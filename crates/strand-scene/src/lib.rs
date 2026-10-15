@@ -28,8 +28,8 @@ pub use effect::{BlendMode, Bundled, Effect, Mask, ShaderInput, ShaderPass, Shad
 pub use geometry::{LogicalPoint, LogicalRect, LogicalSize, Point, Rect, Scale, Size};
 pub use id::{NodeId, NodeIdAllocator, SurfaceId};
 pub use input::{
-    AxisDelta, AxisSource, ButtonState, DropKind, DropPayload, InputEvent, KeyInput, Modifiers,
-    drag_export, drag_identity, drag_type,
+    AxisDelta, AxisSource, ButtonState, ClipboardAsk, DropKind, DropPayload, InputEvent, KeyInput,
+    Modifiers, drag_export, drag_identity, drag_type,
 };
 pub use motion::{Curve, Motion, Spring};
 pub use paint::{

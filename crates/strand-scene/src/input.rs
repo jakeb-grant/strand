@@ -77,6 +77,20 @@ pub struct KeyInput {
     pub modifiers: Modifiers,
     /// Milliseconds, from the compositor's clock.
     pub time: u32,
+    /// (M6, review r1) The key's keysym name in the keymap's first layout
+    /// that gives it a Latin one, when the active layout gives it a
+    /// non-Latin character (`v` for `Cyrillic_em` with `us,ru` and `ru`
+    /// active); `None` otherwise. Shortcuts match it ([`Self::shortcut`]),
+    /// as GTK and Qt match theirs; `on key(k)` still sees `name`.
+    pub latin: Option<String>,
+}
+
+impl KeyInput {
+    /// The name shortcuts match: [`Self::latin`] when there is one, else
+    /// [`Self::name`].
+    pub fn shortcut(&self) -> &str {
+        self.latin.as_deref().unwrap_or(&self.name)
+    }
 }
 
 named_enum! {
@@ -254,6 +268,31 @@ pub enum InputEvent {
         at: LogicalPoint,
         payload: DropPayload,
     },
+    /// (M6) The selection's text, read for a paste the host asked for
+    /// ([`ClipboardAsk::Paste`]) on `surface`: an `input` there inserts it
+    /// at its caret.
+    Paste { surface: SurfaceId, text: String },
+}
+
+/// (M6) What render asks the host of the compositor's clipboard (the
+/// `wl_data_device` selection), for a focused `input`'s Ctrl+C/X/V: the
+/// host takes the press's serial and answers a paste with
+/// [`InputEvent::Paste`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipboardAsk {
+    /// Make `text` the selection (a copy or a cut on `surface`).
+    Copy { surface: SurfaceId, text: String },
+    /// Read the selection as text for `surface` (a paste).
+    Paste { surface: SurfaceId },
+}
+
+impl ClipboardAsk {
+    /// The surface it was asked on.
+    pub fn surface(&self) -> SurfaceId {
+        match self {
+            Self::Copy { surface, .. } | Self::Paste { surface } => *surface,
+        }
+    }
 }
 
 impl InputEvent {
@@ -272,7 +311,8 @@ impl InputEvent {
             | Self::DragEnter { surface, .. }
             | Self::DragMotion { surface, .. }
             | Self::DragLeave { surface }
-            | Self::DragDrop { surface, .. } => *surface,
+            | Self::DragDrop { surface, .. }
+            | Self::Paste { surface, .. } => *surface,
         }
     }
 }
@@ -398,5 +438,24 @@ mod tests {
             assert_eq!(e.clone(), e);
         }
         assert_ne!(payload, DropPayload::Node(NodeId::new(2, 1)));
+    }
+
+    #[test]
+    fn a_paste_names_its_surface() {
+        let s = SurfaceId(9);
+        let e = InputEvent::Paste {
+            surface: s,
+            text: "from elsewhere".into(),
+        };
+        assert_eq!(e.surface(), s);
+        for a in [
+            ClipboardAsk::Copy {
+                surface: s,
+                text: "x".into(),
+            },
+            ClipboardAsk::Paste { surface: s },
+        ] {
+            assert_eq!(a.surface(), s);
+        }
     }
 }

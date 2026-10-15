@@ -955,6 +955,36 @@ findings only.
     `crates/strand-services/src/bluetooth.rs::tests::a_device_shows_its_last_call_and_repeats_are_dropped`,
     `::a_pairing_that_times_out_is_cancelled`;
     `crates/strand-compiler/tests/checker.rs::bluetooth_is_a_pairing_page`).
+30. **No clipboard and no clipboard history.** (found 2026-10-15 by
+    surveying the owner's quickshell config) A shell could not copy a
+    value from a handler (an IP address, a colour), an `input` could not
+    paste or copy, and nothing showed what was copied before, which the
+    owner's quickshell config does with a clipboard history popup.
+    **Fixed; pending the owner's check on Hyprland** (m6-service-gaps,
+    decisions.md): a focused `input` copies, cuts and pastes with
+    Ctrl+C/X/V (and Ctrl+Insert, Shift+Delete, Shift+Insert) through the
+    compositor's clipboard; a builtin `clipboard` service (over
+    `ext-data-control-v1`, else `wlr-data-control`) gives the selection's
+    `text` and `image`, `clipboard.copy(value)` and `clear()`, and
+    `history` (texts and images, `e.copy()`, `e.remove()`), kept across
+    restarts and recorded while the config reads it anywhere, a password
+    manager's secret never read; after review: the selection found when
+    Strand starts is shown but never recorded, so a cleared or removed
+    entry stays gone; the lock neither pastes nor copies; Ctrl+C/X/V
+    work with a non-Latin layout active (`us,ru`); the selection-is-an-
+    image flag is `clipboard.holds_image`; after review r2: a clear
+    also deletes a temporary copy of the history a save cut short left,
+    and image files the history no longer names are deleted at the next
+    load or save, so they never sit outside its caps
+    (`crates/strand-services/src/clipboard/history.rs::tests::a_temporary_file_a_cut_short_save_left_goes_at_clear_and_at_load`,
+    `::image_files_no_entry_names_are_deleted`,
+    `crates/strand/tests/clipboard.rs::an_input_copies_and_pastes_through_the_compositor`,
+    `crates/strand-services/tests/clipboard.rs::a_cleared_or_removed_selection_does_not_come_back_at_a_restart`,
+    `crates/strand-surface/tests/session_lock.rs::the_lock_neither_pastes_nor_copies` (lock VM),
+    `crates/strand-surface/tests/clipboard.rs::ctrl_v_pastes_with_a_non_latin_layout_active`,
+    `crates/strand-services/tests/clipboard.rs`,
+    `crates/strand/src/services/mod.rs::tests::a_closed_popup_reading_clipboard_history_holds_it_from_the_top_level`,
+    `crates/strand/tests/compositor_matrix.rs::the_clipboard_works_on_every_compositor`).
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

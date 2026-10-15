@@ -3,7 +3,9 @@
 # tests/session_lock.rs): nothing locked before it is enabled, every
 # output locked, hotplug, a refused lock reported, only a token unlocking
 # whatever the shell does, keys reaching the lock and following its
-# content to another output. One test at a time: each starts its own sway.
+# content to another output, and the lock neither pasting nor copying
+# the locked session's clipboard. One test at a time: each starts its own
+# sway.
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
 as_tester "$SESSION_LOCK_TEST" --test-threads=1 --nocapture 2>&1 | tee "$out/session_lock.log"

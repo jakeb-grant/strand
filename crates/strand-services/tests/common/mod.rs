@@ -2,6 +2,7 @@
 //! loading, and a private headless sway.
 #![allow(dead_code)]
 
+pub mod data_control;
 pub mod hyprland;
 pub mod window;
 

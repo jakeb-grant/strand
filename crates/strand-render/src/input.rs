@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use strand_scene::input::button;
 use strand_scene::{
-    AxisSource, ButtonState, InputEvent, KeyInput, LogicalPoint, LogicalRect, Modifiers, NodeId,
-    NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
+    AxisSource, ButtonState, ClipboardAsk, InputEvent, KeyInput, LogicalPoint, LogicalRect,
+    Modifiers, NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
 };
 
 use crate::renderer::{Renderer, ScrollInput, ScrollKind};
@@ -101,6 +101,10 @@ pub enum Intent {
         prop: Prop,
         value: PropValue,
     },
+    /// (M6) For the host, not logic: a focused `input` copies to or
+    /// pastes from the compositor's clipboard (Ctrl+C/X/V). A paste comes
+    /// back as [`InputEvent::Paste`].
+    Clipboard(ClipboardAsk),
 }
 
 /// What routing asks of the scene: the hit chain under a point,
@@ -440,6 +444,9 @@ pub struct Router {
     picking: bool,
     /// (M6) The `trigger: hover` popups the router opens and closes.
     hover_popups: HoverPopups,
+    /// (M6) The `input` each surface asked the host to paste into
+    /// ([`ClipboardAsk::Paste`]), until the paste arrives.
+    pending_paste: HashMap<SurfaceId, NodeId>,
 }
 
 /// (M6) How long a `trigger: hover` popup stays open after the pointer
@@ -635,6 +642,7 @@ impl Router {
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
         self.focus.remove(&surface);
+        self.pending_paste.remove(&surface);
         self.pointer.remove(&surface);
         if self.drag.as_ref().is_some_and(|d| d.origin == surface) {
             self.drag = None;
@@ -1368,6 +1376,7 @@ impl Router {
             }
             InputEvent::KeyboardLeave { .. } => {
                 self.set_focus(surface, None);
+                self.pending_paste.remove(&surface);
                 // Focus loss closes a surface bound `open: <-> x`.
                 if open_two_way(scene.tree(), root) {
                     self.close(scene, root);
@@ -1378,6 +1387,23 @@ impl Router {
                     self.close(scene, root);
                 }
                 self.hover_popup_dismissed(scene.tree(), root);
+            }
+            InputEvent::Paste { text, .. } => {
+                // Only into the input that asked, while it still has the
+                // keyboard (focus moved on: the paste is dropped).
+                let Some(input) = self.pending_paste.remove(&surface) else {
+                    return;
+                };
+                let is_input = scene
+                    .tree()
+                    .and_then(|t| t.get(input))
+                    .is_some_and(|n| n.kind == NodeKind::Input);
+                if self.focus.get(&surface) != Some(&input) || !is_input {
+                    return;
+                }
+                let (now, caret, pending) = self.typed_text(input, scene);
+                let edit = crate::widgets::pasted(&now, caret, text);
+                self.apply_edit(input, edit, pending, scene);
             }
             InputEvent::Key { key, .. } => {
                 if key.state == ButtonState::Pressed {
@@ -1791,6 +1817,7 @@ impl Router {
         });
         self.edits.retain(|n, _| live(*n));
         self.focus.retain(|_, n| live(*n));
+        self.pending_paste.retain(|_, n| live(*n));
     }
 
     /// Moves keyboard focus on `surface` to `node` (`focused`).
@@ -1862,10 +1889,6 @@ impl Router {
         let nav = match node.and_then(|n| n.get(Prop::Nav)) {
             Some(PropValue::Node(l)) => Some(*l),
             _ => None,
-        };
-        let text = match node.and_then(|n| n.get(Prop::Text)) {
-            Some(PropValue::Text(t)) => t.clone(),
-            _ => String::new(),
         };
         let open = open_two_way(scene.tree(), root);
         self.event(
@@ -1988,40 +2011,100 @@ impl Router {
                 self.event(focus, NodeEvent::Activate);
                 return;
             }
-            // Keys typed faster than logic answers build on the last
-            // write; once the scene shows it, or a text of logic's own,
-            // they build on the scene.
-            let in_flight = self.edits.get(&focus).filter(|e| {
-                e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+            let password = node.is_some_and(|n| {
+                matches!(n.get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password")
             });
-            // (`observe` already dropped what logic answered.)
-            let mut pending = in_flight.map_or_else(|| vec![text.clone()], |e| e.pending.clone());
-            let now = in_flight.map_or(text, |e| e.latest.clone());
-            let caret = scene
-                .caret(focus)
-                .unwrap_or(Caret::at(now.len()))
-                .clamped(&now);
-            match crate::widgets::edit(&now, caret, &key.name, &key.text, key.modifiers) {
-                Edit::None => {}
-                Edit::Moved(c) => scene.set_caret(focus, Some(c)),
-                Edit::Changed(now, c) => {
-                    scene.set_caret(focus, Some(c));
-                    pending.push(now.clone());
-                    self.edits.insert(
-                        focus,
-                        InFlight {
-                            latest: now.clone(),
-                            pending,
-                            at: Instant::now(),
-                        },
-                    );
-                    self.emit(Intent::Write {
-                        node: focus,
-                        prop: Prop::Text,
-                        value: PropValue::Text(now),
-                    });
+            let (now, caret, pending) = self.typed_text(focus, scene);
+            // Shortcuts match the Latin keysym of a non-Latin layout's key
+            // (Ctrl+V with `ru` active pastes).
+            let edit = crate::widgets::edit(
+                &now,
+                caret,
+                key.shortcut(),
+                &key.text,
+                key.modifiers,
+                password,
+            );
+            match edit {
+                Edit::Copy(t) => {
+                    self.emit(Intent::Clipboard(ClipboardAsk::Copy { surface, text: t }))
                 }
+                Edit::Cut {
+                    copied,
+                    text: now,
+                    caret,
+                } => {
+                    self.emit(Intent::Clipboard(ClipboardAsk::Copy {
+                        surface,
+                        text: copied,
+                    }));
+                    self.apply_edit(focus, Edit::Changed(now, caret), pending, scene);
+                }
+                Edit::Paste => {
+                    self.pending_paste.insert(surface, focus);
+                    self.emit(Intent::Clipboard(ClipboardAsk::Paste { surface }));
+                }
+                edit => self.apply_edit(focus, edit, pending, scene),
             }
+        }
+    }
+
+    /// The text an edit of `input` builds on, its caret, and what the
+    /// scene may show meanwhile ([`InFlight::pending`]). Keys typed (and
+    /// pastes arriving) faster than logic answers build on the last
+    /// write; once the scene shows it, or a text of logic's own, they
+    /// build on the scene.
+    fn typed_text(&self, input: NodeId, scene: &dyn InputScene) -> (String, Caret, Vec<String>) {
+        let text = match scene
+            .tree()
+            .and_then(|t| t.get(input))
+            .and_then(|n| n.get(Prop::Text))
+        {
+            Some(PropValue::Text(t)) => t.clone(),
+            _ => String::new(),
+        };
+        let in_flight = self.edits.get(&input).filter(|e| {
+            e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+        });
+        // (`observe` already dropped what logic answered.)
+        let pending = in_flight.map_or_else(|| vec![text.clone()], |e| e.pending.clone());
+        let now = in_flight.map_or(text, |e| e.latest.clone());
+        let caret = scene
+            .caret(input)
+            .unwrap_or(Caret::at(now.len()))
+            .clamped(&now);
+        (now, caret, pending)
+    }
+
+    /// Applies a caret move or a text change to `input`: a change is
+    /// written (two-way `text`) and remembered as in flight.
+    fn apply_edit(
+        &mut self,
+        input: NodeId,
+        edit: Edit,
+        mut pending: Vec<String>,
+        scene: &mut dyn InputScene,
+    ) {
+        match edit {
+            Edit::Moved(c) => scene.set_caret(input, Some(c)),
+            Edit::Changed(now, c) => {
+                scene.set_caret(input, Some(c));
+                pending.push(now.clone());
+                self.edits.insert(
+                    input,
+                    InFlight {
+                        latest: now.clone(),
+                        pending,
+                        at: Instant::now(),
+                    },
+                );
+                self.emit(Intent::Write {
+                    node: input,
+                    prop: Prop::Text,
+                    value: PropValue::Text(now),
+                });
+            }
+            Edit::None | Edit::Copy(_) | Edit::Cut { .. } | Edit::Paste => {}
         }
     }
 

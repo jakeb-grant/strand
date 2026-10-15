@@ -180,7 +180,7 @@ pub mod keyboard {
     }
 
     /// The named keys the keymap has, with their evdev codes.
-    const NAMED: [(&str, u32); 9] = [
+    const NAMED: [(&str, u32); 11] = [
         ("Escape", 1),
         ("BackSpace", 14),
         ("Return", 28),
@@ -190,7 +190,29 @@ pub mod keyboard {
         ("Right", 106),
         ("End", 107),
         ("Down", 108),
+        ("Insert", 110),
+        ("Delete", 111),
     ];
+
+    /// The keymap's real `Control` and `Shift` modifiers, as the modifier
+    /// state sends them.
+    pub const CONTROL: u32 = 1 << 2;
+    pub const SHIFT: u32 = 1 << 0;
+
+    /// The evdev code of a named key or of a lowercase letter.
+    fn key_code(name: &str) -> Option<u32> {
+        NAMED
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, k)| *k)
+            .or_else(|| {
+                let mut cs = name.chars();
+                match (cs.next(), cs.next()) {
+                    (Some(c), None) => code(c),
+                    _ => None,
+                }
+            })
+    }
 
     pub struct Keyboard {
         _conn: Connection,
@@ -244,13 +266,10 @@ pub mod keyboard {
         }
 
         /// Presses and releases a named key (`Return`, `Escape`, `Up`,
-        /// `Down`, `Left`, `Right`, `Home`, `End`, `BackSpace`).
+        /// `Down`, `Left`, `Right`, `Home`, `End`, `BackSpace`, `Insert`,
+        /// `Delete`) or a lowercase letter.
         pub fn press(&mut self, name: &str) {
-            let k = NAMED
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, k)| *k)
-                .expect("a named key of the keymap");
+            let k = key_code(name).expect("a key of the keymap");
             for state in [1, 0] {
                 self.time += 10;
                 self.keyboard.key(self.time, k, state);
@@ -262,8 +281,13 @@ pub mod keyboard {
         /// Presses and releases a named key with Control held (the
         /// keymap's real `Control` modifier, sent as the modifier state).
         pub fn press_ctrl(&mut self, name: &str) {
-            const CONTROL: u32 = 1 << 2;
-            self.keyboard.modifiers(CONTROL, 0, 0, 0);
+            self.press_with(CONTROL, name);
+        }
+
+        /// (M6) Presses and releases a key with `mods` held ([`CONTROL`],
+        /// [`SHIFT`], or both), sent as the modifier state.
+        pub fn press_with(&mut self, mods: u32, name: &str) {
+            self.keyboard.modifiers(mods, 0, 0, 0);
             self.queue.roundtrip(&mut Client).unwrap();
             self.press(name);
             self.keyboard.modifiers(0, 0, 0, 0);

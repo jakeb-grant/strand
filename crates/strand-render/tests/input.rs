@@ -233,6 +233,7 @@ fn keys_go_to_the_focused_input_and_its_list() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
@@ -497,6 +498,7 @@ fn click_away_closes_only_a_two_way_open() {
                 repeat: false,
                 modifiers: Default::default(),
                 time: 0,
+                latin: None,
             },
         },
         &mut r,
@@ -621,6 +623,7 @@ fn logic_clearing_an_input_wins_over_edits_in_flight() {
                     repeat: false,
                     modifiers: Default::default(),
                     time: 0,
+                    latin: None,
                 },
             },
             r,
@@ -987,6 +990,7 @@ fn escape_cancels_a_drag() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&escape, &mut r);
@@ -2231,6 +2235,7 @@ fn a_removed_input_playing_its_exit_loses_focus_at_once() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&key, &mut r);
@@ -2321,6 +2326,7 @@ fn nav_selects_rows_beyond_the_mounted_window() {
             repeat: false,
             modifiers,
             time: 0,
+            latin: None,
         },
     };
     let key = |name: &str| key_with(name, Modifiers::default());
@@ -2564,6 +2570,7 @@ fn router_hooks_pointer_drag_and_submenu_keys() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     let open = |node, on| Intent::Write {
@@ -2660,6 +2667,7 @@ fn a_password_input_is_edited_like_any_input() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
@@ -2734,6 +2742,7 @@ fn return_activates_a_plain_input() {
                     repeat: false,
                     modifiers: Modifiers::default(),
                     time: 0,
+                    latin: None,
                 },
             },
             &mut r,
@@ -3372,4 +3381,316 @@ fn open_on_a_hover_popup_opens_and_holds_it() {
     assert_eq!(opens(&mut f), []);
     after_grace(&mut f, &mut scene);
     assert_eq!(opens(&mut f), [(POP_B, false)]);
+}
+
+/// (M6) A panel holding two inputs (the first `focus: true`), the first a
+/// password when `password`, on surface 1, the keyboard on it.
+fn clipboard_scene(password: bool) -> (Renderer, SurfaceId, NodeId, R) {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (panel, input, other) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(40.0))
+        .create(input, NodeKind::Input, Some(panel), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(input, Prop::Text, PropValue::Text(String::new()))
+        .create(other, NodeKind::Input, Some(panel), 1)
+        .set(other, Prop::Text, PropValue::Text(String::new()));
+    if password {
+        d.set(
+            input,
+            Prop::InputType,
+            PropValue::Keyword("password".into()),
+        );
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.drain();
+    (r, s, input, f)
+}
+
+fn key_with(s: SurfaceId, name: &str, text: &str, m: strand_scene::Modifiers) -> InputEvent {
+    InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: name.into(),
+            text: text.into(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: m,
+            time: 0,
+            latin: None,
+        },
+    }
+}
+
+fn ctrl() -> strand_scene::Modifiers {
+    strand_scene::Modifiers {
+        ctrl: true,
+        ..Default::default()
+    }
+}
+
+fn shift() -> strand_scene::Modifiers {
+    strand_scene::Modifiers {
+        shift: true,
+        ..Default::default()
+    }
+}
+
+/// The `text` writes and clipboard asks among `out`.
+fn text_writes_and_asks(out: Vec<Intent>) -> (Vec<String>, Vec<strand_scene::ClipboardAsk>) {
+    let mut writes = Vec::new();
+    let mut asks = Vec::new();
+    for i in out {
+        match i {
+            Intent::Write {
+                prop: Prop::Text,
+                value: PropValue::Text(t),
+                ..
+            } => writes.push(t),
+            Intent::Clipboard(a) => asks.push(a),
+            _ => {}
+        }
+    }
+    (writes, asks)
+}
+
+/// (M6) Ctrl+C asks the host to copy the focused input's selection (and
+/// writes nothing); Ctrl+X asks the same and writes the text without it.
+#[test]
+fn ctrl_c_and_ctrl_x_ask_to_copy_the_inputs_selection() {
+    use strand_scene::ClipboardAsk;
+    let (mut r, s, _, mut f) = clipboard_scene(false);
+    for k in ["a", "b", "c"] {
+        f.input(&key_with(s, k, k, Default::default()), &mut r);
+    }
+    // Shift+Left selects the "c".
+    f.input(&key_with(s, "Left", "", shift()), &mut r);
+    f.drain();
+    f.input(&key_with(s, "c", "c", ctrl()), &mut r);
+    let out = f.drain();
+    assert!(
+        out.iter().any(|i| matches!(
+            i,
+            Intent::Event {
+                event: NodeEvent::Key { name, .. },
+                ..
+            } if name == "c"
+        )),
+        "`on key` still hears Ctrl+C"
+    );
+    let (writes, asks) = text_writes_and_asks(out);
+    assert!(writes.is_empty(), "a copy writes nothing: {writes:?}");
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "c".into()
+        }]
+    );
+    f.input(&key_with(s, "x", "x", ctrl()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "c".into()
+        }]
+    );
+    assert_eq!(writes, ["ab"], "a cut writes the text without it");
+    // Nothing selected: Ctrl+C asks nothing.
+    f.input(&key_with(s, "c", "c", ctrl()), &mut r);
+    assert!(text_writes_and_asks(f.drain()).1.is_empty());
+}
+
+/// (M6) Ctrl+V asks the host for the selection; the paste that comes back
+/// lands at the caret, replacing the selection, as one line.
+#[test]
+fn ctrl_v_asks_to_paste_and_the_paste_lands_at_the_caret() {
+    use strand_scene::ClipboardAsk;
+    let (mut r, s, input, mut f) = clipboard_scene(false);
+    for k in ["a", "b"] {
+        f.input(&key_with(s, k, k, Default::default()), &mut r);
+    }
+    f.input(&key_with(s, "Left", "", Default::default()), &mut r);
+    f.drain();
+    f.input(&key_with(s, "v", "v", ctrl()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert!(writes.is_empty());
+    assert_eq!(asks, [ClipboardAsk::Paste { surface: s }]);
+    f.input(
+        &InputEvent::Paste {
+            surface: s,
+            text: "X\nY".into(),
+        },
+        &mut r,
+    );
+    let (writes, _) = text_writes_and_asks(f.drain());
+    assert_eq!(writes, ["aX Yb"]);
+    assert_eq!(
+        r.caret(input),
+        Some(strand_render::widgets::Caret::at(4)),
+        "the caret after the paste"
+    );
+    // A paste nobody asked for is dropped.
+    f.input(
+        &InputEvent::Paste {
+            surface: s,
+            text: "Z".into(),
+        },
+        &mut r,
+    );
+    assert!(text_writes_and_asks(f.drain()).0.is_empty());
+    // Shift+Insert asks too.
+    f.input(&key_with(s, "Insert", "", shift()), &mut r);
+    assert_eq!(
+        text_writes_and_asks(f.drain()).1,
+        [ClipboardAsk::Paste { surface: s }]
+    );
+}
+
+/// (M6, review r1) With a non-Latin layout active, Ctrl+C, Ctrl+X, Ctrl+V
+/// and Ctrl+A match the key's Latin keysym (`KeyInput::latin`, from
+/// strand-surface): `ru`'s keys under C, X, V and A copy, cut, paste and
+/// select all, and the same keys without Ctrl type their own letters;
+/// `on key` still hears the active layout's name.
+#[test]
+fn a_non_latin_layouts_shortcuts_match_their_latin_keys() {
+    use strand_scene::ClipboardAsk;
+    let (mut r, s, _, mut f) = clipboard_scene(false);
+    let ru = |name: &str, text: &str, latin: &str, m| {
+        let mut e = key_with(s, name, text, m);
+        if let InputEvent::Key { key, .. } = &mut e {
+            key.latin = Some(latin.into());
+        }
+        e
+    };
+    // Typed without Ctrl: the active layout's letters.
+    f.input(&ru("Cyrillic_es", "с", "c", Default::default()), &mut r);
+    f.input(&ru("Cyrillic_em", "м", "v", Default::default()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(writes.last().map(String::as_str), Some("см"));
+    assert!(asks.is_empty());
+    // Ctrl+A (`Cyrillic_ef`) selects all, Ctrl+C (`Cyrillic_es`) copies it.
+    f.input(&ru("Cyrillic_ef", "ф", "a", ctrl()), &mut r);
+    f.input(&ru("Cyrillic_es", "с", "c", ctrl()), &mut r);
+    let out = f.drain();
+    assert!(
+        out.iter().any(|i| matches!(
+            i,
+            Intent::Event {
+                event: NodeEvent::Key { name, .. },
+                ..
+            } if name == "Cyrillic_es"
+        )),
+        "`on key` hears the active layout's name"
+    );
+    let (writes, asks) = text_writes_and_asks(out);
+    assert!(writes.is_empty(), "{writes:?}");
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "см".into()
+        }]
+    );
+    // Ctrl+X (`Cyrillic_che`) cuts; Ctrl+V (`Cyrillic_em`) pastes.
+    f.input(&ru("Cyrillic_che", "ч", "x", ctrl()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(writes, [""]);
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "см".into()
+        }]
+    );
+    f.input(&ru("Cyrillic_em", "м", "v", ctrl()), &mut r);
+    let (_, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(asks, [ClipboardAsk::Paste { surface: s }]);
+}
+
+/// (M6) A paste arriving while keys are still in flight to logic builds on
+/// them, as a key does.
+#[test]
+fn a_paste_builds_on_keys_still_in_flight() {
+    let (mut r, s, _, mut f) = clipboard_scene(false);
+    // Logic has answered nothing: the scene still shows "".
+    for k in ["a", "b"] {
+        f.input(&key_with(s, k, k, Default::default()), &mut r);
+    }
+    f.input(&key_with(s, "v", "v", ctrl()), &mut r);
+    f.drain();
+    f.input(
+        &InputEvent::Paste {
+            surface: s,
+            text: "cd".into(),
+        },
+        &mut r,
+    );
+    f.input(&key_with(s, "e", "e", Default::default()), &mut r);
+    let (writes, _) = text_writes_and_asks(f.drain());
+    assert_eq!(writes, ["abcd", "abcde"]);
+}
+
+/// (M6) A paste that arrives after the focus moved on (the keyboard left
+/// and came back) is dropped, so it never lands where nobody asked.
+#[test]
+fn a_paste_after_focus_moved_is_dropped() {
+    let (mut r, s, _, mut f) = clipboard_scene(false);
+    f.input(&key_with(s, "v", "v", ctrl()), &mut r);
+    f.drain();
+    f.input(&InputEvent::KeyboardLeave { surface: s }, &mut r);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.drain();
+    f.input(
+        &InputEvent::Paste {
+            surface: s,
+            text: "late".into(),
+        },
+        &mut r,
+    );
+    assert!(
+        text_writes_and_asks(f.drain()).0.is_empty(),
+        "focus left and came back: the paste is dropped"
+    );
+}
+
+/// (M6) A password input asks for no copy or cut, but takes a paste.
+#[test]
+fn a_password_input_asks_for_no_copy() {
+    use strand_scene::ClipboardAsk;
+    let (mut r, s, _, mut f) = clipboard_scene(true);
+    for k in ["p", "w"] {
+        f.input(&key_with(s, k, k, Default::default()), &mut r);
+    }
+    f.input(&key_with(s, "a", "a", ctrl()), &mut r);
+    f.drain();
+    for (name, m) in [
+        ("c", ctrl()),
+        ("Insert", ctrl()),
+        ("x", ctrl()),
+        ("Delete", shift()),
+    ] {
+        f.input(&key_with(s, name, "", m), &mut r);
+        let (writes, asks) = text_writes_and_asks(f.drain());
+        assert!(asks.is_empty(), "{name}: {asks:?}");
+        assert!(writes.is_empty(), "{name}: {writes:?}");
+    }
+    f.input(&key_with(s, "v", "v", ctrl()), &mut r);
+    assert_eq!(
+        text_writes_and_asks(f.drain()).1,
+        [ClipboardAsk::Paste { surface: s }]
+    );
 }

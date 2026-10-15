@@ -327,7 +327,11 @@ Also every prop and event of [`node`](#node).
 element input: node
 ```
 
-A text field: `input { text: <-> query }`.
+A text field: `input { text: <-> query }`. Focused, it copies its
+selection with Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or
+Shift+Delete and pastes at the caret with Ctrl+V or Shift+Insert,
+through the compositor's clipboard (a `password` copies nothing; a
+paste becomes one line).
 
 It takes no children.
 

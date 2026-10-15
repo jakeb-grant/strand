@@ -3664,3 +3664,83 @@ fn a_posed_panel_looks_the_same_on_every_compositor() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+/// (m6-service-gaps, owner-testing gap 30) On all four, the `clipboard`
+/// service binds data control (`ext-data-control-v1` where offered, else
+/// `wlr-data-control`), and a value it copies comes back as the
+/// selection's text and the history's first entry.
+#[test]
+fn the_clipboard_works_on_every_compositor() {
+    use strand_services::Store;
+    use strand_services::clipboard::{self, Clipboard, Config};
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the clipboard test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let globals = {
+        use wayland_client::Connection;
+        use wayland_client::globals::registry_queue_init;
+        let conn =
+            Connection::from_socket(std::os::unix::net::UnixStream::connect(&socket).unwrap())
+                .unwrap();
+        let (globals, _queue) = registry_queue_init::<support::pointer::Client>(&conn).unwrap();
+        globals
+            .contents()
+            .with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>())
+    };
+    let protocol = if globals.iter().any(|g| g == "ext_data_control_manager_v1") {
+        "ext-data-control-v1"
+    } else if globals.iter().any(|g| g == "zwlr_data_control_manager_v1") {
+        "wlr-data-control"
+    } else {
+        panic!("{kind} offers no data control (globals: {globals:?})")
+    };
+    eprintln!("matrix: {kind}: the clipboard over {protocol}");
+    let state = tempfile::tempdir().unwrap();
+    clipboard::configure(Some(Config {
+        target: strand_services::wm::WaylandTarget::Socket(socket),
+        state_dir: state.path().to_path_buf(),
+    }));
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&services, &rt);
+    b.clipboard.acquire(&rt);
+    let history = Clipboard::FIELDS
+        .iter()
+        .position(|f| f.name == "history")
+        .unwrap();
+    b.clipboard.acquire_field(history);
+    assert!(
+        services.wait_ready(&rt, PATIENCE),
+        "the clipboard's first state"
+    );
+    rt.flush();
+    let snap = || b.clipboard.cells().snapshot(&rt).unwrap_or_default();
+    assert!(snap().available, "{kind}: {:?}", snap());
+    b.clipboard
+        .dynamic()
+        .action(
+            &rt,
+            "copy",
+            None,
+            &[Data::text("strand-matrix")],
+            Default::default(),
+        )
+        .unwrap();
+    rt.flush();
+    until("the copy comes back as the selection", || {
+        services.pump(&rt);
+        rt.flush();
+        let s = snap();
+        if s.text == "strand-matrix" && s.history.first().is_some_and(|e| e.text == "strand-matrix")
+        {
+            Ok(())
+        } else {
+            Err(format!("{s:?}"))
+        }
+    });
+    services.shutdown();
+    clipboard::configure(None);
+}

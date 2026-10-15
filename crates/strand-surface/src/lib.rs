@@ -34,6 +34,10 @@ pub use clock::{FakeClock, FrameClock, Presentation, PresentationClock};
 pub use input::{AxisDelta, AxisSource, ButtonState, InputEvent};
 #[cfg(feature = "gpu")]
 pub use manager::RawHandles;
+/// (M6) Copy and paste for an `input` (`src/selection.rs`).
+pub use manager::selection::{
+    MAX_PASTE_BYTES, PASTE_READ_TIMEOUT, STRAND_SELECTION_MIME, TEXT_TYPES as SELECTION_TEXT_TYPES,
+};
 pub use manager::{
     Config, GRAB_WINDOW, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle, Request, State,
     Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,

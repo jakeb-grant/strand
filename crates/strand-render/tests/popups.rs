@@ -193,6 +193,7 @@ fn escape_closes_a_popup() {
                 repeat: false,
                 modifiers: Modifiers::default(),
                 time: 0,
+                latin: None,
             },
         },
         &mut r,

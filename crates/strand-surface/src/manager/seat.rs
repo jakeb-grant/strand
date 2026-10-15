@@ -10,8 +10,24 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.by_wl.get(&wl.id()).copied()
     }
 
-    /// A key event on the surface with keyboard focus.
-    pub(super) fn key(&mut self, event: KeyEvent, state: ButtonState, repeat: bool) {
+    /// The Latin keysym's name shortcuts match for `event` on `keyboard`
+    /// ([`LatinKeys::shortcut`]).
+    fn latin(&self, keyboard: &wl_keyboard::WlKeyboard, event: &KeyEvent) -> Option<String> {
+        self.latin_keys
+            .get(&keyboard.id())?
+            .shortcut(event.raw_code, event.keysym)
+            .map(key_name)
+    }
+
+    /// A key event on the surface with keyboard focus (`latin`: the
+    /// Latin keysym's name shortcuts match, [`LatinKeys`]).
+    pub(super) fn key(
+        &mut self,
+        event: KeyEvent,
+        latin: Option<String>,
+        state: ButtonState,
+        repeat: bool,
+    ) {
         // During a popup grab, the topmost grabbing popup takes the keys.
         let Some(surface) = self.grab_focus.or(self.keyboard_focus) else {
             return;
@@ -30,6 +46,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 repeat,
                 modifiers: self.modifiers,
                 time: event.time,
+                latin,
             },
         });
     }
@@ -47,6 +64,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         let interval = repeat_interval(rate.get());
         let raw = event.raw_code;
+        let latin = self.latin(keyboard, &event);
         let token = self.handle.insert_source(
             Timer::from_duration(Duration::from_millis(u64::from(*delay))),
             move |_, _, state: &mut State<H>| {
@@ -57,7 +75,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                     state.key_repeat = None;
                     return TimeoutAction::Drop;
                 }
-                state.key(event.clone(), ButtonState::Pressed, true);
+                state.key(event.clone(), latin.clone(), ButtonState::Pressed, true);
                 TimeoutAction::ToDuration(interval)
             },
         );
@@ -104,6 +122,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         self.host.input(&event);
         self.dnd_input(&event);
+        self.clipboard_asks();
         if let Some(tx) = &self.input
             && tx.send(event).is_err()
         {
@@ -129,7 +148,8 @@ fn unpose(event: &mut InputEvent, (fx, fy): (f64, f64)) {
         | InputEvent::KeyboardLeave { .. }
         | InputEvent::Key { .. }
         | InputEvent::ClickAway { .. }
-        | InputEvent::DragLeave { .. } => return,
+        | InputEvent::DragLeave { .. }
+        | InputEvent::Paste { .. } => return,
     };
     p.x = (f64::from(p.x) / fx) as f32;
     p.y = (f64::from(p.y) / fy) as f32;
@@ -141,6 +161,59 @@ pub(super) fn key_name(sym: Keysym) -> String {
     match sym.name() {
         Some(n) => n.strip_prefix("XK_").unwrap_or(n).to_string(),
         None => format!("0x{:x}", sym.raw()),
+    }
+}
+
+/// (M6, review r1) The Latin keysym of each key of a keymap with several
+/// layouts: the first layout's (in the keymap's order) whose first level
+/// gives the key a printable ASCII keysym. A shortcut matches it when the
+/// active layout gives the key a non-ASCII character, as GTK and Qt match
+/// theirs: with `us,ru` and `ru` active, Ctrl+V is `Cyrillic_em`, and
+/// matches as `v`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(super) struct LatinKeys(HashMap<u32, Keysym>);
+
+impl LatinKeys {
+    /// From a keymap in xkb's text format (`None`: it does not compile).
+    /// A keymap with one layout has none: its keys are what they are.
+    pub(super) fn from_text(text: &str) -> Option<LatinKeys> {
+        use xkbcommon::xkb;
+        if text.contains('\0') {
+            return None;
+        }
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_string(
+            &context,
+            text.to_string(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )?;
+        let mut keys = HashMap::new();
+        if keymap.num_layouts() < 2 {
+            return Some(LatinKeys(keys));
+        }
+        keymap.key_for_each(|keymap, code| {
+            let latin = (0..keymap.num_layouts_for_key(code)).find_map(|layout| {
+                match keymap.key_get_syms_by_level(code, layout, 0) {
+                    [sym] if (0x21..=0x7e).contains(&sym.raw()) => Some(*sym),
+                    _ => None,
+                }
+            });
+            // xkb's keycodes are the evdev codes `wl_keyboard` sends, plus 8.
+            if let (Some(sym), Some(raw)) = (latin, code.raw().checked_sub(8)) {
+                keys.insert(raw, sym);
+            }
+        });
+        Some(LatinKeys(keys))
+    }
+
+    /// The Latin keysym a shortcut matches for key `raw` typed as `sym`:
+    /// `None` unless `sym` is a non-ASCII character and the key has one.
+    pub(super) fn shortcut(&self, raw: u32, sym: Keysym) -> Option<Keysym> {
+        if sym.key_char().is_none_or(|c| c.is_ascii()) {
+            return None;
+        }
+        self.0.get(&raw).copied()
     }
 }
 
@@ -165,7 +238,9 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer {
+        // (M6) A keyboard's seat gets one too: an `input` copies and
+        // pastes through its selection.
+        if capability == Capability::Pointer || capability == Capability::Keyboard {
             self.dnd_seat(&seat);
         }
         if capability == Capability::Pointer && !self.pointers.iter().any(|p| p.seat == seat) {
@@ -224,6 +299,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
             for k in &gone {
                 self.repeat_info.remove(k);
                 self.raw_modifiers.remove(k);
+                self.latin_keys.remove(k);
             }
             self.keyboards.retain(|(s, k)| {
                 let keep = *s != seat;
@@ -476,7 +552,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
                 at: Instant::now(),
             });
         }
-        self.key(event.clone(), ButtonState::Pressed, false);
+        let latin = self.latin(keyboard, &event);
+        self.key(event.clone(), latin, ButtonState::Pressed, false);
         self.start_repeat(keyboard, event);
     }
 
@@ -484,11 +561,12 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
-        self.key(event, ButtonState::Pressed, true);
+        let latin = self.latin(keyboard, &event);
+        self.key(event, latin, ButtonState::Pressed, true);
     }
 
     fn release_key(
@@ -506,7 +584,24 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         {
             self.stop_repeat();
         }
-        self.key(event, ButtonState::Released, false);
+        let latin = self.latin(keyboard, &event);
+        self.key(event, latin, ButtonState::Released, false);
+    }
+
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        let latin = LatinKeys::from_text(&keymap.as_string()).unwrap_or_else(|| {
+            log::warn!(
+                "cannot read the keymap's layouts: shortcuts match the active layout's keys"
+            );
+            LatinKeys::default()
+        });
+        self.latin_keys.insert(keyboard.id(), latin);
     }
 
     fn update_repeat_info(
@@ -550,6 +645,91 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A keymap with `groups` (each a list of `(key, keycode, keysym)`
+    /// on one level).
+    fn keymap(groups: &[&[(&str, u32, &str)]]) -> String {
+        let mut codes = Vec::new();
+        let mut keys: Vec<(String, Vec<String>)> = Vec::new();
+        for (g, group) in groups.iter().enumerate() {
+            for (name, code, sym) in *group {
+                if !codes.iter().any(|(n, _)| n == name) {
+                    codes.push((name.to_string(), *code));
+                    keys.push((name.to_string(), Vec::new()));
+                }
+                let k = keys.iter_mut().find(|(n, _)| n == name).unwrap();
+                k.1.push(format!("symbols[Group{}] = [ {sym} ]", g + 1));
+            }
+        }
+        let codes: String = codes
+            .iter()
+            .map(|(n, c)| format!("<{n}> = {c}; "))
+            .collect();
+        let keys: String = keys
+            .iter()
+            .map(|(n, s)| format!("key <{n}> {{ {} }};\n", s.join(", ")))
+            .collect();
+        format!(
+            "xkb_keymap {{\n\
+             xkb_keycodes \"t\" {{ minimum = 8; maximum = 255; {codes}}};\n\
+             xkb_types \"t\" {{ type \"ONE_LEVEL\" {{ modifiers = none; level_name[Level1] = \"Any\"; }}; }};\n\
+             xkb_compatibility \"t\" {{ }};\n\
+             xkb_symbols \"t\" {{\n{keys}}};\n}};\n"
+        )
+    }
+
+    const C: u32 = 46;
+    const V: u32 = 47;
+    const ONE: u32 = 2;
+
+    fn sym(name: &str) -> Keysym {
+        let s = xkbcommon::xkb::keysym_from_name(name, xkbcommon::xkb::KEYSYM_NO_FLAGS);
+        assert_ne!(s.raw(), 0, "{name}");
+        s
+    }
+
+    #[test]
+    fn a_non_latin_layouts_keys_match_shortcuts_as_their_latin_keysyms() {
+        // `us,ru`: the second layout's keys stand for the first's.
+        let us_ru = LatinKeys::from_text(&keymap(&[
+            &[
+                ("AB03", C + 8, "c"),
+                ("AB04", V + 8, "v"),
+                ("AE01", ONE + 8, "1"),
+            ],
+            &[
+                ("AB03", C + 8, "Cyrillic_es"),
+                ("AB04", V + 8, "Cyrillic_em"),
+                ("AE01", ONE + 8, "1"),
+            ],
+        ]))
+        .unwrap();
+        assert_eq!(us_ru.shortcut(V, sym("Cyrillic_em")), Some(sym("v")));
+        assert_eq!(us_ru.shortcut(C, sym("Cyrillic_es")), Some(sym("c")));
+        assert_eq!(
+            key_name(us_ru.shortcut(V, sym("Cyrillic_em")).unwrap()),
+            "v"
+        );
+        // A Latin or non-character keysym is itself.
+        assert_eq!(us_ru.shortcut(V, sym("v")), None);
+        assert_eq!(us_ru.shortcut(ONE, sym("1")), None);
+        assert_eq!(us_ru.shortcut(V, sym("Return")), None);
+        // A key no layout gives a Latin keysym has none.
+        assert_eq!(us_ru.shortcut(99, sym("Cyrillic_em")), None);
+        // `ru,us`: the first layout that has one, wherever it is.
+        let ru_us = LatinKeys::from_text(&keymap(&[
+            &[("AB04", V + 8, "Cyrillic_em")],
+            &[("AB04", V + 8, "v")],
+        ]))
+        .unwrap();
+        assert_eq!(ru_us.shortcut(V, sym("Cyrillic_em")), Some(sym("v")));
+        // One layout: nothing stands in.
+        let ru = LatinKeys::from_text(&keymap(&[&[("AB04", V + 8, "Cyrillic_em")]])).unwrap();
+        assert_eq!(ru, LatinKeys::default());
+        // A keymap that does not compile, or holds a NUL, is none.
+        assert_eq!(LatinKeys::from_text("not a keymap"), None);
+        assert_eq!(LatinKeys::from_text("xkb_keymap {\0"), None);
+    }
 
     #[test]
     fn the_repeat_interval_never_busy_loops() {

@@ -19,7 +19,7 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -92,11 +92,15 @@ mod gpu_handoff;
 mod layer;
 mod origin;
 mod outputs;
+mod pipes;
 mod popup;
 mod pose;
 mod protocols;
 mod scrim;
 mod seat;
+// (M6) Copy and paste for an `input`, beside `dnd.rs`.
+#[path = "../selection.rs"]
+pub(crate) mod selection;
 mod session_lock;
 #[cfg(feature = "gpu")]
 pub use gpu_handoff::RawHandles;
@@ -257,6 +261,14 @@ pub trait SurfaceHost: Painter {
     /// actions ask [`State::activation_token`] with it.
     fn press_serial(&mut self, serial: u32) {
         let _ = serial;
+    }
+    /// (M6) What render asked of the clipboard while it handled the
+    /// event [`SurfaceHost::input`] was just told (a focused `input`'s
+    /// Ctrl+C/X/V: `Intent::Clipboard`), drained right after it, so a
+    /// copy goes with that key press's serial. A paste comes back as
+    /// [`InputEvent::Paste`] (`selection.rs`).
+    fn take_clipboard_asks(&mut self) -> Vec<strand_scene::ClipboardAsk> {
+        Vec::new()
     }
 }
 
@@ -793,6 +805,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// latched, locked, layout): a change on the repeating key's keyboard
     /// stops it, since its text was computed with the old one.
     raw_modifiers: HashMap<ObjectId, (u32, u32, u32, u32)>,
+    /// (M6) Each keyboard's Latin keysyms, from its keymap
+    /// ([`seat::LatinKeys`]).
+    latin_keys: HashMap<ObjectId, seat::LatinKeys>,
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -846,6 +861,8 @@ pub struct State<H: SurfaceHost + 'static> {
     gpu: gpu_handoff::HandOffs,
     /// (M4) Drag and drop over `wl_data_device` (`src/dnd.rs`).
     dnd: dnd::Dnd,
+    /// (M6) Copy and paste for an `input` (`src/selection.rs`).
+    selection: selection::Selection,
     /// (M5) xdg-activation tokens (`src/activation.rs`).
     activation: activation::Activation,
 }
@@ -1030,6 +1047,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             repeat_info: HashMap::new(),
             key_repeat: None,
             raw_modifiers: HashMap::new(),
+            latin_keys: HashMap::new(),
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,
@@ -1049,6 +1067,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             session_lock: session_lock::SessionLock::new(session_lock),
             gpu: gpu_handoff::HandOffs::default(),
             dnd,
+            selection: selection::Selection::new(),
             activation,
         };
         Ok(Self {

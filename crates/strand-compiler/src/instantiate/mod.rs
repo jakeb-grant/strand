@@ -908,6 +908,13 @@ pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 /// design's default accent.
 pub const DEFAULT_SEED: &str = strand_theme::defaults::DEFAULT_SEED;
 
+/// The service fields a program holds from its top level for as long as
+/// it runs whenever it reads them anywhere (spec.md 8.1): a stream that
+/// must keep recording while the scope that shows it is closed. The
+/// clipboard's history records copies made while its popup is closed; a
+/// program that never reads it never records it.
+pub const HELD_ANYWHERE: &[(&str, &str)] = &[("clipboard", "history")];
+
 /// A program running on a runtime. See the module docs.
 pub struct Instance {
     rt: Runtime,
@@ -1046,6 +1053,16 @@ impl Instance {
                 services.insert(("screens".to_string(), None));
             } else if bars {
                 ctx.hold_builtin(rt, "screens");
+            }
+            // A field read anywhere that must be recorded while no shown
+            // scope reads it is held from the top level (a config's
+            // `service` of the name shadows the rule).
+            for (service, field) in HELD_ANYWHERE {
+                let read = (service.to_string(), Some(field.to_string()));
+                if prog.services_anywhere.contains(&read) && !prog.declares_service(service) {
+                    services.insert((service.to_string(), None));
+                    services.insert(read);
+                }
             }
             ctx.acquire(rt, &services);
             let root_frag = ctx.em.borrow_mut().new_frag(None, None);

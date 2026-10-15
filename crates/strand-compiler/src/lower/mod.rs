@@ -46,6 +46,12 @@ pub struct Program {
     pub use_palette: Option<ChunkId>,
     /// Custom services (`service ppd from dbus …`), by declaration.
     pub services: BTreeMap<DefId, CustomService>,
+    /// (m6-service-gaps) What any scope of the program reads of the
+    /// services (every file, component, surface and body, through the
+    /// `let`s and `fn`s they read): a field in
+    /// `instantiate::HELD_ANYWHERE` read anywhere is held from the top
+    /// level (spec.md 8.1).
+    pub services_anywhere: Arc<ServiceUses>,
     /// (M6) Declared actions' commands (`action dispatch(ws: int)
     /// ["hyprctl", "dispatch", "workspace", ws]`), by declaration.
     pub execs: BTreeMap<DefId, ExecAction>,
@@ -633,7 +639,57 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
     reads::compute(&mut l.out);
     reads::alias_watch(&mut l.out);
     l.resolve_services();
+    l.out.services_anywhere = Arc::new(services_anywhere(&l.out));
     l.out
+}
+
+/// What every scope of `prog` reads of the services, together.
+fn services_anywhere(prog: &Program) -> ServiceUses {
+    let mut all = ServiceUses::new();
+    for f in &prog.files {
+        all.extend(f.services.iter().cloned());
+        nodes_uses(&f.items, &mut all);
+    }
+    for c in prog.components.values() {
+        body_uses(&c.body, &mut all);
+    }
+    all
+}
+
+fn body_uses(b: &Body, all: &mut ServiceUses) {
+    all.extend(b.services.iter().cloned());
+    nodes_uses(&b.nodes, all);
+}
+
+/// Adds the uses of every scope in `nodes` (as [`patch_nodes`] visits
+/// them) to `all`.
+fn nodes_uses(nodes: &[Node], all: &mut ServiceUses) {
+    fn element(e: &Element, all: &mut ServiceUses) {
+        if let Some(s) = &e.services {
+            all.extend(s.iter().cloned());
+        }
+        nodes_uses(&e.children, all);
+    }
+    for n in nodes {
+        match n {
+            Node::Element(e) => element(e, all),
+            Node::Surface(s) => {
+                element(&s.element, all);
+                body_uses(&s.body, all);
+            }
+            Node::If { then, else_, .. } => {
+                nodes_uses(then, all);
+                nodes_uses(else_, all);
+            }
+            Node::For(f) => body_uses(&f.body, all),
+            Node::Match { arms, .. } => {
+                for a in arms {
+                    nodes_uses(a, all);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(crate) struct Lowerer<'a> {

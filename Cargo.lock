@@ -3204,6 +3204,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-server",
+ "xkbcommon",
 ]
 
 [[package]]
