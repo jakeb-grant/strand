@@ -2020,7 +2020,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   last CPU paint spent its time (laying out and flattening, of that
   waiting for text, drawing); `strand run`'s damage log prints it. A
   frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
-  passes it takes. Painting a surface moves every other surface's
+  passes it takes, its `update` and `paint` sharing the deadline
+  (`SurfaceState::text_deadline`, set at its first wait, cleared once
+  painted). Painting a surface moves every other surface's
   first-frame and size hold still running by the time it took
   (`Renderer::pause_holds`): they wait for the text worker and the
   compositor, not for the loop's own painting, and are moved on by

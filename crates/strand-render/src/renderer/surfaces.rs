@@ -163,6 +163,7 @@ impl Renderer {
                 painted: false,
                 wait_until: None,
                 wait_paused: Duration::ZERO,
+                text_deadline: None,
                 awaiting_text: false,
                 new_text_until: None,
                 painted_at: None,

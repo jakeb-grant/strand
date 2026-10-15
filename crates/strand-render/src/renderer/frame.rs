@@ -263,6 +263,8 @@ impl Painter for Renderer {
         let damage = self.paint_frame(surface, target);
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
+            // The next frame waits for its own new text.
+            s.text_deadline = None;
         }
         self.pause_holds(surface, started);
         // (M5) `strand report`'s frame timing (`summary.rs`). A frame

@@ -402,10 +402,11 @@ impl Renderer {
     }
 
     /// Waits until `deadline` (the frame's estimate wait, shared by its
-    /// layout passes) for the text worker to deliver the unbounded
-    /// layouts of `needs` whose nodes have none at any scale (layout
-    /// measured them by an estimate). Returns true if any of them arrived
-    /// (lay out again).
+    /// layout passes and by its `update` and `paint`; set to
+    /// `ESTIMATE_WAIT` from now at the first wait) for the text worker to
+    /// deliver the unbounded layouts of `needs` whose nodes have none at
+    /// any scale (layout measured them by an estimate). Returns true if
+    /// any of them arrived (lay out again).
     ///
     /// Text in a `list`'s rows is not waited for: rows mount as a list
     /// scrolls, every frame of a scroll would pay for the wait and a
@@ -416,7 +417,7 @@ impl Renderer {
     pub(super) fn await_unmeasured(
         &mut self,
         needs: &[(NodeId, TextSpec)],
-        deadline: Instant,
+        deadline: &mut Option<Instant>,
     ) -> bool {
         if self.estimate_wait.is_zero() || !matches!(self.text, TextBackend::Worker(_)) {
             return false;
@@ -477,10 +478,14 @@ impl Renderer {
                 .iter()
                 .any(|slot| texts.get(slot).is_some_and(|t| t.layout.is_some()))
         };
-        if waiting(&self.texts) {
-            self.estimate_waits += unmeasured.len() as u64;
+        if !waiting(&self.texts) {
+            return arrived(&self.texts);
         }
+        self.estimate_waits += unmeasured.len() as u64;
         let started = Instant::now();
+        // The wait starts here, not before laying out: a heavy first
+        // pass does not use it up.
+        let deadline = *deadline.get_or_insert(started + self.estimate_wait);
         while waiting(&self.texts) {
             let left = deadline.saturating_duration_since(Instant::now());
             let TextBackend::Worker(w) = &self.text else {

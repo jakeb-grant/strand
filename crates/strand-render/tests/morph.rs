@@ -632,6 +632,63 @@ fn a_frame_waits_for_its_new_text_once() {
     );
 }
 
+/// Twelve texts mounting in a row that starts to move with them.
+const MANY_MOVING: &str = "
+state more = false
+bar Top {
+  height: 30
+  row { gap: 4
+        x: more ? 40 : 0 ~ ease(linear, 400ms)
+    if more {
+      for n in [\"alpha\", \"bravo\", \"charlie\", \"delta\", \"echo\", \"foxtrot\", \"golf\", \"hotel\", \"india\", \"juliett\", \"kilo\", \"lima\"] key n {
+        text n { color: #ffffff }
+      }
+    }
+  }
+}
+";
+
+/// (m6-owner-fixes review) A frame's `update` and its `paint` share the
+/// estimate wait: a surface that moves is flattened again when painted,
+/// and that flatten waits only for what is left of the frame's wait.
+/// Before, each waited `ESTIMATE_WAIT` anew for the same texts (10 ms a
+/// frame on a swelling card mounting its dashboard).
+#[test]
+fn a_moving_frame_waits_for_its_new_text_once() {
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(3)));
+    let worker =
+        TextWorker::spawn_with_waker(FontConfig::isolated(vec![Arc::new(data)]), Some(slow))
+            .unwrap();
+    let mut r = Renderer::new(strand_render::TextBackend::Worker(worker));
+    r.set_first_frame_wait(Duration::ZERO);
+    r.set_new_text_wait(Duration::ZERO);
+    let mut sh = Shell::boot_with(r, MANY_MOVING, 1.0, 800);
+    run(&mut sh, NodeId::new(0, 0));
+    let (waits, waited) = (sh.r.estimate_waits(), sh.r.estimate_waited());
+    // The texts mount as the row starts to move: `update` lays the bar
+    // out, then the frame is painted (flattened again, as it moves).
+    sh.inst
+        .set_value("shell", "more", Value::Bool(true))
+        .unwrap();
+    assert!(sh.r.apply(sh.inst.flush().diff).is_empty());
+    sh.r.update();
+    let k = sh.k;
+    sh.k += 1;
+    let d = sh.shown[0].2.paint_at(&mut sh.r, BAR, 1, frame(k));
+    assert!(!d.is_empty(), "the frame is painted");
+    let waited = sh.r.estimate_waited() - waited;
+    assert!(
+        sh.r.estimate_waits() > waits,
+        "the new texts are waited for"
+    );
+    assert!(
+        waited < strand_render::ESTIMATE_WAIT * 3 / 2,
+        "the frame waited {waited:?} for its text"
+    );
+}
+
 /// The owner's card, reduced (owner-testing.md bug 9, B-a): one popup
 /// holding a card whose `x`, `width` and `height` spring between an
 /// island (100 × 30) and a dashboard (400 × 200), with a constant drop

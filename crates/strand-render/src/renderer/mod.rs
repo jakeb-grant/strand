@@ -141,6 +141,9 @@ struct SurfaceState {
     /// How far other surfaces' paints have moved `wait_until` on (at
     /// most [`MAX_HOLD_PAUSE`]).
     wait_paused: Duration,
+    /// The current frame's estimate wait (`Renderer::await_unmeasured`):
+    /// set at its first wait, cleared when the frame is painted.
+    text_deadline: Option<Instant>,
     /// Some text on the surface is being shaped and has no layout for
     /// the surface's own scale and width yet.
     awaiting_text: bool,
