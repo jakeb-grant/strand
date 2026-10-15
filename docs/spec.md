@@ -281,7 +281,18 @@ filling the monitor, the keyboard always).
   Its `margin` on the side that faces its anchor is the gap between
   them: 6 px unless it is set, `0` touching, negative overlapping the
   anchor (`margin: -30, 0, 0` on a popup of a 30 px top bar covers the
-  bar). Its other sides are not used, and `attach:` makes the gap 0.
+  bar). Its other sides are not used.
+- **`attach: <edge>`** (a `popup` or `panel`) grows the surface out of
+  that edge with concave fillets: its painted box's corners on that side
+  are square, with a fillet of their radius beside each. A popup's
+  `attach:` names its own side that touches its anchor (`top` opens
+  below it, whatever the bar's edge); a panel's anchors it to that
+  screen edge. `attach:` does not move the box: the margin on that side
+  is kept like any margin, 0 while unset (a popup's default gap is 0
+  rather than 6), so the box touches its anchor, the screen's edge or a
+  bar's exclusive zone, and a negative one overlaps it: `attach: top;
+  margin: -30, 0, 0` on a popup of a 30 px top bar, or on a panel under
+  it, covers the bar and grows out of the screen's edge.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.

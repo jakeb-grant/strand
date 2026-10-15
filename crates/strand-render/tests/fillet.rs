@@ -161,3 +161,117 @@ fn attach_left_on_a_painted_root_drops_the_shadow_past_the_edge() {
     assert_eq!(alpha(&buf, 0, top + 80), 255, "the lower fillet");
     assert_matches_ref("fillet_left", &buf, TOLERANCE);
 }
+
+/// (m6-owner-fixes, owner-testing.md gap 26) A popup of a 32 px top bar
+/// with `attach: top; margin: -32, 0, 0`, the island's covering card:
+/// its spec keeps the set negative margin beside `attach` (placement
+/// takes it over the bar to the screen's edge, `strand-surface`'s
+/// `an_attached_popup_touches_its_anchor_at_its_margin`), and its card's
+/// top corners are drawn square with a concave fillet of their radius
+/// beside each, while its shadow reaches out on every side but the
+/// attached one, which meets the screen's edge.
+#[test]
+fn a_popup_attached_over_its_bar_draws_its_fillets_at_the_edge() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Name, text("Top")),
+            (Prop::Height, num(32.0)),
+            (Prop::Bg, color("#11111b")),
+            (
+                Prop::Pad,
+                PropValue::Insets(Insets {
+                    left: 200.0,
+                    ..Insets::default()
+                }),
+            ),
+        ],
+    );
+    let anchor = b.node(
+        NodeKind::Box,
+        Some(bar),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(32.0))],
+    );
+    let over = PropValue::List(vec![num(-32.0), num(0.0), num(0.0)]);
+    let popup = b.node(
+        NodeKind::Popup,
+        Some(anchor),
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Attach, kw("top")),
+            (Prop::Margin, over),
+            (Prop::Width, num(240.0)),
+            (Prop::Height, num(90.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(popup),
+        vec![
+            (Prop::Width, num(240.0)),
+            (Prop::Height, num(90.0)),
+            (Prop::Bg, color("#11111b")),
+            (
+                Prop::Radius,
+                PropValue::List(vec![num(14.0), num(14.0), num(24.0), num(24.0)]),
+            ),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 6.0,
+                    blur: 8.0,
+                    spread: 0.0,
+                    color: hex("#000000").with_alpha(0.4),
+                }]),
+            ),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    const BAR: SurfaceId = SurfaceId(1);
+    const POP: SurfaceId = SurfaceId(2);
+    r.attach_surface(BAR, bar);
+    r.configure_surface(BAR, Size::new(800, 32), Scale::ONE);
+    let mut bar_buf = Buffer::new(800, 32, Scale::ONE);
+    bar_buf.paint(&mut r, BAR, 0);
+    r.update();
+    let spec = r.surface_spec(popup).unwrap().clone();
+    assert_eq!(spec.attach, Some(Edge::Top));
+    assert!(spec.margin_set, "a set margin");
+    assert_eq!(spec.margin.top, -32.0, "kept beside `attach`");
+    assert_eq!(
+        spec.anchor_rect,
+        Some(LogicalRect::new(200.0, 0.0, 100.0, 32.0))
+    );
+    let o = spec.overhang;
+    assert_eq!(o.top, 0.0, "nothing past the attached edge");
+    assert!(o.left >= 14.0 && o.right >= 14.0 && o.bottom > 6.0, "{o:?}");
+    let size = Size::new(
+        (spec.width.unwrap() + o.left + o.right) as u32,
+        (spec.height.unwrap() + o.top + o.bottom) as u32,
+    );
+    r.attach_surface(POP, popup);
+    r.configure_surface(POP, size, Scale::ONE);
+    let mut buf = Buffer::new(size.w, size.h, Scale::ONE);
+    buf.paint(&mut r, POP, 0);
+    let (x0, x1) = (o.left as u32, o.left as u32 + 240);
+    assert_eq!(alpha(&buf, x0, 0), 255, "the top-left corner is square");
+    assert_eq!(
+        alpha(&buf, x1 - 1, 0),
+        255,
+        "the top-right corner is square"
+    );
+    assert_eq!(
+        alpha(&buf, x0 - 2, 0),
+        255,
+        "the left fillet meets the edge"
+    );
+    assert_eq!(alpha(&buf, x1 + 1, 0), 255, "so does the right one");
+    assert!(alpha(&buf, x0 - 12, 10) < 255, "concave by the box's side");
+    assert!(alpha(&buf, x1 + 11, 10) < 255);
+    assert!(alpha(&buf, x0 + 1, 89) < 255, "the far corners stay round");
+    assert_matches_ref("fillet_popup_over_bar", &buf, TOLERANCE);
+}

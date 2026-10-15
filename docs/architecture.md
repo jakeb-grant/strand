@@ -2364,8 +2364,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     `None` elsewhere. `attach: top` fillets are drawn outside the box beside
     the attached edge: render adds the fillet radius to `overhang` on the
     two sides along that edge, so the input region stays the box, and
-    placement puts the box at gap 0 from the attached edge. Fillets take
-    the paint of the outermost box touching that edge.
+    placement puts the box at its margin on that side from the attached
+    edge, 0 while unset (m6-owner-fixes, owner-testing.md gap 26: the
+    margin is kept, so a negative one overlaps). Fillets take the paint
+    of the outermost box touching that edge.
   - **Input.** `InputEvent` gains `DragEnter { surface, at, kinds }`,
     `DragMotion { surface, at }`, `DragLeave { surface }` and `DragDrop {
     surface, at, payload: DropPayload }`, from `wl_data_device` (external
@@ -4127,7 +4129,8 @@ and the connection):
   with slide and flip; the gap is the popup's margin on the side facing
   its anchor, 6 px only while `SurfaceSpec::margin_set` is false, so
   `0` touches the anchor and a negative margin overlaps it (spec.md
-  5.1; `attach:` 0, a tooltip 4); its window geometry is its box, its buffer the
+  5.1; with `attach:` 0 while unset, a set one kept; a tooltip 4); its
+  window geometry is its box, its buffer the
   box plus the overhang. Size or anchor changes reposition it
   (`xdg_popup.reposition`; made again below `xdg_wm_base` version 3).
   (m6-owner-fixes, owner-testing.md bug 6) The manager moves the box
@@ -4247,9 +4250,11 @@ and the connection):
     is the same surface on its root layer surface's layer and output
     (popups stack above layer surfaces), taking no clicks (the grab
     closes it).
-  - Fillets: placement puts an `attach`ed box at gap 0 from that edge
-    (a panel anchored to it, its margin there 0; a popup opening away
-    from its attached side); the overhang render adds for the fillets
+  - Fillets: placement puts an `attach`ed box at its margin on that
+    side from that edge, 0 while unset and negative over it (a panel
+    anchored to it, its margins as set; a popup opening away from its
+    attached side, its gap 0 while its margin is unset; m6-owner-fixes,
+    owner-testing.md gap 26); the overhang render adds for the fillets
     grows the buffer only. Render's `fillet.rs` finds the target, draws
     it, grows the overhang along the edge and drops it past the edge,
     through one call each in `flatten` (the target's fill) and the two

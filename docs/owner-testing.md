@@ -818,6 +818,20 @@ findings only.
     concave fillets itself (`Fillet` in `notch.strand`). Likely
     direction: let `attach:` name the screen edge for a popup that
     covers its anchor.
+    **Fixed; pending the owner's check on Hyprland** (m6-owner-fixes):
+    `attach:` no longer moves the box; the margin on its side is kept
+    like any margin, 0 while unset (spec.md 5.1), so `attach: top;
+    margin: -32, 0, 0` takes a popup of the 32 px bar, or a panel under
+    it, over the bar, its fillets meeting the screen's edge; the
+    island's card could use `attach: top` in place of its `MorphEar`s,
+    its body's top radius set to the ears' (a target's corners on the
+    attached side give the fillets their radius). A panel with `attach:` and a set margin on
+    that side now keeps it, where it was flush
+    (`crates/strand-surface/tests/render.rs::attached_surfaces_with_a_negative_margin_grow_out_of_the_screens_edge`,
+    grim on headless sway, which failed before with both at y 36;
+    `crates/strand-surface/tests/sway.rs::an_attached_surface_keeps_its_margin_on_its_attached_side`;
+    `crates/strand-render/tests/fillet.rs::a_popup_attached_over_its_bar_draws_its_fillets_at_the_edge`).
+    decisions.md m6-owner-fixes.
 27. **A popup's root has no per-child alignment.** (documented,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) A popup's root lays its

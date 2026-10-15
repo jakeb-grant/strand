@@ -384,15 +384,16 @@ pub fn layer_config_with(
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
     let [ot, or, ob, ol] = overhang;
-    // `attach: <edge>` (a panel): flush against that edge, gap 0.
+    // `attach: <edge>` (a panel) anchors that edge; its margin there is
+    // kept like any margin (0 unless set: flush with the edge or past a
+    // bar's exclusive zone; negative over it, owner-testing.md gap 26).
     let attach = spec.attach.filter(|_| spec.kind == NodeKind::Panel);
-    let flush = |e: Edge, v: f32| if attach == Some(e) { 0 } else { px(v) };
     // The box keeps its place: each margin moves out by the overhang.
     let margin = [
-        flush(Edge::Top, m.top) - ot,
-        flush(Edge::Right, m.right) - or,
-        flush(Edge::Bottom, m.bottom) - ob,
-        flush(Edge::Left, m.left) - ol,
+        px(m.top) - ot,
+        px(m.right) - or,
+        px(m.bottom) - ob,
+        px(m.left) - ol,
     ];
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
@@ -563,9 +564,9 @@ impl PopupConfig {
 /// opens away from a bar's edge, across the bar (below a top bar, so a
 /// calendar under the clock clears the bar), and below its anchor
 /// otherwise; `margin` on the side facing its anchor is the gap: 6 px
-/// only while `margin` is unset, so `0` touches the anchor and a
-/// negative margin overlaps it (spec.md 5.1). Waits (`AutoSize`) until
-/// render gave it a size and an anchor.
+/// only while `margin` is unset (0 with `attach:`), so `0` touches the
+/// anchor and a negative margin overlaps it (spec.md 5.1). Waits
+/// (`AutoSize`) until render gave it a size and an anchor.
 pub fn popup_config(
     spec: &SurfaceSpec,
     parent: &SurfaceSpec,
@@ -584,7 +585,8 @@ pub fn popup_config(
     let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
     let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
     // `attach: <edge>` names the popup's side that touches its anchor,
-    // so it opens away from it, at gap 0.
+    // so it opens away from it; its margin there is the gap as always,
+    // 0 while unset.
     let side = match spec.attach.or(bar_edge) {
         Some(Edge::Top) => PopupSide::Below,
         Some(Edge::Bottom) => PopupSide::Above,
@@ -627,12 +629,13 @@ pub fn popup_config(
         PopupSide::Right => m.left,
         PopupSide::Left => m.right,
     };
-    let gap = if spec.attach.is_some() {
-        0
-    } else if !spec.margin_set {
-        6
-    } else {
-        px(gap)
+    // (owner-testing.md gap 26) `attach:` changes only the unset gap:
+    // a set margin is kept, so a negative one takes an attached popup
+    // over its bar to the screen's edge, where its fillets meet.
+    let gap = match (spec.margin_set, spec.attach) {
+        (true, _) => px(gap),
+        (false, Some(_)) => 0,
+        (false, None) => 6,
     };
     if spec.tooltip {
         // A tooltip sits just under what it describes, bars included.
@@ -1316,33 +1319,45 @@ mod tests {
     }
 
     /// `attach: top` on a panel: anchored to the top edge whatever its
-    /// `anchor:` said about that axis (the other axis stays), its top
-    /// margin gone (the box flush with the edge), the others kept.
+    /// `anchor:` said about that axis (the other axis stays); its margins
+    /// are kept like any surface's (owner-testing.md gap 26): unset, the
+    /// box is flush with the edge, and a negative top margin takes it
+    /// over a bar's exclusive zone to the screen's edge.
     #[test]
-    fn an_attached_panel_is_flush_with_its_edge() {
+    fn an_attached_panel_is_anchored_to_its_edge_and_keeps_its_margin() {
         let s = spec(
             NodeKind::Panel,
             &[
                 (Prop::Anchor, kw("bottom_right")),
                 (Prop::Attach, kw("top")),
-                (Prop::Margin, PropValue::Insets(Insets::all(8.0))),
                 (Prop::Width, PropValue::Number(400.0)),
                 (Prop::Height, PropValue::Number(300.0)),
             ],
         );
-        let mut s2 = s.clone();
+        let c = layer_config(&s).unwrap();
+        assert_eq!(c.anchors, Anchors::new(true, false, false, true));
+        assert_eq!(c.margin, [0, 0, 0, 0], "unset: flush");
+        let mut set = s.clone();
+        set.margin = Insets::all(8.0);
+        set.margin_set = true;
+        assert_eq!(layer_config(&set).unwrap().margin, [8, 8, 8, 8], "kept");
+        let mut over = s.clone();
+        over.margin = Insets {
+            top: -36.0,
+            ..Insets::default()
+        };
+        over.margin_set = true;
+        assert_eq!(layer_config(&over).unwrap().margin, [-36, 0, 0, 0]);
+        // The fillets' overhang moves the side margins out; the box stays.
+        let mut s2 = set.clone();
         s2.overhang = Insets {
             top: 0.0,
             right: 16.0,
             bottom: 0.0,
             left: 16.0,
         };
-        let c = layer_config(&s).unwrap();
-        assert_eq!(c.anchors, Anchors::new(true, false, false, true));
-        assert_eq!(c.margin, [0, 8, 8, 8]);
-        // The fillets' overhang moves the side margins out; the box stays.
         let c = layer_config(&s2).unwrap();
-        assert_eq!(c.margin, [0, -8, 8, -8]);
+        assert_eq!(c.margin, [8, -8, 8, -8]);
         assert_eq!(c.width, 432);
         for (edge, anchors) in [
             ("bottom", Anchors::new(false, true, false, true)),
@@ -1370,34 +1385,63 @@ mod tests {
     }
 
     /// `attach:` on a popup names its side that touches the anchor: it
-    /// opens away from it, at gap 0 (whatever its margin), even away from
-    /// a bar's usual side.
+    /// opens away from it, even away from a bar's usual side, at its
+    /// margin on that side like any popup but 0 while that is unset
+    /// (owner-testing.md gap 26): `margin: -36, 0, 0` on a popup of a
+    /// 36 px top bar covers the bar, its fillets at the screen's edge.
     #[test]
-    fn an_attached_popup_touches_its_anchor() {
+    fn an_attached_popup_touches_its_anchor_at_its_margin() {
         use strand_scene::{LogicalRect, NodeId};
         let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
-        let mut p = spec(
-            NodeKind::Popup,
-            &[
-                (Prop::Attach, kw("top")),
-                (Prop::Margin, PropValue::Insets(Insets::all(10.0))),
-            ],
-        );
+        let mut p = spec(NodeKind::Popup, &[(Prop::Attach, kw("top"))]);
         p.parent = Some(NodeId::new(1, 0));
         p.width = Some(200.0);
         p.height = Some(120.0);
         p.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
         let c = popup_config(&p, &bar).unwrap();
-        assert_eq!((c.side, c.gap), (PopupSide::Below, 0));
+        assert_eq!((c.side, c.gap), (PopupSide::Below, 0), "unset: touching");
         for (edge, side) in [
             ("bottom", PopupSide::Above),
             ("left", PopupSide::Right),
             ("right", PopupSide::Left),
         ] {
-            p.attach = Edge::from_name(edge);
-            let c = popup_config(&p, &bar).unwrap();
+            let mut q = p.clone();
+            q.attach = Edge::from_name(edge);
+            let c = popup_config(&q, &bar).unwrap();
             assert_eq!((c.side, c.gap), (side, 0), "{edge}");
         }
+        // A set margin is the gap, on the side facing the anchor.
+        let mut set = p.clone();
+        set.margin = Insets::all(10.0);
+        set.margin_set = true;
+        assert_eq!(popup_config(&set, &bar).unwrap().gap, 10);
+        // Over the bar: from the bar's far edge back across it, so the
+        // popup's top is the bar's top, the screen's edge.
+        let mut over = p.clone();
+        over.margin = Insets {
+            top: -36.0,
+            ..Insets::default()
+        };
+        over.margin_set = true;
+        let c = popup_config(&over, &bar).unwrap();
+        assert_eq!(
+            (c.side, c.gap, c.anchor_rect),
+            (PopupSide::Below, -36, (100, 0, 60, 36))
+        );
+        assert_eq!(popup_request(&c, c.anchor_rect, (0, 0)), (30, 0, 200, 120));
+        // `attach: bottom` on a bottom bar's popup, the same way up.
+        let mut bottom_bar = bar.clone();
+        bottom_bar.edge = Some(Edge::Bottom);
+        let mut up = p.clone();
+        up.attach = Some(Edge::Bottom);
+        up.margin = Insets {
+            bottom: -36.0,
+            ..Insets::default()
+        };
+        up.margin_set = true;
+        let c = popup_config(&up, &bottom_bar).unwrap();
+        assert_eq!((c.side, c.gap), (PopupSide::Above, -36));
+        assert_eq!(popup_request(&c, c.anchor_rect, (0, 0)).1 + 120, 36);
     }
 
     /// A `top` panel with a scrim rises to `overlay`, so its scrim fits on
