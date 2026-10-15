@@ -68,18 +68,21 @@ and every power source it reports.
 
 ## `bluetooth`
 
-Bluetooth, from BlueZ, followed live: the first adapter and the
-devices paired with it.
+Bluetooth, from BlueZ, followed live: the first adapter, the devices
+paired with it, and the devices in range while a pairing page reads
+them.
 
 | Field | Type | |
 | --- | --- | --- |
 | `powered` | `bool rw` | The adapter is on. Writable. |
 | `devices` | `[BluetoothDevice]` | Paired devices, keyed by `address`. |
 | `available` | `bool` | BlueZ answers and has an adapter: false without them (or without a system bus), so a menu can hide what cannot work. |
+| `nearby` | `[BluetoothDevice]` | Unpaired devices in range that have a name, keyed by `address`, found by discovery. Discovery runs only while a visible reader reads them (a pairing page that is open). |
+| `scanning` | `bool` | The adapter is discovering devices, for `nearby` or for another program. |
 
 | Event | |
 | --- | --- |
-| `on bluetooth.failed(address: text, error: text)` | Connecting or disconnecting a device failed (out of range, turned off, timed out after 30 s, or the service not running): `on bluetooth.failed(address, error) { … }`. |
+| `on bluetooth.failed(address: text, error: text)` | Connecting, disconnecting, pairing or forgetting a device failed (out of range, turned off, timed out, or the service not running): `on bluetooth.failed(address, error) { … }`. |
 
 ## `brightness`
 
@@ -164,7 +167,9 @@ Memory use, sampled once a second while a reader is visible.
 
 The network, followed live: from NetworkManager, or from iwd
 (`net.connman.iwd`) where NetworkManager does not run. Either one
-starting or stopping switches to the other.
+starting or stopping switches to the other. `network.disconnect()`
+leaves the Wi-Fi network joined, and `network.scan()` scans for
+networks now.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -174,10 +179,21 @@ starting or stopping switches to the other.
 | `wifi` | `bool rw` | The Wi-Fi radio is on. Writable. |
 | `access_points` | `[AccessPoint]` | The Wi-Fi networks in range, keyed by `ssid`. Scanned only while a visible reader reads them (a network menu that is open). |
 | `available` | `bool` | NetworkManager or iwd answers: false without either (or without a system bus), so a menu can hide what cannot work. |
+| `connecting` | `text?` | The Wi-Fi network being joined, by name: from the moment `ap.connect()` or `ap.connect_with()` is asked, or the daemon starts joining one on its own, until it is joined or fails; null otherwise (`if network.connecting == ap.ssid { … }`). |
+| `disconnecting` | `text?` | The Wi-Fi network being left (`network.disconnect()`, or the daemon leaving it), until it is left; null otherwise. |
+| `frequency` | `int?` | The joined Wi-Fi network's frequency in MHz (2412, 5180, 5955): below 3000 is the 2.4 GHz band, 5150 to 5895 the 5 GHz band, from 5925 the 6 GHz band. Null while no Wi-Fi network is joined, or when iwd does not say. |
+| `security` | `WifiSecurity?` | How the joined Wi-Fi network is secured; null while none is joined. |
+| `address` | `text?` | The connection's IP address, as text without a prefix: its IPv4 address, else its global IPv6 address. Null while not connected. Over NetworkManager this is the default-route connection's interface (wired too); over iwd it is the Wi-Fi interface. Read from the kernel, and followed only while a visible reader reads it. |
+| `scanning` | `bool` | A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu asks when it opens; over iwd, iwd's own scans too. |
+
+| Method | |
+| --- | --- |
+| `action disconnect()` | Leaves the Wi-Fi network joined, or stops the one being joined; the daemon then joins nothing on its own until a network is joined again. A join it stops is no failure; if the disconnect itself fails, that join goes on and is reported as any join is. A `disconnect()` while one is in flight (a double click) is dropped. Without a network joined or being joined it fails. A failure is `network.failed`. |
+| `action scan()` | Scans for Wi-Fi networks now (a refresh button): `scanning` while it runs, `access_points` read again when it ends. A scan the daemon is already running, or has just run, is not asked again and is no failure. With the radio off, or a Wi-Fi device that cannot scan (its hardware switch off, not ready), it fails, as `network.failed("", error)`. |
 
 | Event | |
 | --- | --- |
-| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. |
+| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. `ssid` is the network the action was about, "" for one that names none (`scan()`, or a `disconnect()` the service could not take). |
 
 ## `notifications`
 

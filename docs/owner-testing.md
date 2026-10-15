@@ -882,6 +882,79 @@ findings only.
     `place: absolute`; no per-child `align_self` is added
     (`crates/strand-render/tests/layout.rs::a_stacks_align_places_every_child_on_both_axes`).
     decisions.md m6-owner-fixes.
+28. **The network service cannot disconnect, rescan on demand, or tell
+    the joined network's details.** (open, 2026-10-15; found by surveying
+    the owner's quickshell config for capabilities) A Wi-Fi menu cannot
+    leave the joined network, cannot show that a network is being joined
+    or left (and which), cannot show the joined network's IP address,
+    frequency or band, or security, and cannot rescan on demand with a
+    flag while the scan runs; the scan made when a list opens is all
+    there is. The owner's laptop runs iwd with systemd-networkd, where
+    iwd does not know the address.
+    **Fixed; pending the owner's check on Hyprland** (m6-service-gaps,
+    decisions.md): `network.disconnect()` (NetworkManager's
+    `Device.Disconnect`, iwd's `Station.Disconnect`; it stops a join in
+    progress too), `network.connecting` and `network.disconnecting`
+    (the network's name), `network.frequency` (MHz; the reference gives
+    the bands), `network.security` (the new `WifiSecurity` enum),
+    `network.address` (from the kernel over rtnetlink, read only while
+    shown, so it works under systemd-networkd), `network.scan()` and
+    `network.scanning`; failures of the service's own actions are
+    `network.failed("", error)`. Over NetworkManager an activating
+    network no longer shows as joined, in `access_points` (`active`)
+    as in `ssid`. A scan the device cannot make (the hardware switch)
+    fails rather than doing nothing, and a disconnect that fails lets
+    the join it stopped go on and be reported. Over iwd, a stopped join
+    names its own network as `disconnecting`, never an older one
+    (review connectivity-r1). Cancelling a join before the daemon has
+    started it (an unsaved network still asking, a new password still
+    forgetting the old one) stops it with no failure instead of letting
+    it go through, and a double click on Disconnect asks the daemon once
+    (review connectivity-r2)
+    (`crates/strand-services/tests/network.rs::network_tells_the_joined_networks_details`,
+    `::network_says_what_it_is_joining_and_leaving`,
+    `::disconnect_leaves_the_joined_network`,
+    `::a_join_answered_during_a_disconnect_is_deactivated_once_left`,
+    `::a_join_a_refused_disconnect_stopped_is_still_followed`,
+    `::a_disconnect_with_nothing_active_stops_the_join_itself`,
+    `::a_disconnect_while_one_is_in_flight_is_dropped`,
+    `::an_explicit_scan_raises_scanning_until_it_ends`;
+    `crates/strand-services/tests/network_iwd.rs::iwd_tells_the_joined_networks_details`,
+    `::iwd_says_what_it_is_joining_and_leaving_and_disconnects`,
+    `::a_join_a_refused_disconnect_stopped_is_still_reported`,
+    `::a_disconnect_before_iwd_joins_stops_the_join_itself`,
+    `::a_disconnect_while_one_is_in_flight_is_dropped_on_iwd`,
+    `::an_explicit_scan_on_iwd_raises_scanning`;
+    `crates/strand-services/src/network.rs::tests::only_an_activated_connection_is_joined`,
+    `::a_scan_refusal_is_no_failure`;
+    `crates/strand-services/src/network/iwd.rs::tests::the_station_says_what_is_in_progress`;
+    `crates/strand-services/src/network/address.rs::tests::the_kernel_gives_lo_its_address`;
+    `crates/strand-compiler/tests/checker.rs::network_is_a_wifi_page`).
+29. **Bluetooth cannot find or pair new devices, forget one, or show a
+    device connecting.** (open, 2026-10-15; found by surveying the
+    owner's quickshell config for capabilities) `bluetooth` lists only
+    paired devices: a menu cannot search for devices in range, pair one
+    (pair, trust, connect), forget a paired one, or show that a device
+    is connecting or disconnecting.
+    **Fixed; pending the owner's check on Hyprland** (m6-service-gaps,
+    decisions.md): `bluetooth.nearby` (unpaired devices in range with a
+    name, found by a discovery that runs only while the list is shown),
+    `bluetooth.scanning`, `d.pair()` (pair, trust, connect),
+    `d.forget()`, and each device's `connecting` and `disconnecting`;
+    failures stay `bluetooth.failed(address, error)`. A double click
+    on Pair or Connect asks BlueZ once (no false failure), a device
+    shows the call asked last, and a pairing that times out is
+    cancelled (review connectivity-r1). No pairing agent
+    is registered: the system's agent answers a PIN if one runs (the
+    owner may overrule this, decisions.md)
+    (`crates/strand-services/tests/bluetooth.rs::bluetooth_finds_nearby_devices_only_while_read`,
+    `::pairing_a_nearby_device_pairs_trusts_and_connects_it`,
+    `::a_repeated_pair_or_connect_is_asked_once`,
+    `::disconnecting_and_forgetting_a_paired_device`,
+    `::without_bluez_pair_and_forget_fail_as_events`;
+    `crates/strand-services/src/bluetooth.rs::tests::a_device_shows_its_last_call_and_repeats_are_dropped`,
+    `::a_pairing_that_times_out_is_cancelled`;
+    `crates/strand-compiler/tests/checker.rs::bluetooth_is_a_pairing_page`).
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

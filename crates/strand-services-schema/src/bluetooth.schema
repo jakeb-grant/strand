@@ -1,4 +1,5 @@
-/// A paired Bluetooth device, keyed by `address`.
+/// A Bluetooth device: one paired with the adapter (`bluetooth.devices`)
+/// or one in range (`bluetooth.nearby`), keyed by `address`.
 record BluetoothDevice key address {
   /// Its address.
   address: text
@@ -10,14 +11,36 @@ record BluetoothDevice key address {
   battery: float?
   /// An icon name for its kind.
   icon: text
-  /// Connects to it; a failure is `bluetooth.failed`.
+  /// A `connect()` or `pair()` of it runs (pairing, trusting, connecting),
+  /// until it ends; of several calls running, the one asked last shows.
+  connecting: bool
+  /// A `disconnect()` of it runs, until it ends; of several calls running,
+  /// the one asked last shows.
+  disconnecting: bool
+  /// Connects to it; a failure is `bluetooth.failed`. Asked again while a
+  /// connect or pair of it runs (a double click), it is dropped.
   action connect()
-  /// Disconnects from it; a failure is `bluetooth.failed`.
+  /// Disconnects from it; a failure is `bluetooth.failed`. Asked again
+  /// while one runs, it is dropped.
   action disconnect()
+  /// Pairs with it, trusts it (so it may reconnect on its own) and connects
+  /// to it: how a `nearby` device is added. One already paired is trusted
+  /// and connected. Strand asks for no PIN or passkey: BlueZ pairs through
+  /// the system's pairing agent if one runs, else without one (most
+  /// headphones, mice, keyboards and phones). A device that insists on a
+  /// PIN fails. A pairing not done within a minute is cancelled and fails.
+  /// Asked again while one runs (a double click), it is dropped. A failure
+  /// is `bluetooth.failed`.
+  action pair()
+  /// Forgets it: unpaired and removed from the adapter, so it leaves
+  /// `devices`. Asked again while one runs, it is dropped. A failure is
+  /// `bluetooth.failed`.
+  action forget()
 }
 
-/// Bluetooth, from BlueZ, followed live: the first adapter and the
-/// devices paired with it.
+/// Bluetooth, from BlueZ, followed live: the first adapter, the devices
+/// paired with it, and the devices in range while a pairing page reads
+/// them.
 service bluetooth {
   /// The adapter is on. Writable.
   powered: bool rw
@@ -26,8 +49,15 @@ service bluetooth {
   /// BlueZ answers and has an adapter: false without them (or without a
   /// system bus), so a menu can hide what cannot work.
   available: bool
-  /// Connecting or disconnecting a device failed (out of range, turned
-  /// off, timed out after 30 s, or the service not running): `on
+  /// Unpaired devices in range that have a name, keyed by `address`, found
+  /// by discovery. Discovery runs only while a visible reader reads them
+  /// (a pairing page that is open).
+  nearby: [BluetoothDevice]
+  /// The adapter is discovering devices, for `nearby` or for another
+  /// program.
+  scanning: bool
+  /// Connecting, disconnecting, pairing or forgetting a device failed (out
+  /// of range, turned off, timed out, or the service not running): `on
   /// bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
 }

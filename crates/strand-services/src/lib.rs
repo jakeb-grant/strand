@@ -24,7 +24,8 @@
 //! appearance settings), [`cpu`] and [`memory`] (procfs, sampled once a
 //! second while a reader is visible), and on D-Bus ([`dbus`] holds what
 //! they share): [`battery`] (UPower), [`brightness`] (the backlight,
-//! written through logind), [`network`] (NetworkManager), [`bluetooth`]
+//! written through logind), [`network`] (NetworkManager or iwd, and the kernel's
+//! addresses over rtnetlink), [`bluetooth`]
 //! (BlueZ), [`notifications`] (the shell's own notification server),
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
 //! [`apps`] (desktop entries, fuzzy search, frecency, launching); and

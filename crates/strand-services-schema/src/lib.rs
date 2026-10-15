@@ -17,7 +17,7 @@ pub const MEMORY: &str = include_str!("memory.schema");
 pub const BATTERY: &str = include_str!("battery.schema");
 /// `brightness`: the backlight (sysfs, logind).
 pub const BRIGHTNESS: &str = include_str!("brightness.schema");
-/// `network`: NetworkManager.
+/// `network`: NetworkManager or iwd.
 pub const NETWORK: &str = include_str!("network.schema");
 /// `bluetooth`: BlueZ.
 pub const BLUETOOTH: &str = include_str!("bluetooth.schema");
