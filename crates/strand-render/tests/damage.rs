@@ -309,6 +309,116 @@ fn parent_opacity_change_repaints_overflowing_children() {
     assert_eq!(buf.px(55, 5)[3], 128);
 }
 
+/// A clipping box with rounded lower corners and a rim, over content laid
+/// out wider and taller than it (an island swelling into a card): `w` ×
+/// `h` at `x`, with its own background and rim or nothing of its own.
+fn swelling(x: f32, w: f32, h: f32, radius: f32, bg: bool) -> SceneDiff {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut card = vec![
+        (Prop::X, num(x)),
+        (Prop::Y, num(4.0)),
+        (Prop::Width, num(w)),
+        (Prop::Height, num(h)),
+        (
+            Prop::Radius,
+            PropValue::List(vec![num(0.0), num(0.0), num(radius), num(radius)]),
+        ),
+        (Prop::Clip, PropValue::Bool(true)),
+    ];
+    if bg {
+        card.push((Prop::Bg, color("#45475a")));
+        card.push((
+            Prop::Rim,
+            PropValue::List(vec![
+                PropValue::Keyword("bottom".into()),
+                PropValue::Color(hex("#f9e2af").with_alpha(0.6)),
+            ]),
+        ));
+    }
+    let card = b.node(NodeKind::Box, Some(root), card);
+    // Content where the card ends up: it stays put while the card's
+    // edges uncover it.
+    b.node(
+        NodeKind::Box,
+        Some(card),
+        vec![
+            (Prop::Width, num(260.0)),
+            (Prop::Height, num(110.0)),
+            (Prop::Bg, color("#89b4fa")),
+            (Prop::Radius, num(10.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(card),
+        vec![
+            (Prop::X, num(12.0)),
+            (Prop::Y, num(14.0)),
+            (Prop::Width, num(230.0)),
+            (Prop::Height, num(80.0)),
+            (Prop::Bg, color("#a6e3a1")),
+            (Prop::Radius, num(6.0)),
+        ],
+    );
+    b.diff
+}
+
+/// (owner-testing.md bug 14) A clipping box that moves, resizes and
+/// rounds its corners repaints only along its edges and corners and what
+/// they uncover or cover (`NodeRecord::geom`), not its whole box and
+/// everything in it, with a background of its own or none; and the
+/// partial repaint equals a full one.
+#[test]
+fn a_swelling_clip_repaints_only_its_edges() {
+    for scale in [Scale::ONE, Scale::new(150).unwrap()] {
+        for bg in [true, false] {
+            let size = scale.physical_size(LogicalSize::new(300.0, 130.0));
+            let (mut r, mut buf) =
+                fresh(swelling(60.0, 140.0, 40.0, 12.0, bg), size.w, size.h, scale);
+            let card = r.tree().roots()[0];
+            let card = r.tree().get(card).unwrap().children[0];
+            let mut was = (140.0f32, 40.0f32);
+            for (i, (x, w, h, radius)) in [
+                (50.0, 160.0, 56.0, 14.5),
+                (36.3, 187.4, 75.0, 17.0),
+                (21.0, 218.0, 96.0, 18.0),
+                (20.0, 220.0, 100.0, 18.0),
+                (40.0, 180.0, 64.0, 15.0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut d = SceneDiff::new();
+                d.set(card, Prop::X, num(x));
+                d.set(card, Prop::Width, num(w));
+                d.set(card, Prop::Height, num(h));
+                d.set(
+                    card,
+                    Prop::Radius,
+                    PropValue::List(vec![num(0.0), num(0.0), num(radius), num(radius)]),
+                );
+                r.apply(d);
+                let dmg = buf.paint(&mut r, BAR, 1);
+                let (_, full) = fresh(swelling(x, w, h, radius, bg), size.w, size.h, scale);
+                assert!(
+                    buf.pixels == full.pixels,
+                    "{scale:?} bg {bg} step {i}: partial differs from full"
+                );
+                // Against the bounds of the card where it was and is.
+                let whole = scale.physical_size(LogicalSize::new(w.max(was.0), h.max(was.1)));
+                was = (w, h);
+                let whole = u64::from(whole.w) * u64::from(whole.h);
+                assert!(
+                    dmg.area() * 10 < whole * 7,
+                    "{scale:?} bg {bg} step {i}: damage {dmg:?} ({} px) is most of the card's ({whole} px)",
+                    dmg.area()
+                );
+            }
+        }
+    }
+}
+
 /// Random edits to a small scene, painted incrementally into rotating
 /// buffers, always match a from-scratch render.
 #[test]
@@ -410,7 +520,7 @@ fn random_edits(seed: u64, scale: Scale, frames: usize) {
         let mut d = SceneDiff::new();
         for _ in 0..1 + rnd(3) {
             let id = boxes[rnd(boxes.len() as u32) as usize];
-            match rnd(12) {
+            match rnd(17) {
                 0 => d.set(id, Prop::X, num(rnd(180) as f32)),
                 1 => d.set(id, Prop::Y, num(rnd(20) as f32 - 4.0)),
                 2 => d.set(id, Prop::Bg, color(palette[rnd(5) as usize])),
@@ -461,6 +571,54 @@ fn random_edits(seed: u64, scale: Scale, frames: usize) {
                             },
                         ],
                     }),
+                ),
+                // The clipping box moves, resizes and changes its corners
+                // and rim, alone (`NodeRecord::geom`: only its edges and
+                // what they uncover are repainted).
+                10 => d.set(
+                    clip,
+                    Prop::Width,
+                    num(20.0 + rnd(60) as f32 + rnd(4) as f32 / 4.0),
+                ),
+                11 => d.set(clip, Prop::Height, num(8.0 + rnd(16) as f32)),
+                12 => d.set(
+                    clip,
+                    Prop::X,
+                    num(130.0 + rnd(40) as f32 + rnd(3) as f32 / 3.0),
+                ),
+                13 => d.set(
+                    clip,
+                    Prop::Radius,
+                    if rnd(2) == 0 {
+                        num(rnd(12) as f32 + rnd(4) as f32 / 4.0)
+                    } else {
+                        PropValue::List(
+                            (0..4)
+                                .map(|_| num(rnd(10) as f32 + rnd(2) as f32 / 2.0))
+                                .collect(),
+                        )
+                    },
+                ),
+                14 => d.set(
+                    clip,
+                    Prop::Rim,
+                    PropValue::List(vec![
+                        PropValue::Keyword(
+                            ["top", "bottom", "left", "right"][rnd(4) as usize].into(),
+                        ),
+                        PropValue::Color(hex(palette[rnd(4) as usize]).with_alpha(0.8)),
+                    ]),
+                ),
+                // Without a background it draws nothing itself: what it
+                // clips damages its own changed edges.
+                15 => d.set(
+                    clip,
+                    Prop::Bg,
+                    if rnd(2) == 0 {
+                        PropValue::Unset
+                    } else {
+                        color(palette[rnd(4) as usize])
+                    },
                 ),
                 _ => d.set(label, Prop::Text, text(&rnd(1000).to_string())),
             };

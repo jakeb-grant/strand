@@ -216,6 +216,7 @@ impl Flattener<'_> {
                 (rec.sig, key).hash(&mut h);
                 rec.sig = h.finish();
                 rec.bounds = rec.bounds.union(region);
+                rec.drop_geometry();
             }
         }
         self.out.passes.push(want);

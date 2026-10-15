@@ -374,6 +374,7 @@ pub fn natural_texts(
         timed: false,
         reach: 0,
         input_done: false,
+        clips: std::sync::Arc::from([]),
     };
     let mut ancestors = Vec::new();
     let mut up = node.parent;

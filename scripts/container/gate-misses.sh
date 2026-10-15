@@ -8,7 +8,8 @@
 # "timing gate missed" (the `GATE_MISS` constants of
 # strand-render/tests/theme_swap_bench.rs,
 # strand-render/tests/list_scroll_bench.rs,
-# strand-render/tests/motion.rs, strand-compiler/tests/theme.rs,
+# strand-render/tests/motion.rs, strand-render/tests/morph.rs,
+# strand-compiler/tests/theme.rs,
 # strand/src/bench.rs, strand/src/run/tests.rs and
 # strand/tests/m5/newcomer.rs; their tests check this file still names
 # it). Only ci.sh's timing steps consult this file: newcomer.rs runs in

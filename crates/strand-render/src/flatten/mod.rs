@@ -164,6 +164,107 @@ pub struct NodeRecord {
     /// the border alone (a gradient turning with `t`) damages only the
     /// ring (design.md: "only the ring repaints").
     pub ring: Option<Arc<RingCells>>,
+    /// Where it is drawn apart from what it draws: the rounded clips
+    /// above it, and its own box when that box is all it draws, so a box
+    /// that only moves or resizes (a card swelling) damages the pixels
+    /// along its edges and corners, and what it clips damages no more.
+    pub geom: Option<Arc<Geometry>>,
+}
+
+impl NodeRecord {
+    /// For what is drawn into a node after its record is made (a merge's
+    /// goo, a GPU pass's pixels): its geometry no longer tells what it
+    /// draws, so any change to it, its clips' included, damages its whole
+    /// bounds.
+    pub(crate) fn drop_geometry(&mut self) {
+        if let Some(g) = self.geom.take() {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&self.sig, &mut h);
+            for c in g.clips.iter() {
+                std::hash::Hash::hash(&(c.rect, c.radii), &mut h);
+            }
+            self.sig = std::hash::Hasher::finish(&h);
+        }
+    }
+}
+
+/// A rounded box in buffer pixels (see [`NodeRecord::geom`]): its rect,
+/// its corners' radii as drawn (bit patterns, so a radius springing by a
+/// fraction of a pixel differs), and how far in from its edges what it
+/// draws along them reaches (a border, a rim), plus a pixel of
+/// antialiasing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoundBox {
+    pub rect: Rect,
+    pub radii: [u64; 4],
+    pub edge: u32,
+}
+
+impl RoundBox {
+    /// The pixels whose cover by the box can differ between `a` and `b`:
+    /// their bounds less what both cover whole (both rects shrunk by the
+    /// wider edge band), and each corner of both as far as its radius
+    /// and that band reach.
+    pub fn changed(a: RoundBox, b: RoundBox, out: &mut impl FnMut(Rect)) {
+        let e = i64::from(a.edge.max(b.edge));
+        let all = a.rect.union(b.rect).inflate(1);
+        let core = a
+            .rect
+            .intersect(b.rect)
+            .map(|c| Rect::from_edges(c.left() + e, c.top() + e, c.right() - e, c.bottom() - e));
+        let Some(core) = core.filter(|c| !c.is_empty()) else {
+            out(all);
+            return;
+        };
+        let (x0, y0, x1, y1) = (all.left(), all.top(), all.right(), all.bottom());
+        let (c0, d0, c1, d1) = (core.left(), core.top(), core.right(), core.bottom());
+        for r in [
+            Rect::from_edges(x0, y0, x1, d0),
+            Rect::from_edges(x0, d1, x1, y1),
+            Rect::from_edges(x0, d0, c0, d1),
+            Rect::from_edges(c1, d0, x1, d1),
+        ] {
+            if !r.is_empty() {
+                out(r);
+            }
+        }
+        for o in [a, b] {
+            let (l, t, rr, bb) = (o.rect.left(), o.rect.top(), o.rect.right(), o.rect.bottom());
+            for (i, radius) in o.radii.iter().enumerate() {
+                let radius = f64::from_bits(*radius);
+                if radius.is_nan() || radius <= 0.0 {
+                    continue;
+                }
+                let side = (radius.min(1e6).ceil() as i64).saturating_add(e);
+                let (cx, cy) = match i {
+                    0 => (l, t),
+                    1 => (rr - side, t),
+                    2 => (rr - side, bb - side),
+                    _ => (l, bb - side),
+                };
+                let sq = Rect::from_edges(cx - 1, cy - 1, cx + side + 1, cy + side + 1);
+                if let Some(sq) = sq.intersect(core) {
+                    out(sq);
+                }
+            }
+        }
+    }
+}
+
+/// A node's geometry for damage diffing (see [`NodeRecord::geom`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Geometry {
+    /// The hash of everything it draws but its own box's geometry (with
+    /// its own box) or of everything it draws (without), leaving out the
+    /// clips' geometry either way.
+    pub rest: u64,
+    /// What it draws, before the clips above it cut it.
+    pub ink: Rect,
+    /// Its own box, when all it draws is that box: a solid fill, border
+    /// and rim, untransformed.
+    pub own: Option<RoundBox>,
+    /// The rounded clips above it, outermost first.
+    pub clips: Arc<[RoundBox]>,
 }
 
 /// A node's border ring for damage diffing (see [`NodeRecord::ring`]).
@@ -327,6 +428,9 @@ struct Inherited<'a> {
     /// (M6) Below a child of the surface root: that child's box takes
     /// this node's input (`Flattened::input`).
     input_done: bool,
+    /// The rounded clips above this node, untransformed (`NodeRecord::geom`):
+    /// their geometry is left out of `ctx`.
+    clips: Arc<[RoundBox]>,
 }
 
 /// What flattening reads besides the tree, layout and springs.
@@ -453,6 +557,7 @@ pub fn flatten(
         timed: false,
         reach: 0,
         input_done: false,
+        clips: Arc::from([]),
     };
     // A surface nested in another (a popup in a bar) inherits tokens,
     // colour and font from its ancestors, though it paints on its own.

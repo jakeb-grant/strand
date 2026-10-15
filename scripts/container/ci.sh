@@ -198,6 +198,8 @@ timing_step "cargo test --profile timing -p strand-render --test list_scroll_ben
   cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test motion (frame time)" 30 \
   cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
+timing_step "cargo test --profile timing -p strand-render --test morph (island card frame time)" 30 \
+  cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
 timing_step "cargo test --profile timing -p strand-compiler --test theme (theme swap logic)" 30 \
   cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 

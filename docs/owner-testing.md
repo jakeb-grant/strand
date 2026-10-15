@@ -290,6 +290,58 @@ run on Hyprland), **in progress** (being built on a stream's branch).
    crate's owner. Meanwhile `margin: 0.1` (rounded to 0 px) touches.
    decisions.md m6-owner-fixes.
 
+14. **The island card's open morph misses 60 Hz.** (2026-10-14,
+   Hyprland, the notch config, a popup 1470 × 708 at scale 1.5) The
+   grow ran at about 40 to 47 fps with 62 to 93 ms gaps, and about ten
+   identical 630 × 48 repaints followed a close.
+   **Partly fixed.** Strand's: three causes in the card's morph, and one
+   found on the way:
+   - Each frame of the grow repainted the whole card and everything in
+     it (0.9 Mpx a frame on headless sway at the owner's size, 14 to
+     17 ms drawing): the card's clip moved, which changed every record
+     under it. A box that only moves, resizes or rounds its corners now
+     damages along its edges and corners
+     (`crates/strand-render/tests/damage.rs::a_swelling_clip_repaints_only_its_edges`).
+   - The card's `x` springs with its width, so its content moved by
+     fractions of a pixel every frame, and a spring's tail drew it a
+     pixel off and back after the card looked settled (two frames of
+     300,000 and 210,000 pixels). A paint offset in flight is now drawn
+     whole logical pixels from its rest
+     (`crates/strand-render/tests/morph.rs::a_swelling_card_repaints_its_edges_and_settles_still`).
+   - As the dashboard mounted, each layout pass that received some of
+     its text waited the estimate wait (bug 10) again for the rest, up
+     to 31 ms in one frame. A frame now waits once
+     (`crates/strand-render/tests/morph.rs::a_frame_waits_for_its_new_text_once`).
+   - Under load a surface's first frame could show at the size its
+     text's estimate gave it, when painting other surfaces ran out its
+     hold for the configure. Painting no longer counts against another
+     surface's hold
+     (`crates/strand-render/src/renderer/tests.rs::painting_another_surface_does_not_run_out_a_hold`).
+
+   Offline (optimised, the card reduced to its morph and rows at the
+   owner's size), a swell frame takes a median of 2.1 to 2.7 ms and at
+   worst 3.4 to 5.5 ms (2.7 to 3.1 and 4.5 to 5.9 before), repainting
+   a third of the pixels; CI's timing job gates it
+   (`the_island_card_swells_within_the_frame_budget`: median under
+   8.3 ms, every frame under 16.7 ms).
+   **Open:** on headless sway the whole config's grow still runs at
+   about 44 fps (44 to 47 before). What its frames repaint now is the
+   dashboard's content entering: the three panels of `dash.strand`'s
+   top row (312 px tall, `enter { opacity: 0; y: -12 }`) fade in over
+   about ten frames, 0.5 Mpx a frame and 0.7 to 0.8 with the buffer's
+   age, 14 to 17 ms of drawing on the CPU. A fade has to repaint what
+   it fades, so the remaining lever is drawing a fading subtree once
+   and blending it (a layer), not damage. Smaller or shorter entering
+   panels cost less meanwhile. Most gaps in the log are frames with
+   nothing to draw, which are not committed or logged; `strand run`'s
+   damage log now prints each paint's `flatten=`, `wait=` and `raster=`
+   milliseconds.
+   The repaints after a close are the config's: the exits of
+   `MorphBody` and `MorphEar` (`opacity: 0`, eased over 140 ms) fade
+   the folded card out over the bar's island, nine frames whose pixels
+   differ in alpha only. Without `opacity: 0` there the popup goes in
+   one frame. decisions.md m6-owner-fixes.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

@@ -752,21 +752,36 @@ fn swell(sh: &mut Shell, to: bool) -> Vec<Painted> {
     std::mem::take(&mut sh.times)
 }
 
-/// (owner-testing.md bug 14) The card swelling under its content keeps
-/// its content still (the card's `x` springs with its width, and a paint
-/// offset in flight is drawn whole logical pixels from its rest, as
-/// layout places the content), and once it shows its rest it repaints
-/// nothing: before, the spring's tail a hundredth of a pixel under its
-/// rest drew the content a pixel off for one frame and back the next
-/// (about 500,000 pixels for nothing).
+/// (owner-testing.md bug 14) The card swelling under its content repaints
+/// what its moving edges uncover, not itself and everything in it on
+/// every frame: its content keeps still (the card's `x` springs with its
+/// width, and a paint offset in flight is drawn whole logical pixels from
+/// its rest, as layout places the content) and a box that only moves or
+/// resizes damages along its edges and corners (`NodeRecord::geom`). And
+/// once it shows its rest it repaints nothing: before, the spring's tail
+/// a hundredth of a pixel under its rest drew the content a pixel off for
+/// one frame and back the next (about 500,000 pixels for nothing), and
+/// every frame of the swell repainted the whole card (about 900,000).
 #[test]
 fn a_swelling_card_repaints_its_edges_and_settles_still() {
     let src = SWELL.replace("ENTER", "");
     let mut sh = Shell::boot(&src, 1.5, 2560);
     run(&mut sh, NodeId::new(0, 0));
+    let pop = sh.popup().expect("the popup is shown");
     for to in [true, false, true] {
         let frames = swell(&mut sh, to);
         assert!(frames.len() > 10, "grown {to}: it springs: {frames:?}");
+        // What repainting the whole card on every frame would cost: the
+        // popup's area where the card can be (it is centred in it).
+        let size = sh.buf(pop).size;
+        let whole = u64::from(size.w) * u64::from(size.h) * frames.len() as u64;
+        let total: u64 = frames.iter().map(|p| p.damage).sum();
+        assert!(
+            total * 4 < whole,
+            "grown {to}: {total} px repainted over {} frames: {:?}",
+            frames.len(),
+            frames.iter().map(|p| p.damage).collect::<Vec<_>>()
+        );
         // From the first frame showing its rest, nothing repaints.
         let rest = frames.last().unwrap().pixels;
         let at = frames.iter().position(|p| p.pixels == rest).unwrap();
@@ -779,5 +794,74 @@ fn a_swelling_card_repaints_its_edges_and_settles_still() {
             "grown {to}: repainted after showing its rest at frame {}: {after:?}",
             frames[at].k
         );
+    }
+}
+
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`). Functional assertions
+/// never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
+    assert!(check.contains("strand-render/tests/morph.rs"));
+}
+
+/// The owner's notch card opening and folding at its size on the owner's
+/// laptop (owner-testing.md bug 14: a popup 1470 × 708 at scale 1.5,
+/// which missed 60 Hz on Hyprland), its rows cascading in as it swells
+/// and their text shaped on the text worker. In an optimised build (CI's
+/// `timing` job: `cargo test --profile timing -p strand-render --test
+/// morph the_island_card_swells_within_the_frame_budget`) the median
+/// frame must fit half a 60 Hz refresh (8.3 ms, so 120 Hz is within
+/// reach) and every frame a whole one (16.7 ms), counting the render
+/// thread's whole paint (springs, layout, flatten, damage and raster);
+/// the gates are checked once at the end, after the functional
+/// assertions, with the `GATE_MISS` marker. A debug build only reports
+/// the times.
+#[test]
+fn the_island_card_swells_within_the_frame_budget() {
+    let gated = !cfg!(debug_assertions);
+    let src = SWELL.replace("ENTER", "enter { opacity: 0; y: -8 }");
+    let mut sh = Shell::boot_with(worker_renderer(), &src, 1.5, 2560);
+    run(&mut sh, NodeId::new(0, 0));
+    let mut misses = Vec::new();
+    for round in 0..3 {
+        for (name, to) in [("swell", true), ("fold", false)] {
+            let frames = swell(&mut sh, to);
+            assert!(frames.len() > 10, "{name}: it springs: {frames:?}");
+            let mut work: Vec<Duration> = frames.iter().map(|p| p.work).collect();
+            work.sort();
+            let median = work[work.len() / 2];
+            let worst = *work.last().unwrap();
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            let mean = |f: &dyn Fn(&Painted) -> f64| {
+                frames.iter().map(f).sum::<f64>() / frames.len() as f64
+            };
+            eprintln!(
+                "{name} {round}: {} frames, median {:.2} ms, worst {:.2} ms (mean flatten {:.2} ms of which text wait {:.2} ms, raster {:.2} ms, {:.0} px)",
+                frames.len(),
+                ms(median),
+                ms(worst),
+                mean(&|p| ms(p.flatten)),
+                mean(&|p| ms(p.text_wait)),
+                mean(&|p| ms(p.raster)),
+                mean(&|p| p.damage as f64),
+            );
+            if gated && median >= Duration::from_micros(8_333) {
+                misses.push(format!("{name} {round}: median {median:?} over 8.333 ms"));
+            }
+            if gated && worst >= Duration::from_micros(16_667) {
+                misses.push(format!("{name} {round}: worst {worst:?} over 16.667 ms"));
+            }
+        }
+    }
+    if !misses.is_empty() {
+        panic!("{GATE_MISS}: {}", misses.join("\n"));
     }
 }

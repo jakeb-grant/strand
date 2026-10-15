@@ -5,10 +5,10 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use strand_scene::{Damage, NodeId, PaintTarget, Painter, SurfaceId};
+use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
 
 use super::{DAMAGE_HISTORY, Renderer};
-use crate::flatten::NodeRecord;
+use crate::flatten::{NodeRecord, RoundBox};
 
 impl Renderer {
     /// How long a newly configured surface holds its first frame for text
@@ -173,23 +173,34 @@ pub(super) fn diff_records(
     for (id, n) in new {
         match old.get(id) {
             Some(o) if o == n => {}
-            // Only its glyphs changed: the glyphs that differ, where
-            // they were and where they are.
-            Some(o) => match (&o.glyphs, &n.glyphs, &o.ring, &n.ring) {
-                (Some(a), Some(b), ..) if a.rest == b.rest => glyph_damage(&a.cells, &b.cells, d),
-                // Only its border changed, in the same place: its ring.
-                (_, _, Some(a), Some(b))
-                    if a.rest == b.rest && a.cells == b.cells && o.bounds == n.bounds =>
-                {
-                    for c in b.cells {
-                        d.add(c);
+            Some(o) => {
+                // Glyphs and rings are compared under the same clips.
+                let clipped_alike =
+                    o.geom.as_ref().map(|g| &g.clips) == n.geom.as_ref().map(|g| &g.clips);
+                match (&o.glyphs, &n.glyphs, &o.ring, &n.ring) {
+                    // Only its glyphs changed: the glyphs that differ, where
+                    // they were and where they are.
+                    (Some(a), Some(b), ..) if clipped_alike && a.rest == b.rest => {
+                        glyph_damage(&a.cells, &b.cells, d)
+                    }
+                    // Only its border changed, in the same place: its ring.
+                    (_, _, Some(a), Some(b))
+                        if clipped_alike
+                            && a.rest == b.rest
+                            && a.cells == b.cells
+                            && o.bounds == n.bounds =>
+                    {
+                        for c in b.cells {
+                            d.add(c);
+                        }
+                    }
+                    _ if geometry_damage(o, n, d) => {}
+                    _ => {
+                        d.add(o.bounds);
+                        d.add(n.bounds);
                     }
                 }
-                _ => {
-                    d.add(o.bounds);
-                    d.add(n.bounds);
-                }
-            },
+            }
             None => d.add(n.bounds),
         }
     }
@@ -210,6 +221,40 @@ pub struct PaintTimes {
     pub text_wait: Duration,
     /// Drawing.
     pub raster: Duration,
+}
+
+/// Only where it is changed (`NodeRecord::geom`): its own box moved or
+/// resized, or a clip above it did, and it draws the same. The pixels
+/// along the boxes' edges and corners that changed, where it was and
+/// where it is. False if more changed.
+fn geometry_damage(o: &NodeRecord, n: &NodeRecord, d: &mut Damage) -> bool {
+    let (Some(a), Some(b)) = (&o.geom, &n.geom) else {
+        return false;
+    };
+    if a.rest != b.rest || a.clips.len() != b.clips.len() {
+        return false;
+    }
+    let mut changed = Vec::new();
+    let mut add = |r: Rect| changed.push(r);
+    match (a.own, b.own) {
+        (Some(x), Some(y)) if x != y => RoundBox::changed(x, y, &mut add),
+        (Some(_), Some(_)) => {}
+        (None, None) if a.ink == b.ink => {}
+        _ => return false,
+    }
+    for (x, y) in a.clips.iter().zip(b.clips.iter()) {
+        if x != y {
+            RoundBox::changed(*x, *y, &mut add);
+        }
+    }
+    for r in changed {
+        for at in [o.bounds, n.bounds] {
+            if let Some(c) = r.intersect(at) {
+                d.add(c);
+            }
+        }
+    }
+    true
 }
 
 impl Painter for Renderer {

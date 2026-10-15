@@ -1979,7 +1979,14 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   change that only swaps glyphs damages those glyphs (a clock tick
   repaints its last digit), and a node's border along its box keeps
   its ring's strips (`NodeRecord::ring`), so a change of the border
-  alone (a conic turning with `t`) damages only the ring; a gradient is cached
+  alone (a conic turning with `t`) damages only the ring; a box drawing
+  only solid fills, borders and rims, untransformed and without effects,
+  and every node under a clipping box keep their geometry
+  (`NodeRecord::geom`: the rounded boxes of the node and of the clips it
+  is drawn through, the rest hashed apart), so a box or clip that only
+  moves, resizes or rounds its corners damages along its edges and
+  corners (`RoundBox::changed`), not its whole area and its content's
+  (a card swelling under its content); a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
   uncached. `Renderer::last_paint_times` (`PaintTimes`) says where the
