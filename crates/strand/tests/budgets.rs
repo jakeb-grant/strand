@@ -2479,28 +2479,33 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 25,165,824 B (96 × 256
-/// KiB). M6 wave 2's merged tree measured 24,451,607 B (the surface
-/// stream's box graph, about 181 KB); the gate adds a 512 KiB reserve,
-/// rounded up to 256 KiB (decisions.md m6-owner, 2026-10-14). It was
-/// 24,379,392 B from the re-base on M6 wave 1's `main` (512 KiB reserve,
+/// `.text` of the default (GPU) release build: 26,214,400 B (100 × 256
+/// KiB). The m6-service-gaps merged tree measured 25,465,431 B (the
+/// clipboard, disk and keyboard services and the network, Bluetooth,
+/// media, system and notification additions, +617,856 B over `main`);
+/// the gate adds a 512 KiB reserve, rounded up to 256 KiB (decisions.md
+/// m6-service-gaps, integration). It was 25,165,824 B from M6 wave 2's
+/// merged tree (24,451,607 B, the surface stream's box graph; 512 KiB
+/// reserve, decisions.md m6-owner, 2026-10-14), 24,379,392 B from the re-base on M6 wave 1's `main` (512 KiB reserve,
 /// decisions.md m6-owner, 2026-10-12), 23,855,104 B from remote
 /// media art's re-base (ureq over rustls/ring, about 778 KB; 64 KiB
 /// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 25_165_824;
-/// `.text` of the CPU-only release build: 21,233,664 B (81 × 256 KiB).
-/// M6 wave 2's merged tree measured 20,533,655 B; the gate adds a 512 KiB
-/// reserve, rounded up to 256 KiB (decisions.md m6-owner, 2026-10-14).
-/// It was 20,447,232 B from the re-base on M6 wave 1's `main` (512 KiB
+const TEXT_GATE_GPU: u64 = 26_214_400;
+/// `.text` of the CPU-only release build: 22,282,240 B (85 × 256 KiB).
+/// The m6-service-gaps merged tree measured 21,512,215 B (+595,648 B over
+/// `main`); the gate adds a 512 KiB reserve, rounded up to 256 KiB
+/// (decisions.md m6-service-gaps, integration). It was 21,233,664 B from
+/// M6 wave 2's merged tree (20,533,655 B; 512 KiB reserve, decisions.md
+/// m6-owner, 2026-10-14), 20,447,232 B from the re-base on M6 wave 1's `main` (512 KiB
 /// reserve, decisions.md m6-owner, 2026-10-12), 19,922,944 B from remote media art's re-base (64 KiB reserve,
 /// decisions.md m6-integration-w1), 18,874,368 B from
 /// M5 wave 2's re-base (decisions.md m5-integration-w2), 18,350,080 B
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 21_233_664;
+const TEXT_GATE_CPU: u64 = 22_282_240;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

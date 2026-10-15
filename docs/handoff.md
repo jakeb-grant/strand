@@ -44,6 +44,9 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   (`laptop/m6-w2`) the surface stream's box graph took about 181 KB of
   each, past both, and they were re-based by the same rule to
   21,233,664 B and 25,165,824 B (decisions.md m6-owner, 2026-10-14).
+  The m6-service-gaps merge (owner-testing.md gaps 28 to 35) took
+  +595,648 and +617,856 B past both, and they were re-based by the same
+  rule to 22,282,240 B and 26,214,400 B (decisions.md m6-service-gaps).
 - **Checks.** Each merge and the sweep ran fmt, workspace clippy and
   the touched crates' tests in the container, and the lock VM's
   `scenarios/all.sh` where lock code changed (LOCK VM SCENARIOS PASSED
@@ -96,7 +99,8 @@ rulings).
    745 and 760 KB of headroom (it was about 220 KB). This also settles
    M5's close-gate question, whose values are superseded (decisions.md
    m6-owner). Re-based again 2026-10-14 by the same rule on M6 wave 2's
-   merged tree: 21,233,664 B and 25,165,824 B.
+   merged tree: 21,233,664 B and 25,165,824 B; and on the
+   m6-service-gaps merged tree: 22,282,240 B and 26,214,400 B.
 3. ~~**The Hyprland IPC capture**~~: done 2026-10-12. The owner ran
    `scripts/capture-hyprland.sh 300` on three monitors; scrubbed, it is
    `tests/fixtures/hyprland-0.56.2-captured-2`, replayed by two adapter
