@@ -3027,6 +3027,54 @@ fn a_drag_that_leaves_the_popup_keeps_it_open() {
     assert_eq!(opens(&mut f), [(POP_A, false)]);
 }
 
+/// (m6-owner-fixes review, bug 15) A popup whose surface goes while a
+/// press on it is held (the compositor closed it mid-drag) is pressed no
+/// more: its chain hears `pressed` false, so the renderer does not keep
+/// its root pressed (and its whole box as its input region) into the
+/// next time it opens, and logic's `pressed` goes too.
+#[test]
+fn a_surface_that_goes_mid_press_is_not_left_pressed() {
+    let mut scene = Islands::new(true, None);
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    f.attached(S_A, POP_A);
+    f.input(&leave(S_BAR), &mut scene);
+    f.input(&enter(S_A, 30.0), &mut scene);
+    f.input(
+        &InputEvent::PointerButton {
+            surface: S_A,
+            position: LogicalPoint::new(30.0, 1.0),
+            button: button::LEFT,
+            state: ButtonState::Pressed,
+            time: 0,
+        },
+        &mut scene,
+    );
+    let pressed = |out: &[Intent], on: bool| -> Vec<NodeId> {
+        out.iter()
+            .filter_map(|i| match i {
+                Intent::Flag {
+                    node,
+                    flag: Flag::Pressed,
+                    on: o,
+                } if *o == on => Some(*node),
+                _ => None,
+            })
+            .collect()
+    };
+    let out = f.drain();
+    assert!(pressed(&out, true).contains(&POP_A), "{out:?}");
+    f.router.detached(S_A);
+    f.out.extend(f.router.tick(&mut scene));
+    let out = f.drain();
+    let off = pressed(&out, false);
+    assert!(
+        off.contains(&POP_A) && off.contains(&CARD_A),
+        "the chain is let go: {out:?}"
+    );
+}
+
 /// `delay`: the pointer must rest on the anchor that long before the
 /// popup opens; leaving first opens nothing.
 #[test]

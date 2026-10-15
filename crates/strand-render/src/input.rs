@@ -627,7 +627,11 @@ impl Router {
     pub fn detached(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
         self.hovered.remove(&surface);
-        self.pressed.remove(&surface);
+        // A press held on it ends with it: its chain is let go (heard at
+        // the next flush), or the renderer would keep a popup's root
+        // pressed, and its whole box as its input region, into the next
+        // time it opens (m6-owner-fixes review, bug 15).
+        self.release(surface);
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
         self.focus.remove(&surface);
