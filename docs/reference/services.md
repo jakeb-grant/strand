@@ -199,6 +199,29 @@ name, and says so clearly if another daemon (dunst, mako) has it.
 | --- | --- |
 | `on notifications.received(n: Notification)` | A notification arrived. Events are lossless queues: `on notifications.received(n) { … }`. |
 
+## `outputs`
+
+The monitors' configuration, from the compositor's
+`zwlr_output_manager_v1` (wlr-output-management: sway, Hyprland, niri,
+labwc): every output, on or off, with its modes, place, scale and
+rotation, changed together with `outputs.apply` and checked first with
+`outputs.test`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `all` | `[Output]` | Every output, on or off, keyed by `name`. |
+| `available` | `bool` | The compositor offers output configuration: false without it, when `apply` and `test` fail with `outputs.failed`. |
+
+| Method | |
+| --- | --- |
+| `action apply(changes: [OutputChange])` | Applies `changes` together, as one configuration: each names an output and what to change on it, and outputs not named keep theirs (`on click { outputs.apply([OutputChange(name: "DP-1", scale: 1.5)]) }`). `outputs.succeeded("apply")` or `outputs.failed("apply", error)` follows. |
+| `action test(changes: [OutputChange])` | Asks the compositor whether `changes` would apply, changing nothing: `outputs.succeeded("test")` or `outputs.failed("test", error)` follows. A tested configuration may still fail to apply. |
+
+| Event | |
+| --- | --- |
+| `on outputs.succeeded(action: text)` | The compositor took a configuration: `on outputs.succeeded(action) { … }`, `action` as written (`"apply"` or `"test"`). |
+| `on outputs.failed(action: text, error: text)` | A configuration failed: the compositor refused it (a mode the monitor cannot show), it named no output or an impossible value, or the compositor offers no output configuration: `on outputs.failed(action, error) { … }`. |
+
 ## `screens`
 
 Monitors.

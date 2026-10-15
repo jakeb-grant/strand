@@ -1275,6 +1275,43 @@ fn session_is_a_power_menu() {
     );
 }
 
+/// (M6, owner-testing gap 18) `outputs` is a display settings page: every
+/// output with its modes, test-only and applied configurations built
+/// from `OutputChange` records (a null field keeps the output's value, a
+/// bare `OutputTransform` variant where one is expected), and the
+/// answers as events.
+#[test]
+fn outputs_is_a_display_settings_page() {
+    assert_eq!(
+        codes(
+            "bar B {\n  state why = \"\"\n  \
+             on outputs.succeeded(action) { why = action }\n  \
+             on outputs.failed(action, error) { why = join(\" \", action, error) }\n  \
+             text why\n  \
+             if outputs.available {\n    \
+             for o in outputs.all {\n      \
+             text o.description\n      \
+             text join(\" \", o.mode?.width, o.mode?.height, o.scale, o.x, o.y)\n      \
+             for m in o.modes key join(\"x\", m.width, m.height, m.refresh) {\n        \
+             text join(\"x\", m.width, m.height) {\n          \
+             on click { outputs.test([OutputChange(name: o.name, mode: m)]) }\n        \
+             }\n      \
+             }\n      \
+             text \"On\" { on click { outputs.apply([OutputChange(name: o.name, enabled: !o.enabled)]) } }\n      \
+             text \"Turn\" { on click { outputs.apply([OutputChange(name: o.name, transform: rotate_90, scale: 1.5, x: o.x + 10, adaptive_sync: true)]) } }\n      \
+             text \"4K\" { on click { outputs.apply([OutputChange(name: o.name, mode: OutputMode(width: 3840, height: 2160, refresh: 60))]) } }\n    \
+             }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    // An action outside a handler, as for every service.
+    assert_eq!(
+        codes("bar B { text \"x\" { opacity: outputs.apply([]) } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

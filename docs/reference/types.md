@@ -238,6 +238,61 @@ The app that sent a notification.
 | `name` | `text` | The app's name. |
 | `icon` | `text` | The app's icon: an icon name or a path. |
 
+### `Output`
+
+A monitor as the compositor's output configuration sees it, on or
+off, keyed by `name`: what a display settings page shows and changes
+with `outputs.apply`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `text` | Its connector name, such as `DP-1`: the same as `Screen.name` while it is on. |
+| `description` | `text` | A readable description of it. |
+| `make` | `text` | Its maker, or "" when the compositor does not say. |
+| `model` | `text` | Its model, or "" when the compositor does not say. |
+| `serial` | `text` | Its serial number, or "" when the compositor does not say. |
+| `enabled` | `bool` | It is on: shown, and part of the layout. |
+| `mode` | `OutputMode?` | The mode it shows, or null while it is off. |
+| `preferred` | `OutputMode?` | The mode the monitor prefers, if it names one. |
+| `modes` | `[OutputMode]` | Every mode it can show, each once, in the compositor's order (plain data: `for m in o.modes key join("x", m.width, m.height, m.refresh)`). |
+| `x` | `int` | Its left edge in the layout, in logical pixels (its last place while it is off). |
+| `y` | `int` | Its top edge in the layout, in logical pixels. |
+| `scale` | `float` | Its scale factor (`1.5`). |
+| `transform` | `OutputTransform` | Its rotation (counter-clockwise, as `wl_output` counts) and flip. |
+| `adaptive_sync` | `bool` | Adaptive sync (variable refresh rate) is on. |
+| `physical_width` | `int` | Its physical width in millimetres, or 0 when unknown. |
+| `physical_height` | `int` | Its physical height in millimetres, or 0 when unknown. |
+
+### `OutputChange`
+
+One output's part of a configuration for `outputs.apply` and
+`outputs.test`, named by `name`: a null field keeps what the output
+has, so `OutputChange(name: o.name, scale: 1.5)` changes only its
+scale.
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `text` | The output it changes (`Output.name`). |
+| `enabled` | `bool?` | Turns it on or off. |
+| `mode` | `OutputMode?` | The mode to show: one of its `modes`, or a size and rate (the listed mode of that size nearest the rate within 0.5 Hz, else a custom mode; a rate of 0 takes the fastest listed one). |
+| `x` | `int?` | Its left edge in the layout, in logical pixels. |
+| `y` | `int?` | Its top edge in the layout, in logical pixels. |
+| `scale` | `float?` | Its scale factor, from 1/256 (the protocol's step) up. |
+| `transform` | `OutputTransform?` | Its rotation and flip. |
+| `adaptive_sync` | `bool?` | Adaptive sync on or off. |
+
+### `OutputMode`
+
+A mode an output can show: its size in hardware pixels and its
+refresh rate. An output's `modes` list them; `OutputMode(width: 2560,
+height: 1440, refresh: 144)` names one for `OutputChange.mode`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `width` | `int` | Its width in hardware pixels (before scale and rotation). |
+| `height` | `int` | Its height in hardware pixels. |
+| `refresh` | `float` | Its refresh rate in Hz (`59.951`), or 0 when it has no fixed rate. |
+
 ### `PowerDevice`
 
 A power source UPower reports besides the combined battery: a
@@ -422,6 +477,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Keyboard` | `none`, `on_demand`, `exclusive` |
 | `Layer` | `background`, `bottom`, `top`, `overlay` |
 | `Markup` | `none`, `basic` |
+| `OutputTransform` | `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`, `flipped_90`, `flipped_180`, `flipped_270`. An output's rotation and flip, as `wl_output` (and niri) name them: counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`; `flipped_90` is flipped about the vertical axis, then rotated 90 degrees. |
 | `Place` | `flow`, `absolute` |
 | `PopupTrigger` | `open`, `hover` |
 | `PoseName` | `none`, `fade`, `slidefade` |

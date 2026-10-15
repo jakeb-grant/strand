@@ -5076,7 +5076,8 @@ transparent huge pages for life.
   session calls as actions (each a task of the body's, `failed(action,
   error)` on a refusal) and the own session's `Lock` signal as
   `lock_requested`; a provisional stub in builtin.schema carries its
-  members.
+  members. (M6, m6-owner-fixes) `outputs`, the monitors' configuration
+  over wlr-output-management (below).
 - **Failures are diagnostics.** A run that ends with an error (or
   panics) is a `ServiceDiagnostic { service, message, notice: false }`
   (`service: String`, the registered name);
@@ -5355,6 +5356,46 @@ transparent huge pages for life.
   `set_`/`unset_fullscreen` by the state last sent), then `ext-foreign-toplevel-list-v1` read-only (window
   actions `Unsupported`). `Sources::toplevel_management` says whether the
   wlr protocol is bound. `wm::Mirror` applies the stream (tests).
+
+- **Monitor configuration (`strand_services::outputs`, the `outputs`
+  service; M6, m6-owner-fixes, owner-testing gap 18).** `outputs::Outputs`
+  (`#[service(name = "outputs", action = OutputsAction, refused = …,
+  thread)]`, `Builtin.outputs`, schema `strand_services_schema::OUTPUTS`
+  with a provisional stub in builtin.schema, and the enum
+  `OutputTransform` there, which both use) runs on a thread of its own
+  (`strand-outputs`) with its own Wayland connection, asleep in
+  `poll(2)` on the socket and an eventfd `Cx::set_notify` pokes, and binds
+  `zwlr_output_manager_v1` (version 4 at most; `wayland-protocols-wlr`'s
+  `output_management`). Records (`#[derive(Data)]`): `Output` (keyed by
+  `name`: description, make, model, serial, `enabled`, `mode` and
+  `preferred: OutputMode?`, `modes` deduplicated, `x`, `y`, `scale`,
+  `transform`, `adaptive_sync`, physical size), `OutputMode { width,
+  height, refresh }` (Hz, from the protocol's mHz) and `OutputChange`
+  (`name` and every setting as an `Option`). `all` and `available` are
+  published at each manager `done`; ready after the first `done`, or
+  after the registry's first sync shows no manager (`available` false).
+  `OutputsAction::{Apply, Test} { changes: Vec<OutputChange> }` queue in
+  order, one `zwlr_output_configuration_v1` in flight at a time against
+  the last `done`'s serial; every head goes in it (the protocol's rule),
+  each property a change leaves `None` sent as the head has it (an
+  enabled head's current mode, else its preferred, else its first; a
+  disabled head disabled), adaptive sync only on version 4. A change is
+  checked before sending (an unknown or repeated name, a scale outside
+  1/256 to `wl_fixed`'s largest, a mode size not above 0, a refresh or
+  place out of range), since the protocol counts those as errors that end
+  the connection; a mode is the listed one of its size nearest its rate
+  within 0.5 Hz (`outputs::pick`), else `set_custom_mode`. `succeeded` is
+  `OutputsEvent::Succeeded(action)`, `failed` and every refusal
+  `Failed((action, error))`, `cancelled` sent again from the new state
+  up to `outputs::MAX_TRIES` (3) times. A lost connection empties `all`,
+  clears `available`, emits `failed` for each configuration in flight,
+  waiting or unread, and ends the run with an error (the contract's
+  backoff); while it backs off, `Service::refused` makes an action
+  `failed` too. A stop waits up to 500 ms for the answer in flight.
+  `outputs::configure(Option<WaylandTarget>)` points runs started later
+  at a socket (tests; `None`: `$WAYLAND_DISPLAY`, resolved by
+  `wm::protocol::display_socket`, now `pub(crate)`). Tests:
+  `crates/strand-services/tests/outputs.rs` on headless sway 1.9.
 
 - **Audio (`strand_services::audio`, the `audio` service; cargo feature
   `pipewire`, on by default).**

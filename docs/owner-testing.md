@@ -618,6 +618,20 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     wlr-output-management (Hyprland, sway, niri and labwc implement
     it), writable with apply and test. Queued for the next wave.
     **Wave 2: open**: the monitor-config service is the next wave's.
+    **Fixed; pending the owner's check on Hyprland** (m6-owner-fixes,
+    decisions.md): the builtin `outputs` service over
+    `zwlr_output_manager_v1`. `outputs.all` lists every monitor, on or
+    off (`name`, `description`, `make`, `model`, `serial`, `enabled`,
+    `mode`, `preferred`, `modes`, `x`, `y`, `scale`, `transform`,
+    `adaptive_sync`, physical size); `outputs.apply(changes)` and
+    `outputs.test(changes)` take `[OutputChange]` (a null field keeps
+    the monitor's value, monitors not named keep theirs) and answer
+    `outputs.succeeded(action)` or `outputs.failed(action, error)`;
+    `outputs.available` says whether the compositor offers it
+    (`crates/strand-services/tests/outputs.rs::outputs_lists_configures_and_tests_sways_heads`,
+    `::refused_configurations_arrive_as_failed`,
+    `::without_a_compositor_outputs_is_unavailable_and_fails_as_events`,
+    `crates/strand-compiler/tests/checker.rs::outputs_is_a_display_settings_page`).
 19. **Component names clobber across files.** Every component, type,
     enum and `fn` is global, so two files cannot each have their own
     `Row`. **Owner's ruling (2026-10-14):** names stay global, but a

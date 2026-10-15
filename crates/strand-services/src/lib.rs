@@ -29,7 +29,8 @@
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
 //! [`apps`] (desktop entries, fuzzy search, frecency, launching); and
 //! [`auth`] (the lock screen's password check, through `strand-auth`);
-//! and [`session`] (logind: suspend, reboot, power off, lock, log out).
+//! and [`session`] (logind: suspend, reboot, power off, lock, log out);
+//! and [`outputs`] (the monitors' configuration, wlr-output-management).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -61,6 +62,7 @@ pub mod media;
 pub mod memory;
 pub mod network;
 pub mod notifications;
+pub mod outputs;
 pub mod pixmap;
 mod procfs;
 mod service;
@@ -105,6 +107,7 @@ pub struct Builtin {
     pub audio: Client<audio::AudioStore>,
     pub auth: Client<auth::Auth>,
     pub session: Client<session::Session>,
+    pub outputs: Client<outputs::Outputs>,
 }
 
 impl Builtin {
@@ -129,6 +132,7 @@ impl Builtin {
             audio: services.register(rt),
             auth: services.register(rt),
             session: services.register(rt),
+            outputs: services.register(rt),
         }
     }
 
@@ -153,6 +157,7 @@ impl Builtin {
             self.audio.dynamic(),
             self.auth.dynamic(),
             self.session.dynamic(),
+            self.outputs.dynamic(),
         ]
     }
 }
