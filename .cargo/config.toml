@@ -1,3 +1,2 @@
-[build]
-# One build setting for every agent and CI (docs/decisions.md, wave3-cleanup).
-incremental = false
+# Build settings live in Cargo.toml's profiles, one for every agent and CI
+# (docs/decisions.md, wave3-cleanup and ci-speed).

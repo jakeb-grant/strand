@@ -43,9 +43,14 @@ todo = "warn"
 
 # Builds without debug info: the dev container's disk is small and every
 # agent and CI must build with the same settings, or cargo keeps a second
-# copy of each crate per setting (docs/decisions.md, wave3-cleanup).
+# copy of each crate per setting (docs/decisions.md, wave3-cleanup). The
+# workspace's own crates compile incrementally in debug builds (the test
+# profile inherits it), set here once for every agent; GitHub's jobs turn
+# it off (CARGO_INCREMENTAL=0), as their builds start fresh
+# (docs/decisions.md, ci-speed).
 [profile.dev]
 debug = 0
+incremental = true
 
 # Dependencies optimised in debug builds; the workspace's own crates stay
 # at 0, so an edit still compiles fast. Unoptimised, vello_cpu's blur drew

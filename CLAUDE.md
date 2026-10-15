@@ -25,16 +25,35 @@ reason.
 - Tick `docs/features.md` boxes for features you finish, with the test that
   proves them.
 
-## Checks (run before every commit)
+## Checks
+
+Before every commit, the inner loop:
 
 ```sh
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+scripts/container/run.sh cargo fmt --all
+scripts/container/run.sh cargo clippy --workspace --all-targets -- -D warnings
+scripts/container/run.sh affected     # the tests of the crates you changed
 ```
 
-Run them, and every build and test, through the container below
-(`scripts/container/run.sh cargo fmt --all`, and so on), never natively.
+`affected` runs `cargo test` for each workspace crate with a changed file
+since the merge base with `main` (committed or not), and for the crates
+whose tests read `docs/` when docs changed. Add `--deep` when you change
+an interface other crates use (it adds every crate depending on yours),
+`--list` to see the choice without running it. While fixing one failure,
+rerun that test alone (`run.sh cargo test -p <crate> --test <file>
+<name>`), not a suite.
+
+The whole suite, `scripts/container/run.sh ci`, runs once per branch,
+before the branch is handed off or merged, and not after each fix. When
+it fails at step N: fix it, rerun that test alone, then resume with
+`CI_FROM=N scripts/container/run.sh ci` (`affected` and clippy have
+checked the fix). Run it from the start again only if the fix touched
+what an earlier step checks (formatting, lints, another crate's tests).
+The commit that goes to `main` needs one whole run from step 1; that is
+the integration's, not each stream's.
+
+Run them, and every build and test, through the container below, never
+natively.
 
 ## Building and testing (the container suite)
 
@@ -58,8 +77,12 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   pixel references match CI; lavapipe is the only Vulkan driver in it.
   It runs as your uid with the checkout at its own path (worktrees
   included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU=1`,
-  `RUSTFLAGS=-D warnings`, no debug info), `CARGO_BUILD_JOBS=6`, and builds
-  into `target/container`. Host `STRAND_*` variables are passed in. Tests
+  `RUSTFLAGS=-D warnings`, no debug info), the cores shared among the
+  strand builds running (`CARGO_BUILD_JOBS` overrides), and builds into
+  `target/container`, with sccache's compile cache in the
+  `strand-sccache` volume shared by every worktree (`RUN_SCCACHE=0` turns
+  it off). Debug builds optimise dependencies and compile the workspace's
+  own crates incrementally. Host `STRAND_*` variables are passed in. Tests
   start their own headless sway, buses and PipeWire inside the container.
 - `matrix.sh` builds the matrix test there and runs it in an Arch image
   (`Dockerfile.matrix`). Hyprland gets only `/dev/dri/renderD128`; CI's
@@ -97,6 +120,7 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
 - Run one full-workspace test run at a time, and at most three worktrees
   build at once. Delete your worktree's
   `target/` when your task ends; the cargo registry stays in the
-  `strand-cargo-registry` and `strand-cargo-git` volumes.
+  `strand-cargo-registry` and `strand-cargo-git` volumes, compiled
+  dependencies in `strand-sccache`.
 - Commit on your own branch and push only that branch after each commit;
   never push `main`, never force-push.

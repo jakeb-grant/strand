@@ -37,6 +37,9 @@ env:
   # not fit the runner's disk (as in the dev container, CLAUDE.md).
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # Every job builds from its cache, never incrementally (Cargo.toml's dev
+  # profile is incremental for the laptop's edits; decisions.md ci-speed).
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   # The checks of every push, split into jobs that run side by side (the
@@ -99,14 +102,16 @@ jobs:
       # The CI scripts' own tests: gate-misses.sh (the advisory timing
       # gates), check-tree-sitter.sh, the budgets ledger line and the static
       # checks of the owner-only gpu-measure.sh (never run here),
-      # size-report.sh's crate attribution, and tests-ran.sh (a filtered
-      # test step that runs no test fails).
+      # size-report.sh's crate attribution, tests-ran.sh (a filtered
+      # test step that runs no test fails) and affected.sh's choice of
+      # crates (the laptop's inner loop, CLAUDE.md).
       - run: scripts/container/test-gate-misses.sh
       - run: scripts/container/test-check-tree-sitter.sh
       - run: scripts/container/test-ledger.sh
       - run: scripts/container/test-gpu-measure.sh
       - run: scripts/test-size-report.sh
       - run: scripts/container/test-tests-ran.sh
+      - run: scripts/container/test-affected.sh
 
   # The debug test build: the workspace's tests, the 100 reloads and the
   # reload fuzzer's short run.

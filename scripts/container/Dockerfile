@@ -60,3 +60,20 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/tree-sitter.gz \
  && chmod 0755 /usr/local/bin/tree-sitter \
  && rm /tmp/tree-sitter.gz \
  && tree-sitter --version
+
+# sccache, the laptop's compile cache (decisions.md, ci-speed): run.sh
+# wraps rustc with it, the cache in the named volume strand-sccache, so a
+# fresh worktree takes its dependencies from the cache instead of
+# compiling them again. Local only: GitHub's jobs keep Swatinem/
+# rust-cache, and the compiler's output is the same either way. A pinned
+# prebuilt release checked by its sha256.
+ARG SCCACHE_VERSION=0.18.0
+ARG SCCACHE_SHA256=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/sccache.tar.gz \
+      "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+ && echo "${SCCACHE_SHA256}  /tmp/sccache.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/sccache.tar.gz -C /tmp \
+ && install -m 0755 "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache \
+ && rm -rf /tmp/sccache.tar.gz "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+ && mkdir -p /opt/sccache && chmod 0777 /opt/sccache \
+ && sccache --version

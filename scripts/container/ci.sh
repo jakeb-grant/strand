@@ -158,6 +158,7 @@ step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
+step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
@@ -192,8 +193,13 @@ step "cargo test --release -p strand --test acceptance" 60 \
 job=timing
 timing_step "cargo test --profile timing -p strand-render --test theme_swap_bench" 60 \
   cargo test --profile timing -p strand-render --test theme_swap_bench -- --nocapture
-timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=50)" 60 \
-  env STRAND_LATENCY_ROUNDS=50 scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
+# Advisory here, so fewer rounds than GitHub's 50 unless strict
+# (decisions.md, ci-speed): a p95 over 15 rounds is noisier, and the
+# timing job enforces the gate on 50.
+ROUNDS=15
+[ "$STRICT_TIMING" = 1 ] && ROUNDS=50
+timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=$ROUNDS)" 60 \
+  env STRAND_LATENCY_ROUNDS=$ROUNDS scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
 timing_step "cargo test --profile timing -p strand-render --test list_scroll_bench" 30 \
   cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test motion (frame time)" 30 \
@@ -204,6 +210,10 @@ timing_step "cargo test --profile timing -p strand-compiler --test theme (theme 
   cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
 echo
+# The compile cache's hits and misses (run.sh's sccache), when it ran.
+if [ -n "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null; then
+  sccache --show-stats 2>/dev/null | grep -E '^(Compile requests|Cache hits|Cache misses|Non-cacheable calls) ' | sed 's/^/sccache: /' || true
+fi
 if [ "${#warned[@]}" -gt 0 ]; then
   echo "WARN: ${#warned[@]} timing step(s) missed their gate (advisory; GitHub's timing job enforces them):"
   printf '  %s\n' "${warned[@]}"
