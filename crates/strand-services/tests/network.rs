@@ -881,6 +881,7 @@ mod slow_nm {
     pub struct Manager {
         pub wifi: bool,
         pub added: Arc<AtomicUsize>,
+        pub deactivated: Arc<AtomicUsize>,
     }
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager")]
@@ -914,18 +915,44 @@ mod slow_nm {
             self.added.fetch_add(1, Ordering::SeqCst);
             (
                 path("/org/freedesktop/NetworkManager/Settings/1"),
-                path("/org/freedesktop/NetworkManager/ActiveConnection/1"),
+                path(ACTIVE),
             )
+        }
+        fn deactivate_connection(&self, _active: ObjectPath<'_>) {
+            self.deactivated.fetch_add(1, Ordering::SeqCst);
         }
     }
 
-    pub struct Device;
+    /// The active connection every join is answered with.
+    pub const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
+
+    /// How the device's `Disconnect` answers, and what it and
+    /// `DeactivateConnection` were asked.
+    #[derive(Clone, Default)]
+    pub struct Leave {
+        /// `Disconnect` answers after this.
+        pub delay: Duration,
+        /// `Disconnect` is refused ("Not authorized").
+        pub refuse: bool,
+        pub disconnects: Arc<AtomicUsize>,
+        pub deactivated: Arc<AtomicUsize>,
+    }
+
+    pub struct Device(Leave);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
     impl Device {
         #[zbus(property)]
         fn device_type(&self) -> u32 {
             2
+        }
+        async fn disconnect(&self) -> zbus::fdo::Result<()> {
+            self.0.disconnects.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.0.delay).await;
+            if self.0.refuse {
+                return Err(zbus::fdo::Error::AccessDenied("Not authorized".into()));
+            }
+            Ok(())
         }
     }
 
@@ -983,6 +1010,19 @@ mod slow_nm {
         added: &Arc<AtomicUsize>,
         own: bool,
     ) -> zbus::Connection {
+        serve_leaving(tokio, address, delay, asked, added, own, Leave::default())
+    }
+
+    /// [`serve`], its device's `Disconnect` answering as `leave` says.
+    pub fn serve_leaving(
+        tokio: &tokio::runtime::Runtime,
+        address: &str,
+        delay: Duration,
+        asked: &Arc<AtomicUsize>,
+        added: &Arc<AtomicUsize>,
+        own: bool,
+        leave: Leave,
+    ) -> zbus::Connection {
         tokio.block_on(async {
             let mut b = zbus::connection::Builder::address(address).unwrap();
             if own {
@@ -993,10 +1033,11 @@ mod slow_nm {
                 Manager {
                     wifi: true,
                     added: added.clone(),
+                    deactivated: leave.deactivated.clone(),
                 },
             )
             .unwrap()
-            .serve_at(DEV, Device)
+            .serve_at(DEV, Device(leave))
             .unwrap()
             .serve_at(DEV, Wireless)
             .unwrap()
@@ -1273,6 +1314,167 @@ fn a_join_stops_when_networkmanager_is_replaced() {
     assert_eq!(
         *failures.lock().unwrap(),
         vec![("Slow".to_string(), "NetworkManager stopped".to_string())]
+    );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r1-6) A join NetworkManager answers while a
+/// `disconnect()` is in flight is not followed, and once the device has
+/// left its network that activation is deactivated (it may have started
+/// after the leave): neither the join nor its end is a failure.
+#[test]
+fn a_join_answered_during_a_disconnect_is_deactivated_once_left() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let leave = slow_nm::Leave {
+        delay: Duration::from_millis(2500),
+        ..slow_nm::Leave::default()
+    };
+    let _nm = slow_nm::serve_leaving(
+        &tokio,
+        &bus.address,
+        Duration::from_millis(600),
+        &asked,
+        &added,
+        true,
+        leave.clone(),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    until(&rt, &s, "the join asking", || {
+        asked.load(Ordering::SeqCst) == 1
+    });
+    b.network
+        .dynamic()
+        .action(&rt, "disconnect", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the disconnect in flight", || {
+        leave.disconnects.load(Ordering::SeqCst) == 1
+            && cells.disconnecting.get_untracked(&rt) == Ok(Some("Slow".into()))
+            && cells.connecting.get_untracked(&rt) == Ok(None)
+    });
+    // NetworkManager answers the join while the device is being left.
+    until(&rt, &s, "the join answered", || {
+        added.load(Ordering::SeqCst) == 1
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        leave.deactivated.load(Ordering::SeqCst),
+        0,
+        "deactivated before the disconnect answered"
+    );
+    until(&rt, &s, "the activation ended", || {
+        leave.deactivated.load(Ordering::SeqCst) == 1
+            && cells.disconnecting.get_untracked(&rt) == Ok(None)
+    });
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r1-6) A disconnect NetworkManager refuses (here
+/// `Not authorized`, as polkit may answer) leaves the join it stopped
+/// going on: it is followed again, and its later failure reported. It was
+/// dropped as stopped before, so a wrong password after a refused
+/// disconnect was never told.
+#[test]
+fn a_join_a_refused_disconnect_stopped_is_still_followed() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let leave = slow_nm::Leave {
+        refuse: true,
+        ..slow_nm::Leave::default()
+    };
+    let nm = slow_nm::serve_leaving(
+        &tokio,
+        &bus.address,
+        Duration::from_millis(1500),
+        &asked,
+        &added,
+        true,
+        leave.clone(),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    until(&rt, &s, "the join asking", || {
+        asked.load(Ordering::SeqCst) == 1
+    });
+    b.network
+        .dynamic()
+        .action(&rt, "disconnect", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        *failures.lock().unwrap(),
+        vec![("Slow".to_string(), "Not authorized".to_string())]
+    );
+    assert_eq!(
+        cells.connecting.get_untracked(&rt),
+        Ok(Some("Slow".into())),
+        "still joining"
+    );
+    until(&rt, &s, "the join answered", || {
+        added.load(Ordering::SeqCst) == 1
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(leave.deactivated.load(Ordering::SeqCst), 0, "not ended");
+    // The activation fails: a password is needed.
+    tokio.block_on(async {
+        nm.emit_signal(
+            None::<zbus::names::BusName<'_>>,
+            slow_nm::ACTIVE,
+            "org.freedesktop.NetworkManager.Connection.Active",
+            "StateChanged",
+            &(4u32, 9u32),
+        )
+        .await
+        .unwrap();
+    });
+    until(&rt, &s, "the join's failure", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        failures.lock().unwrap()[1],
+        ("Slow".to_string(), network::reason_text(9))
     );
     s.shutdown();
 }

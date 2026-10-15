@@ -502,9 +502,14 @@ impl Nm {
     /// The state these objects make.
     pub fn state(&self, scanning: bool) -> Network {
         let state = dbus::number(&self.manager, "State").unwrap_or(0.0);
-        let used = self.used_aps();
         // Only an activated connection is joined (an activating one is
-        // `connecting`); the default route's wins.
+        // `connecting`, a deactivating one `disconnecting`), in the list
+        // as in `ssid`; the default route's wins.
+        let joined_aps: Vec<String> = self
+            .wifi_in(ACTIVATED)
+            .into_iter()
+            .filter_map(|c| object_path(c, "SpecificObject"))
+            .collect();
         let joined = self.ap_in(ACTIVATED);
         let mut access_points: Vec<AccessPoint> = Vec::new();
         if scanning {
@@ -517,7 +522,7 @@ impl Nm {
                     ssid: name.clone(),
                     strength: strength(p),
                     secure: secure(p),
-                    active: used.contains(path),
+                    active: joined_aps.contains(path),
                 };
                 by_ssid
                     .entry(name)
@@ -752,6 +757,8 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
     // `leave`.
     let mut leaving: JoinSet<Result<(), String>> = JoinSet::new();
     let mut leave: Option<(tokio::task::Id, String)> = None;
+    // The joins `leave` stopped, until it answers.
+    let mut stopped = Stopped::default();
     let mut pending = Pending::default();
     let mut addresses = Addresses::default();
     // The access points are listed (a reader reads them).
@@ -816,6 +823,7 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         asking.shutdown().await;
                         leaving.shutdown().await;
                         leave = None;
+                        stopped = Stopped::default();
                         pending = Pending {
                             address: pending.address.take(),
                             ..Pending::default()
@@ -846,6 +854,9 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                                         return Ok(Next::Stop);
                                     }
                                 }
+                            } else if stopped.state_changed(&path, state, reason) {
+                                // A join the disconnect in flight stopped:
+                                // settled when it answers.
                             } else if !asking.is_empty() {
                                 // Perhaps a join whose answer is still
                                 // on its way.
@@ -901,10 +912,35 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         continue;
                     };
                     pending.disconnect = None;
-                    if let Err(error) = r {
-                        log::info!("network: not leaving {ssid}: {error}");
-                        if !cx.emit(NetworkEvent::Failed((ssid, error))) {
-                            return Ok(Next::Stop);
+                    match r {
+                        Ok(()) => {
+                            // Left: the joins it stopped are dropped, and
+                            // an activation NetworkManager answered
+                            // meanwhile is ended.
+                            asked.left();
+                            for active in stopped.left() {
+                                let conn = daemon.conn().clone();
+                                leaving.spawn(async move { deactivate(&conn, &active).await });
+                            }
+                        }
+                        Err(error) => {
+                            log::info!("network: not leaving {ssid}: {error}");
+                            if !cx.emit(NetworkEvent::Failed((ssid, error))) {
+                                return Ok(Next::Stop);
+                            }
+                            // Not left: the joins it stopped go on, and are
+                            // followed and reported again.
+                            if let Some(join) = asked.resume().pop() {
+                                pending.join = Some(join);
+                            }
+                            for f in stopped.resume(&mut joining) {
+                                if !cx.emit(NetworkEvent::Failed(f)) {
+                                    return Ok(Next::Stop);
+                                }
+                            }
+                            if !settle_joins(cx, &nm, &mut joining) {
+                                return Ok(Next::Stop);
+                            }
                         }
                     }
                     if !publish(cx, &nm, &pending, listing) {
@@ -916,17 +952,44 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         Ok((id, answer)) => (id, answer),
                         Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
                     };
-                    if asked.was_cancelled(id) {
-                        // A join `disconnect()` stopped: not followed nor
-                        // reported, and an activation it made is ended.
-                        if let Ok(active) = answer {
-                            let conn = daemon.conn().clone();
-                            leaving.spawn(async move { deactivate(&conn, &active).await });
+                    match asked.stopped(id) {
+                        None => {}
+                        // A join a `disconnect()` stopped that has left:
+                        // not followed nor reported, and an activation it
+                        // made is ended.
+                        Some(Stop::Cancelled) => {
+                            if let Ok(active) = answer {
+                                let conn = daemon.conn().clone();
+                                leaving.spawn(async move { deactivate(&conn, &active).await });
+                            }
+                            if asking.is_empty() {
+                                ended.clear();
+                            }
+                            continue;
                         }
-                        if asking.is_empty() {
-                            ended.clear();
+                        // One the disconnect in flight stopped: kept
+                        // until it answers.
+                        Some(Stop::InFlight(ssid, asked_with)) => {
+                            match answer {
+                                Ok(active) => {
+                                    let ended_with = match ended.take(&active) {
+                                        Some((DEACTIVATED, reason)) => Some(reason),
+                                        _ => None,
+                                    };
+                                    let seen = nm.active.contains_key(&active);
+                                    stopped.joins.insert(active, StoppedJoin {
+                                        join: Joining { ssid, seen, asked_with },
+                                        late: true,
+                                        ended: ended_with,
+                                    });
+                                }
+                                Err(e) => stopped.failures.push((ssid, error_text(e))),
+                            }
+                            if asking.is_empty() {
+                                ended.clear();
+                            }
+                            continue;
                         }
-                        continue;
                     }
                     let Some((ssid, asked_with, next)) = asked.answered(id) else {
                         continue;
@@ -1052,8 +1115,8 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         };
                         let name = name.unwrap_or_default();
                         // The joins it stops: neither followed nor
-                        // reported.
-                        stop_joins(&mut asked, &mut joining);
+                        // reported, unless it fails.
+                        stop_joins(&mut asked, &mut joining, &mut stopped);
                         pending.join = None;
                         let conn = daemon.conn().clone();
                         let id = leaving
@@ -1111,12 +1174,13 @@ fn error_text(e: zbus::Error) -> String {
     }
 }
 
-/// The joins a `disconnect()` stops: those still asked are cancelled
-/// (their answer is neither followed nor reported, [`Asked::cancel`]),
-/// and those activating are followed no more (their end is no failure).
-fn stop_joins(asked: &mut Asked, joining: &mut BTreeMap<String, Joining>) {
+/// The joins a `disconnect()` stops: those still asked
+/// ([`Asked::cancel`]) and those activating ([`Stopped::stop`]) are
+/// neither followed nor reported while it is in flight; once it has left
+/// they are dropped, and if it fails they are followed again.
+fn stop_joins(asked: &mut Asked, joining: &mut BTreeMap<String, Joining>, stopped: &mut Stopped) {
     asked.cancel();
-    joining.clear();
+    stopped.stop(joining);
 }
 
 /// `Device.Disconnect` on Wi-Fi device `dev`: NetworkManager leaves its
@@ -1400,21 +1464,42 @@ enum Scan {
     NoDevice,
     /// A device scans.
     Accepted,
-    /// Refused as one runs or has just run: no failure.
+    /// Refused as one runs or has just run, or while a network is being
+    /// joined: no failure.
     Busy,
     /// Refused otherwise, saying why.
     Failed(String),
 }
 
-/// NetworkManager's refusal of a scan that runs or has just run
-/// (`RequestScan` is rate-limited).
+/// NetworkManager's refusal of a scan: one it will not ask now, or one
+/// the device cannot make.
 const NOT_ALLOWED: &str = "org.freedesktop.NetworkManager.Device.NotAllowed";
 
-/// Why a refused `RequestScan` is a failure; `None` for a scan running or
-/// just run, which is none.
-fn scan_failure(e: zbus::Error) -> Option<String> {
+/// Why a refused `RequestScan` is a failure; `None` for a refusal that
+/// only says "not now", which is none (connectivity-r1-2). NetworkManager
+/// says `NotAllowed` for both kinds and tells them apart only in its words:
+/// before 1.22 it refused a scan running ("while already scanning"), just
+/// run ("immediately following previous scan") or not wanted while its
+/// supplicant was busy ("at this time"), and a device activating ("while
+/// unavailable or activating"; `activating`: a Wi-Fi network is being
+/// joined); since, it refuses only a device that cannot scan ("while
+/// unavailable": the radio switched off by its hardware key, the device
+/// not ready), which is a failure, as the radio off is.
+fn scan_failure(e: zbus::Error, activating: bool) -> Option<String> {
     match e {
-        zbus::Error::MethodError(name, _, _) if name.as_str() == NOT_ALLOWED => None,
+        zbus::Error::MethodError(name, text, _) if name.as_str() == NOT_ALLOWED => {
+            let text = text.unwrap_or_default();
+            let busy = ["already scanning", "immediately following", "at this time"]
+                .iter()
+                .any(|w| text.contains(w))
+                || (activating && text.contains("activating"));
+            match (busy, text.contains("unavailable")) {
+                (true, _) => None,
+                (false, true) => Some("the Wi-Fi device is unavailable".to_string()),
+                (false, false) if text.is_empty() => Some("the scan was refused".to_string()),
+                (false, false) => Some(text),
+            }
+        }
         e => Some(error_text(e)),
     }
 }
@@ -1423,6 +1508,7 @@ fn scan_failure(e: zbus::Error) -> Option<String> {
 /// these itself).
 async fn request_scan(daemon: &Daemon, nm: &Nm) -> Scan {
     let mut outcome = Scan::NoDevice;
+    let activating = !nm.wifi_in(ACTIVATING).is_empty();
     for dev in nm.wifi_devices.keys() {
         let opts: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> = Default::default();
         let r = dbus::timed_for(
@@ -1440,7 +1526,7 @@ async fn request_scan(daemon: &Daemon, nm: &Nm) -> Scan {
             Ok(_) => Scan::Accepted,
             Err(e) => {
                 log::debug!("network: no scan on {dev}: {e}");
-                scan_failure(e).map_or(Scan::Busy, Scan::Failed)
+                scan_failure(e, activating).map_or(Scan::Busy, Scan::Failed)
             }
         };
         // One device scanning is a scan; one busy is no failure.
@@ -1502,8 +1588,23 @@ struct Asked {
     asking: BTreeMap<String, (tokio::task::Id, u64)>,
     /// By network name: the join to ask when its answer comes.
     waiting: BTreeMap<String, Option<String>>,
+    /// Tasks asking joins the `disconnect()` in flight stopped, with their
+    /// network and password's fingerprint: cancelled once it has left,
+    /// asked again if it fails ([`Asked::left`], [`Asked::resume`]).
+    stopping: HashMap<tokio::task::Id, (String, u64)>,
     /// Tasks asking joins that were cancelled.
     cancelled: std::collections::HashSet<tokio::task::Id>,
+}
+
+/// A join a `disconnect()` stopped, as its task answers
+/// ([`Asked::stopped`]).
+#[derive(Debug, PartialEq)]
+enum Stop {
+    /// Stopped by the disconnect still in flight: its network and its
+    /// password's fingerprint.
+    InFlight(String, u64),
+    /// Cancelled: the disconnect left the network.
+    Cancelled,
 }
 
 impl Asked {
@@ -1549,21 +1650,133 @@ impl Asked {
     fn clear(&mut self) -> Vec<String> {
         self.waiting.clear();
         self.cancelled.clear();
+        self.stopping.clear();
         std::mem::take(&mut self.asking).into_keys().collect()
     }
 
-    /// Every join being asked is cancelled (`disconnect()`), and none
-    /// waits: their answers are not followed ([`Asked::was_cancelled`]).
+    /// Every join being asked is stopped by a `disconnect()`, and none
+    /// waits: their answers are not followed while it is in flight
+    /// ([`Asked::stopped`]).
     fn cancel(&mut self) {
         self.waiting.clear();
         let asking = std::mem::take(&mut self.asking);
-        self.cancelled
-            .extend(asking.into_values().map(|(task, _)| task));
+        self.stopping.extend(
+            asking
+                .into_iter()
+                .map(|(ssid, (task, fp))| (task, (ssid, fp))),
+        );
     }
 
-    /// Task `id` asked a join that was cancelled (said once).
-    fn was_cancelled(&mut self, id: tokio::task::Id) -> bool {
-        self.cancelled.remove(&id)
+    /// The disconnect left the network: the joins it stopped are
+    /// cancelled for good.
+    fn left(&mut self) {
+        self.cancelled
+            .extend(std::mem::take(&mut self.stopping).into_keys());
+    }
+
+    /// The disconnect failed: the joins it stopped are asked again, so
+    /// their answers are followed (one of a network asked anew meanwhile
+    /// stays cancelled). Their networks.
+    fn resume(&mut self) -> Vec<String> {
+        let mut resumed = Vec::new();
+        for (task, (ssid, fp)) in std::mem::take(&mut self.stopping) {
+            if self.asking.contains_key(&ssid) {
+                self.cancelled.insert(task);
+            } else {
+                self.asking.insert(ssid.clone(), (task, fp));
+                resumed.push(ssid);
+            }
+        }
+        resumed
+    }
+
+    /// Task `id` asked a join a disconnect stopped (said once).
+    fn stopped(&mut self, id: tokio::task::Id) -> Option<Stop> {
+        if let Some((ssid, fp)) = self.stopping.remove(&id) {
+            return Some(Stop::InFlight(ssid, fp));
+        }
+        self.cancelled.remove(&id).then_some(Stop::Cancelled)
+    }
+}
+
+/// A join a `disconnect()` in flight stopped: neither followed nor
+/// reported until the disconnect answers (connectivity-r1-6).
+#[derive(Debug)]
+struct StoppedJoin {
+    join: Joining,
+    /// NetworkManager answered it after the disconnect was asked: its
+    /// activation may have started after the device was left, so it is
+    /// deactivated once the disconnect has left.
+    late: bool,
+    /// It was deactivated meanwhile, with the reason.
+    ended: Option<u32>,
+}
+
+/// The joins the `disconnect()` in flight stopped, by active connection,
+/// and the failures of joins it stopped that NetworkManager answered
+/// meanwhile: dropped once it has left the network, followed again (and
+/// the failures reported) if it fails, so a join that goes on is never
+/// lost.
+#[derive(Debug, Default)]
+struct Stopped {
+    joins: BTreeMap<String, StoppedJoin>,
+    failures: Vec<(String, String)>,
+}
+
+impl Stopped {
+    /// The activating joins `joining` follows are stopped.
+    fn stop(&mut self, joining: &mut BTreeMap<String, Joining>) {
+        for (path, join) in std::mem::take(joining) {
+            self.joins.insert(
+                path,
+                StoppedJoin {
+                    join,
+                    late: false,
+                    ended: None,
+                },
+            );
+        }
+    }
+
+    /// A state change of active connection `path`: whether it is a
+    /// stopped join's (then its end is kept, not reported).
+    fn state_changed(&mut self, path: &str, state: u32, reason: u32) -> bool {
+        let Some(j) = self.joins.get_mut(path) else {
+            return false;
+        };
+        match state {
+            DEACTIVATED => j.ended = Some(reason),
+            ACTIVATED => j.ended = None,
+            _ => {}
+        }
+        true
+    }
+
+    /// The disconnect left the network: the late joins' activations to
+    /// end.
+    fn left(&mut self) -> Vec<String> {
+        self.failures.clear();
+        std::mem::take(&mut self.joins)
+            .into_iter()
+            .filter(|(_, j)| j.late && j.ended.is_none())
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// The disconnect failed: the joins still activating are followed
+    /// again (into `joining`); the failures (those deactivated meanwhile,
+    /// and those answered with an error) to report.
+    fn resume(&mut self, joining: &mut BTreeMap<String, Joining>) -> Vec<(String, String)> {
+        let mut failures = std::mem::take(&mut self.failures);
+        for (path, j) in std::mem::take(&mut self.joins) {
+            match j.ended {
+                Some(reason) => failures.push((j.join.ssid, reason_text(reason))),
+                None => {
+                    joining.insert(path, j.join);
+                }
+            }
+        }
+        failures
     }
 }
 
@@ -2052,6 +2265,19 @@ mod tests {
         let s = nm.state(false);
         assert_eq!(s.connecting.as_deref(), Some("Cafe"));
         assert_eq!((s.ssid, s.frequency, s.security), (None, None, None));
+        let listed = |nm: &Nm| -> Vec<(String, bool)> {
+            nm.state(true)
+                .access_points
+                .into_iter()
+                .map(|a| (a.ssid, a.active))
+                .collect()
+        };
+        // (connectivity-r1-1) The list agrees with `ssid`: a network being joined is
+        // not the one joined, as over iwd.
+        assert_eq!(
+            listed(&nm),
+            [("Cafe".to_string(), false), ("Home".to_string(), false)]
+        );
         assert_eq!(nm.interface(), None, "nothing joined, no default route");
         assert_eq!(
             nm.wifi_device(),
@@ -2066,11 +2292,19 @@ mod tests {
         assert_eq!(s.frequency, Some(5180));
         assert_eq!(s.security, Some(WifiSecurity::Wpa2));
         assert_eq!(nm.interface().as_deref(), Some("wlan0"));
+        assert_eq!(
+            listed(&nm),
+            [("Cafe".to_string(), true), ("Home".to_string(), false)]
+        );
         nm.active
             .insert("/a/1".into(), active(DEACTIVATING, "/ap/1", false));
         let s = nm.state(false);
         assert_eq!(s.disconnecting.as_deref(), Some("Cafe"));
         assert_eq!(s.ssid, None);
+        assert_eq!(
+            listed(&nm),
+            [("Cafe".to_string(), false), ("Home".to_string(), false)]
+        );
         assert_eq!(nm.wifi_device(), None);
     }
 
@@ -2109,8 +2343,11 @@ mod tests {
         assert_eq!((s.connecting, s.disconnecting), (None, None));
     }
 
-    /// (gap 28) NetworkManager refusing a scan because one runs or has
-    /// just run is no failure; any other refusal is.
+    /// (gap 28, connectivity-r1-2) NetworkManager refusing a scan because
+    /// one runs or has just run (before 1.22), or while a network is being
+    /// joined, is no failure; a device that cannot scan (the hardware
+    /// switch, not ready: NetworkManager's only `NotAllowed` since) is,
+    /// as is any other refusal.
     #[test]
     fn a_scan_refusal_is_no_failure() {
         let refusal = |name: &str, text: &str| {
@@ -2124,29 +2361,62 @@ mod tests {
                 call,
             )
         };
+        for activating in [false, true] {
+            for text in [
+                "Scanning not allowed while already scanning",
+                "Scanning not allowed immediately following previous scan",
+                "Scanning not allowed at this time",
+            ] {
+                assert_eq!(
+                    scan_failure(refusal(NOT_ALLOWED, text), activating),
+                    None,
+                    "{text}"
+                );
+            }
+        }
+        // NetworkManager 1.22 and later: the device cannot scan.
+        for activating in [false, true] {
+            assert_eq!(
+                scan_failure(
+                    refusal(NOT_ALLOWED, "Scanning not allowed while unavailable"),
+                    activating
+                ),
+                Some("the Wi-Fi device is unavailable".to_string())
+            );
+        }
+        // Before: the device unavailable, or a network being joined.
+        let older = "Scanning not allowed while unavailable or activating";
+        assert_eq!(scan_failure(refusal(NOT_ALLOWED, older), true), None);
         assert_eq!(
-            scan_failure(refusal(
-                NOT_ALLOWED,
-                "Scanning not allowed while already scanning"
-            )),
-            None
+            scan_failure(refusal(NOT_ALLOWED, older), false),
+            Some("the Wi-Fi device is unavailable".to_string())
         );
         assert_eq!(
-            scan_failure(refusal(
-                "org.freedesktop.NetworkManager.Device.NotActive",
-                "the device is unavailable"
-            )),
+            scan_failure(refusal(NOT_ALLOWED, "something new"), false),
+            Some("something new".to_string())
+        );
+        assert_eq!(
+            scan_failure(
+                refusal(
+                    "org.freedesktop.NetworkManager.Device.NotActive",
+                    "the device is unavailable"
+                ),
+                false
+            ),
             Some("the device is unavailable".to_string())
         );
         assert_eq!(
-            scan_failure(zbus::Error::Failure("no answer".into())),
+            scan_failure(zbus::Error::Failure("no answer".into()), false),
             Some("no answer".to_string())
         );
     }
 
-    /// (gap 28) A disconnect stops the joins: one still asked is
-    /// cancelled (its answer neither followed nor reported, nor a join
-    /// waiting with it asked), one activating is followed no more.
+    /// (gap 28, connectivity-r1-6) A disconnect stops the joins: one
+    /// still asked and one activating are neither followed nor reported
+    /// while it is in flight (nor a join waiting with them asked). Once it
+    /// has left they are dropped, and an activation answered meanwhile is
+    /// ended; if it fails, they are followed again and a join that ended
+    /// meanwhile is reported.
     #[test]
     fn a_join_cancelled_by_disconnect_is_not_followed() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2154,26 +2424,105 @@ mod tests {
             .unwrap();
         let _in = rt.enter();
         let mut tasks: JoinSet<()> = JoinSet::new();
+        let home_join = || {
+            BTreeMap::from([(
+                "/a/5".to_string(),
+                Joining {
+                    ssid: "Home".into(),
+                    seen: true,
+                    asked_with: fingerprint(None),
+                },
+            )])
+        };
+
+        // The disconnect leaves.
         let mut a = Asked::default();
         assert!(a.ask("Cafe", None));
         let cafe = tasks.spawn(async {}).id();
         a.started("Cafe".into(), cafe, None);
         assert!(!a.ask("Cafe", Some("pw")), "waits");
-        let mut joining = BTreeMap::from([(
-            "/a/5".to_string(),
-            Joining {
-                ssid: "Home".into(),
-                seen: true,
-                asked_with: fingerprint(None),
-            },
-        )]);
-        stop_joins(&mut a, &mut joining);
-        assert!(joining.is_empty());
+        let mut joining = home_join();
+        let mut stopped = Stopped::default();
+        stop_joins(&mut a, &mut joining, &mut stopped);
+        assert!(joining.is_empty(), "not followed");
         assert!(a.waiting.is_empty(), "the waiting join goes too");
         assert_eq!(a.answered(cafe), None, "not followed");
-        assert!(a.was_cancelled(cafe));
-        assert!(!a.was_cancelled(cafe), "said once");
         assert!(a.ask("Cafe", None), "asked afresh");
+        assert!(
+            stopped.state_changed("/a/5", DEACTIVATED, 2),
+            "not reported"
+        );
+        let attic = tasks.spawn(async {}).id();
+        a.started("Attic".into(), attic, None);
+        stop_joins(&mut a, &mut joining, &mut stopped);
+        // Attic's activation, answered while the disconnect is in flight.
+        assert_eq!(
+            a.stopped(attic),
+            Some(Stop::InFlight("Attic".into(), fingerprint(None)))
+        );
+        stopped.joins.insert(
+            "/a/6".into(),
+            StoppedJoin {
+                join: Joining {
+                    ssid: "Attic".into(),
+                    seen: false,
+                    asked_with: fingerprint(None),
+                },
+                late: true,
+                ended: None,
+            },
+        );
+        a.left();
+        assert_eq!(stopped.left(), ["/a/6"], "the late activation is ended");
+        assert!(stopped.joins.is_empty());
+        assert_eq!(a.stopped(cafe), Some(Stop::Cancelled));
+        assert_eq!(a.stopped(cafe), None, "said once");
+
+        // The disconnect fails: the joins go on, followed and reported.
+        let mut a = Asked::default();
+        let cafe = tasks.spawn(async {}).id();
+        a.started("Cafe".into(), cafe, Some("pw"));
+        let mut joining = home_join();
+        let mut stopped = Stopped::default();
+        stop_joins(&mut a, &mut joining, &mut stopped);
+        assert!(
+            !stopped.state_changed("/a/9", DEACTIVATED, 9),
+            "not stopped"
+        );
+        assert_eq!(stopped.resume(&mut joining), Vec::new());
+        assert!(joining.contains_key("/a/5"), "Home followed again");
+        assert_eq!(a.resume(), ["Cafe"]);
+        assert_eq!(
+            a.answered(cafe),
+            Some(("Cafe".into(), fingerprint(Some("pw")), None)),
+            "Cafe's answer followed again"
+        );
+        // A join that ended while the disconnect was in flight, and one
+        // whose answer was an error, are reported once it fails.
+        stop_joins(&mut a, &mut joining, &mut stopped);
+        assert!(stopped.state_changed("/a/5", DEACTIVATED, 9));
+        stopped
+            .failures
+            .push(("Attic".into(), "`Attic` is not in range".into()));
+        assert_eq!(
+            stopped.resume(&mut joining),
+            [
+                ("Attic".to_string(), "`Attic` is not in range".to_string()),
+                ("Home".to_string(), reason_text(9)),
+            ]
+        );
+        assert!(joining.is_empty());
+        // A network asked anew while the disconnect was in flight keeps
+        // its new join; the stopped one stays cancelled.
+        let old = tasks.spawn(async {}).id();
+        a.started("Cafe".into(), old, None);
+        a.cancel();
+        let new = tasks.spawn(async {}).id();
+        assert!(a.ask("Cafe", None));
+        a.started("Cafe".into(), new, None);
+        assert_eq!(a.resume(), Vec::<String>::new());
+        assert_eq!(a.stopped(old), Some(Stop::Cancelled));
+        assert_eq!(a.answered(new).map(|(s, ..)| s), Some("Cafe".into()));
     }
 
     #[test]

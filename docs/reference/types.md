@@ -19,7 +19,7 @@ Keyed by `ssid`.
 | `ssid` | `text` | The network's name. |
 | `strength` | `float` | Signal strength, 0 to 1. |
 | `secure` | `bool` | It needs a password: a WPA, WPA2 or WPA3 personal or a WEP network, which `connect_with` joins (a network menu's password field). An open or Enhanced Open network takes none, and an enterprise (802.1X) one joins through its saved profile, with `connect()`. |
-| `active` | `bool` | It is the network joined. |
+| `active` | `bool` | It is the network joined (`network.ssid`); not while it is still being joined or being left (`network.connecting`, `network.disconnecting`). |
 
 | Method | |
 | --- | --- |
@@ -76,15 +76,15 @@ or one in range (`bluetooth.nearby`), keyed by `address`.
 | `connected` | `bool` | It is connected. |
 | `battery` | `float?` | Its battery, 0 to 1, when it reports one. |
 | `icon` | `text` | An icon name for its kind. |
-| `connecting` | `bool` | A `connect()` or `pair()` of it runs (pairing, trusting, connecting), until it ends. |
-| `disconnecting` | `bool` | A `disconnect()` of it runs, until it ends. |
+| `connecting` | `bool` | A `connect()` or `pair()` of it runs (pairing, trusting, connecting), until it ends; of several calls running, the one asked last shows. |
+| `disconnecting` | `bool` | A `disconnect()` of it runs, until it ends; of several calls running, the one asked last shows. |
 
 | Method | |
 | --- | --- |
-| `action connect()` | Connects to it; a failure is `bluetooth.failed`. |
-| `action disconnect()` | Disconnects from it; a failure is `bluetooth.failed`. |
-| `action pair()` | Pairs with it, trusts it (so it may reconnect on its own) and connects to it: how a `nearby` device is added. One already paired is trusted and connected. Strand asks for no PIN or passkey: BlueZ pairs through the system's pairing agent if one runs, else without one (most headphones, mice, keyboards and phones). A device that insists on a PIN fails. A failure is `bluetooth.failed`. |
-| `action forget()` | Forgets it: unpaired and removed from the adapter, so it leaves `devices`. A failure is `bluetooth.failed`. |
+| `action connect()` | Connects to it; a failure is `bluetooth.failed`. Asked again while a connect or pair of it runs (a double click), it is dropped. |
+| `action disconnect()` | Disconnects from it; a failure is `bluetooth.failed`. Asked again while one runs, it is dropped. |
+| `action pair()` | Pairs with it, trusts it (so it may reconnect on its own) and connects to it: how a `nearby` device is added. One already paired is trusted and connected. Strand asks for no PIN or passkey: BlueZ pairs through the system's pairing agent if one runs, else without one (most headphones, mice, keyboards and phones). A device that insists on a PIN fails. A pairing not done within a minute is cancelled and fails. Asked again while one runs (a double click), it is dropped. A failure is `bluetooth.failed`. |
+| `action forget()` | Forgets it: unpaired and removed from the adapter, so it leaves `devices`. Asked again while one runs, it is dropped. A failure is `bluetooth.failed`. |
 
 ### `Canvas`
 

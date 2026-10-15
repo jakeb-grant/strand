@@ -12,23 +12,29 @@ record BluetoothDevice key address {
   /// An icon name for its kind.
   icon: text
   /// A `connect()` or `pair()` of it runs (pairing, trusting, connecting),
-  /// until it ends.
+  /// until it ends; of several calls running, the one asked last shows.
   connecting: bool
-  /// A `disconnect()` of it runs, until it ends.
+  /// A `disconnect()` of it runs, until it ends; of several calls running,
+  /// the one asked last shows.
   disconnecting: bool
-  /// Connects to it; a failure is `bluetooth.failed`.
+  /// Connects to it; a failure is `bluetooth.failed`. Asked again while a
+  /// connect or pair of it runs (a double click), it is dropped.
   action connect()
-  /// Disconnects from it; a failure is `bluetooth.failed`.
+  /// Disconnects from it; a failure is `bluetooth.failed`. Asked again
+  /// while one runs, it is dropped.
   action disconnect()
   /// Pairs with it, trusts it (so it may reconnect on its own) and connects
   /// to it: how a `nearby` device is added. One already paired is trusted
   /// and connected. Strand asks for no PIN or passkey: BlueZ pairs through
   /// the system's pairing agent if one runs, else without one (most
   /// headphones, mice, keyboards and phones). A device that insists on a
-  /// PIN fails. A failure is `bluetooth.failed`.
+  /// PIN fails. A pairing not done within a minute is cancelled and fails.
+  /// Asked again while one runs (a double click), it is dropped. A failure
+  /// is `bluetooth.failed`.
   action pair()
   /// Forgets it: unpaired and removed from the adapter, so it leaves
-  /// `devices`. A failure is `bluetooth.failed`.
+  /// `devices`. Asked again while one runs, it is dropped. A failure is
+  /// `bluetooth.failed`.
   action forget()
 }
 

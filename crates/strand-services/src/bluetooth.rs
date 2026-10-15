@@ -20,8 +20,13 @@
 //! `d.forget()` removes the device from the adapter. Connects,
 //! disconnects, pairs and forgets run as tasks, and a device's
 //! `connecting` or `disconnecting` is the shell's own call in flight
-//! (BlueZ has no such property). No pairing agent is registered: BlueZ
-//! uses the system's if one runs, else pairs without one.
+//! (BlueZ has no such property), the one asked last when there are
+//! several. A call repeating one still in flight on its device (a double
+//! click; a connect while a pair runs, which connects too) is dropped:
+//! BlueZ would refuse it `InProgress`. A pairing that times out is
+//! cancelled (`CancelPairing`), so BlueZ does not go on with it. No
+//! pairing agent is registered: BlueZ uses the system's if one runs,
+//! else pairs without one.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -249,9 +254,52 @@ impl Bluetooth {
     }
 }
 
-/// The shell's calls in flight, by device address.
-fn by_address(busy: &HashMap<tokio::task::Id, (String, Busy)>) -> HashMap<String, Busy> {
-    busy.values().map(|(a, b)| (a.clone(), *b)).collect()
+/// The shell's calls on devices in flight, by task: each one's device
+/// address and what it asks, numbered in the order asked
+/// (connectivity-r1-3).
+#[derive(Debug, Default)]
+struct InFlight {
+    calls: HashMap<tokio::task::Id, (String, Ask, u64)>,
+    asked: u64,
+}
+
+impl InFlight {
+    /// `ask` of `address` repeats a call in flight on it: the same one,
+    /// or a connect while a pair runs (a pair connects too).
+    fn repeats(&self, address: &str, ask: Ask) -> bool {
+        self.calls.values().any(|(a, running, _)| {
+            a == address && (*running == ask || (ask == Ask::Connect && *running == Ask::Pair))
+        })
+    }
+
+    /// Task `id` asks `ask` of `address`.
+    fn insert(&mut self, id: tokio::task::Id, address: String, ask: Ask) {
+        self.asked += 1;
+        self.calls.insert(id, (address, ask, self.asked));
+    }
+
+    /// Task `id` ended.
+    fn remove(&mut self, id: tokio::task::Id) {
+        self.calls.remove(&id);
+    }
+
+    /// What each device is busy with: the call asked last that shows (a
+    /// forget does not).
+    fn by_address(&self) -> HashMap<String, Busy> {
+        let mut last: HashMap<&str, (u64, Busy)> = HashMap::new();
+        for (address, ask, n) in self.calls.values() {
+            let Some(busy) = ask.busy() else {
+                continue;
+            };
+            let e = last.entry(address.as_str()).or_insert((*n, busy));
+            if *n >= e.0 {
+                *e = (*n, busy);
+            }
+        }
+        last.into_iter()
+            .map(|(a, (_, busy))| (a.to_string(), busy))
+            .collect()
+    }
 }
 
 /// The `bluetooth` body: BlueZ followed, read afresh when it restarts.
@@ -270,14 +318,13 @@ async fn follow(
     // no connection. Each brings back its device's address and, if it
     // failed, why; `busy` says which device each is busy with.
     let mut calls: tokio::task::JoinSet<(String, Option<String>)> = tokio::task::JoinSet::new();
-    let mut busy: HashMap<tokio::task::Id, (String, Busy)> = HashMap::new();
+    let mut busy = InFlight::default();
     // The devices in range are listed (a reader reads them).
     let mut listing = cx.watched("nearby");
-    let publish =
-        |cx: &mut Cx<Bluetooth>, objects: &Objects, busy: &HashMap<_, _>, listing: bool| {
-            let busy = by_address(busy);
-            cx.update(|s| *s = Bluetooth::from_objects(objects, &busy, listing))
-        };
+    let publish = |cx: &mut Cx<Bluetooth>, objects: &Objects, busy: &InFlight, listing: bool| {
+        let busy = busy.by_address();
+        cx.update(|s| *s = Bluetooth::from_objects(objects, &busy, listing))
+    };
     loop {
         let mut objects = read(&daemon)
             .await
@@ -294,11 +341,11 @@ async fn follow(
                 Some(done) = calls.join_next_with_id(), if !calls.is_empty() => {
                     let failure = match done {
                         Ok((id, (address, error))) => {
-                            busy.remove(&id);
+                            busy.remove(id);
                             error.map(|e| (address, e))
                         }
                         Err(e) => {
-                            busy.remove(&e.id());
+                            busy.remove(e.id());
                             None
                         }
                     };
@@ -366,6 +413,10 @@ async fn follow(
                             BluetoothAction::Forget { .. } => Ask::Forget,
                         };
                         let address = a.item().address;
+                        if busy.repeats(&address, what) {
+                            log::debug!("bluetooth: {what:?} {address} already runs");
+                            continue;
+                        }
                         let found = objects.iter().find_map(|(p, i)| {
                             let d = i.get(DEVICE)?;
                             (dbus::text(d, "Address").as_deref() == Some(address.as_str()))
@@ -382,17 +433,12 @@ async fn follow(
                         // holds up nothing; BlueZ reports the outcome as
                         // property changes.
                         let conn = conn.clone();
-                        let state = match what {
-                            Ask::Connect | Ask::Pair => Some(Busy::Connecting),
-                            Ask::Disconnect => Some(Busy::Disconnecting),
-                            Ask::Forget => None,
-                        };
                         let addr = address.clone();
                         let task = calls.spawn(async move {
                             let r = match what {
                                 Ask::Connect => device_call(&conn, &path, "Connect", CONNECT_TIMEOUT).await,
                                 Ask::Disconnect => device_call(&conn, &path, "Disconnect", CONNECT_TIMEOUT).await,
-                                Ask::Pair => pair(&conn, &path).await,
+                                Ask::Pair => pair(&conn, &path, PAIR_TIMEOUT).await,
                                 Ask::Forget => forget(&conn, adapter.as_deref(), &path).await,
                             };
                             if let Err(e) = &r {
@@ -400,11 +446,9 @@ async fn follow(
                             }
                             (addr, r.err())
                         });
-                        if let Some(state) = state {
-                            busy.insert(task.id(), (address, state));
-                            if !publish(cx, &objects, &busy, listing) {
-                                return Ok(());
-                            }
+                        busy.insert(task.id(), address, what);
+                        if what.busy().is_some() && !publish(cx, &objects, &busy, listing) {
+                            return Ok(());
                         }
                     }
                     Some(_) => {}
@@ -415,12 +459,23 @@ async fn follow(
 }
 
 /// What an action asks of BlueZ.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ask {
     Connect,
     Disconnect,
     Pair,
     Forget,
+}
+
+impl Ask {
+    /// What its device shows while it runs.
+    fn busy(self) -> Option<Busy> {
+        match self {
+            Ask::Connect | Ask::Pair => Some(Busy::Connecting),
+            Ask::Disconnect => Some(Busy::Disconnecting),
+            Ask::Forget => None,
+        }
+    }
 }
 
 /// What a failed call to BlueZ says: its own words ("Page Timeout",
@@ -457,14 +512,27 @@ async fn device_call(
 /// Pair with device `path` (one paired already is no failure), trust it
 /// and connect to it (one connected already is none either). The first
 /// step failing says why; a device paired whose connect failed stays
-/// paired.
-async fn pair(conn: &zbus::Connection, path: &str) -> Result<(), String> {
+/// paired. A pairing not done within `limit` is cancelled
+/// (`CancelPairing`): BlueZ would go on with it, and refuse the next
+/// one as in progress.
+async fn pair(conn: &zbus::Connection, path: &str, limit: Duration) -> Result<(), String> {
     let paired = dbus::timed_for(
-        PAIR_TIMEOUT,
+        limit,
         conn.call_method(Some(BLUEZ), path, Some(DEVICE), "Pair", &()),
     )
     .await;
     match paired {
+        Err(e) if dbus::is_timeout(&e) => {
+            let cancel = dbus::timed_for(
+                dbus::READ_TIMEOUT,
+                conn.call_method(Some(BLUEZ), path, Some(DEVICE), "CancelPairing", &()),
+            )
+            .await;
+            if let Err(c) = cancel {
+                log::debug!("bluetooth: pairing {path} not cancelled: {c}");
+            }
+            return Err(bluez_error(e));
+        }
         Err(e) if !is_error(&e, "org.bluez.Error.AlreadyExists") => return Err(bluez_error(e)),
         _ => {}
     }
@@ -773,6 +841,101 @@ mod tests {
         assert!(b.nearby[0].connecting && !b.nearby[0].disconnecting);
         let b = Bluetooth::from_objects(&o, &HashMap::new(), true);
         assert!(!b.devices[0].disconnecting && !b.nearby[0].connecting);
+    }
+
+    /// (gap 29, connectivity-r1-3) A call repeating one in flight on its
+    /// device is dropped (a double click; a connect while a pair runs),
+    /// and a device busy with several calls shows the one asked last,
+    /// whatever order the tasks are kept in.
+    #[test]
+    fn a_device_shows_its_last_call_and_repeats_are_dropped() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+        let mut id = || tasks.spawn(async {}).id();
+        let (a, b) = ("11:22:33:44:55:66", "AA:BB:CC:DD:EE:FF");
+        let mut f = InFlight::default();
+        let pair = id();
+        f.insert(pair, b.into(), Ask::Pair);
+        assert!(f.repeats(b, Ask::Pair), "a double click");
+        assert!(f.repeats(b, Ask::Connect), "the pair connects");
+        assert!(!f.repeats(b, Ask::Disconnect));
+        assert!(!f.repeats(a, Ask::Pair), "another device");
+        assert!(!f.repeats(b, Ask::Forget));
+        let connect = id();
+        f.insert(connect, a.into(), Ask::Connect);
+        assert!(!f.repeats(a, Ask::Pair), "a pair of a device connecting");
+        for _ in 0..20 {
+            let mut f2 = InFlight::default();
+            let (c, d) = (id(), id());
+            f2.insert(c, a.into(), Ask::Connect);
+            f2.insert(d, a.into(), Ask::Disconnect);
+            assert_eq!(f2.by_address()[a], Busy::Disconnecting, "the last asked");
+            f2.insert(id(), a.into(), Ask::Forget);
+            assert_eq!(
+                f2.by_address()[a],
+                Busy::Disconnecting,
+                "a forget shows not"
+            );
+            f2.insert(id(), a.into(), Ask::Connect);
+            assert_eq!(f2.by_address()[a], Busy::Connecting);
+            f2.remove(d);
+            f2.remove(c);
+            assert_eq!(f2.by_address()[a], Busy::Connecting);
+        }
+        assert_eq!(f.by_address().len(), 2);
+        f.remove(pair);
+        assert!(!f.repeats(b, Ask::Pair), "ended");
+        assert_eq!(f.by_address().get(b), None);
+    }
+
+    /// (gap 29, connectivity-r1-3) A pairing not done in time is
+    /// cancelled, so BlueZ does not go on with it (and refuse the next
+    /// pairing as in progress); it fails "timed out".
+    #[test]
+    fn a_pairing_that_times_out_is_cancelled() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Device(Arc<AtomicUsize>);
+        #[zbus::interface(name = "org.bluez.Device1")]
+        impl Device {
+            async fn pair(&self) {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+            }
+            fn cancel_pairing(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let Some(bus) = crate::testing::PrivateBus::start() else {
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let dev = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        rt.block_on(async {
+            let _bluez = zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .name(BLUEZ)
+                .unwrap()
+                .serve_at(dev, Device(cancelled.clone()))
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let conn = zbus::connection::Builder::address(bus.address.as_str())
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let r = pair(&conn, dev, Duration::from_millis(300)).await;
+            assert_eq!(r, Err("timed out".to_string()));
+        });
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
     }
 
     #[test]

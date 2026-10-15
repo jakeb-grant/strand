@@ -188,8 +188,8 @@ networks now.
 
 | Method | |
 | --- | --- |
-| `action disconnect()` | Leaves the Wi-Fi network joined, or stops the one being joined; the daemon then joins nothing on its own until a network is joined again. A join it stops is no failure. Without a network joined or being joined it fails. A failure is `network.failed`. |
-| `action scan()` | Scans for Wi-Fi networks now (a refresh button): `scanning` while it runs, `access_points` read again when it ends. A scan the daemon is already running, or has just run, is not asked again and is no failure. With the radio off it fails, as `network.failed("", error)`. |
+| `action disconnect()` | Leaves the Wi-Fi network joined, or stops the one being joined; the daemon then joins nothing on its own until a network is joined again. A join it stops is no failure; if the disconnect itself fails, that join goes on and is reported as any join is. Without a network joined or being joined it fails. A failure is `network.failed`. |
+| `action scan()` | Scans for Wi-Fi networks now (a refresh button): `scanning` while it runs, `access_points` read again when it ends. A scan the daemon is already running, or has just run, is not asked again and is no failure. With the radio off, or a Wi-Fi device that cannot scan (its hardware switch off, not ready), it fails, as `network.failed("", error)`. |
 
 | Event | |
 | --- | --- |

@@ -5025,7 +5025,10 @@ transparent huge pages for life.
   so iwd is never started for us; both agents answer only iwd's current
   unique name; m6-service-gaps, gap 28: `disconnect()` (NetworkManager's
   `Device.Disconnect` on the Wi-Fi device, iwd's `Station.Disconnect`,
-  each a task; joins it stops are cancelled, not reported),
+  each a task; joins it stops are neither followed nor reported while it
+  is in flight, then dropped once it has left (over NetworkManager an
+  activation answered meanwhile is deactivated then) or followed again
+  if it fails),
   `connecting`/`disconnecting` from the daemon (NetworkManager's
   ACTIVATING/DEACTIVATING active connections, which no longer count as
   joined; iwd's Station `State`) merged with the shell's own requests
@@ -5047,7 +5050,9 @@ transparent huge pages for life.
   only advertisement data are dropped; `pair()` (pair, trust, connect)
   and `forget()` (`Adapter1.RemoveDevice`) are tasks, and a device's
   `connecting`/`disconnecting` are the body's tasks in flight by
-  address; no pairing agent is registered),
+  address (`bluetooth::InFlight`: the call asked last shows, a call
+  repeating one in flight on its device is dropped), a pairing past its
+  limit is cancelled (`CancelPairing`); no pairing agent is registered),
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only

@@ -901,14 +901,25 @@ findings only.
     shown, so it works under systemd-networkd), `network.scan()` and
     `network.scanning`; failures of the service's own actions are
     `network.failed("", error)`. Over NetworkManager an activating
-    network no longer shows as joined
+    network no longer shows as joined, in `access_points` (`active`)
+    as in `ssid`. A scan the device cannot make (the hardware switch)
+    fails rather than doing nothing, and a disconnect that fails lets
+    the join it stopped go on and be reported. Over iwd, a stopped join
+    names its own network as `disconnecting`, never an older one
+    (review connectivity-r1)
     (`crates/strand-services/tests/network.rs::network_tells_the_joined_networks_details`,
     `::network_says_what_it_is_joining_and_leaving`,
     `::disconnect_leaves_the_joined_network`,
+    `::a_join_answered_during_a_disconnect_is_deactivated_once_left`,
+    `::a_join_a_refused_disconnect_stopped_is_still_followed`,
     `::an_explicit_scan_raises_scanning_until_it_ends`;
     `crates/strand-services/tests/network_iwd.rs::iwd_tells_the_joined_networks_details`,
     `::iwd_says_what_it_is_joining_and_leaving_and_disconnects`,
+    `::a_join_a_refused_disconnect_stopped_is_still_reported`,
     `::an_explicit_scan_on_iwd_raises_scanning`;
+    `crates/strand-services/src/network.rs::tests::only_an_activated_connection_is_joined`,
+    `::a_scan_refusal_is_no_failure`;
+    `crates/strand-services/src/network/iwd.rs::tests::the_station_says_what_is_in_progress`;
     `crates/strand-services/src/network/address.rs::tests::the_kernel_gives_lo_its_address`;
     `crates/strand-compiler/tests/checker.rs::network_is_a_wifi_page`).
 29. **Bluetooth cannot find or pair new devices, forget one, or show a
@@ -922,13 +933,19 @@ findings only.
     name, found by a discovery that runs only while the list is shown),
     `bluetooth.scanning`, `d.pair()` (pair, trust, connect),
     `d.forget()`, and each device's `connecting` and `disconnecting`;
-    failures stay `bluetooth.failed(address, error)`. No pairing agent
+    failures stay `bluetooth.failed(address, error)`. A double click
+    on Pair or Connect asks BlueZ once (no false failure), a device
+    shows the call asked last, and a pairing that times out is
+    cancelled (review connectivity-r1). No pairing agent
     is registered: the system's agent answers a PIN if one runs (the
     owner may overrule this, decisions.md)
     (`crates/strand-services/tests/bluetooth.rs::bluetooth_finds_nearby_devices_only_while_read`,
     `::pairing_a_nearby_device_pairs_trusts_and_connects_it`,
+    `::a_repeated_pair_or_connect_is_asked_once`,
     `::disconnecting_and_forgetting_a_paired_device`,
     `::without_bluez_pair_and_forget_fail_as_events`;
+    `crates/strand-services/src/bluetooth.rs::tests::a_device_shows_its_last_call_and_repeats_are_dropped`,
+    `::a_pairing_that_times_out_is_cancelled`;
     `crates/strand-compiler/tests/checker.rs::bluetooth_is_a_pairing_page`).
 
 Dropped from the island bar's notes, the spec already answering them: a

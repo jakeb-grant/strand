@@ -60,6 +60,8 @@ struct World {
     stall_disconnect: bool,
     /// A `Disconnect` came during a join: the join is aborted.
     abort: bool,
+    /// `Disconnect` is refused (as a policy that denies it would).
+    refuse_disconnect: bool,
     /// How often `GetOrderedNetworks` was asked.
     ordered_reads: u32,
 }
@@ -152,6 +154,9 @@ impl Station {
         {
             let mut w = self.0.lock().unwrap();
             w.calls.push("Disconnect".into());
+            if w.refuse_disconnect {
+                return Err(IwdError::Failed("Not authorized".into()));
+            }
             if w.joining.is_some() {
                 w.abort = true;
                 return Ok(());
@@ -1041,6 +1046,60 @@ fn an_explicit_scan_on_iwd_raises_scanning() {
     assert_eq!(
         failures.lock().unwrap()[0],
         (String::new(), "Wi-Fi is off".to_string())
+    );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r1-6) A disconnect iwd refuses leaves the join it
+/// stopped going on: that join is followed again, and its failure is
+/// reported as any join's is (it was dropped as stopped before).
+#[test]
+fn a_join_a_refused_disconnect_stopped_is_still_reported() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("wlan0", None);
+    w.lock().unwrap().connected = None;
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    // Loft (unknown) joined with no password, held by iwd.
+    w.lock().unwrap().stall = true;
+    w.lock().unwrap().refuse_disconnect = true;
+    join(&rt, &b, "Loft");
+    until(&rt, &s, "Loft being joined", || {
+        w.lock().unwrap().joining.is_some()
+            && cells.connecting.get_untracked(&rt) == Ok(Some("Loft".into()))
+    });
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Loft".to_string(), "Not authorized".to_string())
+    );
+    until(&rt, &s, "still joining Loft", || {
+        cells.connecting.get_untracked(&rt) == Ok(Some("Loft".into()))
+            && cells.disconnecting.get_untracked(&rt) == Ok(None)
+    });
+    // The join goes on, and fails: iwd's agent has no password for Loft.
+    w.lock().unwrap().stall = false;
+    until(&rt, &s, "the join's failure", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        failures.lock().unwrap()[1],
+        (
+            "Loft".to_string(),
+            "a password is needed (none was given, or it was wrong)".to_string()
+        )
     );
     s.shutdown();
 }

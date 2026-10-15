@@ -32,8 +32,8 @@
 //! the station becomes connected (a join, a roam's end), else its
 //! security from the network's `Type`. `disconnect()` is
 //! `Station.Disconnect` in a task; the joins it stops are not reported
-//! (iwd answers them `Aborted`). `scan()` is `Station.Scan`, iwd's `Busy`
-//! being no failure.
+//! (iwd answers them `Aborted`) unless it fails, when they go on.
+//! `scan()` is `Station.Scan`, iwd's `Busy` being no failure.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -138,8 +138,9 @@ pub struct Iwd {
     level: Option<f64>,
     /// What `GetDiagnostics` said of the joined network.
     diagnostics: Option<Diagnostics>,
-    /// The last network joined, by name: the one a `disconnecting`
-    /// station leaves once it no longer names it.
+    /// The network the station last named while joined or joining, by
+    /// name: the one a `disconnecting` station leaves once it no longer
+    /// names it. Forgotten once the station is disconnected.
     last_joined: Option<String>,
 }
 
@@ -265,12 +266,21 @@ impl Iwd {
         self.device().and_then(|(_, d)| dbus::text(d, "Name"))
     }
 
-    /// The joined network's name kept for `disconnecting`.
+    /// The name of the network joined or being joined, kept for
+    /// `disconnecting` (connectivity-r1-4): iwd stops a join or leaves a
+    /// network by naming none (`ConnectedNetwork` "/") and then saying
+    /// `disconnecting`, so the network left is the one named last, a join
+    /// (the shell's or iwd's own) included. Once the station is
+    /// disconnected (or gone) no network is left, and none is kept.
     fn remember(&mut self) {
-        if self.connected()
-            && let Some(name) = self.joined().and_then(|p| self.name(&p))
-        {
-            self.last_joined = Some(name);
+        match self.station_state().as_deref() {
+            None | Some("disconnected") => self.last_joined = None,
+            Some("disconnecting") => {}
+            Some(_) => {
+                if let Some(name) = self.in_use() {
+                    self.last_joined = Some(name);
+                }
+            }
         }
     }
 
@@ -880,8 +890,28 @@ struct Join {
     ssid: String,
     /// Its network's path.
     path: String,
-    /// `disconnect()` stopped it: its end is not reported.
-    cancelled: bool,
+    /// The `disconnect()` (its task) that stopped it: its end is not
+    /// reported, unless that disconnect fails (connectivity-r1-6).
+    stopped_by: Option<tokio::task::Id>,
+}
+
+impl Join {
+    fn cancelled(&self) -> bool {
+        self.stopped_by.is_some()
+    }
+}
+
+/// Disconnect `leave` failed: the joins it stopped go on, and are
+/// reported as any join is. Their networks.
+fn resume_joins(joining: &mut Joining, leave: tokio::task::Id) -> Vec<String> {
+    joining
+        .values_mut()
+        .filter(|j| j.stopped_by == Some(leave))
+        .map(|j| {
+            j.stopped_by = None;
+            j.ssid.clone()
+        })
+        .collect()
 }
 
 /// Joins asked and not answered, by task.
@@ -892,7 +922,7 @@ type Joining = HashMap<tokio::task::Id, Join>;
 /// stopped.
 fn fail_joins(cx: &mut Cx<Network>, joining: &mut Joining, why: &str) -> bool {
     for j in std::mem::take(joining).into_values() {
-        if !j.cancelled && !cx.emit(NetworkEvent::Failed((j.ssid, why.to_string()))) {
+        if !j.cancelled() && !cx.emit(NetworkEvent::Failed((j.ssid, why.to_string()))) {
             return false;
         }
     }
@@ -940,6 +970,8 @@ pub(super) async fn run(
     // `disconnect()`s in flight: the latest is `leave`.
     let mut leaving: JoinSet<Result<(), String>> = JoinSet::new();
     let mut leave: Option<(tokio::task::Id, String)> = None;
+    // Failures of joins `leave` stopped, while it is in flight.
+    let mut held: Vec<(tokio::task::Id, String, String)> = Vec::new();
     let mut pending = Pending::default();
     let mut addresses = Addresses::default();
     // The networks in range are listed (a reader reads them).
@@ -1037,7 +1069,18 @@ pub(super) async fn run(
                         if !cx.emit(NetworkEvent::Failed((ssid, error))) {
                             break 'body Next::Stop;
                         }
+                        // Not left: the joins it stopped go on, and those
+                        // that failed meanwhile are reported.
+                        if let Some(join) = resume_joins(&mut joining, id).pop() {
+                            pending.join = Some(join);
+                        }
+                        for (_, ssid, error) in held.extract_if(.., |(l, ..)| *l == id) {
+                            if !cx.emit(NetworkEvent::Failed((ssid, error))) {
+                                break 'body Next::Stop;
+                            }
+                        }
                     }
+                    held.clear();
                     if !publish(cx, &iwd, &pending, listing) {
                         break 'body Next::Stop;
                     }
@@ -1053,10 +1096,17 @@ pub(super) async fn run(
                     if let Ok(mut p) = passwords.lock() {
                         p.remove(&j.path);
                     }
-                    if !j.cancelled && pending.join.as_deref() == Some(j.ssid.as_str()) {
+                    if !j.cancelled() && pending.join.as_deref() == Some(j.ssid.as_str()) {
                         pending.join = None;
                     }
-                    if let Some(error) = join_failure(j.cancelled, r) {
+                    // A join stopped by the disconnect in flight that
+                    // failed: reported only if that disconnect fails.
+                    if let (Some(by), Err(error)) = (j.stopped_by, &r)
+                        && leave.as_ref().is_some_and(|(l, _)| *l == by)
+                    {
+                        held.push((by, j.ssid.clone(), error.clone()));
+                    }
+                    if let Some(error) = join_failure(j.cancelled(), r) {
                         log::info!("network: joining {} failed: {error}", j.ssid);
                         if !cx.emit(NetworkEvent::Failed((j.ssid, error))) {
                             break 'body Next::Stop;
@@ -1126,7 +1176,7 @@ pub(super) async fn run(
                         // The network joined or being joined (iwd's, or a
                         // join asked that iwd has not started).
                         let name = iwd.in_use().or_else(|| pending.join.clone()).or_else(|| {
-                            joining.values().find(|j| !j.cancelled).map(|j| j.ssid.clone())
+                            joining.values().find(|j| !j.cancelled()).map(|j| j.ssid.clone())
                         });
                         let target = iwd.station().map(|(p, _)| p.clone()).zip(name);
                         let Some((station, name)) = target else {
@@ -1135,10 +1185,8 @@ pub(super) async fn run(
                             }
                             continue;
                         };
-                        // The joins it stops are not reported.
-                        for j in joining.values_mut() {
-                            j.cancelled = true;
-                        }
+                        // The joins it stops are not reported, unless it
+                        // fails.
                         pending.join = None;
                         let conn = conn.clone();
                         let id = leaving
@@ -1155,6 +1203,9 @@ pub(super) async fn run(
                                 r.map_err(error_text)
                             })
                             .id();
+                        for j in joining.values_mut() {
+                            j.stopped_by = Some(id);
+                        }
                         leave = Some((id, name.clone()));
                         pending.disconnect = Some(name);
                         if !publish(cx, &iwd, &pending, listing) {
@@ -1169,7 +1220,7 @@ pub(super) async fn run(
                         };
                         // One join of a network at a time; a repeat is
                         // dropped.
-                        if joining.values().any(|j| j.ssid == item.ssid && !j.cancelled) {
+                        if joining.values().any(|j| j.ssid == item.ssid && !j.cancelled()) {
                             continue;
                         }
                         match iwd.to_join(&item.ssid, password.is_some()) {
@@ -1187,7 +1238,7 @@ pub(super) async fn run(
                                 }
                                 let task = joins.spawn(join(conn.clone(), path.clone(), forget));
                                 pending.join = Some(item.ssid.clone());
-                                joining.insert(task.id(), Join { ssid: item.ssid, path, cancelled: false });
+                                joining.insert(task.id(), Join { ssid: item.ssid, path, stopped_by: None });
                                 if !publish(cx, &iwd, &pending, listing) {
                                     break 'body Next::Stop;
                                 }
@@ -1339,11 +1390,12 @@ mod tests {
 
     /// (gap 28) The station's `State` says what is in progress: a join
     /// names its network as `connecting` (not yet `ssid`), a leave names
-    /// it as `disconnecting`, from the network last joined once the
-    /// station no longer names it.
+    /// it as `disconnecting`, from the network named last (joined or
+    /// being joined) once the station no longer names it.
     #[test]
     fn the_station_says_what_is_in_progress() {
         let dev = "/net/connman/iwd/0/4";
+        // As a `PropertiesChanged` of the station's is applied.
         let set = |iwd: &mut Iwd, state: &str, net: &str| {
             let st = iwd.objects.get_mut(dev).unwrap().get_mut(STATION).unwrap();
             st.insert(
@@ -1354,18 +1406,26 @@ mod tests {
                 "ConnectedNetwork".into(),
                 OwnedValue::try_from(path(net)).unwrap(),
             );
+            iwd.remember();
         };
         let mut iwd = wlan0();
         iwd.remember();
+        set(&mut iwd, "disconnecting", "/");
+        let s = iwd.state(false);
+        assert_eq!(s.disconnecting.as_deref(), Some("Home"), "the last joined");
+        assert_eq!((s.connecting, s.ssid), (None, None));
         set(&mut iwd, "connecting", &format!("{dev}/43616665_open"));
         let s = iwd.state(false);
         assert_eq!(s.connecting.as_deref(), Some("Cafe"));
         assert_eq!((s.ssid, s.connected, s.disconnecting), (None, false, None));
         assert_eq!(iwd.in_use().as_deref(), Some("Cafe"));
         assert_eq!(iwd.interface(), None, "not connected");
+        // (connectivity-r1-4) A join stopped: iwd names no network, then
+        // leaves; the network left is the one being joined, not the one
+        // joined before.
         set(&mut iwd, "disconnecting", "/");
         let s = iwd.state(false);
-        assert_eq!(s.disconnecting.as_deref(), Some("Home"), "the last joined");
+        assert_eq!(s.disconnecting.as_deref(), Some("Cafe"), "the join stopped");
         assert_eq!((s.connecting, s.ssid), (None, None));
         set(&mut iwd, "disconnecting", &format!("{dev}/43616665_open"));
         assert_eq!(iwd.state(false).disconnecting.as_deref(), Some("Cafe"));
@@ -1376,6 +1436,44 @@ mod tests {
             (None, None, None)
         );
         assert_eq!(iwd.in_use(), None);
+        // Disconnected, nothing is kept: a leave that names no network
+        // later (iwd's own, read afresh) names none rather than an old one.
+        set(&mut iwd, "disconnecting", "/");
+        assert_eq!(iwd.state(false).disconnecting, None, "not Home nor Cafe");
+        // Joined Home, left, then joining Attic (here Work) stopped.
+        set(&mut iwd, "connected", &format!("{dev}/486f6d65_psk"));
+        set(&mut iwd, "disconnected", "/");
+        set(&mut iwd, "connecting", &format!("{dev}/576f726b_8021x"));
+        set(&mut iwd, "disconnecting", "/");
+        assert_eq!(iwd.state(false).disconnecting.as_deref(), Some("Work"));
+    }
+
+    /// (connectivity-r1-6) A disconnect that fails lets the joins it
+    /// stopped go on (reported as any join is); one another disconnect
+    /// stopped stays stopped.
+    #[test]
+    fn a_failed_disconnect_resumes_the_joins_it_stopped() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        let mut id = || tasks.spawn(async {}).id();
+        let (first, second) = (id(), id());
+        let join = |ssid: &str, by| Join {
+            ssid: ssid.into(),
+            path: format!("/n/{ssid}"),
+            stopped_by: by,
+        };
+        let mut joining = Joining::from([
+            (id(), join("Cafe", Some(second))),
+            (id(), join("Home", Some(first))),
+            (id(), join("Work", None)),
+        ]);
+        assert_eq!(resume_joins(&mut joining, second), ["Cafe"]);
+        assert!(joining.values().all(|j| j.ssid == "Home" || !j.cancelled()));
+        assert!(joining.values().any(|j| j.ssid == "Home" && j.cancelled()));
+        assert_eq!(resume_joins(&mut joining, second), Vec::<String>::new());
     }
 
     /// (gap 28) A join `disconnect()` stopped is no failure: iwd answers

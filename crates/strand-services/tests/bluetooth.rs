@@ -545,6 +545,68 @@ fn pairing_a_nearby_device_pairs_trusts_and_connects_it() {
     s.shutdown();
 }
 
+/// (gap 29, connectivity-r1-3) A pair or connect repeated while one
+/// runs on the device (a double click, or a connect during a pair) is
+/// asked of BlueZ once: a second call would be refused `InProgress` and
+/// reported as a failure while the first goes on.
+#[test]
+fn a_repeated_pair_or_connect_is_asked_once() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some((_mock, _)) = bluez(&tokio, &bus, &conn) else {
+        return;
+    };
+    let stranger = format!("{ADAPTER_PATH}/dev_AA_BB_CC_DD_EE_FF");
+    override_method(
+        &tokio,
+        &conn,
+        &stranger,
+        "Connect",
+        &slow_connection(1.5, true),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.bluetooth.acquire(&rt);
+    b.bluetooth.acquire_field(field("nearby"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "Stranger nearby", || {
+        names(&nearby(&b, &rt)) == ["Stranger"]
+    });
+    act(&rt, &b, "pair", STRANGER);
+    act(&rt, &b, "pair", STRANGER);
+    act(&rt, &b, "connect", STRANGER);
+    until(&rt, &s, "Stranger connected", || {
+        devices(&b, &rt)
+            .iter()
+            .any(|d| d.address == STRANGER && d.connected && !d.connecting)
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(mock_calls(&tokio, &conn, BLUEZ, &stranger, "Pair").len(), 1);
+    assert_eq!(
+        mock_calls(&tokio, &conn, BLUEZ, &stranger, "Connect").len(),
+        1
+    );
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    // Once it has ended, a connect is asked again.
+    act(&rt, &b, "connect", STRANGER);
+    until(&rt, &s, "the second connect", || {
+        mock_calls(&tokio, &conn, BLUEZ, &stranger, "Connect").len() == 2
+    });
+    s.shutdown();
+}
+
 /// (gap 29) `d.disconnect()` shows the device `disconnecting` until
 /// BlueZ answers; `d.forget()` removes it from the adapter
 /// (`RemoveDevice`), and it is gone; a device BlueZ does not have fails.
