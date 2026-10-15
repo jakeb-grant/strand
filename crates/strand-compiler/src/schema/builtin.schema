@@ -393,7 +393,7 @@ provisional record Hit key app.id {
   ranges: [Range]
 }
 
-/// A paired Bluetooth device, keyed by `address`.
+/// A Bluetooth device, paired or in range, keyed by `address`.
 provisional record BluetoothDevice key address {
   /// Its address.
   address: text
@@ -405,10 +405,18 @@ provisional record BluetoothDevice key address {
   battery: float?
   /// An icon name for its kind.
   icon: text
+  /// A `connect()` or `pair()` of it runs.
+  connecting: bool
+  /// A `disconnect()` of it runs.
+  disconnecting: bool
   /// Connects to it.
   action connect()
   /// Disconnects from it.
   action disconnect()
+  /// Pairs with it, trusts it and connects to it.
+  action pair()
+  /// Forgets it: unpaired and removed from the adapter.
+  action forget()
 }
 
 /// What `canvas { draw: (c) => … }` draws on, with the paint API the
@@ -723,7 +731,11 @@ provisional service bluetooth {
   devices: [BluetoothDevice]
   /// BlueZ answers and has an adapter.
   available: bool
-  /// Connecting or disconnecting a device failed:
+  /// Unpaired devices in range that have a name, keyed by `address`.
+  nearby: [BluetoothDevice]
+  /// The adapter is discovering devices.
+  scanning: bool
+  /// Connecting, disconnecting, pairing or forgetting a device failed:
   /// `on bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
 }

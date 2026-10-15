@@ -1340,6 +1340,35 @@ fn network_is_a_wifi_page() {
     );
 }
 
+/// (gap 29) `bluetooth` makes a pairing page: the devices in range,
+/// discovery running, a device connecting or disconnecting, and
+/// `d.pair()` and `d.forget()` with their failures as events.
+#[test]
+fn bluetooth_is_a_pairing_page() {
+    assert_eq!(
+        codes(
+            "bar B {\n  state why = \"\"\n  \
+             on bluetooth.failed(address, error) { why = join(\" \", address, error) }\n  \
+             text why\n  \
+             if bluetooth.scanning { text \"Searching\" }\n  \
+             for d in bluetooth.nearby {\n    \
+             text d.name { on click { d.pair() } }\n  \
+             }\n  \
+             for d in bluetooth.devices {\n    \
+             text d.connecting ? \"Connecting\" : d.disconnecting ? \"Disconnecting\" : d.name {\n      \
+             on click { if d.connected { d.disconnect() } else { d.connect() } }\n      \
+             on secondary { d.forget() }\n    \
+             }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { for d in bluetooth.nearby { text \"x\" { opacity: d.pair() } } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the
