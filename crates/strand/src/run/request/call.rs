@@ -27,7 +27,9 @@ impl Shell {
                     self.run_action(&call.service, &call.action, &call.args)
                 }) {
                     (Ok(()), refused) if refused.is_empty() => json!({"ok": true}),
-                    (Ok(()), refused) => proto::refused(format!("{target}: {}", refused.join("; "))),
+                    (Ok(()), refused) => {
+                        proto::refused(format!("{target}: {}", refused.join("; ")))
+                    }
                     (Err(e), _) => proto::refused(format!("{target}: {e}")),
                 },
                 Err(e) => proto::refused(e),

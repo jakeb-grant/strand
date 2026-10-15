@@ -1106,10 +1106,8 @@ mod tests {
     /// one written long before is not read again.
     #[test]
     fn a_drawn_file_written_before_its_watch_is_reported() {
-        let dir = std::env::temp_dir().join(format!(
-            "strand-live-asset-catch-up-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("strand-live-asset-catch-up-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("config");
         std::fs::create_dir_all(&config).unwrap();

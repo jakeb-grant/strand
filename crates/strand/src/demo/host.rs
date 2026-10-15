@@ -2769,7 +2769,10 @@ mod tests {
         let (s, card, at) = k.cover_a();
         let flags = k.hover_flags();
         assert!(flags.contains(&(k.a, false)), "a is left: {flags:?}");
-        assert!(flags.contains(&(card, true)), "the card is hovered: {flags:?}");
+        assert!(
+            flags.contains(&(card, true)),
+            "the card is hovered: {flags:?}"
+        );
         assert!(k.host.rebase.is_some(), "the rebase holds");
         // A click where the pointer rests (the compositor still sends
         // it to the bar) is the card's.
@@ -2822,7 +2825,10 @@ mod tests {
         k.host.settle_rebase();
         assert!(k.host.rebase.is_none(), "the rebase ends");
         let flags = k.hover_flags();
-        assert!(flags.contains(&(card, false)), "the card is left: {flags:?}");
+        assert!(
+            flags.contains(&(card, false)),
+            "the card is left: {flags:?}"
+        );
         k.host.surface_detached(s);
         let flags = k.hover_flags();
         assert!(!flags.contains(&(k.a, true)), "a is not hovered: {flags:?}");

@@ -52,7 +52,9 @@ pub fn local_source(kind: &str, source: &str, config_dir: &Path) -> Option<Strin
         return None;
     }
     let rest = src.strip_prefix("./").unwrap_or(src);
-    absolute(&config_dir.join(rest)).to_str().map(str::to_string)
+    absolute(&config_dir.join(rest))
+        .to_str()
+        .map(str::to_string)
 }
 
 /// `path` made absolute against the process's directory, `.` components
