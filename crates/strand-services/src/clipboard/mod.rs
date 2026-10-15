@@ -8,15 +8,19 @@
 //! Wayland connection, asleep in `poll(2)` on its socket, an eventfd the
 //! service's messages poke and the one read in flight, as `outputs`'
 //! does. It follows the selection: [`offer::kind`] says what it is; a
-//! text is read (1 MiB at most, 5 s) into `text`; an image sets `image`.
+//! text is read (1 MiB at most, 5 s) into `text`; an image sets
+//! `holds_image`.
 //! An offer carrying a password manager's hint marked `secret` (or whose
 //! hint cannot be read) is read no further: `text` is "", nothing is
 //! recorded, nothing is logged. While a reader reads `history` (a
 //! `#[store(keyed, stream)]` field, held from the top level of a program
 //! that reads it anywhere: spec.md 8.1), each text and each PNG or JPEG
-//! image is recorded in [`history::History`], kept in
-//! `<state>/strand/clipboard/`. A program that never reads `history`
-//! never writes clipboard data to disk.
+//! image copied is recorded in [`history::History`], kept in
+//! `<state>/strand/clipboard/`. The selection the run finds when it binds
+//! (Strand starting, or a reconnect) is shown but never recorded: it is
+//! no copy, and an entry removed or cleared while it stays the selection
+//! must not come back. A program that never reads `history` never writes
+//! clipboard data to disk.
 //!
 //! `copy(value)` and `e.copy()` hand the copy to the [`keeper`], which
 //! holds it past the run's end. Without data control `available` is
@@ -141,8 +145,9 @@ pub struct Clipboard {
     /// The selection's text, or "" when it holds none (empty, an image, or a
     /// password manager's secret, which is never read).
     pub text: String,
-    /// The selection is an image.
-    pub image: bool,
+    /// The selection is an image; once recorded, its file is
+    /// `history[0].image`.
+    pub holds_image: bool,
     /// What was copied, newest first, each once: texts and images, the newest
     /// 100 within 64 MiB, kept across restarts. Recorded while a program
     /// reads it anywhere (see spec.md 8.1); a secret never enters it.
@@ -211,6 +216,11 @@ struct Run {
     history: Option<History>,
     /// The selection's offer, kept until the next.
     selection: Option<Offer>,
+    /// The selection is a copy made while the run watched, not the one
+    /// the run found when it bound (at Strand's start, or a reconnect):
+    /// only a copy is recorded, so an entry removed or cleared while its
+    /// selection stays never comes back.
+    copied: bool,
     reading: Option<Reading>,
     /// Actions waiting for the registry.
     waiting: Vec<ClipboardAction>,
@@ -315,16 +325,22 @@ impl Run {
         }
     }
 
-    /// The selection changed.
-    fn selection(&mut self, cx: &mut Cx<Clipboard>, sel: Option<(Offer, Vec<String>)>) {
+    /// The selection changed (`at_bind`: it is the one the run found).
+    fn selection(
+        &mut self,
+        cx: &mut Cx<Clipboard>,
+        sel: Option<(Offer, Vec<String>)>,
+        at_bind: bool,
+    ) {
         self.reading = None;
+        self.copied = !at_bind;
         if let Some(old) = self.selection.take() {
             old.destroy();
         }
         let Some((offer, mimes)) = sel else {
             cx.update(|s| {
                 s.text.clear();
-                s.image = false;
+                s.holds_image = false;
             });
             return;
         };
@@ -350,9 +366,9 @@ impl Run {
             Kind::Image(mime) => {
                 cx.update(|s| {
                     s.text.clear();
-                    s.image = true;
+                    s.holds_image = true;
                 });
-                if cx.watched("history") {
+                if self.copied && cx.watched("history") {
                     self.read(
                         cx,
                         &mime,
@@ -364,13 +380,13 @@ impl Run {
             Kind::OtherImage => {
                 cx.update(|s| {
                     s.text.clear();
-                    s.image = true;
+                    s.holds_image = true;
                 });
             }
             Kind::Empty => {
                 cx.update(|s| {
                     s.text.clear();
-                    s.image = false;
+                    s.holds_image = false;
                 });
             }
         }
@@ -411,7 +427,7 @@ impl Run {
                 if offer::hint_is_secret(data.as_deref()) {
                     cx.update(|s| {
                         s.text.clear();
-                        s.image = false;
+                        s.holds_image = false;
                     });
                 } else {
                     self.classify(cx, &mimes);
@@ -426,10 +442,10 @@ impl Run {
                         );
                         String::new()
                     });
-                let record = cx.watched("history") && !text.is_empty();
+                let record = self.copied && cx.watched("history") && !text.is_empty();
                 cx.update(|s| {
                     s.text.clone_from(&text);
-                    s.image = false;
+                    s.holds_image = false;
                 });
                 if record && let Some(h) = self.history(cx) {
                     h.push_text(&text);
@@ -443,7 +459,7 @@ impl Run {
                     );
                     return;
                 };
-                if !cx.watched("history") {
+                if !self.copied || !cx.watched("history") {
                     return;
                 }
                 let Some(h) = self.history(cx) else {
@@ -485,6 +501,7 @@ impl Clipboard {
             dir,
             history: None,
             selection: None,
+            copied: false,
             reading: None,
             waiting: Vec::new(),
         };
@@ -493,7 +510,7 @@ impl Clipboard {
             cx.update(|s| {
                 s.available = false;
                 s.text.clear();
-                s.image = false;
+                s.holds_image = false;
             });
             let error = format!("the compositor's connection failed: {e}");
             let mut lost = std::mem::take(&mut run.waiting);
@@ -533,7 +550,9 @@ impl Clipboard {
                 }
             }
             let available = wl.bind(&qh);
-            if wl.synced {
+            // Ready once the selection found at bind is told, so an action
+            // never races it.
+            if wl.settled() {
                 if !cx.is_ready() || cx.state().available != available {
                     cx.update(|s| s.available = available);
                     if !cx.is_ready() {
@@ -548,8 +567,8 @@ impl Clipboard {
                 }
             }
             for ev in std::mem::take(&mut wl.events) {
-                if let Ev::Selection(sel) = ev {
-                    run.selection(cx, sel);
+                if let Ev::Selection { offer, at_bind } = ev {
+                    run.selection(cx, offer, at_bind);
                 }
             }
             if wl.lost {
@@ -592,7 +611,7 @@ mod tests {
     fn the_store_is_the_schema() {
         assert_eq!(<Clipboard as Service>::NAME, "clipboard");
         let names: Vec<&str> = Clipboard::FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, ["available", "text", "image", "history"]);
+        assert_eq!(names, ["available", "text", "holds_image", "history"]);
         assert_eq!((Clipboard::FIELDS[3].ty)(), "[ClipboardEntry]");
         assert_eq!(ClipboardEntry::KEY_FIELD, "id");
     }

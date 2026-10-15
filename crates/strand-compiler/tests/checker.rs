@@ -1315,7 +1315,9 @@ fn outputs_is_a_display_settings_page() {
 /// (m6-service-gaps, owner-testing gap 30) A clipboard history popup:
 /// its entries drawn as text or image, copied again and removed by item
 /// actions, the service's own `copy` and `clear` from handlers, its
-/// failure as an event, and `image` as a condition.
+/// failure as an event, and `holds_image` as a condition (review r1: a
+/// bool is never named `image`, which is a file path on `ClipboardEntry`
+/// and `Notification`).
 #[test]
 fn clipboard_is_a_history_popup() {
     assert_eq!(
@@ -1325,7 +1327,7 @@ fn clipboard_is_a_history_popup() {
              text why\n  \
              text \"Copy\" { on click { clipboard.copy(ip) } }\n  \
              if clipboard.available { text clipboard.text }\n  \
-             if clipboard.image { icon \"image\" }\n  \
+             if clipboard.holds_image { icon \"image\" }\n  \
              popup {\n    \
              text \"Clear\" { on click { clipboard.clear() } }\n    \
              for e in clipboard.history {\n      \
@@ -1344,6 +1346,10 @@ fn clipboard_is_a_history_popup() {
     assert_eq!(
         codes("bar B { text \"x\" { opacity: clipboard.copy(\"x\") } }\n"),
         ["check::action_in_binding"]
+    );
+    assert_eq!(
+        codes("bar B { if clipboard.image { text \"x\" } }\n"),
+        ["check::unknown_field"]
     );
 }
 

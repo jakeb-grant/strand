@@ -110,7 +110,7 @@ labwc): the selection, a value copied from a handler, and the history.
 | --- | --- | --- |
 | `available` | `bool` | The compositor offers data control: false without it, when `history` stays as it was and `copy` fails with `clipboard.failed` (an `input` still copies and pastes). |
 | `text` | `text` | The selection's text, or "" when it holds none (empty, an image, or a password manager's secret, which is never read). |
-| `image` | `bool` | The selection is an image. |
+| `holds_image` | `bool` | The selection is an image; once recorded, its file is `history[0].image`. |
 | `history` | `[ClipboardEntry]` | What was copied, newest first, each once: texts and images, the newest 100 within 64 MiB, kept across restarts. Recorded while a program reads it anywhere (see spec.md 8.1); a secret never enters it. |
 
 | Method | |

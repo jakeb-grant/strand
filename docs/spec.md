@@ -828,13 +828,22 @@ filling the monitor, the keyboard always).
   at the caret, over the selection, with Ctrl+V or Shift+Insert
   (Ctrl+Shift+C, X and V too), through the compositor's clipboard
   (`wl_data_device`), on every compositor and whether or not the
-  `clipboard` service runs; `on key(k)` still hears the keys. A
-  `type: password` input copies and cuts nothing. A paste becomes one
+  `clipboard` service runs; `on key(k)` still hears the keys. With a
+  non-Latin layout active the keys match as the first Latin layout has
+  them (Ctrl+V with `us,ru` and `ru` active pastes), as in GTK and Qt;
+  `k.name` stays the active layout's. A
+  `type: password` input copies and cuts nothing. An `input` on the lock
+  neither copies nor pastes, nor does any while the session is locked:
+  someone at the locked machine must not read its clipboard or plant
+  one. A paste becomes one
   line (line breaks and tabs become spaces, other control characters
   go); one over 1 MiB, or not delivered within 5 s, is dropped with a
   warning. The `clipboard` service follows the selection, copies a value
   from a handler (`clipboard.copy(ip)`) and keeps a history of what was
-  copied (decisions.md m6-service-gaps).
+  copied; the selection it finds when it starts (Strand starting, or a
+  reconnect) is shown in `clipboard.text` but is no copy and is never
+  recorded, so an entry removed or cleared stays gone (decisions.md
+  m6-service-gaps).
 - **`tooltip: expr`** shows a tooltip on hover.
 - **Drag and drop.** `drag: value` on a source; `on drop(v: T, at: int)`
   on a target. `at` is where it lands among the target's rows (for a

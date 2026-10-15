@@ -448,7 +448,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 
 **Input and structure**
 
-- **Events** go to the innermost handler; `propagate()` passes one on. `keyboard: none | on_demand | exclusive` sets focus. `nav: results` routes arrow keys from an input to a list. An `input` copies, cuts and pastes through the compositor's clipboard with the usual keys (Ctrl+C, Ctrl+X, Ctrl+V and their Insert and Delete forms); a password copies nothing.
+- **Events** go to the innermost handler; `propagate()` passes one on. `keyboard: none | on_demand | exclusive` sets focus. `nav: results` routes arrow keys from an input to a list. An `input` copies, cuts and pastes through the compositor's clipboard with the usual keys (Ctrl+C, Ctrl+X, Ctrl+V and their Insert and Delete forms, matched on the Latin layout's keys under a non-Latin one); a password copies nothing, and the lock neither copies nor pastes.
 - **Drag and drop.** `drag: pin` on the source; `on drop(p: Pin, at: int) { pins.move(p.app, at) }` on the target. Reordering springs by key. Files, apps and text from other programs arrive as typed `Drop` values.
 - **Pages.** `pages current: page { page wifi {…}; page bluetooth {…} }` gives directional transitions. Hidden pages unmount, so a Wi-Fi scan stops when you leave that page.
 - **Popups** are anchored xdg\_popups that nest, which is how tray menus work. `tooltip: expr` adds a tooltip.

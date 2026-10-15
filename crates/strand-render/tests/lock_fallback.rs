@@ -22,6 +22,7 @@ fn press(name: &str, text: &str) -> KeyInput {
         repeat: false,
         modifiers: Modifiers::default(),
         time: 0,
+        latin: None,
     }
 }
 

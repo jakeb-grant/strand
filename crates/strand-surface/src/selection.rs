@@ -22,6 +22,12 @@
 //! a press serial are all it needs), data control or not; the builtin
 //! `clipboard` service is a separate client (`strand_services::clipboard`).
 //!
+//! Neither works on a session-lock surface, nor on any surface while a
+//! lock is asked for or held ([`State::clipboard_shut`]): someone at the
+//! locked machine must not read the locked session's clipboard into the
+//! lock (a copied password, then Return) or plant a copy for its owner
+//! to paste after unlocking.
+//!
 //! Part of the manager (`manager/mod.rs` includes it as
 //! `manager::selection`), like `dnd.rs`.
 
@@ -105,9 +111,23 @@ impl<H: SurfaceHost + 'static> State<H> {
         Some((device, action.serial))
     }
 
+    /// Whether the clipboard is shut to `surface`: a session-lock
+    /// surface, or any surface while a lock is asked for or held.
+    pub fn clipboard_shut(&self, surface: SurfaceId) -> bool {
+        self.lock_active()
+            || self
+                .surfaces
+                .get(&surface)
+                .is_some_and(|s| matches!(s.role, Role::Lock(_)))
+    }
+
     /// Makes `text` the selection (a copy or a cut in an `input` on
     /// `surface`), with the serial of the key press that asked.
     fn copy(&mut self, surface: SurfaceId, text: String) {
+        if self.clipboard_shut(surface) {
+            log::debug!("no copy on {surface:?}: the session is locked");
+            return;
+        }
         let Some(manager) = self.dnd.manager.as_ref() else {
             log::debug!("no copy on {surface:?}: the compositor offers no data device");
             return;
@@ -127,6 +147,10 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// there): [`InputEvent::Paste`] once read. Nothing when there is no
     /// selection or no text in it.
     fn paste(&mut self, surface: SurfaceId) {
+        if self.clipboard_shut(surface) {
+            log::debug!("no paste on {surface:?}: the session is locked");
+            return;
+        }
         let offer = self
             .press_device()
             .and_then(|(d, _)| d.inner().data::<DataDeviceData>()?.selection_offer());

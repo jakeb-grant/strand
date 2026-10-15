@@ -198,12 +198,12 @@ fn the_clipboard_follows_the_selection_and_keeps_a_history() {
         h.state().text == "one" && h.texts() == ["one", "two"]
     });
     assert_eq!(h.state().history[0].id, one, "a repeat keeps its id");
-    assert!(!h.state().image);
+    assert!(!h.state().holds_image);
     // An image: `image`, and its file holds the bytes.
     let png: &[u8] = b"\x89PNG\r\n\x1a\nnot really";
     other.copy(&[("image/png", png)]);
     h.until("the image", |h| {
-        h.state().image && h.texts() == ["<image>", "one", "two"]
+        h.state().holds_image && h.texts() == ["<image>", "one", "two"]
     });
     let e = h.state().history[0].clone();
     assert_eq!(h.state().text, "");
@@ -214,12 +214,12 @@ fn the_clipboard_follows_the_selection_and_keeps_a_history() {
     // A text beside an image is a text.
     other.copy(&[("image/png", png), (TEXT, b"https://example.org/a.png")]);
     h.until("the address", |h| {
-        h.state().text == "https://example.org/a.png" && !h.state().image
+        h.state().text == "https://example.org/a.png" && !h.state().holds_image
     });
     // An empty selection.
     other.copy(&[("application/x-other", b"x")]);
     h.until("nothing readable", |h| {
-        h.state().text.is_empty() && !h.state().image
+        h.state().text.is_empty() && !h.state().holds_image
     });
     assert!(h.events().is_empty(), "{:?}", h.events());
     h.s.shutdown();
@@ -335,7 +335,7 @@ fn a_secret_never_enters_history_or_reaches_disk() {
     h.until("the secret is no text", |h| h.state().text.is_empty());
     h.settle(Duration::from_millis(300));
     assert_eq!(h.texts(), ["before"]);
-    assert!(!h.state().image);
+    assert!(!h.state().holds_image);
     assert_eq!(files(state.path()), on_disk, "no new file");
     for f in files(state.path()) {
         assert!(
@@ -387,6 +387,87 @@ fn history_survives_a_restart() {
     h.s.shutdown();
 }
 
+/// (review r1) The selection a run finds when it binds is shown, never
+/// recorded: an entry removed, or a history cleared, while its selection
+/// stays does not come back at the next start, and an entry still kept
+/// keeps its time.
+#[test]
+fn a_cleared_or_removed_selection_does_not_come_back_at_a_restart() {
+    let _g = serial();
+    let Some(sway) = Sway::start("clip-unresurrected") else {
+        return;
+    };
+    let state = tempfile::tempdir().unwrap();
+    let dir = state.path().join("strand/clipboard");
+    let other = other(&sway);
+    // Cleared while it is the selection.
+    {
+        let h = Harness::start(&sway.socket(), state.path(), true);
+        other.copy_text("token");
+        h.until("token", |h| h.texts() == ["token"]);
+        assert!(dir.join("history.json").is_file());
+        h.act("clear", None, &[]);
+        h.until("cleared", |h| h.state().history.is_empty());
+        assert_eq!(files(&dir), Vec::<PathBuf>::new());
+        h.s.shutdown();
+    }
+    let h = Harness::start(&sway.socket(), state.path(), true);
+    h.until("the selection is shown", |h| h.state().text == "token");
+    h.settle(Duration::from_millis(300));
+    assert!(h.state().history.is_empty(), "{:#?}", h.state());
+    assert_eq!(files(&dir), Vec::<PathBuf>::new(), "nothing written back");
+    // Removed while it is the selection, an older entry kept.
+    other.copy_text("older");
+    h.until("older", |h| h.texts() == ["older"]);
+    other.copy_text("removed");
+    h.until("removed", |h| h.texts() == ["removed", "older"]);
+    let removed = h.state().history[0].clone();
+    let older = h.state().history[1].clone();
+    h.act("remove", Some(&removed), &[]);
+    h.until("gone", |h| h.texts() == ["older"]);
+    h.s.shutdown();
+    drop(h);
+    let h = Harness::start(&sway.socket(), state.path(), true);
+    h.until("the selection is shown", |h| h.state().text == "removed");
+    h.settle(Duration::from_millis(300));
+    assert_eq!(h.texts(), ["older"]);
+    assert_eq!(h.state().history[0].time, older.time);
+    let saved = std::fs::read(dir.join("history.json")).unwrap();
+    assert!(!contains(&saved, b"removed"), "not written back");
+    // A copy made after the start is recorded.
+    other.copy_text("next");
+    h.until("next", |h| h.texts() == ["next", "older"]);
+    h.s.shutdown();
+}
+
+/// (review r1) The same against strand-fake-wayland, whose selection is
+/// set before the service starts: shown, not recorded, nothing written;
+/// the next copy is.
+#[test]
+fn the_selection_found_at_start_is_shown_but_not_recorded() {
+    let _g = serial();
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .seats(1)
+        .data_control(Managers::Wlr)
+        .start();
+    fake.cmd(Cmd::SetSelection(vec![(
+        TEXT.into(),
+        b"from before".to_vec(),
+    )]));
+    let state = tempfile::tempdir().unwrap();
+    let h = Harness::start(&fake.socket, state.path(), true);
+    h.until("the selection is shown", |h| {
+        h.state().text == "from before"
+    });
+    h.settle(Duration::from_millis(200));
+    assert!(h.state().history.is_empty(), "{:#?}", h.state());
+    assert!(!state.path().join("strand").exists(), "nothing written");
+    fake.cmd(Cmd::SetSelection(vec![(TEXT.into(), b"copied".to_vec())]));
+    h.until("the copy is kept", |h| h.texts() == ["copied"]);
+    h.s.shutdown();
+}
+
 #[test]
 fn history_is_recorded_only_while_read() {
     let _g = serial();
@@ -399,7 +480,7 @@ fn history_is_recorded_only_while_read() {
     other.copy_text("unread");
     h.until("the text", |h| h.state().text == "unread");
     other.copy(&[("image/png", b"png")]);
-    h.until("the image", |h| h.state().image);
+    h.until("the image", |h| h.state().holds_image);
     h.settle(Duration::from_millis(200));
     assert!(h.state().history.is_empty());
     assert!(

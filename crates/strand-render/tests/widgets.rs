@@ -466,6 +466,7 @@ fn key(s: SurfaceId, name: &str, typed: &str, m: Modifiers) -> InputEvent {
             repeat: false,
             modifiers: m,
             time: 0,
+            latin: None,
         },
     }
 }

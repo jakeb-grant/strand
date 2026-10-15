@@ -57,7 +57,7 @@ impl SurfaceHost for ClipHost {
             && key.state == ButtonState::Pressed
             && key.modifiers.ctrl
         {
-            match key.name.as_str() {
+            match key.shortcut() {
                 "c" => self.asks.push(ClipboardAsk::Copy {
                     surface: *surface,
                     text: self.copy.clone(),
@@ -104,8 +104,32 @@ struct Keys {
     time: u32,
 }
 
+/// `c` and `v` in a first layout, `Cyrillic_es` and `Cyrillic_em` in a
+/// second (`us,ru`'s keys under C and V).
+const US_RU: &str = "xkb_keymap {\n\
+    xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AB03> = 54; <AB04> = 55; };\n\
+    xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+    xkb_compatibility \"strand\" { };\n\
+    xkb_symbols \"strand\" {\n\
+      key <AB03> { symbols[Group1] = [ c ], symbols[Group2] = [ Cyrillic_es ] };\n\
+      key <AB04> { symbols[Group1] = [ v ], symbols[Group2] = [ Cyrillic_em ] };\n\
+    };\n\
+    };\n";
+
 impl Keys {
     fn new(sway: &Sway) -> Keys {
+        Keys::with_keymap(
+            sway,
+            "xkb_keymap {\n\
+            xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AB03> = 54; <AB04> = 55; };\n\
+            xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+            xkb_compatibility \"strand\" { };\n\
+            xkb_symbols \"strand\" { key <AB03> { [ c ] }; key <AB04> { [ v ] }; };\n\
+            };\n",
+        )
+    }
+
+    fn with_keymap(sway: &Sway, keymap: &str) -> Keys {
         let conn = sway.connect();
         let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
         let qh = queue.handle();
@@ -113,13 +137,7 @@ impl Keys {
         let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
         let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
         // KEY_C = 46, KEY_V = 47 (+ 8).
-        let keymap = "xkb_keymap {\n\
-            xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <AB03> = 54; <AB04> = 55; };\n\
-            xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
-            xkb_compatibility \"strand\" { };\n\
-            xkb_symbols \"strand\" { key <AB03> { [ c ] }; key <AB04> { [ v ] }; };\n\
-            };\n";
-        let path = sway.dir().join("keymap");
+        let path = sway.dir().join(format!("keymap-{}", keymap.len()));
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(keymap.as_bytes()).unwrap();
         file.write_all(&[0]).unwrap();
@@ -137,13 +155,18 @@ impl Keys {
 
     /// Ctrl and `c` (`"c"`) or `v` (`"v"`), pressed and released.
     fn ctrl(&mut self, key: &str) {
+        self.ctrl_in(key, 0);
+    }
+
+    /// The same with layout `group` active.
+    fn ctrl_in(&mut self, key: &str, group: u32) {
         let code = if key == "c" { 46 } else { 47 };
-        self.keyboard.modifiers(1 << 2, 0, 0, 0);
+        self.keyboard.modifiers(1 << 2, 0, 0, group);
         for state in [1, 0] {
             self.time += 10;
             self.keyboard.key(self.time, code, state);
         }
-        self.keyboard.modifiers(0, 0, 0, 0);
+        self.keyboard.modifiers(0, 0, 0, group);
         self.queue.roundtrip(&mut Client).unwrap();
     }
 }
@@ -315,4 +338,59 @@ fn a_paste_of_our_own_copy_needs_no_pipe() {
             if key.name == "v" && key.state == ButtonState::Pressed),
         "the paste follows its key press with nothing read between: {input:?}"
     );
+}
+
+/// (review r1) With a second, non-Latin layout active, Ctrl+V reaches
+/// the host as `Cyrillic_em` whose Latin keysym is `v`
+/// (`KeyInput::latin`), and pastes as the Router matches it.
+#[test]
+fn ctrl_v_pastes_with_a_non_latin_layout_active() {
+    let Some((sway, mut mgr, panel, _, other)) =
+        desk("ctrl_v_pastes_with_a_non_latin_layout_active")
+    else {
+        return;
+    };
+    let mut keys = Keys::with_keymap(&sway, US_RU);
+    other.copy_text("from elsewhere");
+    assert!(other.wait(WAIT, |s| s.selections >= 2 || !s.mimes.is_empty()));
+    pump(&mut mgr, Duration::from_millis(200));
+    keys.ctrl_in("v", 1);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| !pastes(s.host()).is_empty())
+        .unwrap();
+    assert!(ok, "a paste arrived: {:?}", mgr.state().host().input);
+    assert_eq!(
+        pastes(mgr.state().host()),
+        [(panel, "from elsewhere".to_string())]
+    );
+    let pressed = mgr
+        .state()
+        .host()
+        .input
+        .iter()
+        .find_map(|e| match e {
+            InputEvent::Key { key, .. } if key.state == ButtonState::Pressed => Some(key.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(pressed.name, "Cyrillic_em");
+    assert_eq!(pressed.latin.as_deref(), Some("v"));
+    // In the first layout the key is `v` itself, with no Latin stand-in.
+    keys.ctrl_in("v", 0);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| pastes(s.host()).len() == 2)
+        .unwrap();
+    assert!(ok);
+    let last = mgr
+        .state()
+        .host()
+        .input
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            InputEvent::Key { key, .. } if key.state == ButtonState::Pressed => Some(key.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!((last.name.as_str(), last.latin.as_deref()), ("v", None));
 }

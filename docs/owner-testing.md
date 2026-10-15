@@ -895,8 +895,15 @@ findings only.
     `text` and `image`, `clipboard.copy(value)` and `clear()`, and
     `history` (texts and images, `e.copy()`, `e.remove()`), kept across
     restarts and recorded while the config reads it anywhere, a password
-    manager's secret never read
+    manager's secret never read; after review: the selection found when
+    Strand starts is shown but never recorded, so a cleared or removed
+    entry stays gone; the lock neither pastes nor copies; Ctrl+C/X/V
+    work with a non-Latin layout active (`us,ru`); the selection-is-an-
+    image flag is `clipboard.holds_image`
     (`crates/strand/tests/clipboard.rs::an_input_copies_and_pastes_through_the_compositor`,
+    `crates/strand-services/tests/clipboard.rs::a_cleared_or_removed_selection_does_not_come_back_at_a_restart`,
+    `crates/strand-surface/tests/session_lock.rs::the_lock_neither_pastes_nor_copies` (lock VM),
+    `crates/strand-surface/tests/clipboard.rs::ctrl_v_pastes_with_a_non_latin_layout_active`,
     `crates/strand-services/tests/clipboard.rs`,
     `crates/strand/src/services/mod.rs::tests::a_closed_popup_reading_clipboard_history_holds_it_from_the_top_level`,
     `crates/strand/tests/compositor_matrix.rs::the_clipboard_works_on_every_compositor`).

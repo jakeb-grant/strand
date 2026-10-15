@@ -1468,6 +1468,7 @@ mod tests {
                 repeat: false,
                 modifiers: Modifiers::default(),
                 time: 0,
+                latin: None,
             },
         }
     }

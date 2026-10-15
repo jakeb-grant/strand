@@ -77,6 +77,20 @@ pub struct KeyInput {
     pub modifiers: Modifiers,
     /// Milliseconds, from the compositor's clock.
     pub time: u32,
+    /// (M6, review r1) The key's keysym name in the keymap's first layout
+    /// that gives it a Latin one, when the active layout gives it a
+    /// non-Latin character (`v` for `Cyrillic_em` with `us,ru` and `ru`
+    /// active); `None` otherwise. Shortcuts match it ([`Self::shortcut`]),
+    /// as GTK and Qt match theirs; `on key(k)` still sees `name`.
+    pub latin: Option<String>,
+}
+
+impl KeyInput {
+    /// The name shortcuts match: [`Self::latin`] when there is one, else
+    /// [`Self::name`].
+    pub fn shortcut(&self) -> &str {
+        self.latin.as_deref().unwrap_or(&self.name)
+    }
 }
 
 named_enum! {

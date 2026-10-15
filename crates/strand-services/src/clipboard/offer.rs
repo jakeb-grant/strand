@@ -31,7 +31,7 @@ pub enum Kind {
     Text(String),
     /// An image kept in the history, read as this type.
     Image(String),
-    /// An image of another type: `clipboard.image`, never kept.
+    /// An image of another type: `clipboard.holds_image`, never kept.
     OtherImage,
     /// Nothing Strand reads (or no selection).
     Empty,

@@ -2015,8 +2015,16 @@ impl Router {
                 matches!(n.get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password")
             });
             let (now, caret, pending) = self.typed_text(focus, scene);
-            let edit =
-                crate::widgets::edit(&now, caret, &key.name, &key.text, key.modifiers, password);
+            // Shortcuts match the Latin keysym of a non-Latin layout's key
+            // (Ctrl+V with `ru` active pastes).
+            let edit = crate::widgets::edit(
+                &now,
+                caret,
+                key.shortcut(),
+                &key.text,
+                key.modifiers,
+                password,
+            );
             match edit {
                 Edit::Copy(t) => {
                     self.emit(Intent::Clipboard(ClipboardAsk::Copy { surface, text: t }))

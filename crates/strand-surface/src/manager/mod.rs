@@ -19,7 +19,7 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -805,6 +805,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// latched, locked, layout): a change on the repeating key's keyboard
     /// stops it, since its text was computed with the old one.
     raw_modifiers: HashMap<ObjectId, (u32, u32, u32, u32)>,
+    /// (M6) Each keyboard's Latin keysyms, from its keymap
+    /// ([`seat::LatinKeys`]).
+    latin_keys: HashMap<ObjectId, seat::LatinKeys>,
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -1044,6 +1047,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             repeat_info: HashMap::new(),
             key_repeat: None,
             raw_modifiers: HashMap::new(),
+            latin_keys: HashMap::new(),
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,

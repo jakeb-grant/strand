@@ -1676,7 +1676,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
 - **Input**: `InputEvent` (`PointerEnter`/`Leave`/`Motion`/`Button`/`Axis`
   with `ButtonState`, `AxisDelta`, `AxisSource`; `KeyboardEnter`/`Leave`
   and `Key { key: KeyInput }` with the xkb keysym name, the typed text,
-  `Modifiers` and repeat; `ClickAway { surface }`, a press on the
+  `Modifiers` and repeat (m6-service-gaps, review r1: and `latin`, the
+  key's keysym name in the keymap's first Latin layout when the active
+  one gives it a non-ASCII character, which shortcuts match through
+  `KeyInput::shortcut()`); `ClickAway { surface }`, a press on the
   click-away catcher under an open `keyboard: exclusive` surface whose
   `open` is two-way, `SurfaceSpec::open_two_way` from `Prop::TwoWay`;
   m6-service-gaps: `Paste { surface, text }`, the clipboard's text a
@@ -4396,7 +4399,18 @@ and the connection):
     (`MAX_PASTE_BYTES`, 1 MiB; `PASTE_READ_TIMEOUT`, 5 s) and sent as
     `InputEvent::Paste`. A keyboard's seat gets a data device too. The
     pipe reader and writer dnd and the selection share live in
-    `manager/pipes.rs`.
+    `manager/pipes.rs`. Neither runs for a session-lock surface, nor for
+    any surface while a lock is asked for or held
+    (`State::clipboard_shut`; review r1).
+  - (m6-service-gaps, review r1) Each keyboard's keymap is compiled
+    again with `xkbcommon` 0.8.0 (the version SCTK links) in
+    `update_keymap` into `seat::LatinKeys`: for a keymap with several
+    layouts, each key's level-1 keysym in the first layout giving it a
+    printable ASCII one. A key whose active keysym is a non-ASCII
+    character carries that Latin keysym's name as `KeyInput::latin`
+    (strand-scene; `None` otherwise), and `KeyInput::shortcut()` (`latin`
+    else `name`) is what Render's `widgets::edit` matches, so Ctrl+V
+    under `ru` is `v`; `name` (what `on key(k)` sees) is unchanged.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -5502,7 +5516,7 @@ transparent huge pages for life.
   `ext_data_control_manager_v1` (bound where offered) and
   `zwlr_data_control_manager_v1` (version 1, no primary selection),
   with the first `wl_seat`; a device that finishes is made again while
-  the seat lives. Fields: `available`, `text`, `image` and
+  the seat lives. Fields: `available`, `text`, `holds_image` and
   `#[store(keyed, stream)] history: Vec<ClipboardEntry>` (`ClipboardEntry
   { id, text, image: Option<String>, size, time: Date }`, keyed by `id`);
   event `failed((action, error))`; actions `Copy { value }`, `Clear` and
@@ -5511,7 +5525,12 @@ transparent huge pages for life.
   text type wins; PNG, then JPEG, kept; another image only flagged) and
   whether `x-kde-passwordManagerHint` marks it `secret` (read first, 64
   bytes; unreadable is secret): a secret is read no further, recorded
-  nowhere, logged nowhere. A text is read 1 MiB and 5 s at most;
+  nowhere, logged nowhere. A device's first selection, told before the
+  `wl_display.sync` sent after `get_data_device` is answered
+  (`Ev::Selection { at_bind }`), is the selection found, not a copy: it
+  sets `text` and `holds_image` and is never recorded; the run is ready,
+  and runs queued actions, only once that sync is answered (review
+  r1). A text is read 1 MiB and 5 s at most;
   while `history` is watched each text and kept image is pushed to
   `clipboard/history.rs`'s `History` (newest first, deduplicated by
   content keeping the id, `Caps::DEFAULT` 100 entries, 64 MiB, 1 MiB a

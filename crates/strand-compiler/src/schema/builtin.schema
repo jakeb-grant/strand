@@ -863,7 +863,7 @@ provisional service clipboard {
   /// The selection's text, or "".
   text: text
   /// The selection is an image.
-  image: bool
+  holds_image: bool
   /// What was copied, newest first.
   history: [ClipboardEntry]
   /// Copies `value` as text.

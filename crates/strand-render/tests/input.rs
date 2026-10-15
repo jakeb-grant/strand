@@ -233,6 +233,7 @@ fn keys_go_to_the_focused_input_and_its_list() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
@@ -497,6 +498,7 @@ fn click_away_closes_only_a_two_way_open() {
                 repeat: false,
                 modifiers: Default::default(),
                 time: 0,
+                latin: None,
             },
         },
         &mut r,
@@ -621,6 +623,7 @@ fn logic_clearing_an_input_wins_over_edits_in_flight() {
                     repeat: false,
                     modifiers: Default::default(),
                     time: 0,
+                    latin: None,
                 },
             },
             r,
@@ -987,6 +990,7 @@ fn escape_cancels_a_drag() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&escape, &mut r);
@@ -2231,6 +2235,7 @@ fn a_removed_input_playing_its_exit_loses_focus_at_once() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&key, &mut r);
@@ -2321,6 +2326,7 @@ fn nav_selects_rows_beyond_the_mounted_window() {
             repeat: false,
             modifiers,
             time: 0,
+            latin: None,
         },
     };
     let key = |name: &str| key_with(name, Modifiers::default());
@@ -2564,6 +2570,7 @@ fn router_hooks_pointer_drag_and_submenu_keys() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     let open = |node, on| Intent::Write {
@@ -2660,6 +2667,7 @@ fn a_password_input_is_edited_like_any_input() {
             repeat: false,
             modifiers: Modifiers::default(),
             time: 0,
+            latin: None,
         },
     };
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
@@ -2734,6 +2742,7 @@ fn return_activates_a_plain_input() {
                     repeat: false,
                     modifiers: Modifiers::default(),
                     time: 0,
+                    latin: None,
                 },
             },
             &mut r,
@@ -3420,6 +3429,7 @@ fn key_with(s: SurfaceId, name: &str, text: &str, m: strand_scene::Modifiers) ->
             repeat: false,
             modifiers: m,
             time: 0,
+            latin: None,
         },
     }
 }
@@ -3548,6 +3558,67 @@ fn ctrl_v_asks_to_paste_and_the_paste_lands_at_the_caret() {
         text_writes_and_asks(f.drain()).1,
         [ClipboardAsk::Paste { surface: s }]
     );
+}
+
+/// (M6, review r1) With a non-Latin layout active, Ctrl+C, Ctrl+X, Ctrl+V
+/// and Ctrl+A match the key's Latin keysym (`KeyInput::latin`, from
+/// strand-surface): `ru`'s keys under C, X, V and A copy, cut, paste and
+/// select all, and the same keys without Ctrl type their own letters;
+/// `on key` still hears the active layout's name.
+#[test]
+fn a_non_latin_layouts_shortcuts_match_their_latin_keys() {
+    use strand_scene::ClipboardAsk;
+    let (mut r, s, _, mut f) = clipboard_scene(false);
+    let ru = |name: &str, text: &str, latin: &str, m| {
+        let mut e = key_with(s, name, text, m);
+        if let InputEvent::Key { key, .. } = &mut e {
+            key.latin = Some(latin.into());
+        }
+        e
+    };
+    // Typed without Ctrl: the active layout's letters.
+    f.input(&ru("Cyrillic_es", "с", "c", Default::default()), &mut r);
+    f.input(&ru("Cyrillic_em", "м", "v", Default::default()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(writes.last().map(String::as_str), Some("см"));
+    assert!(asks.is_empty());
+    // Ctrl+A (`Cyrillic_ef`) selects all, Ctrl+C (`Cyrillic_es`) copies it.
+    f.input(&ru("Cyrillic_ef", "ф", "a", ctrl()), &mut r);
+    f.input(&ru("Cyrillic_es", "с", "c", ctrl()), &mut r);
+    let out = f.drain();
+    assert!(
+        out.iter().any(|i| matches!(
+            i,
+            Intent::Event {
+                event: NodeEvent::Key { name, .. },
+                ..
+            } if name == "Cyrillic_es"
+        )),
+        "`on key` hears the active layout's name"
+    );
+    let (writes, asks) = text_writes_and_asks(out);
+    assert!(writes.is_empty(), "{writes:?}");
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "см".into()
+        }]
+    );
+    // Ctrl+X (`Cyrillic_che`) cuts; Ctrl+V (`Cyrillic_em`) pastes.
+    f.input(&ru("Cyrillic_che", "ч", "x", ctrl()), &mut r);
+    let (writes, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(writes, [""]);
+    assert_eq!(
+        asks,
+        [ClipboardAsk::Copy {
+            surface: s,
+            text: "см".into()
+        }]
+    );
+    f.input(&ru("Cyrillic_em", "м", "v", ctrl()), &mut r);
+    let (_, asks) = text_writes_and_asks(f.drain());
+    assert_eq!(asks, [ClipboardAsk::Paste { surface: s }]);
 }
 
 /// (M6) A paste arriving while keys are still in flight to logic builds on

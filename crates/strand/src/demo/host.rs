@@ -1640,6 +1640,7 @@ mod tests {
                 repeat: false,
                 modifiers: strand_scene::Modifiers::default(),
                 time: 0,
+                latin: None,
             },
         };
         assert_eq!(
@@ -1899,6 +1900,7 @@ mod tests {
                 repeat: false,
                 modifiers: Default::default(),
                 time: 0,
+                latin: None,
             },
         };
         assert_eq!(

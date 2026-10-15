@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags};
 use wayland_client::backend::{ObjectId, WaylandError};
-use wayland_client::protocol::{wl_callback, wl_registry, wl_seat};
+use wayland_client::protocol::{wl_callback, wl_display, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, event_created_child};
 use wayland_protocols::ext::data_control::v1::client::{
     ext_data_control_device_v1::{self, ExtDataControlDeviceV1},
@@ -108,8 +108,13 @@ impl Source {
 #[derive(Debug)]
 pub enum Ev {
     /// The selection changed: its offer and the types it offers (`None`:
-    /// empty).
-    Selection(Option<(Offer, Vec<String>)>),
+    /// empty). `at_bind`: the selection as it stood when the device was
+    /// made (told before the sync after it came back), not a copy made
+    /// since.
+    Selection {
+        offer: Option<(Offer, Vec<String>)>,
+        at_bind: bool,
+    },
     /// A program asks for our source's data as `mime`, through `fd`.
     Send {
         source: ObjectId,
@@ -123,6 +128,7 @@ pub enum Ev {
 /// The connection's state (the `Dispatch` target).
 #[derive(Debug, Default)]
 pub struct Wl {
+    display: Option<wl_display::WlDisplay>,
     registry: Option<wl_registry::WlRegistry>,
     /// Globals announced: ext manager, wlr manager, the first seat (name,
     /// version).
@@ -136,6 +142,9 @@ pub struct Wl {
     pub manager: Option<Manager>,
     seat: Option<wl_seat::WlSeat>,
     pub device: Option<Device>,
+    /// Syncs sent after making a device and not yet answered: until they
+    /// are, a selection told is the one the device found ([`Settle`]).
+    settles: u32,
     /// Offers announced, with the types each offers.
     offers: HashMap<ObjectId, (Offer, Vec<String>)>,
     pub events: Vec<Ev>,
@@ -154,6 +163,7 @@ pub fn connect(socket: &Path) -> Result<(Connection, EventQueue<Wl>, Wl), String
     let registry = display.get_registry(&qh, ());
     display.sync(&qh, ());
     let wl = Wl {
+        display: Some(display.clone()),
         registry: Some(registry),
         ..Wl::default()
     };
@@ -191,12 +201,27 @@ impl Wl {
         self.device.is_some() && !self.lost
     }
 
+    /// The registry's first sync is answered, and so is the sync after
+    /// the device was made: the selection it found has been told.
+    pub fn settled(&self) -> bool {
+        self.synced && self.settles == 0
+    }
+
+    /// Gets the seat's device, then a sync: the compositor tells a new
+    /// device the selection at once, so what comes before that sync's
+    /// answer is the selection found, not a copy.
     fn make_device(&mut self, qh: &QueueHandle<Wl>) {
         self.device = match (&self.manager, &self.seat) {
             (Some(Manager::Ext(m)), Some(s)) => Some(Device::Ext(m.get_data_device(s, qh, ()))),
             (Some(Manager::Wlr(m)), Some(s)) => Some(Device::Wlr(m.get_data_device(s, qh, ()))),
             _ => None,
         };
+        if self.device.is_some()
+            && let Some(display) = &self.display
+        {
+            display.sync(qh, Settle);
+            self.settles += 1;
+        }
     }
 
     /// A new source offering `mimes`, made the selection.
@@ -248,7 +273,10 @@ impl Wl {
         for (_, (o, _)) in self.offers.drain() {
             o.destroy();
         }
-        self.events.push(Ev::Selection(offer));
+        self.events.push(Ev::Selection {
+            offer,
+            at_bind: self.settles > 0,
+        });
     }
 
     /// A primary selection's offer: never read.
@@ -381,6 +409,25 @@ impl Dispatch<wl_callback::WlCallback, ()> for Wl {
     ) {
         if let wl_callback::Event::Done { .. } = event {
             state.synced = true;
+        }
+    }
+}
+
+/// The sync after a device was made ([`Wl::make_device`]).
+#[derive(Debug)]
+pub struct Settle;
+
+impl Dispatch<wl_callback::WlCallback, Settle> for Wl {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &Settle,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            state.settles = state.settles.saturating_sub(1);
         }
     }
 }

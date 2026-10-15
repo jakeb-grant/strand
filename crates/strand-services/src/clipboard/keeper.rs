@@ -257,8 +257,11 @@ fn serve(
                         s.destroy();
                     }
                 }
-                Ev::Selection(Some((offer, _))) => offer.destroy(),
-                Ev::Selection(None) => {}
+                Ev::Selection {
+                    offer: Some((offer, _)),
+                    ..
+                } => offer.destroy(),
+                Ev::Selection { offer: None, .. } => {}
             }
         }
         if wl.lost {

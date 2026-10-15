@@ -30,8 +30,9 @@ service clipboard {
   /// The selection's text, or "" when it holds none (empty, an image, or a
   /// password manager's secret, which is never read).
   text: text
-  /// The selection is an image.
-  image: bool
+  /// The selection is an image; once recorded, its file is
+  /// `history[0].image`.
+  holds_image: bool
   /// What was copied, newest first, each once: texts and images, the newest
   /// 100 within 64 MiB, kept across restarts. Recorded while a program
   /// reads it anywhere (see spec.md 8.1); a secret never enters it.

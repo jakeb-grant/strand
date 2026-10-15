@@ -15,6 +15,9 @@
 
 mod common;
 
+#[path = "../../strand-services/tests/common/data_control.rs"]
+mod data_control;
+
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -23,8 +26,8 @@ use std::time::Duration;
 use common::*;
 use strand_auth::{Client, Password, UnlockToken, Verdict};
 use strand_scene::{
-    Color, Damage, InputEvent, LogicalRect, NodeId, NodeKind, PaintTarget, Painter, PropValue,
-    Size, SurfaceChange, SurfaceId, SurfaceSpec,
+    ButtonState, ClipboardAsk, Color, Damage, InputEvent, LogicalRect, NodeId, NodeKind,
+    PaintTarget, Painter, PropValue, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 use strand_surface::{Config, LockState, Monitor, SurfaceHost, SurfaceManager};
 
@@ -58,6 +61,10 @@ struct LockHost {
     attached: Vec<(SurfaceId, NodeId)>,
     detached: Vec<SurfaceId>,
     input: Vec<InputEvent>,
+    /// Each key pressed asks to paste, then to copy "planted", as the
+    /// Router does for Ctrl+V and Ctrl+C in a focused `input`.
+    clip: bool,
+    asks: Vec<ClipboardAsk>,
 }
 
 impl Painter for LockHost {
@@ -96,6 +103,20 @@ impl SurfaceHost for LockHost {
 
     fn input(&mut self, event: &InputEvent) {
         self.input.push(event.clone());
+        if self.clip
+            && let InputEvent::Key { surface, key } = event
+            && key.state == ButtonState::Pressed
+        {
+            self.asks.push(ClipboardAsk::Paste { surface: *surface });
+            self.asks.push(ClipboardAsk::Copy {
+                surface: *surface,
+                text: "planted".into(),
+            });
+        }
+    }
+
+    fn take_clipboard_asks(&mut self) -> Vec<ClipboardAsk> {
+        std::mem::take(&mut self.asks)
     }
 
     fn lock_changed(&mut self, state: LockState) {
@@ -525,6 +546,60 @@ fn keys_reach_the_lock_and_a_lock_without_a_spec_has_content() {
         lock.state().host().input
     );
     assert!(lock.state_mut().unlock(token()));
+}
+
+/// (review r1, m6-service-gaps) The lock neither reads nor sets the
+/// locked session's clipboard: a paste on the lock's content (Ctrl+V in
+/// its password field) never arrives, the selection another program
+/// holds is never read, and a copy there (Ctrl+C) never replaces it.
+#[test]
+fn the_lock_neither_pastes_nor_copies() {
+    let test = "the_lock_neither_pastes_nor_copies";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let other = data_control::DataControl::connect(sway.connect())
+        .expect("sway 1.9 offers wlr-data-control");
+    other.copy_text("hunter2");
+    assert!(other.wait(WAIT, |s| !s.mimes.is_empty()));
+    let mut lock = locker(&sway);
+    let _input = lock.take_input().unwrap();
+    lock.state_mut()
+        .lock()
+        .expect("sway offers ext-session-lock");
+    wait_lock(&mut lock, LockState::Locked);
+    let content = lock.state().lock_content().expect("content without a spec");
+    assert!(lock.state().clipboard_shut(content));
+    let mut keyboard = VirtualKeyboard::new(&sway);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    lock.state_mut().host_mut().clip = true;
+    keyboard.tap();
+    assert!(
+        key_reached(&mut lock, 0, content),
+        "the key reached the lock content: {:?}",
+        lock.state().host().input
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(500));
+    let host = lock.state().host();
+    assert!(
+        !host
+            .input
+            .iter()
+            .any(|e| matches!(e, InputEvent::Paste { .. })),
+        "no paste reached the lock: {:?}",
+        host.input
+    );
+    let seen = other.seen();
+    assert!(seen.served.is_empty(), "the selection was read: {seen:?}");
+    assert_eq!(seen.cancelled, 0, "the lock copied over it: {seen:?}");
+    assert!(!lock.state().holds_selection());
+    assert!(lock.state_mut().unlock(token()));
+    // Unlocked, a layer surface's clipboard opens again.
+    assert!(!lock.state().clipboard_shut(content));
 }
 
 /// (m4-audit) Keys follow the content when it moves to another output
