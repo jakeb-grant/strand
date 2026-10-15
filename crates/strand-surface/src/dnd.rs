@@ -44,18 +44,12 @@
 //! `manager::dnd`), so it reaches `State`'s fields like the manager's
 //! other parts do.
 
-use std::fs::File;
-use std::io::{ErrorKind, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::time::Duration;
 
-use calloop::timer::{TimeoutAction, Timer};
-use calloop::{PostAction, RegistrationToken};
 use smithay_client_toolkit::data_device_manager::data_device::{
     DataDevice, DataDeviceData, DataDeviceHandler,
 };
@@ -88,7 +82,7 @@ pub const DRAG_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// `text/uri-list` (files; an app when every file is a `.desktop` entry).
 const URI_LIST: &str = "text/uri-list";
 /// Text, in the order taken.
-const TEXT: [&str; 4] = [
+pub(super) const TEXT: [&str; 4] = [
     "text/plain;charset=utf-8",
     "UTF8_STRING",
     "text/plain",
@@ -104,11 +98,11 @@ static NEXT_MANAGER: AtomicU32 = AtomicU32::new(1);
 /// The manager's drag-and-drop state.
 pub(super) struct Dnd {
     /// `wl_data_device_manager` (none: no drag and drop at all).
-    manager: Option<DataDeviceManagerState>,
+    pub(super) manager: Option<DataDeviceManagerState>,
     /// The private MIME type our own drags offer (this process and
     /// manager).
     mime: String,
-    devices: Vec<(wl_seat::WlSeat, DataDevice)>,
+    pub(super) devices: Vec<(wl_seat::WlSeat, DataDevice)>,
     /// The offer over one of our surfaces now.
     over: Option<Over>,
     /// Our own drag, while the compositor carries it.
@@ -419,74 +413,17 @@ impl<H: SurfaceHost + 'static> State<H> {
                 return;
             }
         };
-        // Whichever ends first, the read or the time limit, takes the
-        // offer and ends the drop; the other source is then removed.
-        let pending = Rc::new(RefCell::new(Some(offer)));
-        let limit: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
-        let mut buf = Vec::new();
-        let read = self.handle.insert_source(pipe, {
-            let (pending, limit) = (pending.clone(), limit.clone());
-            move |_, file, state| {
-                let end = |state: &mut Self, payload: Option<DropPayload>| {
-                    if let Some(t) = limit.take() {
-                        state.handle.remove(t);
-                    }
-                    if let Some(offer) = pending.borrow_mut().take() {
-                        state.end_drop(surface, at, offer, payload);
-                    }
-                    PostAction::Remove
-                };
-                let mut chunk = [0u8; 16 * 1024];
-                // Level-triggered: one read per wakeup never blocks.
-                let mut f: &File = file;
-                match f.read(&mut chunk) {
-                    Ok(0) => end(state, Some(payload_of(&mime, &buf))),
-                    Ok(n) if buf.len() + n > MAX_DROP_BYTES => {
-                        log::warn!("a drop over {MAX_DROP_BYTES} bytes ({mime}) is ignored");
-                        end(state, None)
-                    }
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        PostAction::Continue
-                    }
-                    Err(e)
-                        if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
-                    {
-                        PostAction::Continue
-                    }
-                    Err(e) => {
-                        log::warn!("cannot read a drop ({mime}): {e}");
-                        end(state, None)
-                    }
-                }
-            }
-        });
-        let read = match read {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("cannot read a drop: {}", e.error);
-                if let Some(offer) = pending.borrow_mut().take() {
-                    self.end_drop(surface, at, offer, None);
-                }
-                return;
-            }
-        };
-        let timer = Timer::from_duration(DROP_READ_TIMEOUT);
-        let timed = self.handle.insert_source(timer, move |_, _, state| {
-            if let Some(offer) = pending.borrow_mut().take() {
-                log::warn!(
-                    "a drop not read within {DROP_READ_TIMEOUT:?} is ignored (its sender never \
-                     closed the pipe)"
-                );
-                state.handle.remove(read);
-                state.end_drop(surface, at, offer, None);
-            }
-            TimeoutAction::Drop
-        });
-        match timed {
-            Ok(t) => limit.set(Some(t)),
-            Err(e) => log::warn!("a drop is read with no time limit: {}", e.error),
-        }
+        let what = format!("a drop ({mime})");
+        self.read_all(
+            pipe,
+            MAX_DROP_BYTES,
+            DROP_READ_TIMEOUT,
+            what,
+            move |state, bytes| {
+                let payload = bytes.map(|b| payload_of(&mime, &b));
+                state.end_drop(surface, at, offer, payload);
+            },
+        );
     }
 
     /// Ends a dropped offer over `surface`. Read (`payload`): the offer is
@@ -671,6 +608,11 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
         mime: String,
         fd: WritePipe,
     ) {
+        // (M6) Our selection (a copy from an `input`): `selection.rs`.
+        if self.is_our_selection(source) {
+            self.serve_selection(&mime, fd);
+            return;
+        }
         let bytes = self
             .dnd
             .ours
@@ -682,71 +624,15 @@ impl<H: SurfaceHost + 'static> DataSourceHandler for State<H> {
             drop(fd);
             return;
         };
-        // When the write last made progress, and the time limit's source:
-        // whichever ends first, the write or the limit, removes the other.
-        let progress = Rc::new(Cell::new(std::time::Instant::now()));
-        let limit: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
-        let written = self.handle.insert_source(fd, {
-            let (progress, limit) = (progress.clone(), limit.clone());
-            let mut done = 0;
-            move |_, file, state| {
-                let end = |state: &mut Self| {
-                    if let Some(t) = limit.take() {
-                        state.handle.remove(t);
-                    }
-                    PostAction::Remove
-                };
-                // POLLOUT on a pipe: at least PIPE_BUF (4096) bytes fit.
-                let stop = (done + 4096).min(bytes.len());
-                let mut f: &File = file;
-                match std::io::Write::write(&mut f, &bytes[done..stop]) {
-                    Ok(n) => {
-                        done += n;
-                        progress.set(std::time::Instant::now());
-                        if done >= bytes.len() {
-                            end(state)
-                        } else {
-                            PostAction::Continue
-                        }
-                    }
-                    Err(e)
-                        if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
-                    {
-                        PostAction::Continue
-                    }
-                    Err(e) => {
-                        log::debug!("a drag's {mime} was not all read: {e}");
-                        end(state)
-                    }
-                }
-            }
-        });
-        let written = match written {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("cannot give a drag's data: {}", e.error);
-                return;
-            }
-        };
-        let timed = self.handle.insert_source(
-            Timer::from_duration(DRAG_WRITE_TIMEOUT),
-            move |due, _, state| {
-                let next = progress.get() + DRAG_WRITE_TIMEOUT;
-                if next > due {
-                    return TimeoutAction::ToInstant(next);
-                }
-                log::warn!("a drag's data not read for {DRAG_WRITE_TIMEOUT:?} is given up");
-                state.handle.remove(written);
-                TimeoutAction::Drop
-            },
-        );
-        match timed {
-            Ok(t) => limit.set(Some(t)),
-            Err(e) => log::warn!("a drag's data is written with no time limit: {}", e.error),
-        }
+        self.write_all(fd, bytes, DRAG_WRITE_TIMEOUT, format!("a drag's {mime}"));
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        // (M6) Another program took the selection from ours.
+        if self.is_our_selection(source) {
+            self.selection_taken();
+            return;
+        }
         self.end_ours(source);
     }
 

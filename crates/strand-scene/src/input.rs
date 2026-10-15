@@ -254,6 +254,31 @@ pub enum InputEvent {
         at: LogicalPoint,
         payload: DropPayload,
     },
+    /// (M6) The selection's text, read for a paste the host asked for
+    /// ([`ClipboardAsk::Paste`]) on `surface`: an `input` there inserts it
+    /// at its caret.
+    Paste { surface: SurfaceId, text: String },
+}
+
+/// (M6) What render asks the host of the compositor's clipboard (the
+/// `wl_data_device` selection), for a focused `input`'s Ctrl+C/X/V: the
+/// host takes the press's serial and answers a paste with
+/// [`InputEvent::Paste`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipboardAsk {
+    /// Make `text` the selection (a copy or a cut on `surface`).
+    Copy { surface: SurfaceId, text: String },
+    /// Read the selection as text for `surface` (a paste).
+    Paste { surface: SurfaceId },
+}
+
+impl ClipboardAsk {
+    /// The surface it was asked on.
+    pub fn surface(&self) -> SurfaceId {
+        match self {
+            Self::Copy { surface, .. } | Self::Paste { surface } => *surface,
+        }
+    }
 }
 
 impl InputEvent {
@@ -272,7 +297,8 @@ impl InputEvent {
             | Self::DragEnter { surface, .. }
             | Self::DragMotion { surface, .. }
             | Self::DragLeave { surface }
-            | Self::DragDrop { surface, .. } => *surface,
+            | Self::DragDrop { surface, .. }
+            | Self::Paste { surface, .. } => *surface,
         }
     }
 }
@@ -398,5 +424,24 @@ mod tests {
             assert_eq!(e.clone(), e);
         }
         assert_ne!(payload, DropPayload::Node(NodeId::new(2, 1)));
+    }
+
+    #[test]
+    fn a_paste_names_its_surface() {
+        let s = SurfaceId(9);
+        let e = InputEvent::Paste {
+            surface: s,
+            text: "from elsewhere".into(),
+        };
+        assert_eq!(e.surface(), s);
+        for a in [
+            ClipboardAsk::Copy {
+                surface: s,
+                text: "x".into(),
+            },
+            ClipboardAsk::Paste { surface: s },
+        ] {
+            assert_eq!(a.surface(), s);
+        }
     }
 }

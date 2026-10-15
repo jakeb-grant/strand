@@ -141,6 +141,10 @@ pub(crate) struct Forward {
     /// catcher's, told before it); one without (a popup the compositor
     /// dismissed, the user having clicked another client) carries none.
     fresh: bool,
+    /// (M6) What routing asked of the compositor's clipboard (an
+    /// `input`'s Ctrl+C/X/V), for the surface manager
+    /// (`SurfaceHost::take_clipboard_asks`), never for logic.
+    clipboard: Vec<strand_scene::ClipboardAsk>,
 }
 
 impl Forward {
@@ -154,6 +158,7 @@ impl Forward {
             pick_seq: 0,
             press: None,
             fresh: false,
+            clipboard: Vec::new(),
         }
     }
 
@@ -269,7 +274,9 @@ impl Forward {
     pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
         let press = press_of(event, self.press, std::mem::take(&mut self.fresh));
         for intent in self.router.handle(event, scene) {
-            if let Some(msg) = to_logic(intent, press) {
+            if let Intent::Clipboard(ask) = intent {
+                self.clipboard.push(ask);
+            } else if let Some(msg) = to_logic(intent, press) {
                 self.send(msg);
             }
         }
@@ -354,6 +361,8 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
             value,
             input: press,
         },
+        // (M6) The surface manager's (`Forward::input`), never logic's.
+        Intent::Clipboard(_) => return None,
     })
 }
 
@@ -1218,6 +1227,13 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.pressed(serial);
         }
+    }
+
+    fn take_clipboard_asks(&mut self) -> Vec<strand_scene::ClipboardAsk> {
+        self.logic
+            .as_mut()
+            .map(|f| std::mem::take(&mut f.clipboard))
+            .unwrap_or_default()
     }
 
     fn input(&mut self, event: &InputEvent) {

@@ -176,6 +176,19 @@ pub enum Edit {
     Moved(Caret),
     /// The text changed, and the caret with it.
     Changed(String, Caret),
+    /// (M6) Copy the selected text to the compositor's clipboard (Ctrl+C,
+    /// Ctrl+Insert).
+    Copy(String),
+    /// (M6) Cut: copy `copied`, and the text and caret change as
+    /// [`Edit::Changed`] does (Ctrl+X, Shift+Delete).
+    Cut {
+        copied: String,
+        text: String,
+        caret: Caret,
+    },
+    /// (M6) Paste the clipboard's text at the caret (Ctrl+V,
+    /// Shift+Insert): the host reads it and [`pasted`] inserts it.
+    Paste,
 }
 
 fn prev_char(text: &str, i: usize) -> usize {
@@ -215,9 +228,18 @@ fn next_word(text: &str, i: usize) -> usize {
 /// `caret`: typing replaces the selection; BackSpace and Delete remove it
 /// or the character (Ctrl: the word) before or after the caret; Left,
 /// Right, Home and End move the caret (Shift extends the selection, Ctrl
-/// moves by words); Ctrl+A selects everything. Keys with Ctrl, Alt or
-/// Super type nothing.
-pub fn edit(text: &str, caret: Caret, name: &str, typed: &str, m: strand_scene::Modifiers) -> Edit {
+/// moves by words); Ctrl+A selects everything. (M6) Ctrl+C and
+/// Ctrl+Insert copy the selection, Ctrl+X and Shift+Delete cut it, Ctrl+V
+/// and Shift+Insert paste (Ctrl+Shift+C/X/V too); a `password` input
+/// copies and cuts nothing. Keys with Ctrl, Alt or Super type nothing.
+pub fn edit(
+    text: &str,
+    caret: Caret,
+    name: &str,
+    typed: &str,
+    m: strand_scene::Modifiers,
+    password: bool,
+) -> Edit {
     let c = caret.clamped(text);
     let sel = c.selection();
     let to = |pos: usize| {
@@ -237,7 +259,14 @@ pub fn edit(text: &str, caret: Caret, name: &str, typed: &str, m: strand_scene::
         t.push_str(&text[range.end..]);
         Edit::Changed(t, Caret::at(range.start + with.len()))
     };
+    let selected = (!sel.is_empty() && !password).then(|| text[sel.clone()].to_string());
     match name {
+        "c" | "C" if m.ctrl && !m.alt => selected.map_or(Edit::None, Edit::Copy),
+        "Insert" | "KP_Insert" if m.ctrl && !m.shift => selected.map_or(Edit::None, Edit::Copy),
+        "x" | "X" if m.ctrl && !m.alt => cut(text, sel, selected),
+        "Delete" | "KP_Delete" if m.shift && !m.ctrl => cut(text, sel, selected),
+        "v" | "V" if m.ctrl && !m.alt => Edit::Paste,
+        "Insert" | "KP_Insert" if m.shift && !m.ctrl => Edit::Paste,
         "Left" | "KP_Left" => {
             let pos = if !m.shift && !sel.is_empty() {
                 sel.start
@@ -296,6 +325,55 @@ pub fn edit(text: &str, caret: Caret, name: &str, typed: &str, m: strand_scene::
         }
         _ => Edit::None,
     }
+}
+
+/// A cut of `sel` from `text`: nothing without a selection (or of a
+/// password, `selected` being `None`).
+fn cut(text: &str, sel: std::ops::Range<usize>, selected: Option<String>) -> Edit {
+    let Some(copied) = selected else {
+        return Edit::None;
+    };
+    let mut t = String::with_capacity(text.len());
+    t.push_str(&text[..sel.start]);
+    t.push_str(&text[sel.end..]);
+    Edit::Cut {
+        copied,
+        text: t,
+        caret: Caret::at(sel.start),
+    }
+}
+
+/// (M6) The clipboard's text `pasted` into an input holding `text` with
+/// `caret`: it replaces the selection and the caret goes after it. An
+/// `input` is one line, so each line break (`\r\n`, `\n`, `\r`) and tab
+/// becomes one space and other control characters are dropped; nothing
+/// left is [`Edit::None`].
+pub fn pasted(text: &str, caret: Caret, pasted: &str) -> Edit {
+    let mut line = String::with_capacity(pasted.len());
+    let mut chars = pasted.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                line.push(' ');
+            }
+            '\n' | '\t' => line.push(' '),
+            c if c.is_control() => {}
+            c => line.push(c),
+        }
+    }
+    if line.is_empty() {
+        return Edit::None;
+    }
+    let c = caret.clamped(text);
+    let sel = c.selection();
+    let mut t = String::with_capacity(text.len() + line.len());
+    t.push_str(&text[..sel.start]);
+    t.push_str(&line);
+    t.push_str(&text[sel.end..]);
+    Edit::Changed(t, Caret::at(sel.start + line.len()))
 }
 
 /// (M4) An `arc`'s line width when it gives none, logical pixels.
@@ -369,31 +447,41 @@ mod tests {
         let ctrl = Modifiers { ctrl: true, ..none };
         // Typing inserts at the caret.
         assert_eq!(
-            edit("fir", Caret::at(1), "x", "x", none),
+            edit("fir", Caret::at(1), "x", "x", none, false),
             Edit::Changed("fxir".into(), Caret::at(2))
         );
         // Typing replaces the selection.
         assert_eq!(
-            edit("firefox", Caret { pos: 4, anchor: 0 }, "w", "w", none),
+            edit(
+                "firefox",
+                Caret { pos: 4, anchor: 0 },
+                "w",
+                "w",
+                none,
+                false
+            ),
             Edit::Changed("wfox".into(), Caret::at(1))
         );
         // BackSpace and Delete, by character and by word.
         assert_eq!(
-            edit("héllo", Caret::at(3), "BackSpace", "", none),
+            edit("héllo", Caret::at(3), "BackSpace", "", none, false),
             Edit::Changed("hllo".into(), Caret::at(1))
         );
         assert_eq!(
-            edit("ab cd", Caret::at(5), "BackSpace", "", ctrl),
+            edit("ab cd", Caret::at(5), "BackSpace", "", ctrl, false),
             Edit::Changed("ab ".into(), Caret::at(3))
         );
         assert_eq!(
-            edit("ab", Caret::at(0), "Delete", "", none),
+            edit("ab", Caret::at(0), "Delete", "", none, false),
             Edit::Changed("b".into(), Caret::at(0))
         );
-        assert_eq!(edit("ab", Caret::at(0), "BackSpace", "", none), Edit::None);
+        assert_eq!(
+            edit("ab", Caret::at(0), "BackSpace", "", none, false),
+            Edit::None
+        );
         // Moving, extending, word jumps, select all.
         assert_eq!(
-            edit("héllo", Caret::at(3), "Left", "", none),
+            edit("héllo", Caret::at(3), "Left", "", none, false),
             Edit::Moved(Caret::at(1))
         );
         assert_eq!(
@@ -406,25 +494,124 @@ mod tests {
                     shift: true,
                     ctrl: true,
                     ..none
-                }
+                },
+                false
             ),
             Edit::Moved(Caret { pos: 3, anchor: 5 })
         );
         assert_eq!(
-            edit("abc", Caret::at(1), "End", "", shift),
+            edit("abc", Caret::at(1), "End", "", shift, false),
             Edit::Moved(Caret { pos: 3, anchor: 1 })
         );
         assert_eq!(
-            edit("abc", Caret { pos: 3, anchor: 1 }, "Left", "", none),
+            edit("abc", Caret { pos: 3, anchor: 1 }, "Left", "", none, false),
             Edit::Moved(Caret::at(1)),
             "Left collapses a selection to its start"
         );
         assert_eq!(
-            edit("abc", Caret::at(1), "a", "a", ctrl),
+            edit("abc", Caret::at(1), "a", "a", ctrl, false),
             Edit::Moved(Caret { pos: 3, anchor: 0 })
         );
         // Control keys type nothing.
-        assert_eq!(edit("abc", Caret::at(1), "Tab", "\t", none), Edit::None);
+        assert_eq!(
+            edit("abc", Caret::at(1), "Tab", "\t", none, false),
+            Edit::None
+        );
+    }
+
+    #[test]
+    fn copy_cut_and_paste_keys() {
+        use strand_scene::Modifiers;
+        let none = Modifiers::default();
+        let ctrl = Modifiers { ctrl: true, ..none };
+        let shift = Modifiers {
+            shift: true,
+            ..none
+        };
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..none
+        };
+        let sel = Caret { pos: 4, anchor: 1 };
+        let key = |name: &str, typed: &str, m, c| edit("abcdef", c, name, typed, m, false);
+        // Copy: Ctrl+C, Ctrl+Insert, Ctrl+Shift+C; nothing without a
+        // selection.
+        assert_eq!(key("c", "c", ctrl, sel), Edit::Copy("bcd".into()));
+        assert_eq!(key("Insert", "", ctrl, sel), Edit::Copy("bcd".into()));
+        assert_eq!(key("C", "C", ctrl_shift, sel), Edit::Copy("bcd".into()));
+        assert_eq!(key("c", "c", ctrl, Caret::at(2)), Edit::None);
+        // Cut: Ctrl+X and Shift+Delete.
+        let cut = Edit::Cut {
+            copied: "bcd".into(),
+            text: "aef".into(),
+            caret: Caret::at(1),
+        };
+        assert_eq!(key("x", "x", ctrl, sel), cut);
+        assert_eq!(key("Delete", "", shift, sel), cut);
+        assert_eq!(
+            key("Delete", "", shift, Caret::at(2)),
+            Edit::None,
+            "Shift+Delete cuts nothing without a selection"
+        );
+        // Plain Delete is unchanged.
+        assert_eq!(
+            key("Delete", "", none, sel),
+            Edit::Changed("aef".into(), Caret::at(1))
+        );
+        assert_eq!(
+            key("Delete", "", none, Caret::at(0)),
+            Edit::Changed("bcdef".into(), Caret::at(0))
+        );
+        // Paste: Ctrl+V, Shift+Insert, Ctrl+Shift+V.
+        assert_eq!(key("v", "v", ctrl, sel), Edit::Paste);
+        assert_eq!(key("Insert", "", shift, sel), Edit::Paste);
+        assert_eq!(key("V", "V", ctrl_shift, Caret::at(0)), Edit::Paste);
+        // A plain `c` still types.
+        assert_eq!(
+            key("c", "c", none, Caret::at(0)),
+            Edit::Changed("cabcdef".into(), Caret::at(1))
+        );
+    }
+
+    #[test]
+    fn a_password_copies_and_cuts_nothing() {
+        use strand_scene::Modifiers;
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let all = Caret { pos: 6, anchor: 0 };
+        let key = |name: &str, m| edit("secret", all, name, "", m, true);
+        assert_eq!(key("c", ctrl), Edit::None);
+        assert_eq!(key("Insert", ctrl), Edit::None);
+        assert_eq!(key("x", ctrl), Edit::None);
+        assert_eq!(key("Delete", shift), Edit::None);
+        assert_eq!(key("v", ctrl), Edit::Paste, "a password takes a paste");
+    }
+
+    #[test]
+    fn a_paste_is_one_line() {
+        assert_eq!(
+            pasted("ab", Caret::at(1), "x\r\ny\tz\u{7}"),
+            Edit::Changed("ax y zb".into(), Caret::at(6))
+        );
+        assert_eq!(
+            pasted("hello", Caret { pos: 1, anchor: 4 }, "\n\r"),
+            Edit::Changed("h  o".into(), Caret::at(3)),
+            "a paste replaces the selection; `\\n` and `\\r` apart are two breaks"
+        );
+        assert_eq!(
+            pasted("héllo", Caret::at(9), "!"),
+            Edit::Changed("héllo!".into(), Caret::at(7)),
+            "the caret is clamped first"
+        );
+        assert_eq!(pasted("ab", Caret::at(1), ""), Edit::None);
+        assert_eq!(pasted("ab", Caret::at(1), "\u{1b}"), Edit::None);
     }
 
     #[test]

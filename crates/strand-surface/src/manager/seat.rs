@@ -104,6 +104,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         self.host.input(&event);
         self.dnd_input(&event);
+        self.clipboard_asks();
         if let Some(tx) = &self.input
             && tx.send(event).is_err()
         {
@@ -129,7 +130,8 @@ fn unpose(event: &mut InputEvent, (fx, fy): (f64, f64)) {
         | InputEvent::KeyboardLeave { .. }
         | InputEvent::Key { .. }
         | InputEvent::ClickAway { .. }
-        | InputEvent::DragLeave { .. } => return,
+        | InputEvent::DragLeave { .. }
+        | InputEvent::Paste { .. } => return,
     };
     p.x = (f64::from(p.x) / fx) as f32;
     p.y = (f64::from(p.y) / fy) as f32;
@@ -165,7 +167,9 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer {
+        // (M6) A keyboard's seat gets one too: an `input` copies and
+        // pastes through its selection.
+        if capability == Capability::Pointer || capability == Capability::Keyboard {
             self.dnd_seat(&seat);
         }
         if capability == Capability::Pointer && !self.pointers.iter().any(|p| p.seat == seat) {

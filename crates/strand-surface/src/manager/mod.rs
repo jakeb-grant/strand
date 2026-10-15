@@ -92,11 +92,15 @@ mod gpu_handoff;
 mod layer;
 mod origin;
 mod outputs;
+mod pipes;
 mod popup;
 mod pose;
 mod protocols;
 mod scrim;
 mod seat;
+// (M6) Copy and paste for an `input`, beside `dnd.rs`.
+#[path = "../selection.rs"]
+pub(crate) mod selection;
 mod session_lock;
 #[cfg(feature = "gpu")]
 pub use gpu_handoff::RawHandles;
@@ -257,6 +261,14 @@ pub trait SurfaceHost: Painter {
     /// actions ask [`State::activation_token`] with it.
     fn press_serial(&mut self, serial: u32) {
         let _ = serial;
+    }
+    /// (M6) What render asked of the clipboard while it handled the
+    /// event [`SurfaceHost::input`] was just told (a focused `input`'s
+    /// Ctrl+C/X/V: `Intent::Clipboard`), drained right after it, so a
+    /// copy goes with that key press's serial. A paste comes back as
+    /// [`InputEvent::Paste`] (`selection.rs`).
+    fn take_clipboard_asks(&mut self) -> Vec<strand_scene::ClipboardAsk> {
+        Vec::new()
     }
 }
 
@@ -846,6 +858,8 @@ pub struct State<H: SurfaceHost + 'static> {
     gpu: gpu_handoff::HandOffs,
     /// (M4) Drag and drop over `wl_data_device` (`src/dnd.rs`).
     dnd: dnd::Dnd,
+    /// (M6) Copy and paste for an `input` (`src/selection.rs`).
+    selection: selection::Selection,
     /// (M5) xdg-activation tokens (`src/activation.rs`).
     activation: activation::Activation,
 }
@@ -1049,6 +1063,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             session_lock: session_lock::SessionLock::new(session_lock),
             gpu: gpu_handoff::HandOffs::default(),
             dnd,
+            selection: selection::Selection::new(),
             activation,
         };
         Ok(Self {
