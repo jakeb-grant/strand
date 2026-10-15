@@ -1410,6 +1410,69 @@ fn clipboard_is_a_history_popup() {
     );
 }
 
+/// (M6, owner-testing gap 32) A player's buttons dim by what the active
+/// player can do: `media.can_next`, `can_previous` and `can_seek` are
+/// plain booleans, read in bindings and `when`s.
+#[test]
+fn media_buttons_dim_by_what_the_player_can_do() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    \
+             text \"prev\" { opacity: media.can_previous ? 1 : 0.4\n      on click { media.previous() } }\n    \
+             text \"next\" { opacity: media.can_next ? 1 : 0.4\n      on click { media.next() } }\n    \
+             slider { value: <-> media.position\n      when !media.can_seek { opacity: 0.4 } }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
+/// (M6, owner-testing gap 34) A dashboard shows the uptime and the
+/// kernel: `system.uptime` is a `duration` for `dur`, `system.kernel` a
+/// text.
+#[test]
+fn system_shows_uptime_and_kernel() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    text dur(system.uptime)\n    text system.kernel\n    \
+             text join(\" \", system.hostname, system.kernel)\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
+/// (M6, owner-testing gap 33) A dashboard shows how full the root
+/// filesystem is, and a page every mounted filesystem keyed by its path.
+#[test]
+fn disk_shows_root_and_every_filesystem() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    text pct(disk.usage)\n    meter disk.usage\n    \
+             text join(\" / \", disk.used, disk.total, disk.free)\n    \
+             for f in disk.all {\n      text f.path\n      text pct(f.usage)\n      \
+             text join(\" \", f.device, f.used, f.total, f.free)\n    }\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
+/// (M6, owner-testing gap 35) A notification centre's "remember" switch
+/// binds `notifications.remember` both ways (there is no `toggle`
+/// element: a `segmented` over `[true, false]`), and a button forgets.
+#[test]
+fn notification_history_can_be_forgotten() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    segmented { options: [true, false]; value: <-> notifications.remember }\n    \
+             text \"Remember\" { on click { notifications.remember = !notifications.remember } }\n    \
+             text \"Forget\" { on click { notifications.remember = false } }\n    \
+             for n in notifications.all {\n      text n.summary\n      \
+             if n.actions.len == 0 { text \"from before\" }\n    }\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the
@@ -3405,4 +3468,24 @@ fn icon_names_of_the_config_icons_folder_are_not_warned() {
     let w = strand_compiler::check::assets::check(&out.program, Some(&dir));
     assert_eq!(w.len(), 1, "{w:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (M6, owner-testing gap 31) A lock screen's Caps Lock warning and
+/// layout, and a bar's lock-key indicators, check clean against the
+/// `keyboard` builtin.
+#[test]
+fn keyboard_is_a_lock_screens_caps_lock_warning() {
+    assert_eq!(
+        codes(
+            "export state locked = false\nlock Gate {\n  state secret = \"\"\n  open: <-> locked\n  \
+             when keyboard.caps_lock { bg: $accent }\n  \
+             input { type: password; text: <-> secret; focus: true\n    \
+             on activate { auth.submit(secret); secret = \"\" }\n  }\n  \
+             if keyboard.caps_lock { text \"Caps Lock is on\" }\n  \
+             text keyboard.layout ?? \"\"\n}\n\
+             bar B {\n  row {\n    if keyboard.num_lock { text \"Num\" }\n    \
+             text keyboard.layout ?? \"?\"\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
 }

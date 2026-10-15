@@ -39,8 +39,8 @@ pub use manager::selection::{
     MAX_PASTE_BYTES, PASTE_READ_TIMEOUT, STRAND_SELECTION_MIME, TEXT_TYPES as SELECTION_TEXT_TYPES,
 };
 pub use manager::{
-    Config, GRAB_WINDOW, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle, Request, State,
-    Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,
+    Config, GRAB_WINDOW, KeyboardState, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle,
+    Request, State, Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,
 };
 pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
 pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};

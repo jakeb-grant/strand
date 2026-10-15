@@ -104,8 +104,15 @@ pub enum Cmd {
     TransformToplevel(&'static str, u32),
     /// Gives keyboard focus to the layer surface with this namespace:
     /// `wl_keyboard.enter` on every bound keyboard, after a leave for the
-    /// surface that had it.
+    /// surface that had it, then `wl_keyboard.modifiers` with the locked
+    /// mask ([`Cmd::LockedModifiers`]), as the protocol requires.
     KeyboardEnter(&'static str),
+    /// (gap 31) The locked modifiers mask becomes this (`Lock` is 1 << 1
+    /// for Caps Lock, `Mod2` 1 << 4 for Num Lock): `wl_keyboard.modifiers`
+    /// on the keyboards of the client with keyboard focus only, as a
+    /// compositor tells only the focused client; with no focus, none
+    /// hears it until the next enter.
+    LockedModifiers(u32),
     /// Takes keyboard focus away (`wl_keyboard.leave` for the surface
     /// that had it), as a lock or another exclusive surface would.
     KeyboardLeave,
@@ -232,6 +239,8 @@ struct Server {
     keyboards: Vec<wl_keyboard::WlKeyboard>,
     /// The surface with keyboard focus.
     keyboard_focus: Option<wl_surface::WlSurface>,
+    /// (gap 31) The locked modifiers mask ([`Cmd::LockedModifiers`]).
+    locked: u32,
     serial: u32,
     /// (M5) Bound pointers (`wl_seat.get_pointer`).
     pointers: Vec<wl_pointer::WlPointer>,
@@ -445,8 +454,22 @@ impl Server {
                     self.serial += 1;
                     for k in &self.keyboards {
                         k.enter(self.serial, &to, Vec::new());
+                        k.modifiers(self.serial, 0, 0, self.locked, 0);
                     }
                     self.keyboard_focus = Some(to);
+                }
+            }
+            Cmd::LockedModifiers(locked) => {
+                self.locked = locked;
+                if let Some(focus) = self.keyboard_focus.as_ref().filter(|f| f.is_alive()) {
+                    self.serial += 1;
+                    for k in self
+                        .keyboards
+                        .iter()
+                        .filter(|k| k.client() == focus.client())
+                    {
+                        k.modifiers(self.serial, 0, 0, locked, 0);
+                    }
                 }
             }
             Cmd::KeyboardLeave => self.keyboard_leave(),

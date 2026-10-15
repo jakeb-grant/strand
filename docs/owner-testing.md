@@ -985,6 +985,116 @@ findings only.
     `crates/strand-services/tests/clipboard.rs`,
     `crates/strand/src/services/mod.rs::tests::a_closed_popup_reading_clipboard_history_holds_it_from_the_top_level`,
     `crates/strand/tests/compositor_matrix.rs::the_clipboard_works_on_every_compositor`).
+31. **No Caps Lock warning on the lock screen, and no layout indicator.**
+    (fixed, 2026-10-15; found 2026-10-15 by surveying the owner's
+    quickshell config) The owner's lock screen warns while Caps Lock is
+    on and the bar shows the keyboard layout; Strand had no way to know
+    either. **Fixed; pending the owner's check on Hyprland**: a builtin
+    `keyboard` with `caps_lock`, `num_lock` and `layout` (`English
+    (US)`, null when unknown). While one of Strand's surfaces has the
+    keyboard (the lock screen, a launcher) they are that keyboard's own,
+    exact as keys are pressed; otherwise the lock keys come from the
+    kernel's keyboard lights, read every 250 ms only while a visible
+    reader shows them, and the layout from Hyprland, sway or niri.
+    Owner question, answered with the recommended reading (overrule it
+    if you disagree): polling the lights is acceptable, as there is no
+    event for them, and a focused surface needs no polling
+    (`crates/strand/tests/lock.rs::the_lock_warns_while_caps_lock_is_on`,
+    lock VM only,
+    `crates/strand/tests/demo.rs::a_focused_surface_shows_caps_lock`,
+    `crates/strand-surface/tests/sway.rs::a_focused_surface_reports_its_lock_keys_and_layout`,
+    `crates/strand-surface/tests/fake.rs::an_enter_reports_the_lock_keys_of_now_not_of_the_last_focus`,
+    `::a_grabbing_popup_loses_the_keyboard_after_an_earlier_release`,
+    `crates/strand-services/tests/keyboard.rs::the_lock_keys_follow_the_keyboard_lights_while_read`,
+    `::a_focused_surfaces_keyboard_state_wins`,
+    `::the_layout_comes_from_the_compositor`,
+    `crates/strand-services/tests/sway.rs::sways_layout_is_the_active_keyboards`,
+    `::sways_keyboard_layout_follows_its_input_events`,
+    `crates/strand-services/tests/hyprland.rs::hyprland_adapter_follows_replayed_traffic`,
+    `crates/strand-services/tests/niri.rs::niri_adapter_follows_replayed_traffic`,
+    `crates/strand-compiler/tests/checker.rs::keyboard_is_a_lock_screens_caps_lock_warning`).
+    decisions.md m6-service-gaps.
+32. **A player's buttons cannot tell what the player can do.** (fixed,
+    2026-10-15; found 2026-10-15 by surveying the owner's quickshell
+    config) The owner's media controls dim "previous", "next" and the
+    scrubber when the player cannot take them; `media` had no way to
+    say so. **Fixed; pending the owner's check on Hyprland**:
+    `media.can_next`, `media.can_previous` and `media.can_seek` follow
+    the active player's MPRIS `CanGoNext`, `CanGoPrevious` and
+    `CanSeek` (all false while `CanControl` is false or no player
+    runs; `can_seek` also needs a known length, the very test a
+    `position` write makes), from the `PropertiesChanged` the service
+    already follows, with no polling
+    (`crates/strand-services/tests/media.rs::media_says_what_the_active_player_can_do`,
+    `crates/strand-services/src/media.rs::tests::the_state_says_what_the_active_player_can_do`,
+    `::an_invalidated_capability_is_read_again`,
+    `crates/strand-compiler/tests/checker.rs::media_buttons_dim_by_what_the_player_can_do`).
+    decisions.md m6-service-gaps.
+33. **No disk usage.** (fixed, 2026-10-15; found 2026-10-15 by
+    surveying the owner's quickshell config) The owner's dashboard shows
+    how full the disks are; Strand had `cpu` and `memory` but nothing
+    for storage, short of a polled `df`. **Fixed; pending the owner's
+    check on Hyprland**: a builtin `disk` gives the root filesystem's
+    `usage`, `used`, `total` and `free` (as `df` counts them) and `all`,
+    every mounted filesystem on a local disk keyed by `path`, `/` first
+    (no snaps, network or FUSE filesystems, binds, container file
+    mounts or automounted filesystems, which sampling would keep from
+    expiring), measured with `statvfs` off the shared runtime every 10 s
+    and only while a reader is visible
+    (`crates/strand-services/tests/builtin.rs::disk_reads_the_root_filesystem_only_while_visible`,
+    `crates/strand-services/src/disk.rs::tests::local_disks_are_listed_root_first`,
+    `::automounted_filesystems_are_left_untouched`,
+    `::mountinfo_is_read_with_its_escapes`, `::usage_is_counted_as_df_does`,
+    `crates/strand-compiler/tests/checker.rs::disk_shows_root_and_every_filesystem`).
+    GPU statistics stay a config's own command (`service gpu from poll`),
+    as planned. decisions.md m6-service-gaps.
+34. **No uptime or kernel release.** (fixed, 2026-10-15; found
+    2026-10-15 by surveying the owner's quickshell config) The owner's
+    dashboard shows how long the machine has been up and the running
+    kernel; Strand had neither, short of a polled command.
+    **Fixed; pending the owner's check on Hyprland**: `system.kernel`
+    is the running kernel's release (`/proc/sys/kernel/osrelease`, read
+    once), and `system.uptime` the time since boot to the minute
+    (`/proc/uptime`, suspend included), a stream field read only while
+    a visible reader shows it and then once a minute, so nothing wakes
+    every second and nothing at all while nobody shows it
+    (`crates/strand-services/tests/builtin.rs::system_reads_the_kernel_and_counts_uptime_by_the_minute`,
+    `crates/strand-services/src/procfs.rs::tests::uptime_is_read_and_floored_to_minutes`,
+    `crates/strand-services/src/system.rs::tests::the_uptime_timer_waits_for_the_next_whole_minute`,
+    `::uptime_advances_as_each_minute_turns`,
+    `crates/strand-compiler/tests/checker.rs::system_shows_uptime_and_kernel`).
+    decisions.md m6-service-gaps.
+35. **The notification history is lost on every restart.** (fixed,
+    2026-10-15; found 2026-10-15 by surveying the owner's quickshell
+    config) The owner's notification centre keeps its history across
+    restarts; `notifications.all` lived in memory only, so a reload of
+    strand or a log-in emptied it. **Fixed; pending the owner's check on
+    Hyprland**: while `notifications.remember` is on (the default; one
+    write of false erases the history at once and stays off) `all` is
+    kept under `$XDG_STATE_HOME/strand/persist` (readable only by you;
+    the newest 1,000; a sender's `transient` notifications and this run's
+    pictures never written) and comes back after a restart, renumbered
+    below every new id, without buttons (their senders cannot hear an
+    answer), never as popups and without `received`; closing one tells
+    no sender, and `clear()` and `dismiss()` forget them on disk too;
+    a change is saved 1 s after the last one and at most 5 s after the
+    first unsaved one, so a notification updated without pause is not
+    left unsaved; a sender's picture given as a percent-encoded
+    `file://` URL comes back with it, and a history file that does not
+    read is replaced or erased, never kept aside
+    (`crates/strand-services/tests/notifications.rs::remembered_notifications_come_back_after_a_restart`,
+    `::forgetting_erases_the_history_and_stays_off`,
+    `::clear_forgets_every_remembered_notification`,
+    `crates/strand-services/src/notifications.rs::tests::the_history_round_trips_without_actions`,
+    `::the_history_keeps_the_newest_and_never_a_transient_one`,
+    `::only_a_senders_existing_picture_is_remembered`,
+    `::a_percent_encoded_file_url_picture_is_found_at_restore`,
+    `::a_history_that_does_not_read_is_refused`,
+    `::a_broken_history_is_erased_by_forgetting_not_kept_aside`,
+    `::the_transient_hint_is_read`,
+    `::a_history_changing_without_pause_is_saved_within_its_bound`,
+    `crates/strand-compiler/tests/checker.rs::notification_history_can_be_forgotten`).
+    decisions.md m6-service-gaps.
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

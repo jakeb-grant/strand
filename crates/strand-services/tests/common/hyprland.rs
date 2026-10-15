@@ -224,6 +224,9 @@ pub fn answer(scene: &str, req: &str) -> Vec<u8> {
         "j/workspacerules" => {
             std::fs::read(fixture("hyprland-0.56.2/workspacerules.json")).unwrap()
         }
+        // The keyboards (gap 31), in the shape a live 0.56.2 answers:
+        // the main keyboard's layout is German, the others' English (US).
+        "j/devices" => std::fs::read(fixture("hyprland-0.56.2/devices.json")).unwrap(),
         // Captured from a live 0.56.2 (`version.json` there).
         "j/version" => std::fs::read(fixture("hyprland-0.56.2-captured/version.json")).unwrap(),
         // `dispatchRequest` (src/debug/HyprCtl.cpp, 0.54.3 and a hyprlang

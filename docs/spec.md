@@ -308,7 +308,10 @@ filling the monitor, the keyboard always).
   service's `message` and `prompt` hold PAM's latest text and the hidden
   prompt it waits on, as PAM says them, so a module that needs no
   password (a fingerprint reader) can unlock, and `auth.submit` answers
-  the prompt PAM waits on, or the next one it asks.
+  the prompt PAM waits on, or the next one it asks. The lock has the
+  keyboard, so `keyboard.caps_lock`, `keyboard.num_lock` and
+  `keyboard.layout` are its keyboard's own, exact as keys are pressed:
+  `if keyboard.caps_lock { text "Caps Lock is on" }`.
 
 ### 5.2 Components and slot
 
@@ -1402,6 +1405,13 @@ new program with the running one.
   default hash matches is used; when the default changed, an unchanged
   stored value adopts the new default and a changed one is kept and
   reported once. A corrupt store gives the default and a warning.
+- Builtin services keep their own state beside `persist`, in the same
+  directory (readable only by you): `apps`' frecency, and, while
+  `notifications.remember` is on (the default), `notifications.all`,
+  so the notification history comes back after a restart (without
+  buttons, never as popups; a sender's `transient` notifications are
+  never kept). `notifications.remember = false` erases it at once and
+  stays off.
 
 ### 10.4 Escape hatches
 

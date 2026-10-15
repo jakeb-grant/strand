@@ -1,0 +1,65 @@
+{
+"mice": [
+    {
+        "address": "0x55d0c09a4120",
+        "name": "ven_2c2f:00-2c2f:0033-touchpad",
+        "defaultSpeed": 0.00000,
+        "scrollFactor": 1.00
+    }
+],
+"keyboards": [
+    {
+        "address": "0x55d0c09b55d0",
+        "name": "power-button",
+        "rules": "",
+        "model": "",
+        "layout": "us,de",
+        "variant": "",
+        "options": "",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": false,
+        "main": false
+    },    {
+        "address": "0x55d0c09c60a0",
+        "name": "at-translated-set-2-keyboard",
+        "rules": "",
+        "model": "",
+        "layout": "us,de",
+        "variant": "",
+        "options": "",
+        "active_layout_index": 1,
+        "active_keymap": "German",
+        "capsLock": false,
+        "numLock": false,
+        "main": true
+    },    {
+        "address": "0x55d0c09d71d0",
+        "name": "video-bus",
+        "rules": "",
+        "model": "",
+        "layout": "us,de",
+        "variant": "",
+        "options": "",
+        "active_layout_index": 0,
+        "active_keymap": "English (US)",
+        "capsLock": false,
+        "numLock": false,
+        "main": false
+    }
+],
+"tablets": [
+
+],
+"touch": [
+
+],
+"switches": [
+    {
+        "address": "0x55d0c08e5390",
+        "name": "Lid Switch"
+    }
+]
+}
+

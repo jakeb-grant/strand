@@ -1,8 +1,11 @@
 //! sway's IPC: swayipc-types (swayipc-async 3.0's types) over our own
 //! i3-ipc framing.
 //!
-//! One connection subscribes to `workspace`, `window` and `shutdown`
-//! events; another reads `get_workspaces` and `get_tree` and runs commands.
+//! One connection subscribes to `workspace`, `window`, `output`, `input`
+//! and `shutdown` events; another reads `get_workspaces` and `get_tree`
+//! and runs commands. The keyboard layout (gap 31) is the first
+//! keyboard's at connection (`get_inputs`), then follows each keyboard's
+//! `xkb_layout` and `xkb_keymap` input events.
 //! A window's title change is patched from the event; every other event
 //! re-reads the workspaces and the tree, once per burst. sway's `reload`
 //! (a `workspace` event with `change: reload`) is `wm.config_reloaded`.
@@ -32,7 +35,7 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use swayipc_types::{
-    CommandOutcome, CommandType, Event, Node, NodeType, WindowChange, WorkspaceChange,
+    CommandOutcome, CommandType, Event, InputChange, Node, NodeType, WindowChange, WorkspaceChange,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -173,6 +176,29 @@ pub(crate) struct State {
     pub assignments: Vec<(String, Vec<String>)>,
     /// The outputs (read with the state while there are assignments).
     pub outputs: Vec<SwayOutput>,
+    /// The active keyboard layout (gap 31): the first keyboard's at
+    /// connection (`get_inputs`), then the last keyboard whose layout or
+    /// keymap changed (`input` events).
+    pub keyboard_layout: Option<String>,
+}
+
+/// One of `get_inputs`' inputs: only a keyboard's layout is read.
+#[derive(Clone, Debug, Default, serde::Deserialize, PartialEq)]
+pub(crate) struct SwayInput {
+    #[serde(default, rename = "type")]
+    pub input_type: String,
+    #[serde(default)]
+    pub xkb_active_layout_name: Option<String>,
+}
+
+/// The layout `keyboard.layout` starts from: the first keyboard's that
+/// names one.
+pub(crate) fn first_layout(inputs: &[SwayInput]) -> Option<String> {
+    inputs
+        .iter()
+        .filter(|i| i.input_type == "keyboard")
+        .find_map(|i| i.xkb_active_layout_name.clone())
+        .filter(|l| !l.is_empty())
 }
 
 /// One of `get_outputs`' outputs: what an assignment names it by.
@@ -405,6 +431,7 @@ impl State {
                 windows,
                 focused_screen: None,
                 configured: self.configured(),
+                keyboard_layout: self.keyboard_layout.clone(),
             },
             toplevel_ids,
             // `fullscreen_mode`; sway has no maximize, so never maximized.
@@ -536,6 +563,15 @@ async fn read_outputs(conn: &mut Conn, state: &mut State) -> Result<(), SessionE
     Ok(())
 }
 
+/// The keyboards' layout (`get_inputs`), read when a session starts;
+/// `input` events follow each change. Extra: a reply it cannot read
+/// leaves the layout unknown.
+async fn read_inputs(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
+    let inputs: Option<Vec<SwayInput>> = extra(conn.request(CommandType::GetInputs, "").await)?;
+    state.keyboard_layout = inputs.as_deref().and_then(first_layout);
+    Ok(())
+}
+
 /// The config's workspace assignments (`get_config`), read when a
 /// session starts and on `reload`.
 async fn read_assignments(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
@@ -624,6 +660,23 @@ fn effect(state: &mut State, event: Event) -> Effect {
         },
         Event::Shutdown(_) => Effect::Shutdown,
         Event::Output(_) => Effect::Outputs,
+        // A keyboard's layout switched or its keymap changed (a reload,
+        // `input … xkb_layout`); a keyboard plugged in names one only
+        // while none is known.
+        Event::Input(e) if e.input.input_type == "keyboard" => {
+            let layout = e.input.xkb_active_layout_name.filter(|l| !l.is_empty());
+            let takes = match e.change {
+                InputChange::XkbLayout | InputChange::XkbKeymap => true,
+                InputChange::Added => state.keyboard_layout.is_none(),
+                _ => false,
+            };
+            if takes && layout.is_some() && layout != state.keyboard_layout {
+                state.keyboard_layout = layout;
+                Effect::Changed
+            } else {
+                Effect::None
+            }
+        }
         _ => Effect::None,
     }
 }
@@ -663,18 +716,19 @@ async fn session(
     let subscribed: Success = events
         .request(
             CommandType::Subscribe,
-            r#"["workspace","window","output","shutdown"]"#,
+            r#"["workspace","window","output","input","shutdown"]"#,
         )
         .await?;
     if !subscribed.success {
         return Err(SessionEnd::reply(
-            "the subscription to workspace, window, output and shutdown events (refused)",
+            "the subscription to workspace, window, output, input and shutdown events (refused)",
         ));
     }
     let mut conn = Conn::connect(socket).await?;
     let mut state = State::default();
     read_assignments(&mut conn, &mut state).await?;
     read_outputs(&mut conn, &mut state).await?;
+    read_inputs(&mut conn, &mut state).await?;
     query(&mut conn, &mut state).await?;
     // Actions this sway refused stay refused until it reports another
     // version.

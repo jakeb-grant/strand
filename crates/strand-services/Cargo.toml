@@ -99,6 +99,9 @@ strand-icons.workspace = true
 tempfile = "3.27.0"
 tokio = { version = "1.53", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "test-util"] }
 rustix = { version = "1.1.5", features = ["event", "process", "fs", "shm"] }
+# A virtual keyboard with named layouts on a real sway (tests/sway.rs,
+# keyboard.rs; gap 31).
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
 
 [lints]
 workspace = true

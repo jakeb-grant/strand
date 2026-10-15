@@ -3659,3 +3659,135 @@ fn an_attached_surface_keeps_its_margin_on_its_attached_side() {
         }
     }
 }
+
+/// (gap 31) A surface with keyboard focus reports its keyboard's lock
+/// keys and the keymap's name for the active layout, exactly as the
+/// keyboard's modifier state changes: a virtual keyboard whose keymap
+/// names two layouts locks Caps Lock (`Lock`) and Num Lock (`Mod2`),
+/// unlocks Caps Lock, switches to the second layout; the panel gone, the
+/// report is `None`. This is a `keyboard: exclusive` panel, not the
+/// session lock (whose code runs only in the lock VM).
+#[test]
+fn a_focused_surface_reports_its_lock_keys_and_layout() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd;
+    use strand_surface::KeyboardState;
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+        zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+        zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardManagerV1);
+    delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
+    delegate_noop!(Client: ignore wl_seat::WlSeat);
+
+    let Some(sway) = Sway::start("a_focused_surface_reports_its_lock_keys_and_layout") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+
+    // The keyboard first, so the seat has one when the panel maps.
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+    let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+    let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+    let keymap = "xkb_keymap {\n\
+        xkb_keycodes \"strand\" { minimum = 8; maximum = 255; <ESC> = 9; };\n\
+        xkb_types \"strand\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+        xkb_compatibility \"strand\" { };\n\
+        xkb_symbols \"strand\" {\n\
+          name[Group1] = \"Strand One\";\n\
+          name[Group2] = \"Strand Two\";\n\
+          key <ESC> { symbols[Group1] = [ Escape ], symbols[Group2] = [ Escape ] };\n\
+        };\n\
+        };\n";
+    let path = std::env::temp_dir().join(format!("strand-keymap-locks-{}", std::process::id()));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(keymap.as_bytes()).unwrap();
+    file.write_all(&[0]).unwrap();
+    file.flush().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    keyboard.keymap(1, file.as_fd(), keymap.len() as u32 + 1);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        mgr.state().host().keyboard_states.is_empty(),
+        "no surface has the keyboard yet"
+    );
+
+    const PANEL: NodeId = NodeId::new(7, 0);
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 200.0, 100.0);
+    spec.keyboard = strand_scene::Keyboard::Exclusive;
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    let input = mgr.take_input().unwrap();
+    let state = |caps_lock: bool, num_lock: bool, layout: &str| {
+        Some(KeyboardState {
+            caps_lock,
+            num_lock,
+            layout: Some(layout.to_string()),
+        })
+    };
+    let wait_for = |mgr: &mut strand_surface::SurfaceManager<TestHost>,
+                    want: Option<KeyboardState>,
+                    what: &str| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| s.host().keyboard_states.last() == Some(&want))
+            .unwrap();
+        assert!(ok, "{what}: {:?}", mgr.state().host().keyboard_states);
+    };
+    wait_for(&mut mgr, state(false, false, "Strand One"), "focused");
+    assert!(mgr.state().keyboard_focus().is_some());
+
+    const LOCK: u32 = 1 << 1;
+    const MOD2: u32 = 1 << 4;
+    keyboard.modifiers(0, 0, LOCK | MOD2, 0);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(&mut mgr, state(true, true, "Strand One"), "both locked");
+    keyboard.modifiers(0, 0, MOD2, 0);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(&mut mgr, state(false, true, "Strand One"), "caps unlocked");
+    keyboard.modifiers(0, 0, MOD2, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(
+        &mut mgr,
+        state(false, true, "Strand Two"),
+        "the second layout",
+    );
+    // Only changes are told.
+    let states = mgr.state().host().keyboard_states.clone();
+    assert!(
+        states.windows(2).all(|w| w[0] != w[1]),
+        "repeated: {states:?}"
+    );
+
+    // The panel goes: no surface has the keyboard.
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Removed);
+    wait_for(&mut mgr, None, "unfocused");
+    drop(input);
+    drop(keyboard);
+}

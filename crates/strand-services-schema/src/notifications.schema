@@ -42,7 +42,8 @@ record Notification key id {
   persistent: bool
   /// When it arrived.
   time: Date
-  /// The buttons it offers.
+  /// The buttons it offers; none on one remembered from an earlier run
+  /// (`notifications.remember`), whose sender cannot hear them.
   actions: [NotificationAction]
   /// Ends its popup, as a timeout does; it stays in `all`, still open
   /// (its actions still reach the sender) until dismissed.
@@ -60,7 +61,8 @@ service notifications {
   /// dismissed.
   popups: [Notification]
   /// Every notification kept, popups included: the newest 1,000 (older
-  /// ones close as expired).
+  /// ones close as expired), remembered across restarts while `remember`
+  /// is on.
   all: [Notification]
   /// How many notifications are kept.
   count: int
@@ -68,6 +70,14 @@ service notifications {
   /// popups (they are kept in `all`, and `received` still fires).
   /// Writable.
   dnd: bool rw
+  /// Notifications kept in `all` are remembered across restarts (under
+  /// `$XDG_STATE_HOME/strand`, readable only by you); on by default.
+  /// Those from an earlier run come back in `all` (never as popups, and
+  /// without `received`) with no buttons, and `activate()` only dismisses
+  /// them, since their senders cannot hear it. A sender's `transient`
+  /// notifications are never remembered. Writable: false forgets every
+  /// remembered notification at once, and stays false across restarts.
+  remember: bool rw
   /// Dismisses every notification.
   action clear()
   /// A notification arrived. Events are lossless queues:

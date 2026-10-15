@@ -1,6 +1,8 @@
-//! Reading `/proc` and `/sys` for the `cpu` and `memory` services.
+//! Reading `/proc` and `/sys` for the `cpu`, `memory` and `system`
+//! services.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// One line of `/proc/stat`: busy and total jiffies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,6 +70,18 @@ pub(crate) fn parse_meminfo(text: &str) -> Option<(f64, f64)> {
         }
     }
     Some((total?, available?))
+}
+
+/// The time since boot of `/proc/uptime` (its first number, seconds
+/// with a fraction; CLOCK_BOOTTIME, so time suspended counts).
+pub(crate) fn parse_uptime(text: &str) -> Option<Duration> {
+    let secs: f64 = text.split_ascii_whitespace().next()?.parse().ok()?;
+    Duration::try_from_secs_f64(secs).ok()
+}
+
+/// `d` floored to whole minutes.
+pub(crate) fn whole_minutes(d: Duration) -> Duration {
+    Duration::from_secs(d.as_secs() / 60 * 60)
 }
 
 /// The hwmon chips that report a processor temperature as `temp1`.
@@ -155,6 +169,22 @@ mod tests {
         assert_eq!(usage(all, all), 0.0);
         // A counter going backwards (a CPU hot-unplugged) is not negative.
         assert_eq!(usage(later, all), 0.0);
+    }
+
+    #[test]
+    fn uptime_is_read_and_floored_to_minutes() {
+        let up = parse_uptime("12345.67 999.0\n").unwrap();
+        assert_eq!(up, Duration::from_secs_f64(12345.67));
+        assert_eq!(whole_minutes(up), Duration::from_secs(12300));
+        assert_eq!(whole_minutes(Duration::from_secs(59)), Duration::ZERO);
+        assert_eq!(
+            whole_minutes(Duration::from_secs(120)),
+            Duration::from_secs(120)
+        );
+        assert_eq!(parse_uptime(""), None);
+        assert_eq!(parse_uptime("soon 1.0"), None);
+        assert_eq!(parse_uptime("-5.0 1.0"), None);
+        assert_eq!(parse_uptime("inf 1.0"), None);
     }
 
     #[test]

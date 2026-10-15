@@ -231,6 +231,16 @@ async fn niri_adapter_follows_replayed_traffic() {
         [1, 2, 5, 3, 4]
     );
 
+    // The keyboard layout (gap 31): the stream's start names the
+    // layouts and the active one, a switch moves it.
+    c.until("layouts", |m| {
+        m.keyboard_layout.as_deref() == Some("English (US)")
+    })
+    .await;
+    fake.send(&bursts["layout"]);
+    c.until("layout", |m| m.keyboard_layout.as_deref() == Some("German"))
+        .await;
+
     fake.send(&bursts["unknown"]);
     assert_eq!(c.quiet_for(Duration::from_millis(150)).await, 0);
 

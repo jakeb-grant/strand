@@ -1,0 +1,15 @@
+/// The keyboard's lock keys and layout. While a Strand surface has
+/// keyboard focus (a lock screen, a launcher) they are that keyboard's
+/// own, exact as keys are pressed; otherwise the lock keys come from the
+/// kernel's keyboard lights, read while a visible reader shows them, and
+/// the layout from the compositor (Hyprland, sway, niri).
+service keyboard {
+  /// Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`.
+  /// False when nothing reports it.
+  caps_lock: bool
+  /// Num Lock is on.
+  num_lock: bool
+  /// The active layout's name as the keymap names it (`English (US)`),
+  /// null when unknown: `text keyboard.layout ?? ""`.
+  layout: text?
+}

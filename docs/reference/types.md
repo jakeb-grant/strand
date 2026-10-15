@@ -171,6 +171,19 @@ which; the other fields are empty. A drag inside the shell delivers the
 | `app` | `App?` | The dropped app. |
 | `text` | `text` | The dropped text. |
 
+### `Filesystem`
+
+A mounted filesystem, keyed by `path`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `path` | `text` | Where it is mounted: `/`, `/home`. |
+| `device` | `text` | The device it is on: `/dev/nvme0n1p2` (the mount's source). |
+| `usage` | `float` | The fraction in use, 0 to 1, as `df` counts it (used over used plus free). |
+| `used` | `float` | Bytes in use. |
+| `total` | `float` | Bytes in all. |
+| `free` | `float` | Bytes free to a user (space reserved for root left out). |
+
 ### `Hit`
 
 A launcher search result: the app, its score and the matched ranges.
@@ -228,7 +241,7 @@ A desktop notification, keyed by `id`.
 | `timeout` | `duration?` | How long the sender asked it to show; null leaves it to the shell: `after n.timeout ?? 6s { n.expire() }`. |
 | `persistent` | `bool` | The sender asked it never to expire (an `expire_timeout` of 0): a shell keeps its popup with `after n.timeout ?? 6s while !n.persistent { n.expire() }`. |
 | `time` | `Date` | When it arrived. |
-| `actions` | `[NotificationAction]` | The buttons it offers. |
+| `actions` | `[NotificationAction]` | The buttons it offers; none on one remembered from an earlier run (`notifications.remember`), whose sender cannot hear them. |
 
 | Method | |
 | --- | --- |

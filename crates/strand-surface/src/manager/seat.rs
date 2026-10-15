@@ -103,6 +103,36 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.keyboard_focus
     }
 
+    /// (gap 31) Tells the host the focused surface's keyboard state when
+    /// it changed: the lock keys and layout of the keyboard that entered
+    /// it, or `None` once none of the surfaces has the keyboard (or before
+    /// its keyboard reported modifiers).
+    pub(super) fn report_keyboard(&mut self) {
+        let focused = self.keyboard_focus.or(self.grab_focus).is_some();
+        let state = self
+            .focus_keyboard
+            .as_ref()
+            .filter(|_| focused)
+            .and_then(|k| {
+                let (caps_lock, num_lock, layout) = *self.lock_keys.get(k)?;
+                let layout = self
+                    .layout_names
+                    .get(k)
+                    .and_then(|names| names.get(layout as usize))
+                    .filter(|n| !n.is_empty())
+                    .cloned();
+                Some(KeyboardState {
+                    caps_lock,
+                    num_lock,
+                    layout,
+                })
+            });
+        if state != self.keyboard_reported {
+            self.keyboard_reported.clone_from(&state);
+            self.host.keyboard_state(state.as_ref());
+        }
+    }
+
     /// True while layer surface `id` is `exclusive` because a grabbing
     /// popup of its is open (see `sync_popup_keyboard`).
     pub fn holds_keyboard_for_popup(&self, id: SurfaceId) -> bool {
@@ -173,24 +203,38 @@ pub(super) fn key_name(sym: Keysym) -> String {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(super) struct LatinKeys(HashMap<u32, Keysym>);
 
+/// A keymap in xkb's text format, compiled once for both what is read
+/// from it ([`LatinKeys::of`], [`layout_names_of`]); `None` when it holds
+/// a NUL or does not compile. A `wl_keyboard` keymap is complete, so no
+/// include path or environment is consulted.
+pub(super) fn compile_keymap(text: &str) -> Option<xkbcommon::xkb::Keymap> {
+    use xkbcommon::xkb;
+    if text.contains('\0') {
+        return None;
+    }
+    let context =
+        xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES | xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
+    xkb::Keymap::new_from_string(
+        &context,
+        text.to_string(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+}
+
 impl LatinKeys {
     /// From a keymap in xkb's text format (`None`: it does not compile).
     /// A keymap with one layout has none: its keys are what they are.
+    #[cfg(test)]
     pub(super) fn from_text(text: &str) -> Option<LatinKeys> {
-        use xkbcommon::xkb;
-        if text.contains('\0') {
-            return None;
-        }
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_string(
-            &context,
-            text.to_string(),
-            xkb::KEYMAP_FORMAT_TEXT_V1,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )?;
+        compile_keymap(text).map(|keymap| LatinKeys::of(&keymap))
+    }
+
+    /// From a compiled keymap.
+    pub(super) fn of(keymap: &xkbcommon::xkb::Keymap) -> LatinKeys {
         let mut keys = HashMap::new();
         if keymap.num_layouts() < 2 {
-            return Some(LatinKeys(keys));
+            return LatinKeys(keys);
         }
         keymap.key_for_each(|keymap, code| {
             let latin = (0..keymap.num_layouts_for_key(code)).find_map(|layout| {
@@ -204,7 +248,7 @@ impl LatinKeys {
                 keys.insert(raw, sym);
             }
         });
-        Some(LatinKeys(keys))
+        LatinKeys(keys)
     }
 
     /// The Latin keysym a shortcut matches for key `raw` typed as `sym`:
@@ -215,6 +259,22 @@ impl LatinKeys {
         }
         self.0.get(&raw).copied()
     }
+}
+
+/// (gap 31) The layout names of a keymap's text, by layout index (`""`
+/// for one it does not name). A keymap that does not compile names none.
+#[cfg(test)]
+pub(super) fn layout_names(text: &str) -> Vec<String> {
+    compile_keymap(text)
+        .map(|keymap| layout_names_of(&keymap))
+        .unwrap_or_default()
+}
+
+/// (gap 31) The layout names of a compiled keymap, by layout index.
+pub(super) fn layout_names_of(keymap: &xkbcommon::xkb::Keymap) -> Vec<String> {
+    (0..keymap.num_layouts())
+        .map(|i| keymap.layout_get_name(i).to_string())
+        .collect()
 }
 
 /// The time between repeats at `rate` keys a second, at least 1 ms: the
@@ -300,6 +360,11 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                 self.repeat_info.remove(k);
                 self.raw_modifiers.remove(k);
                 self.latin_keys.remove(k);
+                self.layout_names.remove(k);
+                self.lock_keys.remove(k);
+                if self.focus_keyboard.as_ref() == Some(k) {
+                    self.focus_keyboard = None;
+                }
             }
             self.keyboards.retain(|(s, k)| {
                 let keep = *s != seat;
@@ -308,6 +373,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                 }
                 keep
             });
+            self.report_keyboard();
         }
     }
 
@@ -465,6 +531,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         {
             self.send_input(InputEvent::KeyboardLeave { surface: p });
         }
+        // (gap 31) No Strand surface has the keys now: the leave's own
+        // report still counted the grabbing popup as focused.
+        self.report_keyboard();
     }
 }
 
@@ -473,13 +542,14 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         surface: &wl_surface::WlSurface,
         _: u32,
         _: &[u32],
         _: &[Keysym],
     ) {
         if let Some(id) = self.keyboard_target(surface) {
+            self.focus_keyboard = Some(keyboard.id());
             log::trace!("keyboard enter {id:?} (grab focus {:?})", self.grab_focus);
             self.releasing.remove(&id);
             if self.held_leave == Some(id) {
@@ -487,6 +557,14 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
                 // the keys.
                 self.held_leave = None;
             }
+            // (gap 31) The lock keys this keyboard reported are from the
+            // last time Strand had it (wl_keyboard.modifiers goes only to
+            // the focused client): stale, so they are dropped, and the
+            // modifiers the compositor must send after an enter report
+            // its state. Until then what was reported stands: none, or
+            // this same keyboard's still current state when the enter
+            // ends a leave held or sent in the same dispatch.
+            self.lock_keys.remove(&keyboard.id());
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -531,6 +609,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if let Some(id) = id {
             self.send_input(InputEvent::KeyboardLeave { surface: id });
         }
+        self.report_keyboard();
     }
 
     fn press_key(
@@ -595,13 +674,20 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         keyboard: &wl_keyboard::WlKeyboard,
         keymap: Keymap<'_>,
     ) {
-        let latin = LatinKeys::from_text(&keymap.as_string()).unwrap_or_else(|| {
-            log::warn!(
-                "cannot read the keymap's layouts: shortcuts match the active layout's keys"
-            );
-            LatinKeys::default()
-        });
+        // SCTK hands the keymap only for the call: it is compiled again
+        // from its text, once, for the Latin keys and the layout names.
+        let (latin, names) = match compile_keymap(&keymap.as_string()) {
+            Some(keymap) => (LatinKeys::of(&keymap), layout_names_of(&keymap)),
+            None => {
+                log::warn!(
+                    "cannot read the keymap's layouts: shortcuts match the active layout's keys"
+                );
+                (LatinKeys::default(), Vec::new())
+            }
+        };
         self.latin_keys.insert(keyboard.id(), latin);
+        self.layout_names.insert(keyboard.id(), names);
+        self.report_keyboard();
     }
 
     fn update_repeat_info(
@@ -639,6 +725,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             shift: m.shift,
             logo: m.logo,
         };
+        self.lock_keys.insert(id, (m.caps_lock, m.num_lock, layout));
+        self.report_keyboard();
     }
 }
 
@@ -729,6 +817,26 @@ mod tests {
         // A keymap that does not compile, or holds a NUL, is none.
         assert_eq!(LatinKeys::from_text("not a keymap"), None);
         assert_eq!(LatinKeys::from_text("xkb_keymap {\0"), None);
+    }
+
+    /// (gap 31) A keymap's layouts by index, named or not; text that is
+    /// no keymap names none.
+    #[test]
+    fn a_keymaps_layouts_are_named_by_index() {
+        let keymap = "xkb_keymap {\n\
+            xkb_keycodes \"t\" { minimum = 8; maximum = 255; <ESC> = 9; };\n\
+            xkb_types \"t\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+            xkb_compatibility \"t\" { };\n\
+            xkb_symbols \"t\" { name[Group1] = \"English (US)\"; name[Group2] = \"German\";\n\
+              key <ESC> { symbols[Group1] = [ Escape ], symbols[Group2] = [ Escape ] }; };\n\
+            };\n";
+        assert_eq!(layout_names(keymap), ["English (US)", "German"]);
+        let unnamed = keymap
+            .replace("name[Group1] = \"English (US)\"; ", "")
+            .replace("name[Group2] = \"German\";", "");
+        assert_eq!(layout_names(&unnamed), ["", ""]);
+        assert!(layout_names("not a keymap").is_empty());
+        assert!(layout_names("xkb_keymap {\0").is_empty());
     }
 
     #[test]

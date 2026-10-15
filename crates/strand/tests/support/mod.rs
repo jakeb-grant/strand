@@ -171,6 +171,11 @@ pub mod keyboard {
     delegate_noop!(Client: ignore ZwpVirtualKeyboardV1);
     delegate_noop!(Client: ignore wl_seat::WlSeat);
 
+    /// The `Lock` modifier's bit: Caps Lock locked.
+    pub const CAPS_LOCK: u32 = 1 << 1;
+    /// `Mod2`'s bit: Num Lock locked.
+    pub const NUM_LOCK: u32 = 1 << 4;
+
     /// Letter `c`'s evdev code (QWERTY).
     fn code(c: char) -> Option<u32> {
         let row = |s: &str, first: u32| s.find(c).map(|i| first + i as u32);
@@ -291,6 +296,13 @@ pub mod keyboard {
             self.queue.roundtrip(&mut Client).unwrap();
             self.press(name);
             self.keyboard.modifiers(0, 0, 0, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
+        /// Sets the locked modifiers (gap 31): `CAPS_LOCK` (`Lock`),
+        /// `NUM_LOCK` (`Mod2`), or none.
+        pub fn lock(&mut self, locked: u32) {
+            self.keyboard.modifiers(0, 0, locked, 0);
             self.queue.roundtrip(&mut Client).unwrap();
         }
 

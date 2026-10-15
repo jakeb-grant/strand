@@ -300,6 +300,7 @@ impl FakeSway {
         let tree = std::fs::read_to_string(fixture("sway-1.9/tree.json")).unwrap();
         let tree = with_raw(&tree, "TITLE_HERE", title);
         let workspaces = std::fs::read(fixture("sway-1.9/workspaces.json")).unwrap();
+        let inputs = std::fs::read(fixture("sway-1.9/inputs.json")).unwrap();
         let overrides = Overrides::default();
         let replies = overrides.clone();
         tokio::spawn(async move {
@@ -308,6 +309,7 @@ impl FakeSway {
                 let (mut r, w) = conn.into_split();
                 let w = std::sync::Arc::new(tokio::sync::Mutex::new(w));
                 let (tree, workspaces, rx) = (tree.clone(), workspaces.clone(), rx.clone());
+                let inputs = inputs.clone();
                 let replies = replies.clone();
                 tokio::spawn(async move {
                     loop {
@@ -325,6 +327,8 @@ impl FakeSway {
                             0 => br#"[{"success": true}]"#.to_vec(),
                             1 => workspaces.clone(),
                             4 => tree.clone(),
+                            // get_inputs (gap 31)
+                            100 => inputs.clone(),
                             // get_version
                             7 => br#"{"major": 1, "minor": 9, "patch": 0, "human_readable": "1.9", "loaded_config_file_name": "/etc/sway/config"}"#.to_vec(),
                             2 => {
@@ -942,5 +946,107 @@ async fn sway_config_assignments_are_configured_workspaces() {
     let (r, done) = WmRequest::new(WmAction::FocusWorkspaceNumber(0));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Err(WmError::UnknownWorkspace(0)));
+    service.abort();
+}
+
+/// The keyboard layout (gap 31): the first keyboard's at connection
+/// (`get_inputs`), then the last keyboard whose layout switched
+/// (`input` `xkb_layout`) or keymap changed (`xkb_keymap`); a pointer's
+/// event, or a keyboard plugged in while one is known, changes nothing,
+/// and a `get_inputs` it cannot read leaves it unknown without
+/// degrading.
+#[tokio::test]
+async fn sways_keyboard_layout_follows_its_input_events() {
+    let fake = FakeSway::start(b"foot");
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    assert_eq!(c.mirror.keyboard_layout.as_deref(), Some("English (US)"));
+
+    let inputs: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture("sway-1.9/inputs.json")).unwrap()).unwrap();
+    let event = |change: &str, input: &serde_json::Value| {
+        serde_json::json!({ "change": change, "input": input })
+            .to_string()
+            .into_bytes()
+    };
+    let mut keyboard = inputs[2].clone();
+    keyboard["xkb_active_layout_index"] = 1.into();
+    keyboard["xkb_active_layout_name"] = "German".into();
+    fake.send_event(0x15, &event("xkb_layout", &keyboard));
+    c.until("switched", |m| {
+        m.keyboard_layout.as_deref() == Some("German")
+    })
+    .await;
+
+    let mut touchpad = inputs[1].clone();
+    touchpad["libinput"]["tap"] = "disabled".into();
+    fake.send_event(0x15, &event("libinput_config", &touchpad));
+    fake.send_event(0x15, &event("added", &inputs[0]));
+    assert_eq!(c.quiet_for(Duration::from_millis(200)).await, 0);
+
+    // A new keymap (`input * xkb_layout fr`, a reload).
+    keyboard["xkb_layout_names"] = serde_json::json!(["French"]);
+    keyboard["xkb_active_layout_index"] = 0.into();
+    keyboard["xkb_active_layout_name"] = "French".into();
+    fake.send_event(0x15, &event("xkb_keymap", &keyboard));
+    c.until("new keymap", |m| {
+        m.keyboard_layout.as_deref() == Some("French")
+    })
+    .await;
+    service.abort();
+
+    // A sway whose `get_inputs` it cannot read: no layout, still up.
+    fake.set_reply(100, Some(br#"{"error": "unknown"}"#));
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let service = tokio::spawn(wm::run(fake_sway_service(&fake), sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    assert_eq!(c.mirror.keyboard_layout, None);
+    assert_eq!(degraded(&c.mirror), None);
+    service.abort();
+}
+
+/// A real sway's keyboard layout (gap 31): a virtual keyboard whose
+/// keymap names its two layouts gives the first at connection
+/// (`get_inputs`), and switching its group (the modifier state's layout)
+/// gives the second (`input` `xkb_layout`).
+#[tokio::test]
+async fn sways_layout_is_the_active_keyboards() {
+    let Some(sway) = Sway::start("sways_layout_is_the_active_keyboards") else {
+        return;
+    };
+    let mut keyboard = common::keyboard::Keyboard::new(&sway.socket(), &sway.dir);
+    let (sink, mut c) = Collector::new();
+    let (_req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(Backend::Sway {
+            socket: sway.ipc.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    assert_eq!(
+        c.mirror.keyboard_layout.as_deref(),
+        Some("Strand One"),
+        "{}",
+        sway.msg(&["-t", "get_inputs", "-r"])
+    );
+    let _keyboard = tokio::task::spawn_blocking(move || {
+        keyboard.modifiers(0, 1);
+        keyboard
+    })
+    .await
+    .unwrap();
+    c.until("switched", |m| {
+        m.keyboard_layout.as_deref() == Some("Strand Two")
+    })
+    .await;
     service.abort();
 }

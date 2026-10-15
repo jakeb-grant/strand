@@ -93,6 +93,11 @@ pub struct WmState {
     /// its number; sway: a negative id of the adapter's own). A bar's
     /// persistent slots (`workspaces.slots(screen)`).
     pub configured: Vec<Workspace>,
+    /// The active keyboard layout's name as the compositor reports it
+    /// (`English (US)`): the last keyboard switched, from Hyprland's main
+    /// keyboard and sway's first at connection, niri's own. `None` when
+    /// the compositor does not say (`keyboard.layout`, gap 31).
+    pub keyboard_layout: Option<String>,
 }
 
 impl WmState {
@@ -241,6 +246,8 @@ pub enum WmChange {
     },
     /// The sources changed (an adapter connected or lost its socket).
     Sources(Sources),
+    /// The active keyboard layout's name (`keyboard.layout`).
+    KeyboardLayout(Option<String>),
 }
 
 /// Turns successive [`WmState`]s into the smallest [`WmChange`]s.
@@ -295,6 +302,7 @@ impl Publisher {
                 out.push(WmChange::Configured(vec![VecDiff::Reset {
                     items: configured_items(&next),
                 }]));
+                out.push(WmChange::KeyboardLayout(next.keyboard_layout.clone()));
             }
             Some(last) => {
                 if last.name != next.name {
@@ -328,6 +336,9 @@ impl Publisher {
                     if !d.is_empty() {
                         out.push(WmChange::Configured(d));
                     }
+                }
+                if last.keyboard_layout != next.keyboard_layout {
+                    out.push(WmChange::KeyboardLayout(next.keyboard_layout.clone()));
                 }
             }
         }
@@ -373,6 +384,8 @@ pub struct Mirror {
     pub reloads: Vec<Option<bool>>,
     /// The last sources seen.
     pub sources: Sources,
+    /// The active keyboard layout.
+    pub keyboard_layout: Option<String>,
 }
 
 impl Mirror {
@@ -401,6 +414,7 @@ impl Mirror {
             }
             WmChange::ConfigReloaded { failed } => self.reloads.push(*failed),
             WmChange::Sources(s) => self.sources = s.clone(),
+            WmChange::KeyboardLayout(l) => self.keyboard_layout = l.clone(),
         }
         Ok(())
     }

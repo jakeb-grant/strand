@@ -29,9 +29,23 @@
 //!   large pictures cannot queue unbounded memory.
 //! - Notifications belong to the run that received them: when the server
 //!   stops (nobody reads `notifications` for 5 s) each one still open is
-//!   closed (`NotificationClosed`, reason 3) before the name goes, and a
-//!   new run starts with none, so ids are never reused for a notification
-//!   still shown.
+//!   closed (`NotificationClosed`, reason 3) before the name goes, so ids
+//!   are never reused for a notification still shown.
+//! - **History across restarts** (gap 35, decisions.md m6-service-gaps):
+//!   while `remember` is on (the default), `all` is kept in the persist
+//!   store (`services:notifications.all`, JSON, the newest [`KEPT`], a
+//!   sender's `transient` ones left out, and only a sender's own
+//!   `image-path`, never our runtime-dir pictures), saved 1 s after the
+//!   last change off the runtime (the latest save wins), and once more as
+//!   the run ends. A new run restores it before it asks for the name: the
+//!   restored notifications are renumbered 1..=n below every new id, come
+//!   back without actions (their senders cannot hear an answer) and
+//!   without pictures that are gone, never as popups and without
+//!   `received`; closing one sends no D-Bus signal, and `n.activate()`
+//!   only dismisses it. Writing `remember = false` erases the file at once
+//!   and keeps the choice (`services:notifications.remember`). Without a
+//!   state directory ([`Config::state`] `None`) nothing is kept and a new
+//!   run starts with none.
 //! - **Another server owns the name** (dunst, mako, a desktop's): the
 //!   name is asked for without queueing, and the run raises a notice
 //!   naming the owner's process (`GetConnectionUnixProcessID`,
@@ -44,8 +58,9 @@
 //!   the notice.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{Datelike, Timelike};
@@ -73,6 +88,54 @@ pub const KEPT: usize = 1000;
 /// How many `image-data` pictures may wait to be written: beyond it a
 /// new notification's picture is left out.
 pub const IMAGES_QUEUED: usize = 8;
+
+/// The persist store path of the remembered notifications.
+pub const HISTORY_PATH: &str = "services:notifications.all";
+/// The persist store path of `remember` (`0` or `1`).
+pub const REMEMBER_PATH: &str = "services:notifications.remember";
+/// How long after the last change to `all` it is saved.
+pub const SAVE_AFTER: Duration = Duration::from_millis(1000);
+/// The longest a change to `all` waits to be saved: a sender replacing a
+/// notification more often than [`SAVE_AFTER`] (a progress bar) does not
+/// keep postponing the save, which a crash would then lose.
+pub const SAVE_WITHIN: Duration = Duration::from_secs(5);
+/// The remembered notifications' format.
+const HISTORY_VERSION: u32 = 1;
+
+/// Where a `notifications` service keeps its history.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Config {
+    /// The persist store's directory (`None`: nothing is remembered).
+    pub state: Option<PathBuf>,
+}
+
+impl Config {
+    /// The persist store's directory from the environment
+    /// (`$XDG_STATE_HOME/strand/persist`).
+    pub fn from_env() -> Config {
+        Config {
+            state: strand_core::PersistStore::from_env()
+                .ok()
+                .map(|s| s.dir().to_path_buf()),
+        }
+    }
+}
+
+static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
+
+/// Use `config` instead of [`Config::from_env`] for services started
+/// from now on (`None`: the environment again).
+pub fn set_config(config: Option<Config>) {
+    *CONFIG.lock().unwrap_or_else(PoisonError::into_inner) = config;
+}
+
+fn config() -> Config {
+    CONFIG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(Config::from_env)
+}
 
 /// What `GetServerInformation` answers as the spec version: 1.2, with
 /// its `ActivationToken` signal (M5; decisions.md m5-platform).
@@ -191,7 +254,8 @@ pub struct Notifications {
     #[store(keyed)]
     pub popups: Vec<Notification>,
     /// Every notification kept, popups included: the newest 1,000 (older
-    /// ones close as expired).
+    /// ones close as expired), remembered across restarts while `remember`
+    /// is on.
     #[store(keyed)]
     pub all: Vec<Notification>,
     /// How many notifications are kept.
@@ -201,6 +265,15 @@ pub struct Notifications {
     /// Writable.
     #[store(rw)]
     pub dnd: bool,
+    /// Notifications kept in `all` are remembered across restarts (under
+    /// `$XDG_STATE_HOME/strand`, readable only by you); on by default.
+    /// Those from an earlier run come back in `all` (never as popups, and
+    /// without `received`) with no buttons, and `activate()` only dismisses
+    /// them, since their senders cannot hear it. A sender's `transient`
+    /// notifications are never remembered. Writable: false forgets every
+    /// remembered notification at once, and stays false across restarts.
+    #[store(rw)]
+    pub remember: bool,
     /// A notification arrived. Events are lossless queues:
     /// `on notifications.received(n) { … }`.
     pub received: Event<Notification>,
@@ -240,6 +313,8 @@ struct Arrival {
     resident: bool,
     /// It offers a `default` action (`n.activate()`).
     default: bool,
+    /// `transient`: never remembered across restarts.
+    transient: bool,
 }
 
 /// From the bus to the service body.
@@ -378,6 +453,12 @@ impl Server {
             .get("resident")
             .and_then(|v| v.downcast_ref::<bool>().ok())
             .unwrap_or(false);
+        // A boolean by the spec; some senders send an integer.
+        let transient = hints
+            .get("transient")
+            .and_then(|v| v.downcast_ref::<bool>().ok())
+            .or_else(|| crate::dbus::number(&hints, "transient").map(|n| n != 0.0))
+            .unwrap_or(false);
         Some(Arrival {
             n: Notification {
                 id: i64::from(id),
@@ -403,6 +484,7 @@ impl Server {
             replaces,
             resident,
             default,
+            transient,
         })
     }
 }
@@ -606,6 +688,11 @@ struct Kept {
     default: HashSet<i64>,
     /// The `image-data` files of the notifications kept.
     images: HashMap<i64, crate::pixmap::Pinned>,
+    /// The `transient` ones: never remembered.
+    transient: HashSet<i64>,
+    /// Those restored from an earlier run: their senders cannot hear of
+    /// them (no D-Bus signal when they close).
+    restored: HashSet<i64>,
 }
 
 impl Notifications {
@@ -628,17 +715,28 @@ impl Notifications {
             )
             .await?;
         // The notifications of an earlier run were closed with it: this
-        // server starts with none (its ids start again at 1).
-        if !cx.state().all.is_empty() || !cx.state().popups.is_empty() {
-            let cleared = cx.update(|s| {
-                s.all.clear();
-                s.popups.clear();
-                s.count = 0;
-            });
-            if !cleared {
-                return Ok(());
-            }
+        // server starts with those it remembers (restored, numbered
+        // 1..=n), else none, its new ids above them. Restored before the
+        // name is asked for, so no id is handed out before they are
+        // numbered.
+        let mut history = History::new(config().state);
+        let mut kept = Kept::default();
+        let (remember, restored) = history.load().await;
+        if let Ok(mut i) = ids.lock() {
+            i.next = u32::try_from(restored.len()).unwrap_or(u32::MAX);
         }
+        kept.restored = restored.iter().map(|n| n.id).collect();
+        let started = cx.update(|s| {
+            s.count = restored.len() as i64;
+            s.all = restored;
+            s.popups.clear();
+            s.remember = remember;
+        });
+        if !started {
+            return Ok(());
+        }
+        // What is not saved yet is saved as the run ends, however it ends.
+        let _saving = SaveOnStop(history.shared.clone());
         // Whoever owns the name, followed before it is asked for: the
         // other server leaving is heard, not polled for.
         let rule = zbus::MatchRule::builder()
@@ -672,7 +770,7 @@ impl Notifications {
                     noticed = true;
                     // No second server, and no polling: the name is
                     // asked for again once its owner lets it go.
-                    if !name_freed(&mut cx, &mut owners).await? {
+                    if !name_freed(&mut cx, &mut owners, &mut history, &kept).await? {
                         return Ok(());
                     }
                 }
@@ -694,16 +792,22 @@ impl Notifications {
             conn: conn.clone(),
             ids: ids.clone(),
         };
-        let mut kept = Kept::default();
         loop {
+            // `all` changed: saved a moment after the last change.
+            let mut touched = false;
             tokio::select! {
+                () = &mut history.due, if history.armed => {
+                    history.armed = false;
+                    history.flush();
+                }
                 m = rx.recv() => {
+                    touched = true;
                     let Some(m) = m else {
                         return Err(ServiceError("the notification server stopped".into()));
                     };
                     match m {
                         FromBus::Notify(a) => {
-                            let Arrival { mut n, image, mut replaces, resident, default } = *a;
+                            let Arrival { mut n, image, mut replaces, resident, default, transient } = *a;
                             // It replaced one the body closed meanwhile: a
                             // new notification under that id, open again.
                             if replaces && !cx.state().all.iter().any(|m| m.id == n.id) {
@@ -729,6 +833,7 @@ impl Notifications {
                             }
                             if resident { kept.resident.insert(n.id); } else { kept.resident.remove(&n.id); }
                             if default { kept.default.insert(n.id); } else { kept.default.remove(&n.id); }
+                            if transient { kept.transient.insert(n.id); } else { kept.transient.remove(&n.id); }
                             // A replacement updates a popup shown; a new one
                             // shows unless do-not-disturb holds it back.
                             let shown = (replaces && cx.state().popups.iter().any(|m| m.id == n.id))
@@ -771,7 +876,13 @@ impl Notifications {
                             return Ok(());
                         }
                     }
+                    Some(Msg::Write(w)) if w.field == "remember" => {
+                        if !write_remember(&mut cx, &w, &mut history, &kept) {
+                            return Ok(());
+                        }
+                    }
                     Some(Msg::Action(a)) => {
+                        touched = !matches!(a, NotificationsAction::Expire { .. });
                         // (M5) Sent before `ActionInvoked` (spec 1.2).
                         let token = cx.activation_token().map(str::to_owned);
                         let alive = match a {
@@ -799,7 +910,10 @@ impl Notifications {
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Invoke { item } => {
-                                if cx.state().all.iter().any(|n| n.id == item.notification) {
+                                // A restored one's sender cannot hear it.
+                                if !kept.restored.contains(&item.notification)
+                                    && cx.state().all.iter().any(|n| n.id == item.notification)
+                                {
                                     invoked(&conn, item.notification, &item.id, token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.notification)
@@ -813,15 +927,21 @@ impl Notifications {
                     Some(_) => {}
                 }
             }
+            if touched {
+                history.changed(cx.state(), &kept);
+            }
         }
     }
 }
 
 /// Wait for the other server to let [`NAME`] go (`NameOwnerChanged` to
-/// no owner), answering `dnd` writes meanwhile. `false` once stopped.
+/// no owner), answering `dnd` and `remember` writes meanwhile. `false`
+/// once stopped.
 async fn name_freed(
     cx: &mut Cx<Notifications>,
     owners: &mut zbus::MessageStream,
+    history: &mut History,
+    kept: &Kept,
 ) -> Result<bool, ServiceError> {
     use futures_lite::StreamExt;
     loop {
@@ -843,6 +963,11 @@ async fn name_freed(
                 Some(Msg::Write(w)) if w.field == "dnd" => {
                     let on: bool = w.value().unwrap_or(cx.state().dnd);
                     if !cx.report(&w, |s| s.dnd = on) {
+                        return Ok(false);
+                    }
+                }
+                Some(Msg::Write(w)) if w.field == "remember" => {
+                    if !write_remember(cx, &w, history, kept) {
                         return Ok(false);
                     }
                 }
@@ -888,6 +1013,390 @@ impl Drop for CloseOnStop {
     }
 }
 
+/// Writing `remember`: false erases the remembered notifications now
+/// and keeps the choice; true keeps the choice and saves `all`. Without
+/// a state directory it stays false. `false` once stopped.
+fn write_remember(
+    cx: &mut Cx<Notifications>,
+    w: &crate::Write,
+    history: &mut History,
+    kept: &Kept,
+) -> bool {
+    let on: bool = w.value().unwrap_or(cx.state().remember);
+    let on = on && history.shared.dir.is_some();
+    if !cx.report(w, |s| s.remember = on) {
+        return false;
+    }
+    history.remember(on, cx.state(), kept);
+    true
+}
+
+/// One remembered notification, as the history file holds it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Saved {
+    app_name: String,
+    app_icon: String,
+    summary: String,
+    body: String,
+    #[serde(default)]
+    image: Option<String>,
+    urgency: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    persistent: bool,
+    time: SavedTime,
+}
+
+/// A notification's `time`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct SavedTime {
+    year: i64,
+    month: i64,
+    day: i64,
+    weekday: i64,
+    hour: Option<i64>,
+    minute: Option<i64>,
+}
+
+/// The history file: its version, then the notifications oldest first.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SavedHistory {
+    version: u32,
+    notifications: Vec<Saved>,
+}
+
+/// What to remember of `all`: the newest [`KEPT`] that are not
+/// `transient`, oldest first; an image only when it is a sender's own
+/// (`ours` names those whose picture we wrote from `image-data`: a file
+/// of this run, gone after it).
+fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i64>) -> String {
+    let kept: Vec<&Notification> = all.iter().filter(|n| !transient.contains(&n.id)).collect();
+    let from = kept.len().saturating_sub(KEPT);
+    let notifications = kept[from..]
+        .iter()
+        .map(|n| Saved {
+            app_name: n.app.name.clone(),
+            app_icon: n.app.icon.clone(),
+            summary: n.summary.clone(),
+            body: n.body.clone(),
+            image: n.image.clone().filter(|_| !ours.contains(&n.id)),
+            urgency: match n.urgency {
+                Urgency::Low => "low",
+                Urgency::Normal => "normal",
+                Urgency::Critical => "critical",
+            }
+            .to_string(),
+            timeout_ms: n
+                .timeout
+                .map(|t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX)),
+            persistent: n.persistent,
+            time: SavedTime {
+                year: n.time.year,
+                month: n.time.month,
+                day: n.time.day,
+                weekday: n.time.weekday,
+                hour: n.time.hour,
+                minute: n.time.minute,
+            },
+        })
+        .collect();
+    serde_json::to_string(&SavedHistory {
+        version: HISTORY_VERSION,
+        notifications,
+    })
+    .unwrap_or_default()
+}
+
+/// The notifications a history file holds, numbered 1..=n oldest first,
+/// without actions, and without an image whose file `exists` says is
+/// gone (an icon name, not a path, is kept). An error for a file that is
+/// not this version's JSON.
+fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notification>, String> {
+    let saved: SavedHistory = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if saved.version != HISTORY_VERSION {
+        return Err(format!(
+            "version {} is not {HISTORY_VERSION}",
+            saved.version
+        ));
+    }
+    let picture = |image: String| {
+        let path = match image.strip_prefix("file://") {
+            Some(rest) => file_url_path(rest),
+            None => PathBuf::from(&image),
+        };
+        if path.is_absolute() && !exists(&path) {
+            return None;
+        }
+        Some(image)
+    };
+    Ok(saved
+        .notifications
+        .into_iter()
+        .zip(1i64..)
+        .map(|(s, id)| Notification {
+            id,
+            app: NotificationApp {
+                name: s.app_name,
+                icon: s.app_icon,
+            },
+            summary: s.summary,
+            body: s.body,
+            image: s.image.and_then(picture),
+            urgency: match s.urgency.as_str() {
+                "low" => Urgency::Low,
+                "critical" => Urgency::Critical,
+                _ => Urgency::Normal,
+            },
+            timeout: s.timeout_ms.map(Duration::from_millis),
+            persistent: s.persistent,
+            time: Date {
+                year: s.time.year,
+                month: s.time.month,
+                day: s.time.day,
+                weekday: s.time.weekday,
+                hour: s.time.hour,
+                minute: s.time.minute,
+            },
+            actions: Vec::new(),
+        })
+        .collect())
+}
+
+/// The file a `file://` URL's rest names, percent-decoded as the
+/// renderer reads it (`file:///home/me/My%20Pictures/cat.png` is
+/// `/home/me/My Pictures/cat.png`); a `%` not followed by two hex digits
+/// is kept as written.
+fn file_url_path(rest: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let b = rest.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let Some(hex) = rest.get(i + 1..i + 3)
+            && let Ok(v) = u8::from_str_radix(hex, 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+/// The history's next save: `remember`, and what `all` held (`None`:
+/// the file is removed).
+#[derive(Debug)]
+struct Pending {
+    generation: u64,
+    remember: bool,
+    all: Option<Snapshot>,
+}
+
+/// `all` as it was, with what saving it needs.
+#[derive(Debug)]
+struct Snapshot {
+    all: Vec<Notification>,
+    transient: HashSet<i64>,
+    ours: HashSet<i64>,
+}
+
+/// Every save of this process is numbered: the latest wins.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The latest generation written (held while writing, so saves run one
+/// at a time and an older one finishing last never lands).
+static WRITTEN: Mutex<u64> = Mutex::new(0);
+
+/// What the run and its drop guard share.
+#[derive(Debug)]
+struct HistoryShared {
+    dir: Option<PathBuf>,
+    /// The save not yet made.
+    pending: Mutex<Option<Pending>>,
+}
+
+impl HistoryShared {
+    /// Make the pending save, if any (blocking).
+    fn save_pending(&self) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let (Some(dir), Some(p)) = (&self.dir, pending) {
+            save(dir, p);
+        }
+    }
+}
+
+/// Write `p` under `dir` unless a later save was written already.
+fn save(dir: &Path, p: Pending) {
+    let mut written = WRITTEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if *written >= p.generation {
+        return;
+    }
+    let store = strand_core::PersistStore::new(dir);
+    let flag: &[u8] = if p.remember { b"1" } else { b"0" };
+    if let Err(e) = store.save(REMEMBER_PATH, b"1", flag) {
+        log::warn!("notifications: `remember` not kept: {e}");
+    }
+    let r = match p.all {
+        Some(s) => store.save(
+            HISTORY_PATH,
+            b"",
+            history_text(&s.all, &s.transient, &s.ours).as_bytes(),
+        ),
+        None => store.remove(HISTORY_PATH),
+    };
+    if let Err(e) = r {
+        log::warn!("notifications: the history not kept: {e}");
+    }
+    *written = p.generation;
+}
+
+/// The run's side of the history: the debounced save.
+struct History {
+    shared: Arc<HistoryShared>,
+    due: std::pin::Pin<Box<tokio::time::Sleep>>,
+    armed: bool,
+    /// While `armed`: when the save must be made at the latest
+    /// ([`SAVE_WITHIN`] after the first change it holds).
+    latest: tokio::time::Instant,
+}
+
+impl History {
+    fn new(dir: Option<PathBuf>) -> History {
+        History {
+            shared: Arc::new(HistoryShared {
+                dir,
+                pending: Mutex::new(None),
+            }),
+            due: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            armed: false,
+            latest: tokio::time::Instant::now(),
+        }
+    }
+
+    /// `remember` and the remembered notifications (none while it is
+    /// off), read off the runtime. A history that does not read is
+    /// logged and starts empty; the next save replaces it.
+    async fn load(&self) -> (bool, Vec<Notification>) {
+        let Some(dir) = self.shared.dir.clone() else {
+            return (false, Vec::new());
+        };
+        tokio::task::spawn_blocking(move || {
+            // After any save still being written (a run that just ended).
+            let _written = WRITTEN.lock().unwrap_or_else(PoisonError::into_inner);
+            // Read-only: a file that does not read is left where it is
+            // rather than set aside as a `.corrupt` copy the store keeps
+            // for its retention, since the history holds notification
+            // bodies; the next save replaces it, `remember = false`
+            // removes it.
+            let store = strand_core::PersistStore::read_only(&dir);
+            let remember = match store.load(REMEMBER_PATH) {
+                Ok(Some(v)) => v.value != b"0",
+                Ok(None) => true,
+                Err(e) => {
+                    log::warn!("notifications: `remember` not read: {e}");
+                    true
+                }
+            };
+            if !remember {
+                return (false, Vec::new());
+            }
+            let restored = match store.load(HISTORY_PATH) {
+                Ok(Some(v)) => restore(&String::from_utf8_lossy(&v.value), Path::exists)
+                    .unwrap_or_else(|e| {
+                        log::warn!("notifications: the history not read: {e}");
+                        Vec::new()
+                    }),
+                Ok(None) => Vec::new(),
+                Err(e) => {
+                    log::warn!("notifications: the history not read: {e}");
+                    Vec::new()
+                }
+            };
+            (true, restored)
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    fn snapshot(state: &Notifications, kept: &Kept) -> Snapshot {
+        Snapshot {
+            all: state.all.clone(),
+            transient: kept.transient.clone(),
+            ours: kept.images.keys().copied().collect(),
+        }
+    }
+
+    fn set(&self, remember: bool, all: Option<Snapshot>) {
+        let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        *self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Pending {
+            generation,
+            remember,
+            all,
+        });
+    }
+
+    /// `all` changed: saved [`SAVE_AFTER`] after the last change, but
+    /// no later than [`SAVE_WITHIN`] after the first unsaved one, while
+    /// `remember` is on.
+    fn changed(&mut self, state: &Notifications, kept: &Kept) {
+        if !state.remember || self.shared.dir.is_none() {
+            return;
+        }
+        self.set(true, Some(History::snapshot(state, kept)));
+        let now = tokio::time::Instant::now();
+        if !self.armed {
+            self.latest = now + SAVE_WITHIN;
+        }
+        self.due.as_mut().reset((now + SAVE_AFTER).min(self.latest));
+        self.armed = true;
+    }
+
+    /// `remember` written: kept, with `all` saved (on) or erased (off),
+    /// now.
+    fn remember(&mut self, on: bool, state: &Notifications, kept: &Kept) {
+        if self.shared.dir.is_none() {
+            return;
+        }
+        self.set(on, on.then(|| History::snapshot(state, kept)));
+        self.armed = false;
+        self.flush();
+    }
+
+    /// Make the pending save off the runtime.
+    fn flush(&self) {
+        let shared = self.shared.clone();
+        tokio::task::spawn_blocking(move || shared.save_pending());
+    }
+}
+
+/// Makes the history's last save as the run ends (a stopped body is
+/// dropped): queued as a finalizer, so a stop or shutdown loses nothing.
+struct SaveOnStop(Arc<HistoryShared>);
+
+impl Drop for SaveOnStop {
+    fn drop(&mut self) {
+        let pending = self.0.pending.lock().map(|p| p.is_some()).unwrap_or(false);
+        if !pending {
+            return;
+        }
+        let shared = self.0.clone();
+        crate::client::finalize(async move {
+            let _ = tokio::task::spawn_blocking(move || shared.save_pending()).await;
+        });
+    }
+}
+
 /// `n` into `list`: in place when it replaces one, else at the end.
 fn arrive(list: &mut Vec<Notification>, n: Notification) {
     match list.iter_mut().find(|m| m.id == n.id) {
@@ -912,12 +1421,17 @@ async fn close(
     }
     kept.resident.remove(&id);
     kept.default.remove(&id);
+    kept.transient.remove(&id);
+    let restored = kept.restored.remove(&id);
     // The file goes once the state no longer names it.
     let image = kept.images.remove(&id);
     if !known {
         return !cx.stopped();
     }
-    signal_closed(conn, id, why).await;
+    // A restored one's sender is not told: it never knew this id.
+    if !restored {
+        signal_closed(conn, id, why).await;
+    }
     let alive = cx.update(|s| {
         s.popups.retain(|n| n.id != id);
         s.all.retain(|n| n.id != id);
@@ -1074,5 +1588,267 @@ mod tests {
         }
         assert!(!interpreter("mako") && !interpreter("swaync"));
         assert!(conflict_message(None).contains("another process"));
+    }
+
+    /// A notification as a sender's `Notify` leaves it in `all`.
+    fn sent(id: i64, summary: &str, image: Option<&str>) -> Notification {
+        Notification {
+            id,
+            app: NotificationApp {
+                name: "Mail".into(),
+                icon: "mail-unread".into(),
+            },
+            summary: summary.into(),
+            body: "You have <b>mail</b>".into(),
+            image: image.map(str::to_string),
+            urgency: Urgency::Critical,
+            timeout: Some(Duration::from_millis(4500)),
+            persistent: false,
+            time: Date {
+                year: 2026,
+                month: 10,
+                day: 15,
+                weekday: 4,
+                hour: Some(9),
+                minute: Some(41),
+            },
+            actions: vec![NotificationAction {
+                id: "reply".into(),
+                label: "Reply".into(),
+                notification: id,
+            }],
+        }
+    }
+
+    /// (gap 35, m6-service-gaps) What is remembered comes back, oldest
+    /// first, renumbered 1..=n, without actions: its senders cannot hear
+    /// an answer.
+    #[test]
+    fn the_history_round_trips_without_actions() {
+        let all = vec![sent(7, "First", None), sent(9, "Second", None)];
+        let text = history_text(&all, &HashSet::new(), &HashSet::new());
+        let back = restore(&text, |_| true).unwrap();
+        assert_eq!(back.len(), 2);
+        for (i, (b, a)) in back.iter().zip(&all).enumerate() {
+            assert_eq!(b.id, i as i64 + 1, "renumbered");
+            assert!(b.actions.is_empty(), "no buttons");
+            assert_eq!(
+                Notification {
+                    id: a.id,
+                    actions: a.actions.clone(),
+                    ..b.clone()
+                },
+                *a
+            );
+        }
+    }
+
+    /// The newest [`KEPT`] are remembered, `transient` ones never.
+    #[test]
+    fn the_history_keeps_the_newest_and_never_a_transient_one() {
+        let all: Vec<Notification> = (1..=KEPT as i64 + 5)
+            .map(|i| sent(i, &format!("n{i}"), None))
+            .collect();
+        let transient = HashSet::from([KEPT as i64 + 5, 3]);
+        let back = restore(&history_text(&all, &transient, &HashSet::new()), |_| true).unwrap();
+        assert_eq!(back.len(), KEPT);
+        assert_eq!(back.last().unwrap().summary, format!("n{}", KEPT + 4));
+        assert_eq!(back[0].summary, "n5", "the oldest beyond KEPT left out");
+        assert!(back.iter().all(|n| n.summary != "n3"));
+    }
+
+    /// Our own pictures (written from `image-data` into the runtime
+    /// directory) are never remembered; a sender's `image-path` is, and
+    /// is dropped at restore when its file is gone (an icon name stays).
+    #[test]
+    fn only_a_senders_existing_picture_is_remembered() {
+        let all = vec![
+            sent(1, "ours", Some("/run/user/1000/strand/pixmaps/a.png")),
+            sent(2, "path", Some("/home/me/Pictures/cat.png")),
+            sent(3, "url", Some("file:///home/me/Pictures/gone.png")),
+            sent(4, "icon", Some("dialog-information")),
+        ];
+        let text = history_text(&all, &HashSet::new(), &HashSet::from([1]));
+        let exists = |p: &Path| p == Path::new("/home/me/Pictures/cat.png");
+        let back = restore(&text, exists).unwrap();
+        let images: Vec<Option<&str>> = back.iter().map(|n| n.image.as_deref()).collect();
+        assert_eq!(
+            images,
+            [
+                None,
+                Some("/home/me/Pictures/cat.png"),
+                None,
+                Some("dialog-information")
+            ]
+        );
+        assert!(!text.contains("pixmaps"), "{text}");
+    }
+
+    /// (gap 35, review round 2) A `file://` picture is looked for at the
+    /// path it names, percent-decoded as the renderer reads it, so a
+    /// picture under a folder with a space or a non-ASCII name survives
+    /// the restart; the URL itself is kept as the sender wrote it.
+    #[test]
+    fn a_percent_encoded_file_url_picture_is_found_at_restore() {
+        let all = vec![
+            sent(1, "space", Some("file:///home/me/My%20Pictures/cat.png")),
+            sent(2, "utf8", Some("file:///home/me/Bilder/K%C3%A4tzchen.png")),
+            sent(3, "gone", Some("file:///home/me/My%20Pictures/gone.png")),
+        ];
+        let text = history_text(&all, &HashSet::new(), &HashSet::new());
+        let exists = |p: &Path| {
+            p == Path::new("/home/me/My Pictures/cat.png")
+                || p == Path::new("/home/me/Bilder/Kätzchen.png")
+        };
+        let back = restore(&text, exists).unwrap();
+        let images: Vec<Option<&str>> = back.iter().map(|n| n.image.as_deref()).collect();
+        assert_eq!(
+            images,
+            [
+                Some("file:///home/me/My%20Pictures/cat.png"),
+                Some("file:///home/me/Bilder/K%C3%A4tzchen.png"),
+                None
+            ]
+        );
+    }
+
+    /// A history that is not this version's JSON does not restore.
+    #[test]
+    fn a_history_that_does_not_read_is_refused() {
+        assert!(restore("{not json", |_| true).is_err());
+        assert!(restore("", |_| true).is_err());
+        assert!(restore(r#"{"version":2,"notifications":[]}"#, |_| true).is_err());
+        assert!(restore(r#"{"version":1,"notifications":[{"summary":1}]}"#, |_| true).is_err());
+        assert_eq!(
+            restore(r#"{"version":1,"notifications":[]}"#, |_| true),
+            Ok(Vec::new())
+        );
+    }
+
+    /// (gap 35, review round 1) The save waits [`SAVE_AFTER`] after the
+    /// last change, but a sender replacing a notification every half
+    /// second (a progress bar) does not postpone it past [`SAVE_WITHIN`]
+    /// after the first unsaved change; after a save the bound starts
+    /// again.
+    #[tokio::test(start_paused = true)]
+    async fn a_history_changing_without_pause_is_saved_within_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = History::new(Some(dir.path().to_path_buf()));
+        let state = Notifications {
+            remember: true,
+            ..Notifications::default()
+        };
+        let kept = Kept::default();
+        // When each save fell due, from `start`, while `all` changes every
+        // half second for 20 s.
+        let start = tokio::time::Instant::now();
+        let mut saves = Vec::new();
+        history.changed(&state, &kept);
+        while start.elapsed() < Duration::from_secs(20) {
+            tokio::select! {
+                () = &mut history.due, if history.armed => {
+                    history.armed = false;
+                    saves.push(start.elapsed());
+                }
+                () = tokio::time::sleep(SAVE_AFTER / 2) => history.changed(&state, &kept),
+            }
+        }
+        assert!(saves.len() >= 3, "{saves:?}");
+        assert!(saves[0] <= SAVE_WITHIN, "{saves:?}");
+        for w in saves.windows(2) {
+            assert!(w[1] - w[0] <= SAVE_WITHIN + SAVE_AFTER, "{saves:?}");
+        }
+
+        // One change alone is still saved SAVE_AFTER after it.
+        if history.armed {
+            (&mut history.due).await;
+            history.armed = false;
+        }
+        let at = tokio::time::Instant::now();
+        history.changed(&state, &kept);
+        (&mut history.due).await;
+        assert_eq!(at.elapsed(), SAVE_AFTER);
+    }
+
+    /// (gap 35, review round 2) A history file that does not read is not
+    /// set aside as a `.corrupt` copy (which would keep every body for
+    /// the store's retention): it stays where it is, the run starts
+    /// empty, and `remember = false` erases it with the rest, leaving no
+    /// file in the directory that holds a notification's text.
+    #[tokio::test]
+    async fn a_broken_history_is_erased_by_forgetting_not_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = strand_core::PersistStore::new(dir.path());
+        let file = store.file_of(HISTORY_PATH).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"not a persisted value: 2FA code 123456").unwrap();
+
+        let history = History::new(Some(dir.path().to_path_buf()));
+        assert_eq!(history.load().await, (true, Vec::new()));
+
+        save(
+            dir.path(),
+            Pending {
+                generation: GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
+                remember: false,
+                all: None,
+            },
+        );
+        let mut left = Vec::new();
+        for entry in walk(dir.path()) {
+            let bytes = std::fs::read(&entry).unwrap();
+            if String::from_utf8_lossy(&bytes).contains("123456") {
+                left.push(entry);
+            }
+        }
+        assert_eq!(left, Vec::<PathBuf>::new());
+        assert!(!file.exists());
+    }
+
+    /// Every file under `dir`.
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// The `transient` hint, a boolean by the spec or an integer.
+    #[test]
+    fn the_transient_hint_is_read() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = Server {
+            ids: Arc::default(),
+            tx,
+            images: Arc::new(AtomicUsize::new(0)),
+        };
+        let arrive = |hints: HashMap<String, OwnedValue>| {
+            server
+                .arrival(
+                    "a".into(),
+                    0,
+                    String::new(),
+                    "s".into(),
+                    String::new(),
+                    vec![],
+                    hints,
+                    -1,
+                )
+                .unwrap()
+                .transient
+        };
+        let hint = |v: zbus::zvariant::Value<'static>| {
+            HashMap::from([("transient".to_string(), OwnedValue::try_from(v).unwrap())])
+        };
+        assert!(arrive(hint(true.into())));
+        assert!(arrive(hint(1i32.into())));
+        assert!(!arrive(hint(false.into())));
+        assert!(!arrive(HashMap::new()));
     }
 }

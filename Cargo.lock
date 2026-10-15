@@ -3166,6 +3166,7 @@ dependencies = [
  "ureq",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "zbus",
 ]

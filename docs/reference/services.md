@@ -149,6 +149,33 @@ Processor load, sampled once a second while a reader is visible.
 | `cores` | `[float]` | The load of each core, 0 to 1. |
 | `temperature` | `float?` | The processor's temperature in degrees Celsius, when a sensor reports one. |
 
+## `disk`
+
+Disk usage of the mounted filesystems (`statvfs`), read every 10 s
+while a reader is visible.
+
+| Field | Type | |
+| --- | --- | --- |
+| `usage` | `float` | The root filesystem's fraction in use, 0 to 1: `pct(disk.usage)`. |
+| `used` | `float` | The root filesystem's bytes in use. |
+| `total` | `float` | The root filesystem's size in bytes. |
+| `free` | `float` | The root filesystem's bytes free to a user. |
+| `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
+
+## `keyboard`
+
+The keyboard's lock keys and layout. While a Strand surface has
+keyboard focus (a lock screen, a launcher) they are that keyboard's
+own, exact as keys are pressed; otherwise the lock keys come from the
+kernel's keyboard lights, read while a visible reader shows them, and
+the layout from the compositor (Hyprland, sway, niri).
+
+| Field | Type | |
+| --- | --- | --- |
+| `caps_lock` | `bool` | Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`. False when nothing reports it. |
+| `num_lock` | `bool` | Num Lock is on. |
+| `layout` | `text?` | The active layout's name as the keymap names it (`English (US)`), null when unknown: `text keyboard.layout ?? ""`. |
+
 ## `media`
 
 The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`
@@ -168,6 +195,9 @@ and only while a visible reader shows it.
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |
 | `player` | `text?` | The active player's name, such as `Firefox` or `mpv`; null when no player runs. |
+| `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
+| `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
+| `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
 
 | Method | |
 | --- | --- |
@@ -225,9 +255,10 @@ name, and says so clearly if another daemon (dunst, mako) has it.
 | Field | Type | |
 | --- | --- | --- |
 | `popups` | `[Notification]` | The notifications to show now; each leaves when it expires or is dismissed. |
-| `all` | `[Notification]` | Every notification kept, popups included: the newest 1,000 (older ones close as expired). |
+| `all` | `[Notification]` | Every notification kept, popups included: the newest 1,000 (older ones close as expired), remembered across restarts while `remember` is on. |
 | `count` | `int` | How many notifications are kept. |
 | `dnd` | `bool rw` | Do not disturb: new notifications that are not critical skip the popups (they are kept in `all`, and `received` still fires). Writable. |
+| `remember` | `bool rw` | Notifications kept in `all` are remembered across restarts (under `$XDG_STATE_HOME/strand`, readable only by you); on by default. Those from an earlier run come back in `all` (never as popups, and without `received`) with no buttons, and `activate()` only dismisses them, since their senders cannot hear it. A sender's `transient` notifications are never remembered. Writable: false forgets every remembered notification at once, and stays false across restarts. |
 
 | Method | |
 | --- | --- |
@@ -302,7 +333,7 @@ that fails (polkit refused it, no login session, no logind) is
 ## `system`
 
 The desktop's appearance settings, from the XDG desktop portal and
-followed live, and the machine's host name.
+followed live, and the machine's host name, kernel and uptime.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -311,6 +342,8 @@ followed live, and the machine's host name.
 | `contrast` | `float` | The contrast preference, as `material(contrast:)` takes it: 0 for normal, 1 for high. |
 | `reduced_motion` | `bool` | Motion should be reduced: springs snap, and loops, time signals and effects stop. |
 | `hostname` | `text` | The machine's host name. |
+| `kernel` | `text` | The running kernel's release, as `uname -r` gives it: `6.11.2-arch1-1`. |
+| `uptime` | `duration` | Time since boot (suspend included), to the minute: `dur(system.uptime)` reads `3 h 12 min`. It changes once a minute, and only while a visible reader shows it. |
 
 ## `tray`
 

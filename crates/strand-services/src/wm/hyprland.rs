@@ -12,6 +12,11 @@
 //! workspace and monitor changes, `fullscreen`, `configreloaded`) re-read
 //! it once per burst.
 //!
+//! The keyboard layout (`keyboard.layout`, gap 31) is read from
+//! `j/devices` at connection and after a reload, the main keyboard's
+//! `active_keymap`, and follows `activelayout` (the last keyboard
+//! switched wins).
+//!
 //! Hyprland copies window titles as raw bytes (an XWayland `WM_NAME` of
 //! type `STRING` is Latin-1), into events and into JSON replies alike, so
 //! both are decoded lossily: a title that is not UTF-8 shows U+FFFD where
@@ -125,6 +130,41 @@ fn enabled() -> bool {
     true
 }
 
+/// `j/devices`' reply (0.56.2's `devicesRequest`): only its keyboards'
+/// layouts are read.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(crate) struct Devices {
+    #[serde(default)]
+    pub keyboards: Vec<Keyboard>,
+}
+
+/// One of `j/devices`' keyboards.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub(crate) struct Keyboard {
+    #[serde(default)]
+    pub name: String,
+    /// The active layout's name, as the keymap names it: `English (US)`.
+    #[serde(default)]
+    pub active_keymap: String,
+    /// The keyboard Hyprland's `switchxkblayout current` acts on (the
+    /// last one typed on).
+    #[serde(default)]
+    pub main: bool,
+}
+
+impl Devices {
+    /// The layout `keyboard.layout` starts from: the main keyboard's,
+    /// else the first keyboard's (gap 31).
+    pub(crate) fn layout(&self) -> Option<String> {
+        self.keyboards
+            .iter()
+            .find(|k| k.main)
+            .or(self.keyboards.first())
+            .map(|k| k.active_keymap.clone())
+            .filter(|l| !l.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct HWorkspace {
     pub id: i64,
@@ -198,6 +238,9 @@ pub(crate) struct State {
     pub minimized: HashSet<String>,
     /// `j/workspacerules`: where workspaces go before they exist.
     pub rules: Vec<Rule>,
+    /// The active keyboard layout: `j/devices`' main keyboard's, then
+    /// the last `activelayout` (gap 31).
+    pub keyboard_layout: Option<String>,
 }
 
 /// Addresses come as `0x55d…` from requests and as `55d…` in events.
@@ -374,6 +417,21 @@ impl State {
                 }
             }
             "configreloaded" => Effect::Reloaded,
+            // `KEYBOARD,LAYOUT`: a keyboard's layout switched. A layout's
+            // name may hold commas (`English (US, intl., with dead
+            // keys)`), a device's does not: split at the first. The last
+            // keyboard switched wins.
+            "activelayout" => {
+                let Some((_keyboard, layout)) = data.split_once(',') else {
+                    return Effect::None;
+                };
+                let layout = (!layout.is_empty()).then(|| layout.to_string());
+                if layout.is_none() || self.keyboard_layout == layout {
+                    return Effect::None;
+                }
+                self.keyboard_layout = layout;
+                Effect::Changed
+            }
             // Structure changed: read it again (once per burst).
             "openwindow" | "closewindow" | "kill" | "movewindow" | "movewindowv2"
             | "createworkspace" | "createworkspacev2" | "destroyworkspace"
@@ -381,8 +439,8 @@ impl State {
             | "monitoradded" | "monitoraddedv2" | "monitorremoved" | "monitorremovedv2"
             | "fullscreen" => Effect::Requery,
             // `workspace`, `focusedmon`, `activewindow`, `windowtitle` come
-            // with their v2 twins; layers, layouts, submaps and the rest
-            // show nothing.
+            // with their v2 twins; layers, window layouts, submaps and the
+            // rest show nothing.
             _ => Effect::None,
         }
     }
@@ -446,6 +504,7 @@ impl State {
                 windows,
                 focused_screen: focused_mon.map(|m| m.name.clone()),
                 configured,
+                keyboard_layout: self.keyboard_layout.clone(),
             },
             toplevel_ids,
             window_states: true,
@@ -696,6 +755,22 @@ async fn read_rules(requests: &Path, state: &mut State) -> Result<(), SessionEnd
     Ok(())
 }
 
+/// Reads the keyboards' layouts (`j/devices`), at connection and after a
+/// config reload (which may set new layouts); `activelayout` events
+/// follow each switch. Extra, as the rules are: a reply it cannot read
+/// leaves the layout unknown (gap 31).
+async fn read_devices(requests: &Path, state: &mut State) -> Result<(), SessionEnd> {
+    let text = request_text(requests, "j/devices").await?;
+    state.keyboard_layout = match parse_reply::<Devices>("j/devices", &text) {
+        Ok(devices) => devices.layout(),
+        Err(e) => {
+            log::debug!("Hyprland IPC: no keyboard layout: {e}");
+            None
+        }
+    };
+    Ok(())
+}
+
 /// The version Hyprland reports (`j/version`'s `version`, else its
 /// `tag` without the `v`), for a diagnostic; `None` when it does not say.
 async fn version(requests: &Path) -> Option<String> {
@@ -772,6 +847,7 @@ async fn session(
     let mut buf = Vec::new();
     query(requests, state).await?;
     read_rules(requests, state).await?;
+    read_devices(requests, state).await?;
     // Actions this Hyprland refused in both dialects stay refused until
     // it reports another version.
     degradation.check_refusal(version(requests)).await?;
@@ -829,6 +905,7 @@ async fn session(
                 }
                 if reloads > 0 {
                     read_rules(requests, state).await?;
+                    read_devices(requests, state).await?;
                 }
                 if !up {
                     if !strikes.seen_event() {
@@ -1138,8 +1215,41 @@ mod tests {
 
         assert_eq!(s.apply("openwindow", "b2,2,foot,foot"), Effect::Requery);
         assert_eq!(s.apply("configreloaded", ""), Effect::Reloaded);
-        assert_eq!(s.apply("activelayout", "kb,us"), Effect::None);
+        // The keyboard layout: split at the first comma, the last
+        // keyboard switched winning.
+        assert_eq!(
+            s.apply("activelayout", "kb,English (US, intl., with dead keys)"),
+            Effect::Changed
+        );
+        assert_eq!(
+            s.snapshot().state.keyboard_layout.as_deref(),
+            Some("English (US, intl., with dead keys)")
+        );
+        assert_eq!(s.apply("activelayout", "other-kb,German"), Effect::Changed);
+        assert_eq!(s.apply("activelayout", "kb,German"), Effect::None);
+        assert_eq!(s.apply("activelayout", "kb"), Effect::None);
+        assert_eq!(
+            s.snapshot().state.keyboard_layout.as_deref(),
+            Some("German")
+        );
         assert_eq!(s.apply("workspacev2", "77,77"), Effect::Requery);
+    }
+
+    /// `j/devices` (0.56.2's shape, checked against a live 0.56.2): the
+    /// main keyboard's layout, else the first keyboard's; none without a
+    /// keyboard (gap 31).
+    #[test]
+    fn the_layout_is_the_main_keyboards() {
+        let text = crate::wm::captured::fixture("hyprland-0.56.2/devices.json");
+        let devices: Devices = parse_reply("j/devices", &text).unwrap();
+        assert_eq!(devices.keyboards.len(), 3);
+        assert_eq!(devices.layout().as_deref(), Some("German"));
+        let mut no_main = devices.clone();
+        for k in &mut no_main.keyboards {
+            k.main = false;
+        }
+        assert_eq!(no_main.layout().as_deref(), Some("English (US)"));
+        assert_eq!(Devices::default().layout(), None);
     }
 
     #[test]

@@ -54,7 +54,8 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     assert!(pavu.minimized && pavu.workspace.is_none());
     assert_eq!(m.focused_screen.as_deref(), Some("DP-1"));
     assert_eq!(m.focused_window.as_ref().unwrap().app_id, "kitty");
-    // The workspace rules once, at connection (Gaps 3).
+    // The workspace rules and the keyboards once, at connection (Gaps 3,
+    // gap 31).
     assert_eq!(
         fake.requests(),
         [
@@ -62,9 +63,12 @@ async fn hyprland_adapter_follows_replayed_traffic() {
             "j/workspaces",
             "j/clients",
             "j/activewindow",
-            "j/workspacerules"
+            "j/workspacerules",
+            "j/devices"
         ]
     );
+    // The main keyboard's layout, not the first keyboard's.
+    assert_eq!(m.keyboard_layout.as_deref(), Some("German"));
     // The rules' numbered workspaces not made yet, on monitors that are
     // on (6 by `desc:`); 1 to 3 exist, a named rule makes none.
     let slots: Vec<(i64, &str)> = m
@@ -81,7 +85,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     })
     .await;
     assert!(!c.mirror.workspace("1").unwrap().active);
-    assert_eq!(fake.requests().len(), 5, "patched without a request");
+    assert_eq!(fake.requests().len(), 6, "patched without a request");
 
     // A window opens: one re-read for the whole burst.
     fake.set_scene("opened");
@@ -95,7 +99,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     // Hyprland sends the new window's title and an urgent hint before
     // `openwindow` (as captured): the unknown window costs no extra read,
     // and the hint does not outlive the focus that follows it.
-    assert_eq!(fake.requests().len(), 9, "one re-read for the burst");
+    assert_eq!(fake.requests().len(), 10, "one re-read for the burst");
     let ws2 = c.mirror.workspace("2").unwrap();
     assert!(ws2.occupied && ws2.focused);
     assert!(!ws2.urgent, "the focus ends the urgent hint");
@@ -109,7 +113,7 @@ async fn hyprland_adapter_follows_replayed_traffic() {
             .is_some_and(|w| w.title == "~/src, strand")
     })
     .await;
-    assert_eq!(fake.requests().len(), 9);
+    assert_eq!(fake.requests().len(), 10);
 
     // Urgency lands on the window and its workspace.
     fake.send(&bursts["urgent"]);
@@ -117,13 +121,29 @@ async fn hyprland_adapter_follows_replayed_traffic() {
         .await;
     assert!(c.mirror.window_by_app("kitty").unwrap().urgent);
 
-    // Events the services do not show change nothing.
+    // A keyboard's layout switched: patched without a request; the
+    // layer and the submap change nothing.
     fake.send(&bursts["layout"]);
+    c.until("layout", |m| {
+        m.keyboard_layout.as_deref() == Some("English (US)")
+    })
+    .await;
     assert_eq!(c.quiet_for(Duration::from_millis(150)).await, 0);
+    assert_eq!(fake.requests().len(), 10);
 
     // configreloaded: wm.config_reloaded (failed unknown) and strand-watch.
+    // A reload may set new layouts: the keyboards are read again.
+    fake.set_reply(
+        "j/devices",
+        br#"{"mice": [], "keyboards": [{"name": "kb", "active_keymap": "French", "main": true}]}"#,
+    );
     fake.send(&bursts["reload"]);
     c.until("reload", |m| m.reloads == [None]).await;
+    c.until("the new layout", |m| {
+        m.keyboard_layout.as_deref() == Some("French")
+    })
+    .await;
+    fake.clear_reply("j/devices");
     let ev = tokio::task::spawn_blocking(move || changes.recv_timeout(Duration::from_secs(5)))
         .await
         .unwrap()
@@ -215,9 +235,9 @@ async fn hyprland_adapter_reconnects_after_losing_its_socket() {
     c.until("reconnected", |m| m.sources.connected).await;
     c.until("caught up", |m| m.window_by_app("foot").is_some())
         .await;
-    // One fresh read (and the rules) on reconnecting, and only the
-    // difference went out.
-    assert_eq!(fake.requests().len(), 10);
+    // One fresh read (and the rules and keyboards) on reconnecting, and
+    // only the difference went out.
+    assert_eq!(fake.requests().len(), 12);
     let resets = c
         .log
         .iter()
@@ -389,7 +409,7 @@ async fn titles_that_are_not_utf8_keep_the_connection() {
     );
     assert_eq!(
         fake.requests().len(),
-        9,
+        10,
         "boot and one re-read; no reconnect"
     );
     service.abort();
@@ -472,7 +492,7 @@ async fn the_hub_shares_one_adapter_between_stores() {
     }
     assert_eq!(mb, ma);
     assert_eq!(hub.starts(), 1);
-    assert_eq!(fake.requests().len(), 5, "one read for both");
+    assert_eq!(fake.requests().len(), 6, "one read for both");
 
     // Both follow the stream; actions go through either.
     let bursts = bursts("hyprland-0.56.2/events.txt");

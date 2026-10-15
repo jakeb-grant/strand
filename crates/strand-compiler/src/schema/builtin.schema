@@ -590,6 +590,8 @@ provisional service notifications {
   /// Do not disturb: new notifications that are not critical skip the
   /// popups. Writable.
   dnd: bool rw
+  /// Notifications in `all` are remembered across restarts. Writable.
+  remember: bool rw
   /// Dismisses every notification.
   action clear()
   /// A notification arrived. Events are lossless queues:
@@ -628,6 +630,12 @@ provisional service media {
   length: duration?
   /// The active player's name; null when no player runs.
   player: text?
+  /// The active player can skip to the next track.
+  can_next: bool
+  /// The active player can go back to the previous track.
+  can_previous: bool
+  /// Writing `position` seeks.
+  can_seek: bool
   /// Plays or pauses.
   action play_pause()
   /// Skips to the next track.
@@ -649,6 +657,10 @@ provisional service system {
   reduced_motion: bool
   /// The machine's host name.
   hostname: text
+  /// The running kernel's release.
+  kernel: text
+  /// Time since boot, to the minute.
+  uptime: duration
 }
 
 /// Processor load.
@@ -903,6 +915,46 @@ provisional service clipboard {
   action clear()
   /// An action failed: `on clipboard.failed(action, error) { … }`.
   event failed(action: text, error: text)
+}
+
+/// A mounted filesystem, keyed by `path`.
+provisional record Filesystem key path {
+  /// Where it is mounted.
+  path: text
+  /// The device it is on.
+  device: text
+  /// The fraction in use, 0 to 1.
+  usage: float
+  /// Bytes in use.
+  used: float
+  /// Bytes in all.
+  total: float
+  /// Bytes free to a user.
+  free: float
+}
+
+/// Disk usage of the mounted filesystems.
+provisional service disk {
+  /// The root filesystem's fraction in use, 0 to 1.
+  usage: float
+  /// The root filesystem's bytes in use.
+  used: float
+  /// The root filesystem's size in bytes.
+  total: float
+  /// The root filesystem's bytes free to a user.
+  free: float
+  /// Every mounted filesystem on a local disk, keyed by `path`.
+  all: [Filesystem]
+}
+
+/// The keyboard's lock keys and layout.
+provisional service keyboard {
+  /// Caps Lock is on.
+  caps_lock: bool
+  /// Num Lock is on.
+  num_lock: bool
+  /// The active layout's name, null when unknown.
+  layout: text?
 }
 
 // ---------------------------------------------------------------------------

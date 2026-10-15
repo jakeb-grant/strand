@@ -4404,13 +4404,30 @@ and the connection):
     (`State::clipboard_shut`; review r1).
   - (m6-service-gaps, review r1) Each keyboard's keymap is compiled
     again with `xkbcommon` 0.8.0 (the version SCTK links) in
-    `update_keymap` into `seat::LatinKeys`: for a keymap with several
+    `update_keymap`, once (`seat::compile_keymap`, without default
+    includes or environment names) for both this and gap 31's layout
+    names, into `seat::LatinKeys`: for a keymap with several
     layouts, each key's level-1 keysym in the first layout giving it a
     printable ASCII one. A key whose active keysym is a non-ASCII
     character carries that Latin keysym's name as `KeyInput::latin`
     (strand-scene; `None` otherwise), and `KeyInput::shortcut()` (`latin`
     else `name`) is what Render's `widgets::edit` matches, so Ctrl+V
     under `ru` is `v`; `name` (what `on key(k)` sees) is unchanged.
+- **M6, gap 31** (decisions.md m6-service-gaps): a no-op-default hook
+  `SurfaceHost::keyboard_state(Option<&KeyboardState>)` and `pub struct
+  KeyboardState { caps_lock, num_lock, layout: Option<String> }`
+  (re-exported from `lib.rs`). `seat.rs` keeps the keyboard that entered
+  the focused surface, its keymap's layout names (`update_keymap`,
+  compiled with xkbcommon 0.8, the release SCTK links, without default
+  includes or environment names, the same compile `LatinKeys` reads)
+  and its locked or held `Lock` and `Mod2`; it reports them when they change while one of ours has the
+  keys (`update_modifiers`, `update_keymap`; an `enter` drops the
+  keyboard's lock keys, stale from its last focus, and reports with the
+  `modifiers` the compositor sends after it), and `None` on `leave`
+  (a held one when it resolves as real), when that surface goes
+  (`layer.rs`'s destroy, the lock's refocus) or the seat loses its
+  keyboard. The binary's host forwards it to
+  `strand_services::keyboard::focused`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -5055,8 +5072,28 @@ transparent huge pages for life.
   still hearing the failure event (review of the integration).
 - **Builtin services here** (wave 4): `system` (the portal's appearance
   settings through `strand_watch::follow` on the shared runtime, plus
-  `hostname`), `cpu` and `memory` (procfs, sampled once a second only
-  while a reader is visible), and the D-Bus services (wave 4, a2):
+  `hostname`; M6, gap 34: `kernel` from `/proc/sys/kernel/osrelease`,
+  read once, and `uptime`, a stream field from `/proc/uptime` floored
+  to minutes, read again at each whole minute of uptime only while a
+  visible reader shows it, `system::uptime_ticks()` counting the wakes
+  for tests), `cpu` and `memory` (procfs, sampled once a second only
+  while a reader is visible), `disk` (M6, gap 33: the mounted
+  filesystems of `/proc/self/mountinfo` selected by `disk::select`,
+  none at or under an `autofs` point, measured with rustix's `statvfs` on the blocking pool one sample at a
+  time, every 10 s only while a reader is visible;
+  `disk::configure(Option<disk::Config { mountinfo, period }>)` points
+  it at a fixture and a short period in tests, `disk::samples()` counts
+  its samples), `keyboard` (M6, gap 31: `caps_lock`, `num_lock` and
+  `layout`, stream fields; first what `keyboard::focused(Option<Focused>)`
+  holds, which the binary's host sets from strand-surface's
+  `SurfaceHost::keyboard_state`; else the lock keys from the kernel's
+  LEDs, `<sys>/class/leds/*::capslock` and `*::numlock`, read every
+  `keyboard::LED_PERIOD` (250 ms) only while a visible reader shows one
+  and no focused report holds, and the layout from the shared hub's
+  `WmChange::KeyboardLayout`, subscribed only while `layout` is watched;
+  `keyboard::configure(Option<keyboard::Config { sys, led_period }>)`
+  points it at fake LEDs in tests, `keyboard::led_reads()` counts the
+  reads), and the D-Bus services (wave 4, a2):
   `battery` (UPower's display device and devices), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's
   `SetBrightness`; `brightness::set_backlight_root` /
@@ -5105,9 +5142,23 @@ transparent huge pages for life.
   repeating one in flight on its device is dropped), a pairing past its
   limit is cancelled (`CancelPairing`); no pairing agent is registered),
   `notifications` (our own `org.freedesktop.Notifications` server;
-  `Notification.time` is a `Date` with the hour and minute since M6),
+  `Notification.time` is a `Date` with the hour and minute since M6;
+  M6, gap 35: the history is kept in the persist store's
+  `services:notifications.all` (JSON, `{"version":1,"notifications":[…]}`,
+  the newest `KEPT`, `transient` ones and our runtime-dir pictures left
+  out) and `services:notifications.remember` (`0` or `1`), saved 1 s
+  after the last change (`SAVE_AFTER`) but at most `SAVE_WITHIN` (5 s)
+  after the first unsaved one, on the blocking pool (latest generation wins,
+  a `SaveOnStop` finalizer making the last save) and restored, renumbered
+  1..=n without actions, before the name is asked for;
+  `notifications::set_config(Option<notifications::Config { state }>)`
+  points it at a test's directory, or `state: None` for none, as
+  `apps::set_config` does),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
-  while watched; remote `https`/`http` art fetched by `art`, below) and
+  while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
+  from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,
+  false while `CanControl` is, `can_seek` the very test a `position`
+  write makes; remote `https`/`http` art fetched by `art`, below) and
   `tray` (StatusNotifierItem host, its own watcher
   when the session has none, DBusMenu model), and (wave 4, wm) the
   compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`
@@ -5388,6 +5439,17 @@ transparent huge pages for life.
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
+  (M6, gap 31) `WmState::keyboard_layout: Option<String>` is the
+  compositor's name for the active keyboard layout, published as
+  `WmChange::KeyboardLayout` (and in the hub's replay) for the
+  `keyboard` service: Hyprland's `j/devices` (the `main` keyboard's
+  `active_keymap`, else the first's) read at connection and after a
+  reload, then `activelayout>>` events (the name after the first
+  comma); sway's `GET_INPUTS` at connection (the first keyboard's
+  `xkb_active_layout_name`) and `input` events (`xkb_layout`,
+  `xkb_keymap`, `added` while none is known); niri's
+  `KeyboardLayoutsChanged` and `KeyboardLayoutSwitched` from its event
+  stream. A failed read leaves it `None` and degrades nothing.
   (M6 wave 2, m6-w2-services) `WmState::configured` holds the workspaces
   the compositor's config places on a screen that do not exist yet
   (Hyprland's numbered `j/workspacerules` with a monitor that is on,

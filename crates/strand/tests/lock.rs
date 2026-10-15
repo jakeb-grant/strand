@@ -35,7 +35,8 @@
 //! never sends it); the compositor refusing the lock (another locker
 //! holds it: not a fault, nothing shows, the run goes on); an output
 //! plugged in while locked; a config write of `false` while locked
-//! (only a password unlocks). A run under `STRAND_MOCK` never locks. The
+//! (only a password unlocks). Not a fault: the config's Caps Lock
+//! warning (`keyboard.caps_lock`, gap 31) follows the lock's keyboard. A run under `STRAND_MOCK` never locks. The
 //! inspector cannot pick while locked (M5). With a fingerprint-shaped
 //! stack (`fingerprint_*`, run by `scripts/lockvm/scenarios/fingerprint.sh`
 //! only, m6-lock): the lock shows PAM's text while the reader waits and a
@@ -684,10 +685,20 @@ mod keyboard {
             self.type_text(text);
             self.tap(RETURN);
         }
+
+        /// (gap 31) Sets the locked modifiers: [`CAPS_LOCK`] (`Lock`)
+        /// or none.
+        pub fn lock_keys(&mut self, locked: u32) {
+            self.keyboard.modifiers(0, 0, locked, 0);
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
     }
+
+    /// The `Lock` modifier's bit: Caps Lock locked.
+    pub const CAPS_LOCK: u32 = 1 << 1;
 }
 
-use keyboard::Keyboard;
+use keyboard::{CAPS_LOCK, Keyboard};
 
 // ---- strand ----------------------------------------------------------------------
 
@@ -1729,6 +1740,43 @@ fn a_healthy_lock_draws_its_first_frame_in_time() {
         );
     }
     eprintln!("lock first frames: {frames:?} ms");
+}
+
+/// (gap 31) The lock's Caps Lock warning: [`CONFIG`] with `when
+/// keyboard.caps_lock { bg: … }`. The lock surface has the keyboard, so
+/// `keyboard.caps_lock` is its keyboard's own: Caps Lock locked on the
+/// virtual keyboard shows the warning, the session locked throughout;
+/// unlocked, the warning goes; the test password still unlocks.
+#[test]
+fn the_lock_warns_while_caps_lock_is_on() {
+    let test = "caps_lock";
+    if !in_lock_vm(test) {
+        return;
+    }
+    const WARNING: [u8; 3] = [0xd0, 0xb0, 0x10];
+    let typed = "  when secret != \"\" { bg: #20a050 }\n";
+    assert!(CONFIG.contains(typed));
+    let source = CONFIG.replace(
+        typed,
+        &format!("{typed}  when keyboard.caps_lock {{ bg: #d0b010 }}\n"),
+    );
+    let mut vm = Vm::with(test, "", &source);
+    vm.lock();
+    vm.content();
+    vm.keys.lock_keys(CAPS_LOCK);
+    vm.until_locked("HEADLESS-1", "the Caps Lock warning", true, |s| {
+        near(s.corner(), WARNING)
+    });
+    vm.keys.lock_keys(0);
+    vm.until_locked("HEADLESS-1", "the warning gone", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    vm.lock_passwords();
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("lock: showing the built-in password field"),
+        "the config's lock, not the fallback:\n{log}"
+    );
 }
 
 /// The config's lock refuses a wrong password and unlocks with the

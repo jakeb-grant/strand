@@ -791,7 +791,9 @@ fn regions_follow_a_delegated_scale() {
 /// grab's enter). A real focus loss after the next grab (a lock,
 /// another exclusive surface) still reaches the grabbing popup; a
 /// leave and enter for the bar arriving together (sway's late leave)
-/// does not.
+/// does not. (gap 31) The held leave that turns out real also tells the
+/// host no Strand surface has the keys, so `keyboard` stops showing the
+/// lock keys as they were when it had them.
 #[test]
 fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
     use strand_scene::{InputEvent, LogicalRect, SurfaceSpec};
@@ -820,6 +822,16 @@ fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
         .dispatch_until(WAIT, |s| s.keyboard_focus() == Some(bar))
         .unwrap();
     assert!(ok, "the bar has keyboard focus");
+    fake.cmd(Cmd::LockedModifiers(1 << 1));
+    let caps_on = Some(strand_surface::KeyboardState {
+        caps_lock: true,
+        num_lock: false,
+        layout: None,
+    });
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.host().keyboard_states.last() == Some(&caps_on))
+        .unwrap();
+    assert!(ok, "caps lock: {:?}", mgr.state().host().keyboard_states);
 
     let popup = |open: bool| {
         let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
@@ -929,6 +941,74 @@ fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
         mgr.state().host().input
     );
     assert_eq!(mgr.state().keyboard_focus(), None);
+    assert_eq!(
+        mgr.state().host().keyboard_states.last(),
+        Some(&None),
+        "no Strand surface has the keys: {:?}",
+        mgr.state().host().keyboard_states
+    );
+}
+
+/// (gap 31) The lock keys reported on an enter are the compositor's
+/// state then, never what they were when Strand last had the keys
+/// (`wl_keyboard.modifiers` goes only to the focused client): Caps Lock
+/// on, the keys leave, Caps Lock goes off elsewhere, and the next enter
+/// reports it off, without first saying it is on.
+#[test]
+fn an_enter_reports_the_lock_keys_of_now_not_of_the_last_focus() {
+    use strand_surface::KeyboardState;
+    const BAR: NodeId = NodeId::new(1, 0);
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals::default())
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(common::bar_spec("Top", 36.0)));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(BAR)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the bar maps");
+    let caps = |on: bool| {
+        Some(KeyboardState {
+            caps_lock: on,
+            num_lock: false,
+            layout: None,
+        })
+    };
+    let wait_for = |mgr: &mut SurfaceManager<TestHost>, want: Option<KeyboardState>| {
+        let ok = mgr
+            .dispatch_until(WAIT, |s| s.host().keyboard_states.last() == Some(&want))
+            .unwrap();
+        assert!(ok, "{want:?}: {:?}", mgr.state().host().keyboard_states);
+    };
+
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    wait_for(&mut mgr, caps(false));
+    fake.cmd(Cmd::LockedModifiers(1 << 1));
+    wait_for(&mut mgr, caps(true));
+    fake.cmd(Cmd::KeyboardLeave);
+    wait_for(&mut mgr, None);
+    // Off while another client has the keys: Strand is not told.
+    fake.cmd(Cmd::LockedModifiers(0));
+    common::pump(&mut mgr, Duration::from_millis(50));
+    let left = mgr.state().host().keyboard_states.len();
+    assert_eq!(mgr.state().host().keyboard_states.last(), Some(&None));
+
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    wait_for(&mut mgr, caps(false));
+    common::pump(&mut mgr, Duration::from_millis(50));
+    assert_eq!(
+        mgr.state().host().keyboard_states[left..],
+        [caps(false)],
+        "no stale state on the enter"
+    );
 }
 
 /// (M4) The fake configures a surface only when its own request changes

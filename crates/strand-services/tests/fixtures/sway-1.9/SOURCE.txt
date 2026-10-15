@@ -9,3 +9,16 @@ tests/sway.rs's fake sway serves these over the i3-ipc framing and puts
 raw Latin-1 bytes where `TITLE_HERE` is, as sway's json-c output does for
 an XWayland window whose WM_NAME is of type STRING (wlroots copies it
 byte for byte; json-c escapes only control characters, quotes and `/`).
+
+inputs.json (m6-service-gaps, gap 31) is reconstructed, not captured
+(the dev container's headless sway has no input devices): `get_inputs`
+as sway 1.9's ipc_json_describe_input (sway/ipc-json.c) writes it, with
+a power button and a laptop keyboard (`keyboard`: repeat_delay,
+repeat_rate, xkb_layout_names, xkb_active_layout_index,
+xkb_active_layout_name; libinput devices: libinput, vendor, product)
+and a touchpad (`touchpad`: scroll_factor), two layouts configured
+(`input type:keyboard xkb_layout us,de`). An `input` event
+(IPC_EVENT_INPUT, 0x80000015) is `{"change": …, "input": <one of
+these>}`; tests/sway.rs builds its xkb_layout event from the keyboard.
+The layout names a real sway gives a virtual keyboard's own keymap are
+checked live by tests/sway.rs::sways_layout_is_the_active_keyboards.

@@ -3,7 +3,9 @@
 //! with the store's popups, events and actions checked and the spec's
 //! signals heard; and the name conflict with another server
 //! (python-dbusmock's `notification_daemon` standing in for dunst or
-//! mako) failing with a diagnostic that names it.
+//! mako) failing with a diagnostic that names it; and the history kept
+//! across restarts in a temporary state directory (never the real
+//! `$XDG_STATE_HOME`: every test sets [`notifications::set_config`]).
 
 mod support;
 
@@ -13,7 +15,7 @@ use std::time::Duration;
 
 use futures_lite::StreamExt;
 use strand_core::Runtime;
-use strand_services::notifications::{Date, NAME, Notification, PATH, Urgency};
+use strand_services::notifications::{self, Date, NAME, Notification, PATH, Urgency};
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Data, ToData};
 use support::*;
@@ -119,6 +121,8 @@ fn wait_heard(heard: &Arc<Mutex<Vec<String>>>, line: &str) {
 
 #[test]
 fn the_server_serves_the_spec_and_the_store() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -395,6 +399,8 @@ fn the_server_serves_the_spec_and_the_store() {
 /// pictures are refused.
 #[test]
 fn history_is_bounded_and_lying_pictures_are_refused() {
+    let _serial = serial();
+    history_in(None);
     use strand_services::notifications::KEPT;
     // Written out, not `KEPT`: a smaller bound must fail here.
     const HISTORY: usize = 1_000;
@@ -485,6 +491,8 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
 
 #[test]
 fn another_notification_server_fails_clearly() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -563,6 +571,8 @@ fn another_notification_server_fails_clearly() {
 /// notification.
 #[test]
 fn a_restarted_server_starts_with_no_notifications() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -628,6 +638,8 @@ fn a_restarted_server_starts_with_no_notifications() {
 /// runtime goes.
 #[test]
 fn shutdown_closes_the_notifications_still_open() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -684,6 +696,8 @@ fn heard_of(heard: &Arc<Mutex<Vec<String>>>, id: u32) -> Vec<String> {
 /// `ActionInvoked`; one from no press (an IPC call, a timer) sends none.
 #[test]
 fn activation_token_precedes_action_invoked() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -771,6 +785,8 @@ fn activation_token_precedes_action_invoked() {
 /// still behind it.
 #[test]
 fn invoke_then_dismiss_keeps_order_while_waiting_for_a_token() {
+    let _serial = serial();
+    history_in(None);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -838,4 +854,333 @@ fn invoke_then_dismiss_keeps_order_while_waiting_for_a_token() {
         [format!("Invoked {second} go"), format!("Closed {second} 2")]
     );
     assert!(s.take_diagnostics().is_empty());
+}
+
+/// Tests here share the process-wide history config (and a stopped
+/// server's last save): one at a time.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The services started from now on remember into `dir` (`None`:
+/// nothing is remembered, never the real `$XDG_STATE_HOME`).
+fn history_in(dir: Option<&std::path::Path>) {
+    notifications::set_config(Some(notifications::Config {
+        state: dir.map(std::path::Path::to_path_buf),
+    }));
+}
+
+/// Every notification in `all`, oldest first.
+fn all(b: &strand_services::Builtin, rt: &Runtime) -> Vec<Notification> {
+    b.notifications
+        .cells()
+        .all
+        .get_untracked(rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, n)| n.clone())
+        .collect()
+}
+
+/// Services on `bus` with `notifications` read and its name owned, its
+/// `received` events collected.
+fn serve(
+    rt: &Runtime,
+    bus: &PrivateBus,
+) -> (
+    strand_services::Services,
+    strand_services::Builtin,
+    Arc<Mutex<Vec<Vec<Data>>>>,
+) {
+    let (s, b) = services(rt, bus.buses());
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let r = received.clone();
+    b.notifications.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Event { args, .. } = a {
+            r.lock().unwrap().push(args.clone());
+        }
+    }));
+    b.notifications.acquire(rt);
+    assert!(s.wait_ready(rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    (s, b, received)
+}
+
+fn remember_field() -> usize {
+    use strand_services::Store;
+    notifications::Notifications::FIELDS
+        .iter()
+        .position(|f| f.name == "remember")
+        .unwrap()
+}
+
+/// (gap 35, m6-service-gaps) What `all` held comes back after a restart,
+/// oldest first and below every new id: without buttons (their senders
+/// cannot hear an answer), without the pictures written for this run, a
+/// `transient` one never, as no popup and with no `received`. Closing
+/// one tells no sender, activating one only dismisses it, and what was
+/// dismissed stays gone after the next restart.
+#[test]
+fn remembered_notifications_come_back_after_a_restart() {
+    let _serial = serial();
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    history_in(Some(dir.path()));
+    let picture = dir.path().join("cat.png");
+    std::fs::write(&picture, b"\x89PNG").unwrap();
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    assert_eq!(
+        b.notifications.cells().remember.get_untracked(&rt),
+        Ok(true)
+    );
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "First",
+        &["default", "Open", "reply", "Reply"],
+        HashMap::from([("urgency", Value::from(2u8))]),
+        4000,
+    );
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Second",
+        &[],
+        HashMap::from([("image-path", Value::from(picture.to_str().unwrap()))]),
+        -1,
+    );
+    let pixels = Value::from((1i32, 1i32, 4i32, true, 8i32, 4i32, vec![1u8, 2, 3, 4]));
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Third",
+        &[],
+        HashMap::from([("image-data", pixels)]),
+        0,
+    );
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Fourth",
+        &[],
+        HashMap::from([("transient", Value::from(true))]),
+        -1,
+    );
+    until(&rt, &s, "all four", || all(&b, &rt).len() == 4);
+    let before = all(&b, &rt);
+    s.shutdown();
+
+    // A new run (a restart of strand) on the same state directory.
+    let rt = Runtime::new();
+    let (s, b, received) = serve(&rt, &bus);
+    let back = all(&b, &rt);
+    let summaries: Vec<&str> = back.iter().map(|n| n.summary.as_str()).collect();
+    assert_eq!(summaries, ["First", "Second", "Third"], "no transient one");
+    assert_eq!(back.iter().map(|n| n.id).collect::<Vec<_>>(), [1, 2, 3]);
+    for (b, a) in back.iter().zip(&before) {
+        assert_eq!(
+            (&b.app, &b.body, b.urgency, &b.time, b.timeout, b.persistent),
+            (&a.app, &a.body, a.urgency, &a.time, a.timeout, a.persistent)
+        );
+        assert!(b.actions.is_empty(), "no buttons: {b:?}");
+    }
+    assert_eq!(
+        back[1].image.as_deref(),
+        picture.to_str(),
+        "a sender's file"
+    );
+    assert_eq!(back[2].image, None, "this run's picture is gone");
+    assert_eq!(b.notifications.cells().count.get_untracked(&rt), Ok(3));
+    assert!(popups(&b, &rt).is_empty(), "never as popups");
+    assert!(received.lock().unwrap().is_empty(), "no `received`");
+
+    // A new one is numbered above them.
+    let new = notify(&tokio, &conn, 0, "Fifth", &[], HashMap::new(), -1);
+    assert!(new > 3, "{new}");
+    until(&rt, &s, "the fifth", || all(&b, &rt).len() == 4);
+    // A sender's old id names nothing: its close is refused.
+    let closing = tokio.block_on(conn.call_method(
+        Some(NAME),
+        PATH,
+        Some(NAME),
+        "CloseNotification",
+        &(1u32,),
+    ));
+    assert!(closing.is_err(), "a restored id is not the sender's");
+
+    // Dismissed and activated: gone, with no signal to anyone (the
+    // first run's own closes of ids 1 and 2 were heard before).
+    std::thread::sleep(Duration::from_millis(200));
+    let heard_before = heard.lock().unwrap().len();
+    let d = b.notifications.dynamic();
+    d.action(
+        &rt,
+        "dismiss",
+        Some(&back[0].to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
+    d.action(
+        &rt,
+        "activate",
+        Some(&back[1].to_data()),
+        &[],
+        Default::default(),
+    )
+    .unwrap();
+    until(&rt, &s, "two gone", || all(&b, &rt).len() == 2);
+    std::thread::sleep(Duration::from_millis(200));
+    let about_restored: Vec<String> = heard.lock().unwrap()[heard_before..]
+        .iter()
+        .filter(|l| {
+            ["Closed 1 ", "Closed 2 ", "Invoked 1 ", "Invoked 2 "]
+                .iter()
+                .any(|p| l.starts_with(p))
+        })
+        .cloned()
+        .collect();
+    assert!(about_restored.is_empty(), "{about_restored:?}");
+    s.shutdown();
+
+    // Another restart: the dismissed ones stay gone.
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    let summaries: Vec<String> = all(&b, &rt).into_iter().map(|n| n.summary).collect();
+    assert_eq!(summaries, ["Third", "Fifth"]);
+    s.shutdown();
+    notifications::set_config(None);
+}
+
+/// Writing `remember = false` erases the remembered notifications at
+/// once and stays off after a restart; `true` remembers again.
+#[test]
+fn forgetting_erases_the_history_and_stays_off() {
+    let _serial = serial();
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    history_in(Some(dir.path()));
+    let store = strand_core::PersistStore::new(dir.path());
+    let file = store.file_of(notifications::HISTORY_PATH).unwrap();
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Secret code 1234",
+        &[],
+        HashMap::new(),
+        -1,
+    );
+    until(&rt, &s, "kept", || all(&b, &rt).len() == 1);
+    // Saved a moment after the change.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !file.exists() {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("Secret code 1234")
+    );
+    // Forget: the file goes now; memory keeps `all`.
+    b.notifications
+        .dynamic()
+        .write(&rt, remember_field(), &[], Data::Bool(false))
+        .unwrap();
+    until(&rt, &s, "remember off", || {
+        b.notifications.cells().remember.get_untracked(&rt) == Ok(false)
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while file.exists() {
+        assert!(std::time::Instant::now() < deadline, "never erased");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(all(&b, &rt).len(), 1, "memory keeps them");
+    // New ones are not saved either, through the stop.
+    notify(&tokio, &conn, 0, "Another", &[], HashMap::new(), -1);
+    until(&rt, &s, "two", || all(&b, &rt).len() == 2);
+    s.shutdown();
+    assert!(!file.exists(), "nothing saved while off");
+
+    // Restarted: still off, nothing back.
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    assert_eq!(
+        b.notifications.cells().remember.get_untracked(&rt),
+        Ok(false)
+    );
+    assert!(all(&b, &rt).is_empty());
+    // On again: remembered from now on.
+    b.notifications
+        .dynamic()
+        .write(&rt, remember_field(), &[], Data::Bool(true))
+        .unwrap();
+    until(&rt, &s, "remember on", || {
+        b.notifications.cells().remember.get_untracked(&rt) == Ok(true)
+    });
+    notify(&tokio, &conn, 0, "Kept again", &[], HashMap::new(), -1);
+    until(&rt, &s, "one", || all(&b, &rt).len() == 1);
+    s.shutdown();
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    let summaries: Vec<String> = all(&b, &rt).into_iter().map(|n| n.summary).collect();
+    assert_eq!(summaries, ["Kept again"]);
+    s.shutdown();
+    notifications::set_config(None);
+}
+
+/// `clear()` forgets every remembered notification too.
+#[test]
+fn clear_forgets_every_remembered_notification() {
+    let _serial = serial();
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    history_in(Some(dir.path()));
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    notify(&tokio, &conn, 0, "One", &[], HashMap::new(), -1);
+    notify(&tokio, &conn, 0, "Two", &[], HashMap::new(), -1);
+    until(&rt, &s, "two", || all(&b, &rt).len() == 2);
+    s.shutdown();
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    assert_eq!(all(&b, &rt).len(), 2, "remembered");
+    b.notifications
+        .dynamic()
+        .action(&rt, "clear", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "cleared", || all(&b, &rt).is_empty());
+    s.shutdown();
+    let rt = Runtime::new();
+    let (s, b, _) = serve(&rt, &bus);
+    assert!(all(&b, &rt).is_empty(), "forgotten");
+    s.shutdown();
+    notifications::set_config(None);
 }

@@ -1,5 +1,6 @@
 //! The builtin services on the contract: `system` against a mock portal
-//! on a private bus, `cpu` and `memory` from procfs (sampled only while a
+//! on a private bus, `cpu` and `memory` from procfs and `disk` from
+//! `statvfs` (sampled only while a
 //! reader is visible), and the test harness itself (private bus,
 //! python-dbusmock).
 
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Builtin, Buses, Rgba, Services, cpu, memory};
+use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, disk, memory, system};
 use zbus::zvariant::{OwnedValue, Value};
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -475,4 +476,126 @@ fn the_portal_icon_theme_is_followed_live() {
     builtin.system.release(&rt);
     services.shutdown();
     strand_icons::set_desktop_theme(None);
+}
+
+/// (gap 34, m6-service-gaps) `system` reads the kernel's release once and
+/// counts the uptime in whole minutes, read only while a visible reader
+/// shows it, and never more than once a minute: nothing ticks per second,
+/// and nothing at all once the reader is gone.
+#[test]
+fn system_reads_the_kernel_and_counts_uptime_by_the_minute() {
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, Buses::none());
+    let uptime = system::System::FIELDS
+        .iter()
+        .position(|f| f.name == "uptime")
+        .unwrap();
+    b.system.acquire(&rt);
+    b.system.acquire_field(uptime);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.system.cells();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    assert_eq!(
+        cells.kernel.get_untracked(&rt),
+        Ok(release.trim().to_string())
+    );
+    until(&rt, &s, "the uptime", || {
+        cells
+            .uptime
+            .get_untracked(&rt)
+            .is_ok_and(|u| u > Duration::ZERO)
+    });
+    let up = cells.uptime.get_untracked(&rt).unwrap();
+    assert_eq!(up.as_secs() % 60, 0, "whole minutes: {up:?}");
+    assert_eq!(up.subsec_nanos(), 0, "whole minutes: {up:?}");
+    let booted = std::fs::read_to_string("/proc/uptime").unwrap();
+    let secs: f64 = booted.split_whitespace().next().unwrap().parse().unwrap();
+    assert!(
+        up.as_secs_f64() <= secs && secs - up.as_secs_f64() < 61.0,
+        "{up:?} of {secs} s"
+    );
+    // Shown: at most one wake (a minute turning) in 3 s, and at most one
+    // report to the logic thread.
+    let (ticks, reports) = (system::uptime_ticks(), b.system.reports());
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        system::uptime_ticks() <= ticks + 1,
+        "{} wakes in 3 s",
+        system::uptime_ticks() - ticks
+    );
+    assert!(
+        b.system.reports() <= reports + 1,
+        "{} reports in 3 s",
+        b.system.reports() - reports
+    );
+    // Nobody shows it: the timer is off, though `system` still runs.
+    b.system.release_field(uptime);
+    s.pump(&rt);
+    std::thread::sleep(Duration::from_millis(100));
+    let ticks = system::uptime_ticks();
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(2) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(system::uptime_ticks(), ticks, "no wakes while unread");
+    assert!(b.system.running());
+    s.shutdown();
+}
+
+/// (gap 33, m6-service-gaps) `disk` measures the real root filesystem
+/// before its first frame, lists it first in `all`, and samples only
+/// while a reader is visible: none once the reader is gone, though the
+/// service runs on through its grace.
+#[test]
+fn disk_reads_the_root_filesystem_only_while_visible() {
+    disk::configure(Some(disk::Config {
+        period: Duration::from_millis(100),
+        ..disk::Config::default()
+    }));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, Buses::none());
+    b.disk.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.disk.cells();
+    let total = cells.total.get_untracked(&rt).unwrap();
+    let used = cells.used.get_untracked(&rt).unwrap();
+    let free = cells.free.get_untracked(&rt).unwrap();
+    let usage = cells.usage.get_untracked(&rt).unwrap();
+    assert!(total > 0.0, "{total}");
+    assert!(used <= total && free <= total, "{used} {free} of {total}");
+    assert!((0.0..=1.0).contains(&usage), "{usage}");
+    let all: Vec<disk::Filesystem> = cells
+        .all
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, f)| f.clone())
+        .collect();
+    assert_eq!(all.first().map(|f| f.path.as_str()), Some("/"), "{all:?}");
+    assert!(all.iter().all(|f| f.total > 0.0), "{all:?}");
+    assert_eq!(all[0].total, total);
+    // Visible: sampled every period.
+    let start = disk::samples();
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(disk::samples() >= start + 3, "sampled while visible");
+    // Released: no more samples, though the service runs on (5 s grace).
+    b.disk.release(&rt);
+    s.pump(&rt);
+    std::thread::sleep(Duration::from_millis(300));
+    let hidden = disk::samples();
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(disk::samples(), hidden, "no samples while hidden");
+    assert!(b.disk.running());
+    // Shown again: sampled at once, and on.
+    b.disk.acquire(&rt);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(disk::samples() > hidden, "sampling resumes");
+    disk::configure(None);
+    s.shutdown();
 }
