@@ -1121,8 +1121,11 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
         ));
     }
     let picture = |image: String| {
-        let path = image.strip_prefix("file://").unwrap_or(&image);
-        if path.starts_with('/') && !exists(Path::new(path)) {
+        let path = match image.strip_prefix("file://") {
+            Some(rest) => file_url_path(rest),
+            None => PathBuf::from(&image),
+        };
+        if path.is_absolute() && !exists(&path) {
             return None;
         }
         Some(image)
@@ -1158,6 +1161,30 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
             actions: Vec::new(),
         })
         .collect())
+}
+
+/// The file a `file://` URL's rest names, percent-decoded as the
+/// renderer reads it (`file:///home/me/My%20Pictures/cat.png` is
+/// `/home/me/My Pictures/cat.png`); a `%` not followed by two hex digits
+/// is kept as written.
+fn file_url_path(rest: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let b = rest.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let Some(hex) = rest.get(i + 1..i + 3)
+            && let Ok(v) = u8::from_str_radix(hex, 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
 }
 
 /// The history's next save: `remember`, and what `all` held (`None`:
@@ -1263,7 +1290,12 @@ impl History {
         tokio::task::spawn_blocking(move || {
             // After any save still being written (a run that just ended).
             let _written = WRITTEN.lock().unwrap_or_else(PoisonError::into_inner);
-            let store = strand_core::PersistStore::new(&dir);
+            // Read-only: a file that does not read is left where it is
+            // rather than set aside as a `.corrupt` copy the store keeps
+            // for its retention, since the history holds notification
+            // bodies; the next save replaces it, `remember = false`
+            // removes it.
+            let store = strand_core::PersistStore::read_only(&dir);
             let remember = match store.load(REMEMBER_PATH) {
                 Ok(Some(v)) => v.value != b"0",
                 Ok(None) => true,
@@ -1652,6 +1684,34 @@ mod tests {
         assert!(!text.contains("pixmaps"), "{text}");
     }
 
+    /// (gap 35, review round 2) A `file://` picture is looked for at the
+    /// path it names, percent-decoded as the renderer reads it, so a
+    /// picture under a folder with a space or a non-ASCII name survives
+    /// the restart; the URL itself is kept as the sender wrote it.
+    #[test]
+    fn a_percent_encoded_file_url_picture_is_found_at_restore() {
+        let all = vec![
+            sent(1, "space", Some("file:///home/me/My%20Pictures/cat.png")),
+            sent(2, "utf8", Some("file:///home/me/Bilder/K%C3%A4tzchen.png")),
+            sent(3, "gone", Some("file:///home/me/My%20Pictures/gone.png")),
+        ];
+        let text = history_text(&all, &HashSet::new(), &HashSet::new());
+        let exists = |p: &Path| {
+            p == Path::new("/home/me/My Pictures/cat.png")
+                || p == Path::new("/home/me/Bilder/Kätzchen.png")
+        };
+        let back = restore(&text, exists).unwrap();
+        let images: Vec<Option<&str>> = back.iter().map(|n| n.image.as_deref()).collect();
+        assert_eq!(
+            images,
+            [
+                Some("file:///home/me/My%20Pictures/cat.png"),
+                Some("file:///home/me/Bilder/K%C3%A4tzchen.png"),
+                None
+            ]
+        );
+    }
+
     /// A history that is not this version's JSON does not restore.
     #[test]
     fn a_history_that_does_not_read_is_refused() {
@@ -1708,6 +1768,55 @@ mod tests {
         history.changed(&state, &kept);
         (&mut history.due).await;
         assert_eq!(at.elapsed(), SAVE_AFTER);
+    }
+
+    /// (gap 35, review round 2) A history file that does not read is not
+    /// set aside as a `.corrupt` copy (which would keep every body for
+    /// the store's retention): it stays where it is, the run starts
+    /// empty, and `remember = false` erases it with the rest, leaving no
+    /// file in the directory that holds a notification's text.
+    #[tokio::test]
+    async fn a_broken_history_is_erased_by_forgetting_not_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = strand_core::PersistStore::new(dir.path());
+        let file = store.file_of(HISTORY_PATH).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"not a persisted value: 2FA code 123456").unwrap();
+
+        let history = History::new(Some(dir.path().to_path_buf()));
+        assert_eq!(history.load().await, (true, Vec::new()));
+
+        save(
+            dir.path(),
+            Pending {
+                generation: GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
+                remember: false,
+                all: None,
+            },
+        );
+        let mut left = Vec::new();
+        for entry in walk(dir.path()) {
+            let bytes = std::fs::read(&entry).unwrap();
+            if String::from_utf8_lossy(&bytes).contains("123456") {
+                left.push(entry);
+            }
+        }
+        assert_eq!(left, Vec::<PathBuf>::new());
+        assert!(!file.exists());
+    }
+
+    /// Every file under `dir`.
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
     }
 
     /// The `transient` hint, a boolean by the spec or an integer.

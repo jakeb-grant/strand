@@ -958,6 +958,7 @@ findings only.
     (`crates/strand-services/tests/builtin.rs::system_reads_the_kernel_and_counts_uptime_by_the_minute`,
     `crates/strand-services/src/procfs.rs::tests::uptime_is_read_and_floored_to_minutes`,
     `crates/strand-services/src/system.rs::tests::the_uptime_timer_waits_for_the_next_whole_minute`,
+    `::uptime_advances_as_each_minute_turns`,
     `crates/strand-compiler/tests/checker.rs::system_shows_uptime_and_kernel`).
     decisions.md m6-service-gaps.
 35. **The notification history is lost on every restart.** (fixed,
@@ -975,14 +976,19 @@ findings only.
     no sender, and `clear()` and `dismiss()` forget them on disk too;
     a change is saved 1 s after the last one and at most 5 s after the
     first unsaved one, so a notification updated without pause is not
-    left unsaved
+    left unsaved; a sender's picture given as a percent-encoded
+    `file://` URL comes back with it, and a history file that does not
+    read is replaced or erased, never kept aside
     (`crates/strand-services/tests/notifications.rs::remembered_notifications_come_back_after_a_restart`,
     `::forgetting_erases_the_history_and_stays_off`,
     `::clear_forgets_every_remembered_notification`,
     `crates/strand-services/src/notifications.rs::tests::the_history_round_trips_without_actions`,
     `::the_history_keeps_the_newest_and_never_a_transient_one`,
     `::only_a_senders_existing_picture_is_remembered`,
-    `::a_history_that_does_not_read_is_refused`, `::the_transient_hint_is_read`,
+    `::a_percent_encoded_file_url_picture_is_found_at_restore`,
+    `::a_history_that_does_not_read_is_refused`,
+    `::a_broken_history_is_erased_by_forgetting_not_kept_aside`,
+    `::the_transient_hint_is_read`,
     `::a_history_changing_without_pause_is_saved_within_its_bound`,
     `crates/strand-compiler/tests/checker.rs::notification_history_can_be_forgotten`).
     decisions.md m6-service-gaps.

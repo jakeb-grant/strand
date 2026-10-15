@@ -111,8 +111,8 @@ impl System {
             }
         };
         tokio::pin!(follow);
-        let mut uptime = Uptime::new();
-        if !uptime.arm(&mut cx) {
+        let mut uptime = Uptime::new(read_uptime);
+        if !publish(&mut cx, |shown| uptime.arm(shown)) {
             return Ok(());
         }
         loop {
@@ -138,8 +138,7 @@ impl System {
                 }
                 () = &mut uptime.tick, if uptime.armed => {
                     UPTIME_TICKS.fetch_add(1, Ordering::Relaxed);
-                    uptime.armed = false;
-                    if !uptime.arm(&mut cx) {
+                    if !publish(&mut cx, |shown| uptime.rearm(shown)) {
                         return Ok(());
                     }
                 }
@@ -147,13 +146,12 @@ impl System {
                     None => return Ok(()),
                     Some(Msg::Visible(true)) | Some(Msg::Watch { field: "uptime", on: true }) => {
                         // Shown again: the value now, then each minute.
-                        uptime.armed = false;
-                        if !uptime.arm(&mut cx) {
+                        if !publish(&mut cx, |shown| uptime.rearm(shown)) {
                             return Ok(());
                         }
                     }
                     Some(_) => {
-                        if !uptime.arm(&mut cx) {
+                        if !publish(&mut cx, |shown| uptime.arm(shown)) {
                             return Ok(());
                         }
                     }
@@ -176,41 +174,60 @@ pub fn uptime_ticks() -> u64 {
     UPTIME_TICKS.load(Ordering::Relaxed)
 }
 
+/// Publish the `uptime` that `read` gives (an [`Uptime`] call, told
+/// whether a visible reader reads `uptime`), if any. `false` once the
+/// service was stopped.
+fn publish(cx: &mut Cx<System>, read: impl FnOnce(bool) -> Option<Duration>) -> bool {
+    match read(cx.watched("uptime") && cx.visible()) {
+        Some(up) => cx.update(|s| s.uptime = up),
+        None => true,
+    }
+}
+
 /// `system.uptime`'s minute timer: armed only while a visible reader
 /// reads `uptime`, to fire as the next whole minute of uptime turns.
 struct Uptime {
     tick: std::pin::Pin<Box<tokio::time::Sleep>>,
     armed: bool,
+    /// The time since boot ([`read_uptime`]; tests count it on tokio's
+    /// clock).
+    read: fn() -> Option<Duration>,
 }
 
 impl Uptime {
-    fn new() -> Uptime {
+    fn new(read: fn() -> Option<Duration>) -> Uptime {
         Uptime {
             tick: Box::pin(tokio::time::sleep(Duration::ZERO)),
             armed: false,
+            read,
         }
     }
 
-    /// Arm or disarm the timer by whether a visible reader reads
-    /// `uptime`; arming publishes the value now and sets the timer to
-    /// the next minute. `false` once the service was stopped.
-    fn arm(&mut self, cx: &mut Cx<System>) -> bool {
-        if !(cx.watched("uptime") && cx.visible()) {
+    /// Arm or disarm the timer by whether the value is `shown`. Arming
+    /// reads the uptime, sets the timer to its next minute and gives the
+    /// value to publish (whole minutes); `None` while armed already,
+    /// not shown, or with no uptime to read (nothing to wake for).
+    fn arm(&mut self, shown: bool) -> Option<Duration> {
+        if !shown {
             self.armed = false;
-            return true;
+            return None;
         }
         if self.armed {
-            return true;
+            return None;
         }
-        let Some(up) = read_uptime() else {
-            // No `/proc/uptime`: nothing to count, nothing to wake for.
-            return true;
-        };
+        let up = (self.read)()?;
         self.tick
             .as_mut()
             .reset(tokio::time::Instant::now() + until_next_minute(up) + SLACK);
         self.armed = true;
-        cx.update(|s| s.uptime = procfs::whole_minutes(up))
+        Some(procfs::whole_minutes(up))
+    }
+
+    /// Read again now, whether armed or not: the timer fired (its minute
+    /// turned) or a reader started to show the value.
+    fn rearm(&mut self, shown: bool) -> Option<Duration> {
+        self.armed = false;
+        self.arm(shown)
     }
 }
 
@@ -286,5 +303,44 @@ mod tests {
             until_next_minute(Duration::from_millis(59_999)),
             Duration::from_millis(1)
         );
+    }
+
+    /// When the uptime test's clock started (tokio's, paused).
+    static START: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+
+    /// An uptime of 125.3 s at [`START`], counting on tokio's clock.
+    fn fake_uptime() -> Option<Duration> {
+        let start = START.get()?;
+        Some(Duration::from_secs_f64(125.3) + start.elapsed())
+    }
+
+    /// (gap 34, review round 2) `uptime` advances as each minute turns:
+    /// shown, it publishes 2 min at once, and the timer fires just after
+    /// each next whole minute (54.75 s, then every 60 s) to publish 3, 4
+    /// and 5 min; armed already, nothing more is published; hidden, the
+    /// timer is disarmed and nothing is read.
+    #[tokio::test(start_paused = true)]
+    async fn uptime_advances_as_each_minute_turns() {
+        let start = *START.get_or_init(tokio::time::Instant::now);
+        let mut up = Uptime::new(fake_uptime);
+        assert_eq!(up.arm(false), None);
+        assert!(!up.armed);
+        assert_eq!(up.arm(true), Some(Duration::from_secs(120)));
+        assert_eq!(up.arm(true), None, "armed already");
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            up.tick.as_mut().await;
+            let at = start.elapsed();
+            seen.push((at.as_millis(), up.rearm(true)));
+        }
+        let min = |m: u64| Some(Duration::from_secs(60 * m));
+        assert_eq!(
+            seen,
+            [(54_750, min(3)), (114_750, min(4)), (174_750, min(5))]
+        );
+
+        assert_eq!(up.arm(false), None);
+        assert!(!up.armed, "hidden: no timer");
     }
 }
