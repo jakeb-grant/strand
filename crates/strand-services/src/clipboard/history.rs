@@ -6,7 +6,11 @@
 //! image a 0600 file named by its id and a time, so a path is never
 //! reused, not even after `clear`). Every write is atomic (a temporary
 //! file, synced, renamed, the directory synced), on the service's own
-//! thread.
+//! thread. `images/` holds only the files `history.json` names: a file
+//! no entry names (a crash between an image's write and the save, or
+//! the images of a corrupt file) goes at the next load or save, and a
+//! temporary file a save cut short goes at the next load, save or
+//! clear, so no copied data outlives the history that held it.
 
 use std::fs;
 use std::io::{self, Write};
@@ -149,12 +153,20 @@ impl History {
     /// or corrupt file is an empty history and the warning why (the file
     /// is replaced at the next change). Entries whose image file is gone
     /// are left out.
+    ///
+    /// Temporary files a save cut short are deleted; so are image files no
+    /// entry names when the file was read (or there is none). When it
+    /// cannot be read, its images stay until the next save replaces it.
     pub fn load(dir: PathBuf, caps: Caps) -> (History, Option<String>) {
         let mut h = History::new(dir, caps);
+        h.sweep(false);
         let path = h.dir.join(FILE);
         let text = match fs::read(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return (h, None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                h.sweep(true);
+                return (h, None);
+            }
             Err(e) => {
                 return (
                     h,
@@ -213,7 +225,42 @@ impl History {
         h.next_id = file.next_id.max(max_id + 1).max(1);
         // Caps smaller than when it was written still hold.
         let _ = h.evict();
+        h.sweep(true);
         (h, None)
+    }
+
+    /// Deletes the temporary files a save cut short (in the directory and
+    /// in `images/`) and, with `orphans`, every image file no entry
+    /// names. A file that cannot be deleted is a warning in the log.
+    fn sweep(&self, orphans: bool) {
+        let named: std::collections::HashSet<&str> = self
+            .entries
+            .iter()
+            .filter_map(|s| match &s.what {
+                What::Image { file, .. } => Some(file.as_str()),
+                What::Text(_) => None,
+            })
+            .collect();
+        let delete = |path: &Path| {
+            if let Err(e) = fs::remove_file(path)
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                log::warn!("clipboard: cannot delete {}: {e}", path.display());
+            }
+        };
+        for (dir, images) in [(self.dir.clone(), false), (self.dir.join(IMAGES), true)] {
+            let Ok(files) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for f in files.flatten() {
+                let name = f.file_name();
+                let stale = is_temporary(&name)
+                    || (images && orphans && !name.to_str().is_some_and(|n| named.contains(n)));
+                if stale && f.file_type().is_ok_and(|t| t.is_file()) {
+                    delete(&f.path());
+                }
+            }
+        }
     }
 
     /// Its directory.
@@ -400,11 +447,19 @@ impl History {
         true
     }
 
-    /// Empties the history: `history.json` and every image file go.
+    /// Empties the history: `history.json`, any temporary copy of it a
+    /// save cut short, and every image file go.
     pub fn clear(&mut self) -> io::Result<()> {
         self.entries.clear();
-        match fs::remove_file(self.dir.join(FILE)) {
-            Ok(()) => {}
+        match fs::read_dir(&self.dir) {
+            Ok(files) => {
+                for f in files.flatten() {
+                    let name = f.file_name();
+                    if (name == FILE || is_temporary(&name)) && f.file_type()?.is_file() {
+                        fs::remove_file(f.path())?;
+                    }
+                }
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
@@ -420,7 +475,8 @@ impl History {
         Ok(())
     }
 
-    /// Writes `history.json` (atomically).
+    /// Writes `history.json` (atomically), then deletes the image files
+    /// it does not name and any temporary file a save cut short.
     pub fn save(&self) -> io::Result<()> {
         let file = FileV1 {
             version: 1,
@@ -450,8 +506,17 @@ impl History {
         };
         let bytes = serde_json::to_vec(&file).map_err(io::Error::other)?;
         make_dir(&self.dir)?;
-        write_atomic(&self.dir, FILE, &bytes)
+        write_atomic(&self.dir, FILE, &bytes)?;
+        self.sweep(true);
+        Ok(())
     }
+}
+
+/// Whether `name` is a temporary file of `write_atomic`'s
+/// (`.<name>.tmp-<pid>`); no file the history keeps starts with a dot.
+fn is_temporary(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|n| n.starts_with('.') && n.contains(".tmp-"))
 }
 
 /// Creates `dir` (and its parents) private to the user, and makes it so
@@ -676,6 +741,73 @@ mod tests {
         // A clear with nothing on disk is fine.
         let mut empty = History::new(dir.path().join("none"), Caps::DEFAULT);
         empty.clear().unwrap();
+    }
+
+    #[test]
+    fn a_temporary_file_a_cut_short_save_left_goes_at_clear_and_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("c");
+        let mut h = History::new(at.clone(), Caps::DEFAULT);
+        h.push_text("a token");
+        h.save().unwrap();
+        // A save killed after its temporary file was synced, before the
+        // rename: a full copy of the history under another pid's name.
+        let tmp = at.join(format!(".{FILE}.tmp-4194301"));
+        std::fs::write(&tmp, std::fs::read(at.join(FILE)).unwrap()).unwrap();
+        let image_tmp = at.join(IMAGES).join(".1-0.png.tmp-4194301");
+        std::fs::create_dir_all(at.join(IMAGES)).unwrap();
+        std::fs::write(&image_tmp, b"png").unwrap();
+        h.clear().unwrap();
+        assert!(!tmp.exists(), "clear leaves no copy of the history");
+        assert!(!image_tmp.exists());
+        assert_eq!(std::fs::read_dir(&at).unwrap().count(), 1, "images/ only");
+        // A load deletes one too, the history it holds not read back.
+        std::fs::write(&tmp, br#"{"version":1,"next_id":2,"entries":[]}"#).unwrap();
+        let (h, warning) = History::load(at.clone(), Caps::DEFAULT);
+        assert_eq!(warning, None);
+        assert!(h.stored().is_empty());
+        assert!(!tmp.exists(), "a load deletes a cut-short save's file");
+    }
+
+    #[test]
+    fn image_files_no_entry_names_are_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("c");
+        let mut h = History::new(at.clone(), Caps::DEFAULT);
+        let kept = h.push_image(b"kept png", "image/png").unwrap().unwrap();
+        h.save().unwrap();
+        let kept_file = PathBuf::from(h.entries()[0].image.clone().unwrap());
+        // A crash between an image's write and the save: its file is
+        // named by no entry.
+        h.push_image(b"orphan png", "image/png").unwrap().unwrap();
+        let orphan = PathBuf::from(h.entries()[0].image.clone().unwrap());
+        drop(h);
+        assert!(orphan.is_file());
+        let (h, _) = History::load(at.clone(), Caps::DEFAULT);
+        assert!(!orphan.exists(), "a load deletes an image no entry names");
+        assert!(kept_file.is_file());
+        assert_eq!(h.stored().iter().map(|s| s.id).collect::<Vec<_>>(), [kept]);
+        // A corrupt file: its images stay while it is not replaced (it may
+        // be read again), and go at the save that replaces it.
+        std::fs::write(at.join(FILE), b"{ not json").unwrap();
+        let (mut h, warning) = History::load(at.clone(), Caps::DEFAULT);
+        assert!(warning.is_some());
+        assert!(kept_file.is_file());
+        h.push_image(b"new png", "image/png").unwrap().unwrap();
+        let new_file = PathBuf::from(h.entries()[0].image.clone().unwrap());
+        h.save().unwrap();
+        assert!(
+            !kept_file.exists(),
+            "the save deletes the old file's images"
+        );
+        assert!(new_file.is_file());
+        assert_eq!(std::fs::read_dir(at.join(IMAGES)).unwrap().count(), 1);
+        // With no history file at all, every image is named by none.
+        std::fs::remove_file(at.join(FILE)).unwrap();
+        let (h, warning) = History::load(at.clone(), Caps::DEFAULT);
+        assert_eq!(warning, None);
+        assert!(h.stored().is_empty());
+        assert!(!new_file.exists());
     }
 
     #[test]

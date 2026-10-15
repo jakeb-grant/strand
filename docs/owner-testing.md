@@ -899,8 +899,13 @@ findings only.
     Strand starts is shown but never recorded, so a cleared or removed
     entry stays gone; the lock neither pastes nor copies; Ctrl+C/X/V
     work with a non-Latin layout active (`us,ru`); the selection-is-an-
-    image flag is `clipboard.holds_image`
-    (`crates/strand/tests/clipboard.rs::an_input_copies_and_pastes_through_the_compositor`,
+    image flag is `clipboard.holds_image`; after review r2: a clear
+    also deletes a temporary copy of the history a save cut short left,
+    and image files the history no longer names are deleted at the next
+    load or save, so they never sit outside its caps
+    (`crates/strand-services/src/clipboard/history.rs::tests::a_temporary_file_a_cut_short_save_left_goes_at_clear_and_at_load`,
+    `::image_files_no_entry_names_are_deleted`,
+    `crates/strand/tests/clipboard.rs::an_input_copies_and_pastes_through_the_compositor`,
     `crates/strand-services/tests/clipboard.rs::a_cleared_or_removed_selection_does_not_come_back_at_a_restart`,
     `crates/strand-surface/tests/session_lock.rs::the_lock_neither_pastes_nor_copies` (lock VM),
     `crates/strand-surface/tests/clipboard.rs::ctrl_v_pastes_with_a_non_latin_layout_active`,

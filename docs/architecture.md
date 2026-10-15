@@ -5538,7 +5538,10 @@ transparent huge pages for life.
   `<state>/strand/clipboard/` (`history.json` and `images/<id>-<time>.png
   |.jpg`, directory 0700, files 0600, each write a synced temporary file
   renamed over, the directory synced; a corrupt file is an empty history
-  and a `Cx::warn`), loaded at the first watch or action that needs it.
+  and a `Cx::warn`; `images/` holds only files `history.json` names, the
+  rest and any temporary file a cut-short save left deleted at a load or
+  save, temporary files at `clear` too: review r2), loaded at the first
+  watch or action that needs it.
   `copy` and `e.copy()` go to `clipboard/keeper.rs`: the process-wide
   `strand-clipboard-keep` thread with its own connection holds the
   source, writes each paste without blocking (5 s without progress ends
