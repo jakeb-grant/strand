@@ -3273,3 +3273,55 @@ fn pick_mode_ending_rebuilds_the_hover_under_the_pointer() {
     assert_eq!(flags(&mut f), [hover(BAR_N, true), hover(ITEM_A, true)]);
     assert_eq!(f.router.hovered(S_BAR), [ITEM_A, BAR_N]);
 }
+
+/// `SetProp { Hold }` on `popup`, as logic sends `open:` on a `trigger:
+/// hover` popup.
+fn hold_diff(popup: NodeId, on: bool) -> strand_scene::SceneDiff {
+    let mut d = strand_scene::SceneDiff::new();
+    d.set(popup, Prop::Hold, PropValue::Bool(on));
+    d
+}
+
+/// (m6-owner-fixes, G-b) `open:` on a `trigger: hover` popup opens it
+/// from code: at once (no `delay`), with the pointer nowhere near, and
+/// it stays open past any grace while `open:` holds; once that is false
+/// the pointer holds it as usual: it stays while the pointer is on it,
+/// and closes the grace after the pointer leaves, or after `open:` lets
+/// go with the pointer away.
+#[test]
+fn open_on_a_hover_popup_opens_and_holds_it() {
+    let mut scene = Islands::new(true, Some(std::time::Duration::from_millis(150)));
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.router.observe(&hold_diff(POP_B, true));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [(POP_B, true)], "at once, no delay");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [], "held past the grace");
+    assert_eq!(f.router.next_wake(), None);
+
+    // The pointer comes onto it, then the program lets go: it stays
+    // while the pointer is there, and goes the grace after it leaves.
+    let s_b = SurfaceId(3);
+    f.attached(s_b, POP_B);
+    f.input(&enter(s_b, 30.0), &mut scene);
+    f.router.observe(&hold_diff(POP_B, false));
+    f.out.extend(f.router.tick(&mut scene));
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [], "the pointer holds it");
+    f.input(&leave(s_b), &mut scene);
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [], "graced");
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_B, false)]);
+
+    // Let go with the pointer nowhere: it closes after the grace.
+    f.router.observe(&hold_diff(POP_B, true));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [(POP_B, true)]);
+    f.router.observe(&hold_diff(POP_B, false));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), []);
+    after_grace(&mut f, &mut scene);
+    assert_eq!(opens(&mut f), [(POP_B, false)]);
+}

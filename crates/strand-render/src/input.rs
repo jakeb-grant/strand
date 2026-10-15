@@ -170,6 +170,13 @@ pub trait InputScene {
         let _ = (surface, node);
         None
     }
+    /// (m6-owner-fixes) `at` moved into `node`'s laid-out box, undoing
+    /// the paint offsets and transforms it is drawn with (see
+    /// [`Renderer::to_laid`]); by default `at`.
+    fn to_laid(&self, surface: SurfaceId, node: NodeId, at: LogicalPoint) -> LogicalPoint {
+        let _ = (surface, node);
+        at
+    }
     /// An `input`'s caret (`None`: at the end of its text).
     fn caret(&self, node: NodeId) -> Option<Caret> {
         let _ = node;
@@ -240,6 +247,9 @@ impl InputScene for Renderer {
     }
     fn node_rect(&self, surface: SurfaceId, node: NodeId) -> Option<LogicalRect> {
         Renderer::node_rect(self, surface, node)
+    }
+    fn to_laid(&self, surface: SurfaceId, node: NodeId, at: LogicalPoint) -> LogicalPoint {
+        Renderer::to_laid(self, surface, node, at)
     }
     fn caret(&self, node: NodeId) -> Option<Caret> {
         self.widgets().carets.get(&node).copied()
@@ -457,6 +467,9 @@ struct HoverPopups {
     /// pointer was on its anchor: it opens again only once the pointer
     /// has left that anchor.
     dismissed: HashSet<NodeId>,
+    /// (m6-owner-fixes) Those whose `open:` the program holds true
+    /// (`Prop::Hold`): open, and kept open, whatever the pointer does.
+    held: HashSet<NodeId>,
 }
 
 /// (M6) Whether `node` is a `trigger: hover` popup (never a tooltip's).
@@ -548,6 +561,22 @@ impl Router {
                 }
             }
         }
+        // (m6-owner-fixes) `open:` on a `trigger: hover` popup.
+        for op in &diff.ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::Hold,
+                value,
+                ..
+            } = op
+            {
+                if *value == PropValue::Bool(true) {
+                    self.hover_popups.held.insert(*id);
+                } else {
+                    self.hover_popups.held.remove(id);
+                }
+            }
+        }
         for op in &diff.ops {
             if let SceneOp::Remove { id, window: true } = op
                 && let Some(list) = self
@@ -609,6 +638,15 @@ impl Router {
         if self.offer.as_ref().is_some_and(|o| o.surface == surface) {
             self.offer = None;
         }
+    }
+
+    /// (m6-owner-fixes) Whether a button that went down on `surface` is
+    /// still held (the compositor keeps the pointer there until it is
+    /// let go).
+    pub fn held(&self, surface: SurfaceId) -> bool {
+        self.pressed.contains_key(&surface)
+            || self.right_down.contains_key(&surface)
+            || self.middle_down.contains_key(&surface)
     }
 
     /// (M4) The last pointer position on `surface`, while the pointer is
@@ -765,6 +803,7 @@ impl Router {
         h.pending.retain(|n, _| ours(n));
         h.written.retain(|n, _| tree.contains_live(*n));
         h.dismissed.retain(|n| ours(n));
+        h.held.retain(|n| ours(n));
         if self.picking {
             let graced: Vec<NodeId> = self
                 .hover_popups
@@ -806,16 +845,28 @@ impl Router {
                 }
             }
         }
+        // (m6-owner-fixes) A popup the program holds open opens at once,
+        // before what the pointer opens from the same surface.
+        let mut held: Vec<NodeId> = self.hover_popups.held.iter().copied().collect();
+        held.sort();
+        for p in held {
+            if let Some(from) = opened_from(tree, p) {
+                want.insert(from, p);
+            }
+        }
+        let held = &self.hover_popups.held;
         let wanted = |p: &NodeId| want.values().any(|w| w == p);
         self.hover_popups.pending.retain(|p, _| wanted(p));
         self.hover_popups.dismissed.retain(|p| wanted(p));
         let mut opening = Vec::new();
         for (&from, &p) in &want {
-            if self.hover_popups.open.contains_key(&p) || self.hover_popups.dismissed.contains(&p) {
+            if self.hover_popups.open.contains_key(&p)
+                || (self.hover_popups.dismissed.contains(&p) && !held.contains(&p))
+            {
                 continue;
             }
             let delay = match tree.get(p).and_then(|n| n.get(Prop::Delay)) {
-                Some(PropValue::Duration(d)) => *d,
+                Some(PropValue::Duration(d)) if !held.contains(&p) => *d,
                 _ => Duration::ZERO,
             };
             if !delay.is_zero() {
@@ -851,7 +902,7 @@ impl Router {
             let Some(due) = self.hover_popups.open.get_mut(&p) else {
                 continue; // closed with the popup it was opened from
             };
-            if anchor.is_some_and(|a| under.contains(&a)) {
+            if anchor.is_some_and(|a| under.contains(&a)) || self.hover_popups.held.contains(&p) {
                 *due = None;
                 continue;
             }
@@ -1983,6 +2034,10 @@ impl Router {
         let Some(r) = scene.node_rect(surface, slider) else {
             return;
         };
+        // Where the slider is drawn: its laid-out box moved by the paint
+        // offsets and transforms of it and its ancestors (a card that
+        // springs by `x`).
+        let at = scene.to_laid(surface, slider, at);
         // Pressed, so drawn with its larger knob: the same span.
         let (x0, x1) = crate::widgets::slider_span(r.x as f64, (r.x + r.w) as f64, true, 1.0);
         let v = (((at.x as f64 - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0)) as f32;
@@ -2034,6 +2089,7 @@ impl Router {
         if opts.is_empty() || r.w <= 0.0 {
             return;
         }
+        let at = scene.to_laid(surface, seg, at);
         let i = (((at.x - r.x) / r.w * opts.len() as f32).floor().max(0.0) as usize)
             .min(opts.len() - 1);
         self.emit(Intent::Write {

@@ -7,8 +7,9 @@
 //! the screen for as long as it shows.
 //!
 //! (M6) A `popup`'s `trigger: hover` (spec.md 6.3): the pointer opens
-//! it, so it takes no `open:`, and the trigger is written as is, on the
-//! popup itself, never in a `when` or as an expression.
+//! it, and its `open:` (m6-owner-fixes) only holds it open, so it is
+//! never two-way; the trigger is written as is, on the popup itself,
+//! never in a `when` or as an expression.
 
 use super::Checker;
 use crate::hir::{self, Node};
@@ -52,7 +53,8 @@ impl Checker<'_> {
 
 impl Checker<'_> {
     /// (M6) A popup's `trigger`: a variant as written, on the popup;
-    /// with `hover`, no `open` beside it (in its props or a `when`).
+    /// with `hover`, no two-way `open` beside it (in its props or a
+    /// `when`).
     fn popup_trigger(&mut self, props: &[hir::Prop], children: &[Node]) {
         let whens: Vec<&hir::Prop> = children
             .iter()
@@ -116,20 +118,22 @@ impl Checker<'_> {
             }
             return;
         };
+        // (m6-owner-fixes) Its `open:` holds it open, one way: the
+        // pointer, not the program, closes it.
         for p in props
             .iter()
             .chain(whens.iter().copied())
-            .filter(|p| p.name == "open")
+            .filter(|p| p.name == "open" && p.two_way)
         {
             self.error(
                 "check::hover_popup_open",
-                "a `trigger: hover` popup takes no `open:`",
+                "a `trigger: hover` popup's `open:` cannot be two-way",
                 p.span,
-                "the pointer opens this popup",
+                "the pointer closes this popup",
             )
             .add_secondary(file, trigger, "`trigger: hover` here")
             .help = Some(
-                "remove `open:` to let the pointer open it, or remove `trigger: hover` to open it with `open:`"
+                "write `open: x` to hold it open while `x` is true (read `id.open` for whether it shows), or remove `trigger: hover` to bind `open: <-> x`"
                     .into(),
             );
         }
@@ -164,11 +168,12 @@ panel Dash { anchor: top_right; attach: top; scrim: #00000040; width: 300; heigh
         assert!(got.iter().all(|(c, _)| c == "check::raw_color"), "{got:?}");
     }
 
-    /// (M6) `trigger: hover` takes no `open:` (in the props or a `when`),
-    /// and `trigger` is a fixed variant on the popup itself; `trigger:
-    /// open` with `open:` and `trigger: hover` alone are fine.
+    /// (M6) `trigger: hover` takes no two-way `open:` (m6-owner-fixes:
+    /// a one-way one, in the props or a `when`, holds it open), and
+    /// `trigger` is a fixed variant on the popup itself; `trigger: open`
+    /// with `open:` and `trigger: hover` alone are fine.
     #[test]
-    fn a_hover_popup_takes_no_open() {
+    fn a_hover_popup_takes_no_two_way_open() {
         let src = r#"
 state on = false
 bar Top { edge: top; height: 30
@@ -177,6 +182,7 @@ bar Top { edge: top; height: 30
   box { size: 20; popup { trigger: open; open: on; box { size: 40 } } }
   box { size: 20; popup { trigger: hover; open: on; box { size: 40 } } }
   box { size: 20; popup { trigger: hover; when on { open: true }; box { size: 40 } } }
+  box { size: 20; popup { trigger: hover; open: <-> on; box { size: 40 } } }
   box { size: 20; popup { open: on; when on { trigger: hover }; box { size: 40 } } }
   box { size: 20; popup { trigger: on ? hover : open; open: on; box { size: 40 } } }
 }
@@ -196,11 +202,7 @@ bar Top { edge: top; height: 30
                 ),
                 (
                     "check::hover_popup_open",
-                    "a `trigger: hover` popup takes no `open:`"
-                ),
-                (
-                    "check::hover_popup_open",
-                    "a `trigger: hover` popup takes no `open:`"
+                    "a `trigger: hover` popup's `open:` cannot be two-way"
                 ),
                 ("check::popup_trigger", "a popup's `trigger` cannot change"),
                 (

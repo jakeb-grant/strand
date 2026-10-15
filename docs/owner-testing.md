@@ -226,20 +226,20 @@ here is a proposal.
    needs the popup. Likely direction: look first at how layout takes a
    shadowed node's overhang while its size moves (the path bug 6 changed
    for a moving island in a hover popup).
-   **Fixed; pending the owner's check on Hyprland.** Strand's (B-a): the shadow reaches past
-   the popup's box once the card is grown, so the popup's overhang
-   followed the springing card and changed every frame, and the popup
-   was resized every frame (13 times in one grow). Hyprland repositions
-   it each time; sway 1.9 (`xdg_wm_base` 2) makes it again, and a popup
-   made again snapped the size springs (bug 11's cause), as headless
-   sway showed both ways. Now while a size springs on a surface, its
-   overhang is the larger of the reach where the spring started and
-   where it lands, kept until it settles: one resize at most each way,
-   and none mid spring
+   **Fixed; pending the owner's check on Hyprland.** Strand's (B-a): the
+   shadow reaches past the popup's box once the card is grown, so the
+   popup's overhang followed the springing card and changed every frame,
+   and the popup was resized every frame (13 times in one grow).
+   Hyprland repositions it each time; sway 1.9 (`xdg_wm_base` 2) makes
+   it again, and a popup made again snapped the size springs (bug 11's
+   cause), as headless sway showed both ways. Now while a size springs
+   on a surface, its overhang is the larger of the reach where the
+   spring started and where it lands, kept until it settles: one resize
+   at most each way, and none mid spring
    (`crates/strand-render/tests/morph.rs::a_shadowed_card_springs_its_size_without_resizing_its_popup`,
-   which failed before: 13 resizes on a reposition, the width at 400
-   on every frame when made again). decisions.md m6-owner-fixes. The
-   config is right.
+   which failed before: 13 resizes on a reposition, the width at 400 on
+   every frame when made again). decisions.md m6-owner-fixes. The config
+   is right.
 10. **A conditional transition does not switch on the change that
     switches it.** (fixed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)
@@ -252,14 +252,14 @@ here is a proposal.
     work, which is inconsistent and is the first thing a minimal repro
     should settle. Likely direction: check whether a `~`'s easing is
     read before or after the write that retargets the value.
-    **Fixed; pending the owner's check on Hyprland.** Strand's (B-b): a `~` expression was
-    evaluated once, when its node mounted, so every change used the
-    transition of the state it mounted in (the card's box mounts with
-    `grown` true: 160 ms both ways). Width and height read the same
-    frozen transition, so they only seemed to work where the mount
-    state's transition was the one wanted. spec.md 6.6 now says a change
-    takes the transition in effect after it; the `~` is evaluated with
-    the value
+    **Fixed; pending the owner's check on Hyprland.** Strand's (B-b): a
+    `~` expression was evaluated once, when its node mounted, so every
+    change used the transition of the state it mounted in (the card's
+    box mounts with `grown` true: 160 ms both ways). Width and height
+    read the same frozen transition, so they only seemed to work where
+    the mount state's transition was the one wanted. spec.md 6.6 now
+    says a change takes the transition in effect after it; the `~` is
+    evaluated with the value
     (`crates/strand-compiler/tests/instantiate.rs::a_conditional_transition_applies_to_the_change_that_switches_it`,
     which failed before with 160 ms on the fade out); decisions.md
     m6-owner-fixes. The config is right.
@@ -276,19 +276,19 @@ here is a proposal.
     this is the same is for the repro to settle. Likely direction: check
     what a popup's first layout and first configure are sized from when
     its content's enter pose changes a size.
-    **Fixed; pending the owner's check on Hyprland.** Strand's (B-c): a surface just made is
-    laid out once before its first frame (`configure_surface`), with no
-    clock yet, and that layout snapped every size spring under it to its
-    target: it took the `enter` sizes waiting to start and dropped them,
-    and (bug 9) a spring in flight on a popup made again. Now a layout
-    with no clock leaves size springs alone and the first frame painted
-    starts them
+    **Fixed; pending the owner's check on Hyprland.** Strand's (B-c): a
+    surface just made is laid out once before its first frame
+    (`configure_surface`), with no clock yet, and that layout snapped
+    every size spring under it to its target: it took the `enter` sizes
+    waiting to start and dropped them, and (bug 9) a spring in flight on
+    a popup made again. Now a layout with no clock leaves size springs
+    alone and the first frame painted starts them
     (`crates/strand-render/tests/morph.rs::a_size_in_an_enter_pose_plays_as_its_popup_opens`,
     which failed before: 400 × 200 on every frame), as spec.md 6.6 says
     (a node starts at its `enter` values and springs to its own).
     decisions.md m6-owner-fixes. The config is right.
 12. **`.hover` disagrees with a hover popup that maps under a still
-    pointer.** (open, 2026-10-14; found by the island test bar
+    pointer.** (fixed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)
     When a `trigger: hover` popup maps under a pointer that does not
     move, `card.hover` (an element in the popup) and the anchor's
@@ -302,8 +302,21 @@ here is a proposal.
     sending `wl_pointer.enter` to a surface mapped under the pointer.
     Likely direction: check on Hyprland first; if it is sway's, decide
     whether node `.hover` should follow the popup tracker's view.
+    **Fixed; pending the owner's check on Hyprland.** Both compositors'
+    (B-d): sway 1.9 sends no `wl_pointer.enter` to a popup that maps, or
+    whose input region grows, under a still pointer, and Hyprland 0.56.2
+    re-picks on map only against the first commit's region. spec.md 6.3
+    defines `hover` by where the pointer is, so after each frame a popup
+    paints, a pointer still on a surface the popup opens from, where the
+    popup now takes input, is taken onto the popup (a leave and an enter
+    through the router, `Host::rebase_pointer`), and the compositor's
+    events for the old surface go to the popup until it moves the
+    pointer itself
+    (`crates/strand/tests/hover_popups.rs::a_hover_popup_mapped_under_a_still_pointer_is_hovered`,
+    which failed before). decisions.md m6-owner-fixes. The config's
+    `touched` latch is no longer needed.
 
-Bugs 13 and 14 are the owner's own, on Hyprland with the island test bar
+Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
 (`target/try/island`, 2026-10-14).
 
 13. **Cut text flickers while the island morphs.** (fixed, 2026-10-14,
@@ -311,18 +324,18 @@ Bugs 13 and 14 are the owner's own, on Hyprland with the island test bar
     flickery … all text that gets cut off with '...' is the stuff that
     flickers as it gets triggered to cutoff": the window title in the
     crown's pill, squeezed while the card's width springs.
-    **Fixed; pending the owner's check on Hyprland.** Strand's: a text narrower than its
-    unbounded layout draws a layout shaped for its box's width, and a
-    springing width asks the text worker for a new one every frame,
-    which arrives after that frame. Meanwhile the unbounded layout stood
-    in, so every frame whose width had changed drew the whole title
-    spilling past its box, and only frames where the rounded width held
-    still (the spring's slow tail) drew it cut: cut and whole by turns.
-    The inline shaper of the offline tests never showed it. Now a layout
-    of another width stands in: the widest shaped for no more than the
-    box (last frame's, while it grows), else the nearest wider one
-    clipped to the box; the unbounded one only where nothing else was
-    ever shaped, also clipped
+    **Fixed; pending the owner's check on Hyprland.** Strand's: a text
+    narrower than its unbounded layout draws a layout shaped for its
+    box's width, and a springing width asks the text worker for a new
+    one every frame, which arrives after that frame. Meanwhile the
+    unbounded layout stood in, so every frame whose width had changed
+    drew the whole title spilling past its box, and only frames where
+    the rounded width held still (the spring's slow tail) drew it cut:
+    cut and whole by turns. The inline shaper of the offline tests never
+    showed it. Now a layout of another width stands in: the widest
+    shaped for no more than the box (last frame's, while it grows), else
+    the nearest wider one clipped to the box; the unbounded one only
+    where nothing else was ever shaped, also clipped
     (`crates/strand-render/tests/morph.rs::cut_text_stays_cut_while_its_box_springs`,
     on the text worker at scales 1 and 1.5, which failed before with the
     whole title drawn 28 px past its box on the first frame). Text whose
@@ -333,28 +346,72 @@ Bugs 13 and 14 are the owner's own, on Hyprland with the island test bar
     ungracefully when the island morphs between open / compact": the
     green music level bars (`Bars`, three boxes at the start of the
     crown's status row, `crown.strand:184`).
-    **Fixed (Strand's part); pending the owner's check on Hyprland.** Growing, the crown
-    mounts the readings after the bars: glyphs in Material Symbols,
-    whose names (`battery_5_bar`) are one ligature glyph about 16 px
-    wide. Text the worker has not shaped yet was laid out by an estimate
-    of its width (0.55 em a character, about 110 px for that name), and
-    the shaped size arrived a frame later, so the row was laid out
-    twice: the bars jumped left by the estimate, then back and on with
-    the readings' glide (on headless sway too: they were drawn 39 px
-    left of where they slid from, then back). Now laying out waits up to
-    5 ms for the worker to shape a text that has no layout yet, so the
-    frame is laid out with its real size (not text in a `list`'s rows,
-    which mount as it scrolls)
+    **Fixed (Strand's part); pending the owner's check on Hyprland.**
+    Growing, the crown mounts the readings after the bars: glyphs in
+    Material Symbols, whose names (`battery_5_bar`) are one ligature
+    glyph about 16 px wide. Text the worker has not shaped yet was laid
+    out by an estimate of its width (0.55 em a character, about 110 px
+    for that name), and the shaped size arrived a frame later, so the
+    row was laid out twice: the bars jumped left by the estimate, then
+    back and on with the readings' glide (on headless sway too: they
+    were drawn 39 px left of where they slid from, then back). Now
+    laying out waits up to 5 ms for the worker to shape a text that has
+    no layout yet, so the frame is laid out with its real size (not
+    text in a `list`'s rows, which mount as it scrolls)
     (`crates/strand-render/tests/morph.rs::a_mounted_text_moves_its_siblings_once`,
     which failed before: on the worker the bars took a frame at the
     estimate first). What is left is as specified: the bars sit at the
     end of the split, whose width springs with the card (overshoot
-    included), and the readings entering beside them (`enter { width:
-    0 }` on their text) push them along as they grow; the gap changes
-    from 6 to 10 at once (layout lengths snap). At scale 1.5 each 3 px
-    bar is 4 or 5 device pixels by turns as it moves (edges snap to
-    pixels one by one, so fills stay crisp); an even logical width (2 or
-    4) keeps every bar's width. decisions.md m6-owner-fixes.
+    included), and the readings entering beside them (`enter { width: 0
+    }` on their text) push them along as they grow; the gap changes from
+    6 to 10 at once (layout lengths snap). At scale 1.5 each 3 px bar is
+    4 or 5 device pixels by turns as it moves (edges snap to pixels one
+    by one, so fills stay crisp); an even logical width (2 or 4) keeps
+    every bar's width. decisions.md m6-owner-fixes.
+15. **The island closes or stops responding while a slider is
+    dragged.** (fixed, 2026-10-14, Hyprland, the island config
+    `target/try/island/`) Dragging the brightness slider (and others)
+    on the dashboard folds the card or closes it, or the slider stops
+    following. **Fixed where Strand can; pending the owner's check on
+    Hyprland.** Not the config: its fold reads `card.hover ||
+    notch.hover`, and a held press keeps `hover` on its whole chain, the
+    card included (spec.md 6.3), so on headless sway a drag carried
+    below the popup keeps the card grown and the slider following, and
+    the release outside folds it (target/try/shots/input/drag15). The
+    cause is Hyprland's: it keeps the pointer on the pressed surface
+    only while some surface has keyboard focus
+    (`src/managers/input/InputManager.cpp:412-413`, v0.56.2). Without
+    one (an empty workspace) the pointer goes to whatever is under it as
+    soon as it leaves the popup's input region, the drawn card: the
+    popup gets `wl_pointer.leave`, which ends Strand's drag and drops
+    `hover` (it never hears the release), so the card folds after the
+    config's 350 ms and the popup closes after its grace, and coming
+    back with the button down drags nothing. Strand now gives a hover
+    popup its whole box as input region while a press on it is held, so
+    the drag survives leaving the card inside the popup's box (50 px
+    each side, 28 below, for the island)
+    (`crates/strand-render/tests/boxes.rs::a_held_press_takes_the_hover_popups_whole_box`,
+    which failed before). Past the popup's box Hyprland still takes the
+    pointer away and no client can keep it. decisions.md
+    m6-owner-fixes.
+16. **Sliders and scrubbers register away from the pointer.** (fixed,
+    2026-10-14, Hyprland at scales 1 and 1.5, the island config
+    `target/try/island/`) Where the pointer presses a slider and where
+    its value lands do not match. **Fixed; pending the owner's check on
+    Hyprland.** Strand's, at any scale and on any compositor: a slider
+    (and a `segmented`) read the pointer against its laid-out box, while
+    it is drawn, and hit, moved by the paint offsets and transforms of
+    it and its ancestors. The island's card springs by `x: slack + ear`
+    (50 px), so its sliders took the pointer 50 px ahead of it (headless
+    sway at 1.5: a press 60% along the brightness slider wrote 100%).
+    Now the router moves the pointer into the widget's laid-out box
+    first (`Renderer::to_laid`, from the drawn hit shape)
+    (`crates/strand-render/tests/widgets.rs::widgets_moved_by_paint_offsets_read_the_pointer_where_drawn`,
+    at scales 1 and 1.5, which failed before). The window-geometry
+    overhang, the negative margin and bug 6's placement shift are not
+    it: pointer coordinates are surface-local and hit testing used them
+    right (the press found the slider). decisions.md m6-owner-fixes. The
+    config is right.
 17. **The island card's open morph misses 60 Hz.** (2026-10-14,
     Hyprland, the notch config, a popup 1470 × 708 at scale 1.5) The
     grow ran at about 40 to 47 fps with 62 to 93 ms gaps, and about ten
@@ -655,7 +712,7 @@ findings only.
     `bt_seen`, `fn logind()` from the `can_*` fields). Likely direction:
     a `running`/`available` field per service, or actions and writes
     failing as values.
-21. **A `trigger: hover` popup cannot be opened from code.** (diagnosed,
+21. **A `trigger: hover` popup cannot be opened from code.** (fixed,
     2026-10-14; found by the island test bar (`target/try/island`),
     headless sway; not yet reproduced minimally) It takes no `open:`
     (spec.md 6.3, as designed), so a live-activity peek that covers the
@@ -664,8 +721,18 @@ findings only.
     drops the peek after 800 ms on its middle and relies on the pointer.
     Likely direction: a way to open (not hold) a hover popup from a
     handler.
+    **Fixed; pending the owner's check on Hyprland** (G-b): `open:` on a
+    `trigger: hover` popup opens it from code and holds it while true
+    (at once, without its `delay`); once false the pointer holds it as
+    any hover popup. One way only (`open: <-> x` stays a load error).
+    The handover is `open: handing`, cleared `on show`, with bug 12's
+    fix taking the pointer onto the popup
+    (`crates/strand-render/tests/input.rs::open_on_a_hover_popup_opens_and_holds_it`,
+    `crates/strand-compiler/tests/instantiate.rs::open_on_a_hover_popup_is_its_hold`,
+    `crates/strand/tests/hover_popups.rs::open_opens_a_hover_popup_from_code_and_holds_it`);
+    spec.md 6.3, decisions.md m6-owner-fixes.
 22. **A hover popup's input covers its elements' empty gaps.**
-    (diagnosed, 2026-10-14; found by the island test bar
+    (fixed, 2026-10-14; found by the island test bar
     (`target/try/island`), headless sway; not yet reproduced minimally)
     A `trigger: hover` popup that draws nothing takes input in each
     top-level element's whole box (spec.md 6.7), gaps that draw nothing
@@ -674,6 +741,13 @@ findings only.
     concave fillets) had to be three top-level siblings, each placed by
     `x`, so the strips beside the fillets let the pointer through.
     Likely direction: a per-node way out of the input region.
+    **Fixed; pending the owner's check on Hyprland** (G-c): `hit: none`
+    gives a node no hit shape of its own (a point in it off its children
+    hits what is below), its children keeping theirs; on a `trigger:
+    hover` popup that draws nothing, such a top-level element hands the
+    input region to its children's boxes
+    (`crates/strand-render/tests/boxes.rs::hit_none_takes_no_input_in_its_own_box`);
+    spec.md 6.7, decisions.md m6-owner-fixes.
 23. **No index-of on lists.** (open, 2026-10-14; found by the island
     test bar (`target/try/island`), headless sway; not yet reproduced
     minimally) Lists have `find`, `filter`, `first` and `last` but
@@ -720,15 +794,15 @@ findings only.
     concave fillets itself (`Fillet` in `notch.strand`). Likely
     direction: let `attach:` name the screen edge for a popup that
     covers its anchor.
-27. **A popup's root has no per-child alignment.** (documented, 2026-10-14;
-    found by the island test bar (`target/try/island`), headless sway;
-    not yet reproduced minimally) A popup's root lays its children out
-    centred on both axes, and there is no per-child `align_self`, so the
-    island's three side-by-side pieces are each placed by `x` from the
-    popup's size. Neither the spec nor the reference says how a surface
-    lays out its top-level children. Likely direction: document the
-    root's layout, then decide whether `align`/`justify` on the popup
-    suffice.
+27. **A popup's root has no per-child alignment.** (documented,
+    2026-10-14; found by the island test bar (`target/try/island`),
+    headless sway; not yet reproduced minimally) A popup's root lays its
+    children out centred on both axes, and there is no per-child
+    `align_self`, so the island's three side-by-side pieces are each
+    placed by `x` from the popup's size. Neither the spec nor the
+    reference says how a surface lays out its top-level children. Likely
+    direction: document the root's layout, then decide whether
+    `align`/`justify` on the popup suffice.
     **Documented** (spec.md 6.7, G-e): a popup, like a `stack`, a `box`
     and every surface, lays its children out over each other, its
     `align` placing all of them on both axes; a child placed apart goes

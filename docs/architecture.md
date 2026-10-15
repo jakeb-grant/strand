@@ -2435,7 +2435,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     order, and takes any other value as logic's own (a reload
     remounting one open or closed); only live `trigger: hover` popups
     stay its own (a reload that drops `trigger` hands one back to the
-    program). A `ClickAway` on such a popup's surface (`popup_done`)
+    program). (m6-owner-fixes) The program's `open:` on such a popup is
+    lowered to `Prop::Hold` (never written in source), which
+    `Router::observe` follows: while it is true the router opens the
+    popup at once (no delay, closing another open from the same
+    surface) and runs no grace for it; once false, the pointer rules
+    above apply. A `ClickAway` on such a popup's surface (`popup_done`)
     closes it in logic too, and it opens again only once the pointer
     has left its anchor. A `delay` or `grace` too long for the clock
     never comes due. `Router::next_wake() -> Option<Instant>` is the earliest

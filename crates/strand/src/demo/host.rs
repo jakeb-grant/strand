@@ -36,6 +36,10 @@ pub struct Host {
     /// (M4) The output each surface is on (its monitor's identity), for
     /// render's surface origins (shared-element morphs across surfaces).
     outputs: HashMap<SurfaceId, String>,
+    /// (m6-owner-fixes, B-d) The pointer the compositor still has on a
+    /// surface, taken onto a popup of it that mapped (or grew) under it
+    /// ([`Host::rebase_pointer`]).
+    rebase: Option<Rebase>,
     /// The surfaces idle before an input event, kept between events so
     /// pointer motion allocates nothing.
     idle: Vec<SurfaceId>,
@@ -55,6 +59,24 @@ pub struct Host {
     /// `fuzz.rs`).
     #[cfg(test)]
     pub(crate) probe: Option<ProbeHandle>,
+}
+
+/// (m6-owner-fixes, B-d) A popup mapped, or grew, under a pointer that
+/// has not moved since: the compositor still has the pointer on the
+/// surface it opens from (sway sends no enter until the pointer moves),
+/// while it is over the popup. Strand takes it onto the popup itself, so
+/// `hover` reads as the pointer is: the events the compositor sends
+/// `from` go to `to`, moved by `d`, until it moves the pointer itself.
+#[derive(Clone, Copy, Debug)]
+struct Rebase {
+    /// The surface the compositor has the pointer on.
+    from: SurfaceId,
+    /// The popup it is over.
+    to: SurfaceId,
+    /// From `from`'s coordinates to `to`'s (logical).
+    d: (f32, f32),
+    /// The pointer on `from`, as last heard.
+    at: strand_scene::LogicalPoint,
 }
 
 /// What the latency benchmark watches on the main thread.
@@ -452,6 +474,7 @@ impl Host {
             roots: HashMap::new(),
             origins: HashMap::new(),
             outputs: HashMap::new(),
+            rebase: None,
             idle: Vec::new(),
             blur_fallback: BlurFallback::default(),
             gpu_released: Vec::new(),
@@ -692,7 +715,180 @@ impl Host {
         if let Some(feeds) = &mut self.feeds {
             crate::run::feeds::sync(&mut self.renderer, feeds);
         }
+        self.rebase_pointer(surface);
         self.wake_if_changed();
+    }
+
+    /// (m6-owner-fixes, B-d) `popup` painted a frame: if the pointer is
+    /// still on the surface it opens from (directly or through other
+    /// popups), on the same output, and over where `popup` now takes
+    /// input, the pointer is taken onto it ([`Rebase`]): the surface it
+    /// was on hears a leave and the popup an enter, as the compositor
+    /// would send them on the pointer's next motion. Not while a button
+    /// is held there (the compositor keeps the pointer on the pressed
+    /// surface), during a drag, or in pick mode.
+    fn rebase_pointer(&mut self, popup: SurfaceId) {
+        if self.rebase.is_some() || self.lock.shown_on(popup) {
+            return;
+        }
+        let Some(f) = &self.logic else {
+            return;
+        };
+        if f.router.picking() || f.router.drag().is_some() {
+            return;
+        }
+        let Some(&to_node) = f.surfaces.get(&popup) else {
+            return;
+        };
+        let Some((from, at)) = f
+            .surfaces
+            .keys()
+            .copied()
+            .filter(|s| *s != popup)
+            .find_map(|s| Some((s, f.router.pointer(s)?)))
+        else {
+            return;
+        };
+        let Some(&from_node) = f.surfaces.get(&from) else {
+            return;
+        };
+        if f.router.held(from) || self.outputs.get(&from) != self.outputs.get(&popup) {
+            return;
+        }
+        let tree = self.renderer.tree();
+        if tree.get(to_node).map(|n| n.kind) != Some(strand_scene::NodeKind::Popup) {
+            return;
+        }
+        let mut up = tree.get(to_node).and_then(|n| n.parent);
+        let mut opens_from = false;
+        for _ in 0..4096 {
+            match up {
+                Some(n) if n == from_node => {
+                    opens_from = true;
+                    break;
+                }
+                Some(n) => up = tree.get(n).and_then(|n| n.parent),
+                None => break,
+            }
+        }
+        let (Some(&a), Some(&b)) = (self.origins.get(&from), self.origins.get(&popup)) else {
+            return;
+        };
+        if !opens_from {
+            return;
+        }
+        let d = ((a.0 - b.0) as f32, (a.1 - b.1) as f32);
+        let q = strand_scene::LogicalPoint::new(at.x + d.0, at.y + d.1);
+        if !self.renderer.takes_input_at(popup, q) {
+            return;
+        }
+        log::debug!(
+            "pointer taken from surface {} onto popup {} under it",
+            from.0,
+            popup.0
+        );
+        self.rebase = Some(Rebase {
+            from,
+            to: popup,
+            d,
+            at,
+        });
+        self.input(&InputEvent::PointerLeave { surface: from });
+        self.input(&InputEvent::PointerEnter {
+            surface: popup,
+            position: q,
+        });
+    }
+
+    /// (m6-owner-fixes, B-d) What `event` becomes while the pointer is
+    /// taken onto a popup ([`Rebase`]); `None`: `event` itself. The
+    /// compositor's events for the surface it still has the pointer on go
+    /// to the popup, moved, while the pointer is over the popup (or a
+    /// button went down there); its leave of that surface is the one
+    /// already heard. Its own enter of the popup ends the rebase, and so
+    /// does any other enter or leave, or a motion off the popup: the
+    /// popup hears a leave first.
+    fn rebase_event(&mut self, event: &InputEvent) -> Option<Vec<InputEvent>> {
+        use strand_scene::LogicalPoint;
+        let r = self.rebase?;
+        let moved = |p: &LogicalPoint| LogicalPoint::new(p.x + r.d.0, p.y + r.d.1);
+        let leave = InputEvent::PointerLeave { surface: r.to };
+        match event {
+            InputEvent::PointerLeave { surface } if *surface == r.from => Some(Vec::new()),
+            InputEvent::PointerEnter { surface, position } if *surface == r.to => {
+                self.rebase = None;
+                Some(vec![InputEvent::PointerMotion {
+                    surface: r.to,
+                    position: *position,
+                    time: 0,
+                }])
+            }
+            InputEvent::PointerLeave { surface } if *surface == r.to => {
+                self.rebase = None;
+                None
+            }
+            InputEvent::PointerEnter { .. } | InputEvent::PointerLeave { .. } => {
+                self.rebase = None;
+                Some(vec![leave, event.clone()])
+            }
+            InputEvent::PointerMotion {
+                surface,
+                position,
+                time,
+            } if *surface == r.from => {
+                let q = moved(position);
+                let held = self.logic.as_ref().is_some_and(|f| f.router.held(r.to));
+                if held || self.renderer.takes_input_at(r.to, q) {
+                    if let Some(r) = &mut self.rebase {
+                        r.at = *position;
+                    }
+                    Some(vec![InputEvent::PointerMotion {
+                        surface: r.to,
+                        position: q,
+                        time: *time,
+                    }])
+                } else {
+                    self.rebase = None;
+                    Some(vec![
+                        leave,
+                        InputEvent::PointerEnter {
+                            surface: r.from,
+                            position: *position,
+                        },
+                        event.clone(),
+                    ])
+                }
+            }
+            InputEvent::PointerButton {
+                surface,
+                position,
+                button,
+                state,
+                time,
+            } if *surface == r.from => Some(vec![InputEvent::PointerButton {
+                surface: r.to,
+                position: moved(position),
+                button: *button,
+                state: *state,
+                time: *time,
+            }]),
+            InputEvent::PointerAxis {
+                surface,
+                position,
+                horizontal,
+                vertical,
+                source,
+                time,
+            } if *surface == r.from => Some(vec![InputEvent::PointerAxis {
+                surface: r.to,
+                position: moved(position),
+                horizontal: *horizontal,
+                vertical: *vertical,
+                source: *source,
+                time: *time,
+            }]),
+            _ => None,
+        }
     }
 
     /// The `damage` log line of a frame shown (with `--log-damage`).
@@ -924,6 +1120,17 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.detached(surface);
         }
+        // (m6-owner-fixes, B-d) A popup the pointer was taken onto went:
+        // the pointer is back on the surface the compositor has it on.
+        if let Some(r) = self.rebase.filter(|r| r.to == surface || r.from == surface) {
+            self.rebase = None;
+            if r.to == surface {
+                self.input(&InputEvent::PointerEnter {
+                    surface: r.from,
+                    position: r.at,
+                });
+            }
+        }
         // (M6) The pointer gone with the surface may start a hover
         // popup's grace.
         self.tick_input();
@@ -987,6 +1194,13 @@ impl SurfaceHost for Host {
     }
 
     fn input(&mut self, event: &InputEvent) {
+        // (m6-owner-fixes, B-d) The pointer taken onto a popup under it.
+        if let Some(events) = self.rebase_event(event) {
+            for e in &events {
+                self.input(e);
+            }
+            return;
+        }
         // Tests wait on this line before clicking a surface just mapped.
         if let InputEvent::PointerEnter { surface, .. } = event {
             log::debug!("pointer entered surface {}", surface.0);

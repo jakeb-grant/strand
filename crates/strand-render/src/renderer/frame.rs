@@ -321,12 +321,18 @@ impl Painter for Renderer {
     /// pointer through everywhere else. Every other surface keeps the
     /// surface manager's region: a popup opened by `open:` takes clicks
     /// in its gaps as it always did (spec.md 14, decisions.md
-    /// m6-w2-surface).
+    /// m6-w2-surface). While a press that went down on the popup is
+    /// held (a slider's drag) it takes its whole box: a compositor that
+    /// does not keep the pointer on the pressed surface (Hyprland with no
+    /// keyboard focus anywhere) would otherwise send it elsewhere, and
+    /// end the drag, as soon as it leaves the drawn content
+    /// (decisions.md m6-owner-fixes, owner-testing.md bug 15).
     fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
         let s = self.surfaces.get(&surface)?;
         let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
         let f = s.cache.as_ref()?;
-        if !hover || f.root_paints {
+        let held = self.extras.widgets.pressed.contains(&s.root);
+        if !hover || f.root_paints || held {
             return None;
         }
         Some(f.input.clone())
@@ -334,6 +340,35 @@ impl Painter for Renderer {
 }
 
 impl Renderer {
+    /// (m6-owner-fixes) Whether `surface` takes the pointer at `at`
+    /// (logical, on the surface) as its last frame left it: inside the
+    /// region [`Painter::input_region`] asks for, or else inside its box
+    /// within the shadow overhang (the surface manager's region).
+    pub fn takes_input_at(&self, surface: SurfaceId, at: strand_scene::LogicalPoint) -> bool {
+        let inside = |r: &strand_scene::LogicalRect| {
+            at.x >= r.x && at.y >= r.y && at.x < r.x + r.w && at.y < r.y + r.h
+        };
+        if let Some(rects) = Painter::input_region(self, surface) {
+            return rects.iter().any(inside);
+        }
+        let Some(s) = self.surfaces.get(&surface) else {
+            return false;
+        };
+        let k = s.scale.as_f64() as f32;
+        let o = self
+            .specs
+            .get(&s.root)
+            .map(|sp| sp.overhang)
+            .unwrap_or_default();
+        let (w, h) = (s.size.w as f32 / k, s.size.h as f32 / k);
+        inside(&strand_scene::LogicalRect::new(
+            o.left,
+            o.top,
+            w - o.left - o.right,
+            h - o.top - o.bottom,
+        ))
+    }
+
     pub(super) fn paint_frame(
         &mut self,
         surface: SurfaceId,

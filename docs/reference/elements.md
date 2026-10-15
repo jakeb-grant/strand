@@ -52,7 +52,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea` | Its hit area: `hit: grow(6)` enlarges it for small targets. |
+| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |
@@ -526,7 +526,7 @@ It takes no children.
 | `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea` | Its hit area: `hit: grow(6)` enlarges it for small targets. |
+| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |
@@ -577,7 +577,7 @@ Also every prop and event of [`surface`](#surface).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `trigger` | `PopupTrigger` | What opens it: `open` (the default), its `open:` prop; `hover`, the pointer. A `trigger: hover` popup opens while the pointer is on the element it is anchored to (after `delay`), stays open while the pointer is on that element or on the popup (popups opened from it too), and 200 ms more to cross the gap, or while a drag that started in it goes on. It never takes the keyboard, and opening one closes the other `trigger: hover` popup open from the same surface. It takes no `open:`. |
+| `trigger` | `PopupTrigger` | What opens it: `open` (the default), its `open:` prop; `hover`, the pointer. A `trigger: hover` popup opens while the pointer is on the element it is anchored to (after `delay`), stays open while the pointer is on that element or on the popup (popups opened from it too), and 200 ms more to cross the gap, or while a drag that started in it goes on. It never takes the keyboard, and opening one closes the other `trigger: hover` popup open from the same surface. Its `open:` (never two-way) opens it from code and holds it open while true; then the pointer holds it as usual. |
 | `delay` | `duration` | How long the pointer rests on the element before a `trigger: hover` popup opens. At once by default. |
 | `grace` | `duration` | How long a `trigger: hover` popup stays open after the pointer leaves both it and its element, to cross the gap. 200 ms by default. |
 
