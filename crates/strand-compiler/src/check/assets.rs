@@ -36,9 +36,12 @@ pub fn is_local(kind: &str, source: &str) -> bool {
 }
 
 /// A relative local source made absolute under `config_dir`
-/// (`dot.svg`, `icons/wifi.svg`, `./a.png`); `None` for anything that
-/// stays as written: an absolute path, `~/…`, `file://…`, another URL, an
-/// icon name, an empty source or a non-UTF-8 config directory.
+/// (`dot.svg`, `icons/wifi.svg`, `./a.png`), against the process's
+/// directory too when `config_dir` is relative (`strand run
+/// target/try/island`), with its `.` components dropped, as the watcher
+/// reports a file ([`absolute`]); `None` for anything that stays as
+/// written: an absolute path, `~/…`, `file://…`, another URL, an icon
+/// name, an empty source or a non-UTF-8 config directory.
 pub fn local_source(kind: &str, source: &str, config_dir: &Path) -> Option<String> {
     let src = source.trim();
     if src.is_empty() || !is_local(kind, src) || src.starts_with("~/") || src.contains("://") {
@@ -49,29 +52,37 @@ pub fn local_source(kind: &str, source: &str, config_dir: &Path) -> Option<Strin
         return None;
     }
     let rest = src.strip_prefix("./").unwrap_or(src);
-    config_dir.join(rest).to_str().map(str::to_string)
+    absolute(&config_dir.join(rest)).to_str().map(str::to_string)
+}
+
+/// `path` made absolute against the process's directory, `.` components
+/// dropped and nothing else resolved (`..` and symlinks stay): the path
+/// the file watcher reports a file by (`strand_watch::paths::absolute`),
+/// so a recorded asset and a reported change are the same path.
+pub fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The file a local source names: `~/` under the home directory,
 /// `file://` decoded, a relative path under `config_dir` (`None` without
-/// one), as at run time.
+/// one), as at run time; [`absolute`], as the watcher reports it.
 pub fn file_of(source: &str, config_dir: Option<&Path>) -> Option<PathBuf> {
     let src = source.trim();
     if let Some(rest) = src.strip_prefix("file://") {
-        return Some(PathBuf::from(percent_decode(rest)));
+        return Some(absolute(Path::new(&percent_decode(rest))));
     }
     if src.contains("://") {
         return None;
     }
     if let Some(rest) = src.strip_prefix("~/") {
-        return std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest));
+        return std::env::var_os("HOME").map(|h| absolute(&PathBuf::from(h).join(rest)));
     }
     let p = Path::new(src);
     if p.is_relative() {
         let rest = src.strip_prefix("./").unwrap_or(src);
-        return config_dir.map(|d| d.join(rest));
+        return config_dir.map(|d| absolute(&d.join(rest)));
     }
-    Some(p.to_path_buf())
+    Some(absolute(p))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -224,5 +235,31 @@ mod tests {
         ] {
             assert_eq!(abs(k, s), None, "{k} {s}");
         }
+    }
+
+    /// (m6-owner-fixes review) A relative config directory (`strand run
+    /// target/try/island`) still gives an absolute source, under the
+    /// process's directory, and `.` components go: the path the watcher
+    /// reports the file by. `file_of` gives the same path, for any
+    /// source shape.
+    #[test]
+    fn a_relative_config_dir_gives_the_path_the_watcher_reports() {
+        let cwd = std::env::current_dir().unwrap();
+        let d = Path::new("target/try/island");
+        let want = cwd.join("target/try/island/icons/a.svg");
+        assert_eq!(
+            local_source("svg", "icons/./a.svg", d).as_deref(),
+            want.to_str()
+        );
+        assert_eq!(file_of("icons/./a.svg", Some(d)), Some(want.clone()));
+        assert_eq!(
+            file_of(want.to_str().unwrap(), None),
+            Some(want.clone()),
+            "as recorded from the source drawn"
+        );
+        assert_eq!(
+            file_of("/abs/./x.png", None),
+            Some(PathBuf::from("/abs/x.png"))
+        );
     }
 }

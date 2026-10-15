@@ -1095,6 +1095,56 @@ fn the_drawn_local_files_follow_the_mounted_sources() {
     assert!(inst.take_assets_changed());
 }
 
+/// (m6-owner-fixes review) With a relative config directory (`strand run
+/// target/try/island` from the repository), a relative source is drawn
+/// and watched by its absolute path, `.` components dropped: the path
+/// the watcher reports. Before, no file was recorded at all.
+#[test]
+fn a_relative_config_directory_still_records_absolute_files() {
+    let src = "bar Top {\n  height: 24\n  row {\n    \
+        svg \"icons/./a.svg\" { size: 24 }\n    image \"/abs/./x.png\" { size: 24 }\n  }\n}\n";
+    let mut map = SourceMap::new();
+    map.add("bar.strand".to_string(), src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let storage =
+        strand_compiler::instantiate::Storage::in_dirs("/nonexistent/.state", "try/island");
+    let inst = Instance::new(&rt, program, host.clone(), storage);
+    let diff = inst.flush().diff;
+    let cwd = std::env::current_dir().unwrap();
+    let svg = cwd.join("try/island/icons/a.svg");
+    assert_eq!(
+        inst.asset_files(),
+        [std::path::PathBuf::from("/abs/x.png"), svg.clone()]
+    );
+    // The source render draws by is that path too.
+    let sources: Vec<String> = diff
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            strand_scene::SceneOp::SetProp {
+                prop: strand_scene::Prop::Source,
+                value: strand_scene::PropValue::Text(t),
+                ..
+            } => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        sources.iter().any(|s| s == svg.to_str().unwrap()),
+        "{sources:?}"
+    );
+}
+
 /// (Bug 8, owner testing 2026-10-14) A relative `svg` and `image` path,
 /// a subdirectory's (`icons/b.svg`, `icons/g.png`) too, is read under the
 /// config directory, not the process's (the test's is the crate's): each

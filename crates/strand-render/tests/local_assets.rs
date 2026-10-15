@@ -161,6 +161,28 @@ fn an_edited_local_file_is_drawn_without_a_reload() {
     );
 }
 
+/// (m6-owner-fixes review) A source written with a `.` component
+/// (`<dir>/./b.svg`) is the file the watcher reports without it (`Path`
+/// equality drops a `.` past the first component): its change is drawn.
+#[test]
+fn a_source_with_a_dot_component_follows_its_file() {
+    use strand_scene::Painter;
+    let mut f = files("dot");
+    let dir = f.svg.parent().unwrap().to_path_buf();
+    let reported = [f.image.clone(), f.svg.clone(), f.lottie.clone()];
+    for p in [&mut f.image, &mut f.svg, &mut f.lottie] {
+        *p = dir.join(".").join(p.file_name().unwrap());
+    }
+    let mut r = renderer();
+    let mut buf = scene(&mut r, &f);
+    assert_eq!([at(&buf, 0), at(&buf, 1), at(&buf, 2)], [RED; 3]);
+    edit(&f);
+    r.assets_changed(&reported);
+    assert!(r.wants_frame(S), "the surface showing them repaints");
+    buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
+    assert_eq!([at(&buf, 0), at(&buf, 1), at(&buf, 2)], [GREEN; 3]);
+}
+
 /// With an image worker the files are read off the render thread: the
 /// frame right after the report still draws the old pixels (no blank
 /// frame), and the new ones arrive and repaint.
