@@ -92,6 +92,8 @@ impl Shell {
             &[
                 ("id", Value::text("Mock | DP-1")),
                 ("name", Value::text("DP-1")),
+                ("width", Value::float(f64::from(width))),
+                ("scale", Value::float(f64::from(scale))),
             ],
         );
         host.set(&rt, "screens.all", Value::list(vec![screen]))
@@ -691,4 +693,91 @@ fn a_size_in_an_enter_pose_plays_as_its_popup_opens() {
         "springs: {seen:?}"
     );
     assert_eq!(seen.last(), Some(&(400.0, 200.0)));
+}
+
+/// The owner's notch card, reduced (owner-testing.md bug 14): the card
+/// swells from the island (420 × 32) into a dashboard (880 × 444) on the
+/// owner's springs, `x` springing with `width` so it stays centred, its
+/// lower corners rounding out and a rim along its bottom; its content is
+/// laid out at the grown size, mounts as it grows and is uncovered by
+/// the card's clip. `ENTER` is each row's `enter` pose, `TEXT` is set on
+/// the third row's label.
+const SWELL: &str = "
+state grown = false
+let s_w = spring(700, 0.7)
+let s_h = spring(450, 0.8)
+let s_fold = spring(800, 0.95)
+bar Top {
+  height: 30
+  box { width: 420; height: 30
+    popup { id: big; open: true; width: 980; height: 472; margin: 0; align: start
+      col { align: center; clip: true; bg: #11111b
+            width: 880 ~ s_w
+            height: 444 ~ s_h
+            x: 50 ~ s_w
+            when !grown { width: 420 ~ s_fold; height: 32 ~ s_fold; x: 280 ~ s_fold }
+            radius: 0, 0, 16, 16
+            when grown { radius: 0, 0, 30, 30 }
+            rim: bottom, #585b70
+        box { width: 880; height: 32; shrink: 0; bg: #313244 }
+        if grown {
+          col { width: 880; shrink: 0; pad: 6, 22, 20; gap: 14; stagger: 70ms
+            for n in [\"Monday\", \"Tuesday\", \"Wednesday\", \"Thursday\", \"Friday\", \"Saturday\", \"Sunday\"] key n {
+              row { height: 40; gap: 15; align: center; ENTER
+                for m in [1, 2, 3, 4, 5, 6, 7, 8, 9] key m {
+                  box { width: 27; height: 21; radius: 6; bg: #89b4fa }
+                }
+                text n { color: #cdd6f4 }
+                box { width: 131; height: 33; radius: 9; bg: #45475a }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+";
+
+/// The card's frames from `grown` turning `to` until nothing moves.
+fn swell(sh: &mut Shell, to: bool) -> Vec<Painted> {
+    sh.times.clear();
+    sh.set("grown", Value::Bool(to));
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        n += 1;
+        assert!(n < 600, "never settled");
+    }
+    std::mem::take(&mut sh.times)
+}
+
+/// (owner-testing.md bug 14) The card swelling under its content keeps
+/// its content still (the card's `x` springs with its width, and a paint
+/// offset in flight is drawn whole logical pixels from its rest, as
+/// layout places the content), and once it shows its rest it repaints
+/// nothing: before, the spring's tail a hundredth of a pixel under its
+/// rest drew the content a pixel off for one frame and back the next
+/// (about 500,000 pixels for nothing).
+#[test]
+fn a_swelling_card_repaints_its_edges_and_settles_still() {
+    let src = SWELL.replace("ENTER", "");
+    let mut sh = Shell::boot(&src, 1.5, 2560);
+    run(&mut sh, NodeId::new(0, 0));
+    for to in [true, false, true] {
+        let frames = swell(&mut sh, to);
+        assert!(frames.len() > 10, "grown {to}: it springs: {frames:?}");
+        // From the first frame showing its rest, nothing repaints.
+        let rest = frames.last().unwrap().pixels;
+        let at = frames.iter().position(|p| p.pixels == rest).unwrap();
+        let after: Vec<_> = frames[at..]
+            .iter()
+            .filter(|p| p.damage > 0 || p.pixels != rest)
+            .collect();
+        assert!(
+            after.iter().all(|p| p.k == frames[at].k),
+            "grown {to}: repainted after showing its rest at frame {}: {after:?}",
+            frames[at].k
+        );
+    }
 }

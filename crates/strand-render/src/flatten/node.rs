@@ -185,8 +185,21 @@ impl<'a> Flattener<'a> {
         // it needs is kept (`crate::effects::transition`).
         let transition_mask = self.anim.reveal(self.tree, node, &scope);
         self.anim.stagger(self.tree, node, &scope);
+        // The paint offsets as written, and as their springs have them.
+        let offsets = |props: &[(Prop, Cow<'a, PropValue>)]| {
+            let of = |p: Prop, along: f32| {
+                length(
+                    props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref()),
+                    along,
+                )
+                .unwrap_or(0.0)
+            };
+            (of(Prop::X, parent.w), of(Prop::Y, parent.h))
+        };
+        let written = offsets(&props);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
+        let sprung = offsets(&props);
         let play = self
             .anim
             .keyframes(node, &mut props, inherited, Some(laid), parent);
@@ -274,10 +287,27 @@ impl<'a> Flattener<'a> {
         // Geometry: the laid-out box, moved by the paint offsets (`x`,
         // `y`, and a FLIP glide) of this node and its ancestors. A
         // percentage is of the parent's box, as CSS insets are.
+        // A paint offset in flight is drawn whole logical pixels from
+        // where it rests, as layout places boxes: a box whose offset
+        // springs with its size (centred as it grows) keeps its content
+        // still, its content moves as one, and a spring's tail between
+        // pixels draws its rest (never a pixel off for a frame as it
+        // settles). A drag follows the pointer as it is.
+        let whole = |d: f32| d.round() - d;
         let glide = self.anim.offset(node.id);
+        let glide = if self.anim.lifted(node.id) {
+            glide
+        } else {
+            (glide.0 + whole(glide.0), glide.1 + whole(glide.1))
+        };
+        let settle = |p: Prop, d: f32| if get(p).is_some() { whole(d) } else { 0.0 };
         let mut own = (
-            length(get(Prop::X), parent.w).unwrap_or(0.0) + glide.0,
-            length(get(Prop::Y), parent.h).unwrap_or(0.0) + glide.1,
+            length(get(Prop::X), parent.w).unwrap_or(0.0)
+                + settle(Prop::X, sprung.0 - written.0)
+                + glide.0,
+            length(get(Prop::Y), parent.h).unwrap_or(0.0)
+                + settle(Prop::Y, sprung.1 - written.1)
+                + glide.1,
         );
         if let Some(m) = shared {
             own = (own.0 + m[0], own.1 + m[1]);

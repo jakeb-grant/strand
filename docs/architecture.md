@@ -1761,7 +1761,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   laid out: `Renderer::last_layout_nodes`). Other
   layout lengths snap and the boxes they move glide (FLIP), as do the
   siblings of created, removed and moved nodes and every box after a
-  `SetTokens`; text changes never glide. A target changed by tokens or
+  `SetTokens`; text changes never glide. A paint offset in flight (an
+  `x`/`y` spring, a glide) is drawn whole logical pixels from its rest,
+  as layout places boxes, so content moves as one and a spring's tail
+  draws its rest; a lifted node's held offset (a drag) is drawn as it
+  is. A target changed by tokens or
   inheritance snaps at rest and steers a motion in flight. `scale` and
   `rotate` (a `PropValue::Angle` in degrees, as the compiler sends it
   and every rotate sample is; a bare number reads as degrees) draw the
