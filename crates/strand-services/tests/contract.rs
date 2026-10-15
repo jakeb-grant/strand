@@ -1278,6 +1278,63 @@ fn a_held_write_committing_after_its_run_ended_starts_one() {
     s.shutdown();
 }
 
+/// What ends a `gated` run: the run fails when it is sent (or dropped).
+static GATED: Mutex<Option<tokio::sync::oneshot::Receiver<()>>> = Mutex::new(None);
+
+/// A service with `available`: up and answering until the test ends its
+/// run with an error (a hung daemon, the bus connection gone).
+#[service(name = "gated", schema = "service gated { available: bool\n n: int }")]
+#[derive(Store, Clone, Debug, Default, PartialEq)]
+pub struct Gated {
+    pub available: bool,
+    pub n: i64,
+}
+
+impl Gated {
+    async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+        cx.update(|s| {
+            s.available = true;
+            s.n = 7;
+        });
+        cx.ready();
+        let rx = GATED.lock().unwrap().take();
+        if let Some(rx) = rx {
+            let _ = rx.await;
+        }
+        Err("the bus connection ended".into())
+    }
+}
+
+/// (m6-owner-fixes review, gap 20) A run that said `available: true` and
+/// then fails backs off reading `available` false, as it answers nothing
+/// meanwhile (spec.md 12); its other fields keep their last values, and
+/// a run that comes up says true again.
+#[test]
+fn a_failed_run_is_not_available_while_it_backs_off() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (end, rx) = tokio::sync::oneshot::channel();
+    *GATED.lock().unwrap() = Some(rx);
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let gated = s.register::<Gated>(&rt);
+    gated.acquire(&rt);
+    until(&rt, &s, "the run answers", || {
+        gated.cells().available.get_untracked(&rt) == Ok(true)
+    });
+    let _ = end.send(());
+    until(&rt, &s, "the run fails", || !gated.running());
+    assert_eq!(gated.cells().available.get_untracked(&rt), Ok(false));
+    assert_eq!(gated.cells().n.get_untracked(&rt), Ok(7), "kept");
+    // The retry (no gate: it says true, then fails again).
+    let next = rt.next_deadline().expect("a retry");
+    rt.tick(next);
+    until(&rt, &s, "the retry answers", || gated.starts() == 2);
+    until(&rt, &s, "and fails", || {
+        !gated.running() && gated.cells().available.get_untracked(&rt) == Ok(false)
+    });
+    s.shutdown();
+}
+
 /// A service that says it is ready and fails at once.
 #[service(name = "flaky", schema = "service flaky { n: int }")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]

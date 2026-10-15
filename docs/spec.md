@@ -1441,8 +1441,9 @@ people can edit by hand.
   would; a write to such a service is dropped and logged, the field
   keeping the service's last value. Where a daemon may be missing,
   `available` says whether it answers (`network`, `bluetooth`,
-  `session`, `brightness`), so a config can hide what cannot work
-  (decisions.md m6-owner-fixes, gap 20).
+  `session`, `brightness`), false too while a failed service waits to
+  try again, so a config can hide what cannot work (decisions.md
+  m6-owner-fixes, gap 20).
 
 ## 13. The command line and IPC
 

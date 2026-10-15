@@ -1025,6 +1025,9 @@ impl<S: Service> ClientInner<S> {
         }
         // Writes it never answered never will be.
         self.cells.forget_echoes(rt);
+        if failed {
+            self.unavailable(rt);
+        }
         if failed && self.refs.get() > 0 {
             // Only a run that stayed up resets the backoff: one that fails
             // right after saying it is ready (a daemon missing or
@@ -1033,6 +1036,33 @@ impl<S: Service> ClientInner<S> {
                 self.failures.set(0);
             }
             self.arm_retry(rt);
+        }
+    }
+
+    /// (M6, owner-testing gap 20) The run failed: a service with an
+    /// `available: bool` field (`network`, `bluetooth`, `session`,
+    /// `brightness`) does not answer until a run says it does again, so
+    /// the field takes its default, false, as before any run (spec.md
+    /// 12: `available` says whether it answers). Every other field keeps
+    /// the service's last value.
+    fn unavailable(&self, rt: &Runtime) {
+        let Some(i) = S::FIELDS
+            .iter()
+            .position(|f| f.name == "available" && (f.ty)() == "bool")
+        else {
+            return;
+        };
+        let Some(patch) = S::default().field_patch(i) else {
+            return;
+        };
+        match self.cells.apply(rt, &patch, How::Report(None)) {
+            Ok(Some(applied)) => {
+                for o in self.observers.borrow().iter() {
+                    o(rt, &applied);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("{}: {e}", self.name),
         }
     }
 
