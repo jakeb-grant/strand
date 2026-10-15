@@ -137,6 +137,20 @@ while a reader is visible.
 | `free` | `float` | The root filesystem's bytes free to a user. |
 | `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
 
+## `keyboard`
+
+The keyboard's lock keys and layout. While a Strand surface has
+keyboard focus (a lock screen, a launcher) they are that keyboard's
+own, exact as keys are pressed; otherwise the lock keys come from the
+kernel's keyboard lights, read while a visible reader shows them, and
+the layout from the compositor (Hyprland, sway, niri).
+
+| Field | Type | |
+| --- | --- | --- |
+| `caps_lock` | `bool` | Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`. False when nothing reports it. |
+| `num_lock` | `bool` | Num Lock is on. |
+| `layout` | `text?` | The active layout's name as the keymap names it (`English (US)`), null when unknown: `text keyboard.layout ?? ""`. |
+
 ## `media`
 
 The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`

@@ -4361,6 +4361,18 @@ and the connection):
     grabbed). The private MIME type starts with `dnd::STRAND_MIME`, so
     another Strand process's drag is recognised and read through its
     exports as a `DropPayload::External`.
+- **M6, gap 31** (decisions.md m6-service-gaps): a no-op-default hook
+  `SurfaceHost::keyboard_state(Option<&KeyboardState>)` and `pub struct
+  KeyboardState { caps_lock, num_lock, layout: Option<String> }`
+  (re-exported from `lib.rs`). `seat.rs` keeps the keyboard that entered
+  the focused surface, its keymap's layout names (`update_keymap`,
+  compiled with xkbcommon 0.8, the release SCTK links, without default
+  includes or environment names) and its locked or held `Lock` and
+  `Mod2`; it reports them when they change while one of ours has the
+  keys (`enter`, `update_modifiers`, `update_keymap`), and `None` on
+  `leave`, when that surface goes (`layer.rs`'s destroy, the lock's
+  refocus) or the seat loses its keyboard. The binary's host forwards it
+  to `strand_services::keyboard::focused`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -5015,7 +5027,17 @@ transparent huge pages for life.
   time, every 10 s only while a reader is visible;
   `disk::configure(Option<disk::Config { mountinfo, period }>)` points
   it at a fixture and a short period in tests, `disk::samples()` counts
-  its samples), and the D-Bus services (wave 4, a2):
+  its samples), `keyboard` (M6, gap 31: `caps_lock`, `num_lock` and
+  `layout`, stream fields; first what `keyboard::focused(Option<Focused>)`
+  holds, which the binary's host sets from strand-surface's
+  `SurfaceHost::keyboard_state`; else the lock keys from the kernel's
+  LEDs, `<sys>/class/leds/*::capslock` and `*::numlock`, read every
+  `keyboard::LED_PERIOD` (250 ms) only while a visible reader shows one
+  and no focused report holds, and the layout from the shared hub's
+  `WmChange::KeyboardLayout`, subscribed only while `layout` is watched;
+  `keyboard::configure(Option<keyboard::Config { sys, led_period }>)`
+  points it at fake LEDs in tests, `keyboard::led_reads()` counts the
+  reads), and the D-Bus services (wave 4, a2):
   `battery` (UPower's display device and devices), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's
   `SetBrightness`; `brightness::set_backlight_root` /
@@ -5331,6 +5353,17 @@ transparent huge pages for life.
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
+  (M6, gap 31) `WmState::keyboard_layout: Option<String>` is the
+  compositor's name for the active keyboard layout, published as
+  `WmChange::KeyboardLayout` (and in the hub's replay) for the
+  `keyboard` service: Hyprland's `j/devices` (the `main` keyboard's
+  `active_keymap`, else the first's) read at connection and after a
+  reload, then `activelayout>>` events (the name after the first
+  comma); sway's `GET_INPUTS` at connection (the first keyboard's
+  `xkb_active_layout_name`) and `input` events (`xkb_layout`,
+  `xkb_keymap`, `added` while none is known); niri's
+  `KeyboardLayoutsChanged` and `KeyboardLayoutSwitched` from its event
+  stream. A failed read leaves it `None` and degrades nothing.
   (M6 wave 2, m6-w2-services) `WmState::configured` holds the workspaces
   the compositor's config places on a screen that do not exist yet
   (Hyprland's numbered `j/workspacerules` with a monitor that is on,

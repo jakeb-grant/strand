@@ -31,9 +31,12 @@
 # A new empty workspace (id 5) appears below "chat"; indices shift.
 {"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":null,"output":"DP-1","is_urgent":true,"is_active":false,"is_focused":false,"active_window_id":10},{"id":2,"idx":2,"name":"chat","output":"DP-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":12},{"id":5,"idx":3,"name":null,"output":"DP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},{"id":3,"idx":4,"name":null,"output":"DP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null},{"id":4,"idx":1,"name":null,"output":"HDMI-A-1","is_urgent":false,"is_active":true,"is_focused":false,"active_window_id":null}]}}
 
+## layout
+# The keyboard layout switched to the second, German (gap 31).
+{"KeyboardLayoutSwitched":{"idx":1}}
+
 ## unknown
 # Events this adapter does not know (a later niri): ignored.
-{"KeyboardLayoutSwitched":{"idx":1}}
 {"ScreenshotCaptured":{"path":"/home/u/Pictures/Screenshots/Screenshot from 2026-10-06 10-00-00.png"}}
 {"SomethingFromALaterNiri":{"field":1}}
 

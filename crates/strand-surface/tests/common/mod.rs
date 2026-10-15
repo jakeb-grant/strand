@@ -348,6 +348,8 @@ pub struct TestHost {
     /// only `input_only`, when set).
     pub input_rects: Option<Vec<LogicalRect>>,
     pub input_only: Option<SurfaceId>,
+    /// (gap 31) What [`SurfaceHost::keyboard_state`] was told, in order.
+    pub keyboard_states: Vec<Option<strand_surface::KeyboardState>>,
 }
 
 impl TestHost {
@@ -571,6 +573,10 @@ impl SurfaceHost for TestHost {
 
     fn lock_changed(&mut self, state: strand_surface::LockState) {
         self.locks.push(state);
+    }
+
+    fn keyboard_state(&mut self, state: Option<&strand_surface::KeyboardState>) {
+        self.keyboard_states.push(state.cloned());
     }
 }
 

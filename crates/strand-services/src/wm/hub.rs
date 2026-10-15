@@ -319,6 +319,7 @@ impl Inner {
             out.push(WmChange::Configured(vec![VecDiff::Reset {
                 items: m.configured.clone(),
             }]));
+            out.push(WmChange::KeyboardLayout(m.keyboard_layout.clone()));
         }
         if self.has_sources {
             out.push(WmChange::Sources(self.mirror.sources.clone()));
@@ -558,6 +559,36 @@ mod tests {
         assert_eq!(m, reference, "the coalesced stream rebuilds the state");
         assert_eq!(m.reloads.len(), 4, "no reload is lost");
         assert_eq!(m.reloads[2], Some(true));
+    }
+
+    /// The keyboard layout is state (gap 31): a store that joins a
+    /// running hub gets it at once, and a switch reaches every store as
+    /// one change.
+    #[tokio::test]
+    async fn a_late_subscriber_gets_the_keyboard_layout() {
+        let hub = WmHub::new(WmConfig::default(), Handle::current());
+        let mut a = hub.subscribe();
+        let mut sink = hub.sink_for(1);
+        let mut publisher = Publisher::new();
+        let mut s = state(1);
+        s.keyboard_layout = Some("German".into());
+        sink(publisher.publish(s.clone()));
+        let mut b = hub.subscribe();
+        let mut mb = Mirror::default();
+        drain(&mut b, &mut mb);
+        assert_eq!(mb.keyboard_layout.as_deref(), Some("German"));
+        s.keyboard_layout = Some("English (US)".into());
+        let batch = publisher.publish(s);
+        assert_eq!(
+            batch,
+            [WmChange::KeyboardLayout(Some("English (US)".into()))]
+        );
+        sink(batch);
+        let mut ma = Mirror::default();
+        drain(&mut a, &mut ma);
+        drain(&mut b, &mut mb);
+        assert_eq!(ma, mb);
+        assert_eq!(mb.keyboard_layout.as_deref(), Some("English (US)"));
     }
 
     /// A hub made with [`WmHub::fresh`] detects the compositor at each

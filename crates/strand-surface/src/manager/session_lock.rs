@@ -571,6 +571,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         if refocus && let Some(id) = self.session_lock.content {
             self.keyboard_focus = Some(id);
             self.send_input(crate::InputEvent::KeyboardEnter { surface: id });
+            // (gap 31) The same keyboard: its state again.
+            self.report_keyboard();
         }
         let missing: Vec<u32> = self
             .outputs

@@ -99,6 +99,11 @@ pub(crate) struct State {
     /// The stream's first `ConfigLoaded` reports the last load, not a
     /// reload.
     pub seen_config: bool,
+    /// The keyboard layouts' names and the active one's index
+    /// (`KeyboardLayoutsChanged`, which every stream starts with, then
+    /// `KeyboardLayoutSwitched`; gap 31). Only the stream tells them.
+    pub layouts: Vec<String>,
+    pub layout_idx: usize,
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(v: &Value) -> Option<T> {
@@ -131,7 +136,7 @@ impl State {
             windows: parse_reply("Windows", windows)?,
             focused_output: parse_reply::<Option<NOutput>>("FocusedOutput", focused_output)?
                 .map(|o| o.name),
-            seen_config: false,
+            ..Self::default()
         })
     }
 
@@ -139,8 +144,12 @@ impl State {
     /// stream tells.
     fn reread(&mut self, fresh: Self) {
         let seen_config = self.seen_config;
+        let layouts = std::mem::take(&mut self.layouts);
+        let layout_idx = self.layout_idx;
         *self = fresh;
         self.seen_config = seen_config;
+        self.layouts = layouts;
+        self.layout_idx = layout_idx;
     }
 
     /// Applies one event line's JSON (`{"Name": {fields}}`).
@@ -276,10 +285,45 @@ impl State {
                     Effect::None
                 }
             }
-            // Layouts, keyboard layouts, overview, casts, screenshots and
-            // whatever later versions add.
+            "KeyboardLayoutsChanged" => {
+                #[derive(Deserialize)]
+                struct Layouts {
+                    names: Vec<String>,
+                    current_idx: usize,
+                }
+                let Some(l) = body.get("keyboard_layouts").and_then(parse::<Layouts>) else {
+                    return Effect::Requery;
+                };
+                let before = self.keyboard_layout();
+                self.layouts = l.names;
+                self.layout_idx = l.current_idx;
+                if self.keyboard_layout() == before {
+                    Effect::None
+                } else {
+                    Effect::Changed
+                }
+            }
+            "KeyboardLayoutSwitched" => {
+                let Some(idx) = body.get("idx").and_then(Value::as_u64) else {
+                    return Effect::Requery;
+                };
+                let before = self.keyboard_layout();
+                self.layout_idx = usize::try_from(idx).unwrap_or(usize::MAX);
+                if self.keyboard_layout() == before {
+                    Effect::None
+                } else {
+                    Effect::Changed
+                }
+            }
+            // Window layouts, overview, casts, screenshots and whatever
+            // later versions add.
             _ => Effect::None,
         }
+    }
+
+    /// The active keyboard layout's name, when niri said.
+    pub(crate) fn keyboard_layout(&self) -> Option<String> {
+        self.layouts.get(self.layout_idx).cloned()
     }
 
     pub(crate) fn snapshot(&self) -> IpcSnapshot {
@@ -326,6 +370,7 @@ impl State {
                 // niri's named workspaces (`workspace "web" {
                 // open-on-output … }`) always exist: they are in `all`.
                 configured: Vec::new(),
+                keyboard_layout: self.keyboard_layout(),
             },
             toplevel_ids: Vec::new(),
             // niri's `Window` says neither maximized nor fullscreen: they
@@ -741,6 +786,43 @@ mod tests {
         assert!(!s.snapshot().state.windows[0].focused);
         assert_eq!(ev(&mut s, r#"{"WindowClosed":{"id":7}}"#), Effect::Changed);
         assert!(s.snapshot().state.windows.is_empty());
+
+        // The keyboard layouts (gap 31): the names and the active one,
+        // then each switch; a re-read keeps them.
+        assert_eq!(s.snapshot().state.keyboard_layout, None);
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"KeyboardLayoutsChanged":{"keyboard_layouts":{"names":["English (US)","German"],"current_idx":0}}}"#
+            ),
+            Effect::Changed
+        );
+        assert_eq!(
+            s.snapshot().state.keyboard_layout.as_deref(),
+            Some("English (US)")
+        );
+        assert_eq!(
+            ev(&mut s, r#"{"KeyboardLayoutSwitched":{"idx":1}}"#),
+            Effect::Changed
+        );
+        assert_eq!(
+            ev(&mut s, r#"{"KeyboardLayoutSwitched":{"idx":1}}"#),
+            Effect::None
+        );
+        assert_eq!(
+            ev(&mut s, r#"{"KeyboardLayoutSwitched":{"index":1}}"#),
+            Effect::Requery
+        );
+        s.reread(State::default());
+        assert_eq!(
+            s.snapshot().state.keyboard_layout.as_deref(),
+            Some("German")
+        );
+        assert_eq!(
+            ev(&mut s, r#"{"KeyboardLayoutSwitched":{"idx":7}}"#),
+            Effect::Changed
+        );
+        assert_eq!(s.snapshot().state.keyboard_layout, None);
     }
 
     /// An event the adapter knows whose data has another shape asks for a
@@ -938,9 +1020,14 @@ mod tests {
                 _ => None,
             };
             if let Some(dir) = checkpoint {
+                // The keyboard layouts come from the stream alone: a
+                // re-read keeps them (`State::reread`).
+                let mut fresh = s.clone();
+                fresh.reread(from_captured_replies(dir));
+                assert_eq!(s.keyboard_layout().as_deref(), Some("English (US)"));
                 assert_eq!(
                     s.snapshot(),
-                    from_captured_replies(dir).snapshot(),
+                    fresh.snapshot(),
                     "after `{name}`: the events and the replies in {dir}/"
                 );
                 checked.push(dir);

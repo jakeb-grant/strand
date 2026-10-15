@@ -1220,6 +1220,16 @@ impl SurfaceHost for Host {
         }
     }
 
+    /// (gap 31) The focused surface's keyboard, for `keyboard`: exact
+    /// while one of ours (the lock screen, a launcher) has the keys.
+    fn keyboard_state(&mut self, state: Option<&strand_surface::KeyboardState>) {
+        strand_services::keyboard::focused(state.map(|s| strand_services::keyboard::Focused {
+            caps_lock: s.caps_lock,
+            num_lock: s.num_lock,
+            layout: s.layout.clone(),
+        }));
+    }
+
     fn input(&mut self, event: &InputEvent) {
         // (m6-owner-fixes, B-d) The pointer taken onto a popup under it.
         if let Some(events) = self.rebase_event(event) {

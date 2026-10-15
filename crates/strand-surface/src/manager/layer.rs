@@ -292,6 +292,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             // A compositor may skip the leave for a destroyed surface:
             // the release would then never reach us.
             self.stop_repeat();
+            self.report_keyboard();
         }
         self.cancel_deadline(id);
         self.cancel_give_up(id);

@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod hyprland;
+pub mod keyboard;
 pub mod window;
 
 use std::collections::HashMap;

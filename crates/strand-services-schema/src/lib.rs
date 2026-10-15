@@ -47,6 +47,8 @@ pub const SESSION: &str = include_str!("session.schema");
 pub const OUTPUTS: &str = include_str!("outputs.schema");
 /// `disk`: the mounted filesystems' usage (`statvfs`).
 pub const DISK: &str = include_str!("disk.schema");
+/// `keyboard`: the lock keys and the layout.
+pub const KEYBOARD: &str = include_str!("keyboard.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -70,5 +72,6 @@ pub fn schemas() -> Vec<&'static str> {
         SESSION,
         OUTPUTS,
         DISK,
+        KEYBOARD,
     ]
 }

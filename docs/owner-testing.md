@@ -882,6 +882,33 @@ findings only.
     `place: absolute`; no per-child `align_self` is added
     (`crates/strand-render/tests/layout.rs::a_stacks_align_places_every_child_on_both_axes`).
     decisions.md m6-owner-fixes.
+31. **No Caps Lock warning on the lock screen, and no layout indicator.**
+    (fixed, 2026-10-15; found 2026-10-15 by surveying the owner's
+    quickshell config) The owner's lock screen warns while Caps Lock is
+    on and the bar shows the keyboard layout; Strand had no way to know
+    either. **Fixed; pending the owner's check on Hyprland**: a builtin
+    `keyboard` with `caps_lock`, `num_lock` and `layout` (`English
+    (US)`, null when unknown). While one of Strand's surfaces has the
+    keyboard (the lock screen, a launcher) they are that keyboard's own,
+    exact as keys are pressed; otherwise the lock keys come from the
+    kernel's keyboard lights, read every 250 ms only while a visible
+    reader shows them, and the layout from Hyprland, sway or niri.
+    Owner question, answered with the recommended reading (overrule it
+    if you disagree): polling the lights is acceptable, as there is no
+    event for them, and a focused surface needs no polling
+    (`crates/strand/tests/lock.rs::the_lock_warns_while_caps_lock_is_on`,
+    lock VM only,
+    `crates/strand/tests/demo.rs::a_focused_surface_shows_caps_lock`,
+    `crates/strand-surface/tests/sway.rs::a_focused_surface_reports_its_lock_keys_and_layout`,
+    `crates/strand-services/tests/keyboard.rs::the_lock_keys_follow_the_keyboard_lights_while_read`,
+    `::a_focused_surfaces_keyboard_state_wins`,
+    `::the_layout_comes_from_the_compositor`,
+    `crates/strand-services/tests/sway.rs::sways_layout_is_the_active_keyboards`,
+    `::sways_keyboard_layout_follows_its_input_events`,
+    `crates/strand-services/tests/hyprland.rs::hyprland_adapter_follows_replayed_traffic`,
+    `crates/strand-services/tests/niri.rs::niri_adapter_follows_replayed_traffic`,
+    `crates/strand-compiler/tests/checker.rs::keyboard_is_a_lock_screens_caps_lock_warning`).
+    decisions.md m6-service-gaps.
 32. **A player's buttons cannot tell what the player can do.** (fixed,
     2026-10-15; found 2026-10-15 by surveying the owner's quickshell
     config) The owner's media controls dim "previous", "next" and the

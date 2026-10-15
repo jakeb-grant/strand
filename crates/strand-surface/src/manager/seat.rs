@@ -85,6 +85,36 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.keyboard_focus
     }
 
+    /// (gap 31) Tells the host the focused surface's keyboard state when
+    /// it changed: the lock keys and layout of the keyboard that entered
+    /// it, or `None` once none of the surfaces has the keyboard (or before
+    /// its keyboard reported modifiers).
+    pub(super) fn report_keyboard(&mut self) {
+        let focused = self.keyboard_focus.or(self.grab_focus).is_some();
+        let state = self
+            .focus_keyboard
+            .as_ref()
+            .filter(|_| focused)
+            .and_then(|k| {
+                let (caps_lock, num_lock, layout) = *self.lock_keys.get(k)?;
+                let layout = self
+                    .layout_names
+                    .get(k)
+                    .and_then(|names| names.get(layout as usize))
+                    .filter(|n| !n.is_empty())
+                    .cloned();
+                Some(KeyboardState {
+                    caps_lock,
+                    num_lock,
+                    layout,
+                })
+            });
+        if state != self.keyboard_reported {
+            self.keyboard_reported.clone_from(&state);
+            self.host.keyboard_state(state.as_ref());
+        }
+    }
+
     /// True while layer surface `id` is `exclusive` because a grabbing
     /// popup of its is open (see `sync_popup_keyboard`).
     pub fn holds_keyboard_for_popup(&self, id: SurfaceId) -> bool {
@@ -142,6 +172,29 @@ pub(super) fn key_name(sym: Keysym) -> String {
         Some(n) => n.strip_prefix("XK_").unwrap_or(n).to_string(),
         None => format!("0x{:x}", sym.raw()),
     }
+}
+
+/// (gap 31) The layout names of a keymap, by layout index (`""` for one
+/// it does not name): compiled again from its text, as SCTK hands the
+/// keymap only for the call. A keymap that does not compile names none.
+pub(super) fn layout_names(text: &str) -> Vec<String> {
+    use xkbcommon::xkb;
+    if text.contains('\0') {
+        return Vec::new();
+    }
+    let context =
+        xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES | xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
+    let Some(keymap) = xkb::Keymap::new_from_string(
+        &context,
+        text.to_string(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::COMPILE_NO_FLAGS,
+    ) else {
+        return Vec::new();
+    };
+    (0..keymap.num_layouts())
+        .map(|i| keymap.layout_get_name(i).to_string())
+        .collect()
 }
 
 /// The time between repeats at `rate` keys a second, at least 1 ms: the
@@ -224,6 +277,11 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
             for k in &gone {
                 self.repeat_info.remove(k);
                 self.raw_modifiers.remove(k);
+                self.layout_names.remove(k);
+                self.lock_keys.remove(k);
+                if self.focus_keyboard.as_ref() == Some(k) {
+                    self.focus_keyboard = None;
+                }
             }
             self.keyboards.retain(|(s, k)| {
                 let keep = *s != seat;
@@ -232,6 +290,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                 }
                 keep
             });
+            self.report_keyboard();
         }
     }
 
@@ -397,13 +456,14 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         surface: &wl_surface::WlSurface,
         _: u32,
         _: &[u32],
         _: &[Keysym],
     ) {
         if let Some(id) = self.keyboard_target(surface) {
+            self.focus_keyboard = Some(keyboard.id());
             log::trace!("keyboard enter {id:?} (grab focus {:?})", self.grab_focus);
             self.releasing.remove(&id);
             if self.held_leave == Some(id) {
@@ -414,6 +474,9 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
+            // Its modifiers follow the enter; a keyboard that reported
+            // them before is told at once.
+            self.report_keyboard();
         }
     }
 
@@ -455,6 +518,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         if let Some(id) = id {
             self.send_input(InputEvent::KeyboardLeave { surface: id });
         }
+        self.report_keyboard();
     }
 
     fn press_key(
@@ -544,12 +608,46 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             shift: m.shift,
             logo: m.logo,
         };
+        self.lock_keys.insert(id, (m.caps_lock, m.num_lock, layout));
+        self.report_keyboard();
+    }
+
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        keyboard: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        self.layout_names
+            .insert(keyboard.id(), layout_names(&keymap.as_string()));
+        self.report_keyboard();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (gap 31) A keymap's layouts by index, named or not; text that is
+    /// no keymap names none.
+    #[test]
+    fn a_keymaps_layouts_are_named_by_index() {
+        let keymap = "xkb_keymap {\n\
+            xkb_keycodes \"t\" { minimum = 8; maximum = 255; <ESC> = 9; };\n\
+            xkb_types \"t\" { type \"ONE_LEVEL\" { modifiers = none; level_name[Level1] = \"Any\"; }; };\n\
+            xkb_compatibility \"t\" { };\n\
+            xkb_symbols \"t\" { name[Group1] = \"English (US)\"; name[Group2] = \"German\";\n\
+              key <ESC> { symbols[Group1] = [ Escape ], symbols[Group2] = [ Escape ] }; };\n\
+            };\n";
+        assert_eq!(layout_names(keymap), ["English (US)", "German"]);
+        let unnamed = keymap
+            .replace("name[Group1] = \"English (US)\"; ", "")
+            .replace("name[Group2] = \"German\";", "");
+        assert_eq!(layout_names(&unnamed), ["", ""]);
+        assert!(layout_names("not a keymap").is_empty());
+        assert!(layout_names("xkb_keymap {\0").is_empty());
+    }
 
     #[test]
     fn the_repeat_interval_never_busy_loops() {

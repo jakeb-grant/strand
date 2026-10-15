@@ -308,7 +308,10 @@ filling the monitor, the keyboard always).
   service's `message` and `prompt` hold PAM's latest text and the hidden
   prompt it waits on, as PAM says them, so a module that needs no
   password (a fingerprint reader) can unlock, and `auth.submit` answers
-  the prompt PAM waits on, or the next one it asks.
+  the prompt PAM waits on, or the next one it asks. The lock has the
+  keyboard, so `keyboard.caps_lock`, `keyboard.num_lock` and
+  `keyboard.layout` are its keyboard's own, exact as keys are pressed:
+  `if keyboard.caps_lock { text "Caps Lock is on" }`.
 
 ### 5.2 Components and slot
 

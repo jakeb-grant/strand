@@ -39,3 +39,12 @@ rule's `workspaceString`, `enabled`, `monitor` and `default` only when
 set), with this scenario's monitors: numbered rules on DP-1 and
 HDMI-A-1 (one by `desc:`) and a named rule. It does not change with the
 scene.
+
+devices.json (m6-service-gaps, gap 31) is j/devices in the shape and
+formatting a live Hyprland 0.56.2 answers it (the owner's, 2026-10-15,
+read only for its shape; `devicesRequest` in src/debug/HyprCtl.cpp:
+mice, keyboards, tablets, touch, switches, objects joined by
+"},    {"), with this scenario's devices made up: three keyboards, the
+main one (`main: true`) second and on its second layout (German), the
+others on English (US). The `layout` burst's `activelayout` switches a
+keyboard to English (US). It does not change with the scene.

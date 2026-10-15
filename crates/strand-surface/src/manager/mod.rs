@@ -19,7 +19,7 @@ use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers as XkbModifiers, RawModifiers, RepeatInfo,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
@@ -258,6 +258,27 @@ pub trait SurfaceHost: Painter {
     fn press_serial(&mut self, serial: u32) {
         let _ = serial;
     }
+    /// (M6, gap 31) The keyboard state of the surface with keyboard
+    /// focus, when it changes: the lock keys from its `wl_keyboard`'s
+    /// modifiers and the keymap's name for the active layout, exact as
+    /// keys are pressed; `None` once none of the surfaces has the
+    /// keyboard. The binary hands it to `strand_services::keyboard`.
+    fn keyboard_state(&mut self, state: Option<&KeyboardState>) {
+        let _ = state;
+    }
+}
+
+/// (M6, gap 31) The keyboard of the focused surface, as
+/// [`SurfaceHost::keyboard_state`] reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyboardState {
+    /// Caps Lock is on (the `Lock` modifier is locked or held).
+    pub caps_lock: bool,
+    /// Num Lock is on (`Mod2`).
+    pub num_lock: bool,
+    /// The keymap's name for the active layout (`English (US)`), if it
+    /// names one.
+    pub layout: Option<String>,
 }
 
 /// (M4) The session lock as the compositor reports it.
@@ -793,6 +814,15 @@ pub struct State<H: SurfaceHost + 'static> {
     /// latched, locked, layout): a change on the repeating key's keyboard
     /// stops it, since its text was computed with the old one.
     raw_modifiers: HashMap<ObjectId, (u32, u32, u32, u32)>,
+    /// (gap 31) Each keyboard's keymap's layout names, by layout index.
+    layout_names: HashMap<ObjectId, Vec<String>>,
+    /// (gap 31) Each keyboard's lock keys and active layout (Caps Lock,
+    /// Num Lock, layout index), from its last `modifiers`.
+    lock_keys: HashMap<ObjectId, (bool, bool, u32)>,
+    /// (gap 31) The keyboard that entered the focused surface.
+    focus_keyboard: Option<ObjectId>,
+    /// (gap 31) What [`SurfaceHost::keyboard_state`] was last told.
+    keyboard_reported: Option<KeyboardState>,
     /// The surface with keyboard focus, and the modifiers held.
     keyboard_focus: Option<SurfaceId>,
     modifiers: Modifiers,
@@ -1030,6 +1060,10 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             repeat_info: HashMap::new(),
             key_repeat: None,
             raw_modifiers: HashMap::new(),
+            layout_names: HashMap::new(),
+            lock_keys: HashMap::new(),
+            focus_keyboard: None,
+            keyboard_reported: None,
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,

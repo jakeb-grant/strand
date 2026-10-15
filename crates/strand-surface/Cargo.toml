@@ -22,6 +22,10 @@ wayland-backend = { version = "0.3.17", optional = true }
 # (the lib only: libc and zeroize; the helper alone links libpam).
 strand-auth.workspace = true
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
+# (gap 31) The keymap's layout names for `keyboard.layout`: the version
+# SCTK's `xkbcommon` feature already links (0.9.0 is out; this builds no
+# second copy).
+xkbcommon = { version = "0.8.0", default-features = false }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 calloop = "0.14.5"

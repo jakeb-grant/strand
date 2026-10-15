@@ -32,7 +32,9 @@
 //! and [`session`] (logind: suspend, reboot, power off, lock, log out);
 //! and [`outputs`] (the monitors' configuration, wlr-output-management);
 //! and [`disk`] (the mounted filesystems' usage, `statvfs`, sampled every
-//! 10 s while a reader is visible).
+//! 10 s while a reader is visible); and [`keyboard`] (the lock keys and
+//! the layout: a focused surface's keyboard, the kernel's lights, the
+//! compositor).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -61,6 +63,7 @@ pub mod dbus;
 pub mod disk;
 pub mod icon_theme;
 pub mod ipc_bus;
+pub mod keyboard;
 pub mod media;
 pub mod memory;
 pub mod network;
@@ -114,6 +117,7 @@ pub struct Builtin {
     pub session: Client<session::Session>,
     pub outputs: Client<outputs::Outputs>,
     pub disk: Client<disk::Disk>,
+    pub keyboard: Client<keyboard::Keyboard>,
 }
 
 impl Builtin {
@@ -140,6 +144,7 @@ impl Builtin {
             session: services.register(rt),
             outputs: services.register(rt),
             disk: services.register(rt),
+            keyboard: services.register(rt),
         }
     }
 
@@ -166,6 +171,7 @@ impl Builtin {
             self.session.dynamic(),
             self.outputs.dynamic(),
             self.disk.dynamic(),
+            self.keyboard.dynamic(),
         ]
     }
 }

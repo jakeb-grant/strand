@@ -412,6 +412,8 @@ pub(crate) fn merge_with(
                 windows,
                 focused_screen: keyboard_screen,
                 configured: Vec::new(),
+                // The protocols tell no layout.
+                keyboard_layout: None,
             }
         }
     };

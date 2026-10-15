@@ -3371,3 +3371,23 @@ fn icon_names_of_the_config_icons_folder_are_not_warned() {
     assert_eq!(w.len(), 1, "{w:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (M6, owner-testing gap 31) A lock screen's Caps Lock warning and
+/// layout, and a bar's lock-key indicators, check clean against the
+/// `keyboard` builtin.
+#[test]
+fn keyboard_is_a_lock_screens_caps_lock_warning() {
+    assert_eq!(
+        codes(
+            "export state locked = false\nlock Gate {\n  state secret = \"\"\n  open: <-> locked\n  \
+             when keyboard.caps_lock { bg: $accent }\n  \
+             input { type: password; text: <-> secret; focus: true\n    \
+             on activate { auth.submit(secret); secret = \"\" }\n  }\n  \
+             if keyboard.caps_lock { text \"Caps Lock is on\" }\n  \
+             text keyboard.layout ?? \"\"\n}\n\
+             bar B {\n  row {\n    if keyboard.num_lock { text \"Num\" }\n    \
+             text keyboard.layout ?? \"?\"\n  }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}

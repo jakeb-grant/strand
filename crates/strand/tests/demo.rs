@@ -2794,3 +2794,62 @@ fn strand_run_drags_from_one_surface_to_another() {
     assert_eq!(px(50, 10), red, "the source left its bar");
     drop(strand);
 }
+
+/// (gap 31) `keyboard.caps_lock` on a surface with keyboard focus is
+/// that keyboard's own, as the lock screen's warning needs: `strand run`
+/// on a config whose `keyboard: exclusive` panel is blue, red while Caps
+/// Lock is on. A virtual keyboard locks Caps Lock: red; unlocks it: blue
+/// again. No lights in the container, so the focused keyboard is the
+/// only source.
+#[test]
+fn a_focused_surface_shows_caps_lock() {
+    let Some(sway) = Sway::start_as("caps") else {
+        return;
+    };
+    let config = sway.dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("caps.strand"),
+        "panel Warn {\n  anchor: center; layer: overlay; keyboard: exclusive; open: true\n  \
+         box { width: 300; height: 200; bg: #0000ff\n    \
+         when keyboard.caps_lock { bg: #ff0000 }\n  }\n}\n",
+    )
+    .unwrap();
+    // The keyboard first, so the seat has one when the panel maps.
+    let mut keys = keyboard::Keyboard::new(&sway.dir.join(&sway.display), &sway.dir);
+    let log = sway.dir.join("strand.log");
+    let child = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&config)
+        .env("XDG_RUNTIME_DIR", &sway.dir)
+        .env("XDG_CACHE_HOME", sway.dir.join("cache"))
+        .env("XDG_STATE_HOME", sway.dir.join("state"))
+        .env("WAYLAND_DISPLAY", &sway.display)
+        .stdin(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut strand = Proc(child);
+    const BLUE: [u8; 3] = [0, 0, 0xff];
+    const RED: [u8; 3] = [0xff, 0, 0];
+    let centre = |strand: &mut Proc, want: [u8; 3], what: &str| {
+        let shot = poll::until(
+            || Shot::take(&sway, "HEADLESS-1"),
+            |s| s.px(s.w / 2, s.h / 2) == want,
+        );
+        assert_eq!(
+            shot.px(shot.w / 2, shot.h / 2),
+            want,
+            "{what}: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(strand.0.try_wait().unwrap().is_none(), "strand exited");
+    };
+    centre(&mut strand, BLUE, "the panel, Caps Lock off");
+    keys.lock(keyboard::CAPS_LOCK);
+    centre(&mut strand, RED, "Caps Lock on");
+    keys.lock(keyboard::NUM_LOCK);
+    centre(&mut strand, BLUE, "Caps Lock off again");
+    drop(keys);
+    drop(strand);
+}

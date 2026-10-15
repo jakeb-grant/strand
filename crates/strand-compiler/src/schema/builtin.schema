@@ -879,6 +879,16 @@ provisional service disk {
   all: [Filesystem]
 }
 
+/// The keyboard's lock keys and layout.
+provisional service keyboard {
+  /// Caps Lock is on.
+  caps_lock: bool
+  /// Num Lock is on.
+  num_lock: bool
+  /// The active layout's name, null when unknown.
+  layout: text?
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.
