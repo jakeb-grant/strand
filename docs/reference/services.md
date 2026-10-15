@@ -143,6 +143,9 @@ and only while a visible reader shows it.
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |
 | `player` | `text?` | The active player's name, such as `Firefox` or `mpv`; null when no player runs. |
+| `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
+| `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
+| `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
 
 | Method | |
 | --- | --- |

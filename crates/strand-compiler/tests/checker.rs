@@ -1312,6 +1312,23 @@ fn outputs_is_a_display_settings_page() {
     );
 }
 
+/// (M6, owner-testing gap 32) A player's buttons dim by what the active
+/// player can do: `media.can_next`, `can_previous` and `can_seek` are
+/// plain booleans, read in bindings and `when`s.
+#[test]
+fn media_buttons_dim_by_what_the_player_can_do() {
+    assert_eq!(
+        codes(
+            "bar B {\n  row {\n    \
+             text \"prev\" { opacity: media.can_previous ? 1 : 0.4\n      on click { media.previous() } }\n    \
+             text \"next\" { opacity: media.can_next ? 1 : 0.4\n      on click { media.next() } }\n    \
+             slider { value: <-> media.position\n      when !media.can_seek { opacity: 0.4 } }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the

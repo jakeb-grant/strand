@@ -617,6 +617,12 @@ provisional service media {
   length: duration?
   /// The active player's name; null when no player runs.
   player: text?
+  /// The active player can skip to the next track.
+  can_next: bool
+  /// The active player can go back to the previous track.
+  can_previous: bool
+  /// Writing `position` seeks.
+  can_seek: bool
   /// Plays or pauses.
   action play_pause()
   /// Skips to the next track.

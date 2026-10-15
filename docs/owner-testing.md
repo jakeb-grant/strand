@@ -882,6 +882,22 @@ findings only.
     `place: absolute`; no per-child `align_self` is added
     (`crates/strand-render/tests/layout.rs::a_stacks_align_places_every_child_on_both_axes`).
     decisions.md m6-owner-fixes.
+32. **A player's buttons cannot tell what the player can do.** (fixed,
+    2026-10-15; found 2026-10-15 by surveying the owner's quickshell
+    config) The owner's media controls dim "previous", "next" and the
+    scrubber when the player cannot take them; `media` had no way to
+    say so. **Fixed; pending the owner's check on Hyprland**:
+    `media.can_next`, `media.can_previous` and `media.can_seek` follow
+    the active player's MPRIS `CanGoNext`, `CanGoPrevious` and
+    `CanSeek` (all false while `CanControl` is false or no player
+    runs; `can_seek` also needs a known length, the very test a
+    `position` write makes), from the `PropertiesChanged` the service
+    already follows, with no polling
+    (`crates/strand-services/tests/media.rs::media_says_what_the_active_player_can_do`,
+    `crates/strand-services/src/media.rs::tests::the_state_says_what_the_active_player_can_do`,
+    `::an_invalidated_capability_is_read_again`,
+    `crates/strand-compiler/tests/checker.rs::media_buttons_dim_by_what_the_player_can_do`).
+    decisions.md m6-service-gaps.
 
 Dropped from the island bar's notes, the spec already answering them: a
 component whose tree is not one element cannot take `id:` (spec.md 5.2:

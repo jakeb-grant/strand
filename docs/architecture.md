@@ -5027,7 +5027,10 @@ transparent huge pages for life.
   `notifications` (our own `org.freedesktop.Notifications` server;
   `Notification.time` is a `Date` with the hour and minute since M6),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
-  while watched; remote `https`/`http` art fetched by `art`, below) and
+  while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
+  from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,
+  false while `CanControl` is, `can_seek` the very test a `position`
+  write makes; remote `https`/`http` art fetched by `art`, below) and
   `tray` (StatusNotifierItem host, its own watcher
   when the session has none, DBusMenu model), and (wave 4, wm) the
   compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`

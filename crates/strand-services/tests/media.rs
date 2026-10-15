@@ -33,6 +33,12 @@ struct Track {
     can_seek: bool,
     /// It seeks without saying so (no `Seeked`).
     quiet: bool,
+    /// Its `CanGoNext`, `CanGoPrevious` and `CanControl`.
+    can_go_next: bool,
+    can_go_previous: bool,
+    can_control: bool,
+    /// Its track's `mpris:length` in microseconds, when it names one.
+    length_us: Option<i64>,
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -103,6 +109,21 @@ impl Player {
     }
 
     #[zbus(property)]
+    fn can_go_next(&self) -> bool {
+        self.0.lock().unwrap().can_go_next
+    }
+
+    #[zbus(property)]
+    fn can_go_previous(&self) -> bool {
+        self.0.lock().unwrap().can_go_previous
+    }
+
+    #[zbus(property)]
+    fn can_control(&self) -> bool {
+        self.0.lock().unwrap().can_control
+    }
+
+    #[zbus(property)]
     fn playback_status(&self) -> String {
         self.0.lock().unwrap().status.clone()
     }
@@ -119,12 +140,14 @@ impl Player {
                 "xesam:artist".to_string(),
                 OwnedValue::try_from(Value::from(vec!["Ann", "Bo"])).unwrap(),
             ),
-            ("mpris:length".to_string(), OwnedValue::from(200_000_000i64)),
             (
                 "mpris:artUrl".to_string(),
                 OwnedValue::try_from(Value::from(t.art.as_str())).unwrap(),
             ),
         ]);
+        if let Some(us) = t.length_us {
+            m.insert("mpris:length".to_string(), OwnedValue::from(us));
+        }
         if let Some(id) = &t.trackid {
             let path = zbus::zvariant::ObjectPath::try_from(id.as_str()).unwrap();
             m.insert(
@@ -194,6 +217,10 @@ fn player_with(
         trackid: None,
         can_seek: true,
         quiet: false,
+        can_go_next: true,
+        can_go_previous: true,
+        can_control: true,
+        length_us: Some(200_000_000),
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -730,5 +757,126 @@ fn writing_the_position_seeks_the_player() {
         Ok(Duration::from_secs(50)),
         "the place is kept"
     );
+    s.shutdown();
+}
+
+/// The player on `conn` signals its property `$changed` (zbus's
+/// generated `…_changed`).
+macro_rules! signal {
+    ($tokio:expr, $conn:expr, $changed:ident) => {
+        $tokio.block_on(async {
+            let i = $conn
+                .object_server()
+                .interface::<_, Player>(media::PATH)
+                .await
+                .unwrap();
+            i.get().await.$changed(i.signal_emitter()).await.unwrap();
+        })
+    };
+}
+
+/// (gap 32, m6-service-gaps) `can_next`, `can_previous` and `can_seek`
+/// follow what the active player says it can do (`CanGoNext`,
+/// `CanGoPrevious`, `CanSeek`), all false while it takes no control and
+/// while no player runs; a track of unknown length cannot be sought; an
+/// invalidated property is read again; and another active player brings
+/// its own answers.
+#[test]
+fn media_says_what_the_active_player_can_do() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (a_conn, a) = player_with(&tokio, &bus.address, "mpv", "Paused", "First", 0, |t| {
+        t.can_go_previous = false
+    });
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    let can = || {
+        (
+            cells.can_next.get_untracked(&rt) == Ok(true),
+            cells.can_previous.get_untracked(&rt) == Ok(true),
+            cells.can_seek.get_untracked(&rt) == Ok(true),
+        )
+    };
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(can(), (true, false, true));
+
+    // It can go back now.
+    a.lock().unwrap().can_go_previous = true;
+    signal!(tokio, a_conn, can_go_previous_changed);
+    until(&rt, &s, "can_previous", || can() == (true, true, true));
+
+    // It takes no control: nothing can be done.
+    a.lock().unwrap().can_control = false;
+    signal!(tokio, a_conn, can_control_changed);
+    until(&rt, &s, "no control", || can() == (false, false, false));
+    a.lock().unwrap().can_control = true;
+    signal!(tokio, a_conn, can_control_changed);
+    until(&rt, &s, "control again", || can() == (true, true, true));
+
+    // It cannot seek; then a track of unknown length cannot be sought.
+    a.lock().unwrap().can_seek = false;
+    signal!(tokio, a_conn, can_seek_changed);
+    until(&rt, &s, "no seeking", || can() == (true, true, false));
+    {
+        let mut t = a.lock().unwrap();
+        t.can_seek = true;
+        t.length_us = None;
+        t.title = "Live".into();
+    }
+    signal!(tokio, a_conn, can_seek_changed);
+    signal!(tokio, a_conn, metadata_changed);
+    until(&rt, &s, "the live track", || {
+        cells.title.get_untracked(&rt) == Ok(Some("Live".into()))
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(can(), (true, true, false), "unknown length");
+    a.lock().unwrap().length_us = Some(200_000_000);
+    signal!(tokio, a_conn, metadata_changed);
+    until(&rt, &s, "a known length", || can() == (true, true, true));
+
+    // Invalidated (no value sent): read again.
+    a.lock().unwrap().can_go_next = false;
+    tokio
+        .block_on(a_conn.emit_signal(
+            None::<&str>,
+            media::PATH,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            &(
+                "org.mpris.MediaPlayer2.Player",
+                HashMap::<String, Value>::new(),
+                vec!["CanGoNext"],
+            ),
+        ))
+        .unwrap();
+    until(&rt, &s, "the invalidated CanGoNext read", || {
+        can() == (false, true, true)
+    });
+
+    // Another player plays: its answers.
+    let (v_conn, _v) = player_with(&tokio, &bus.address, "vlc", "Playing", "Other", 0, |t| {
+        t.can_seek = false
+    });
+    until(&rt, &s, "vlc active", || {
+        cells.player.get_untracked(&rt) == Ok(Some("vlc".into()))
+    });
+    assert_eq!(can(), (true, true, false));
+    drop(v_conn);
+    until(&rt, &s, "mpv again", || {
+        cells.player.get_untracked(&rt) == Ok(Some("mpv".into()))
+    });
+    assert_eq!(can(), (false, true, true));
+
+    // No player: nothing can be done.
+    drop(a_conn);
+    until(&rt, &s, "no player", || {
+        cells.player.get_untracked(&rt) == Ok(None)
+    });
+    assert_eq!(can(), (false, false, false));
     s.shutdown();
 }

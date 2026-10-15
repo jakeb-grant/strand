@@ -26,6 +26,15 @@
 //! `Seeked` corrects it; a call that fails asks the position again. A
 //! player whose `CanSeek` is false, or a track of unknown length, keeps
 //! its place.
+//!
+//! `can_next`, `can_previous` and `can_seek` say what the active player
+//! takes (gap 32, decisions.md m6-service-gaps): its `CanGoNext`,
+//! `CanGoPrevious` and `CanSeek`, all false while `CanControl` is false;
+//! a property the player does not report counts as able. `can_seek` also
+//! needs a known length, and is the very test a `position` write makes
+//! ([`Player::can_seek`]). MPRIS signals these properties, so they follow
+//! the same `PropertiesChanged` as the rest; an invalidated one is read
+//! again with the player's other properties. Nothing is polled.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -91,6 +100,16 @@ pub struct Media {
     /// The active player's name, such as `Firefox` or `mpv`; null when no
     /// player runs.
     pub player: Option<String>,
+    /// The active player can skip to the next track (MPRIS `CanGoNext`):
+    /// `opacity: media.can_next ? 1 : 0.4`. False when no player runs or
+    /// it takes no control (`CanControl` false).
+    pub can_next: bool,
+    /// The active player can go back to the previous track
+    /// (`CanGoPrevious`, as `can_next`).
+    pub can_previous: bool,
+    /// Writing `position` seeks: the active player can seek (`CanSeek`, as
+    /// `can_next`) and the track's length is known.
+    pub can_seek: bool,
 }
 
 /// The playback rates carried forward: MPRIS players report a rate
@@ -198,6 +217,23 @@ impl Player {
             .map_or(1.0, |r| r.clamp(RATES.0, RATES.1))
     }
 
+    /// The player says it can do `what` (`CanGoNext`, `CanGoPrevious`,
+    /// `CanSeek`): false when it takes no control at all (`CanControl`
+    /// false) or says it cannot; a property it does not report counts as
+    /// able, so a button that may work is never dimmed (decisions.md,
+    /// m6-service-gaps).
+    fn can(&self, what: &str) -> bool {
+        dbus::boolean(&self.props, "CanControl") != Some(false)
+            && dbus::boolean(&self.props, what) != Some(false)
+    }
+
+    /// A `position` write seeks a track of `length`: the player can seek
+    /// and the length is known. What `media.can_seek` says and what
+    /// [`Players::seek`] does, so the field and the write agree.
+    fn can_seek(&self, length: Option<Duration>) -> bool {
+        self.can("CanSeek") && length.is_some_and(|l| !l.is_zero())
+    }
+
     fn metadata(&self) -> Props {
         self.props
             .get("Metadata")
@@ -295,27 +331,29 @@ impl Players {
             elapsed,
             length,
             player: p.identity.clone(),
+            can_next: p.can("CanGoNext"),
+            can_previous: p.can("CanGoPrevious"),
+            can_seek: p.can_seek(length),
         }
     }
 
     /// Seeks the active player to `fraction` of its track at `now`: the
     /// call to make, its position fixed at the target meanwhile. `None`
-    /// when no player is active, it cannot seek (`CanSeek` false), its
-    /// track's length is unknown, or `fraction` is not a number.
+    /// when no player is active, it cannot seek ([`Player::can_seek`]:
+    /// `CanSeek` or `CanControl` false, or its track's length unknown),
+    /// or `fraction` is not a number.
     fn seek(&mut self, fraction: f64, now: Instant) -> Option<Seek> {
         if !fraction.is_finite() {
             return None;
         }
         let name = self.active_name()?;
         let p = self.by_name.get_mut(&name)?;
-        if dbus::boolean(&p.props, "CanSeek") == Some(false) {
-            return None;
-        }
         let meta = p.metadata();
-        let length = meta.get("mpris:length").and_then(micros)?;
-        if length.is_zero() {
+        let length = meta.get("mpris:length").and_then(micros);
+        if !p.can_seek(length) {
             return None;
         }
+        let length = length?;
         let target = length.mul_f64(fraction.clamp(0.0, 1.0));
         let from = p.elapsed(now, Some(length));
         let us = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
@@ -1522,5 +1560,72 @@ mod tests {
         let s = players.state(t3);
         assert_eq!(s.title.as_deref(), Some("Second"));
         assert_eq!(s.elapsed, Duration::from_secs(4));
+    }
+
+    fn flag(b: bool) -> OwnedValue {
+        OwnedValue::from(b)
+    }
+
+    /// (gap 32, m6-service-gaps) What the active player can do, from its
+    /// properties: an absent property counts as able, `CanControl` false
+    /// makes all false, `can_seek` needs a known length too, and the
+    /// `position` write asks the very same question.
+    #[test]
+    fn the_state_says_what_the_active_player_can_do() {
+        let t0 = Instant::now();
+        assert!(!Players::default().state(t0).can_next, "no player");
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        let s = players.state(t0);
+        assert!(s.can_next && s.can_previous && s.can_seek, "absent: able");
+        let set = |players: &mut Players, k: &str, v: bool| {
+            players
+                .by_name
+                .get_mut(P)
+                .unwrap()
+                .props
+                .insert(k.into(), flag(v));
+        };
+        set(&mut players, "CanGoNext", false);
+        set(&mut players, "CanGoPrevious", true);
+        let s = players.state(t0);
+        assert!(!s.can_next && s.can_previous && s.can_seek);
+        set(&mut players, "CanSeek", false);
+        assert!(!players.state(t0).can_seek);
+        assert_eq!(players.seek(0.5, t0), None, "the write agrees");
+        set(&mut players, "CanSeek", true);
+        set(&mut players, "CanControl", false);
+        let s = players.state(t0);
+        assert!(!s.can_next && !s.can_previous && !s.can_seek);
+        assert_eq!(players.seek(0.5, t0), None, "the write agrees");
+        set(&mut players, "CanControl", true);
+        assert!(players.state(t0).can_seek);
+        // A track of unknown length cannot be sought.
+        let mut m: std::collections::HashMap<String, zbus::zvariant::Value<'static>> =
+            std::collections::HashMap::new();
+        m.insert("xesam:title".into(), text("Live"));
+        let unknown = OwnedValue::try_from(zbus::zvariant::Value::from(m)).unwrap();
+        metadata_changed(&mut players, unknown, t0);
+        let s = players.state(t0);
+        assert!(
+            !s.can_next && s.can_previous && !s.can_seek,
+            "CanGoNext is still false"
+        );
+        assert_eq!(players.seek(0.5, t0), None, "the write agrees");
+    }
+
+    /// An invalidated capability is read again (with the rest of the
+    /// player's properties), never left unknown.
+    #[test]
+    fn an_invalidated_capability_is_read_again() {
+        let t0 = Instant::now();
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        players
+            .by_name
+            .get_mut(P)
+            .unwrap()
+            .props
+            .insert("CanGoNext".into(), flag(false));
+        let ask = players.changed(P, Props::new(), &["CanGoNext".to_string()], t0);
+        assert!(ask.props, "read again");
     }
 }
