@@ -906,16 +906,24 @@ findings only.
     fails rather than doing nothing, and a disconnect that fails lets
     the join it stopped go on and be reported. Over iwd, a stopped join
     names its own network as `disconnecting`, never an older one
-    (review connectivity-r1)
+    (review connectivity-r1). Cancelling a join before the daemon has
+    started it (an unsaved network still asking, a new password still
+    forgetting the old one) stops it with no failure instead of letting
+    it go through, and a double click on Disconnect asks the daemon once
+    (review connectivity-r2)
     (`crates/strand-services/tests/network.rs::network_tells_the_joined_networks_details`,
     `::network_says_what_it_is_joining_and_leaving`,
     `::disconnect_leaves_the_joined_network`,
     `::a_join_answered_during_a_disconnect_is_deactivated_once_left`,
     `::a_join_a_refused_disconnect_stopped_is_still_followed`,
+    `::a_disconnect_with_nothing_active_stops_the_join_itself`,
+    `::a_disconnect_while_one_is_in_flight_is_dropped`,
     `::an_explicit_scan_raises_scanning_until_it_ends`;
     `crates/strand-services/tests/network_iwd.rs::iwd_tells_the_joined_networks_details`,
     `::iwd_says_what_it_is_joining_and_leaving_and_disconnects`,
     `::a_join_a_refused_disconnect_stopped_is_still_reported`,
+    `::a_disconnect_before_iwd_joins_stops_the_join_itself`,
+    `::a_disconnect_while_one_is_in_flight_is_dropped_on_iwd`,
     `::an_explicit_scan_on_iwd_raises_scanning`;
     `crates/strand-services/src/network.rs::tests::only_an_activated_connection_is_joined`,
     `::a_scan_refusal_is_no_failure`;

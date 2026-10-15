@@ -880,6 +880,8 @@ mod slow_nm {
 
     pub struct Manager {
         pub wifi: bool,
+        /// Home is joined ([`JOINED`]).
+        pub joined: bool,
         pub added: Arc<AtomicUsize>,
         pub deactivated: Arc<AtomicUsize>,
     }
@@ -900,7 +902,11 @@ mod slow_nm {
         }
         #[zbus(property)]
         fn active_connections(&self) -> Vec<OwnedObjectPath> {
-            Vec::new()
+            if self.joined {
+                vec![path(JOINED)]
+            } else {
+                Vec::new()
+            }
         }
         #[zbus(property)]
         fn devices(&self) -> Vec<OwnedObjectPath> {
@@ -925,6 +931,47 @@ mod slow_nm {
 
     /// The active connection every join is answered with.
     pub const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
+    /// Home's active connection, activated, when it is joined.
+    pub const JOINED: &str = "/org/freedesktop/NetworkManager/ActiveConnection/0";
+    /// Home's access point.
+    pub const HOME_AP: &str = "/org/freedesktop/NetworkManager/AccessPoint/0";
+
+    /// Home joined on the device.
+    pub struct Joined;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
+    impl Joined {
+        #[zbus(property, name = "Type")]
+        fn kind(&self) -> String {
+            "802-11-wireless".into()
+        }
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            2
+        }
+        #[zbus(property)]
+        fn devices(&self) -> Vec<OwnedObjectPath> {
+            vec![path(DEV)]
+        }
+        #[zbus(property)]
+        fn specific_object(&self) -> OwnedObjectPath {
+            path(HOME_AP)
+        }
+        #[zbus(property)]
+        fn default(&self) -> bool {
+            true
+        }
+    }
+
+    /// The device's refusals, as NetworkManager names them.
+    #[derive(Debug, zbus::DBusError)]
+    #[zbus(prefix = "org.freedesktop.NetworkManager.Device")]
+    pub enum DeviceError {
+        #[zbus(error)]
+        ZBus(zbus::Error),
+        NotActive(String),
+        PermissionDenied(String),
+    }
 
     /// How the device's `Disconnect` answers, and what it and
     /// `DeactivateConnection` were asked.
@@ -934,6 +981,10 @@ mod slow_nm {
         pub delay: Duration,
         /// `Disconnect` is refused ("Not authorized").
         pub refuse: bool,
+        /// Home is joined; without it `Disconnect` is refused as
+        /// NetworkManager refuses it on a device with nothing active
+        /// (`NotActive`, "This device is not active").
+        pub joined: bool,
         pub disconnects: Arc<AtomicUsize>,
         pub deactivated: Arc<AtomicUsize>,
     }
@@ -946,11 +997,14 @@ mod slow_nm {
         fn device_type(&self) -> u32 {
             2
         }
-        async fn disconnect(&self) -> zbus::fdo::Result<()> {
+        async fn disconnect(&self) -> Result<(), DeviceError> {
             self.0.disconnects.fetch_add(1, Ordering::SeqCst);
+            if !self.0.joined {
+                return Err(DeviceError::NotActive("This device is not active".into()));
+            }
             tokio::time::sleep(self.0.delay).await;
             if self.0.refuse {
-                return Err(zbus::fdo::Error::AccessDenied("Not authorized".into()));
+                return Err(DeviceError::PermissionDenied("Not authorized".into()));
             }
             Ok(())
         }
@@ -967,13 +1021,14 @@ mod slow_nm {
         fn request_scan(&self, _options: HashMap<String, OwnedValue>) {}
     }
 
-    pub struct AccessPoint;
+    /// An access point of the network it names.
+    pub struct AccessPoint(&'static str);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.AccessPoint")]
     impl AccessPoint {
         #[zbus(property)]
         fn ssid(&self) -> Vec<u8> {
-            b"Slow".to_vec()
+            self.0.as_bytes().to_vec()
         }
         #[zbus(property)]
         fn strength(&self) -> u8 {
@@ -1032,6 +1087,7 @@ mod slow_nm {
                 super::ROOT,
                 Manager {
                     wifi: true,
+                    joined: leave.joined,
                     added: added.clone(),
                     deactivated: leave.deactivated.clone(),
                 },
@@ -1041,7 +1097,11 @@ mod slow_nm {
             .unwrap()
             .serve_at(DEV, Wireless)
             .unwrap()
-            .serve_at(AP, AccessPoint)
+            .serve_at(AP, AccessPoint("Slow"))
+            .unwrap()
+            .serve_at(HOME_AP, AccessPoint("Home"))
+            .unwrap()
+            .serve_at(JOINED, Joined)
             .unwrap()
             .serve_at(
                 "/org/freedesktop/NetworkManager/Settings",
@@ -1334,6 +1394,7 @@ fn a_join_answered_during_a_disconnect_is_deactivated_once_left() {
     let added = Arc::new(AtomicUsize::new(0));
     let leave = slow_nm::Leave {
         delay: Duration::from_millis(2500),
+        joined: true,
         ..slow_nm::Leave::default()
     };
     let _nm = slow_nm::serve_leaving(
@@ -1362,7 +1423,7 @@ fn a_join_answered_during_a_disconnect_is_deactivated_once_left() {
         .unwrap();
     until(&rt, &s, "the disconnect in flight", || {
         leave.disconnects.load(Ordering::SeqCst) == 1
-            && cells.disconnecting.get_untracked(&rt) == Ok(Some("Slow".into()))
+            && cells.disconnecting.get_untracked(&rt) == Ok(Some("Home".into()))
             && cells.connecting.get_untracked(&rt) == Ok(None)
     });
     // NetworkManager answers the join while the device is being left.
@@ -1392,6 +1453,146 @@ fn a_join_answered_during_a_disconnect_is_deactivated_once_left() {
     s.shutdown();
 }
 
+/// (gap 28, connectivity-r2-1) With nothing active on the Wi-Fi device
+/// (a join of an unsaved network still asking, before NetworkManager has
+/// an activation for it), `disconnect()` stops the join itself: the
+/// device is not asked (NetworkManager answers `NotActive`, "This device
+/// is not active", which surfaced as a failure and let the join go on),
+/// nothing is reported, and the activation NetworkManager answers the
+/// join with is deactivated at once.
+#[test]
+fn a_disconnect_with_nothing_active_stops_the_join_itself() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let leave = slow_nm::Leave::default();
+    let _nm = slow_nm::serve_leaving(
+        &tokio,
+        &bus.address,
+        Duration::from_millis(1000),
+        &asked,
+        &added,
+        true,
+        leave.clone(),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    until(&rt, &s, "the join asking", || {
+        asked.load(Ordering::SeqCst) == 1
+            && cells.connecting.get_untracked(&rt) == Ok(Some("Slow".into()))
+    });
+    b.network
+        .dynamic()
+        .action(&rt, "disconnect", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the join stopped", || {
+        cells.connecting.get_untracked(&rt) == Ok(None)
+    });
+    assert_eq!(cells.disconnecting.get_untracked(&rt), Ok(None));
+    // NetworkManager answers the join: its activation is ended.
+    until(&rt, &s, "the activation ended", || {
+        added.load(Ordering::SeqCst) == 1 && leave.deactivated.load(Ordering::SeqCst) == 1
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        leave.disconnects.load(Ordering::SeqCst),
+        0,
+        "the device was asked"
+    );
+    assert_eq!(cells.connecting.get_untracked(&rt), Ok(None));
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r2-2) A `disconnect()` while one is in flight (a
+/// double click) is dropped: the device is asked once, and the first
+/// one's answer settles the join it stopped. The second overwrote the
+/// first, whose answer then matched nothing, so only the second's
+/// outcome counted (a refusal resumed joins the first had left).
+#[test]
+fn a_disconnect_while_one_is_in_flight_is_dropped() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let added = Arc::new(AtomicUsize::new(0));
+    let leave = slow_nm::Leave {
+        delay: Duration::from_millis(1500),
+        joined: true,
+        ..slow_nm::Leave::default()
+    };
+    let _nm = slow_nm::serve_leaving(
+        &tokio,
+        &bus.address,
+        Duration::from_millis(400),
+        &asked,
+        &added,
+        true,
+        leave.clone(),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+
+    join_slow(&rt, &b, "hunter22");
+    until(&rt, &s, "the join asking", || {
+        asked.load(Ordering::SeqCst) == 1
+    });
+    for _ in 0..2 {
+        b.network
+            .dynamic()
+            .action(&rt, "disconnect", None, &[], Default::default())
+            .unwrap();
+    }
+    until(&rt, &s, "the disconnect in flight", || {
+        cells.disconnecting.get_untracked(&rt) == Ok(Some("Home".into()))
+    });
+    until(&rt, &s, "the disconnect answered", || {
+        cells.disconnecting.get_untracked(&rt) == Ok(None)
+            && leave.deactivated.load(Ordering::SeqCst) == 1
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(leave.disconnects.load(Ordering::SeqCst), 1, "asked twice");
+    assert_eq!(cells.connecting.get_untracked(&rt), Ok(None));
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
 /// (gap 28, connectivity-r1-6) A disconnect NetworkManager refuses (here
 /// `Not authorized`, as polkit may answer) leaves the join it stopped
 /// going on: it is followed again, and its later failure reported. It was
@@ -1409,6 +1610,7 @@ fn a_join_a_refused_disconnect_stopped_is_still_followed() {
     let added = Arc::new(AtomicUsize::new(0));
     let leave = slow_nm::Leave {
         refuse: true,
+        joined: true,
         ..slow_nm::Leave::default()
     };
     let nm = slow_nm::serve_leaving(
@@ -1438,9 +1640,10 @@ fn a_join_a_refused_disconnect_stopped_is_still_followed() {
     until(&rt, &s, "the refusal", || {
         !failures.lock().unwrap().is_empty()
     });
+    // The disconnect names the network the device has joined.
     assert_eq!(
         *failures.lock().unwrap(),
-        vec![("Slow".to_string(), "Not authorized".to_string())]
+        vec![("Home".to_string(), "Not authorized".to_string())]
     );
     assert_eq!(
         cells.connecting.get_untracked(&rt),

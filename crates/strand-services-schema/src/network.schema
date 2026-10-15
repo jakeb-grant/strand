@@ -77,7 +77,8 @@ service network {
   /// Leaves the Wi-Fi network joined, or stops the one being joined; the
   /// daemon then joins nothing on its own until a network is joined again.
   /// A join it stops is no failure; if the disconnect itself fails, that
-  /// join goes on and is reported as any join is. Without a network joined
+  /// join goes on and is reported as any join is. A `disconnect()` while
+  /// one is in flight (a double click) is dropped. Without a network joined
   /// or being joined it fails. A failure is `network.failed`.
   action disconnect()
   /// Scans for Wi-Fi networks now (a refresh button): `scanning` while it

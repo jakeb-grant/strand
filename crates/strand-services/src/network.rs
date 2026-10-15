@@ -1096,19 +1096,33 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         }
                     }
                     Some(Msg::Action(NetworkAction::Disconnect)) => {
+                        // A repeat while one is in flight (a double
+                        // click) is dropped: that one's answer decides
+                        // (connectivity-r2-2).
+                        if leave.is_some() {
+                            log::debug!("network: already disconnecting");
+                            continue;
+                        }
                         // The device of the network joined or being
-                        // joined, else (a join still asked) the first
-                        // Wi-Fi device.
+                        // joined.
                         let target = nm
                             .wifi_device()
-                            .map(|(dev, name)| (dev, name.or_else(|| pending.join.clone())))
-                            .or_else(|| {
-                                let join = pending.join.clone()?;
-                                let dev = nm.wifi_devices.keys().next()?.clone();
-                                Some((dev, Some(join)))
-                            });
+                            .map(|(dev, name)| (dev, name.or_else(|| pending.join.clone())));
                         let Some((dev, name)) = target else {
-                            if !cx.emit(NetworkEvent::Failed((String::new(), "no Wi-Fi network is joined".into()))) {
+                            // Nothing active on a Wi-Fi device, which
+                            // NetworkManager would refuse to disconnect
+                            // (`NotActive`): the joins not yet active are
+                            // stopped here (connectivity-r2-1).
+                            if let Some(actives) = cancel_joins(&mut asked, &mut joining) {
+                                for active in actives {
+                                    let conn = daemon.conn().clone();
+                                    leaving.spawn(async move { deactivate(&conn, &active).await });
+                                }
+                                pending.join = None;
+                                if !publish(cx, &nm, &pending, listing) {
+                                    return Ok(Next::Stop);
+                                }
+                            } else if !cx.emit(NetworkEvent::Failed((String::new(), "no Wi-Fi network is joined".into()))) {
                                 return Ok(Next::Stop);
                             }
                             continue;
@@ -1181,6 +1195,23 @@ fn error_text(e: zbus::Error) -> String {
 fn stop_joins(asked: &mut Asked, joining: &mut BTreeMap<String, Joining>, stopped: &mut Stopped) {
     asked.cancel();
     stopped.stop(joining);
+}
+
+/// A `disconnect()` with nothing active on a Wi-Fi device: the joins
+/// still asked are cancelled (an activation NetworkManager answers them
+/// with is deactivated, [`Stop::Cancelled`]), and those it answered but
+/// has not yet said are activating are no longer followed: their
+/// activations, to deactivate. Neither is reported. `None` when there was
+/// no join. NetworkManager refuses `Device.Disconnect` on a device with
+/// nothing active (`NotActive`), so no device is asked
+/// (connectivity-r2-1).
+fn cancel_joins(asked: &mut Asked, joining: &mut BTreeMap<String, Joining>) -> Option<Vec<String>> {
+    if asked.is_idle() && joining.is_empty() {
+        return None;
+    }
+    asked.cancel();
+    asked.left();
+    Some(std::mem::take(joining).into_keys().collect())
 }
 
 /// `Device.Disconnect` on Wi-Fi device `dev`: NetworkManager leaves its
@@ -1652,6 +1683,11 @@ impl Asked {
         self.cancelled.clear();
         self.stopping.clear();
         std::mem::take(&mut self.asking).into_keys().collect()
+    }
+
+    /// No join is being asked.
+    fn is_idle(&self) -> bool {
+        self.asking.is_empty()
     }
 
     /// Every join being asked is stopped by a `disconnect()`, and none
@@ -2523,6 +2559,49 @@ mod tests {
         assert_eq!(a.resume(), Vec::<String>::new());
         assert_eq!(a.stopped(old), Some(Stop::Cancelled));
         assert_eq!(a.answered(new).map(|(s, ..)| s), Some("Cafe".into()));
+    }
+
+    /// (connectivity-r2-1) With nothing active on a Wi-Fi device, a
+    /// `disconnect()` cancels the joins not yet active itself: the one
+    /// asked is cancelled for good (its activation ended once answered),
+    /// one answered and not yet seen activating is ended, neither waits
+    /// for a disconnect's answer; with no join there is nothing to stop.
+    #[test]
+    fn with_nothing_active_disconnect_cancels_the_joins_itself() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        let mut a = Asked::default();
+        let mut joining = BTreeMap::new();
+        assert_eq!(cancel_joins(&mut a, &mut joining), None, "no join");
+
+        let cafe = tasks.spawn(async {}).id();
+        a.started("Cafe".into(), cafe, None);
+        assert!(!a.ask("Cafe", Some("pw")), "waits");
+        joining.insert(
+            "/a/7".to_string(),
+            Joining {
+                ssid: "Attic".into(),
+                seen: false,
+                asked_with: fingerprint(None),
+            },
+        );
+        assert_eq!(
+            cancel_joins(&mut a, &mut joining),
+            Some(vec!["/a/7".to_string()])
+        );
+        assert!(joining.is_empty(), "not followed");
+        assert!(a.waiting.is_empty(), "the waiting join goes too");
+        assert!(a.stopping.is_empty(), "no disconnect is awaited");
+        assert_eq!(a.stopped(cafe), Some(Stop::Cancelled));
+        assert!(a.ask("Cafe", None), "asked afresh");
+        let again = tasks.spawn(async {}).id();
+        a.started("Cafe".into(), again, None);
+        assert_eq!(cancel_joins(&mut a, &mut joining), Some(vec![]));
+        assert!(a.is_idle());
+        assert_eq!(a.stopped(again), Some(Stop::Cancelled));
     }
 
     #[test]

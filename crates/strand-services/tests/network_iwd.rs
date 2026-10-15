@@ -62,6 +62,11 @@ struct World {
     abort: bool,
     /// `Disconnect` is refused (as a policy that denies it would).
     refuse_disconnect: bool,
+    /// A `Disconnect` is in progress: another is refused `Busy`, as iwd
+    /// refuses one while the station is disconnecting.
+    leaving: bool,
+    /// `KnownNetwork.Forget` waits while this is set.
+    stall_forget: bool,
     /// How often `GetOrderedNetworks` was asked.
     ordered_reads: u32,
 }
@@ -79,6 +84,8 @@ enum IwdError {
     ZBus(zbus::Error),
     Failed(String),
     Aborted(String),
+    Busy(String),
+    NotConnected(String),
 }
 
 struct Device(W);
@@ -145,31 +152,48 @@ impl Station {
         self.0.lock().unwrap().scanning
     }
 
-    /// Leaves the network joined, or aborts the join in flight.
+    /// Leaves the network joined, or aborts the join in flight; as iwd,
+    /// refused `NotConnected` with neither, `Busy` while leaving.
     async fn disconnect(
         &self,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(signal_emitter)] e: SignalEmitter<'_>,
     ) -> Result<(), IwdError> {
-        {
+        let aborting = {
             let mut w = self.0.lock().unwrap();
             w.calls.push("Disconnect".into());
             if w.refuse_disconnect {
                 return Err(IwdError::Failed("Not authorized".into()));
             }
+            if w.leaving {
+                return Err(IwdError::Busy("Operation already in progress".into()));
+            }
+            if w.joining.is_none() && w.connected.is_none() {
+                return Err(IwdError::NotConnected("Not connected".into()));
+            }
+            w.leaving = true;
             if w.joining.is_some() {
                 w.abort = true;
-                return Ok(());
+                true
+            } else {
+                w.state = Some("disconnecting".into());
+                false
             }
-            w.state = Some("disconnecting".into());
+        };
+        if !aborting {
+            self.state_changed(&e).await?;
         }
-        self.state_changed(&e).await?;
         while self.0.lock().unwrap().stall_disconnect {
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if aborting {
+            self.0.lock().unwrap().leaving = false;
+            return Ok(());
         }
         let old = {
             let mut w = self.0.lock().unwrap();
             w.state = None;
+            w.leaving = false;
             w.connected.take()
         };
         self.state_changed(&e).await?;
@@ -393,10 +417,16 @@ struct Known(W, String, String);
 
 #[zbus::interface(name = "net.connman.iwd.KnownNetwork")]
 impl Known {
-    fn forget(&self) {
-        let mut w = self.0.lock().unwrap();
-        w.calls.push(format!("Forget {}", self.2));
-        w.known.remove(&self.1);
+    async fn forget(&self) {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .push(format!("Forget {}", self.2));
+        while self.0.lock().unwrap().stall_forget {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        self.0.lock().unwrap().known.remove(&self.1);
     }
 }
 
@@ -1101,5 +1131,149 @@ fn a_join_a_refused_disconnect_stopped_is_still_reported() {
             "a password is needed (none was given, or it was wrong)".to_string()
         )
     );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r2-1) A `disconnect()` while the station names
+/// no network (a `connect_with` join still forgetting the old password)
+/// stops the join itself: iwd is not asked (it answers `NotConnected`,
+/// which surfaced as a failure and let the join go on to `Connect`),
+/// nothing is reported, and the join asks iwd nothing more.
+#[test]
+fn a_disconnect_before_iwd_joins_stops_the_join_itself() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("wlan0", None);
+    {
+        let mut w = w.lock().unwrap();
+        w.connected = None;
+        w.stall_forget = true;
+    }
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let calls = |what: &str| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == what)
+            .count()
+    };
+
+    // Home with a new password: its old one is forgotten first, held.
+    let home = AccessPoint {
+        ssid: "Home".into(),
+        strength: 0.6,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(
+            &rt,
+            "connect_with",
+            Some(&home.to_data()),
+            &[Data::Text("hunter22".into())],
+            Default::default(),
+        )
+        .unwrap();
+    until(&rt, &s, "Home's old password being forgotten", || {
+        calls("Forget Home") == 1 && cells.connecting.get_untracked(&rt) == Ok(Some("Home".into()))
+    });
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "the join stopped", || {
+        cells.connecting.get_untracked(&rt) == Ok(None)
+    });
+    w.lock().unwrap().stall_forget = false;
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(calls("Disconnect"), 0, "iwd was asked to disconnect");
+    assert_eq!(calls("Connect Home"), 0, "the join went on");
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
+    assert_eq!(cells.connecting.get_untracked(&rt), Ok(None));
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (gap 28, connectivity-r2-2) A `disconnect()` while one is in flight (a
+/// double click) is dropped: iwd is asked once, and the join the first
+/// stopped is not reported. The second was asked too, re-tagging the
+/// join; iwd refused it `Busy`, which was reported along with the
+/// stopped join's `Aborted` ("a password is needed").
+#[test]
+fn a_disconnect_while_one_is_in_flight_is_dropped_on_iwd() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("wlan0", None);
+    w.lock().unwrap().connected = None;
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let calls = |what: &str| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == what)
+            .count()
+    };
+
+    // Attic being joined, held by iwd; the leave held too.
+    w.lock().unwrap().stall = true;
+    join(&rt, &b, "Attic");
+    until(&rt, &s, "Attic being joined", || {
+        w.lock().unwrap().joining.is_some()
+            && cells.connecting.get_untracked(&rt) == Ok(Some("Attic".into()))
+    });
+    w.lock().unwrap().stall_disconnect = true;
+    act(&rt, &b, "disconnect");
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "the join aborted", || {
+        calls("Disconnect") >= 1
+            && w.lock().unwrap().joining.is_none()
+            && cells.connecting.get_untracked(&rt) == Ok(None)
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    w.lock().unwrap().stall = false;
+    w.lock().unwrap().stall_disconnect = false;
+    until(&rt, &s, "the leave answered", || {
+        !w.lock().unwrap().leaving && cells.disconnecting.get_untracked(&rt) == Ok(None)
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(calls("Disconnect"), 1, "iwd was asked twice");
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
     s.shutdown();
 }
