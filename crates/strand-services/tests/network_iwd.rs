@@ -44,6 +44,24 @@ struct World {
     refuse_levels: bool,
     /// How often `RegisterSignalLevelAgent` was asked.
     level_registrations: u32,
+    /// The device's interface name ("wlan0" when empty).
+    iface: String,
+    /// The station scans.
+    scanning: bool,
+    /// A `Scan` keeps scanning until the test ends it ([`end_scan`]).
+    hold_scan: bool,
+    /// The station's `State` while a join or a leave is in progress.
+    state: Option<String>,
+    /// The network being joined (iwd names it as `ConnectedNetwork`).
+    joining: Option<String>,
+    /// `StationDiagnostic` is served, saying (MHz, security).
+    diagnostics: Option<(u32, String)>,
+    /// `Disconnect` waits while this is set (a leave in flight).
+    stall_disconnect: bool,
+    /// A `Disconnect` came during a join: the join is aborted.
+    abort: bool,
+    /// How often `GetOrderedNetworks` was asked.
+    ordered_reads: u32,
 }
 
 type W = Arc<Mutex<World>>;
@@ -67,7 +85,12 @@ struct Device(W);
 impl Device {
     #[zbus(property)]
     fn name(&self) -> String {
-        "wlan0".into()
+        let w = self.0.lock().unwrap();
+        if w.iface.is_empty() {
+            "wlan0".into()
+        } else {
+            w.iface.clone()
+        }
     }
 
     #[zbus(property)]
@@ -94,7 +117,11 @@ struct Station(W);
 impl Station {
     #[zbus(property)]
     fn state(&self) -> String {
-        match self.0.lock().unwrap().connected {
+        let w = self.0.lock().unwrap();
+        if let Some(s) = &w.state {
+            return s.clone();
+        }
+        match w.connected {
             Some(_) => "connected".into(),
             None => "disconnected".into(),
         }
@@ -102,12 +129,51 @@ impl Station {
 
     #[zbus(property)]
     fn connected_network(&self) -> OwnedObjectPath {
-        path(self.0.lock().unwrap().connected.as_deref().unwrap_or("/"))
+        let w = self.0.lock().unwrap();
+        path(
+            w.joining
+                .as_deref()
+                .or(w.connected.as_deref())
+                .unwrap_or("/"),
+        )
     }
 
     #[zbus(property)]
     fn scanning(&self) -> bool {
-        false
+        self.0.lock().unwrap().scanning
+    }
+
+    /// Leaves the network joined, or aborts the join in flight.
+    async fn disconnect(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) -> Result<(), IwdError> {
+        {
+            let mut w = self.0.lock().unwrap();
+            w.calls.push("Disconnect".into());
+            if w.joining.is_some() {
+                w.abort = true;
+                return Ok(());
+            }
+            w.state = Some("disconnecting".into());
+        }
+        self.state_changed(&e).await?;
+        while self.0.lock().unwrap().stall_disconnect {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let old = {
+            let mut w = self.0.lock().unwrap();
+            w.state = None;
+            w.connected.take()
+        };
+        self.state_changed(&e).await?;
+        self.connected_network_changed(&e).await?;
+        if let Some(p) = old {
+            let n = server.interface::<_, Net>(p.as_str()).await?;
+            n.get().await.connected_changed(n.signal_emitter()).await?;
+        }
+        Ok(())
     }
 
     /// A scan: Cafe comes into range.
@@ -131,11 +197,21 @@ impl Station {
                 .await
                 .unwrap();
         }
+        let hold = {
+            let mut w = self.0.lock().unwrap();
+            w.scanning = true;
+            w.hold_scan
+        };
         self.scanning_changed(&e).await.unwrap();
+        if !hold {
+            self.0.lock().unwrap().scanning = false;
+            self.scanning_changed(&e).await.unwrap();
+        }
     }
 
     fn get_ordered_networks(&self) -> Vec<(OwnedObjectPath, i16)> {
-        let w = self.0.lock().unwrap();
+        let mut w = self.0.lock().unwrap();
+        w.ordered_reads += 1;
         w.ordered.iter().map(|(p, s)| (path(p), *s)).collect()
     }
 
@@ -222,8 +298,51 @@ impl Net {
             .unwrap()
             .calls
             .push(format!("Connect {}", self.name));
-        while self.w.lock().unwrap().stall {
+        let station = server.interface::<_, Station>(DEV).await?;
+        let stalled = self.w.lock().unwrap().stall;
+        if stalled {
+            // iwd names the network from the start of the join.
+            {
+                let mut w = self.w.lock().unwrap();
+                w.state = Some("connecting".into());
+                w.joining = Some(self.path.clone());
+            }
+            let e = station.signal_emitter();
+            station.get().await.state_changed(e).await?;
+            station.get().await.connected_network_changed(e).await?;
+        }
+        loop {
+            let (stall, abort) = {
+                let w = self.w.lock().unwrap();
+                (w.stall, w.abort)
+            };
+            if abort {
+                {
+                    let mut w = self.w.lock().unwrap();
+                    w.abort = false;
+                    w.state = None;
+                    w.joining = None;
+                }
+                let e = station.signal_emitter();
+                station.get().await.state_changed(e).await?;
+                station.get().await.connected_network_changed(e).await?;
+                return Err(IwdError::Aborted("Operation aborted".into()));
+            }
+            if !stall {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        {
+            let mut w = self.w.lock().unwrap();
+            w.state = None;
+            w.joining = None;
+        }
+        if stalled {
+            // Back to the network joined before, until this one is.
+            let e = station.signal_emitter();
+            station.get().await.state_changed(e).await?;
+            station.get().await.connected_network_changed(e).await?;
         }
         let (ask, agent) = {
             let w = self.w.lock().unwrap();
@@ -253,7 +372,6 @@ impl Net {
             self.w.lock().unwrap().known.insert(self.path.clone());
         }
         let old = self.w.lock().unwrap().connected.replace(self.path.clone());
-        let station = server.interface::<_, Station>(DEV).await?;
         let e = station.signal_emitter();
         station.get().await.state_changed(e).await?;
         station.get().await.connected_network_changed(e).await?;
@@ -291,11 +409,52 @@ impl AgentManager {
     }
 }
 
-/// iwd with `wlan0` joined to Home (known); Attic and Loft (personal,
-/// unknown) in range.
-fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Connection {
+/// `net.connman.iwd.StationDiagnostic`: the joined network's frequency
+/// and security.
+struct Diagnostic(W);
+
+#[zbus::interface(name = "net.connman.iwd.StationDiagnostic")]
+impl Diagnostic {
+    fn get_diagnostics(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
+        let w = self.0.lock().unwrap();
+        let (freq, security) = w.diagnostics.clone().unwrap_or_default();
+        std::collections::HashMap::from([
+            (
+                "Frequency".to_string(),
+                zbus::zvariant::OwnedValue::from(freq),
+            ),
+            (
+                "Security".to_string(),
+                zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(security))
+                    .unwrap(),
+            ),
+        ])
+    }
+}
+
+/// The fake's scan ends: `Scanning` falls.
+fn end_scan(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection, w: &W) {
+    w.lock().unwrap().scanning = false;
     tokio.block_on(async {
-        zbus::connection::Builder::address(address)
+        let st = conn
+            .object_server()
+            .interface::<_, Station>(DEV)
+            .await
+            .unwrap();
+        st.get()
+            .await
+            .scanning_changed(st.signal_emitter())
+            .await
+            .unwrap();
+    });
+}
+
+/// iwd with `wlan0` joined to Home (known); Attic and Loft (personal,
+/// unknown) in range; its diagnostics served when the world has some.
+fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Connection {
+    let diagnostics = w.lock().unwrap().diagnostics.is_some();
+    tokio.block_on(async {
+        let mut b = zbus::connection::Builder::address(address)
             .unwrap()
             .name(iwd::IWD)
             .unwrap()
@@ -304,8 +463,11 @@ fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Conn
             .serve_at(iwd::MANAGER, AgentManager(w.clone()))
             .unwrap()
             .serve_at(DEV, Device(w.clone()))
-            .unwrap()
-            .serve_at(DEV, Station(w.clone()))
+            .unwrap();
+        if diagnostics {
+            b = b.serve_at(DEV, Diagnostic(w.clone())).unwrap();
+        }
+        b.serve_at(DEV, Station(w.clone()))
             .unwrap()
             .serve_at(HOME, Net::new(w, HOME, "Home", "psk"))
             .unwrap()
@@ -637,5 +799,248 @@ fn a_refused_signal_agent_is_asked_once() {
         });
     }
     assert_eq!(w.lock().unwrap().level_registrations, 1);
+    s.shutdown();
+}
+
+fn field(name: &str) -> usize {
+    network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == name)
+        .unwrap()
+}
+
+/// `network.disconnect()` or `network.scan()`.
+fn act(rt: &Runtime, b: &strand_services::Builtin, name: &str) {
+    b.network
+        .dynamic()
+        .action(rt, name, None, &[], Default::default())
+        .unwrap();
+}
+
+/// `ap.connect()` of `ssid`.
+fn join(rt: &Runtime, b: &strand_services::Builtin, ssid: &str) {
+    let item = AccessPoint {
+        ssid: ssid.into(),
+        strength: 0.5,
+        secure: true,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(
+            rt,
+            "connect",
+            Some(&item.to_data()),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+}
+
+/// Home joined on `iface`, its diagnostics served when given.
+fn home_world(iface: &str, diagnostics: Option<(u32, &str)>) -> W {
+    Arc::new(Mutex::new(World {
+        powered: true,
+        connected: Some(HOME.into()),
+        known: HashSet::from([HOME.to_string(), ATTIC.to_string()]),
+        ordered: vec![(HOME.into(), -6000), (ATTIC.into(), -7000)],
+        iface: iface.into(),
+        diagnostics: diagnostics.map(|(f, s)| (f, s.to_string())),
+        ..World::default()
+    }))
+}
+
+/// (m6-service-gaps, gap 28) The joined network's frequency and security
+/// from iwd's `StationDiagnostic`, else its security from the network's
+/// `Type` and no frequency; its address from the kernel while a reader
+/// reads it (the device's interface here is `lo`).
+#[test]
+fn iwd_tells_the_joined_networks_details() {
+    use strand_services::network::WifiSecurity;
+    for (diagnostics, frequency, security) in [
+        (
+            Some((5180, "WPA3-Personal")),
+            Some(5180),
+            WifiSecurity::Wpa3,
+        ),
+        (None, None, WifiSecurity::Wpa2),
+    ] {
+        let Some(bus) = strand_services::testing::PrivateBus::start() else {
+            return;
+        };
+        let tokio = tokio();
+        let w = home_world("lo", diagnostics);
+        let _iwd = fake_iwd(&tokio, &bus.address, &w);
+        let rt = Runtime::new();
+        let (s, b) = services(&rt, bus.buses());
+        let cells = b.network.cells();
+        b.network.acquire(&rt);
+        assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+        assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".into())));
+        assert_eq!(cells.frequency.get_untracked(&rt), Ok(frequency));
+        assert_eq!(cells.security.get_untracked(&rt), Ok(Some(security)));
+        assert_eq!(cells.address.get_untracked(&rt), Ok(None), "not read");
+        b.network.acquire_field(field("address"));
+        until(&rt, &s, "the address", || {
+            cells.address.get_untracked(&rt) == Ok(Some("127.0.0.1".into()))
+        });
+        s.shutdown();
+    }
+}
+
+/// (gap 28) A join in flight is `connecting` (the shell's at once, then
+/// iwd's), a leave `disconnecting`; once left nothing of the network is
+/// told. A disconnect during a join stops it with no failure (iwd's
+/// `Aborted`); with nothing joined it fails.
+#[test]
+fn iwd_says_what_it_is_joining_and_leaving_and_disconnects() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("lo", Some((2412, "WPA2-Personal")));
+    w.lock().unwrap().connected = None;
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    b.network.acquire_field(field("address"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
+    let calls = |what: &str| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == what)
+            .count()
+    };
+
+    // A join, held by iwd.
+    w.lock().unwrap().stall = true;
+    join(&rt, &b, "Attic");
+    until(&rt, &s, "Attic being joined", || {
+        cells.connecting.get_untracked(&rt) == Ok(Some("Attic".into()))
+            && calls("Connect Attic") == 1
+            && w.lock().unwrap().joining.is_some()
+    });
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
+    w.lock().unwrap().stall = false;
+    until(&rt, &s, "Attic joined", || {
+        cells.ssid.get_untracked(&rt) == Ok(Some("Attic".into()))
+            && cells.connecting.get_untracked(&rt) == Ok(None)
+            && cells.address.get_untracked(&rt) == Ok(Some("127.0.0.1".into()))
+    });
+    assert_eq!(cells.frequency.get_untracked(&rt), Ok(Some(2412)));
+
+    // Leaving it, held by iwd.
+    w.lock().unwrap().stall_disconnect = true;
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "Attic being left", || {
+        cells.disconnecting.get_untracked(&rt) == Ok(Some("Attic".into()))
+            && w.lock().unwrap().state.as_deref() == Some("disconnecting")
+    });
+    w.lock().unwrap().stall_disconnect = false;
+    until(&rt, &s, "Attic left", || {
+        cells.ssid.get_untracked(&rt) == Ok(None)
+            && cells.disconnecting.get_untracked(&rt) == Ok(None)
+            && cells.connected.get_untracked(&rt) == Ok(false)
+    });
+    assert_eq!(cells.address.get_untracked(&rt), Ok(None));
+    assert_eq!(cells.frequency.get_untracked(&rt), Ok(None));
+    assert_eq!(cells.security.get_untracked(&rt), Ok(None));
+
+    // A disconnect during a join stops it: no failure.
+    w.lock().unwrap().stall = true;
+    join(&rt, &b, "Attic");
+    until(&rt, &s, "the second join in flight", || {
+        calls("Connect Attic") == 2 && w.lock().unwrap().joining.is_some()
+    });
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "the join stopped", || {
+        calls("Disconnect") == 2
+            && w.lock().unwrap().joining.is_none()
+            && cells.connecting.get_untracked(&rt) == Ok(None)
+            && cells.disconnecting.get_untracked(&rt) == Ok(None)
+    });
+    w.lock().unwrap().stall = false;
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(300) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        failures.lock().unwrap().is_empty(),
+        "{:?}",
+        failures.lock().unwrap()
+    );
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
+
+    // Nothing joined: it fails, naming no network.
+    act(&rt, &b, "disconnect");
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        (String::new(), "no Wi-Fi network is joined".to_string())
+    );
+    assert_eq!(calls("Disconnect"), 2);
+    s.shutdown();
+}
+
+/// (gap 28) `network.scan()` over iwd: `Scan`, `scanning` while the
+/// station's `Scanning` says so, the networks read again when it ends;
+/// with the radio off (no station) it fails.
+#[test]
+fn an_explicit_scan_on_iwd_raises_scanning() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("wlan0", None);
+    w.lock().unwrap().hold_scan = true;
+    let iwd_conn = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.scanning.get_untracked(&rt), Ok(false));
+    act(&rt, &b, "scan");
+    until(&rt, &s, "scanning", || {
+        cells.scanning.get_untracked(&rt) == Ok(true)
+    });
+    assert!(w.lock().unwrap().calls.contains(&"Scan".to_string()));
+    let reads = w.lock().unwrap().ordered_reads;
+    end_scan(&tokio, &iwd_conn, &w);
+    until(&rt, &s, "the scan's end", || {
+        cells.scanning.get_untracked(&rt) == Ok(false)
+    });
+    until(&rt, &s, "the networks read again", || {
+        w.lock().unwrap().ordered_reads > reads
+    });
+    // The radio off: iwd takes the station away.
+    tokio.block_on(async {
+        iwd_conn
+            .object_server()
+            .remove::<Station, _>(DEV)
+            .await
+            .unwrap();
+    });
+    until(&rt, &s, "offline", || {
+        cells.connected.get_untracked(&rt) == Ok(false)
+    });
+    act(&rt, &b, "scan");
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        (String::new(), "Wi-Fi is off".to_string())
+    );
     s.shutdown();
 }

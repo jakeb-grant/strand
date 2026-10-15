@@ -44,6 +44,9 @@ enum PopupTrigger { open, hover }
 /// `flipped_90` is flipped about the vertical axis, then rotated 90
 /// degrees.
 enum OutputTransform { normal, rotate_90, rotate_180, rotate_270, flipped, flipped_90, flipped_180, flipped_270 }
+/// How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but
+/// encrypted); `enterprise` is 802.1X.
+enum WifiSecurity { open, enhanced_open, wep, wpa, wpa2, wpa3, enterprise }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -692,6 +695,22 @@ provisional service network {
   access_points: [AccessPoint]
   /// NetworkManager or iwd answers.
   available: bool
+  /// The Wi-Fi network being joined, by name.
+  connecting: text?
+  /// The Wi-Fi network being left, by name.
+  disconnecting: text?
+  /// The joined Wi-Fi network's frequency in MHz.
+  frequency: int?
+  /// How the joined Wi-Fi network is secured.
+  security: WifiSecurity?
+  /// The connection's IP address, as text without a prefix.
+  address: text?
+  /// A Wi-Fi scan runs.
+  scanning: bool
+  /// Leaves the Wi-Fi network joined, or stops the one being joined.
+  action disconnect()
+  /// Scans for Wi-Fi networks now.
+  action scan()
   /// Joining a network failed: `on network.failed(ssid, error) { … }`.
   event failed(ssid: text, error: text)
 }

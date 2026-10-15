@@ -42,6 +42,7 @@ use zbus::zvariant::OwnedValue;
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
+pub mod address;
 pub mod iwd;
 
 /// How a backend's body ended.
@@ -78,6 +79,22 @@ pub struct AccessPoint {
     pub active: bool,
 }
 
+/// How a Wi-Fi network is secured (`network.security`).
+#[derive(crate::Data, Clone, Copy, Debug, PartialEq, Eq)]
+#[data(name = "WifiSecurity")]
+pub enum WifiSecurity {
+    /// No key.
+    Open,
+    /// OWE: open, but encrypted.
+    EnhancedOpen,
+    Wep,
+    Wpa,
+    Wpa2,
+    Wpa3,
+    /// 802.1X.
+    Enterprise,
+}
+
 /// `network`'s actions.
 #[derive(Call, Debug)]
 pub enum NetworkAction {
@@ -85,6 +102,10 @@ pub enum NetworkAction {
     Connect { item: AccessPoint },
     /// `ap.connect_with(password)`.
     ConnectWith { item: AccessPoint, password: String },
+    /// `network.disconnect()`.
+    Disconnect,
+    /// `network.scan()`.
+    Scan,
 }
 
 /// See the module docs.
@@ -108,25 +129,147 @@ pub struct Network {
     /// NetworkManager or iwd answers: false without either (or without a
     /// system bus), so a menu can hide what cannot work.
     pub available: bool,
+    /// The Wi-Fi network being joined, by name: from the moment
+    /// `ap.connect()` or `ap.connect_with()` is asked, or the daemon starts
+    /// joining one on its own, until it is joined or fails; null otherwise
+    /// (`if network.connecting == ap.ssid { … }`).
+    pub connecting: Option<String>,
+    /// The Wi-Fi network being left (`network.disconnect()`, or the daemon
+    /// leaving it), until it is left; null otherwise.
+    pub disconnecting: Option<String>,
+    /// The joined Wi-Fi network's frequency in MHz (2412, 5180, 5955): below
+    /// 3000 is the 2.4 GHz band, 5150 to 5895 the 5 GHz band, from 5925 the
+    /// 6 GHz band. Null while no Wi-Fi network is joined, or when iwd does
+    /// not say.
+    pub frequency: Option<i64>,
+    /// How the joined Wi-Fi network is secured; null while none is joined.
+    pub security: Option<WifiSecurity>,
+    /// The connection's IP address, as text without a prefix: its IPv4
+    /// address, else its global IPv6 address. Null while not connected.
+    /// Over NetworkManager this is the default-route connection's interface
+    /// (wired too); over iwd it is the Wi-Fi interface. Read from the
+    /// kernel, and followed only while a visible reader reads it.
+    #[store(stream)]
+    pub address: Option<String>,
+    /// A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu
+    /// asks when it opens; over iwd, iwd's own scans too.
+    pub scanning: bool,
     /// Joining a network failed (no password and no secret agent to ask
     /// for one, a wrong one, out of range, timed out, or the service not
-    /// running): `on network.failed(ssid, error) { … }`.
+    /// running): `on network.failed(ssid, error) { … }`. `ssid` is the
+    /// network the action was about, "" for one that names none (`scan()`,
+    /// or a `disconnect()` the service could not take).
     pub failed: Event<(String, String)>,
 }
 
-/// A join the service could not take (no system bus, its run backing
-/// off): `failed(ssid, error)`, as a join that fails is.
+/// An action the service could not take (no system bus, its run backing
+/// off): `failed(ssid, error)`, as one that fails is; "" for one that
+/// names no network.
 fn refused(action: &NetworkAction, error: &str) -> Option<NetworkEvent> {
-    let (NetworkAction::Connect { item } | NetworkAction::ConnectWith { item, .. }) = action;
-    Some(NetworkEvent::Failed((item.ssid.clone(), error.to_string())))
+    let ssid = match action {
+        NetworkAction::Connect { item } | NetworkAction::ConnectWith { item, .. } => {
+            item.ssid.clone()
+        }
+        NetworkAction::Disconnect | NetworkAction::Scan => String::new(),
+    };
+    Some(NetworkEvent::Failed((ssid, error.to_string())))
+}
+
+/// What the shell itself asked and the daemon has not said yet, laid over
+/// what the daemon says ([`overlay`]) the same way on both backends: a
+/// click shows at once.
+#[derive(Debug, Default)]
+struct Pending {
+    /// The latest join asked and not answered yet: its network.
+    join: Option<String>,
+    /// A `disconnect()` in flight: the network it leaves.
+    disconnect: Option<String>,
+    /// A `scan()` (or a menu's scan) asked over NetworkManager, which has
+    /// no scanning property: until when it counts as running.
+    scan_until: Option<tokio::time::Instant>,
+    /// The address follower's value ([`address::Follower`]).
+    address: Option<String>,
+}
+
+/// `s`, as a backend's state, with the shell's own requests laid over it:
+/// the daemon's join or leave first, else the one asked; a scan asked;
+/// the address while connected.
+fn overlay(p: &Pending, s: &mut Network) {
+    if s.connecting.is_none() {
+        s.connecting = p.join.clone();
+    }
+    if s.disconnecting.is_none() {
+        s.disconnecting = p.disconnect.clone();
+    }
+    s.scanning |= p.scan_until.is_some();
+    s.address = if s.connected { p.address.clone() } else { None };
+}
+
+/// How long a scan NetworkManager accepted counts as running when its
+/// `LastScan` does not say it ended (NetworkManager before 1.12).
+const SCAN_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A body's address follower ([`address::Follower`]): open only while a
+/// visible reader reads `address` and the backend names an interface.
+#[derive(Debug, Default)]
+struct Addresses {
+    follower: Option<address::Follower>,
+    /// The socket failed: not opened again until `address` is watched
+    /// anew.
+    broken: bool,
+}
+
+impl Addresses {
+    /// Open or close the follower for `iface` while `watched`; when it
+    /// closes, the value goes. Whether the value changed.
+    fn sync(&mut self, pending: &mut Pending, watched: bool, iface: Option<&str>) -> bool {
+        if !watched {
+            self.broken = false;
+        }
+        if watched && iface.is_some() && !self.broken {
+            if self.follower.is_none() {
+                match address::Follower::open() {
+                    Ok(f) => self.follower = Some(f),
+                    Err(e) => {
+                        log::warn!("network: the address is not followed: {e}");
+                        self.broken = true;
+                    }
+                }
+            }
+            return false;
+        }
+        self.follower = None;
+        pending.address.take().is_some()
+    }
+
+    /// The next address of `iface` (pending while closed). A follower
+    /// that fails is closed, and its value is null.
+    async fn next(&mut self, iface: Option<&str>) -> Option<String> {
+        let Some(f) = self.follower.as_mut() else {
+            return std::future::pending().await;
+        };
+        match f.changed(iface).await {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("network: the address is not followed: {e}");
+                self.follower = None;
+                self.broken = true;
+                None
+            }
+        }
+    }
 }
 
 /// How long NetworkManager may take to accept an activation (its own
 /// D-Bus timeout is 25 s); the outcome comes later, as `StateChanged`.
 const ACTIVATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// `NMActiveConnectionState`: activating.
+const ACTIVATING: u32 = 1;
 /// `NMActiveConnectionState`: activated.
 const ACTIVATED: u32 = 2;
+/// `NMActiveConnectionState`: deactivating.
+const DEACTIVATING: u32 = 3;
 /// `NMActiveConnectionState`: deactivated.
 const DEACTIVATED: u32 = 4;
 
@@ -283,6 +426,11 @@ pub struct Nm {
     /// Access points read: those Wi-Fi connections use, and while
     /// scanning every one in range.
     aps: BTreeMap<String, Props>,
+    /// Every device's interface name (`IpInterface`, else `Interface`).
+    interfaces: BTreeMap<String, String>,
+    /// A Wi-Fi device's `LastScan` changed since this was last taken: a
+    /// scan ended.
+    scanned: bool,
 }
 
 impl Nm {
@@ -295,21 +443,69 @@ impl Nm {
             .collect()
     }
 
-    /// The state these objects make.
-    pub fn state(&self, scanning: bool) -> Network {
-        let state = dbus::number(&self.manager, "State").unwrap_or(0.0);
-        let used = self.used_aps();
-        // The Wi-Fi connection that is the default route wins.
+    /// The Wi-Fi active connections in `state` (an
+    /// `NMActiveConnectionState`), the default route's first.
+    fn wifi_in(&self, state: u32) -> Vec<&Props> {
         let mut wifi: Vec<&Props> = self
             .active
             .values()
             .filter(|c| dbus::text(c, "Type").as_deref() == Some("802-11-wireless"))
+            .filter(|c| dbus::number(c, "State").map(|n| n as u32) == Some(state))
             .collect();
         wifi.sort_by_key(|c| !dbus::boolean(c, "Default").unwrap_or(false));
-        let joined = wifi
+        wifi
+    }
+
+    /// The access point the first Wi-Fi active connection in `state` uses.
+    fn ap_in(&self, state: u32) -> Option<&Props> {
+        self.wifi_in(state)
             .first()
             .and_then(|c| object_path(c, "SpecificObject"))
-            .and_then(|p| self.aps.get(&p));
+            .and_then(|p| self.aps.get(&p))
+    }
+
+    /// The interface whose address is the connection's: the device of the
+    /// default route's active connection (IPv4, else IPv6), else of the
+    /// joined Wi-Fi network.
+    fn interface(&self) -> Option<String> {
+        let device_of = |c: &Props| {
+            object_paths(c, "Devices")
+                .into_iter()
+                .next()
+                .and_then(|d| self.interfaces.get(&d).cloned())
+        };
+        let default = |key: &str| {
+            self.active
+                .values()
+                .find(|c| dbus::boolean(c, key).unwrap_or(false))
+                .and_then(device_of)
+        };
+        default("Default")
+            .or_else(|| default("Default6"))
+            .or_else(|| self.wifi_in(ACTIVATED).first().and_then(|c| device_of(c)))
+    }
+
+    /// The Wi-Fi device a `disconnect()` asks, and the network it leaves:
+    /// the device of the joined Wi-Fi network, else of the one being
+    /// joined.
+    fn wifi_device(&self) -> Option<(String, Option<String>)> {
+        [ACTIVATED, ACTIVATING].into_iter().find_map(|state| {
+            let c = *self.wifi_in(state).first()?;
+            let dev = object_paths(c, "Devices").into_iter().next()?;
+            let name = object_path(c, "SpecificObject")
+                .and_then(|p| self.aps.get(&p))
+                .and_then(ssid);
+            Some((dev, name))
+        })
+    }
+
+    /// The state these objects make.
+    pub fn state(&self, scanning: bool) -> Network {
+        let state = dbus::number(&self.manager, "State").unwrap_or(0.0);
+        let used = self.used_aps();
+        // Only an activated connection is joined (an activating one is
+        // `connecting`); the default route's wins.
+        let joined = self.ap_in(ACTIVATED);
         let mut access_points: Vec<AccessPoint> = Vec::new();
         if scanning {
             let mut by_ssid: BTreeMap<String, AccessPoint> = BTreeMap::new();
@@ -351,6 +547,14 @@ impl Nm {
             access_points,
             // Its manager object answered the last read.
             available: !self.manager.is_empty(),
+            connecting: self.ap_in(ACTIVATING).and_then(ssid),
+            disconnecting: self.ap_in(DEACTIVATING).and_then(ssid),
+            frequency: joined
+                .and_then(|p| dbus::number(p, "Frequency"))
+                .map(|f| f as i64),
+            security: joined.map(security_of),
+            address: None,
+            scanning: false,
             failed: Event::default(),
         }
     }
@@ -386,6 +590,12 @@ impl Nm {
             let Some((path, dev)) = read(path, DEVICE).await? else {
                 continue;
             };
+            if let Some(name) = dbus::text(&dev, "IpInterface")
+                .filter(|n| !n.is_empty())
+                .or_else(|| dbus::text(&dev, "Interface"))
+            {
+                self.interfaces.insert(path.clone(), name);
+            }
             // NM_DEVICE_TYPE_WIFI.
             if dbus::number(&dev, "DeviceType") != Some(2.0) {
                 continue;
@@ -444,8 +654,12 @@ impl Nm {
                 // says when it is.
                 None => Some(false),
             },
-            WIRELESS if c.changed.contains_key("AccessPoints") => {
-                if !scanning {
+            WIRELESS => {
+                // A scan ended (NetworkManager 1.12 and later).
+                if c.changed.contains_key("LastScan") {
+                    self.scanned = true;
+                }
+                if !c.changed.contains_key("AccessPoints") || !scanning {
                     return Some(false);
                 }
                 let Some(dev) = self.wifi_devices.get_mut(&c.path) else {
@@ -533,43 +747,79 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
     // How active connections no join followed yet ended, while joins
     // are asked: an answer naming one settles at once.
     let mut ended = Ended::default();
-    let mut scanning = cx.watched("access_points");
+    // `disconnect()`s in flight (and the deactivations of joins they
+    // stopped): the one whose answer ends `pending.disconnect` is
+    // `leave`.
+    let mut leaving: JoinSet<Result<(), String>> = JoinSet::new();
+    let mut leave: Option<(tokio::task::Id, String)> = None;
+    let mut pending = Pending::default();
+    let mut addresses = Addresses::default();
+    // The access points are listed (a reader reads them).
+    let mut listing = cx.watched("access_points");
     let mut used = None;
-    // A scan is asked for when scanning starts and when a new
+    // A scan is asked for when listing starts and when a new
     // NetworkManager appears, not on every re-read.
-    let mut want_scan = scanning;
+    let mut want_scan = listing;
+    let publish = |cx: &mut Cx<Network>, nm: &Nm, pending: &Pending, listing: bool| {
+        cx.update(|s| {
+            *s = nm.state(listing);
+            overlay(pending, s);
+        })
+    };
     loop {
-        if scanning {
-            sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
+        if listing {
+            sync_subscriptions(&mut daemon, &nm, listing, false, &mut used).await;
         }
-        if let Err(e) = nm.read(&daemon, scanning).await {
+        if let Err(e) = nm.read(&daemon, listing).await {
             return Err(ServiceError(format!("NetworkManager did not answer: {e}")));
         }
-        sync_subscriptions(&mut daemon, &nm, scanning, &mut used).await;
         if !settle_joins(cx, &nm, &mut joining) {
             return Ok(Next::Stop);
         }
         // Asked once there is a Wi-Fi device to ask (a NetworkManager
         // that just appeared may not list its devices yet).
-        if scanning && want_scan && request_scan(&daemon, &nm).await {
-            want_scan = false;
+        if listing && want_scan {
+            match request_scan(&daemon, &nm).await {
+                Scan::NoDevice => {}
+                outcome => {
+                    want_scan = false;
+                    if outcome == Scan::Accepted {
+                        pending.scan_until = Some(tokio::time::Instant::now() + SCAN_LIMIT);
+                    }
+                }
+            }
         }
-        if !cx.update(|s| *s = nm.state(scanning)) {
+        let scan_running = pending.scan_until.is_some();
+        sync_subscriptions(&mut daemon, &nm, listing, scan_running, &mut used).await;
+        if !publish(cx, &nm, &pending, listing) {
             return Ok(Next::Stop);
         }
         cx.ready();
         'follow: loop {
+            let iface = nm.interface();
+            if addresses.sync(&mut pending, cx.watched("address"), iface.as_deref())
+                && !publish(cx, &nm, &pending, listing)
+            {
+                return Ok(Next::Stop);
+            }
+            let scan_until = pending.scan_until;
             tokio::select! {
                 ev = daemon.next() => match ev {
                     None => return Err(ServiceError("the system bus connection ended".into())),
                     Some(DaemonEvent::Owner) => {
-                        want_scan = scanning;
+                        want_scan = listing;
                         ended.clear();
                         // Its activations went with it, and the joins
                         // still asking stop here: their next call would
                         // reach the new NetworkManager, whose answer
                         // this would not follow.
                         asking.shutdown().await;
+                        leaving.shutdown().await;
+                        leave = None;
+                        pending = Pending {
+                            address: pending.address.take(),
+                            ..Pending::default()
+                        };
                         let stopped = asked.clear().into_iter().chain(
                             std::mem::take(&mut joining).into_values().map(|j| j.ssid),
                         );
@@ -602,14 +852,20 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                                 ended.note(path, state, reason);
                             }
                         }
-                        match nm.signal(&daemon, &m, scanning).await {
-                        None => break 'follow,
-                        Some(false) => {}
-                        Some(true) => {
-                            if !cx.update(|s| *s = nm.state(scanning)) {
-                                return Ok(Next::Stop);
-                            }
+                        let changed = nm.signal(&daemon, &m, listing).await;
+                        // A scan ended: its flag goes, and the devices'
+                        // signals with it unless the list is open.
+                        let scanned = std::mem::take(&mut nm.scanned) && pending.scan_until.take().is_some();
+                        if scanned {
+                            sync_subscriptions(&mut daemon, &nm, listing, false, &mut used).await;
                         }
+                        match changed {
+                            None => break 'follow,
+                            Some(changed) => {
+                                if (changed || scanned) && !publish(cx, &nm, &pending, listing) {
+                                    return Ok(Next::Stop);
+                                }
+                            }
                         }
                     }
                 },
@@ -618,14 +874,66 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         return Ok(Next::Again);
                     }
                 }
+                () = until(scan_until) => {
+                    // NetworkManager did not say the scan ended.
+                    pending.scan_until = None;
+                    sync_subscriptions(&mut daemon, &nm, listing, false, &mut used).await;
+                    if !publish(cx, &nm, &pending, listing) {
+                        return Ok(Next::Stop);
+                    }
+                }
+                a = addresses.next(iface.as_deref()) => {
+                    pending.address = a;
+                    if !publish(cx, &nm, &pending, listing) {
+                        return Ok(Next::Stop);
+                    }
+                }
+                Some(done) = leaving.join_next_with_id(), if !leaving.is_empty() => {
+                    let (id, r) = match done {
+                        Ok((id, r)) => (id, r),
+                        Err(e) => (e.id(), Err("the disconnect stopped".to_string())),
+                    };
+                    let Some((_, ssid)) = leave.take_if(|(l, _)| *l == id) else {
+                        // A stopped join's deactivation.
+                        if let Err(e) = r {
+                            log::debug!("network: a stopped join stays: {e}");
+                        }
+                        continue;
+                    };
+                    pending.disconnect = None;
+                    if let Err(error) = r {
+                        log::info!("network: not leaving {ssid}: {error}");
+                        if !cx.emit(NetworkEvent::Failed((ssid, error))) {
+                            return Ok(Next::Stop);
+                        }
+                    }
+                    if !publish(cx, &nm, &pending, listing) {
+                        return Ok(Next::Stop);
+                    }
+                }
                 Some(done) = asking.join_next_with_id(), if !asking.is_empty() => {
                     let (id, answer) = match done {
                         Ok((id, answer)) => (id, answer),
                         Err(e) => (e.id(), Err(zbus::Error::Failure("the join stopped".into()))),
                     };
+                    if asked.was_cancelled(id) {
+                        // A join `disconnect()` stopped: not followed nor
+                        // reported, and an activation it made is ended.
+                        if let Ok(active) = answer {
+                            let conn = daemon.conn().clone();
+                            leaving.spawn(async move { deactivate(&conn, &active).await });
+                        }
+                        if asking.is_empty() {
+                            ended.clear();
+                        }
+                        continue;
+                    }
                     let Some((ssid, asked_with, next)) = asked.answered(id) else {
                         continue;
                     };
+                    if pending.join.as_deref() == Some(ssid.as_str()) {
+                        pending.join = None;
+                    }
                     let failure = match answer {
                         Ok(active) => match ended.take(&active) {
                             Some((ACTIVATED, _)) => None,
@@ -645,11 +953,7 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         },
                         Err(e) => {
                             log::warn!("network: not joining {ssid}: {e}");
-                            Some(match e {
-                                zbus::Error::MethodError(_, Some(text), _) => text,
-                                zbus::Error::Failure(text) => text,
-                                e => e.to_string(),
-                            })
+                            Some(error_text(e))
                         }
                     };
                     if asking.is_empty() {
@@ -668,28 +972,96 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         && !repeats_joining(&mut joining, &ssid, fingerprint(password.as_deref()))
                     {
                         let id = ask(&mut asking, daemon.conn(), &nm, ssid.clone(), password.clone());
-                        asked.started(ssid, id, password.as_deref());
+                        asked.started(ssid.clone(), id, password.as_deref());
+                        pending.join = Some(ssid);
+                    }
+                    if !publish(cx, &nm, &pending, listing) {
+                        return Ok(Next::Stop);
                     }
                 }
                 m = cx.recv() => match m {
                     None => return Ok(Next::Stop),
                     Some(Msg::Watch { field: "access_points", on }) => {
-                        scanning = on;
+                        listing = on;
                         want_scan = on;
                         break 'follow;
                     }
                     Some(Msg::Write(w)) if w.field == "wifi" => {
-                        let on: bool = w.value().unwrap_or(nm.state(scanning).wifi);
+                        let on: bool = w.value().unwrap_or(nm.state(listing).wifi);
                         let set = dbus::set(conn, NM, ROOT, NM, "WirelessEnabled", on.into()).await;
                         let now = match set {
-                            Ok(()) => on,
+                            Ok(()) => {
+                                // As NetworkManager's signal will say (a
+                                // scan asked before it comes is refused).
+                                nm.manager.insert("WirelessEnabled".into(), on.into());
+                                on
+                            }
                             Err(e) => {
                                 log::warn!("network: Wi-Fi not switched: {e}");
                                 // The radio as last read.
-                                nm.state(scanning).wifi
+                                nm.state(listing).wifi
                             }
                         };
                         if !cx.report(&w, |s| s.wifi = now) {
+                            return Ok(Next::Stop);
+                        }
+                    }
+                    Some(Msg::Action(NetworkAction::Scan)) => {
+                        let failure = if !nm.state(listing).wifi {
+                            Some("Wi-Fi is off".to_string())
+                        } else {
+                            match request_scan(&daemon, &nm).await {
+                                Scan::NoDevice => Some("there is no Wi-Fi device".to_string()),
+                                Scan::Accepted => {
+                                    nm.scanned = false;
+                                    pending.scan_until = Some(tokio::time::Instant::now() + SCAN_LIMIT);
+                                    sync_subscriptions(&mut daemon, &nm, listing, true, &mut used).await;
+                                    None
+                                }
+                                Scan::Busy => None,
+                                Scan::Failed(error) => Some(error),
+                            }
+                        };
+                        if let Some(error) = failure {
+                            log::info!("network: no scan: {error}");
+                            if !cx.emit(NetworkEvent::Failed((String::new(), error))) {
+                                return Ok(Next::Stop);
+                            }
+                        }
+                        if !publish(cx, &nm, &pending, listing) {
+                            return Ok(Next::Stop);
+                        }
+                    }
+                    Some(Msg::Action(NetworkAction::Disconnect)) => {
+                        // The device of the network joined or being
+                        // joined, else (a join still asked) the first
+                        // Wi-Fi device.
+                        let target = nm
+                            .wifi_device()
+                            .map(|(dev, name)| (dev, name.or_else(|| pending.join.clone())))
+                            .or_else(|| {
+                                let join = pending.join.clone()?;
+                                let dev = nm.wifi_devices.keys().next()?.clone();
+                                Some((dev, Some(join)))
+                            });
+                        let Some((dev, name)) = target else {
+                            if !cx.emit(NetworkEvent::Failed((String::new(), "no Wi-Fi network is joined".into()))) {
+                                return Ok(Next::Stop);
+                            }
+                            continue;
+                        };
+                        let name = name.unwrap_or_default();
+                        // The joins it stops: neither followed nor
+                        // reported.
+                        stop_joins(&mut asked, &mut joining);
+                        pending.join = None;
+                        let conn = daemon.conn().clone();
+                        let id = leaving
+                            .spawn(async move { leave_device(&conn, &dev).await })
+                            .id();
+                        leave = Some((id, name.clone()));
+                        pending.disconnect = Some(name);
+                        if !publish(cx, &nm, &pending, listing) {
                             return Ok(Next::Stop);
                         }
                     }
@@ -697,6 +1069,7 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         let (item, password) = match a {
                             NetworkAction::Connect { item } => (item, None),
                             NetworkAction::ConnectWith { item, password } => (item, Some(password)),
+                            NetworkAction::Disconnect | NetworkAction::Scan => continue,
                         };
                         // Asked in a task (up to 25 s for the
                         // activation): NetworkManager's signals, the
@@ -707,7 +1080,11 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                             && !repeats_joining(&mut joining, &item.ssid, fingerprint(password.as_deref()))
                         {
                             let id = ask(&mut asking, daemon.conn(), &nm, item.ssid.clone(), password.clone());
-                            asked.started(item.ssid, id, password.as_deref());
+                            asked.started(item.ssid.clone(), id, password.as_deref());
+                            pending.join = Some(item.ssid);
+                            if !publish(cx, &nm, &pending, listing) {
+                                return Ok(Next::Stop);
+                            }
                         }
                     }
                     Some(_) => {}
@@ -715,6 +1092,56 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
             }
         }
     }
+}
+
+/// Wait until `deadline`; never without one.
+async fn until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// What a failed call says: the daemon's words when it gave some.
+fn error_text(e: zbus::Error) -> String {
+    match e {
+        zbus::Error::MethodError(_, Some(text), _) => text,
+        zbus::Error::Failure(text) => text,
+        e => e.to_string(),
+    }
+}
+
+/// The joins a `disconnect()` stops: those still asked are cancelled
+/// (their answer is neither followed nor reported, [`Asked::cancel`]),
+/// and those activating are followed no more (their end is no failure).
+fn stop_joins(asked: &mut Asked, joining: &mut BTreeMap<String, Joining>) {
+    asked.cancel();
+    joining.clear();
+}
+
+/// `Device.Disconnect` on Wi-Fi device `dev`: NetworkManager leaves its
+/// network and joins nothing on its own until one is joined again.
+async fn leave_device(conn: &zbus::Connection, dev: &str) -> Result<(), String> {
+    dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(Some(NM), dev, Some(DEVICE), "Disconnect", &()),
+    )
+    .await
+    .map(drop)
+    .map_err(error_text)
+}
+
+/// Deactivate active connection `active` (a join `disconnect()` stopped,
+/// which NetworkManager answered afterwards).
+async fn deactivate(conn: &zbus::Connection, active: &str) -> Result<(), String> {
+    let path = zbus::zvariant::ObjectPath::try_from(active).map_err(|e| e.to_string())?;
+    dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(Some(NM), ROOT, Some(NM), "DeactivateConnection", &(path,)),
+    )
+    .await
+    .map(drop)
+    .map_err(error_text)
 }
 
 /// The Wi-Fi devices' access point lists: their `PropertiesChanged` on
@@ -730,15 +1157,25 @@ fn wireless_rule() -> zbus::Result<zbus::MatchRule<'static>> {
 }
 
 /// The access points' signals and the devices' access point lists only
-/// while scanning; otherwise the signals of the access point in use (its
-/// strength), one rule replaced when the connection moves.
+/// while listing; otherwise the signals of the access point in use (its
+/// strength), one rule replaced when the connection moves, and the
+/// devices' signals while a scan runs (its end, `LastScan`).
 async fn sync_subscriptions(
     daemon: &mut Daemon,
     nm: &Nm,
-    scanning: bool,
+    listing: bool,
+    scan_running: bool,
     used: &mut Option<String>,
 ) {
-    if scanning {
+    async fn devices(daemon: &mut Daemon) {
+        if !daemon.subscribed("devices")
+            && let Ok(r) = wireless_rule()
+            && let Err(e) = daemon.subscribe("devices", r).await
+        {
+            log::debug!("network: no device signals: {e}");
+        }
+    }
+    if listing {
         daemon.unsubscribe("used");
         *used = None;
         if !daemon.subscribed("aps")
@@ -747,16 +1184,15 @@ async fn sync_subscriptions(
         {
             log::debug!("network: no access point signals: {e}");
         }
-        if !daemon.subscribed("devices")
-            && let Ok(r) = wireless_rule()
-            && let Err(e) = daemon.subscribe("devices", r).await
-        {
-            log::debug!("network: no device signals: {e}");
-        }
+        devices(daemon).await;
         return;
     }
     daemon.unsubscribe("aps");
-    daemon.unsubscribe("devices");
+    if scan_running {
+        devices(daemon).await;
+    } else {
+        daemon.unsubscribe("devices");
+    }
     let now = nm.used_aps().into_iter().next();
     if *used == now {
         return;
@@ -835,6 +1271,34 @@ fn kind(p: &Props) -> Kind {
     } else {
         // Open, or Enhanced Open (OWE): no key to give.
         Kind::Open
+    }
+}
+
+/// How access point `p` is secured, from the flags [`kind`] reads too. A
+/// WPA3 transition network (PSK and SAE) reads `wpa2`: the flags do not
+/// say which one was used.
+fn security_of(p: &Props) -> WifiSecurity {
+    let n = |k| dbus::number(p, k).map_or(0, |n| n as u32);
+    let (wpa, rsn) = (n("WpaFlags"), n("RsnFlags"));
+    let mgmt = wpa | rsn;
+    let (psk, sae) = (mgmt & 0x100 != 0, mgmt & 0x400 != 0);
+    if mgmt & (0x800 | 0x1000) != 0 && !psk && !sae {
+        WifiSecurity::EnhancedOpen
+    } else if mgmt & (0x200 | 0x2000) != 0 && !psk && !sae {
+        WifiSecurity::Enterprise
+    } else if rsn & 0x400 != 0 && rsn & 0x100 == 0 {
+        WifiSecurity::Wpa3
+    } else if rsn & 0x100 != 0 {
+        WifiSecurity::Wpa2
+    } else if wpa & 0x100 != 0 {
+        WifiSecurity::Wpa
+    } else if sae {
+        WifiSecurity::Wpa3
+    } else if n("Flags") & 0x1 != 0 && mgmt & 0x3f00 == 0 {
+        // PRIVACY without key management.
+        WifiSecurity::Wep
+    } else {
+        WifiSecurity::Open
     }
 }
 
@@ -929,9 +1393,36 @@ fn refusal(name: &str, kind: Kind, saved: bool, password: bool) -> Option<String
     }
 }
 
+/// How a scan asked of NetworkManager went.
+#[derive(Debug, PartialEq)]
+enum Scan {
+    /// There is no Wi-Fi device to ask.
+    NoDevice,
+    /// A device scans.
+    Accepted,
+    /// Refused as one runs or has just run: no failure.
+    Busy,
+    /// Refused otherwise, saying why.
+    Failed(String),
+}
+
+/// NetworkManager's refusal of a scan that runs or has just run
+/// (`RequestScan` is rate-limited).
+const NOT_ALLOWED: &str = "org.freedesktop.NetworkManager.Device.NotAllowed";
+
+/// Why a refused `RequestScan` is a failure; `None` for a scan running or
+/// just run, which is none.
+fn scan_failure(e: zbus::Error) -> Option<String> {
+    match e {
+        zbus::Error::MethodError(name, _, _) if name.as_str() == NOT_ALLOWED => None,
+        e => Some(error_text(e)),
+    }
+}
+
 /// Ask every Wi-Fi device for a fresh scan (NetworkManager rate-limits
-/// these itself); whether there was one to ask.
-async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
+/// these itself).
+async fn request_scan(daemon: &Daemon, nm: &Nm) -> Scan {
+    let mut outcome = Scan::NoDevice;
     for dev in nm.wifi_devices.keys() {
         let opts: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> = Default::default();
         let r = dbus::timed_for(
@@ -945,11 +1436,21 @@ async fn request_scan(daemon: &Daemon, nm: &Nm) -> bool {
             ),
         )
         .await;
-        if let Err(e) = r {
-            log::debug!("network: no scan on {dev}: {e}");
-        }
+        let this = match r {
+            Ok(_) => Scan::Accepted,
+            Err(e) => {
+                log::debug!("network: no scan on {dev}: {e}");
+                scan_failure(e).map_or(Scan::Busy, Scan::Failed)
+            }
+        };
+        // One device scanning is a scan; one busy is no failure.
+        outcome = match (outcome, this) {
+            (Scan::Accepted, _) | (_, Scan::Accepted) => Scan::Accepted,
+            (Scan::Busy, _) | (_, Scan::Busy) => Scan::Busy,
+            (_, this) => this,
+        };
     }
-    !nm.wifi_devices.is_empty()
+    outcome
 }
 
 /// What a join needs from the last read, taken along by its task.
@@ -1001,6 +1502,8 @@ struct Asked {
     asking: BTreeMap<String, (tokio::task::Id, u64)>,
     /// By network name: the join to ask when its answer comes.
     waiting: BTreeMap<String, Option<String>>,
+    /// Tasks asking joins that were cancelled.
+    cancelled: std::collections::HashSet<tokio::task::Id>,
 }
 
 impl Asked {
@@ -1045,7 +1548,22 @@ impl Asked {
     /// networks that were being asked.
     fn clear(&mut self) -> Vec<String> {
         self.waiting.clear();
+        self.cancelled.clear();
         std::mem::take(&mut self.asking).into_keys().collect()
+    }
+
+    /// Every join being asked is cancelled (`disconnect()`), and none
+    /// waits: their answers are not followed ([`Asked::was_cancelled`]).
+    fn cancel(&mut self) {
+        self.waiting.clear();
+        let asking = std::mem::take(&mut self.asking);
+        self.cancelled
+            .extend(asking.into_values().map(|(task, _)| task));
+    }
+
+    /// Task `id` asked a join that was cancelled (said once).
+    fn was_cancelled(&mut self, id: tokio::task::Id) -> bool {
+        self.cancelled.remove(&id)
     }
 }
 
@@ -1457,6 +1975,205 @@ mod tests {
         assert!(!a.ask("X", Some("pw")));
         assert_eq!(a.clear(), vec!["X".to_string()]);
         assert!(a.waiting.is_empty() && a.ask("X", Some("pw")));
+    }
+
+    /// (m6-service-gaps, gap 28) The joined network's security, from its
+    /// access point's flags.
+    #[test]
+    fn the_joined_networks_security_is_named_from_its_flags() {
+        use WifiSecurity::*;
+        for (flags, wpa, rsn, want) in [
+            (0, 0, 0, Open),
+            (0x1, 0, 0x800, EnhancedOpen),
+            (0x1, 0, 0x1000, EnhancedOpen),
+            (0x1, 0, 0, Wep),
+            (0x1, 0x1, 0x1, Wep),
+            (0x1, 0x108, 0, Wpa),
+            (0x1, 0, 0x188, Wpa2),
+            // python-dbusmock writes both flags alike.
+            (0x1, 0x100, 0x100, Wpa2),
+            (0x1, 0, 0x400, Wpa3),
+            // A WPA3 transition network: the flags do not say which.
+            (0x1, 0, 0x500, Wpa2),
+            (0x1, 0, 0x288, Enterprise),
+            (0x1, 0x288, 0, Enterprise),
+            (0x1, 0, 0x2000, Enterprise),
+        ] {
+            assert_eq!(
+                security_of(&ap(flags, wpa, rsn)),
+                want,
+                "{flags:#x} {wpa:#x} {rsn:#x}"
+            );
+        }
+    }
+
+    fn active(state: u32, ap: &str, default: bool) -> Props {
+        let v = |x: Value<'_>| OwnedValue::try_from(x).unwrap();
+        let path = |p: &str| {
+            v(Value::from(
+                zbus::zvariant::ObjectPath::try_from(p).unwrap(),
+            ))
+        };
+        Props::from([
+            ("Type".to_string(), v(Value::from("802-11-wireless"))),
+            ("State".to_string(), v(Value::from(state))),
+            ("SpecificObject".to_string(), path(ap)),
+            ("Default".to_string(), v(Value::from(default))),
+            (
+                "Devices".to_string(),
+                v(Value::from(vec![
+                    zbus::zvariant::ObjectPath::try_from("/d/1").unwrap(),
+                ])),
+            ),
+        ])
+    }
+
+    fn named_ap(name: &str, freq: u32) -> Props {
+        let mut p = ap(0x1, 0x100, 0x100);
+        p.insert(
+            "Ssid".into(),
+            OwnedValue::try_from(Value::from(name.as_bytes().to_vec())).unwrap(),
+        );
+        p.insert("Frequency".into(), OwnedValue::from(freq));
+        p
+    }
+
+    /// (gap 28) Only an activated connection is joined: an activating one
+    /// is `connecting` (it showed as joined before, unlike iwd), a
+    /// deactivating one `disconnecting`.
+    #[test]
+    fn only_an_activated_connection_is_joined() {
+        let mut nm = Nm::default();
+        nm.aps.insert("/ap/1".into(), named_ap("Cafe", 5180));
+        nm.aps.insert("/ap/2".into(), named_ap("Home", 2412));
+        nm.interfaces.insert("/d/1".into(), "wlan0".into());
+        nm.active
+            .insert("/a/1".into(), active(ACTIVATING, "/ap/1", false));
+        let s = nm.state(false);
+        assert_eq!(s.connecting.as_deref(), Some("Cafe"));
+        assert_eq!((s.ssid, s.frequency, s.security), (None, None, None));
+        assert_eq!(nm.interface(), None, "nothing joined, no default route");
+        assert_eq!(
+            nm.wifi_device(),
+            Some(("/d/1".to_string(), Some("Cafe".to_string()))),
+            "a disconnect stops the join"
+        );
+        nm.active
+            .insert("/a/1".into(), active(ACTIVATED, "/ap/1", true));
+        let s = nm.state(false);
+        assert_eq!(s.ssid.as_deref(), Some("Cafe"));
+        assert_eq!(s.connecting, None);
+        assert_eq!(s.frequency, Some(5180));
+        assert_eq!(s.security, Some(WifiSecurity::Wpa2));
+        assert_eq!(nm.interface().as_deref(), Some("wlan0"));
+        nm.active
+            .insert("/a/1".into(), active(DEACTIVATING, "/ap/1", false));
+        let s = nm.state(false);
+        assert_eq!(s.disconnecting.as_deref(), Some("Cafe"));
+        assert_eq!(s.ssid, None);
+        assert_eq!(nm.wifi_device(), None);
+    }
+
+    /// (gap 28) The shell's own requests over the daemon's state: a join
+    /// asked shows before NetworkManager knows it, the daemon's own value
+    /// wins, a scan asked raises `scanning`, and the address goes while
+    /// not connected.
+    #[test]
+    fn the_overlay_merges_the_shells_requests() {
+        let pending = Pending {
+            join: Some("Cafe".into()),
+            disconnect: Some("Home".into()),
+            scan_until: Some(tokio::time::Instant::now()),
+            address: Some("192.168.1.9".into()),
+        };
+        let mut s = Network::default();
+        overlay(&pending, &mut s);
+        assert_eq!(s.connecting.as_deref(), Some("Cafe"));
+        assert_eq!(s.disconnecting.as_deref(), Some("Home"));
+        assert!(s.scanning);
+        assert_eq!(s.address, None, "not connected");
+        let mut s = Network {
+            connected: true,
+            connecting: Some("Attic".into()),
+            ..Network::default()
+        };
+        overlay(&pending, &mut s);
+        assert_eq!(s.connecting.as_deref(), Some("Attic"), "the daemon's");
+        assert_eq!(s.address.as_deref(), Some("192.168.1.9"));
+        let mut s = Network {
+            scanning: true,
+            ..Network::default()
+        };
+        overlay(&Pending::default(), &mut s);
+        assert!(s.scanning, "iwd's own scan");
+        assert_eq!((s.connecting, s.disconnecting), (None, None));
+    }
+
+    /// (gap 28) NetworkManager refusing a scan because one runs or has
+    /// just run is no failure; any other refusal is.
+    #[test]
+    fn a_scan_refusal_is_no_failure() {
+        let refusal = |name: &str, text: &str| {
+            let call = zbus::Message::method_call("/", "RequestScan")
+                .unwrap()
+                .build(&())
+                .unwrap();
+            zbus::Error::MethodError(
+                zbus::names::OwnedErrorName::try_from(name).unwrap(),
+                Some(text.to_string()),
+                call,
+            )
+        };
+        assert_eq!(
+            scan_failure(refusal(
+                NOT_ALLOWED,
+                "Scanning not allowed while already scanning"
+            )),
+            None
+        );
+        assert_eq!(
+            scan_failure(refusal(
+                "org.freedesktop.NetworkManager.Device.NotActive",
+                "the device is unavailable"
+            )),
+            Some("the device is unavailable".to_string())
+        );
+        assert_eq!(
+            scan_failure(zbus::Error::Failure("no answer".into())),
+            Some("no answer".to_string())
+        );
+    }
+
+    /// (gap 28) A disconnect stops the joins: one still asked is
+    /// cancelled (its answer neither followed nor reported, nor a join
+    /// waiting with it asked), one activating is followed no more.
+    #[test]
+    fn a_join_cancelled_by_disconnect_is_not_followed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        let mut a = Asked::default();
+        assert!(a.ask("Cafe", None));
+        let cafe = tasks.spawn(async {}).id();
+        a.started("Cafe".into(), cafe, None);
+        assert!(!a.ask("Cafe", Some("pw")), "waits");
+        let mut joining = BTreeMap::from([(
+            "/a/5".to_string(),
+            Joining {
+                ssid: "Home".into(),
+                seen: true,
+                asked_with: fingerprint(None),
+            },
+        )]);
+        stop_joins(&mut a, &mut joining);
+        assert!(joining.is_empty());
+        assert!(a.waiting.is_empty(), "the waiting join goes too");
+        assert_eq!(a.answered(cafe), None, "not followed");
+        assert!(a.was_cancelled(cafe));
+        assert!(!a.was_cancelled(cafe), "said once");
+        assert!(a.ask("Cafe", None), "asked afresh");
     }
 
     #[test]

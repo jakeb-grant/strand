@@ -1312,6 +1312,34 @@ fn outputs_is_a_display_settings_page() {
     );
 }
 
+/// (m6-service-gaps, gap 28) `network` makes a Wi-Fi page: the network
+/// being joined or left, the joined one's frequency, security (a
+/// `WifiSecurity` variant by name) and address, a scan running, and
+/// `disconnect()` and `scan()` with their failures as events.
+#[test]
+fn network_is_a_wifi_page() {
+    assert_eq!(
+        codes(
+            "bar B {\n  state why = \"\"\n  \
+             on network.failed(ssid, error) { why = join(\" \", ssid, error) }\n  \
+             text why\n  \
+             text network.connecting ?? network.disconnecting ?? network.ssid ?? \"\"\n  \
+             text join(\" \", network.frequency ?? 0, network.address ?? \"\")\n  \
+             if network.security == wpa3 { text \"WPA3\" }\n  \
+             let unlocked = match network.security ?? open { open => true, enhanced_open => true, _ => false }\n  \
+             if unlocked { text \"Open\" }\n  \
+             if network.scanning { text \"Scanning\" }\n  \
+             text \"Leave\" { on click { network.disconnect() } }\n  \
+             text \"Scan\" { on click { network.scan() } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { text \"x\" { opacity: network.scan() } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// `from dbus` fields against the object's introspection: a missing
 /// property (with a did-you-mean), a type that does not convert, `rw` on
 /// a read-only property, and a bus that cannot be reached (a warning, the
