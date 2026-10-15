@@ -823,6 +823,18 @@ filling the monitor, the keyboard always).
   handler.
 - **`nav: id`** on an `input` routes arrow keys to the list with that
   `id`; Return activates the selected row (`on activate`).
+- **Copy and paste.** A focused `input` copies its selection with
+  Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
+  at the caret, over the selection, with Ctrl+V or Shift+Insert
+  (Ctrl+Shift+C, X and V too), through the compositor's clipboard
+  (`wl_data_device`), on every compositor and whether or not the
+  `clipboard` service runs; `on key(k)` still hears the keys. A
+  `type: password` input copies and cuts nothing. A paste becomes one
+  line (line breaks and tabs become spaces, other control characters
+  go); one over 1 MiB, or not delivered within 5 s, is dropped with a
+  warning. The `clipboard` service follows the selection, copies a value
+  from a handler (`clipboard.copy(ip)`) and keeps a history of what was
+  copied (decisions.md m6-service-gaps).
 - **`tooltip: expr`** shows a tooltip on hover.
 - **Drag and drop.** `drag: value` on a source; `on drop(v: T, at: int)`
   on a target. `at` is where it lands among the target's rows (for a
@@ -946,7 +958,12 @@ units).
   runs. When nothing is written, nothing runs and no frame is drawn.
 - A service starts when the program first reads it, is shared by every
   reader, and stops 5 s after its last reader leaves or becomes
-  invisible.
+  invisible. One field is held otherwise: a program that reads
+  `clipboard.history` anywhere (a closed popup, a `let` only it reads)
+  holds `clipboard` and its history from its top level for as long as
+  it runs, so copies made while the history is not shown are kept; a
+  program that never reads it never records it, and a config's own
+  `service clipboard` shadows the rule (decisions.md m6-service-gaps).
 
 ### 8.2 One tick, one diff
 
@@ -1448,14 +1465,15 @@ people can edit by hand.
   shell. An action of a builtin service that cannot run (its daemon or
   bus missing) is never a runtime fault: it is logged and arrives as
   that service's failure event where it has one (`session.failed`,
-  `network.failed`, `bluetooth.failed`, `outputs.failed`), as the
-  daemon refusing it would; a write to such a service is dropped and
+  `network.failed`, `bluetooth.failed`, `outputs.failed`,
+  `clipboard.failed`), as the daemon refusing it would; a write to such a service is dropped and
   logged, the field keeping the service's last value. Where a daemon
   may be missing, `available` says whether it answers (`network`,
-  `bluetooth`, `session`, `brightness`, and `outputs` for the
-  compositor's output configuration), false too while a failed service
-  waits to try again, so a config can hide what cannot work
-  (decisions.md m6-owner-fixes, gaps 18 and 20).
+  `bluetooth`, `session`, `brightness`, `outputs` for the compositor's
+  output configuration and `clipboard` for its data control), false too
+  while a failed service waits to try again, so a config can hide what
+  cannot work (decisions.md m6-owner-fixes, gaps 18 and 20;
+  m6-service-gaps, gap 30).
 
 ## 13. The command line and IPC
 

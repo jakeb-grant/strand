@@ -15,7 +15,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Render timer (`strand-tooltip`) | `strand-render` (`renderer/wake.rs`) | The render loop's own due times: one wake at the latest time it was sent (a tooltip's delay, the exit of a surface whose output stopped sending frames), through the loop's waker | Any work but the wake: `Renderer::update` runs on the main thread |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (`strand-persist`, one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`); the `clipboard` store runs on its own `strand-clipboard` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`), and each value it copies is held by the process-wide `strand-clipboard-keep` keeper thread, started on the first copy and ending once another program takes the selection (m6-service-gaps) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 | Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check is one PAM conversation that blocks here, bounded by the client's deadlines (decisions.md m6-lock), and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; `strand-gpu`, started on demand, ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
@@ -94,9 +94,17 @@ after applying it (a focused `input`'s `nav` list with rows and no
 selection selects its first row), sending its intents like `handle`'s.
 A `KeyboardEnter` with no leave before it (the keyboard back from a
 grabbing popup) keeps the surface's focused node. An `Intent` is `Flag { node, flag, on }`,
-`Event { node, event }` or `Write { node, prop, value }`; the binary's
+`Event { node, event }`, `Write { node, prop, value }` or (m6-service-gaps)
+`Clipboard(ClipboardAsk)`: a focused `input`'s copy, cut or paste key
+(`widgets::edit` returns `Edit::Copy`, `Cut` or `Paste`; a `password`
+input copies and cuts nothing) asks the host to copy text or to paste,
+the Router remembering which node asked (per surface; cleared on
+detach, focus loss and prune); the paste comes back as
+`InputEvent::Paste`, built on the edits in flight like a key
+(`widgets::pasted` makes it one line) and dropped if focus moved; the binary's
 host (`demo/host.rs`, `Forward`) only maps them to `ToLogic::Flag`,
-`Event` and `Write` (both with the press they came from, `input`; a
+`Event` and `Write`, keeping the clipboard asks for strand-surface's
+`SurfaceHost::take_clipboard_asks` (both with the press they came from, `input`; a
 `Write` logic applies with `Instance::write`, a
 two-way write) (decisions.md, wave3-pixels). Before the logic thread
 starts, `live::Worker::spawn` starts the `strand-watch` watcher (module
@@ -457,7 +465,7 @@ strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
                      capture, layer surfaces, xdg popups, a seat keyboard,
                      the M4 surface globals and optionally
                      wp_presentation, with frame callbacks and feedback
-                     it can hold; no Strand crate
+                     it can hold, and data control; no Strand crate
   ^-- dev-dependency of strand-services (the wm protocol client's and the
       thumbnail capture tests) and strand-surface (the manager's tests,
       tests/fake.rs)
@@ -472,7 +480,11 @@ the toplevel and workspace protocols strand-services' wm client speaks
 the toplevel capture strand-services' thumbnails use
 (`ext_foreign_toplevel_image_capture_source_manager_v1`,
 `ext_image_copy_capture_manager_v1`; `src/capture.rs`,
-`strand-services/tests/capture.rs`); and `wl_compositor`, `wl_shm`,
+`strand-services/tests/capture.rs`), with `FakeBuilder::data_control`
+the clipboard's `ext-data-control-v1` and `wlr-data-control`
+(`src/data_control.rs`: one selection, a client's source or one the fake
+sets itself with `Cmd::SetSelection`, reported by `Fake::selection`;
+`strand-services/tests/clipboard.rs`); and `wl_compositor`, `wl_shm`,
 layer shell, `xdg_wm_base` for popups (`src/xdg.rs`), a `wl_seat` with a
 keyboard whose focus the tests move, the viewporter, single-pixel
 buffers, the alpha modifier and `ext-background-effect-v1` for
@@ -1666,7 +1678,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   and `Key { key: KeyInput }` with the xkb keysym name, the typed text,
   `Modifiers` and repeat; `ClickAway { surface }`, a press on the
   click-away catcher under an open `keyboard: exclusive` surface whose
-  `open` is two-way, `SurfaceSpec::open_two_way` from `Prop::TwoWay`) in
+  `open` is two-way, `SurfaceSpec::open_two_way` from `Prop::TwoWay`;
+  m6-service-gaps: `Paste { surface, text }`, the clipboard's text a
+  paste asked for, answering `ClipboardAsk::Paste { surface }` beside
+  `ClipboardAsk::Copy { surface, text }`) in
   surface-local logical pixels, per `SurfaceId`. `strand-surface` produces it; render hit-tests
   it on the main thread and forwards node events to logic. Wayland
   serials stay in `strand-surface`.
@@ -3611,6 +3626,13 @@ Public interfaces other crates and later stages build on:
     What a `#[store(stream)]` field's stream runs for (a Wi-Fi scan,
     audio levels): a bar showing `network.ssid` does not keep a closed
     popup's scan of `network` access points going. Default: nothing.
+    One exception (m6-service-gaps, spec.md 8.1):
+    `lower::Program::services_anywhere` is what any scope reads (files,
+    components, surfaces, bodies, through `let`s and `fn`s), and boot
+    holds each field of `instantiate::HELD_ANYWHERE`
+    (`("clipboard", "history")`) read anywhere, with its service, at the
+    top level for as long as the program runs, as bars hold `screens`,
+    unless the config declares its own `service` of that name.
   - Several service crates, one host (M3 plan): `Instance::new` takes one
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
     and the rest of the VM's dynamic types) stays in `strand-compiler`:
@@ -4361,6 +4383,20 @@ and the connection):
     grabbed). The private MIME type starts with `dnd::STRAND_MIME`, so
     another Strand process's drag is recognised and read through its
     exports as a `DropPayload::External`.
+  - Copy and paste (`src/selection.rs`, included as
+    `manager::selection`; m6-service-gaps): right after a key press
+    reaches the host, the seat drains `SurfaceHost::take_clipboard_asks()
+    -> Vec<ClipboardAsk>` (default: none). A copy is a
+    `wl_data_source` offering the five text types and a private type
+    (`STRAND_SELECTION_MIME` with the pid and the manager) set as the
+    selection with that press's serial, its text written to readers
+    through calloop without blocking; `cancelled` drops it. A paste of
+    our own selection (its offer carries the private type) is answered
+    from memory; another program's text is read through calloop
+    (`MAX_PASTE_BYTES`, 1 MiB; `PASTE_READ_TIMEOUT`, 5 s) and sent as
+    `InputEvent::Paste`. A keyboard's seat gets a data device too. The
+    pipe reader and writer dnd and the selection share live in
+    `manager/pipes.rs`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -4384,7 +4420,8 @@ viewport scale, margins), `effect.rs` (the blur region on
 `ext_background_effect_surface_v1`) and `origin.rs` (each surface's
 place in the compositor's logical layout, for `surface_placed`), and two
 modules kept beside the manager in `src/` but part of it: `dnd.rs`
-(drag and drop over `wl_data_device`) and `gpu_handoff.rs` (a surface's
+(drag and drop over `wl_data_device`), `selection.rs` (copy and paste
+over it; m6-service-gaps, with `manager/pipes.rs`) and `gpu_handoff.rs` (a surface's
 hand-off between `wl_shm` and the GPU thread's WSI).
 
 ### `strand-gpu`
@@ -5453,6 +5490,49 @@ transparent huge pages for life.
   at a socket (tests; `None`: `$WAYLAND_DISPLAY`, resolved by
   `wm::protocol::display_socket`, now `pub(crate)`). Tests:
   `crates/strand-services/tests/outputs.rs` on headless sway 1.9.
+
+- **Clipboard (`strand_services::clipboard`, the `clipboard` service;
+  M6, m6-service-gaps, owner-testing gap 30).** `clipboard::Clipboard`
+  (`#[service(name = "clipboard", action = ClipboardAction, refused = …,
+  thread)]`, `Builtin.clipboard`, schema
+  `strand_services_schema::CLIPBOARD` with a provisional stub in
+  builtin.schema) runs on its own `strand-clipboard` thread with its own
+  Wayland connection, asleep in `poll(2)` on the socket, an eventfd and
+  the one read in flight. `clipboard/protocol.rs` is one client over
+  `ext_data_control_manager_v1` (bound where offered) and
+  `zwlr_data_control_manager_v1` (version 1, no primary selection),
+  with the first `wl_seat`; a device that finishes is made again while
+  the seat lives. Fields: `available`, `text`, `image` and
+  `#[store(keyed, stream)] history: Vec<ClipboardEntry>` (`ClipboardEntry
+  { id, text, image: Option<String>, size, time: Date }`, keyed by `id`);
+  event `failed((action, error))`; actions `Copy { value }`, `Clear` and
+  the item actions `CopyEntry { item }` (`#[call(name = "copy")]`) and
+  `Remove { item }`. `clipboard/offer.rs` says what a selection is (a
+  text type wins; PNG, then JPEG, kept; another image only flagged) and
+  whether `x-kde-passwordManagerHint` marks it `secret` (read first, 64
+  bytes; unreadable is secret): a secret is read no further, recorded
+  nowhere, logged nowhere. A text is read 1 MiB and 5 s at most;
+  while `history` is watched each text and kept image is pushed to
+  `clipboard/history.rs`'s `History` (newest first, deduplicated by
+  content keeping the id, `Caps::DEFAULT` 100 entries, 64 MiB, 1 MiB a
+  text, 16 MiB an image, oldest evicted with its file) and saved in
+  `<state>/strand/clipboard/` (`history.json` and `images/<id>-<time>.png
+  |.jpg`, directory 0700, files 0600, each write a synced temporary file
+  renamed over, the directory synced; a corrupt file is an empty history
+  and a `Cx::warn`), loaded at the first watch or action that needs it.
+  `copy` and `e.copy()` go to `clipboard/keeper.rs`: the process-wide
+  `strand-clipboard-keep` thread with its own connection holds the
+  source, writes each paste without blocking (5 s without progress ends
+  a write) and ends when another program takes the selection, so a copy
+  outlives the run's 5 s stop; the run reads its own copy back like any
+  selection. Without data control `available` is false and the actions
+  fail as `failed`; a lost connection clears `available`, fails what
+  was queued and ends the run (the contract's backoff).
+  `clipboard::configure(Option<Config { target, state_dir }>)` points
+  runs started later at a display and state directory (tests). Tests:
+  `crates/strand-services/tests/clipboard.rs` (headless sway 1.9 and
+  strand-fake-wayland), `compositor_matrix.rs`'s
+  `the_clipboard_works_on_every_compositor`.
 
 - **Audio (`strand_services::audio`, the `audio` service; cargo feature
   `pipewire`, on by default).**

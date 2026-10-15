@@ -102,6 +102,24 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `fn circle(x: float, y: float, r: float)` | A circle centred at (`x`, `y`) with radius `r`. |
 | `fn text(t: text, x: float, y: float)` | Text `t` at (`x`, `y`). |
 
+### `ClipboardEntry`
+
+One entry of the clipboard's history: a text or an image copied,
+newest first, keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `int` | Its identity, kept while it is in the history (across restarts). |
+| `text` | `text` | Its text, or "" for an image. |
+| `image` | `text?` | An image's file, which `image` draws (`image e.image ?? ""`), or null for a text. |
+| `size` | `int` | Its size in bytes, as copied. |
+| `time` | `Date` | When it was last copied. |
+
+| Method | |
+| --- | --- |
+| `action copy()` | Makes it the selection again; it moves to the front of the history: `on click { e.copy() }`. |
+| `action remove()` | Removes it from the history, its image file with it. |
+
 ### `Date`
 
 A date and time of day, such as `clock.today`.
