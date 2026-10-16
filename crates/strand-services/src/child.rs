@@ -1,5 +1,7 @@
 //! What every program the shell starts gets back between `fork` and
-//! `exec`: the process-wide settings strand changed for itself only.
+//! `exec`: the process-wide settings strand changed for itself only; and
+//! the environment it gets ([`child_env`]): strand's own, less what
+//! addresses this shell only.
 //!
 //! `strand` turns transparent huge pages off for its own process from an
 //! ELF constructor ([`thp_off`], the memory budget: decisions.md
@@ -95,20 +97,34 @@ pub fn restore_in_child() {
 /// read (the same token, as the xdg-activation spec asks).
 pub const ACTIVATION_VARS: [&str; 2] = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"];
 
-/// (M5) Sets `cmd`'s activation variables ([`ACTIVATION_VARS`]) to
-/// `token`, the token for the press that launched it, or removes them
-/// with none: a program strand starts never inherits the token strand
-/// itself was started with (spent, and meant for strand's own window).
-/// Every program strand starts goes through it, beside
-/// [`restore_in_child`], so it is done on the `Command` before `fork`
-/// (setting the environment between `fork` and `exec` is not
-/// async-signal-safe).
-pub fn activation_env(cmd: &mut std::process::Command, token: Option<&str>) {
+/// The variables that address one running shell, not the session: the
+/// socket it answers on (`STRAND_SOCKET`) and the directory it keeps its
+/// state in (`STRAND_STATE_DIR`). A program strand starts never inherits
+/// them, so a terminal opened from a second instance reaches the
+/// display's shell with `strand set`, as one opened anywhere else does,
+/// and keeps nothing in that instance's state (spec section 13;
+/// decisions.md launch-env).
+pub const INSTANCE_VARS: [&str; 2] = ["STRAND_SOCKET", strand_core::persist::STATE_DIR_VAR];
+
+/// The environment of a program strand starts: strand's own, with the
+/// activation variables ([`ACTIVATION_VARS`]) set to `token`, the token
+/// for the press that launched it, or removed with none (a program never
+/// inherits the token strand itself was started with: spent, and meant
+/// for strand's own window), and [`INSTANCE_VARS`] removed. Every
+/// program strand starts goes through it, beside [`restore_in_child`]:
+/// an app launch, a declared action's command, an `exec` source, a
+/// `file` element's `run:` and the overlay's editor. It is done on the
+/// `Command` before `fork` (setting the environment between `fork` and
+/// `exec` is not async-signal-safe).
+pub fn child_env(cmd: &mut std::process::Command, token: Option<&str>) {
     for var in ACTIVATION_VARS {
         match token {
             Some(t) => cmd.env(var, t),
             None => cmd.env_remove(var),
         };
+    }
+    for var in INSTANCE_VARS {
+        cmd.env_remove(var);
     }
 }
 
@@ -127,7 +143,8 @@ mod tests {
 
     /// A launch with a token carries it in both variables; one without
     /// carries neither, even one strand inherited (an explicit removal
-    /// overrides the inherited environment).
+    /// overrides the inherited environment); neither carries the
+    /// variables that address this shell.
     #[test]
     fn a_launch_carries_its_token_and_never_an_inherited_one() {
         let envs = |cmd: &std::process::Command| -> Vec<(String, Option<String>)> {
@@ -141,25 +158,30 @@ mod tests {
                 .collect()
         };
         let mut cmd = std::process::Command::new("true");
-        activation_env(&mut cmd, Some("tok"));
+        child_env(&mut cmd, Some("tok"));
         let mut got = envs(&cmd);
         got.sort();
         assert_eq!(
             got,
             [
                 ("DESKTOP_STARTUP_ID".into(), Some("tok".into())),
+                ("STRAND_SOCKET".into(), None),
+                ("STRAND_STATE_DIR".into(), None),
                 ("XDG_ACTIVATION_TOKEN".into(), Some("tok".into())),
             ]
         );
         let mut cmd = std::process::Command::new("true");
         cmd.env("XDG_ACTIVATION_TOKEN", "stale");
-        activation_env(&mut cmd, None);
+        cmd.env("STRAND_SOCKET", "/run/user/1000/strand-launcher.sock");
+        child_env(&mut cmd, None);
         let mut got = envs(&cmd);
         got.sort();
         assert_eq!(
             got,
             [
                 ("DESKTOP_STARTUP_ID".into(), None),
+                ("STRAND_SOCKET".into(), None),
+                ("STRAND_STATE_DIR".into(), None),
                 ("XDG_ACTIVATION_TOKEN".into(), None),
             ]
         );

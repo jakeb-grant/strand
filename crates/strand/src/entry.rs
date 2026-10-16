@@ -60,6 +60,19 @@ const OPTIONS: &[(&str, &str)] = &[
     ("-V, --version", "print the version"),
 ];
 
+/// The variables that address one shell (spec section 13): never passed
+/// to a program the shell starts.
+const ENVIRONMENT: &[(&str, &str)] = &[
+    (
+        "STRAND_SOCKET",
+        "the shell's socket (default $XDG_RUNTIME_DIR/strand-<display>.sock)",
+    ),
+    (
+        "STRAND_STATE_DIR",
+        "the shell's state directory (default $XDG_STATE_HOME/strand)",
+    ),
+];
+
 fn usage() -> String {
     let mut s = String::from("usage: strand <command> [args]\n\ncommands:\n");
     for (name, about) in COMMANDS {
@@ -67,6 +80,10 @@ fn usage() -> String {
     }
     s.push_str("\noptions:\n");
     for (name, about) in OPTIONS {
+        s.push_str(&format!("  {name:<18}{about}\n"));
+    }
+    s.push_str("\nenvironment (not passed to programs the shell starts):\n");
+    for (name, about) in ENVIRONMENT {
         s.push_str(&format!("  {name:<18}{about}\n"));
     }
     s
@@ -238,6 +255,9 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("-V, --version"), "{out}");
+        // The variables that pick a second shell's socket and state.
+        assert!(out.contains("\n  STRAND_SOCKET "), "{out}");
+        assert!(out.contains("\n  STRAND_STATE_DIR "), "{out}");
     }
 
     /// Every command the help lists is served: `run`, a tool or a

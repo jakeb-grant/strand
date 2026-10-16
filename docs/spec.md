@@ -1403,7 +1403,8 @@ new program with the running one.
   cell, is a **reload write**: `on change` takes it as its baseline and
   does not fire.
 - **`persist`** stores the value with a hash of its default, under
-  `$XDG_STATE_HOME/strand/persist`. At start, a stored value whose
+  `persist` in the state directory (`$XDG_STATE_HOME/strand`, or
+  `$STRAND_STATE_DIR`: section 13). At start, a stored value whose
   default hash matches is used; when the default changed, an unchanged
   stored value adopts the new default and a changed one is kept and
   reported once. A corrupt store gives the default and a warning.
@@ -1467,7 +1468,7 @@ people can edit by hand.
   spacing and order. They follow
   symbolic links and replace the file through a temporary file and a
   rename. A read-only target (such as a file in `/nix/store`) gets the
-  write in an overlay under `$XDG_STATE_HOME/strand` instead, with a
+  write in an overlay in the state directory instead, with a
   notice.
 - Who wins between the overlay, the file and the default: section 8.8.
 
@@ -1546,6 +1547,19 @@ people can edit by hand.
     last 600 paints, with the drawn and unchanged counts). It carries no
     serials or ids. The `report` request is served over the socket
     only, not D-Bus.
+- **One shell's variables.** `STRAND_SOCKET` picks the socket a shell
+  answers on and the one a command reaches; `STRAND_STATE_DIR` names
+  the directory a shell keeps its state in (`persist`, settings and
+  token overlays, palettes, clipboard history, `file` manifests;
+  default `$XDG_STATE_HOME/strand`), read by `strand run` and `strand
+  export`. Each counts only when absolute. Together they run a second
+  shell beside the first (`STRAND_SOCKET=… STRAND_STATE_DIR=… strand
+  run dir`) without changing the session's XDG variables. They address
+  that shell only: no program it starts (an app launch, a declared
+  action's command, an `exec` source, a `file` element's `run:`, the
+  overlay's editor) inherits them, so `strand` in a terminal it opened
+  reaches the display's shell; every other variable is passed on as the
+  shell got it (decisions.md launch-env).
 - Paths use the program's own names: `file.name` for exports
   (`launcher.open`); `file.settings.field` for a settings field, or
   `settings.field` when exactly one file declares settings with that
@@ -1569,9 +1583,9 @@ people can edit by hand.
   unknown method.
 - A plugin binary (section 5.6) answers every command above as
   `strand` does, against its own schema, and adds `--write-schemas`.
-- `strand help` lists every command. Commands, their flags and their
-  output formats are covered by the compatibility policy only where this
-  section names them.
+- `strand help` lists every command and the variables above. Commands,
+  their flags and their output formats are covered by the compatibility
+  policy only where this section names them.
 
 ## 14. Compatibility
 

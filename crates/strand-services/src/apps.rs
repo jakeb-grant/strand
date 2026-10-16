@@ -930,7 +930,8 @@ pub fn spawn_detached(argv: &[String], dir: Option<&Path>) -> std::io::Result<()
 /// (M5) [`spawn_detached`] for a launch: the program gets `token`, the
 /// xdg-activation token for the press that launched it, in
 /// `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, and never the one
-/// strand inherited ([`crate::child::activation_env`]).
+/// strand inherited, nor the variables that address this shell
+/// (`STRAND_SOCKET`, `STRAND_STATE_DIR`: [`crate::child::child_env`]).
 pub fn spawn_launched(
     argv: &[String],
     dir: Option<&Path>,
@@ -949,7 +950,7 @@ pub fn spawn_launched(
     if let Some(d) = dir.filter(|d| d.is_dir()) {
         cmd.current_dir(d);
     }
-    crate::child::activation_env(&mut cmd, token);
+    crate::child::child_env(&mut cmd, token);
     // SAFETY: only async-signal-safe calls between fork and exec
     // (`setsid`, `fork`, `_exit`, `prctl`), as `pre_exec` requires.
     unsafe {

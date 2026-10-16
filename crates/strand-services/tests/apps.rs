@@ -328,6 +328,81 @@ fn a_launch_carries_the_token_and_not_an_inherited_one() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// (launch-env) A launched app gets strand's environment but for the
+/// variables that address this shell: a second instance's
+/// `STRAND_SOCKET` and `STRAND_STATE_DIR` stay with it, so `strand` in a
+/// terminal it opened reaches the display's shell and the app's own
+/// variables (here `XDG_STATE_HOME`) are the session's.
+#[test]
+fn a_launch_never_inherits_the_variables_that_address_this_shell() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the tests of this binary run one at a time (`SERIAL`), and
+    // nothing else here reads the environment while this one sets it.
+    unsafe {
+        std::env::set_var("STRAND_SOCKET", "/run/strand-second.sock");
+        std::env::set_var("STRAND_STATE_DIR", "/tmp/strand-second-state");
+        std::env::set_var("STRAND_LAUNCH_ENV_KEPT", "kept");
+    }
+    let root = std::env::temp_dir().join(format!("strand-apps-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    let marker = root.join("env");
+    let script = root.join("env.sh");
+    write(
+        &script,
+        &format!(
+            "#!/bin/sh\necho \"[${{STRAND_SOCKET-unset}}] [${{STRAND_STATE_DIR-unset}}] \
+             [${{STRAND_LAUNCH_ENV_KEPT-unset}}]\" > {0}.tmp\nmv {0}.tmp {0}\n",
+            marker.display()
+        ),
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(
+        &dir.join("env.desktop"),
+        &desktop("Env", &script.display().to_string(), ""),
+    );
+    apps::set_config(Some(Config {
+        dirs: vec![dir],
+        desktops: vec![],
+        state: None,
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let d = b.apps.dynamic();
+    b.apps.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    rt.flush();
+    let app = d.keyed_items(&rt, 0).unwrap()[0].clone();
+    d.action(
+        &rt,
+        "launch",
+        Some(&app),
+        &[],
+        strand_core::ActionCtx::default(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "never launched");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let got = std::fs::read_to_string(&marker).unwrap();
+    s.shutdown();
+    apps::set_config(None);
+    // SAFETY: as above.
+    unsafe {
+        std::env::remove_var("STRAND_SOCKET");
+        std::env::remove_var("STRAND_STATE_DIR");
+        std::env::remove_var("STRAND_LAUNCH_ENV_KEPT");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(got.trim(), "[unset] [unset] [kept]");
+}
+
 /// Bugs 3 and gaps 9 (m6-w2-services): a window finds its desktop entry
 /// by its app id (the entry's id, ignoring case, `StartupWMClass`, a
 /// reverse-DNS id's last part, the name, a dash-separated head), and

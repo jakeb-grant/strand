@@ -685,10 +685,10 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 /// the command backgrounds (`dunst &`), or one that left the group with
 /// `setsid`, inherits the pipe and may hold it open for good. (M5) Like
 /// every program strand starts, it does not inherit the xdg-activation
-/// token strand was started with (`child::activation_env`), and it gets
-/// back the transparent huge page setting strand inherited
-/// (`child::restore_in_child`): a daemon a `run:` restarts would
-/// otherwise run with THP off for life.
+/// token strand was started with, nor the variables that address this
+/// shell (`child::child_env`), and it gets back the transparent huge
+/// page setting strand inherited (`child::restore_in_child`): a daemon a
+/// `run:` restarts would otherwise run with THP off for life.
 fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
     let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
@@ -697,7 +697,7 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .process_group(0);
-    strand_services::child::activation_env(&mut cmd, None);
+    strand_services::child::child_env(&mut cmd, None);
     // SAFETY: `restore_in_child` makes only async-signal-safe calls (an
     // atomic load, `prctl`), as `pre_exec` requires.
     unsafe {
