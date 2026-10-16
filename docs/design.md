@@ -528,7 +528,7 @@ Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compos
 
 ### Bundled GPU effects
 
-These 8 start the GPU only while visible and release it 30 s after: bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path, and a noise field is one of them, spelled like the aurora as a `shader` node: `shader "noise.wgsl" { … }`. Five, which have no node or prop of their own, are spelled as values of existing props: `filter: bloom(r)`, `filter: crt()`, `filter: chromatic(px)`, `filter: wobble(amp)` and `backdrop: glass()`. Without a usable GPU each falls back to a CPU version (particles cap at 1,000, tilt stays 2D, bloom becomes glow, glass becomes blur and tint) or, for the shader-only ones, draws the node unfiltered.
+These 8 use the GPU only while visible (the device itself is kept for the session when one exists, see Paint below): bloom, liquid-glass refraction (dispersion, fresnel rim, pointer specular), particles above 1,000, true 3D perspective, raster wobble, CRT and chromatic aberration, aurora and noise fields, and large full-resolution backdrop blur. Your own `.wgsl` shaders use the same path, and a noise field is one of them, spelled like the aurora as a `shader` node: `shader "noise.wgsl" { … }`. Five, which have no node or prop of their own, are spelled as values of existing props: `filter: bloom(r)`, `filter: crt()`, `filter: chromatic(px)`, `filter: wobble(amp)` and `backdrop: glass()`. Without a usable GPU each falls back to a CPU version (particles cap at 1,000, tilt stays 2D, bloom becomes glow, glass becomes blur and tint) or, for the shader-only ones, draws the node unfiltered.
 
 **Left out of v1:** video wallpapers (use mpvpaper or the compositor), Rive, wallpaper subject separation (depth masks) and mesh-warp minimise effects.
 
@@ -560,7 +560,7 @@ Nine lines give a squircle pill with a slowly rotating gradient border, a spinni
 
 ## Rendering, performance and memory budget
 
-Render on the CPU into shared memory with exact damage by default, and promote to the GPU only for heavy animation. A two-monitor bar targets about 30 MB, a clock tick repaints about 60×20 px, and an idle shell does zero work.
+Render still surfaces on the CPU into shared memory with exact damage, and draw whatever animates a large area on the GPU whenever a device exists. A two-monitor bar targets about 30 MB, a clock tick repaints about 60×20 px, and an idle shell does zero work.
 
 ![Runtime architecture: every change flows through one graph; the renderer never waits](images/architecture.png)
 
@@ -570,7 +570,7 @@ File saves and system changes enter at the top and become writes into the reacti
 
 - **Wayland:** [smithay-client-toolkit](https://github.com/Smithay/client-toolkit) 0.21 plus `wayland-protocols` 0.32 for fractional scale, viewporter, single-pixel buffers, alpha modifier and background effect.
 - **Text:** parley 0.11 shapes on a worker thread; swash rasterises into LRU glyph atlases, one per output scale. Mixed-DPI setups stay sharp, unlike pleamar's single max-scale atlas.
-- **Paint:** our own scene IR feeds two backends. [vello\_cpu](https://github.com/linebender/vello) into `wl_shm` is the default. vello\_gpu on wgpu 30 handles shaders and surfaces animating large areas for more than 500 ms; the device is dropped after 30 s idle. Backends switch only when springs settle. The GPU backend is in every build; when no device starts (no Vulkan driver, a lost device), Strand stays on the CPU, bundled GPU effects use their CPU versions, and a `shader` node draws nothing while the inspector and `strand report` say why. After 3 lost devices (a hang, a reset or a panic) in one process the GPU stays off until Strand restarts: no device is created and nothing is promoted, the CPU draws everything it can, `shader` nodes draw nothing, and one warning and `strand watch` notice say so.
+- **Paint:** our own scene IR feeds two backends. [vello\_cpu](https://github.com/linebender/vello) into `wl_shm` is the default. vello\_gpu on wgpu 30 handles shaders and any surface animating a large area: when a device exists, a surface switches to the GPU at the first large frame (0.2 Mpx) of an animation, springs included (a morph, a panel opening, a scroll, a theme crossfade), or at the third in a row of a clock, so that frame follows a still one and the backends' antialiasing difference is lost in the motion. It goes back to the CPU once it has been settled (small frames or none, no spring in flight) for 3 s, so a bar ticking a clock stays cheap, and an idle shell takes no wakeup for it beyond the one that switches it back. The device is created as the shell starts, off the frame path, with its pipelines built, and kept for the session, so an animation never waits for it (decisions.md gpu-first). A promoted surface presents through the WSI; it is read back into `wl_shm` only where the compositor cannot take the GPU's buffers. The GPU backend is in every build; when no device starts (no Vulkan driver, a lost device), Strand stays on the CPU, bundled GPU effects use their CPU versions, and a `shader` node draws nothing while the inspector and `strand report` say why. After 3 lost devices (a hang, a reset or a panic) in one process the GPU stays off until Strand restarts: no device is created and nothing is promoted, the CPU draws everything it can, `shader` nodes draw nothing, and one warning and `strand watch` notice say so.
 - **Images** decode at drawn size into a 32 MB LRU. mimalloc as allocator. GPU crates stay cold unless used; LSP and tree-sitter live in a separate `strand-dev` binary.
 
 **Compositor-animated poses.** Surface-level fades and scales cost no repaint: opacity via `wp_alpha_modifier_v1`, scale via viewporter, small moves via layer-shell margins. Without those protocols, Strand repaints instead.
@@ -578,10 +578,10 @@ File saves and system changes enter at the top and become writes into the reacti
 **Damage and pacing**
 
 - Up to 8 dirty rectangles per frame, a 2–3 buffer shm pool with buffer age, `damage_buffer` and `set_opaque_region`.
-- GPU frames send full damage until wgpu's [`present_with_damage` PR #10152](https://github.com/gfx-rs/wgpu/pull/10152) lands. That's acceptable because only large animations run on the GPU.
+- GPU frames send full damage until wgpu's [`present_with_damage` PR #10152](https://github.com/gfx-rs/wgpu/pull/10152) lands. That's acceptable because only large animations run on the GPU, and a settled surface goes back to exact CPU damage.
 - Frame callbacks are requested only while something is dirty or a spring is unsettled. Timing comes from `wp_presentation` feedback, so frames lock to the real refresh rate, not a free-running clock.
 
-**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3). The totals are targets: CI warns above them and fails only above a ceiling, 48 MB for the two-monitor bar and 104 MB for the full shell (re-based in M5 from 38 and 70 MB for the speed-first release profile, decisions.md m5-speed, then with headroom for M5's later waves, decisions.md m5-open-budgets, then for GitHub's runner variance, decisions.md seam-snap), so runner variance and real icon themes do not flip the build while growth past the target stays visible.
+**Memory budget** (PSS in MB, design estimates to be measured in M0 and M3). The totals are targets: CI warns above them and fails only above a ceiling, 48 MB for the two-monitor bar and 104 MB for the full shell (re-based in M5 from 38 and 70 MB for the speed-first release profile, decisions.md m5-speed, then with headroom for M5's later waves, decisions.md m5-open-budgets, then for GitHub's runner variance, decisions.md seam-snap), so runner variance and real icon themes do not flip the build while growth past the target stays visible. Those figures are the shell's own, GPU cold. Since gpu-first (decisions.md, owner 2026-10-16: speed beats size) `strand run` keeps a warm GPU device, so the CI gates measure the shell with it: on CI's software tier (lavapipe, which maps LLVM) the bar warns above 256 MiB and fails above 288 MiB, the full shell warns above 328 MiB and fails above 384 MiB; on the owner's Intel GPU the device adds about 21 MB at idle.
 
 The budgets are targets for Strand's own benchmarks and tests, never limits on a user's shell: nothing refuses, truncates or degrades what a config shows to stay under them. Bounds against hostile or broken input (one file or client that would crash, hang or grow memory without end) and fixed-size caches that evict and redo work stay.
 
@@ -595,7 +595,7 @@ The budgets are targets for Strand's own benchmarks and tests, never limits on a
 | Images, notification history | 1 | 8 |
 | Allocator overhead | 1–2 | 2–3 |
 | **Total** | **29–34** | **59–64** |
-| GPU device if promoted | — | +20–40, dropped when idle |
+| GPU device, kept warm (gpu-first) | +21 measured on Intel ANV; about +190 on lavapipe | +22 to +38 measured on Intel ANV with the launcher drawn on the GPU, kept for the session |
 
 For comparison, real Quickshell configs reach 0.5–1.26 GB, driven by a GL context per popup and full-resolution image decodes. Scrims and lock backgrounds use single-pixel buffers; a 4K triple buffer would cost about 99 MB.
 
@@ -780,7 +780,7 @@ TSX lost on every lens for the same reasons: a JS runtime's memory and startup c
 | Blur coverage: sway, labwc and COSMIC have none; Hyprland's support of the new protocol is unverified | The fallback ladder; tint by default |
 | Reload semantics and lock-screen security | A written spec, the edit fuzzer, VM-only lock testing, and a small, separately reviewable PAM helper |
 | The notification bus name can collide with dunst or mako; nucleo releases have stalled; niri's IPC changes in patch versions | Clear error on name conflict; wrap nucleo; reimplement niri IPC behind a feature flag |
-| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (48 MB bar, 104 MB full shell), and anything over the target is reported |
+| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (48 MB bar, 104 MB full shell, GPU cold; with the warm device 288 / 384 MiB on CI's lavapipe tier, decisions.md gpu-first), and anything over the target is reported |
 
 **Open questions**
 
@@ -802,7 +802,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 | Wayland integration | One container: sway headless with software rendering, optionally weston | Layer-shell, popups, damage, input regions; hotplug and mixed DPI faked with `swaymsg create_output` and per-output scales | Every push |
 | Services | Same container, private D-Bus via `dbus-run-session` | python-dbusmock for UPower, NetworkManager, BlueZ, logind and notifications; PipeWire with a null sink; small zbus mocks for the portal and tray | Every push |
 | Reload fuzzer | Same container, tmpfs | Random edits replayed through five editor save styles; no panic, blank frame or lost state | Every push, longer runs nightly |
-| Budgets | Same container | Memory (PSS) and idle wakeups; the two-monitor bar warns above its 42 MB target and fails above 48 MB, the full shell warns above 76 MB and fails above 104 MB | Every push |
+| Budgets | Same container | Memory (PSS) and idle wakeups; the two-monitor bar warns above its 256 MiB target and fails above 288 MiB, the full shell warns above 328 MiB and fails above 384 MiB, each with the warm GPU device on lavapipe (42 / 48 MB and 76 / 104 MB GPU cold, before gpu-first) | Every push |
 | Lock screen | Local QEMU VM | PAM, fail-closed behaviour under injected faults; never tested on your real session | Before touching the lock code, and before releases |
 | Daily driving | Your own compositor, nested in a window, then as your real shell | Real-world bugs no lab finds | Always |
 

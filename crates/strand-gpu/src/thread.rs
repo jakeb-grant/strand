@@ -119,6 +119,21 @@ pub(crate) fn run(
         reply.send(GpuReply::Exited);
         return;
     };
+    // (gpu-first) What a first frame would build (vello_gpu's resources,
+    // Mesa's pipeline variants, the blits), built now: the device starts
+    // with the shell, off its frame path, and the first promoted frame
+    // is not the one that pays. A failure here is the start's.
+    let warmed = catch_unwind(AssertUnwindSafe(|| state.warm(&dev)));
+    if warmed.is_err() || dev.is_lost() {
+        reply.send(GpuReply::Unavailable(GpuError::new(
+            GpuErrorKind::Device,
+            format!("the GPU failed its first frame on {}", info.name),
+        )));
+        drop(state);
+        drop(dev);
+        reply.send(GpuReply::Exited);
+        return;
+    }
     reply.send(GpuReply::Ready(info));
     while let Ok((sent, req)) = rx.recv() {
         if matches!(req, GpuRequest::Shutdown) {
@@ -213,6 +228,138 @@ impl State {
             blit: Blit::default(),
             targets: HashMap::new(),
             pass_reads: Lru::new(PASS_READS),
+        }
+    }
+
+    /// (gpu-first) Draws a small frame offscreen (fills, a gradient, an
+    /// image, a clip and a layer) and records the present blit for both
+    /// swapchain formats, then waits for the GPU: the pipelines and
+    /// resources a first frame builds are built. Nothing is answered and
+    /// nothing is kept but what any frame keeps.
+    fn warm(&mut self, dev: &Device) {
+        use crate::kurbo::{Affine, Rect, Shape};
+        use crate::{AlphaColor, Brush, Layer, peniko};
+        const WARM: SurfaceId = SurfaceId(u32::MAX);
+        const IMAGE: u64 = u64::MAX;
+        let size = Size::new(64, 64);
+        self.targets.insert(
+            WARM,
+            Target {
+                size,
+                scale: Scale::ONE,
+                present: None,
+                timer: None,
+                frame: None,
+                read: None,
+            },
+        );
+        let blue = AlphaColor::new([0.2, 0.4, 0.9, 1.0]);
+        let pink = AlphaColor::new([0.9, 0.5, 0.7, 0.8]);
+        let card = Rect::new(4.0, 4.0, 60.0, 60.0)
+            .to_rounded_rect(12.0)
+            .to_path(0.1);
+        let gradient =
+            peniko::Gradient::new_linear((0.0, 0.0), (64.0, 64.0)).with_stops([blue, pink]);
+        let ops = vec![
+            Op::Fill {
+                path: card.clone(),
+                brush: Brush::Solid(blue),
+                brush_transform: Affine::IDENTITY,
+                even_odd: false,
+            },
+            Op::PushClip(card.clone()),
+            Op::PushLayer(Layer {
+                clip: None,
+                blend: None,
+                opacity: Some(0.5),
+                blur: None,
+            }),
+            Op::Fill {
+                path: Rect::new(8.0, 8.0, 56.0, 32.0).to_path(0.1),
+                brush: Brush::Gradient(gradient),
+                brush_transform: Affine::IDENTITY,
+                even_odd: false,
+            },
+            Op::PopLayer,
+            Op::Image {
+                rect: Rect::new(8.0, 36.0, 24.0, 52.0),
+                image: IMAGE,
+                image_transform: Affine::scale(4.0).then_translate((8.0, 36.0).into()),
+                tint: Some(pink),
+                smooth: true,
+            },
+            Op::Image {
+                rect: Rect::new(32.0, 36.0, 48.0, 52.0),
+                image: IMAGE,
+                image_transform: Affine::scale(4.0).then_translate((32.0, 36.0).into()),
+                tint: None,
+                smooth: false,
+            },
+            Op::PopClip,
+        ];
+        let frame = Frame {
+            surface: WARM,
+            id: 0,
+            size,
+            scale: Scale::ONE,
+            ops,
+            uploads: vec![Upload {
+                id: IMAGE,
+                generation: 0,
+                pixmap: std::sync::Arc::new(crate::Pixmap::new(4, 4)),
+            }],
+            retire: Vec::new(),
+            clear: AlphaColor::TRANSPARENT,
+        };
+        // Its `Pixels` (a readback, which waits for the GPU) goes nowhere.
+        let (tx, _rx) = mpsc::channel();
+        let quiet = Reply {
+            tx: &tx,
+            waker: &|| {},
+        };
+        if let Err(e) = self.draw_frame(dev, frame, Duration::ZERO, &quiet) {
+            log::debug!("GPU: the warm-up frame: {e}");
+        }
+        self.targets.remove(&WARM);
+        let mut encoder = dev
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("strand warm-up"),
+            });
+        if let Some(h) = self.images.remove(&IMAGE) {
+            self.renderer
+                .destroy_image(&mut self.resources, &mut encoder, h.id);
+        }
+        // The present blit, for both formats a swapchain may have.
+        let texture = |format, usage| {
+            dev.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("strand warm-up"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let src = texture(FRAME_FORMAT, wgpu::TextureUsages::TEXTURE_BINDING);
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        ] {
+            let dst = texture(format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            self.blit.record(dev, &mut encoder, &src, &dst, format);
+        }
+        dev.queue.submit([encoder.finish()]);
+        if let Err(e) = crate::readback::finish(dev, None, "the warm-up") {
+            log::debug!("GPU: {e}");
         }
     }
 

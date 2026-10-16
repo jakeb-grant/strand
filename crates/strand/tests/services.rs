@@ -569,15 +569,14 @@ fn the_real_services_sleep_when_nothing_changes() {
     let after: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
     assert_eq!(before, after, "{threads:?} woke while idle");
     let pss = pss_kb(pid);
-    // The debug ceiling is the design bar's in demo.rs (92 MiB since the
-    // m6-service-gaps merge: the debug binary's code, much of it
-    // resident; decisions.md, m4-integration-w2 and m6-service-gaps).
-    // The release gate below is the design's budget.
+    // The ceilings are the design bar's in demo.rs, which hold the warm
+    // device (gpu-first: about 190 MB on CI's lavapipe tier; before it
+    // 92 MiB debug and 48 MB release; decisions.md m4-integration-w2,
+    // m6-service-gaps, m5-open-budgets and gpu-first).
     let (limit, what) = if cfg!(debug_assertions) {
-        (92 * 1024, "debug ceiling")
+        (320 * 1024, "debug ceiling")
     } else {
-        // design.md: aims at 42 MB, fails above 48 (decisions.md m5-open-budgets).
-        (48 * 1024, "48 MB ceiling")
+        (288 * 1024, "ceiling")
     };
     eprintln!("bar on the real services: PSS {pss} kB ({what} {limit} kB)");
     assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");

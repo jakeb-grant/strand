@@ -127,7 +127,8 @@ impl Renderer {
             .min();
         // A capped clock's next tick (M4), half a frame early.
         let clocks = self.clocks.next_wake();
-        // (M4) An idle promoted surface's demotion, the device's drop.
+        // (M4) A settled promoted surface's demotion (gpu-first: the
+        // device is kept up, so it asks for no wake).
         #[cfg(feature = "gpu")]
         let gpu = self.gpu_wake();
         #[cfg(not(feature = "gpu"))]

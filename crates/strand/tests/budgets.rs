@@ -1,7 +1,8 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
 //! (design.md, "Memory budget" and "Testing": the two-monitor bar aims at
-//! 42 MB, a warning above it, and the build fails above 48 MB; a running
-//! service with nothing changing wakes nothing).
+//! 256 MiB with the warm GPU device on CI's lavapipe tier, a warning
+//! above it, and the build fails above 288 MiB (42 / 48 MB before
+//! gpu-first); a running service with nothing changing wakes nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
 //! 2560×1440 outputs (scale 1 and 1.25), beside python-dbusmock's UPower
@@ -19,8 +20,9 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 48 MB ceiling (fails above it; above the 42 MB target
-//!   it warns) in release (a debug build has its own ceiling),
+//!   within the 288 MiB ceiling (fails above it; above the 256 MiB target
+//!   it warns; both hold the warm GPU device, lavapipe on CI's tier:
+//!   decisions.md gpu-first) in release (a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
 //!   minute ticks no thread of strand's wakes (or comes or goes) and no
 //!   frame is drawn, and the next minute tick wakes it in one burst.
@@ -33,8 +35,9 @@
 //!   (the test's apps' icons found on screen), two notifications from an
 //!   app as toasts (on screen), the OSD up too (a `wpctl` volume change;
 //!   on screen), then the launcher closed. The larger of the settled
-//!   launcher-and-toasts figure and the OSD's aims at the 76 MB target (a
-//!   warning above it), and fails above the 104 MB ceiling, in release.
+//!   launcher-and-toasts figure and the OSD's aims at the 328 MiB target (a
+//!   warning above it), and fails above the 384 MiB ceiling, in release
+//!   (with the warm device: decisions.md gpu-first).
 //! - `the_full_shell_with_a_desktop_of_apps_is_measured`, the same with
 //!   160 more apps (a desktop's worth), half with their own PNG icons of
 //!   mixed sizes, half naming icons of the machine's themes.
@@ -81,12 +84,19 @@ use zbus::zvariant::{OwnedValue, Value as ZValue};
 /// 1-2 resident code: the highest run, GitHub's 37,817 kB, plus about
 /// 14%, and the ceiling a further 14% (decisions.md m5-open-budgets).
 /// Tripwires for accidental growth, never a cap on a user's shell.
-const PSS_TARGET_KB: u64 = 42 * 1024;
-const PSS_GATE_KB: u64 = 48 * 1024;
+/// (gpu-first) Re-based again for the warm device: the bar now holds a
+/// started device wherever one can start, which on CI's lavapipe tier is
+/// lavapipe, LLVM and the device's memfd-backed memory (231,912 kB in the
+/// container, 194 MB over the cold bar; on the laptop's GPU about 15-25
+/// MB): target and ceiling are those measurements plus about 13% and a
+/// further 12% (decisions.md gpu-first).
+const PSS_TARGET_KB: u64 = 256 * 1024;
+const PSS_GATE_KB: u64 = 288 * 1024;
 /// A debug build's code is about three times release's (65 MB against
 /// 32 MB here): a ceiling of its own that only catches gross growth; the
-/// gate is checked in release (CI).
-const DEBUG_PSS_CEILING_KB: u64 = 96 * 1024;
+/// gate is checked in release (CI). With the warm lavapipe device
+/// 267,100 kB (gpu-first).
+const DEBUG_PSS_CEILING_KB: u64 = 320 * 1024;
 /// The full shell with the launcher open: the target (CI warns above it)
 /// is 76 MB and the build fails above 104 MB, held in release. Re-based
 /// from 67 / 74 MB (and the owner-confirmed 64 / 70 MB before that): the
@@ -95,15 +105,27 @@ const DEBUG_PSS_CEILING_KB: u64 = 96 * 1024;
 /// further 13% (decisions.md m5-open-budgets); the ceiling then from
 /// 86 MB to 104 MB, as GitHub's runners read the same build anywhere
 /// from 80,715 to 97,875 kB (its heap alone 12 MB apart) while the
-/// container reads it within 3 MB (decisions.md seam-snap).
-const FULL_SHELL_TARGET_KB: u64 = 76 * 1024;
-const FULL_SHELL_KB: u64 = 104 * 1024;
+/// container reads it within 3 MB (decisions.md seam-snap). (gpu-first)
+/// With the warm device, on lavapipe: 270,087 kB, and 289,102 kB with a
+/// desktop of apps (the launcher's entrance drawn on the GPU, its image
+/// atlas among the device's memory), so a target of 328 MiB (16% over
+/// the larger) and a ceiling of 384 MiB (36% over it, as 104 MB was over
+/// the cold shell's 68,585 kB plus GitHub's variance; decisions.md
+/// gpu-first).
+const FULL_SHELL_TARGET_KB: u64 = 328 * 1024;
+const FULL_SHELL_KB: u64 = 384 * 1024;
 /// The gates the owner confirmed in M3 (decisions.md wave4-core), which
 /// docs/m3-report.md records; the ones in force are above.
 const M3_PSS_TARGET_KB: u64 = 34 * 1024;
 const M3_PSS_GATE_KB: u64 = 38 * 1024;
 const M3_FULL_SHELL_TARGET_KB: u64 = 64 * 1024;
 const M3_FULL_SHELL_KB: u64 = 70 * 1024;
+/// The environment requires a GPU device (CI's lavapipe tier): the warm
+/// device must be up.
+fn gpu_required() -> bool {
+    cfg!(feature = "gpu") && std::env::var("STRAND_REQUIRE_GPU").as_deref() == Ok("1")
+}
+
 /// The idle window: no wakeup, no frame.
 const IDLE: Duration = Duration::from_secs(10);
 /// How long a child command or a D-Bus call of the test's may take.
@@ -1459,7 +1481,7 @@ fn pss_limit() -> (u64, &'static str) {
     if cfg!(debug_assertions) {
         (DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        (PSS_GATE_KB, "48 MB ceiling")
+        (PSS_GATE_KB, "288 MiB ceiling")
     }
 }
 
@@ -1476,8 +1498,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 48 MB
-/// ceiling (a warning above the 42 MB target), no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 288 MiB
+/// ceiling (a warning above the 256 MiB target; the warm device's), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {
@@ -1567,14 +1589,18 @@ fn the_design_bar_on_the_real_services_keeps_the_budget() {
         "design bar on the real services: PSS {pss} kB ({what} {limit} kB)"
     ));
     assert_eq!(huge, 0, "huge pages resident\n{}", memory_report(pid));
-    // (M4) The GPU backend is linked but cold: no Vulkan library is
-    // mapped before anything needs the GPU (docs/architecture.md,
-    // "`strand-gpu`", "Budgets and tests").
-    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
-    assert!(
-        !maps.contains("libvulkan"),
-        "a Vulkan library is mapped by a bar that needs no GPU"
-    );
+    // (gpu-first) The device is warm wherever one can start: started
+    // with the shell, kept for its first animation, and counted in the
+    // PSS above (lavapipe and LLVM on CI's tier; docs/architecture.md,
+    // "`strand-gpu`", "Budgets and tests"; decisions.md gpu-first).
+    if gpu_required() {
+        let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+        assert!(
+            maps.contains("libvulkan") && desk.log_text().contains("GPU: the device is up"),
+            "STRAND_REQUIRE_GPU is set, but the bar has no warm device\n{}",
+            desk.log_text()
+        );
+    }
     warn_over_target("design bar on the real services", pss, PSS_TARGET_KB);
     assert!(
         pss <= limit,
@@ -2058,16 +2084,19 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>) {
     settled(&mut desk, "the launcher closed", limit);
     let closed = pss_kb(pid);
     desk.alive("at the end");
-    // (m4-audit) None of these shells has a shader, a filter, a backdrop
-    // or a large long animation, so none starts the GPU: the launcher's
-    // opening and closing seconds apart once added up to a promotion and
-    // left lavapipe's ~100 MB mapped ("launcher closed" at 136-147 MB).
+    // (gpu-first) The device started with the shell and is kept: the
+    // launcher's opening and the toasts' entrances draw on it, and its
+    // cost is in every figure above.
     let log = desk.log_text();
-    let gpu: Vec<&str> = log.lines().filter(|l| l.contains("GPU: ")).collect();
+    if gpu_required() {
+        assert!(
+            log.contains("GPU: the device is up"),
+            "STRAND_REQUIRE_GPU is set, but the shell has no warm device\n{log}"
+        );
+    }
     assert!(
-        gpu.is_empty(),
-        "the full shell started the GPU: {gpu:?}\n{}",
-        memory_report(pid)
+        !log.contains("GPU: the thread ended"),
+        "the warm device was dropped\n{log}"
     );
     // The launcher closed is gated too (it was only printed).
     let peak = full.max(toasts).max(closed);

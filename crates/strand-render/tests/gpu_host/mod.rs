@@ -52,11 +52,7 @@ impl Host {
                     });
                 }
                 BackendChange::Demote(s) => self.request(GpuRequest::Release(s)),
-                BackendChange::Drop => {
-                    if let Some(g) = self.gpu.take() {
-                        drop(g);
-                    }
-                }
+                BackendChange::Start => self.start(),
             }
         }
         let reqs = r.take_gpu_requests();
@@ -78,6 +74,13 @@ impl Host {
                 self.opts,
             ));
         }
+    }
+
+    /// The thread ends (as a lost device's does): the `Gpu` dropped and
+    /// its `Exited` delivered.
+    pub fn end(&mut self, r: &mut Renderer) {
+        drop(self.gpu.take());
+        r.deliver_gpu(GpuReply::Exited);
     }
 
     pub fn request(&mut self, q: GpuRequest) {

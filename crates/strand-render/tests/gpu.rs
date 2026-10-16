@@ -125,13 +125,42 @@ fn a_shader_node_is_drawn_offscreen_and_read_back_into_a_cpu_frame() {
     assert!(r.take_gpu_requests().is_empty());
 }
 
-/// The device goes 30 s (here 50 ms) after its last use, at the wake
-/// render asked for; the thread ends.
+/// (gpu-first) The warm start: `warm_gpu` asks the host to start the
+/// device before anything needs it (`BackendChange::Start`, once), so a
+/// later pass or promotion finds it up and starts nothing.
 #[test]
-fn the_device_is_dropped_after_idle_at_one_wake() {
+fn the_warm_start_brings_the_device_up_before_anything_needs_it() {
     let Some(opts) = device() else { return };
     let mut r = renderer();
-    r.set_gpu_idle(Duration::from_millis(50));
+    let (diff, _) = shader_scene("#00ff00");
+    let mut host = Host::new(opts);
+    r.warm_gpu();
+    assert_eq!(r.take_backend_changes(), [BackendChange::Start]);
+    assert_eq!(r.gpu_status(), GpuStatus::Starting);
+    host.start();
+    host.until(&mut r, |m| matches!(m, GpuReply::Ready(_)));
+    assert!(matches!(r.gpu_status(), GpuStatus::Up(_)));
+    r.warm_gpu();
+    assert!(r.take_backend_changes().is_empty(), "up: nothing to start");
+    // A shader shows: its pass goes to the running device.
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    assert!(r.take_backend_changes().is_empty());
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::PassPixels { .. }));
+    buf.paint(&mut r, S, 1);
+    assert_eq!(buf.px(20, 20), [0, 255, 0, 255], "green, from the pass");
+}
+
+/// (gpu-first) The device is kept up once nothing needs it: no wake is
+/// asked for, nothing is reported, and the thread keeps running (3a638d14
+/// dropped it 30 s after its last use, at a wake of render's).
+#[test]
+fn the_device_stays_up_when_idle() {
+    let Some(opts) = device() else { return };
+    let mut r = renderer();
     let (diff, node) = shader_scene("#00ff00");
     assert!(r.apply(diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
@@ -147,25 +176,25 @@ fn the_device_is_dropped_after_idle_at_one_wake() {
     assert!(r.apply(d).is_empty());
     buf.paint(&mut r, S, 1);
     assert!(!r.gpu_in_demand());
-    let wake = r.next_wake().expect("render wakes to drop the device");
-    std::thread::sleep(wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
+    assert_eq!(r.next_wake(), None, "no wake: an idle shell takes none");
+    std::thread::sleep(Duration::from_millis(100));
     r.update();
-    assert_eq!(r.take_backend_changes(), [BackendChange::Drop]);
-    assert_eq!(r.gpu_status(), GpuStatus::Unused);
-    assert_eq!(r.next_wake(), None, "nothing more to wake for");
-    let gpu = host.gpu.take().expect("the Gpu ran");
-    drop(gpu);
+    assert!(r.take_backend_changes().is_empty(), "the device is kept");
+    assert!(matches!(r.gpu_status(), GpuStatus::Up(_)));
+    assert!(
+        host.gpu.as_ref().is_some_and(|g| !g.exited()),
+        "the thread runs"
+    );
 }
 
-/// A still `shader` node keeps its pixels across the device's drop: they
-/// are CPU pixmaps, not GPU memory. A later frame of its surface (the
-/// bar's clock ticking) repaints it from them, asks for no new pass, and
-/// so does not start the device again.
+/// A still `shader` node keeps its pixels when the device goes (its
+/// thread ended): they are CPU pixmaps, not GPU memory. A later frame of
+/// its surface (the bar's clock ticking) repaints it from them, asks for
+/// no new pass, and so does not start the device again.
 #[test]
-fn a_still_shader_keeps_its_pixels_when_the_device_drops() {
+fn a_still_shader_keeps_its_pixels_when_the_device_goes() {
     let Some(opts) = device() else { return };
     let mut r = renderer();
-    r.set_gpu_idle(Duration::from_millis(50));
     let (diff, _) = shader_scene("#ff0000");
     assert!(r.apply(diff).is_empty());
     let root = r.tree().roots()[0];
@@ -177,13 +206,9 @@ fn a_still_shader_keeps_its_pixels_when_the_device_drops() {
     host.until(&mut r, |m| matches!(m, GpuReply::PassPixels { .. }));
     buf.paint(&mut r, S, 1);
     assert_eq!(buf.px(20, 20), [0, 0, 255, 255], "red, from the pass");
-    // Idle: the device drops at its wake.
-    let wake = r.next_wake().expect("render wakes to drop the device");
-    std::thread::sleep(wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
-    r.update();
-    assert_eq!(r.take_backend_changes(), [BackendChange::Drop]);
+    // The thread ends.
+    host.end(&mut r);
     assert_eq!(r.gpu_status(), GpuStatus::Unused);
-    drop(host.gpu.take());
     // Something else on the bar changes: the shader still shows red, in
     // a full repaint too, and nothing asks for the device.
     let mut d = SceneDiff::new();
@@ -1144,8 +1169,8 @@ fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
 /// (m4-integration-w2) A presented frame in flight is not idleness: a
 /// promoted surface whose frame the GPU thread has not presented yet
 /// (lavapipe's first frame compiles its pipelines, hundreds of ms on a
-/// loaded machine) stays on the GPU past promotion's 500 ms idle window,
-/// and its idle window starts at the frame's `Presented`. Without it
+/// loaded machine) stays on the GPU past its settle window (here 300 ms),
+/// and goes back once that frame is shown. Without it
 /// `strand/tests/gpu_idle.rs` saw an animating panel released at its
 /// first frame. Needs no device; waits in real time (the renderer's
 /// clock is `Instant::now`).
@@ -1162,6 +1187,8 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
         ],
     );
     let mut r = renderer();
+    let settle = Duration::from_millis(300);
+    r.set_gpu_settle(settle);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(80, 40, Scale::ONE);
@@ -1176,7 +1203,7 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
         r.paint_gpu(S, Duration::from_secs(1)).is_some(),
         "the switch's frame"
     );
-    let idle = strand_render::promote::PROMOTE_AFTER + Duration::from_millis(150);
+    let idle = settle + Duration::from_millis(150);
     std::thread::sleep(idle);
     r.update();
     assert_eq!(
@@ -1190,7 +1217,10 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
             .any(|c| matches!(c, BackendChange::Demote(_))),
         "a demotion asked for with a frame in flight"
     );
-    // Presented: idle from now, so the next wake demotes it.
+    // Presented: a still frame (nothing animates on it), shown past the
+    // settle window, so the surface goes back now. An animated frame's
+    // `Presented` would start the window over (`promote.rs`,
+    // `a_shown_frame_restarts_the_settle_window`).
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
         frame: 0,
@@ -1200,18 +1230,10 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
     });
     r.update();
     assert!(
-        !r.take_backend_changes()
-            .iter()
-            .any(|c| matches!(c, BackendChange::Demote(_))),
-        "demoted at once on its Presented"
-    );
-    std::thread::sleep(idle);
-    r.update();
-    assert!(
         r.take_backend_changes()
             .iter()
             .any(|c| matches!(c, BackendChange::Demote(id) if *id == S)),
-        "idle after its frame was shown"
+        "settled once its frame was shown"
     );
 }
 
@@ -1377,6 +1399,7 @@ fn a_presented_frames_time_leaves_out_the_swapchain_wait() {
 #[test]
 fn a_presented_frame_counts_when_its_gpu_run_comes() {
     let (mut r, _buf) = presenting();
+    r.log_gpu_frames(true);
     let present = |r: &mut Renderer, ran: Vec<(u64, Duration)>| {
         r.invalidate(S);
         let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
@@ -1398,6 +1421,12 @@ fn a_presented_frame_counts_when_its_gpu_run_comes() {
     let f = r.frame_summary(S).unwrap();
     assert_eq!(f.drawn, 2, "the second, and not the first");
     assert!(f.p99 >= run && f.p99 < run * 2, "its run: {:?}", f.p99);
+    // (gpu-first) The `damage` log's `gpu-frame` line: the second
+    // frame, its GPU run apart from its CPU part.
+    let timed = r.take_gpu_frame_times();
+    assert_eq!(timed.len(), 1, "{timed:?}");
+    assert_eq!((timed[0].0, timed[0].2), (S, run));
+    assert!(r.take_gpu_frame_times().is_empty(), "taken once");
 }
 
 /// (m4-integration-w2) A surface the GPU thread presents paints its pose

@@ -2,8 +2,9 @@
 //! the environment's Vulkan device (lavapipe in CI; skipped without one
 //! unless `STRAND_REQUIRE_GPU=1`): each drawn by the GPU once its pixels
 //! are back (against a reference rendered on lavapipe, tolerance 2 per
-//! channel), each starting the device only while it is visible and
-//! letting it drop after idle, the CPU's fallback until then; and a
+//! channel), each starting the device only while it is visible (when
+//! the warm start has not) and keeping it after, the CPU's fallback
+//! until its pixels come; and a
 //! `shader` node's `strand.pointer` following the pointer.
 //!
 //! The CPU fallbacks themselves are `tests/effects.rs`'s.
@@ -14,7 +15,7 @@ mod common;
 mod gpu_host;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::*;
 use gpu_host::*;
@@ -441,8 +442,8 @@ fn noise_code() -> Arc<ShaderCode> {
 /// the bar or clipped out by an ancestor's `clip` while on the bar (the
 /// pointer over the bar, so a tilt leans), it asks for nothing; in view
 /// it asks, the device comes up and its pixels are held; hidden again
-/// nothing wants the device, its pixels are freed, and the device drops
-/// after the idle time (30 s; 50 ms here).
+/// nothing wants the device and its pixels are freed, and the device is
+/// kept for the next animation with no wake (gpu-first).
 #[test]
 fn bundled_effects_start_the_gpu_only_while_visible() {
     let Some(opts) = device() else {
@@ -543,20 +544,15 @@ fn bundled_effects_start_the_gpu_only_while_visible() {
             assert!(run.frame(1200).is_empty(), "{name}");
             assert!(!run.r.gpu_in_demand(), "{name}: hidden again");
             assert_eq!(run.r.gpu_pass_bytes(), 0, "{name}: its pixels freed");
-            // The idle window shortened only now: a frame of the steps
-            // above taking longer on the wall clock must not drop it.
-            run.r.set_gpu_idle(Duration::from_millis(50));
-            let wake = run.r.next_wake().expect("render wakes to drop the device");
-            std::thread::sleep(
-                wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
-            );
+            // (gpu-first) The device is kept for the next animation: no
+            // wake to drop it, nothing reported.
+            assert_eq!(run.r.next_wake(), None, "{name}: no wake when idle");
             run.r.update();
-            assert_eq!(
-                run.r.take_backend_changes(),
-                [BackendChange::Drop],
-                "{name}: released after idle"
+            assert!(
+                run.r.take_backend_changes().is_empty(),
+                "{name}: the device is kept"
             );
-            assert_eq!(run.r.gpu_status(), GpuStatus::Unused, "{name}");
+            assert!(matches!(run.r.gpu_status(), GpuStatus::Up(_)), "{name}");
             drop(run.host.gpu.take());
         }
     }
@@ -755,7 +751,7 @@ fn answer(p: &strand_gpu::PassFrame) -> GpuReply {
     }
 }
 
-/// A tilt hovered again after the device dropped on idle warms up in
+/// A tilt hovered again after the device went (its thread ended) warms up in
 /// 2-D, as its first hover did, rather than drawing its card flat until
 /// a new device has answered (design.md: tilt's fallback is the 2-D
 /// tilt).
@@ -804,12 +800,8 @@ fn a_tilt_after_the_device_dropped_warms_up_in_2d() {
         t += 16;
         assert!(t < 10000, "comes to rest");
     }
-    // The device drops on idle.
-    run.r.set_gpu_idle(Duration::from_millis(50));
-    let wake = run.r.next_wake().expect("render wakes to drop the device");
-    std::thread::sleep(wake.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
-    run.r.update();
-    assert_eq!(run.r.take_backend_changes(), [BackendChange::Drop]);
+    // The device goes (its thread ended).
+    run.host.end(&mut run.r);
     assert_eq!(run.r.gpu_status(), GpuStatus::Unused);
     // Hovered again while the device starts (no reply yet): it turns in
     // 2-D, frame for frame as where no GPU can draw.

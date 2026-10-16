@@ -124,10 +124,11 @@ fn backend_name(b: Backend) -> &'static str {
 fn promotion(b: Backend) -> Option<String> {
     #[cfg(feature = "gpu")]
     if b.is_gpu() {
-        use strand_render::promote::{LARGE_DAMAGE, PROMOTE_AFTER};
+        use strand_render::promote::{LARGE_DAMAGE, SETTLE_AFTER};
         return Some(format!(
-            "every frame damaged at least {LARGE_DAMAGE} px for over {} ms",
-            PROMOTE_AFTER.as_millis()
+            "it animates frames of at least {LARGE_DAMAGE} px; back to the CPU once settled \
+             for {} s",
+            SETTLE_AFTER.as_secs()
         ));
     }
     let _ = b;

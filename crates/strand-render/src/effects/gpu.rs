@@ -2,10 +2,10 @@
 //! them (design.md, "Bundled GPU effects"; decisions.md, m4-gpu-effects).
 //!
 //! Each effect is a pass want (`renderer::backend::PassWant`) its node
-//! adds to the frame while it is drawn, which is what starts the device
-//! (only while visible) and keeps it up; when its node stops being drawn
-//! the wants stop, and the device drops 30 s later
-//! (`renderer::promote`). Until the GPU's pixels for a want are back, and
+//! adds to the frame while it is drawn, which starts the device if the
+//! warm start did not (only while visible); when its node stops being
+//! drawn the wants stop, and the device stays up for the next animation
+//! (`renderer::promote`, gpu-first). Until the GPU's pixels for a want are back, and
 //! with no device, the CPU draws its fallback:
 //!
 //! - `filter: bloom(…) | crt() | chromatic(…) | wobble(…)` and the 3-D

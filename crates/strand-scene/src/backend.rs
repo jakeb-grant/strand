@@ -36,9 +36,10 @@ pub enum BackendChange {
     Promote(SurfaceId),
     /// Give `surface` back to the CPU.
     Demote(SurfaceId),
-    /// Nothing has used the GPU for 30 s: drop the `Gpu` (its thread
-    /// ends with the device).
-    Drop,
+    /// Start the `Gpu` if none runs, with nothing to send it yet: the
+    /// warm start (gpu-first), so the device and its pipelines are ready
+    /// before the first animation. It is kept for the process.
+    Start,
 }
 
 /// The adapter the GPU thread opened, for diagnostics.
@@ -104,5 +105,6 @@ mod tests {
         assert_eq!(not_built.clone(), not_built);
         let s = SurfaceId(3);
         assert_ne!(BackendChange::Promote(s), BackendChange::Demote(s));
+        assert_ne!(BackendChange::Start, BackendChange::Demote(s));
     }
 }

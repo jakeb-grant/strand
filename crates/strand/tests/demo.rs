@@ -209,6 +209,15 @@ fn damage_lines(log: &Path) -> Vec<String> {
 const PSS_TARGET_KB: u64 = 42 * 1024;
 const PSS_GATE_KB: u64 = 48 * 1024;
 
+/// (gpu-first) The design bar under `strand run` holds the warm device
+/// (on CI's lavapipe tier lavapipe, LLVM and the device's memory, about
+/// 190 MB): its target and ceilings are budgets.rs's for the design bar
+/// (decisions.md gpu-first). `strand run --demo` starts none and keeps
+/// the gate above.
+const WARM_PSS_TARGET_KB: u64 = 256 * 1024;
+const WARM_PSS_GATE_KB: u64 = 288 * 1024;
+const WARM_DEBUG_PSS_CEILING_KB: u64 = 320 * 1024;
+
 /// A debug build carries about 9 MB more than release (30–31 MB against
 /// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
 /// pass for a budget breach. The gate itself is checked in release.
@@ -789,14 +798,16 @@ fn the_design_bar_keeps_the_m0_budget() {
     // in debug: the ceiling was 80 MiB (decisions.md, m4-integration-w2).
     // Gaps 28 to 35 took the debug `.text` from 74.3 to 77.2 MB and
     // GitHub's runner to 82.3 MB: 92 MiB (decisions.md, m6-service-gaps).
-    // The release gate below is the design's budget.
+    // The warm device then added about 190 MB on lavapipe (gpu-first).
     let (limit, what) = if cfg!(debug_assertions) {
-        (92 * 1024, "debug ceiling")
+        (WARM_DEBUG_PSS_CEILING_KB, "debug ceiling")
     } else {
-        pss_limit()
+        (WARM_PSS_GATE_KB, "ceiling")
     };
     eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
-    warn_over_target("design bar", pss);
+    if !cfg!(debug_assertions) && pss > WARM_PSS_TARGET_KB {
+        eprintln!("design bar: PSS {pss} kB is over the {WARM_PSS_TARGET_KB} kB target");
+    }
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",

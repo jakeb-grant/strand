@@ -1,36 +1,36 @@
-//! "The GPU leaves nothing running" (M4, docs/architecture.md,
-//! "`strand-gpu`", "Budgets and tests"; m4-plan's
-//! `gpu_is_released_when_idle`): `strand run` on headless sway. Panel
-//! `Glow` (640×420) shows, while `on`, a 640×320 animated `shader` above
-//! a strip (a translucent row with a gradient box, a still `shader` and
+//! "A settled surface goes back, and the device stays warm" (M4's
+//! `gpu_is_released_when_idle`, turned by the owner's gpu-first ruling:
+//! docs/architecture.md, "`strand-gpu`", "Budgets and tests";
+//! decisions.md gpu-first): `strand run` on headless sway. Panel `Glow`
+//! (640×420) shows, while `on`, a 640×320 animated `shader` above a
+//! strip (a translucent row with a gradient box, a still `shader` and
 //! text), and over the animation a box with `filter: bloom(8)`, a
 //! bundled pass whose input is read back and whose pixels come back to
 //! render (m4-gpu-effects), beside a plain box of the same colour;
-//! panel `Ref` (320×100) shows the same strip. Before anything
-//! needs the GPU no Vulkan library is mapped and no `strand-gpu` thread
-//! runs. Each cycle: `on` is set; `Glow` is promoted and presented
-//! through the surface hand-off (lavapipe presents on CI's pixman sway;
-//! the hardware leg reads back on a pixman sway, and presents on the
-//! GPU sway `gpu-session.sh` names with `STRAND_GPU_PRESENT=1`), while
-//! `Ref`, too small to
-//! promote, draws its still shader by reading the pass back; the
-//! screenshot shows the still shader's colour in both (premultiplied,
-//! red and blue in place), the bloomed box is brighter inside than the
-//! plain one (the GPU's bloom screens its glow over the box; the CPU's
-//! fallback glow is drawn under it, leaving it as plain), and `Glow`'s
-//! presented strip matches `Ref`'s
-//! CPU-drawn strip within the GPU tolerance. Then `on` is cleared, which
-//! hides the shaders with both panels left open: `Glow` is demoted (its
-//! swapchain released, the surface taken back) and the device drops
-//! once idle, the thread gone and the process taking no wakeups. PSS
-//! after every later cycle is within 4 MiB of the PSS after the first
-//! (no growth); the hardware leg runs three cycles, and that is its
-//! leak tripwire (decisions.md m5-open-budgets).
+//! panel `Ref` (320×100) shows the same strip. At boot the device is
+//! started before anything needs it: the `strand-gpu` thread runs and
+//! Vulkan is mapped, and the shell takes no wakeups. Each cycle: `on` is
+//! set; `Glow` is promoted and presented through the surface hand-off
+//! (lavapipe presents on CI's pixman sway; the hardware leg reads back on
+//! a pixman sway, and presents on the GPU sway `gpu-session.sh` names
+//! with `STRAND_GPU_PRESENT=1`), while `Ref`, too small to promote, draws
+//! its still shader by reading the pass back; the screenshot shows the
+//! still shader's colour in both (premultiplied, red and blue in place),
+//! the bloomed box is brighter inside than the plain one (the GPU's
+//! bloom screens its glow over the box; the CPU's fallback glow is drawn
+//! under it, leaving it as plain), and `Glow`'s presented strip matches
+//! `Ref`'s CPU-drawn strip within the GPU tolerance. Then `on` is
+//! cleared, which hides the shaders with both panels left open: settled,
+//! `Glow` goes back to the CPU (its swapchain released, the surface taken
+//! back) at its one wake, and the device stays up: the thread keeps
+//! running and the process takes no wakeups. PSS after every later cycle
+//! is within 4 MiB of the PSS after the first (no growth); the hardware
+//! leg runs three cycles, and that is its leak tripwire (decisions.md
+//! m5-open-budgets).
 //!
 //! Lavapipe tier: `STRAND_REQUIRE_GPU=1` (with `STRAND_GPU_SOFTWARE=1`,
 //! which accepts lavapipe) makes a device that does not come up a
-//! failure; without it the test is skipped then. The device's idle time
-//! is shortened with `STRAND_GPU_IDLE_MS` (tests only).
+//! failure; without it the test is skipped then.
 
 #![cfg(feature = "gpu")]
 
@@ -144,14 +144,16 @@ const PSS_SLACK_KB: u64 = 4 * 1024;
 /// Cycles the hardware leg runs by default (two elsewhere), so that the
 /// growth bound sees a leak twice.
 const HARDWARE_CYCLES: u32 = 3;
-/// The readback hardware leg's after-drop backstop over the pre-GPU
-/// baseline: the spike's ANV left 5.2-6.3 MiB, and four runs here
+/// The readback hardware leg's backstop after a demotion over the
+/// baseline (before gpu-first, after the device's drop over the pre-GPU
+/// baseline): the spike's ANV left 5.2-6.3 MiB, and four runs here
 /// 4,611-6,123 kB after the first cycle and up to 7,466 kB after a
 /// later one, the arena's swing again; 6 MiB was 21 kB from failing.
 /// 12 MiB, the presented leg's old bound: a device held past the drop
 /// (20-40 MB) still trips it (decisions.md m5-open-budgets).
 const HARDWARE_SLACK_KB: u64 = 12 * 1024;
-/// The presented hardware leg's after-drop backstop: ANV's presented
+/// The presented hardware leg's backstop after a demotion (before
+/// gpu-first, after the device's drop): ANV's presented
 /// path left 4.6-8.1 MiB in six earlier runs and 4,726-8,506 kB after
 /// the first cycle in thirteen here (up to 8,833 kB after a later one),
 /// the arena's swing included; growth between cycles
@@ -159,8 +161,6 @@ const HARDWARE_SLACK_KB: u64 = 12 * 1024;
 /// device held past the drop (20-40 MB) (decisions.md
 /// m5-speed-gpu-bound, m5-open-budgets).
 const PRESENTED_SLACK_KB: u64 = 16 * 1024;
-/// The device outlives its last use this long (30 s outside tests).
-const IDLE_MS: u64 = 1500;
 const STEP: Duration = Duration::from_secs(30);
 
 struct Proc(Child);
@@ -498,7 +498,7 @@ fn compare(a: &[[u8; 3]], b: &[[u8; 3]]) -> (usize, u8) {
 }
 
 #[test]
-fn gpu_is_released_when_idle() {
+fn a_settled_surface_goes_back_and_the_device_stays_warm() {
     for tool in ["sway", "grim"] {
         if !have(tool) {
             assert!(
@@ -548,7 +548,6 @@ fn gpu_is_released_when_idle() {
             .env("STRAND_MOCK", "acceptance")
             .env("STRAND_SOCKET", &socket)
             .env("STRAND_LOG", "info")
-            .env("STRAND_GPU_IDLE_MS", IDLE_MS.to_string())
             .stdin(Stdio::null())
             .stderr(std::fs::File::create(&log_path).unwrap())
             .spawn()
@@ -565,12 +564,25 @@ fn gpu_is_released_when_idle() {
         out.status.success()
     };
     until("the shell's socket", STEP, || set(false), &log);
-    quiet(pid, "at boot", &log);
-    assert!(!gpu_thread(pid), "a GPU thread before anything needs one");
-    assert!(
-        !vulkan_mapped(pid),
-        "a Vulkan library is mapped before anything needs the GPU"
+    // (gpu-first) The warm start: the device comes up with the shell,
+    // before anything needs it, and the shell then goes quiet.
+    until(
+        "the warm device",
+        STEP,
+        || {
+            let text = log();
+            text.contains("GPU: the device is up") || text.contains("everything draws on the CPU")
+        },
+        &log,
     );
+    if !log().contains("GPU: the device is up") {
+        assert!(!required, "STRAND_REQUIRE_GPU is set but:\n{}", log());
+        eprintln!("\n*** SKIPPED: no GPU device ***\n{}", log());
+        return;
+    }
+    quiet(pid, "at boot", &log);
+    assert!(gpu_thread(pid), "the warm device's thread runs at boot");
+    assert!(vulkan_mapped(pid), "the warm device has Vulkan mapped");
     // Both strips are on screen (CPU-drawn, no shader yet).
     let mut img = None;
     until(
@@ -594,12 +606,11 @@ fn gpu_is_released_when_idle() {
     let still = still_over(under);
     eprintln!("the strip {under:?} under the still shader: it shows {still:?}");
 
-    // Lavapipe and LLVM stay mapped after the drop (about 80 MiB), so
-    // the baseline is reported, not asserted against (gpu.sh's hardware
-    // leg compares it).
+    // The baseline holds the warm device (lavapipe and LLVM on the
+    // lavapipe tier): reported, and compared on gpu.sh's hardware leg.
     let baseline = pss_kb(pid);
     let baseline_maps = pss_by_mapping(pid);
-    eprintln!("before the GPU: PSS {baseline} kB");
+    eprintln!("warm, before any promotion: PSS {baseline} kB");
     let mut pss = Vec::new();
     let mut maps = Vec::new();
     let cycles: u32 = std::env::var("STRAND_GPU_IDLE_CYCLES")
@@ -612,7 +623,7 @@ fn gpu_is_released_when_idle() {
         let attached = text.matches("attached (").count();
         let released = text.matches(" released").count();
         assert!(set(true), "strand set glow.on true");
-        // The panel animates 0.2 Mpx a frame: promoted after 500 ms.
+        // The panel animates 0.2 Mpx a frame: promoted at its third.
         let end = Instant::now() + STEP;
         let mode = loop {
             let text = log();
@@ -650,8 +661,7 @@ fn gpu_is_released_when_idle() {
             attached + 1,
             "cycle {cycle}: only Glow is promoted ({mode}); Ref reads its pass back"
         );
-        // Shown three times promotion's 500 ms idle window: a presented
-        // animation is not idle, so it stays on the GPU.
+        // A presented animation is not settled: it stays on the GPU.
         std::thread::sleep(Duration::from_millis(1500));
         assert_eq!(
             log().matches(" released").count(),
@@ -758,31 +768,25 @@ fn gpu_is_released_when_idle() {
             glow["backend"],
             report["gpu"]
         );
-        // Hidden (both panels stay open): Glow goes back to the CPU, its
-        // swapchain released before the manager commits it again.
+        // Hidden (both panels stay open): settled, Glow goes back to the
+        // CPU at its wake, its swapchain released before the manager
+        // commits it again.
         assert!(set(false), "strand set glow.on false");
-        if mode == "Present" {
-            until(
-                &format!("cycle {cycle}: Glow demoted and taken back"),
-                STEP,
-                || log().matches(" released").count() > released,
-                &log,
-            );
-        }
         until(
-            &format!("cycle {cycle}: the GPU thread to end"),
+            &format!("cycle {cycle}: Glow demoted and taken back"),
             STEP,
-            || !gpu_thread(pid),
+            || log().matches(" released").count() > released,
             &log,
         );
         quiet(pid, &format!("cycle {cycle}"), &log);
-        // No wakeups: nothing is left to tick.
+        // The device stays warm, and nothing is left to tick: no wakeups.
+        assert!(gpu_thread(pid), "cycle {cycle}: the device is kept");
         let before = switches(pid);
         std::thread::sleep(Duration::from_secs(2));
         assert_eq!(
             switches(pid),
             before,
-            "cycle {cycle}: woke after the device dropped\n{}",
+            "cycle {cycle}: woke after the demotion\n{}",
             log()
         );
         // The CPU draws both strips again, without the still shader.
@@ -828,25 +832,27 @@ fn gpu_is_released_when_idle() {
         );
     }
     let text = log();
-    assert!(text.contains("GPU: the thread ended"), "{text}");
-    // The hardware leg (`scripts/container/gpu.sh`), in release: a
-    // hardware driver unmaps its libraries with the device, so PSS goes
-    // back to within 12 MiB of the baseline (the spike's ANV left 5.2-6.3
-    // MiB; 4.6-7.3 MiB here): what stays is strand's own GPU code paged
-    // in, mimalloc's pages and a glibc arena of Mesa's. A debug
-    // binary's is several times larger (8.9 MiB of it on ANV), so a debug
-    // run only reports it. The bounds are backstops ([`HARDWARE_SLACK_KB`],
-    // [`PRESENTED_SLACK_KB`]); growth between cycles is the tripwire.
+    assert!(
+        !text.contains("GPU: the thread ended"),
+        "the warm device was dropped\n{text}"
+    );
+    // The hardware leg (`scripts/container/gpu.sh`), in release: after
+    // a demotion PSS is back within 12 MiB (16 presenting) of the warm
+    // baseline: what a promotion leaves is the vello_gpu scene's and the
+    // frame target's pages, mimalloc's pages and a glibc arena of Mesa's,
+    // never a swapchain or a second device. A debug binary's residue is
+    // several times larger, so a debug run only reports it. The bounds
+    // are backstops ([`HARDWARE_SLACK_KB`], [`PRESENTED_SLACK_KB`]);
+    // growth between cycles is the tripwire.
     eprintln!(
-        "after the drop: {first} kB, {} kB over the baseline:\n{}",
+        "after the demotion: {first} kB, {} kB over the warm baseline:\n{}",
         first.saturating_sub(baseline),
         growth(&baseline_maps, &maps[0])
     );
     // The presented leg (`STRAND_GPU_PRESENT=1` on a GPU sway) is held
-    // to a 16 MiB backstop: ANV's presented path left 4.6-8.8 MiB; growth
-    // between cycles above is the leak tripwire, this only catches a
-    // device held past the drop (decisions.md m5-speed-gpu-bound,
-    // m5-open-budgets). Every cycle is checked, the highest reported.
+    // to a 16 MiB backstop: growth between cycles above is the leak
+    // tripwire (decisions.md m5-speed-gpu-bound, m5-open-budgets,
+    // gpu-first). Every cycle is checked, the highest reported.
     let (worst_at, worst) = pss
         .iter()
         .copied()
@@ -861,8 +867,8 @@ fn gpu_is_released_when_idle() {
     if hardware && !cfg!(debug_assertions) {
         assert!(
             worst <= baseline + bound,
-            "PSS {worst} kB after cycle {}'s drop, more than {bound} kB over the {baseline} kB \
-             before the GPU:\n{}",
+            "PSS {worst} kB after cycle {}'s demotion, more than {bound} kB over the warm \
+             {baseline} kB before any promotion:\n{}",
             worst_at + 1,
             growth(&baseline_maps, &maps[worst_at])
         );

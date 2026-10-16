@@ -47,21 +47,14 @@ impl StatusForward {
 #[cfg(feature = "gpu")]
 pub(crate) use host::GpuHost;
 
-/// Tests only: how long the device outlives its last use, in
-/// milliseconds, in place of 30 s (`strand/tests/gpu_idle.rs` runs two
-/// promote, frames and drop cycles without waiting a minute).
-#[cfg(feature = "gpu")]
-pub(crate) const IDLE_ENV: &str = "STRAND_GPU_IDLE_MS";
-
-/// The renderer's GPU settings from the environment ([`IDLE_ENV`]).
+/// (gpu-first) The renderer asks for the device as the shell starts
+/// (decisions.md gpu-first): the first pump starts the `Gpu` thread
+/// (`BackendChange::Start`), which creates the device and builds its
+/// pipelines off the main thread, and it is kept for the process, so an
+/// animation is drawn on the GPU from its first large frame.
 #[cfg(feature = "gpu")]
 pub(crate) fn configure(renderer: &mut Renderer) {
-    if let Some(ms) = std::env::var(IDLE_ENV)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        renderer.set_gpu_idle(std::time::Duration::from_millis(ms));
-    }
+    renderer.warm_gpu();
 }
 
 #[cfg(feature = "gpu")]
@@ -120,6 +113,8 @@ mod host {
         /// Requests for a `Gpu` not started yet: one starts only once
         /// every ending thread has ended (one device per process).
         queued: Vec<GpuRequest>,
+        /// A warm start asked for while a thread was ending.
+        start_queued: bool,
         opts: GpuOptions,
         /// Wakes the main loop after every reply.
         ping: calloop::ping::Ping,
@@ -147,6 +142,7 @@ mod host {
                 gpu: None,
                 exiting: Vec::new(),
                 queued: Vec::new(),
+                start_queued: false,
                 opts: GpuOptions::from_env(),
                 ping,
                 attached: BTreeMap::new(),
@@ -163,19 +159,32 @@ mod host {
                         g.send(r);
                     }
                 }
-                SendRoute::Spawn => {
-                    let ping = self.ping.clone();
-                    let g = Gpu::spawn(Box::new(move || ping.ping()), self.opts);
-                    g.send(r);
-                    self.gpu = Some(g);
-                }
+                SendRoute::Spawn => self.spawn().send(r),
                 SendRoute::Queue => self.queued.push(r),
+            }
+        }
+
+        fn spawn(&mut self) -> &Gpu {
+            let ping = self.ping.clone();
+            self.gpu
+                .insert(Gpu::spawn(Box::new(move || ping.ping()), self.opts))
+        }
+
+        /// Starts a `Gpu` with nothing to send it (the warm start), unless
+        /// one runs; while a thread is still ending, once it has ended.
+        fn start(&mut self) {
+            match send_route(self.gpu.is_some(), !self.exiting.is_empty()) {
+                SendRoute::Send => {}
+                SendRoute::Spawn => {
+                    self.spawn();
+                }
+                SendRoute::Queue => self.start_queued = true,
             }
         }
 
         /// A thread runs or will once the ending ones have ended.
         fn running(&self) -> bool {
-            self.gpu.is_some() || !self.queued.is_empty()
+            self.gpu.is_some() || !self.queued.is_empty() || self.start_queued
         }
 
         /// Asks the thread to let go of `id` (once).
@@ -239,6 +248,9 @@ mod host {
             }
             // The last ending thread has ended: the next one starts.
             if self.gpu.is_none() && self.exiting.is_empty() {
+                if std::mem::take(&mut self.start_queued) {
+                    self.start();
+                }
                 for r in std::mem::take(&mut self.queued) {
                     self.send(r);
                 }
@@ -253,6 +265,7 @@ mod host {
         /// as it ends, so none may outlive the connection.
         pub(crate) fn shutdown(&mut self, within: Duration) -> bool {
             self.queued.clear();
+            self.start_queued = false;
             if let Some(g) = self.gpu.take() {
                 self.exiting.push((g, Vec::new()));
             }
@@ -331,6 +344,9 @@ mod host {
                             );
                         }
                     }
+                    GpuReply::Ready(info) => {
+                        log::info!("GPU: the device is up ({}, {})", info.name, info.driver);
+                    }
                     GpuReply::Released(id) => {
                         let id = *id;
                         log::info!("GPU: surface {} released", id.0);
@@ -382,6 +398,7 @@ mod host {
                 }
                 changed |= !matches!(reply, GpuReply::Presented { .. });
                 state.host_mut().renderer.deliver_gpu(reply);
+                state.host_mut().log_gpu_frames();
             }
             changed
         }
@@ -426,25 +443,7 @@ mod host {
                         self.release(id);
                     }
                 }
-                BackendChange::Drop => {
-                    // Render has forgotten the device. Its replies are no
-                    // longer read: a surface whose handles the thread has
-                    // (handed off, or its `Attach` still queued there) is
-                    // taken back once the thread has ended, any swapchain
-                    // on it dropped first.
-                    self.presented.clear();
-                    let held = lent(&std::mem::take(&mut self.attached));
-                    if let Some(g) = self.gpu.take() {
-                        g.send(GpuRequest::Shutdown);
-                        self.exiting.push((g, held));
-                    } else {
-                        // Never sent: no thread holds them.
-                        self.queued.clear();
-                        for id in held {
-                            state.take_back(id);
-                        }
-                    }
-                }
+                BackendChange::Start => self.start(),
             }
         }
 

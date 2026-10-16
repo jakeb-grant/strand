@@ -480,6 +480,10 @@ impl Host {
         // A compositor answers a resize: a content-sized surface waits for
         // it rather than painting one frame at its old size.
         renderer.set_resize_wait(strand_render::RESIZE_WAIT);
+        // (gpu-first) A GPU frame's time is known only when its run
+        // comes: the `damage` log prints it as a `gpu-frame` line.
+        #[cfg(feature = "gpu")]
+        renderer.log_gpu_frames(log_damage);
         Self {
             renderer,
             log_damage,
@@ -923,6 +927,21 @@ impl Host {
                 time: *time,
             }]),
             _ => None,
+        }
+    }
+
+    /// (gpu-first) Under `STRAND_LOG=damage`, one line per timed GPU
+    /// frame: its CPU part (paint and the GPU thread's work to its
+    /// submission) and its GPU run, in milliseconds.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn log_gpu_frames(&mut self) {
+        for (surface, cpu, gpu) in self.renderer.take_gpu_frame_times() {
+            eprintln!(
+                "strand: gpu-frame surface={} cpu={:.2} gpu={:.2}",
+                surface.0,
+                cpu.as_secs_f64() * 1e3,
+                gpu.as_secs_f64() * 1e3
+            );
         }
     }
 

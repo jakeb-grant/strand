@@ -142,8 +142,11 @@ its cause and re-based or cut with a recorded reason.
   23,620,631 B). M5's close was 18,711,127 and 22,630,295 B. The gates
   were re-based here by the owner's rule, measured plus a 512 KiB
   reserve rounded up to 256 KiB (decisions.md m6-owner, 2026-10-14).
-- **Memory** (CI tripwires set by judgement, decisions.md
-  m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
+- **Memory** (gpu-first, 2026-10-16: `strand run` now keeps a warm GPU
+  device, so on CI's lavapipe tier the bar warns above 256 MiB and fails
+  above 288 MiB, the full shell 328 / 384 MiB; the figures below are the
+  cold shell's before it; decisions.md gpu-first). (CI tripwires set by
+  judgement, decisions.md m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
   fails above 48 MB (49,152 kB): 38,201 kB in the container at
   `067711a` (M5: 37,328 kB; 38,912 kB on GitHub). The full shell warns
   above 76 MB (77,824 kB) and fails above 104 MB (106,496 kB; 86 MB
