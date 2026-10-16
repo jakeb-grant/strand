@@ -411,6 +411,7 @@ impl Renderer {
             let mut stack: Vec<NodeId> = self.tree.get(*a)?.children.clone();
             while let Some(n) = stack.pop() {
                 boxes.rects.remove(&n);
+                boxes.residues.remove(&n);
                 if let Some(node) = self.tree.get(n) {
                     stack.extend(node.children.iter().copied());
                 }
@@ -418,6 +419,13 @@ impl Renderer {
             for (k, v) in b.rects {
                 if k != *a {
                     boxes.rects.insert(k, v);
+                }
+            }
+            // Laid out in the frame `a` was given, its rounded box: the
+            // residues are relative to it, as `a`'s own are kept.
+            for (k, v) in b.residues {
+                if k != *a {
+                    boxes.residues.insert(k, v);
                 }
             }
         }

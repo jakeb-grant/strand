@@ -687,6 +687,10 @@ fn move_subtree(tree: &SceneTree, id: NodeId, old: &Boxes, out: &mut Boxes, dx: 
             out.rects
                 .insert(n, LogicalRect::new(r.x + dx, r.y + dy, r.w, r.h));
         }
+        match old.residues.get(&n) {
+            Some(r) => out.residues.insert(n, *r),
+            None => out.residues.remove(&n),
+        };
         if let Some(l) = old.lists.get(&n) {
             let mut l = *l;
             l.content =

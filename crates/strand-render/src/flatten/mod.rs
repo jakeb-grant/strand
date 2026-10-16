@@ -431,8 +431,13 @@ struct Inherited<'a> {
     ctx: u64,
     /// Accumulated clip in physical pixels.
     clip: Rect,
-    /// Accumulated paint offset (`x`, `y`) of the ancestors, logical.
+    /// Accumulated paint offset (`x`, `y`) of the ancestors, logical,
+    /// as written (at rest).
     offset: (f32, f32),
+    /// (seam-snap) The part of the ancestors' paint offsets in flight
+    /// (springs and glides), logical and unrounded: each box adds its
+    /// own and rounds its edges from where they fall (`drawn_span`).
+    flight: (f32, f32),
     /// Inside a subtree playing its exit pose: drawn, never hit.
     inert: bool,
     /// (M4) A `tokens` override in scope reads time: every node under it
@@ -569,6 +574,7 @@ pub fn flatten(
         ctx: 0,
         clip: full,
         offset: (0.0, 0.0),
+        flight: (0.0, 0.0),
         inert: false,
         timed: false,
         reach: 0,

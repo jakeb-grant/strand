@@ -917,6 +917,83 @@ fn a_swelling_card_repaints_its_edges_and_settles_still() {
     }
 }
 
+/// A card in three pieces side by side, as the owner's island builds its
+/// swelling card (`notch.strand`'s `MorphEar` and `MorphBody`): the body
+/// springs its `x` and width, each ear its `x`, so the right ear's `x` is
+/// always the body's `x` plus its width. Opaque, they draw one solid band.
+const SEAM: &str = "
+state grown = false
+let s_w = spring(700, 0.7)
+let s_fold = spring(800, 0.95)
+bar Top {
+  height: 30
+  box { width: 420; height: 30
+    popup { id: big; open: true; width: 980; height: 472; margin: 0; align: start
+      box { width: 14; height: 14; shrink: 0; bg: #11111b
+            x: 36 ~ s_w
+            when !grown { x: 284 ~ s_fold } }
+      col { bg: #11111b; shrink: 0
+            width: 880 ~ s_w
+            height: 444 ~ s_w
+            x: 50 ~ s_w
+            when !grown { width: 384 ~ s_fold; height: 32 ~ s_fold; x: 298 ~ s_fold } }
+      box { width: 14; height: 14; shrink: 0; bg: #11111b
+            x: 930 ~ s_w
+            when !grown { x: 682 ~ s_fold } }
+    }
+  }
+}
+";
+
+/// (seam-snap) Pieces that meet exactly meet on every frame of their
+/// springs: the body's right edge is where the right ear starts, never a
+/// pixel of the wallpaper between them. Before, layout rounded the body's
+/// springing width and flattening its springing `x` apart, and the ear's
+/// `x` on its own, so on about ten frames of the swell (and three of the
+/// fold) a column a pixel wide showed through at the right seam (the
+/// owner saw it flicker on Hyprland). Each edge is now rounded from where
+/// it falls.
+#[test]
+fn pieces_that_meet_stay_joined_while_they_spring() {
+    for scale in [1.0, 1.5] {
+        let mut sh = Shell::boot(SEAM, scale, 1280);
+        run(&mut sh, NodeId::new(0, 0));
+        let pop = sh.popup().expect("the popup is shown");
+        for to in [true, false, true, false] {
+            sh.set("grown", Value::Bool(to));
+            let mut n = 0;
+            let mut moving = 0;
+            while sh.wants() {
+                sh.paint();
+                n += 1;
+                assert!(n < 600, "never settled");
+                let buf = sh.buf(pop);
+                let w = buf.size.w as usize;
+                // The top row, from the first opaque pixel to the last.
+                let row: Vec<u8> = (0..w).map(|x| buf.pixels[x * 4 + 3]).collect();
+                let (Some(a), Some(b)) = (
+                    row.iter().position(|&v| v == 255),
+                    row.iter().rposition(|&v| v == 255),
+                ) else {
+                    panic!("scale {scale}, grown {to}, frame {n}: nothing drawn");
+                };
+                let holes: Vec<usize> = (a..=b).filter(|&x| row[x] != 255).collect();
+                assert!(
+                    holes.is_empty(),
+                    "scale {scale}, grown {to}, frame {n}: the band from {a} to {b} has gaps at {holes:?}"
+                );
+                if b - a > 0 {
+                    moving += 1;
+                }
+            }
+            assert!(
+                moving > 10,
+                "scale {scale}, grown {to}: it springs ({moving} frames)"
+            );
+        }
+    }
+}
+
 /// The start of every wall-clock gate's failure message: the laptop's
 /// container suite warns, instead of failing, only on failures that all
 /// carry it (`scripts/container/gate-misses.sh`). Functional assertions

@@ -525,6 +525,24 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     decisions.md popup-slide. Check on Hyprland: the card meets the top
     edge.
 
+20. **A seam flickers where the island's card meets its fillet while
+    it morphs.** (fixed, 2026-10-15; found 2026-10-15 by the owner on
+    Hyprland with the island config.) The card is three pieces side by
+    side (`MorphEar`, `MorphBody`, `MorphEar`); while they spring, a
+    column a pixel wide of wallpaper showed now and then where the
+    body's square top corner meets the right fillet. Cause: the right
+    ear's `x` is the body's `x` plus its width, but layout rounded the
+    body's springing width, flattening its springing `x`, and the ear's
+    `x` each on its own, and the rounded sum missed the rounded whole by
+    a pixel on about ten frames of the swell and three of the fold. The
+    left seam shares one rounded offset, so it never opened. Each drawn
+    edge is now rounded from where it falls exactly (the box's edge from
+    layout before snapping, moved by every offset in flight)
+    (`crates/strand-render/tests/morph.rs::pieces_that_meet_stay_joined_while_they_spring`,
+    which shows the hole on `main`). decisions.md seam-snap. Check on
+    Hyprland: no flicker at either fillet while the card opens and
+    folds.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

@@ -370,6 +370,7 @@ pub fn natural_texts(
         ctx: 0,
         clip: Rect::default(),
         offset: (0.0, 0.0),
+        flight: (0.0, 0.0),
         inert: false,
         timed: false,
         reach: 0,

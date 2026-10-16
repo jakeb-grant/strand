@@ -172,9 +172,10 @@ impl<'a> Flattener<'a> {
                 )
                 .unwrap_or(0.0)
             };
+            // Where the ancestors are drawn: at rest and in flight.
             let at = LogicalRect::new(
-                laid.x + inh.offset.0 + raw(Prop::X, parent.w),
-                laid.y + inh.offset.1 + raw(Prop::Y, parent.h),
+                laid.x + inh.offset.0 + inh.flight.0 + raw(Prop::X, parent.w),
+                laid.y + inh.offset.1 + inh.flight.1 + raw(Prop::Y, parent.h),
                 laid.w.max(0.0),
                 laid.h.max(0.0),
             );
@@ -299,27 +300,34 @@ impl<'a> Flattener<'a> {
         // Geometry: the laid-out box, moved by the paint offsets (`x`,
         // `y`, and a FLIP glide) of this node and its ancestors. A
         // percentage is of the parent's box, as CSS insets are.
-        // A paint offset in flight is drawn whole logical pixels from
-        // where it rests, as layout places boxes: a box whose offset
-        // springs with its size (centred as it grows) keeps its content
-        // still, its content moves as one, and a spring's tail between
-        // pixels draws its rest (never a pixel off for a frame as it
-        // settles). A drag follows the pointer as it is.
-        let whole = |d: f32| d.round() - d;
-        let glide = self.anim.offset(node.id);
-        let glide = if self.anim.lifted(node.id) {
-            glide
+        // A paint offset in flight (a spring's way to its rest, a glide)
+        // is drawn whole logical pixels from where it rests, as layout
+        // places boxes: a box whose offset springs with its size
+        // (centred as it grows) keeps its content still, its content
+        // moves as one, and a spring's tail between pixels draws its
+        // rest (never a pixel off for a frame as it settles). (seam-snap)
+        // Each edge is rounded from where it falls, the box's exact edge
+        // (`Boxes::residues`) moved by everything in flight above and
+        // here, never the offset and the size apart: two boxes that meet
+        // exactly (a card and the fillets springing beside it) meet on
+        // every frame. A drag follows the pointer as it is.
+        let raw_glide = self.anim.offset(node.id);
+        let lifted = self.anim.lifted(node.id);
+        let glide = if lifted {
+            raw_glide
         } else {
-            (glide.0 + whole(glide.0), glide.1 + whole(glide.1))
+            (raw_glide.0.round(), raw_glide.1.round())
         };
-        let settle = |p: Prop, d: f32| if get(p).is_some() { whole(d) } else { 0.0 };
+        let flown = |p: Prop, d: f32| if get(p).is_some() { d } else { 0.0 };
+        let (fx, fy) = (
+            flown(Prop::X, sprung.0 - written.0),
+            flown(Prop::Y, sprung.1 - written.1),
+        );
+        let (gx, gy) = if lifted { (0.0, 0.0) } else { raw_glide };
+        let flight = (inh.flight.0 + fx + gx, inh.flight.1 + fy + gy);
         let mut own = (
-            length(get(Prop::X), parent.w).unwrap_or(0.0)
-                + settle(Prop::X, sprung.0 - written.0)
-                + glide.0,
-            length(get(Prop::Y), parent.h).unwrap_or(0.0)
-                + settle(Prop::Y, sprung.1 - written.1)
-                + glide.1,
+            length(get(Prop::X), parent.w).unwrap_or(0.0) - fx + (raw_glide.0 - gx),
+            length(get(Prop::Y), parent.h).unwrap_or(0.0) - fy + (raw_glide.1 - gy),
         );
         if let Some(m) = shared {
             own = (own.0 + m[0], own.1 + m[1]);
@@ -331,12 +339,15 @@ impl<'a> Flattener<'a> {
             .and_then(|a| self.anim.jelly(node, a, glide, &scope))
             .and_then(crate::effects::jelly::matrix);
         let offset = (inh.offset.0 + own.0, inh.offset.1 + own.1);
-        let rect = LogicalRect::new(
-            laid.x + offset.0,
-            laid.y + offset.1,
-            laid.w.max(0.0),
-            laid.h.max(0.0),
-        );
+        let [rl, rt, rr, rb] = self
+            .boxes
+            .residues
+            .get(&node.id)
+            .copied()
+            .unwrap_or_default();
+        let (x, w) = drawn_span(laid.x + offset.0, laid.w.max(0.0), rl, rr, flight.0);
+        let (y, h) = drawn_span(laid.y + offset.1, laid.h.max(0.0), rt, rb, flight.1);
+        let rect = LogicalRect::new(x, y, w, h);
 
         // An `input` shows its `text` (bullets for `type: password`), or
         // its `placeholder` in `$fg.muted` while that is empty (plain
@@ -1594,6 +1605,7 @@ impl<'a> Flattener<'a> {
             ctx: ctx.finish(),
             clip: child_clip,
             offset,
+            flight,
             inert,
             timed: timed_scope,
             reach,
@@ -1883,4 +1895,20 @@ fn round_box(phys: Rect, r: &RoundedRectRadii, edge: u32) -> RoundBox {
         radii: [r.top_left, r.top_right, r.bottom_right, r.bottom_left].map(f64::to_bits),
         edge,
     }
+}
+
+/// (seam-snap) Where a box is drawn along one axis: from `start` (its
+/// laid-out, snapped edge moved by the paint offsets at rest) for `len`,
+/// each edge moved by `flight` (the offsets in flight, unrounded) rounded
+/// from where it falls exactly (`lo` and `hi`, its edges' residues from
+/// layout's snapping). Nothing in flight: the laid-out box, unchanged.
+pub(crate) fn drawn_span(start: f32, len: f32, lo: f32, hi: f32, flight: f32) -> (f32, f32) {
+    if flight == 0.0 || !flight.is_finite() {
+        return (start, len);
+    }
+    // Half up, the same at every whole-pixel origin.
+    let snap = |v: f32| (v + 0.5).floor();
+    let a = start + snap(lo + flight);
+    let b = start + len + snap(hi + flight);
+    (a, (b - a).max(0.0))
 }

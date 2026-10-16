@@ -77,6 +77,13 @@ pub struct Boxes {
     /// Every laid-out node's border box in surface logical pixels, before
     /// paint offsets (`x`, `y`). Rows a list did not lay out are absent.
     pub rects: HashMap<NodeId, LogicalRect>,
+    /// (seam-snap) How far each edge of a box in `rects` lies from where
+    /// layout put it before snapping it to whole pixels: left, top,
+    /// right, bottom (exact minus snapped, within half a pixel). Only
+    /// boxes with a residue are here. Flattening rounds a box moved by a
+    /// paint offset in flight from its exact edges, so two boxes whose
+    /// edges meet exactly still meet while they move.
+    pub residues: HashMap<NodeId, [f32; 4]>,
     /// The root's size as laid out (its content size for a content-sized
     /// surface).
     pub size: LogicalSize,
@@ -579,11 +586,16 @@ impl<'a> Build<'a> {
             };
             let (cx, cy) = (px + l.location.x, py + l.location.y);
             let (x0, y0) = (cx.round(), cy.round());
-            let w = (cx + l.size.width).round() - x0;
-            let h = (cy + l.size.height).round() - y0;
+            let (x1, y1) = (cx + l.size.width, cy + l.size.height);
+            let w = x1.round() - x0;
+            let h = y1.round() - y0;
             let Some(&id) = ids.get(&tn) else { continue };
             out.rects
                 .insert(id, LogicalRect::new(ox + x0, oy + y0, w, h));
+            let residue = [cx - x0, cy - y0, x1 - x1.round(), y1 - y1.round()];
+            if residue.iter().all(|r| r.is_finite()) && residue != [0.0; 4] {
+                out.residues.insert(id, residue);
+            }
             let mut dy = 0.0;
             if scroll_ids.contains(&id) {
                 let st = scrolls.entry(id).or_default();
