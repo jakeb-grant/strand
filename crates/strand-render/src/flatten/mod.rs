@@ -561,6 +561,7 @@ pub fn flatten(
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
         fillet: crate::fillet::find(tree, boxes, root),
+        open_clips: Vec::new(),
         pointer: extras.pointers.get(&root).copied(),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
     };
@@ -615,6 +616,11 @@ struct Flattener<'a> {
     out: &'a mut Flattened,
     /// The surface's `attach:` fillet (`crate::fillet`).
     fillet: Option<crate::fillet::Fillet>,
+    /// (fillet-clip) The clips open above the node being flattened: each
+    /// one's `PushClip` item and the transform it is drawn under, so the
+    /// fillet target's fillets show through them
+    /// (`Flattener::let_fillets_through`).
+    open_clips: Vec<(usize, kurbo::Affine)>,
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,

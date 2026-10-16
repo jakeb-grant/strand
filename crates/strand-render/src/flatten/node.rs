@@ -7,8 +7,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use strand_scene::{
-    BlurRegion, Border, Color, Font, Insets, LogicalRect, NodeKind, Paint, Prop, PropValue, Rect,
-    Shadow, TokenScope,
+    BlurRegion, Border, Color, Edge, Font, Insets, LogicalRect, NodeKind, Paint, Prop, PropValue,
+    Rect, Shadow, TokenScope,
 };
 use strand_text::{TextLayout, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRectRadii, Shape};
@@ -768,6 +768,8 @@ impl<'a> Flattener<'a> {
             }
             _ => None,
         };
+        // Where its fillets show past the clips above it.
+        let mut fillets = Rect::default();
         if has_area
             && let Some(paint) = paint_of(get(Prop::Bg))
                 .or(default_bg)
@@ -788,9 +790,11 @@ impl<'a> Flattener<'a> {
             }
             let fillet = self.fillet.filter(|f| f.node == node.id);
             let (shape, reach) = if let Some(f) = fillet {
-                // `attach:`: square on the edge, with its fillets.
+                // `attach:`: square on the edge, with its fillets, which
+                // the clips above it let through (fillet-clip).
                 let path = crate::fillet::path(frame, r, f.edge);
                 let reach = cover(path.bounding_box()).union(phys);
+                fillets = self.let_fillets_through(frame, r, f.edge);
                 (FillShape::Path(path), reach)
             } else if radii_zero(&r) {
                 (FillShape::Rect(frame), phys)
@@ -1369,7 +1373,7 @@ impl<'a> Flattener<'a> {
             );
         }
 
-        let mut bounds = ink.intersect(inh.clip).unwrap_or_default();
+        let mut bounds = ink.intersect(inh.clip).unwrap_or_default().union(fillets);
         if reach > 0 && !bounds.is_empty() {
             bounds = bounds
                 .inflate(reach)
@@ -1573,7 +1577,9 @@ impl<'a> Flattener<'a> {
             child_clip = map_rect(self.xform, phys)
                 .intersect(inh.clip)
                 .unwrap_or_default();
-            clip_group = Some(self.marker(Item::PushClip(box_path)));
+            let i = self.marker(Item::PushClip(box_path));
+            clip_group = Some(i);
+            self.open_clips.push((i, self.xform));
         }
         // (M4) A merge's goo goes under its children, once they are
         // drawn (`crate::effects::goo`): its distance and their colours.
@@ -1632,6 +1638,7 @@ impl<'a> Flattener<'a> {
             self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
         }
         if let Some(i) = clip_group {
+            self.open_clips.pop();
             self.out.items[i].bounds = children;
             self.marker(Item::PopClip);
         }
@@ -1671,6 +1678,49 @@ impl<'a> Flattener<'a> {
             self.xform = saved;
         }
         subtree
+    }
+
+    /// (fillet-clip) The `attach:` target drawn in `frame` with radii
+    /// `r`: each clip above it (open, between its `PushClip` and
+    /// `PopClip`) takes in its fillets beside its box, so they show
+    /// past a clip that holds it to its box while what else that clip
+    /// holds stays inside. Returns the pixels the fillets cover (none
+    /// under no clip, where its fill's own ink is enough).
+    fn let_fillets_through(&mut self, frame: kurbo::Rect, r: RoundedRectRadii, edge: Edge) -> Rect {
+        if self.open_clips.is_empty() {
+            return Rect::default();
+        }
+        let wedges = crate::fillet::wedges(frame, r, edge);
+        let Some(covered) = wedges
+            .iter()
+            .map(|w| w.bounding_box())
+            .reduce(|a, b| a.union(b))
+        else {
+            return Rect::default();
+        };
+        for &(i, at) in &self.open_clips {
+            // Each clip's path is in its own group's space.
+            if at.determinant().abs() <= 1e-12 {
+                continue;
+            }
+            let to = at.inverse() * self.xform;
+            let Item::PushClip(clip) = &mut self.out.items[i].item else {
+                continue;
+            };
+            // Wound like the clip's own box, so the union has no seam
+            // where a fillet meets it.
+            let along = clip.area() >= 0.0;
+            for w in &wedges {
+                let mut w = to * w.clone();
+                if (w.area() >= 0.0) != along {
+                    w = w.reverse_subpaths();
+                }
+                clip.extend(w.iter());
+            }
+        }
+        map_rect(self.xform, cover(covered))
+            .intersect(self.surface)
+            .unwrap_or_default()
     }
 
     /// (M4) Inserts `merge` node `node`'s goo at item `at` (under its

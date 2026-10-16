@@ -275,3 +275,120 @@ fn a_popup_attached_over_its_bar_draws_its_fillets_at_the_edge() {
     assert!(alpha(&buf, x0 + 1, 89) < 255, "the far corners stay round");
     assert_matches_ref("fillet_popup_over_bar", &buf, TOLERANCE);
 }
+
+/// `panel { attach: top; stack { clip: true; … box { bg; radius } } }`:
+/// the stack's box clips its content, the card. `under` adds a box the
+/// stack holds before the card, clear of the edge (40 below it) and
+/// reaching 30 past the stack's left side; `nested` puts the card in a
+/// second clipping stack inside the first.
+fn clipped_card(under: bool, nested: bool) -> (SceneDiff, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Attach, kw("top"))]);
+    let stack = b.node(
+        NodeKind::Stack,
+        Some(root),
+        vec![
+            (Prop::Clip, PropValue::Bool(true)),
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+        ],
+    );
+    if under {
+        b.node(
+            NodeKind::Box,
+            Some(stack),
+            vec![
+                (Prop::X, num(-30.0)),
+                (
+                    Prop::Margin,
+                    PropValue::Insets(Insets {
+                        top: 40.0,
+                        ..Insets::default()
+                    }),
+                ),
+                (Prop::Width, num(60.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::Bg, color("#f38ba8")),
+            ],
+        );
+    }
+    let holder = if nested {
+        b.node(
+            NodeKind::Stack,
+            Some(stack),
+            vec![(Prop::Clip, PropValue::Bool(true))],
+        )
+    } else {
+        stack
+    };
+    let card = b.node(
+        NodeKind::Box,
+        Some(holder),
+        vec![
+            (Prop::Width, num(300.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#89b4fa")),
+            (Prop::Radius, num(18.0)),
+        ],
+    );
+    (b.diff, card)
+}
+
+/// (fillet-clip) The card a `clip: true` box holds is the fillet target:
+/// its fillets lie outside the clipping box, and they show, since the
+/// clips above the target let its fillets through; what else the clip
+/// holds stays inside its box.
+#[test]
+fn a_clip_above_the_card_lets_its_fillets_through() {
+    for (under, nested) in [(false, false), (true, false), (true, true)] {
+        let (diff, _) = clipped_card(under, nested);
+        let (spec, buf) = render(diff);
+        assert_eq!((spec.overhang.left, spec.overhang.right), (18.0, 18.0));
+        assert_eq!(spec.overhang.top, 0.0);
+        assert_eq!((buf.size.w, buf.size.h), (336, 100));
+        // The card spans x 18..318.
+        assert_eq!(buf.px(18, 0), buf.px(150, 50), "square on the edge");
+        assert_eq!(
+            buf.px(16, 0),
+            buf.px(150, 50),
+            "the left fillet meets the edge"
+        );
+        assert_eq!(buf.px(319, 0), buf.px(150, 50), "so does the right one");
+        assert_eq!(alpha(&buf, 3, 12), 0, "concave: empty by the box's side");
+        assert_eq!(alpha(&buf, 332, 12), 0);
+        assert_eq!(alpha(&buf, 10, 50), 0, "the clip still cuts what overflows");
+        assert_eq!(alpha(&buf, 17, 60), 0);
+        if under {
+            assert!(alpha(&buf, 30, 60) == 255, "the box shows inside the clip");
+        }
+    }
+    let (diff, _) = clipped_card(true, false);
+    let (_, buf) = render(diff);
+    assert_matches_ref("fillet_through_clip", &buf, TOLERANCE);
+}
+
+/// (fillet-clip) A change of the card's paint repaints its fillets
+/// outside the clip too: its damage takes them in.
+#[test]
+fn a_clipped_cards_fillets_repaint_with_it() {
+    let (diff, card) = clipped_card(false, true);
+    let mut r = renderer();
+    assert!(r.apply(diff).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(336, 100), Scale::ONE);
+    let mut buf = Buffer::new(336, 100, Scale::ONE);
+    buf.paint(&mut r, SurfaceId(1), 0);
+    assert_eq!(buf.px(16, 0), buf.px(150, 50));
+    let mut d = SceneDiff::new();
+    d.set(card, Prop::Bg, color("#a6e3a1"));
+    r.apply(d);
+    let dmg = buf.paint(&mut r, SurfaceId(1), 1);
+    assert!(dmg.covers(Rect::new(0, 0, 18, 18)), "{dmg:?}");
+    assert_eq!(
+        buf.px(16, 0),
+        buf.px(150, 50),
+        "the fillet took the new paint"
+    );
+    assert_eq!(buf.px(319, 0), buf.px(150, 50));
+}

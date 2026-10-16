@@ -13,6 +13,12 @@
 //! adds their reach to the surface's overhang on the two sides along the
 //! edge ([`grow`]); the input region stays the box. Nothing reaches past
 //! the attached edge, so the overhang there is none ([`flush`]).
+//!
+//! (fillet-clip) The fillets lie outside the target's box, so outside a
+//! clip above it that holds it to its box (a `clip: true` stack around
+//! the card, a scroll, a box whose size springs): each such clip lets
+//! the target's fillets through ([`wedges`]), and what else it holds
+//! stays inside its box.
 
 use strand_scene::{Edge, Insets, LogicalRect, NodeId, NodeKind, Prop, PropValue, TokenScope};
 use vello_cpu::kurbo::{BezPath, Point, Rect, RoundedRectRadii};
@@ -225,6 +231,56 @@ pub(crate) fn path(frame: Rect, r: RoundedRectRadii, edge: Edge) -> BezPath {
     p
 }
 
+/// The fillets alone: the concave regions [`path`] adds beside the
+/// target's corners on `edge`, outside `frame`, one closed subpath each
+/// (none for a square corner).
+pub(crate) fn wedges(frame: Rect, r: RoundedRectRadii, edge: Edge) -> Vec<BezPath> {
+    let len = match edge {
+        Edge::Top | Edge::Bottom => frame.width(),
+        Edge::Left | Edge::Right => frame.height(),
+    };
+    let (a, b) = match edge {
+        Edge::Top => (r.top_left, r.top_right),
+        Edge::Bottom => (r.bottom_left, r.bottom_right),
+        Edge::Left => (r.top_left, r.bottom_left),
+        Edge::Right => (r.top_right, r.bottom_right),
+    };
+    let map = |u: f64, v: f64| -> Point {
+        match edge {
+            Edge::Top => Point::new(frame.x0 + u, frame.y0 + v),
+            Edge::Bottom => Point::new(frame.x0 + u, frame.y1 - v),
+            Edge::Left => Point::new(frame.x0 + v, frame.y0 + u),
+            Edge::Right => Point::new(frame.x1 - v, frame.y0 + u),
+        }
+    };
+    let k = KAPPA;
+    let mut out = Vec::new();
+    // The start fillet: from the box's corner along the edge to its tip,
+    // back along the arc centred at (-a, a), up the box's side.
+    if a > 0.0 {
+        let mut p = BezPath::new();
+        p.move_to(map(0.0, 0.0));
+        p.line_to(map(-a, 0.0));
+        p.curve_to(map(-a + k * a, 0.0), map(0.0, a - k * a), map(0.0, a));
+        p.close_path();
+        out.push(p);
+    }
+    // The end fillet, centred at (len + b, b).
+    if b > 0.0 {
+        let mut p = BezPath::new();
+        p.move_to(map(len, 0.0));
+        p.line_to(map(len, b));
+        p.curve_to(
+            map(len, b - k * b),
+            map(len + b - k * b, 0.0),
+            map(len + b, 0.0),
+        );
+        p.close_path();
+        out.push(p);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +330,28 @@ mod tests {
         // Square corners make no fillets: the box itself.
         let square = path(frame, RoundedRectRadii::from_single_radius(0.0), Edge::Top);
         assert_eq!(square.bounding_box(), frame);
+    }
+
+    /// (fillet-clip) The wedges are what the path adds beside the box:
+    /// inside the path and outside the frame, wherever they are tested.
+    #[test]
+    fn the_wedges_are_the_fillets_alone() {
+        let frame = Rect::new(20.0, 20.0, 120.0, 70.0);
+        let r = RoundedRectRadii::new(10.0, 6.0, 4.0, 8.0);
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            let whole = path(frame, r, edge);
+            let w = wedges(frame, r, edge);
+            assert_eq!(w.len(), 2, "{edge:?}");
+            for y in 0..90 {
+                for x in 0..140 {
+                    let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let in_wedge = w.iter().any(|p| inside(p, px, py));
+                    let fillet = inside(&whole, px, py) && !frame.contains(Point::new(px, py));
+                    assert_eq!(in_wedge, fillet, "{edge:?} at ({px}, {py})");
+                }
+            }
+        }
+        let none = wedges(frame, RoundedRectRadii::from_single_radius(0.0), Edge::Top);
+        assert!(none.is_empty());
     }
 }

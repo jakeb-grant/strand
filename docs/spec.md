@@ -286,7 +286,10 @@ filling the monitor, the keyboard always).
   bar). Its other sides are not used.
 - **`attach: <edge>`** (a `popup` or `panel`) grows the surface out of
   that edge with concave fillets: its painted box's corners on that side
-  are square, with a fillet of their radius beside each. A popup's
+  are square, with a fillet of their radius beside each. The fillets
+  lie outside that box, and a clip above it (a `clip: true` box holding
+  the card, a `scroll`) lets them through: what else the clip holds
+  stays inside its box. A popup's
   `attach:` names its own side that touches its anchor (`top` opens
   below it, whatever the bar's edge); a panel's anchors it to that
   screen edge. `attach:` does not move the box: the margin on that side
