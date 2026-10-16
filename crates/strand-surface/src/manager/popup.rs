@@ -284,7 +284,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                     && !spec.hover_trigger
                     && parent_ok
                     && cause == Some(a.serial)
-                    && a.at.elapsed() <= GRAB_WINDOW =>
+                    && a.at.elapsed() <= GRAB_WINDOW
+                    && self.press_reaches(a.on, parent) =>
             {
                 Some((a.seat.clone(), a.serial))
             }
@@ -468,6 +469,27 @@ impl<H: SurfaceHost + 'static> State<H> {
             }
         }
         None
+    }
+
+    /// (grab-scope) Whether a press on layer surface `on` may open a
+    /// grabbing popup in surface `parent`: one on the surface pressed, or
+    /// on another surface on its monitor (a panel the click opened), never
+    /// on another monitor. Everything one logic step does carries the
+    /// press that started it (`SceneDiff::press`), `on change` handlers
+    /// in every monitor's instance of a bar included: a slider dragged on
+    /// one monitor changed a level that opened a popup on each other
+    /// monitor, whose grab took the pointer from the slider and shut the
+    /// popup it was in (owner-testing.md bug 21). A press on no known
+    /// surface reaches any, as before.
+    pub(super) fn press_reaches(&self, on: Option<SurfaceId>, parent: SurfaceId) -> bool {
+        let (Some(on), Some(root)) = (on, self.root_layer(parent)) else {
+            return true;
+        };
+        if on == root {
+            return true;
+        }
+        let monitor = |id: SurfaceId| self.surfaces.get(&id).and_then(|s| s.monitor.clone());
+        matches!((monitor(on), monitor(root)), (Some(a), Some(b)) if a == b)
     }
 
     /// True if popup `id` is nested, at any depth, in surface `ancestor`.

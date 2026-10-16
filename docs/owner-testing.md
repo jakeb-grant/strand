@@ -522,8 +522,8 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     on an axis where its box does not fit its output (Strand already
     moves it inside, bug 6), or while the output is not known
     (`crates/strand-surface/src/placement.rs::tests::a_popup_that_fits_its_output_asks_for_no_slide`).
-    decisions.md popup-slide. Check on Hyprland: the card meets the top
-    edge.
+    decisions.md popup-slide. Confirmed by the owner on Hyprland
+    (2026-10-15): the card meets the top edge.
 
 20. **A seam flickers where the island's card meets its fillet while
     it morphs.** (fixed, 2026-10-15; found 2026-10-15 by the owner on
@@ -539,9 +539,29 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     edge is now rounded from where it falls exactly (the box's edge from
     layout before snapping, moved by every offset in flight)
     (`crates/strand-render/tests/morph.rs::pieces_that_meet_stay_joined_while_they_spring`,
-    which shows the hole on `main`). decisions.md seam-snap. Check on
-    Hyprland: no flicker at either fillet while the card opens and
-    folds.
+    which shows the hole on `main`). decisions.md seam-snap. Confirmed
+    by the owner on Hyprland (2026-10-15).
+
+21. **Dragging the brightness slider on another monitor shuts the
+    island.** (fixed, 2026-10-15; found 2026-10-15 by the owner on
+    Hyprland with the island config, the laptop's screen and two more.)
+    On the laptop's screen the slider works; on the other monitors the
+    card closed as the drag began and would not open again for a while.
+    Cause: everything one logic step does carries the press that started
+    it (`SceneDiff::press`), `on change` handlers included, in every
+    monitor's instance of the bar. The slider's two-way write changed
+    `brightness.level`, each other monitor's island (its card closed)
+    raised its brightness activity, and those popups, marked with the
+    slider's press, took an `xdg_popup` grab: Hyprland then sent the
+    pointer only to them, so the card being dragged in lost it and
+    folded, and could not be hovered open until the activities ended. A
+    press now grabs only for popups on the surface it landed on or on
+    another surface on its monitor
+    (`crates/strand-surface/tests/sway.rs::a_press_grabs_only_for_popups_on_its_monitor`,
+    which fails on `main`). Why the laptop's screen escaped is not
+    known; the activities on the other monitors would have grabbed
+    there too. decisions.md grab-scope. Check on Hyprland: drag the
+    slider on each monitor.
 
 ## Capability gaps
 

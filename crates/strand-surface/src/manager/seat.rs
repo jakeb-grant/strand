@@ -417,6 +417,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                         }
                     }
                     PointerEventKind::Press { serial, .. } => {
+                        let on = self.root_layer(surface);
                         if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                             p.button_serial = Some(*serial);
                             let seat = p.seat.clone();
@@ -425,6 +426,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                                 seat,
                                 serial: *serial,
                                 at: Instant::now(),
+                                on,
                             });
                         }
                         self.send_input(InputEvent::ClickAway { surface });
@@ -464,6 +466,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     button,
                     serial,
                 } => {
+                    let on = self.root_layer(surface);
                     if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                         p.button_serial = Some(*serial);
                         let seat = p.seat.clone();
@@ -472,6 +475,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                             seat,
                             serial: *serial,
                             at: Instant::now(),
+                            on,
                         });
                     }
                     self.last_pressed = Some(surface);
@@ -625,10 +629,15 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             // (M5) Key serials are tracked beside the pointer's, for
             // xdg-activation tokens (`activation.rs`).
             self.note_press(&seat, serial);
+            let on = self
+                .grab_focus
+                .or(self.keyboard_focus)
+                .and_then(|f| self.root_layer(f));
             self.last_action = Some(UserAction {
                 seat,
                 serial,
                 at: Instant::now(),
+                on,
             });
         }
         let latin = self.latin(keyboard, &event);

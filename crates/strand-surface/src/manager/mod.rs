@@ -919,6 +919,11 @@ struct UserAction {
     seat: wl_seat::WlSeat,
     serial: u32,
     at: Instant,
+    /// (grab-scope) The layer surface (or lock surface) under the press:
+    /// the pointer's surface, or the one with the keyboard; `None` when
+    /// not known. Only popups on it, or on a surface on its monitor,
+    /// grab with this press ([`State::press_reaches`]).
+    on: Option<SurfaceId>,
 }
 
 /// A seat's pointer, with the cursor it shows over our surfaces.

@@ -275,7 +275,9 @@ filling the monitor, the keyboard always).
   click or a key set its `open`, or a service answered an action such
   a handler ran (a tray menu's `opened`). One a hover, a timer or IPC
   opens does not, nor does a `trigger: hover` popup or one opened from
-  inside a popup without a grab.
+  inside a popup without a grab, nor one on another monitor than the
+  surface the press landed on (a bar's instance there reacting to what
+  the press changed).
 - **A popup opens away from a `bar`'s edge**, across the bar, below
   its anchor otherwise, and beside its row for a popup in a popup.
   Its `margin` on the side that faces its anchor is the gap between

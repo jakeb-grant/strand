@@ -3339,6 +3339,149 @@ fn a_popup_grabs_only_for_the_press_that_opened_it() {
     drop(pointer);
 }
 
+/// (grab-scope, owner-testing.md bug 21) A press grabs only for popups
+/// on its own monitor. Everything a logic step does carries the press
+/// that started it, `on change` handlers in every monitor's instance of
+/// a bar included: a brightness slider dragged in one monitor's card
+/// made each other monitor's bar open a popup marked with that press,
+/// whose grab took the pointer from the slider and shut the card. Two
+/// outputs, a bar on each; a click on the first's: a popup on the
+/// second's bar marked with it takes no grab, one on the first's does.
+#[test]
+fn a_press_grabs_only_for_popups_on_its_monitor() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_press_grabs_only_for_popups_on_its_monitor") else {
+        return;
+    };
+    sway.msg(&["output", "HEADLESS-1", "position", "0", "0"]);
+    let second = sway.create_output();
+    sway.msg(&["output", &second, "position", "1920", "0"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const HERE: NodeId = NodeId::new(1, 0);
+    const THERE: NodeId = NodeId::new(2, 0);
+    const MENU: NodeId = NodeId::new(3, 0);
+    const PEEK: NodeId = NodeId::new(4, 0);
+    for (node, output) in [(HERE, "HEADLESS-1".to_string()), (THERE, second.clone())] {
+        let mut spec = bar_spec("Top", 36.0);
+        spec.screens = strand_scene::Screens::Named(vec![output]);
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(spec));
+    }
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 2);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    // The layout is both outputs side by side, 3840 × 1080.
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 3840, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    // A first click on the desktop wakes the new virtual pointer up.
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let pressed = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host().input.iter().any(|e| {
+                matches!(
+                    e,
+                    InputEvent::PointerButton {
+                        state: ButtonState::Pressed,
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap();
+    assert!(pressed, "the press reached the first bar");
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    let popup =
+        |parent: NodeId, name: &str| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some(name.into());
+            spec.parent = Some(parent);
+            spec.anchor_rect = Some(LogicalRect::new(100.0, 8.0, 60.0, 20.0));
+            spec.width = Some(200.0);
+            spec.height = Some(120.0);
+            spec.open_two_way = true;
+            spec
+        };
+    let mapped = |mgr: &mut strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap()
+    };
+
+    // The other monitor's bar opens a popup in the same logic step.
+    mgr.state_mut().set_popup_cause(PEEK, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(PEEK, SurfaceChange::Created(popup(THERE, "Peek")));
+    assert!(mapped(&mut mgr, PEEK));
+    assert_eq!(
+        mgr.state().stats().grabs,
+        0,
+        "a popup on another monitor never grabs with this press"
+    );
+    let there = mgr.state().surfaces_of(THERE)[0];
+    assert!(!mgr.state().holds_keyboard_for_popup(there));
+
+    // The pressed bar's own menu grabs.
+    mgr.state_mut().set_popup_cause(MENU, Some(serial));
+    mgr.state_mut()
+        .apply_surface_change(MENU, SurfaceChange::Created(popup(HERE, "Menu")));
+    assert!(mapped(&mut mgr, MENU));
+    assert_eq!(mgr.state().stats().grabs, 1, "the pressed bar's menu grabs");
+    let here = mgr.state().surfaces_of(HERE)[0];
+    assert!(mgr.state().holds_keyboard_for_popup(here));
+    drop(input);
+    drop(pointer);
+}
+
 /// (owner-testing.md bug 6) A popup wider than the room its anchor
 /// leaves at an output's edge is moved inside the output by the manager
 /// itself, so the compositor never has to slide it (Hyprland 0.56
