@@ -379,6 +379,31 @@ impl Runtime {
         Debounced { effect, timer }
     }
 
+    /// [`Runtime::on_change_after`] over targets paired with their
+    /// identities: the countdown restarts when some target's value changes
+    /// while its identity stays ([`Runtime::on_change_each`]).
+    pub fn on_change_after_each<K, T, F, H>(
+        &self,
+        track: F,
+        delay: Duration,
+        handler: H,
+    ) -> Debounced
+    where
+        K: PartialEq + 'static,
+        T: PartialEq + 'static,
+        F: Fn(&Runtime) -> Result<Vec<(K, T)>, Error> + 'static,
+        H: FnMut(&Runtime) -> Result<(), Error> + 'static,
+    {
+        let timer = self.timer(
+            Mode::Debounce,
+            Box::new(move |_| Ok(delay)),
+            Box::new(|_| Ok(true)),
+            Box::new(handler),
+        );
+        let effect = self.on_change_each(track, move |rt, _| timer.restart(rt));
+        Debounced { effect, timer }
+    }
+
     pub(crate) fn timer_deadline(&self) -> Option<Duration> {
         let timers = self.inner.timers.borrow().clone();
         timers

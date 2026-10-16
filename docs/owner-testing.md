@@ -1193,3 +1193,19 @@ the caller).
 2. **The guide did not say where `strand` comes from.** (fixed
    2026-10-13, decisions.md m6-owner) The owner's first try was
    `strand: command not found`; README.md's "What you need" now says.
+3. **`on change` over a field next to a list query's key never runs on
+   a new item.** (proposed, 2026-10-16; found with change-optional-chain
+   by the launcher test config (`target/try/launcher`), headless sway)
+   `on change clipboard.history.first?.text { … }` does not run on a new
+   copy: the newest entry is another record, and spec.md 8.4 takes a
+   watched service path switching to another object as the new
+   baseline, which is right for `audio.sink.volume` on a sink switch
+   but hides every new item behind a list query (`first`, `last`,
+   `[i]`). Watching the key itself (`… first?.id`) or a field holding it
+   (`hits.first?.app` under `key app.id`) runs, decisions.md
+   change-optional-chain; a `let`, binding or `if` over the field
+   follows it either way. Waiting for the owner's ruling: should a list
+   query's item switch re-baseline the way an object reference's does,
+   or count as a change of the field watched? Pinned as built by
+   `crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch`
+   (`texts`).

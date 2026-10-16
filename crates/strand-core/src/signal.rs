@@ -220,7 +220,52 @@ impl Runtime {
         F: Fn(&Runtime) -> Result<T, Error> + 'static,
         H: FnMut(&Runtime, &T) -> Result<(), Error> + 'static,
     {
-        let mut prev: Option<(K, T)> = None;
+        self.on_change_by(
+            move |rt| Ok((key(rt)?, track(rt)?)),
+            |(pk, pv), (k, v)| pk == k && pv != v,
+            move |rt, (_, v)| handler(rt, v),
+        )
+    }
+
+    /// `on change a, b`, each target paired with its own identity (see
+    /// [`Runtime::on_change_keyed`]): it runs when some target's value
+    /// changes while its identity stays, so `audio.sink.volume, x` runs
+    /// when `x` changes in the same tick as a sink switch, and
+    /// `entry.id, entry.text` runs on a new entry when the key is paired
+    /// with no identity (a constant: it is compared by value). A target
+    /// whose identity changed takes its new value as its baseline; a
+    /// change in the number of targets is a baseline too. `handler` gets
+    /// the pairs.
+    pub fn on_change_each<K, T, F, H>(&self, track: F, handler: H) -> Effect
+    where
+        K: PartialEq + 'static,
+        T: PartialEq + 'static,
+        F: Fn(&Runtime) -> Result<Vec<(K, T)>, Error> + 'static,
+        H: FnMut(&Runtime, &Vec<(K, T)>) -> Result<(), Error> + 'static,
+    {
+        self.on_change_by(
+            track,
+            |prev, now| {
+                prev.len() == now.len()
+                    && prev
+                        .iter()
+                        .zip(now)
+                        .any(|((pk, pv), (k, v))| pk == k && pv != v)
+            },
+            handler,
+        )
+    }
+
+    /// The `on change` effect: `snap` reads what it watches, `fire` tells
+    /// from the previous snapshot whether this one is a change to run for.
+    fn on_change_by<P, F, R, H>(&self, snap: F, fire: R, mut handler: H) -> Effect
+    where
+        P: 'static,
+        F: Fn(&Runtime) -> Result<P, Error> + 'static,
+        R: Fn(&P, &P) -> bool + 'static,
+        H: FnMut(&Runtime, &P) -> Result<(), Error> + 'static,
+    {
+        let mut prev: Option<P> = None;
         let effect = self.effect(move |rt| {
             // A reload write upstream (`Signal::set_reloaded`): the next
             // value read is a baseline, also when this run fails to read
@@ -228,15 +273,9 @@ impl Runtime {
             if rt.current_writer().is_some_and(|me| rt.take_rebaseline(me)) {
                 prev = None;
             }
-            let k = key(rt)?;
-            let value = track(rt)?;
-            let fire = match &prev {
-                // First value: boot or reload.
-                None => false,
-                // Same identity, new value.
-                Some((pk, pv)) => *pk == k && *pv != value,
-            };
-            let r = if fire {
+            let now = snap(rt)?;
+            // `None`: the first value (boot or reload).
+            let r = if prev.as_ref().is_some_and(|p| fire(p, &now)) {
                 let writer = rt.current_writer().unwrap_or_default();
                 // Its component as of now: the effect may have been moved
                 // (`reparent`) since it was created.
@@ -247,11 +286,11 @@ impl Runtime {
                     input: false,
                     rate: None,
                 };
-                rt.run_handler(ctx, |rt| handler(rt, &value))
+                rt.run_handler(ctx, |rt| handler(rt, &now))
             } else {
                 Ok(())
             };
-            prev = Some((k, value));
+            prev = Some(now);
             r
         });
         // In-flight tasks the handler started are cancelled with it, not

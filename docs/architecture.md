@@ -2864,9 +2864,12 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   is never throttled but a loop inside the run is). Input event
   queues are `rt.input_events()`; `<->` writes from widgets are made
   outside any handler and are not counted either. Timers are
-  `rt.after/every(_dyn)`, `on change` is `rt.on_change(_after)` or, for
-  service paths, `rt.on_change_keyed(key, ..)` with the path's object as
-  key (no firing on a sink switch); `on change` handlers run after the
+  `rt.after/every(_dyn)`, `on change` is `rt.on_change_each(_after)`
+  with each target paired with the identity of the keyed object it reads
+  (none for a key, a field holding it, or a target with no such object):
+  it fires when some target changes while its own identity stays (no
+  firing on a sink switch; `rt.on_change_keyed` is the one-target form);
+  `on change` handlers run after the
   tick's other effects settle, so they fire once per outside write.
   Sinks run in a computed topological order (wave 2): ranks over read
   edges, ownership and the write edges handlers make. The compiler must

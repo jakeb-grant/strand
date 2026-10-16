@@ -235,6 +235,13 @@ fn desktop(rt: &Runtime, host: &SchemaHost) {
     .unwrap();
 }
 
+fn app_record(host: &SchemaHost, id: &str, name: &str) -> Value {
+    host.record(
+        "App",
+        &[("id", Value::text(id)), ("name", Value::text(name))],
+    )
+}
+
 fn notification(host: &SchemaHost, id: i64, app: &str, summary: &str, urgency: &str) -> Value {
     let napp = host.record("NotificationApp", &[("name", Value::text(app))]);
     host.record(
@@ -398,6 +405,136 @@ fn on_change_skips_boot_and_debounces() {
         "{}",
         shell.scene.render()
     );
+}
+
+/// spec.md 8.4 (decisions.md change-optional-chain): a target that is the
+/// key of the object it reads (`clipboard.history.first?.id`,
+/// `audio.sink.id`), or a field holding a path key (`hits.first?.app`
+/// under `Hit`'s `key app.id`), fires when that object switches, since a
+/// switch always changes it; a field beside the key still takes a switch
+/// as its baseline. Each target of a handler is judged by its own object:
+/// a key watched with a field beside it fires on the switch, two fields
+/// of a sink that switches do not. Bindings and `if` over the same chain
+/// follow it too.
+#[test]
+fn on_change_over_an_identity_fires_on_a_switch() {
+    let src = "state direct = 0\nstate last = 0\nstate sink = 0\nstate texts = 0\n\
+               state debounced = 0\nstate top = 0\nstate scores = 0\n\
+               state pair = 0\nstate pair_after = 0\nstate levels = 0\nstate mixed = 0\n\
+               state q = \"oo\"\n\
+               let newest = clipboard.history.first?.id\n\
+               let hits = apps.search(q) ?? []\n\
+               on change hits.first?.app { top += 1 }\n\
+               on change hits.first?.score { scores += 1 }\n\
+               on change clipboard.history.first?.id { direct += 1 }\n\
+               on change clipboard.history.last?.id { last += 1 }\n\
+               on change clipboard.history.first?.id after 0.5s { debounced += 1 }\n\
+               on change audio.sink.id { sink += 1 }\n\
+               on change clipboard.history.first?.text { texts += 1 }\n\
+               on change clipboard.history.first?.id, clipboard.history.first?.text { pair += 1 }\n\
+               on change clipboard.history.first?.id, clipboard.history.first?.text after 0.5s \
+               { pair_after += 1 }\n\
+               on change audio.sink.volume, audio.sink.muted { levels += 1 }\n\
+               on change hits.first?.app, hits.first?.score { mixed += 1 }\n\
+               bar B {\n  text clipboard.history.first?.text ?? \"none\"\n  \
+               if clipboard.history.first?.id == 2 { text \"second\" }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let sink = host.record("AudioDevice", &[("id", Value::int(40))]);
+        host.set(rt, "audio.sink", sink).unwrap();
+        host.set(
+            rt,
+            "apps.all",
+            Value::list(vec![
+                app_record(host, "foot", "Foot"),
+                app_record(host, "firefox", "Firefox"),
+            ]),
+        )
+        .unwrap();
+    });
+    let entry = |host: &SchemaHost, id: i64, text: &str| {
+        host.record(
+            "ClipboardEntry",
+            &[("id", Value::int(id)), ("text", Value::text(text))],
+        )
+    };
+    let get = |s: &Shell, name: &str| s.inst.value_of("t", name).unwrap();
+    assert_eq!(get(&shell, "direct"), Value::int(0), "never at boot");
+    assert_eq!(shell.scene.texts(), ["none"]);
+    // Two copies, newest first: each makes another entry the first.
+    let one = entry(&shell.host, 1, "one");
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "clipboard.history",
+            Value::list(vec![one.clone()]),
+        )
+        .unwrap();
+    shell.at(1.0);
+    shell.at(1.6);
+    assert_eq!(get(&shell, "debounced"), Value::int(1), "`after` too");
+    let two = entry(&shell.host, 2, "two");
+    shell
+        .host
+        .set(&shell.rt, "clipboard.history", Value::list(vec![two, one]))
+        .unwrap();
+    shell.at(2.0);
+    shell.at(2.6);
+    assert_eq!(get(&shell, "debounced"), Value::int(2));
+    assert_eq!(
+        get(&shell, "pair"),
+        Value::int(2),
+        "the key beside a field it re-baselines"
+    );
+    assert_eq!(get(&shell, "pair_after"), Value::int(2), "`after` too");
+    assert_eq!(get(&shell, "newest"), Value::int(2));
+    assert_eq!(
+        get(&shell, "direct"),
+        Value::int(2),
+        "each copy is a change"
+    );
+    assert_eq!(get(&shell, "last"), Value::int(1), "only the first copy");
+    assert_eq!(
+        get(&shell, "texts"),
+        Value::int(0),
+        "a field beside the key takes a switch as its baseline"
+    );
+    assert_eq!(shell.scene.texts(), ["two", "second"]);
+    // A sink switch changes `audio.sink.id`.
+    // Its volume and mute beside each other both take the switch as their
+    // baseline.
+    let other = shell.host.record(
+        "AudioDevice",
+        &[
+            ("id", Value::int(41)),
+            ("volume", Value::float(0.2)),
+            ("muted", Value::Bool(true)),
+        ],
+    );
+    shell.host.set(&shell.rt, "audio.sink", other).unwrap();
+    shell.at(3.0);
+    assert_eq!(get(&shell, "sink"), Value::int(1));
+    assert_eq!(get(&shell, "levels"), Value::int(0), "a sink switch");
+    shell
+        .host
+        .set(&shell.rt, "audio.sink.muted", Value::Bool(false))
+        .unwrap();
+    shell.at(3.5);
+    assert_eq!(get(&shell, "levels"), Value::int(1), "a change on it");
+    // A path key (`Hit` is `key app.id`): `app` holds it, so another top
+    // hit (Foot, then Firefox) changes it; `score` beside it takes the
+    // switch as its baseline. Counted from here: the search resolving
+    // after boot is not what this checks.
+    let count = |s: &Shell| ["top", "mixed", "scores"].map(|n| get(s, n).as_f64().unwrap());
+    let [top, mixed, scores] = count(&shell);
+    shell.inst.set_value("t", "q", Value::text("ir")).unwrap();
+    shell.at(4.0);
+    assert_eq!(get(&shell, "hits").as_list().map(<[Value]>::len), Some(1));
+    let now = count(&shell);
+    assert_eq!(now[0], top + 1.0, "a field holding the key");
+    assert_eq!(now[1], mixed + 1.0, "`app` beside `score`");
+    assert_eq!(now[2], scores, "`score` takes the switch as its baseline");
 }
 
 /// `after T while cond`: the toast's countdown pauses while hovered and

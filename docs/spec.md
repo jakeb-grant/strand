@@ -1035,7 +1035,15 @@ units).
   **never** runs for the first value (at boot or mount), for a value a
   reload writes (section 10.3), or when a watched service path switches
   to another object (`audio.sink.volume` when the default sink changes):
-  the new object's value becomes the baseline. The watched expressions
+  the new object's value becomes the baseline. A watched key, or a
+  field holding it, is the exception: `audio.sink.id`,
+  `clipboard.history.first?.id` or a `Hit`'s `app` (`key app.id`)
+  changes with every such switch, so it runs then. Each watched value
+  is judged by its own object: `on change audio.sink.volume,
+  audio.sink.muted` does not run on a sink switch, but
+  `on change clipboard.history.first?.id, clipboard.history.first?.text`
+  runs on a new copy, and `on change audio.sink.volume, x` runs when `x`
+  changes in the same tick as a sink switch. The watched expressions
   must be reactive (state, settings, services, or `let`s that read
   them).
 - **`on change a after T { … }`** debounces: it runs once, `T` after
