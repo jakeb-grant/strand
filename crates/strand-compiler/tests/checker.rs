@@ -1589,6 +1589,9 @@ fn a_text_holds_letters_and_nothing_else() {
     // still refused.
     for src in [
         "text \"x\" { box {} }",
+        // `letters` is a leaf too: its props apply to each letter, and a
+        // child would draw nothing (letters-placement).
+        "text \"x\" { letters { box {} } }",
         "icon \"x\" { letters { y: 2 } }",
         "meter { letters { y: 2 } }",
         "image { letters { y: 2 } }",

@@ -1032,15 +1032,16 @@ impl<'a> Checker<'a> {
             )
             .help = Some("use the `tooltip: expr` prop for a text tooltip".into());
         }
-        if let Some(parent) = &schema.flags.only_in
-            && self.nodes.last().is_none_or(|n| n.kind != *parent)
-        {
+        if let Some(parent) = self.misplaced_in(schema) {
             self.error(
                 "check::misplaced",
                 format!("`{kind}` goes directly inside `{parent}`"),
                 el.kind.span,
                 format!("not in a `{parent}`"),
-            );
+            )
+            .help = Some(format!(
+                "write it inside a `{parent}`: `{parent} … {{ {kind} {{ … }} }}`"
+            ));
         }
         self.add_ref(el.kind.span, Target::Element(kind.to_string()));
         let (id, node) = match self.ids.get(&(self.module, span)) {
@@ -1251,8 +1252,14 @@ impl<'a> Checker<'a> {
         schema: &crate::schema::ElementSchema,
         children: &[Node],
     ) {
+        // A misplaced element is one mistake: its children are not also
+        // reported (`letters { text "x" }` is a `letters` outside its
+        // `text`, not also a `letters` holding a child).
         if schema.flags.leaf
-            && let Some(child) = children.iter().find_map(|c| rendered_child(c, kind))
+            && self.misplaced_in(schema).is_none()
+            && let Some(child) = children
+                .iter()
+                .find_map(|c| rendered_child(self.schema, c, kind))
         {
             self.error(
                 "check::children_not_allowed",
@@ -1262,6 +1269,17 @@ impl<'a> Checker<'a> {
             )
             .help = Some(format!("wrap them together: `row {{ {kind} …; … }}`"));
         }
+    }
+
+    /// The element an element of `schema` goes directly inside, when the
+    /// node being checked is not in one (`start` outside a `split`,
+    /// `letters` outside a `text`).
+    fn misplaced_in(&self, schema: &'a crate::schema::ElementSchema) -> Option<&'a str> {
+        schema
+            .flags
+            .only_in
+            .as_deref()
+            .filter(|p| self.nodes.last().is_none_or(|n| n.kind != *p))
     }
 
     fn unknown_element(&mut self, el: &'a ast::Element, span: Span) -> Option<Node> {
@@ -3163,14 +3181,19 @@ fn uniform_ty() -> Ty {
 
 /// A child that renders inside its parent (of kind `parent`), for
 /// "takes no children" (a `popup` or `tooltip` is its own surface, so a
-/// leaf may hold one).
-fn rendered_child(n: &Node, parent: &str) -> Option<Span> {
+/// leaf may hold one, and an element whose schema says it goes only in
+/// `parent` is part of it: `letters` in a `text`).
+fn rendered_child(schema: &crate::schema::Schema, n: &Node, parent: &str) -> Option<Span> {
     match n {
         Node::Element(e) => match &e.kind {
             ElementKind::Builtin(k) if k == "popup" || k == "tooltip" => None,
-            // (M4) `letters` animates the text it is in (decisions.md,
-            // m4-owner): of the leaves, only `text` holds it.
-            ElementKind::Builtin(k) if k == "letters" && parent == "text" => None,
+            ElementKind::Builtin(k)
+                if schema
+                    .element(k)
+                    .is_some_and(|s| s.flags.only_in.as_deref() == Some(parent)) =>
+            {
+                None
+            }
             _ => Some(e.span),
         },
         Node::If(i) => Some(i.span),

@@ -480,7 +480,7 @@ This catalogue comes from a survey of popular Quickshell shells (end-4, caelesti
 | Glow on boxes, text and icons | `glow: 12, $accent.alpha(0.6)` | Ok; cached as 9-slice or pixmap |
 | Inner shadow and rim light (lit top edge) | `inner_shadow: 0 2px 6px $shadow; rim: top, $fg.alpha(0.15)` | Ok; cached |
 | Grain | `grain: 0.04` | Trivial when static |
-| Text effects: outline, gradient fill, per-letter animation | `text_stroke: 1, $bg; fill: linear(…)`; `letters { y: 2 * wave(1s, phase: index * 0.1) }` | Trivial–ok |
+| Text effects: outline, gradient fill, per-letter animation | `text_stroke: 1, $bg; fill: linear(…)`; `text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }` | Trivial–ok |
 | Scrim and dim behind popups | `scrim: $shadow.alpha(0.3)` on a popup or panel | Single-pixel buffer, free |
 
 ### Filters and compositing

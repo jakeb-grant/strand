@@ -4209,7 +4209,7 @@ fn time_values_convert_to_token_time_leaves() {
     );
 }
 
-/// design.md "Effects": `letters { y: 2 * wave(1s, phase: index * 0.1) }`.
+/// design.md "Effects": `text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }`.
 /// A letter's `index` and `count` are time leaves (`TokenExpr::Index`,
 /// `TokenExpr::Count`) render evaluates per letter, not values logic
 /// fixes for the whole node: arithmetic on them stays symbolic, and the
@@ -4233,7 +4233,7 @@ fn letters_go_inside_the_text_they_animate() {
 #[test]
 fn letters_index_and_count_stay_time_leaves() {
     use strand_scene::{TimeContext, TokenExpr, TokenScope, TokenTable};
-    let src = "bar B {\n  letters { y: 2 * wave(1s, phase: index * 0.1); x: index * 8; opacity: (index + 1) / count }\n}\n";
+    let src = "bar B {\n  text \"hi\" { letters { y: 2 * wave(1s, phase: index * 0.1); x: index * 8; opacity: (index + 1) / count } }\n}\n";
     let shell = boot(&[("t.strand", src)], |rt, host| {
         let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
         host.set(rt, "screens.all", Value::list(vec![screen]))

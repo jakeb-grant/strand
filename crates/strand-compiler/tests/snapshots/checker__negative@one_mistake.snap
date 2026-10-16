@@ -81,6 +81,7 @@ check::misplaced
     ·     ╰── not in a `pages`
  24 │ }
     ╰────
+  help: write it inside a `pages`: `pages … { page { … } }`
 
 check::assign_to_let
 
