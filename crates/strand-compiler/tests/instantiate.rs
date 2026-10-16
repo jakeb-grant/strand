@@ -235,6 +235,13 @@ fn desktop(rt: &Runtime, host: &SchemaHost) {
     .unwrap();
 }
 
+fn app_record(host: &SchemaHost, id: &str, name: &str) -> Value {
+    host.record(
+        "App",
+        &[("id", Value::text(id)), ("name", Value::text(name))],
+    )
+}
+
 fn notification(host: &SchemaHost, id: i64, app: &str, summary: &str, urgency: &str) -> Value {
     let napp = host.record("NotificationApp", &[("name", Value::text(app))]);
     host.record(
@@ -408,8 +415,11 @@ fn on_change_skips_boot_and_debounces() {
 #[test]
 fn on_change_over_an_identity_fires_on_a_switch() {
     let src = "state direct = 0\nstate last = 0\nstate sink = 0\nstate texts = 0\n\
-               state debounced = 0\n\
+               state debounced = 0\nstate top = 0\nstate scores = 0\n\
                let newest = clipboard.history.first?.id\n\
+               let hits = apps.search(\"f\") ?? []\n\
+               on change hits.first?.app { top += 1 }\n\
+               on change hits.first?.score { scores += 1 }\n\
                on change clipboard.history.first?.id { direct += 1 }\n\
                on change clipboard.history.last?.id { last += 1 }\n\
                on change clipboard.history.first?.id after 0.5s { debounced += 1 }\n\
@@ -421,6 +431,12 @@ fn on_change_over_an_identity_fires_on_a_switch() {
         screens(rt, host, &["DP-1"]);
         let sink = host.record("AudioDevice", &[("id", Value::int(40))]);
         host.set(rt, "audio.sink", sink).unwrap();
+        host.set(
+            rt,
+            "apps.all",
+            Value::list(vec![app_record(host, "foot", "Foot")]),
+        )
+        .unwrap();
     });
     let entry = |host: &SchemaHost, id: i64, text: &str| {
         host.record(
@@ -470,6 +486,22 @@ fn on_change_over_an_identity_fires_on_a_switch() {
     shell.host.set(&shell.rt, "audio.sink", other).unwrap();
     shell.at(3.0);
     assert_eq!(get(&shell, "sink"), Value::int(1));
+    // A path key (`Hit` is `key app.id`): `app` holds it, so another top
+    // hit changes it; `score` beside it takes the switch as its baseline.
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "apps.all",
+            Value::list(vec![
+                app_record(&shell.host, "firefox", "Firefox"),
+                app_record(&shell.host, "foot", "Foot"),
+            ]),
+        )
+        .unwrap();
+    shell.at(4.0);
+    assert_eq!(get(&shell, "top"), Value::int(1), "a field holding the key");
+    assert_eq!(get(&shell, "scores"), Value::int(0));
 }
 
 /// `after T while cond`: the toast's countdown pauses while hovered and

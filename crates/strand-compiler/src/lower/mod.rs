@@ -1527,14 +1527,15 @@ impl Lowerer<'_> {
                     .map(|t| {
                         // A field of a keyed record re-baselines when the
                         // record switches (`audio.sink.volume` on a sink
-                        // switch), unless the field is the key itself
-                        // (`clipboard.history.first?.id`): its every change
-                        // is a switch, which is what it watches.
+                        // switch), unless the field is the key or holds it
+                        // (`clipboard.history.first?.id`, `hits.first?.app`
+                        // under `key app.id`): a switch changes it, which is
+                        // what it watches.
                         let key = match &t.kind {
                             hir::ExprKind::Field { base, name, .. }
                                 if matches!(base.ty.non_null(), Ty::Record(r)
                                     if self.hir.types.record(*r).key.as_ref()
-                                        .is_some_and(|k| k.as_slice() != std::slice::from_ref(name))) =>
+                                        .is_some_and(|k| k.first() != Some(name))) =>
                             {
                                 Some(self.expr_chunk(base))
                             }
