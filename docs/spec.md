@@ -827,7 +827,12 @@ filling the monitor, the keyboard always).
   `propagate()` in a handler passes the event on to the next enclosing
   handler.
 - **`nav: id`** on an `input` routes arrow keys to the list with that
-  `id`; Return activates the selected row (`on activate`).
+  `id`; Return activates the selected row (`on activate`). It names the
+  list as it is once each change is done: one that mounts later (in an
+  `if` that turns true), in the same change that points `nav` at it
+  (`nav: m == b ? lb : la` beside `pages current: m`), or again when its
+  page comes back, gets the keys, its first row selected; while it is
+  not mounted the keys go to no list (decisions.md nav-remount).
 - **Copy and paste.** A focused `input` copies its selection with
   Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
   at the caret, over the selection, with Ctrl+V or Shift+Insert

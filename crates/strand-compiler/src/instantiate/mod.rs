@@ -240,10 +240,16 @@ pub(crate) struct Ctx {
     pub handover: RefCell<Vec<String>>,
     /// Runtime faults outlined in red: the node and the border it had.
     pub outlined: RefCell<HashMap<NodeId, Option<PropValue>>>,
-    /// Props naming a node not on the scene yet when they were bound
-    /// (`nav: results` above the `list { id: results }`): set at the end
-    /// of the tick, once everything is mounted.
-    pub late_nodes: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
+    /// Props whose value names an element (`nav: results`), with the
+    /// element they name now: set at the end of each tick to the scene
+    /// node it has then, once everything is mounted. It may not be
+    /// mounted yet (`nav: results` above the `list { id: results }`, or
+    /// inside an `if` that turns true later), and a remount (its `page`
+    /// shown again) gives it a new node without the prop's memo running
+    /// again; one that is not on the scene names nothing (`Unset`).
+    /// Kept while the naming node lives and its binding names the
+    /// element (nav-remount).
+    pub node_props: RefCell<Vec<(NodeId, SceneProp, Rc<NodeState>)>>,
     /// Components that hit [`MAX_MOUNT_DEPTH`] in the mount in progress:
     /// not mounted again until it returns, so a recursion that fans out
     /// (`C` mounting two `C`s) costs one path to the cap, not 2^256.
@@ -303,6 +309,37 @@ impl Ctx {
         if changed {
             self.assets_changed.set(true);
         }
+    }
+
+    /// `id`'s `prop` names element `node` now (`None`: no element). Its
+    /// value is set at the tick's end ([`Ctx::settle_node_props`]).
+    pub(crate) fn name_node(&self, id: NodeId, prop: SceneProp, node: Option<Rc<NodeState>>) {
+        let mut named = self.node_props.borrow_mut();
+        let at = named.iter().position(|(i, p, _)| *i == id && *p == prop);
+        match (at, node) {
+            (Some(at), Some(n)) => named[at].2 = n,
+            (None, Some(n)) => named.push((id, prop, n)),
+            (Some(at), None) => {
+                named.swap_remove(at);
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// At the tick's end, once everything is mounted: each prop that
+    /// names an element is set to the scene node the element has now,
+    /// or unset while it has none (a node id that is gone is never sent:
+    /// ids are reused). Props of nodes that are gone are let go.
+    pub(crate) fn settle_node_props(&self) {
+        let mut em = self.em.borrow_mut();
+        self.node_props.borrow_mut().retain(|(id, prop, node)| {
+            if !em.nodes.contains_key(id) {
+                return false;
+            }
+            let value = node.scene.get().map_or(PropValue::Unset, PropValue::Node);
+            em.set(*id, *prop, value, Transition::Default);
+            true
+        });
     }
 }
 
@@ -705,7 +742,7 @@ impl Ctx {
             carry: RefCell::default(),
             pending: RefCell::default(),
             parked: RefCell::default(),
-            late_nodes: RefCell::default(),
+            node_props: RefCell::default(),
             runaway: RefCell::default(),
             mounting: Cell::new(0),
             closed: RefCell::default(),
@@ -1565,29 +1602,6 @@ impl Instance {
     fn collect(&self, tick: strand_core::Tick) -> Update {
         // The new tree took its holds during the tick.
         self.release_bridge();
-        // Props naming a node not on the scene when bound (`nav:
-        // results`): set once it is, which may be ticks later (inside an
-        // `if` that turns true). Kept while the naming node lives and its
-        // prop is still unset.
-        let late: Vec<_> = self.ctx.late_nodes.borrow_mut().drain(..).collect();
-        let mut waiting = Vec::new();
-        for (id, prop, state) in late {
-            let mut em = self.ctx.em.borrow_mut();
-            let unset = em
-                .sent
-                .get(&id)
-                .and_then(|p| p.get(&prop))
-                .is_none_or(|v| *v == PropValue::Unset);
-            if !em.nodes.contains_key(&id) || !unset {
-                continue;
-            }
-            match state.scene.get() {
-                Some(target) => em.set(id, prop, PropValue::Node(target), Transition::Default),
-                None if Rc::strong_count(&state) > 1 => waiting.push((id, prop, state)),
-                None => {}
-            }
-        }
-        self.ctx.late_nodes.borrow_mut().extend(waiting);
         let mut new_tokens = None;
         for id in &tick.changed {
             if self.tokens.is_some_and(|t| t.id() == *id) {
@@ -1596,6 +1610,7 @@ impl Instance {
             }
             self.emit_binding(*id);
         }
+        self.ctx.settle_node_props();
         self.emit_watched();
         let mut ops = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
         if let Some(table) = new_tokens {
@@ -1637,8 +1652,13 @@ impl Instance {
         };
         match memo.get_untracked(&self.rt) {
             Ok(out) => {
-                let t = boot.transition(out.transition);
-                self.ctx.em.borrow_mut().set(scene, prop, out.value, t);
+                // A node named is set at the tick's end, as it is then.
+                let named = out.node.is_some();
+                self.ctx.name_node(scene, prop, out.node);
+                if !named {
+                    let t = boot.transition(out.transition);
+                    self.ctx.em.borrow_mut().set(scene, prop, out.value, t);
+                }
             }
             // Errors are values: the prop keeps its last good value.
             Err(e) => {

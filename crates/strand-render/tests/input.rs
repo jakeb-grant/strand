@@ -175,6 +175,82 @@ fn input_goes_to_the_hit_node() {
     );
 }
 
+/// (nav-remount) One diff that swaps the list an input's `nav` names
+/// for a new one (a `page` shown, its list mounted with a new node, the
+/// old id's slot reused) moves the arrows to the new list: its first row
+/// is selected at once and Down moves within it, each time it comes
+/// back.
+#[test]
+fn nav_moves_to_a_list_mounted_in_the_same_diff() {
+    use strand_scene::{Modifiers, NodeKind, SceneDiff, SceneOp};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (panel, col, input) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    // The list of mount `g`: node 3 of generation `g`, rows 4..7 too.
+    let list = |g| NodeId::new(3, g);
+    let rows = |g| [NodeId::new(4, g), NodeId::new(5, g), NodeId::new(6, g)];
+    let mount = |d: &mut SceneDiff, g| {
+        d.create(list(g), NodeKind::List, Some(col), 1).set(
+            input,
+            Prop::Nav,
+            PropValue::Node(list(g)),
+        );
+        for (i, row) in rows(g).into_iter().enumerate() {
+            d.create(row, NodeKind::Row, Some(list(g)), i as u32).set(
+                row,
+                Prop::Height,
+                PropValue::Number(20.0),
+            );
+        }
+    };
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(120.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(input, NodeKind::Input, Some(col), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(input, Prop::Text, PropValue::Text(String::new()));
+    mount(&mut d, 0);
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut f = R::default();
+    f.attached(s, panel);
+    let down = InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: "Down".into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+            latin: None,
+        },
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.input(&down, &mut r);
+    assert_eq!(f.router.selected(list(0)), Some(rows(0)[1]));
+    for g in 1..4 {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: list(g - 1),
+            window: false,
+        });
+        mount(&mut d, g);
+        assert!(r.apply(d).is_empty());
+        f.out.extend(f.router.settle(&mut r));
+        assert_eq!(f.router.selected(list(g)), Some(rows(g)[0]), "mount {g}");
+        f.input(&down, &mut r);
+        assert_eq!(f.router.selected(list(g)), Some(rows(g)[1]), "mount {g}");
+    }
+}
+
 /// Keyboard routing on a launcher-like panel: focus goes to the
 /// `focus: true` input, typing writes its `text`, arrows move the
 /// selection of the list its `nav` names, Return activates the

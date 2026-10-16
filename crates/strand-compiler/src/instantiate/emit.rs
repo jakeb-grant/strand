@@ -32,6 +32,12 @@ pub struct PropOut {
     pub value: PropValue,
     pub source: usize,
     pub transition: Transition,
+    /// The element a node-valued prop names (`nav: results`), mounted or
+    /// not: which scene node that is changes without the memo running
+    /// again (its list unmounts, or mounts again with a new node, later
+    /// in the same tick), so the instance keeps the prop on the node it
+    /// has at each tick's end ([`super::Ctx::node_props`]).
+    pub node: Option<Rc<NodeState>>,
 }
 
 /// A watched binding.

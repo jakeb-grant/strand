@@ -2026,11 +2026,20 @@ impl Ctx {
         prop: SceneProp,
         s: &SourceValue,
         env: &Rc<Env>,
-    ) -> Result<PropValue, Error> {
+    ) -> Result<(PropValue, Option<Rc<NodeState>>), Error> {
         let types = &self.vm.prog.types;
-        Ok(match s {
+        let value = match s {
             SourceValue::Chunk(c, ty) => {
-                convert::prop_value_for(types, prop, ty, &self.eval(rt, *c, env)?)
+                let v = self.eval(rt, *c, env)?;
+                let value = convert::prop_value_for(types, prop, ty, &v);
+                // An element named (`nav: results`): which node it is goes
+                // to render at the tick's end ([`Ctx::node_props`]).
+                if let Value::Node(n) = v
+                    && matches!(value, PropValue::Node(_) | PropValue::Unset)
+                {
+                    return Ok((value, Some(n)));
+                }
+                value
             }
             SourceValue::Pose(props) => {
                 let mut pose = Vec::new();
@@ -2087,7 +2096,8 @@ impl Ctx {
                 Value::Keyframes(d) => self.keyframes(rt, d, 0)?,
                 _ => PropValue::Unset,
             },
-        })
+        };
+        Ok((value, None))
     }
 
     /// One watched memo per scene prop: the last `when` that holds wins,
@@ -2190,9 +2200,11 @@ impl Ctx {
                         value,
                         source: i,
                         transition: Transition::Default,
+                        node: None,
                     });
                 }
-                let value = match (ctx.source_value(rt, prop, &s.value, &e)?, &base) {
+                let (value, node) = ctx.source_value(rt, prop, &s.value, &e)?;
+                let value = match (value, &base) {
                     (PropValue::Text(t), Some(dir)) => PropValue::Text(
                         crate::check::assets::local_source(kind.name(), &t, dir).unwrap_or(t),
                     ),
@@ -2211,6 +2223,7 @@ impl Ctx {
                     value,
                     source: i,
                     transition,
+                    node,
                 });
             }
             if drag {
@@ -2220,6 +2233,7 @@ impl Ctx {
                 value: PropValue::Unset,
                 source: 0,
                 transition: Transition::Default,
+                node: None,
             })
         };
         let boot: Rc<super::emit::BootRead> = Rc::default();
@@ -2268,19 +2282,14 @@ impl Ctx {
         });
         match memo.get_untracked(rt) {
             Ok(out) => {
-                // A node named before it is mounted: set at the end of the
-                // tick.
-                if out.value == PropValue::Unset
-                    && let Some(Source {
-                        value: SourceValue::Chunk(c, _),
-                        ..
-                    }) = sources.get(out.source)
-                    && let Ok(Value::Node(n)) = rt.untrack(|rt| self.eval(rt, *c, env))
-                {
-                    self.late_nodes.borrow_mut().push((id, prop, n));
+                // A node named, mounted or not, is set at the tick's end,
+                // as it is then.
+                let named = out.node.is_some();
+                self.name_node(id, prop, out.node);
+                if !named {
+                    let t = boot.transition(out.transition);
+                    self.em.borrow_mut().set(id, prop, out.value, t);
                 }
-                let t = boot.transition(out.transition);
-                self.em.borrow_mut().set(id, prop, out.value, t);
             }
             Err(e) => {
                 let err = self.located(&site, e);
@@ -2325,6 +2334,7 @@ impl Ctx {
                 value: PropValue::Bool(shown.get(rt)?),
                 source: 0,
                 transition: Transition::Instant,
+                node: None,
             })
         });
         let _ = rt.reads_from(memo.id(), &[shown.id()]);
