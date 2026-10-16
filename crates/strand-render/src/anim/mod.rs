@@ -533,9 +533,16 @@ impl Animator {
             self.shared
                 .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
         if started {
-            // In place of its enter pose.
+            // In place of its enter pose. It is drawn for the first time
+            // all the same: logic's writes that created it show at their
+            // values, as [`Animator::paint`] shows an entering node's,
+            // never springing from unset under the flight (its `x: 101`
+            // from 0, moving where the morph starts: morph-cross-surface).
             self.enter.remove(&node.id);
             self.staggers.forget(node.id);
+            if let Some(na) = self.nodes.get_mut(&node.id) {
+                na.touched.clear();
+            }
         }
         if moving {
             self.active = true;

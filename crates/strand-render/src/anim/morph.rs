@@ -11,7 +11,9 @@
 //! each axis) so its box covers the old one, then springs to its own box
 //! along the `morph` entry's `~` (`$motion.spatial` by default). It
 //! plays that in place of its `enter` pose, and its subtree moves and
-//! scales with it. The node it came from leaves as it would anyway.
+//! scales with it; the props it was created with show at their values,
+//! as any new node's do (none springs from unset under the flight). The
+//! node it came from leaves as it would anyway.
 //!
 //! A name last drawn on another surface starts the morph too when both
 //! surfaces lie on the same output and the host told render where

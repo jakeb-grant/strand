@@ -2371,6 +2371,129 @@ fn a_shared_morph_crosses_surfaces_on_one_output() {
     }
 }
 
+/// The box of the pixels of `buf` that are not `bg`: `(x0, y0, x1, y1)`,
+/// edges exclusive.
+fn bbox_off(buf: &Buffer, bg: [u8; 4]) -> Option<(u32, u32, u32, u32)> {
+    let mut b: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..buf.size.h {
+        for x in 0..buf.size.w {
+            if buf.px(x, y) != bg {
+                b = Some(match b {
+                    None => (x, y, x + 1, y + 1),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+                });
+            }
+        }
+    }
+    b
+}
+
+/// (morph-cross-surface) A node mounted with `morph:` and its own `x` and
+/// `y`, written as logic writes them in the diff that creates it (no
+/// `~`), on a surface of another width than the named box's: its first
+/// frame sits on its way from the named box, in screen coordinates, and
+/// its offsets show at their values from that frame as any new node's
+/// do. They used to spring from 0 under the flight: the launcher's icon
+/// flying from a 940-wide panel into an 880-wide OSD's droplet started
+/// some 40 px left of and above the icon (owner's launcher, 2026-10-16).
+#[test]
+fn a_morph_mounted_with_its_own_offsets_starts_on_the_named_box() {
+    use std::time::Duration;
+    let at = |x: f32, y: f32| strand_scene::LogicalPoint::new(x, y);
+    let dark = || (Prop::Bg, color("#1e1e2e"));
+    let mut b = Builder::default();
+    let panel = b.node(
+        NodeKind::Panel,
+        None,
+        vec![dark(), (Prop::Width, num(200.0)), (Prop::Height, num(80.0))],
+    );
+    let osd = b.node(
+        NodeKind::Osd,
+        None,
+        vec![dark(), (Prop::Width, num(160.0)), (Prop::Height, num(80.0))],
+    );
+    // The icon: 100..120 × 30..50 on the panel.
+    let mut p = at_xy(100.0, 30.0, 20.0, 20.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#fab387")),
+        (Prop::Morph, text("m")),
+    ]);
+    b.node(NodeKind::Box, Some(panel), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, panel);
+    r.attach_surface(S2, osd);
+    // Both centred on one 400-wide output: the panel at 100, the OSD at
+    // 120, so the icon is 200..220 on screen and 80..100 on the OSD.
+    r.set_surface_origin(S, Some((Some("DP-1".into()), at(100.0, 0.0))));
+    r.set_surface_origin(S2, Some((Some("DP-1".into()), at(120.0, 0.0))));
+    let mut buf = Buffer::new(200, 80, Scale::ONE);
+    let mut buf2 = Buffer::new(160, 80, Scale::ONE);
+    buf2.paint_at(&mut r, S2, 0, Duration::from_millis(1000));
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1008));
+    let orange = buf.px(110, 40);
+    let bg = buf2.px(5, 5);
+    // The droplet mounts on the OSD at 30..60 × 10..40, every prop
+    // written as logic sends a new node's.
+    let drop = NodeId::new(400, 0);
+    let mut d = SceneDiff::new();
+    d.create(drop, NodeKind::Box, Some(osd), 0);
+    for (p, v) in at_xy(30.0, 10.0, 30.0, 30.0) {
+        d.set(drop, p, v);
+    }
+    d.set(drop, Prop::Place, kw("absolute"));
+    d.set(drop, Prop::Bg, color("#fab387"));
+    d.set(drop, Prop::Morph, text("m"));
+    d.set(
+        drop,
+        Prop::Enter,
+        PropValue::Pose(vec![(Prop::Scale, num(0.4))]),
+    );
+    assert!(r.apply(d).is_empty());
+    buf2.paint_at(&mut r, S2, 1, Duration::from_millis(1016));
+    // Drawn on the line from the icon's centre (90, 40 on the OSD) to its
+    // own (45, 25), near the start: one refresh along, its size between
+    // the two. (Its offsets springing from 0 drew it 22 px left of and 7
+    // px above that line.)
+    let Some((x0, y0, x1, y1)) = bbox_off(&buf2, bg) else {
+        panic!("the droplet is drawn");
+    };
+    let (cx, cy) = ((x0 + x1) as f32 / 2.0, (y0 + y1) as f32 / 2.0);
+    let along = (90.0 - cx) / 45.0;
+    assert!(
+        (0.0..0.5).contains(&along),
+        "starts at the icon: centre ({cx}, {cy}), {along} of the way"
+    );
+    let on_line = 40.0 - 15.0 * along;
+    assert!(
+        (cy - on_line).abs() <= 1.5,
+        "on its way from the icon: centre ({cx}, {cy}), the line at {on_line}"
+    );
+    let size = (x1 - x0) as f32;
+    assert!(
+        (20.0..=30.0).contains(&size) && ((y1 - y0) as f32 - size).abs() <= 1.0,
+        "between the icon's size and its own: {x0}..{x1} × {y0}..{y1}"
+    );
+    assert_eq!(
+        buf2.px(cx as u32, cy as u32),
+        orange,
+        "in its own colour (no fade: the morph replaces its enter)"
+    );
+    let mut t = 1016;
+    while r.wants_frame(S2) {
+        t += 16;
+        buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+        assert!(t < 5000, "settles");
+    }
+    assert_eq!(
+        bbox_off(&buf2, bg),
+        Some((30, 10, 60, 40)),
+        "at its own box"
+    );
+    assert_eq!(buf2.px(45, 25), orange);
+}
+
 /// A shared morph that a preview (the flatten at the last frame's time
 /// before a paint) sees start begins on the painted frame, from the
 /// offsets of that frame: inside a parent whose `x` springs, the morph
