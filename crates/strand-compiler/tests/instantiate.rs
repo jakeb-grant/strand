@@ -400,6 +400,78 @@ fn on_change_skips_boot_and_debounces() {
     );
 }
 
+/// spec.md 8.4 (decisions.md change-optional-chain): a target that is the
+/// key of the object it reads (`clipboard.history.first?.id`,
+/// `audio.sink.id`) fires when that object switches, since the switch is
+/// its only change; a field beside the key still takes a switch as its
+/// baseline. Bindings and `if` over the same chain follow it too.
+#[test]
+fn on_change_over_an_identity_fires_on_a_switch() {
+    let src = "state direct = 0\nstate last = 0\nstate sink = 0\nstate texts = 0\n\
+               state debounced = 0\n\
+               let newest = clipboard.history.first?.id\n\
+               on change clipboard.history.first?.id { direct += 1 }\n\
+               on change clipboard.history.last?.id { last += 1 }\n\
+               on change clipboard.history.first?.id after 0.5s { debounced += 1 }\n\
+               on change audio.sink.id { sink += 1 }\n\
+               on change clipboard.history.first?.text { texts += 1 }\n\
+               bar B {\n  text clipboard.history.first?.text ?? \"none\"\n  \
+               if clipboard.history.first?.id == 2 { text \"second\" }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let sink = host.record("AudioDevice", &[("id", Value::int(40))]);
+        host.set(rt, "audio.sink", sink).unwrap();
+    });
+    let entry = |host: &SchemaHost, id: i64, text: &str| {
+        host.record(
+            "ClipboardEntry",
+            &[("id", Value::int(id)), ("text", Value::text(text))],
+        )
+    };
+    let get = |s: &Shell, name: &str| s.inst.value_of("t", name).unwrap();
+    assert_eq!(get(&shell, "direct"), Value::int(0), "never at boot");
+    assert_eq!(shell.scene.texts(), ["none"]);
+    // Two copies, newest first: each makes another entry the first.
+    let one = entry(&shell.host, 1, "one");
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "clipboard.history",
+            Value::list(vec![one.clone()]),
+        )
+        .unwrap();
+    shell.at(1.0);
+    shell.at(1.6);
+    assert_eq!(get(&shell, "debounced"), Value::int(1), "`after` too");
+    let two = entry(&shell.host, 2, "two");
+    shell
+        .host
+        .set(&shell.rt, "clipboard.history", Value::list(vec![two, one]))
+        .unwrap();
+    shell.at(2.0);
+    shell.at(2.6);
+    assert_eq!(get(&shell, "debounced"), Value::int(2));
+    assert_eq!(get(&shell, "newest"), Value::int(2));
+    assert_eq!(
+        get(&shell, "direct"),
+        Value::int(2),
+        "each copy is a change"
+    );
+    assert_eq!(get(&shell, "last"), Value::int(1), "only the first copy");
+    assert_eq!(
+        get(&shell, "texts"),
+        Value::int(0),
+        "a field beside the key takes a switch as its baseline"
+    );
+    assert_eq!(shell.scene.texts(), ["two", "second"]);
+    // A sink switch changes `audio.sink.id`.
+    let other = shell.host.record("AudioDevice", &[("id", Value::int(41))]);
+    shell.host.set(&shell.rt, "audio.sink", other).unwrap();
+    shell.at(3.0);
+    assert_eq!(get(&shell, "sink"), Value::int(1));
+}
+
 /// `after T while cond`: the toast's countdown pauses while hovered and
 /// never runs for a critical one (design.md's notification stack).
 #[test]
