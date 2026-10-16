@@ -244,8 +244,10 @@ impl Mount {
             format!("{NO_PALETTE} (no config directory: set XDG_CONFIG_HOME or HOME)")
         })?;
         let build = crate::rules::load(&dir).map_err(|e| format!("{NO_PALETTE}:\n{e}"))?;
-        let state = state_dir().ok_or_else(|| {
-            format!("{NO_PALETTE} (no state directory: set XDG_STATE_HOME or HOME)")
+        let state = strand_core::persist::state_dir().ok_or_else(|| {
+            format!(
+                "{NO_PALETTE} (no state directory: set STRAND_STATE_DIR, XDG_STATE_HOME or HOME)"
+            )
         })?;
         Ok(Mount::boot(
             &build,
@@ -268,7 +270,11 @@ impl Mount {
             config_dir: std::env::current_dir().ok(),
             tokens: Default::default(),
         };
-        Ok(Mount::boot(&build, storage, state_dir().as_deref()))
+        Ok(Mount::boot(
+            &build,
+            storage,
+            strand_core::persist::state_dir().as_deref(),
+        ))
     }
 
     fn boot(build: &Build, storage: Storage, state: Option<&Path>) -> Mount {
@@ -334,21 +340,6 @@ impl Mount {
             },
         )
     }
-}
-
-/// `$XDG_STATE_HOME/strand` (else `~/.local/state/strand`), as the
-/// persist store finds it.
-fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .map(|h| h.join(".local/state"))
-        })
-        .map(|s| s.join("strand"))
 }
 
 #[cfg(test)]

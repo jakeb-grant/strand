@@ -795,8 +795,9 @@ pub fn open_editor(file: &Path, line: u32, col: u32) {
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .process_group(0);
-    // (M5) Never strand's own inherited activation token.
-    strand_services::child::activation_env(&mut cmd, None);
+    // (M5) Never strand's own inherited activation token, nor the
+    // variables that address this shell (`child_env`).
+    strand_services::child::child_env(&mut cmd, None);
     // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
     // `pre_exec` requires: the editor gets the THP setting strand had.
     unsafe {

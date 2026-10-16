@@ -447,8 +447,10 @@ pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo
     }
 }
 
-/// The persist and settings stores under `$XDG_STATE_HOME/strand`. With
-/// no state directory (neither `XDG_STATE_HOME` nor `HOME` absolute),
+/// The persist and settings stores in strand's state directory
+/// (`$STRAND_STATE_DIR`, else `$XDG_STATE_HOME/strand`). With no state
+/// directory (none of `STRAND_STATE_DIR`, `XDG_STATE_HOME` and `HOME`
+/// absolute),
 /// persisted state is not kept, but settings files are still read from
 /// and written to the config directory, their overlays (for read-only
 /// files) kept in a temporary directory for this run.

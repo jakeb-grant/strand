@@ -11,8 +11,9 @@
 //! clicked. Each is detached in its own process
 //! group (a signal to strand's group does not reach it), stdin and stdout
 //! on `/dev/null`, stderr strand's own (its log). Like every program
-//! strand starts it does not inherit strand's xdg-activation token, and it
-//! gets back the transparent huge page setting strand inherited. Its
+//! strand starts it does not inherit strand's xdg-activation token or the
+//! variables that address this shell (`child::child_env`), and it gets
+//! back the transparent huge page setting strand inherited. Its
 //! thread waits for it and nothing else: it is never killed, since an
 //! app it opens may run for hours. A failure to start or a non-zero exit
 //! comes back (the loop is pinged awake) as a log line and a `strand
@@ -135,7 +136,7 @@ pub(super) fn run(argv: &[String]) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .process_group(0);
-    strand_services::child::activation_env(&mut cmd, None);
+    strand_services::child::child_env(&mut cmd, None);
     // SAFETY: `restore_in_child` makes only async-signal-safe calls (an
     // atomic load, `prctl`), as `pre_exec` requires.
     unsafe {
@@ -252,6 +253,48 @@ mod tests {
             "the first call, the latest re-run, and b"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (launch-env) A declared action's command (a terminal, often) never
+    /// inherits the variables that address this shell: run in a copy of
+    /// this test binary started with `STRAND_SOCKET` and
+    /// `STRAND_STATE_DIR` set, a command that fails when it sees either
+    /// succeeds, and one that needs the rest of the environment too.
+    #[test]
+    fn a_command_never_inherits_the_variables_that_address_this_shell() {
+        const CHILD: &str = "STRAND_TEST_EXEC_ENV_CHILD";
+        let sh = |c: &str| vec!["sh".to_string(), "-c".into(), c.into()];
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(
+                std::env::var("STRAND_SOCKET").as_deref(),
+                Ok("/run/strand-second.sock")
+            );
+            assert_eq!(
+                run(&sh("test -z \"${STRAND_SOCKET+x}${STRAND_STATE_DIR+x}\"")),
+                None,
+                "inherited"
+            );
+            assert_eq!(run(&sh("test \"$STRAND_TEST_EXEC_ENV_CHILD\" = 1")), None);
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::exec::tests::a_command_never_inherits_the_variables_that_address_this_shell",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("STRAND_SOCKET", "/run/strand-second.sock")
+            .env("STRAND_STATE_DIR", "/tmp/strand-second-state")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
     /// (M6, the review of the owner's ruling) The command is the leader

@@ -104,22 +104,17 @@ struct EntryV1 {
 const FILE: &str = "history.json";
 const IMAGES: &str = "images";
 
-/// `<state>/strand/clipboard`, `<state>` being `$XDG_STATE_HOME` when
-/// absolute, else `$HOME/.local/state` (as `strand_core::PersistStore`
-/// finds it); `None` without either.
+/// `clipboard` in strand's state directory (`$STRAND_STATE_DIR`, else
+/// `$XDG_STATE_HOME/strand`, else `$HOME/.local/state/strand`, as
+/// `strand_core::persist::state_dir_from` finds it from these values);
+/// `None` without any of them.
 pub fn default_dir(
+    strand_state_dir: Option<std::ffi::OsString>,
     xdg_state_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
-    let state = xdg_state_home
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            home.map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .map(|h| h.join(".local/state"))
-        })?;
-    Some(dir_in(&state))
+    strand_core::persist::state_dir_from(strand_state_dir, xdg_state_home, home)
+        .map(|s| s.join("clipboard"))
 }
 
 /// The history's directory under a state directory.
@@ -811,15 +806,20 @@ mod tests {
     }
 
     #[test]
-    fn the_default_directory_follows_xdg_state_home() {
+    fn the_default_directory_follows_the_state_directory() {
         assert_eq!(
-            default_dir(Some("/s".into()), Some("/h".into())),
+            default_dir(None, Some("/s".into()), Some("/h".into())),
             Some(PathBuf::from("/s/strand/clipboard"))
         );
         assert_eq!(
-            default_dir(Some("rel".into()), Some("/h".into())),
+            default_dir(None, Some("rel".into()), Some("/h".into())),
             Some(PathBuf::from("/h/.local/state/strand/clipboard"))
         );
-        assert_eq!(default_dir(None, None), None);
+        // `STRAND_STATE_DIR` names strand's own directory, ahead of both.
+        assert_eq!(
+            default_dir(Some("/t".into()), Some("/s".into()), Some("/h".into())),
+            Some(PathBuf::from("/t/clipboard"))
+        );
+        assert_eq!(default_dir(None, None, None), None);
     }
 }

@@ -1,10 +1,11 @@
 //! `state x = … persist`: values kept across restarts.
 //!
-//! Each persisted cell is one small file under `$XDG_STATE_HOME/strand/
-//! persist/` (or `~/.local/state/strand/persist/`), named by the cell's path
-//! (`launcher.query`, `bar.dnd`: the `file.name` path `export` uses, plus
-//! the instance identity when a component has several instances,
-//! `bar[<monitor>].expanded`).
+//! Each persisted cell is one small file under `persist/` in strand's
+//! state directory ([`state_dir`]: `$STRAND_STATE_DIR`, else
+//! `$XDG_STATE_HOME/strand`, else `~/.local/state/strand`), named by the
+//! cell's path (`launcher.query`, `bar.dnd`: the `file.name` path
+//! `export` uses, plus the instance identity when a component has several
+//! instances, `bar[<monitor>].expanded`).
 //! The file stores the value's bytes together with a hash of the default
 //! it was declared with, so a changed default can be noticed ("Persistence
 //! and settings" in the design):
@@ -63,7 +64,8 @@ const MAX_NAME: usize = 200;
 /// sit in a [`Diagnostic`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PersistError {
-    /// Neither `$XDG_STATE_HOME` nor `$HOME` is set.
+    /// None of `$STRAND_STATE_DIR`, `$XDG_STATE_HOME` and `$HOME` is set
+    /// (to an absolute path).
     NoStateDir,
     /// The cell path is empty.
     EmptyPath,
@@ -87,7 +89,9 @@ pub enum PersistError {
 impl fmt::Display for PersistError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoStateDir => f.write_str("neither XDG_STATE_HOME nor HOME is set"),
+            Self::NoStateDir => {
+                f.write_str("none of STRAND_STATE_DIR, XDG_STATE_HOME and HOME is set")
+            }
             Self::EmptyPath => f.write_str("empty persist path"),
             Self::Io { path, message } => write!(f, "{}: {message}", path.display()),
             Self::Corrupt { path, reason } => {
@@ -104,6 +108,40 @@ pub(crate) fn io_error(path: &Path, e: &std::io::Error) -> PersistError {
         path: path.to_path_buf(),
         message: Arc::from(e.to_string()),
     }
+}
+
+/// The variable naming one shell's state directory in place of
+/// `$XDG_STATE_HOME/strand` (spec section 13). Like `STRAND_SOCKET` it
+/// addresses this instance only, so no program strand starts inherits it
+/// (`strand_services::child::child_env`).
+pub const STATE_DIR_VAR: &str = "STRAND_STATE_DIR";
+
+/// Strand's state directory, which every store keeps its files under
+/// (`persist/`, `settings/`, `tokens.toml`, `palettes/`, `clipboard/`,
+/// `files`): `$STRAND_STATE_DIR`, else `$XDG_STATE_HOME/strand`, else
+/// `$HOME/.local/state/strand`. `None` without any of them.
+pub fn state_dir() -> Option<PathBuf> {
+    state_dir_from(
+        std::env::var_os(STATE_DIR_VAR),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`state_dir`] from the three variables' values. Each counts only when
+/// absolute (the XDG base directory spec ignores relative paths, and a
+/// relative `STRAND_STATE_DIR` would move with the working directory).
+pub fn state_dir_from(
+    strand_state_dir: Option<std::ffi::OsString>,
+    xdg_state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let absolute = |v: Option<std::ffi::OsString>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+    absolute(strand_state_dir).or_else(|| {
+        absolute(xdg_state_home)
+            .or_else(|| absolute(home).map(|h| h.join(".local/state")))
+            .map(|s| s.join("strand"))
+    })
 }
 
 /// A stable 64-bit hash (FNV-1a) of a value's bytes: the same in every
@@ -800,28 +838,27 @@ impl PersistStore {
             .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(f));
     }
 
-    /// `$XDG_STATE_HOME/strand/persist`, or `$HOME/.local/state/strand/
-    /// persist` when `XDG_STATE_HOME` is unset or not absolute (as the XDG
-    /// spec says to ignore relative paths).
+    /// `persist` in [`state_dir`]: `$STRAND_STATE_DIR/persist`, else
+    /// `$XDG_STATE_HOME/strand/persist`, else `$HOME/.local/state/strand/
+    /// persist` (relative values ignored, as the XDG spec says).
     pub fn from_env() -> Result<Self, PersistError> {
-        Self::from_vars(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+        Self::from_vars(
+            std::env::var_os(STATE_DIR_VAR),
+            std::env::var_os("XDG_STATE_HOME"),
+            std::env::var_os("HOME"),
+        )
     }
 
-    /// [`PersistStore::from_env`] with the variables given.
+    /// [`PersistStore::from_env`] with the variables given
+    /// ([`state_dir_from`]).
     pub fn from_vars(
+        strand_state_dir: Option<std::ffi::OsString>,
         xdg_state_home: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
     ) -> Result<Self, PersistError> {
-        let state = xdg_state_home
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| {
-                home.map(PathBuf::from)
-                    .filter(|p| p.is_absolute())
-                    .map(|h| h.join(".local/state"))
-            })
+        let state = state_dir_from(strand_state_dir, xdg_state_home, home)
             .ok_or(PersistError::NoStateDir)?;
-        Ok(Self::new(state.join("strand").join("persist")))
+        Ok(Self::new(state.join("persist")))
     }
 
     /// The directory holding the files.

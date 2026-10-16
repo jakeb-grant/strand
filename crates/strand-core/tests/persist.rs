@@ -275,6 +275,7 @@ fn a_failed_write_is_a_warning_and_the_value_stays() {
 #[test]
 fn the_store_lives_under_xdg_state_home() {
     let s = PersistStore::from_vars(
+        None,
         Some(OsString::from("/x/state")),
         Some(OsString::from("/home/u")),
     )
@@ -282,14 +283,37 @@ fn the_store_lives_under_xdg_state_home() {
     assert_eq!(s.dir(), Path::new("/x/state/strand/persist"));
     // A relative XDG_STATE_HOME is ignored (XDG base directory spec).
     let s = PersistStore::from_vars(
+        None,
         Some(OsString::from("state")),
         Some(OsString::from("/home/u")),
     )
     .unwrap();
     assert_eq!(s.dir(), Path::new("/home/u/.local/state/strand/persist"));
     assert_eq!(
-        PersistStore::from_vars(None, None),
+        PersistStore::from_vars(None, None, None),
         Err(PersistError::NoStateDir)
+    );
+}
+
+/// `STRAND_STATE_DIR` names strand's own state directory (no `strand/`
+/// under it), ahead of `XDG_STATE_HOME`; a relative one is ignored.
+#[test]
+fn strand_state_dir_names_the_state_directory_itself() {
+    use strand_core::persist::state_dir_from;
+    let s = PersistStore::from_vars(
+        Some(OsString::from("/t/launcher")),
+        Some(OsString::from("/x/state")),
+        Some(OsString::from("/home/u")),
+    )
+    .unwrap();
+    assert_eq!(s.dir(), Path::new("/t/launcher/persist"));
+    assert_eq!(
+        state_dir_from(Some("rel".into()), None, Some("/home/u".into())),
+        Some(PathBuf::from("/home/u/.local/state/strand"))
+    );
+    assert_eq!(
+        state_dir_from(Some("/t".into()), None, None),
+        Some(PathBuf::from("/t"))
     );
 }
 

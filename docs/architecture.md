@@ -758,6 +758,14 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
 - The socket's path is `strand_core::ipc::socket_path()`
   (`$STRAND_SOCKET`, else `$XDG_RUNTIME_DIR/strand-<display>.sock`),
   so the shell, its CLI and `strand-dev inspect` find it by one rule.
+  (launch-env) Its state directory is likewise
+  `strand_core::persist::state_dir()` (`$STRAND_STATE_DIR`, else
+  `$XDG_STATE_HOME/strand`, else `~/.local/state/strand`): every store
+  (`PersistStore::from_env`, and through it settings, tokens, palettes,
+  `file` manifests, `apps` and `notifications`; the clipboard history;
+  `strand export`) resolves it there. Both variables address one
+  shell, so `strand_services::child::child_env` removes them
+  (`child::INSTANCE_VARS`) from every program the shell starts.
 - `ipc.rs` in the binary becomes `ipc/{mod, server, cli, describe}.rs`
   over them.
 - Protocol version 1 gains commands only, and every rule above holds (an
@@ -1187,8 +1195,11 @@ S-platform in M5 wave 3, decisions.md m5-platform).**
   `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`
   (`strand_services::apps::spawn_launched`), and never the token strand
   inherited: every program strand starts (launches, `exec` sources, the
-  editor, a `file` element's `run:` command) goes through `strand_services::child::activation_env`, which
-  removes both on the `Command` before `fork`.
+  editor, a `file` element's `run:` command, a declared action's
+  command) goes through `strand_services::child::child_env`, which
+  removes both on the `Command` before `fork`, and with them the
+  variables that address this shell (`STRAND_SOCKET`,
+  `STRAND_STATE_DIR`; launch-env).
 - **Ordering rule.** An action that needs a token (notification
   `invoke` and `activate`, an app launch) waits up to 200 ms from when
   the handler sent it (a deadline, so several in one invocation wait
@@ -2964,7 +2975,8 @@ How consumers drive it (wave 1, see `crates/strand-core/src/lib.rs`):
   LSP: `rt.sources/observers/owned(id)`, `rt.site_of(handler)`.
 - `state x = d persist` is `rt.persisted(&store, path, d, encode, decode)`
   (wave 2): `store` is one `PersistStore::from_env()` per process
-  (`$XDG_STATE_HOME/strand/persist`, one file per cell path; its writes go
+  (`persist` in `strand_core::persist::state_dir()`, by default
+  `$XDG_STATE_HOME/strand/persist`, one file per cell path; its writes go
   through one persist IO thread, so `fsync` never stalls a tick), and the
   VM supplies a stable byte codec for its `Value`s. `path` names one live
   cell: the cell's `file.name` path plus its instance identity when the

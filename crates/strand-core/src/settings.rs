@@ -133,8 +133,9 @@ impl SettingsStore {
         }
     }
 
-    /// `$XDG_STATE_HOME/strand/settings` (see [`PersistStore::from_env`]),
-    /// with its own IO thread.
+    /// `settings` in strand's state directory (`$STRAND_STATE_DIR`, else
+    /// `$XDG_STATE_HOME/strand`: see [`PersistStore::from_env`]), with its
+    /// own IO thread.
     pub fn from_env() -> Result<Self, PersistError> {
         let persist = PersistStore::from_env()?;
         let dir = persist

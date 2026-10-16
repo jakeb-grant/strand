@@ -70,7 +70,8 @@ static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 
 /// Where `clipboard` connects and keeps its history from its next start
 /// on (tests: a headless sway's socket and a temporary directory). `None`
-/// restores `$WAYLAND_DISPLAY` and `$XDG_STATE_HOME`.
+/// restores `$WAYLAND_DISPLAY` and the state directory from the
+/// environment (`history::default_dir`).
 pub fn configure(config: Option<Config>) {
     if let Ok(mut c) = CONFIG.lock() {
         *c = config;
@@ -85,7 +86,11 @@ fn config() -> io::Result<(PathBuf, Option<PathBuf>)> {
         Some(c) => (c.target, Some(history::dir_in(&c.state_dir))),
         None => (
             WaylandTarget::Env,
-            history::default_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME")),
+            history::default_dir(
+                std::env::var_os(strand_core::persist::STATE_DIR_VAR),
+                std::env::var_os("XDG_STATE_HOME"),
+                std::env::var_os("HOME"),
+            ),
         ),
     };
     let socket = match target {
@@ -278,7 +283,8 @@ impl Run {
         available: bool,
         action: ClipboardAction,
     ) -> Result<(), String> {
-        const NO_STATE: &str = "no state directory ($XDG_STATE_HOME or $HOME) to keep a history in";
+        const NO_STATE: &str =
+            "no state directory ($STRAND_STATE_DIR, $XDG_STATE_HOME or $HOME) to keep a history in";
         match action {
             ClipboardAction::Copy { value } => {
                 if !available {
