@@ -134,6 +134,42 @@ pub struct ScrollState {
     /// extent (measured where they were estimated, unmounted where they
     /// were measured), the offset follows it, so nothing in view jumps.
     anchor: Option<(NodeId, f32)>,
+    /// The row the last reveal brought into view, kept in view as the
+    /// viewport changes until the pointer scrolls (list-scroll-regrow).
+    reveal: Option<Reveal>,
+}
+
+/// A reveal ([`Renderer::reveal_index`]) standing until the pointer
+/// scrolls its list: whenever the list's viewport changes, the row is
+/// brought into view again from the offset the reveal started from, so
+/// an offset a reveal took in a short-lived view (a list laid out
+/// shorter than the row while its surface waits to grow) goes once the
+/// view grows.
+///
+/// [`Renderer::reveal_index`]: crate::Renderer::reveal_index
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Reveal {
+    /// The row, if it was mounted (found again where it moved).
+    row: Option<NodeId>,
+    /// Its global index (for a row not mounted).
+    index: u32,
+    /// The offset before the reveal.
+    from: f32,
+    /// Placed again at the next layout pass: the reveal is new, the
+    /// viewport changed or the rows' measured heights moved it.
+    due: bool,
+}
+
+/// The offset nearest `from` that shows content from `y` to `y + h` in
+/// a `view` tall viewport (its top, if it is taller than the view).
+pub(crate) fn keep_in_view(from: f32, y: f32, h: f32, view: f32) -> f32 {
+    if y < from || h > view {
+        y
+    } else if y + h > from + view {
+        y + h - view
+    } else {
+        from
+    }
 }
 
 impl ScrollState {
@@ -152,6 +188,7 @@ impl ScrollState {
         let moved = new != self.offset;
         self.offset = new;
         self.motion = None;
+        self.reveal = None;
         moved
     }
 
@@ -176,6 +213,7 @@ impl ScrollState {
         if to == from {
             return false;
         }
+        self.reveal = None;
         if curve == Curve::Instant {
             self.offset = to;
             self.motion = None;
@@ -236,6 +274,19 @@ impl ScrollState {
             last: frame,
         });
         true
+    }
+
+    /// A reveal moved the offset from `from` to show the row at global
+    /// index `index` (node `row`, if mounted): it stands until the
+    /// pointer scrolls, placed again whenever the viewport changes
+    /// ([`Reveal`]).
+    pub(crate) fn revealed(&mut self, row: Option<NodeId>, index: u32, from: f32) {
+        self.reveal = Some(Reveal {
+            row,
+            index,
+            from,
+            due: true,
+        });
     }
 
     /// Stops any motion where it is.
@@ -322,6 +373,9 @@ impl ScrollState {
     fn shift(&mut self, d: f32) {
         self.offset += d;
         self.shown += d;
+        if let Some(r) = &mut self.reveal {
+            r.from += d;
+        }
         match &mut self.motion {
             Some(ScrollMotion::Spring(m, c)) => {
                 let to = m.target()[0] + d;
@@ -437,7 +491,9 @@ struct Placement {
     top: f32,
     bottom: f32,
     total: f32,
-    /// One unmounted row's extent (its estimate and the gap).
+    /// One unmounted row's height (the estimate) and extent (with the
+    /// gap).
+    est: f32,
     pitch: f32,
     count: u32,
     first: u32,
@@ -456,6 +512,27 @@ impl Placement {
             self.first + j as u32
         };
         i.min(self.count)
+    }
+
+    /// Where the row `row` (if mounted, among `rows`) or else the one at
+    /// global index `index` lies: its top and height, unmounted rows at
+    /// the estimate. `None` if `row` is no longer mounted.
+    fn span(&self, rows: &[NodeId], row: Option<NodeId>, index: u32) -> Option<(f32, f32)> {
+        if let Some(row) = row {
+            let j = rows.iter().position(|r| *r == row)?;
+            return Some((self.ys[j], self.hs[j]));
+        }
+        let n = self.ys.len() as u32;
+        let est = self.est;
+        Some(if index < self.first || n == 0 {
+            (index as f32 * self.pitch, est)
+        } else if index >= self.first + n {
+            let past = (index - self.first - n) as f32;
+            (self.bottom + past * self.pitch, est)
+        } else {
+            let j = (index - self.first) as usize;
+            (self.ys[j], self.hs[j])
+        })
     }
 
     /// The rows from content height `a` to `b`.
@@ -532,6 +609,7 @@ pub(super) fn place_list(
             top,
             bottom: y,
             total,
+            est,
             pitch,
             count,
             first,
@@ -549,8 +627,21 @@ pub(super) fn place_list(
             st.shift(d);
         }
     }
+    let resized = (st.viewport - content.h).abs() > 0.5;
     st.viewport = content.h;
     st.content = p.total;
+    // The row a reveal brought into view stays there in the view the
+    // list has now, from where the reveal started (list-scroll-regrow).
+    if let Some(r) = &mut st.reveal {
+        r.due |= resized;
+    }
+    if let Some(r) = st.reveal.filter(|r| r.due && st.motion.is_none()) {
+        match p.span(rows, r.row, r.index) {
+            Some((y, h)) => st.offset = keep_in_view(r.from, y, h, content.h),
+            // The row is gone: what selects next reveals again.
+            None => st.reveal = None,
+        }
+    }
     if !st.offset.is_finite() {
         st.offset = 0.0;
     }
@@ -625,6 +716,11 @@ pub(super) fn place_list(
     // Scrolling goes by what was just measured.
     let p = place(st);
     st.content = p.total;
+    // Rows measured off their estimate moved a revealed row: placed
+    // again in the pass that follows.
+    if let Some(r) = &mut st.reveal {
+        r.due = changed;
+    }
     st.anchor = (0..rows.len())
         .find(|j| p.ys[*j] + p.hs[*j] > shown)
         .map(|j| (rows[j], p.ys[j]));

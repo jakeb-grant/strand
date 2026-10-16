@@ -17,7 +17,7 @@ use strand_scene::{
 use super::Renderer;
 use super::layout_pass::TextInfo;
 use crate::anim::{exit_pose, is_pose, page_slide};
-use crate::layout::{layout_margin, relayout_list, scrolls_content, translate_under};
+use crate::layout::{keep_in_view, layout_margin, relayout_list, scrolls_content, translate_under};
 
 /// What moved a scroll ([`Renderer::scroll_input`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -261,7 +261,11 @@ impl Renderer {
     /// Scrolls list `id` so that its row at global index `index` is in
     /// view, mounted or not: a row logic has not mounted is placed at
     /// the estimated row height, and the view follows it once it is
-    /// measured. It lands at once.
+    /// measured. It lands at once, scrolled as little as it takes (to
+    /// the row's top if the row is taller than the view), and stands
+    /// until the pointer scrolls the list: whenever the list's viewport
+    /// changes, the row is brought into view again from the offset it
+    /// started from (`ScrollState::revealed`).
     pub fn reveal_index(&mut self, id: NodeId, index: u32) {
         let Some(node) = self.tree.get(id) else {
             return;
@@ -280,6 +284,10 @@ impl Renderer {
             st.heights.values().sum::<f32>() / st.heights.len() as f32
         };
         let h = |r: &NodeId| st.heights.get(r).copied().unwrap_or(est);
+        let row = index
+            .checked_sub(first)
+            .and_then(|j| rows.get(j as usize))
+            .copied();
         let (y, rh) = if index < first {
             (index as f32 * (est + gap), est)
         } else {
@@ -295,14 +303,13 @@ impl Renderer {
             }
         };
         let before = st.offset;
-        let mut to = st.offset;
-        if y < to {
-            to = y;
-        } else if y + rh > to + st.viewport {
-            to = y + rh - st.viewport;
-        }
+        let to = keep_in_view(before, y, rh, st.viewport);
         st.stop();
         st.offset = to.clamp(0.0, (st.content - st.viewport).max(0.0));
+        // Placed again by the next layout, and whenever the view
+        // changes: the view this one went by may be on its way to
+        // another size (list-scroll-regrow).
+        st.revealed(row, index, before);
         if st.offset != before {
             self.lists.revealing.insert(id);
             self.scrolled(id);

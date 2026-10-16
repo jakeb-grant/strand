@@ -726,6 +726,67 @@ fn a_2000_row_list_lays_out_only_its_window() {
     assert_eq!((stats.stalls, stats.gaps), (3, 0), "{stats:?}");
 }
 
+/// (list-scroll-regrow) A row revealed while its list is laid out
+/// shorter than it will be (a content-sized panel whose surface has not
+/// grown yet) is placed again when the view grows: from where the view
+/// was before the reveal, so the list shows its top again rather than
+/// keeping the offset the short view needed. While the reveal stands
+/// the row stays in view as the view shrinks; a pointer scroll ends it.
+#[test]
+fn a_reveal_in_a_short_view_is_placed_again_when_it_grows() {
+    let colors = [
+        "#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af", "#cba6f7", "#94e2d5", "#fab387",
+    ];
+    let mut b = Builder::default();
+    let p = b.node(NodeKind::Panel, None, vec![]);
+    let col = b.node(NodeKind::Col, Some(p), vec![(Prop::Width, num(100.0))]);
+    let lst = b.node(NodeKind::List, Some(col), vec![(Prop::Height, num(200.0))]);
+    let rows: Vec<NodeId> = colors
+        .iter()
+        .map(|c| swatch(&mut b, lst, c, vec![(Prop::Height, num(40.0))]))
+        .collect();
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, p);
+    let paint = |r: &mut strand_render::Renderer, h: u32| {
+        let mut buf = Buffer::new(100, h, Scale::ONE);
+        buf.paint(r, S, 0);
+        buf
+    };
+    // The surface is 50 px tall for now: the list's view is too.
+    paint(&mut r, 50);
+    assert_eq!(r.scroll_state(lst).unwrap().viewport, 50.0);
+    // Row 2 (80 to 120) revealed: as little as it takes, 70.
+    r.reveal_index(lst, 2);
+    paint(&mut r, 50);
+    assert_eq!(r.scroll_offset(lst), Some(70.0));
+    // The surface grows to the panel's 200: the five rows fit from the
+    // top, and row 2 is among them.
+    let buf = paint(&mut r, 200);
+    assert_eq!(r.scroll_offset(lst), Some(0.0));
+    approx(rect(&r, rows[0]), (0.0, 0.0, 100.0, 40.0));
+    // Drawn so: the first row's colour at the top (#f38ba8, BGRA).
+    assert_eq!(buf.px(50, 5), [0xa8, 0x8b, 0xf3, 0xff]);
+    // Row 6 revealed from the top (240 to 280 in a 200 view): 80. The
+    // view shrinking to 120 keeps it in view (160), from where the
+    // reveal started.
+    r.reveal_index(lst, 6);
+    paint(&mut r, 200);
+    assert_eq!(r.scroll_offset(lst), Some(80.0));
+    paint(&mut r, 120);
+    assert_eq!(r.scroll_offset(lst), Some(160.0));
+    // The pointer scrolls it up by 100: the reveal is over, and the view
+    // changing size leaves the offset where the pointer put it.
+    assert_eq!(
+        r.scroll(S, LogicalPoint::new(50.0, 50.0), -100.0),
+        Some(lst)
+    );
+    paint(&mut r, 120);
+    assert_eq!(r.scroll_offset(lst), Some(60.0));
+    paint(&mut r, 100);
+    assert_eq!(r.scroll_offset(lst), Some(60.0));
+}
+
 /// Hit testing uses the rounded shape (a pill's corner is not the pill),
 /// `hit: grow(n)` enlarges it, and a shadow never does.
 #[test]
