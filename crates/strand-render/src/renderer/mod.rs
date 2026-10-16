@@ -818,8 +818,9 @@ impl Renderer {
     }
 
     /// Bytes of cached gradient and shadow pixmaps (at most
-    /// [`crate::PAINT_CACHE_BYTES`] plus what one frame needs), and how
-    /// many were built so far.
+    /// [`crate::PAINT_CACHE_BYTES`] plus what one frame needs), with the
+    /// sliced shadows' corner tiles held uncached (at most 4 MB plus one
+    /// frame's), and how many were built so far.
     pub fn paint_cache(&self) -> (usize, u64) {
         let c = self.raster.cache();
         (c.bytes(), c.builds())

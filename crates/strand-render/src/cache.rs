@@ -79,6 +79,15 @@ fn dither(x: u32, y: u32) -> f32 {
 /// shadow-slice).
 const FLAT: f64 = 4.0;
 
+/// Bytes of corner tiles held uncached (see [`PaintCache::shadow_slices`])
+/// before the oldest are dropped; the current frame's are never dropped.
+/// A tile waits here until a later frame asks for it again, however many
+/// other surfaces paint in between (each paint is a frame of the shared
+/// cache): 4 MB holds a few dozen of the launcher's 1.5× corner tiles
+/// (about 100–250 kB each), many frames of a radius springing on every
+/// surface at once.
+const RECENT_BYTES: usize = 4 << 20;
+
 /// Shadows blurred less than this are not sliced: f32 rounding in where
 /// a pixel falls (a part of the box's size) moves a near-step edge.
 const MIN_SLICED_STD_DEV: f32 = 0.25;
@@ -111,14 +120,27 @@ pub struct PaintCache {
     /// How long an unused entry lives (`IDLE_FREE` unless a test
     /// shortens it).
     idle: Option<Duration>,
-    /// Sliced shadows' corner tiles built uncached, with the frame that
-    /// built them: cached when a later frame asks again (see
-    /// [`PaintCache::shadow_slices`]), dropped when the frame after their
-    /// own does not.
-    recent: HashMap<u64, (u64, Instant, Arc<Pixmap>)>,
+    /// Sliced shadows' corner tiles built uncached: cached when a later
+    /// frame asks again (see [`PaintCache::shadow_slices`]), the oldest
+    /// dropped past [`RECENT_BYTES`] or when idle.
+    recent: HashMap<u64, Recent>,
+    /// Bytes of `recent` (counted in [`PaintCache::bytes`]).
+    recent_bytes: usize,
     /// Pixels of blurred shadow rendered into pixmaps (whole shadows and
     /// tiles), plus the extents frames drew directly (tests).
     blurred: u64,
+}
+
+/// A corner tile built uncached, held for a later frame to cache.
+#[derive(Debug)]
+struct Recent {
+    pixmap: Arc<Pixmap>,
+    bytes: usize,
+    /// The frame that built it.
+    frame: u64,
+    /// When it was built, in `tick` order (oldest dropped first).
+    tick: u64,
+    at: Instant,
 }
 
 /// A blurred rounded rect, relative to the pixmap's origin.
@@ -352,7 +374,10 @@ fn slice_plan(s: &ShadowShape) -> Option<SlicePlan> {
             let ((xa, xb), (lx0, lx1)) = corner_span(cx, left, out, inner, big);
             let ((ya, yb), (ly0, ly1)) = corner_span(cy, top, out, inner, big);
             let (tw, th) = (u16::try_from(xb - xa).ok()?, u16::try_from(yb - ya).ok()?);
-            if !cacheable(tw as u32, th as u32) {
+            // A tile over `EAGER_ENTRY_BYTES` (a blur of over about 110
+            // px, or a huge radius) is not sliced: the whole shadow keeps
+            // the large-entry rule, built only by a second whole frame.
+            if !eager(tw as u32, th as u32) {
                 return None;
             }
             Some(TileSpec {
@@ -498,9 +523,10 @@ fn eager(w: u32, h: u32) -> bool {
 }
 
 impl PaintCache {
-    /// Bytes of pixmaps held.
+    /// Bytes of pixmaps held: cached entries and corner tiles held
+    /// uncached.
     pub fn bytes(&self) -> usize {
-        self.bytes
+        self.bytes + self.recent_bytes
     }
 
     /// Pixmaps built so far (tests: a second frame builds none).
@@ -511,9 +537,6 @@ impl PaintCache {
     /// Starts a frame: entries used from now on stay until the next.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
-        // Corner tiles the last frame built stay for this one to cache.
-        let frame = self.frame;
-        self.recent.retain(|_, (f, _, _)| *f + 1 >= frame);
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<Pixmap>> {
@@ -542,7 +565,8 @@ impl PaintCache {
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
         self.recent
-            .retain(|_, (_, at, _)| now.saturating_duration_since(*at) < idle);
+            .retain(|_, t| now.saturating_duration_since(t.at) < idle);
+        self.recent_bytes = self.recent.values().map(|t| t.bytes).sum();
     }
 
     /// How long an unused entry lives.
@@ -562,7 +586,7 @@ impl PaintCache {
         self.entries
             .get(&key)
             .map(|e| &e.pixmap)
-            .or_else(|| self.recent.get(&key).map(|(_, _, p)| p))
+            .or_else(|| self.recent.get(&key).map(|t| &t.pixmap))
     }
 
     fn insert(&mut self, key: u64, pixmap: Pixmap) -> Arc<Pixmap> {
@@ -667,7 +691,8 @@ impl PaintCache {
     /// The pixmap of a blurred rounded rect, its origin at the shape's
     /// `extent` corner rounded down (`None` when too large to cache),
     /// built at first sight whatever its size: the GPU backend's frames
-    /// are whole and count no frames here.
+    /// are whole (each lowering is a frame of this cache, `begin_frame`
+    /// in `lower_frame`, for corner-tile promotion and eviction).
     #[cfg(any(test, feature = "gpu"))]
     pub fn shadow(&mut self, s: &ShadowShape) -> Option<Arc<Pixmap>> {
         self.shadow_with(s, |_, _| true)
@@ -727,9 +752,11 @@ impl PaintCache {
     /// `None` when its field depends on its box's size (draw it whole).
     /// Each quadrant's base tile is cached at once: it depends on the blur,
     /// colour and sub-pixel phase only. A corner tile, which also depends
-    /// on its radius, is cached when a frame after the one that built it
-    /// asks for it, so a radius springing frame by frame builds a corner
-    /// tile a frame and never evicts what the cache holds.
+    /// on its radius, is held uncached (`recent`, at most
+    /// [`RECENT_BYTES`]) and cached when any later frame asks for it,
+    /// however many other surfaces painted in between, so a radius
+    /// springing frame by frame builds a corner tile a frame and never
+    /// evicts what the cache holds, and a still one is built once.
     pub fn shadow_slices(&mut self, s: &ShadowShape) -> Option<Slices> {
         let plan = slice_plan(s)?;
         Slices::from_plan(&plan, |t| Some(self.tile(t, s)))
@@ -748,10 +775,11 @@ impl PaintCache {
         }
         let frame = self.frame;
         match self.recent.get(&t.key) {
-            Some((f, _, p)) if *f == frame => return p.clone(),
+            Some(r) if r.frame == frame => return r.pixmap.clone(),
             Some(_) => {
-                if let Some((_, _, p)) = self.recent.remove(&t.key) {
-                    return self.insert_arc(t.key, p);
+                if let Some(r) = self.recent.remove(&t.key) {
+                    self.recent_bytes -= r.bytes;
+                    return self.insert_arc(t.key, r.pixmap);
                 }
             }
             None => {}
@@ -762,9 +790,43 @@ impl PaintCache {
             return self.insert(t.key, pm);
         }
         let pm = Arc::new(pm);
-        self.recent
-            .insert(t.key, (frame, Instant::now(), pm.clone()));
+        self.hold_recent(t.key, pm.clone());
         pm
+    }
+
+    /// Holds a corner tile this frame built uncached, dropping the
+    /// oldest other frames' tiles past [`RECENT_BYTES`].
+    fn hold_recent(&mut self, key: u64, pixmap: Arc<Pixmap>) {
+        let bytes = pixmap.width() as usize * pixmap.height() as usize * 4;
+        while self.recent_bytes + bytes > RECENT_BYTES {
+            let frame = self.frame;
+            let Some((&old, _)) = self
+                .recent
+                .iter()
+                .filter(|(_, r)| r.frame != frame)
+                .min_by_key(|(_, r)| r.tick)
+            else {
+                break;
+            };
+            if let Some(r) = self.recent.remove(&old) {
+                self.recent_bytes -= r.bytes;
+            }
+        }
+        self.tick += 1;
+        self.recent_bytes += bytes;
+        let old = self.recent.insert(
+            key,
+            Recent {
+                pixmap,
+                bytes,
+                frame: self.frame,
+                tick: self.tick,
+                at: Instant::now(),
+            },
+        );
+        if let Some(r) = old {
+            self.recent_bytes -= r.bytes;
+        }
     }
 }
 
@@ -1435,6 +1497,18 @@ mod tests {
         assert!(slice_plan(&cast(pill, [40.0; 4], 24.0, 1.0, "#00000066")).is_some());
         // Unblurred: a near-step edge.
         assert!(slice_plan(&cast(card, [16.0; 4], 0.0, 1.0, "#00000066")).is_none());
+        // A tile over `EAGER_ENTRY_BYTES`: σ = 125 makes a base tile about
+        // 820 px square (2.7 MB), so the shadow keeps the large-entry rule;
+        // σ = 100 makes one of about 655 px (1.7 MB).
+        let wide = kurbo::Rect::new(10.0, 10.0, 2410.0, 1810.0);
+        assert!(slice_plan(&cast(wide, [16.0; 4], 250.0, 1.0, "#00000066")).is_none());
+        let plan = slice_plan(&cast(wide, [16.0; 4], 200.0, 1.0, "#00000066")).unwrap();
+        assert!(
+            plan.quads
+                .iter()
+                .all(|q| eager(q.base.w as u32, q.base.h as u32)
+                    && eager(q.corner.w as u32, q.corner.h as u32))
+        );
     }
 
     /// (shadow-slice) A box whose size springs draws every frame from the
@@ -1456,7 +1530,7 @@ mod tests {
         };
         c.begin_frame();
         assert!(c.shadow_slices(&at(0, 48.0)).is_some());
-        let (builds, blurred, bytes) = (c.builds(), c.blurred(), c.bytes());
+        let (builds, blurred, bytes) = (c.builds(), c.blurred(), c.bytes);
         assert_eq!(builds, 8, "four base and four corner tiles");
         for i in 1..30 {
             c.begin_frame();
@@ -1465,7 +1539,8 @@ mod tests {
         }
         // Only the base tiles were cached at once; the corner tiles a
         // frame later. The tiles are small next to the whole shadow.
-        assert!(c.bytes() > bytes);
+        assert!(c.bytes > bytes);
+        assert_eq!(c.recent_bytes, 0);
         let whole = {
             let (w, h) = shadow_size(&at(29, 48.0));
             w as usize * h as usize * 4
@@ -1477,25 +1552,165 @@ mod tests {
         );
         eprintln!("tiles {} B, whole shadow {whole} B", c.bytes());
         let held = c.bytes();
-        // The bottom radius springs: two corner tiles a frame, uncached.
-        for i in 0..20 {
+        // The bottom radius springs: two corner tiles a frame, uncached
+        // (held aside, at most `RECENT_BYTES` of them).
+        for i in 0..40 {
             c.begin_frame();
             assert!(c.shadow_slices(&at(29, 50.5 + 2.5 * i as f32)).is_some());
             assert_eq!(c.builds(), builds + 2 * (i + 1), "frame {i}");
-            assert_eq!(c.bytes(), held, "a springing radius caches nothing");
+            assert_eq!(c.bytes, held, "a springing radius caches nothing");
+            assert!(c.recent_bytes <= RECENT_BYTES, "frame {i}");
+            assert_eq!(c.bytes(), c.bytes + c.recent_bytes);
         }
         // It settles: the next frame caches the tiles the last one built.
         c.begin_frame();
-        let s = at(29, 50.5 + 2.5 * 19.0);
+        let s = at(29, 50.5 + 2.5 * 39.0);
         assert!(c.shadow_slices(&s).is_some());
-        assert_eq!(c.builds(), builds + 40);
-        assert!(c.bytes() > held);
+        assert_eq!(c.builds(), builds + 80);
+        assert!(c.bytes > held);
         c.begin_frame();
         let (m, _) = diff(
             &sliced(&s, &mut c),
             &render_shadow(&s, shadow_size(&s).0 as u16, shadow_size(&s).1 as u16),
         );
         assert!(m <= 1);
-        assert_eq!(c.builds(), builds + 40, "cached");
+        assert_eq!(c.builds(), builds + 80, "cached");
+    }
+
+    /// (shadow-slice) The cache's frames are every surface's paints (CPU
+    /// prepares and GPU lowerings): a still card's corner tiles are built
+    /// once and cached by its next frame however many other surfaces
+    /// paint in between, here a bar drawing its own shadow and an OSD
+    /// whose radius springs, and its springing radius settles the same.
+    #[test]
+    fn other_surfaces_painting_between_frames_do_not_lose_corner_tiles() {
+        let card = |r: f32| {
+            cast(
+                kurbo::Rect::new(40.0, 40.0, 940.0, 670.0),
+                [27.0, 27.0, r, r],
+                48.0,
+                1.5,
+                "#00000066",
+            )
+        };
+        let bar = cast(
+            kurbo::Rect::new(10.0, 10.0, 1900.0, 60.0),
+            [0.0; 4],
+            4.0,
+            1.0,
+            "#00000040",
+        );
+        let osd = |i: usize| {
+            cast(
+                kurbo::Rect::new(20.0, 20.0, 320.0, 140.0),
+                [10.0 + i as f32 * 0.5; 4],
+                6.0,
+                1.0,
+                "#00000080",
+            )
+        };
+        let mut c = PaintCache::default();
+        let others = |c: &mut PaintCache, i: usize| {
+            for _ in 0..1 + i % 3 {
+                c.begin_frame();
+                c.shadow_slices(&bar).expect("bar sliced");
+                c.begin_frame();
+                c.shadow_slices(&osd(i)).expect("osd sliced");
+            }
+        };
+        c.begin_frame();
+        c.shadow_slices(&card(48.0)).unwrap();
+        for i in 0..12 {
+            others(&mut c, i);
+            let before = c.builds();
+            c.begin_frame();
+            c.shadow_slices(&card(48.0)).unwrap();
+            assert_eq!(c.builds(), before, "frame {i} rebuilt the card's tiles");
+        }
+        // Its radius springs, then settles at 60.
+        for i in 0..10 {
+            others(&mut c, 12 + i);
+            let before = c.builds();
+            c.begin_frame();
+            c.shadow_slices(&card(50.0 + i as f32)).unwrap();
+            assert_eq!(c.builds(), before + 2, "springing frame {i}");
+        }
+        for i in 0..6 {
+            others(&mut c, 22 + i);
+            let before = c.builds();
+            c.begin_frame();
+            c.shadow_slices(&card(59.0)).unwrap();
+            assert_eq!(c.builds(), before, "settled frame {i} rebuilt");
+        }
+        assert!(c.recent_bytes <= RECENT_BYTES);
+    }
+
+    /// (shadow-slice) At the slicing bound the flat terms are tightest:
+    /// the shortest box `slice_plan` takes for a blur, and the roundest
+    /// corner it takes for a box, still match the direct blur, at 1.5×
+    /// with fractional edges, each way round.
+    #[test]
+    fn shadows_at_the_slicing_bound_match_the_direct_blur() {
+        let mut cases = 0;
+        let mut worst = (0u8, 0usize);
+        let mut check = |s: &ShadowShape| {
+            let (w, h) = shadow_size(s);
+            let direct = render_shadow(s, w as u16, h as u16);
+            let mut c = PaintCache::default();
+            c.begin_frame();
+            let (m, n) = diff(&sliced(s, &mut c), &direct);
+            worst = worst.max((m, n));
+            assert!(
+                m <= 1 && (n as f64) < 0.01 * direct.data().len() as f64,
+                "{m} {n}: {s:?}"
+            );
+            cases += 1;
+        };
+        let scale = 1.5;
+        for blur in [8.0, 24.0, 48.0] {
+            let sd = blur * scale / 2.0;
+            for (fx, fy) in [(0.25, 0.75), (0.6, 0.15)] {
+                for tall in [false, true] {
+                    let shape = |short: f64, radii: [f32; 4]| {
+                        let (w, h) = if tall {
+                            (short, 400.0 * scale)
+                        } else {
+                            (400.0 * scale, short)
+                        };
+                        cast(
+                            kurbo::Rect::new(30.0 + fx, 17.0 + fy, 30.0 + fx + w, 17.0 + fy + h),
+                            radii,
+                            blur,
+                            scale,
+                            "#1e66f566",
+                        )
+                    };
+                    // The shortest side sliced, in quarter pixels from 8σ.
+                    for radii in [[0.0; 4], [6.0, 18.0, 27.0, 3.0]] {
+                        let short = (0..4000)
+                            .map(|q| 8.0 * sd + q as f64 * 0.25)
+                            .find(|&v| slice_plan(&shape(v, radii)).is_some())
+                            .expect("some size slices");
+                        assert!(slice_plan(&shape(short - 0.25, radii)).is_none());
+                        check(&shape(short, radii));
+                        check(&shape(short + 0.5, radii));
+                    }
+                    // The roundest corner sliced on a box 12σ across,
+                    // alone and on all four corners.
+                    let short = (12.0 * sd).round();
+                    for one in [true, false] {
+                        let radii = |r: f32| if one { [0.0, r, 0.0, 0.0] } else { [r; 4] };
+                        let r = (0..4000)
+                            .map(|q| q as f32 * 0.25)
+                            .take_while(|&r| slice_plan(&shape(short, radii(r))).is_some())
+                            .last()
+                            .expect("a square corner slices");
+                        assert!(r > 0.0, "blur {blur}");
+                        check(&shape(short, radii(r)));
+                    }
+                }
+            }
+        }
+        eprintln!("{cases} cases at the bound; worst {worst:?}");
     }
 }

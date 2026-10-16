@@ -2043,9 +2043,13 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   (a square corner's field padded past its edges) and a corner tile of
   the quadrant's radius, keyed by blur, colour, radius and the edges'
   sub-pixel phase, never by the size, so a box whose size springs builds
-  nothing after its first frame; a corner tile is cached when a frame
-  after the one that built it asks again, so a springing radius builds
-  two small tiles a frame and evicts nothing; a
+  nothing after its first frame; tiles are at most 2 MB (a larger one
+  leaves the shadow whole); a corner tile is held uncached (up to 4 MB
+  of them, counted in the cache's bytes) and cached when any later
+  frame asks again, every surface's paint and GPU lowering being a frame
+  of the shared cache, so a springing radius builds two small tiles a
+  frame and evicts nothing, and a still one is built once however many
+  surfaces paint; a
   text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
   change that only swaps glyphs damages those glyphs (a clock tick
   repaints its last digit), and a node's border along its box keeps
