@@ -4305,7 +4305,8 @@ and the connection):
     through one call each in `flatten` (the target's fill) and the two
     places a surface's overhang is set (`specs.rs`, `layout_pass.rs`).
     A clip group open above the target takes in its fillets and the
-    square corners they meet (`fillet::corners`), and the group's other
+    square corners they meet at the corners its box reaches, bounded by
+    that box (`fillet::corners`), and the group's other
     items are wrapped in clips of the box again when it closes
     (`Flattener::let_fillets_through`, `hold_to_box`; fillet-clip).
   - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint

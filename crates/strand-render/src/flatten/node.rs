@@ -794,7 +794,7 @@ impl<'a> Flattener<'a> {
                 // the clips above it let through (fillet-clip).
                 let path = crate::fillet::path(frame, r, f.edge);
                 let reach = cover(path.bounding_box()).union(phys);
-                fillets = self.let_fillets_through(frame, r, f.edge, &path);
+                fillets = self.let_fillets_through(frame, r, f.edge);
                 (FillShape::Path(path), reach)
             } else if radii_zero(&r) {
                 (FillShape::Rect(frame), phys)
@@ -1332,6 +1332,7 @@ impl<'a> Flattener<'a> {
                 self.marker(Item::PopClip);
             }
         }
+        let before_light = self.out.items.len();
         if let Some(effects) = text_stroke
             && let Some((bounds, effects)) = crate::effects::light::under_content(
                 &mut self.out.items,
@@ -1359,6 +1360,7 @@ impl<'a> Flattener<'a> {
             crate::layers::hash_effects(&mut sig, &effects);
             ink = ink.union(bounds);
         }
+        self.shift_fillet_fill(content_start, self.out.items.len() - before_light);
         // An input's caret, over its text.
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
             self.caret(
@@ -1582,6 +1584,7 @@ impl<'a> Flattener<'a> {
             self.open_clips.push(super::OpenClip {
                 item: i,
                 xform: self.xform,
+                frame,
                 radius: [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
                     .into_iter()
                     .fold(0.0, f64::max),
@@ -1692,25 +1695,30 @@ impl<'a> Flattener<'a> {
     /// (fillet-clip) The `attach:` target about to draw its fill `fill`
     /// in `frame` with radii `r`: each clip above it (open, between its
     /// `PushClip` and `PopClip`) takes in its fillets and the square
-    /// corners they meet ([`crate::fillet::corners`]), so its fill shows
+    /// corners they meet at the target's corners its box reaches, bounded
+    /// by that box ([`crate::fillet::corners`]), so its fill shows
     /// there past a clip that holds it to its box; once the clip's group
     /// is drawn, the rest of it is held to the box (`hold_to_box`).
     /// Returns the pixels they cover (none under no clip, where its
     /// fill's own ink is enough).
-    fn let_fillets_through(
-        &mut self,
-        frame: kurbo::Rect,
-        r: RoundedRectRadii,
-        edge: Edge,
-        fill: &BezPath,
-    ) -> Rect {
+    fn let_fillets_through(&mut self, frame: kurbo::Rect, r: RoundedRectRadii, edge: Edge) -> Rect {
         let mut covered: Option<kurbo::Rect> = None;
+        if self.xform.determinant().abs() <= 1e-12 {
+            return Rect::default();
+        }
+        // The fill's item: the next one pushed.
+        let at = self.out.items.len();
         for open in &mut self.open_clips {
             // Each clip's path is in its own group's space.
             if open.xform.determinant().abs() <= 1e-12 {
                 continue;
             }
-            let corners = crate::fillet::corners(frame, r, edge, open.radius);
+            // Its box and radius in the target's space: what it lets
+            // through is bounded by its box.
+            let to_target = self.xform.inverse() * open.xform;
+            let clip_box = to_target.transform_rect_bbox(open.frame);
+            let side = open.radius * to_target.determinant().abs().sqrt();
+            let corners = crate::fillet::corners(frame, r, edge, side, clip_box);
             for c in &corners {
                 let b = c.bounding_box();
                 covered = Some(covered.map_or(b, |a| a.union(b)));
@@ -1737,10 +1745,20 @@ impl<'a> Flattener<'a> {
         let Some(covered) = covered else {
             return Rect::default();
         };
-        self.fillet_fill = Some(fill.clone());
+        self.fillet_fill = Some(at);
         map_rect(self.xform, cover(covered))
             .intersect(self.surface)
             .unwrap_or_default()
+    }
+
+    /// (fillet-clip) `n` items went in before item `at`: the fillet
+    /// target's fill, when it is at or past `at`, moved with them.
+    fn shift_fillet_fill(&mut self, at: usize, n: usize) {
+        if let Some(k) = &mut self.fillet_fill
+            && at <= *k
+        {
+            *k += n;
+        }
     }
 
     /// (fillet-clip) The clip group `open` closing: when the fillet
@@ -1758,11 +1776,15 @@ impl<'a> Flattener<'a> {
         };
         let start = open.item + 1;
         let end = self.out.items.len();
-        let Some(fill) = self.fillet_fill.as_ref().and_then(|p| {
-            (start..end).find(|&k| {
-                matches!(&self.out.items[k].item,
-                    Item::Fill { shape: FillShape::Path(q), .. } if q == p)
-            })
+        let Some(fill) = self.fillet_fill.filter(|&k| {
+            (start..end).contains(&k)
+                && matches!(
+                    self.out.items[k].item,
+                    Item::Fill {
+                        shape: FillShape::Path(_),
+                        ..
+                    }
+                )
         }) else {
             return;
         };
@@ -1867,6 +1889,10 @@ impl<'a> Flattener<'a> {
                 *k += inserts.iter().filter(|(at, _)| *at <= old).count();
             }
         }
+        if let Some(k) = &mut self.fillet_fill {
+            let old = *k;
+            *k += inserts.iter().filter(|(at, _)| *at <= old).count();
+        }
         let tail: Vec<DisplayItem> = self.out.items.drain(start..).collect();
         let mut inserts = inserts.into_iter().peekable();
         for (k, d) in (start..).zip(tail) {
@@ -1934,6 +1960,7 @@ impl<'a> Flattener<'a> {
             origin.y + pixmap.height() as f64,
         );
         let bounds = map_rect(self.xform, phys);
+        self.shift_fillet_fill(at, 1);
         self.out.items.insert(
             at,
             DisplayItem {

@@ -294,6 +294,11 @@ struct Clipped {
     nested: bool,
     /// The card's paint, `#89b4fa` when unset.
     bg: Option<&'static str>,
+    /// The stack's size, smaller than the card it holds (the panel
+    /// stays 300×100).
+    stack: Option<(f32, f32)>,
+    /// The card's `x:` in the stack.
+    card_x: f32,
 }
 
 fn overflowing(b: &mut Builder, parent: NodeId, top: f32, bg: &str) {
@@ -318,11 +323,16 @@ fn overflowing(b: &mut Builder, parent: NodeId, top: f32, bg: &str) {
 
 fn clipped_card(o: Clipped) -> (SceneDiff, NodeId) {
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Panel, None, vec![(Prop::Attach, kw("top"))]);
+    let mut panel = vec![(Prop::Attach, kw("top"))];
+    if o.stack.is_some() {
+        panel.extend([(Prop::Width, num(300.0)), (Prop::Height, num(100.0))]);
+    }
+    let root = b.node(NodeKind::Panel, None, panel);
+    let (w, h) = o.stack.unwrap_or((300.0, 100.0));
     let mut props = vec![
         (Prop::Clip, PropValue::Bool(true)),
-        (Prop::Width, num(300.0)),
-        (Prop::Height, num(100.0)),
+        (Prop::Width, num(w)),
+        (Prop::Height, num(h)),
     ];
     if o.radius > 0.0 {
         props.push((Prop::Radius, num(o.radius)));
@@ -344,6 +354,7 @@ fn clipped_card(o: Clipped) -> (SceneDiff, NodeId) {
         NodeKind::Box,
         Some(holder),
         vec![
+            (Prop::X, num(o.card_x)),
             (Prop::Width, num(300.0)),
             (Prop::Height, num(100.0)),
             (Prop::Bg, color(o.bg.unwrap_or("#89b4fa"))),
@@ -524,6 +535,119 @@ fn only_the_cards_fill_passes_the_clip() {
                 card,
                 "{what}: the box shows inside the clip"
             );
+        }
+    }
+}
+
+/// (fillet-clip) A clip lets the card through only at the corners on
+/// the edge it reaches, and no further than its box away from the edge:
+/// a card overflowing a short clip (a toast collapsing), a narrow one,
+/// or one it slid out of (pages, a scroll) leaves no tabs or stray
+/// fillets outside it.
+#[test]
+fn a_clip_lets_through_only_the_corners_it_reaches() {
+    // The card spans x 18..318 (the stack's left side is at 18); the
+    // fillets 0..18 and 318..336.
+    let empty = |buf: &Buffer, what: &str, at: &[(u32, u32)]| {
+        for &(x, y) in at {
+            assert_eq!(alpha(buf, x, y), 0, "{what}: nothing at ({x}, {y})");
+        }
+    };
+    let card = [250, 180, 137, 255];
+    let shows = |buf: &Buffer, what: &str, at: &[(u32, u32)]| {
+        for &(x, y) in at {
+            assert_eq!(buf.px(x, y), card, "{what}: the card at ({x}, {y})");
+        }
+    };
+    for radius in [0.0, 18.0] {
+        // Short: 5 deep. The card and its fillets end where it does.
+        let (diff, _) = clipped_card(Clipped {
+            stack: Some((300.0, 5.0)),
+            radius,
+            ..Clipped::default()
+        });
+        let (_, buf) = render(diff);
+        let what = format!("short, radius {radius}");
+        shows(
+            &buf,
+            &what,
+            &[
+                (150, 2),
+                (18, 2),
+                (317, 2),
+                (16, 3),
+                (10, 1),
+                (319, 3),
+                (325, 1),
+            ],
+        );
+        empty(
+            &buf,
+            &what,
+            &[
+                (150, 12),
+                (23, 12),
+                (312, 12),
+                (17, 10),
+                (318, 10),
+                (3, 2),
+                (332, 2),
+            ],
+        );
+        if radius > 0.0 {
+            assert_matches_ref("fillet_short_clip", &buf, TOLERANCE);
+        }
+        // Narrow: x 18..118. The left corner and its fillet only.
+        let (diff, _) = clipped_card(Clipped {
+            stack: Some((100.0, 100.0)),
+            radius,
+            ..Clipped::default()
+        });
+        let (_, buf) = render(diff);
+        let what = format!("narrow, radius {radius}");
+        shows(&buf, &what, &[(10, 2), (17, 10), (18, 0), (60, 50)]);
+        if radius == 0.0 {
+            shows(&buf, &what, &[(117, 1)]);
+        } else {
+            // The clip's own corner there, which is not the card's,
+            // stays round.
+            assert!(alpha(&buf, 117, 0) < 255, "{what}: round at (117, 0)");
+        }
+        empty(
+            &buf,
+            &what,
+            &[
+                (119, 1),
+                (150, 5),
+                (200, 5),
+                (308, 5),
+                (308, 15),
+                (316, 1),
+                (322, 2),
+            ],
+        );
+        // Slid 200 left out of it: x -182..118. The right corner only,
+        // its fillet beside the clip's right side.
+        let (diff, _) = clipped_card(Clipped {
+            stack: Some((100.0, 100.0)),
+            card_x: -200.0,
+            radius,
+            ..Clipped::default()
+        });
+        let (_, buf) = render(diff);
+        let what = format!("slid, radius {radius}");
+        shows(
+            &buf,
+            &what,
+            &[(117, 0), (117, 17), (119, 1), (125, 1), (60, 50)],
+        );
+        empty(
+            &buf,
+            &what,
+            &[(10, 2), (14, 1), (3, 2), (135, 15), (150, 5)],
+        );
+        if radius > 0.0 {
+            assert_matches_ref("fillet_slid_out_of_clip", &buf, TOLERANCE);
         }
     }
 }

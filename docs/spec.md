@@ -289,9 +289,12 @@ filling the monitor, the keyboard always).
   are square, with a fillet of their radius beside each. The fillets
   lie outside that box, and a clip above it (a `clip: true` box holding
   the card, a `scroll`) lets the box's fill through there and at the
-  square corners they meet, a rounded clip too; nothing else passes
-  (what the clip holds before or after the box, under it or in it
-  stays inside the clip's box). A popup's
+  square corners they meet, a rounded clip too, at each of the box's
+  corners on that side that lies on or inside the clip's box, and only
+  as far from the edge as the clip's box reaches (a card overflowing a
+  short or narrow clip, or slid out of it, shows no corners past it);
+  nothing else passes (what the clip holds before or after the box,
+  under it or in it stays inside the clip's box). A popup's
   `attach:` names its own side that touches its anchor (`top` opens
   below it, whatever the bar's edge); a panel's anchors it to that
   screen edge. `attach:` does not move the box: the margin on that side

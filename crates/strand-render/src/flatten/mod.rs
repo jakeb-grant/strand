@@ -621,10 +621,11 @@ struct Flattener<'a> {
     /// outermost first, so the fillet target's fill passes them at its
     /// fillets (`Flattener::let_fillets_through`).
     open_clips: Vec<OpenClip>,
-    /// (fillet-clip) The fillet target's fill path once drawn under a
-    /// clip: the item each clip it passed finds it by
+    /// (fillet-clip) The fillet target's fill item once drawn under a
+    /// clip it passes, kept in step with the items inserted before it:
+    /// what each such clip holds the rest of its group around
     /// (`Flattener::hold_to_box`).
-    fillet_fill: Option<BezPath>,
+    fillet_fill: Option<usize>,
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,
@@ -636,6 +637,9 @@ struct OpenClip {
     item: usize,
     /// The transform its path is drawn under.
     xform: kurbo::Affine,
+    /// Its box (physical pixels, under `xform`): what it lets the
+    /// target's fillets through is bounded by it.
+    frame: kurbo::Rect,
     /// Its box's largest corner radius (physical pixels): how far its
     /// rounding reaches into the target's square corners.
     radius: f64,
