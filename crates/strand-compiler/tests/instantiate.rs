@@ -3700,6 +3700,60 @@ fn nav_names_a_list_mounted_later() {
     );
 }
 
+/// The node the input's `nav` names on the scene, if it names one.
+fn nav_target(shell: &Shell) -> Option<NodeId> {
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    match shell.scene.prop(input, Prop::Nav) {
+        Some(PropValue::Node(n)) => Some(*n),
+        None | Some(PropValue::Unset) => None,
+        other => panic!("nav is {other:?}"),
+    }
+}
+
+/// The one `list` on the scene, which must hold the text `row`.
+fn the_list(shell: &Shell, row: &str) -> NodeId {
+    let lists = shell.scene.of_kind(NodeKind::List);
+    assert_eq!(lists.len(), 1, "{}", shell.scene.render());
+    let text = shell.text_node(row);
+    assert_eq!(shell.scene.parent(text), Some(lists[0]));
+    lists[0]
+}
+
+/// (nav-remount) `nav:` follows the list it names into a page that
+/// mounts in the same change: an expression that switches to it with the
+/// page (`nav: m == b ? lb : la` beside `pages current: m`) names the
+/// list that change mounted, and a constant `nav: lb` names lb's new
+/// instance each time its page comes back, never the unmounted one.
+#[test]
+fn nav_follows_a_list_that_remounts() {
+    for nav in ["m == b ? lb : la", "lb"] {
+        let src = format!(
+            "enum M {{ a, b }}\nstate q = \"\"\nlet m = q == \"b\" ? b : a\n\
+             panel P {{\n  width: 200\n  height: 100\n  col {{\n    \
+             input {{ nav: {nav} }}\n    pages current: m {{\n      \
+             page a {{ list {{ id: la\n        text \"in-a\" }} }}\n      \
+             page b {{ list {{ id: lb\n        text \"in-b\" }} }}\n    }}\n  }}\n}}\n"
+        );
+        let mut shell = boot(&[("n.strand", src.as_str())], |rt, host| {
+            screens(rt, host, &["DP-1"])
+        });
+        shell.flush();
+        let la = the_list(&shell, "in-a");
+        let on_a = |la| (nav != "lb").then_some(la);
+        assert_eq!(nav_target(&shell), on_a(la), "{nav}: at boot");
+        for round in 0..3 {
+            shell.inst.set_value("n", "q", Value::text("b")).unwrap();
+            shell.flush();
+            let lb = the_list(&shell, "in-b");
+            assert_eq!(nav_target(&shell), Some(lb), "{nav}, round {round}: on b");
+            shell.inst.set_value("n", "q", Value::text("")).unwrap();
+            shell.flush();
+            let la = the_list(&shell, "in-a");
+            assert_eq!(nav_target(&shell), on_a(la), "{nav}, round {round}: on a");
+        }
+    }
+}
+
 /// Typing into the launcher's `input` is a two-way write of its `text`;
 /// `open: <-> open` takes the `false` Escape writes.
 #[test]

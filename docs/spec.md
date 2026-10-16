@@ -835,11 +835,16 @@ filling the monitor, the keyboard always).
   `propagate()` in a handler passes the event on to the next enclosing
   handler.
 - **`nav: id`** on an `input` routes arrow keys to the list with that
-  `id`; Return activates the selected row (`on activate`). The selected
-  row is scrolled into view as little as it takes (to its top if it is
-  taller than the list's view), and kept in view until the pointer
-  scrolls the list: when the list's view changes size, the row is
-  brought into view again from where the view was before it was
+  `id`; Return activates the selected row (`on activate`). It names the
+  list as it is once each change is done: one that mounts later (in an
+  `if` that turns true), in the same change that points `nav` at it
+  (`nav: m == b ? lb : la` beside `pages current: m`), or again when its
+  page comes back, gets the keys, its first row selected; while it is
+  not mounted the keys go to no list (decisions.md nav-remount). The
+  selected row is scrolled into view as little as it takes (to its top
+  if it is taller than the list's view), and kept in view until the
+  pointer scrolls the list: when the list's view changes size, the row
+  is brought into view again from where the view was before it was
   selected, so a list laid out shorter than its row (a filtered list
   whose height follows its rows, back from no results) shows its first
   rows again once it grows (decisions.md list-scroll-regrow).
