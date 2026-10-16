@@ -794,7 +794,7 @@ impl<'a> Flattener<'a> {
                 // the clips above it let through (fillet-clip).
                 let path = crate::fillet::path(frame, r, f.edge);
                 let reach = cover(path.bounding_box()).union(phys);
-                fillets = self.let_fillets_through(frame, r, f.edge);
+                fillets = self.let_fillets_through(frame, r, f.edge, &path);
                 (FillShape::Path(path), reach)
             } else if radii_zero(&r) {
                 (FillShape::Rect(frame), phys)
@@ -1579,7 +1579,14 @@ impl<'a> Flattener<'a> {
                 .unwrap_or_default();
             let i = self.marker(Item::PushClip(box_path));
             clip_group = Some(i);
-            self.open_clips.push((i, self.xform));
+            self.open_clips.push(super::OpenClip {
+                item: i,
+                xform: self.xform,
+                radius: [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+                    .into_iter()
+                    .fold(0.0, f64::max),
+                held: None,
+            });
         }
         // (M4) A merge's goo goes under its children, once they are
         // drawn (`crate::effects::goo`): its distance and their colours.
@@ -1638,7 +1645,9 @@ impl<'a> Flattener<'a> {
             self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
         }
         if let Some(i) = clip_group {
-            self.open_clips.pop();
+            if let Some(open) = self.open_clips.pop() {
+                self.hold_to_box(open);
+            }
             self.out.items[i].bounds = children;
             self.marker(Item::PopClip);
         }
@@ -1680,47 +1689,193 @@ impl<'a> Flattener<'a> {
         subtree
     }
 
-    /// (fillet-clip) The `attach:` target drawn in `frame` with radii
-    /// `r`: each clip above it (open, between its `PushClip` and
-    /// `PopClip`) takes in its fillets beside its box, so they show
-    /// past a clip that holds it to its box while what else that clip
-    /// holds stays inside. Returns the pixels the fillets cover (none
-    /// under no clip, where its fill's own ink is enough).
-    fn let_fillets_through(&mut self, frame: kurbo::Rect, r: RoundedRectRadii, edge: Edge) -> Rect {
-        if self.open_clips.is_empty() {
-            return Rect::default();
-        }
-        let wedges = crate::fillet::wedges(frame, r, edge);
-        let Some(covered) = wedges
-            .iter()
-            .map(|w| w.bounding_box())
-            .reduce(|a, b| a.union(b))
-        else {
-            return Rect::default();
-        };
-        for &(i, at) in &self.open_clips {
+    /// (fillet-clip) The `attach:` target about to draw its fill `fill`
+    /// in `frame` with radii `r`: each clip above it (open, between its
+    /// `PushClip` and `PopClip`) takes in its fillets and the square
+    /// corners they meet ([`crate::fillet::corners`]), so its fill shows
+    /// there past a clip that holds it to its box; once the clip's group
+    /// is drawn, the rest of it is held to the box (`hold_to_box`).
+    /// Returns the pixels they cover (none under no clip, where its
+    /// fill's own ink is enough).
+    fn let_fillets_through(
+        &mut self,
+        frame: kurbo::Rect,
+        r: RoundedRectRadii,
+        edge: Edge,
+        fill: &BezPath,
+    ) -> Rect {
+        let mut covered: Option<kurbo::Rect> = None;
+        for open in &mut self.open_clips {
             // Each clip's path is in its own group's space.
-            if at.determinant().abs() <= 1e-12 {
+            if open.xform.determinant().abs() <= 1e-12 {
                 continue;
             }
-            let to = at.inverse() * self.xform;
-            let Item::PushClip(clip) = &mut self.out.items[i].item else {
+            let corners = crate::fillet::corners(frame, r, edge, open.radius);
+            for c in &corners {
+                let b = c.bounding_box();
+                covered = Some(covered.map_or(b, |a| a.union(b)));
+            }
+            let to = open.xform.inverse() * self.xform;
+            let Item::PushClip(clip) = &mut self.out.items[open.item].item else {
                 continue;
             };
+            if corners.is_empty() {
+                continue;
+            }
+            open.held.get_or_insert_with(|| clip.clone());
             // Wound like the clip's own box, so the union has no seam
-            // where a fillet meets it.
+            // where a corner meets it.
             let along = clip.area() >= 0.0;
-            for w in &wedges {
-                let mut w = to * w.clone();
-                if (w.area() >= 0.0) != along {
-                    w = w.reverse_subpaths();
+            for c in corners {
+                let mut c = to * c;
+                if (c.area() >= 0.0) != along {
+                    c = c.reverse_subpaths();
                 }
-                clip.extend(w.iter());
+                clip.extend(c.iter());
             }
         }
+        let Some(covered) = covered else {
+            return Rect::default();
+        };
+        self.fillet_fill = Some(fill.clone());
         map_rect(self.xform, cover(covered))
             .intersect(self.surface)
             .unwrap_or_default()
+    }
+
+    /// (fillet-clip) The clip group `open` closing: when the fillet
+    /// target's fill widened it ([`Self::let_fillets_through`]),
+    /// everything else the group draws is held to the clip's box again,
+    /// so only that fill passes it. Each run of items around the fill
+    /// that opens no group the fill is drawn in (what is drawn before
+    /// the fill, the target's own content after it, what follows) is
+    /// wrapped in a clip of the box, in the transform it is drawn under;
+    /// the groups the fill is drawn in (its ancestors' and its own
+    /// opacity, transform, layers, clips) keep their order.
+    fn hold_to_box(&mut self, open: super::OpenClip) {
+        let Some(held) = open.held else {
+            return;
+        };
+        let start = open.item + 1;
+        let end = self.out.items.len();
+        let Some(fill) = self.fillet_fill.as_ref().and_then(|p| {
+            (start..end).find(|&k| {
+                matches!(&self.out.items[k].item,
+                    Item::Fill { shape: FillShape::Path(q), .. } if q == p)
+            })
+        }) else {
+            return;
+        };
+        // The runs to hold: (first item, end, the transform in force).
+        let mut runs: Vec<(usize, usize, kurbo::Affine)> = Vec::new();
+        // The groups open at the fill, each with the transform before it.
+        let mut path: Vec<(usize, kurbo::Affine)> = Vec::new();
+        let mut cur = open.xform;
+        for k in start..fill {
+            match &self.out.items[k].item {
+                Item::PushTransform(a) => {
+                    path.push((k, cur));
+                    cur = *a;
+                }
+                Item::PushClip(_) | Item::PushOpacity(..) | Item::PushLayer(_) => {
+                    path.push((k, cur));
+                }
+                Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
+                    if let Some((_, before)) = path.pop() {
+                        cur = before;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut from = start;
+        for &(k, before) in &path {
+            runs.push((from, k, before));
+            from = k + 1;
+        }
+        runs.push((from, fill, cur));
+        // After the fill: each pop at its depth closes a group it is
+        // drawn in, innermost first.
+        let mut from = fill + 1;
+        let mut depth = 0usize;
+        for k in fill + 1..end {
+            match &self.out.items[k].item {
+                Item::PushClip(_)
+                | Item::PushOpacity(..)
+                | Item::PushTransform(_)
+                | Item::PushLayer(_) => depth += 1,
+                Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
+                    if depth > 0 {
+                        depth -= 1;
+                    } else {
+                        runs.push((from, k, cur));
+                        if let Some((_, before)) = path.pop() {
+                            cur = before;
+                        }
+                        from = k + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        runs.push((from, end, cur));
+        // The clips to insert, by the item they go before.
+        let mut inserts: Vec<(usize, DisplayItem)> = Vec::new();
+        for (a, b, at) in runs {
+            if a >= b || at.determinant().abs() <= 1e-12 {
+                continue;
+            }
+            let bounds = self.out.items[a..b]
+                .iter()
+                .filter(|d| {
+                    !matches!(
+                        d.item,
+                        Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer
+                    )
+                })
+                .fold(Rect::default(), |u, d| u.union(d.bounds));
+            let to = at.inverse() * open.xform;
+            let clip = if to == kurbo::Affine::IDENTITY {
+                held.clone()
+            } else {
+                to * held.clone()
+            };
+            inserts.push((
+                a,
+                DisplayItem {
+                    item: Item::PushClip(clip),
+                    bounds,
+                },
+            ));
+            inserts.push((
+                b,
+                DisplayItem {
+                    item: Item::PopClip,
+                    bounds: self.surface,
+                },
+            ));
+        }
+        if inserts.is_empty() {
+            return;
+        }
+        // (The runs are in order, so the inserts are.)
+        #[cfg(feature = "gpu")]
+        for want in &mut self.out.passes {
+            use crate::renderer::backend::PassInput;
+            if let PassInput::Group(k) | PassInput::Behind(k) = &mut want.input {
+                let old = *k;
+                *k += inserts.iter().filter(|(at, _)| *at <= old).count();
+            }
+        }
+        let tail: Vec<DisplayItem> = self.out.items.drain(start..).collect();
+        let mut inserts = inserts.into_iter().peekable();
+        for (k, d) in (start..).zip(tail) {
+            while let Some((_, i)) = inserts.next_if(|(at, _)| *at == k) {
+                self.out.items.push(i);
+            }
+            self.out.items.push(d);
+        }
+        self.out.items.extend(inserts.map(|(_, i)| i));
     }
 
     /// (M4) Inserts `merge` node `node`'s goo at item `at` (under its

@@ -4304,6 +4304,10 @@ and the connection):
     it, grows the overhang along the edge and drops it past the edge,
     through one call each in `flatten` (the target's fill) and the two
     places a surface's overhang is set (`specs.rs`, `layout_pass.rs`).
+    A clip group open above the target takes in its fillets and the
+    square corners they meet (`fillet::corners`), and the group's other
+    items are wrapped in clips of the box again when it closes
+    (`Flattener::let_fillets_through`, `hold_to_box`; fillet-clip).
   - Blur ladder (`blur.rs`, `manager/effect.rs`): after each paint
     `Painter::blur_region` becomes a logical `wl_region`
     (`blur::region_rects`: inside every rounded shape, rounded inward,

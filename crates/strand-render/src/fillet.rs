@@ -17,8 +17,8 @@
 //! (fillet-clip) The fillets lie outside the target's box, so outside a
 //! clip above it that holds it to its box (a `clip: true` stack around
 //! the card, a scroll, a box whose size springs): each such clip lets
-//! the target's fillets through ([`wedges`]), and what else it holds
-//! stays inside its box.
+//! the target's fill through at its fillets and the square corners they
+//! meet ([`corners`]), and what else it holds stays inside its box.
 
 use strand_scene::{Edge, Insets, LogicalRect, NodeId, NodeKind, Prop, PropValue, TokenScope};
 use vello_cpu::kurbo::{BezPath, Point, Rect, RoundedRectRadii};
@@ -231,13 +231,15 @@ pub(crate) fn path(frame: Rect, r: RoundedRectRadii, edge: Edge) -> BezPath {
     p
 }
 
-/// The fillets alone: the concave regions [`path`] adds beside the
-/// target's corners on `edge`, outside `frame`, one closed subpath each
-/// (none for a square corner).
-pub(crate) fn wedges(frame: Rect, r: RoundedRectRadii, edge: Edge) -> Vec<BezPath> {
-    let len = match edge {
-        Edge::Top | Edge::Bottom => frame.width(),
-        Edge::Left | Edge::Right => frame.height(),
+/// What a clip above the target lets through (fillet-clip): at each of
+/// its corners on `edge` with a fillet, that fillet (the concave region
+/// [`path`] adds outside `frame`) and the square corner it meets, `side`
+/// on a side but at least the fillet's radius, inside `frame`; one
+/// closed subpath each (none for a square corner).
+pub(crate) fn corners(frame: Rect, r: RoundedRectRadii, edge: Edge, side: f64) -> Vec<BezPath> {
+    let (len, depth) = match edge {
+        Edge::Top | Edge::Bottom => (frame.width(), frame.height()),
+        Edge::Left | Edge::Right => (frame.height(), frame.width()),
     };
     let (a, b) = match edge {
         Edge::Top => (r.top_left, r.top_right),
@@ -253,28 +255,34 @@ pub(crate) fn wedges(frame: Rect, r: RoundedRectRadii, edge: Edge) -> Vec<BezPat
             Edge::Right => Point::new(frame.x1 - v, frame.y0 + u),
         }
     };
+    // The square corner: `side`, at least the radius, within the box.
+    let square = |radius: f64| (side.max(radius).min(len).min(depth).max(0.0), radius);
     let k = KAPPA;
     let mut out = Vec::new();
-    // The start fillet: from the box's corner along the edge to its tip,
-    // back along the arc centred at (-a, a), up the box's side.
+    // The start fillet, centred at (-a, a): along the edge from its tip
+    // over the square corner, round the square, up the box's side to
+    // the fillet and along its arc back to the tip.
     if a > 0.0 {
+        let (s, a) = square(a);
         let mut p = BezPath::new();
-        p.move_to(map(0.0, 0.0));
-        p.line_to(map(-a, 0.0));
-        p.curve_to(map(-a + k * a, 0.0), map(0.0, a - k * a), map(0.0, a));
+        p.move_to(map(-a, 0.0));
+        p.line_to(map(s, 0.0));
+        p.line_to(map(s, s));
+        p.line_to(map(0.0, s));
+        p.line_to(map(0.0, a));
+        p.curve_to(map(0.0, a - k * a), map(-a + k * a, 0.0), map(-a, 0.0));
         p.close_path();
         out.push(p);
     }
-    // The end fillet, centred at (len + b, b).
+    // The end fillet, centred at (len + b, b), the same way round.
     if b > 0.0 {
+        let (s, b) = square(b);
         let mut p = BezPath::new();
-        p.move_to(map(len, 0.0));
-        p.line_to(map(len, b));
-        p.curve_to(
-            map(len, b - k * b),
-            map(len + b - k * b, 0.0),
-            map(len + b, 0.0),
-        );
+        p.move_to(map(len - s, 0.0));
+        p.line_to(map(len + b, 0.0));
+        p.curve_to(map(len + b - k * b, 0.0), map(len, b - k * b), map(len, b));
+        p.line_to(map(len, s));
+        p.line_to(map(len - s, s));
         p.close_path();
         out.push(p);
     }
@@ -332,26 +340,53 @@ mod tests {
         assert_eq!(square.bounding_box(), frame);
     }
 
-    /// (fillet-clip) The wedges are what the path adds beside the box:
-    /// inside the path and outside the frame, wherever they are tested.
+    /// (fillet-clip) The corners are what the path adds beside the box
+    /// and the square corners they meet: inside the path and outside
+    /// the frame, or inside both squares' reach of the corner, wherever
+    /// they are tested; the square is at least the fillet's radius.
     #[test]
-    fn the_wedges_are_the_fillets_alone() {
+    fn the_corners_are_the_fillets_and_the_square_corners_they_meet() {
         let frame = Rect::new(20.0, 20.0, 120.0, 70.0);
         let r = RoundedRectRadii::new(10.0, 6.0, 4.0, 8.0);
-        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
-            let whole = path(frame, r, edge);
-            let w = wedges(frame, r, edge);
-            assert_eq!(w.len(), 2, "{edge:?}");
-            for y in 0..90 {
-                for x in 0..140 {
-                    let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-                    let in_wedge = w.iter().any(|p| inside(p, px, py));
-                    let fillet = inside(&whole, px, py) && !frame.contains(Point::new(px, py));
-                    assert_eq!(in_wedge, fillet, "{edge:?} at ({px}, {py})");
+        for side in [0.0, 12.0] {
+            for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+                let whole = path(frame, r, edge);
+                let c = corners(frame, r, edge, side);
+                assert_eq!(c.len(), 2, "{edge:?}");
+                // The corners on the edge, with their radii.
+                let (start, end) = match edge {
+                    Edge::Top => ((20.0, 20.0, 10.0), (120.0, 20.0, 6.0)),
+                    Edge::Bottom => ((20.0, 70.0, 8.0), (120.0, 70.0, 4.0)),
+                    Edge::Left => ((20.0, 20.0, 10.0), (20.0, 70.0, 8.0)),
+                    Edge::Right => ((120.0, 20.0, 6.0), (120.0, 70.0, 4.0)),
+                };
+                let near = |(cx, cy, rad): (f64, f64, f64), x: f64, y: f64| {
+                    let s = f64::max(side, rad);
+                    (x - cx).abs() < s && (y - cy).abs() < s
+                };
+                for y in 0..90 {
+                    for x in 0..140 {
+                        let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                        let pt = Point::new(px, py);
+                        let in_corner = c.iter().any(|p| inside(p, px, py));
+                        let fillet = inside(&whole, px, py) && !frame.contains(pt);
+                        let square =
+                            frame.contains(pt) && (near(start, px, py) || near(end, px, py));
+                        assert_eq!(
+                            in_corner,
+                            fillet || square,
+                            "{edge:?} side {side} at ({px}, {py})"
+                        );
+                    }
                 }
             }
         }
-        let none = wedges(frame, RoundedRectRadii::from_single_radius(0.0), Edge::Top);
+        let none = corners(
+            frame,
+            RoundedRectRadii::from_single_radius(0.0),
+            Edge::Top,
+            8.0,
+        );
         assert!(none.is_empty());
     }
 }

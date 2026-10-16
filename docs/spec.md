@@ -288,8 +288,10 @@ filling the monitor, the keyboard always).
   that edge with concave fillets: its painted box's corners on that side
   are square, with a fillet of their radius beside each. The fillets
   lie outside that box, and a clip above it (a `clip: true` box holding
-  the card, a `scroll`) lets them through: what else the clip holds
-  stays inside its box. A popup's
+  the card, a `scroll`) lets the box's fill through there and at the
+  square corners they meet, a rounded clip too; nothing else passes
+  (what the clip holds before or after the box, under it or in it
+  stays inside the clip's box). A popup's
   `attach:` names its own side that touches its anchor (`top` opens
   below it, whatever the bar's edge); a panel's anchors it to that
   screen edge. `attach:` does not move the box: the margin on that side

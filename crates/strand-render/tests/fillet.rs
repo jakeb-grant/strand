@@ -276,43 +276,62 @@ fn a_popup_attached_over_its_bar_draws_its_fillets_at_the_edge() {
     assert_matches_ref("fillet_popup_over_bar", &buf, TOLERANCE);
 }
 
-/// `panel { attach: top; stack { clip: true; … box { bg; radius } } }`:
-/// the stack's box clips its content, the card. `under` adds a box the
-/// stack holds before the card, clear of the edge (40 below it) and
-/// reaching 30 past the stack's left side; `nested` puts the card in a
-/// second clipping stack inside the first.
-fn clipped_card(under: bool, nested: bool) -> (SceneDiff, NodeId) {
-    let mut b = Builder::default();
-    let root = b.node(NodeKind::Panel, None, vec![(Prop::Attach, kw("top"))]);
-    let stack = b.node(
-        NodeKind::Stack,
-        Some(root),
+/// `panel { attach: top; stack { clip: true; … box { bg; radius: 18 } } }`
+/// (300×100 each): the stack's box clips its content, the card. The
+/// options add what else the clip holds, each a 60×60 box reaching 30
+/// past the stack's left side.
+#[derive(Clone, Copy, Default)]
+struct Clipped {
+    /// The stack's own radius: a rounded clip.
+    radius: f32,
+    /// A box the stack holds before the card, this far below the edge.
+    under: Option<f32>,
+    /// A box the stack holds after the card, at the edge.
+    over: bool,
+    /// A box the card holds, at the edge.
+    child: bool,
+    /// The card in a second clipping stack inside the first.
+    nested: bool,
+    /// The card's paint, `#89b4fa` when unset.
+    bg: Option<&'static str>,
+}
+
+fn overflowing(b: &mut Builder, parent: NodeId, top: f32, bg: &str) {
+    b.node(
+        NodeKind::Box,
+        Some(parent),
         vec![
-            (Prop::Clip, PropValue::Bool(true)),
-            (Prop::Width, num(300.0)),
-            (Prop::Height, num(100.0)),
+            (Prop::X, num(-30.0)),
+            (
+                Prop::Margin,
+                PropValue::Insets(Insets {
+                    top,
+                    ..Insets::default()
+                }),
+            ),
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(60.0)),
+            (Prop::Bg, color(bg)),
         ],
     );
-    if under {
-        b.node(
-            NodeKind::Box,
-            Some(stack),
-            vec![
-                (Prop::X, num(-30.0)),
-                (
-                    Prop::Margin,
-                    PropValue::Insets(Insets {
-                        top: 40.0,
-                        ..Insets::default()
-                    }),
-                ),
-                (Prop::Width, num(60.0)),
-                (Prop::Height, num(60.0)),
-                (Prop::Bg, color("#f38ba8")),
-            ],
-        );
+}
+
+fn clipped_card(o: Clipped) -> (SceneDiff, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![(Prop::Attach, kw("top"))]);
+    let mut props = vec![
+        (Prop::Clip, PropValue::Bool(true)),
+        (Prop::Width, num(300.0)),
+        (Prop::Height, num(100.0)),
+    ];
+    if o.radius > 0.0 {
+        props.push((Prop::Radius, num(o.radius)));
     }
-    let holder = if nested {
+    let stack = b.node(NodeKind::Stack, Some(root), props);
+    if let Some(top) = o.under {
+        overflowing(&mut b, stack, top, "#f38ba8");
+    }
+    let holder = if o.nested {
         b.node(
             NodeKind::Stack,
             Some(stack),
@@ -327,10 +346,16 @@ fn clipped_card(under: bool, nested: bool) -> (SceneDiff, NodeId) {
         vec![
             (Prop::Width, num(300.0)),
             (Prop::Height, num(100.0)),
-            (Prop::Bg, color("#89b4fa")),
+            (Prop::Bg, color(o.bg.unwrap_or("#89b4fa"))),
             (Prop::Radius, num(18.0)),
         ],
     );
+    if o.child {
+        overflowing(&mut b, card, 0.0, "#a6e3a1");
+    }
+    if o.over {
+        overflowing(&mut b, holder, 0.0, "#f9e2af");
+    }
     (b.diff, card)
 }
 
@@ -341,7 +366,11 @@ fn clipped_card(under: bool, nested: bool) -> (SceneDiff, NodeId) {
 #[test]
 fn a_clip_above_the_card_lets_its_fillets_through() {
     for (under, nested) in [(false, false), (true, false), (true, true)] {
-        let (diff, _) = clipped_card(under, nested);
+        let (diff, _) = clipped_card(Clipped {
+            under: under.then_some(40.0),
+            nested,
+            ..Clipped::default()
+        });
         let (spec, buf) = render(diff);
         assert_eq!((spec.overhang.left, spec.overhang.right), (18.0, 18.0));
         assert_eq!(spec.overhang.top, 0.0);
@@ -362,7 +391,10 @@ fn a_clip_above_the_card_lets_its_fillets_through() {
             assert!(alpha(&buf, 30, 60) == 255, "the box shows inside the clip");
         }
     }
-    let (diff, _) = clipped_card(true, false);
+    let (diff, _) = clipped_card(Clipped {
+        under: Some(40.0),
+        ..Clipped::default()
+    });
     let (_, buf) = render(diff);
     assert_matches_ref("fillet_through_clip", &buf, TOLERANCE);
 }
@@ -371,7 +403,10 @@ fn a_clip_above_the_card_lets_its_fillets_through() {
 /// outside the clip too: its damage takes them in.
 #[test]
 fn a_clipped_cards_fillets_repaint_with_it() {
-    let (diff, card) = clipped_card(false, true);
+    let (diff, card) = clipped_card(Clipped {
+        nested: true,
+        ..Clipped::default()
+    });
     let mut r = renderer();
     assert!(r.apply(diff).is_empty());
     let root = r.tree().roots()[0];
@@ -391,4 +426,104 @@ fn a_clipped_cards_fillets_repaint_with_it() {
         "the fillet took the new paint"
     );
     assert_eq!(buf.px(319, 0), buf.px(150, 50));
+}
+
+/// (fillet-clip) A rounded clip above the card rounds what it holds, but
+/// the card's corners on the edge stay square where its fillets meet
+/// them: no gap opens between a fillet and the card.
+#[test]
+fn a_rounded_clip_keeps_the_cards_corners_on_the_edge_square() {
+    for nested in [false, true] {
+        let (diff, _) = clipped_card(Clipped {
+            radius: 18.0,
+            nested,
+            ..Clipped::default()
+        });
+        let (_, buf) = render(diff);
+        let card = buf.px(150, 50);
+        // The card spans x 18..318; each fillet reaches 18 past it.
+        assert_eq!(buf.px(18, 0), card, "square on the edge");
+        assert_eq!(buf.px(317, 0), card);
+        for x in 10..326 {
+            assert_eq!(buf.px(x, 1), card, "no gap along the edge at x {x}");
+        }
+        for y in 0..18 {
+            assert_eq!(
+                buf.px(18, y),
+                card,
+                "the left side meets its fillet at y {y}"
+            );
+            assert_eq!(buf.px(317, y), card, "so does the right one at y {y}");
+        }
+        assert_eq!(alpha(&buf, 3, 12), 0, "concave: empty by the box's side");
+        assert!(alpha(&buf, 19, 98) < 255, "the far corners stay round");
+        assert!(alpha(&buf, 316, 98) < 255);
+    }
+    let (diff, _) = clipped_card(Clipped {
+        radius: 18.0,
+        ..Clipped::default()
+    });
+    let (_, buf) = render(diff);
+    assert_matches_ref("fillet_through_rounded_clip", &buf, TOLERANCE);
+}
+
+/// (fillet-clip) Only the card's fill passes the clip: a box the clip
+/// holds after the card, one the card holds, and one under a translucent
+/// card, each reaching into a fillet, stay inside the clip's box.
+#[test]
+fn only_the_cards_fill_passes_the_clip() {
+    let cases = [
+        (
+            "over",
+            Clipped {
+                over: true,
+                ..Clipped::default()
+            },
+        ),
+        (
+            "child",
+            Clipped {
+                child: true,
+                ..Clipped::default()
+            },
+        ),
+        (
+            "under a translucent card",
+            Clipped {
+                // A pixel below the edge: one touching it would be the
+                // target.
+                under: Some(1.0),
+                bg: Some("#89b4fa80"),
+                ..Clipped::default()
+            },
+        ),
+        (
+            "over, nested and rounded",
+            Clipped {
+                over: true,
+                nested: true,
+                radius: 18.0,
+                ..Clipped::default()
+            },
+        ),
+    ];
+    for (what, o) in cases {
+        let (diff, _) = clipped_card(o);
+        let (_, buf) = render(diff);
+        // The card alone, clear of the boxes at the left.
+        let card = buf.px(150, 50);
+        // Inside the left fillet, outside the stack (x < 18).
+        for (x, y) in [(10, 2), (14, 1), (16, 5), (17, 10)] {
+            assert_eq!(buf.px(x, y), card, "{what}: the fillet at ({x}, {y})");
+        }
+        // Outside the stack, past the fillet: nothing.
+        assert_eq!(alpha(&buf, 3, 20), 0, "{what}: cut by the clip");
+        if o.over || o.child {
+            assert_ne!(
+                buf.px(30, 30),
+                card,
+                "{what}: the box shows inside the clip"
+            );
+        }
+    }
 }
