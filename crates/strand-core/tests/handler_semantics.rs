@@ -480,6 +480,69 @@ fn on_change_keyed_ignores_a_sink_switch() {
 }
 
 #[test]
+fn on_change_each_judges_each_target_by_its_own_identity() {
+    // on change entry.id, entry.text: the id is compared by value (no
+    // identity), the text beside it re-baselines on a switch; a switch
+    // changes the id, so it runs. on change sink.volume, sink.muted: a
+    // switch moves both, so it does not.
+    #[derive(Clone, PartialEq)]
+    struct Item {
+        id: u32,
+        text: u32,
+    }
+    let rt = Runtime::new();
+    let item = rt.signal(Item { id: 1, text: 10 });
+    let x = rt.signal(0u32);
+    let pair = rt.signal(0u32);
+    let both = rt.signal(0u32);
+    rt.on_change_each(
+        move |rt| {
+            let i = item.get(rt)?;
+            Ok(vec![(None, i.id), (Some(i.id), i.text)])
+        },
+        move |rt, _| pair.update(rt, |n| *n += 1),
+    );
+    rt.on_change_each(
+        move |rt| {
+            let i = item.get(rt)?;
+            Ok(vec![(Some(i.id), i.text), (None, x.get(rt)?)])
+        },
+        move |rt, _| both.update(rt, |n| *n += 1),
+    );
+    rt.flush();
+    item.set(&rt, Item { id: 2, text: 20 }).unwrap();
+    rt.flush();
+    assert_eq!(pair.get(&rt), Ok(1), "the id changed");
+    assert_eq!(both.get(&rt), Ok(0), "the text switched with the item");
+    item.set(&rt, Item { id: 3, text: 30 }).unwrap();
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    assert_eq!(both.get(&rt), Ok(1), "`x` changed in the same tick");
+    item.set(&rt, Item { id: 3, text: 31 }).unwrap();
+    rt.flush();
+    assert_eq!(pair.get(&rt), Ok(3));
+    assert_eq!(both.get(&rt), Ok(2), "the text of the same item");
+    // The debounced form follows the same rule.
+    let later = rt.signal(0u32);
+    rt.on_change_after_each(
+        move |rt| {
+            let i = item.get(rt)?;
+            Ok(vec![(Some(i.id), i.text)])
+        },
+        Duration::from_millis(100),
+        move |rt| later.update(rt, |n| *n += 1),
+    );
+    rt.flush();
+    item.set(&rt, Item { id: 4, text: 40 }).unwrap();
+    rt.flush();
+    assert_eq!(rt.next_deadline(), None, "no countdown on a switch");
+    item.set(&rt, Item { id: 4, text: 41 }).unwrap();
+    rt.flush();
+    rt.tick(rt.now() + Duration::from_millis(100));
+    assert_eq!(later.get(&rt), Ok(1));
+}
+
+#[test]
 fn a_self_waking_task_does_not_spin_the_flush() {
     let rt = Runtime::new();
     let polls = Rc::new(RefCell::new(0u32));

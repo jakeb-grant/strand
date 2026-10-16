@@ -3848,27 +3848,21 @@ impl Ctx {
                     .iter()
                     .flat_map(|(t, k)| std::iter::once(*t).chain(*k))
                     .collect();
+                // Each target with the identity of the item it reads
+                // (`Unit` for one that has none: compared by value), so
+                // a switch re-baselines only the targets it moves.
                 let targets = targets.clone();
                 let (ctx, e) = (self.clone(), env.clone());
-                let track = move |rt: &Runtime| -> Result<Value, Error> {
+                let track = move |rt: &Runtime| -> Result<Vec<(Value, Value)>, Error> {
                     let mut out = Vec::with_capacity(targets.len());
-                    for (t, _) in &targets {
-                        out.push(ctx.eval(rt, *t, &e)?);
+                    for (t, k) in &targets {
+                        let id = match k {
+                            Some(k) => ctx.eval(rt, *k, &e)?.identity(&ctx.vm.prog.types),
+                            None => Value::Unit,
+                        };
+                        out.push((id, ctx.eval(rt, *t, &e)?));
                     }
-                    Ok(Value::list(out))
-                };
-                let keys: Vec<ChunkId> = match &h.event {
-                    Event::Change { targets, .. } => targets.iter().filter_map(|t| t.1).collect(),
-                    _ => Vec::new(),
-                };
-                let (ctx, e) = (self.clone(), env.clone());
-                let key = move |rt: &Runtime| -> Result<Value, Error> {
-                    let mut out = Vec::with_capacity(keys.len());
-                    for k in &keys {
-                        let item = ctx.eval(rt, *k, &e)?;
-                        out.push(item.identity(&ctx.vm.prog.types));
-                    }
-                    Ok(Value::list(out))
+                    Ok(out)
                 };
                 let loc = Rc::new(super::Site {
                     what: "on change".into(),
@@ -3888,7 +3882,7 @@ impl Ctx {
                 let id = match debounce {
                     None => {
                         let id = rt
-                            .on_change_keyed(key, track, move |rt, _| {
+                            .on_change_each(track, move |rt, _| {
                                 start(rt);
                                 Ok(())
                             })
@@ -3907,7 +3901,7 @@ impl Ctx {
                         let d = *d;
                         let (ctx, e) = (self.clone(), env.clone());
                         let owner = rt.current_owner();
-                        let (key, track, start) = (Rc::new(key), Rc::new(track), Rc::new(start));
+                        let (track, start) = (Rc::new(track), Rc::new(start));
                         let current: Rc<
                             Cell<Option<(std::time::Duration, strand_core::Debounced)>>,
                         > = Rc::default();
@@ -3951,10 +3945,9 @@ impl Ctx {
                             if current.get().is_some_and(|(cur, _)| cur == delay) {
                                 return Ok(());
                             }
-                            let (k, t, s) = (key.clone(), track.clone(), start.clone());
+                            let (t, s) = (track.clone(), start.clone());
                             let make = move |rt: &Runtime| {
-                                rt.on_change_after_keyed(
-                                    move |rt| k(rt),
+                                rt.on_change_after_each(
                                     move |rt| t(rt),
                                     delay,
                                     move |rt| {
