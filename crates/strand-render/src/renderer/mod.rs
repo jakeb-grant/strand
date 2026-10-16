@@ -825,6 +825,14 @@ impl Renderer {
         (c.bytes(), c.builds())
     }
 
+    /// Pixels of blurred shadow rendered so far: shadow pixmaps and slice
+    /// tiles built, and the extents of shadows drawn directly (tests: a
+    /// box whose size springs renders none after its first frame;
+    /// decisions.md, shadow-slice).
+    pub fn blurred_shadow_px(&self) -> u64 {
+        self.raster.cache().blurred()
+    }
+
     /// `reduced_motion` (from the system or a setting): every spring,
     /// pose and glide snaps. The global token `motion.reduced: true` turns
     /// it on too.

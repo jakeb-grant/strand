@@ -304,7 +304,17 @@ impl Raster {
         self.cache.begin_frame();
         let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
         let whole = |b: &Rect| b.intersect(window).is_some_and(|b| damage.covers(b));
+        // Whether each open `scale`/`rotate` group transforms (a sliced
+        // shadow draws only on whole pixels).
+        let mut turned: Vec<bool> = Vec::new();
         for d in items {
+            match &d.item {
+                Item::PushTransform(a) => turned.push(*a != Affine::IDENTITY),
+                Item::PopTransform => {
+                    turned.pop();
+                }
+                _ => {}
+            }
             if !touches(&d.bounds) {
                 continue;
             }
@@ -322,16 +332,18 @@ impl Raster {
                     extent,
                     ..
                 } => {
-                    self.cache.shadow_in(
-                        &ShadowShape {
-                            rect: *rect,
-                            radii: *radii,
-                            std_dev: *std_dev,
-                            color: *color,
-                            extent: *extent,
-                        },
-                        whole(&d.bounds),
-                    );
+                    let shape = ShadowShape {
+                        rect: *rect,
+                        radii: *radii,
+                        std_dev: *std_dev,
+                        color: *color,
+                        extent: *extent,
+                    };
+                    let sliced = !turned.last().copied().unwrap_or(false)
+                        && self.cache.shadow_slices(&shape).is_some();
+                    if !sliced && self.cache.shadow_in(&shape, whole(&d.bounds)).is_none() {
+                        self.cache.drew_directly(*extent);
+                    }
                 }
                 _ => {}
             }

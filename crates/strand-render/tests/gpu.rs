@@ -513,6 +513,155 @@ fn shape_masks_and_text_fills_are_drawn_by_the_gpu_like_the_cpu() {
     );
 }
 
+/// The launcher's card at 1.5×: a `w × h` box with corners 18, 18, 32,
+/// 32 and `elevation.xl`'s shadow (0 16px 48px), on a 760 × 560 panel.
+/// Its node and the buffer to paint.
+fn launcher_card(r: &mut Renderer, w: f32, h: f32) -> (NodeId, Buffer) {
+    let scale = Scale::new(180).unwrap();
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(760.0)),
+            (Prop::Height, num(560.0)),
+            (Prop::Bg, color("#e6e9ef")),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+            (Prop::X, num(40.0)),
+            (Prop::Y, num(30.0)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Bg, color("#ffffff")),
+            (
+                Prop::Radius,
+                PropValue::List(vec![num(18.0), num(18.0), num(32.0), num(32.0)]),
+            ),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 16.0,
+                    blur: 48.0,
+                    spread: 0.0,
+                    color: hex("#00000066"),
+                }]),
+            ),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    let spec = r.surface_spec(root).unwrap().clone();
+    let size = scale.physical_size(LogicalSize::new(
+        spec.width.unwrap() + spec.overhang.left + spec.overhang.right,
+        spec.height.unwrap() + spec.overhang.top + spec.overhang.bottom,
+    ));
+    r.attach_surface(S, root);
+    r.configure_surface(S, size, scale);
+    (card, Buffer::new(size.w, size.h, scale))
+}
+
+fn resize(r: &mut Renderer, card: NodeId, w: f32, h: f32) {
+    let mut d = SceneDiff::new();
+    for (prop, v) in [(Prop::Width, w), (Prop::Height, h)] {
+        d.push(SceneOp::SetProp {
+            id: card,
+            prop,
+            value: num(v),
+            transition: Transition::Instant,
+        });
+    }
+    assert!(r.apply(d).is_empty());
+}
+
+/// (shadow-slice) A promoted surface lowers a shadow on whole pixels
+/// from its slice tiles: as the launcher's card resizes, no frame after
+/// the first builds or uploads a pixmap (each frame uploaded a new 3.8
+/// MB shadow before). Needs no device: the frames are only lowered.
+#[test]
+fn a_resizing_shadow_is_lowered_from_the_same_tiles() {
+    let mut r = renderer();
+    let (card, mut buf) = launcher_card(&mut r, 560.0, 380.0);
+    let t0 = Duration::from_secs(1);
+    buf.paint_at(&mut r, S, 0, t0);
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    resize(&mut r, card, 566.0, 383.0);
+    let first = r
+        .paint_gpu(S, t0 + Duration::from_millis(16))
+        .expect("resized");
+    let images = |f: &strand_gpu::Frame| {
+        f.ops
+            .iter()
+            .filter(|op| matches!(op, strand_gpu::Op::Image { .. }))
+            .count()
+    };
+    let builds = r.paint_cache().1;
+    for i in 2..=10 {
+        resize(&mut r, card, 560.0 + 6.0 * i as f32, 380.0 + 3.0 * i as f32);
+        let f = r
+            .paint_gpu(S, t0 + Duration::from_millis(16 * i))
+            .expect("resized");
+        assert!(
+            f.uploads.is_empty(),
+            "frame {i} uploaded {}",
+            f.uploads.len()
+        );
+        assert_eq!(images(&f), images(&first));
+        assert_eq!(r.paint_cache().1, builds, "frame {i} built a pixmap");
+    }
+    assert!(images(&first) >= 8, "drawn from its tiles");
+}
+
+/// (shadow-slice) The sliced shadow the GPU draws matches the CPU's, at
+/// the card's size after a resize.
+#[test]
+fn a_sliced_shadow_on_the_gpu_matches_the_cpu() {
+    let Some(opts) = device() else { return };
+    let mut cpu = renderer();
+    let (_, mut want) = launcher_card(&mut cpu, 600.0, 400.0);
+    want.paint(&mut cpu, S, 0);
+
+    let mut r = renderer();
+    let (card, mut buf) = launcher_card(&mut r, 560.0, 380.0);
+    buf.paint(&mut r, S, 0);
+    let mut host = Host::new(opts);
+    r.promote_now(S);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Attached { .. }));
+    assert_eq!(r.backend(S), Backend::GpuReadback);
+    for (w, h) in [(580.0, 390.0), (600.0, 400.0)] {
+        resize(&mut r, card, w, h);
+        buf.paint(&mut r, S, 0);
+        host.send(&mut r);
+        host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    }
+    buf.pixels.fill(0);
+    let copied = r.gpu_frames_copied();
+    buf.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied + 1, "drawn by the GPU");
+    let (bad, worst) = compare(&buf, &want);
+    let n = (buf.size.w * buf.size.h) as f64;
+    eprintln!("GPU vs CPU: {bad} pixels past {GPU_TOLERANCE}, worst {worst}");
+    if bad as f64 / n > EDGE_SHARE {
+        write_png(
+            &refs_dir().join("gpu_sliced_shadow.actual.png"),
+            buf.size.w,
+            buf.size.h,
+            &buf.to_rgba(),
+        );
+    }
+    assert!(
+        bad as f64 / n <= EDGE_SHARE,
+        "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
+    );
+}
+
 /// No device: a `shader` node keeps its box and draws nothing, the status
 /// says why, and the device is not asked for again within 30 s.
 #[test]

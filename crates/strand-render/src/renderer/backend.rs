@@ -1520,6 +1520,9 @@ impl Renderer {
     ) -> Frame {
         let bounds = Rect::from_size(size);
         let (cache, offscreen) = self.raster.gpu_parts();
+        // A frame of its own: what the last one built uncached (a sliced
+        // shadow's corner tiles) is cached if this one asks again.
+        cache.begin_frame();
         // Groups the CPU filters (blur, colour matrix), drawn whole.
         offscreen.prepare(
             items,
@@ -1811,6 +1814,26 @@ impl Lowering<'_> {
                         color: *color,
                         extent: *extent,
                     };
+                    // Sliced on whole pixels: a box whose size springs
+                    // draws from the same tiles every frame.
+                    let sliced = (cur == Affine::IDENTITY)
+                        .then(|| self.cache.shadow_slices(&shape))
+                        .flatten();
+                    if let Some(sl) = sliced {
+                        self.ops.push(Op::PushClipEvenOdd(clip.clone()));
+                        for p in &sl.parts {
+                            let id = self.uploads.id(&p.pixmap, &mut self.new);
+                            self.ops.push(Op::Image {
+                                rect: p.dest,
+                                image: id,
+                                image_transform: Affine::translate(p.origin),
+                                tint: None,
+                                smooth: false,
+                            });
+                        }
+                        self.ops.push(Op::PopClip);
+                        continue;
+                    }
                     match self.cache.shadow(&shape) {
                         Some(pm) => {
                             let id = self.uploads.id(&pm, &mut self.new);

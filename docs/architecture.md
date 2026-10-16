@@ -713,7 +713,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
   fallback, an offscreen group of what is drawn behind the node.
 - Top-level files beside the directories, among them: `cache.rs`
-  (dithered gradients and blurred shadows drawn once into pixmaps),
+  (dithered gradients and blurred shadows drawn once into pixmaps, a
+  large shadow as size-independent slice tiles),
   `layers.rs` (M4: effect layers as `PushLayer`/`PopLayer`),
   `offscreen.rs` (M4: cached offscreen groups and CPU raster nodes;
   m6-owner-fixes: `offscreen/fade.rs`, fade layers),
@@ -2033,7 +2034,18 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   freed at the next paint or the next `Renderer::update`, whatever woke
   the loop: nothing wakes just to free them, so an idle shell does zero
   work between ticks; a frame loop that stops keeps them, so a surface
-  shown again within `IDLE_FREE` draws from them); a
+  shown again within `IDLE_FREE` draws from them). A shadow on whole
+  pixels (no `scale`/`rotate` above it) whose box is at least 8σ and
+  twice its corners' reach across, with corners vello does not clamp to
+  the box, is drawn from slice
+  tiles instead of a pixmap of its size (shadow-slice,
+  `PaintCache::shadow_slices`, both backends): per quadrant a base tile
+  (a square corner's field padded past its edges) and a corner tile of
+  the quadrant's radius, keyed by blur, colour, radius and the edges'
+  sub-pixel phase, never by the size, so a box whose size springs builds
+  nothing after its first frame; a corner tile is cached when a frame
+  after the one that built it asks again, so a springing radius builds
+  two small tiles a frame and evicts nothing; a
   text node's record keeps its glyph cells (`NodeRecord::glyphs`), so a
   change that only swaps glyphs damages those glyphs (a clock tick
   repaints its last digit), and a node's border along its box keeps

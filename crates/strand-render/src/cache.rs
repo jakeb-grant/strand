@@ -5,7 +5,10 @@
 //!
 //! Every entry is a pure function of its key, and whether a key is
 //! cached at all depends only on the key (its size), so a partial
-//! repaint draws exactly what a full one does.
+//! repaint draws exactly what a full one does. A shadow on whole pixels
+//! whose box is large enough for its blur is drawn from slice tiles that
+//! do not depend on the box's size (`slice_plan`), so a box whose size
+//! springs reuses them on every frame (decisions.md, shadow-slice).
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -69,6 +72,17 @@ fn dither(x: u32, y: u32) -> f32 {
     (BAYER[((y & 7) * 8 + (x & 7)) as usize] as f32 + 0.5) / 64.0 - 0.5
 }
 
+/// Multiple of the standard deviation past which vello's blurred
+/// rounded rect is flat: its erf of 4 is within 3e-6 of 1, under a
+/// thousandth of a level in a u8 channel, so a box this many σ from an
+/// edge draws the same field whatever lies beyond (decisions.md,
+/// shadow-slice).
+const FLAT: f64 = 4.0;
+
+/// Shadows blurred less than this are not sliced: f32 rounding in where
+/// a pixel falls (a part of the box's size) moves a near-step edge.
+const MIN_SLICED_STD_DEV: f32 = 0.25;
+
 #[derive(Debug)]
 struct Entry {
     pixmap: Arc<Pixmap>,
@@ -97,6 +111,14 @@ pub struct PaintCache {
     /// How long an unused entry lives (`IDLE_FREE` unless a test
     /// shortens it).
     idle: Option<Duration>,
+    /// Sliced shadows' corner tiles built uncached, with the frame that
+    /// built them: cached when a later frame asks again (see
+    /// [`PaintCache::shadow_slices`]), dropped when the frame after their
+    /// own does not.
+    recent: HashMap<u64, (u64, Instant, Arc<Pixmap>)>,
+    /// Pixels of blurred shadow rendered into pixmaps (whole shadows and
+    /// tiles), plus the extents frames drew directly (tests).
+    blurred: u64,
 }
 
 /// A blurred rounded rect, relative to the pixmap's origin.
@@ -180,6 +202,288 @@ pub fn shadow_key(s: &ShadowShape) -> u64 {
     h.finish()
 }
 
+/// One tile of a sliced shadow: the blurred field of a box `local`, in
+/// tile pixels, with corner radius `radius`, over a `w × h` pixmap whose
+/// origin is `origin` in item coordinates (whole pixels).
+#[derive(Clone, Debug)]
+struct TileSpec {
+    key: u64,
+    origin: (i64, i64),
+    w: u16,
+    h: u16,
+    local: kurbo::Rect,
+    radius: f32,
+    /// A quadrant's base tile (cached at once), not its corner tile.
+    base: bool,
+}
+
+/// Where one quadrant of a sliced shadow draws from: `area` (whole
+/// pixels, item coordinates) is drawn from `base`, the field of a
+/// square corner padded past its edges, except `corner_area`, drawn from
+/// `corner`, the field of the quadrant's own corner radius.
+#[derive(Clone, Debug)]
+struct QuadPlan {
+    area: [i64; 4],
+    corner_area: [i64; 4],
+    base: TileSpec,
+    corner: TileSpec,
+}
+
+/// A shadow cut into tiles that do not depend on its box's size.
+#[derive(Clone, Debug)]
+struct SlicePlan {
+    quads: [QuadPlan; 4],
+}
+
+/// One axis of one corner: the tile's span `[a, b)` in whole pixels for
+/// an edge at `c` reaching `out` pixels outward and `inner` inward (`low`
+/// for a left or top edge), the edge's place in tile pixels, and the
+/// virtual box's extent along the axis there (`big` inward).
+fn corner_span(c: f64, low: bool, out: i64, inner: i64, big: f64) -> ((i64, i64), (f64, f64)) {
+    let f = c.floor();
+    let (fi, frac) = (f as i64, c - f);
+    if low {
+        let e = frac + out as f64;
+        ((fi - out, fi + inner + 1), (e, e + big))
+    } else {
+        let e = frac + (inner + 1) as f64;
+        ((fi - inner - 1, fi + out + 1), (e - big, e))
+    }
+}
+
+fn tile_key(
+    s: &ShadowShape,
+    corner: usize,
+    radius: Option<f32>,
+    frac: (f64, f64),
+    reach: (i64, i64),
+) -> u64 {
+    let mut h = DefaultHasher::new();
+    3u8.hash(&mut h);
+    corner.hash(&mut h);
+    radius.map(f32::to_bits).hash(&mut h);
+    hash_f64(&mut h, frac.0);
+    hash_f64(&mut h, frac.1);
+    reach.hash(&mut h);
+    s.std_dev.to_bits().hash(&mut h);
+    for c in [s.color.r, s.color.g, s.color.b, s.color.a] {
+        c.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// How a shadow is cut into tiles, or `None` when its field depends on
+/// its box's size (a box under about `2 × FLAT` σ across, or one whose
+/// corners are so round that vello clamps them to the box) or it is too
+/// sharp to slice exactly.
+///
+/// vello's blurred rounded rect (`fill_blurred_rounded_rect`) is a
+/// distance field: at a point `u` outside a vertical edge and `v`
+/// outside a horizontal one (negative inside), past a corner's reach
+/// (`r1 = hypot(r, 2σ)` from each edge) its distance is `v`, `u` or, deep
+/// inside, `max(u, v)`, whatever the radius, and its other terms are
+/// flat for a box at least `2 × FLAT` σ across. So each quadrant is the
+/// field of a square corner (`base`, out to `FLAT` σ inside, padded
+/// beyond: the edges' profiles and the flat middle) with its own corner
+/// tile (`corner`, out to `r1`) over it: tiles keyed by radius, blur,
+/// colour and the edges' sub-pixel phase, never by the size, so a box
+/// whose size springs draws from the same tiles on every frame, and one
+/// whose radius springs builds only its corner tiles. Each quadrant is
+/// the field of its own corner's radius, as [`draw_shadow`] draws it.
+fn slice_plan(s: &ShadowShape) -> Option<SlicePlan> {
+    let sd = s.std_dev;
+    if !(sd.is_finite() && sd >= MIN_SLICED_STD_DEV) {
+        return None;
+    }
+    let r = s.rect;
+    let e = s.extent;
+    if ![r.x0, r.y0, r.x1, r.y1, e.x0, e.y0, e.x1, e.y1]
+        .iter()
+        .all(|v| v.is_finite() && v.abs() < 1e7)
+    {
+        return None;
+    }
+    let (w, h) = (r.width(), r.height());
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let sdf = sd as f64;
+    let (short, long) = (w.min(h), w.max(h));
+    if short < 2.0 * FLAT * sdf {
+        return None;
+    }
+    // vello's terms (`EncodeExt for BlurredRoundedRectangle`): a radius
+    // or `r1` clamped to half the short side, or a scale term short of
+    // flat, follows the box's size.
+    let mut inner_k = [0i64; 4];
+    for (k, &rad) in inner_k.iter_mut().zip(&s.radii) {
+        if !(rad.is_finite() && rad >= 0.0) {
+            return None;
+        }
+        let r1 = rad.hypot(sd * 2.0) as f64;
+        if r1 > 0.5 * short || 0.5 * (long - 0.5 * rad as f64) < FLAT * sdf {
+            return None;
+        }
+        *k = r1.ceil() as i64 + 2;
+    }
+    let out = (2.5 * sdf).ceil() as i64 + 2;
+    let flat = (FLAT * sdf).ceil() as i64 + 2;
+    let px = |a: f64, b: f64| (a.floor() as i64, b.ceil() as i64);
+    let (ex, ey) = (px(e.x0, e.x1), px(e.y0, e.y1));
+    // The quadrants meet between the corners' reach, where every
+    // quadrant's field is the same (the edges' profiles).
+    let reach = |i: usize| flat.max(inner_k[i]) + 1;
+    let split = |lo: f64, hi: f64, a: [usize; 2], b: [usize; 2], c: f64| {
+        let lo = lo.floor() as i64 + reach(a[0]).max(reach(a[1]));
+        let hi = hi.floor() as i64 - reach(b[0]).max(reach(b[1]));
+        (lo <= hi).then(|| (c.round() as i64).clamp(lo, hi))
+    };
+    let mx = split(r.x0, r.x1, [0, 3], [1, 2], r.center().x)?;
+    let my = split(r.y0, r.y1, [0, 1], [3, 2], r.center().y)?;
+    let quad = |i: usize| -> Option<QuadPlan> {
+        let (left, top) = (matches!(i, 0 | 3), matches!(i, 0 | 1));
+        let (cx, cy) = (
+            if left { r.x0 } else { r.x1 },
+            if top { r.y0 } else { r.y1 },
+        );
+        let tile = |radius: Option<f32>, inner: i64| -> Option<TileSpec> {
+            let rad = radius.unwrap_or(0.0);
+            let big = (2 * (inner.max(flat) + out + 8)) as f64 + rad.ceil() as f64;
+            let ((xa, xb), (lx0, lx1)) = corner_span(cx, left, out, inner, big);
+            let ((ya, yb), (ly0, ly1)) = corner_span(cy, top, out, inner, big);
+            let (tw, th) = (u16::try_from(xb - xa).ok()?, u16::try_from(yb - ya).ok()?);
+            if !cacheable(tw as u32, th as u32) {
+                return None;
+            }
+            Some(TileSpec {
+                key: tile_key(
+                    s,
+                    i,
+                    radius,
+                    (cx - cx.floor(), cy - cy.floor()),
+                    (out, inner),
+                ),
+                origin: (xa, ya),
+                w: tw,
+                h: th,
+                local: kurbo::Rect::new(lx0, ly0, lx1, ly1),
+                radius: rad,
+                base: radius.is_none(),
+            })
+        };
+        let base = tile(None, flat)?;
+        let corner = tile(Some(s.radii[i]), inner_k[i])?;
+        // The quadrant: from the extent's edge (or the tiles', past which
+        // the field is zero) to the split.
+        let (qx0, qx1) = if left {
+            (ex.0.max(corner.origin.0), mx)
+        } else {
+            (mx, ex.1.min(corner.origin.0 + corner.w as i64))
+        };
+        let (qy0, qy1) = if top {
+            (ey.0.max(corner.origin.1), my)
+        } else {
+            (my, ey.1.min(corner.origin.1 + corner.h as i64))
+        };
+        let (kx0, kx1) = if left {
+            (qx0, corner.origin.0 + corner.w as i64)
+        } else {
+            (corner.origin.0, qx1)
+        };
+        let (ky0, ky1) = if top {
+            (qy0, corner.origin.1 + corner.h as i64)
+        } else {
+            (corner.origin.1, qy1)
+        };
+        Some(QuadPlan {
+            area: [qx0, qy0, qx1, qy1],
+            corner_area: [kx0.max(qx0), ky0.max(qy0), kx1.min(qx1), ky1.min(qy1)],
+            base,
+            corner,
+        })
+    };
+    Some(SlicePlan {
+        quads: [quad(0)?, quad(1)?, quad(2)?, quad(3)?],
+    })
+}
+
+/// A sliced shadow ready to draw: each part an image placed with its
+/// origin at `origin` (item coordinates), filling `dest`.
+#[derive(Clone, Debug, Default)]
+pub struct Slices {
+    pub parts: Vec<SlicePart>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SlicePart {
+    pub dest: kurbo::Rect,
+    pub pixmap: Arc<Pixmap>,
+    pub origin: (f64, f64),
+}
+
+impl Slices {
+    fn from_plan(
+        plan: &SlicePlan,
+        mut tile: impl FnMut(&TileSpec) -> Option<Arc<Pixmap>>,
+    ) -> Option<Self> {
+        let mut parts = Vec::with_capacity(12);
+        let rect = |[x0, y0, x1, y1]: [i64; 4]| {
+            (x1 > x0 && y1 > y0)
+                .then(|| kurbo::Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64))
+        };
+        for q in &plan.quads {
+            let base = tile(&q.base)?;
+            let corner = tile(&q.corner)?;
+            let [qx0, qy0, qx1, qy1] = q.area;
+            let [kx0, ky0, kx1, ky1] = q.corner_area;
+            let at = |t: &TileSpec| (t.origin.0 as f64, t.origin.1 as f64);
+            if let Some(dest) = rect(q.corner_area) {
+                parts.push(SlicePart {
+                    dest,
+                    pixmap: corner,
+                    origin: at(&q.corner),
+                });
+            }
+            // The rest of the quadrant: the rows beside the corner tile,
+            // then the full-height columns beside it.
+            let (cols, rows) = (
+                if kx0 > qx0 { [qx0, kx0] } else { [kx1, qx1] },
+                if ky0 > qy0 { [qy0, ky0] } else { [ky1, qy1] },
+            );
+            for dest in [
+                rect([kx0, rows[0], kx1, rows[1]]),
+                rect([cols[0], qy0, cols[1], qy1]),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                parts.push(SlicePart {
+                    dest,
+                    pixmap: base.clone(),
+                    origin: at(&q.base),
+                });
+            }
+        }
+        Some(Self { parts })
+    }
+}
+
+/// Draws a sliced shadow into `ctx` (in its current transform, which
+/// must keep pixels whole), only the parts that touch `region`.
+pub fn draw_slices(ctx: &mut RenderContext, slices: &Slices, region: kurbo::Rect) {
+    for p in &slices.parts {
+        let dest = p.dest.intersect(region);
+        if dest.width() <= 0.0 || dest.height() <= 0.0 {
+            continue;
+        }
+        let (paint, t) = image_paint(&p.pixmap, p.origin.0, p.origin.1, false);
+        ctx.set_paint(paint);
+        ctx.set_paint_transform(t);
+        ctx.fill_rect(&dest);
+        ctx.reset_paint_transform();
+    }
+}
+
 /// True if a `w × h` pixmap may be cached.
 pub fn cacheable(w: u32, h: u32) -> bool {
     w > 0 && h > 0 && w <= u16::MAX as u32 && h <= u16::MAX as u32 && {
@@ -207,6 +511,9 @@ impl PaintCache {
     /// Starts a frame: entries used from now on stay until the next.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
+        // Corner tiles the last frame built stay for this one to cache.
+        let frame = self.frame;
+        self.recent.retain(|_, (f, _, _)| *f + 1 >= frame);
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<Pixmap>> {
@@ -234,6 +541,8 @@ impl PaintCache {
         }
         self.seen
             .retain(|_, (_, at)| now.saturating_duration_since(*at) < idle);
+        self.recent
+            .retain(|_, (_, at, _)| now.saturating_duration_since(*at) < idle);
     }
 
     /// How long an unused entry lives.
@@ -246,12 +555,21 @@ impl PaintCache {
         self.idle = Some(idle);
     }
 
-    /// A cached pixmap, without touching the LRU order.
+    /// A cached pixmap, without touching the LRU order (corner tiles
+    /// built uncached by this frame or the last count too: see
+    /// [`Self::shadow_slices`]).
     pub fn peek(&self, key: u64) -> Option<&Arc<Pixmap>> {
-        self.entries.get(&key).map(|e| &e.pixmap)
+        self.entries
+            .get(&key)
+            .map(|e| &e.pixmap)
+            .or_else(|| self.recent.get(&key).map(|(_, _, p)| p))
     }
 
     fn insert(&mut self, key: u64, pixmap: Pixmap) -> Arc<Pixmap> {
+        self.insert_arc(key, Arc::new(pixmap))
+    }
+
+    fn insert_arc(&mut self, key: u64, pixmap: Arc<Pixmap>) -> Arc<Pixmap> {
         let bytes = pixmap.width() as usize * pixmap.height() as usize * 4;
         while self.bytes + bytes > PAINT_CACHE_BYTES {
             let frame = self.frame;
@@ -268,8 +586,6 @@ impl PaintCache {
             }
         }
         self.tick += 1;
-        self.builds += 1;
-        let pixmap = Arc::new(pixmap);
         self.bytes += bytes;
         self.entries.insert(
             key,
@@ -324,6 +640,7 @@ impl PaintCache {
             return None;
         }
         let pm = render_gradient(paint, w, h)?;
+        self.builds += 1;
         Some(self.insert(key, pm))
     }
 
@@ -381,7 +698,73 @@ impl PaintCache {
             return None;
         }
         let pm = render_shadow(s, w as u16, h as u16);
+        self.built(&pm);
         Some(self.insert(key, pm))
+    }
+
+    /// Counts a pixmap of blurred shadow rendered.
+    fn built(&mut self, pm: &Pixmap) {
+        self.builds += 1;
+        self.blurred += pm.width() as u64 * pm.height() as u64;
+    }
+
+    /// Notes that a frame draws a shadow of `extent` directly (tests: see
+    /// [`Self::blurred`]).
+    pub fn drew_directly(&mut self, extent: kurbo::Rect) {
+        let (w, h) = whole_px(&extent);
+        self.blurred += w as u64 * h as u64;
+    }
+
+    /// Pixels of blurred shadow rendered so far: whole pixmaps and slice
+    /// tiles built, and the extents of shadows frames drew directly
+    /// (tests: a box whose size springs renders none after its first
+    /// frame).
+    pub fn blurred(&self) -> u64 {
+        self.blurred
+    }
+
+    /// The tiles of `s` sliced (see `slice_plan`), built as needed, or
+    /// `None` when its field depends on its box's size (draw it whole).
+    /// Each quadrant's base tile is cached at once: it depends on the blur,
+    /// colour and sub-pixel phase only. A corner tile, which also depends
+    /// on its radius, is cached when a frame after the one that built it
+    /// asks for it, so a radius springing frame by frame builds a corner
+    /// tile a frame and never evicts what the cache holds.
+    pub fn shadow_slices(&mut self, s: &ShadowShape) -> Option<Slices> {
+        let plan = slice_plan(s)?;
+        Slices::from_plan(&plan, |t| Some(self.tile(t, s)))
+    }
+
+    /// The tiles of `s` sliced, if this frame or the cache holds all of
+    /// them (the raster's draw, after [`Self::shadow_slices`]).
+    pub fn peek_slices(&self, s: &ShadowShape) -> Option<Slices> {
+        let plan = slice_plan(s)?;
+        Slices::from_plan(&plan, |t| self.peek(t.key).cloned())
+    }
+
+    fn tile(&mut self, t: &TileSpec, s: &ShadowShape) -> Arc<Pixmap> {
+        if let Some(p) = self.get(t.key) {
+            return p;
+        }
+        let frame = self.frame;
+        match self.recent.get(&t.key) {
+            Some((f, _, p)) if *f == frame => return p.clone(),
+            Some(_) => {
+                if let Some((_, _, p)) = self.recent.remove(&t.key) {
+                    return self.insert_arc(t.key, p);
+                }
+            }
+            None => {}
+        }
+        let pm = render_tile(t, s);
+        self.built(&pm);
+        if t.base {
+            return self.insert(t.key, pm);
+        }
+        let pm = Arc::new(pm);
+        self.recent
+            .insert(t.key, (frame, Instant::now(), pm.clone()));
+        pm
     }
 }
 
@@ -577,7 +960,11 @@ pub fn draw_shadow(ctx: &mut RenderContext, s: &ShadowShape) {
 
 /// The pixel size of a shadow's pixmap: its extent, out to whole pixels.
 pub fn shadow_size(s: &ShadowShape) -> (u32, u32) {
-    let e = &s.extent;
+    whole_px(&s.extent)
+}
+
+/// The pixel size of `e` out to whole pixels.
+fn whole_px(e: &kurbo::Rect) -> (u32, u32) {
     let span = |a: f64, b: f64| {
         let v = b.ceil() - a.floor();
         if v.is_finite() && v > 0.0 {
@@ -593,14 +980,29 @@ pub fn shadow_size(s: &ShadowShape) -> (u32, u32) {
 /// rounded down.
 fn render_shadow(s: &ShadowShape, w: u16, h: u16) -> Pixmap {
     let (ox, oy) = (s.extent.x0.floor(), s.extent.y0.floor());
+    render_blurred(w, h, |ctx| {
+        ctx.set_transform(Affine::translate((-ox, -oy)));
+        draw_shadow(ctx, s);
+    })
+}
+
+/// Renders one tile of a sliced shadow.
+fn render_tile(t: &TileSpec, s: &ShadowShape) -> Pixmap {
+    render_blurred(t.w, t.h, |ctx| {
+        ctx.set_paint(bgra(s.color));
+        ctx.fill_blurred_rounded_rect(&t.local, t.radius, s.std_dev, false);
+    })
+}
+
+/// Renders what `draw` draws into a `w × h` pixmap.
+fn render_blurred(w: u16, h: u16, draw: impl FnOnce(&mut RenderContext)) -> Pixmap {
     let settings = RenderSettings {
         num_threads: 0,
         ..RenderSettings::default()
     };
     let mut ctx = RenderContext::new_with(w, h, settings);
-    ctx.set_transform(Affine::translate((-ox, -oy)));
     ctx.set_fill_rule(Fill::NonZero);
-    draw_shadow(&mut ctx, s);
+    draw(&mut ctx);
     ctx.flush();
     let mut bytes = vec![0u8; w as usize * h as usize * 4];
     let mut resources = Resources::new();
@@ -894,5 +1296,206 @@ mod tests {
         // the start colour: red, which is in the `b` slot (BGRA).
         let px = pm.sample(60, 34);
         assert!(px.b > 200 && px.r < 60, "{px:?}");
+    }
+
+    /// A shadow as `flatten` makes one: `blur` logical pixels at `scale`
+    /// over a box already in physical pixels.
+    fn cast(rect: kurbo::Rect, radii: [f32; 4], blur: f64, scale: f64, color: &str) -> ShadowShape {
+        let sd = blur * scale / 2.0;
+        let reach = (3.0 * sd).ceil() + 1.0;
+        ShadowShape {
+            rect,
+            radii,
+            std_dev: sd as f32,
+            color: Color::from_hex(color).unwrap(),
+            extent: rect.inflate(reach, reach),
+        }
+    }
+
+    /// `s` drawn from its slices into a pixmap the size and origin of its
+    /// whole one.
+    fn sliced(s: &ShadowShape, c: &mut PaintCache) -> Pixmap {
+        let sl = c.shadow_slices(s).expect("sliced");
+        let (w, h) = shadow_size(s);
+        let (ox, oy) = (s.extent.x0.floor(), s.extent.y0.floor());
+        render_blurred(w as u16, h as u16, |ctx| {
+            ctx.set_transform(Affine::translate((-ox, -oy)));
+            draw_slices(ctx, &sl, s.extent.inflate(1.0, 1.0));
+        })
+    }
+
+    /// The largest channel difference and how many pixels differ.
+    fn diff(a: &Pixmap, b: &Pixmap) -> (u8, usize) {
+        assert_eq!((a.width(), a.height()), (b.width(), b.height()));
+        let mut worst = 0u8;
+        let mut n = 0;
+        for (p, q) in a.data().iter().zip(b.data()) {
+            let d = [
+                p.r.abs_diff(q.r),
+                p.g.abs_diff(q.g),
+                p.b.abs_diff(q.b),
+                p.a.abs_diff(q.a),
+            ];
+            let m = d.into_iter().max().unwrap_or(0);
+            worst = worst.max(m);
+            n += (m > 0) as usize;
+        }
+        (worst, n)
+    }
+
+    /// (shadow-slice) A sliced shadow is the direct blurred rect, to
+    /// rounding: uniform and per-corner radii, several sizes, fractional
+    /// edges, at scale 1 and 1.5 (the field is f32 relative to the box,
+    /// so a pixel's place rounds a little differently in a tile than in
+    /// the whole box).
+    #[test]
+    fn sliced_shadows_match_the_direct_blur() {
+        let mut worst = (0u8, 0.0f64, String::new());
+        let mut cases = 0;
+        for scale in [1.0, 1.5] {
+            for (blur, w, h) in [
+                (8.0, 120.0, 90.0),
+                (24.0, 300.0, 200.0),
+                (48.0, 600.0, 420.0),
+            ] {
+                let (w, h) = (w * scale, h * scale);
+                for (fx, fy, fw, fh) in [
+                    (0.0, 0.0, 0.0, 0.0),
+                    (0.5, 0.5, 0.0, 0.0),
+                    (0.25, 0.75, 0.5, 0.25),
+                    (0.7, 0.1, 0.3, 0.9),
+                ] {
+                    let rect = kurbo::Rect::new(
+                        30.0 + fx,
+                        17.0 + fy,
+                        30.0 + fx + w + fw,
+                        17.0 + fy + h + fh,
+                    );
+                    let k = scale as f32;
+                    for radii in [
+                        [0.0; 4],
+                        [12.0 * k; 4],
+                        [18.0 * k, 18.0 * k, 32.0 * k, 32.0 * k],
+                        [0.0, 40.0 * k, 6.5 * k, 9.25 * k],
+                    ] {
+                        let s = cast(rect, radii, blur, scale, "#1e66f566");
+                        let direct =
+                            render_shadow(&s, shadow_size(&s).0 as u16, shadow_size(&s).1 as u16);
+                        let mut c = PaintCache::default();
+                        c.begin_frame();
+                        let lit = direct.data().iter().filter(|p| p.a > 0).count();
+                        assert!(lit > direct.data().len() / 4, "{s:?}");
+                        let (m, n) = diff(&sliced(&s, &mut c), &direct);
+                        let share = n as f64 / direct.data().len() as f64;
+                        if (m, share) > (worst.0, worst.1) {
+                            worst = (m, share, format!("{s:?}"));
+                        }
+                        assert!(
+                            m <= 1 && share < 0.01,
+                            "{m} {n} of {}: {s:?}",
+                            direct.data().len()
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{cases} cases; worst {} ({:.4}% of pixels): {}",
+            worst.0,
+            worst.1 * 100.0,
+            worst.2
+        );
+    }
+
+    /// (shadow-slice) A box whose field follows its size is drawn whole,
+    /// as before: one under `2 × FLAT` σ across, one so round that vello
+    /// clamps its corners to the box (a pill), and an unblurred one.
+    #[test]
+    fn small_round_or_sharp_boxes_are_not_sliced() {
+        let card = kurbo::Rect::new(10.0, 10.0, 410.0, 310.0);
+        let ok = cast(card, [16.0; 4], 24.0, 1.0, "#00000066");
+        assert!(slice_plan(&ok).is_some());
+        // 8σ is the shortest side sliced: 12σ = 144 px here.
+        let narrow = kurbo::Rect::new(10.0, 10.0, 410.0, 150.0);
+        assert!(slice_plan(&cast(narrow, [16.0; 4], 24.0, 1.0, "#00000066")).is_some());
+        let narrower = kurbo::Rect::new(10.0, 10.0, 410.0, 100.0);
+        let s = cast(narrower, [16.0; 4], 24.0, 1.0, "#00000066");
+        assert!(slice_plan(&s).is_none());
+        let mut c = PaintCache::default();
+        c.begin_frame();
+        assert!(c.shadow_slices(&s).is_none());
+        assert!(
+            c.shadow_in(&s, true).is_some(),
+            "drawn from its whole pixmap"
+        );
+        // A pill: r1 = hypot(r, 2σ) is clamped to half its height.
+        let pill = kurbo::Rect::new(10.0, 10.0, 610.0, 160.0);
+        assert!(slice_plan(&cast(pill, [75.0; 4], 24.0, 1.0, "#00000066")).is_none());
+        assert!(slice_plan(&cast(pill, [40.0; 4], 24.0, 1.0, "#00000066")).is_some());
+        // Unblurred: a near-step edge.
+        assert!(slice_plan(&cast(card, [16.0; 4], 0.0, 1.0, "#00000066")).is_none());
+    }
+
+    /// (shadow-slice) A box whose size springs draws every frame from the
+    /// tiles its first frame built; one whose corner radius springs builds
+    /// that corner's tiles each frame without caching them, and caches
+    /// them once a second frame asks for the same radius.
+    #[test]
+    fn a_springing_box_draws_from_the_same_tiles() {
+        let mut c = PaintCache::default();
+        let at = |i: usize, r: f32| {
+            let (w, h) = (450.0 + 7.0 * i as f64, 330.0 + 3.0 * i as f64);
+            cast(
+                kurbo::Rect::new(40.0, 40.0, 40.0 + w, 40.0 + h),
+                [27.0, 27.0, r, r],
+                48.0,
+                1.5,
+                "#00000066",
+            )
+        };
+        c.begin_frame();
+        assert!(c.shadow_slices(&at(0, 48.0)).is_some());
+        let (builds, blurred, bytes) = (c.builds(), c.blurred(), c.bytes());
+        assert_eq!(builds, 8, "four base and four corner tiles");
+        for i in 1..30 {
+            c.begin_frame();
+            assert!(c.shadow_slices(&at(i, 48.0)).is_some());
+            assert_eq!((c.builds(), c.blurred()), (builds, blurred), "frame {i}");
+        }
+        // Only the base tiles were cached at once; the corner tiles a
+        // frame later. The tiles are small next to the whole shadow.
+        assert!(c.bytes() > bytes);
+        let whole = {
+            let (w, h) = shadow_size(&at(29, 48.0));
+            w as usize * h as usize * 4
+        };
+        assert!(
+            c.bytes() < whole,
+            "{} B of tiles, {whole} B whole",
+            c.bytes()
+        );
+        eprintln!("tiles {} B, whole shadow {whole} B", c.bytes());
+        let held = c.bytes();
+        // The bottom radius springs: two corner tiles a frame, uncached.
+        for i in 0..20 {
+            c.begin_frame();
+            assert!(c.shadow_slices(&at(29, 50.5 + 2.5 * i as f32)).is_some());
+            assert_eq!(c.builds(), builds + 2 * (i + 1), "frame {i}");
+            assert_eq!(c.bytes(), held, "a springing radius caches nothing");
+        }
+        // It settles: the next frame caches the tiles the last one built.
+        c.begin_frame();
+        let s = at(29, 50.5 + 2.5 * 19.0);
+        assert!(c.shadow_slices(&s).is_some());
+        assert_eq!(c.builds(), builds + 40);
+        assert!(c.bytes() > held);
+        c.begin_frame();
+        let (m, _) = diff(
+            &sliced(&s, &mut c),
+            &render_shadow(&s, shadow_size(&s).0 as u16, shadow_size(&s).1 as u16),
+        );
+        assert!(m <= 1);
+        assert_eq!(c.builds(), builds + 40, "cached");
     }
 }

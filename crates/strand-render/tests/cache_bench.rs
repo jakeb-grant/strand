@@ -22,6 +22,13 @@
 //! - `large_blur_group_frame_cost`: a blurred group of 700 × 500 at 2×
 //!   (1400 × 1000 px) repainted whole every frame: the offscreen budget
 //!   decides whether it is filtered once or every frame.
+//! - `resizing_shadow_frame_cost` (shadow-slice): the owner's launcher
+//!   card at 1.5× (600 × 420 logical, corners 18, 18, 32, 32, a 0 16px
+//!   48px shadow) resized every frame as a size spring does, each frame
+//!   repainting what changed; then with its bottom radius springing too,
+//!   without its shadow, and still but repainted whole, with and without
+//!   its shadow (what drawing the shadow from a cached pixmap costs).
+//!   Prints the mean, median and 95th percentile frame.
 //! - `reopen_first_frame_cost`: the launcher closed while a bar paints
 //!   on, then opened again: its first three frames' cost, each repainted
 //!   whole (the fallback), with what the caches kept from its last
@@ -232,6 +239,102 @@ fn large_blur_group_frame_cost() {
         r.offscreen_cache().0 / 1024,
         r.offscreen_cache().1
     );
+}
+
+#[test]
+#[ignore = "measurement, not a gate"]
+fn resizing_shadow_frame_cost() {
+    let scale = Scale::new(180).unwrap();
+    let radii = |bottom: f32| PropValue::List(vec![num(18.0), num(18.0), num(bottom), num(bottom)]);
+    // (size springs, radius springs, shadowed)
+    for (resizes, radius_springs, shadowed) in [
+        (true, false, true),
+        (true, true, true),
+        (true, false, false),
+        (false, false, true),
+        (false, false, false),
+    ] {
+        let mut r = renderer();
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Width, num(900.0)),
+                (Prop::Height, num(640.0)),
+                (Prop::Bg, color("#1e1e2e")),
+            ],
+        );
+        let card = b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Place, kw("absolute")),
+                (Prop::X, num(40.0)),
+                (Prop::Y, num(30.0)),
+                (Prop::Width, num(600.0)),
+                (Prop::Height, num(420.0)),
+                (Prop::Bg, color("#313244")),
+                (Prop::Radius, radii(32.0)),
+                (
+                    Prop::Shadow,
+                    if shadowed {
+                        shadow()
+                    } else {
+                        PropValue::Shadow(Vec::new())
+                    },
+                ),
+            ],
+        );
+        assert!(r.apply(b.diff).is_empty());
+        let mut buf = show(&mut r, LAUNCHER, root, 900, 640, scale);
+        buf.paint(&mut r, LAUNCHER, 0);
+        let n = frames();
+        let mut times = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            // A triangle wave of sizes, as a spring swings past its rest.
+            let k = (i % 60) as f32;
+            let k = if k < 30.0 { k } else { 60.0 - k };
+            let mut sets = Vec::new();
+            if resizes {
+                sets.push((Prop::Width, num(560.0 + 4.0 * k)));
+                sets.push((Prop::Height, num(380.0 + 2.0 * k)));
+            }
+            if radius_springs {
+                sets.push((Prop::Radius, radii(32.0 + 0.37 * k)));
+            }
+            let mut d = SceneDiff::new();
+            for (prop, value) in sets {
+                d.push(SceneOp::SetProp {
+                    id: card,
+                    prop,
+                    value,
+                    transition: Transition::Instant,
+                });
+            }
+            assert!(r.apply(d).is_empty());
+            let start = Instant::now();
+            buf.paint(&mut r, LAUNCHER, if resizes { 1 } else { 0 });
+            times.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        times.sort_by(f64::total_cmp);
+        let at = |q: f64| times[((times.len() - 1) as f64 * q).round() as usize];
+        println!(
+            "resizing_shadow_frame_cost ({}): mean {mean:.2} ms, p50 {:.2} ms, p95 {:.2} ms over {n} frames (paint cache {} kB held, {} built)",
+            match (resizes, radius_springs, shadowed) {
+                (false, _, true) => "still, repainted whole",
+                (false, _, false) => "still, repainted whole, no shadow",
+                (_, _, false) => "size, no shadow",
+                (_, false, _) => "size",
+                (_, true, _) => "size and radius",
+            },
+            at(0.5),
+            at(0.95),
+            r.paint_cache().0 / 1024,
+            r.paint_cache().1
+        );
+    }
 }
 
 #[test]

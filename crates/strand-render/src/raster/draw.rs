@@ -12,8 +12,8 @@ use vello_cpu::{Image, ImageSource, PaintType, RenderContext, Tint, TintMode};
 use super::atlas::AtlasMirror;
 use super::paint::{bgra, paint_type};
 use crate::cache::{
-    PaintCache, ShadowShape, draw_shadow, gradient_key, image_paint, render_gradient_part,
-    shadow_key,
+    PaintCache, ShadowShape, draw_shadow, draw_slices, gradient_key, image_paint,
+    render_gradient_part, shadow_key,
 };
 use crate::flatten::{DisplayItem, FillShape, Item};
 use crate::offscreen::{Drawn, layer_key};
@@ -210,8 +210,12 @@ pub(crate) fn draw(
                     color: *color,
                     extent: *extent,
                 };
-                match cache.peek(shadow_key(&shape)) {
-                    Some(pm) => {
+                // Sliced (whole pixels, so only untransformed), else the
+                // whole pixmap, else drawn directly.
+                let sliced = (cur == base).then(|| cache.peek_slices(&shape)).flatten();
+                match (sliced, cache.peek(shadow_key(&shape))) {
+                    (Some(sl), _) => draw_slices(ctx, &sl, region(cur)),
+                    (None, Some(pm)) => {
                         let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
                         let (p, t) = image_paint(pm, ox, oy, cur != base);
                         ctx.set_paint(p);
@@ -224,7 +228,7 @@ pub(crate) fn draw(
                         ));
                         ctx.reset_paint_transform();
                     }
-                    None => draw_shadow(ctx, &shape),
+                    (None, None) => draw_shadow(ctx, &shape),
                 }
                 ctx.pop_clip();
             }

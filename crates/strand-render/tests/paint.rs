@@ -410,7 +410,10 @@ fn shadows_no_frame_used_go_once_idle() {
     let mut buf = render_with(&mut r, diff, Scale::ONE);
     let first = buf.pixels.clone();
     let (bytes, builds) = r.paint_cache();
-    assert!(bytes > 0 && builds == 4, "{bytes} {builds}");
+    // md and lg's 2px layer are sliced (eight tiles each); lg's 24px
+    // layer and xl are drawn whole, their boxes too small for their blur
+    // (decisions.md, shadow-slice).
+    assert!(bytes > 0 && builds == 18, "{bytes} {builds}");
     let mut d = SceneDiff::new();
     d.set(dot, Prop::Bg, color("#ff0000"));
     assert!(r.apply(d).is_empty());
@@ -449,22 +452,26 @@ fn elevation_shadow_lists_are_drawn_and_cached() {
     // Deeper elevations reach further below their box.
     let below = |x: u32| buf.px(x, 85 + 12)[1];
     assert!(below(60) > below(165) && below(165) > below(270));
-    // Every shadow of the three lists is a cached pixmap; repainting the
-    // same frame builds none, and a repaint of part of it matches.
+    // Every shadow of the three lists is a cached pixmap, whole or as
+    // slice tiles (md and lg's 2px layer: eight each; lg's 24px layer and
+    // xl, whose boxes are too small for their blur, whole: decisions.md,
+    // shadow-slice); repainting the same frame builds none, and a repaint
+    // of part of it matches.
     let (bytes, builds) = r.paint_cache();
-    assert_eq!(builds, 4, "md, lg (two shadows) and xl");
+    assert_eq!(builds, 18, "md, lg (two shadows) and xl");
     assert!(bytes > 0 && bytes <= strand_render::PAINT_CACHE_BYTES);
     r.invalidate(SurfaceId(1));
     let mut again = Buffer::new(buf.size.w, buf.size.h, Scale::ONE);
     again.paint(&mut r, SurfaceId(1), 0);
-    assert_eq!(r.paint_cache().1, 4);
+    assert_eq!(r.paint_cache().1, 18);
     assert_eq!(again.pixels, buf.pixels);
     assert_matches_ref("paint_shadows", &buf, TOLERANCE);
 }
 
 /// A shadowed node moved by whole pixels (a sliding toast, a FLIP glide)
 /// reuses its cached shadow: the key is relative to the pixmap's
-/// whole-pixel origin.
+/// whole-pixel origin (sliced, its tiles' keys hold only the edges'
+/// sub-pixel phase).
 #[test]
 fn moved_shadows_reuse_their_pixmap() {
     let mut b = Builder::default();
@@ -488,7 +495,9 @@ fn moved_shadows_reuse_their_pixmap() {
     );
     let mut r = renderer();
     let mut buf = render_with(&mut r, b.diff, Scale::ONE);
-    assert_eq!(r.paint_cache().1, 1);
+    // Sliced: four base and four corner tiles (decisions.md,
+    // shadow-slice).
+    assert_eq!(r.paint_cache().1, 8);
     for i in 1..=10 {
         let mut d = SceneDiff::new();
         d.push(SceneOp::SetProp {
@@ -500,7 +509,7 @@ fn moved_shadows_reuse_their_pixmap() {
         assert!(r.apply(d).is_empty());
         buf.paint(&mut r, SurfaceId(1), 1);
     }
-    assert_eq!(r.paint_cache().1, 1, "one shadow pixmap for every position");
+    assert_eq!(r.paint_cache().1, 8, "one set of tiles for every position");
     // And the moved shadow is the same pixels, 30 px further right.
     let fresh = {
         let mut b = Builder::default();
@@ -525,6 +534,83 @@ fn moved_shadows_reuse_their_pixmap() {
         render(b.diff, Scale::ONE)
     };
     assert_eq!(buf.pixels, fresh.pixels);
+}
+
+/// A card of `w × h` with the launcher's corners (18, 18, 32, 32) and
+/// `elevation`'s shadow, on a `pw × ph` panel.
+fn shadowed_card(elevation: &str, pw: f32, ph: f32, w: f32, h: f32) -> (SceneDiff, NodeId) {
+    let mut b = Builder::default();
+    b.diff.set_tokens(elevation_tokens(), Transition::Instant);
+    let root = panel(&mut b, pw, ph);
+    let card = at(
+        &mut b,
+        root,
+        40.0,
+        30.0,
+        w,
+        h,
+        vec![
+            (Prop::Bg, color("#ffffff")),
+            (
+                Prop::Radius,
+                PropValue::List(vec![num(18.0), num(18.0), num(32.0), num(32.0)]),
+            ),
+            (
+                Prop::Shadow,
+                PropValue::Token(TokenExpr::path(format!("elevation.{elevation}"))),
+            ),
+        ],
+    );
+    (b.diff, card)
+}
+
+/// (shadow-slice) A shadowed card whose size changes every frame (a size
+/// spring, a morph) draws its shadow from the tiles its first frame
+/// built: no frame after it builds a pixmap or blurs a pixel, where each
+/// frame used to build its shadows whole at the new size (or, past 2 MB,
+/// blur them directly). At 1.5×: `elevation.lg` (two shadows, each
+/// under 2 MB whole) on a 300 × 220 card and `elevation.xl` (0 16px 48px,
+/// 3.8 MB whole) on a 600 × 420 one, the launcher's. The last frame
+/// matches the card drawn fresh at that size.
+#[test]
+fn a_resizing_card_draws_its_shadow_from_the_same_tiles() {
+    let scale = Scale::new(180).unwrap();
+    for (elevation, pw, ph, w, h) in [
+        ("lg", 520.0, 400.0, 300.0, 220.0),
+        ("xl", 900.0, 640.0, 600.0, 420.0),
+    ] {
+        let mut r = renderer();
+        let (diff, card) = shadowed_card(elevation, pw, ph, w, h);
+        let mut buf = render_with(&mut r, diff, scale);
+        let (builds, blurred) = (r.paint_cache().1, r.blurred_shadow_px());
+        assert!(builds > 0, "{elevation}: the first frame builds the tiles");
+        let size = |i: usize| (w + 6.0 * i as f32, h + 3.0 * i as f32);
+        for i in 1..=12 {
+            let (w, h) = size(i);
+            let mut d = SceneDiff::new();
+            for (prop, v) in [(Prop::Width, w), (Prop::Height, h)] {
+                d.push(SceneOp::SetProp {
+                    id: card,
+                    prop,
+                    value: num(v),
+                    transition: Transition::Instant,
+                });
+            }
+            assert!(r.apply(d).is_empty());
+            buf.paint(&mut r, SurfaceId(1), 1);
+            assert_eq!(
+                (r.paint_cache().1, r.blurred_shadow_px()),
+                (builds, blurred),
+                "{elevation}: frame {i} built or blurred its shadow again"
+            );
+        }
+        let (w, h) = size(12);
+        let fresh = render(shadowed_card(elevation, pw, ph, w, h).0, scale);
+        assert!(
+            buf.pixels == fresh.pixels,
+            "{elevation}: the resized card differs"
+        );
+    }
 }
 
 fn gradients_scene() -> SceneDiff {
