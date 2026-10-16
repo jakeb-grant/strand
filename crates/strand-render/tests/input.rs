@@ -394,6 +394,118 @@ fn keys_go_to_the_focused_input_and_its_list() {
     assert_eq!(f.router.selected(list), Some(top));
 }
 
+/// (list-scroll-regrow) A launcher's filtered list whose height follows
+/// its rows (`height: n > 0 ? 40 * n : 1`): a query matching nothing
+/// leaves it 1 px tall, and clearing the query brings the rows back with
+/// the first selected. It shows from its first row again: the selection
+/// is revealed while the content-sized surface still has its short
+/// size, and that reveal is placed again once it grows.
+#[test]
+fn a_list_grown_back_from_empty_shows_its_first_row() {
+    use strand_scene::{Color, NodeKind, SceneDiff, SceneOp};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, input, list) = (id(0), id(1), id(2), id(3));
+    let rows = |base: u32, d: &mut SceneDiff| -> Vec<NodeId> {
+        (0..7)
+            .map(|i| {
+                let row = id(base + i);
+                d.create(row, NodeKind::Row, Some(list), i).set(
+                    row,
+                    Prop::Height,
+                    PropValue::Number(40.0),
+                );
+                row
+            })
+            .collect()
+    };
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(input, NodeKind::Input, Some(col), 0)
+        .set(input, Prop::Focus, PropValue::Bool(true))
+        .set(input, Prop::Nav, PropValue::Node(list))
+        .set(input, Prop::Text, PropValue::Text(String::new()))
+        .create(list, NodeKind::List, Some(col), 1)
+        .set(list, Prop::Height, PropValue::Number(200.0));
+    let first = rows(10, &mut d);
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    // The surface takes the panel's height (the compositor's configure).
+    let paint = |r: &mut Renderer| {
+        let h = r.surface_spec(panel).and_then(|s| s.height).unwrap() as u32;
+        let mut px = vec![0u8; 200 * h as usize * 4];
+        let mut t = PaintTarget::new(&mut px, Size::new(200, h), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t);
+    };
+    paint(&mut r);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(first[0]));
+    assert_eq!(r.scroll_offset(list), Some(0.0));
+    // `q = "zzzz"`: no rows, the list 1 px tall, the surface shrunk.
+    let mut d = SceneDiff::new();
+    for row in &first {
+        d.push(SceneOp::Remove {
+            id: *row,
+            window: false,
+        });
+    }
+    d.set(list, Prop::Height, PropValue::Number(1.0)).set(
+        input,
+        Prop::Text,
+        PropValue::Text("zzzz".into()),
+    );
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    paint(&mut r);
+    // `q = ""`: the rows are back and the first is selected, while the
+    // surface still has its short size.
+    let mut d = SceneDiff::new();
+    let back = rows(30, &mut d);
+    d.set(list, Prop::Height, PropValue::Number(200.0)).set(
+        input,
+        Prop::Text,
+        PropValue::Text(String::new()),
+    );
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(back[0]));
+    {
+        let mut px = vec![0u8; 200 * 40 * 4];
+        let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t);
+    }
+    // Its row is taller than the short view: the view shows its top.
+    assert_eq!(
+        r.scroll_offset(list),
+        Some(0.0),
+        "{:?}",
+        r.scroll_state(list)
+    );
+    // Then it grows: the list shows its first row at its top.
+    paint(&mut r);
+    paint(&mut r);
+    assert_eq!(
+        r.scroll_offset(list),
+        Some(0.0),
+        "{:?}",
+        r.scroll_state(list)
+    );
+    let b = r.boxes(s).unwrap();
+    assert_eq!(b.rects[&back[0]].y, b.rects[&list].y);
+}
+
 /// The keyboard back on a surface without a leave first (a popup that
 /// grabbed it closed) keeps the focus where a click had moved it; after
 /// a real leave, focus starts again at the first `focus: true` node.

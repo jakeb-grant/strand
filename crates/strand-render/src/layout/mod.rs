@@ -51,7 +51,9 @@ use list::rows_height;
 pub use list::{
     FLING_DECAY, LAYOUT_OVERSCAN, ListBox, ListWindow, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
-pub(crate) use list::{layout_margin, relayout_list, scrolls_content, translate_under};
+pub(crate) use list::{
+    keep_in_view, layout_margin, relayout_list, scrolls_content, translate_under,
+};
 pub(crate) use text::TextSizes;
 use text::measure_leaf;
 

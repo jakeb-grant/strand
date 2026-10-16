@@ -1791,7 +1791,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   logical pixels (`Renderer::boxes`), `x`/`y` applied at flatten time as
   paint offsets. `Renderer::scroll(surface, point, dy)` scrolls the
   innermost `scroll`/`list` under a point and `scroll_into_view(list,
-  row)` reveals a row; a `list` lays out only the rows in view. Text is
+  row)` reveals a row (the reveal stands in the list's `ScrollState`
+  until the pointer scrolls it, and each layout pass that changes the
+  list's view places it again); a `list` lays out only the rows in
+  view. Text is
   measured from delivered layouts (estimated until the first arrives).
 - **Animation** (`anim/`, on the render thread): the render thread owns
   every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,

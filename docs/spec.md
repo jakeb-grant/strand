@@ -827,7 +827,14 @@ filling the monitor, the keyboard always).
   `propagate()` in a handler passes the event on to the next enclosing
   handler.
 - **`nav: id`** on an `input` routes arrow keys to the list with that
-  `id`; Return activates the selected row (`on activate`).
+  `id`; Return activates the selected row (`on activate`). The selected
+  row is scrolled into view as little as it takes (to its top if it is
+  taller than the list's view), and kept in view until the pointer
+  scrolls the list: when the list's view changes size, the row is
+  brought into view again from where the view was before it was
+  selected, so a list laid out shorter than its row (a filtered list
+  whose height follows its rows, back from no results) shows its first
+  rows again once it grows (decisions.md list-scroll-regrow).
 - **Copy and paste.** A focused `input` copies its selection with
   Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
   at the caret, over the selection, with Ctrl+V or Shift+Insert
