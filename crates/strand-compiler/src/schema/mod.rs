@@ -78,12 +78,15 @@ pub struct PropSchema {
 /// What may contain what.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ElementFlags {
-    /// Takes no children (`text`, `icon`, `slider`).
+    /// Takes no children (`text`, `icon`, `slider`), except an element
+    /// whose `only_in` names it (`letters` in `text`) and the surfaces
+    /// `popup` and `tooltip`.
     pub leaf: bool,
     /// A top-level surface (`bar`, `panel`, `osd`, `lock`); `popup` is an
     /// anchored surface declared inside an element.
     pub surface: bool,
-    /// May only appear directly inside this element (`start` in `split`).
+    /// May only appear directly inside this element (`start` in `split`,
+    /// `letters` in `text`).
     pub only_in: Option<String>,
     /// Accepts any prop starting with `u_` (shader uniforms).
     pub uniforms: bool,

@@ -1,0 +1,11 @@
+// expect: check::misplaced
+// `letters` animates the `text` it is written in, so it goes directly
+// inside one: `text "hi" { letters { … } }`. Written around its text, or
+// on its own, it would animate nothing. One mistake, one diagnostic: the
+// `text` inside a misplaced `letters` is not also reported as its child.
+bar B {
+  letters { text "hello" { y: 2 * wave(1s, phase: index * 0.1) } }
+}
+component Wave {
+  letters { y: 2 }
+}

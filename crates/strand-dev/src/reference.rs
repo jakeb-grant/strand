@@ -318,7 +318,19 @@ fn element_section(o: &mut String, s: &Schema, name: &str, e: &ElementSchema, gr
     let mut notes = Vec::new();
     let f = &e.flags;
     if f.leaf {
-        notes.push("takes no children".to_string());
+        // A leaf still holds what goes only inside it (`letters` in
+        // `text`).
+        let own: Vec<String> = s
+            .elements
+            .iter()
+            .filter(|(_, c)| c.flags.only_in.as_deref() == Some(name))
+            .map(|(n, _)| format!("[{}](#{})", code(n), anchor(n)))
+            .collect();
+        if own.is_empty() {
+            notes.push("takes no children".to_string());
+        } else {
+            notes.push(format!("takes no children but {}", own.join(" and ")));
+        }
     }
     if f.surface && name != "popup" {
         notes.push("is a surface, written at the top level of a file".to_string());
@@ -809,6 +821,53 @@ mod tests {
         for (name, text) in &p {
             for line in text.lines() {
                 assert!(!line.ends_with("|  |"), "{name}: {line}");
+            }
+        }
+    }
+
+    /// An element's section of `elements.md`, up to the next heading.
+    fn section<'p>(page: &'p str, name: &str) -> &'p str {
+        let start = page
+            .find(&format!("### `{name}`\n"))
+            .unwrap_or_else(|| panic!("no section {name}"));
+        let body = &page[start + 4..];
+        &page[start..start + 4 + body.find("\n### ").unwrap_or(body.len())]
+    }
+
+    /// spec.md 6.1: which children an element may hold are schema
+    /// entries, and the reference says them. An element that goes only
+    /// inside another says where, and a leaf that still holds it says so
+    /// rather than "takes no children": `text` holds `letters`, written
+    /// `text "hi" { letters { … } }` (letters-placement).
+    #[test]
+    fn where_an_element_goes_is_on_its_page() {
+        let s = schema().unwrap();
+        let p = pages(&s);
+        let el = &p["elements.md"];
+        let text = section(el, "text");
+        assert!(
+            text.contains("It takes no children but [`letters`](#letters)."),
+            "{text}"
+        );
+        let letters = section(el, "letters");
+        assert!(
+            letters.contains("may appear only directly inside `text`"),
+            "{letters}"
+        );
+        assert!(letters.contains("`text \"hi\" { letters {"), "{letters}");
+        for (name, e) in &s.elements {
+            let Some(parent) = &e.flags.only_in else {
+                continue;
+            };
+            let own = section(el, name);
+            assert!(
+                own.contains(&format!("only directly inside `{parent}`")),
+                "{own}"
+            );
+            if s.elements[parent].flags.leaf {
+                let host = section(el, parent);
+                assert!(host.contains(&format!("[`{name}`](#")), "{host}");
+                assert!(!host.contains("takes no children."), "{host}");
             }
         }
     }

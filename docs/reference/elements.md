@@ -351,13 +351,18 @@ Also every prop and event of [`node`](#node).
 element letters: node
 ```
 
-Animates each letter of its text; `index` is the letter's position.
+Animates each letter of the `text` it is written in:
+`text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }`. Its
+props apply to each drawn letter in turn; `index` is the letter's
+position.
+
+It takes no children; may appear only directly inside `text`.
 
 Also every prop and event of [`node`](#node).
 
 | In scope | Type | |
 | --- | --- | --- |
-| `index` | `int` | The letter's position. |
+| `index` | `int` | The letter's position, from 0. |
 | `count` | `int` | How many letters there are. |
 
 ### `list`
@@ -746,7 +751,7 @@ element text(text -> text): node
 
 Text: `text clock.format("%a %d  %H:%M")`.
 
-It takes no children.
+It takes no children but [`letters`](#letters).
 
 Also every prop and event of [`node`](#node).
 

@@ -1583,12 +1583,16 @@ element particles: node {
   speed: float
   flags leaf
 }
-/// Animates each letter of its text; `index` is the letter's position.
+/// Animates each letter of the `text` it is written in:
+/// `text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }`. Its
+/// props apply to each drawn letter in turn; `index` is the letter's
+/// position.
 element letters: node {
-  /// The letter's position.
+  /// The letter's position, from 0.
   let index: int
   /// How many letters there are.
   let count: int
+  flags leaf only_in text
 }
 /// Goo merge: children melt together within the given distance.
 element merge(length -> value): node {}

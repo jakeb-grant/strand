@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::misplaced
+
+  × `letters` goes directly inside `text`
+   ╭─[letters_outside_text.strand:7:3]
+ 6 │ bar B {
+ 7 │   letters { text "hello" { y: 2 * wave(1s, phase: index * 0.1) } }
+   ·   ───┬───
+   ·      ╰── not in a `text`
+ 8 │ }
+   ╰────
+  help: write it inside a `text`: `text … { letters { … } }`
+
+check::misplaced
+
+  × `letters` goes directly inside `text`
+    ╭─[letters_outside_text.strand:10:3]
+  9 │ component Wave {
+ 10 │   letters { y: 2 }
+    ·   ───┬───
+    ·      ╰── not in a `text`
+ 11 │ }
+    ╰────
+  help: write it inside a `text`: `text … { letters { … } }`

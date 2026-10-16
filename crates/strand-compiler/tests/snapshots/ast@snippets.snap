@@ -195,8 +195,9 @@ file
     element text "x"
       prop text_stroke: (commas 1 $bg)
       prop fill: (call linear 90deg $accent $tertiary)
-    element letters
-      prop y: (* 2 (call wave 1s (phase: (* index 0.1))))
+    element text "hi"
+      element letters
+        prop y: (* 2 (call wave 1s (phase: (* index 0.1))))
     element popup
       prop scrim: (call (. $shadow alpha) 0.3)
   component Filters

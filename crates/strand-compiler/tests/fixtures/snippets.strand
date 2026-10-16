@@ -161,7 +161,7 @@ component Paint {
   box { inner_shadow: 0 2px 6px $shadow; rim: top, $fg.alpha(0.15) }
   box { grain: 0.04 }
   text "x" { text_stroke: 1, $bg; fill: linear(90deg, $accent, $tertiary) }
-  letters { y: 2 * wave(1s, phase: index * 0.1) }
+  text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }
   popup { scrim: $shadow.alpha(0.3) }
 }
 
