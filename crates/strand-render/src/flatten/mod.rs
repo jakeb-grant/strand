@@ -561,6 +561,8 @@ pub fn flatten(
         xform: kurbo::Affine::IDENTITY,
         out: &mut out,
         fillet: crate::fillet::find(tree, boxes, root),
+        open_clips: Vec::new(),
+        fillet_fill: None,
         pointer: extras.pointers.get(&root).copied(),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
     };
@@ -615,9 +617,35 @@ struct Flattener<'a> {
     out: &'a mut Flattened,
     /// The surface's `attach:` fillet (`crate::fillet`).
     fillet: Option<crate::fillet::Fillet>,
+    /// (fillet-clip) The clips open above the node being flattened,
+    /// outermost first, so the fillet target's fill passes them at its
+    /// fillets (`Flattener::let_fillets_through`).
+    open_clips: Vec<OpenClip>,
+    /// (fillet-clip) The fillet target's fill item once drawn under a
+    /// clip it passes, kept in step with the items inserted before it:
+    /// what each such clip holds the rest of its group around
+    /// (`Flattener::hold_to_box`).
+    fillet_fill: Option<usize>,
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,
+}
+
+/// (fillet-clip) A clip group open above the node being flattened.
+struct OpenClip {
+    /// Its `PushClip` item.
+    item: usize,
+    /// The transform its path is drawn under.
+    xform: kurbo::Affine,
+    /// Its box (physical pixels, under `xform`): what it lets the
+    /// target's fillets through is bounded by it.
+    frame: kurbo::Rect,
+    /// Its box's largest corner radius (physical pixels): how far its
+    /// rounding reaches into the target's square corners.
+    radius: f64,
+    /// Its box path, kept once the fillet target's fill has widened the
+    /// clip: what the rest of the group is held to.
+    held: Option<BezPath>,
 }
 
 /// The pixels `r` covers once drawn under `a`.

@@ -13,9 +13,17 @@
 //! adds their reach to the surface's overhang on the two sides along the
 //! edge ([`grow`]); the input region stays the box. Nothing reaches past
 //! the attached edge, so the overhang there is none ([`flush`]).
+//!
+//! (fillet-clip) The fillets lie outside the target's box, so outside a
+//! clip above it that holds it to its box (a `clip: true` stack around
+//! the card, a scroll, a box whose size springs): each such clip lets
+//! the target's fill through at its fillets and the square corners they
+//! meet, at the target's corners on the edge its box reaches and no
+//! further from the edge than that box ([`corners`]), and what else it
+//! holds stays inside its box.
 
 use strand_scene::{Edge, Insets, LogicalRect, NodeId, NodeKind, Prop, PropValue, TokenScope};
-use vello_cpu::kurbo::{BezPath, Point, Rect, RoundedRectRadii};
+use vello_cpu::kurbo::{BezPath, CubicBez, ParamCurve, Point, Rect, RoundedRectRadii};
 
 use crate::layout::Boxes;
 use crate::tree::SceneTree;
@@ -225,6 +233,156 @@ pub(crate) fn path(frame: Rect, r: RoundedRectRadii, edge: Edge) -> BezPath {
     p
 }
 
+/// What a clip above the target lets through (fillet-clip): at each of
+/// its corners on `edge` with a fillet that lies on or inside `clip`
+/// (the clip's box in the target's space, within half a pixel), that
+/// fillet (the concave region [`path`] adds outside `frame`) and the
+/// square corner it meets, `side` on a side but at least the fillet's
+/// radius, inside `frame`; both end where `clip` ends away from the
+/// edge, and the square where it ends along it, so a clip never lets
+/// through what lies past its other sides. One closed subpath each
+/// (none for a square corner or one the clip does not reach).
+pub(crate) fn corners(
+    frame: Rect,
+    r: RoundedRectRadii,
+    edge: Edge,
+    side: f64,
+    clip: Rect,
+) -> Vec<BezPath> {
+    let (len, depth) = match edge {
+        Edge::Top | Edge::Bottom => (frame.width(), frame.height()),
+        Edge::Left | Edge::Right => (frame.height(), frame.width()),
+    };
+    let (a, b) = match edge {
+        Edge::Top => (r.top_left, r.top_right),
+        Edge::Bottom => (r.bottom_left, r.bottom_right),
+        Edge::Left => (r.top_left, r.bottom_left),
+        Edge::Right => (r.top_right, r.bottom_right),
+    };
+    let map = |u: f64, v: f64| -> Point {
+        match edge {
+            Edge::Top => Point::new(frame.x0 + u, frame.y0 + v),
+            Edge::Bottom => Point::new(frame.x0 + u, frame.y1 - v),
+            Edge::Left => Point::new(frame.x0 + v, frame.y0 + u),
+            Edge::Right => Point::new(frame.x1 - v, frame.y0 + u),
+        }
+    };
+    // The clip in (u, v): u along the edge, v away from it.
+    let (u0, u1, v0, v1) = {
+        let (p, q) = match edge {
+            Edge::Top => (
+                (clip.x0 - frame.x0, clip.y0 - frame.y0),
+                (clip.x1 - frame.x0, clip.y1 - frame.y0),
+            ),
+            Edge::Bottom => (
+                (clip.x0 - frame.x0, frame.y1 - clip.y1),
+                (clip.x1 - frame.x0, frame.y1 - clip.y0),
+            ),
+            Edge::Left => (
+                (clip.y0 - frame.y0, clip.x0 - frame.x0),
+                (clip.y1 - frame.y0, clip.x1 - frame.x0),
+            ),
+            Edge::Right => (
+                (clip.y0 - frame.y0, frame.x1 - clip.x1),
+                (clip.y1 - frame.y0, frame.x1 - clip.x0),
+            ),
+        };
+        (p.0.min(q.0), p.0.max(q.0), p.1.min(q.1), p.1.max(q.1))
+    };
+    const HALF: f64 = 0.5;
+    let reaches = |u: f64| u0 - HALF <= u && u <= u1 + HALF && v0 - HALF <= 0.0 && 0.0 <= v1 + HALF;
+    // How deep the clip lets the corner through, away from the edge.
+    let deep = v1.min(depth);
+    // The square corner's side: `side`, at least the radius, within the
+    // box; and its reach along the edge, within the clip.
+    let square = |radius: f64| side.max(radius).min(len).min(depth).max(0.0);
+    let k = KAPPA;
+    let mut out = Vec::new();
+    // The start fillet, centred at (-a, a): along the edge from its tip
+    // over the square corner, round the square, up the box's side to
+    // the fillet (or to where the clip ends) and along its arc back to
+    // the tip.
+    if a > 0.0 && reaches(0.0) && deep > 0.0 {
+        let s = square(a);
+        let (su, sv) = (s.min(u1), s.min(deep));
+        let arc = CubicBez::new(
+            Point::new(0.0, a),
+            Point::new(0.0, a - k * a),
+            Point::new(-a + k * a, 0.0),
+            Point::new(-a, 0.0),
+        );
+        // From where it leaves the box's side (v falls along it).
+        let arc = if deep < a {
+            arc.subsegment(at_depth(&arc, deep)..1.0)
+        } else {
+            arc
+        };
+        if su > 0.0 {
+            let mut p = BezPath::new();
+            p.move_to(map(-a, 0.0));
+            p.line_to(map(su, 0.0));
+            p.line_to(map(su, sv));
+            p.line_to(map(0.0, sv));
+            p.line_to(map(arc.p0.x, arc.p0.y));
+            p.curve_to(
+                map(arc.p1.x, arc.p1.y),
+                map(arc.p2.x, arc.p2.y),
+                map(-a, 0.0),
+            );
+            p.close_path();
+            out.push(p);
+        }
+    }
+    // The end fillet, centred at (len + b, b), the same way round.
+    if b > 0.0 && reaches(len) && deep > 0.0 {
+        let s = square(b);
+        let (su, sv) = (s.min(len - u0), s.min(deep));
+        let arc = CubicBez::new(
+            Point::new(len + b, 0.0),
+            Point::new(len + b - k * b, 0.0),
+            Point::new(len, b - k * b),
+            Point::new(len, b),
+        );
+        // To where it meets the box's side (v rises along it).
+        let arc = if deep < b {
+            arc.subsegment(0.0..at_depth(&arc, deep))
+        } else {
+            arc
+        };
+        if su > 0.0 {
+            let mut p = BezPath::new();
+            p.move_to(map(len - su, 0.0));
+            p.line_to(map(len + b, 0.0));
+            p.curve_to(
+                map(arc.p1.x, arc.p1.y),
+                map(arc.p2.x, arc.p2.y),
+                map(arc.p3.x, arc.p3.y),
+            );
+            p.line_to(map(len, sv));
+            p.line_to(map(len - su, sv));
+            p.close_path();
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// The parameter where fillet arc `arc`, monotonic in v (its `y`),
+/// is `v` deep.
+fn at_depth(arc: &CubicBez, v: f64) -> f64 {
+    let rising = arc.p3.y > arc.p0.y;
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if (arc.eval(mid).y < v) == rising {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +432,131 @@ mod tests {
         // Square corners make no fillets: the box itself.
         let square = path(frame, RoundedRectRadii::from_single_radius(0.0), Edge::Top);
         assert_eq!(square.bounding_box(), frame);
+    }
+
+    /// (fillet-clip) The corners are what the path adds beside the box
+    /// and the square corners they meet: inside the path and outside
+    /// the frame, or inside both squares' reach of the corner, wherever
+    /// they are tested; the square is at least the fillet's radius.
+    #[test]
+    fn the_corners_are_the_fillets_and_the_square_corners_they_meet() {
+        let frame = Rect::new(20.0, 20.0, 120.0, 70.0);
+        let r = RoundedRectRadii::new(10.0, 6.0, 4.0, 8.0);
+        for side in [0.0, 12.0] {
+            for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+                let whole = path(frame, r, edge);
+                let c = corners(frame, r, edge, side, frame.inflate(40.0, 40.0));
+                assert_eq!(c.len(), 2, "{edge:?}");
+                // The corners on the edge, with their radii.
+                let (start, end) = match edge {
+                    Edge::Top => ((20.0, 20.0, 10.0), (120.0, 20.0, 6.0)),
+                    Edge::Bottom => ((20.0, 70.0, 8.0), (120.0, 70.0, 4.0)),
+                    Edge::Left => ((20.0, 20.0, 10.0), (20.0, 70.0, 8.0)),
+                    Edge::Right => ((120.0, 20.0, 6.0), (120.0, 70.0, 4.0)),
+                };
+                let near = |(cx, cy, rad): (f64, f64, f64), x: f64, y: f64| {
+                    let s = f64::max(side, rad);
+                    (x - cx).abs() < s && (y - cy).abs() < s
+                };
+                for y in 0..90 {
+                    for x in 0..140 {
+                        let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                        let pt = Point::new(px, py);
+                        let in_corner = c.iter().any(|p| inside(p, px, py));
+                        let fillet = inside(&whole, px, py) && !frame.contains(pt);
+                        let square =
+                            frame.contains(pt) && (near(start, px, py) || near(end, px, py));
+                        assert_eq!(
+                            in_corner,
+                            fillet || square,
+                            "{edge:?} side {side} at ({px}, {py})"
+                        );
+                    }
+                }
+            }
+        }
+        let none = corners(
+            frame,
+            RoundedRectRadii::from_single_radius(0.0),
+            Edge::Top,
+            8.0,
+            frame,
+        );
+        assert!(none.is_empty());
+    }
+
+    /// (fillet-clip) A clip lets through only the corners it reaches,
+    /// and nothing past its box but the fillets beside them, cut where
+    /// it ends away from the edge.
+    #[test]
+    fn a_clip_lets_through_only_the_corners_it_reaches() {
+        let frame = Rect::new(20.0, 20.0, 120.0, 70.0);
+        let r = RoundedRectRadii::from_single_radius(10.0);
+        let any = |c: &[BezPath], x: f64, y: f64| c.iter().any(|p| inside(p, x, y));
+        // The card's own box: both corners, whole.
+        assert_eq!(corners(frame, r, Edge::Top, 12.0, frame).len(), 2);
+        // Half a pixel short of a corner still reaches it.
+        assert_eq!(
+            corners(
+                frame,
+                r,
+                Edge::Top,
+                12.0,
+                Rect::new(20.4, 20.4, 119.6, 70.0)
+            )
+            .len(),
+            2
+        );
+        // Narrow: from the left side to x 25, the left corner alone,
+        // its square within the clip.
+        let narrow = Rect::new(20.0, 20.0, 25.0, 70.0);
+        let c = corners(frame, r, Edge::Top, 12.0, narrow);
+        assert_eq!(c.len(), 1);
+        assert!(any(&c, 15.5, 20.5), "the left fillet");
+        assert!(any(&c, 24.5, 20.5), "the square, within the clip");
+        assert!(!any(&c, 25.5, 20.5), "not past the clip's right side");
+        assert!(!any(&c, 119.5, 20.5), "nor at the right corner");
+        // Clear of both corners: nothing.
+        let middle = Rect::new(40.0, 20.0, 100.0, 70.0);
+        assert!(corners(frame, r, Edge::Top, 12.0, middle).is_empty());
+        // Off the edge: nothing.
+        let below = Rect::new(0.0, 22.0, 140.0, 70.0);
+        assert!(corners(frame, r, Edge::Top, 12.0, below).is_empty());
+        // Short: 4 deep, so are the squares and the fillets, every edge.
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            let short = match edge {
+                Edge::Top => Rect::new(20.0, 20.0, 120.0, 24.0),
+                Edge::Bottom => Rect::new(20.0, 66.0, 120.0, 70.0),
+                Edge::Left => Rect::new(20.0, 20.0, 24.0, 70.0),
+                Edge::Right => Rect::new(116.0, 20.0, 120.0, 70.0),
+            };
+            let c = corners(frame, r, edge, 12.0, short);
+            assert_eq!(c.len(), 2, "{edge:?}");
+            let whole = path(frame, r, edge);
+            for y in 0..90 {
+                for x in 0..140 {
+                    let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let deep = match edge {
+                        Edge::Top => py - 20.0,
+                        Edge::Bottom => 70.0 - py,
+                        Edge::Left => px - 20.0,
+                        Edge::Right => 120.0 - px,
+                    };
+                    let along = match edge {
+                        Edge::Top | Edge::Bottom => px - 20.0,
+                        Edge::Left | Edge::Right => py - 20.0,
+                    };
+                    let len = match edge {
+                        Edge::Top | Edge::Bottom => 100.0,
+                        Edge::Left | Edge::Right => 50.0,
+                    };
+                    let in_corner = any(&c, px, py);
+                    let want = inside(&whole, px, py)
+                        && deep < 4.0
+                        && (along < 12.0 || along > len - 12.0);
+                    assert_eq!(in_corner, want, "{edge:?} at ({px}, {py})");
+                }
+            }
+        }
     }
 }
