@@ -179,7 +179,8 @@ jobs:
       # warns, 48 MB ceiling fails) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # a 76 MB target (warns) and 86 MB ceiling (fails), decisions.md m5-open-budgets.
+      # a 76 MB target (warns) and 104 MB ceiling (fails), decisions.md
+      # m5-open-budgets and seam-snap.
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger

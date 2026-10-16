@@ -146,7 +146,8 @@ its cause and re-based or cut with a recorded reason.
   m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
   fails above 48 MB (49,152 kB): 38,201 kB in the container at
   `067711a` (M5: 37,328 kB; 38,912 kB on GitHub). The full shell warns
-  above 76 MB (77,824 kB) and fails above 86 MB (88,064 kB): 52,984 kB
+  above 76 MB (77,824 kB) and fails above 104 MB (106,496 kB; 86 MB
+  until decisions.md seam-snap): 52,984 kB
   (4 entries) and 68,585 kB (161) in the container at `067711a` (M5:
   51,944 and 62,204 kB; GitHub at M5: 66,422 kB (15) and 68,070 kB
   (172)). The 161-entry figure is mostly launcher icon and buffer
@@ -259,7 +260,8 @@ were re-based under the owner's later policy of 2026-10-10, which lets
 agents set binary and memory gates by judgement with recorded reasons:
 39 / 44 MB and 67 / 74 MB (decisions.md m5-speed), then 42 / 48 MB and
 76 / 86 MB with headroom for M5's waves 1-2 (decisions.md
-m5-open-budgets). Change them again only with a measurement and a
+m5-open-budgets), and the full shell's ceiling 104 MB for GitHub's
+runner variance (decisions.md seam-snap). Change them again only with a measurement and a
 recorded reason.
 
 ## Deferred work
