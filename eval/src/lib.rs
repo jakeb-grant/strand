@@ -3,11 +3,14 @@
 //! strand-render (with its `eval-hooks` feature) and the logic VM in
 //! one process, every painted frame traced node by node and checked.
 //!
-//! This is the skeleton: the command line and its typed errors. The
-//! scenario parser, the driver, the checks and the reports land on top
-//! of it.
+//! - [`scenario`], [`steps`], [`select`]: the `.scn` format, parsed with
+//!   typed errors at `file:line`.
 
 use std::fmt;
+
+pub mod scenario;
+pub mod select;
+pub mod steps;
 
 /// What the sandbox can fail with; every command returns one of these
 /// rather than panicking.
@@ -17,6 +20,18 @@ pub enum Error {
     Unsupported(String),
     /// The command line itself is wrong.
     Usage(String),
+    /// A scenario is wrong: its file, the line and why.
+    Scenario {
+        file: String,
+        line: u32,
+        msg: String,
+    },
+    /// The config did not load or compile.
+    Config(String),
+    /// The run went wrong (a scene error, a step the shell refused).
+    Run(String),
+    /// A file could not be read or written.
+    Io(String, std::io::Error),
 }
 
 impl fmt::Display for Error {
@@ -24,6 +39,10 @@ impl fmt::Display for Error {
         match self {
             Error::Unsupported(what) => write!(f, "{what}: not implemented in this build"),
             Error::Usage(msg) => write!(f, "{msg}"),
+            Error::Scenario { file, line, msg } => write!(f, "{file}:{line}: {msg}"),
+            Error::Config(msg) => write!(f, "config: {msg}"),
+            Error::Run(msg) => write!(f, "run: {msg}"),
+            Error::Io(what, e) => write!(f, "{what}: {e}"),
         }
     }
 }
