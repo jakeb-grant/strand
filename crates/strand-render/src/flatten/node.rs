@@ -209,6 +209,9 @@ impl<'a> Flattener<'a> {
             .clamp(0.0, 1.0)
         };
         let written_opacity = opacity_of(&props);
+        // (eval-sandbox) Before `paint`, which takes the enter.
+        #[cfg(feature = "eval-hooks")]
+        let probe_before = self.anim.motions(node.id);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         let sprung = offsets(&props);
@@ -420,6 +423,8 @@ impl<'a> Flattener<'a> {
         // An `input`'s caret and selection: their x in its text layout
         // (logical), and the layout's shift in the box.
         let mut caret_at: Option<(Arc<TextLayout>, f32)> = None;
+        #[cfg(feature = "eval-hooks")]
+        let mut probe_text = None;
         if is_text
             && let Some((natural, align, colors)) =
                 natural_spec(&text_get, &scope, &font, self.scale)
@@ -458,6 +463,10 @@ impl<'a> Flattener<'a> {
                 clip_text = clip;
                 (fit, placed)
             };
+            #[cfg(feature = "eval-hooks")]
+            {
+                probe_text = Some(super::probe::text_drawn(shaped, self.scale, fit));
+            }
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
                 self.out.text.push((
@@ -498,10 +507,46 @@ impl<'a> Flattener<'a> {
                     v.reads_time_with(&|t| global.time_reads(t)) || timed_scope && v.has_tokens()
                 })
         };
+        // (eval-sandbox) What moves it this frame, from the locals above.
+        #[cfg(feature = "eval-hooks")]
+        let probe = self.trace.is_some().then(|| {
+            super::probe::Seen {
+                node: node.id,
+                parent: node.parent,
+                kind: node.kind,
+                laid,
+                drawn: rect,
+                before: probe_before,
+                after: self.anim.motions(node.id),
+                written,
+                sprung,
+                written_opacity,
+                sprung_opacity,
+                plays: super::probe::axes(&plays),
+                playing,
+                shared,
+                tilt: tilt.is_some(),
+                jelly: jelly.is_some(),
+                raw_glide,
+                lifted,
+                reveal: transition_mask.is_some(),
+                inert,
+                follows: super::probe::axes(&follows),
+                inherited: (inh.offset.0 + inh.flight.0, inh.offset.1 + inh.flight.1),
+                text: probe_text,
+            }
+            .trace()
+        });
         let opacity = number(get(Prop::Opacity)).unwrap_or(1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
             if follows(Prop::Opacity) {
                 self.run_clock(node.id, clock, playing);
+            }
+            #[cfg(feature = "eval-hooks")]
+            if let Some(t) = probe {
+                let look = (opacity, [1.0, 1.0], 0.0);
+                let hidden = Some(crate::probe::Hidden::Opacity0);
+                self.probe_push(t, look, frame, self.xform, hidden);
             }
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
@@ -513,6 +558,12 @@ impl<'a> Flattener<'a> {
         if zoom <= 0.0 {
             if follows(Prop::Scale) {
                 self.run_clock(node.id, clock, playing);
+            }
+            #[cfg(feature = "eval-hooks")]
+            if let Some(t) = probe {
+                let look = (opacity, [0.0, 0.0], 0.0);
+                let hidden = Some(crate::probe::Hidden::Scale0);
+                self.probe_push(t, look, frame, self.xform, hidden);
             }
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
@@ -1492,6 +1543,12 @@ impl<'a> Flattener<'a> {
                 })),
             },
         );
+        #[cfg(feature = "eval-hooks")]
+        if let Some(t) = probe {
+            let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
+            let hidden = inert.then_some(crate::probe::Hidden::Inert);
+            self.probe_push(t, (opacity, [sx, sy], turn), frame, self.xform, hidden);
+        }
 
         // Hit shape: the rounded box, grown by `hit: grow(n)`; none with
         // `hit: none`.

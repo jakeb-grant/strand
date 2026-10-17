@@ -34,6 +34,8 @@ mod markup;
 mod media;
 mod offscreen;
 mod pose;
+#[cfg(feature = "eval-hooks")]
+pub mod probe;
 #[cfg(feature = "gpu")]
 pub mod promote;
 mod raster;

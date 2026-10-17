@@ -25,6 +25,8 @@ mod hash;
 mod image;
 mod node;
 mod paint;
+#[cfg(feature = "eval-hooks")]
+mod probe;
 mod text;
 mod widget;
 
@@ -344,6 +346,10 @@ pub struct Flattened {
     /// (M6) The surface root draws something itself (a background, a
     /// border): its whole box takes input.
     pub root_paints: bool,
+    /// (eval-sandbox) Each node as drawn, when the frame trace is on
+    /// (`crate::probe`).
+    #[cfg(feature = "eval-hooks")]
+    pub trace: Option<Arc<[crate::probe::NodeTrace]>>,
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -504,6 +510,10 @@ pub struct Extras {
 
     /// (M4) Media nodes' sources (graphs, spectra), by node.
     pub media: crate::media::Media,
+    /// (eval-sandbox) The frame trace is on: flattening records each
+    /// node (`crate::probe`).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) trace: bool,
 }
 
 /// (M4) Where a surface's buffer (its top-left corner) lies on an
@@ -565,6 +575,8 @@ pub fn flatten(
         fillet_fill: None,
         pointer: extras.pointers.get(&root).copied(),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
+        #[cfg(feature = "eval-hooks")]
+        trace: extras.trace.then(Vec::new),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -600,6 +612,11 @@ pub fn flatten(
         .copied()
         .unwrap_or(LogicalRect::new(0.0, 0.0, logical.w, logical.h));
     f.node(node, frame, &inh, true);
+    #[cfg(feature = "eval-hooks")]
+    {
+        let trace = f.trace.take();
+        out.trace = trace.map(Arc::from);
+    }
     out
 }
 
@@ -629,6 +646,10 @@ struct Flattener<'a> {
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,
+    /// (eval-sandbox) The nodes drawn so far, when the frame trace is on
+    /// (`crate::probe`).
+    #[cfg(feature = "eval-hooks")]
+    trace: Option<Vec<crate::probe::NodeTrace>>,
 }
 
 /// (fillet-clip) A clip group open above the node being flattened.

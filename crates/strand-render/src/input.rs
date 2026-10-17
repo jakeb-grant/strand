@@ -447,6 +447,10 @@ pub struct Router {
     /// (M6) The `input` each surface asked the host to paste into
     /// ([`ClipboardAsk::Paste`]), until the paste arrives.
     pending_paste: HashMap<SurfaceId, NodeId>,
+    /// (eval-sandbox) The time the router reads in place of the wall
+    /// clock ([`Router::set_now`]).
+    #[cfg(feature = "eval-hooks")]
+    now: Option<Instant>,
 }
 
 /// (M6) How long a `trigger: hover` popup stays open after the pointer
@@ -781,6 +785,24 @@ impl Router {
         self.flush(scene)
     }
 
+    /// (eval-sandbox) Reads `now` in place of the wall clock (`None`:
+    /// the wall clock again): hover delays and grace run on the
+    /// evaluation sandbox's virtual time (docs/decisions.md
+    /// eval-sandbox).
+    #[cfg(feature = "eval-hooks")]
+    pub fn set_now(&mut self, now: Option<Instant>) {
+        self.now = now;
+    }
+
+    /// The time hover delays, grace and edits are measured by.
+    fn now(&self) -> Instant {
+        #[cfg(feature = "eval-hooks")]
+        if let Some(now) = self.now {
+            return now;
+        }
+        Instant::now()
+    }
+
     /// (M6) When [`Router::tick`] must run: the earliest `delay` or
     /// grace of a `trigger: hover` popup to end.
     pub fn next_wake(&self) -> Option<Instant> {
@@ -1086,7 +1108,7 @@ impl Router {
 
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
-        self.hover_popups(scene.tree(), Instant::now());
+        self.hover_popups(scene.tree(), self.now());
         for i in &self.out {
             if let Intent::Flag { node, flag, on } = i {
                 scene.set_flag(*node, *flag, *on);
@@ -2095,7 +2117,7 @@ impl Router {
                     InFlight {
                         latest: now.clone(),
                         pending,
-                        at: Instant::now(),
+                        at: self.now(),
                     },
                 );
                 self.emit(Intent::Write {

@@ -970,6 +970,56 @@ impl Animator {
         }
     }
 
+    /// (eval-sandbox) What moves `id` as its state stands, and the axes
+    /// of its own springs in flight (`x`, `y`, `opacity`, `scale`,
+    /// `rotate`, and its laid-out size), read without sampling anything
+    /// (`crate::probe`).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn motions(&self, id: NodeId) -> (crate::probe::Motions, crate::probe::Axes) {
+        use crate::probe::{Axes, Motions};
+        let mut m = Motions::NONE;
+        let mut a = Axes::NONE;
+        let staggered = self.staggers.planned(id);
+        if self.enter.contains(&id) || staggered {
+            m |= Motions::ENTER;
+        }
+        if staggered {
+            m |= Motions::STAGGER;
+        }
+        if self.exits.contains_key(&id) {
+            m |= Motions::EXIT;
+        }
+        if self.lifted.contains_key(&id) {
+            m |= Motions::LIFT;
+        }
+        if let Some(na) = self.nodes.get(&id) {
+            for (p, _) in &na.props {
+                m |= match p {
+                    Prop::Opacity => Motions::OPACITY_SPRING,
+                    _ => Motions::PROP_SPRING,
+                };
+                a |= match p {
+                    Prop::X => Axes::X,
+                    Prop::Y => Axes::Y,
+                    Prop::Opacity => Axes::OPACITY,
+                    Prop::Scale => Axes::SCALE,
+                    Prop::Rotate => Axes::ROTATE,
+                    _ => Axes::NONE,
+                };
+            }
+            if na.glide.is_some() {
+                m |= Motions::GLIDE;
+            }
+            for (s, axis) in na.size.iter().zip([Axes::W, Axes::H]) {
+                if s.is_some() {
+                    m |= Motions::SIZE_SPRING;
+                    a |= axis;
+                }
+            }
+        }
+        (m, a)
+    }
+
     /// (M4) `id` is lifted or springing back from a lift (it paints
     /// above its siblings).
     pub fn lifted(&self, id: NodeId) -> bool {

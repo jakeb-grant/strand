@@ -470,6 +470,13 @@ strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
   ^-- dev-dependency of strand-services (the wm protocol client's and the
       thumbnail capture tests) and strand-surface (the manager's tests,
       tests/fake.rs)
+
+eval/ (strand-eval)  the animation evaluation sandbox: its own Cargo
+                     workspace beside the root one, not a member; path
+                     dependencies on strand-render (with `eval-hooks`),
+                     strand-compiler, strand-core, strand-scene,
+                     strand-text, strand-gpu, strand-services-schema
+  ^-- nothing: no crate under crates/ depends on it
 ```
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
@@ -492,6 +499,32 @@ buffers, the alpha modifier and `ext-background-effect-v1` for
 strand-surface, recording what each surface committed for the tests to
 assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
 `src/lib.rs`, lists the globals).
+
+`eval/` (eval-sandbox) is the animation evaluation sandbox, the
+`strand-eval` package: scenario scripts run on a virtual clock against
+`Renderer` and the logic VM in one process, with per-node checks on
+every frame (docs/eval.md; docs/decisions.md eval-sandbox). It is a
+Cargo workspace of its own (`eval/Cargo.toml` has `[workspace]`, and
+the root's `members = ["crates/*", …]` does not reach it), so root
+`--workspace` builds, tests and feature unification never see it. It
+names the Strand crates it uses by path (the root's
+`[workspace.dependencies]` cannot be inherited across workspaces; the
+path dependencies' own `.workspace = true` fields resolve in the root
+workspace, which they are members of), keeps its own `Cargo.lock`
+seeded from the root's and held to the root's versions
+(`scripts/eval/check-lock.sh`), and copies the root's profiles and
+lints (`eval/tests/drift.rs` fails when they drift). It is the only
+place strand-render's `eval-hooks` feature is turned on (see
+"`strand-render` module map"); `scripts/eval/check-isolation.sh`
+checks that no `crates/*/Cargo.toml` names `strand-eval`, a path into
+`eval/` or `eval-hooks` (strand-render's own `[features]` line
+aside), that the root resolution never enables `eval-hooks`, and that
+every `cfg(feature = "eval-hooks")` under `crates/` is in
+strand-render. Its commands run from the repository root with
+`--manifest-path eval/Cargo.toml`, so the container's
+`CARGO_TARGET_DIR=target/container` and the shared compile cache serve
+both workspaces (`scripts/eval/eval.sh`, `scripts/container/run.sh
+eval`).
 
 `strand-auth` (M4) is the lock's whole security boundary, small enough to
 review alone. Its lib depends on `libc` and `zeroize` and no Strand
@@ -732,6 +765,31 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).
+- (eval-sandbox) The `eval-hooks` feature, off by default and never
+  enabled by a crate of the root workspace (only `eval/` turns it on;
+  `scripts/eval/check-isolation.sh`), adds the evaluation sandbox's
+  probe and changes nothing a frame draws:
+  - `probe.rs`, public as `strand_render::probe`: plain data,
+    `FrameTrace` (one per `Painter::paint`, CPU or GPU, empty damage
+    included, never `update`'s preview: the frame's time, backend,
+    whether it was flattened afresh, its own damage, rasterised pixels,
+    items, records, layout passes and nodes, pending and held texts, the
+    advisory wall times, and its nodes), `NodeTrace` (per drawn or
+    hidden node: laid, drawn and visual boxes, own opacity, scale and
+    rotation, the offset parts, `Motions` and `authored` `Axes` bits,
+    `Hidden`, `TextDrawn`), `OffsetParts`, `HeldText`;
+  - `Renderer::set_frame_trace(bool)`, `take_frame_traces() ->
+    Vec<FrameTrace>`, `set_text_hold(bool)`, `held_text() ->
+    Vec<HeldText>` and `release_text(&mut dyn FnMut(&HeldText) -> bool)
+    -> usize` (`renderer/probe.rs`): the trace's switch, and a hold on
+    the layouts inline shaping makes, which stay pending, as a late text
+    worker's do, until released through the usual delivery;
+  - `Router::set_now(Option<Instant>)`: the time the router reads for
+    hover delays, grace and edits in place of the wall clock;
+  - the trace is built in `flatten/probe.rs` from the locals
+    `Flattener::node` already has (`Animator::motions` reads motion
+    state without sampling), into `Flattened::trace`.
+  Their only consumer is `eval/`.
 
 ## M5 interfaces (wave 0a)
 

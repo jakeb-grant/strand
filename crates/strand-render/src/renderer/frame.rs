@@ -398,6 +398,8 @@ impl Renderer {
         if target.validate().is_err() {
             return Damage::new();
         }
+        #[cfg(feature = "eval-hooks")]
+        let probe_passes = self.layout_passes;
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -522,6 +524,10 @@ impl Renderer {
             self.anim.finish_undrawn(unseen);
             self.anim.drop_undrawn_enters(unseen);
         }
+        #[cfg(all(feature = "eval-hooks", feature = "gpu"))]
+        let probe_backend = self.backend(surface);
+        #[cfg(all(feature = "eval-hooks", not(feature = "gpu")))]
+        let probe_backend = strand_scene::Backend::Cpu;
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -571,6 +577,20 @@ impl Renderer {
         );
         s.records = f.records.clone();
         s.hits = f.hits.clone();
+        // (eval-sandbox) Every paint, empty damage included.
+        #[cfg(feature = "eval-hooks")]
+        self.probe.frame(
+            surface,
+            target.time,
+            probe_backend,
+            &f,
+            fresh,
+            frame.area(),
+            self.layout_passes.saturating_sub(probe_passes),
+            s.boxes.as_ref().map_or(0, |b| b.rects.len()),
+            self.pending.len(),
+            self.paint_times,
+        );
 
         // Widen by the buffer's age: it misses the last `age - 1` frames.
         let age = target.age as usize;
@@ -645,6 +665,11 @@ impl Renderer {
                 .paint(&f.items, &total, &self.atlas, scale, target);
         }
         self.paint_times.raster = raster_start.elapsed();
+        #[cfg(feature = "eval-hooks")]
+        if !drawn {
+            let px = self.raster.rasterised();
+            self.probe.rastered(surface, px, self.paint_times);
+        }
         if let super::swap::FadeFrame::Blend(w) = fade
             && !lowered
         {

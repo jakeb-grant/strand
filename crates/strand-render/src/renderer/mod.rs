@@ -28,6 +28,8 @@ mod frame;
 mod layout_pass;
 mod lists;
 mod pose;
+#[cfg(feature = "eval-hooks")]
+mod probe;
 mod specs;
 mod summary;
 mod surfaces;
@@ -401,6 +403,10 @@ pub struct Renderer {
     /// (M4) The GPU backend: promotion, the device, lowering, passes.
     #[cfg(feature = "gpu")]
     gpu: backend::GpuState,
+    /// (eval-sandbox) The frame trace and the text hold
+    /// (`crate::probe`).
+    #[cfg(feature = "eval-hooks")]
+    probe: crate::probe::Probe,
 }
 
 /// Starts the image worker, waking the render loop through `waker`.
@@ -517,6 +523,8 @@ impl Renderer {
             frame_stats: Default::default(),
             #[cfg(feature = "gpu")]
             gpu: backend::GpuState::default(),
+            #[cfg(feature = "eval-hooks")]
+            probe: Default::default(),
         }
     }
 

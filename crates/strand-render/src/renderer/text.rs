@@ -561,6 +561,12 @@ impl Renderer {
                 TextBackend::Inline(engine) => {
                     let layout = engine.layout(&req);
                     self.pending.insert(key, slot);
+                    // (eval-sandbox) Held back, it stays pending as a
+                    // late worker's layout does.
+                    #[cfg(feature = "eval-hooks")]
+                    let Some(layout) = self.probe_hold(*node, &spec.text, layout) else {
+                        continue;
+                    };
                     self.deliver(layout);
                     delivered = true;
                 }
