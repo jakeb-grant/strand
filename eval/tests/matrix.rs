@@ -1,0 +1,201 @@
+//! The effect matrix (docs/eval.md, "Matrix"): every effect of
+//! effects.toml compiles on the fixture and passes alone, or fails only
+//! what known.toml accepts for it; two effects setting the same prop are
+//! `n/a`; a known entry that no longer fails is stale; and a failing
+//! cell promoted with `--xfail` is a regression the gate reports XFAIL.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use strand_eval::checks::Status;
+use strand_eval::harness::RunOptions;
+use strand_eval::matrix::{self, Effects, Known, Outcome, Plan};
+use strand_eval::promote::{self, Ask};
+use strand_eval::scenario::{Place, Scenario};
+use strand_eval::trace::BuildInfo;
+
+fn scratch(name: &str) -> PathBuf {
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("matrix-{name}"));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn set() -> (Effects, String) {
+    let dir = matrix::dir();
+    let set = Effects::load(&dir.join("effects.toml")).unwrap_or_else(|e| panic!("{e}"));
+    let fixture = std::fs::read_to_string(dir.join("fixture.strand.in")).unwrap();
+    (set, fixture)
+}
+
+fn show(done: &[matrix::Done]) -> String {
+    done.iter()
+        .filter(|d| d.outcome.gates())
+        .map(|d| {
+            format!(
+                "{} {:?}: {}",
+                d.cell.dir_name(),
+                d.outcome,
+                d.lines.join("; ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn every_effect_alone_compiles_and_passes_or_is_known() {
+    let (set, _) = set();
+    assert_eq!(set.effects.len(), 22, "the starting set (plan section 7)");
+    let mut plan = Plan::new(BuildInfo::default());
+    plan.singles = true;
+    plan.jobs = 4;
+    let done = matrix::run(&plan).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(done.len(), 22);
+    assert!(done.iter().all(|d| !d.outcome.gates()), "{}", show(&done));
+    // Each effect does what it says: the motion it is named for shows.
+    // The jelly cell is dragged (LIFT) but shows no JELLY: the harness
+    // runs `Renderer::update` every tick and a drag frame reuses its
+    // preview, where `jelly` never measures speed (an open finding,
+    // docs/decisions.md eval-sandbox matrix).
+    let has = |name: &str, bit: strand_render::probe::Motions| {
+        let d = done.iter().find(|d| d.cell.name == name).unwrap();
+        let t = &d.entry.as_ref().unwrap().trace;
+        assert!(
+            t.frames
+                .iter()
+                .flat_map(|f| &f.n)
+                .any(|r| strand_render::probe::Motions(r.emot).contains(bit)),
+            "{name}: no {bit:?} in its trace"
+        );
+    };
+    use strand_render::probe::Motions as M;
+    for (name, bit) in [
+        ("enter-fade", M::ENTER),
+        ("exit-fade", M::EXIT),
+        ("size-spring", M::SIZE_SPRING),
+        ("shared-morph", M::SHARED_MORPH),
+        ("reveal", M::REVEAL),
+        ("stagger", M::STAGGER),
+        ("lean", M::LEAN),
+        ("jelly", M::LIFT),
+        ("keyframes", M::KEYFRAMES),
+    ] {
+        has(name, bit);
+    }
+}
+
+#[test]
+fn effects_that_set_the_same_prop_do_not_pair() {
+    let (set, fixture) = set();
+    let c = matrix::cell(&set, &fixture, &["enter-fade", "enter-slide"], 60);
+    assert!(
+        c.na.as_deref()
+            .is_some_and(|n| n.contains("enter { opacity }")),
+        "{:?}",
+        c.na
+    );
+    let c = matrix::cell(&set, &fixture, &["scale-1.5", "scale-2"], 60);
+    assert!(c.na.is_some(), "two screen scales");
+    let c = matrix::cell(&set, &fixture, &["late-text-1", "late-text-paint"], 60);
+    assert!(c.na.as_deref().is_some_and(|n| n.starts_with("excluded")));
+    // A pair that touches different props merges into one block, and
+    // the cell is a scenario that parses where a regression would live.
+    let c = matrix::cell(&set, &fixture, &["enter-fade", "exit-slide"], 60);
+    assert!(c.na.is_none(), "{:?}", c.na);
+    assert!(c.text.contains("enter {") && c.text.contains("exit {"));
+    assert_eq!(c.id(), "m.enter-fade__exit-slide.60");
+    let file = matrix::dir().join("cells").join("x.scn");
+    Scenario::parse_in(&c.text, &file, Place::Committed).unwrap_or_else(|e| panic!("{e}"));
+    // 22 alone and 231 pairs.
+    let names: Vec<&str> = set.effects.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        matrix::cells(&set, &fixture, &names, &[60], false).len(),
+        253
+    );
+}
+
+#[test]
+fn a_known_failure_that_passes_is_stale() {
+    let (set, fixture) = set();
+    let c = matrix::cell(&set, &fixture, &["enter-fade"], 60);
+    let known = Known {
+        checks: vec!["vanish".into()],
+        note: "for the test".into(),
+        since: "2026-10-17".into(),
+    };
+    let d = matrix::run_cell(c, Some(&known), &BuildInfo::default());
+    assert_eq!(d.outcome, Outcome::Stale, "{:?}", d.lines);
+    assert!(d.outcome.gates());
+}
+
+/// The fixture's `on` mounts the subject between the bystanders, so
+/// `#after` moves: an `expect still` on it fails on purpose.
+fn failing(set: &Effects, fixture: &str) -> matrix::Cell {
+    let mut set = set.clone();
+    let e = set
+        .effects
+        .iter_mut()
+        .find(|e| e.name == "enter-fade")
+        .unwrap();
+    e.post = vec![
+        "mark again".into(),
+        "set on true".into(),
+        "rest".into(),
+        "expect still #after x".into(),
+    ];
+    matrix::cell(&set, fixture, &["enter-fade"], 60)
+}
+
+#[test]
+fn a_failing_cell_promoted_with_xfail_is_a_regression_the_gate_reports_xfail() {
+    let (set, fixture) = set();
+    let out = scratch("promote");
+    let d = matrix::run_cell(failing(&set, &fixture), None, &BuildInfo::default());
+    assert_eq!(d.outcome, Outcome::Fail, "{:?}", d.lines);
+    assert_eq!(d.failed, vec!["expect".to_string()]);
+    let mut plan = Plan::new(BuildInfo::default());
+    plan.singles = true;
+    let mut done = vec![d];
+    matrix::write(&out, &plan, &mut done).unwrap_or_else(|e| panic!("{e}"));
+    let grid = std::fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(grid.contains("href=\"enter-fade@60/index.html\""), "{grid}");
+    assert!(out.join("enter-fade@60/index.html").is_file());
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("matrix.json")).unwrap()).unwrap();
+    assert_eq!(json["counts"]["fail"], 1);
+
+    // Without --note, an --xfail is refused.
+    let to = out.join("regressions");
+    let ask = |xfail: Vec<String>, note: Option<&str>| Ask {
+        // The cell named without its rate, as the plan's command does.
+        from: out.join("enter-fade"),
+        name: "enter-fade-still".into(),
+        xfail,
+        note: note.map(String::from),
+        to: Some(to.clone()),
+        force: true,
+    };
+    assert!(promote::promote(&ask(vec!["expect".into()], None)).is_err());
+    let path = promote::promote(&ask(vec!["expect".into()], Some("the subject pushes it")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(path, to.join("enter-fade-still.scn"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("id = \"enter-fade-still\""), "{text}");
+    assert!(text.contains("Promoted from"), "{text}");
+    assert!(text.contains("=== shell.strand"), "{text}");
+    assert!(text.contains("expect still #after x"), "{text}");
+    let sc = Scenario::parse_in(&text, &path, Place::Committed).unwrap_or_else(|e| panic!("{e}"));
+    let c = strand_eval::check_scenario(&sc, &RunOptions::default()).unwrap();
+    let status: BTreeMap<&str, &Status> = c
+        .report
+        .results
+        .iter()
+        .map(|r| (r.check.as_str(), &r.status))
+        .collect();
+    assert!(
+        matches!(status.get("expect"), Some(Status::Xfail(_))),
+        "{status:?}"
+    );
+    assert!(c.report.ok(), "XFAIL does not fail the gate");
+}

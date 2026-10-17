@@ -11,7 +11,8 @@
 //!   which runs a scenario with its twin and checks it.
 //! - [`report`]: what a run writes (summaries, contact sheets, the
 //!   viewer page); [`refs`]: the owner's verdicts; [`ab`]: two runs
-//!   compared.
+//!   compared; [`matrix`]: every effect and pair of effects run on one
+//!   fixture; [`promote`]: a run's scenario made a regression.
 
 use std::fmt;
 
@@ -22,6 +23,8 @@ pub mod clock;
 pub mod harness;
 pub mod input;
 pub mod labels;
+pub mod matrix;
+pub mod promote;
 pub mod refs;
 pub mod report;
 pub mod scenario;
@@ -173,6 +176,8 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
         "explain" => cli::explain(&args[1..]),
         "verdict" => cli::verdict(&args[1..]),
         "ab" => cli::ab(&args[1..]),
+        "matrix" => cli::matrix(&args[1..]),
+        "promote" => cli::promote(&args[1..]),
         // `selftest` is scripts/eval/ci.sh, run by scripts/eval/eval.sh.
         c if COMMANDS.contains(&c) => Err(Error::Unsupported(format!("strand-eval {c}"))),
         other => Err(Error::Usage(format!(
@@ -207,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_known_command_not_built_yet_is_a_typed_error() {
-        let e = main_with(&["matrix".into()]).unwrap_err();
+        let e = main_with(&["bench".into()]).unwrap_err();
         assert!(matches!(e, Error::Unsupported(_)), "{e}");
     }
 }

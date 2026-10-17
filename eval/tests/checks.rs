@@ -611,6 +611,45 @@ fn a_glide_that_jumps_fails_teleport() {
 }
 
 #[test]
+fn a_drag_released_far_from_home_glides_back_without_teleport() {
+    // Dragged 90 px away and released: no net travel over the segment,
+    // the glide closes its 90 px offset in a few fast ticks. A tick that
+    // closes all of what was left in one go still fails.
+    let sc = scenario("");
+    let glide = |x: f32, left: f32| {
+        let mut r = row("a", [0.0, 0.0, 20.0, 20.0])
+            .laid_at(0.0, 0.0)
+            .at(x, 0.0)
+            .mot(Motions::GLIDE);
+        r.glide = [left, 0.0];
+        r
+    };
+    let path = [0.0, 30.0, 60.0, 90.0, 72.0, 35.0, 11.0, 0.0];
+    let t = shape(9, |k| match path.get(k as usize) {
+        Some(x) if k > 0 && k < 8 => vec![glide(*x, *x)],
+        _ => vec![row("a", [0.0, 0.0, 20.0, 20.0])],
+    });
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let path = [0.0, 30.0, 60.0, 90.0, 0.5, 0.2, 0.1, 0.0];
+    let t = shape(9, |k| match path.get(k as usize) {
+        Some(x) if k > 0 && k < 8 => vec![glide(*x, *x)],
+        _ => vec![row("a", [0.0, 0.0, 20.0, 20.0])],
+    });
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
 fn a_layout_jump_with_no_motion_is_noted_not_failed() {
     let sc = scenario("");
     let t = shape(2, |k| {
@@ -632,6 +671,57 @@ fn a_layout_jump_with_no_motion_is_noted_not_failed() {
     assert_eq!(tp.findings.len(), 1);
     assert_eq!(tp.findings[0].sev, Sev::Info);
     assert!(tp.findings[0].msg.starts_with("jump"));
+}
+
+#[test]
+fn a_size_layout_snaps_under_a_glide_is_noted_not_failed() {
+    // A late text's estimate corrected: its box widens 41 px with its
+    // layout while it glides a pixel on y. The glide moves it, the width
+    // is layout's: noted. A size spring on it would make it a failure.
+    let sc = scenario("");
+    let make = |m: Motions| {
+        shape(4, move |k| {
+            let a = row("a", [0.0, 10.0, 58.0, 16.0]);
+            match k {
+                0 | 1 => vec![a],
+                2 => vec![a.laid_at(0.0, 9.0).at(0.0, 9.7).mot(m)],
+                _ => vec![a.laid_at(0.0, 9.0).at(0.0, 9.0)],
+            }
+            .into_iter()
+            .map(|mut r| {
+                if k >= 2 {
+                    r.visual[2] = 99.0;
+                    r.drawn[2] = 99.0;
+                    r.laid[2] = 99.0;
+                }
+                r
+            })
+            .collect()
+        })
+    };
+    let t = make(Motions::GLIDE);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let tp = r.results.iter().find(|c| c.check == "teleport").unwrap();
+    assert!(
+        tp.findings
+            .iter()
+            .any(|f| f.sev == Sev::Info && f.msg.starts_with("jump")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = make(Motions::GLIDE | Motions::SIZE_SPRING);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "w"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 #[test]
@@ -785,6 +875,35 @@ fn twin_compares_each_rest_with_the_reduced_run() {
         f.iter().any(|f| f.key.as_deref() == Some("ghost")),
         "{}",
         show(&r, &extra)
+    );
+    // A tilt held toward the pointer at rest is the run's alone: reduced
+    // motion turns lean off by design (effects/lean.rs), so a leaning
+    // node is left out; the same box without LEAN is a difference.
+    let mut lean = t.clone();
+    if let Some(last) = lean.frames.last_mut() {
+        last.n[0].visual[2] = 18.0;
+        last.n[0].mot = Motions::LEAN.0;
+        last.n[0].emot = Motions::LEAN.0;
+    }
+    lean.seal();
+    let r = checks::evaluate(&sc, &lean, Some(&twin), None, None);
+    assert_eq!(
+        status(&r, CheckId::Twin),
+        Status::Pass,
+        "{}",
+        show(&r, &lean)
+    );
+    let mut wide = lean.clone();
+    if let Some(last) = wide.frames.last_mut() {
+        last.n[0].mot = 0;
+        last.n[0].emot = 0;
+    }
+    wide.seal();
+    let r = checks::evaluate(&sc, &wide, Some(&twin), None, None);
+    assert!(
+        fails_on(&r, CheckId::Twin, "bars", "w"),
+        "{}",
+        show(&r, &wide)
     );
 }
 

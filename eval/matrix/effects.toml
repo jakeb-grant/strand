@@ -1,0 +1,156 @@
+# The effect matrix's effects (docs/eval.md, "Matrix"; eval/src/matrix.rs).
+# Every effect alone and every unordered pair runs on fixture.strand.in
+# with the standard steps:
+#
+#   [rules] rest [pre]
+#   mark on;    set on true;    rest   [mid]
+#   mark wide;  set wide true;  rest
+#   mark off;   set on false;   rest   [post]
+#
+# An effect is a `[[effect]]` with `name`, `about` and any of:
+#   slots.<slot>  a table of props for a props slot (row, subject, card;
+#                 a table value is a block such as `enter { … }`, and
+#                 `play` is written as the statement `play name`), or a
+#                 string for a text slot (subject_body, with, extra,
+#                 below, card_width, card_body, decls)
+#   rules         standing steps before boot (`text late 1 via waker`)
+#   screen_scale, hz, reduce_motion
+#   pre, mid, post  steps at those places
+#   intend        lines put in every segment (`intend #x moves x`)
+#   excludes      effects it never pairs with
+# Two effects that set the same prop of one slot, the same text slot, or
+# the same header key make a cell `n/a: conflict`. Fragments use only
+# syntax from design.md and the repository's tests.
+
+[defaults]
+subject_body = 'text "iiii" { shrink: 0; color: #ff00ff }'
+
+# ---- poses ----------------------------------------------------------------
+
+[[effect]]
+name = "enter-fade"
+about = "the subject fades in (`enter { opacity: 0 }`; exit mirrors it)"
+slots.subject = { enter = { opacity = "0" } }
+
+[[effect]]
+name = "enter-slide"
+about = "the subject slides in from 6 px left while it fades (bug 25's pose)"
+slots.subject = { enter = { opacity = "0", x = "-6" } }
+
+[[effect]]
+name = "enter-scale"
+about = "the subject grows in from 0.6"
+slots.subject = { enter = { scale = "0.6" } }
+
+[[effect]]
+name = "exit-fade"
+about = "the subject fades out"
+slots.subject = { exit = { opacity = "0" } }
+
+[[effect]]
+name = "exit-slide"
+about = "the subject slides 8 px right while it fades out"
+slots.subject = { exit = { opacity = "0", x = "8" } }
+
+[[effect]]
+name = "exit-height0"
+about = "the subject's height springs to 0 as it leaves (motion.rs's exit pose)"
+slots.subject = { exit = { height = "0" } }
+
+# ---- layout ---------------------------------------------------------------
+
+[[effect]]
+name = "flip-reorder"
+about = "two keyed boxes in the row swap places when `wide` turns on (FLIP glides)"
+slots.extra = 'for n in (wide ? ["b", "a"] : ["a", "b"]) key n { box { width: n == "a" ? 8 : 14; height: 10; bg: #ffffff } }'
+
+[[effect]]
+name = "size-spring"
+about = "the card's width springs on a bouncy spring (`~ spring(700, 0.7)`, bug 17's)"
+slots.card_width = " ~ spring(700, 0.7)"
+
+[[effect]]
+name = "text-estimate-far"
+about = "the subject's text is wide letters, its estimate far narrower than its shaped size"
+slots.subject_body = 'text "WWWWWWWW" { shrink: 0; color: #ff00ff }'
+
+# ---- motion ---------------------------------------------------------------
+
+[[effect]]
+name = "shared-morph"
+about = "a box under the row and the subject share `morph: \"m\"`: one becomes the other"
+slots.subject = { morph = '"m"' }
+slots.below = 'if !on { box { id: partner; morph: "m"; width: 30; height: 10; bg: #ff00ff } }'
+
+[[effect]]
+name = "reveal"
+about = "the subject is revealed by `transition: wipe(left)`"
+slots.subject = { transition = "wipe(left)" }
+
+[[effect]]
+name = "stagger"
+about = "the status row staggers what mounts in it by 30 ms: two tags enter with the subject"
+slots.row = { stagger = "30ms" }
+slots.with = 'box { id: tag1; width: 8; height: 8; bg: #ffff00; enter { opacity: 0; y: 4 } } box { id: tag2; width: 8; height: 8; bg: #00ffff; enter { opacity: 0; y: 4 } }'
+
+[[effect]]
+name = "lean"
+about = "the subject tilts toward the pointer (`tilt: 8deg`), which glides across it"
+slots.subject = { tilt = "8deg" }
+mid = ["glide 20,16 -> 140,16 over 200", "rest"]
+
+[[effect]]
+name = "jelly"
+about = """the subject is dragged (`drag:`) and squashes (`jelly: 0.4`). \
+Finding: no JELLY shows here; a drag frame reuses the preview the \
+harness's per-tick `Renderer::update` flattened, where jelly never \
+measures speed (docs/decisions.md eval-sandbox matrix)"""
+slots.subject = { jelly = "0.4", drag = '"subject"' }
+mid = ["drag 42,16 -> 140,16 over 200", "rest"]
+
+[[effect]]
+name = "keyframes"
+about = "the subject plays `keyframes shake` on mount"
+slots.decls = 'keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4 }; duration: 300ms }'
+slots.subject = { play = "shake" }
+
+# ---- effects --------------------------------------------------------------
+
+[[effect]]
+name = "blur"
+about = "the subject blurs what is behind it (`backdrop: blur(6)`)"
+slots.subject = { backdrop = "blur(6)" }
+
+[[effect]]
+name = "clip"
+about = "the subject clips its content to its rounded box"
+slots.subject = { clip = "true", radius = "4" }
+
+# ---- perturbations and environment ------------------------------------------
+
+[[effect]]
+name = "late-text-1"
+about = "every text is shaped one tick late, arriving through the waker between frames"
+rules = ["text late 1 via waker"]
+excludes = ["late-text-paint"]
+
+[[effect]]
+name = "late-text-paint"
+about = """every text is shaped one tick late, arriving just before the next paint
+(the plan's late-text-0: in-time text is Inline itself, every cell's default)"""
+rules = ["text late 1 via paint"]
+
+[[effect]]
+name = "reduced-motion"
+about = "the desktop reduces motion: every transition snaps"
+reduce_motion = true
+
+[[effect]]
+name = "scale-1.5"
+about = "the screen's scale is 1.5"
+screen_scale = 1.5
+
+[[effect]]
+name = "scale-2"
+about = "the screen's scale is 2"
+screen_scale = 2.0

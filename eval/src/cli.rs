@@ -144,6 +144,14 @@ impl Args {
             .find(|(f, _)| flags.contains(&f.as_str()))
             .and_then(|(_, v)| v.as_deref())
     }
+
+    fn values(&self, flag: &str) -> Vec<&str> {
+        self.opts
+            .iter()
+            .filter(|(f, _)| f == flag)
+            .filter_map(|(_, v)| v.as_deref())
+            .collect()
+    }
 }
 
 fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
@@ -523,5 +531,137 @@ pub fn ab(args: &[String]) -> Result<(), Error> {
         }
     }
     println!("page: {}/index.html", out.display());
+    Ok(())
+}
+
+/// `strand-eval matrix [--effects a,b,…|all] [--hz 60,144] [--singles]
+/// [--jobs N] [--out DIR]`: the effect matrix (`matrix::run`), its
+/// report in DIR (default `target/eval/matrix-<seconds>`); fails when a
+/// cell fails a check known.toml does not list, a listed one passes, or a
+/// cell cannot run.
+pub fn matrix(args: &[String]) -> Result<(), Error> {
+    use crate::matrix::{self, Outcome, Plan};
+    let a = Args::parse(
+        "matrix",
+        args,
+        &["--effects", "--hz", "--jobs", "--out", "-o", "--known"],
+        &["--singles"],
+    )?;
+    if !a.words.is_empty() {
+        return Err(Error::Usage(
+            "usage: strand-eval matrix [--effects a,b,…|all] [--hz 60,144] [--singles] [--jobs N] [--out DIR]"
+                .into(),
+        ));
+    }
+    let mut plan = Plan::new(build_info());
+    if let Some(e) = a.value(&["--effects"])
+        && e != "all"
+    {
+        plan.effects = Some(e.split(',').map(|x| x.trim().to_string()).collect());
+    }
+    if let Some(h) = a.value(&["--hz"]) {
+        plan.hz = h
+            .split(',')
+            .map(|x| x.trim().parse::<u32>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| Error::Usage(format!("--hz {h}: rates like 60,144")))?;
+        if plan.hz.is_empty() || plan.hz.iter().any(|h| *h == 0 || *h > 1000) {
+            return Err(Error::Usage(format!("--hz {h}: rates from 1 to 1000")));
+        }
+    }
+    if let Some(j) = a.value(&["--jobs"]) {
+        plan.jobs = j
+            .parse()
+            .map_err(|_| Error::Usage(format!("--jobs {j}: a count")))?;
+    } else {
+        plan.jobs = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .clamp(1, 8);
+    }
+    if let Some(k) = a.value(&["--known"]) {
+        plan.known_file = PathBuf::from(k);
+    }
+    plan.singles = a.has("--singles");
+    let out = match a.value(&["--out", "-o"]) {
+        Some(o) => PathBuf::from(o),
+        None => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            PathBuf::from(format!("target/eval/matrix-{stamp}"))
+        }
+    };
+    let mut done = matrix::run(&plan)?;
+    matrix::write(&out, &plan, &mut done)?;
+    let mut gating = 0;
+    for d in &done {
+        match d.outcome {
+            Outcome::Pass | Outcome::Na => {}
+            _ => {
+                if d.outcome.gates() {
+                    gating += 1;
+                }
+                println!(
+                    "{} {:?}: {}",
+                    d.cell.dir_name(),
+                    d.outcome,
+                    if d.failed.is_empty() {
+                        d.lines.first().cloned().unwrap_or_default()
+                    } else {
+                        d.failed.join(", ")
+                    }
+                );
+            }
+        }
+    }
+    let count = |o: Outcome| done.iter().filter(|d| d.outcome == o).count();
+    let tail = format!(
+        "{} cells: {} pass, {} known, {} n/a, {} fail, {} stale, {} error",
+        done.len(),
+        count(Outcome::Pass),
+        count(Outcome::Known),
+        count(Outcome::Na),
+        count(Outcome::Fail),
+        count(Outcome::Stale),
+        count(Outcome::Error)
+    );
+    println!("{tail}");
+    println!("report: {}/index.html", out.display());
+    if gating > 0 {
+        return Err(Error::Failed(tail));
+    }
+    Ok(())
+}
+
+/// `strand-eval promote <run>/<id> --as NAME [--xfail CHECK]... [--note
+/// TEXT] [--to DIR] [--force]`: the run's scenario as a regression
+/// (default eval/scenarios/regressions/NAME.scn).
+pub fn promote(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse(
+        "promote",
+        args,
+        &["--as", "--xfail", "--note", "--to"],
+        &["--force"],
+    )?;
+    let ([from], Some(name)) = (a.words.as_slice(), a.value(&["--as"])) else {
+        return Err(Error::Usage(
+            "usage: strand-eval promote <run>/<id> --as NAME [--xfail CHECK]... [--note TEXT] [--to DIR]"
+                .into(),
+        ));
+    };
+    let ask = crate::promote::Ask {
+        from: PathBuf::from(from),
+        name: name.to_string(),
+        xfail: a.values("--xfail").into_iter().map(String::from).collect(),
+        note: a.value(&["--note"]).map(String::from),
+        to: a.value(&["--to"]).map(PathBuf::from),
+        force: a.has("--force"),
+    };
+    let path = crate::promote::promote(&ask)?;
+    println!("wrote {}", path.display());
+    println!(
+        "run it: scripts/container/run.sh eval check {}",
+        path.display()
+    );
     Ok(())
 }

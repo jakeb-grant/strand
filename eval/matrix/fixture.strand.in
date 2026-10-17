@@ -1,0 +1,43 @@
+// The effect matrix's shell (docs/eval.md, "Matrix"; eval/src/matrix.rs
+// fills it). A status row whose `#subject` mounts while `on` holds, with
+// a bystander either side (`#before`, `#after`) and a fixed-width text
+// (`#label`); a second row under it, the vertical bystander, which holds
+// the popup's anchor; and a popup card, open while `on` holds, whose
+// width follows `wide`; `with` holds siblings that mount with the
+// subject. `{{slot}}` marks where an effect's fragment
+// goes: props slots (`row`, `subject`, `card`) take `; prop: value`
+// lists, text slots take whole lines. The default subject body is a
+// text whose estimate is far from its shaped size. Bundled fonts only.
+state on = false
+state wide = false
+{{decls}}
+bar Top {
+  height: 60
+  col { id: body; width: 400; height: 60; pad: 4, 10; gap: 4
+    row { id: status; height: 24; gap: 6; align: center{{row}}
+      box { id: before; width: 20; height: 12; bg: #00ff00 }
+      if on {
+        row { id: subject; gap: 3; align: center; shrink: 0{{subject}}
+          {{subject_body}}
+        }
+        {{with}}
+      }
+      text "label" { id: label; width: 40; shrink: 0; color: #ffffff }
+      {{extra}}
+      box { id: after; width: 20; height: 12; bg: #0000ff }
+    }
+    row { id: below; height: 20; gap: 6; align: center
+      box { id: under; width: 60; height: 10; bg: #808080 }
+      box { id: anchor; width: 30; height: 10; bg: #404040
+        popup { id: pop; open: on; width: 280; height: 60; margin: 0
+          col { id: card; height: 50; bg: #202030; pad: 6
+                width: wide ? 260 : 180{{card_width}}{{card}}
+            box { id: cardtop; width: 40; height: 10; bg: #ff8000 }
+            {{card_body}}
+          }
+        }
+      }
+      {{below}}
+    }
+  }
+}

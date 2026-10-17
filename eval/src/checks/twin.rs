@@ -2,8 +2,11 @@
 //! (everything snaps) ends each settled segment as the run does: the
 //! same nodes shown (by key), their visual boxes within `tol` and their
 //! opacity within 1/255. A stuck offset, or a layout left on an estimate
-//! at rest, shows as a difference. Keyframed and time-driven nodes are
-//! left out (reduced motion drops loops).
+//! at rest, shows as a difference. Keyframed, time-driven, leaning and
+//! jelly nodes are left out: reduced motion drops loops, time signals and
+//! effects (design.md "Runtime changes these need" 7; effects/lean.rs:
+//! "`reduced_motion` turns both off"), so a tilt held toward the pointer
+//! at rest is the run's and not the twin's by design.
 
 use std::collections::BTreeSet;
 
@@ -29,7 +32,7 @@ pub fn run(cx: &Cx, twin: &RunTrace) -> Vec<Finding> {
         ));
         return out;
     }
-    let free = Motions::KEYFRAMES | Motions::TIME;
+    let free = Motions::KEYFRAMES | Motions::TIME | Motions::LEAN | Motions::JELLY;
     for (a, b) in cx.trace.segments.iter().zip(&twin.segments) {
         if !a.settled || !b.settled {
             continue;
@@ -37,10 +40,21 @@ pub fn run(cx: &Cx, twin: &RunTrace) -> Vec<Finding> {
         let (Some(ia), Some(ib)) = (cx.tl.at(a.e), tw.at(b.e)) else {
             continue;
         };
+        // A node left out in either run is left out of both (the twin
+        // draws a leaning node upright, without LEAN).
+        let freed: BTreeSet<String> = [(&cx.tl, ia), (&tw, ib)]
+            .iter()
+            .flat_map(|(tl, i)| {
+                tl.screens[*i]
+                    .iter()
+                    .filter(|(_, r)| motions(r).intersects(free))
+                    .map(|(k, _)| k.to_string())
+            })
+            .collect();
         let shown = |tl: &Timeline, i: usize| -> BTreeSet<String> {
             tl.screens[i]
                 .iter()
-                .filter(|(_, r)| tl.visible(i, r) && !motions(r).intersects(free))
+                .filter(|(k, r)| tl.visible(i, r) && !freed.contains(**k))
                 .map(|(k, _)| k.to_string())
                 .collect()
         };

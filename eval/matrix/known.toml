@@ -1,0 +1,105 @@
+# The effect matrix's accepted failures (docs/eval.md, "Matrix"): a cell
+# listed here may fail the checks named, and only those; a listed check
+# that passes is stale and fails the matrix, so a fix removes its line.
+# Keys are cells (`a`, `a+b` in effects.toml's order), optionally at one
+# rate (`a+b@144`). Every entry says why and since when; a finding is
+# listed here only after it was triaged as the product's (or the
+# sandbox's known limit), never to make a cell pass.
+#
+# ["enter-slide+late-text-1"]
+# checks = ["envelope"]
+# note = "why"
+# since = "2026-10-17"
+
+# Product finding (eval-sandbox matrix, first 60 Hz run): a node leaving
+# with `exit { height: 0 }` alone springs its height to 0, then, on the
+# frame its exit ends and before it is removed, is laid out and drawn
+# whole again for one frame (row#subject and its text at 12 x 15, k34 of
+# m.exit-height0.60). A fade, a slide's opacity, `reveal` or `clip:` on
+# it hide that frame, which is why those pairs pass. Not fixed here
+# (strand-render's exit/size-spring hand-off is outside the sandbox).
+
+["exit-height0"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["enter-fade+exit-height0"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["enter-slide+exit-height0"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["enter-scale+exit-height0"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+flip-reorder"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+size-spring"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+text-estimate-far"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+shared-morph"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+stagger"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+lean"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+jelly"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+keyframes"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+blur"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+late-text-1"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+late-text-paint"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+scale-1.5"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"
+
+["exit-height0+scale-2"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
+since = "2026-10-17"

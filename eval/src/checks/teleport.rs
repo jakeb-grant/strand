@@ -1,10 +1,17 @@
 //! `teleport`: a moving node does not jump. Between two frames in which
 //! it shows, with any motion on it or an ancestor at either, each edge
-//! moves at most `max(teleport_px * 60 / hz, 0.75 * |e - s|) + tol` per
-//! tick between them. A glide retargeted in flight starts from where the
-//! node was drawn: its drawn box does not jump with its layout. A jump
-//! with no motion at either frame (layout snapping) is noted, not failed.
-//! Skipped under reduced motion, where everything snaps.
+//! moves at most `max(teleport_px * 60 / hz, 0.75 * d) + tol` per tick
+//! between them. `d` is the segment's travel `|e - s|` or, for a node
+//! gliding (or carried by a gliding ancestor) at both frames, the glide
+//! offset, its own and inherited, it had left at the first, if larger: a
+//! drag released far from home has no net travel, but its glide back
+//! closes the whole distance, and a jump of all that is left in one tick
+//! still exceeds 0.75 of it. A glide retargeted in flight starts from
+//! where the node was drawn: its drawn box does not jump with its layout.
+//! A jump with no motion at either frame (layout snapping) is noted, not
+//! failed; on w and h a glide or a drag counts as no motion (they move a
+//! box, never size it). Skipped under reduced motion, where everything
+//! snaps.
 
 use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value};
 use crate::scenario::CheckId;
@@ -31,13 +38,26 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 if !cx.tl.visible(i, r) || !cx.tl.visible(p, q) || q.surface != r.surface {
                     continue;
                 }
-                let moving = r.emot != 0 || q.emot != 0;
+                let any = Motions(r.emot | q.emot);
                 let glides = Motions(r.mot).contains(Motions::GLIDE)
                     && Motions(q.mot).contains(Motions::GLIDE);
+                // Gliding itself or carried by a gliding ancestor.
+                let carried = Motions(r.emot).contains(Motions::GLIDE)
+                    && Motions(q.emot).contains(Motions::GLIDE);
                 for a in GEOMETRY {
                     if cx.exempt(CheckId::Teleport, si, key, a.bits()) {
                         continue;
                     }
+                    // A glide or a drag moves a box, never sizes it: a size
+                    // that layout snaps under one is layout's, as with no
+                    // motion (a late text's estimate corrected while its
+                    // row glides a pixel).
+                    let moving = match a {
+                        super::Axis::W | super::Axis::H => {
+                            any.0 & !(Motions::GLIDE | Motions::LIFT).0 != 0
+                        }
+                        _ => !any.is_empty(),
+                    };
                     let travel = match (
                         bi.and_then(|b| cx.tl.row(b, key)),
                         ei.and_then(|e| cx.tl.row(e, key)),
@@ -45,7 +65,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         (Some(b), Some(e)) => (value(e, a) - value(b, a)).abs(),
                         _ => 0.0,
                     };
-                    let bound = (per_tick * ticks).max(0.75 * travel) + cx.tol;
+                    let left = match (carried, a) {
+                        (true, super::Axis::X) => f64::from(q.glide[0] + q.inherited[0]).abs(),
+                        (true, super::Axis::Y) => f64::from(q.glide[1] + q.inherited[1]).abs(),
+                        _ => 0.0,
+                    };
+                    let bound = (per_tick * ticks).max(0.75 * travel.max(left)) + cx.tol;
                     let d = value(r, a) - value(q, a);
                     let k = cx.tl.ks[i];
                     if d.abs() > bound {
