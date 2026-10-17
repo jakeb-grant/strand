@@ -831,7 +831,9 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // hung driver) keeps the connection: the manager is leaked, not
     // dropped under it, and the process exits soon after.
     #[cfg(feature = "gpu")]
-    if !gpu.shutdown(GPU_SHUTDOWN) {
+    let gpu_left = !gpu.shutdown(GPU_SHUTDOWN);
+    #[cfg(feature = "gpu")]
+    if gpu_left {
         log::warn!(
             "GPU: the thread did not end within {} s; the Wayland connection is left open",
             GPU_SHUTDOWN.as_secs()
@@ -843,13 +845,40 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     if compiler.join().is_err() {
         log::error!("the compiler worker or the file watcher panicked");
     }
-    match (end, joined) {
+    let result = match (end, joined) {
         (_, Err(_)) => Err(DemoError::Logic("panicked".into())),
         (End::Failed(e), _) => Err(e),
         (_, Ok(Err(e))) => Err(DemoError::Logic(e)),
         (End::LogicEnded, Ok(Ok(()))) => Err(DemoError::Logic("ended".into())),
         (End::Done, Ok(Ok(()))) => Ok(()),
+    };
+    #[cfg(feature = "gpu")]
+    if gpu_left {
+        exit_beside_gpu_thread(&result);
     }
+    result
+}
+
+/// (gpu-first) Ends the process while the GPU thread is still running
+/// (a driver still compiling the warm device's pipelines at a SIGTERM
+/// soon after boot, or a hung one), once the logic thread has flushed
+/// and ended. A normal exit runs the C library's exit handlers and the
+/// driver's static destructors (lavapipe's LLVM) under that thread,
+/// which crashes the process; `_exit` skips them. `strand run` is the
+/// only caller, and the process ends right after it anyway.
+#[cfg(feature = "gpu")]
+fn exit_beside_gpu_thread(result: &Result<(), DemoError>) -> ! {
+    use std::io::Write;
+    if let Err(e) = result {
+        eprintln!("strand run: {e}");
+    }
+    log::logger().flush();
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `_exit` only ends the process; nothing after it runs, and
+    // every thread whose work must reach the disk (logic, compiler) has
+    // been joined above.
+    unsafe { libc::_exit(i32::from(result.is_err())) }
 }
 
 #[cfg(test)]
