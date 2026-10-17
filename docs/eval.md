@@ -163,7 +163,9 @@ advance the clock.
 
 **Environment**
 
-- `reduce-motion on|off`.
+- `reduce-motion on|off` sets `system.reduced_motion`, which logic reads
+  and hands render in its diff, as in the shell (so does `set
+  system.reduced_motion …`).
 - `scale S`.
 - `hz N`.
 - `backend cpu|gpu`.
@@ -227,18 +229,31 @@ runtime's `text_ready` wake does.
 ## Driver
 
 One scenario runs in one process: the logic VM, the input router and the
-renderer, wired as the runtime wires them. Each tick does this, in order:
+renderer, wired as the runtime wires them (crates/strand/src/demo and
+run/). The renderer's own timers (a tooltip's delay, a capped clock's tick)
+and the router read the virtual clock. Each tick does this, in order:
 
-1. Logic runs its timers and steps to `t`.
-2. Its diff goes through the router to render, and surfaces follow.
-3. The router ticks.
-4. Waker texts are delivered.
+1. The tick's input steps go through the router, as `Host::input` does:
+   input that leaves an idle surface wanting a frame wakes the loop.
+2. Logic runs its timers and steps to `t`. Only a diff with something in
+   it is applied (as the logic thread sends), then the router settles and
+   surfaces follow.
+3. The loop wakes between frames if a waker text is delivered or the
+   renderer's next wake is due: the router ticks and `Renderer::update`
+   runs (`text_ready`).
+4. A frame held for logic's answer to its layout facts (an idle surface's
+   container query) gets it first.
 5. Paint texts are delivered, then every surface that wants a frame paints
-   at `t`.
-6. The frame's traces are collected.
+   once at `t`. A paint that leaves surface changes wakes the loop
+   (`Host::painted`).
+6. The frame's traces are collected, and what the frame laid out goes to
+   logic; its answer lands before the next frame.
 
-The renderer's wall-clock holds are neutralised with its own setters, so a
-run is a function of its scenario. Surfaces are attached and configured at
+Text is shaped inline, where the shell has a text worker that wakes the
+loop for each layout it delivers: the driver wakes the loop for each
+layout shaped inline, as that wake would. The renderer's wall-clock holds
+are neutralised with its own setters (the query hold excepted: logic always
+answers in time), so a run is a function of its scenario. Surfaces are attached and configured at
 the size their spec asks, as the surface manager does. A run that leaves a
 surface wanting frames at the end of a rest is a `settle` failure, not a
 hang.
@@ -256,9 +271,13 @@ For each node the trace records:
   spring, enter, exit, keyframes, morph, reveal, stagger, lean, jelly,
   drag, time);
 - its authored axes;
-- the parts of its offset (inherited, written, spring, glide, morph);
+- the parts of its offset (inherited, and of that the part in flight;
+  written, spring, glide, morph);
 - why it is hidden;
 - its text state (estimate, shaped or held).
+
+Each frame also records the screen's scale it was drawn at, and whether
+logic's diff or input reached the renderer since the frame before.
 
 A node's key is its origin plus its sibling path, stable across runs and
 builds. The digest hashes every deterministic field and none of the wall
@@ -270,8 +289,16 @@ A segment runs from a step that changes something to the next `rest`. `s`
 is the tick before its first change, and `e` is its rest. On each axis a
 node is either a mover or a bystander:
 
-- A **mover** is laid out differently at `s` and `e`.
-- A **bystander** is laid out the same at both.
+- A **mover** is laid out differently at `s` and `e`, or drawn at a
+  different place at both (a written offset changed), or laid out
+  elsewhere between them for a reason: something on its surface that lays
+  out anew by itself (an exiting ghost holding its slot, a size spring,
+  keyframes, a time-driven prop, a drag, a text drawn by its estimate), or
+  logic's diff or input arriving at the frame it came back on.
+- A **bystander** is any other node: laid out the same at `s` and `e`, and
+  elsewhere between them for no reason. Such a layout is a wrong one
+  drawn: it neither makes the node a mover nor widens the way `envelope`
+  holds a mover to.
 
 Authored motion is exempt per axis. That covers springs of values logic
 set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
@@ -280,9 +307,9 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | Check | Holds |
 |---|---|
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
-| `bystander` | A node laid out the same on every frame of a segment, and drawn at the same place at its start and rest, is not drawn elsewhere while it runs (bugs 24 and 25). |
-| `envelope` | Derived motion stays between where a node started, where it rests and where each frame laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts. |
+| `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
+| `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel, or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts. |
 | `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose, or leaves a damaged frame blank. |
 | `twin` | The run with motion reduced ends each settled segment where the run does. |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
@@ -292,7 +319,13 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `regions` | Opt-in. Where a surface takes input follows what it draws. |
 | `cpu-gpu` | Comes with `backend = "both"`. The CPU and GPU legs agree (see CPU and GPU). |
 
-`tol` is `edge_px`, and at least one physical pixel.
+`tol` is `edge_px`, and at least one physical pixel at the coarsest scale
+any frame was drawn at.
+
+Authored axes pass to children as motion carries them: an ancestor's
+offset authors their x and y, its opacity their opacity, its scale or
+rotation all their geometry. Its size does not: a size that springs or
+plays is laid out each frame, and its children are held to their layouts.
 
 **`regions`.** It holds docs/spec.md 6.7's rule: a `trigger: hover` popup
 that draws nothing itself takes input only in the boxes of its top-level
@@ -508,7 +541,12 @@ owner's config becomes a committed scenario written from scratch.
   gates on them. The timing tests in crates/strand-render hold the frame
   budgets.
 - **The GPU leg does not see bug 23**, as described above.
-- **`jelly` never shows.** The driver runs `Renderer::update` every
-  tick, so each drag frame reuses its preview, and `jelly` never measures
-  a speed there. The matrix's jelly cell exercises the drag (LIFT), not
-  the squash (decisions.md, eval-sandbox matrix).
+- **`jelly` never shows.** Each pointer motion of a drag wakes the loop
+  for the surface its last frame left idle, as `Host::input` does;
+  `Renderer::update` flattens a preview and the drag frame reuses it,
+  where `jelly` never measures a speed. The matrix's jelly cell exercises
+  the drag (LIFT), not the squash. It is reported as the product's
+  (decisions.md, eval-sandbox), not worked around.
+- **The renderer's other wall-clock reads stay wall-clock**: an exit's
+  stall, GPU promotion and device retries, the busy window. Their waits
+  are set so they never fire in a run.

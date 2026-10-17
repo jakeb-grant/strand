@@ -50,6 +50,25 @@ impl Renderer {
         }
     }
 
+    /// (eval-sandbox) Reads `now` in place of the wall clock in the
+    /// renderer's own timers (`None`: the wall clock again): a tooltip's
+    /// delay and a capped clock's ticks (`effect shimmer`, a raster
+    /// rate) run on the evaluation sandbox's virtual time, and
+    /// [`Renderer::next_wake`] answers on it (docs/decisions.md
+    /// eval-sandbox).
+    pub fn set_now(&mut self, now: Option<std::time::Instant>) {
+        self.probe.now = now;
+    }
+
+    /// (eval-sandbox) How many layouts inline shaping delivered at once
+    /// since the last call (held ones not counted). A text worker wakes
+    /// the render loop for every layout it delivers (the host then runs
+    /// [`Renderer::update`]); with inline shaping nothing wakes it, so
+    /// the sandbox wakes its loop for these.
+    pub fn take_inline_shaped(&mut self) -> u32 {
+        std::mem::take(&mut self.probe.shaped)
+    }
+
     /// (eval-sandbox) The layouts the hold keeps back, oldest first.
     pub fn held_text(&self) -> Vec<HeldText> {
         self.probe.held.iter().map(|(h, _)| h.clone()).collect()
@@ -83,6 +102,7 @@ impl Renderer {
             .as_mut()
             .is_some_and(|pick| pick(node, text))
         {
+            self.probe.shaped = self.probe.shaped.saturating_add(1);
             return Some(layout);
         }
         let held = HeldText {

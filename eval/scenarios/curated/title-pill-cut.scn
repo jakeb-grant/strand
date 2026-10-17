@@ -3,7 +3,10 @@ about  = """owner-testing.md bug 13 (crates/strand-render/tests/morph.rs TITLE, 
 ids): the window pill, a title cut with `ellipsis: end` in a row whose width
 springs, room after it. The title stays visible and inside its box on every
 frame as the pill grows, shrinks and grows again; the room box moves with the
-spring (authored), never past it."""
+spring (authored), never past it. The bar holds a clock's text: its layout
+arriving is what wakes the loop to place the popup on the bar's first layout,
+as a text worker's does in the shell (docs/decisions.md eval-sandbox, the
+driver's wakes)."""
 screen = { width = 800, scale = 1.0 }
 
 === shell.strand
@@ -20,6 +23,7 @@ bar Top {
       }
     }
   }
+  text "12:00" { color: #ffffff }
 }
 
 === steps

@@ -1,12 +1,12 @@
 //! `bystander`: a node drawn at the same place on an axis at a segment's
-//! start and at its rest, and laid at the same place on every frame of
-//! it ([`super::way`]), is not drawn elsewhere on that axis while it
-//! runs, unless authored motion moves it there; its opacity and scale,
-//! when they end where they started, do not stray unless authored. Bugs
-//! 24 and 25: the bars' laid `y` never changed, yet they fell out of the
-//! island and came back.
+//! start and at its rest, laid at the same place at both and elsewhere
+//! between for no reason ([`super::way`]), is not drawn elsewhere on that
+//! axis while it runs, unless authored motion moves it there; its opacity
+//! and scale, when they end where they started, do not stray unless
+//! authored. Bugs 24 and 25: the bars' laid `y` never changed, yet they
+//! fell out of the island and came back.
 
-use super::{Cx, Finding, GEOMETRY, authored, first_per_node, value, way};
+use super::{Cx, Finding, GEOMETRY, authored, first_per_node, laid, value, way};
 use crate::scenario::CheckId;
 use crate::steps::Axis;
 
@@ -52,6 +52,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     if (v - v0).abs() > *give {
                         let what = if matches!(a, Axis::Opacity | Axis::Scale) {
                             format!("its {} strayed while nothing authored moves it", a.name())
+                        } else if (laid(r, *a) - laid(b, *a)).abs() > cx.tol {
+                            format!(
+                                "drawn off its level on {}: laid out elsewhere and back with \
+                                 nothing to move it (no change from logic or input, no exit, \
+                                 size spring, keyframes or late text)",
+                                a.name()
+                            )
                         } else {
                             format!(
                                 "drawn off its level on {}: its laid {} is unchanged and nothing \

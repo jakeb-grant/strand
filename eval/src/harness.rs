@@ -5,21 +5,33 @@
 //!
 //! Each tick `k` at time `t(k)`:
 //! 1. the instant steps before it have acted (state, input, environment);
-//! 2. logic runs its timers due by `t` and steps to `t`; its diff goes
-//!    to the router, then to render, and surfaces follow;
-//! 3. the router ticks (a hover popup's delay); what it writes reaches
-//!    logic, which steps again;
-//! 4. texts released `via waker` are delivered and `Renderer::update`
-//!    runs;
+//! 2. logic runs its timers due by `t` and steps to `t`; a diff that is
+//!    not empty goes to the router, then to render (whose `apply` runs
+//!    `Renderer::update`), routing settles on it and surfaces follow, as
+//!    the shell's logic thread sends only diffs with something in them;
+//! 3. the loop wakes between frames only for what wakes the shell's
+//!    (crates/strand/src/demo/mod.rs `text_ready`): texts released `via
+//!    waker`, or the renderer's own due time ([`Renderer::next_wake`]: a
+//!    hover popup's delay or grace, a tooltip's delay, a capped clock's
+//!    tick, on the virtual clock). A wake ticks the router and runs
+//!    `Renderer::update`; so do surface changes a paint or input leaves,
+//!    input that wakes an idle surface (`Host::painted`, `Host::input`),
+//!    and text shaped inline (a text worker wakes the loop for each
+//!    layout it delivers, `Renderer::take_inline_shaped`);
+//! 4. a frame held for logic's answer to its layout facts (a container
+//!    query on an idle surface, the renderer's `query_hold`) gets it;
 //! 5. texts released `via paint` are delivered, then every surface that
-//!    wants a frame (or was just configured) paints at `t`, layout facts
-//!    answered for up to 8 rounds;
-//! 6. the frame traces, held texts and commands are collected.
+//!    wants a frame (or was just configured) paints at `t`, once;
+//! 6. the frame traces, held texts and commands are collected, and the
+//!    layout facts the frames laid out go to logic, whose answer is
+//!    applied before the next tick's frame (the shell's logic thread
+//!    answers between frames).
 //!
 //! Wall-clock holds are neutralised with the renderer's own setters (no
-//! first-frame, new-text, estimate, busy or resize wait; container
-//! queries answered in the frame), so the run is a function of the
-//! scenario.
+//! first-frame, new-text, estimate, busy or resize wait; a long query
+//! wait, since logic here always answers before the frame it holds), and
+//! the router's and renderer's timers read the virtual clock
+//! (`set_now`), so the run is a function of the scenario.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -102,8 +114,13 @@ pub fn run(sc: &Scenario, opts: &RunOptions) -> Result<RunOutput, Error> {
 
 /// A logic wake later than this counts as nothing to wait for.
 const REST_HORIZON: Duration = Duration::from_secs(10);
-/// Rounds of layout facts answered within one tick.
+/// Rounds of layout facts a held frame waits on within one tick.
 const FACT_ROUNDS: usize = 8;
+/// Diffs applied inside one another (logic answering routing's settle,
+/// which settles again) before the run is called stuck.
+const APPLY_DEPTH: u32 = 32;
+/// Wakes in a row for text shaped inline before the run is called stuck.
+const WAKE_ROUNDS: usize = 16;
 /// Logic timers run within one tick before the run is called stuck.
 const TIMER_ROUNDS: usize = 10_000;
 
@@ -240,7 +257,16 @@ struct Harness<'s> {
     /// Ticks left without a paint: every surface's, one surface's.
     drop_all: u32,
     drop_one: HashMap<SurfaceId, u32>,
+    /// Motion is reduced now (render's last `reduced_motion`).
     reduced: bool,
+    /// Motion is reduced whatever the run sets (the twin, or the
+    /// scenario's own `reduce_motion`).
+    forced_reduced: bool,
+    /// Diffs being applied inside one another now.
+    depth: u32,
+    /// Logic's diff with changes, or input, reached the renderer since
+    /// the last frame (`Frame::driven`).
+    driven: bool,
     /// The last tick run.
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
@@ -311,7 +337,6 @@ impl<'s> Harness<'s> {
         }
         r.set_promotion(false);
         r.set_frame_trace(true);
-        r.set_reduced_motion(reduced);
         let gpu = match leg {
             BackendMode::Gpu => Some(Device::start(&mut r)?),
             _ => None,
@@ -319,6 +344,7 @@ impl<'s> Harness<'s> {
         let mut router = Router::new();
         let i0 = Instant::now();
         router.set_now(Some(i0));
+        r.set_now(Some(i0));
         let inst = Instance::from_build(&rt, &build, host.clone(), Storage::none());
         let mut h = Harness {
             sc,
@@ -341,7 +367,10 @@ impl<'s> Harness<'s> {
             waiting_intends: Vec::new(),
             drop_all: 0,
             drop_one: HashMap::new(),
-            reduced,
+            reduced: false,
+            forced_reduced: reduced,
+            depth: 0,
+            driven: false,
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
@@ -354,9 +383,40 @@ impl<'s> Harness<'s> {
             h.set_service(path, text)
                 .map_err(|m| Error::Config(format!("[services] `{path}`: {m}")))?;
         }
+        // Reduced motion is `system.reduced_motion`, which logic reads
+        // and its diffs carry to render, as in the shell.
+        if reduced {
+            h.set_reduced_motion(true)?;
+        }
         let (u, _) = h.inst.step(T0, wall(T0));
         h.update(u)?;
         Ok(h)
+    }
+
+    /// `system.reduced_motion` set, as the portal sets it in the shell.
+    fn set_reduced_motion(&mut self, on: bool) -> Result<(), Error> {
+        self.host
+            .set(&self.rt, "system.reduced_motion", Value::Bool(on))
+            .map_err(|e| Error::Run(format!("system.reduced_motion: {e}")))
+    }
+
+    /// `system.reduced_motion` as logic has it now, into `diff` when
+    /// render does not have it yet (crates/strand/src/run/logic.rs, the
+    /// step's `reduced_motion`).
+    fn carry_reduced(&mut self, diff: &mut SceneDiff) {
+        let now = self
+            .host
+            .get(&self.rt, "system.reduced_motion")
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if now != self.reduced {
+            diff.reduced_motion = Some(now);
+            self.reduced = now;
+            if let Some(i) = self.open {
+                self.trace.segments[i].reduced_motion |= now;
+            }
+        }
     }
 
     /// `screens.all` and `screens.focused`: the one screen, as
@@ -542,16 +602,41 @@ impl<'s> Harness<'s> {
         self.i0 + t.saturating_sub(T0)
     }
 
-    /// Applies a logic update: its errors noted, its diff to the router
-    /// and render.
+    /// Applies a logic update: its errors noted, its diff (with
+    /// `system.reduced_motion` when it changed) to the router and render
+    /// unless it is empty, as the shell's logic thread sends only diffs
+    /// with something in them.
     fn update(&mut self, u: Update) -> Result<(), Error> {
         for e in &u.errors {
             self.notes.push(format!("runtime error: {}", e.message()));
         }
-        self.apply(u.diff)
+        let mut diff = u.diff;
+        self.carry_reduced(&mut diff);
+        if diff.is_empty() {
+            return Ok(());
+        }
+        self.apply(diff)
     }
 
+    /// A diff to the router and render, then what the host does after
+    /// it (crates/strand/src/demo/mod.rs `apply`): routing settles on the
+    /// new scene (its intents to logic), the renderer's input wake
+    /// follows the router's, surfaces sync.
     fn apply(&mut self, diff: SceneDiff) -> Result<(), Error> {
+        self.depth += 1;
+        if self.depth > APPLY_DEPTH {
+            self.depth = 0;
+            return Err(Error::Run(
+                "logic and routing never settle (diffs applied inside one another)".into(),
+            ));
+        }
+        let out = self.apply_inner(diff);
+        self.depth -= 1;
+        out
+    }
+
+    fn apply_inner(&mut self, diff: SceneDiff) -> Result<(), Error> {
+        self.driven |= !diff.ops.is_empty();
         self.router.observe(&diff);
         let errors = self.r.apply(diff);
         if !errors.is_empty() {
@@ -559,7 +644,35 @@ impl<'s> Harness<'s> {
                 "render refused logic's diff: {errors:?}"
             )));
         }
-        self.sync()
+        let intents = self.router.settle(&mut self.r);
+        self.route(intents)?;
+        self.r.set_input_wake(self.router.next_wake());
+        self.sync()?;
+        if self.r.take_inline_shaped() > 0 {
+            self.wake()?;
+        }
+        Ok(())
+    }
+
+    /// The loop woken between frames (crates/strand/src/demo/mod.rs
+    /// `text_ready`): the router ticks (a hover popup's delay or grace),
+    /// its intents reach logic, the renderer's input wake follows, and
+    /// `Renderer::update` runs, then surfaces sync. Text shaped inline
+    /// meanwhile is text a worker would wake the loop for again.
+    fn wake(&mut self) -> Result<(), Error> {
+        for _ in 0..WAKE_ROUNDS {
+            let intents = self.router.tick(&mut self.r);
+            self.route(intents)?;
+            self.r.set_input_wake(self.router.next_wake());
+            self.r.update();
+            self.sync()?;
+            if self.r.take_inline_shaped() == 0 {
+                return Ok(());
+            }
+        }
+        Err(Error::Run(format!(
+            "text is shaped again on each of {WAKE_ROUNDS} wakes in a row"
+        )))
     }
 
     /// Surface changes to the surfaces, noted in the trace.
@@ -572,6 +685,7 @@ impl<'s> Harness<'s> {
     /// Surface changes noted in the trace, and handed to the GPU leg.
     fn changed(&mut self, changes: Vec<Change>) -> Result<(), Error> {
         let k = self.clock.k();
+        let mut detached = false;
         for c in changes {
             match c {
                 Change::Configured(id, size, scale) => {
@@ -614,6 +728,7 @@ impl<'s> Harness<'s> {
                     });
                 }
                 Change::Detached(id) => {
+                    detached = true;
                     if self.gpu_attached.remove(&id)
                         && let Some(dev) = self.gpu.as_mut()
                     {
@@ -630,6 +745,13 @@ impl<'s> Harness<'s> {
                     }
                 }
             }
+        }
+        // The pointer gone with a surface may start a hover popup's
+        // grace (`Host::surface_detached` ticks the router).
+        if detached {
+            let intents = self.router.tick(&mut self.r);
+            self.route(intents)?;
+            self.r.set_input_wake(self.router.next_wake());
         }
         Ok(())
     }
@@ -672,12 +794,28 @@ impl<'s> Harness<'s> {
         Ok(())
     }
 
+    /// Input through the router, as `Host::input` sends it: intents to
+    /// logic, the pointer to lean and tilt, the renderer's input wake;
+    /// surface changes it leaves, or a surface it wakes from idle, wake
+    /// the loop.
     fn send(&mut self, events: Vec<strand_scene::InputEvent>) -> Result<(), Error> {
+        self.driven |= !events.is_empty();
         for e in events {
+            let idle: Vec<SurfaceId> = self
+                .surfaces
+                .shown
+                .iter()
+                .map(|s| s.id)
+                .filter(|s| !self.r.wants_frame(*s))
+                .collect();
             let intents = self.router.handle(&e, &mut self.r);
             self.route(intents)?;
             let s = e.surface();
             self.r.set_pointer(s, self.router.pointer(s));
+            self.r.set_input_wake(self.router.next_wake());
+            if self.r.has_surface_changes() || idle.iter().any(|s| self.r.wants_frame(*s)) {
+                self.wake()?;
+            }
         }
         Ok(())
     }
@@ -881,11 +1019,8 @@ impl<'s> Harness<'s> {
             }
             StepKind::ReduceMotion(on) => {
                 self.event(step);
-                self.reduced = *on || self.opts.reduced_motion || self.sc.reduce_motion;
-                self.r.set_reduced_motion(self.reduced);
-                if let Some(i) = self.open {
-                    self.trace.segments[i].reduced_motion |= self.reduced;
-                }
+                // Logic's next step carries it to render.
+                self.set_reduced_motion(*on || self.forced_reduced)?;
             }
             StepKind::Scale(f) => {
                 self.event(step);
@@ -1030,8 +1165,9 @@ impl<'s> Harness<'s> {
     }
 
     /// Nothing more will happen without a step: no surface wants a frame,
-    /// the router waits for nothing, logic's next timer is more than
-    /// [`REST_HORIZON`] away, no text is held, no surface is changing.
+    /// the router waits for nothing, neither logic's next timer nor the
+    /// renderer's own (a tooltip's delay, a capped clock's tick) is due
+    /// within [`REST_HORIZON`], no text is held, no surface is changing.
     fn at_rest(&self) -> bool {
         let t = self.clock.now();
         let wants = self
@@ -1041,6 +1177,10 @@ impl<'s> Harness<'s> {
             .any(|s| s.fresh || self.r.wants_frame(s.id));
         !wants
             && self.router.next_wake().is_none()
+            && self
+                .r
+                .next_wake()
+                .is_none_or(|w| w > self.instant(t + REST_HORIZON))
             && self
                 .inst
                 .next_deadline()
@@ -1053,7 +1193,9 @@ impl<'s> Harness<'s> {
     fn tick(&mut self, input: Vec<Input>) -> Result<(), Error> {
         let k = self.clock.k();
         let t = self.clock.now();
-        self.router.set_now(Some(self.instant(t)));
+        let now = self.instant(t);
+        self.router.set_now(Some(now));
+        self.r.set_now(Some(now));
         for i in input {
             let ev = match i {
                 Input::Move(s, at) => self.pointer.move_to(s, at, ms(t)),
@@ -1064,17 +1206,28 @@ impl<'s> Harness<'s> {
             self.send(ev)?;
         }
         self.logic(t)?;
-        let intents = self.router.tick(&mut self.r);
-        self.route(intents)?;
-        // Texts arriving through the waker, between frames.
-        if self.release(k, Via::Waker) > 0 {
-            self.r.update();
-            self.sync()?;
-            self.answer()?;
+        // The loop's wakes between frames: texts arriving through the
+        // waker, the renderer's own due time (the router's included).
+        let texts = self.release(k, Via::Waker);
+        if texts > 0 || self.r.next_wake().is_some_and(|w| w <= now) {
+            self.wake()?;
+        }
+        // A frame held for logic's answer to its facts gets it first.
+        let mut rounds = 0;
+        while self.held_for_facts() && self.answer()? {
+            rounds += 1;
+            if rounds > FACT_ROUNDS {
+                return Err(Error::Run(format!(
+                    "a frame stays held for layout facts after {FACT_ROUNDS} answers"
+                )));
+            }
         }
         self.release(k, Via::Paint);
         self.paint(t)?;
         self.collect(k, t)?;
+        // What the frames laid out reaches logic now; its answer lands
+        // before the next frame.
+        self.answer()?;
         for v in self.drop_one.values_mut() {
             *v = v.saturating_sub(1);
         }
@@ -1101,6 +1254,15 @@ impl<'s> Harness<'s> {
         self.r.release_text(&mut |h| due.contains(&h.key))
     }
 
+    /// A shown surface's next frame waits (for logic's answer to its
+    /// layout facts: no text or resize wait is left in the sandbox).
+    fn held_for_facts(&self) -> bool {
+        self.surfaces
+            .shown
+            .iter()
+            .any(|s| self.r.frame_deadline(s.id).is_some())
+    }
+
     /// Layout facts to logic and its answer back; whether there were any.
     fn answer(&mut self) -> Result<bool, Error> {
         let facts = self.r.take_layout_facts();
@@ -1110,12 +1272,14 @@ impl<'s> Harness<'s> {
         for (n, b) in facts {
             self.inst.set_box(n, b);
         }
+        let seq = self.r.layout_seq();
         let u = self.inst.flush();
         for e in &u.errors {
             self.notes.push(format!("runtime error: {}", e.message()));
         }
         let mut diff = u.diff;
-        diff.layout_seen = Some(self.r.layout_seq());
+        diff.layout_seen = Some(seq);
+        self.carry_reduced(&mut diff);
         self.apply(diff)?;
         Ok(true)
     }
@@ -1156,32 +1320,32 @@ impl<'s> Harness<'s> {
         }
     }
 
-    /// Paints every surface that wants a frame at `t`.
+    /// Paints every surface that wants a frame at `t`, once; surface
+    /// changes the paints leave wake the loop (`Host::painted`).
     fn paint(&mut self, t: Duration) -> Result<(), Error> {
-        for _ in 0..FACT_ROUNDS {
-            let ids: Vec<SurfaceId> = self
-                .surfaces
-                .shown
-                .iter()
-                .filter(|s| s.fresh || self.r.wants_frame(s.id))
-                .map(|s| s.id)
-                .filter(|id| self.drop_all == 0 && !self.drop_one.contains_key(id))
-                .collect();
-            for id in ids {
-                match self.gpu.as_mut() {
-                    Some(dev) if self.gpu_attached.contains(&id) => {
-                        self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
-                        dev.changes(&mut self.r);
-                    }
-                    _ => {
-                        self.surfaces.paint(&mut self.r, id, t)?;
-                    }
+        let ids: Vec<SurfaceId> = self
+            .surfaces
+            .shown
+            .iter()
+            .filter(|s| s.fresh || self.r.wants_frame(s.id))
+            .map(|s| s.id)
+            .filter(|id| self.drop_all == 0 && !self.drop_one.contains_key(id))
+            .collect();
+        for id in ids {
+            match self.gpu.as_mut() {
+                Some(dev) if self.gpu_attached.contains(&id) => {
+                    self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
+                    dev.changes(&mut self.r);
+                }
+                _ => {
+                    self.surfaces.paint(&mut self.r, id, t)?;
                 }
             }
-            self.sync()?;
-            if !self.answer()? {
-                break;
-            }
+        }
+        // `Host::painted`: surface changes wake the loop, and so does
+        // text the frame shaped (a worker's layout arrives with a wake).
+        if self.r.take_inline_shaped() > 0 || self.r.has_surface_changes() {
+            self.wake()?;
         }
         Ok(())
     }
@@ -1209,6 +1373,12 @@ impl<'s> Harness<'s> {
         let mut cost: BTreeMap<u32, Cost> = BTreeMap::new();
         let mut last: BTreeMap<u32, &FrameTrace> = BTreeMap::new();
         for f in &traces {
+            if last.contains_key(&f.surface.0) {
+                return Err(Error::Run(format!(
+                    "surface {} painted twice at tick {k}: a frame would go unchecked",
+                    f.surface.0
+                )));
+            }
             let c = cost.entry(f.surface.0).or_default();
             c.paints += 1;
             c.damage_px += f.damage_px;
@@ -1250,6 +1420,8 @@ impl<'s> Harness<'s> {
                     paints: h.paints,
                 })
                 .collect(),
+            scale: self.surfaces.screen.scale,
+            driven: std::mem::take(&mut self.driven),
             ..Frame::default()
         };
         for (s, f) in &last {
@@ -1284,21 +1456,30 @@ impl<'s> Harness<'s> {
     }
 
     /// A surface's traced nodes as rows: keys, effective opacity, motions
-    /// and authored axes (an ancestor's x/y authors x/y, its size w/h and
-    /// x/y, its scale or rotation all geometry).
+    /// and authored axes (an ancestor's x/y authors x/y, its opacity
+    /// opacity, its scale or rotation all geometry, its size nothing:
+    /// [`inherited`]).
     fn rows(&mut self, surface: u32, nodes: &[NodeTrace]) -> Vec<Row> {
-        let mut eff: HashMap<NodeId, (f32, Axes, u32)> = HashMap::new();
+        // Per node: effective opacity, authored axes, motions, and the
+        // offset in flight it gives its children (its ancestors' and its
+        // own springs and glides, a drag's lift included).
+        let mut eff: HashMap<NodeId, (f32, Axes, u32, [f32; 2])> = HashMap::new();
         let mut out = Vec::with_capacity(nodes.len());
         for n in nodes {
-            let (pop, pauth, pmot) =
-                n.parent
-                    .and_then(|p| eff.get(&p))
-                    .copied()
-                    .unwrap_or((1.0, Axes::NONE, 0));
+            let (pop, pauth, pmot, flight) = n
+                .parent
+                .and_then(|p| eff.get(&p))
+                .copied()
+                .unwrap_or((1.0, Axes::NONE, 0, [0.0, 0.0]));
             let op = pop * n.opacity;
             let auth = n.authored | inherited(pauth);
             let emot = pmot | n.motions.0;
-            eff.insert(n.node, (op, auth, emot));
+            let p = &n.parts;
+            let carries = [
+                flight[0] + p.spring[0] + p.glide[0],
+                flight[1] + p.spring[1] + p.glide[1],
+            ];
+            eff.insert(n.node, (op, auth, emot, carries));
             let key = self
                 .labels
                 .key(n.node, &self.inst, self.r.tree(), &self.sources);
@@ -1338,6 +1519,7 @@ impl<'s> Harness<'s> {
                 spring: pair(n.parts.spring),
                 glide: pair(n.parts.glide),
                 morph: pair(n.parts.morph),
+                flight: pair(flight),
             });
         }
         out
@@ -1390,12 +1572,15 @@ fn regions(r: &Renderer, surface: SurfaceId) -> Regions {
     }
 }
 
-/// The axes a node's authored motion moves on its children.
+/// The axes a node's authored motion moves on its children: its offset
+/// carries them on x and y and its opacity fades them; its scale or
+/// rotation transforms their drawn boxes on every axis of geometry,
+/// their laid boxes unchanged. Its size does not: a size that springs or
+/// plays is laid out each frame, so its children's laid boxes follow it
+/// and their drawn boxes are held to those (a child drawn off its layout
+/// under a growing card is the bug-24 class, not authored).
 pub fn inherited(parent: Axes) -> Axes {
     let mut a = Axes(parent.0 & (Axes::X | Axes::Y | Axes::OPACITY).0);
-    if parent.intersects(Axes::W | Axes::H) {
-        a |= Axes::X | Axes::Y | Axes::W | Axes::H;
-    }
     if parent.intersects(Axes::SCALE | Axes::ROTATE) {
         a |= Axes::GEOMETRY;
     }

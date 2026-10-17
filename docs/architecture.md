@@ -787,6 +787,13 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     trace's switch, and a hold on the layouts inline shaping makes, which
     stay pending, as a late text worker's do, until released through the
     usual delivery;
+  - `Renderer::set_now(Option<Instant>)`: the time the renderer's own
+    timers read in place of the wall clock (a tooltip's delay, a capped
+    clock's ticks, so `next_wake` answers on it), through the private
+    `Renderer::now`, which is `Instant::now()` without the feature or
+    unset; and `take_inline_shaped() -> u32`, the layouts inline shaping
+    delivered at once since the last call (each one a text worker would
+    have woken the host's loop for);
   - `Router::set_now(Option<Instant>)`: the time the router reads for
     hover delays, grace and edits in place of the wall clock;
   - the trace is built in `flatten/probe.rs` from the locals

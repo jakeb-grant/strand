@@ -1,0 +1,35 @@
+id     = "container-query"
+about  = """A container query (`when self.width < 60`, design.md "Container
+queries") on a row whose text widens: the layout facts go to logic and its
+answer comes back between frames. What a layout pass before a frame reads is
+answered before it (an idle surface's frame is held for logic), what the frame
+itself lays out (the wide text, late by a frame and shaped at the paint) is
+answered after it, and the row's opacity springs to logic's answer from the
+next frame. The box after the row glides out of its way, then back."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 4; align: center
+    row { id: probe; shrink: 0; align: center
+      opacity: 1
+      when self.width < 60 { opacity: 0.5 }
+      text wide ? "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii" : "ii" { id: label; shrink: 0; color: #ffffff }
+    }
+    box { id: after; width: 20; height: 10; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark widen
+text late 1 where "iiiiiiii" via paint
+set wide true
+rest
+expect still #after y
+mark narrow
+set wide false
+rest
+expect still #after y

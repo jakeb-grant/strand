@@ -13,11 +13,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The trace format's version.
 pub const SCHEMA: u32 = 1;
 
+/// The columns of a row before `fx`, `fy` (still read).
+const OLD_COLS: usize = 34;
+
 /// The node row's columns, in order (`Row`'s array form).
-pub const COLS: [&str; 34] = [
+pub const COLS: [&str; 36] = [
     "key", "s", "x", "y", "w", "h", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "oo",
     "sx", "sy", "rot", "mot", "emot", "auth", "hid", "txt", "ix", "iy", "wx", "wy", "spx", "spy",
-    "gx", "gy", "mx", "my",
+    "gx", "gy", "mx", "my", "fx", "fy",
 ];
 
 /// A rect, `[x, y, w, h]`.
@@ -219,6 +222,14 @@ pub struct Frame {
     pub regions: BTreeMap<u32, Regions>,
     /// The nodes of each painted surface, at its last paint of the tick.
     pub n: Vec<Row>,
+    /// The screen's scale at this tick (a `scale` step changes it); 0 in
+    /// a trace from before it was recorded: the scenario's.
+    #[serde(default)]
+    pub scale: f64,
+    /// Logic's diff with changes in it, or input, reached the renderer
+    /// since the frame before: what is laid out anew may be theirs.
+    #[serde(default)]
+    pub driven: bool,
 }
 
 /// A surface's `Painter` regions after a frame.
@@ -268,6 +279,10 @@ pub struct Row {
     pub spring: [f32; 2],
     pub glide: [f32; 2],
     pub morph: [f32; 2],
+    /// Of `inherited`, the part in flight: the ancestors' springs and
+    /// glides, a drag's lift included (what they have written at rest
+    /// left out). The sandbox's sum of their `spring` and `glide`.
+    pub flight: [f32; 2],
 }
 
 /// `v` to 1/64.
@@ -302,6 +317,7 @@ impl Serialize for Row {
             self.spring,
             self.glide,
             self.morph,
+            self.flight,
         ] {
             seq.serialize_element(&q(p[0]))?;
             seq.serialize_element(&q(p[1]))?;
@@ -313,11 +329,13 @@ impl Serialize for Row {
 impl<'de> Deserialize<'de> for Row {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v: Vec<serde_json::Value> = Vec::deserialize(d)?;
-        if v.len() != COLS.len() {
+        // A trace from before `fx`, `fy` were recorded (an A/B against
+        // an earlier revision) reads with nothing in flight.
+        if v.len() != COLS.len() && v.len() != OLD_COLS {
             return Err(D::Error::custom(format!(
                 "a node row has {} columns, not {}",
-                COLS.len(),
-                v.len()
+                v.len(),
+                COLS.len()
             )));
         }
         let f = |i: usize| -> Result<f32, D::Error> {
@@ -359,6 +377,11 @@ impl<'de> Deserialize<'de> for Row {
             spring: pair(28)?,
             glide: pair(30)?,
             morph: pair(32)?,
+            flight: if v.len() > OLD_COLS {
+                pair(34)?
+            } else {
+                [0.0, 0.0]
+            },
         })
     }
 }
@@ -403,11 +426,37 @@ impl RunTrace {
             put(&(f.k, f.t_ns, &f.painted, &f.wants, &f.sizes));
             put(&(&det, &f.held_text, &f.n));
             put(&f.regions);
+            put(&(f.scale, f.driven));
         }
         put(&self.segments);
         put(&self.rests);
         put(&self.nodes);
         format!("blake3:{}", h.finalize().to_hex())
+    }
+
+    /// The screen's scale at `f`: its own, else the scenario's, else 1.
+    pub fn scale_at(&self, f: &Frame) -> f64 {
+        if f.scale > 0.0 {
+            f.scale
+        } else if self.scenario.scale > 0.0 {
+            self.scenario.scale
+        } else {
+            1.0
+        }
+    }
+
+    /// The least scale any frame was drawn at (the scenario's when none
+    /// was): the coarsest physical pixel, in logical px, is its inverse.
+    pub fn min_scale(&self) -> f64 {
+        self.frames
+            .iter()
+            .map(|f| self.scale_at(f))
+            .fold(None, |m: Option<f64>, s| Some(m.map_or(s, |m| m.min(s))))
+            .unwrap_or(if self.scenario.scale > 0.0 {
+                self.scenario.scale
+            } else {
+                1.0
+            })
     }
 
     /// Fills in the digest.

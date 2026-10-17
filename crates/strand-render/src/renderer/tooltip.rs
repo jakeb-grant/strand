@@ -92,7 +92,7 @@ impl Renderer {
         let Some((target, text)) = want else {
             return;
         };
-        let due = Instant::now() + self.tooltip_delay;
+        let due = self.now() + self.tooltip_delay;
         self.tooltip = Some(Tooltip {
             target,
             text,
@@ -119,7 +119,7 @@ impl Renderer {
         let Some(t) = &self.tooltip else {
             return;
         };
-        if t.popup.is_some() || Instant::now() < t.due {
+        if t.popup.is_some() || self.now() < t.due {
             return;
         }
         if !self.tree.contains_live(t.target) {

@@ -101,7 +101,7 @@ pub fn run(
             let (Some(ia), Some(ib)) = (cpu_images.get(na), gpu_images.get(nb)) else {
                 continue;
             };
-            let scale = cx.trace.scenario.scale.max(0.25);
+            let scale = cx.trace.scale_at(fa).max(0.25);
             let masks: Vec<[f32; 4]> =
                 fa.n.iter()
                     .filter(|r| r.surface == *s && allowed(&r.key))

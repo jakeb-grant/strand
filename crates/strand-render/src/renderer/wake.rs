@@ -167,7 +167,7 @@ impl Renderer {
         #[cfg(feature = "gpu")]
         self.gpu_tick(now);
         // A capped clock's tick has come: its surface wants a frame.
-        self.clocks.woke(now);
+        self.clocks.woke(self.now());
         self.show_tooltip();
         self.poll_text();
         self.expire_exits();

@@ -429,3 +429,20 @@ fn the_router_reads_the_pinned_clock() {
     router.set_now(Some(i0 + delay));
     assert!(opened(router.tick(&mut scene)), "opens when its delay ends");
 }
+
+/// Every layout inline shaping delivers at once is counted, as a text
+/// worker would wake the loop for it; one the hold keeps back is not,
+/// nor one `release_text` delivers.
+#[test]
+fn inline_shaping_counts_the_wakes_a_worker_would_make() {
+    let mut sh = Shell::boot(TWO, false);
+    sh.r.take_inline_shaped();
+    sh.r.set_text_hold_with(Some(Box::new(|_, text: &str| text == "iiii")));
+    sh.set("show", Value::Bool(true));
+    sh.paint();
+    assert_eq!(sh.r.take_inline_shaped(), 1, "\"mm\" alone");
+    assert_eq!(sh.r.take_inline_shaped(), 0, "taken");
+    assert_eq!(sh.r.release_text(&mut |_| true), 1);
+    sh.run();
+    assert_eq!(sh.r.take_inline_shaped(), 0, "a release is not shaping");
+}

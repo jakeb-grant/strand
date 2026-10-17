@@ -267,6 +267,13 @@ pub(crate) struct Probe {
     /// The hold: `None` holds nothing.
     pub(crate) hold: Option<HoldPick>,
     pub(crate) held: Vec<(HeldText, TextLayout)>,
+    /// The time the renderer's own timers read in place of the wall
+    /// clock (`Renderer::set_now`).
+    pub(crate) now: Option<std::time::Instant>,
+    /// Layouts inline shaping delivered at once since the last
+    /// `Renderer::take_inline_shaped`: each is one a text worker would
+    /// have woken the loop for.
+    pub(crate) shaped: u32,
 }
 
 impl std::fmt::Debug for Probe {
@@ -276,6 +283,8 @@ impl std::fmt::Debug for Probe {
             .field("frames", &self.frames.len())
             .field("hold", &self.hold.is_some())
             .field("held", &self.held.len())
+            .field("now", &self.now)
+            .field("shaped", &self.shaped)
             .finish()
     }
 }

@@ -363,39 +363,90 @@ pub const GEOMETRY: [Axis; 4] = [Axis::X, Axis::Y, Axis::W, Axis::H];
 /// derived motion may take.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Way {
-    /// Drawn at the same place at the segment's start and rest, and laid
-    /// at the same place on every frame of it.
+    /// Drawn at the same place at the segment's start and rest, laid at
+    /// the same place at both, and laid elsewhere on no frame between for
+    /// a reason ([`way`]).
     pub bystander: bool,
     /// The lowest and highest place it may be drawn at, before any
-    /// overshoot: its start and rest, and every frame's laid place
-    /// carried by the offset it rests at (written offsets, transforms).
+    /// overshoot: its start and rest, and the laid place of every frame
+    /// counted, carried by the offset it rests at (written offsets,
+    /// transforms).
     pub lo: f64,
     pub hi: f64,
 }
 
+/// What on a surface can lay a node out elsewhere for a while and back
+/// with no change from logic or input: an exiting ghost holding its slot
+/// (`EXIT`, an inert node), a size that springs past its target, a
+/// keyframe or time-driven prop that places, a drag lifting an item out
+/// of its list, a text drawn by its estimate or held.
+pub const LAYOUT_CAUSES: Motions = Motions(
+    Motions::EXIT.0
+        | Motions::SIZE_SPRING.0
+        | Motions::KEYFRAMES.0
+        | Motions::TIME.0
+        | Motions::LIFT.0,
+);
+
 /// `key`'s [`Way`] on `a` over the frames `(s, e_k]` (`b` its row at
 /// `s`, `e` at the rest).
 ///
-/// A node can move in layout and come back within a segment (an exiting
-/// ghost holds its slot until it leaves, a text drawn by its estimate
-/// before it is shaped): that is a mover held to the layouts drawn, not
-/// a bystander. A node drawn elsewhere at rest though laid at the same
-/// place (a written `x:` offset that changed) is a mover too. Only the
-/// layouts of frames drawn count: a layout pass a frame threw away (the
-/// estimate's, before the shaped text's in the same frame) never does.
+/// A node laid out at the same place at `s` and at `e` can be laid
+/// elsewhere between and come back (an *excursion*). One with a reason
+/// makes it a mover held to the layouts drawn: something on its surface
+/// at one of its frames can lay out anew with no change from logic
+/// ([`LAYOUT_CAUSES`]: an exiting ghost holding its slot, a text drawn by
+/// its estimate before it is shaped), or logic's diff or input reached
+/// the renderer at the frame it came back on (a second step of the
+/// segment, a container query's answer, the pointer leaving what it
+/// hovered). An excursion with no reason is a layout drawn wrong: it
+/// neither makes the node a mover nor widens its way, so `bystander` or
+/// `envelope` holds the node to where it belongs. The same holds for a
+/// mover's excursions past its start and rest. A node drawn elsewhere at
+/// rest though laid at the same place (a written `x:` offset that
+/// changed) is a mover too. Only the layouts of frames drawn count: a
+/// layout pass a frame threw away (the estimate's, before the shaped
+/// text's in the same frame) never does.
 pub fn way(cx: &Cx, key: &str, s: u32, e_k: u32, b: &Row, e: &Row, a: Axis) -> Way {
     let (vs, ve) = (value(b, a), value(e, a));
     let carry = ve - laid(e, a);
     let (mut lo, mut hi) = (vs.min(ve), vs.max(ve));
-    let mut laid_moved = (laid(b, a) - laid(e, a)).abs() > cx.tol;
+    let (lb, le) = (laid(b, a), laid(e, a));
+    let (span_lo, span_hi) = (lb.min(le) - cx.tol, lb.max(le) + cx.tol);
+    let mut laid_moved = (lb - le).abs() > cx.tol;
+    // The excursion open: its laid places, and whether it has a reason.
+    let mut run: Vec<f64> = Vec::new();
+    let mut why = false;
+    let take = |run: &mut Vec<f64>, lo: &mut f64, hi: &mut f64, moved: &mut bool| {
+        for at in run.drain(..) {
+            *lo = lo.min(at + carry);
+            *hi = hi.max(at + carry);
+            *moved = true;
+        }
+    };
     for i in cx.tl.within(Some(s), e_k) {
         let Some(r) = cx.tl.row(i, key) else { continue };
-        if (laid(r, a) - laid(b, a)).abs() > cx.tol {
+        let l = laid(r, a);
+        if l < span_lo || l > span_hi {
+            run.push(l);
+            why |= cx.lays_out(i, r.surface);
+            continue;
+        }
+        if !run.is_empty() {
+            if why || cx.tl.frames.get(i).is_some_and(|f| f.driven) {
+                take(&mut run, &mut lo, &mut hi, &mut laid_moved);
+            }
+            run.clear();
+            why = false;
+        }
+        if (l - lb).abs() > cx.tol {
             laid_moved = true;
         }
-        let at = laid(r, a) + carry;
-        lo = lo.min(at);
-        hi = hi.max(at);
+        lo = lo.min(l + carry);
+        hi = hi.max(l + carry);
+    }
+    if why {
+        take(&mut run, &mut lo, &mut hi, &mut laid_moved);
     }
     Way {
         bystander: !laid_moved && (vs - ve).abs() <= cx.tol,
@@ -425,14 +476,19 @@ pub struct Cx<'a> {
     /// Allow entries that named nothing.
     pub unmatched_allows: Vec<(CheckId, String)>,
     parents: HashMap<&'a str, &'a str>,
+    /// Per frame of the timeline, the surfaces with something on them
+    /// that lays out anew by itself ([`LAYOUT_CAUSES`]).
+    causes: Vec<HashSet<u32>>,
 }
 
 impl<'a> Cx<'a> {
     pub fn new(sc: &'a Scenario, trace: &'a RunTrace) -> Cx<'a> {
-        let scale = if trace.scenario.scale > 0.0 {
-            trace.scenario.scale
-        } else {
+        // The coarsest physical pixel any frame was drawn at (a `scale`
+        // step can change it mid-run).
+        let scale = if trace.frames.is_empty() && trace.scenario.scale <= 0.0 {
             sc.screen.scale
+        } else {
+            trace.min_scale()
         };
         let tol = sc.tolerance.edge_px.max(1.0 / scale.max(0.25));
         let mut allow: HashMap<CheckId, HashSet<String>> = HashMap::new();
@@ -451,15 +507,36 @@ impl<'a> Cx<'a> {
             .iter()
             .filter_map(|(k, m)| Some((k.as_str(), m.parent.as_deref()?)))
             .collect();
+        let tl = Timeline::new(trace);
+        let causes = tl
+            .screens
+            .iter()
+            .map(|rows| {
+                rows.values()
+                    .filter(|r| {
+                        Motions(r.mot).intersects(LAYOUT_CAUSES)
+                            || r.hidden.as_deref() == Some("inert")
+                            || matches!(r.text.as_deref(), Some("E" | "I"))
+                    })
+                    .map(|r| r.surface)
+                    .collect()
+            })
+            .collect();
         Cx {
             sc,
             trace,
-            tl: Timeline::new(trace),
+            tl,
             tol,
             allow,
             unmatched_allows: unmatched,
             parents,
+            causes,
         }
+    }
+
+    /// Something on `surface` at frame `i` lays out anew by itself.
+    pub fn lays_out(&self, i: usize, surface: u32) -> bool {
+        self.causes.get(i).is_some_and(|c| c.contains(&surface))
     }
 
     /// `key` and its ancestors.

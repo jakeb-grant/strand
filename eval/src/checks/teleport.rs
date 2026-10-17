@@ -3,8 +3,9 @@
 //! moves at most `max(teleport_px * 60 / hz, 0.75 * d) + tol` per tick
 //! between them. `d` is the segment's travel `|e - s|` or, for a node
 //! gliding (or carried by a gliding ancestor) at the second frame and
-//! gliding or lifted by a drag at the first, the glide (or drag) offset,
-//! its own and inherited, it had left at the first, if larger: a
+//! gliding or lifted by a drag at the first, the glide (or drag) offset
+//! it had left at the first, its own and its ancestors' in flight (what
+//! they have written at rest is no way left to go), if larger: a
 //! drag released far from home has no net travel, but its glide back
 //! closes the whole distance, and a jump of all that is left in one tick
 //! still exceeds 0.75 of it. A glide retargeted in flight starts from
@@ -83,8 +84,8 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         _ => 0.0,
                     };
                     let left = match (carried, a) {
-                        (true, super::Axis::X) => f64::from(q.glide[0] + q.inherited[0]).abs(),
-                        (true, super::Axis::Y) => f64::from(q.glide[1] + q.inherited[1]).abs(),
+                        (true, super::Axis::X) => f64::from(q.glide[0] + q.flight[0]).abs(),
+                        (true, super::Axis::Y) => f64::from(q.glide[1] + q.flight[1]).abs(),
                         _ => 0.0,
                     };
                     let bound = (per_tick * ticks).max(0.75 * travel.max(left)) + cx.tol;

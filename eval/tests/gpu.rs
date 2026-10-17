@@ -61,8 +61,30 @@ fn the_gpu_leg_draws_every_frame_on_the_gpu() {
             .any(|f| f.cost.values().any(|c| c.raster_px > 0)),
         "the CPU leg rasters"
     );
+    // The same nodes, frame by frame, at the same places; opacity within
+    // 1e-4. A frame with nothing new still presents on the GPU (its
+    // target has no age: all of it is damage) and stamps the surface's
+    // last painted time, where the CPU's draws nothing and does not: a
+    // motion starting at the next frame takes its first step from
+    // there, a frame shorter on the GPU (the exit fade after the rest
+    // here, 5e-6 apart). docs/decisions.md eval-sandbox, the driver's
+    // wakes.
     let rows = |t: &strand_eval::trace::RunTrace| -> Vec<_> {
-        t.frames.iter().map(|f| (f.k, f.n.clone())).collect()
+        t.frames
+            .iter()
+            .map(|f| {
+                let n: Vec<_> =
+                    f.n.iter()
+                        .map(|r| {
+                            let mut r = r.clone();
+                            r.op = (r.op * 1e4).round() / 1e4;
+                            r.own_op = (r.own_op * 1e4).round() / 1e4;
+                            r
+                        })
+                        .collect();
+                (f.k, n)
+            })
+            .collect()
     };
     assert_eq!(
         rows(&c.trace),

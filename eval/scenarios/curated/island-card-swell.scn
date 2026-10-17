@@ -3,7 +3,10 @@ about  = """owner-testing.md bug 17 (crates/strand-render/tests/morph.rs SWELL, 
 ids and four rows): the notch card swells from the island into a dashboard on
 its own springs, `x` springing with `width` so it stays centred, under a clip;
 its rows mount staggered with `enter { opacity: 0; y: -8 }` as it grows and
-leave by the mirrored pose as it folds."""
+leave by the mirrored pose as it folds. The bar holds a clock's
+text: its layout arriving is what wakes the loop to place the popup on the
+bar's first layout, as a text worker's does in the shell (docs/decisions.md
+eval-sandbox, the driver's wakes)."""
 screen = { width = 1280, scale = 1.0 }
 
 === shell.strand
@@ -40,6 +43,7 @@ bar Top {
       }
     }
   }
+  text "12:00" { color: #cdd6f4 }
 }
 
 === steps

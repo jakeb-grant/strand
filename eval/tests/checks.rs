@@ -649,6 +649,47 @@ fn a_drag_released_far_from_home_glides_back_without_teleport() {
     );
 }
 
+/// A node carried by a gliding ancestor that also sits at a written
+/// `x: 100`: what it has left to go is the glide in flight, not the
+/// ancestor's resting offset, and a jump of 70 px in one tick fails
+/// (0.75 of the 104 px inherited would have let it through).
+#[test]
+fn a_static_ancestor_offset_is_not_glide_left_to_go() {
+    let sc = scenario("");
+    let carried = |x: f32, flight: f32| {
+        let mut r = row("a", [0.0, 0.0, 20.0, 20.0])
+            .laid_at(100.0, 0.0)
+            .at(x, 0.0);
+        r.emot = Motions::GLIDE.0;
+        r.inherited = [100.0 + flight, 0.0];
+        r.flight = [flight, 0.0];
+        r
+    };
+    let t = shape(6, |k| match k {
+        0 => vec![
+            row("a", [0.0, 0.0, 20.0, 20.0])
+                .laid_at(100.0, 0.0)
+                .at(100.0, 0.0),
+        ],
+        1 => vec![carried(104.0, 4.0)],
+        2 => vec![carried(34.0, 2.0)],
+        3 => vec![carried(66.0, 1.0)],
+        4 => vec![carried(98.0, 0.5)],
+        _ => vec![
+            row("a", [0.0, 0.0, 20.0, 20.0])
+                .laid_at(100.0, 0.0)
+                .at(100.0, 0.0),
+        ],
+    });
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+    assert_eq!(r.failures(CheckId::Teleport)[0].k, Some(2));
+}
+
 #[test]
 fn a_layout_jump_with_no_motion_is_noted_not_failed() {
     let sc = scenario("");
@@ -1207,6 +1248,9 @@ fn a_report_round_trips_through_json() {
 fn ghost_slot(peak: f32) -> RunTrace {
     shape(14, |k| {
         let right = row("right", [58.0, 9.0, 20.0, 12.0]);
+        // The ghost holding its slot while it exits.
+        let mut ghost = row("ghost", [80.0, 9.0, 20.0, 12.0]).mot(Motions::EXIT);
+        ghost.hidden = Some("inert".into());
         match k {
             0 => vec![right],
             1..=5 => vec![
@@ -1214,6 +1258,7 @@ fn ghost_slot(peak: f32) -> RunTrace {
                     .laid_at(102.0, 9.0)
                     .at(ease(58.0, peak, k, 5), 9.0)
                     .mot(Motions::GLIDE),
+                ghost,
             ],
             6..=12 => vec![
                 right
@@ -1239,6 +1284,79 @@ fn layout_that_moves_and_comes_back_holds_a_node_to_the_layouts_drawn() {
     let r = check(&sc, &t);
     assert!(
         fails_on(&r, CheckId::Envelope, "right", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// The same excursion with no ghost on the surface, and no change from
+/// logic or input when it comes back: a layout drawn wrong. It does not
+/// widen the way, and the glide toward it is outside it.
+#[test]
+fn an_excursion_with_no_reason_does_not_widen_the_way() {
+    let sc = scenario("");
+    let mut t = ghost_slot(97.0);
+    for f in &mut t.frames {
+        f.n.retain(|r| r.key != "ghost");
+    }
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Envelope, "right", "x"),
+        "{}",
+        show(&r, &t)
+    );
+    // Logic's diff (or input) at the frame it came back on is a reason
+    // (a second step of the segment took it back).
+    let back = t.frames.iter().position(|f| f.k == 6).unwrap();
+    t.frames[back].driven = true;
+    t.digest = t.compute_digest();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Envelope),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A node laid out one frame 9 px up and back, its drawn box with it,
+/// nothing on its surface to lay it out anew: a bystander drawn off its
+/// level (a wrong layout does not make it a mover). A sibling text drawn
+/// by its estimate on that frame is a reason: then it is a mover held to
+/// the layouts drawn.
+#[test]
+fn a_wrong_layout_drawn_does_not_exempt_a_bystander() {
+    let sc = scenario("");
+    let bars = |text: Option<&str>| {
+        shape(6, move |k| {
+            let b = row("bars", [225.0, 9.0, 15.0, 12.0]);
+            let mut label = row("label", [100.0, 8.0, 40.0, 14.0]);
+            label.text = Some(if k == 1 { text.unwrap_or("S") } else { "S" }.into());
+            match k {
+                1 => vec![b.laid_at(225.0, 0.0).at(225.0, 0.0), label],
+                _ => vec![b, label],
+            }
+        })
+    };
+    let t = bars(None);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Bystander, "bars", "y"),
+        "{}",
+        show(&r, &t)
+    );
+    let f = &r.failures(CheckId::Bystander)[0];
+    assert!(f.msg.contains("laid out elsewhere and back"), "{f:?}");
+    let t = bars(Some("E"));
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Bystander, "bars", "y"),
+        "{}",
+        show(&r, &t)
+    );
+    assert_eq!(
+        status(&r, CheckId::Envelope),
+        Status::Pass,
         "{}",
         show(&r, &t)
     );

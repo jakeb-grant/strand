@@ -921,6 +921,18 @@ impl Renderer {
         })
     }
 
+    /// The time the renderer's own timers (a tooltip's delay, a capped
+    /// clock's ticks) are measured by: the wall clock, or under the
+    /// `eval-hooks` feature the evaluation sandbox's virtual time once
+    /// it pins one (`Renderer::set_now`, docs/decisions.md eval-sandbox).
+    fn now(&self) -> Instant {
+        #[cfg(feature = "eval-hooks")]
+        if let Some(now) = self.probe.now {
+            return now;
+        }
+        Instant::now()
+    }
+
     /// The surfaces showing surface node `root` lay out again.
     fn mark_layout_of(&mut self, root: NodeId) {
         for s in self.surfaces.values_mut() {

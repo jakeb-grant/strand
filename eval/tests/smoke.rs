@@ -320,3 +320,352 @@ fn the_check_command_gates_and_writes_its_report() {
     assert!(matches!(e, strand_eval::Error::Failed(_)), "{e}");
     let _ = std::fs::remove_dir_all(&out);
 }
+
+/// The ticks at which `t` painted a surface, and the most paints any
+/// surface had in one tick.
+fn paints(t: &RunTrace) -> u32 {
+    t.frames
+        .iter()
+        .flat_map(|f| f.cost.values())
+        .map(|c| c.paints)
+        .max()
+        .unwrap_or(0)
+}
+
+/// A tooltip's delay runs on the virtual clock (the renderer's timers
+/// read it through `Renderer::set_now`): 250 ms at 60 Hz is 15 ticks,
+/// however fast the run goes in wall time, and the scene is not at rest
+/// while the tooltip waits.
+#[test]
+fn a_tooltip_shows_after_its_delay_on_virtual_time() {
+    let text = |wait: u32| {
+        format!(
+            r##"id = "tooltip"
+screen = {{ width = 300 }}
+tooltip_delay = 250
+
+=== shell.strand
+bar Top {{
+  height: 30
+  row {{ width: 300; height: 30
+    box {{ id: tip; width: 40; height: 30; bg: #303030; tooltip: "hello" }}
+  }}
+}}
+
+=== steps
+rest
+pointer 10,10
+wait {wait}
+"##
+        )
+    };
+    let t = go(&text(300));
+    let pointer_k = t
+        .events
+        .iter()
+        .find(|e| e.text.starts_with("pointer"))
+        .unwrap()
+        .k;
+    let tip = t
+        .surfaces
+        .iter()
+        .find(|s| s.kind == "popup")
+        .unwrap_or_else(|| panic!("no tooltip: {:?}", t.surfaces));
+    let ticks = tip.attached - pointer_k;
+    assert!(
+        (15..=16).contains(&ticks),
+        "shown {ticks} ticks after the pointer"
+    );
+    // Before its delay it does not show.
+    let t = go(&text(200));
+    assert!(
+        t.surfaces.iter().all(|s| s.kind != "popup"),
+        "{:?}",
+        t.surfaces
+    );
+    // Waiting for it is not rest.
+    let t = go(&text(10).replace("wait 10", "rest"));
+    assert!(
+        t.surfaces.iter().any(|s| s.kind == "popup"),
+        "{:?}",
+        t.surfaces
+    );
+}
+
+/// A container query (`when self.width < 60`): what a layout pass
+/// before the frame reads is answered before it (the renderer holds an
+/// idle surface's frame for logic), what the frame itself lays out (a
+/// late text shaped at the paint) is answered after it and shows in the
+/// next frame; every surface paints once a tick.
+#[test]
+fn layout_facts_reach_logic_between_frames() {
+    let t = go(r##"id = "query"
+screen = { width = 300 }
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 4; align: center
+    row { id: probe; shrink: 0; align: center
+      opacity: 1
+      when self.width < 60 { opacity: 0.5 }
+      text wide ? "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii" : "ii" { id: label; shrink: 0; color: #ffffff }
+    }
+    box { id: after; width: 20; height: 10; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark widen
+text late 1 where "iiiiiiii" via paint
+set wide true
+rest
+"##);
+    assert_eq!(paints(&t), 1, "a surface painted twice in a tick");
+    let probe = key(&t, "probe");
+    let seen: Vec<(u32, f32, f32)> = t
+        .frames
+        .iter()
+        .filter_map(|f| {
+            let r = row(f, &probe)?;
+            Some((f.k, r.laid[2], r.own_op))
+        })
+        .collect();
+    // At boot the narrow row is answered before its first frame.
+    assert_eq!(seen[0].2, 0.5, "{seen:?}");
+    // The frame that first lays it out wide still has the old answer;
+    // the next has logic's.
+    let wide = seen
+        .iter()
+        .position(|(_, w, _)| *w >= 60.0)
+        .unwrap_or_else(|| panic!("{seen:?}"));
+    assert_eq!(seen[wide].2, 0.5, "{seen:?}");
+    // (Its opacity springs to logic's 1 from there.)
+    assert!(seen[wide + 1].2 > 0.5, "{seen:?}");
+    assert_eq!(seen[wide + 1].0, seen[wide].0 + 1, "{seen:?}");
+}
+
+/// `system.reduced_motion` is what logic and render read, as in the
+/// shell: setting it reaches render through logic's diff, and a glide
+/// it would have played snaps.
+#[test]
+fn system_reduced_motion_reaches_render_through_logic() {
+    let text = |reduce: &str| {
+        format!(
+            r##"id = "reduce"
+screen = {{ width = 300 }}
+
+=== shell.strand
+state on = false
+bar Top {{
+  height: 30
+  row {{ width: 300; height: 30; gap: 6; align: center
+    if on {{ box {{ id: a; width: 40; height: 10; bg: #00ff00 }} }}
+    box {{ id: b; width: 20; height: 10; bg: #0000ff }}
+    text system.reduced_motion ? "still" : "moving" {{ id: says; color: #ffffff }}
+  }}
+}}
+
+=== steps
+rest
+{reduce}
+rest
+mark grow
+set on true
+rest
+"##
+        )
+    };
+    let glides = |t: &RunTrace| {
+        let b = key(t, "b");
+        t.frames
+            .iter()
+            .filter_map(|f| row(f, &b))
+            .any(|r| Motions(r.mot).contains(Motions::GLIDE))
+    };
+    let moving = go(&text("log full motion"));
+    assert!(glides(&moving), "b glides with full motion");
+    for step in ["set system.reduced_motion true", "reduce-motion on"] {
+        let t = go(&text(step));
+        assert!(!glides(&t), "{step}: b snaps");
+        let grow = t.segments.iter().find(|s| s.name == "grow").unwrap();
+        assert!(grow.reduced_motion, "{step}: {grow:?}");
+        // Logic reads it too.
+        let says = key(&t, "says");
+        let last = t.frames.last().unwrap();
+        let w = row(last, &says).unwrap().laid[2];
+        let before = row(&moving.frames[0], &key(&moving, "says")).unwrap().laid[2];
+        assert!(
+            w < before,
+            "{step}: logic still says moving ({w} vs {before})"
+        );
+    }
+}
+
+/// A parent's authored size is not its children's: a card whose width
+/// springs is laid out each frame, and its children's drawn boxes are
+/// held to their layouts. Its offset, opacity and transform are theirs.
+#[test]
+fn only_an_ancestors_offset_fade_and_transform_author_its_children() {
+    use strand_eval::harness::inherited;
+    assert_eq!(inherited(Axes::W | Axes::H), Axes::NONE);
+    assert_eq!(inherited(Axes::X | Axes::W), Axes::X);
+    assert_eq!(inherited(Axes::OPACITY), Axes::OPACITY);
+    assert_eq!(inherited(Axes::SCALE), Axes::GEOMETRY);
+    assert_eq!(inherited(Axes::ROTATE), Axes::GEOMETRY);
+    // Under a card whose width springs, the dot at its end moves with
+    // it in layout, never authored, and every check passes.
+    let sc = scenario(
+        r##"id = "card"
+screen = { width = 300 }
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; align: center
+    row { id: card; width: wide ? 200 : 80 ~ spring(700, 0.7); height: 24; bg: #303030; align: center; justify: end
+      box { id: dot; width: 10; height: 10; bg: #ff00ff }
+    }
+  }
+}
+
+=== steps
+rest
+mark grow
+set wide true
+rest
+"##,
+    );
+    let c =
+        strand_eval::check_scenario(&sc, &RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    let lines = c.report.lines(&c.run.trace);
+    assert!(c.report.ok(), "{}", lines.join("\n"));
+    let t = &c.run.trace;
+    let dot = key(t, "dot");
+    let laid: Vec<f32> = t
+        .frames
+        .iter()
+        .filter_map(|f| row(f, &dot))
+        .map(|r| r.laid[0])
+        .collect();
+    assert!(
+        laid.iter().any(|x| (x - laid[0]).abs() > 20.0),
+        "the dot moves with the card: {laid:?}"
+    );
+    for f in &t.frames {
+        if let Some(r) = row(f, &dot) {
+            assert_eq!(r.auth, 0, "frame {}: {r:?}", f.k);
+        }
+    }
+}
+
+/// A row written at `x: 20` carries its children by 20 at rest, none of
+/// it in flight; while it glides (a box mounted before it), its glide
+/// is what of it is in flight.
+#[test]
+fn the_inherited_offset_says_what_of_it_is_in_flight() {
+    let t = go(r##"id = "flight"
+screen = { width = 300 }
+
+=== shell.strand
+state more = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 4; align: center
+    if more { box { width: 30; height: 10; bg: #ff00ff } }
+    row { id: carrier; x: 20; gap: 2; align: center
+      box { id: inner; width: 10; height: 12; bg: #00ff00 }
+    }
+  }
+}
+
+=== steps
+rest
+set more true
+rest
+"##);
+    let inner = key(&t, "inner");
+    let rows: Vec<&Row> = t.frames.iter().filter_map(|f| row(f, &inner)).collect();
+    assert_eq!(rows[0].inherited, [20.0, 0.0], "{:?}", rows[0]);
+    assert_eq!(rows[0].flight, [0.0, 0.0], "{:?}", rows[0]);
+    let gliding = rows
+        .iter()
+        .find(|r| r.flight[0] != 0.0)
+        .unwrap_or_else(|| panic!("never in flight: {rows:?}"));
+    assert!(gliding.flight[0] < -1.0, "{gliding:?}");
+    assert!(
+        (gliding.inherited[0] - (20.0 + gliding.flight[0])).abs() < 0.05,
+        "{gliding:?}"
+    );
+    let last = rows.last().unwrap();
+    assert_eq!(last.flight, [0.0, 0.0], "{last:?}");
+}
+
+/// A row of a trace from before the in-flight columns (an A/B against an
+/// earlier revision) still reads, with nothing in flight; any other
+/// width is refused.
+#[test]
+fn a_row_without_the_flight_columns_still_reads() {
+    let t = go(FOCUS_OFF);
+    let r = t.frames[0].n[0].clone();
+    let mut v = serde_json::to_value(&r).unwrap();
+    let a = v.as_array_mut().unwrap();
+    assert_eq!(a.len(), strand_eval::trace::COLS.len());
+    a.truncate(a.len() - 2);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(back.flight, [0.0, 0.0]);
+    assert_eq!(back.inherited, r.inherited);
+    v.as_array_mut().unwrap().pop();
+    let e = serde_json::from_value::<Row>(v).unwrap_err().to_string();
+    assert!(e.contains("has 33 columns, not 36"), "{e}");
+}
+
+/// A `scale` step changes the screen's scale mid-run: each frame records
+/// the scale it was drawn at (the report's crops and the CPU/GPU pixel
+/// masks read it), and an edge's give is one physical pixel at the
+/// coarsest of them.
+#[test]
+fn each_frame_records_the_scale_it_was_drawn_at() {
+    let text = r##"id = "rescale"
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+bar Top {
+  height: 30
+  row { width: 300; height: 30; align: center
+    box { id: b; width: 20; height: 10; bg: #ff0000 }
+  }
+}
+
+=== steps
+rest
+scale 2
+rest
+"##;
+    let sc = scenario(text);
+    let out = run(
+        &sc,
+        &RunOptions {
+            images: true,
+            ..RunOptions::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let t = &out.trace;
+    let scales: Vec<f64> = t.frames.iter().map(|f| f.scale).collect();
+    assert_eq!(scales.first(), Some(&1.0), "{scales:?}");
+    assert_eq!(scales.last(), Some(&2.0), "{scales:?}");
+    assert_eq!(t.min_scale(), 1.0);
+    // The last frame's image is drawn at 2x: 600 px wide.
+    let last = t.frames.iter().rev().find(|f| !f.png.is_empty()).unwrap();
+    let name = last.png.values().next().unwrap();
+    let png = &out.images[name].png;
+    let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+    assert_eq!(w, 600);
+    assert_eq!(t.scale_at(last), 2.0);
+    let c = strand_eval::checks::Cx::new(&sc, t);
+    assert_eq!(c.tol, 1.0, "one physical pixel at scale 1");
+}

@@ -120,11 +120,9 @@ pub fn sheet(
     };
     let tl = Timeline::new(trace);
     let Some(at) = tl.at(k) else { return Ok(None) };
-    let scale = if trace.scenario.scale > 0.0 {
-        trace.scenario.scale as f32
-    } else {
-        1.0
-    };
+    // The crop is in the buffer pixels of the finding's frame; a frame
+    // drawn at another scale (a `scale` step) is read at its own.
+    let scale = trace.scale_at(tl.frames[at]) as f32;
     let lo = (at as i64 - SPAN).max(0) as usize;
     let hi = ((at as i64 + SPAN) as usize).min(tl.ks.len() - 1);
     let Some(surface) = tl
@@ -207,10 +205,11 @@ pub fn sheet(
         );
         c.fill(x0, y0, pw, ph, PANEL);
         // The image this surface shows at frame i: its last painted one.
-        let name = (0..=i)
+        let shown = (0..=i)
             .rev()
-            .find_map(|x| tl.frames[x].png.get(&surface))
-            .map(String::as_str);
+            .find_map(|x| Some((tl.frames[x].png.get(&surface)?, tl.frames[x])));
+        let name = shown.map(|(n, _)| n.as_str());
+        let ratio = shown.map_or(1.0, |(_, f)| trace.scale_at(f) as f32 / scale);
         let img = match name.and_then(|n| images.get(n).map(|im| (n, im))) {
             Some((n, im)) => {
                 if !decoded.contains_key(n) {
@@ -230,8 +229,8 @@ pub fn sheet(
             Some((iw, ih, rgba)) => {
                 for py in 0..ph {
                     for px in 0..pw {
-                        let sx = crop.x as u32 + px / ZOOM;
-                        let sy = crop.y as u32 + py / ZOOM;
+                        let sx = ((crop.x + (px / ZOOM) as f32) * ratio) as u32;
+                        let sy = ((crop.y + (py / ZOOM) as f32) * ratio) as u32;
                         if sx >= *iw || sy >= *ih {
                             continue;
                         }
