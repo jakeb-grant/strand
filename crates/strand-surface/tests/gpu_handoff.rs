@@ -326,3 +326,61 @@ fn a_handed_off_surface_drops_its_compositor_pose() {
         "the GPU's frames carry the pose, not the compositor"
     );
 }
+
+fn input_requests(fake: &Fake) -> Vec<Option<strand_fake_wayland::Region>> {
+    fake.surfaces()
+        .iter()
+        .filter(|s| s.namespace.as_deref() == Some("strand-Dash"))
+        .flat_map(|s| s.input_requests.clone())
+        .collect()
+}
+
+/// (gpu-regions, owner-testing.md bug 23) A hover popup that grew on the
+/// GPU takes the pointer where it now draws: the input region its frame
+/// asks for is set as pending state for the present, without a commit
+/// of the manager's. Without it the region of the last shm frame stood,
+/// and the island lost hover when the pointer left its old size.
+#[test]
+fn a_handed_off_surface_takes_input_where_its_gpu_frame_drew() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    mgr.state_mut().host_mut().input_rects = Some(vec![LogicalRect::new(10.0, 10.0, 40.0, 20.0)]);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    assert!(mgr.state_mut().hand_off(id));
+    let sent = input_requests(&fake).len();
+    let before = commits(&fake);
+
+    // The GPU frame drew it wider.
+    let grown = LogicalRect::new(10.0, 10.0, 300.0, 200.0);
+    mgr.state_mut().host_mut().input_rects = Some(vec![grown]);
+    mgr.state_mut().sync_presented(id);
+    mgr.dispatch_until(Duration::from_millis(100), |_| false)
+        .unwrap();
+    let requests = input_requests(&fake);
+    assert_eq!(requests.len(), sent + 1, "the new input region was not set");
+    let region = requests[sent]
+        .clone()
+        .expect("a region, not the whole surface");
+    assert!(
+        region.contains(250, 150),
+        "the region is not the grown one: {region:?}"
+    );
+    assert_eq!(
+        commits(&fake),
+        before,
+        "the manager committed a handed-off surface"
+    );
+
+    // The same frame again sets nothing.
+    mgr.state_mut().sync_presented(id);
+    mgr.dispatch_until(Duration::from_millis(100), |_| false)
+        .unwrap();
+    assert_eq!(
+        input_requests(&fake).len(),
+        sent + 1,
+        "an unchanged region was sent again"
+    );
+}

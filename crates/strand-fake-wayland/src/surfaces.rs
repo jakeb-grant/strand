@@ -172,6 +172,9 @@ pub struct SurfaceRecord {
     /// The input region as of the last commit (`None`: the whole
     /// surface).
     pub input: Option<Region>,
+    /// Each `set_input_region` request as it came, before the commit
+    /// that applies it (`None`: the whole surface).
+    pub input_requests: Vec<Option<Region>>,
     /// The blur region as of the last commit (`None`: no blur).
     pub blur: Option<Region>,
     /// Each commit that carried a `set_blur_region`, with what it set
@@ -553,8 +556,12 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
                 }
             }
             wl_surface::Request::SetInputRegion { region } => {
+                let input = region_of(region.as_ref());
+                state
+                    .surf
+                    .record(&id, |r| r.input_requests.push(input.clone()));
                 if let Some(l) = state.surf.live.get_mut(&id) {
-                    l.pending.input = Some(region_of(region.as_ref()));
+                    l.pending.input = Some(input);
                 }
             }
             wl_surface::Request::Commit => state.surf.commit(&id),

@@ -4810,6 +4810,10 @@ would have been) and sends it. One frame is in flight per surface.
   present commits the new size) and sets pending state (input and
   opaque regions, margins from placement, a popup grab's keyboard
   interactivity) without committing; the next present applies it.
+  `State::sync_presented(surface)`, which the host calls after sending
+  the GPU thread each frame, sets the regions that frame asks for
+  (opaque, a hover popup's painted input, blur) the same way
+  (decisions.md gpu-regions).
   Compositor poses are not delegated while presented: render paints the
   pose into the GPU frames, which are full frames anyway.
 - `State::take_back(surface)` after the GPU thread's `Released` reply

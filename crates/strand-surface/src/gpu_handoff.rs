@@ -20,7 +20,9 @@
 //!   commits it: configures are still acked (sctk acks them) and reported
 //!   (`surface_configured`, so the host sends `Resize`), and pending state
 //!   (input region, layer state) is set without a commit; the next
-//!   present applies it.
+//!   present applies it. [`State::sync_presented`], after each frame the
+//!   host sends the GPU thread, sets that frame's opaque, input and blur
+//!   regions the same way.
 //! - [`State::take_back`] after the GPU thread's `Released` (or when it
 //!   attached the surface for readback, or ended): a handed-off surface's
 //!   next shm frame is painted in full (`age` 0), frame callbacks resume;
@@ -169,6 +171,30 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// The GPU thread commits `surface` ([`State::hand_off`]).
     pub fn is_handed_off(&self, surface: SurfaceId) -> bool {
         self.gpu.has(surface)
+    }
+
+    /// After the host sent the GPU thread a frame of handed-off
+    /// `surface`: what that frame asks of the compositor besides pixels
+    /// (its opaque region, the input region of a hover popup that draws
+    /// nothing itself, its blur region) is set as pending state when it
+    /// changed, so the present commits it with the frame. Without it a
+    /// surface keeps the regions of its last shm frame: an island that
+    /// grew on the GPU took the pointer only where it was before, and
+    /// lost hover as soon as the pointer left that (decisions.md
+    /// gpu-regions, owner-testing.md bug 23).
+    pub fn sync_presented(&mut self, surface: SurfaceId) {
+        if !self.gpu.has(surface) {
+            return;
+        }
+        let Some(scale) = self.surfaces.get(&surface).map(|s| s.scale) else {
+            return;
+        };
+        self.sync_opaque(surface, scale);
+        self.sync_painted_input(surface);
+        if self.blurs() {
+            let rects = self.blur_rects(surface, scale);
+            self.set_blur(surface, rects);
+        }
     }
 
     /// In `draw` for a handed-off surface: no paint and no commit, but a

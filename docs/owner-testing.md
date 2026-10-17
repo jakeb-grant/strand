@@ -582,6 +582,24 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     hardware GPU) speaks explicit sync with a Vulkan client, so no test
     reached it. decisions.md syncobj-lend. Check on Hyprland: open the
     launcher and Tab through its modes, several launches.
+23. **The island closes as soon as the pointer leaves its closed size.**
+    (fixed, 2026-10-16; found 2026-10-16 by the owner on Hyprland with
+    the island test config (`target/try/island`) on the syncobj-lend
+    build.) Open, the island collapsed the moment the pointer left the
+    area of the closed island, wherever its open content reached.
+    Cause: the island is a hover popup that draws nothing itself, so it
+    takes the pointer only where its content drew in the last frame
+    (`Painter::input_region`, decisions.md m6-owner-fixes). The surface
+    manager sets that region after each shm frame; a frame drawn on the
+    GPU never passes through it, so the region of the last shm frame,
+    the closed island, stood while it grew, and the pointer leaving it
+    left the popup. gpu-first moved the island to the GPU as it starts
+    to open, which exposed it. The host now sets each GPU frame's
+    opaque, input and blur regions as pending state for its present
+    (`crates/strand-surface/tests/gpu_handoff.rs::a_handed_off_surface_takes_input_where_its_gpu_frame_drew`).
+    decisions.md gpu-regions. Check on Hyprland: open the island and
+    move the pointer over its open content, away from where the closed
+    island sat.
 
 ## Capability gaps
 

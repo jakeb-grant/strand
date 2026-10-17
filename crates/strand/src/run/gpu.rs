@@ -504,8 +504,11 @@ mod host {
                     p.in_flight = true;
                     p.sent = Some((size, scale));
                     // What follows a CPU frame follows this one too:
-                    // layout facts and list windows to logic, fed nodes
-                    // (its `damage` line waits for `Presented`).
+                    // its regions, as pending state the present commits
+                    // (decisions.md gpu-regions); layout facts and list
+                    // windows to logic, fed nodes (its `damage` line
+                    // waits for `Presented`).
+                    state.sync_presented(*id);
                     state.host_mut().painted(*id, &Damage::full(size));
                 }
             }
