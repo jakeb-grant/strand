@@ -143,9 +143,12 @@ its cause and re-based or cut with a recorded reason.
   were re-based here by the owner's rule, measured plus a 512 KiB
   reserve rounded up to 256 KiB (decisions.md m6-owner, 2026-10-14).
 - **Memory** (gpu-first, 2026-10-16: `strand run` now keeps a warm GPU
-  device, so on CI's lavapipe tier the bar warns above 256 MiB and fails
-  above 288 MiB, the full shell 328 / 384 MiB; the figures below are the
-  cold shell's before it; decisions.md gpu-first). (CI tripwires set by
+  device where a render node exists, so `budgets.rs` measures two legs:
+  warm on CI's lavapipe tier, the bar 232 / 242 MiB (232,089 kB
+  measured) and the full shell 296 / 324 MiB (296,351 kB); cold, with no
+  device asked for, the gates below, now 41,294–41,471 kB (bar) and 75,034–86,820 kB
+  (full shell, 161 entries; 3a638d14 measured 90,157 kB in the same
+  container) in the container; decisions.md gpu-first). (CI tripwires set by
   judgement, decisions.md m5-open-budgets): the design bar warns above 42 MB (43,008 kB) and
   fails above 48 MB (49,152 kB): 38,201 kB in the container at
   `067711a` (M5: 37,328 kB; 38,912 kB on GitHub). The full shell warns

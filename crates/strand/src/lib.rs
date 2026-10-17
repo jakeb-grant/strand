@@ -95,6 +95,16 @@ macro_rules! process_setup {
             }
             no_thp
         };
+
+        #[cfg(target_os = "linux")]
+        #[used]
+        #[unsafe(link_section = ".init_array.00101")]
+        static STRAND_GPU_ENV: extern "C" fn() = {
+            extern "C" fn gpu_env() {
+                $crate::__process::gpu_env();
+            }
+            gpu_env
+        };
     };
 }
 
@@ -103,6 +113,34 @@ macro_rules! process_setup {
 pub mod __process {
     pub use mimalloc::MiMalloc;
     pub use strand_services::child::thp_off;
+
+    /// (gpu-first review) The Vulkan loader leaves out the software
+    /// drivers unless `STRAND_GPU_SOFTWARE=1`, and the drivers of GPU
+    /// vendors with no render node here, unless the person chose the
+    /// drivers (`strand_gpu::loader_disable`): the warm start's probe
+    /// never maps lavapipe or RADV, nor the LLVM they link, on a machine
+    /// that cannot use them. Set from an ELF
+    /// constructor just after [`thp_off`]'s, while no other thread
+    /// runs; programs strand starts get the inherited value back
+    /// (`strand_services::child::child_env`).
+    pub fn gpu_env() {
+        #[cfg(feature = "gpu")]
+        {
+            let chosen = strand_gpu::LOADER_CHOICE_ENVS
+                .iter()
+                .any(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()));
+            let inherited = std::env::var_os(strand_gpu::LOADER_DISABLE_ENV);
+            let opts = strand_gpu::GpuOptions::from_env();
+            let vendors = strand_gpu::render_vendors();
+            if let Some(v) =
+                strand_gpu::loader_disable(&opts, vendors.as_deref(), inherited.as_deref(), chosen)
+            {
+                // SAFETY: called from `process_setup!`'s constructor,
+                // before `main`: no other thread runs.
+                unsafe { strand_services::child::set_own_var(strand_gpu::LOADER_DISABLE_ENV, &v) };
+            }
+        }
+    }
 }
 
 // The unit tests' harness runs with the binary's allocator and THP

@@ -31,14 +31,21 @@ pub(crate) fn is_software(info: &wgpu::AdapterInfo) -> bool {
 }
 
 impl Device {
-    /// Opens the highest-performance Vulkan adapter and a device on it.
+    /// Opens the low-power Vulkan adapter (the integrated GPU on a
+    /// hybrid laptop) and a device on it.
+    ///
+    /// (gpu-first review) The device is kept for the whole session, so
+    /// it is the GPU the compositor most likely scans out from, not the
+    /// discrete one: a device held open keeps a discrete GPU from
+    /// suspending (watts at idle), and every present from it would cross
+    /// GPUs. Where there is one GPU, it is that one.
     pub fn open(opts: &GpuOptions) -> Result<Device, GpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             ..wgpu::RequestAdapterOptions::default()
         }))

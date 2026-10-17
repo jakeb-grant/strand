@@ -68,6 +68,140 @@ impl GpuOptions {
     }
 }
 
+/// (gpu-first review) Whether a device can exist in this process: a
+/// software adapter is accepted ([`GpuOptions::software`]), or there is a
+/// DRM render node (`/dev/dri/renderD*`) for a hardware driver to open.
+/// With neither, nothing need be probed: the binary does not warm a
+/// device, so no Vulkan instance is made and no driver is mapped.
+pub fn device_possible(opts: &GpuOptions) -> bool {
+    opts.software || render_node_in(std::path::Path::new("/dev/dri"))
+}
+
+/// Whether `dir` holds a DRM render node (`renderD*`).
+fn render_node_in(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("renderD"))
+        })
+    })
+}
+
+/// The Vulkan loader's variable that keeps drivers out of enumeration
+/// (loader 1.3.234 on): a comma-separated list of globs matched against
+/// the drivers' manifest file names.
+pub const LOADER_DISABLE_ENV: &str = "VK_LOADER_DRIVERS_DISABLE";
+
+/// The variables with which a person picks the Vulkan drivers
+/// themselves: strand then leaves the loader as they set it.
+pub const LOADER_CHOICE_ENVS: [&str; 3] = [
+    "VK_DRIVER_FILES",
+    "VK_ICD_FILENAMES",
+    "VK_LOADER_DRIVERS_SELECT",
+];
+
+/// The software drivers' manifests: Mesa's lavapipe (`lvp_icd*.json`)
+/// and SwiftShader (`vk_swiftshader_icd.json`).
+const SOFTWARE_DRIVERS: [&str; 2] = ["*lvp_icd*", "*swiftshader*"];
+
+/// The hardware drivers' manifests by the PCI vendor they drive: Intel's
+/// (ANV, HASVK), AMD's (RADV, which links LLVM, and AMDVLK), NVIDIA's
+/// (NVK, the proprietary driver) and virtio-gpu's (Venus, gfxstream).
+/// Drivers not named here are never kept out.
+const VENDOR_DRIVERS: [(u16, &[&str]); 4] = [
+    (0x8086, &["*intel_icd*", "*intel_hasvk_icd*"]),
+    (0x1002, &["*radeon_icd*", "*amd_icd*"]),
+    (0x10de, &["*nouveau_icd*", "*nvidia_icd*"]),
+    (0x1af4, &["*virtio_icd*", "*gfxstream_vk_icd*"]),
+];
+
+/// The drivers of GPUs that are not PCI devices (Apple's, Qualcomm's,
+/// Arm's, Imagination's, Broadcom's): kept out where every render node
+/// is a PCI device with a vendor read, since none of them is there.
+const PLATFORM_DRIVERS: [&str; 5] = [
+    "*asahi_icd*",
+    "*freedreno_icd*",
+    "*panfrost_icd*",
+    "*powervr_mesa_icd*",
+    "*broadcom_icd*",
+];
+
+/// The PCI vendors of the machine's render nodes
+/// (`/sys/class/drm/renderD*/device/vendor`; none without the DRM
+/// class); `None` when they cannot all be read (no driver is then kept
+/// out for want of its GPU).
+pub fn render_vendors() -> Option<Vec<u16>> {
+    vendors_in(std::path::Path::new("/sys/class/drm"))
+}
+
+fn vendors_in(sys: &std::path::Path) -> Option<Vec<u16>> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(sys) {
+        Ok(e) => e,
+        // No DRM class at all: no GPU.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(out),
+        Err(_) => return None,
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if !name.to_str().is_some_and(|n| n.starts_with("renderD")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(e.path().join("device/vendor")).ok()?;
+        let hex = text.trim().trim_start_matches("0x");
+        out.push(u16::from_str_radix(hex, 16).ok()?);
+    }
+    Some(out)
+}
+
+/// (gpu-first review) What [`LOADER_DISABLE_ENV`] must be for the
+/// process, given the render nodes' `vendors` ([`render_vendors`]),
+/// `inherited` (its value when strand started) and whether the person
+/// chose drivers ([`LOADER_CHOICE_ENVS`]): the software drivers kept out
+/// unless a software adapter is accepted, and the hardware drivers of
+/// vendors with no render node here. A probe then never loads lavapipe,
+/// nor RADV on a machine with no AMD GPU, and the LLVM they link (about
+/// 54 MB resident, mapped for good once loaded), nor NVIDIA's driver on
+/// a laptop that has its manifest but not its GPU. `None` leaves it as
+/// it is: the person chose the drivers, or nothing is to be added.
+pub fn loader_disable(
+    opts: &GpuOptions,
+    vendors: Option<&[u16]>,
+    inherited: Option<&std::ffi::OsStr>,
+    chosen: bool,
+) -> Option<std::ffi::OsString> {
+    if chosen {
+        return None;
+    }
+    let mut globs: Vec<&str> = Vec::new();
+    if !opts.software {
+        globs.extend(SOFTWARE_DRIVERS);
+    }
+    if let Some(vendors) = vendors {
+        for (vendor, drivers) in VENDOR_DRIVERS {
+            if !vendors.contains(&vendor) {
+                globs.extend(drivers.iter().copied());
+            }
+        }
+        globs.extend(PLATFORM_DRIVERS);
+    }
+    let had = inherited.and_then(|v| v.to_str()).unwrap_or("").trim();
+    let have: Vec<&str> = had.split(',').map(str::trim).collect();
+    globs.retain(|g| !have.contains(g));
+    if globs.is_empty() {
+        return None;
+    }
+    let mut out = String::from(had);
+    for g in globs {
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(g);
+    }
+    Some(out.into())
+}
+
 /// A surface's Wayland handles for the WSI: the connection's `wl_display`
 /// and the surface's `wl_surface`, as `raw-window-handle` handles
 /// (`State::raw_handles` in strand-surface).
@@ -579,5 +713,106 @@ mod tests {
     fn options_read_the_software_variable() {
         assert_eq!(GpuOptions::SOFTWARE_ENV, "STRAND_GPU_SOFTWARE");
         assert!(!GpuOptions::default().software);
+    }
+
+    /// (gpu-first review) A device can exist with a render node, or with
+    /// a software adapter accepted; with neither nothing is probed.
+    #[test]
+    fn a_device_is_possible_with_a_render_node_or_software() {
+        let dir = std::env::temp_dir().join(format!("strand-gpu-dri-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!render_node_in(&dir), "empty");
+        std::fs::write(dir.join("card0"), b"").unwrap();
+        assert!(!render_node_in(&dir), "a KMS card is not a render node");
+        std::fs::write(dir.join("renderD128"), b"").unwrap();
+        assert!(render_node_in(&dir));
+        assert!(!render_node_in(&dir.join("missing")));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(device_possible(&GpuOptions { software: true }));
+    }
+
+    /// (gpu-first review) The loader is told to leave out the software
+    /// drivers unless software is accepted, and the drivers of vendors
+    /// with no render node here, unless the person chose the drivers; an
+    /// inherited list is kept and added to.
+    #[test]
+    fn the_drivers_no_device_here_needs_are_kept_out_of_the_loader() {
+        use std::ffi::OsStr;
+        let hw = GpuOptions { software: false };
+        let sw = GpuOptions { software: true };
+        let s = |v: Option<std::ffi::OsString>| v.map(|v| v.to_string_lossy().into_owned());
+        const PLATFORM: &str =
+            "*asahi_icd*,*freedreno_icd*,*panfrost_icd*,*powervr_mesa_icd*,*broadcom_icd*";
+        const VIRTIO: &str = "*virtio_icd*,*gfxstream_vk_icd*";
+        // An Intel laptop (the owner's: NVIDIA's manifest installed too).
+        assert_eq!(
+            s(loader_disable(&hw, Some(&[0x8086]), None, false)),
+            Some(format!(
+                "*lvp_icd*,*swiftshader*,*radeon_icd*,*amd_icd*,*nouveau_icd*,*nvidia_icd*,\
+                 {VIRTIO},{PLATFORM}"
+            ))
+        );
+        // Intel and NVIDIA (a hybrid laptop), software accepted.
+        assert_eq!(
+            s(loader_disable(&sw, Some(&[0x8086, 0x10de]), None, false)),
+            Some(format!("*radeon_icd*,*amd_icd*,{VIRTIO},{PLATFORM}"))
+        );
+        // No render node at all: every vendor's driver and lavapipe.
+        assert_eq!(
+            s(loader_disable(&hw, Some(&[]), None, false)),
+            Some(format!(
+                "*lvp_icd*,*swiftshader*,*intel_icd*,*intel_hasvk_icd*,*radeon_icd*,*amd_icd*,\
+                 *nouveau_icd*,*nvidia_icd*,{VIRTIO},{PLATFORM}"
+            ))
+        );
+        // Vendors unknown: only the software drivers.
+        assert_eq!(
+            s(loader_disable(&hw, None, None, false)).as_deref(),
+            Some("*lvp_icd*,*swiftshader*")
+        );
+        assert_eq!(
+            loader_disable(&sw, None, None, false),
+            None,
+            "nothing to add"
+        );
+        // An inherited list is kept, and nothing is added twice.
+        assert_eq!(
+            s(loader_disable(&hw, None, Some(OsStr::new("*foo*")), false)).as_deref(),
+            Some("*foo*,*lvp_icd*,*swiftshader*")
+        );
+        assert_eq!(
+            s(loader_disable(&hw, None, Some(OsStr::new(" ")), false)).as_deref(),
+            Some("*lvp_icd*,*swiftshader*")
+        );
+        let already = OsStr::new("*lvp_icd*,*swiftshader*");
+        assert_eq!(loader_disable(&hw, None, Some(already), false), None);
+        assert_eq!(
+            loader_disable(&hw, Some(&[]), None, true),
+            None,
+            "the person chose"
+        );
+    }
+
+    /// The render nodes' vendors come from sysfs; one unreadable makes
+    /// them unknown.
+    #[test]
+    fn render_vendors_are_read_from_sysfs() {
+        let dir = std::env::temp_dir().join(format!("strand-gpu-sys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("card0/device")).unwrap();
+        std::fs::write(dir.join("card0/device/vendor"), "0x1002\n").unwrap();
+        assert_eq!(
+            vendors_in(&dir),
+            Some(vec![]),
+            "a card is not a render node"
+        );
+        std::fs::create_dir_all(dir.join("renderD128/device")).unwrap();
+        std::fs::write(dir.join("renderD128/device/vendor"), "0x8086\n").unwrap();
+        assert_eq!(vendors_in(&dir), Some(vec![0x8086]));
+        std::fs::create_dir_all(dir.join("renderD129")).unwrap();
+        assert_eq!(vendors_in(&dir), None, "unreadable");
+        assert_eq!(vendors_in(&dir.join("missing")), Some(vec![]), "no DRM");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

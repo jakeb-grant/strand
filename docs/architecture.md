@@ -4187,7 +4187,13 @@ and the connection):
   output's size to render (`Renderer::set_surface_bounds`), and render
   holds a content-sized surface's frame for the configure at a new size
   (`Renderer::set_resize_wait`, `strand_render::RESIZE_WAIT`; zero
-  offline). Spec changes render makes while the manager calls in (a
+  offline), except a surface the GPU thread presents (gpu-first review):
+  its new size is pending state only its next present commits, so the
+  configure cannot come first; it draws at once at the size it has, and
+  the configure follows that present. A presented surface's frame held
+  for any other reason (new text, a query) wakes the loop at the hold's
+  end through `GpuHost::wait`, since the manager arms that deadline only
+  for the surfaces it paints. Spec changes render makes while the manager calls in (a
   configure, a paint) are reported by `Renderer::has_surface_changes`;
   the binary's host then pings its loop (`Host::waking`) so they reach
   the manager at once. A click-away catcher (`SurfaceInfo::click_away`) is a
@@ -4604,9 +4610,14 @@ A software adapter (`DeviceType::Cpu`, lavapipe) counts as no device:
 it would draw on the CPU and keep about 80 MiB mapped after the drop.
 `STRAND_GPU_SOFTWARE=1` accepts it, and a user never needs it. The
 lavapipe tier sets it beside `STRAND_REQUIRE_GPU=1` (CI's env, `run.sh`
-and `ci.sh`). The adapter is requested with
-`PowerPreference::HighPerformance`, so a hardware adapter wins when both
-exist. The thread waits on its
+and `ci.sh`). The adapter is requested with `PowerPreference::LowPower`
+(gpu-first review; it was `HighPerformance`): a hardware adapter still
+wins over a software one, and on a hybrid laptop the integrated GPU,
+the one compositing, is chosen, so the device held for the session does
+not keep the discrete GPU out of runtime suspend and no present crosses
+GPUs. (The compositor's dmabuf-feedback main device would be the exact
+choice; the adapter is requested before any surface exists, so it is
+not used.) The thread waits on its
 channel and on presents, never on a timer: it does not decide when to
 stop.
 
@@ -4636,13 +4647,22 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
   commits nothing). A shader pass also needs the device, without
   promoting its surface (below).
 - Demotion: once a promoted surface has been settled for 3 s
-  (`promote::SETTLE_AFTER`: every frame since its last animated one,
-  large or with a spring in flight, small, or none), at a frame with no
-  spring in flight; one that paints nothing goes back at a wake of its
-  own, its settle window starting when its last animated frame was
-  shown (`Presented`, or the attach). One wake ends an animation; an
-  idle shell takes none. Clocks (time signals, shader time, particles,
-  animated images) do not count as springs.
+  (`promote::SETTLE_AFTER`), at a still frame; one that paints nothing
+  goes back at a wake of its own, its settle window starting when its
+  last hot frame was shown (`Presented`, or the attach). One wake ends
+  an animation; an idle shell takes none. Settled is about damage
+  (gpu-first review): a hot frame is a large one, or a small one with a
+  spring in flight whose CPU frames were slow (the last small spring
+  frame the CPU drew took `promote::CHEAP_FRAME`, 4 ms, or more:
+  `Promotion::frame(now, damage, springs, cpu)` takes the CPU's raster
+  time of the frame it drew, `None` for a GPU frame); a small spring the
+  CPU draws cheaply (a turning 80 px cover, a spinner) never holds its
+  surface. A surface promoted again within `promote::AGAIN_WITHIN`
+  (30 s) of going back settles `AGAIN_FACTOR` (5) times longer, 15 s,
+  so repeated animations a few seconds apart keep the GPU without a
+  CPU spell (and a full CPU repaint) between them. Clocks (time
+  signals, shader time, particles, animated images) do not count as
+  springs.
 - The device is kept up for the process (gpu-first; M4 dropped it 30 s
   after its last use). `strand run` calls `Renderer::warm_gpu()` as it
   builds the renderer: render asks for the device and reports
@@ -4651,6 +4671,35 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
   fails before anything shown needs the GPU is logged at `info` ("…;
   everything draws on the CPU"); a machine without a device draws as it
   always did. Render asks for no wake for the device.
+- (gpu-first review) The device is asked for only where one can exist:
+  `strand_gpu::device_possible(&GpuOptions) -> bool` is true with a
+  software adapter accepted or a `/dev/dri/renderD*` node. Without one
+  `strand run` calls `Renderer::gpu_absent(reason)` instead of
+  `warm_gpu`: the status is `Unavailable { reason }`, logged once at
+  `info`, and the device is `Absent` (`promote::Device::absent`), which
+  never asks again. A start answered `Unavailable` of kind `NoAdapter`
+  or `Software` makes it `Absent` too (that refusal holds for the
+  process); other failures keep the 30 s retry. So a machine that can
+  never have a device builds no Vulkan instance after the first refusal,
+  or none at all.
+- (gpu-first review) The Vulkan loader filter. Before any thread starts
+  (a second `process_setup!` constructor, `.init_array.00101`, after the
+  THP one) the binary sets `VK_LOADER_DRIVERS_DISABLE` to
+  `strand_gpu::loader_disable(&GpuOptions, render_vendors, inherited,
+  chosen) -> Option<OsString>`: the software drivers' manifests
+  (`*lvp_icd*`, `*swiftshader*`) unless a software adapter is accepted,
+  and, where every render node's PCI vendor was read
+  (`strand_gpu::render_vendors() -> Option<Vec<u16>>`, from
+  `/sys/class/drm/renderD*/device/vendor`), the drivers of the vendors
+  with no render node (Intel's, AMD's, which link LLVM, NVIDIA's,
+  virtio-gpu's) and of the platform GPUs (Asahi, Freedreno, Panfrost,
+  PowerVR, Broadcom). It appends to an inherited list, and sets nothing
+  when the environment chose drivers itself (`VK_DRIVER_FILES`,
+  `VK_ICD_FILENAMES`, `VK_LOADER_DRIVERS_SELECT`). A loaded driver stays
+  mapped for the process, so this is what keeps lavapipe's LLVM out of
+  a shell whose only real GPU is Intel's. The variable is given back to
+  the programs strand spawns as they found it
+  (`strand_services::child::set_own_var`, read by `child_env`).
 - A failed start or a lost device is recorded as `GpuStatus::Unavailable
   { reason }`. Every promoted surface goes back to the CPU at once (it
   cannot wait for a settled frame) with a full repaint. Render asks
@@ -4875,10 +4924,19 @@ inspector (M5) to say why.
   prediction for the GPU build (mean 33.7 MB, about 1.3 MB over the CPU
   build measured alternately with it), not a regression of the landed
   backend: features.md's 31.2–32.3 MB are the CPU build's. Since
-  gpu-first the device is warm wherever one can start, so every PSS
-  figure of `budgets.rs` on CI's lavapipe tier includes lavapipe's and
-  LLVM's pages, and the gates were re-based on measurements (decisions.md
-  gpu-first).
+  gpu-first the device is warm wherever one can start, so `budgets.rs`
+  measures two legs (decisions.md gpu-first). Warm, under
+  `STRAND_REQUIRE_GPU=1` with lavapipe accepted, the figures include
+  lavapipe's and LLVM's pages: the bar warns above 232 MiB and fails
+  above 242 MiB, the full shell 296 / 324 MiB, debug 288 MiB, each the
+  measurement plus the cold gates' absolute headroom. Cold
+  (`the_design_bar_with_no_gpu_keeps_the_cold_budget`,
+  `the_full_shell_with_no_gpu_keeps_the_cold_budget`; `demo.rs` and
+  `services.rs`' bars), with no render node and `STRAND_GPU_SOFTWARE`
+  and `STRAND_REQUIRE_GPU` removed, no device is asked for: the old
+  42 / 48 MB and 76 / 104 MB gates (96 / 92 MiB debug), no `libvulkan`
+  or `libLLVM` mapped, "GPU: no GPU render node" logged. The cold legs
+  skip where a render node exists (`gpu.sh`).
 - Cold (`strand/tests/gpu_cold.rs`, per feature set with `cargo
   metadata`): wgpu, vello_gpu and naga reach `strand` only through
   `strand-gpu`, and naga also through `strand-compiler`'s `shaders`;

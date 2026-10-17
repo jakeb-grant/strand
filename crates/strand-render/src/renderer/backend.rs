@@ -762,6 +762,21 @@ impl Renderer {
         }
     }
 
+    /// (gpu-first review) No device can exist in this process (the binary
+    /// found no render node and no software adapter is accepted): none is
+    /// ever asked for, nothing is promoted, and the status says `reason`.
+    /// Nothing Vulkan is loaded, so the shell costs what it did before
+    /// gpu-first.
+    pub fn gpu_absent(&mut self, reason: &str) {
+        self.gpu.device.absent();
+        if self.gpu.device.is_absent() {
+            log::info!("GPU: {reason}; everything draws on the CPU");
+            self.gpu.status = GpuStatus::Unavailable {
+                reason: reason.to_string(),
+            };
+        }
+    }
+
     /// (M4) Turns promotion off or on (tests: a test of passes on CPU
     /// surfaces whose frames' wall-clock spacing must not matter;
     /// promotion's own timing is `promote.rs`'s).
@@ -787,6 +802,11 @@ impl Renderer {
     #[doc(hidden)]
     pub fn set_gpu_retry(&mut self, retry: Duration) {
         self.gpu.device.set_retry(retry);
+    }
+
+    /// The GPU thread presents `surface` (or will, from its next frame).
+    pub(super) fn gpu_presented(&self, surface: SurfaceId) -> bool {
+        self.backend(surface) == Backend::GpuPresent
     }
 
     /// (M4) What draws `surface`.
@@ -832,6 +852,10 @@ impl Renderer {
         if let Some(st) = self.surfaces.get_mut(&surface) {
             st.valid = false;
             st.mark_dirty();
+            if backend == Backend::GpuPresent {
+                // Presented: never held for a configure (`refresh_size_holds`).
+                st.size_hold = None;
+            }
         }
     }
 
@@ -870,8 +894,13 @@ impl Renderer {
                 // The third lost device turns the GPU off for the process
                 // (m4-close-gpucap): the status says so from then on, and
                 // the host tells it once (`gpu_off`).
+                // No adapter, or only a software one refused: no device
+                // can exist in this process, and none is asked for again
+                // (gpu-first review).
                 if matches!(reply, GpuReply::Lost(_)) {
                     self.gpu.device.lost(now);
+                } else if matches!(e.kind, GpuErrorKind::NoAdapter | GpuErrorKind::Software) {
+                    self.gpu.device.absent();
                 } else {
                     self.gpu.device.failed(now);
                 }
@@ -1155,17 +1184,24 @@ impl Renderer {
     }
 
     /// A frame of `surface` damaged `damage` pixels with `springs` in
-    /// flight: promotion's input.
-    pub(super) fn gpu_frame_stats(&mut self, surface: SurfaceId, damage: u64, springs: bool) {
+    /// flight, drawn by the CPU in `cpu` (`None`: the GPU drew it):
+    /// promotion's input.
+    pub(super) fn gpu_frame_stats(
+        &mut self,
+        surface: SurfaceId,
+        damage: u64,
+        springs: bool,
+        cpu: Option<Duration>,
+    ) {
         if self.gpu.no_promotion {
             return;
         }
         let now = Instant::now();
-        if self.gpu.device.is_off() {
+        if self.gpu.device.is_off() || self.gpu.device.is_absent() {
             return;
         }
         let s = self.gpu.surf(surface);
-        match s.promo.frame(now, damage, springs) {
+        match s.promo.frame(now, damage, springs, cpu) {
             Some(Switch::ToGpu) => {
                 if self.gpu.want(now) {
                     self.gpu.changes.push(BackendChange::Promote(surface));

@@ -11,8 +11,48 @@
 //! so without [`restore_in_child`] every app the launcher starts, every
 //! `from exec` service and the editor the overlay opens, and their
 //! children, would run without THP for life.
+//!
+//! Variables strand sets for its own process before `main`
+//! ([`set_own_var`]: the Vulkan loader's driver filter, decisions.md
+//! gpu-first) are given back as strand inherited them the same way.
 
+use std::ffi::{OsStr, OsString};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
+
+/// Variables strand set for its own process ([`set_own_var`]), each with
+/// the value it inherited.
+static OWN_VARS: Mutex<Vec<(&'static str, Option<OsString>)>> = Mutex::new(Vec::new());
+
+/// Sets `var` to `value` for strand's own process only, remembering what
+/// it inherited: [`child_env`] gives every program strand starts that
+/// back (gpu-first review: the Vulkan loader's driver filter, which an
+/// app the launcher starts must not inherit).
+///
+/// # Safety
+///
+/// It changes the process environment: call it only while no other
+/// thread runs (an ELF constructor before `main`, as `process_setup!`
+/// does).
+pub unsafe fn set_own_var(var: &'static str, value: &OsStr) {
+    let was = std::env::var_os(var);
+    // SAFETY: no other thread runs (the caller's contract).
+    unsafe { std::env::set_var(var, value) };
+    OWN_VARS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((var, was));
+}
+
+/// Gives `cmd` back the values `own` records as inherited.
+fn give_back(cmd: &mut std::process::Command, own: &[(&'static str, Option<OsString>)]) {
+    for (var, was) in own {
+        match was {
+            Some(v) => cmd.env(var, v),
+            None => cmd.env_remove(var),
+        };
+    }
+}
 
 /// `PR_SET_THP_DISABLE`'s flag (Linux 6.18) that keeps THP for regions
 /// advised `MADV_HUGEPAGE` (not in `libc` yet).
@@ -110,7 +150,8 @@ pub const INSTANCE_VARS: [&str; 2] = ["STRAND_SOCKET", strand_core::persist::STA
 /// activation variables ([`ACTIVATION_VARS`]) set to `token`, the token
 /// for the press that launched it, or removed with none (a program never
 /// inherits the token strand itself was started with: spent, and meant
-/// for strand's own window), and [`INSTANCE_VARS`] removed. Every
+/// for strand's own window), [`INSTANCE_VARS`] removed, and the variables
+/// strand set for itself ([`set_own_var`]) as it inherited them. Every
 /// program strand starts goes through it, beside [`restore_in_child`]:
 /// an app launch, a declared action's command, an `exec` source, a
 /// `file` element's `run:` and the overlay's editor. It is done on the
@@ -126,6 +167,7 @@ pub fn child_env(cmd: &mut std::process::Command, token: Option<&str>) {
     for var in INSTANCE_VARS {
         cmd.env_remove(var);
     }
+    give_back(cmd, &OWN_VARS.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
 /// Whether THP is on for `status` (a `/proc/<pid>/status` text): the
@@ -183,6 +225,31 @@ mod tests {
                 ("STRAND_SOCKET".into(), None),
                 ("STRAND_STATE_DIR".into(), None),
                 ("XDG_ACTIVATION_TOKEN".into(), None),
+            ]
+        );
+    }
+
+    /// (gpu-first review) A variable strand set for itself goes back to
+    /// what strand inherited: removed where it had none, its old value
+    /// where it had one.
+    #[test]
+    fn a_program_gets_back_the_variables_strand_set_for_itself() {
+        let own = [
+            ("VK_LOADER_DRIVERS_DISABLE", None),
+            ("STRAND_TEST_OWN", Some(OsString::from("theirs"))),
+        ];
+        let mut cmd = std::process::Command::new("true");
+        give_back(&mut cmd, &own);
+        let mut got: Vec<_> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("STRAND_TEST_OWN".into(), Some("theirs".into())),
+                ("VK_LOADER_DRIVERS_DISABLE".into(), None),
             ]
         );
     }

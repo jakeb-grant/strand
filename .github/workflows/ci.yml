@@ -165,7 +165,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: release
-      # The bar's PSS budget (256 MiB target warns, 288 MiB ceiling fails, with the warm lavapipe device: decisions.md gpu-first) is checked on a release build (design.md, "Testing": budgets).
+      # The bar's PSS budget (42 MB target warns, 48 MB ceiling fails, GPU cold: no render node, no software adapter accepted, decisions.md gpu-first) is checked on a release build (design.md, "Testing": budgets).
       - run: cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
@@ -175,11 +175,12 @@ jobs:
       # tray and notifications on the real backends (python-dbusmock's
       # UPower, NetworkManager and logind and a mock portal on a private
       # bus, the shell's own notifications server and tray host, sway's
-      # IPC, a private PipeWire) within the PSS budget (256 MiB target
-      # warns, 288 MiB ceiling fails, the warm device's) with no huge
+      # IPC, a private PipeWire) within the PSS budget with the warm
+      # lavapipe device (232 MiB target warns, 242 MiB ceiling fails) and
+      # GPU cold (42 / 48 MB, nothing Vulkan mapped) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # a 328 MiB target (warns) and 384 MiB ceiling (fails), decisions.md
+      # 296 / 324 MiB warm and 76 / 104 MB cold, decisions.md
       # m5-open-budgets, seam-snap and gpu-first (the warm device).
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:

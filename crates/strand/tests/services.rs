@@ -374,6 +374,11 @@ impl Setup {
                 .envs(bus.env())
                 .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
                 .env_remove("STRAND_MOCK")
+                // (gpu-first review) No device can exist (no software
+                // adapter accepted, no render node here or in CI): the
+                // bar is the cold one its gate is for.
+                .env_remove("STRAND_GPU_SOFTWARE")
+                .env_remove("STRAND_REQUIRE_GPU")
                 .stdin(Stdio::null())
                 .stderr(std::fs::File::create(&log).unwrap())
                 .spawn()
@@ -569,17 +574,30 @@ fn the_real_services_sleep_when_nothing_changes() {
     let after: Vec<u64> = threads.iter().map(|t| switches_of(pid, t)).collect();
     assert_eq!(before, after, "{threads:?} woke while idle");
     let pss = pss_kb(pid);
-    // The ceilings are the design bar's in demo.rs, which hold the warm
-    // device (gpu-first: about 190 MB on CI's lavapipe tier; before it
-    // 92 MiB debug and 48 MB release; decisions.md m4-integration-w2,
-    // m6-service-gaps, m5-open-budgets and gpu-first).
+    // The debug ceiling is the design bar's in demo.rs (92 MiB since the
+    // m6-service-gaps merge: the debug binary's code, much of it
+    // resident; decisions.md, m4-integration-w2 and m6-service-gaps).
+    // The release gate below is the design's budget.
     let (limit, what) = if cfg!(debug_assertions) {
-        (320 * 1024, "debug ceiling")
+        (92 * 1024, "debug ceiling")
     } else {
-        (288 * 1024, "ceiling")
+        // design.md: aims at 42 MB, fails above 48 (decisions.md m5-open-budgets).
+        (48 * 1024, "48 MB ceiling")
     };
     eprintln!("bar on the real services: PSS {pss} kB ({what} {limit} kB)");
-    assert!(pss <= limit, "PSS {pss} kB over the {limit} kB {what}");
+    // With a render node here (gpu.sh) the shell warms a device: its
+    // cost is budgets.rs's warm leg, not this gate.
+    let warm = std::fs::read_dir("/dev/dri").is_ok_and(|d| {
+        d.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("renderD"))
+        })
+    });
+    assert!(
+        warm || pss <= limit,
+        "PSS {pss} kB over the {limit} kB {what}"
+    );
     // The popup opens: cpu starts and samples once a second.
     setup.cli(&["set", "bar.open", "true"]);
     std::thread::sleep(Duration::from_millis(1500));

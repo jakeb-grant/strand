@@ -186,10 +186,18 @@ impl Renderer {
         let now = Instant::now();
         for (id, root) in ids {
             let wanted = self.wanted_size(id, root);
+            // (gpu-first review) A surface the GPU thread presents is not
+            // held: its new size is pending surface state that only its
+            // next present commits, so the configure at that size cannot
+            // come before a frame does (the hold only ever ran out).
+            #[cfg(feature = "gpu")]
+            let presented = self.gpu_presented(id);
+            #[cfg(not(feature = "gpu"))]
+            let presented = false;
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
-            let holds = !self.resize_wait.is_zero() && s.size != Size::default();
+            let holds = !self.resize_wait.is_zero() && s.size != Size::default() && !presented;
             let Some((w, h)) = wanted.filter(|_| holds) else {
                 s.size_hold = None;
                 continue;

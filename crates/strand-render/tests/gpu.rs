@@ -1038,10 +1038,125 @@ fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
     drop(gpu);
 }
 
-/// A start that fails the same way at every retry (once per 30 s while a
-/// `shader` node shows: no adapter, only a software one) is a warning
-/// once; a new reason, or the same after the device was up, is said
-/// again. Needs no device.
+/// (gpu-first review) A presented surface whose content size changes is
+/// not held for the configure at the new size, as a CPU one is: the new
+/// size is pending surface state only its next present commits, so that
+/// configure cannot come first, and the hold only ran out (and with
+/// nothing waking the loop at its end, the launcher's size-changing mode
+/// switches froze about 0.5 s on the GPU). Its frame is lowered at once,
+/// at the size it has. Needs no device (a frame is lowered, not drawn).
+#[test]
+fn a_presented_surface_is_not_held_for_its_new_size() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Font, PropValue::Font(font(13.0)))],
+    );
+    let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("short"))]);
+    let mut r = renderer();
+    r.set_resize_wait(Duration::from_secs(30));
+    assert!(r.apply(b.diff).is_empty());
+    let size = |r: &Renderer| {
+        let s = r.surface_spec(p).unwrap();
+        Size::new(s.width.unwrap() as u32, s.height.unwrap() as u32)
+    };
+    let first = size(&r);
+    r.attach_surface(S, p);
+    r.configure_surface(S, first, Scale::ONE);
+    let mut buf = Buffer::new(first.w, first.h, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let f = r
+        .paint_gpu(S, Duration::from_millis(16))
+        .expect("the first presented frame");
+    assert_eq!(f.size, first);
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("a much longer line of text"));
+    r.apply(d);
+    assert!(size(&r).w > first.w);
+    assert!(r.frame_deadline(S).is_none(), "no hold");
+    assert!(r.wants_frame(S));
+    let f = r
+        .paint_gpu(S, Duration::from_millis(32))
+        .expect("lowered at once");
+    assert_eq!(f.size, first, "at the size it has until the configure");
+}
+
+/// (gpu-first review) No adapter, or only a software one refused, is
+/// final: the renderer never asks for a device again, whatever needs one
+/// later (a promotion, a warm start, a pass), however long after; and
+/// where the binary found no render node (`gpu_absent`) nothing is ever
+/// asked for. d636d051 asked again at every animation 30 s apart, each
+/// ask a new instance and its drivers mapped. Needs no device.
+#[test]
+fn no_adapter_is_never_asked_for_again() {
+    for kind in [GpuErrorKind::NoAdapter, GpuErrorKind::Software] {
+        let mut r = renderer();
+        let (diff, _) = shader_scene("#00ff00");
+        assert!(r.apply(diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        r.set_gpu_retry(Duration::from_millis(1));
+        r.warm_gpu();
+        assert_eq!(r.take_backend_changes(), vec![BackendChange::Start]);
+        r.deliver_gpu(GpuReply::Unavailable(strand_gpu::GpuError {
+            kind,
+            message: "no Vulkan adapter".into(),
+        }));
+        r.deliver_gpu(GpuReply::Exited);
+        std::thread::sleep(Duration::from_millis(5));
+        let mut buf = Buffer::new(240, 60, Scale::ONE);
+        for t in 0..3 {
+            buf.paint(&mut r, S, t);
+        }
+        r.warm_gpu();
+        r.promote_now(S);
+        assert!(
+            r.take_gpu_requests().is_empty(),
+            "{kind:?}: no pass asked for"
+        );
+        assert!(r.take_backend_changes().is_empty(), "{kind:?}: no start");
+        assert_eq!(r.backend(S), Backend::Cpu);
+        assert_eq!(r.next_wake(), None, "{kind:?}: no wake");
+    }
+    // No render node: nothing asked for from the start.
+    let mut r = renderer();
+    let (diff, _) = shader_scene("#00ff00");
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    r.gpu_absent("no GPU render node (/dev/dri/renderD*)");
+    r.warm_gpu();
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    r.promote_now(S);
+    assert!(r.take_gpu_requests().is_empty());
+    assert!(r.take_backend_changes().is_empty());
+    assert_eq!(
+        r.gpu_status(),
+        GpuStatus::Unavailable {
+            reason: "no GPU render node (/dev/dri/renderD*)".into()
+        }
+    );
+    // Drawn as with no GPU at all.
+    let mut cpu = renderer();
+    let (diff, _) = shader_scene("#00ff00");
+    assert!(cpu.apply(diff).is_empty());
+    cpu.attach_surface(S, cpu.tree().roots()[0]);
+    cpu.deliver_gpu(GpuReply::Unavailable(strand_gpu::GpuError {
+        kind: GpuErrorKind::NoAdapter,
+        message: "no Vulkan adapter".into(),
+    }));
+    let mut want = Buffer::new(240, 60, Scale::ONE);
+    want.paint(&mut cpu, S, 0);
+    assert!(buf.pixels == want.pixels, "drawn as the CPU draws it");
+}
+
+/// A start that fails the same way each time it is asked (no adapter,
+/// only a software one: since the gpu-first review not asked again, but a
+/// host may still deliver the answer of a start already sent) is a
+/// warning once; a new reason, or the same after the device was up, is
+/// said again. Needs no device.
 #[test]
 fn an_unavailable_reason_is_warned_once() {
     let mut r = renderer();

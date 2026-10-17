@@ -807,7 +807,10 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
             .min();
         // (M4) A GPU thread that is ending is joined at a short poll.
         #[cfg(feature = "gpu")]
-        let wait = [wait, gpu.wait()].into_iter().flatten().min();
+        let wait = [wait, gpu.wait(&mgr.state().host().renderer)]
+            .into_iter()
+            .flatten()
+            .min();
         match mgr.dispatch(wait) {
             Ok(()) => {}
             Err(e) if connection_closed(&e) => {

@@ -52,9 +52,18 @@ pub(crate) use host::GpuHost;
 /// (`BackendChange::Start`), which creates the device and builds its
 /// pipelines off the main thread, and it is kept for the process, so an
 /// animation is drawn on the GPU from its first large frame.
+///
+/// (gpu-first review) Where no device can exist (no render node, and no
+/// software adapter accepted: `strand_gpu::device_possible`) nothing is
+/// started or ever probed: the shell maps no Vulkan library and costs
+/// what it did before gpu-first.
 #[cfg(feature = "gpu")]
 pub(crate) fn configure(renderer: &mut Renderer) {
-    renderer.warm_gpu();
+    if strand_gpu::device_possible(&strand_gpu::GpuOptions::from_env()) {
+        renderer.warm_gpu();
+    } else {
+        renderer.gpu_absent("no GPU render node (/dev/dri/renderD*)");
+    }
 }
 
 #[cfg(feature = "gpu")]
@@ -285,9 +294,28 @@ mod host {
 
         /// How soon the loop must pump again with nothing else waking
         /// it: a thread that is ending is polled until it has ended (its
-        /// last ping can come before it has).
-        pub(crate) fn wait(&self) -> Option<Duration> {
-            (!self.exiting.is_empty()).then_some(JOIN_POLL)
+        /// last ping can come before it has); a presented surface whose
+        /// next frame is held (a size or query hold, new text, a pass in
+        /// flight: `Renderer::frame_deadline`) is painted at the hold's
+        /// end.
+        ///
+        /// (gpu-first review) The surface manager arms that deadline for
+        /// the surfaces it paints, never for one handed off to the GPU
+        /// thread, so a held frame of a presented surface waited for
+        /// whatever woke the loop next: the launcher's mode switches that
+        /// change its size froze for about 0.5 s (the allocator's trim
+        /// timer) on the GPU, with every frame of the morph after it late.
+        pub(crate) fn wait(&self, renderer: &Renderer) -> Option<Duration> {
+            let poll = (!self.exiting.is_empty()).then_some(JOIN_POLL);
+            let now = std::time::Instant::now();
+            let held = self
+                .presented
+                .iter()
+                .filter(|(_, p)| !p.in_flight)
+                .filter_map(|(id, _)| renderer.frame_deadline(*id))
+                .min()
+                .map(|t| t.saturating_duration_since(now));
+            [poll, held].into_iter().flatten().min()
         }
 
         /// Delivers the thread's replies to render; true when one may
@@ -655,6 +683,72 @@ mod host {
                 },
             );
             assert_eq!(lent(&attached), [SurfaceId(1), SurfaceId(2)]);
+        }
+
+        /// (gpu-first review) A presented surface whose next frame is held
+        /// (here a size hold) wakes the loop at the hold's end: the
+        /// surface manager arms that deadline only for surfaces it paints.
+        /// One with a frame in flight waits for its `Presented`; one the
+        /// manager paints is the manager's.
+        #[test]
+        fn a_held_presented_frame_wakes_the_loop_at_its_hold() {
+            use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff};
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let mut r = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            r.set_resize_wait(Duration::from_secs(30));
+            // A content-sized panel whose text grows.
+            let (p, t) = (NodeId::new(1, 0), NodeId::new(2, 0));
+            let mut d = SceneDiff::new();
+            d.create(p, NodeKind::Panel, None, u32::MAX);
+            d.set(
+                p,
+                Prop::Font,
+                PropValue::Font(strand_scene::Font {
+                    family: strand_text::TEST_FONT_FAMILY.into(),
+                    size: 13.0,
+                    weight: 400,
+                }),
+            );
+            d.create(t, NodeKind::Text, Some(p), u32::MAX);
+            d.set(t, Prop::Text, PropValue::Text("short".into()));
+            r.apply(d);
+            let spec = r.surface_spec(p).cloned().unwrap();
+            let size = Size::new(spec.width.unwrap() as u32, spec.height.unwrap() as u32);
+            let s = SurfaceId(5);
+            r.attach_surface(s, p);
+            r.configure_surface(s, size, Scale::ONE);
+            let mut d = SceneDiff::new();
+            d.set(
+                t,
+                Prop::Text,
+                PropValue::Text("a much longer line of text".into()),
+            );
+            r.apply(d);
+            assert!(r.frame_deadline(s).is_some(), "held for its configure");
+            assert_eq!(host.wait(&r), None, "not presented: the manager's");
+            host.presented.insert(
+                s,
+                Presented {
+                    size,
+                    scale: Scale::ONE,
+                    in_flight: false,
+                    sent: None,
+                },
+            );
+            let w = host.wait(&r).expect("woken at the hold's end");
+            assert!(
+                w > Duration::from_secs(25) && w <= Duration::from_secs(30),
+                "{w:?}"
+            );
+            if let Some(pr) = host.presented.get_mut(&s) {
+                pr.in_flight = true;
+            }
+            assert_eq!(host.wait(&r), None, "in flight: its `Presented` wakes it");
         }
 
         /// The run's exit ends the GPU thread before the surface manager

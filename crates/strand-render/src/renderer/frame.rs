@@ -570,7 +570,7 @@ impl Renderer {
             s.cache = Some(f);
             self.last_damage.insert(surface, total);
             #[cfg(feature = "gpu")]
-            self.gpu_frame_stats(surface, stats.0, stats.1);
+            self.gpu_frame_stats(surface, stats.0, stats.1, None);
             return total;
         }
 
@@ -638,8 +638,15 @@ impl Renderer {
             s.painted_at = Some(Instant::now());
         }
         self.last_damage.insert(surface, total);
+        // The CPU's time for the frame, when it drew it: whether a small
+        // animated frame is cheap there (promotion's settle rule).
         #[cfg(feature = "gpu")]
-        self.gpu_frame_stats(surface, stats.0, stats.1);
+        self.gpu_frame_stats(
+            surface,
+            stats.0,
+            stats.1,
+            (!drawn).then_some(self.paint_times.raster),
+        );
         total
     }
 

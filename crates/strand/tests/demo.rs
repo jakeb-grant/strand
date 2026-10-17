@@ -209,14 +209,16 @@ fn damage_lines(log: &Path) -> Vec<String> {
 const PSS_TARGET_KB: u64 = 42 * 1024;
 const PSS_GATE_KB: u64 = 48 * 1024;
 
-/// (gpu-first) The design bar under `strand run` holds the warm device
-/// (on CI's lavapipe tier lavapipe, LLVM and the device's memory, about
-/// 190 MB): its target and ceilings are budgets.rs's for the design bar
-/// (decisions.md gpu-first). `strand run --demo` starts none and keeps
-/// the gate above.
-const WARM_PSS_TARGET_KB: u64 = 256 * 1024;
-const WARM_PSS_GATE_KB: u64 = 288 * 1024;
-const WARM_DEBUG_PSS_CEILING_KB: u64 = 320 * 1024;
+/// A DRM render node is here (`gpu.sh`): `strand run` warms a device.
+fn render_node() -> bool {
+    std::fs::read_dir("/dev/dri").is_ok_and(|d| {
+        d.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("renderD"))
+        })
+    })
+}
 
 /// A debug build carries about 9 MB more than release (30–31 MB against
 /// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
@@ -733,6 +735,11 @@ fn the_design_bar_keeps_the_m0_budget() {
         .env("STRAND_MOCK", "desktop")
         .env("STRAND_LOG", "damage")
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        // (gpu-first review) No device can exist: no software adapter
+        // accepted and (here, CI) no render node, so the bar is the cold
+        // one its gate is for; budgets.rs measures the warm device.
+        .env_remove("STRAND_GPU_SOFTWARE")
+        .env_remove("STRAND_REQUIRE_GPU")
         .stdin(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
@@ -798,16 +805,22 @@ fn the_design_bar_keeps_the_m0_budget() {
     // in debug: the ceiling was 80 MiB (decisions.md, m4-integration-w2).
     // Gaps 28 to 35 took the debug `.text` from 74.3 to 77.2 MB and
     // GitHub's runner to 82.3 MB: 92 MiB (decisions.md, m6-service-gaps).
-    // The warm device then added about 190 MB on lavapipe (gpu-first).
+    // The release gate below is the design's budget.
     let (limit, what) = if cfg!(debug_assertions) {
-        (WARM_DEBUG_PSS_CEILING_KB, "debug ceiling")
+        (92 * 1024, "debug ceiling")
     } else {
-        (WARM_PSS_GATE_KB, "ceiling")
+        pss_limit()
     };
     eprintln!("design bar PSS on two 2560x1440 outputs: {pss} kB ({what} {limit} kB)");
-    if !cfg!(debug_assertions) && pss > WARM_PSS_TARGET_KB {
-        eprintln!("design bar: PSS {pss} kB is over the {WARM_PSS_TARGET_KB} kB target");
-    }
+    warn_over_target("design bar", pss);
+    // With a render node here (gpu.sh) the shell warms a device whatever
+    // the test removes: its cost is budgets.rs's warm leg, not this gate.
+    let limit = if render_node() {
+        eprintln!("a GPU render node is here: the warm device is in the figure, not gated");
+        u64::MAX
+    } else {
+        limit
+    };
     assert!(
         pss <= limit,
         "PSS {pss} kB over the {limit} kB {what}\n{}",

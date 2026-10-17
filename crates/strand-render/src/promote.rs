@@ -20,12 +20,19 @@
 //!   against the one before (the whole node is damaged) with nothing
 //!   after it (m4-audit).
 //! - It goes back once settled for [`SETTLE_AFTER`]: every frame since
-//!   its last animated one (large, or with a spring in flight) small, or
-//!   none at all. A frame with a spring in flight never switches back, so
-//!   the switch lands on a still frame. A promoted surface that paints
-//!   nothing goes back at a wake of its own ([`Promotion::wake`]): one
-//!   wake after an animation ends, none while idle. So a bar ticking a
-//!   clock draws on the CPU with exact damage.
+//!   its last heavy one small, or none at all. Settled is a matter of
+//!   damage, not of springs (gpu-first review): a small spring that
+//!   never rests (an album cover turning with `t`) does not hold a
+//!   surface on the GPU, unless the CPU was measured drawing such a
+//!   frame of it slowly (at least [`CHEAP_FRAME`]): there the GPU is the
+//!   faster of the two even for a small frame, and it stays. A promoted
+//!   surface that paints nothing goes back at a wake of its own
+//!   ([`Promotion::wake`]): one wake after an animation ends, none while
+//!   idle. So a bar ticking a clock draws on the CPU with exact damage.
+//!   A surface promoted again within [`AGAIN_WITHIN`] of going back
+//!   settles for [`AGAIN_FACTOR`] times as long: one that animates every
+//!   few seconds (a launcher switching modes) keeps its swapchain, so its
+//!   next animation's first frames are not the CPU's while it attaches.
 //! - The device ([`Device`]) is kept up for the whole process once
 //!   started: the binary starts it when the shell starts
 //!   (`Renderer::warm_gpu`), off the frame path, so an animation never
@@ -54,6 +61,19 @@ pub const CLOCK_RUN: u32 = 3;
 
 /// How long a promoted surface must be settled before it goes back.
 pub const SETTLE_AFTER: Duration = Duration::from_secs(3);
+
+/// A surface promoted again this soon after it went back...
+pub const AGAIN_WITHIN: Duration = Duration::from_secs(30);
+
+/// ...settles this many times [`SETTLE_AFTER`] (15 s) before it goes
+/// back again.
+pub const AGAIN_FACTOR: u32 = 5;
+
+/// A small frame with springs in flight that the CPU drew in at least
+/// this long (half a 120 Hz frame) is heavy: a promoted surface whose
+/// small animated frames are that slow on the CPU stays on the GPU while
+/// they last.
+pub const CHEAP_FRAME: Duration = Duration::from_millis(4);
 
 /// How long after a failed start or a lost device the device is asked
 /// for again.
@@ -86,8 +106,17 @@ pub struct Promotion {
     run: u32,
     /// The last frame had springs in flight.
     sprung: bool,
-    /// The last frame animated (large, or springs in flight).
+    /// The last frame was heavy: large, or a small one with springs in
+    /// flight on a surface whose such frames are slow on the CPU.
     hot: bool,
+    /// The CPU's time for this surface's last small frame with springs in
+    /// flight that it drew.
+    spring_cost: Option<Duration>,
+    /// When it last went back to the CPU, settled.
+    back_at: Option<Instant>,
+    /// Promoted again within [`AGAIN_WITHIN`] of going back: it settles
+    /// for [`AGAIN_FACTOR`] times as long.
+    again: bool,
     /// On the GPU: when it last animated (or was promoted, or showed an
     /// animated frame). Its settle window runs from here.
     busy: Option<Instant>,
@@ -107,15 +136,26 @@ impl Promotion {
     }
 
     fn settle(&self) -> Duration {
-        self.settle.unwrap_or(SETTLE_AFTER)
+        let base = self.settle.unwrap_or(SETTLE_AFTER);
+        if self.again {
+            base * AGAIN_FACTOR
+        } else {
+            base
+        }
     }
 
     /// A frame at `now` that damaged `damage` pixels, with `springs`
-    /// in flight on the surface. Returns the switch to make now. A paint
-    /// that damaged nothing is not a frame (nothing is committed): a
-    /// clocked shader whose pass result comes every other paint does not
-    /// break its run.
-    pub fn frame(&mut self, now: Instant, damage: u64, springs: bool) -> Option<Switch> {
+    /// in flight on the surface; `cpu` is the CPU's time for it when the
+    /// CPU drew it. Returns the switch to make now. A paint that damaged
+    /// nothing is not a frame (nothing is committed): a clocked shader
+    /// whose pass result comes every other paint does not break its run.
+    pub fn frame(
+        &mut self,
+        now: Instant,
+        damage: u64,
+        springs: bool,
+        cpu: Option<Duration>,
+    ) -> Option<Switch> {
         if damage == 0 {
             return None;
         }
@@ -123,6 +163,9 @@ impl Promotion {
         // by springs alone ends here, though its damage is still large.
         let settling = std::mem::replace(&mut self.sprung, springs) && !springs;
         let large = damage >= LARGE_DAMAGE;
+        if !large && springs && cpu.is_some() {
+            self.spring_cost = cpu;
+        }
         let close = self
             .last
             .is_some_and(|t| now.saturating_duration_since(t) <= RUN_GAP);
@@ -132,13 +175,14 @@ impl Promotion {
             (true, false) => 1,
         };
         self.last = Some(now);
-        self.hot = large || springs;
+        let slow = springs && self.spring_cost.is_some_and(|c| c >= CHEAP_FRAME);
+        self.hot = large || slow;
         if self.gpu {
             if self.hot {
                 self.busy = Some(now);
                 return None;
             }
-            // Settled long enough: back at this still frame.
+            // Settled long enough: back at this small frame.
             let settled = self
                 .busy
                 .is_none_or(|t| now.saturating_duration_since(t) >= self.settle());
@@ -151,10 +195,14 @@ impl Promotion {
     fn switch(&mut self, now: Instant) -> Switch {
         self.gpu = !self.gpu;
         if self.gpu {
+            self.again = self
+                .back_at
+                .is_some_and(|t| now.saturating_duration_since(t) <= AGAIN_WITHIN);
             self.busy = Some(now);
             Switch::ToGpu
         } else {
             self.busy = None;
+            self.back_at = Some(now);
             Switch::ToCpu
         }
     }
@@ -174,6 +222,7 @@ impl Promotion {
         match self.wake() {
             Some(t) if now >= t => {
                 self.force_cpu();
+                self.back_at = Some(now);
                 Some(Switch::ToCpu)
             }
             _ => None,
@@ -226,6 +275,9 @@ enum State {
     Failed(Instant),
     /// [`LOST_CAP`] devices were lost: never asked for again.
     Off,
+    /// No device can exist in this process (no render node, no Vulkan
+    /// adapter, only a software one refused): never asked for again.
+    Absent,
 }
 
 impl Device {
@@ -235,7 +287,7 @@ impl Device {
     /// old, and once the GPU is off.
     pub fn want(&mut self, now: Instant) -> bool {
         match self.state {
-            State::Off => false,
+            State::Off | State::Absent => false,
             State::Failed(at)
                 if now.saturating_duration_since(at) < self.retry.unwrap_or(RETRY_AFTER) =>
             {
@@ -273,16 +325,33 @@ impl Device {
 
     /// The start failed or the device was lost at `now`.
     pub fn failed(&mut self, now: Instant) {
-        if self.state != State::Off {
+        if !matches!(self.state, State::Off | State::Absent) {
             self.state = State::Failed(now);
         }
+    }
+
+    /// (gpu-first review) No device can exist in this process: no render
+    /// node, no Vulkan adapter, or only a software one, refused. Nothing
+    /// asks for one again (a machine that never has a device would
+    /// otherwise make an instance, and map its drivers, at every
+    /// animation 30 s apart); the GPU's turning off after lost devices
+    /// stays what it is.
+    pub fn absent(&mut self) {
+        if self.state != State::Off {
+            self.state = State::Absent;
+        }
+    }
+
+    /// True once no device can exist in this process.
+    pub fn is_absent(&self) -> bool {
+        self.state == State::Absent
     }
 
     /// The device was lost at `now` (a hang, a reset, a panic). True if
     /// this loss turned the GPU off (the [`LOST_CAP`]th): it says so once.
     pub fn lost(&mut self, now: Instant) -> bool {
         self.lost = self.lost.saturating_add(1);
-        if self.state == State::Off {
+        if matches!(self.state, State::Off | State::Absent) {
             return false;
         }
         if self.lost >= LOST_CAP {
@@ -334,7 +403,7 @@ mod tests {
         let mut out = Vec::new();
         while *t < end {
             *t += FRAME;
-            out.extend(p.frame(*t, damage, springs));
+            out.extend(p.frame(*t, damage, springs, None));
         }
         out
     }
@@ -349,10 +418,10 @@ mod tests {
         let mut p = Promotion::default();
         let t = Instant::now();
         // Still: a small frame (a caret), nothing in flight.
-        assert_eq!(p.frame(t, 2_000, false), None);
+        assert_eq!(p.frame(t, 2_000, false, None), None);
         // The mode switch: the card's size springs.
         assert_eq!(
-            p.frame(t + FRAME, 900_000, true),
+            p.frame(t + FRAME, 900_000, true, None),
             Some(Switch::ToGpu),
             "the first large frame of the spring"
         );
@@ -362,7 +431,7 @@ mod tests {
         let mut t = t + FRAME;
         assert!(run(&mut p, &mut t, Duration::from_millis(300), 900_000, true).is_empty());
         t += FRAME;
-        assert_eq!(p.frame(t, 900_000, false), None, "the settling frame");
+        assert_eq!(p.frame(t, 900_000, false, None), None, "the settling frame");
         assert!(p.on_gpu());
     }
 
@@ -372,7 +441,7 @@ mod tests {
     fn a_panel_opening_is_promoted_at_its_first_frame() {
         let mut p = Promotion::default();
         assert_eq!(
-            p.frame(Instant::now(), 1_350_000, true),
+            p.frame(Instant::now(), 1_350_000, true, None),
             Some(Switch::ToGpu)
         );
     }
@@ -385,25 +454,29 @@ mod tests {
     fn a_clock_is_promoted_at_its_third_large_frame_in_a_row() {
         let mut p = Promotion::default();
         let mut t = Instant::now();
-        assert_eq!(p.frame(t, 1_000_000, false), None, "a first frame");
+        assert_eq!(p.frame(t, 1_000_000, false, None), None, "a first frame");
         t += FRAME;
-        assert_eq!(p.frame(t, 1_000_000, false), None, "its text laid out");
+        assert_eq!(
+            p.frame(t, 1_000_000, false, None),
+            None,
+            "its text laid out"
+        );
         // Seconds later, two more: a pause breaks the run.
         t += Duration::from_secs(2);
-        assert_eq!(p.frame(t, 1_000_000, false), None);
+        assert_eq!(p.frame(t, 1_000_000, false, None), None);
         t += RUN_GAP + FRAME;
-        assert_eq!(p.frame(t, 1_000_000, false), None);
+        assert_eq!(p.frame(t, 1_000_000, false, None), None);
         // A small frame breaks it too.
         t += FRAME;
-        assert_eq!(p.frame(t, 1_000, false), None);
+        assert_eq!(p.frame(t, 1_000, false, None), None);
         // A clock: the third large frame in a row (a dropped frame or
         // two within RUN_GAP keep the run).
         t += FRAME;
-        assert_eq!(p.frame(t, LARGE_DAMAGE, false), None);
+        assert_eq!(p.frame(t, LARGE_DAMAGE, false, None), None);
         t += RUN_GAP;
-        assert_eq!(p.frame(t, LARGE_DAMAGE, false), None);
+        assert_eq!(p.frame(t, LARGE_DAMAGE, false, None), None);
         t += FRAME;
-        assert_eq!(p.frame(t, LARGE_DAMAGE, false), Some(Switch::ToGpu));
+        assert_eq!(p.frame(t, LARGE_DAMAGE, false, None), Some(Switch::ToGpu));
         // Just under 0.2 Mpx is not large, however long it runs.
         let mut q = Promotion::default();
         let mut t = Instant::now();
@@ -428,7 +501,7 @@ mod tests {
         for i in 0..8 {
             t += Duration::from_millis(8);
             let damage = if i % 2 == 0 { LARGE_DAMAGE } else { 0 };
-            switched = switched.or(p.frame(t, damage, false));
+            switched = switched.or(p.frame(t, damage, false, None));
         }
         assert_eq!(switched, Some(Switch::ToGpu));
     }
@@ -447,67 +520,188 @@ mod tests {
         p.force_cpu(); // no device: render takes it back at once
         assert!(run(&mut p, &mut t, Duration::from_millis(200), 1_000, true).is_empty());
         t += FRAME;
-        assert_eq!(p.frame(t, 1_000_000, false), None, "a lone large frame");
+        assert_eq!(
+            p.frame(t, 1_000_000, false, None),
+            None,
+            "a lone large frame"
+        );
         // Large frames all through the spring, the device refused each.
         let mut q = Promotion::default();
         let mut t = Instant::now();
         for _ in 0..10 {
             t += FRAME;
-            if q.frame(t, 1_000_000, true) == Some(Switch::ToGpu) {
+            if q.frame(t, 1_000_000, true, None) == Some(Switch::ToGpu) {
                 q.force_cpu();
             }
         }
         t += FRAME;
-        assert_eq!(q.frame(t, 1_000_000, false), None, "the settling frame");
+        assert_eq!(
+            q.frame(t, 1_000_000, false, None),
+            None,
+            "the settling frame"
+        );
         assert!(!q.on_gpu());
         // Nothing follows: the next paint comes after a pause.
         t += Duration::from_secs(2);
-        assert_eq!(q.frame(t, 1_000_000, false), None);
+        assert_eq!(q.frame(t, 1_000_000, false, None), None);
         // With a clock still running, the next large frame promotes.
         let mut c = Promotion::default();
         let mut t = Instant::now();
         for _ in 0..10 {
             t += FRAME;
-            if c.frame(t, 1_000_000, true) == Some(Switch::ToGpu) {
+            if c.frame(t, 1_000_000, true, None) == Some(Switch::ToGpu) {
                 c.force_cpu();
             }
         }
         t += FRAME;
-        assert_eq!(c.frame(t, 1_000_000, false), None, "the settling frame");
+        assert_eq!(
+            c.frame(t, 1_000_000, false, None),
+            None,
+            "the settling frame"
+        );
         t += FRAME;
-        assert_eq!(c.frame(t, 1_000_000, false), Some(Switch::ToGpu));
+        assert_eq!(c.frame(t, 1_000_000, false, None), Some(Switch::ToGpu));
     }
 
     /// Back on the CPU only after `SETTLE_AFTER` of small frames (a clock
-    /// ticking), at a frame with no spring in flight; any animated frame
-    /// starts the window over.
+    /// ticking, a hover's small spring); any large frame starts the
+    /// window over.
     #[test]
     fn a_settled_surface_goes_back_after_the_settle_period() {
         let mut p = Promotion::default();
         let mut t = Instant::now();
-        assert_eq!(p.frame(t, 900_000, true), Some(Switch::ToGpu));
+        assert_eq!(p.frame(t, 900_000, true, None), Some(Switch::ToGpu));
         // A second's ticks, then the morph again: still promoted.
         let tick = Duration::from_secs(1);
         for _ in 0..2 {
             t += tick;
-            assert_eq!(p.frame(t, 1_200, false), None);
+            assert_eq!(p.frame(t, 1_200, false, None), None);
         }
         t += FRAME;
-        assert_eq!(p.frame(t, 900_000, true), None, "animating again");
+        assert_eq!(p.frame(t, 900_000, true, None), None, "animating again");
         let busy = t;
-        // Ticks until the settle period has passed since the morph.
+        // Ticks and a hover until the settle period has passed since the
+        // morph.
         for _ in 0..2 {
             t += tick;
-            assert_eq!(p.frame(t, 1_200, false), None);
+            assert_eq!(p.frame(t, 1_200, false, None), None);
         }
-        // A small spring in flight (a hover) is not settled.
-        t = busy + SETTLE_AFTER;
-        assert_eq!(p.frame(t, 1_200, true), None);
+        t += FRAME;
+        assert_eq!(p.frame(t, 1_200, true, None), None, "a hover, unsettled");
         assert!(p.on_gpu());
-        t += SETTLE_AFTER;
-        assert_eq!(p.frame(t, 1_200, false), Some(Switch::ToCpu));
+        // A small spring in flight is settled once the period is over:
+        // back at that frame.
+        t = busy + SETTLE_AFTER;
+        assert_eq!(p.frame(t, 1_200, true, None), Some(Switch::ToCpu));
         assert!(!p.on_gpu());
         assert_eq!(p.wake(), None);
+    }
+
+    /// (gpu-first review) Settled is a matter of damage: a promoted
+    /// surface whose only motion is a small spring that never rests (the
+    /// launcher's album cover, `rotate: t * 20deg`, 80×80 px) goes back
+    /// after `SETTLE_AFTER`. d636d051 counted any spring in flight as
+    /// animating, so the launcher stayed on the GPU for as long as the
+    /// cover turned.
+    #[test]
+    fn a_perpetual_small_spring_does_not_hold_a_surface_on_the_gpu() {
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        assert_eq!(p.frame(t, 1_350_000, true, None), Some(Switch::ToGpu));
+        let back = run(&mut p, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
+        assert_eq!(back, vec![Switch::ToCpu], "back once, after the period");
+        assert!(!p.on_gpu());
+        // On the CPU the cover turns on, cheaply: nothing promotes it.
+        let more = run(&mut p, &mut t, Duration::from_secs(5), 6_400, true);
+        assert!(more.is_empty());
+    }
+
+    /// (gpu-first review) A small spring the CPU was measured drawing
+    /// slowly (at least `CHEAP_FRAME`: the launcher's turning cover,
+    /// 13-19 ms a frame on the CPU, where the GPU draws the whole surface
+    /// in about 9 ms off the main thread) is not settled: its surface
+    /// stays on the GPU while it turns, and goes back once it rests. One
+    /// measured fast goes back as any small frame does.
+    #[test]
+    fn a_small_spring_the_cpu_draws_slowly_keeps_its_surface_on_the_gpu() {
+        let slow = Some(Duration::from_millis(13));
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        // On the CPU: the cover turns, measured slow; then a mode switch.
+        for _ in 0..10 {
+            t += FRAME;
+            assert_eq!(p.frame(t, 6_400, true, slow), None, "small: not promoted");
+        }
+        t += FRAME;
+        assert_eq!(p.frame(t, 1_350_000, true, slow), Some(Switch::ToGpu));
+        // On the GPU (no CPU time) the cover turns on for 10 s: it stays.
+        assert!(run(&mut p, &mut t, Duration::from_secs(10), 6_400, true).is_empty());
+        assert!(p.on_gpu());
+        // Paused: small frames with nothing in flight settle it.
+        let rest = t;
+        let back = run(&mut p, &mut t, SETTLE_AFTER + FRAME, 1_200, false);
+        assert_eq!(back, vec![Switch::ToCpu]);
+        assert!(t >= rest + SETTLE_AFTER);
+        // The same surface measured fast goes back while it turns.
+        let mut q = Promotion::default();
+        let mut t = Instant::now();
+        let fast = Some(Duration::from_micros(400));
+        for _ in 0..10 {
+            t += FRAME;
+            q.frame(t, 6_400, true, fast);
+        }
+        t += FRAME;
+        assert_eq!(q.frame(t, 1_350_000, true, fast), Some(Switch::ToGpu));
+        let back = run(&mut q, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
+        assert_eq!(back, vec![Switch::ToCpu]);
+        // A large frame's CPU time says nothing about small ones.
+        let mut r = Promotion::default();
+        let mut t = Instant::now();
+        assert_eq!(
+            r.frame(t, 1_350_000, true, Some(Duration::from_millis(15))),
+            Some(Switch::ToGpu)
+        );
+        let back = run(&mut r, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
+        assert_eq!(back, vec![Switch::ToCpu]);
+    }
+
+    /// (gpu-first review) A surface promoted again within `AGAIN_WITHIN`
+    /// of going back settles `AGAIN_FACTOR` times as long, so a launcher
+    /// switching modes every few seconds keeps its swapchain; one
+    /// promoted again later settles in `SETTLE_AFTER` again.
+    #[test]
+    fn a_surface_promoted_again_soon_settles_longer() {
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        assert_eq!(p.frame(t, 900_000, true, None), Some(Switch::ToGpu));
+        assert_eq!(p.wake(), Some(t + SETTLE_AFTER));
+        t += SETTLE_AFTER;
+        assert_eq!(p.idle(t), Some(Switch::ToCpu));
+        // A mode switch a second later.
+        t += Duration::from_secs(1);
+        assert_eq!(p.frame(t, 900_000, true, None), Some(Switch::ToGpu));
+        let long = SETTLE_AFTER * AGAIN_FACTOR;
+        assert_eq!(p.wake(), Some(t + long));
+        // Small frames for SETTLE_AFTER do not take it back now.
+        let start = t;
+        let back = run(&mut p, &mut t, long - FRAME * 2, 1_200, false);
+        assert!(back.is_empty(), "held for the longer period");
+        let back = run(&mut p, &mut t, FRAME * 3, 1_200, false);
+        assert_eq!(back, vec![Switch::ToCpu]);
+        assert!(t >= start + long);
+        // Promoted again after AGAIN_WITHIN: the usual period.
+        t += AGAIN_WITHIN + FRAME;
+        assert_eq!(p.frame(t, 900_000, true, None), Some(Switch::ToGpu));
+        assert_eq!(p.wake(), Some(t + SETTLE_AFTER));
+        // A test's shorter window scales the same way.
+        let mut q = Promotion::default();
+        q.set_settle(Duration::from_millis(100));
+        let t = Instant::now();
+        assert_eq!(q.frame(t, 900_000, true, None), Some(Switch::ToGpu));
+        let t = t + Duration::from_millis(100);
+        assert_eq!(q.idle(t), Some(Switch::ToCpu));
+        assert_eq!(q.frame(t + FRAME, 900_000, true, None), Some(Switch::ToGpu));
+        assert_eq!(q.wake(), Some(t + FRAME + Duration::from_millis(500)));
     }
 
     /// A promoted surface that paints nothing goes back at one wake,
@@ -542,7 +736,7 @@ mod tests {
         let mut p = Promotion::default();
         p.shown(t);
         assert_eq!(p.wake(), None, "on the CPU");
-        assert_eq!(p.frame(t, LARGE_DAMAGE, true), Some(Switch::ToGpu));
+        assert_eq!(p.frame(t, LARGE_DAMAGE, true, None), Some(Switch::ToGpu));
         assert_eq!(p.wake(), Some(t + SETTLE_AFTER));
         let late = t + Duration::from_millis(800);
         p.shown(late);
@@ -551,7 +745,7 @@ mod tests {
         p.shown(t);
         assert_eq!(p.wake(), Some(late + SETTLE_AFTER), "never earlier");
         // A still frame shown later does not move it.
-        assert_eq!(p.frame(late + FRAME, 100, false), None);
+        assert_eq!(p.frame(late + FRAME, 100, false, None), None);
         p.shown(late + Duration::from_secs(1));
         assert_eq!(p.wake(), Some(late + SETTLE_AFTER));
         assert_eq!(p.idle(late + SETTLE_AFTER), Some(Switch::ToCpu));
@@ -561,7 +755,7 @@ mod tests {
     fn a_forced_demotion_waits_for_nothing() {
         let mut p = Promotion::default();
         let t = Instant::now();
-        assert_eq!(p.frame(t, 300_000, true), Some(Switch::ToGpu));
+        assert_eq!(p.frame(t, 300_000, true, None), Some(Switch::ToGpu));
         p.force_cpu();
         assert!(!p.on_gpu());
         assert_eq!(p.wake(), None);
@@ -599,6 +793,43 @@ mod tests {
         d.up();
         d.failed(t0 + Duration::from_secs(40));
         assert!(!d.want(t0 + Duration::from_secs(41)));
+    }
+
+    /// (gpu-first review) A machine where no device can exist (no
+    /// render node, no adapter, only a software one refused) is never
+    /// asked for one again, however long it runs: d636d051 retried every
+    /// 30 s of demand, and with springs promoting at once that was every
+    /// animation, each one an instance and its drivers mapped.
+    #[test]
+    fn a_machine_with_no_device_is_never_asked_again() {
+        let mut d = Device::default();
+        let t = Instant::now();
+        assert!(d.want(t), "the warm start");
+        d.absent();
+        assert!(d.is_absent() && !d.idle() && !d.is_off());
+        for later in [RETRY_AFTER * 2, Duration::from_secs(86_400)] {
+            assert!(!d.want(t + later), "never asked for again");
+        }
+        d.failed(t);
+        d.dropped();
+        assert!(!d.lost(t));
+        assert!(d.is_absent(), "for the process");
+        // Known before any start (no render node): the same.
+        let mut e = Device::default();
+        e.absent();
+        assert!(!e.want(t));
+        // The GPU turned off after lost devices stays off.
+        let mut f = Device::default();
+        let mut at = t;
+        for _ in 0..LOST_CAP {
+            assert!(f.want(at));
+            f.up();
+            f.lost(at);
+            at += RETRY_AFTER + Duration::from_millis(1);
+        }
+        assert!(f.is_off());
+        f.absent();
+        assert!(f.is_off());
     }
 
     /// (m4-close-gpucap) The third lost device turns the GPU off, not the
