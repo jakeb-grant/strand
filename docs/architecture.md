@@ -779,11 +779,14 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     rotation, the offset parts, `Motions` and `authored` `Axes` bits,
     `Hidden`, `TextDrawn`), `OffsetParts`, `HeldText`;
   - `Renderer::set_frame_trace(bool)`, `take_frame_traces() ->
-    Vec<FrameTrace>`, `set_text_hold(bool)`, `held_text() ->
-    Vec<HeldText>` and `release_text(&mut dyn FnMut(&HeldText) -> bool)
-    -> usize` (`renderer/probe.rs`): the trace's switch, and a hold on
-    the layouts inline shaping makes, which stay pending, as a late text
-    worker's do, until released through the usual delivery;
+    Vec<FrameTrace>`, `set_text_hold(bool)`,
+    `set_text_hold_with(Option<HoldPick>)` (`HoldPick = Box<dyn
+    FnMut(NodeId, &str) -> bool>`: hold only the texts it picks),
+    `held_text() -> Vec<HeldText>` and `release_text(&mut dyn
+    FnMut(&HeldText) -> bool) -> usize` (`renderer/probe.rs`): the
+    trace's switch, and a hold on the layouts inline shaping makes, which
+    stay pending, as a late text worker's do, until released through the
+    usual delivery;
   - `Router::set_now(Option<Instant>)`: the time the router reads for
     hover delays, grace and edits in place of the wall clock;
   - the trace is built in `flatten/probe.rs` from the locals

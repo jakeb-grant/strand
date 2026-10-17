@@ -13,13 +13,15 @@
 //!   included; never `update`'s preview) pushes one [`FrameTrace`],
 //!   taken with [`Renderer::take_frame_traces`].
 //! - [`Renderer::set_text_hold`] keeps the layouts inline shaping makes
-//!   from being delivered: the request stays pending, so layout and the
+//!   from being delivered (or [`Renderer::set_text_hold_with`], those of
+//!   the texts it picks): the request stays pending, so layout and the
 //!   frame treat the text as a late worker's (placed by its estimate)
 //!   until [`Renderer::release_text`] delivers it.
 //!
 //! [`Renderer::set_frame_trace`]: crate::Renderer::set_frame_trace
 //! [`Renderer::take_frame_traces`]: crate::Renderer::take_frame_traces
 //! [`Renderer::set_text_hold`]: crate::Renderer::set_text_hold
+//! [`Renderer::set_text_hold_with`]: crate::Renderer::set_text_hold_with
 //! [`Renderer::release_text`]: crate::Renderer::release_text
 
 use std::ops::{BitOr, BitOrAssign};
@@ -253,13 +255,29 @@ pub struct HeldText {
     pub paints: u32,
 }
 
+/// Which texts the hold keeps back (`Renderer::set_text_hold_with`): a
+/// layout's node and text, true to hold it.
+pub type HoldPick = Box<dyn FnMut(NodeId, &str) -> bool>;
+
 /// The renderer's probe state (`Renderer::probe`).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct Probe {
     pub(crate) trace_on: bool,
     pub(crate) frames: Vec<FrameTrace>,
-    pub(crate) hold_text: bool,
+    /// The hold: `None` holds nothing.
+    pub(crate) hold: Option<HoldPick>,
     pub(crate) held: Vec<(HeldText, TextLayout)>,
+}
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Probe")
+            .field("trace_on", &self.trace_on)
+            .field("frames", &self.frames.len())
+            .field("hold", &self.hold.is_some())
+            .field("held", &self.held.len())
+            .finish()
+    }
 }
 
 impl Probe {

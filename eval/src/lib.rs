@@ -5,12 +5,21 @@
 //!
 //! - [`scenario`], [`steps`], [`select`]: the `.scn` format, parsed with
 //!   typed errors at `file:line`.
+//! - [`harness`] (with [`clock`], [`surfaces`], [`input`], [`text`] and
+//!   [`labels`]): the driver, which runs a scenario into a [`trace`].
 
 use std::fmt;
 
+pub mod clock;
+pub mod harness;
+pub mod input;
+pub mod labels;
 pub mod scenario;
 pub mod select;
 pub mod steps;
+pub mod surfaces;
+pub mod text;
+pub mod trace;
 
 /// What the sandbox can fail with; every command returns one of these
 /// rather than panicking.

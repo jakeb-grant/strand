@@ -305,6 +305,62 @@ fn held_text_is_drawn_by_its_estimate_until_released() {
     assert!(!sh.r.text_pending());
 }
 
+/// Two texts mounted at once, one held by name: the other is shaped in
+/// the same frame (`set_text_hold_with`, the driver's `text hold where`).
+const TWO: &str = "
+state show = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 4; align: center
+    if show { text \"iiii\" { color: #ff00ff } }
+    if show { text \"mm\" { color: #00ff00 } }
+  }
+}
+";
+
+#[test]
+fn a_hold_filter_holds_only_the_texts_it_picks() {
+    let mut sh = Shell::boot(TWO, false);
+    sh.r.set_text_hold_with(Some(Box::new(|_, text: &str| text == "iiii")));
+    sh.set("show", Value::Bool(true));
+    let f = sh.paint();
+    let f = f.last().expect("a frame");
+    let held = sh.r.held_text();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].text, "iiii");
+    let late = find(f, NodeKind::Text, |n| n.node == held[0].node).unwrap();
+    assert_eq!(node(f, late).unwrap().text, Some(TextDrawn::Estimate));
+    let other = find(f, NodeKind::Text, |n| n.node != late).expect("the other text");
+    assert_eq!(node(f, other).unwrap().text, Some(TextDrawn::Shaped));
+    // No filter: nothing held, what was is released.
+    sh.r.set_text_hold_with(None);
+    assert!(sh.r.held_text().is_empty());
+    let f = sh.run();
+    let last = f.last().unwrap();
+    assert_eq!(node(last, late).unwrap().text, Some(TextDrawn::Shaped));
+    assert_eq!(last.text_held, 0);
+}
+
+/// At rest the trace's boxes are the renderer's own: every node's
+/// visual box is its `node_rect`, the box hit testing reads.
+#[test]
+fn at_rest_the_traced_boxes_are_the_renderers() {
+    let mut sh = Shell::boot(FOCUS_OFF, false);
+    sh.set("dnd", Value::Bool(false));
+    let f = sh.run();
+    let f = f.last().expect("frames");
+    let mut n = 0;
+    for t in f.nodes.iter() {
+        let Some(rect) = sh.r.node_rect(BAR, t.node) else {
+            continue;
+        };
+        n += 1;
+        assert_eq!(t.visual, rect, "{t:?}");
+        assert_eq!(t.laid, rect, "{t:?}");
+    }
+    assert!(n >= 6, "{n} nodes with a box");
+}
+
 /// A bar with an item whose popup opens on hover after `delay`
 /// (crates/strand-render/tests/input.rs's `Islands`, one island).
 struct Island {

@@ -31,8 +31,21 @@ impl Renderer {
     /// now on (on), its request left pending as a late worker's is; off
     /// delivers what is held.
     pub fn set_text_hold(&mut self, on: bool) {
-        self.probe.hold_text = on;
-        if !on {
+        match on {
+            true => self.set_text_hold_with(Some(Box::new(|_, _| true))),
+            false => self.set_text_hold_with(None),
+        }
+    }
+
+    /// (eval-sandbox) Holds back the layouts inline shaping makes from
+    /// now on of the texts `pick` chooses (by node and text); the others
+    /// are delivered at once, as without a hold. `None` holds nothing and
+    /// delivers what is held. What is already held stays held under a
+    /// new pick.
+    pub fn set_text_hold_with(&mut self, pick: Option<crate::probe::HoldPick>) {
+        let off = pick.is_none();
+        self.probe.hold = pick;
+        if off {
             self.release_text(&mut |_| true);
         }
     }
@@ -64,7 +77,12 @@ impl Renderer {
         text: &str,
         layout: TextLayout,
     ) -> Option<TextLayout> {
-        if !self.probe.hold_text {
+        if !self
+            .probe
+            .hold
+            .as_mut()
+            .is_some_and(|pick| pick(node, text))
+        {
             return Some(layout);
         }
         let held = HeldText {
