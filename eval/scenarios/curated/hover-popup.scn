@@ -1,0 +1,35 @@
+id     = "hover-popup"
+about  = """A `trigger: hover` popup (design.md; docs/spec.md `trigger: hover`) opened
+by the pointer gliding onto its element and closed by it gliding away, its delay
+and grace on the virtual clock. Its card enters faded from above and leaves by
+the mirrored pose; the bar under it does not move."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 30; gap: 6; align: center
+    box { id: before; width: 30; height: 20; bg: #00ff00 }
+    box { id: item; width: 40; height: 30; bg: #303030
+      popup { id: pop; trigger: hover; delay: 200ms; width: 120; height: 40
+        box { id: card; width: 120; height: 40; bg: #ff0000; enter { opacity: 0; y: -6 } }
+      }
+    }
+    box { id: after; width: 30; height: 20; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark hover-in
+glide 250,10 -> 50,10 over 120
+wait 300
+rest
+expect visible #card
+expect still #before
+expect still #after
+mark hover-out
+glide 50,10 -> 250,10 over 120
+rest
+expect still #before
+expect still #after

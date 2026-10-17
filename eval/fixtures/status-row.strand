@@ -1,0 +1,28 @@
+// The owner's crown status row, reduced (owner-testing.md bugs 24 and
+// 25; crates/strand-render/tests/morph.rs STATUS_ROW and FOCUS_OFF, with
+// ids): the music bars, Focus's glyph while Focus is on, the unread
+// count entering faded while it is off, and a last box. Both glyphs are
+// texts whose estimates are far from their shaped sizes (narrow letters,
+// as a ligature's name is one glyph). Bundled fonts only.
+state dnd = false
+bar Top {
+  height: 30
+  split { width: 300; height: 30; pad: 0, 14
+    end { align: center
+      row { id: status; gap: 6; align: center; shrink: 0
+        box { id: bars; enter { opacity: 0; scale: 0.6 }
+          row { gap: 2; height: 12; align: end
+            for i in [0, 1, 2] key i { box { width: 4; height: 8 + i * 2; bg: #00ff00 } }
+          }
+        }
+        if dnd { text "iiii" { id: focus; width: 14; shrink: 0; color: #ff00ff } }
+        if !dnd {
+          row { id: count; gap: 3; align: center; shrink: 0; enter { opacity: 0; x: -6 }
+            text "llll" { width: 14; shrink: 0; color: #ff00ff }
+          }
+        }
+        box { id: last; width: 20; height: 10; bg: #0000ff }
+      }
+    }
+  }
+}

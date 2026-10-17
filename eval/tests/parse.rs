@@ -692,3 +692,38 @@ fn hash_is_a_comment_only_on_its_own() {
     assert_eq!(s.steps[0].line, 6);
     assert_eq!(s.steps[1].text, "expect still #bars");
 }
+
+/// Every committed scenario parses as committed (nothing outside eval/,
+/// bundled fonts), its ids are its file names and unique, and each says
+/// what it is about.
+#[test]
+fn every_committed_scenario_parses() {
+    let dirs = [
+        eval_root().join("scenarios/curated"),
+        eval_root().join("scenarios/regressions"),
+    ];
+    let files = strand_eval::cli::collect(&dirs).unwrap();
+    assert!(files.len() >= 11, "{files:?}");
+    let mut ids = Vec::new();
+    for f in &files {
+        let s = Scenario::load(f).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(s.place, Place::Committed, "{}", f.display());
+        assert_eq!(s.fonts, Fonts::Bundled, "{}", f.display());
+        assert_eq!(
+            f.file_stem().and_then(|x| x.to_str()),
+            Some(s.id.as_str()),
+            "{}",
+            f.display()
+        );
+        assert!(!s.about.trim().is_empty(), "{}: no about", f.display());
+        assert!(!ids.contains(&s.id), "{} twice", s.id);
+        ids.push(s.id);
+    }
+    for want in [
+        "bug24-flip-open",
+        "bug24-flip-open-late1",
+        "bug25-hidden-text",
+    ] {
+        assert!(ids.iter().any(|i| i == want), "{want} missing: {ids:?}");
+    }
+}

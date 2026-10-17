@@ -1,13 +1,15 @@
 //! `envelope`: derived motion (a glide, layout, text arriving) takes a
 //! node from where it was to where it ends, give or take an overshoot:
-//! on an axis its laid box changes over a segment and nothing authored
-//! moves, its visual value stays within `[min(s,e) - ov, max(s,e) + ov]`,
-//! `ov = max(3 px, overshoot * |e - s|)` (3 px: morph.rs's bug-24 test).
-//! Keyframes, lean, jelly and time-driven motion are out of it.
+//! on an axis it moves on over a segment (not a bystander there,
+//! [`super::way`]) and nothing authored moves, its visual value stays
+//! within `[lo - ov, hi + ov]`, `lo` and `hi` the least and greatest of
+//! where it started, where it rests and where each frame laid it out,
+//! `ov = max(3 px, overshoot * (hi - lo))` (3 px: morph.rs's bug-24
+//! test). Keyframes, lean, jelly and time-driven motion are out of it.
 
 use strand_render::probe::Motions;
 
-use super::{Cx, Finding, GEOMETRY, authored, first_per_node, laid, motions, value};
+use super::{Cx, Finding, GEOMETRY, authored, first_per_node, motions, value, way};
 use crate::scenario::CheckId;
 
 /// The overshoot every glide may have, logical px.
@@ -28,12 +30,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 continue;
             };
             for a in GEOMETRY {
-                if (laid(b, a) - laid(e, a)).abs() <= cx.tol {
+                let w = way(cx, key, s, seg.e, b, e, a);
+                if w.bystander {
                     continue;
                 }
                 let (vs, ve) = (value(b, a), value(e, a));
-                let ov = MIN_OVERSHOOT.max(cx.sc.tolerance.overshoot * (ve - vs).abs());
-                let (lo, hi) = (vs.min(ve) - ov, vs.max(ve) + ov);
+                let ov = MIN_OVERSHOOT.max(cx.sc.tolerance.overshoot * (w.hi - w.lo));
+                let (lo, hi) = (w.lo - ov, w.hi + ov);
                 for i in cx.tl.within(Some(s), seg.e) {
                     let Some(r) = cx.tl.row(i, key) else { continue };
                     if !cx.tl.visible(i, r)

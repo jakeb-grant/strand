@@ -1,0 +1,22 @@
+id     = "reduced-motion-row"
+about  = """The status row (eval/fixtures/status-row.strand) with motion reduced from
+the start (design.md: `reduced_motion` snaps every spring): Focus on and off
+snap in one frame each, and no bystander leaves its level on the way."""
+screen = { width = 300, scale = 1.0 }
+reduce_motion = true
+config = "../../fixtures/status-row.strand"
+
+=== steps
+rest
+mark focus-on
+set dnd true
+rest max 30
+expect still #bars y
+expect still #last y
+expect visible #focus
+mark focus-off
+set dnd false
+rest max 30
+expect still #bars y
+expect still #last y
+expect visible #count

@@ -1,0 +1,54 @@
+id     = "island-card-swell"
+about  = """owner-testing.md bug 17 (crates/strand-render/tests/morph.rs SWELL, with
+ids and four rows): the notch card swells from the island into a dashboard on
+its own springs, `x` springing with `width` so it stays centred, under a clip;
+its rows mount staggered with `enter { opacity: 0; y: -8 }` as it grows and
+leave by the mirrored pose as it folds."""
+screen = { width = 1280, scale = 1.0 }
+
+=== shell.strand
+state grown = false
+let s_w = spring(700, 0.7)
+let s_h = spring(450, 0.8)
+let s_fold = spring(800, 0.95)
+bar Top {
+  height: 30
+  box { width: 420; height: 30
+    popup { id: big; open: true; width: 980; height: 472; margin: 0; align: start
+      col { id: card; align: center; clip: true; bg: #11111b
+            width: 880 ~ s_w
+            height: 444 ~ s_h
+            x: 50 ~ s_w
+            when !grown { width: 420 ~ s_fold; height: 32 ~ s_fold; x: 280 ~ s_fold }
+            radius: 0, 0, 16, 16
+            when grown { radius: 0, 0, 30, 30 }
+            rim: bottom, #585b70
+        box { id: notch; width: 880; height: 32; shrink: 0; bg: #313244 }
+        if grown {
+          col { id: days; width: 880; shrink: 0; pad: 6, 22, 20; gap: 14; stagger: 70ms
+            for n in ["Monday", "Tuesday", "Wednesday", "Thursday"] key n {
+              row { height: 40; gap: 15; align: center; enter { opacity: 0; y: -8 }
+                for m in [1, 2, 3, 4, 5] key m {
+                  box { width: 27; height: 21; radius: 6; bg: #89b4fa }
+                }
+                text n { color: #cdd6f4 }
+                box { width: 131; height: 33; radius: 9; bg: #45475a }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark swell
+set grown true
+rest
+expect visible #days
+mark fold
+set grown false
+rest
+expect hidden #days

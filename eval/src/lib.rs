@@ -13,6 +13,7 @@
 use std::fmt;
 
 pub mod checks;
+pub mod cli;
 pub mod clock;
 pub mod harness;
 pub mod input;
@@ -44,6 +45,9 @@ pub enum Error {
     Run(String),
     /// A file could not be read or written.
     Io(String, std::io::Error),
+    /// The run went as asked and a scenario failed its checks (exit 1;
+    /// every other error exits 2).
+    Failed(String),
 }
 
 impl fmt::Display for Error {
@@ -55,6 +59,7 @@ impl fmt::Display for Error {
             Error::Config(msg) => write!(f, "config: {msg}"),
             Error::Run(msg) => write!(f, "run: {msg}"),
             Error::Io(what, e) => write!(f, "{what}: {e}"),
+            Error::Failed(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -157,6 +162,8 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
             println!("{}", usage());
             Ok(())
         }
+        "run" => cli::run(&args[1..]),
+        "check" => cli::check(&args[1..]),
         // `selftest` is scripts/eval/ci.sh, run by scripts/eval/eval.sh.
         c if COMMANDS.contains(&c) => Err(Error::Unsupported(format!("strand-eval {c}"))),
         other => Err(Error::Usage(format!(

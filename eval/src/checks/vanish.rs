@@ -2,14 +2,19 @@
 //!
 //! - **vanish**: shown at one frame, not at the next, shown again within
 //!   three ticks, with no exit, enter or authored opacity or scale on it
-//!   or an ancestor around it;
+//!   or an ancestor around it, and no step bringing it back (none acts
+//!   between the frame it is gone in and the one it is back in);
 //! - **flash**: shown at one frame only, between frames it does not
-//!   show in, with no keyframes or time-driven motion;
+//!   show in, with no keyframes or time-driven motion, and no step
+//!   taking it out (none acts between that frame and the next);
 //! - **pop-in**: an element with an `enter` pose, mounted after boot,
 //!   first shows near its pose: the pose's opacity and offset start its
 //!   springs, and its first frame shown has covered at most half the way
 //!   to rest (a pose skipped shows it at rest at once);
-//! - **blank**: a frame that damaged pixels and drew no item.
+//! - **blank**: a frame that damaged pixels and drew no item, unless
+//!   what it holds is drawn hidden by an `enter` or `exit` pose (a
+//!   popup's first frame at a pose's `opacity: 0`, its last as its
+//!   content's exit ends).
 
 use std::collections::BTreeSet;
 
@@ -43,6 +48,14 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             .rev()
             .find(|(_, s)| s.s.is_none_or(|s| s < k) && k <= s.e)
     };
+    // A step acted after tick `from` and by tick `to`: a segment starts
+    // there (its `s` is the tick before its first change).
+    let stepped = |from: u32, to: u32| {
+        cx.trace
+            .segments
+            .iter()
+            .any(|s| s.s.is_some_and(|s| from <= s && s < to))
+    };
     for key in keys {
         let vis: Vec<bool> = (0..tl.ks.len()).map(|i| tl.visible_key(i, key)).collect();
         for i in 1..vis.len() {
@@ -54,7 +67,8 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             if vis[i - 1] && !vis[i] && !exempt(CheckId::Vanish) {
                 let back = (i + 1..vis.len())
                     .take_while(|j| tl.ks[*j] <= k + BLINK_TICKS)
-                    .find(|j| vis[*j]);
+                    .find(|j| vis[*j])
+                    .filter(|j| !stepped(k, tl.ks[*j]));
                 if let Some(j) = back {
                     let around = [i - 1, i, j]
                         .iter()
@@ -78,7 +92,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 }
             }
             // flash
-            if i + 1 < vis.len() && !vis[i - 1] && vis[i] && !vis[i + 1] && !exempt(CheckId::Vanish)
+            if i + 1 < vis.len()
+                && !vis[i - 1]
+                && vis[i]
+                && !vis[i + 1]
+                && !stepped(k, tl.ks[i + 1])
+                && !exempt(CheckId::Vanish)
             {
                 let free = tl
                     .row(i, key)
@@ -156,7 +175,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     // blank
     for f in &cx.trace.frames {
         for (s, c) in &f.cost {
-            if c.damage_px > 0 && c.items == 0 {
+            let posed = f.n.iter().any(|r| {
+                r.surface == *s
+                    && Motions(r.emot).intersects(Motions::ENTER | Motions::EXIT)
+                    && (matches!(r.hidden.as_deref(), Some("opacity0" | "scale0")) || r.op < 0.02)
+            });
+            if c.damage_px > 0 && c.items == 0 && !posed {
                 out.push(
                     Finding::fail(
                         CheckId::Vanish,

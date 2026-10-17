@@ -6,6 +6,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match strand_eval::main_with(&args) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(strand_eval::Error::Failed(msg)) => {
+            eprintln!("strand-eval: {msg}");
+            ExitCode::from(1)
+        }
         Err(e) => {
             eprintln!("strand-eval: {e}");
             ExitCode::from(2)

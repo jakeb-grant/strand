@@ -1,0 +1,34 @@
+id     = "stagger-list"
+about  = """Rows mounting in a row with `stagger: 30ms` (design.md "Motion and time";
+cf. crates/strand-render/tests/morph.rs ROWS and effects.rs's stagger test):
+each new item enters faded from below in turn, its text shaped before layout
+places it. The head before them stays still; leaving, the items fade by the
+mirrored pose."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state more = false
+bar Top {
+  height: 30
+  row { id: list; width: 300; height: 30; gap: 6; align: center; pad: 0, 10; stagger: 30ms
+    box { id: head; width: 20; height: 12; bg: #00ff00 }
+    for n in (more ? ["one", "two", "three", "four"] : ["one"]) key n {
+      row { gap: 3; align: center; enter { opacity: 0; y: 6 }
+        box { width: 8; height: 8; bg: #ff0000 }
+        text n { color: #ffffff }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark more
+set more true
+rest
+expect still #head
+expect visible text("four")
+mark fewer
+set more false
+rest
+expect still #head

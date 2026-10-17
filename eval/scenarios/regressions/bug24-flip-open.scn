@@ -1,0 +1,37 @@
+id     = "bug24-flip-open"
+about  = """owner-testing.md bug 24 (crates/strand-render/tests/morph.rs STATUS_ROW,
+with ids): Focus turns on, mounting a text whose estimate (narrow letters, as a
+ligature's name is one glyph) is far from its shaped size beside the music bars.
+The frame lays the row out by the estimate, then by the shaped text; the bars
+glide left once, on their level, from where they were drawn. Its mutant
+(eval/mutants/bug24-flip-open.patch) reverts the fix: the glide starts where the
+estimate's pass put them, and they drop out of the bar and fall back."""
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state dnd = false
+bar Top {
+  height: 30
+  split { width: 300; height: 30; pad: 0, 14
+    end { align: center
+      row { gap: 6; align: center; shrink: 0
+        box { id: bars; enter { opacity: 0; scale: 0.6 }
+          row { gap: 2; height: 12; align: end
+            for i in [0, 1, 2] key i { box { width: 4; height: 8 + i * 2; bg: #00ff00 } }
+          }
+        }
+        if dnd { text "iiii" { id: focus; width: 14; shrink: 0; color: #ff00ff } }
+      }
+    }
+  }
+}
+
+=== steps
+rest                     # boot: the bars enter
+mark flip-open
+set dnd true
+rest max 120
+expect still #bars y
+expect moves #bars x
+expect visible #focus

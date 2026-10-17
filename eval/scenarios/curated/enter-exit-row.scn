@@ -1,0 +1,35 @@
+id     = "enter-exit-row"
+about  = """Enter and exit poses in one row: a box fading in, one sliding in from
+the left while it fades, and one sliding out to the right while it fades. The
+boxes before them stay still; the box after them glides to its new place
+(derived motion, held to its envelope), never past it."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 30; gap: 6; align: center; pad: 0, 10
+    box { id: left; width: 20; height: 12; bg: #00ff00 }
+    if on { box { id: fade; width: 16; height: 16; bg: #ff00ff; enter { opacity: 0 } } }
+    if on { box { id: slide; width: 16; height: 16; bg: #ffff00; enter { opacity: 0; x: -6 } } }
+    if !on { box { id: leave; width: 16; height: 16; bg: #00ffff; exit { opacity: 0; x: 8 } } }
+    box { id: right; width: 20; height: 12; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark on
+set on true
+rest
+expect still #left
+expect visible #fade
+expect visible #slide
+expect hidden #leave
+mark off
+set on false
+rest
+expect still #left
+expect hidden #fade
+expect visible #leave

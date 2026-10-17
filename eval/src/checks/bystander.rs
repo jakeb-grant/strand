@@ -1,11 +1,12 @@
-//! `bystander`: a node whose laid box does not change on an axis over a
-//! segment is not drawn elsewhere on that axis while it runs, unless
-//! authored motion moves it there; its opacity and scale, when they end
-//! where they started, do not stray unless authored. Bugs 24 and 25: the
-//! bars' laid `y` never changed, yet they fell out of the island and
-//! came back.
+//! `bystander`: a node drawn at the same place on an axis at a segment's
+//! start and at its rest, and laid at the same place on every frame of
+//! it ([`super::way`]), is not drawn elsewhere on that axis while it
+//! runs, unless authored motion moves it there; its opacity and scale,
+//! when they end where they started, do not stray unless authored. Bugs
+//! 24 and 25: the bars' laid `y` never changed, yet they fell out of the
+//! island and came back.
 
-use super::{Cx, Finding, GEOMETRY, authored, first_per_node, laid, value};
+use super::{Cx, Finding, GEOMETRY, authored, first_per_node, value, way};
 use crate::scenario::CheckId;
 use crate::steps::Axis;
 
@@ -28,7 +29,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             };
             let mut axes: Vec<(Axis, f64)> = GEOMETRY
                 .into_iter()
-                .filter(|a| (laid(b, *a) - laid(e, *a)).abs() <= cx.tol)
+                .filter(|a| way(cx, key, s, seg.e, b, e, *a).bystander)
                 .map(|a| (a, cx.tol))
                 .collect();
             if (value(b, Axis::Opacity) - value(e, Axis::Opacity)).abs() <= OPACITY_GIVE {

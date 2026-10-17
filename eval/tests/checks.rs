@@ -1002,3 +1002,211 @@ fn a_report_round_trips_through_json() {
     let back: Report = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
     assert_eq!(back, r);
 }
+
+// --- what scenarios on the product showed (docs/decisions.md eval-sandbox)
+
+/// The box after an exiting one (`exit` mirroring its `enter`): the
+/// ghost holds its slot while it leaves and two boxes mount before it,
+/// so its layout goes 58 → 102 for a few frames, then to 80 once the
+/// ghost has left. It glides after its layout, past where it rests, but
+/// never past where a frame laid it out.
+fn ghost_slot(peak: f32) -> RunTrace {
+    shape(14, |k| {
+        let right = row("right", [58.0, 9.0, 20.0, 12.0]);
+        match k {
+            0 => vec![right],
+            1..=5 => vec![
+                right
+                    .laid_at(102.0, 9.0)
+                    .at(ease(58.0, peak, k, 5), 9.0)
+                    .mot(Motions::GLIDE),
+            ],
+            6..=12 => vec![
+                right
+                    .laid_at(80.0, 9.0)
+                    .at(ease(peak, 80.0, k - 5, 7), 9.0)
+                    .mot(Motions::GLIDE),
+            ],
+            _ => vec![right.laid_at(80.0, 9.0).at(80.0, 9.0)],
+        }
+    })
+}
+
+#[test]
+fn layout_that_moves_and_comes_back_holds_a_node_to_the_layouts_drawn() {
+    let sc = scenario("");
+    let t = ghost_slot(97.0);
+    let r = check(&sc, &t);
+    for c in [CheckId::Bystander, CheckId::Envelope] {
+        assert_eq!(status(&r, c), Status::Pass, "{c:?}: {}", show(&r, &t));
+    }
+    // Past the furthest layout drawn (102, give 15.4) it is not.
+    let t = ghost_slot(125.0);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Envelope, "right", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A layout a frame laid out and threw away (the estimate's pass before
+/// the shaped text's) is not one drawn: the bars' laid `y` is 9 on every
+/// frame, so a drop is still a bystander's (bug 24 in one frame).
+#[test]
+fn a_layout_no_frame_drew_does_not_widen_the_way() {
+    let sc = scenario("");
+    let t = shape(6, |k| {
+        let bars = row("bars", [225.0, 9.0, 15.0, 12.0]);
+        match k {
+            0 => vec![bars],
+            1 => vec![bars.at(225.0, 2.0).mot(Motions::GLIDE)],
+            _ => vec![bars],
+        }
+    });
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Bystander, "bars", "y"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A card whose written `x:` offset springs from 280 to 50 (owner-testing
+/// bug 17's swell): laid at the same place throughout, drawn elsewhere at
+/// rest. Authored while it springs, at rest after: a mover, not a
+/// bystander drawn off its level.
+#[test]
+fn a_node_whose_written_offset_changed_is_a_mover() {
+    let sc = scenario("");
+    let t = shape(12, |k| {
+        let card = row("card", [280.0, 0.0, 420.0, 32.0]);
+        match k {
+            0 => vec![card],
+            1..=8 => vec![
+                card.at(ease(280.0, 50.0, k, 8), 0.0)
+                    .mot(Motions::PROP_SPRING)
+                    .auth(Axes::X),
+            ],
+            _ => vec![card.at(50.0, 0.0)],
+        }
+    });
+    let r = check(&sc, &t);
+    for c in [CheckId::Bystander, CheckId::Envelope] {
+        assert_eq!(status(&r, c), Status::Pass, "{c:?}: {}", show(&r, &t));
+    }
+}
+
+/// Three segments of one tick each (motion reduced: each change snaps):
+/// a node unmounted by one step and mounted again by the next is not a
+/// blink, and the one shown between them is not a flash.
+#[test]
+fn gone_and_back_across_steps_is_not_a_blink() {
+    let sc = scenario("");
+    let mut t = shape(2, |k| match k {
+        1 => vec![row("focus", [246.0, 8.0, 14.0, 14.0])],
+        _ => vec![row("count", [246.0, 8.0, 14.0, 15.0])],
+    });
+    t.segments[1].e = 1;
+    t.segments.push(Segment {
+        name: "back".into(),
+        line: 4,
+        s: Some(1),
+        e: 2,
+        settled: true,
+        hz: 60,
+        ..Segment::default()
+    });
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // In one segment the same frames blink.
+    let mut one = t.clone();
+    one.segments.truncate(2);
+    one.segments[1].e = 2;
+    one.seal();
+    let r = check(&sc, &one);
+    let f = r.failures(CheckId::Vanish);
+    assert!(
+        f.iter().any(|f| f.msg.starts_with("vanish"))
+            && f.iter().any(|f| f.msg.starts_with("flash")),
+        "{}",
+        show(&r, &one)
+    );
+}
+
+/// A popup's first frame shows its content at its `enter` pose's
+/// `opacity: 0`, which draws nothing: not a blank frame. The same frame
+/// with nothing posed is.
+#[test]
+fn a_frame_drawing_only_a_pose_at_opacity_0_is_not_blank() {
+    let sc = scenario("");
+    let posed = |m: Motions| {
+        let mut t = shape(3, |k| {
+            let card = row("card", [0.0, 0.0, 120.0, 40.0]);
+            if k == 1 {
+                let mut c = card.op(0.0).mot(m);
+                c.hidden = Some("opacity0".into());
+                vec![c]
+            } else {
+                vec![card]
+            }
+        });
+        t.frames[1].cost.get_mut(&1).unwrap().items = 0;
+        t.seal();
+        t
+    };
+    let t = posed(Motions::ENTER);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("blank")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = posed(Motions(0));
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("blank") && f.k == Some(1)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A surface detached with no frame after it (a popup closed by its
+/// grace once its content had left) shows nothing from the tick it went.
+#[test]
+fn a_detached_surface_shows_nothing_after_it_goes() {
+    let mut t = shape(2, |_| vec![row("bar", [0.0, 0.0, 300.0, 30.0])]);
+    let mut card = row("card", [0.0, 0.0, 120.0, 40.0]);
+    card.surface = 2;
+    t.frames[2].n.push(card);
+    t.frames[2].painted.push(2);
+    t.frames[2].sizes.insert(2, [120.0, 40.0]);
+    t.surfaces = vec![
+        strand_eval::trace::SurfaceInfo {
+            id: 1,
+            ..Default::default()
+        },
+        strand_eval::trace::SurfaceInfo {
+            id: 2,
+            attached: 2,
+            detached: Some(5),
+            ..Default::default()
+        },
+    ];
+    let tl = checks::Timeline::new(&t);
+    let at = |k: u32| tl.at(k).unwrap();
+    assert!(tl.row(at(4), "card").is_some());
+    assert!(tl.row(at(5), "card").is_none());
+    assert!(tl.row(at(9), "card").is_none());
+    assert!(tl.row(at(9), "bar").is_some());
+}

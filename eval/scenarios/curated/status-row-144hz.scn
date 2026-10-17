@@ -1,0 +1,21 @@
+id     = "status-row-144hz"
+about  = """The status row (eval/fixtures/status-row.strand) at 144 Hz: Focus on and
+off. Springs and glides sampled at 144 Hz take more, smaller steps; a bystander
+stays on its level on every one of them."""
+screen = { width = 300, scale = 1.0 }
+hz     = 144
+config = "../../fixtures/status-row.strand"
+
+=== steps
+rest
+mark focus-on
+set dnd true
+rest max 120
+expect still #bars y
+expect still #last y
+mark focus-off
+set dnd false
+rest max 120
+expect still #bars y
+expect still #last y
+expect visible #count

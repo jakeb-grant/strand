@@ -41,12 +41,6 @@ lock_and_isolation() {
 }
 
 gate() {
-  # The scenarios land with the driver and the checks; until then there
-  # is nothing to gate (said, not silently passed).
-  if [ ! -d eval/scenarios ]; then
-    echo "SKIP: eval/scenarios does not exist yet"
-    return 0
-  fi
   cargo run -q --locked --manifest-path "$MANIFEST" --bin strand-eval -- \
     check --gate eval/scenarios/curated eval/scenarios/regressions --out target/eval/ci
 }

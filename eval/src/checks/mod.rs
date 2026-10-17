@@ -226,7 +226,8 @@ pub fn describe(f: &Finding, trace: &RunTrace) -> String {
 }
 
 /// What is on screen at each painted tick: the rows of every surface
-/// shown, a surface not painted at a tick keeping its last rows.
+/// shown, a surface not painted at a tick keeping its last rows, and at
+/// each tick a surface was detached at, without its rows.
 #[derive(Debug)]
 pub struct Timeline<'a> {
     pub ks: Vec<u32>,
@@ -240,7 +241,33 @@ impl<'a> Timeline<'a> {
         let mut screens = Vec::new();
         let mut frames = Vec::new();
         let mut cur: HashMap<&'a str, &'a Row> = HashMap::new();
+        // A surface detached shows nothing from then on, painted after
+        // or not (a popup closed by its grace with nothing else to draw):
+        // an entry at the tick it went, the frame before it standing in.
+        let mut gone: Vec<(u32, u32)> = trace
+            .surfaces
+            .iter()
+            .filter_map(|s| Some((s.detached?, s.id)))
+            .collect();
+        gone.sort_unstable();
+        let mut gone = gone.into_iter().peekable();
+        let detach = |d: u32,
+                      sid: u32,
+                      cur: &mut HashMap<&'a str, &'a Row>,
+                      ks: &mut Vec<u32>,
+                      screens: &mut Vec<HashMap<&'a str, &'a Row>>,
+                      frames: &mut Vec<&'a Frame>| {
+            if let Some(last) = frames.last().copied() {
+                cur.retain(|_, r| r.surface != sid);
+                ks.push(d);
+                screens.push(cur.clone());
+                frames.push(last);
+            }
+        };
         for f in &trace.frames {
+            while let Some((d, sid)) = gone.next_if(|(d, _)| *d < f.k) {
+                detach(d, sid, &mut cur, &mut ks, &mut screens, &mut frames);
+            }
             cur.retain(|_, r| f.sizes.contains_key(&r.surface) && !f.painted.contains(&r.surface));
             for r in &f.n {
                 cur.insert(r.key.as_str(), r);
@@ -248,6 +275,9 @@ impl<'a> Timeline<'a> {
             ks.push(f.k);
             screens.push(cur.clone());
             frames.push(f);
+        }
+        for (d, sid) in gone {
+            detach(d, sid, &mut cur, &mut ks, &mut screens, &mut frames);
         }
         Timeline {
             ks,
@@ -325,6 +355,52 @@ pub fn laid(r: &Row, a: Axis) -> f64 {
 }
 
 pub const GEOMETRY: [Axis; 4] = [Axis::X, Axis::Y, Axis::W, Axis::H];
+
+/// Where layout and authoring put a node on a geometry axis over a
+/// segment: whether it is a *bystander* there, and the way a mover's
+/// derived motion may take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Way {
+    /// Drawn at the same place at the segment's start and rest, and laid
+    /// at the same place on every frame of it.
+    pub bystander: bool,
+    /// The lowest and highest place it may be drawn at, before any
+    /// overshoot: its start and rest, and every frame's laid place
+    /// carried by the offset it rests at (written offsets, transforms).
+    pub lo: f64,
+    pub hi: f64,
+}
+
+/// `key`'s [`Way`] on `a` over the frames `(s, e_k]` (`b` its row at
+/// `s`, `e` at the rest).
+///
+/// A node can move in layout and come back within a segment (an exiting
+/// ghost holds its slot until it leaves, a text drawn by its estimate
+/// before it is shaped): that is a mover held to the layouts drawn, not
+/// a bystander. A node drawn elsewhere at rest though laid at the same
+/// place (a written `x:` offset that changed) is a mover too. Only the
+/// layouts of frames drawn count: a layout pass a frame threw away (the
+/// estimate's, before the shaped text's in the same frame) never does.
+pub fn way(cx: &Cx, key: &str, s: u32, e_k: u32, b: &Row, e: &Row, a: Axis) -> Way {
+    let (vs, ve) = (value(b, a), value(e, a));
+    let carry = ve - laid(e, a);
+    let (mut lo, mut hi) = (vs.min(ve), vs.max(ve));
+    let mut laid_moved = (laid(b, a) - laid(e, a)).abs() > cx.tol;
+    for i in cx.tl.within(Some(s), e_k) {
+        let Some(r) = cx.tl.row(i, key) else { continue };
+        if (laid(r, a) - laid(b, a)).abs() > cx.tol {
+            laid_moved = true;
+        }
+        let at = laid(r, a) + carry;
+        lo = lo.min(at);
+        hi = hi.max(at);
+    }
+    Way {
+        bystander: !laid_moved && (vs - ve).abs() <= cx.tol,
+        lo,
+        hi,
+    }
+}
 
 pub fn authored(r: &Row, a: Axis) -> bool {
     Axes(r.auth).intersects(a.bits())

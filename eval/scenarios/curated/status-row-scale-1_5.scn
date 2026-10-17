@@ -1,0 +1,21 @@
+id     = "status-row-scale-1_5"
+about  = """The status row (eval/fixtures/status-row.strand) at scale 1.5: Focus on
+(a text mounted beside the bars, bug 24's shape) and off (the count re-entering
+faded, bug 25's shape). Fractional scale snaps drawn edges to physical pixels,
+so a glide or an enter offset must not move a bystander by a pixel's rounding."""
+screen = { width = 300, scale = 1.5 }
+config = "../../fixtures/status-row.strand"
+
+=== steps
+rest
+mark focus-on
+set dnd true
+rest max 120
+expect still #bars y
+expect still #last y
+mark focus-off
+set dnd false
+rest max 120
+expect still #bars y
+expect still #last y
+expect visible #count

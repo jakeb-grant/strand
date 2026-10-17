@@ -282,3 +282,41 @@ fn the_focus_off_scenario_passes_its_checks() {
         );
     }
 }
+
+/// `strand-eval check --gate` runs a committed regression and writes its
+/// report; a gate over nothing, or over a scenario that fails, fails.
+#[test]
+fn the_check_command_gates_and_writes_its_report() {
+    let out = std::env::temp_dir().join(format!("strand-eval-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let scn = eval_root().join("scenarios/regressions/bug25-hidden-text.scn");
+    let args = |extra: &[&str]| -> Vec<String> {
+        let mut v = vec!["check".to_string(), "--gate".into()];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v.extend(["--out".into(), out.display().to_string()]);
+        v
+    };
+    strand_eval::main_with(&args(&[scn.to_str().unwrap()])).unwrap_or_else(|e| panic!("{e}"));
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.contains("bug25-hidden-text bystander: pass"),
+        "{summary}"
+    );
+    assert!(summary.ends_with("1 scenarios: all pass\n"), "{summary}");
+    let trace = std::fs::read_to_string(out.join("bug25-hidden-text/trace.json")).unwrap();
+    assert!(RunTrace::from_json(&trace).is_ok());
+    assert!(out.join("bug25-hidden-text/checks.json").is_file());
+    assert!(out.join("summary.md").is_file());
+    // Nothing to gate is an error, not a pass.
+    let empty = out.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let e = strand_eval::main_with(&args(&[empty.to_str().unwrap()])).unwrap_err();
+    assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
+    // A failing scenario fails the command.
+    let bad = out.join("bad.scn");
+    let text = FOCUS_OFF.replace("expect hidden #focus", "expect visible #focus");
+    std::fs::write(&bad, text.replace("id = \"focus-off\"", "id = \"bad\"")).unwrap();
+    let e = strand_eval::main_with(&args(&[bad.to_str().unwrap()])).unwrap_err();
+    assert!(matches!(e, strand_eval::Error::Failed(_)), "{e}");
+    let _ = std::fs::remove_dir_all(&out);
+}
