@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The CI jobs `lint`, `test`, `budgets`, `acceptance` and `timing`
-# (.github/workflows/ci.yml), step by step and one job after the other,
+# The CI jobs `lint`, `test`, `budgets`, `acceptance`, `timing` and
+# `eval` (.github/workflows/ci.yml), step by step and one job after the
+# other,
 # inside the image of scripts/container/run.sh (run it as
 # `scripts/container/run.sh ci`). Stops at the first failing step and
 # names it. Keep the steps in step with ci.yml.
@@ -29,8 +30,8 @@ FROM=${CI_FROM:-1}
 ONLY=${CI_JOB:-}
 STRICT_TIMING=${STRAND_STRICT_TIMING:-0}
 case "$ONLY" in
-  "" | lint | test | budgets | acceptance | timing) ;;
-  *) echo "CI_JOB=$ONLY: not one of lint, test, budgets, acceptance, timing" >&2; exit 2 ;;
+  "" | lint | test | budgets | acceptance | timing | eval) ;;
+  *) echo "CI_JOB=$ONLY: not one of lint, test, budgets, acceptance, timing, eval" >&2; exit 2 ;;
 esac
 n=0
 job=setup
@@ -208,6 +209,17 @@ timing_step "cargo test --profile timing -p strand-render --test morph (island c
   cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
 timing_step "cargo test --profile timing -p strand-compiler --test theme (theme swap logic)" 30 \
   cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
+
+# The animation evaluation sandbox (eval/, docs/eval.md): its own
+# workspace, so its steps are scripts/eval/ci.sh's 1 to 5 (fmt, clippy,
+# lock and isolation, tests, the scenario gate), as GitHub's eval job runs
+# them.
+job=eval
+step "cargo fmt --check (strand-eval)" 10 bash scripts/eval/ci.sh 1
+step "cargo clippy (eval/, -D warnings)" 60 bash scripts/eval/ci.sh 2
+step "check-lock.sh, check-isolation.sh and their self-tests" 10 bash scripts/eval/ci.sh 3
+step "cargo test (eval/)" 60 bash scripts/eval/ci.sh 4
+step "strand-eval check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
 
 echo
 # The compile cache's hits and misses (run.sh's sccache), when it ran.

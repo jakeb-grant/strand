@@ -12,6 +12,14 @@
 # strand's guide and architecture checks). Other files outside crates/
 # (scripts, .github) test nothing here; ci covers them.
 #
+# The animation evaluation sandbox (eval/, its own workspace) is the
+# pseudo-target `eval`: a change under eval/ or scripts/eval/, or to the
+# root Cargo.toml or Cargo.lock (its lock and profiles are checked
+# against them), runs scripts/eval/ci.sh 3 4 5 (lock and isolation, its
+# tests, the scenario gate) before the crates' tests. A product change
+# does not pull it in; a change to strand-render's animation, flatten,
+# layout or renderer code prints the command that would.
+#
 # --list prints the crates and runs nothing. Test args after `--` go to
 # the test binaries; by default the fuzzer and the 100 reloads are
 # skipped, as in ci's workspace step.
@@ -56,10 +64,16 @@ members=$(jq -r --arg root "$root/" '
   | "\(.manifest_path | ltrimstr($root) | rtrimstr("/Cargo.toml")) \(.name)"' <<<"$meta")
 
 declare -A pick=()
-all=0
+all=0 eval=0 anim=0
 while IFS= read -r f; do
   case "$f" in
-    Cargo.toml | Cargo.lock | .cargo/*) all=1 ;;
+    eval/* | scripts/eval/*) eval=1 ;;
+    crates/strand-render/src/anim/* | crates/strand-render/src/flatten/* | \
+      crates/strand-render/src/layout/* | crates/strand-render/src/renderer/*) anim=1 ;;
+  esac
+  case "$f" in
+    Cargo.toml | Cargo.lock) all=1 eval=1 ;;
+    .cargo/*) all=1 ;;
     docs/*) pick[strand-dev]=1; pick[strand-compiler]=1; pick[strand]=1 ;;
     crates/*)
       while read -r dir name; do
@@ -90,14 +104,22 @@ elif [ "$deep" = 1 ] && [ "${#pick[@]}" -gt 0 ]; then
   done
 fi
 
-if [ "${#pick[@]}" -eq 0 ]; then
+[ "$anim" = 1 ] && [ "$eval" = 0 ] &&
+  echo "affected: animation code changed: \`scripts/container/run.sh eval check eval/scenarios/curated\` checks it"
+if [ "${#pick[@]}" -eq 0 ] && [ "$eval" = 0 ]; then
   echo "affected: no crate changed since $base ($mb); ci covers the rest"
   exit 0
 fi
 
-crates=$(printf '%s\n' "${!pick[@]}" | sort)
-echo "affected since $base ($(git rev-parse --short "$mb" 2>/dev/null || echo "$mb")): $(echo $crates)"
+crates=$(printf '%s\n' "${!pick[@]}" | sed '/^$/d' | sort)
+targets=$crates
+[ "$eval" = 1 ] && targets=$(printf 'eval\n%s\n' "$crates" | sed '/^$/d')
+echo "affected since $base ($(git rev-parse --short "$mb" 2>/dev/null || echo "$mb")): $(echo $targets)"
 [ "$list" = 1 ] && exit 0
+if [ "$eval" = 1 ]; then
+  bash scripts/eval/ci.sh 3 4 5
+fi
+[ -n "$crates" ] || exit 0
 args=()
 for c in $crates; do args+=(-p "$c"); done
 exec cargo test "${args[@]}" -- "${test_args[@]}"

@@ -1,0 +1,64 @@
+name: Eval matrix
+
+# The animation evaluation sandbox's long runs (docs/eval.md, "Matrix" and
+# "Mutants"): every effect of eval/matrix/effects.toml alone and every
+# pair, at 60 and 144 Hz, judged against eval/matrix/known.toml, and the
+# mutants (each regression scenario must catch the bug it is named for).
+# Nightly and on demand; ci.yml's `eval` job runs the curated and
+# regression scenarios on every push.
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      effects:
+        description: Only these effects, comma-separated (empty for all)
+        default: ""
+      hz:
+        description: The rates, comma-separated
+        default: "60,144"
+      mutants:
+        description: Run the mutants too ("true" or "false")
+        default: "true"
+
+# As ci.yml: the GPU leg runs on lavapipe and fails without it.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  STRAND_REQUIRE_GPU: "1"
+  STRAND_GPU_SOFTWARE: "1"
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+  VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+  LP_NATIVE_VECTOR_WIDTH: "256"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: eval
+          cache-save: "false"
+      # Appends its summary.md (the failing and stale cells) to the job's.
+      - run: scripts/eval/matrix.sh
+        env:
+          HZ: ${{ inputs.hz || '60,144' }}
+          EFFECTS: ${{ inputs.effects }}
+          OUT: target/eval/matrix-nightly
+      - run: scripts/eval/mutants.sh
+        if: always() && (inputs.mutants || 'true') == 'true'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-matrix
+          path: |
+            target/eval/matrix-nightly/
+            target/eval/mutants/
+            !target/eval/mutants/tree/
+          if-no-files-found: ignore

@@ -4,8 +4,9 @@
 # with the checkout mounted at its own absolute path.
 #
 # Usage: scripts/container/run.sh ci            every step of CI's lint, test,
-#                                               budgets, acceptance and timing
-#                                               jobs (CI_JOB=NAME: one job)
+#                                               budgets, acceptance, timing
+#                                               and eval jobs (CI_JOB=NAME:
+#                                               one job)
 #        scripts/container/run.sh affected      the tests of the crates this
 #                                               branch changed (affected.sh:
 #                                               --deep, --list, BASE)
@@ -36,7 +37,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,33p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,34p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
