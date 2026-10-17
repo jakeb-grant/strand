@@ -206,6 +206,11 @@ pub(crate) struct Animator {
     /// (M4) Jelly: dragged nodes' squash and stretch
     /// (`crate::effects::jelly`).
     jellies: crate::effects::jelly::Jellies,
+    /// (eval-sandbox) Nodes whose enter pose started and still springs
+    /// (`Animator::motions`): kept apart from `enter`, which the frame
+    /// that starts the pose empties.
+    #[cfg(feature = "eval-hooks")]
+    entered: HashSet<NodeId>,
 }
 
 /// (M4) A node's lift and glide, held aside by [`Animator::hold_still`].
@@ -790,6 +795,8 @@ impl Animator {
         self.jellies.forget(id);
         self.poses.remove(&id);
         self.nodes.remove(&id);
+        #[cfg(feature = "eval-hooks")]
+        self.entered.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
         self.exits.remove(&id);
@@ -973,14 +980,18 @@ impl Animator {
     /// (eval-sandbox) What moves `id` as its state stands, and the axes
     /// of its own springs in flight (`x`, `y`, `opacity`, `scale`,
     /// `rotate`, and its laid-out size), read without sampling anything
-    /// (`crate::probe`).
+    /// (`crate::probe`). `ENTER` holds from the frame an enter is asked
+    /// for (or waits for its stagger) until its pose's springs settle,
+    /// across every flatten of a frame (the first takes `enter`), and
+    /// never under `reduced_motion`, which shows the node at once.
     #[cfg(feature = "eval-hooks")]
     pub(crate) fn motions(&self, id: NodeId) -> (crate::probe::Motions, crate::probe::Axes) {
         use crate::probe::{Axes, Motions};
         let mut m = Motions::NONE;
         let mut a = Axes::NONE;
         let staggered = self.staggers.planned(id);
-        if self.enter.contains(&id) || staggered {
+        let springing = self.nodes.get(&id).is_some_and(|n| !n.props.is_empty());
+        if self.enter.contains(&id) || staggered || self.entered.contains(&id) && springing {
             m |= Motions::ENTER;
         }
         if staggered {
@@ -1105,6 +1116,10 @@ impl Animator {
         // A staggered child stays entering (in `staggers`, not `enter`,
         // which frames clear) until its turn.
         let entering = self.enter.remove(&id) || waiting;
+        #[cfg(feature = "eval-hooks")]
+        if !entering && self.nodes.get(&id).is_none_or(|n| n.props.is_empty()) {
+            self.entered.remove(&id);
+        }
         if !entering && exiting.is_none() && !self.nodes.contains_key(&id) {
             return;
         }
@@ -1143,6 +1158,8 @@ impl Animator {
             .unwrap_or_default();
         if entering && exiting.is_none() {
             self.poses.remove(&id);
+            #[cfg(feature = "eval-hooks")]
+            self.entered.insert(id);
         }
         let (at, commit, last) = (self.time, self.commit, self.prev);
         let na = self.nodes.entry(id).or_default();

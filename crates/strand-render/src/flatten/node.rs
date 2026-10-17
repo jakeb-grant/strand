@@ -209,9 +209,6 @@ impl<'a> Flattener<'a> {
             .clamp(0.0, 1.0)
         };
         let written_opacity = opacity_of(&props);
-        // (eval-sandbox) Before `paint`, which takes the enter.
-        #[cfg(feature = "eval-hooks")]
-        let probe_before = self.anim.motions(node.id);
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         let sprung = offsets(&props);
@@ -516,7 +513,6 @@ impl<'a> Flattener<'a> {
                 kind: node.kind,
                 laid,
                 drawn: rect,
-                before: probe_before,
                 after: self.anim.motions(node.id),
                 written,
                 sprung,

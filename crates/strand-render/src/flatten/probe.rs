@@ -18,9 +18,7 @@ pub(super) struct Seen {
     pub kind: NodeKind,
     pub laid: LogicalRect,
     pub drawn: LogicalRect,
-    /// `Animator::motions` before `Animator::paint` (it consumes the
-    /// enter) and after the glide's sample.
-    pub before: (Motions, Axes),
+    /// `Animator::motions` once the springs and the glide are sampled.
     pub after: (Motions, Axes),
     pub written: (f32, f32),
     pub sprung: (f32, f32),
@@ -47,11 +45,7 @@ impl Seen {
     fn classify(&self) -> (Motions, Axes) {
         let mut m = Motions::NONE;
         let mut a = Axes::NONE;
-        let (before, _) = self.before;
         let (after, springing) = self.after;
-        if before.contains(Motions::ENTER) {
-            m |= Motions::ENTER;
-        }
         m |= after;
         // Its own prop springs (an enter or exit pose's included).
         if self.sprung.0 != self.written.0 || springing.contains(Axes::X) {
