@@ -803,6 +803,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 | Services | Same container, private D-Bus via `dbus-run-session` | python-dbusmock for UPower, NetworkManager, BlueZ, logind and notifications; PipeWire with a null sink; small zbus mocks for the portal and tray | Every push |
 | Reload fuzzer | Same container, tmpfs | Random edits replayed through five editor save styles; no panic, blank frame or lost state | Every push, longer runs nightly |
 | Budgets | Same container | Memory (PSS) and idle wakeups; GPU cold, the two-monitor bar warns above 42 MB and fails above 48 MB and the full shell warns above 76 MB and fails above 104 MB; with the warm GPU device on lavapipe, 232 / 242 MiB and 296 / 324 MiB | Every push |
+| Animation evaluation | `eval/` in the same container ([eval.md](eval.md)) | Scenario scripts on a virtual clock; per-node trace invariants (nothing laid out in place is drawn elsewhere, no jumps, blinks or stuck offsets); a pairwise matrix of effects at 60 and 144 Hz; the CPU and GPU (lavapipe) legs compared; an HTML viewer of every frame | Curated and regression scenarios every push; the matrix and the mutants nightly and on demand |
 | Lock screen | Local QEMU VM | PAM, fail-closed behaviour under injected faults; never tested on your real session | Before touching the lock code, and before releases |
 | Daily driving | Your own compositor, nested in a window, then as your real shell | Real-world bugs no lab finds | Always |
 
@@ -810,6 +811,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 
 - **Injectable frame clock.** Fake presentation timestamps (60 Hz, 144 Hz, jittery) test frame scheduling deterministically, standing in for monitors you don't own.
 - **Deterministic springs.** Given a timestamp, a spring's position is exact, so animation frames are testable as images.
+- **Animation traces.** Behind a test-only feature, the renderer reports each frame's nodes: where layout put them, where they were drawn, and which motion moved them. The evaluation sandbox checks those traces against invariants any correct animation keeps, so a few-frame glitch like a bar dipping out of its row fails a scenario instead of waiting to be seen.
 - **Machine-readable state.** `strand watch --json` and inspector dumps let tests assert on structure instead of screenshots.
 - **`strand report`.** Dumps compositor, protocols, scale factors, memory and frame statistics. Early users with other GPUs, compositors and monitors become the hardware lab.
 

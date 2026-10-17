@@ -146,6 +146,10 @@ Each crate is one box in the runtime architecture:
 | `strand` | The runtime binary and CLI | all |
 | `strand-dev` | LSP and inspector, kept out of the runtime binary | M1, M5 |
 
+Beside the workspace, `eval/` is the animation evaluation sandbox: a Cargo
+workspace of its own, never part of the shipped binary, that runs a config
+on a virtual clock and checks every frame's nodes (docs/eval.md).
+
 ## Roadmap
 
 ![Roadmap](docs/images/roadmap.png)
@@ -304,6 +308,14 @@ guest with real PAM: `scripts/container/lockvm.sh bash
 scripts/lockvm/scenarios/all.sh` after `scripts/container/run.sh bash
 scripts/lockvm/scenarios/build.sh` (CI's `lock-vm` job where KVM is
 available).
+
+Animation changes are checked by the evaluation sandbox (docs/eval.md):
+`scripts/container/run.sh eval check eval/scenarios/curated` runs the
+curated scenarios, and `scripts/container/run.sh eval selftest` runs its
+whole gate, which CI's `eval` job runs on every push (`CI_JOB=eval` for
+`run.sh ci`'s steps 35 to 39). The effect matrix at 60 and 144 Hz and the
+mutants run nightly (`.github/workflows/eval-matrix.yml`); a report's
+`index.html` scrubs every frame.
 
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and
