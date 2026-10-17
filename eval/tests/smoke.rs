@@ -253,3 +253,32 @@ fn a_selector_matching_nothing_is_an_error_at_its_line() {
     let want = format!("smoke.scn:{line}: `#nothing` matches no node mounted now or seen before");
     assert!(e.ends_with(&want), "{e}");
 }
+
+/// On main (bugs 24 and 25 fixed) the focus-off scenario passes every
+/// check it runs, its twin included.
+#[test]
+fn the_focus_off_scenario_passes_its_checks() {
+    let sc = scenario(FOCUS_OFF);
+    let c = strand_eval::check_scenario(&sc, &RunOptions::default()).unwrap();
+    let lines = c.report.lines(&c.run.trace);
+    assert!(c.report.ok(), "{}", lines.join("\n"));
+    assert!(c.twin.is_some());
+    use strand_eval::checks::{CheckId, Status};
+    for check in [
+        CheckId::Bystander,
+        CheckId::Envelope,
+        CheckId::Teleport,
+        CheckId::Vanish,
+        CheckId::Twin,
+        CheckId::Expect,
+        CheckId::Settle,
+        CheckId::Determinism,
+    ] {
+        assert_eq!(
+            c.report.status(check),
+            Some(&Status::Pass),
+            "{check:?}\n{}",
+            lines.join("\n")
+        );
+    }
+}

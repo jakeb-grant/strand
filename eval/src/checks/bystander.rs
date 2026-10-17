@@ -1,0 +1,76 @@
+//! `bystander`: a node whose laid box does not change on an axis over a
+//! segment is not drawn elsewhere on that axis while it runs, unless
+//! authored motion moves it there; its opacity and scale, when they end
+//! where they started, do not stray unless authored. Bugs 24 and 25: the
+//! bars' laid `y` never changed, yet they fell out of the island and
+//! came back.
+
+use super::{Cx, Finding, GEOMETRY, authored, first_per_node, laid, value};
+use crate::scenario::CheckId;
+use crate::steps::Axis;
+
+/// How far opacity and scale may stray.
+pub const OPACITY_GIVE: f64 = 0.01;
+pub const SCALE_GIVE: f64 = 0.005;
+
+pub fn run(cx: &Cx) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for (si, seg, s) in cx.segments() {
+        let (Some(bi), Some(ei)) = (cx.tl.at(s), cx.tl.at(seg.e)) else {
+            continue;
+        };
+        for key in cx.visible_keys(bi) {
+            if !cx.tl.visible_key(ei, key) {
+                continue;
+            }
+            let (Some(b), Some(e)) = (cx.tl.row(bi, key), cx.tl.row(ei, key)) else {
+                continue;
+            };
+            let mut axes: Vec<(Axis, f64)> = GEOMETRY
+                .into_iter()
+                .filter(|a| (laid(b, *a) - laid(e, *a)).abs() <= cx.tol)
+                .map(|a| (a, cx.tol))
+                .collect();
+            if (value(b, Axis::Opacity) - value(e, Axis::Opacity)).abs() <= OPACITY_GIVE {
+                axes.push((Axis::Opacity, OPACITY_GIVE));
+            }
+            if (value(b, Axis::Scale) - value(e, Axis::Scale)).abs() <= SCALE_GIVE {
+                axes.push((Axis::Scale, SCALE_GIVE));
+            }
+            for i in cx.tl.within(Some(s), seg.e) {
+                let Some(r) = cx.tl.row(i, key) else { continue };
+                if !cx.tl.visible(i, r) || r.hidden.as_deref() == Some("inert") {
+                    continue;
+                }
+                let k = cx.tl.ks[i];
+                for (a, give) in &axes {
+                    if authored(r, *a) || cx.exempt(CheckId::Bystander, si, key, a.bits()) {
+                        continue;
+                    }
+                    let (v0, v) = (value(b, *a), value(r, *a));
+                    if (v - v0).abs() > *give {
+                        let what = if matches!(a, Axis::Opacity | Axis::Scale) {
+                            format!("its {} strayed while nothing authored moves it", a.name())
+                        } else {
+                            format!(
+                                "drawn off its level on {}: its laid {} is unchanged and nothing \
+                                 authored moves it",
+                                a.name(),
+                                a.name()
+                            )
+                        };
+                        out.push(
+                            Finding::fail(CheckId::Bystander, what)
+                                .at(k)
+                                .node(key)
+                                .axis(a.name())
+                                .got(v, [v0 - give, v0 + give])
+                                .in_segment(&seg.name),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    first_per_node(out)
+}

@@ -7,9 +7,12 @@
 //!   typed errors at `file:line`.
 //! - [`harness`] (with [`clock`], [`surfaces`], [`input`], [`text`] and
 //!   [`labels`]): the driver, which runs a scenario into a [`trace`].
+//! - [`checks`]: the invariants over a trace, and [`check_scenario`],
+//!   which runs a scenario with its twin and checks it.
 
 use std::fmt;
 
+pub mod checks;
 pub mod clock;
 pub mod harness;
 pub mod input;
@@ -57,6 +60,86 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// A scenario run and checked.
+#[derive(Debug)]
+pub struct Checked {
+    pub run: harness::RunOutput,
+    /// The reduced-motion re-run, when `twin` ran.
+    pub twin: Option<trace::RunTrace>,
+    pub report: checks::Report,
+}
+
+/// Whether `sc` is a curated scenario (determinism runs it twice).
+pub fn curated(sc: &scenario::Scenario) -> bool {
+    sc.file
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("curated"))
+}
+
+/// Runs `sc`, its reduced-motion twin and, for a curated scenario or one
+/// asking for `determinism`, a second run, and checks them against the
+/// scenario's reference (`eval/refs/<id>.ref.json`) if it has one.
+pub fn check_scenario(
+    sc: &scenario::Scenario,
+    opts: &harness::RunOptions,
+) -> Result<Checked, Error> {
+    use checks::{CheckId, Finding, Status};
+    let run = harness::run(sc, opts)?;
+    let mut twin_error = None;
+    let twin = if sc.runs(CheckId::Twin) && !sc.reduce_motion && !opts.reduced_motion {
+        let o = harness::RunOptions {
+            reduced_motion: true,
+            images: false,
+            build: opts.build.clone(),
+        };
+        match harness::run(sc, &o) {
+            Ok(t) => Some(t.trace),
+            Err(e) => {
+                twin_error = Some(e.to_string());
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let again = if sc.runs(CheckId::Determinism) || curated(sc) {
+        let o = harness::RunOptions {
+            images: false,
+            ..opts.clone()
+        };
+        Some(harness::run(sc, &o)?.trace)
+    } else {
+        None
+    };
+    let refs = scenario::eval_root()
+        .join("refs")
+        .join(format!("{}.ref.json", sc.id));
+    let reference = checks::Reference::load(&refs)?;
+    let mut report = checks::evaluate(
+        sc,
+        &run.trace,
+        twin.as_ref(),
+        again.as_ref(),
+        reference.as_ref(),
+    );
+    if let Some(e) = twin_error
+        && let Some(r) = report
+            .results
+            .iter_mut()
+            .find(|r| r.check == CheckId::Twin.name())
+    {
+        r.findings.push(Finding::fail(
+            CheckId::Twin,
+            format!("the reduced-motion run failed: {e}"),
+        ));
+        r.status = match sc.expect_fail.get(&CheckId::Twin) {
+            Some(why) => Status::Xfail(why.clone()),
+            None => Status::Fail,
+        };
+    }
+    Ok(Checked { run, twin, report })
+}
 
 /// The subcommands `strand-eval` knows, in the order docs/eval.md
 /// describes them.
