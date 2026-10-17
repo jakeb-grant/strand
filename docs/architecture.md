@@ -4789,8 +4789,13 @@ would have been) and sends it. One frame is in flight per surface.
   from then until `State::take_back` a destroy of the surface goes
   through `gpu_release` as for a handed-off one, since the GPU thread
   may be building a swapchain on it before its `Attached` reply comes
-  back (the device takes 100 ms or more to start); the manager still
-  paints and commits it until `hand_off`. It needs
+  back (the device takes 100 ms or more to start). From then the
+  manager attaches no buffer to it (bare commits acking a configure
+  still go): a WSI with explicit sync (`wp_linux_drm_syncobj_v1`, Mesa's
+  Vulkan on Hyprland) owns its buffers once it builds a swapchain, and
+  an shm buffer with no acquire point is a protocol error; its frames
+  resume at `hand_off` (the GPU's) or `take_back` (decisions.md
+  syncobj-lend). It needs
   `wayland-backend`'s `client_system` feature, which strand-surface's
   `gpu` feature turns on (on by default). That feature switches the
   backend for every crate in the build to libwayland-client (57 kB of

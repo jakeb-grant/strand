@@ -1,7 +1,8 @@
 //! (M4) Surface hand-off against the fake compositor (docs/architecture.md,
 //! "`strand-gpu`", "Surface hand-off"): while handed off the manager
 //! neither paints nor commits the surface, a configure is still
-//! reported, `take_back` paints a full frame, and a surface destroyed
+//! reported, `take_back` paints a full frame, a lent surface takes no
+//! buffer until it is handed off or taken back, and a surface destroyed
 //! while handed off, or after its handles were lent, keeps its
 //! `wl_surface` until `take_back`. On headless sway, a handed-off
 //! surface's new size reaches the compositor with the next present.
@@ -137,9 +138,8 @@ fn alive(fake: &Fake) -> bool {
 /// hand-off too: the GPU thread may be building a swapchain on it when
 /// the surface is closed (its device takes 100 ms or more to start).
 /// Until `take_back` a destroy goes through `gpu_release`, and the late
-/// `Attached { Present }` hands nothing off. Meanwhile the manager still
-/// paints and commits it; once taken back (read back after all), a
-/// destroy is immediate again.
+/// `Attached { Present }` hands nothing off. Once taken back (read back
+/// after all), a destroy is immediate again.
 #[test]
 fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
     let fake = Fake::compositor(SurfaceGlobals::default());
@@ -147,13 +147,6 @@ fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
     let id = show_panel(&fake, &mut mgr);
     mgr.state_mut().raw_handles(id).expect("raw handles");
     assert!(!mgr.state().is_handed_off(id));
-    // Lent, not handed off: the manager still commits it.
-    let before = commits(&fake);
-    change(&mut mgr, 40.0);
-    let ok = mgr
-        .dispatch_until(WAIT, |_| commits(&fake) > before)
-        .unwrap();
-    assert!(ok, "a lent surface is still the manager's to commit");
 
     // Closed before `Attached` came back.
     mgr.state_mut()
@@ -184,6 +177,53 @@ fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
     );
     let ok = mgr.dispatch_until(WAIT, |_| !alive(&fake)).unwrap();
     assert!(ok, "a surface given back was kept");
+}
+
+fn buffer_commits(fake: &Fake) -> usize {
+    fake.surfaces()
+        .iter()
+        .filter(|s| s.namespace.as_deref() == Some("strand-Dash"))
+        .map(|s| s.buffer_commits)
+        .sum()
+}
+
+/// (syncobj-lend) From the moment its handles are lent the manager
+/// attaches no buffer to the surface: the GPU thread may be building a
+/// swapchain on it, and a WSI with explicit sync then owns its buffers
+/// (Hyprland ends the connection on an shm buffer with no acquire point,
+/// owner-testing.md bug 22). A new frame waits; given back (attached for
+/// readback), the surface paints it.
+#[test]
+fn a_lent_surface_takes_no_buffer_until_it_is_taken_back() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    let paints = mgr.state().host().paints.len();
+    let before = buffer_commits(&fake);
+    change(&mut mgr, 40.0);
+    mgr.dispatch_until(Duration::from_millis(300), |_| false)
+        .unwrap();
+    assert_eq!(
+        buffer_commits(&fake),
+        before,
+        "a buffer was committed to a lent surface"
+    );
+    assert_eq!(
+        mgr.state().host().paints.len(),
+        paints,
+        "painted while lent"
+    );
+
+    // Given back: the frame it skipped is drawn and committed.
+    mgr.state_mut().take_back(id);
+    let ok = mgr
+        .dispatch_until(WAIT, |_| buffer_commits(&fake) > before)
+        .unwrap();
+    assert!(ok, "the skipped frame was not drawn after take_back");
+    assert!(mgr.state().host().paints.len() > paints);
 }
 
 /// A handed-off surface resized: the manager sets the new viewport

@@ -560,8 +560,28 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     (`crates/strand-surface/tests/sway.rs::a_press_grabs_only_for_popups_on_its_monitor`,
     which fails on `main`). Why the laptop's screen escaped is not
     known; the activities on the other monitors would have grabbed
-    there too. decisions.md grab-scope. Check on Hyprland: drag the
-    slider on each monitor.
+    there too. decisions.md grab-scope. Confirmed by the owner on
+    Hyprland (2026-10-16): the slider works on every monitor.
+22. **Hyprland drops the connection: `wp_linux_drm_syncobj_surface_v1`
+    error 4, "Missing acquire timeline".** (fixed, 2026-10-16; found
+    2026-10-16 by the owner on Hyprland with the launcher test config
+    (`target/try/launcher`) on the gpu-first build.) It worked for a
+    moment, then on a later launch Strand died with a broken pipe.
+    Cause: a surface's handles are lent to the GPU thread when it is
+    promoted, and until the thread's `Attached` reply the manager still
+    painted and committed shm frames to it. Mesa's Vulkan WSI on
+    Hyprland turns explicit sync on for a surface it builds a swapchain
+    on, after which every buffer committed to that surface needs an
+    acquire point; an shm frame landing in that window was a protocol
+    error. Before gpu-first a surface was promoted only once its springs
+    had settled, so no frame fell in the window; promoted at the first
+    frame of an animation, one often did. A lent surface now takes no
+    buffer until it is handed off or taken back
+    (`crates/strand-surface/tests/gpu_handoff.rs::a_lent_surface_takes_no_buffer_until_it_is_taken_back`,
+    which fails on `main`). Neither CI's sway 1.9 nor its Hyprland (no
+    hardware GPU) speaks explicit sync with a Vulkan client, so no test
+    reached it. decisions.md syncobj-lend. Check on Hyprland: open the
+    launcher and Tab through its modes, several launches.
 
 ## Capability gaps
 

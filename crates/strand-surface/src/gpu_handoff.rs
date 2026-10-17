@@ -7,8 +7,13 @@
 //!   `GpuRequest::Attach`. They are lent: from then until
 //!   [`State::take_back`] the `wl_surface` outlives a destroy (below),
 //!   since the GPU thread may build a swapchain on it before the
-//!   `Attached` reply comes back. The manager still paints and commits
-//!   it until [`State::hand_off`].
+//!   `Attached` reply comes back. From then the manager attaches no
+//!   buffer to it (configures are still acked with bare commits): a WSI
+//!   with explicit sync (`wp_linux_drm_syncobj_v1`, Mesa's Vulkan on
+//!   Hyprland) owns the surface's buffers once it builds a swapchain on
+//!   it, and an shm buffer committed then has no acquire point, a
+//!   protocol error that ends the connection (decisions.md
+//!   syncobj-lend). Its frames resume at [`State::take_back`].
 //! - [`State::hand_off`]: from then the GPU thread is the surface's only
 //!   committer. The manager stops attaching shm buffers (they are freed),
 //!   requesting frame callbacks and calling `paint` for it, and never
@@ -19,7 +24,7 @@
 //! - [`State::take_back`] after the GPU thread's `Released` (or when it
 //!   attached the surface for readback, or ended): a handed-off surface's
 //!   next shm frame is painted in full (`age` 0), frame callbacks resume;
-//!   a lent one is no longer lent.
+//!   a lent one is no longer lent and paints the frames it skipped.
 //! - A lent or handed-off surface the manager has to destroy is kept
 //!   alive (its `wl_surface` with it), [`SurfaceHost::gpu_release`] is
 //!   called, and it is destroyed at `take_back`, so the swapchain always
@@ -51,6 +56,12 @@ impl HandOffs {
     /// The GPU thread commits `id`.
     pub(super) fn has(&self, id: SurfaceId) -> bool {
         self.on.contains(&id)
+    }
+
+    /// `id`'s handles are lent and it is not handed off yet: nobody
+    /// commits a buffer to it.
+    pub(super) fn is_lent(&self, id: SurfaceId) -> bool {
+        self.lent.contains(&id)
     }
 
     /// `s` is being destroyed: kept if it is lent or handed off (`None`
@@ -127,13 +138,19 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// now; a lent one is no longer lent; a handed-off one is painted and
     /// committed by the manager again, starting with a full frame.
     pub fn take_back(&mut self, surface: SurfaceId) {
-        self.gpu.lent.remove(&surface);
+        let lent = self.gpu.lent.remove(&surface);
         if let Some(s) = self.gpu.doomed.remove(&surface) {
             // Its swapchain is gone: the wl_surface can go.
             drop(s);
             return;
         }
         if !self.gpu.on.remove(&surface) {
+            if lent && let Some(s) = self.surfaces.get_mut(&surface) {
+                // Frames skipped while lent (`draw`) are drawn now; its
+                // buffers were never handed over, so their ages hold.
+                s.repaint = true;
+                self.mark(surface);
+            }
             return;
         }
         let Some(s) = self.surfaces.get_mut(&surface) else {

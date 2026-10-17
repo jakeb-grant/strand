@@ -39,6 +39,15 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.draw_handed_off(id);
             return;
         }
+        if self.gpu.is_lent(id) {
+            // (syncobj-lend) Its handles are lent: the GPU thread may be
+            // building a swapchain on it, and a WSI with explicit sync
+            // (`wp_linux_drm_syncobj_v1`: Mesa's Vulkan on Hyprland) then
+            // owns its buffers, so an shm buffer committed now has no
+            // acquire point and the compositor ends the connection. Its
+            // next frame waits for `hand_off` or `take_back`.
+            return;
+        }
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
