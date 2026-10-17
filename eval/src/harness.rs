@@ -66,13 +66,14 @@ pub struct RunOptions {
     pub build: BuildInfo,
 }
 
-/// A painted surface's image.
+/// A painted surface's image, PNG-encoded as it is collected (a run's
+/// images stay small in memory; `report::png::decode` reads one back).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
-    /// Straight-alpha RGBA.
-    pub rgba: Vec<u8>,
+    /// The PNG file (straight-alpha RGBA, 8 bits).
+    pub png: Vec<u8>,
 }
 
 /// What a run made.
@@ -1184,11 +1185,17 @@ impl<'s> Harness<'s> {
                     "frames/{}.png",
                     &blake3::hash(&rgba).to_hex().as_str()[..16]
                 );
-                self.images.entry(name.clone()).or_insert(Image {
-                    width: sh.size.w,
-                    height: sh.size.h,
-                    rgba,
-                });
+                if !self.images.contains_key(&name) {
+                    let png = crate::report::png::encode(sh.size.w, sh.size.h, &rgba)?;
+                    self.images.insert(
+                        name.clone(),
+                        Image {
+                            width: sh.size.w,
+                            height: sh.size.h,
+                            png,
+                        },
+                    );
+                }
                 frame.png.insert(*s, name);
             }
         }

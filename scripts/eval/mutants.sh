@@ -6,7 +6,9 @@
 # fix reverted), runs the scenario again, which must fail with at least
 # the expected checks, and reverts the patch. Runs are serial; the
 # worktree is removed at the end. A patch that no longer applies is
-# reported STALE (regenerate it), not as a product failure.
+# reported STALE (regenerate it), not as a product failure. Each mutant
+# leaves an A/B page of HEAD against it, every frame scrubbable:
+# target/eval/mutants/<name>-ab/index.html.
 #
 # Usage: scripts/eval/mutants.sh [NAME...]   (NAME: a patch without .patch;
 #        default: every line)
@@ -41,8 +43,18 @@ remove_tree() {
 # prints its exit status (0 pass, 1 a check failed, 2 the run failed).
 check() {
   cargo run -q --locked --manifest-path "$TREE/eval/Cargo.toml" --bin strand-eval -- \
-    check "$1" --out "$2" >"$2.log" 2>&1
+    check "$1" --frames all --out "$2" >"$2.log" 2>&1
   echo $?
+}
+
+# ab HEAD_OUT MUTANT_OUT NAME: the A/B page of the two runs, made by the
+# checkout's own strand-eval (it reads reports; no product code differs).
+ab() {
+  cargo run -q --locked --manifest-path eval/Cargo.toml --bin strand-eval -- \
+    ab "$1" "$2" -o "$2-ab" --label-a "HEAD $(git rev-parse --short=8 HEAD)" \
+    --label-b "mutant $3 (fix reverted)" >"$2-ab.log" 2>&1 &&
+    echo "  A/B page: $2-ab/index.html" ||
+    echo "  (no A/B page: $2-ab.log)"
 }
 
 # expected SUMMARY ID SPEC: whether summary.txt shows the failure SPEC.
@@ -65,6 +77,7 @@ git worktree add -q --detach "$TREE" HEAD || { echo "mutants: no worktree at $TR
 failed=0
 ran=0
 declare -A control
+declare -A control_out
 while read -r patch scenario specs; do
   case "$patch" in "" | \#*) continue ;; esac
   name=${patch%.patch}
@@ -75,12 +88,13 @@ while read -r patch scenario specs; do
   scn="$TREE/eval/scenarios/$scenario"
   id=$(sed -n 's/^id *= *"\(.*\)".*/\1/p' "$scn" | head -n1)
   out="$BASE/$name"
-  rm -rf "$out" "$out-head"
+  rm -rf "$out" "$out-head" "$out-ab"
   echo "=== mutant $name: $scenario ($id)"
   # The control: the scenario passes on HEAD.
   if [ -z "${control[$scenario]:-}" ]; then
     rc=$(check "$scn" "$out-head")
     control[$scenario]=$rc
+    control_out[$scenario]="$out-head"
     if [ "$rc" != 0 ]; then
       echo "FAIL: $scenario does not pass on HEAD (exit $rc): $out-head.log"
       sed -n '1,40p' "$out-head.log"
@@ -97,6 +111,7 @@ while read -r patch scenario specs; do
   git -C "$TREE" apply "$ROOT/eval/mutants/$patch"
   rc=$(check "$scn" "$out")
   git -C "$TREE" apply -R "$ROOT/eval/mutants/$patch"
+  [ "$rc" = 2 ] || ab "${control_out[$scenario]}" "$out" "$name"
   case "$rc" in
     0)
       echo "SURVIVED: $scenario passes with $patch applied"

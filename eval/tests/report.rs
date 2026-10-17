@@ -1,0 +1,352 @@
+//! Reports (docs/eval.md, "Reports" and "The viewer"): the page is one
+//! self-contained file whose embedded trace round-trips and whose images
+//! are thinned to stay under its budget; a failing finding gets a contact
+//! sheet, a summary line and an `explain` table; verdicts become
+//! references the `reference` check reads; A/B names the first frame two
+//! runs differ at.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use strand_eval::checks::{self, CheckId, Reference, Status};
+use strand_eval::harness::{Image, RunOptions};
+use strand_eval::report::{self, Entry, Frames, RunInfo, html};
+use strand_eval::scenario::{Scenario, eval_root};
+use strand_eval::trace::RunTrace;
+
+fn scenario(text: &str) -> Scenario {
+    let file = eval_root().join("scenarios/curated/report.scn");
+    Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// A fresh directory under cargo's test scratch space.
+fn scratch(name: &str) -> PathBuf {
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("report-{name}"));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A row whose count re-enters: the last box glides right to make room,
+/// and the `expect still` on it is wrong on purpose, so the run has a
+/// failing finding on a node.
+const ROW: &str = r##"id = "report-row"
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 6; align: center; pad: 0, 10
+    box { id: left; width: 20; height: 12; bg: #00ff00 }
+    if on { box { id: mid; width: 16; height: 16; bg: #ff00ff; enter { opacity: 0 } } }
+    box { id: right; width: 20; height: 12; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark on
+set on true
+rest
+shot settled
+expect still #right x
+"##;
+
+fn checked(text: &str) -> Entry {
+    let sc = scenario(text);
+    let opts = RunOptions {
+        images: true,
+        ..RunOptions::default()
+    };
+    let c = strand_eval::check_scenario(&sc, &opts).unwrap_or_else(|e| panic!("{e}"));
+    Entry {
+        id: sc.id.clone(),
+        file: sc.file.display().to_string(),
+        source: sc.source.clone(),
+        trace: c.run.trace,
+        report: Some(c.report),
+        images: c.run.images,
+        notes: c.run.notes,
+        ..Entry::default()
+    }
+}
+
+fn info(out: &std::path::Path, frames: Frames) -> RunInfo {
+    RunInfo {
+        command: "check".into(),
+        out: out.to_path_buf(),
+        frames,
+    }
+}
+
+/// The page names nothing outside itself, has a title, light and dark
+/// tokens and a narrow layout, and its embedded trace and checks read
+/// back as they were written.
+#[test]
+fn the_page_is_self_contained_and_its_data_round_trips() {
+    let out = scratch("page");
+    let mut entries = vec![checked(ROW)];
+    report::write_run(&info(&out, Frames::All), &mut entries, &[]).unwrap();
+    let page = std::fs::read_to_string(out.join("index.html")).unwrap();
+    for scheme in ["http://", "https://", "//cdn", "src=\"http", "url(http"] {
+        assert!(!page.contains(scheme), "the page names `{scheme}`");
+    }
+    assert!(page.contains("<title>strand-eval report-row</title>"));
+    assert!(page.contains("prefers-color-scheme: dark"));
+    assert!(page.contains(":root[data-theme=\"dark\"]"));
+    assert!(page.contains("@media (max-width: 760px)"));
+    assert!(page.len() < 16 * 1024 * 1024);
+    let data = html::embedded(&page).expect("the page embeds its data");
+    let sc = &data["runs"][0]["scenarios"][0];
+    let trace: RunTrace = serde_json::from_value(sc["trace"].clone()).unwrap();
+    assert_eq!(trace, entries[0].trace, "the trace round-trips");
+    let checks: checks::Report = serde_json::from_value(sc["checks"].clone()).unwrap();
+    assert_eq!(Some(&checks), entries[0].report.as_ref());
+    let images = sc["images"].as_object().unwrap();
+    assert_eq!(images.len(), entries[0].images.len(), "every frame kept");
+    assert!(
+        images
+            .values()
+            .all(|v| v.as_str().unwrap().starts_with("data:image/png;base64,"))
+    );
+    assert_eq!(sc["thinned"], false);
+    // A `</script>` in the data cannot end the data's element.
+    let mut e = checked(ROW);
+    e.notes
+        .push("a note with </script><script>alert(1)</script> in it".into());
+    let p = html::page(&html::Page::run(
+        &info(&out, Frames::None),
+        std::slice::from_ref(&e),
+    ))
+    .unwrap();
+    let back = html::embedded(&p).unwrap();
+    assert_eq!(
+        back["runs"][0]["scenarios"][0]["notes"][0],
+        "a note with </script><script>alert(1)</script> in it"
+    );
+}
+
+/// An image of noise (it does not compress).
+fn noise(seed: u32, w: u32, h: u32) -> Image {
+    let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+    let rgba: Vec<u8> = (0..w * h * 4)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x & 0xff) as u8
+        })
+        .collect();
+    Image {
+        width: w,
+        height: h,
+        png: report::png::encode(w, h, &rgba).unwrap(),
+    }
+}
+
+/// Over its budget the page keeps the frames around a failing finding
+/// and thins the rest; its trace stays whole.
+#[test]
+fn the_size_guard_thins_images_and_keeps_the_failing_frames() {
+    let mut e = checked(ROW);
+    assert!(!e.report.as_ref().unwrap().ok(), "the row's expect fails");
+    // Every frame gets its own large image.
+    let mut images = BTreeMap::new();
+    for (n, f) in e.trace.frames.iter_mut().enumerate() {
+        let name = format!("frames/noise{n}.png");
+        images.insert(name.clone(), noise(n as u32, 128, 128));
+        for v in f.png.values_mut() {
+            *v = name.clone();
+        }
+        if f.png.is_empty() {
+            f.png.insert(1, name.clone());
+        }
+    }
+    e.images = images;
+    let total: usize = e.images.values().map(|i| i.png.len()).sum();
+    let entries = [e];
+    let out = scratch("thin");
+    let mut page = html::Page::run(&info(&out, Frames::All), &entries);
+    page.budget = 600 * 1024 + total / 3;
+    let text = html::page(&page).unwrap();
+    assert!(
+        text.len() <= page.budget,
+        "{} > {}",
+        text.len(),
+        page.budget
+    );
+    let data = html::embedded(&text).unwrap();
+    let sc = &data["runs"][0]["scenarios"][0];
+    assert_eq!(sc["thinned"], true);
+    let kept = sc["images"].as_object().unwrap();
+    assert!(!kept.is_empty() && kept.len() < entries[0].images.len());
+    // The frame the expect failed at is among those kept.
+    let f = entries[0].failing()[0].1.clone();
+    let k = f.k.unwrap();
+    let frame = entries[0].trace.frames.iter().rfind(|x| x.k <= k).unwrap();
+    let name = frame.png.values().next().unwrap();
+    assert!(kept.contains_key(name), "{name} at k{k} was thinned");
+    let trace: RunTrace = serde_json::from_value(sc["trace"].clone()).unwrap();
+    assert_eq!(trace.frames.len(), entries[0].trace.frames.len());
+}
+
+/// A failing finding gets a contact sheet, a line in summary.md naming
+/// it, an entry in summary.json, and an `explain` table with its frame
+/// marked.
+#[test]
+fn a_failing_finding_is_explained_headless() {
+    let out = scratch("headless");
+    let mut entries = vec![checked(ROW)];
+    report::write_run(&info(&out, Frames::Failing), &mut entries, &[]).unwrap();
+    let dir = out.join("report-row");
+    let sheet = dir.join("fail-expect-1.png");
+    let (w, h, _) = report::png::decode(&std::fs::read(&sheet).unwrap()).unwrap();
+    assert!(w > 100 && h > 40, "{w}×{h}");
+    assert!(dir.join("scenario.scn").is_file());
+    assert!(std::fs::read_dir(dir.join("frames")).unwrap().count() > 0);
+    let md = std::fs::read_to_string(out.join("summary.md")).unwrap();
+    assert!(md.contains("**report-row** FAIL"), "{md}");
+    assert!(
+        md.contains("expect [on] box#right (shell.strand:") && md.contains("fail-expect-1.png"),
+        "{md}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["scenarios"][0]["findings"][0]["label"], "box#right");
+    // explain reads the report back.
+    let back = report::read_entry(&dir).unwrap();
+    assert_eq!(back.trace, entries[0].trace);
+    let findings: Vec<_> = back
+        .report
+        .iter()
+        .flat_map(|r| r.results.iter())
+        .flat_map(|r| r.findings.clone())
+        .collect();
+    let text = report::explain::explain(
+        &back.trace,
+        &findings,
+        &report::explain::Ask {
+            check: Some("expect".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(text.contains("box#right"), "{text}");
+    assert!(text.lines().any(|l| l.starts_with('*')), "{text}");
+    assert!(
+        text.contains("GLIDE"),
+        "the room it makes is a glide:\n{text}"
+    );
+    // The CLI says the same.
+    strand_eval::main_with(&[
+        "explain".into(),
+        dir.display().to_string(),
+        "--node".into(),
+        "#left".into(),
+    ])
+    .unwrap();
+}
+
+/// A verdict is a reference: a run that reproduces one marked bad fails
+/// `reference`, and one that no longer matches a good one is CHANGED.
+#[test]
+fn a_verdict_becomes_a_reference_the_check_reads() {
+    let out = scratch("verdict");
+    let ok = ROW.replace("expect still #right x\n", "expect still #left x\n");
+    let mut entries = vec![checked(&ok)];
+    report::write_run(&info(&out, Frames::None), &mut entries, &[]).unwrap();
+    let refs = out.join("refs");
+    strand_eval::main_with(&[
+        "verdict".into(),
+        out.join("report-row").display().to_string(),
+        "bad".into(),
+        "--note".into(),
+        "the right box should not slide".into(),
+        "--refs".into(),
+        refs.display().to_string(),
+    ])
+    .unwrap();
+    let r = Reference::load(&refs.join("report-row.ref.json"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.verdict, "bad");
+    assert_eq!(r.note, "the right box should not slide");
+    assert_eq!(r.digest, entries[0].trace.digest);
+    assert!(r.path.keys().any(|k| k.starts_with("right|")));
+    let sc = scenario(&ok);
+    let rep = checks::evaluate(&sc, &entries[0].trace, None, None, Some(&r));
+    assert_eq!(rep.status(CheckId::Reference), Some(&Status::Fail));
+    let good = Reference {
+        verdict: "good".into(),
+        digest: "blake3:other".into(),
+        path: BTreeMap::new(),
+        ..r
+    };
+    let rep = checks::evaluate(&sc, &entries[0].trace, None, None, Some(&good));
+    assert_eq!(rep.status(CheckId::Reference), Some(&Status::Changed));
+    assert!(rep.ok(), "CHANGED never gates");
+    let e = strand_eval::main_with(&[
+        "verdict".into(),
+        out.join("report-row").display().to_string(),
+        "meh".into(),
+    ])
+    .unwrap_err();
+    assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
+}
+
+/// A/B: two runs of one scenario where a node is drawn 3 px lower from
+/// one tick on: the comparison names that node, tick and axis, and the
+/// A/B page embeds both runs.
+#[test]
+fn ab_names_the_first_frame_two_runs_differ_at() {
+    let a = checked(ROW);
+    let mut b = checked(ROW);
+    let key = b
+        .trace
+        .nodes
+        .iter()
+        .find(|(_, m)| m.id.as_deref() == Some("left"))
+        .map(|(k, _)| k.clone())
+        .unwrap();
+    let from = b.trace.frames[b.trace.frames.len() / 2].k;
+    for f in b.trace.frames.iter_mut().filter(|f| f.k >= from) {
+        for r in f.n.iter_mut().filter(|r| r.key == key) {
+            r.visual[1] += 3.0;
+        }
+    }
+    b.trace.seal();
+    let same = strand_eval::ab::compare(std::slice::from_ref(&a), std::slice::from_ref(&a));
+    assert_eq!(same["scenarios"]["report-row"]["same"], true);
+    let cmp = strand_eval::ab::compare(std::slice::from_ref(&a), std::slice::from_ref(&b));
+    let d = &cmp["scenarios"]["report-row"];
+    assert_eq!(d["same"], false);
+    let first = d["diverge"].as_array().unwrap();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0]["label"], "box#left");
+    assert_eq!(first[0]["what"], "y");
+    assert_eq!(first[0]["k"], from);
+    assert_eq!(first[0]["uncertain"], false);
+    // Through the CLI, from two reports on disk.
+    let out = scratch("ab");
+    let (da, db) = (out.join("a"), out.join("b"));
+    report::write_run(&info(&da, Frames::All), &mut [a], &[]).unwrap();
+    report::write_run(&info(&db, Frames::All), &mut [b], &[]).unwrap();
+    strand_eval::main_with(&[
+        "ab".into(),
+        da.display().to_string(),
+        db.display().to_string(),
+        "-o".into(),
+        out.join("page").display().to_string(),
+    ])
+    .unwrap();
+    let page = std::fs::read_to_string(out.join("page/index.html")).unwrap();
+    let data = html::embedded(&page).unwrap();
+    assert_eq!(data["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        data["ab"]["scenarios"]["report-row"]["diverge"][0]["what"],
+        "y"
+    );
+    assert!(!page.contains("https://") && !page.contains("http://"));
+}

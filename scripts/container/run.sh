@@ -13,7 +13,7 @@
 #                                               sandbox (scripts/eval/eval.sh:
 #                                               strand-eval's commands,
 #                                               `selftest`, scripts/eval/ci.sh,
-#                                               and `mutants`, mutants.sh)
+#                                               `mutants`, mutants.sh; `ab-revs`, ab.sh)
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default: the cores shared among the strand

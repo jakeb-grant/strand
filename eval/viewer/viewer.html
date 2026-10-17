@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>{{CSS}}</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand">strand-eval</span>
+  <span id="run-title" class="title"></span>
+  <span class="spacer"></span>
+  <button id="theme" class="btn" type="button" title="Theme: follows the system, light or dark">Theme: auto</button>
+</header>
+<div class="layout">
+  <aside class="rail">
+    <input id="filter" type="search" placeholder="Filter scenarios" aria-label="Filter scenarios">
+    <ul id="list" class="list"></ul>
+  </aside>
+  <main id="main" class="main">
+    <section id="head" class="head"></section>
+    <section class="stage-wrap">
+      <div id="toolbar" class="toolbar"></div>
+      <div id="stage" class="stage"></div>
+      <div id="tip" class="tip" hidden></div>
+    </section>
+    <section class="scrub">
+      <div class="controls">
+        <button class="btn" type="button" id="first" title="First frame (Home)">|&lt;</button>
+        <button class="btn" type="button" id="prev" title="Back one frame (Left; Shift: ten)">&lt;</button>
+        <button class="btn" type="button" id="play" title="Play or pause (Space)">Play</button>
+        <button class="btn" type="button" id="next" title="On one frame (Right; Shift: ten)">&gt;</button>
+        <button class="btn" type="button" id="last" title="Last frame (End)">&gt;|</button>
+        <label class="field">speed
+          <select id="speed"><option value="1">1×</option><option value="0.25">¼×</option><option value="0.1">1/10×</option></select>
+        </label>
+        <span id="frame-label" class="frame-label"></span>
+      </div>
+      <input id="slider" class="slider" type="range" min="0" max="0" value="0" aria-label="Frame">
+      <div id="track" class="track"></div>
+    </section>
+    <section id="film" class="film" aria-label="Frames of this segment"></section>
+    <section class="panels">
+      <div id="tabs" class="tabs" role="tablist"></div>
+      <div id="panel" class="panel"></div>
+    </section>
+  </main>
+</div>
+<script type="application/json" id="run">{{DATA}}</script>
+<script>{{JS}}</script>
+</body>
+</html>

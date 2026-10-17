@@ -9,15 +9,21 @@
 //!   [`labels`]): the driver, which runs a scenario into a [`trace`].
 //! - [`checks`]: the invariants over a trace, and [`check_scenario`],
 //!   which runs a scenario with its twin and checks it.
+//! - [`report`]: what a run writes (summaries, contact sheets, the
+//!   viewer page); [`refs`]: the owner's verdicts; [`ab`]: two runs
+//!   compared.
 
 use std::fmt;
 
+pub mod ab;
 pub mod checks;
 pub mod cli;
 pub mod clock;
 pub mod harness;
 pub mod input;
 pub mod labels;
+pub mod refs;
+pub mod report;
 pub mod scenario;
 pub mod select;
 pub mod steps;
@@ -164,6 +170,9 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
         }
         "run" => cli::run(&args[1..]),
         "check" => cli::check(&args[1..]),
+        "explain" => cli::explain(&args[1..]),
+        "verdict" => cli::verdict(&args[1..]),
+        "ab" => cli::ab(&args[1..]),
         // `selftest` is scripts/eval/ci.sh, run by scripts/eval/eval.sh.
         c if COMMANDS.contains(&c) => Err(Error::Unsupported(format!("strand-eval {c}"))),
         other => Err(Error::Usage(format!(

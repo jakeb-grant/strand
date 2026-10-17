@@ -9,6 +9,8 @@
 # Usage: scripts/eval/eval.sh <command> [args...]   (strand-eval's commands)
 #        scripts/eval/eval.sh selftest [step...]    scripts/eval/ci.sh
 #        scripts/eval/eval.sh mutants [name...]     scripts/eval/mutants.sh
+#        scripts/eval/eval.sh ab-revs <revA> [<revB>] [-- scenarios]
+#                                                    scripts/eval/ab.sh
 # In the container: scripts/container/run.sh eval <command> [args...]
 
 set -euo pipefail
@@ -24,5 +26,9 @@ fi
 if [ "${1:-}" = mutants ]; then
   shift
   exec bash "$ROOT/scripts/eval/mutants.sh" "$@"
+fi
+if [ "${1:-}" = ab-revs ]; then
+  shift
+  exec bash "$ROOT/scripts/eval/ab.sh" "$@"
 fi
 exec cargo run -q --locked --manifest-path eval/Cargo.toml --bin strand-eval -- "$@"

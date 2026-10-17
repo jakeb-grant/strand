@@ -251,6 +251,9 @@ pub struct Scenario {
     pub reduce_motion: bool,
     pub config: Config,
     pub steps: Vec<Step>,
+    /// The scenario's text as parsed (a run keeps it beside its trace, so
+    /// `promote` can write it out again).
+    pub source: String,
 }
 
 #[derive(Deserialize)]
@@ -691,6 +694,7 @@ impl Scenario {
             reduce_motion: h.reduce_motion.unwrap_or(false),
             config,
             steps,
+            source: text.to_string(),
         })
     }
 
