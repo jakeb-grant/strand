@@ -43,8 +43,9 @@ use strand_gpu::{
 };
 use strand_scene::shader::ShaderCode;
 use strand_scene::{
-    Backend, BackendChange, Color, Damage, GpuStatus, GradientStop, Length, NodeId, Paint,
-    PaintTarget, PropValue, Rect, Scale, ShaderInput, ShaderPass, ShaderRef, Size, SurfaceId,
+    Backend, BackendChange, Color, Damage, GpuStatus, GradientStop, Length, LogicalSize, NodeId,
+    Paint, PaintTarget, PropValue, Rect, Scale, ShaderInput, ShaderPass, ShaderRef, Size,
+    SurfaceId,
 };
 use vello_cpu::color::{AlphaColor, ColorSpaceTag, Srgb};
 use vello_cpu::kurbo::{self, Affine, Shape};
@@ -532,6 +533,9 @@ struct Surf {
     /// failed, and their files as lost, when a frame of it hangs or
     /// panics, so that no new device is asked for them (m4-audit).
     inline: Vec<(PassId, u64, u64, Option<Arc<ShaderCode>>)>,
+    /// (gpu-first review 2) The size hold the GPU thread was asked to
+    /// commit for ([`GpuRequest::Commit`]): asked once per size.
+    committed: Option<LogicalSize>,
 }
 
 impl Surf {
@@ -602,6 +606,15 @@ pub(super) struct GpuState {
     /// device that cannot start then is said at `info`, since nothing
     /// showed needs it (a GPU-less machine is not a fault).
     warming: bool,
+    /// (gpu-first review 2) The binary keeps a device warm
+    /// ([`Renderer::warm_gpu`]): one that failed for a reason that may
+    /// pass, or was lost, is started again at its retry deadline, not at
+    /// the next animation's first frame.
+    keep_warm: bool,
+    /// That retry was made since the device was last up: a device that
+    /// fails again is asked for on demand only, so a machine whose device
+    /// never starts is not woken every 30 s while idle.
+    rewarmed: bool,
 }
 
 impl GpuState {
@@ -753,6 +766,7 @@ impl Renderer {
     /// failure under [`crate::promote::RETRY_AFTER`] old, or once the GPU
     /// is off.
     pub fn warm_gpu(&mut self) {
+        self.gpu.keep_warm = true;
         if !self.gpu.device.idle() {
             return;
         }
@@ -804,11 +818,6 @@ impl Renderer {
         self.gpu.device.set_retry(retry);
     }
 
-    /// The GPU thread presents `surface` (or will, from its next frame).
-    pub(super) fn gpu_presented(&self, surface: SurfaceId) -> bool {
-        self.backend(surface) == Backend::GpuPresent
-    }
-
     /// (M4) What draws `surface`.
     pub fn backend(&self, surface: SurfaceId) -> Backend {
         self.gpu
@@ -852,9 +861,40 @@ impl Renderer {
         if let Some(st) = self.surfaces.get_mut(&surface) {
             st.valid = false;
             st.mark_dirty();
-            if backend == Backend::GpuPresent {
-                // Presented: never held for a configure (`refresh_size_holds`).
-                st.size_hold = None;
+            // A hold taken on the CPU was committed by the manager.
+            if backend == Backend::GpuPresent
+                && let Some(s) = self.gpu.surfaces.get_mut(&surface)
+            {
+                s.committed = st.size_hold.map(|(t, _)| t);
+            }
+        }
+    }
+
+    /// (gpu-first review 2) After the surface changes were handed to the
+    /// manager ([`Renderer::take_surface_changes`]): a presented surface
+    /// held for its new size has that size pending on its layer surface,
+    /// which only a present commits (the manager commits a surface the
+    /// GPU thread presents no more), so the GPU thread presents its last
+    /// frame again ([`GpuRequest::Commit`]), once per size. The configure
+    /// then comes as a CPU surface's does, and the new layout is drawn
+    /// at its new size: drawn at once instead, into the old size, the
+    /// launcher's growing mode switches showed a frame or two shifted by
+    /// half the growth and clipped on the far side.
+    pub(super) fn gpu_commit_holds(&mut self) {
+        for (id, st) in &self.surfaces {
+            let Some(s) = self.gpu.surfaces.get_mut(id) else {
+                continue;
+            };
+            if s.backend != Backend::GpuPresent {
+                continue;
+            }
+            let Some((target, _)) = st.size_hold else {
+                s.committed = None;
+                continue;
+            };
+            if s.committed != Some(target) {
+                s.committed = Some(target);
+                self.gpu.out.push(GpuRequest::Commit(*id));
             }
         }
     }
@@ -866,6 +906,7 @@ impl Renderer {
             GpuReply::Ready(info) => {
                 self.gpu.warned = None;
                 self.gpu.warming = false;
+                self.gpu.rewarmed = false;
                 self.gpu.device.up();
                 self.gpu.status = GpuStatus::Up(info);
                 // Passes wanted while it started.
@@ -1113,19 +1154,34 @@ impl Renderer {
     }
 
     /// When the loop must wake for the GPU: a settled promoted surface's
-    /// demotion. The device is kept up (gpu-first), so nothing else.
+    /// demotion, and a kept-warm device's retry after a failure that may
+    /// pass (one wake: the start it makes ends in a device or in the next
+    /// failure's deadline). The device is kept up (gpu-first), so nothing
+    /// else.
     pub(super) fn gpu_wake(&self) -> Option<Instant> {
+        let retry = (self.gpu.keep_warm && !self.gpu.rewarmed)
+            .then(|| self.gpu.device.retry_at())
+            .flatten();
         self.gpu
             .surfaces
             .values()
             .filter(|s| s.idles())
             .filter_map(|s| s.promo.wake())
+            .chain(retry)
             .min()
     }
 
-    /// The loop woke at `now`: settled promoted surfaces go back, and
-    /// what surfaces that went away left is forgotten.
+    /// The loop woke at `now`: settled promoted surfaces go back, a
+    /// kept-warm device whose retry is due starts again, and what
+    /// surfaces that went away left is forgotten.
     pub(super) fn gpu_tick(&mut self, now: Instant) {
+        if self.gpu.keep_warm
+            && !self.gpu.rewarmed
+            && self.gpu.device.retry_at().is_some_and(|t| now >= t)
+        {
+            self.gpu.rewarmed = true;
+            self.warm_gpu();
+        }
         let mut back = Vec::new();
         for (id, s) in self.gpu.surfaces.iter_mut() {
             if s.idles() && s.promo.idle(now) == Some(Switch::ToCpu) {

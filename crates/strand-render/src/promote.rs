@@ -75,6 +75,15 @@ pub const AGAIN_FACTOR: u32 = 5;
 /// they last.
 pub const CHEAP_FRAME: Duration = Duration::from_millis(4);
 
+/// The small spring frames whose CPU times are kept: their median is
+/// the surface's cost of one ([`CHEAP_FRAME`]), known once
+/// [`SPRING_SAMPLES_MIN`] of them came, so one slow frame (a preempted
+/// raster on a loaded host) does not hold a surface on the GPU.
+pub const SPRING_SAMPLES: usize = 5;
+
+/// Samples needed before a small spring's cost counts.
+pub const SPRING_SAMPLES_MIN: usize = 3;
+
 /// How long after a failed start or a lost device the device is asked
 /// for again.
 pub const RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -109,9 +118,10 @@ pub struct Promotion {
     /// The last frame was heavy: large, or a small one with springs in
     /// flight on a surface whose such frames are slow on the CPU.
     hot: bool,
-    /// The CPU's time for this surface's last small frame with springs in
-    /// flight that it drew.
-    spring_cost: Option<Duration>,
+    /// The CPU's times for this surface's last small frames with springs
+    /// in flight that it drew with about their own damage, newest last
+    /// ([`SPRING_SAMPLES`] at most).
+    spring_costs: std::collections::VecDeque<Duration>,
     /// When it last went back to the CPU, settled.
     back_at: Option<Instant>,
     /// Promoted again within [`AGAIN_WITHIN`] of going back: it settles
@@ -146,7 +156,9 @@ impl Promotion {
 
     /// A frame at `now` that damaged `damage` pixels, with `springs`
     /// in flight on the surface; `cpu` is the CPU's time for it when the
-    /// CPU drew it. Returns the switch to make now. A paint that damaged
+    /// CPU drew about that damage (the renderer passes none for a frame
+    /// widened past twice it by a buffer's age, or drawn in full).
+    /// Returns the switch to make now. A paint that damaged
     /// nothing is not a frame (nothing is committed): a clocked shader
     /// whose pass result comes every other paint does not break its run.
     pub fn frame(
@@ -163,8 +175,11 @@ impl Promotion {
         // by springs alone ends here, though its damage is still large.
         let settling = std::mem::replace(&mut self.sprung, springs) && !springs;
         let large = damage >= LARGE_DAMAGE;
-        if !large && springs && cpu.is_some() {
-            self.spring_cost = cpu;
+        if let Some(c) = cpu.filter(|_| !large && springs) {
+            if self.spring_costs.len() == SPRING_SAMPLES {
+                self.spring_costs.pop_front();
+            }
+            self.spring_costs.push_back(c);
         }
         let close = self
             .last
@@ -175,7 +190,7 @@ impl Promotion {
             (true, false) => 1,
         };
         self.last = Some(now);
-        let slow = springs && self.spring_cost.is_some_and(|c| c >= CHEAP_FRAME);
+        let slow = springs && self.spring_cost().is_some_and(|c| c >= CHEAP_FRAME);
         self.hot = large || slow;
         if self.gpu {
             if self.hot {
@@ -190,6 +205,17 @@ impl Promotion {
         }
         let animates = springs || (self.run >= CLOCK_RUN && !settling);
         (large && animates).then(|| self.switch(now))
+    }
+
+    /// The median of the small spring frames' CPU times, once
+    /// [`SPRING_SAMPLES_MIN`] came.
+    fn spring_cost(&self) -> Option<Duration> {
+        if self.spring_costs.len() < SPRING_SAMPLES_MIN {
+            return None;
+        }
+        let mut v: Vec<Duration> = self.spring_costs.iter().copied().collect();
+        v.sort_unstable();
+        Some(v[v.len() / 2])
     }
 
     fn switch(&mut self, now: Instant) -> Switch {
@@ -298,6 +324,15 @@ impl Device {
                 true
             }
             State::Starting | State::Up => true,
+        }
+    }
+
+    /// When a failed start or a lost device may be asked for again
+    /// ([`RETRY_AFTER`] after it); `None` in any other state.
+    pub fn retry_at(&self) -> Option<Instant> {
+        match self.state {
+            State::Failed(at) => Some(at + self.retry.unwrap_or(RETRY_AFTER)),
+            _ => None,
         }
     }
 
@@ -663,6 +698,50 @@ mod tests {
         );
         let back = run(&mut r, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
         assert_eq!(back, vec![Switch::ToCpu]);
+    }
+
+    /// (gpu-first review 2) A small spring's cost is the median of its
+    /// last frames, and counts once `SPRING_SAMPLES_MIN` came: one slow
+    /// frame among cheap ones (a raster preempted on a loaded host, the
+    /// full repaint after a demotion, which the renderer does not report)
+    /// does not hold the surface on the GPU, and neither does a single
+    /// sample. 47a3cd04 took the last frame's time alone.
+    #[test]
+    fn one_slow_spring_frame_does_not_hold_a_surface_on_the_gpu() {
+        let fast = Some(Duration::from_micros(400));
+        let slow = Some(Duration::from_millis(30));
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        for _ in 0..4 {
+            t += FRAME;
+            p.frame(t, 6_400, true, fast);
+        }
+        // The outlier is the last frame before the mode switch.
+        t += FRAME;
+        p.frame(t, 6_400, true, slow);
+        t += FRAME;
+        assert_eq!(p.frame(t, 1_350_000, true, None), Some(Switch::ToGpu));
+        let back = run(&mut p, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
+        assert_eq!(back, vec![Switch::ToCpu], "the median is cheap");
+        // One slow sample alone is not a cost yet.
+        let mut q = Promotion::default();
+        let mut t = Instant::now();
+        q.frame(t, 6_400, true, slow);
+        t += FRAME;
+        assert_eq!(q.frame(t, 1_350_000, true, None), Some(Switch::ToGpu));
+        let back = run(&mut q, &mut t, SETTLE_AFTER + FRAME * 2, 6_400, true);
+        assert_eq!(back, vec![Switch::ToCpu], "one sample is not enough");
+        // Mostly slow frames are a cost, whatever one fast one says.
+        let mut r = Promotion::default();
+        let mut t = Instant::now();
+        for c in [slow, fast, slow, slow, slow] {
+            t += FRAME;
+            r.frame(t, 6_400, true, c);
+        }
+        t += FRAME;
+        assert_eq!(r.frame(t, 1_350_000, true, None), Some(Switch::ToGpu));
+        assert!(run(&mut r, &mut t, SETTLE_AFTER * 2, 6_400, true).is_empty());
+        assert!(r.on_gpu());
     }
 
     /// (gpu-first review) A surface promoted again within `AGAIN_WITHIN`

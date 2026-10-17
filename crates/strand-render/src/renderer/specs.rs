@@ -186,18 +186,18 @@ impl Renderer {
         let now = Instant::now();
         for (id, root) in ids {
             let wanted = self.wanted_size(id, root);
-            // (gpu-first review) A surface the GPU thread presents is not
-            // held: its new size is pending surface state that only its
-            // next present commits, so the configure at that size cannot
-            // come before a frame does (the hold only ever ran out).
-            #[cfg(feature = "gpu")]
-            let presented = self.gpu_presented(id);
-            #[cfg(not(feature = "gpu"))]
-            let presented = false;
+            // (gpu-first review 2) A surface the GPU thread presents is
+            // held too: its new size is pending surface state that only a
+            // present commits, so the thread presents its last frame
+            // again for it (`gpu_commit_holds`, at the hand-over of the
+            // surface changes) and the configure comes as a CPU
+            // surface's. A hold that runs out wakes the loop
+            // (`GpuHost::wait` in the binary) and the frame is drawn at
+            // the size the surface has.
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
-            let holds = !self.resize_wait.is_zero() && s.size != Size::default() && !presented;
+            let holds = !self.resize_wait.is_zero() && s.size != Size::default();
             let Some((w, h)) = wanted.filter(|_| holds) else {
                 s.size_hold = None;
                 continue;
@@ -238,6 +238,11 @@ impl Renderer {
     /// in order. Token changes that move a resolved value (`margin:
     /// $space.2`) are reported as updates.
     pub fn take_surface_changes(&mut self) -> Vec<(NodeId, SurfaceChange)> {
+        // (gpu-first review 2) The manager sets what these change on the
+        // surfaces the GPU thread presents without a commit: the thread
+        // is asked for one (sent after them, at the host's next pump).
+        #[cfg(feature = "gpu")]
+        self.gpu_commit_holds();
         std::mem::take(&mut self.surface_changes)
     }
 

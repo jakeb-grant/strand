@@ -187,6 +187,77 @@ fn the_device_stays_up_when_idle() {
     );
 }
 
+/// (gpu-first review 2) A kept-warm device that failed for a reason that
+/// may pass is started again at its retry deadline, once: that wake is
+/// the only one, so the next animation does not wait for a device, and a
+/// device that fails again leaves the shell idle (asked for on demand
+/// only). Once up again, a later loss gets its one retry too. 47a3cd04
+/// asked again only on demand. Needs no device: replies by hand.
+#[test]
+fn a_failed_warm_device_is_started_again_once_at_its_retry() {
+    let retry = Duration::from_millis(40);
+    let mut r = renderer();
+    r.set_gpu_retry(retry);
+    let starts = |r: &mut Renderer| {
+        r.take_backend_changes()
+            .iter()
+            .filter(|c| matches!(c, BackendChange::Start))
+            .count()
+    };
+    let failed = |r: &mut Renderer, kind| {
+        r.deliver_gpu(GpuReply::Unavailable(strand_gpu::GpuError {
+            kind,
+            message: "the GPU failed to start (test)".into(),
+        }));
+        r.deliver_gpu(GpuReply::Exited);
+    };
+    // Nothing warm asked for: a failure is retried on demand only.
+    let mut cold = renderer();
+    cold.set_gpu_retry(retry);
+    cold.promote_now(S);
+    let _ = cold.take_backend_changes();
+    failed(&mut cold, GpuErrorKind::Device);
+    assert_eq!(cold.next_wake(), None, "no warm start: no retry wake");
+    // The warm start fails.
+    r.warm_gpu();
+    assert_eq!(starts(&mut r), 1, "the warm start");
+    let at = Instant::now();
+    failed(&mut r, GpuErrorKind::Device);
+    let wake = r.next_wake().expect("a wake at the retry");
+    assert!(
+        wake >= at && wake <= at + retry + Duration::from_millis(20),
+        "{wake:?}"
+    );
+    r.update();
+    assert_eq!(starts(&mut r), 0, "not before the deadline");
+    sleep_past(wake);
+    r.update();
+    assert_eq!(starts(&mut r), 1, "started again at the retry");
+    assert_eq!(r.gpu_status(), GpuStatus::Starting);
+    // It fails again: no wake, and none later.
+    failed(&mut r, GpuErrorKind::Device);
+    assert_eq!(r.next_wake(), None, "one retry, then idle");
+    std::thread::sleep(retry * 2);
+    r.update();
+    assert_eq!(starts(&mut r), 0, "not asked for again unprompted");
+    // Asked for on demand, it comes up, then is lost: one retry again.
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    up_without_a_device(&mut r);
+    r.deliver_gpu(GpuReply::Lost(strand_gpu::GpuError {
+        kind: GpuErrorKind::Lost,
+        message: "the GPU device was lost (test)".into(),
+    }));
+    r.deliver_gpu(GpuReply::Exited);
+    let wake = r.next_wake().expect("a wake at the lost device's retry");
+    sleep_past(wake);
+    r.update();
+    assert_eq!(starts(&mut r), 1, "a lost device is warmed again");
+    // A final answer (no adapter) asks for nothing again.
+    failed(&mut r, GpuErrorKind::NoAdapter);
+    assert_eq!(r.next_wake(), None);
+}
+
 /// A still `shader` node keeps its pixels when the device goes (its
 /// thread ended): they are CPU pixmaps, not GPU memory. A later frame of
 /// its surface (the bar's clock ticking) repaints it from them, asks for
@@ -1038,15 +1109,19 @@ fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
     drop(gpu);
 }
 
-/// (gpu-first review) A presented surface whose content size changes is
-/// not held for the configure at the new size, as a CPU one is: the new
-/// size is pending surface state only its next present commits, so that
-/// configure cannot come first, and the hold only ran out (and with
-/// nothing waking the loop at its end, the launcher's size-changing mode
-/// switches froze about 0.5 s on the GPU). Its frame is lowered at once,
-/// at the size it has. Needs no device (a frame is lowered, not drawn).
+/// (gpu-first review 2) A presented surface whose content size changes
+/// is held for the configure at the new size, as a CPU one is, and the
+/// GPU thread is asked to commit the size the manager left pending (a
+/// `Commit`, once per size, when the surface changes are handed over):
+/// the new size is pending surface state only a present commits.
+/// 47a3cd04 drew the new layout at once into the old size (no hold, no
+/// commit): the launcher's growing mode switches showed a frame or two
+/// shifted by half the growth and clipped on the far side (burst
+/// captures, decisions.md gpu-first). Before that, d636d051 held with
+/// nothing to commit, and the hold only ran out. Needs no device (a
+/// frame is lowered, not drawn).
 #[test]
-fn a_presented_surface_is_not_held_for_its_new_size() {
+fn a_presented_surface_is_held_and_committed_for_its_new_size() {
     let mut b = Builder::default();
     let p = b.node(
         NodeKind::Panel,
@@ -1072,16 +1147,38 @@ fn a_presented_surface_is_not_held_for_its_new_size() {
         .paint_gpu(S, Duration::from_millis(16))
         .expect("the first presented frame");
     assert_eq!(f.size, first);
+    let commits = |r: &mut Renderer| {
+        r.take_gpu_requests()
+            .iter()
+            .filter(|q| matches!(q, GpuRequest::Commit(s) if *s == S))
+            .count()
+    };
+    let _ = r.take_surface_changes();
+    assert_eq!(commits(&mut r), 0, "nothing pending, nothing committed");
     let mut d = SceneDiff::new();
     d.set(t, Prop::Text, text("a much longer line of text"));
     r.apply(d);
-    assert!(size(&r).w > first.w);
-    assert!(r.frame_deadline(S).is_none(), "no hold");
+    let grown = size(&r);
+    assert!(grown.w > first.w);
+    assert!(r.frame_deadline(S).is_some(), "held for the configure");
+    assert!(!r.wants_frame(S));
+    assert!(
+        r.paint_gpu(S, Duration::from_millis(32)).is_none(),
+        "not drawn into the old size"
+    );
+    assert_eq!(commits(&mut r), 0, "not before the manager has the size");
+    assert!(!r.take_surface_changes().is_empty(), "the new size");
+    assert_eq!(commits(&mut r), 1, "the size is committed");
+    let _ = r.take_surface_changes();
+    assert_eq!(commits(&mut r), 0, "once");
+    // The configure at the new size: drawn there.
+    r.configure_surface(S, grown, Scale::ONE);
+    assert!(r.frame_deadline(S).is_none());
     assert!(r.wants_frame(S));
     let f = r
-        .paint_gpu(S, Duration::from_millis(32))
-        .expect("lowered at once");
-    assert_eq!(f.size, first, "at the size it has until the configure");
+        .paint_gpu(S, Duration::from_millis(48))
+        .expect("drawn at its new size");
+    assert_eq!(f.size, grown);
 }
 
 /// (gpu-first review) No adapter, or only a software one refused, is

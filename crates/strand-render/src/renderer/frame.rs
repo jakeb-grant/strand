@@ -260,7 +260,26 @@ fn geometry_damage(o: &NodeRecord, n: &NodeRecord, d: &mut Damage) -> bool {
 impl Painter for Renderer {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
         let started = Instant::now();
+        // (gpu-first review 2) Under `STRAND_LOG=debug`, a paint slower
+        // than `SLOW_FRAME` is logged with this thread's time on a core,
+        // waiting for one and its major faults, beside the GPU thread's
+        // own slow-frame line: a stall under load is told apart from
+        // work of ours.
+        #[cfg(feature = "gpu")]
+        let sched = log::log_enabled!(log::Level::Debug)
+            .then(strand_gpu::thread_stats)
+            .flatten();
         let damage = self.paint_frame(surface, target);
+        #[cfg(feature = "gpu")]
+        if started.elapsed() >= strand_gpu::SLOW_FRAME && log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "a slow paint of {surface:?}: {:.1} ms:{} flatten={:.1} raster={:.1}",
+                started.elapsed().as_secs_f64() * 1e3,
+                strand_gpu::thread_stats_since(sched),
+                self.paint_times.flatten.as_secs_f64() * 1e3,
+                self.paint_times.raster.as_secs_f64() * 1e3,
+            );
+        }
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
             // The next frame waits for its own new text.
@@ -638,14 +657,18 @@ impl Renderer {
             s.painted_at = Some(Instant::now());
         }
         self.last_damage.insert(surface, total);
-        // The CPU's time for the frame, when it drew it: whether a small
-        // animated frame is cheap there (promotion's settle rule).
+        // The CPU's time for the frame, when it drew about the frame's
+        // own damage: at most twice it (its union with the last frame's,
+        // at a buffer age of 2), never a repaint in full of an invalid
+        // buffer or a late readback's. Whether a small animated frame is
+        // cheap there (promotion's settle rule).
         #[cfg(feature = "gpu")]
         self.gpu_frame_stats(
             surface,
             stats.0,
             stats.1,
-            (!drawn).then_some(self.paint_times.raster),
+            (!drawn && total.area() <= stats.0.saturating_mul(2))
+                .then_some(self.paint_times.raster),
         );
         total
     }

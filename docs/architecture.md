@@ -4187,13 +4187,19 @@ and the connection):
   output's size to render (`Renderer::set_surface_bounds`), and render
   holds a content-sized surface's frame for the configure at a new size
   (`Renderer::set_resize_wait`, `strand_render::RESIZE_WAIT`; zero
-  offline), except a surface the GPU thread presents (gpu-first review):
-  its new size is pending state only its next present commits, so the
-  configure cannot come first; it draws at once at the size it has, and
-  the configure follows that present. A presented surface's frame held
-  for any other reason (new text, a query) wakes the loop at the hold's
-  end through `GpuHost::wait`, since the manager arms that deadline only
-  for the surfaces it paints. Spec changes render makes while the manager calls in (a
+  offline). A surface the GPU thread presents is held too (gpu-first
+  review 2): the manager sets its new size without a commit (the GPU
+  thread is its only committer), so when render hands the surface
+  changes over (`Renderer::take_surface_changes`) it asks the thread to
+  present that surface's last frame again (`GpuRequest::Commit`, once
+  per size held for), whose commit carries the new size; the configure
+  then comes as a CPU surface's does and the new layout is drawn at its
+  new size. (47a3cd04 drew it at once into the old size instead: a
+  frame or two shifted by half the growth and clipped on the far side.)
+  A presented surface's held frame wakes the loop at the hold's end
+  through `GpuHost::wait`, since the manager arms that deadline only
+  for the surfaces it paints; a hold that runs out draws at the size the
+  surface has. Spec changes render makes while the manager calls in (a
   configure, a paint) are reported by `Renderer::has_surface_changes`;
   the binary's host then pings its loop (`Host::waking`) so they reach
   the manager at once. A click-away catcher (`SurfaceInfo::click_away`) is a
@@ -4545,7 +4551,10 @@ Wayland crate. Its interface:
   `wl_surface` or display) holds at exit.
 - `GpuRequest`: `Attach { surface: SurfaceId, handles: Option<RawHandles>,
   size, scale, opaque: bool }` (no handles: readback only), `Resize {
-  surface, size, scale }`, `Release(SurfaceId)`, `Frame(Frame)`,
+  surface, size, scale }`, `Release(SurfaceId)`, `Commit(SurfaceId)`
+  (present the surface's last frame again so the compositor applies its
+  pending state; unanswered, skipped when no frame matches the
+  swapchain's size), `Frame(Frame)`,
   `Pass(PassFrame)` (a `shader` node's pass on a surface the GPU does
   not draw, or a bundled effect's: drawn offscreen at its size and read
   back), `Shutdown`. `PassFrame { key, id, size, pass: ShaderPass,
@@ -4652,12 +4661,15 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
   last hot frame was shown (`Presented`, or the attach). One wake ends
   an animation; an idle shell takes none. Settled is about damage
   (gpu-first review): a hot frame is a large one, or a small one with a
-  spring in flight whose CPU frames were slow (the last small spring
-  frame the CPU drew took `promote::CHEAP_FRAME`, 4 ms, or more:
-  `Promotion::frame(now, damage, springs, cpu)` takes the CPU's raster
-  time of the frame it drew, `None` for a GPU frame); a small spring the
-  CPU draws cheaply (a turning 80 px cover, a spinner) never holds its
-  surface. A surface promoted again within `promote::AGAIN_WITHIN`
+  spring in flight whose CPU frames were slow (the median of the last
+  `promote::SPRING_SAMPLES` (5) small spring frames the CPU drew, once
+  `SPRING_SAMPLES_MIN` (3) came, is `promote::CHEAP_FRAME`, 4 ms, or
+  more: `Promotion::frame(now, damage, springs, cpu)` takes the CPU's
+  raster time of a frame it drew over at most twice its own damage,
+  `None` for a GPU frame, a repaint in full or one widened further by
+  the buffer's age; gpu-first review 2: one slow sample, a preempted
+  raster, no longer holds a surface); a small spring the CPU draws
+  cheaply (a turning 80 px cover, a spinner) never holds its surface. A surface promoted again within `promote::AGAIN_WITHIN`
   (30 s) of going back settles `AGAIN_FACTOR` (5) times longer, 15 s,
   so repeated animations a few seconds apart keep the GPU without a
   CPU spell (and a full CPU repaint) between them. Clocks (time
@@ -4670,7 +4682,12 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
   to send it (once any thread still ending has ended). A start that
   fails before anything shown needs the GPU is logged at `info` ("…;
   everything draws on the CPU"); a machine without a device draws as it
-  always did. Render asks for no wake for the device.
+  always did. Render asks for no wake for the device, but one (gpu-first
+  review 2): a kept-warm device that failed for a reason that may pass,
+  or was lost, is started again once at its retry deadline
+  (`promote::Device::retry_at`), so the next animation does not wait for
+  it; a device that fails again is asked for on demand only, so an idle
+  shell whose device never starts is not woken every 30 s.
 - (gpu-first review) The device is asked for only where one can exist:
   `strand_gpu::device_possible(&GpuOptions) -> bool` is true with a
   software adapter accepted or a `/dev/dri/renderD*` node. Without one
@@ -4690,7 +4707,9 @@ can bring the device's drop forward; decisions.md m4-gpu-w2):
   (`*lvp_icd*`, `*swiftshader*`) unless a software adapter is accepted,
   and, where every render node's PCI vendor was read
   (`strand_gpu::render_vendors() -> Option<Vec<u16>>`, from
-  `/sys/class/drm/renderD*/device/vendor`), the drivers of the vendors
+  `/sys/class/drm/renderD*/device/vendor`, `None` when one is unreadable
+  or a `/dev/dri/renderD*` node has no sysfs entry, a sandbox hiding
+  sysfs: no hardware driver is then kept out), the drivers of the vendors
   with no render node (Intel's, AMD's, which link LLVM, NVIDIA's,
   virtio-gpu's) and of the platform GPUs (Asahi, Freedreno, Panfrost,
   PowerVR, Broadcom). It appends to an inherited list, and sets nothing

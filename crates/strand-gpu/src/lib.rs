@@ -45,6 +45,10 @@ mod pass;
 mod present;
 mod readback;
 mod thread;
+/// (gpu-first review 2) Debug-log diagnostics: a thread's scheduling
+/// and fault figures (`/proc/thread-self`), and the time past which a
+/// frame counts as slow.
+pub use thread::{SLOW_FRAME, thread_stats, thread_stats_since};
 mod timer;
 
 /// How the GPU is started.
@@ -127,28 +131,44 @@ const PLATFORM_DRIVERS: [&str; 5] = [
     "*broadcom_icd*",
 ];
 
-/// The PCI vendors of the machine's render nodes
-/// (`/sys/class/drm/renderD*/device/vendor`; none without the DRM
-/// class); `None` when they cannot all be read (no driver is then kept
-/// out for want of its GPU).
+/// The PCI vendors of the machine's render nodes, those in sysfs
+/// (`/sys/class/drm/renderD*/device/vendor`) and those in `/dev/dri`;
+/// none when neither has one. `None` when one's vendor cannot be read,
+/// a node in `/dev/dri` with no sysfs entry included (a sandbox that
+/// hides sysfs but passes the device): no driver is then kept out for
+/// want of its GPU.
 pub fn render_vendors() -> Option<Vec<u16>> {
-    vendors_in(std::path::Path::new("/sys/class/drm"))
+    vendors_in(
+        std::path::Path::new("/sys/class/drm"),
+        std::path::Path::new("/dev/dri"),
+    )
 }
 
-fn vendors_in(sys: &std::path::Path) -> Option<Vec<u16>> {
-    let mut out = Vec::new();
-    let entries = match std::fs::read_dir(sys) {
+/// The `renderD*` names in `dir` (none if it cannot be read: `Err` for
+/// anything but its absence).
+fn render_names(dir: &std::path::Path) -> Result<Vec<std::ffi::OsString>, ()> {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        // No DRM class at all: no GPU.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(out),
-        Err(_) => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(()),
     };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        if !name.to_str().is_some_and(|n| n.starts_with("renderD")) {
-            continue;
+    Ok(entries
+        .flatten()
+        .map(|e| e.file_name())
+        .filter(|n| n.to_str().is_some_and(|n| n.starts_with("renderD")))
+        .collect())
+}
+
+fn vendors_in(sys: &std::path::Path, dev: &std::path::Path) -> Option<Vec<u16>> {
+    let mut names = render_names(sys).ok()?;
+    for n in render_names(dev).ok()? {
+        if !names.contains(&n) {
+            names.push(n);
         }
-        let text = std::fs::read_to_string(e.path().join("device/vendor")).ok()?;
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let text = std::fs::read_to_string(sys.join(&name).join("device/vendor")).ok()?;
         let hex = text.trim().trim_start_matches("0x");
         out.push(u16::from_str_radix(hex, 16).ok()?);
     }
@@ -243,6 +263,12 @@ pub enum GpuRequest {
     /// Stop drawing `surface`: its swapchain (if any) is dropped before
     /// the answer, [`GpuReply::Released`].
     Release(SurfaceId),
+    /// (gpu-first review 2) Present `surface`'s last frame again, so the
+    /// compositor applies the surface state the manager left pending (a
+    /// new layer size) and configures it, before a frame of the new
+    /// layout is drawn. Nothing is answered; a surface not presented, or
+    /// with no frame at its swapchain's size, is skipped.
+    Commit(SurfaceId),
     /// One frame of an attached surface.
     Frame(Frame),
     /// A shader pass on a surface the GPU does not draw: drawn offscreen
@@ -795,24 +821,35 @@ mod tests {
     }
 
     /// The render nodes' vendors come from sysfs; one unreadable makes
-    /// them unknown.
+    /// them unknown, and so does a node in `/dev/dri` that sysfs does not
+    /// show (gpu-first review 2: a sandbox hiding sysfs read as "no GPU"
+    /// kept every hardware driver out, and the probe's `NoAdapter` is
+    /// final).
     #[test]
     fn render_vendors_are_read_from_sysfs() {
-        let dir = std::env::temp_dir().join(format!("strand-gpu-sys-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let root = std::env::temp_dir().join(format!("strand-gpu-sys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, dev) = (root.join("sys"), root.join("dev"));
         std::fs::create_dir_all(dir.join("card0/device")).unwrap();
+        std::fs::create_dir_all(&dev).unwrap();
         std::fs::write(dir.join("card0/device/vendor"), "0x1002\n").unwrap();
         assert_eq!(
-            vendors_in(&dir),
+            vendors_in(&dir, &dev),
             Some(vec![]),
             "a card is not a render node"
         );
         std::fs::create_dir_all(dir.join("renderD128/device")).unwrap();
         std::fs::write(dir.join("renderD128/device/vendor"), "0x8086\n").unwrap();
-        assert_eq!(vendors_in(&dir), Some(vec![0x8086]));
+        assert_eq!(vendors_in(&dir, &dev), Some(vec![0x8086]));
+        // The node in /dev too: one vendor, once.
+        std::fs::write(dev.join("renderD128"), "").unwrap();
+        assert_eq!(vendors_in(&dir, &dev), Some(vec![0x8086]));
         std::fs::create_dir_all(dir.join("renderD129")).unwrap();
-        assert_eq!(vendors_in(&dir), None, "unreadable");
-        assert_eq!(vendors_in(&dir.join("missing")), Some(vec![]), "no DRM");
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(vendors_in(&dir, &dev), None, "unreadable");
+        let missing = root.join("missing");
+        assert_eq!(vendors_in(&missing, &missing), Some(vec![]), "no DRM");
+        // A device passed in with sysfs hidden: unknown, not "none".
+        assert_eq!(vendors_in(&missing, &dev), None, "a node sysfs hides");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

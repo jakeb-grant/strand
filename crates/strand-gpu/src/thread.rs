@@ -317,7 +317,7 @@ impl State {
             tx: &tx,
             waker: &|| {},
         };
-        if let Err(e) = self.draw_frame(dev, frame, Duration::ZERO, &quiet) {
+        if let Err(e) = self.draw_frame(dev, frame, Duration::ZERO, &quiet, &mut Phases::new()) {
             log::debug!("GPU: the warm-up frame: {e}");
         }
         self.targets.remove(&WARM);
@@ -365,6 +365,33 @@ impl State {
 
     /// Handles a request that sat `queued` in the channel.
     fn handle(&mut self, dev: &Device, req: GpuRequest, queued: Duration, reply: &Reply<'_>) {
+        let start = Instant::now();
+        let what = match &req {
+            GpuRequest::Attach { .. } => Some("an attach"),
+            GpuRequest::Resize { .. } => Some("a resize"),
+            GpuRequest::Release(_) => Some("a release"),
+            GpuRequest::Commit(_) => Some("a commit"),
+            GpuRequest::Pass(_) => Some("a pass"),
+            _ => None,
+        };
+        self.handle_request(dev, req, queued, reply);
+        if let Some(what) = what
+            && start.elapsed() >= SLOW_FRAME
+        {
+            log::debug!(
+                "GPU: {what} took {:.1} ms",
+                start.elapsed().as_secs_f64() * 1e3
+            );
+        }
+    }
+
+    fn handle_request(
+        &mut self,
+        dev: &Device,
+        req: GpuRequest,
+        queued: Duration,
+        reply: &Reply<'_>,
+    ) {
         match req {
             GpuRequest::Attach {
                 surface,
@@ -420,10 +447,37 @@ impl State {
                 self.targets.remove(&surface);
                 reply.send(GpuReply::Released(surface));
             }
+            GpuRequest::Commit(surface) => self.commit(dev, surface),
             GpuRequest::Frame(frame) => self.frame(dev, frame, queued, reply),
             GpuRequest::Pass(pass) => self.pass(dev, pass, reply),
             GpuRequest::Shutdown => {}
         }
+    }
+
+    /// (gpu-first review 2) Presents `surface`'s last frame again: its
+    /// commit carries the surface state the manager set since (a new
+    /// size), whose configure the renderer holds the next frame for.
+    fn commit(&mut self, dev: &Device, surface: SurfaceId) {
+        let Some(t) = self.targets.get_mut(&surface) else {
+            return;
+        };
+        let (Some(p), Some(ft)) = (t.present.as_mut(), t.frame.as_ref()) else {
+            return;
+        };
+        if (ft.width, ft.height) != (p.config.width, p.config.height) {
+            return;
+        }
+        let mut encoder = dev
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("strand commit"),
+            });
+        let Some((image, dst, format)) = p.acquire(dev) else {
+            return;
+        };
+        self.blit.record(dev, &mut encoder, &ft.view, &dst, format);
+        dev.queue.submit([encoder.finish()]);
+        p.present(dev, image);
     }
 
     /// Uploads the frame's new pixmaps, then frees the retired ones and
@@ -535,13 +589,15 @@ impl State {
     /// is answered `Failed` alone.
     fn frame(&mut self, dev: &Device, frame: Frame, queued: Duration, reply: &Reply<'_>) {
         let surface = frame.surface;
-        if let Err(error) = self.draw_frame(dev, frame, queued, reply) {
+        let mut ph = Phases::new();
+        if let Err(error) = self.draw_frame(dev, frame, queued, reply, &mut ph) {
             reply.send(GpuReply::Failed {
                 surface: Some(surface),
                 key: None,
                 error,
             });
         }
+        ph.done(surface);
     }
 
     fn draw_frame(
@@ -550,6 +606,7 @@ impl State {
         frame: Frame,
         queued: Duration,
         reply: &Reply<'_>,
+        ph: &mut Phases,
     ) -> Result<(), GpuError> {
         let surface = frame.surface;
         let Some(target) = self.targets.get(&surface) else {
@@ -575,6 +632,15 @@ impl State {
         // A presented frame's GPU time starts with its first command.
         let timed = target.timer.as_ref().and_then(|t| t.begin(&mut encoder));
         self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
+        ph.mark("upload");
+        ph.uploads = (
+            frame.uploads.len(),
+            frame
+                .uploads
+                .iter()
+                .map(|u| u64::from(u.pixmap.width()) * u64::from(u.pixmap.height()))
+                .sum(),
+        );
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
         let (passes, pass_error) =
@@ -589,8 +655,10 @@ impl State {
             drop(keep);
             return Err(e);
         }
+        ph.mark("passes");
         self.scene.reset_and_resize(w as u16, h as u16);
         let missing = draw::build(&mut self.scene, &frame.ops, &self.images, &passes);
+        ph.mark("build");
         if missing.images > 0 {
             log::debug!(
                 "GPU frame of {surface:?}: {} images not uploaded",
@@ -633,6 +701,7 @@ impl State {
         let Some(ft) = target.frame.as_ref() else {
             return Err(render_error("no frame texture"));
         };
+        ph.mark("texture");
         let size = vello_gpu::RenderSize {
             width: w as u16,
             height: h as u16,
@@ -652,6 +721,7 @@ impl State {
         if let Err(e) = rendered {
             return Err(render_error(e.to_string()));
         }
+        ph.mark("render");
         if presenting {
             let Some(p) = target.present.as_mut() else {
                 return Err(render_error("no swapchain"));
@@ -665,6 +735,7 @@ impl State {
                 &ft.view,
                 (surface, frame.id),
                 queued,
+                Some(ph),
             );
             drop(keep);
             reply.send(presented?);
@@ -678,8 +749,10 @@ impl State {
             };
             read.record(&mut encoder, &ft.texture);
             dev.queue.submit([encoder.finish()]);
+            ph.mark("submit");
             drop(keep);
             let pixels = read.read(dev)?;
+            ph.mark("read");
             reply.send(GpuReply::Pixels {
                 surface,
                 frame: frame.id,
@@ -811,6 +884,100 @@ fn input_texture(dev: &Device, px: &crate::Pixmap) -> Option<(wgpu::Texture, wgp
     Some((texture, view))
 }
 
+/// (gpu-first) Where a frame's time on this thread went, for the log's
+/// slow-frame line: wall-clock marks, and the thread's own run and
+/// run-queue time from `/proc/thread-self/schedstat` (a frame slow while
+/// the thread waited for a core is the host's load, one slow while it
+/// ran is ours).
+struct Phases {
+    start: Instant,
+    sched: Option<(u64, u64, u64)>,
+    marks: Vec<(&'static str, Instant)>,
+    /// Images uploaded and their pixels.
+    uploads: (usize, u64),
+}
+
+/// A frame slower than this on the thread is logged with its phases
+/// (render's main thread logs a paint as slow from the same figure).
+pub const SLOW_FRAME: Duration = Duration::from_millis(40);
+
+/// This thread's time on a core and waiting for one (ns), and its major
+/// page faults (the disk read code or data back in).
+pub fn thread_stats() -> Option<(u64, u64, u64)> {
+    let s = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    let mut it = s.split_whitespace().map(|v| v.parse::<u64>().ok());
+    let (ran, queued) = (it.next()??, it.next()??);
+    let stat = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+    Some((ran, queued, majflt(&stat)?))
+}
+
+/// The major faults of a `/proc/…/stat` line: after the `(comm)`, whose
+/// name may hold spaces and parentheses, the tenth field (field 12).
+fn majflt(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(9)?.parse().ok()
+}
+
+/// `thread_stats` since `before`, for a log line.
+pub fn thread_stats_since(before: Option<(u64, u64, u64)>) -> String {
+    match (before, thread_stats()) {
+        (Some((r0, q0, f0)), Some((r1, q1, f1))) => format!(
+            " ran={:.1} runqueue={:.1} majflt={}",
+            r1.saturating_sub(r0) as f64 / 1e6,
+            q1.saturating_sub(q0) as f64 / 1e6,
+            f1.saturating_sub(f0)
+        ),
+        _ => String::new(),
+    }
+}
+
+impl Phases {
+    fn new() -> Self {
+        let on = log::log_enabled!(log::Level::Debug);
+        Phases {
+            start: Instant::now(),
+            sched: on.then(thread_stats).flatten(),
+            marks: if on {
+                Vec::with_capacity(8)
+            } else {
+                Vec::new()
+            },
+            uploads: (0, 0),
+        }
+    }
+
+    /// Marks the end of a phase (only while the debug log is on).
+    fn mark(&mut self, what: &'static str) {
+        if self.marks.capacity() > 0 {
+            self.marks.push((what, Instant::now()));
+        }
+    }
+
+    /// Logs the frame's phases if it was slow.
+    fn done(&self, surface: SurfaceId) {
+        let took = self.start.elapsed();
+        if took < SLOW_FRAME || !log::log_enabled!(log::Level::Debug) {
+            return;
+        }
+        let mut last = self.start;
+        let mut parts = String::new();
+        for (what, at) in &self.marks {
+            parts.push_str(&format!(
+                " {what}={:.1}",
+                at.saturating_duration_since(last).as_secs_f64() * 1e3
+            ));
+            last = *at;
+        }
+        let sched = thread_stats_since(self.sched);
+        log::debug!(
+            "GPU: a slow frame of {surface:?}: {:.1} ms:{parts}{sched} uploads={} ({} px)",
+            took.as_secs_f64() * 1e3,
+            self.uploads.0,
+            self.uploads.1
+        );
+    }
+}
+
 fn render_error(message: impl Into<String>) -> GpuError {
     GpuError::new(GpuErrorKind::Render, message)
 }
@@ -832,10 +999,14 @@ fn present_frame<C: Swapchain>(
     src: &wgpu::TextureView,
     (surface, frame): (SurfaceId, u64),
     queued: Duration,
+    mut ph: Option<&mut Phases>,
 ) -> Result<GpuReply, GpuError> {
     let acquiring = Instant::now();
     let image = chain.acquire(dev);
     let waited = queued + acquiring.elapsed();
+    if let Some(p) = ph.as_deref_mut() {
+        p.mark("acquire");
+    }
     let Some((image, dst, format)) = image else {
         return Err(render_error("no swapchain image"));
     };
@@ -845,7 +1016,13 @@ fn present_frame<C: Swapchain>(
     }
     dev.queue.submit([encoder.finish()]);
     let at = Instant::now();
+    if let Some(p) = ph.as_deref_mut() {
+        p.mark("submit");
+    }
     chain.present(dev, image);
+    if let Some(p) = ph {
+        p.mark("present");
+    }
     let ran = match timer {
         Some((t, slot)) => {
             if let Some(slot) = slot {
@@ -984,6 +1161,7 @@ mod tests {
             &view,
             (SurfaceId(1), 7),
             queued,
+            None,
         )
         .unwrap();
         let GpuReply::Presented {
@@ -1026,6 +1204,27 @@ mod tests {
             "the GPU's run is within submit to finish: {gpu:?}"
         );
         assert!(t.ran(&dev).is_empty(), "each run comes once");
+    }
+
+    /// (gpu-first review 2) The slow-frame line's figures: this thread's
+    /// time on a core grows with its work, and the major faults are read
+    /// past a thread name with spaces and parentheses.
+    #[test]
+    fn a_threads_scheduling_figures_are_read() {
+        let before = thread_stats().expect("/proc/thread-self");
+        let spin = Instant::now();
+        let mut x = 0u64;
+        while spin.elapsed() < Duration::from_millis(20) {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+        let after = thread_stats().expect("/proc/thread-self");
+        assert!(after.0 >= before.0 + 10_000_000, "{before:?} {after:?}");
+        assert!(after.2 >= before.2);
+        let line = "42 (a (b) c) S 1 42 42 0 -1 4194560 812 0 7 0 1 2 0 0 20 0 1 0";
+        assert_eq!(majflt(line), Some(7));
+        assert_eq!(majflt("42 (x"), None);
+        assert!(thread_stats_since(Some(before)).contains(" ran="));
+        assert_eq!(thread_stats_since(None), "");
     }
 
     fn replies(
