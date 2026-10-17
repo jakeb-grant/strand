@@ -205,6 +205,21 @@ struct SurfaceState {
     /// (a token swap).
     flip: HashSet<NodeId>,
     flip_all: bool,
+    /// (owner-testing.md bug 24) The parents of the last structural
+    /// change's FLIP (and `flip_all`), kept while text that change
+    /// mounted is still being shaped: a layout pass that a text's
+    /// arrival causes glides what it moves in them from where it was
+    /// drawn too, so a box laid out by an estimate (a ligature's name
+    /// wrapped into ten lines) and then by the shaped size does not
+    /// carry the estimate's offset into its glide. Cleared once every
+    /// text on the surface is shaped.
+    flip_open: Option<(HashSet<NodeId>, bool)>,
+    /// A text layout for it arrived since its last layout pass.
+    text_arrived: bool,
+    /// Nodes first laid out since it last painted, while `flip_open`:
+    /// never drawn, so a later pass's glide does not start them where
+    /// an earlier pass of the same frame put them.
+    unpainted: HashSet<NodeId>,
     /// Presentation time of the last frame it painted.
     painted_time: Option<Duration>,
     /// Nodes with motion state its last fresh frame drew. With

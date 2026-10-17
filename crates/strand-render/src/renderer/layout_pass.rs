@@ -129,6 +129,11 @@ impl Renderer {
                 .iter()
                 .map(|(node, spec)| TextSlot::of(*node, spec))
                 .collect();
+            if settled {
+                // What a structural change mounted is measured: later
+                // passes move nothing it placed by an estimate.
+                s.flip_open = None;
+            }
             if settled && s.prev_scale.take().is_some() {
                 self.prune_scales();
             }
@@ -321,11 +326,32 @@ impl Renderer {
             }
         }
         // FLIP: boxes a structural change moved start where they were.
+        // So do boxes the shaped size of text it mounted moves again (a
+        // pass after a text arrived, in this frame or a later one, while
+        // the change's scope is open): their glides add up, and each
+        // starts where the box was drawn.
         if let Some(s) = self.surfaces.get_mut(&id) {
             let flip = std::mem::take(&mut s.flip);
             let all = std::mem::take(&mut s.flip_all);
+            let text = std::mem::take(&mut s.text_arrived);
+            let fresh = all || !flip.is_empty();
+            if fresh {
+                let open = s.flip_open.get_or_insert_with(Default::default);
+                open.0.extend(flip);
+                open.1 |= all;
+            }
+            let scope = s.flip_open.clone().filter(|_| fresh || text);
+            if let (Some(old), Some(_)) = (&old, &s.flip_open) {
+                s.unpainted.extend(
+                    boxes
+                        .rects
+                        .keys()
+                        .filter(|n| !old.rects.contains_key(n))
+                        .copied(),
+                );
+            }
             if let Some(old) = &old
-                && (all || !flip.is_empty())
+                && let Some((flip, all)) = scope
                 && !self.anim.reduced()
             {
                 let tables = [&self.tree.tokens];
@@ -341,6 +367,7 @@ impl Renderer {
                     &boxes.rects,
                     &flip,
                     all,
+                    &s.unpainted,
                     curve,
                 );
             }
@@ -434,7 +461,8 @@ impl Renderer {
 }
 
 /// FLIP: every node whose parent is in `parents` (all with `all`) and
-/// whose box moved starts where it was and glides to its new place.
+/// whose box moved starts where it was and glides to its new place;
+/// one never drawn (`unpainted`) has no place it was.
 /// Visited top-down, so a node that moved with its parent adds nothing
 /// to the parent's glide.
 #[allow(clippy::too_many_arguments)]
@@ -446,6 +474,7 @@ pub(super) fn glide_moved(
     new: &HashMap<NodeId, strand_scene::LogicalRect>,
     parents: &HashSet<NodeId>,
     all: bool,
+    unpainted: &HashSet<NodeId>,
     curve: Curve,
 ) {
     let mut stack = vec![(root, (0.0f32, 0.0f32))];
@@ -457,7 +486,10 @@ pub(super) fn glide_moved(
                 continue;
             }
             let mut acc_c = acc;
-            if scope && let (Some(o), Some(w)) = (old.get(c), new.get(c)) {
+            if scope
+                && !unpainted.contains(c)
+                && let (Some(o), Some(w)) = (old.get(c), new.get(c))
+            {
                 let adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
                 if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
                     anim.glide(*c, [adj.0, adj.1], curve);

@@ -583,6 +583,8 @@ impl Renderer {
             }
         }
         total.clip(bounds);
+        // What this frame laid out is what the surface shows now.
+        s.unpainted.clear();
         if total.is_empty() {
             // Nothing drawn: no frame, so nothing enters the history and
             // the caller does not commit (see `Painter::paint`).

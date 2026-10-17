@@ -344,6 +344,7 @@ impl Renderer {
         for s in self.surfaces.values_mut() {
             if Some(s.root) == root {
                 s.mark_layout();
+                s.text_arrived = true;
             }
         }
         self.spec_dirty.extend(root);

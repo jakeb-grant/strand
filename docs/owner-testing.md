@@ -600,6 +600,27 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     decisions.md gpu-regions. Check on Hyprland: open the island and
     move the pointer over its open content, away from where the closed
     island sat.
+24. **A status glyph mounting in the island throws its neighbours up.**
+    (fixed, 2026-10-17; found 2026-10-16 by the owner on Hyprland with
+    the island test config.) Turning Focus on put its glyph in the
+    crown's status row; the music bars beside it jumped out of the
+    island and fell back into place while sliding left, which the owner
+    called jarring. Cause: a frame lays a surface out more than once
+    when new text arrives while it waits (decisions.md m6-owner-fixes,
+    bug 14). The first pass placed the glyph by an estimate
+    (`do_not_disturb_on`, seventeen letters, wrapped into ten lines in
+    its 14 px), which made the row about 170 px tall, and started the
+    bars' glide (FLIP) from where they had been to where that pass put
+    them. The second pass, with the shaped glyph, put them back on
+    their level, but their glide kept the first pass's offset, so they
+    were drawn far above it and fell. A pass that a text's arrival
+    causes now glides what it moves from where it was drawn, while the
+    change that mounted the text still waits on its shaping, and a box
+    never drawn is not glided from where an earlier pass put it
+    (`crates/strand-render/tests/morph.rs::a_mounted_text_moves_its_siblings_from_where_they_were_drawn`,
+    which fails on `main`). decisions.md flip-open. Check on Hyprland:
+    with music playing, turn Focus on and off; the bars slide sideways
+    only.
 
 ## Capability gaps
 

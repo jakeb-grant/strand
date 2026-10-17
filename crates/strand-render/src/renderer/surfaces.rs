@@ -185,6 +185,9 @@ impl Renderer {
                 anim_layout: false,
                 flip: HashSet::new(),
                 flip_all: false,
+                flip_open: None,
+                text_arrived: false,
+                unpainted: HashSet::new(),
                 painted_time: None,
                 overhang: self
                     .specs

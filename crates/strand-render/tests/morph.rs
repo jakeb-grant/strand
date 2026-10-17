@@ -1518,3 +1518,91 @@ fn a_fading_dashboard_draws_its_panels_from_layers() {
         eprintln!("dash {name}: {built} layers built, {drawn} drawn");
     }
 }
+
+/// (owner-testing.md bug 24) The owner's crown status row, reduced: the
+/// music bars, then Focus's glyph when it is on. The glyph is a text
+/// whose estimated size is far from its shaped one (narrow letters, as
+/// a ligature's name is one glyph), wrapped in a box of fixed width.
+const STATUS_ROW: &str = "
+state dnd = false
+bar Top {
+  height: 30
+  split { width: 300; height: 30; pad: 0, 14
+    end { align: center
+      row { gap: 6; align: center; shrink: 0
+        box { enter { opacity: 0; scale: 0.6 }
+          row { gap: 2; height: 12; align: end
+            for i in [0, 1, 2] key i { box { width: 4; height: 8 + i * 2; bg: #00ff00 } }
+          }
+        }
+        if dnd { text \"iiii\" { width: 14; shrink: 0; color: #ff00ff } }
+      }
+    }
+  }
+}
+";
+
+/// The box of the pixels close to `want` (straight RGB), if any.
+fn bbox_of(buf: &Buffer, want: [u8; 3]) -> Option<(u32, u32, u32, u32)> {
+    let close = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs() < 60;
+    let mut b: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..buf.size.h {
+        for x in 0..buf.size.w {
+            let p = buf.px(x, y);
+            if p[3] > 40 && close(p[0], want[0]) && close(p[1], want[1]) && close(p[2], want[2]) {
+                b = Some(b.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                }));
+            }
+        }
+    }
+    b
+}
+
+/// (owner-testing.md bug 24) Text mounted beside a box moves the box
+/// once, from where it was drawn: its glide does not start where the
+/// text's estimate put it. A frame lays the row out by the estimate,
+/// waits for the shaped text and lays it out again; the glide started
+/// by the first pass carried that pass's offset, so the owner's music
+/// bars, beside Focus's glyph (`do_not_disturb_on`, estimated as ten
+/// lines in its 14 px), dropped out of the island and fell back into
+/// place. The bars glide left on one level, and the glyph appears where
+/// it is shaped, never where its estimate was.
+#[test]
+fn a_mounted_text_moves_its_siblings_from_where_they_were_drawn() {
+    let mut sh = Shell::boot_with(worker_renderer(), STATUS_ROW, 1.0, 300);
+    run(&mut sh, NodeId::new(0, 0));
+    let green = [0, 255, 0];
+    let rest = bbox_of(sh.buf(BAR), green).expect("the bars are drawn");
+    sh.set("dnd", Value::Bool(true));
+    let mut seen = Vec::new();
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        seen.push(bbox_of(sh.buf(BAR), green));
+        n += 1;
+        assert!(n < 120, "never settled");
+    }
+    let end = bbox_of(sh.buf(BAR), green).expect("the bars are drawn");
+    assert!(
+        end.0 < rest.0,
+        "the bars did not make room: {rest:?} to {end:?}"
+    );
+    for (k, b) in seen.iter().enumerate() {
+        let b = b.unwrap_or_else(|| panic!("frame {k}: the bars left the bar: {seen:?}"));
+        assert!(
+            b.1 == rest.1 && b.3 == rest.3,
+            "frame {k}: the bars left their level, {:?} against {rest:?}: {seen:?}",
+            (b.1, b.3)
+        );
+        // Between where they were and where they end, give or take the
+        // glide's overshoot.
+        assert!(
+            b.0 + 3 >= end.0 && b.0 <= rest.0 + 3,
+            "frame {k}: the bars went past their glide, at x {} from {} to {}: {seen:?}",
+            b.0,
+            rest.0,
+            end.0
+        );
+    }
+}
