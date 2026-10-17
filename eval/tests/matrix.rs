@@ -46,13 +46,27 @@ fn show(done: &[matrix::Done]) -> String {
 #[test]
 fn every_effect_alone_compiles_and_passes_or_is_known() {
     let (set, _) = set();
-    assert_eq!(set.effects.len(), 22, "the starting set (plan section 7)");
+    // The starting set (plan section 7) and `gpu` (the GPU leg, step 10).
+    assert_eq!(set.effects.len(), 23, "the starting set and gpu");
     let mut plan = Plan::new(BuildInfo::default());
     plan.singles = true;
     plan.jobs = 4;
     let done = matrix::run(&plan).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(done.len(), 22);
+    assert_eq!(done.len(), 23);
     assert!(done.iter().all(|d| !d.outcome.gates()), "{}", show(&done));
+    // The gpu cell ran both legs and compared them (or skipped without a
+    // device where none is required).
+    let gpu = done.iter().find(|d| d.cell.name == "gpu").unwrap();
+    let checked = gpu.entry.as_ref().unwrap();
+    assert!(
+        checked
+            .report
+            .as_ref()
+            .and_then(|r| r.status(strand_eval::checks::CheckId::CpuGpu))
+            .is_some(),
+        "{}",
+        show(&done)
+    );
     // Each effect does what it says: the motion it is named for shows.
     // The jelly cell is dragged (LIFT) but shows no JELLY: the harness
     // runs `Renderer::update` every tick and a drag frame reuses its
@@ -107,11 +121,11 @@ fn effects_that_set_the_same_prop_do_not_pair() {
     assert_eq!(c.id(), "m.enter-fade__exit-slide.60");
     let file = matrix::dir().join("cells").join("x.scn");
     Scenario::parse_in(&c.text, &file, Place::Committed).unwrap_or_else(|e| panic!("{e}"));
-    // 22 alone and 231 pairs.
+    // 23 alone and 253 pairs.
     let names: Vec<&str> = set.effects.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         matrix::cells(&set, &fixture, &names, &[60], false).len(),
-        253
+        276
     );
 }
 

@@ -725,6 +725,81 @@ fn a_size_layout_snaps_under_a_glide_is_noted_not_failed() {
 }
 
 #[test]
+fn keyframes_on_x_alone_do_not_make_a_width_snap_a_jump() {
+    // A `play` shaking it on x while its late text's width lands: the
+    // width is layout's (noted). Keyframes on w size it: a failure.
+    let sc = scenario("");
+    let make = |a: Axes| {
+        shape(4, move |k| {
+            let r = row("a", [0.0, 10.0, 58.0, 16.0]);
+            let mut r = match k {
+                0 | 1 => r,
+                2 => r.at(3.0, 10.0).mot(Motions::KEYFRAMES).auth(a),
+                _ => r,
+            };
+            if k >= 2 {
+                r.visual[2] = 99.0;
+                r.drawn[2] = 99.0;
+                r.laid[2] = 99.0;
+            }
+            vec![r]
+        })
+    };
+    let t = make(Axes::X);
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "a", "w"),
+        "{}",
+        show(&r, &t)
+    );
+    let t = make(Axes::X | Axes::W);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "w"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn a_drag_released_glides_back_from_where_the_drag_left_it() {
+    // Lifted 90 px by a drag (LIFT), released: the first glide frame
+    // closes 35 of the 90 px it was left, within 0.75 of it.
+    let sc = scenario("");
+    // The drag's offset is reported as its glide part (as the probe
+    // does: m.jelly.144 k52, LIFT with glide 94.5).
+    let lifted = |x: f32| {
+        let mut r = row("a", [0.0, 0.0, 20.0, 20.0])
+            .laid_at(0.0, 0.0)
+            .at(x, 0.0)
+            .mot(Motions::LIFT);
+        r.glide = [x, 0.0];
+        r
+    };
+    let glide = |x: f32| {
+        let mut r = row("a", [0.0, 0.0, 20.0, 20.0])
+            .laid_at(0.0, 0.0)
+            .at(x, 0.0)
+            .mot(Motions::GLIDE);
+        r.glide = [x, 0.0];
+        r
+    };
+    let t = shape(9, |k| match k {
+        1..=3 => vec![lifted(30.0 * k as f32)],
+        4 => vec![glide(55.0)],
+        5 => vec![glide(25.0)],
+        6 => vec![glide(8.0)],
+        _ => vec![row("a", [0.0, 0.0, 20.0, 20.0])],
+    });
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
 fn a_glide_retargeted_from_its_layout_not_where_it_was_drawn_fails() {
     // Gliding 0 → 40; at tick 3 its layout moves to 30 and the drawn box
     // jumps with it instead of starting where it was.
@@ -1328,4 +1403,239 @@ fn a_detached_surface_shows_nothing_after_it_goes() {
     assert!(tl.row(at(5), "card").is_none());
     assert!(tl.row(at(9), "card").is_none());
     assert!(tl.row(at(9), "bar").is_some());
+}
+
+// --- cpu-gpu
+
+/// A one-surface image of `w` × `h` filled with `px` (straight RGBA),
+/// with `dot` at `(x, y)`.
+fn image(
+    w: u32,
+    h: u32,
+    px: [u8; 4],
+    dot: Option<(u32, u32, [u8; 4])>,
+) -> strand_eval::harness::Image {
+    let mut rgba: Vec<u8> = (0..w * h).flat_map(|_| px).collect();
+    if let Some((x, y, c)) = dot {
+        let i = ((y * w + x) * 4) as usize;
+        rgba[i..i + 4].copy_from_slice(&c);
+    }
+    strand_eval::harness::Image {
+        width: w,
+        height: h,
+        png: strand_eval::report::png::encode(w, h, &rgba).unwrap(),
+    }
+}
+
+/// Both legs' traces of a node gliding, every frame showing `frame.png`
+/// (the CPU's image, or the GPU's).
+fn legs() -> (RunTrace, RunTrace) {
+    let t = shape(6, |k| {
+        vec![row("a", [10.0 + k as f32, 10.0, 10.0, 10.0]).mot(Motions::GLIDE)]
+    });
+    let mut t = t;
+    for f in &mut t.frames {
+        f.png.insert(1, "frame.png".into());
+    }
+    (t.clone(), t)
+}
+
+fn images(img: strand_eval::harness::Image) -> BTreeMap<String, strand_eval::harness::Image> {
+    BTreeMap::from([("frame.png".to_string(), img)])
+}
+
+#[test]
+fn cpu_gpu_passes_legs_that_agree_within_the_gpu_tolerance() {
+    let sc = scenario("backend = \"both\"");
+    let (cpu, gpu) = legs();
+    let cx = checks::Cx::new(&sc, &cpu);
+    let a = images(image(20, 10, [200, 40, 40, 255], None));
+    // Every channel 5 off (within GPU_TOLERANCE 6), one pixel far off
+    // (an edge: within EDGE_SHARE).
+    let b = images(image(
+        20,
+        10,
+        [205, 45, 35, 255],
+        Some((3, 3, [0, 0, 0, 255])),
+    ));
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &b);
+    assert!(f.is_empty(), "{f:?}");
+}
+
+#[test]
+fn cpu_gpu_fails_a_node_the_gpu_draws_elsewhere_and_pixels_past_the_tolerance() {
+    let sc = scenario("backend = \"both\"");
+    let (cpu, mut gpu) = legs();
+    gpu.frames[3].n[0].visual[1] += 2.0;
+    let cx = checks::Cx::new(&sc, &cpu);
+    let a = images(image(20, 10, [200, 40, 40, 255], None));
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &a);
+    assert!(
+        f.iter().any(|f| f.key.as_deref() == Some("a")
+            && f.axis.as_deref() == Some("y")
+            && f.k == Some(3)),
+        "{f:?}"
+    );
+    // Pixels: every channel 7 off fails.
+    let (cpu, gpu) = legs();
+    let cx = checks::Cx::new(&sc, &cpu);
+    let b = images(image(20, 10, [207, 47, 33, 255], None));
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &b);
+    assert!(
+        f.iter().any(|f| f.axis.as_deref() == Some("pixels")),
+        "{f:?}"
+    );
+    // A frame painted on one leg only.
+    let (cpu, mut gpu) = legs();
+    gpu.frames.remove(2);
+    let cx = checks::Cx::new(&sc, &cpu);
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &a);
+    assert!(
+        f.iter()
+            .any(|f| f.msg.contains("not on the GPU") && f.k == Some(2)),
+        "{f:?}"
+    );
+}
+
+#[test]
+fn cpu_gpu_masks_an_allowed_node_out_of_both_comparisons() {
+    let sc = scenario(
+        "backend = \"both\"\n[allow]\ncpu-gpu = [{ node = \"#a\", why = \"a dithered gradient\" }]",
+    );
+    let (cpu, mut gpu) = legs();
+    gpu.frames[3].n[0].visual[1] += 2.0;
+    let cx = checks::Cx::new(&sc, &cpu);
+    // Far off only inside #a's box (x from 10 + k, 10 wide; y 10 to
+    // 20) on every frame: (19, 15). Unmasked, one pixel of 40 × 30 is
+    // within EDGE_SHARE, so the box is made of them.
+    let a = images(image(40, 30, [200, 40, 40, 255], None));
+    let mut rgba: Vec<u8> = (0..40 * 30).flat_map(|_| [200u8, 40, 40, 255]).collect();
+    for y in 10..20 {
+        for x in 16..20 {
+            let i = (y * 40 + x) * 4;
+            rgba[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        }
+    }
+    let b = images(strand_eval::harness::Image {
+        width: 40,
+        height: 30,
+        png: strand_eval::report::png::encode(40, 30, &rgba).unwrap(),
+    });
+    let unmasked = checks::cpu_gpu::run(
+        &checks::Cx::new(&scenario("backend = \"both\""), &cpu),
+        &cpu,
+        &a,
+        &b,
+    );
+    assert!(
+        unmasked.iter().any(|f| f.axis.as_deref() == Some("pixels")),
+        "{unmasked:?}"
+    );
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &b);
+    assert!(f.is_empty(), "{f:?}");
+}
+
+#[test]
+fn cpu_gpu_compares_the_regions_each_leg_reports() {
+    let sc = scenario("backend = \"both\"");
+    let (cpu, mut gpu) = legs();
+    gpu.frames[4].regions.insert(
+        1,
+        strand_eval::trace::Regions {
+            opaque: vec![[0, 0, 300, 30]],
+            ..Default::default()
+        },
+    );
+    let cx = checks::Cx::new(&sc, &cpu);
+    let a = images(image(20, 10, [200, 40, 40, 255], None));
+    let f = checks::cpu_gpu::run(&cx, &gpu, &a, &a);
+    assert!(
+        f.iter()
+            .any(|f| f.msg.contains("regions") && f.k == Some(4)),
+        "{f:?}"
+    );
+}
+
+// --- regions
+
+/// A hover popup (surface 1, root `pop`) holding a card `card` with a
+/// label `label`, drawn at `card_x`; the surface reports `input` as its
+/// region.
+fn island(card_x: impl Fn(u32) -> f32, input: impl Fn(u32) -> Option<Vec<[f32; 4]>>) -> RunTrace {
+    let mut t = shape(5, |k| {
+        let x = card_x(k);
+        vec![
+            row("pop", [0.0, 0.0, 300.0, 30.0]),
+            row("card", [x, 5.0, 60.0, 20.0]).mot(Motions::GLIDE),
+            row("label", [x + 5.0, 8.0, 40.0, 14.0]),
+        ]
+    });
+    t.surfaces.push(strand_eval::trace::SurfaceInfo {
+        id: 1,
+        label: "popup #pop".into(),
+        kind: "popup".into(),
+        root: "pop".into(),
+        attached: 0,
+        detached: None,
+    });
+    t.nodes.insert("card".into(), meta("card", Some("pop")));
+    let mut label = meta("label", Some("card"));
+    label.kind = "text".into();
+    t.nodes.insert("label".into(), label);
+    for f in &mut t.frames {
+        f.regions.insert(
+            1,
+            strand_eval::trace::Regions {
+                input: input(f.k),
+                ..Default::default()
+            },
+        );
+    }
+    t
+}
+
+#[test]
+fn regions_pass_an_input_region_that_follows_the_drawn_card() {
+    let sc = scenario("checks = [\"regions\"]");
+    let x = |k: u32| 20.0 + 10.0 * k as f32;
+    let t = island(x, |k| Some(vec![[x(k), 5.0, 60.0, 20.0]]));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Regions),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // A surface keeping the manager's region is not held to it.
+    let t = island(x, |_| None);
+    assert_eq!(status(&check(&sc, &t), CheckId::Regions), Status::Pass);
+    // Opt-in: not run unless asked for.
+    let t = island(x, |_| Some(vec![]));
+    assert!(matches!(
+        status(&check(&scenario(""), &t), CheckId::Regions),
+        Status::Skip(_)
+    ));
+}
+
+#[test]
+fn regions_fail_a_region_left_where_the_card_was() {
+    let sc = scenario("checks = [\"regions\"]");
+    let x = |k: u32| 20.0 + 10.0 * k as f32;
+    // The region lags two frames (20 px) behind the card: neither the
+    // card nor its label is inside it.
+    let t = island(x, |k| Some(vec![[x(k.saturating_sub(2)), 5.0, 60.0, 20.0]]));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Regions),
+        Status::Fail,
+        "{}",
+        show(&r, &t)
+    );
+    let f = r.failures(CheckId::Regions);
+    assert!(
+        f.iter()
+            .any(|f| f.msg.starts_with("covered") && f.key.as_deref() == Some("card")),
+        "{f:?}"
+    );
+    assert!(f.iter().any(|f| f.msg.starts_with("follows")), "{f:?}");
 }

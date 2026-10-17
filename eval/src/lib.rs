@@ -20,6 +20,7 @@ pub mod ab;
 pub mod checks;
 pub mod cli;
 pub mod clock;
+pub mod gpu;
 pub mod harness;
 pub mod input;
 pub mod labels;
@@ -54,6 +55,8 @@ pub enum Error {
     Run(String),
     /// A file could not be read or written.
     Io(String, std::io::Error),
+    /// The GPU leg found no device (a skip unless `STRAND_REQUIRE_GPU=1`).
+    NoDevice(String),
     /// The run went as asked and a scenario failed its checks (exit 1;
     /// every other error exits 2).
     Failed(String),
@@ -68,6 +71,7 @@ impl fmt::Display for Error {
             Error::Config(msg) => write!(f, "config: {msg}"),
             Error::Run(msg) => write!(f, "run: {msg}"),
             Error::Io(what, e) => write!(f, "{what}: {e}"),
+            Error::NoDevice(why) => write!(f, "no GPU device: {why}"),
             Error::Failed(msg) => write!(f, "{msg}"),
         }
     }
@@ -81,6 +85,8 @@ pub struct Checked {
     pub run: harness::RunOutput,
     /// The reduced-motion re-run, when `twin` ran.
     pub twin: Option<trace::RunTrace>,
+    /// The GPU leg's run, for a `backend = "both"` scenario.
+    pub gpu: Option<harness::RunOutput>,
     pub report: checks::Report,
 }
 
@@ -91,21 +97,28 @@ pub fn curated(sc: &scenario::Scenario) -> bool {
         .any(|c| c.as_os_str() == std::ffi::OsStr::new("curated"))
 }
 
-/// Runs `sc`, its reduced-motion twin and, for a curated scenario or one
-/// asking for `determinism`, a second run, and checks them against the
-/// scenario's reference (`eval/refs/<id>.ref.json`) if it has one.
+/// Runs `sc`, its reduced-motion twin, for a curated scenario or one
+/// asking for `determinism` a second run, and for a `backend = "both"`
+/// one its GPU leg, and checks them against the scenario's reference
+/// (`eval/refs/<id>.ref.json`) if it has one.
 pub fn check_scenario(
     sc: &scenario::Scenario,
     opts: &harness::RunOptions,
 ) -> Result<Checked, Error> {
     use checks::{CheckId, Finding, Status};
-    let run = harness::run(sc, opts)?;
+    let both = opts.backend.is_none() && sc.backend == scenario::BackendMode::Both;
+    let mut opts = opts.clone();
+    if both {
+        // The pixel comparison needs both legs' images.
+        opts.images = true;
+    }
+    let run = harness::run(sc, &opts)?;
     let mut twin_error = None;
     let twin = if sc.runs(CheckId::Twin) && !sc.reduce_motion && !opts.reduced_motion {
         let o = harness::RunOptions {
             reduced_motion: true,
             images: false,
-            build: opts.build.clone(),
+            ..opts.clone()
         };
         match harness::run(sc, &o) {
             Ok(t) => Some(t.trace),
@@ -123,6 +136,15 @@ pub fn check_scenario(
             ..opts.clone()
         };
         Some(harness::run(sc, &o)?.trace)
+    } else {
+        None
+    };
+    let gpu = if both {
+        let o = harness::RunOptions {
+            backend: Some(scenario::BackendMode::Gpu),
+            ..opts.clone()
+        };
+        Some(harness::run(sc, &o))
     } else {
         None
     };
@@ -152,7 +174,45 @@ pub fn check_scenario(
             None => Status::Fail,
         };
     }
-    Ok(Checked { run, twin, report })
+    let gpu = match gpu {
+        None => None,
+        Some(Ok(g)) => {
+            let cx = checks::Cx::new(sc, &run.trace);
+            let findings = checks::cpu_gpu::run(&cx, &g.trace, &run.images, &g.images);
+            report.set(sc, CheckId::CpuGpu, findings, None);
+            Some(g)
+        }
+        Some(Err(Error::NoDevice(why))) if !gpu::required() => {
+            report.set(
+                sc,
+                CheckId::CpuGpu,
+                Vec::new(),
+                Some(Status::Skip(format!(
+                    "no GPU device ({why}); {}=1 makes this a failure",
+                    gpu::REQUIRE_ENV
+                ))),
+            );
+            None
+        }
+        Some(Err(e)) => {
+            report.set(
+                sc,
+                CheckId::CpuGpu,
+                vec![Finding::fail(
+                    CheckId::CpuGpu,
+                    format!("the GPU leg's run failed: {e}"),
+                )],
+                None,
+            );
+            None
+        }
+    };
+    Ok(Checked {
+        run,
+        twin,
+        gpu,
+        report,
+    })
 }
 
 /// The subcommands `strand-eval` knows, in the order docs/eval.md

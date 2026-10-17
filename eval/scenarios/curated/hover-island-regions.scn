@@ -1,0 +1,46 @@
+id     = "hover-island-regions"
+about  = """docs/spec.md 6.7: a `trigger: hover` popup that draws nothing itself takes
+input only in the boxes of its top-level elements that draw, as they are drawn
+this frame. Here an island card inside a wider popup swells and shrinks with a
+width spring while the pointer rests on the popup's anchor: on every frame the
+popup's input region is the card as drawn (the opt-in `regions` check), and the
+bar under the popup does not move."""
+screen = { width = 300, scale = 1.0 }
+checks = ["settle", "bystander", "envelope", "teleport", "vanish", "twin", "budget",
+          "reference", "expect", "regions"]
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 30; gap: 6; align: center
+    box { id: before; width: 30; height: 20; bg: #00ff00 }
+    box { id: item; width: 40; height: 30; bg: #303030
+      popup { id: pop; trigger: hover; delay: 100ms; width: 240; height: 40
+        row { id: card; height: 32; radius: 16; bg: #202020; align: center; pad: 0, 10
+              width: wide ? 200 : 90 ~ spring(320, 0.7)
+          text "Island" { id: label; color: #ffffff }
+        }
+      }
+    }
+    box { id: after; width: 30; height: 20; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark hover-in
+glide 250,10 -> 50,10 over 100
+wait 200
+rest
+expect visible #card
+mark swell
+set wide true
+rest
+expect visible #label
+expect still #before
+mark shrink
+set wide false
+rest
+expect visible #label
+expect still #after

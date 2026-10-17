@@ -103,3 +103,60 @@ since = "2026-10-17"
 checks = ["vanish"]
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
+
+["exit-height0+gpu"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); on the GPU leg too, and cpu-gpu passes"
+since = "2026-10-17"
+
+# Product finding (eval-sandbox matrix, first 144 Hz run): the same
+# exit-to-height-0 hand-off, seen at 144 Hz. As the height spring ends
+# the node is laid out again at its natural width (row#subject 12 -> 29 px
+# wide at height 0, k84 of m.exit-height0__stagger.144) and the rest of
+# its row snaps 17 px with it, before the one-frame flash. At 60 Hz the
+# snap stays under the 32 px teleport bound; at 144 Hz (13.3 px a tick)
+# it does not, and `reveal`'s mask no longer hides the flash frame.
+
+["exit-height0+reveal@144"]
+checks = ["vanish"]
+note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); reveal's mask hides it at 60 Hz, not at 144"
+since = "2026-10-17"
+
+["exit-height0+stagger@144"]
+checks = ["teleport", "vanish"]
+note = "exit to height 0 relays the node at its full width as its height spring ends: the tags after it snap 17 px (and the flash)"
+since = "2026-10-17"
+
+["exit-height0+lean@144"]
+checks = ["teleport", "vanish"]
+note = "exit to height 0 relays the node at its full width as its height spring ends: a 17 px width snap (and the flash)"
+since = "2026-10-17"
+
+# Product finding (eval-sandbox matrix, first 144 Hz run): a change
+# starts at most START_LEAD (16.7 ms, one 60 Hz refresh) before the
+# first frame that shows it, and never before the surface's previous
+# paint (strand-scene motion.rs, `Animator::begin(time, painted_time)`).
+# After idle ticks on a 144 Hz surface the previous paint is long ago, so
+# the first frame of a glide shows 16.7 ms of progress, 2.4 ticks: the
+# exiting tags of text-estimate-far+stagger@144 jump 27 px at k77 where
+# the next ticks move 18. And a GPU-presented surface paints at buffer
+# age 0 (Renderer::paint_gpu), so every paint, damage or not, sets its
+# painted_time: the same glide leads by one tick there, not 2.4, and the
+# CPU and GPU legs draw its first frames apart (flip-reorder+gpu@144 k25:
+# glide 10.36 px left on the CPU, 13.17 on the GPU; the same in lean+gpu).
+# At 60 Hz both leads are one tick. Not fixed here (strand-render).
+
+["text-estimate-far+stagger@144"]
+checks = ["teleport"]
+note = "a glide's first frame after idle ticks leads by START_LEAD (2.4 ticks at 144 Hz): the exiting tags jump 27 px"
+since = "2026-10-17"
+
+["flip-reorder+gpu@144"]
+checks = ["cpu-gpu"]
+note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick)"
+since = "2026-10-17"
+
+["lean+gpu@144"]
+checks = ["cpu-gpu"]
+note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick)"
+since = "2026-10-17"

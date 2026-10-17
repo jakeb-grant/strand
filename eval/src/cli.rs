@@ -174,21 +174,33 @@ fn error_entry(sc: &Scenario, e: &Error) -> Entry {
 }
 
 /// `strand-eval run <scn|dir>... [--out DIR] [--reduced-motion]
-/// [--frames all|failing|none]`: runs each scenario and writes its
-/// trace and report, without checking it.
+/// [--frames all|failing|none] [--backend cpu|gpu]`: runs each scenario
+/// and writes its trace and report, without checking it. `--backend`
+/// runs that leg whatever the scenario says (a `both` scenario runs its
+/// CPU leg otherwise).
 pub fn run(args: &[String]) -> Result<(), Error> {
     let a = Args::parse(
         "run",
         args,
-        &["--out", "-o", "--frames"],
+        &["--out", "-o", "--frames", "--backend"],
         &["--reduced-motion"],
     )?;
     if a.words.is_empty() {
         return Err(Error::Usage(
-            "usage: strand-eval run [--out DIR] [--frames all|failing|none] [--reduced-motion] <scenario.scn|dir>..."
+            "usage: strand-eval run [--out DIR] [--frames all|failing|none] [--reduced-motion] [--backend cpu|gpu] <scenario.scn|dir>..."
                 .into(),
         ));
     }
+    let backend = match a.value(&["--backend"]) {
+        None => None,
+        Some("cpu") => Some(crate::scenario::BackendMode::Cpu),
+        Some("gpu") => Some(crate::scenario::BackendMode::Gpu),
+        Some(b) => {
+            return Err(Error::Usage(format!(
+                "--backend {b}: cpu or gpu (`check` runs a `both` scenario's two legs)"
+            )));
+        }
+    };
     let files = collect(&a.words.iter().map(PathBuf::from).collect::<Vec<_>>())?;
     let build = build_info();
     let out = out_dir(a.value(&["--out", "-o"]).map(PathBuf::from), &build)?;
@@ -197,6 +209,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
         reduced_motion: a.has("--reduced-motion"),
         images: frames != Frames::None,
         build,
+        backend,
     };
     let mut entries = Vec::new();
     let mut lines = Vec::new();
@@ -269,6 +282,7 @@ pub fn check(args: &[String]) -> Result<(), Error> {
         reduced_motion: a.has("--reduced-motion"),
         images: true,
         build,
+        backend: None,
     };
     let mut lines = Vec::new();
     let mut failed = Vec::new();

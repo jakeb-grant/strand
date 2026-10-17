@@ -21,7 +21,7 @@
 //! queries answered in the frame), so the run is a function of the
 //! scenario.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -44,6 +44,7 @@ use strand_text::{FontConfig, TextEngine};
 
 use crate::Error;
 use crate::clock::{Clock, T0};
+use crate::gpu::Device;
 use crate::input::{Pointer, to_logic};
 use crate::labels::Labels;
 use crate::scenario::{BackendMode, Config, Fonts, Scenario, Screen, TextMode};
@@ -52,8 +53,8 @@ use crate::steps::{Button, ExpectKind, Intention, Point, Step, StepKind, Via};
 use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
-    BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, RestRec, Row,
-    RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
+    BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, Regions,
+    RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
 };
 
 /// How to run a scenario.
@@ -64,6 +65,10 @@ pub struct RunOptions {
     /// Keep the image each painted surface showed.
     pub images: bool,
     pub build: BuildInfo,
+    /// The leg to run, whatever the scenario's `backend` says: `Cpu` or
+    /// `Gpu` (a `both` scenario runs once on each, docs/eval.md "CPU and
+    /// GPU"). `None` runs the scenario's own, `both` as its CPU leg.
+    pub backend: Option<BackendMode>,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -240,6 +245,12 @@ struct Harness<'s> {
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
     notes: Vec<String>,
+    /// The GPU leg's device, once started, and whether surfaces are drawn
+    /// by it now (the `backend` header or step).
+    gpu: Option<Device>,
+    on_gpu: bool,
+    /// Surfaces attached to the GPU thread.
+    gpu_attached: HashSet<SurfaceId>,
 }
 
 /// Input a time step sends at the start of a tick.
@@ -250,12 +261,10 @@ enum Input {
 
 impl<'s> Harness<'s> {
     fn boot(sc: &'s Scenario, opts: &RunOptions) -> Result<Harness<'s>, Error> {
-        if sc.backend != BackendMode::Cpu {
-            return Err(Error::Unsupported(format!(
-                "backend = \"{}\" (the CPU/GPU parity leg)",
-                sc.backend.name()
-            )));
-        }
+        let leg = match opts.backend.unwrap_or(sc.backend) {
+            BackendMode::Gpu => BackendMode::Gpu,
+            BackendMode::Cpu | BackendMode::Both => BackendMode::Cpu,
+        };
         if sc.text == TextMode::Worker {
             return Err(Error::Unsupported("text = \"worker\"".into()));
         }
@@ -274,7 +283,7 @@ impl<'s> Harness<'s> {
                 file: sc.file.display().to_string(),
                 hz: sc.hz,
                 scale: sc.screen.scale,
-                backend: sc.backend.name().into(),
+                backend: leg.name().into(),
                 text: "inline".into(),
                 reduced_motion: reduced,
             },
@@ -303,6 +312,10 @@ impl<'s> Harness<'s> {
         r.set_promotion(false);
         r.set_frame_trace(true);
         r.set_reduced_motion(reduced);
+        let gpu = match leg {
+            BackendMode::Gpu => Some(Device::start(&mut r)?),
+            _ => None,
+        };
         let mut router = Router::new();
         let i0 = Instant::now();
         router.set_now(Some(i0));
@@ -332,6 +345,9 @@ impl<'s> Harness<'s> {
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
+            on_gpu: gpu.is_some(),
+            gpu,
+            gpu_attached: HashSet::new(),
         };
         h.set_screens()?;
         for (path, text) in &sc.services {
@@ -549,8 +565,26 @@ impl<'s> Harness<'s> {
     /// Surface changes to the surfaces, noted in the trace.
     fn sync(&mut self) -> Result<(), Error> {
         let k = self.clock.k();
-        for c in self.surfaces.sync(&mut self.r, &mut self.router, k)? {
+        let changes = self.surfaces.sync(&mut self.r, &mut self.router, k)?;
+        self.changed(changes)
+    }
+
+    /// Surface changes noted in the trace, and handed to the GPU leg.
+    fn changed(&mut self, changes: Vec<Change>) -> Result<(), Error> {
+        let k = self.clock.k();
+        for c in changes {
             match c {
+                Change::Configured(id, size, scale) => {
+                    if self.on_gpu
+                        && let Some(dev) = self.gpu.as_mut()
+                    {
+                        if self.gpu_attached.insert(id) {
+                            dev.attach(&mut self.r, id, size, scale);
+                        } else {
+                            dev.resize(id, size, scale);
+                        }
+                    }
+                }
                 Change::Attached(id, node) => {
                     let root = self
                         .labels
@@ -580,6 +614,11 @@ impl<'s> Harness<'s> {
                     });
                 }
                 Change::Detached(id) => {
+                    if self.gpu_attached.remove(&id)
+                        && let Some(dev) = self.gpu.as_mut()
+                    {
+                        dev.release(&mut self.r, id, true);
+                    }
                     if let Some(s) = self
                         .trace
                         .surfaces
@@ -853,21 +892,16 @@ impl<'s> Harness<'s> {
                 self.surfaces.screen.scale = *f;
                 self.surfaces.scale()?;
                 self.set_screens()?;
-                self.surfaces.rescale(&mut self.r)?;
+                let changes = self.surfaces.rescale(&mut self.r)?;
+                self.changed(changes)?;
             }
             StepKind::Hz(n) => {
                 self.event(step);
                 self.clock.set_hz(*n);
             }
             StepKind::Backend(b) => {
-                if *b != BackendMode::Cpu {
-                    return Err(Error::Unsupported(format!(
-                        "{}:{line}: `backend {}` (the CPU/GPU parity leg)",
-                        self.sc.file.display(),
-                        b.name()
-                    )));
-                }
                 self.event(step);
+                self.switch(*b, line)?;
             }
             StepKind::Mark(label) => {
                 self.close(false);
@@ -1086,6 +1120,42 @@ impl<'s> Harness<'s> {
         Ok(true)
     }
 
+    /// `backend cpu|gpu` mid-run: every shown surface drawn by that
+    /// backend from its next frame (`both` is the header's alone: it
+    /// means two runs).
+    fn switch(&mut self, b: BackendMode, line: u32) -> Result<(), Error> {
+        match b {
+            BackendMode::Both => Err(self.err(
+                line,
+                "`backend both` is a header value (two runs, compared); a step switches to cpu or gpu"
+                    .into(),
+            )),
+            BackendMode::Cpu => {
+                self.on_gpu = false;
+                if let Some(dev) = self.gpu.as_mut() {
+                    for id in self.gpu_attached.drain() {
+                        dev.release(&mut self.r, id, false);
+                    }
+                }
+                Ok(())
+            }
+            BackendMode::Gpu => {
+                if self.gpu.is_none() {
+                    self.gpu = Some(Device::start(&mut self.r)?);
+                }
+                self.on_gpu = true;
+                if let Some(dev) = self.gpu.as_mut() {
+                    for sh in &self.surfaces.shown {
+                        if self.gpu_attached.insert(sh.id) {
+                            dev.attach(&mut self.r, sh.id, sh.size, self.surfaces.scale()?);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Paints every surface that wants a frame at `t`.
     fn paint(&mut self, t: Duration) -> Result<(), Error> {
         for _ in 0..FACT_ROUNDS {
@@ -1098,7 +1168,15 @@ impl<'s> Harness<'s> {
                 .filter(|id| self.drop_all == 0 && !self.drop_one.contains_key(id))
                 .collect();
             for id in ids {
-                self.surfaces.paint(&mut self.r, id, t)?;
+                match self.gpu.as_mut() {
+                    Some(dev) if self.gpu_attached.contains(&id) => {
+                        self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
+                        dev.changes(&mut self.r);
+                    }
+                    _ => {
+                        self.surfaces.paint(&mut self.r, id, t)?;
+                    }
+                }
             }
             self.sync()?;
             if !self.answer()? {
@@ -1176,6 +1254,7 @@ impl<'s> Harness<'s> {
         };
         for (s, f) in &last {
             frame.n.extend(self.rows(*s, &f.nodes));
+            frame.regions.insert(*s, regions(&self.r, SurfaceId(*s)));
             if self.opts.images
                 && cost.get(s).is_some_and(|c| c.damage_px > 0)
                 && let Some(sh) = self.surfaces.get(SurfaceId(*s))
@@ -1266,6 +1345,17 @@ impl<'s> Harness<'s> {
 
     fn finish(mut self) -> Result<RunOutput, Error> {
         self.close(false);
+        if let Some(dev) = self.gpu.take() {
+            let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+            for d in &dev.dropped {
+                *kinds.entry(d.as_str()).or_default() += 1;
+            }
+            for (what, n) in kinds {
+                self.notes
+                    .push(format!("the GPU leg dropped {what} ({n} times)"));
+            }
+            dev.finish();
+        }
         self.trace.nodes = std::mem::take(&mut self.labels.metas);
         self.trace.seal();
         Ok(RunOutput {
@@ -1273,6 +1363,30 @@ impl<'s> Harness<'s> {
             images: self.images,
             notes: self.notes,
         })
+    }
+}
+
+/// What the last frame of `surface` asks of the compositor besides its
+/// pixels (the `Painter` regions): where it takes input (logical), where
+/// it is opaque and where it blurs behind (buffer pixels).
+fn regions(r: &Renderer, surface: SurfaceId) -> Regions {
+    let rect = |x: strand_scene::Rect| [x.x as i64, x.y as i64, x.w as i64, x.h as i64];
+    Regions {
+        input: Painter::input_region(r, surface)
+            .map(|v| v.iter().map(|x| [q(x.x), q(x.y), q(x.w), q(x.h)]).collect()),
+        opaque: Painter::opaque_region(r, surface)
+            .rects()
+            .iter()
+            .map(|x| rect(*x))
+            .collect(),
+        blur: Painter::blur_region(r, surface)
+            .iter()
+            .map(|b| BlurRec {
+                rect: rect(b.rect),
+                radii: b.radii,
+                radius: b.radius,
+            })
+            .collect(),
     }
 }
 

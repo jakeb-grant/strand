@@ -42,6 +42,9 @@ pub struct Shown {
 #[derive(Debug, PartialEq)]
 pub enum Change {
     Attached(SurfaceId, NodeId),
+    /// Configured at this buffer size and scale (after `Attached` for a
+    /// new surface; again when its size or the scale changes).
+    Configured(SurfaceId, Size, Scale),
     Detached(SurfaceId),
 }
 
@@ -194,22 +197,25 @@ impl Surfaces {
                 sh.pixels = vec![0; (size.w * size.h * 4) as usize];
                 sh.fresh = true;
                 r.configure_surface(id, size, scale);
+                out.push(Change::Configured(id, size, scale));
             }
         }
         Ok(out)
     }
 
     /// Every shown surface configured again at the screen's (new) scale.
-    pub fn rescale(&mut self, r: &mut Renderer) -> Result<(), Error> {
+    pub fn rescale(&mut self, r: &mut Renderer) -> Result<Vec<Change>, Error> {
         let scale = self.scale()?;
+        let mut out = Vec::new();
         for sh in &mut self.shown {
             let size = physical(sh.logical, scale);
             sh.size = size;
             sh.pixels = vec![0; (size.w * size.h * 4) as usize];
             sh.fresh = true;
             r.configure_surface(sh.id, size, scale);
+            out.push(Change::Configured(sh.id, size, scale));
         }
-        Ok(())
+        Ok(out)
     }
 
     /// Paints surface `id`'s frame presented at `time`; its damage area.
@@ -229,6 +235,33 @@ impl Surfaces {
             .map_err(|e| Error::Run(format!("surface {}: {e:?}", id.0)))?;
         let mut t = t.at(time);
         Ok(r.paint(id, &mut t).area())
+    }
+
+    /// Paints surface `id`'s frame presented at `time` on the GPU leg:
+    /// the frame `Renderer::paint_gpu` lowers, drawn by `dev` into the
+    /// surface's pixels. Whether there was one.
+    pub fn paint_gpu(
+        &mut self,
+        r: &mut Renderer,
+        dev: &mut crate::gpu::Device,
+        id: SurfaceId,
+        time: std::time::Duration,
+    ) -> Result<bool, Error> {
+        let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
+            return Ok(false);
+        };
+        sh.fresh = false;
+        let Some(frame) = r.paint_gpu(id, time) else {
+            return Ok(false);
+        };
+        if frame.size != sh.size {
+            return Err(Error::Run(format!(
+                "surface {}: a GPU frame of {}x{} for a {}x{} buffer",
+                id.0, frame.size.w, frame.size.h, sh.size.w, sh.size.h
+            )));
+        }
+        dev.draw(frame, &mut sh.pixels, sh.size)?;
+        Ok(true)
     }
 }
 

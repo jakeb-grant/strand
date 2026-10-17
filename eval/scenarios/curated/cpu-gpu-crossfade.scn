@@ -1,0 +1,53 @@
+id      = "cpu-gpu-crossfade"
+about   = """The CPU/GPU parity check (docs/eval.md, "CPU and GPU"): one scenario run
+twice on the same virtual clock, drawn by the CPU and by the GPU leg (every
+surface `GpuPresent`, its frames drawn by strand-gpu and read back). A labelled
+pill crossfades into another (an exit fade under an enter fade), a box slides in
+beside them, and the accent token springs to a new colour under the pill. Every
+tick both legs paint, they agree node by node, in their regions and within the
+GPU tests' pixel tolerance. The theme-swap crossfade from a snapshot stays
+crates/strand-render/tests/gpu.rs's (it needs a token table no .strand file
+declares)."""
+screen  = { width = 300, scale = 1.0 }
+backend = "both"
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 40
+  row { id: strip; width: 300; height: 40; gap: 6; align: center; pad: 0, 10
+    box { id: left; width: 20; height: 12; bg: #00ff00 }
+    stack { id: slot; width: 90; height: 28
+      if !on {
+        row { id: old; width: 90; height: 28; radius: 14; bg: $accent; align: center; pad: 0, 10
+              exit { opacity: 0 }
+          text "Before" { id: oldlabel; color: #ffffff }
+        }
+      }
+      if on {
+        row { id: new; width: 90; height: 28; radius: 14; bg: #303030; align: center; pad: 0, 10
+              enter { opacity: 0 }
+          text "After" { id: newlabel; color: #ffcc00 }
+        }
+      }
+    }
+    if on { box { id: slide; width: 16; height: 16; radius: 4; bg: #ff00ff; enter { opacity: 0; x: -6 } } }
+    box { id: right; width: 20; height: 12; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark accent
+set $accent #2266ff
+rest
+mark crossfade
+set on true
+rest
+expect visible #newlabel
+expect hidden #oldlabel
+expect still #left
+mark back
+set on false
+rest
+expect visible #oldlabel

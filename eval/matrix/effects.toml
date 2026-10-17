@@ -154,3 +154,11 @@ screen_scale = 1.5
 name = "scale-2"
 about = "the screen's scale is 2"
 screen_scale = 2.0
+
+# ---- backends -------------------------------------------------------------
+
+[[effect]]
+name = "gpu"
+about = """the cell runs twice, drawn on the CPU and on the GPU leg (every surface
+GpuPresent, drawn by strand-gpu and read back), and adds `cpu-gpu`"""
+backend = "both"

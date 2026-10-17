@@ -61,6 +61,9 @@ pub struct Effect {
     pub screen_scale: Option<f64>,
     pub hz: Option<u32>,
     pub reduce_motion: Option<bool>,
+    /// The scenario's `backend` (`both`: the cell runs on the GPU leg too
+    /// and adds `cpu-gpu`).
+    pub backend: Option<String>,
     pub pre: Vec<String>,
     pub mid: Vec<String>,
     pub post: Vec<String>,
@@ -169,6 +172,7 @@ impl Effects {
                     "screen_scale",
                     "hz",
                     "reduce_motion",
+                    "backend",
                     "pre",
                     "mid",
                     "post",
@@ -235,6 +239,14 @@ impl Effects {
                     .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))),
                 hz: t.get("hz").and_then(|v| v.as_integer()).map(|v| v as u32),
                 reduce_motion: t.get("reduce_motion").and_then(|v| v.as_bool()),
+                backend: match t.get("backend") {
+                    None => None,
+                    Some(v) => {
+                        let b = v.as_str().ok_or_else(|| at("backend: a string".into()))?;
+                        crate::scenario::BackendMode::parse(b).map_err(at)?;
+                        Some(b.to_string())
+                    }
+                },
                 pre: strings(t.get("pre"), "pre", file)?,
                 mid: strings(t.get("mid"), "mid", file)?,
                 post: strings(t.get("post"), "post", file)?,
@@ -430,7 +442,8 @@ pub fn cell(set: &Effects, fixture: &str, names: &[&str], hz: u32) -> Cell {
     };
     na = na
         .or_else(|| one(&|e| e.screen_scale.is_some(), "the screen's scale"))
-        .or_else(|| one(&|e| e.hz.is_some(), "the rate"));
+        .or_else(|| one(&|e| e.hz.is_some(), "the rate"))
+        .or_else(|| one(&|e| e.backend.is_some(), "the backend"));
     let slots = match merge(&effects) {
         Ok(s) => s,
         Err(m) => {
@@ -465,6 +478,9 @@ pub fn cell(set: &Effects, fixture: &str, names: &[&str], hz: u32) -> Cell {
     t += &format!("hz = {hz}\n");
     if reduce {
         t += "reduce_motion = true\n";
+    }
+    if let Some(b) = effects.iter().find_map(|e| e.backend.as_deref()) {
+        t += &format!("backend = {}\n", toml_str(b));
     }
     t += "\n=== shell.strand\n";
     t += &fill(fixture, &slots, &set.defaults);
@@ -656,6 +672,7 @@ pub fn run_cell(cell: Cell, known: Option<&Known>, build: &crate::trace::BuildIn
         reduced_motion: false,
         images: true,
         build: build.clone(),
+        backend: None,
     };
     match check_scenario(&sc, &opts) {
         Ok(c) => {

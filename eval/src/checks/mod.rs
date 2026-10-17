@@ -25,10 +25,12 @@ use crate::trace::{Frame, Row, RunTrace};
 
 pub mod budget;
 pub mod bystander;
+pub mod cpu_gpu;
 pub mod determinism;
 pub mod envelope;
 pub mod expect;
 pub mod reference;
+pub mod regions;
 pub mod settle;
 pub mod teleport;
 pub mod twin;
@@ -615,9 +617,9 @@ pub fn evaluate(
                     (Vec::new(), skip("no expect steps"))
                 }
                 CheckId::Expect => (expect::run(&cx), None),
-                CheckId::Regions | CheckId::CpuGpu => {
-                    (Vec::new(), skip("lands with the CPU/GPU and regions legs"))
-                }
+                CheckId::Regions => (regions::run(&cx), None),
+                // `check_scenario` runs the GPU leg and replaces this.
+                CheckId::CpuGpu => (Vec::new(), skip("no GPU run to compare with")),
             }
         };
         let mut findings = findings;
@@ -629,16 +631,7 @@ pub fn evaluate(
                 ));
             }
         }
-        let failed = findings.iter().any(|f| f.sev == Sev::Fail);
-        let changed = findings.iter().any(|f| f.sev == Sev::Warn);
-        let status = match (skipped, sc.expect_fail.get(&check)) {
-            (Some(s), _) => s,
-            (None, Some(why)) if failed => Status::Xfail(why.clone()),
-            (None, Some(why)) => Status::Xpass(why.clone()),
-            (None, None) if failed => Status::Fail,
-            (None, None) if changed => Status::Changed,
-            (None, None) => Status::Pass,
-        };
+        let status = status(sc, check, &findings, skipped);
         results.push(CheckResult {
             check: check.name().to_string(),
             status,
@@ -648,5 +641,49 @@ pub fn evaluate(
     Report {
         id: sc.id.clone(),
         results,
+    }
+}
+
+/// A check's status from its findings: skipped, or failed, passed or
+/// changed, turned XFAIL or XPASS by the scenario's `expect_fail`.
+pub fn status(
+    sc: &Scenario,
+    check: CheckId,
+    findings: &[Finding],
+    skipped: Option<Status>,
+) -> Status {
+    let failed = findings.iter().any(|f| f.sev == Sev::Fail);
+    let changed = findings.iter().any(|f| f.sev == Sev::Warn);
+    match (skipped, sc.expect_fail.get(&check)) {
+        (Some(s), _) => s,
+        (None, Some(why)) if failed => Status::Xfail(why.clone()),
+        (None, Some(why)) => Status::Xpass(why.clone()),
+        (None, None) if failed => Status::Fail,
+        (None, None) if changed => Status::Changed,
+        (None, None) => Status::Pass,
+    }
+}
+
+impl Report {
+    /// `check`'s result replaced by `findings` (or a skip), as
+    /// [`evaluate`] would have judged them: for the checks that need more
+    /// than the trace (`cpu-gpu`'s second run).
+    pub fn set(
+        &mut self,
+        sc: &Scenario,
+        check: CheckId,
+        findings: Vec<Finding>,
+        skipped: Option<Status>,
+    ) {
+        let status = status(sc, check, &findings, skipped);
+        let r = CheckResult {
+            check: check.name().to_string(),
+            status,
+            findings,
+        };
+        match self.results.iter_mut().find(|x| x.check == r.check) {
+            Some(x) => *x = r,
+            None => self.results.push(r),
+        }
     }
 }

@@ -214,8 +214,30 @@ pub struct Frame {
     pub held_text: Vec<HeldRec>,
     /// The image each painted surface showed (`frames/<hash>.png`).
     pub png: BTreeMap<u32, String>,
+    /// What each painted surface asked of the compositor besides pixels.
+    #[serde(default)]
+    pub regions: BTreeMap<u32, Regions>,
     /// The nodes of each painted surface, at its last paint of the tick.
     pub n: Vec<Row>,
+}
+
+/// A surface's `Painter` regions after a frame.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Regions {
+    /// Where it takes input, logical `[x, y, w, h]`; `None` keeps the
+    /// surface manager's (its box inside the shadow overhang).
+    pub input: Option<Vec<Rect>>,
+    /// Where it is opaque, buffer pixels.
+    pub opaque: Vec<[i64; 4]>,
+    /// Where it asks for a blur behind it, buffer pixels.
+    pub blur: Vec<BlurRec>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BlurRec {
+    pub rect: [i64; 4],
+    pub radii: [f32; 4],
+    pub radius: f32,
 }
 
 /// One node in one frame.
@@ -380,6 +402,7 @@ impl RunTrace {
                 .collect();
             put(&(f.k, f.t_ns, &f.painted, &f.wants, &f.sizes));
             put(&(&det, &f.held_text, &f.n));
+            put(&f.regions);
         }
         put(&self.segments);
         put(&self.rests);
