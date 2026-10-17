@@ -74,14 +74,19 @@
       Array.from(cur.keys()).forEach(function (s) {
         if (!(String(s) in f.sizes)) cur.delete(s);
       });
+      // A frame's own scale (a `scale` step changes it); a trace from
+      // before it was recorded has the scenario's.
+      var fscale = f.scale || t.scenario.scale || 1;
       f.painted.forEach(function (s) {
         var prev = cur.get(s);
-        var png = (f.png && f.png[s]) || (prev ? prev.png : null);
-        cur.set(s, { rows: f.n.filter(function (r) { return r[C.s] === s; }), png: png, size: f.sizes[s] });
+        var fresh = f.png && f.png[s];
+        var png = fresh || (prev ? prev.png : null);
+        var scale = fresh || !prev ? fscale : prev.scale;
+        cur.set(s, { rows: f.n.filter(function (r) { return r[C.s] === s; }), png: png, size: f.sizes[s], scale: scale });
       });
       Array.from(cur.keys()).forEach(function (s) {
         var v = cur.get(s);
-        if (f.sizes[s] && v.size !== f.sizes[s]) cur.set(s, { rows: v.rows, png: v.png, size: f.sizes[s] });
+        if (f.sizes[s] && v.size !== f.sizes[s]) cur.set(s, { rows: v.rows, png: v.png, size: f.sizes[s], scale: v.scale });
       });
       ks.push(f.k); screens.push(snap()); frames.push(f);
     });
@@ -310,7 +315,14 @@
     t.appendChild(sel('as', S.onionMode, [['outline', 'outlines'], ['ghost', 'ghost pixels']], function (v) { S.onionMode = v; }));
     t.appendChild(chk('diff to previous', S.diff, function (v) { S.diff = v; }, 'Pixels that changed since the frame before, in red'));
     if (AB) {
-      t.appendChild(sel('A/B', S.view, [['a', 'A: ' + DATA.runs[0].label], ['b', 'B: ' + DATA.runs[1].label], ['side', 'side by side'], ['flicker', 'flicker'], ['difference', 'difference']], function (v) { S.view = v; }));
+      t.appendChild(sel('A/B', S.view, [['a', 'A: ' + DATA.runs[0].label], ['b', 'B: ' + DATA.runs[1].label], ['side', 'side by side'], ['flicker', 'flicker'], ['difference', 'difference']], function (v) {
+        var was = S.view;
+        S.view = v;
+        // The verdict panel is of the run shown (B only on `b`): it
+        // follows the select. Its draft is kept per run, so nothing typed
+        // is lost.
+        if (S.tab === 'verdict' && (was === 'b') !== (v === 'b')) renderPanel();
+      }));
     }
   }
 
@@ -353,7 +365,7 @@
   // Draws surface `sid` of `sc` at frame `i` into a new canvas.
   function surfaceCanvas(sc, i, sid, other) {
     var scr = sc.tl.screens[i].get(sid);
-    var scale = sc.trace.scenario.scale || 1;
+    var scale = scr.scale || 1;
     var z = S.zoom;
     var size = scr.size || [1, 1];
     var W = Math.max(1, Math.ceil(size[0] * scale)), H = Math.max(1, Math.ceil(size[1] * scale));
@@ -474,7 +486,7 @@
 
   function hit(ev, sc, i, sid, cv) {
     var rect = cv.getBoundingClientRect();
-    var scale = sc.trace.scenario.scale || 1;
+    var scale = sc.tl.screens[i].get(sid).scale || 1;
     var lx = (ev.clientX - rect.left) * (cv.width / rect.width) / S.zoom / scale;
     var ly = (ev.clientY - rect.top) * (cv.height / rect.height) / S.zoom / scale;
     var best = null, area = Infinity;
@@ -495,6 +507,7 @@
       if (py) out.push('y ' + (py > 0 ? '+' : '') + fmt(py) + ' px ' + what);
     }
     add(o.ix, o.iy, 'inherited' + (parent ? ' from ' + label(sc, parent) : ''));
+    add(o.fx, o.fy, 'of it in flight');
     add(o.wx, o.wy, 'written (own)');
     add(o.spx, o.spy, 'spring (own)');
     add(o.gx, o.gy, 'GLIDE (own)');
@@ -629,7 +642,7 @@
         var c = el('canvas', { title: 'k' + a.tl.ks[i] });
         var hgt = 36;
         if (!scr) { c.width = 40; c.height = hgt; film.appendChild(c); return; }
-        var scale = a.trace.scenario.scale || 1;
+        var scale = scr.scale || 1;
         var W = scr.size[0] * scale, H = scr.size[1] * scale;
         var f = hgt / Math.max(1, H);
         c.width = Math.max(8, Math.min(240, Math.round(W * f)));
@@ -936,7 +949,8 @@
       t.appendChild(el('tr', null, el('td', { text: s }), el('td', { text: String(c.paints) }), el('td', { text: String(c.damage_px) }), el('td', { text: String(c.raster_px) }), el('td', { text: String(c.items) }), el('td', { text: String(c.records) }), el('td', { text: String(c.layout_passes) }), el('td', { text: String(c.layout_nodes) }), el('td', { text: String(c.flatten_us) }), el('td', { text: String(c.raster_us) })));
     }
     p.appendChild(el('h3', { text: 'This tick (k' + f.k + '); * advisory' }));
-    p.appendChild(t);
+    // Ten columns: on a phone the table scrolls in its own box, not the page.
+    p.appendChild(el('div', { cls: 'scrollx' }, t));
   }
 
   function abPanel(p) {

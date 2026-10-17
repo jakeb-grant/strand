@@ -674,6 +674,31 @@ fn a_local_scenario_may_name_the_owners_files() {
         msg.contains("STRAND_EVAL_SURELY_UNSET_VAR is not set"),
         "{msg}"
     );
+    // So does `config` (docs/eval.md, "Local configs and fonts"); cargo
+    // sets CARGO_MANIFEST_DIR for the tests it runs.
+    let s = Scenario::parse(
+        "id = \"l\"\nconfig = \"${CARGO_MANIFEST_DIR}/fixtures/status-row.strand\"\n=== steps\nrest\n",
+        &local,
+    )
+    .unwrap();
+    assert_eq!(
+        s.config,
+        Config::Path(eval_root().join("fixtures/status-row.strand"))
+    );
+    let (line, msg) = fails_at(
+        "id = \"l\"\nconfig = \"${STRAND_EVAL_SURELY_UNSET_VAR}/shell.strand\"\n=== steps\nrest\n",
+        &local,
+    );
+    assert_eq!(line, 2);
+    assert!(
+        msg.contains("STRAND_EVAL_SURELY_UNSET_VAR is not set"),
+        "{msg}"
+    );
+    // A committed scenario does not expand it.
+    let (_, msg) = fails(
+        "id = \"c\"\nconfig = \"${CARGO_MANIFEST_DIR}/fixtures/status-row.strand\"\n=== steps\nrest\n",
+    );
+    assert!(msg.contains("only in eval/scenarios/local/"), "{msg}");
 }
 
 #[test]

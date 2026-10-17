@@ -11,7 +11,7 @@
 #   4  cargo test of eval/
 #   5  strand-eval check --gate over the curated and regression scenarios
 #
-# Usage: scripts/eval/ci.sh [STEP...]   (default: all; affected.sh runs 3 4 5)
+# Usage: scripts/eval/ci.sh [STEP...]   (default: all, as affected.sh runs it)
 # Stops at the first failing step and names it.
 
 set -uo pipefail
@@ -40,9 +40,18 @@ lock_and_isolation() {
     bash scripts/eval/test-check-isolation.sh
 }
 
+# The gate's summary goes to GitHub's step summary from here, not from
+# strand-eval (whose tests and mutant runs would write to it too).
 gate() {
+  local status=0
+  rm -f target/eval/ci/summary.md
   cargo run -q --locked --manifest-path "$MANIFEST" --bin strand-eval -- \
-    check --gate eval/scenarios/curated eval/scenarios/regressions --out target/eval/ci
+    check --gate eval/scenarios/curated eval/scenarios/regressions --out target/eval/ci ||
+    status=$?
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f target/eval/ci/summary.md ]; then
+    cat target/eval/ci/summary.md >>"$GITHUB_STEP_SUMMARY"
+  fi
+  return "$status"
 }
 
 for n in "${steps[@]}"; do

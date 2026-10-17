@@ -138,11 +138,12 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 .panel { padding: 10px 0; min-width: 0; }
 .panel table { border-collapse: collapse; width: 100%; }
+.scrollx { overflow-x: auto; max-width: 100%; }
 .panel td, .panel th { text-align: left; padding: 2px 8px 2px 0; vertical-align: top; }
 .find { padding: 4px 6px; border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; }
 .find:hover { background: var(--hover); }
 .tree { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12px; }
-.tree div { padding: 1px 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 4px; }
+.tree div { padding: 1px 4px; cursor: pointer; white-space: pre; overflow: hidden; text-overflow: ellipsis; border-radius: 4px; }
 .tree div:hover { background: var(--hover); }
 .tree .sel { background: var(--hover); font-weight: 600; }
 .tree .bad { color: var(--fail); }

@@ -7,7 +7,11 @@
 # Each revision is built serially in a detached worktree under
 # target/eval/ab/ into the shared target directory (one build at a time;
 # the worktree is removed afterwards). Only revisions that have eval/
-# can run: older ones have no sandbox.
+# can run: older ones have no sandbox. A revision's strand-eval holds a
+# committed scenario to its own eval/ (`eval_root`, its build's
+# manifest directory), so the checkout's eval/scenarios and
+# eval/fixtures are copied into the revision's tree and the scenarios
+# named under eval/ are read from there.
 #
 # Usage: scripts/eval/ab.sh <revA> [<revB>] [-- <scenario.scn|dir>...]
 #        (default scenarios: eval/scenarios/curated eval/scenarios/regressions)
@@ -39,7 +43,8 @@ mkdir -p "$BASE"
 # run REV OUT: the scenarios on REV ("" for the checkout) into OUT;
 # check's exit 1 (a scenario failed) still makes a report.
 run() {
-  local rev=$1 out=$2 manifest=eval/Cargo.toml tree="" rc
+  local rev=$1 out=$2 manifest=eval/Cargo.toml tree="" rc s
+  local args=("${scen[@]}")
   rm -rf "$out"
   if [ -n "$rev" ]; then
     tree=$BASE/tree-$rev
@@ -51,10 +56,25 @@ run() {
     git worktree prune
     git worktree add -q --detach "$tree" "$rev" || { echo "ab: no worktree at $tree"; return 2; }
     manifest=$tree/eval/Cargo.toml
+    # The checkout's scenarios, inside the revision's eval/.
+    for d in scenarios fixtures; do
+      if [ -d "eval/$d" ]; then
+        mkdir -p "$tree/eval/$d"
+        cp -R "eval/$d/." "$tree/eval/$d/"
+      fi
+    done
+    args=()
+    for s in "${scen[@]}"; do
+      case "$s" in
+        eval/*) args+=("$tree/$s") ;;
+        "$ROOT"/eval/*) args+=("$tree/${s#"$ROOT"/}") ;;
+        *) args+=("$s") ;;
+      esac
+    done
   fi
   echo "=== ab: ${rev:-the checkout} -> $out"
   cargo run -q --locked --manifest-path "$manifest" --bin strand-eval -- \
-    check --frames all --out "$out" "${scen[@]}" >"$out.log" 2>&1
+    check --frames all --out "$out" "${args[@]}" >"$out.log" 2>&1
   rc=$?
   tail -n 1 "$out.log"
   if [ -n "$tree" ]; then

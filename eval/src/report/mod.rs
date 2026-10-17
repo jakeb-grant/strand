@@ -181,8 +181,10 @@ pub struct RunInfo {
 }
 
 /// Writes every entry, then `summary.txt` (`lines`), `summary.md`,
-/// `summary.json` and `index.html` in `info.out`. Appends `summary.md` to
-/// `$GITHUB_STEP_SUMMARY` when that is set.
+/// `summary.json` and `index.html` in `info.out`. Nothing outside
+/// `info.out`: CI's step summary is the script's to append
+/// (scripts/eval/ci.sh's gate, scripts/eval/matrix.sh), so a test or a
+/// mutant run under CI never writes to it.
 pub fn write_run(info: &RunInfo, entries: &mut [Entry], lines: &[String]) -> Result<(), Error> {
     for e in entries.iter_mut() {
         write_entry(&info.out, e, info.frames)?;
@@ -197,18 +199,6 @@ pub fn write_run(info: &RunInfo, entries: &mut [Entry], lines: &[String]) -> Res
     write(&info.out.join("summary.json"), json.as_bytes())?;
     let page = html::page(&html::Page::run(info, entries))?;
     write(&info.out.join("index.html"), page.as_bytes())?;
-    if let Ok(p) = std::env::var("GITHUB_STEP_SUMMARY")
-        && !p.is_empty()
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&p)
-        {
-            let _ = f.write_all(md.as_bytes());
-        }
-    }
     Ok(())
 }
 

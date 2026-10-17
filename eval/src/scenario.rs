@@ -639,6 +639,18 @@ impl Scenario {
                 ));
             }
             (Some(c), None, true) => {
+                // `${VAR}` only where a scenario may name what is outside
+                // eval/ (a committed one is held to its own files).
+                let c = match place {
+                    Place::Local => expand(&c).map_err(|m| err(hl("config"), m))?,
+                    Place::Committed if c.contains("${") => {
+                        return Err(err(
+                            hl("config"),
+                            format!("config `{c}`: `${{VAR}}` only in eval/scenarios/local/"),
+                        ));
+                    }
+                    Place::Committed => c,
+                };
                 let p = normal(&base.join(&c));
                 if place == Place::Committed && !inside_eval(&p) {
                     return Err(err(

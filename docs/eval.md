@@ -32,7 +32,7 @@ scripts/container/run.sh eval explain target/eval/latest/<id>   # a node's frame
 scripts/container/run.sh eval selftest                          # the CI gate (scripts/eval/ci.sh)
 scripts/container/run.sh eval matrix --hz 60,144                # the effect matrix (see Matrix)
 scripts/container/run.sh eval mutants                           # the bugs the regressions catch
-scripts/container/run.sh eval ab-revs main                      # A/B: main against this checkout
+scripts/container/run.sh eval ab-revs HEAD~1                    # A/B: the last commit against this checkout
 ```
 
 `run.sh eval <command>` is `scripts/eval/eval.sh`. For anything except
@@ -138,7 +138,9 @@ advance the clock.
 - `set <path> <value>`: a value as `strand set` reads it.
 - `toggle <path>`.
 - `emit <service.event> [args…]`.
-- `notify "<summary>" ["<body>"] [app=…] [urgency=…]`.
+- `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
+  refuses it as unsupported: the notification daemon is not in the
+  sandbox. Set `notifications.*` and `emit` instead.
 
 **Input**
 
@@ -192,8 +194,10 @@ advance the clock.
 - A kind path from a surface root, such as `bar>row>box[2]`, counts `[n]`
   from 0 among siblings of that kind.
 
-A selector resolves against the nodes mounted when its step runs. One that
-matches nothing is an error at that line.
+A selector resolves against the nodes mounted when its step runs. When it
+matches none of those, it matches the nodes seen earlier in the run (so
+`expect hidden #x` names a node that has left). One that matches neither
+is an error at that line.
 
 ### Clock
 
@@ -336,8 +340,9 @@ A report directory holds, per scenario:
 - contact sheets.
 
 Per run, it also holds `summary.md`, `summary.json`, `summary.txt` and
-`index.html`. `summary.md` is appended to `$GITHUB_STEP_SUMMARY` when that
-variable is set.
+`index.html`. In CI, `scripts/eval/ci.sh`'s gate and `scripts/eval/matrix.sh`
+append their run's `summary.md` to `$GITHUB_STEP_SUMMARY`; `strand-eval` itself
+writes nothing outside `--out`, so its tests and mutant runs never do.
 
 ### The viewer
 
@@ -419,9 +424,13 @@ an A/B page of HEAD against it. Commit first: the mutants run HEAD.
 There are two ways to compare runs:
 
 - `scripts/container/run.sh eval ab-revs <revA> [<revB>]` builds each
-  revision in a detached worktree, one at a time. It runs the curated and
-  regression scenarios on both and writes `target/eval/ab/<A>-vs-<B>/`.
-  `revB` defaults to the checkout as it is, uncommitted changes included.
+  revision in a detached worktree, one at a time. It runs this checkout's
+  curated and regression scenarios on both (copied into each revision's
+  `eval/`, with `eval/fixtures`, since a revision's `strand-eval` holds
+  committed scenarios to its own `eval/`) and writes
+  `target/eval/ab/<A>-vs-<B>/`. `revB` defaults to the checkout as it is,
+  uncommitted changes included. Both revisions must have `eval/`: one
+  from before the sandbox has nothing to build.
 - `strand-eval ab <run A> <run B>` pairs two existing reports.
 
 The page matches nodes by key and lists the first frame each pair differs

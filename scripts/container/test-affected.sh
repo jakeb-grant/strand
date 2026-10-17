@@ -3,8 +3,8 @@
 # a crate's file picks that crate, --deep adds its dependents, docs pick
 # the crates whose tests read them, the root manifest picks every crate
 # and the eval sandbox, eval/ and scripts/eval/ pick the sandbox alone, a
-# strand-render animation change picks strand-render and names the
-# sandbox's command, and other scripts alone pick none.
+# strand-render change picks strand-render, checks its eval-hooks build
+# and names the sandbox's command, and other scripts alone pick none.
 # Run: scripts/container/run.sh scripts/container/test-affected.sh
 
 set -uo pipefail
@@ -42,8 +42,14 @@ expect "an animation change picks strand-render, not the sandbox" \
   "crates/strand-render/src/anim/mod.rs" "strand-render"
 hint=$(AFFECTED_FILES=crates/strand-render/src/anim/mod.rs "$HERE/affected.sh" --list 2>&1)
 case "$hint" in
-  *"run.sh eval check eval/scenarios/curated"*) echo "ok   an animation change names the sandbox's command" ;;
+  *"eval-hooks build is checked"*"run.sh eval check eval/scenarios/curated eval/scenarios/regressions"*)
+    echo "ok   an animation change names the sandbox's command" ;;
   *) echo "FAIL no sandbox hint for an animation change: '$hint'"; bad=1 ;;
+esac
+hint=$(AFFECTED_FILES=crates/strand-render/src/clock.rs "$HERE/affected.sh" --list 2>&1)
+case "$hint" in
+  *"eval-hooks build is checked"*) echo "ok   any strand-render change checks its eval-hooks build" ;;
+  *) echo "FAIL no eval-hooks check for a strand-render change: '$hint'"; bad=1 ;;
 esac
 deep=$(AFFECTED_FILES=crates/strand-core/src/lib.rs "$HERE/affected.sh" --list --deep 2>&1 | sed -n 's/^affected since [^:]*: //p')
 case " $deep " in

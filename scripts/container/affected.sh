@@ -15,10 +15,13 @@
 # The animation evaluation sandbox (eval/, its own workspace) is the
 # pseudo-target `eval`: a change under eval/ or scripts/eval/, or to the
 # root Cargo.toml or Cargo.lock (its lock and profiles are checked
-# against them), runs scripts/eval/ci.sh 3 4 5 (lock and isolation, its
-# tests, the scenario gate) before the crates' tests. A product change
-# does not pull it in; a change to strand-render's animation, flatten,
-# layout or renderer code prints the command that would.
+# against them), runs scripts/eval/ci.sh (every step: its fmt and
+# clippy, lock and isolation, its tests, the scenario gate) before the
+# crates' tests. A product change does not pull it in. A change to
+# strand-render's code builds strand-render with its `eval-hooks`
+# feature as well (`cargo check`: the sandbox's hooks are compiled by
+# nothing else in the root workspace) and prints the command that runs
+# the sandbox's scenarios on it.
 #
 # --list prints the crates and runs nothing. Test args after `--` go to
 # the test binaries; by default the fuzzer and the 100 reloads are
@@ -68,8 +71,7 @@ all=0 eval=0 anim=0
 while IFS= read -r f; do
   case "$f" in
     eval/* | scripts/eval/*) eval=1 ;;
-    crates/strand-render/src/anim/* | crates/strand-render/src/flatten/* | \
-      crates/strand-render/src/layout/* | crates/strand-render/src/renderer/*) anim=1 ;;
+    crates/strand-render/src/* | crates/strand-render/Cargo.toml) anim=1 ;;
   esac
   case "$f" in
     Cargo.toml | Cargo.lock) all=1 eval=1 ;;
@@ -105,7 +107,7 @@ elif [ "$deep" = 1 ] && [ "${#pick[@]}" -gt 0 ]; then
 fi
 
 [ "$anim" = 1 ] && [ "$eval" = 0 ] &&
-  echo "affected: animation code changed: \`scripts/container/run.sh eval check eval/scenarios/curated\` checks it"
+  echo "affected: strand-render changed: its eval-hooks build is checked; \`scripts/container/run.sh eval check eval/scenarios/curated eval/scenarios/regressions\` runs the sandbox's scenarios on it"
 if [ "${#pick[@]}" -eq 0 ] && [ "$eval" = 0 ]; then
   echo "affected: no crate changed since $base ($mb); ci covers the rest"
   exit 0
@@ -117,7 +119,9 @@ targets=$crates
 echo "affected since $base ($(git rev-parse --short "$mb" 2>/dev/null || echo "$mb")): $(echo $targets)"
 [ "$list" = 1 ] && exit 0
 if [ "$eval" = 1 ]; then
-  bash scripts/eval/ci.sh 3 4 5
+  bash scripts/eval/ci.sh
+elif [ "$anim" = 1 ]; then
+  cargo check -p strand-render --features eval-hooks
 fi
 [ -n "$crates" ] || exit 0
 args=()

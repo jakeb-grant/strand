@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::scenario::{CheckId, Place, Scenario};
+use crate::scenario::{CheckId, Place, Scenario, place_of};
 use crate::{Error, report};
 
 /// What to promote and how.
@@ -105,6 +105,23 @@ pub fn promote(ask: &Ask) -> Result<PathBuf, Error> {
         force: ask.force,
     };
     let e = report::read_entry(&ask.from)?;
+    // A local scenario is the owner's (its config, its fonts): nothing
+    // from it is committed (docs/eval.md, "Local configs and fonts").
+    // A finding in one is written up as a new scenario from scratch.
+    let file = Path::new(&e.trace.scenario.file);
+    if e.trace.scenario.file.is_empty() || place_of(file) == Place::Local {
+        return Err(Error::Usage(format!(
+            "{}: promote takes committed scenarios and matrix cells only; `{}` is {} \
+             (write the regression from scratch, docs/eval.md \"Local configs and fonts\")",
+            ask.from.display(),
+            e.trace.scenario.file,
+            if e.trace.scenario.file.is_empty() {
+                "no scenario file"
+            } else {
+                "a local scenario"
+            }
+        )));
+    }
     if e.source.is_empty() {
         return Err(Error::Usage(format!(
             "{}: no scenario.scn (a report written before promote existed?)",

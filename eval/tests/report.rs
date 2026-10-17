@@ -96,6 +96,11 @@ fn the_page_is_self_contained_and_its_data_round_trips() {
     assert!(page.contains("prefers-color-scheme: dark"));
     assert!(page.contains(":root[data-theme=\"dark\"]"));
     assert!(page.contains("@media (max-width: 760px)"));
+    // The node tree keeps its indentation (spaces, not collapsed), and
+    // the ten-column cost table scrolls in its own box at phone width.
+    assert!(page.contains(".tree div { padding: 1px 4px; cursor: pointer; white-space: pre;"));
+    assert!(page.contains(".scrollx { overflow-x: auto;"));
+    assert!(page.contains("el('div', { cls: 'scrollx' }, t)"));
     assert!(page.len() < 16 * 1024 * 1024);
     let data = html::embedded(&page).expect("the page embeds its data");
     let sc = &data["runs"][0]["scenarios"][0];
@@ -349,4 +354,67 @@ fn ab_names_the_first_frame_two_runs_differ_at() {
         "y"
     );
     assert!(!page.contains("https://") && !page.contains("http://"));
+}
+
+/// `promote` writes only what may be committed: a local scenario's run
+/// (the owner's config and fonts) is refused, a committed one's is
+/// promoted.
+#[test]
+fn promote_refuses_a_local_scenarios_run() {
+    use strand_eval::promote::{Ask, promote};
+    let dir = scratch("promote-local");
+    let text = "id = \"mine\"\n=== shell.strand\nbar Top {\n  height: 30\n  box { id: b; width: 20; height: 10; bg: #ff0000 }\n}\n=== steps\nrest\n";
+    let ask = |from: PathBuf| Ask {
+        from,
+        name: "promoted".into(),
+        xfail: Vec::new(),
+        note: None,
+        to: Some(dir.join("regressions")),
+        force: true,
+    };
+    for (place, ok) in [("scenarios/local", false), ("scenarios/curated", true)] {
+        let src = dir.join(place);
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("mine.scn");
+        std::fs::write(&file, text).unwrap();
+        let out = dir.join(format!("out-{}", place.replace('/', "-")));
+        let args: Vec<String> = vec![
+            "check".into(),
+            file.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+        ];
+        strand_eval::main_with(&args).unwrap_or_else(|e| panic!("{e}"));
+        let r = promote(&ask(out.join("mine")));
+        match (ok, r) {
+            (true, Ok(p)) => assert!(p.is_file()),
+            (false, Err(e)) => {
+                let e = e.to_string();
+                assert!(e.contains("a local scenario"), "{e}");
+            }
+            (_, r) => panic!("{place}: {r:?}"),
+        }
+    }
+}
+
+/// strand-eval writes nothing outside `--out`: under CI its step summary
+/// is the scripts' to append (scripts/eval/ci.sh, matrix.sh), so a test
+/// or a mutant run does not add to it.
+#[test]
+fn a_run_leaves_the_ci_step_summary_alone() {
+    let dir = scratch("step-summary");
+    let summary = dir.join("step-summary.md");
+    let out = dir.join("out");
+    let scn = eval_root().join("scenarios/regressions/bug25-hidden-text.scn");
+    let st = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("check")
+        .arg(&scn)
+        .arg("--out")
+        .arg(&out)
+        .env("GITHUB_STEP_SUMMARY", &summary)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    assert!(out.join("summary.md").is_file());
+    assert!(!summary.exists(), "strand-eval wrote the step summary");
 }
