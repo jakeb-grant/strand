@@ -621,6 +621,25 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     which fails on `main`). decisions.md flip-open. Check on Hyprland:
     with music playing, turn Focus on and off; the bars slide sideways
     only.
+25. **Turning Focus off drops the status row into the island.** (fixed,
+    2026-10-17; found 2026-10-17 by the owner on Hyprland with the island
+    open and a notification waiting.) As Focus went off, its glyph was
+    replaced by the unread count at once, and the music bars, Wi-Fi,
+    battery and volume dropped into view though nothing about them had
+    changed. Cause: the count comes back as a reading that enters faded
+    out (`enter { opacity: 0; x: -6 }`), and a node drawn at `opacity` 0
+    (or `scale` 0) was not visited when flattening, so the texts under
+    it (the `notifications` ligature and the count) were neither asked
+    for nor waited on, unlike visible text since bug 14. Layout still
+    placed them, by estimates (the ligature's name wrapped into eight
+    lines in its 16 px), and that frame's glide sent every sibling far
+    from its place; the shaped size came a frame later, after the glide
+    had been aimed. A hidden node now asks for the unbounded layouts of
+    the texts under it, so they are waited on and laid out as visible
+    text is (`crates/strand-render/tests/morph.rs::text_entering_faded_out_moves_its_siblings_once`,
+    which fails on `main`). decisions.md hidden-text. Check on Hyprland:
+    open the island with a notification waiting and turn Focus on and
+    off; nothing but the glyph and the count changes place.
 
 ## Capability gaps
 

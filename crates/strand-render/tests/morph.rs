@@ -1606,3 +1606,65 @@ fn a_mounted_text_moves_its_siblings_from_where_they_were_drawn() {
         );
     }
 }
+
+/// (owner-testing.md bug 25) The owner's crown status row as Focus
+/// turns off: Focus's glyph goes, and the unread count comes back as a
+/// reading that enters faded out (`enter { opacity: 0; x: -6 }`), its
+/// glyph a text whose estimate is far from its shaped size (narrow
+/// letters, as a ligature's name is one glyph).
+const FOCUS_OFF: &str = "
+state dnd = true
+bar Top {
+  height: 30
+  split { width: 300; height: 30; pad: 0, 14
+    end { align: center
+      row { gap: 6; align: center; shrink: 0
+        box { width: 15; height: 12; bg: #00ff00 }
+        if dnd { box { width: 14; height: 14; bg: #ff00ff } }
+        if !dnd {
+          row { gap: 3; align: center; shrink: 0; enter { opacity: 0; x: -6 }
+            text \"iiii\" { width: 14; shrink: 0; color: #ff00ff }
+          }
+        }
+        box { width: 20; height: 10; bg: #0000ff }
+      }
+    }
+  }
+}
+";
+
+/// (owner-testing.md bug 25) Text under a box that enters faded out is
+/// shaped before the frame that mounts it is laid out, as visible text
+/// is. A node drawn hidden (`opacity` 0) was not visited, so its texts
+/// were neither asked for nor waited on; layout placed them by their
+/// estimates, and the owner's music bars, Wi-Fi, battery and volume
+/// jumped out of the island and fell back as the count came back.
+#[test]
+fn text_entering_faded_out_moves_its_siblings_once() {
+    let mut sh = Shell::boot_with(worker_renderer(), FOCUS_OFF, 1.0, 300);
+    run(&mut sh, NodeId::new(0, 0));
+    let (green, blue) = ([0, 255, 0], [255, 0, 0]);
+    let rest = (
+        bbox_of(sh.buf(BAR), green).expect("the bars are drawn"),
+        bbox_of(sh.buf(BAR), blue).expect("the last box is drawn"),
+    );
+    sh.set("dnd", Value::Bool(false));
+    let mut seen = Vec::new();
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        seen.push((bbox_of(sh.buf(BAR), green), bbox_of(sh.buf(BAR), blue)));
+        n += 1;
+        assert!(n < 120, "never settled");
+    }
+    for (k, (g, b)) in seen.iter().enumerate() {
+        let (g, b) = (
+            g.unwrap_or_else(|| panic!("frame {k}: the bars left the bar: {seen:?}")),
+            b.unwrap_or_else(|| panic!("frame {k}: the last box left the bar: {seen:?}")),
+        );
+        assert!(
+            (g.1, g.3) == (rest.0.1, rest.0.3) && (b.1, b.3) == (rest.1.1, rest.1.3),
+            "frame {k}: a sibling left its level: {seen:?}"
+        );
+    }
+}
