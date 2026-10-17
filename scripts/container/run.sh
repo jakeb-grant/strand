@@ -9,6 +9,10 @@
 #        scripts/container/run.sh affected      the tests of the crates this
 #                                               branch changed (affected.sh:
 #                                               --deep, --list, BASE)
+#        scripts/container/run.sh eval CMD ...  the animation evaluation
+#                                               sandbox (scripts/eval/eval.sh:
+#                                               strand-eval's commands, and
+#                                               `selftest`, scripts/eval/ci.sh)
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default: the cores shared among the strand
@@ -31,7 +35,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,27p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,32p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
@@ -117,6 +121,7 @@ tty=()
 case "$1" in
   ci) set -- bash "$HERE/ci.sh" ;;
   affected) shift; set -- bash "$HERE/affected.sh" "$@" ;;
+  eval) shift; set -- bash "$HERE/../eval/eval.sh" "$@" ;;
   shell) set -- bash ;;
 esac
 

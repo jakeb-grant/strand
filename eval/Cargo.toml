@@ -1,0 +1,141 @@
+[package]
+name = "strand-eval"
+description = "Animation evaluation sandbox: scenario scripts on a virtual clock, per-node frame checks"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+# Its own workspace, not a member of the root one: root `--workspace`
+# builds, tests and feature unification never see it, so strand-render's
+# `eval-hooks` stays out of the product (docs/architecture.md, "Crate
+# graph"; docs/decisions.md eval-sandbox). Run it from the repository
+# root with `--manifest-path eval/Cargo.toml` (scripts/eval/eval.sh).
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "strand-eval"
+path = "src/main.rs"
+
+# The Strand crates by path: the root's `[workspace.dependencies]` cannot
+# be inherited across workspaces (their own `.workspace = true` fields
+# resolve in the root workspace). Third-party versions are the root
+# Cargo.lock's (scripts/eval/check-lock.sh).
+[dependencies]
+# Default features keep `gpu` (the CPU/GPU parity check).
+strand-render = { path = "../crates/strand-render", features = ["eval-hooks"] }
+strand-compiler = { path = "../crates/strand-compiler", default-features = false }
+strand-core = { path = "../crates/strand-core" }
+strand-scene = { path = "../crates/strand-scene" }
+strand-text = { path = "../crates/strand-text" }
+strand-gpu = { path = "../crates/strand-gpu" }
+strand-services-schema = { path = "../crates/strand-services-schema" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+png = "0.18.1"
+base64 = "0.23.1"
+blake3 = "1.8.7"
+# Builder API only, with the features the root lock already resolves
+# (`derive` and the default colour features would add packages the
+# root lock lacks: clap_derive, anstream and seven more).
+clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
+
+[lints]
+workspace = true
+
+# Everything below is the root Cargo.toml's, from its lints table on,
+# copied verbatim but for the per-package release levels of packages
+# eval's graph does not have (cargo warns about each), so eval/'s release
+# and timing builds are the product's (eval/tests/drift.rs fails when it
+# drifts). Here the strand-* crates are not members, so
+# `[profile.dev.package."*"]` builds them at opt-level 2.
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+# Builds without debug info: the dev container's disk is small and every
+# agent and CI must build with the same settings, or cargo keeps a second
+# copy of each crate per setting (docs/decisions.md, wave3-cleanup). The
+# workspace's own crates compile incrementally in debug builds (the test
+# profile inherits it), set here once for every agent; GitHub's jobs turn
+# it off (CARGO_INCREMENTAL=0), as their builds start fresh
+# (docs/decisions.md, ci-speed).
+[profile.dev]
+debug = 0
+incremental = true
+
+# Dependencies optimised in debug builds; the workspace's own crates stay
+# at 0, so an edit still compiles fast. Unoptimised, vello_cpu's blur drew
+# a shadowed popup's animated frames in 100 to 380 ms, which made the
+# debug tests' animation windows a matter of luck (owner-testing.md bug
+# 18); at 2 they take 1 to 11 ms. Built once, then cached
+# (docs/decisions.md, m6-service-gaps).
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+debug = 0
+
+[profile.release]
+# Fat LTO: the whole program optimised once more at link time. Chosen
+# for size (decisions.md, m4-integration-w2), and as fast as thin LTO or
+# faster. That last pass runs in the session of the crate that links the
+# binary, `strand`, at `strand`'s opt-level, for every crate in it:
+# `strand` is at 3 so the link-time inliner and vectoriser treat
+# render, text, layout and their dependencies at O3 (decisions.md,
+# m5-speed-strand: at 3 list scrolling, the launcher's animation, SVG
+# and Lottie frames take 19-26% less time than at "s").
+lto = "fat"
+codegen-units = 1
+
+[profile.release.package.tokio]
+opt-level = "z"
+
+[profile.release.package.strand-icons]
+opt-level = "s"
+
+[profile.release.package.toml_edit]
+opt-level = "s"
+
+[profile.release.package.toml_parser]
+opt-level = "s"
+
+# Startup and a font change only: opt 3 measured no faster (decisions.md,
+# m5-speed-profile).
+[profile.release.package.fontique]
+opt-level = "s"
+
+[profile.release.package.miette]
+opt-level = "z"
+
+[profile.release.package.chrono]
+opt-level = "s"
+
+# resvg, tiny-skia and tiny-skia-path, usvg and the rest of the SVG
+# parse (svgtypes, simplecss, data-url, roxmltree), velato, serde_json,
+# the image decoders, wayland-client, wayland-backend,
+# smithay-client-toolkit and material-colors are at
+# the release default (opt 3): each is on a path a person waits on
+# (decisions.md, m5-size reclaim 2 withdrawn; m5-speed-profile).
+
+# The timing gates' build (CI's `timing` job: theme_swap_bench and the
+# reload latency bench): the release profile, its per-package opt-levels
+# above and its single codegen unit included (a custom profile inherits
+# them), without the cross-crate link-time optimisation that makes a
+# release build slow. The memory gates (demo, services, budgets) and
+# the acceptance tests keep `release` (docs/decisions.md, laptop-ci).
+# Without LTO it cannot see the link-time pass's opt-level; strand's
+# `speed-bench` feature runs the render benches in the shipped binary's
+# LTO session (crates/strand/src/speed.rs; decisions.md, m5-speed-profile).
+[profile.timing]
+inherits = "release"
+lto = false
