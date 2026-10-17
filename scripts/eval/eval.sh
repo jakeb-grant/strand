@@ -8,6 +8,7 @@
 #
 # Usage: scripts/eval/eval.sh <command> [args...]   (strand-eval's commands)
 #        scripts/eval/eval.sh selftest [step...]    scripts/eval/ci.sh
+#        scripts/eval/eval.sh mutants [name...]     scripts/eval/mutants.sh
 # In the container: scripts/container/run.sh eval <command> [args...]
 
 set -euo pipefail
@@ -19,5 +20,9 @@ export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-target}
 if [ "${1:-}" = selftest ]; then
   shift
   exec bash "$ROOT/scripts/eval/ci.sh" "$@"
+fi
+if [ "${1:-}" = mutants ]; then
+  shift
+  exec bash "$ROOT/scripts/eval/mutants.sh" "$@"
 fi
 exec cargo run -q --locked --manifest-path eval/Cargo.toml --bin strand-eval -- "$@"

@@ -1,0 +1,16 @@
+# The mutants (docs/eval.md, "Mutants"; docs/decisions.md eval-sandbox):
+# each patch reverts a fix in crates/strand-render, and the regression
+# scenario that reproduces its bug must pass on HEAD and fail under it
+# with at least the checks listed. scripts/eval/mutants.sh runs them.
+#
+# <patch> <scenario, under eval/scenarios/> <expected failure>...
+#   an expected failure is `check` (its status is FAIL), `check:#id`
+#   (a failing finding of it names the node with that id) or
+#   `check:#id:axis` (on that axis too).
+#
+# bug24-flip-open.patch: the reverse of ff92415c's crates/strand-render/src
+# hunks (flip-open; owner-testing.md bug 24), cut against this branch.
+# bug25-hidden-text.patch: the reverse of 2fab9622's node.rs hunks
+# (hidden-text; owner-testing.md bug 25), cut against this branch.
+bug24-flip-open.patch   regressions/bug24-flip-open.scn   bystander:#bars:y expect:#bars:y
+bug25-hidden-text.patch regressions/bug25-hidden-text.scn bystander:#bars:y bystander:#last:y expect:#bars:y expect:#last:y

@@ -1,0 +1,153 @@
+diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
+index c436ff88..d2200098 100644
+--- a/crates/strand-render/src/renderer/frame.rs
++++ b/crates/strand-render/src/renderer/frame.rs
+@@ -603,8 +603,6 @@ impl Renderer {
+             }
+         }
+         total.clip(bounds);
+-        // What this frame laid out is what the surface shows now.
+-        s.unpainted.clear();
+         if total.is_empty() {
+             // Nothing drawn: no frame, so nothing enters the history and
+             // the caller does not commit (see `Painter::paint`).
+diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
+index 41820131..495cbf4c 100644
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -129,11 +129,6 @@ impl Renderer {
+                 .iter()
+                 .map(|(node, spec)| TextSlot::of(*node, spec))
+                 .collect();
+-            if settled {
+-                // What a structural change mounted is measured: later
+-                // passes move nothing it placed by an estimate.
+-                s.flip_open = None;
+-            }
+             if settled && s.prev_scale.take().is_some() {
+                 self.prune_scales();
+             }
+@@ -326,32 +321,11 @@ impl Renderer {
+             }
+         }
+         // FLIP: boxes a structural change moved start where they were.
+-        // So do boxes the shaped size of text it mounted moves again (a
+-        // pass after a text arrived, in this frame or a later one, while
+-        // the change's scope is open): their glides add up, and each
+-        // starts where the box was drawn.
+         if let Some(s) = self.surfaces.get_mut(&id) {
+             let flip = std::mem::take(&mut s.flip);
+             let all = std::mem::take(&mut s.flip_all);
+-            let text = std::mem::take(&mut s.text_arrived);
+-            let fresh = all || !flip.is_empty();
+-            if fresh {
+-                let open = s.flip_open.get_or_insert_with(Default::default);
+-                open.0.extend(flip);
+-                open.1 |= all;
+-            }
+-            let scope = s.flip_open.clone().filter(|_| fresh || text);
+-            if let (Some(old), Some(_)) = (&old, &s.flip_open) {
+-                s.unpainted.extend(
+-                    boxes
+-                        .rects
+-                        .keys()
+-                        .filter(|n| !old.rects.contains_key(n))
+-                        .copied(),
+-                );
+-            }
+             if let Some(old) = &old
+-                && let Some((flip, all)) = scope
++                && (all || !flip.is_empty())
+                 && !self.anim.reduced()
+             {
+                 let tables = [&self.tree.tokens];
+@@ -367,7 +341,6 @@ impl Renderer {
+                     &boxes.rects,
+                     &flip,
+                     all,
+-                    &s.unpainted,
+                     curve,
+                 );
+             }
+@@ -461,8 +434,7 @@ impl Renderer {
+ }
+ 
+ /// FLIP: every node whose parent is in `parents` (all with `all`) and
+-/// whose box moved starts where it was and glides to its new place;
+-/// one never drawn (`unpainted`) has no place it was.
++/// whose box moved starts where it was and glides to its new place.
+ /// Visited top-down, so a node that moved with its parent adds nothing
+ /// to the parent's glide.
+ #[allow(clippy::too_many_arguments)]
+@@ -474,7 +446,6 @@ pub(super) fn glide_moved(
+     new: &HashMap<NodeId, strand_scene::LogicalRect>,
+     parents: &HashSet<NodeId>,
+     all: bool,
+-    unpainted: &HashSet<NodeId>,
+     curve: Curve,
+ ) {
+     let mut stack = vec![(root, (0.0f32, 0.0f32))];
+@@ -486,10 +457,7 @@ pub(super) fn glide_moved(
+                 continue;
+             }
+             let mut acc_c = acc;
+-            if scope
+-                && !unpainted.contains(c)
+-                && let (Some(o), Some(w)) = (old.get(c), new.get(c))
+-            {
++            if scope && let (Some(o), Some(w)) = (old.get(c), new.get(c)) {
+                 let adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
+                 if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
+                     anim.glide(*c, [adj.0, adj.1], curve);
+diff --git a/crates/strand-render/src/renderer/mod.rs b/crates/strand-render/src/renderer/mod.rs
+index 58452a14..12d78f32 100644
+--- a/crates/strand-render/src/renderer/mod.rs
++++ b/crates/strand-render/src/renderer/mod.rs
+@@ -207,21 +207,6 @@ struct SurfaceState {
+     /// (a token swap).
+     flip: HashSet<NodeId>,
+     flip_all: bool,
+-    /// (owner-testing.md bug 24) The parents of the last structural
+-    /// change's FLIP (and `flip_all`), kept while text that change
+-    /// mounted is still being shaped: a layout pass that a text's
+-    /// arrival causes glides what it moves in them from where it was
+-    /// drawn too, so a box laid out by an estimate (a ligature's name
+-    /// wrapped into ten lines) and then by the shaped size does not
+-    /// carry the estimate's offset into its glide. Cleared once every
+-    /// text on the surface is shaped.
+-    flip_open: Option<(HashSet<NodeId>, bool)>,
+-    /// A text layout for it arrived since its last layout pass.
+-    text_arrived: bool,
+-    /// Nodes first laid out since it last painted, while `flip_open`:
+-    /// never drawn, so a later pass's glide does not start them where
+-    /// an earlier pass of the same frame put them.
+-    unpainted: HashSet<NodeId>,
+     /// Presentation time of the last frame it painted.
+     painted_time: Option<Duration>,
+     /// Nodes with motion state its last fresh frame drew. With
+diff --git a/crates/strand-render/src/renderer/surfaces.rs b/crates/strand-render/src/renderer/surfaces.rs
+index 6ebdcebb..54af91b2 100644
+--- a/crates/strand-render/src/renderer/surfaces.rs
++++ b/crates/strand-render/src/renderer/surfaces.rs
+@@ -185,9 +185,6 @@ impl Renderer {
+                 anim_layout: false,
+                 flip: HashSet::new(),
+                 flip_all: false,
+-                flip_open: None,
+-                text_arrived: false,
+-                unpainted: HashSet::new(),
+                 painted_time: None,
+                 overhang: self
+                     .specs
+diff --git a/crates/strand-render/src/renderer/text.rs b/crates/strand-render/src/renderer/text.rs
+index a49b0d2e..66dd74bf 100644
+--- a/crates/strand-render/src/renderer/text.rs
++++ b/crates/strand-render/src/renderer/text.rs
+@@ -344,7 +344,6 @@ impl Renderer {
+         for s in self.surfaces.values_mut() {
+             if Some(s.root) == root {
+                 s.mark_layout();
+-                s.text_arrived = true;
+             }
+         }
+         self.spec_dirty.extend(root);

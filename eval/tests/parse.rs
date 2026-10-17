@@ -727,3 +727,33 @@ fn every_committed_scenario_parses() {
         assert!(ids.iter().any(|i| i == want), "{want} missing: {ids:?}");
     }
 }
+
+/// eval/mutants/mutants.txt names patches and scenarios that exist, and
+/// checks that do.
+#[test]
+fn every_mutant_line_names_what_exists() {
+    let root = eval_root();
+    let text = std::fs::read_to_string(root.join("mutants/mutants.txt")).unwrap();
+    let mut n = 0;
+    for line in text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        let mut it = line.split_whitespace();
+        let (patch, scn) = (it.next().unwrap(), it.next().unwrap());
+        assert!(root.join("mutants").join(patch).is_file(), "{patch}");
+        let s = Scenario::load(&root.join("scenarios").join(scn)).unwrap();
+        assert!(
+            s.expect_fail.is_empty(),
+            "{scn}: a mutant's scenario passes on HEAD outright"
+        );
+        let specs: Vec<&str> = it.collect();
+        assert!(!specs.is_empty(), "{line}");
+        for spec in specs {
+            let check = spec.split(':').next().unwrap();
+            assert!(CheckId::parse(check).is_some(), "{spec}");
+        }
+        n += 1;
+    }
+    assert_eq!(n, 2);
+}

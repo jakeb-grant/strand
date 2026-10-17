@@ -1,0 +1,93 @@
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+index d84284e4..ddd7fafb 100644
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -544,7 +544,6 @@ impl<'a> Flattener<'a> {
+                 let hidden = Some(crate::probe::Hidden::Opacity0);
+                 self.probe_push(t, look, frame, self.xform, hidden);
+             }
+-            self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
+             return Rect::default();
+         }
+ 
+@@ -561,7 +560,6 @@ impl<'a> Flattener<'a> {
+                 let hidden = Some(crate::probe::Hidden::Scale0);
+                 self.probe_push(t, look, frame, self.xform, hidden);
+             }
+-            self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
+             return Rect::default();
+         }
+         let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
+@@ -2066,72 +2064,6 @@ impl<'a> Flattener<'a> {
+         )
+     }
+ 
+-    /// (owner-testing.md bug 25) The texts under `node`, which is drawn
+-    /// hidden (`opacity` or `scale` 0, as an `enter` pose starts): its
+-    /// subtree is not visited, but layout still places it, and a text
+-    /// with no layout is placed by its estimate (a ligature's name
+-    /// wrapped into lines). So their unbounded layouts are asked for
+-    /// and waited on here as when they are drawn, with no other part of
+-    /// the visit (no item, clock, hit or animation state): only what
+-    /// the text's spec reads, its props in its token scope and the
+-    /// font it inherits.
+-    fn hidden_texts(
+-        &mut self,
+-        node: &'a Node,
+-        font: Option<&Font>,
+-        weight: Option<u16>,
+-        tokens: &[&'a strand_scene::TokenTable],
+-    ) {
+-        for c in &node.children {
+-            let Some(child) = self
+-                .tree
+-                .get(*c)
+-                .filter(|n| !crate::layout::out_of_flow(n.kind))
+-                .filter(|n| self.boxes.rects.contains_key(&n.id))
+-            else {
+-                continue;
+-            };
+-            let mut tokens = tokens.to_vec();
+-            if let Some(PropValue::Tokens(t)) = child.get(Prop::Tokens) {
+-                tokens.push(t);
+-            }
+-            let scope = TokenScope::new(&tokens);
+-            let props: Vec<(Prop, Cow<'a, PropValue>)> = child
+-                .props
+-                .iter()
+-                .filter(|e| e.prop != Prop::Tokens)
+-                .filter_map(|e| scope.resolve(&e.value).map(|v| (e.prop, v)))
+-                .collect();
+-            let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
+-            let (own_font, mut own_weight) = match get(Prop::Font) {
+-                Some(PropValue::Font(f)) => (Some(sane_font(f.clone())), None),
+-                _ => (font.cloned(), weight),
+-            };
+-            if let Some(w) = number(get(Prop::Weight)) {
+-                own_weight = Some(w.clamp(1.0, 1000.0) as u16);
+-            }
+-            // As `node` reads them for a text and a button's label (an
+-            // `input`'s text depends on its focus and is left to its
+-            // estimate).
+-            if matches!(child.kind, NodeKind::Text | NodeKind::Button) {
+-                let mut f = own_font.clone().unwrap_or_else(|| default_font(&scope));
+-                if let Some(w) = own_weight {
+-                    f.weight = w;
+-                }
+-                let centre = PropValue::Keyword("center".into());
+-                let button = child.kind == NodeKind::Button;
+-                let text_get = |p: Prop| match p {
+-                    Prop::Align if button && get(Prop::Align).is_none() => Some(&centre),
+-                    _ => get(p),
+-                };
+-                if let Some((natural, ..)) = natural_spec(&text_get, &scope, &f, self.scale) {
+-                    self.out.text.push((child.id, natural));
+-                }
+-            }
+-            self.hidden_texts(child, own_font.as_ref(), own_weight, &tokens);
+-        }
+-    }
+-
+     pub(super) fn shadow(
+         &mut self,
+         sh: &Shadow,

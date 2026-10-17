@@ -11,8 +11,9 @@
 #                                               --deep, --list, BASE)
 #        scripts/container/run.sh eval CMD ...  the animation evaluation
 #                                               sandbox (scripts/eval/eval.sh:
-#                                               strand-eval's commands, and
-#                                               `selftest`, scripts/eval/ci.sh)
+#                                               strand-eval's commands,
+#                                               `selftest`, scripts/eval/ci.sh,
+#                                               and `mutants`, mutants.sh)
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default: the cores shared among the strand
@@ -35,7 +36,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,32p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,33p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
