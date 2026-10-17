@@ -1,6 +1,9 @@
 # The effect matrix's accepted failures (docs/eval.md, "Matrix"): a cell
-# listed here may fail the checks named, and only those; a listed check
-# that passes is stale and fails the matrix, so a fix removes its line.
+# listed here may fail the checks named on the nodes named (selectors),
+# and only those; the same check failing on any other node fails the
+# cell, and a listed check that passes is stale and fails the matrix, so
+# a fix removes its line. `nodes = ["*"]` is any node, and the only way
+# to accept a finding on no node (a surface's pixels): its note says so.
 # Keys are cells (`a`, `a+b` in effects.toml's order), optionally at one
 # rate (`a+b@144`). Every entry says why and since when; a finding is
 # listed here only after it was triaged as the product's (or the
@@ -8,6 +11,7 @@
 #
 # ["enter-slide+late-text-1"]
 # checks = ["envelope"]
+# nodes = ["#subject"]
 # note = "why"
 # since = "2026-10-17"
 
@@ -21,91 +25,109 @@
 
 ["exit-height0"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["enter-fade+exit-height0"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["enter-slide+exit-height0"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["enter-scale+exit-height0"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+flip-reorder"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+size-spring"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+text-estimate-far"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("WWWWWWWW")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+shared-morph"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+stagger"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+lean"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+jelly"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+keyframes"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+blur"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+late-text-1"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+late-text-paint"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+scale-1.5"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+scale-2"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
 since = "2026-10-17"
 
 ["exit-height0+gpu"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); on the GPU leg too, and cpu-gpu passes"
 since = "2026-10-17"
 
@@ -119,16 +141,19 @@ since = "2026-10-17"
 
 ["exit-height0+reveal@144"]
 checks = ["vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); reveal's mask hides it at 60 Hz, not at 144"
 since = "2026-10-17"
 
 ["exit-height0+stagger@144"]
 checks = ["teleport", "vanish"]
+nodes = ["#subject", 'text("iiii")', "#tag1", "#tag2"]
 note = "exit to height 0 relays the node at its full width as its height spring ends: the tags after it snap 17 px (and the flash)"
 since = "2026-10-17"
 
 ["exit-height0+lean@144"]
 checks = ["teleport", "vanish"]
+nodes = ["#subject", 'text("iiii")']
 note = "exit to height 0 relays the node at its full width as its height spring ends: a 17 px width snap (and the flash)"
 since = "2026-10-17"
 
@@ -148,15 +173,18 @@ since = "2026-10-17"
 
 ["text-estimate-far+stagger@144"]
 checks = ["teleport"]
+nodes = ["#tag1", "#tag2"]
 note = "a glide's first frame after idle ticks leads by START_LEAD (2.4 ticks at 144 Hz): the exiting tags jump 27 px"
 since = "2026-10-17"
 
 ["flip-reorder+gpu@144"]
 checks = ["cpu-gpu"]
-note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick)"
+nodes = ["*"]
+note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick); one of its findings is the surface's pixels, on no node, hence `*`"
 since = "2026-10-17"
 
 ["lean+gpu@144"]
 checks = ["cpu-gpu"]
+nodes = ["#subject", 'text("iiii")']
 note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick)"
 since = "2026-10-17"

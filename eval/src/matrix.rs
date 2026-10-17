@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
 
-use crate::checks::{Reference, Sev, Status};
+use crate::checks::{Finding, Reference, Sev, Status};
 use crate::harness::RunOptions;
 use crate::report::{self, Entry, Frames};
 use crate::scenario::{CheckId, Place, Scenario};
+use crate::select::Selector;
 use crate::{Error, check_scenario};
 
 /// The props slots of the fixture; every other slot takes text.
@@ -78,12 +79,41 @@ pub struct Effects {
     pub effects: Vec<Effect>,
 }
 
-/// A known failure: the checks a cell may fail and why.
+/// A known failure: the checks a cell may fail, on which nodes, and why.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Known {
     pub checks: Vec<String>,
+    /// Selectors of the nodes the failures are on: a finding of a listed
+    /// check on any other node still fails the cell. `*` is any node,
+    /// and the only way to accept a finding on no node (a surface's
+    /// pixels).
+    pub nodes: Vec<String>,
     pub note: String,
     pub since: String,
+}
+
+impl Known {
+    /// Whether this entry accepts `f`, a failure in `trace`.
+    pub fn covers(&self, f: &Finding, trace: &crate::trace::RunTrace) -> bool {
+        if !self.checks.contains(&f.check) {
+            return false;
+        }
+        if self.nodes.iter().any(|n| n == "*") {
+            return true;
+        }
+        let Some(key) = f.key.as_deref() else {
+            return false;
+        };
+        self.nodes.iter().any(|n| {
+            Selector::parse(n)
+                .map(|sel| {
+                    crate::checks::select_seen(trace, &sel)
+                        .iter()
+                        .any(|k| k == key)
+                })
+                .unwrap_or(false)
+        })
+    }
 }
 
 /// The matrix's directory.
@@ -298,18 +328,31 @@ pub fn load_known(path: &Path) -> Result<BTreeMap<String, Known>, Error> {
                 return Err(bad(path, format!("[\"{cell}\"]: `{c}` is not a check")));
             }
         }
+        let nodes = strings(t.get("nodes"), "nodes", path)?;
+        for n in &nodes {
+            if n != "*"
+                && let Err(e) = Selector::parse(n)
+            {
+                return Err(bad(path, format!("[\"{cell}\"]: nodes: `{n}`: {e}")));
+            }
+        }
         let note = t.get("note").and_then(|n| n.as_str()).unwrap_or("");
         let since = t.get("since").and_then(|n| n.as_str()).unwrap_or("");
-        if checks.is_empty() || note.trim().is_empty() || since.trim().is_empty() {
+        if checks.is_empty()
+            || nodes.is_empty()
+            || note.trim().is_empty()
+            || since.trim().is_empty()
+        {
             return Err(bad(
                 path,
-                format!("[\"{cell}\"]: checks, a note and a since date are required"),
+                format!("[\"{cell}\"]: checks, nodes, a note and a since date are required"),
             ));
         }
         out.insert(
             cell,
             Known {
                 checks,
+                nodes,
                 note: note.to_string(),
                 since: since.to_string(),
             },
@@ -618,11 +661,30 @@ fn judge(cell: Cell, known: Option<&Known>, entry: Entry) -> Done {
             }
         }
     }
+    // A failure the entry does not cover (another check, or a listed
+    // check on a node it does not name) fails the cell.
+    let uncovered: Vec<&Finding> = match (known, report) {
+        (Some(k), Some(r)) => r
+            .results
+            .iter()
+            .flat_map(|x| x.findings.iter())
+            .filter(|f| f.sev == Sev::Fail && !k.covers(f, &entry.trace))
+            .collect(),
+        _ => Vec::new(),
+    };
     let outcome = match known {
         None if failed.is_empty() => Outcome::Pass,
         None => Outcome::Fail,
         Some(k) => {
             if failed.iter().any(|c| !k.checks.contains(c)) {
+                Outcome::Fail
+            } else if !uncovered.is_empty() {
+                lines.push(format!(
+                    "known.toml accepts {} on {} only: {} failure(s) elsewhere",
+                    k.checks.join(", "),
+                    k.nodes.join(", "),
+                    uncovered.len()
+                ));
                 Outcome::Fail
             } else if k.checks.iter().any(|c| !failed.contains(c)) {
                 lines.push(format!(
@@ -816,7 +878,7 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
                 "na": d.cell.na,
                 "failed": d.failed,
                 "findings": d.lines,
-                "known": d.known.as_ref().map(|k| json!({"checks": k.checks, "note": k.note, "since": k.since})),
+                "known": d.known.as_ref().map(|k| json!({"checks": k.checks, "nodes": k.nodes, "note": k.note, "since": k.since})),
             })
         })
         .collect();
@@ -891,9 +953,10 @@ fn summary_md(out: &Path, done: &[Done]) -> String {
     for d in done.iter().filter(|d| d.outcome == Outcome::Known) {
         if let Some(k) = &d.known {
             md.push(format!(
-                "- {} known ({}): {}",
+                "- {} known ({} on {}): {}",
                 d.cell.dir_name(),
                 k.checks.join(", "),
+                k.nodes.join(", "),
                 k.note
             ));
         }

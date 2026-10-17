@@ -68,10 +68,11 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         show(&done)
     );
     // Each effect does what it says: the motion it is named for shows.
-    // The jelly cell is dragged (LIFT) but shows no JELLY: the harness
-    // runs `Renderer::update` every tick and a drag frame reuses its
-    // preview, where `jelly` never measures speed (an open finding,
-    // docs/decisions.md eval-sandbox matrix).
+    // The jelly cell is dragged (LIFT) but shows no JELLY: each pointer
+    // motion wakes the loop for the surface idle since its last frame
+    // (`Host::input`), `Renderer::update` flattens a preview and the
+    // drag frame reuses it, where `jelly` never measures speed (an open
+    // finding, docs/decisions.md eval-sandbox).
     let has = |name: &str, bit: strand_render::probe::Motions| {
         let d = done.iter().find(|d| d.cell.name == name).unwrap();
         let t = &d.entry.as_ref().unwrap().trace;
@@ -135,12 +136,48 @@ fn a_known_failure_that_passes_is_stale() {
     let c = matrix::cell(&set, &fixture, &["enter-fade"], 60);
     let known = Known {
         checks: vec!["vanish".into()],
+        nodes: vec!["#subject".into()],
         note: "for the test".into(),
         since: "2026-10-17".into(),
     };
     let d = matrix::run_cell(c, Some(&known), &BuildInfo::default());
     assert_eq!(d.outcome, Outcome::Stale, "{:?}", d.lines);
     assert!(d.outcome.gates());
+}
+
+/// A known entry accepts its checks on the nodes it names only: the
+/// same check failing on another node fails the cell.
+#[test]
+fn a_known_failure_covers_only_the_nodes_it_names() {
+    let (set, fixture) = set();
+    let known = |nodes: &[&str]| Known {
+        checks: vec!["expect".into()],
+        nodes: nodes.iter().map(|n| n.to_string()).collect(),
+        note: "for the test".into(),
+        since: "2026-10-17".into(),
+    };
+    let run = |k: Known| matrix::run_cell(failing(&set, &fixture), Some(&k), &BuildInfo::default());
+    let d = run(known(&["#after"]));
+    assert_eq!(d.outcome, Outcome::Known, "{:?}", d.lines);
+    let d = run(known(&["#subject"]));
+    assert_eq!(d.outcome, Outcome::Fail, "{:?}", d.lines);
+    assert!(
+        d.lines.iter().any(|l| l.contains("on #subject only")),
+        "{:?}",
+        d.lines
+    );
+    let d = run(known(&["*"]));
+    assert_eq!(d.outcome, Outcome::Known, "{:?}", d.lines);
+    // An entry without nodes is refused.
+    let dir = scratch("known");
+    let file = dir.join("known.toml");
+    std::fs::write(
+        &file,
+        "[\"a\"]\nchecks = [\"vanish\"]\nnote = \"n\"\nsince = \"2026-10-17\"\n",
+    )
+    .unwrap();
+    let e = matrix::load_known(&file).unwrap_err().to_string();
+    assert!(e.contains("nodes"), "{e}");
 }
 
 /// The fixture's `on` mounts the subject between the bystanders, so

@@ -392,13 +392,18 @@ unordered pair at each rate.
 Two effects that set the same prop of one slot cannot pair, and their cell
 is `n/a: conflict`. A cell fails the matrix in three cases:
 
-- it fails a check `eval/matrix/known.toml` does not list for it;
+- it fails a check `eval/matrix/known.toml` does not list for it, or a
+  listed check on a node the entry does not name;
 - a check listed for it passes (stale: remove the entry);
 - it cannot run.
 
-Each known entry says why and since when, and is listed only after it was
-triaged as the product's finding or as the sandbox's known limit. An entry
-can be limited to one rate (`a+b@144`).
+Each known entry names its checks and the nodes their failures are on
+(`nodes`, selectors; `*` is any node, the only way to accept a finding on
+no node, such as a surface's pixels), says why and since when, and is
+listed only after it was triaged as the product's finding or as the
+sandbox's known limit. An entry can be limited to one rate (`a+b@144`).
+`promote` takes committed scenarios and matrix cells only, never a local
+scenario's run.
 
 ```text
 scripts/container/run.sh eval matrix --hz 60,144 --out target/eval/matrix
