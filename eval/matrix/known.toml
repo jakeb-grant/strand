@@ -15,148 +15,6 @@
 # note = "why"
 # since = "2026-10-17"
 
-# Product finding (eval-sandbox matrix, first 60 Hz run): a node leaving
-# with `exit { height: 0 }` alone springs its height to 0, then, on the
-# frame its exit ends and before it is removed, is laid out and drawn
-# whole again for one frame (row#subject and its text at 12 x 15, k34 of
-# m.exit-height0.60). A fade, a slide's opacity, `reveal` or `clip:` on
-# it hide that frame, which is why those pairs pass. Not fixed here
-# (strand-render's exit/size-spring hand-off is outside the sandbox).
-
-["exit-height0"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["enter-fade+exit-height0"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["enter-slide+exit-height0"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["enter-scale+exit-height0"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+flip-reorder"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+size-spring"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+text-estimate-far"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("WWWWWWWW")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+shared-morph"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+stagger"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+lean"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+jelly"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+keyframes"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+blur"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+late-text-1"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+late-text-paint"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+scale-1.5"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+scale-2"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash)"
-since = "2026-10-17"
-
-["exit-height0+gpu"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); on the GPU leg too, and cpu-gpu passes"
-since = "2026-10-17"
-
-# Product finding (eval-sandbox matrix, first 144 Hz run): the same
-# exit-to-height-0 hand-off, seen at 144 Hz. As the height spring ends
-# the node is laid out again at its natural width (row#subject 12 -> 29 px
-# wide at height 0, k84 of m.exit-height0__stagger.144) and the rest of
-# its row snaps 17 px with it, before the one-frame flash. At 60 Hz the
-# snap stays under the 32 px teleport bound; at 144 Hz (13.3 px a tick)
-# it does not, and `reveal`'s mask no longer hides the flash frame.
-
-["exit-height0+reveal@144"]
-checks = ["vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 draws the node whole for one frame as its exit ends (flash); reveal's mask hides it at 60 Hz, not at 144"
-since = "2026-10-17"
-
-["exit-height0+stagger@144"]
-checks = ["teleport", "vanish"]
-nodes = ["#subject", 'text("iiii")', "#tag1", "#tag2"]
-note = "exit to height 0 relays the node at its full width as its height spring ends: the tags after it snap 17 px (and the flash)"
-since = "2026-10-17"
-
-["exit-height0+lean@144"]
-checks = ["teleport", "vanish"]
-nodes = ["#subject", 'text("iiii")']
-note = "exit to height 0 relays the node at its full width as its height spring ends: a 17 px width snap (and the flash)"
-since = "2026-10-17"
-
 # Product finding (eval-sandbox matrix, first 144 Hz run): a change
 # starts at most START_LEAD (16.7 ms, one 60 Hz refresh) before the
 # first frame that shows it, and never before the surface's previous
@@ -187,4 +45,17 @@ since = "2026-10-17"
 checks = ["cpu-gpu"]
 nodes = ["#subject", 'text("iiii")']
 note = "a glide's first-frame lead depends on the backend at 144 Hz (GPU paints at age 0 and moves painted_time every tick)"
+since = "2026-10-17"
+
+# The same lead, shown once exit-height0 was fixed: the collapsed
+# subject now stays drawn at height 0 until it unmounts, so the CPU leg
+# paints nothing for the ticks before (its painted_time falls behind)
+# where the one-frame flash used to paint; the glide of #label and #after
+# into its gap then leads by 2.4 ticks on the CPU and one on the GPU
+# (k80: 13.31 px left on the CPU, 17 on the GPU).
+
+["exit-height0+gpu@144"]
+checks = ["cpu-gpu"]
+nodes = ["*"]
+note = "a glide's first-frame lead depends on the backend at 144 Hz (the gap's glide after the collapsed subject unmounts); two of its findings are the surface's (frames wanted and painted), on no node, hence `*`"
 since = "2026-10-17"

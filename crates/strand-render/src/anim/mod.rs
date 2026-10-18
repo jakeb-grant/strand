@@ -775,8 +775,21 @@ impl Animator {
 
     /// Ends the exit of `id` now, as if its pose had settled.
     pub fn finish_now(&mut self, id: NodeId) {
-        if let Some(k) = self.exits.remove(&id) {
-            self.exit_started.remove(&id);
+        self.end_exit(id);
+    }
+
+    /// The exit of `id` ends with the frame being painted. It stays
+    /// exiting until [`Animator::take_finished`] hands it over to be
+    /// unmounted (exit-height0): a frame may lay out and flatten again
+    /// after the pass that ended it (text it waited for, a stand-in
+    /// pruned), and every pass of that frame lays it out at its exit
+    /// pose's size and draws it at its pose, as the pass that ended it
+    /// did. Ended in an earlier pass, it laid out whole in the next and
+    /// was drawn so for one frame.
+    fn end_exit(&mut self, id: NodeId) {
+        if let Some(k) = self.exits.get(&id).copied()
+            && !self.finished.iter().any(|(f, _)| *f == id)
+        {
             self.finished.push((id, k));
         }
     }
@@ -824,6 +837,8 @@ impl Animator {
     pub fn take_finished(&mut self) -> Vec<(NodeId, ExitKind)> {
         for (id, _) in &self.finished {
             self.poses.remove(id);
+            self.exits.remove(id);
+            self.exit_started.remove(id);
         }
         std::mem::take(&mut self.finished)
     }
@@ -842,15 +857,14 @@ impl Animator {
     /// Ends the exits of nodes under `root` (by `root_of`) that the
     /// frame just painted did not draw: nobody sees them.
     pub fn finish_undrawn(&mut self, mut under: impl FnMut(NodeId) -> bool) {
-        let gone: Vec<(NodeId, ExitKind)> = self
+        let gone: Vec<NodeId> = self
             .exits
-            .iter()
-            .filter(|(id, _)| !self.drawn.contains(id) && under(**id))
-            .map(|(id, k)| (*id, *k))
+            .keys()
+            .filter(|id| !self.drawn.contains(id) && under(**id))
+            .copied()
             .collect();
-        for (id, k) in gone {
-            self.exits.remove(&id);
-            self.finished.push((id, k));
+        for id in gone {
+            self.end_exit(id);
         }
         // Paint state of nodes the frame did not draw (out of view, under
         // a transparent parent) is dropped: they show at rest when they
@@ -1107,9 +1121,7 @@ impl Animator {
                 }
                 self.enter.remove(&id);
                 self.staggers.forget(id);
-                if let Some(k) = self.exits.remove(&id) {
-                    self.finished.push((id, k));
-                }
+                self.end_exit(id);
             }
             return;
         }
@@ -1270,12 +1282,8 @@ impl Animator {
         if moving {
             self.active = true;
         }
-        if commit
-            && let Some(k) = exiting
-            && exit_done
-        {
-            self.exits.remove(&id);
-            self.finished.push((id, k));
+        if commit && exiting.is_some() && exit_done {
+            self.end_exit(id);
         }
         if self.nodes.get(&id).is_some_and(NodeAnim::is_empty) {
             self.nodes.remove(&id);

@@ -1668,3 +1668,67 @@ fn text_entering_faded_out_moves_its_siblings_once() {
         );
     }
 }
+
+/// (exit-height0, the eval sandbox's matrix) A row that leaves by
+/// collapsing (`exit { height: 0 }`) between two boxes, its text one
+/// whose estimate is far from its shaped size (narrow letters).
+const COLLAPSE: &str = "
+state on = true
+bar Top {
+  height: 30
+  row { width: 300; height: 30; pad: 0, 14; gap: 6; align: center
+    box { width: 20; height: 12; bg: #00ff00 }
+    if on {
+      row { gap: 3; align: center; shrink: 0; exit { height: 0 }
+        text \"iiii\" { shrink: 0; color: #ff00ff }
+      }
+    }
+    box { width: 20; height: 12; bg: #0000ff }
+  }
+}
+";
+
+/// (exit-height0) A node leaving with `exit { height: 0 }` collapses
+/// once: what it hid while collapsed is never drawn again, and its
+/// siblings never move away from where it was. Its height spring
+/// ending, the exit then ending in a pass of a frame that lays out
+/// again, drew the row whole for one frame (a flash), and its text,
+/// unvisited while clipped to nothing, was laid out by its estimate,
+/// moving the box after it 17 px right before the flash.
+#[test]
+fn a_collapsing_exit_hides_what_it_collapsed_until_it_unmounts() {
+    let mut sh = Shell::boot_with(worker_renderer(), COLLAPSE, 1.0, 300);
+    run(&mut sh, NodeId::new(0, 0));
+    let (magenta, blue) = ([255, 0, 255], [255, 0, 0]);
+    assert!(bbox_of(sh.buf(BAR), magenta).is_some(), "the text is drawn");
+    let rest = bbox_of(sh.buf(BAR), blue).expect("the last box is drawn");
+    sh.set("on", Value::Bool(false));
+    let mut seen = Vec::new();
+    let mut n = 0;
+    while sh.wants() {
+        sh.paint();
+        seen.push((bbox_of(sh.buf(BAR), magenta), bbox_of(sh.buf(BAR), blue)));
+        n += 1;
+        assert!(n < 120, "never settled");
+    }
+    let gone = seen
+        .iter()
+        .position(|(m, _)| m.is_none())
+        .unwrap_or_else(|| panic!("the text never went: {seen:?}"));
+    for (k, (m, b)) in seen.iter().enumerate() {
+        assert!(
+            k < gone || m.is_none(),
+            "frame {k}: the text was drawn again after it collapsed (frame {gone}): {seen:?}"
+        );
+        let b = b.unwrap_or_else(|| panic!("frame {k}: the last box left the bar: {seen:?}"));
+        assert!(
+            b.0 <= rest.0 && b.1 == rest.1,
+            "frame {k}: the last box moved away, at {b:?} from {rest:?}: {seen:?}"
+        );
+    }
+    let end = seen
+        .last()
+        .and_then(|s| s.1)
+        .expect("the last box is drawn");
+    assert!(end.0 < rest.0, "the gap never closed: {rest:?} to {end:?}");
+}

@@ -6,14 +6,21 @@ use strand_scene::{Curve, LogicalRect, Motion, NodeId, Prop, TokenScope, Transit
 
 use super::pose::{exit_pose, pose_sizes};
 use super::{Animator, COLLAPSED, Forced, PX_EPS, SizeMap};
-use crate::tree::SceneTree;
+use crate::tree::{Node, SceneTree};
 
 impl Animator {
-    /// True while `id`'s laid-out size springs: it clips its content.
-    pub fn sizing(&self, id: NodeId) -> bool {
+    /// True while `node`'s laid-out size springs, or while it exits to
+    /// a pose that sets its size (laid out at that size by
+    /// [`Animator::rest_sizes`] once its spring settles, until it
+    /// unmounts): it clips its content. A row collapsed to `height: 0`
+    /// whose spring had settled drew its text whole (exit-height0).
+    pub fn sizing(&self, tree: &SceneTree, node: &Node) -> bool {
         self.nodes
-            .get(&id)
+            .get(&node.id)
             .is_some_and(|n| n.size.iter().any(Option::is_some))
+            || (self.exits.contains_key(&node.id)
+                && exit_pose(node)
+                    .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))
     }
 
     /// Nodes under `root` whose laid-out size may spring: the layout step

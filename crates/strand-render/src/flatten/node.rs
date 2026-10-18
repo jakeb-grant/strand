@@ -1601,13 +1601,13 @@ impl<'a> Flattener<'a> {
         // Children. A `scroll`, `list` or `pages` always clips its content
         // (a page slides in from outside it), and so
         // does a node whose size springs (a toast collapsing to `height:
-        // 0`).
+        // 0`), or that exits to a pose setting its size.
         let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
             || matches!(
                 node.kind,
                 NodeKind::Scroll | NodeKind::List | NodeKind::Pages
             )
-            || self.anim.sizing(node.id);
+            || self.anim.sizing(self.tree, node);
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
@@ -1713,6 +1713,14 @@ impl<'a> Flattener<'a> {
                     children = children.union(self.node(child, rect, &child_inh, false));
                 }
             }
+        } else {
+            // Clipped to nothing (collapsed to `height: 0`, or scrolled
+            // out of its clip): its subtree is not visited, but layout
+            // still places it, so its texts are asked for as a hidden
+            // node's are, and as a visited text out of view is
+            // (exit-height0).
+            let (font, weight) = (child_inh.font.clone(), child_inh.weight);
+            self.hidden_texts(node, font.as_ref(), weight, &child_inh.tokens);
         }
         if let Some((at, distance, colors)) = goo_at {
             self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
@@ -2082,8 +2090,8 @@ impl<'a> Flattener<'a> {
     }
 
     /// (owner-testing.md bug 25) The texts under `node`, which is drawn
-    /// hidden (`opacity` or `scale` 0, as an `enter` pose starts): its
-    /// subtree is not visited, but layout still places it, and a text
+    /// hidden (`opacity` or `scale` 0, as an `enter` pose starts) or
+    /// clips it to nothing (exit-height0): its subtree is not visited, but layout still places it, and a text
     /// with no layout is placed by its estimate (a ligature's name
     /// wrapped into lines). So their unbounded layouts are asked for
     /// and waited on here as when they are drawn, with no other part of
