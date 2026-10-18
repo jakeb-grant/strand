@@ -337,6 +337,16 @@ impl Renderer {
                     spec.open = true;
                 }
             }
+            if !spec.open && reported == Some(true) {
+                // (popup-reopen) It closes now (its closing pose, if it
+                // had one, has ended): opened again, it enters from its
+                // pose, not from what its exit held. A preview flattened
+                // before the surface goes would otherwise snap that to
+                // rest (the exit no longer holds it), and the next
+                // opening would show at rest at once.
+                let tree = &self.tree;
+                self.anim.surface_closed(|n| tree.root_of(n) == Some(id));
+            }
             if !spec.open || self.shown(Some(id)) {
                 self.opening.remove(&id);
             }

@@ -129,6 +129,21 @@ struct NodeAnim {
     size_touched: bool,
 }
 
+/// Drops the paint state (the props' springs, logic's writes not yet
+/// drawn, a glide) of the nodes `gone` picks: they show at rest when they
+/// are next drawn. Size springs belong to layout and stay.
+fn drop_paint_state(nodes: &mut HashMap<NodeId, NodeAnim>, mut gone: impl FnMut(NodeId) -> bool) {
+    for (id, na) in nodes.iter_mut() {
+        if gone(*id) {
+            na.props.clear();
+            na.touched.clear();
+            na.respring = false;
+            na.glide = None;
+        }
+    }
+    nodes.retain(|_, n| !n.is_empty());
+}
+
 impl NodeAnim {
     fn is_empty(&self) -> bool {
         self.props.is_empty()
@@ -720,7 +735,9 @@ impl Animator {
     pub fn enter(&mut self, id: NodeId) {
         self.enter.insert(id);
         self.enter_size.insert(id);
-        // A surface opened again: props held at its exit pose spring back.
+        // Props it still holds spring from where they are drawn. A
+        // surface that closed holds none (`surface_closed`): it enters
+        // from its pose.
         if let Some(na) = self.nodes.get_mut(&id) {
             na.respring = true;
         }
@@ -900,15 +917,7 @@ impl Animator {
         // a transparent parent) is dropped: they show at rest when they
         // come back. Size springs belong to layout and stay.
         let drawn = &self.drawn;
-        for (id, na) in self.nodes.iter_mut() {
-            if !drawn.contains(id) && under(*id) {
-                na.props.clear();
-                na.touched.clear();
-                na.respring = false;
-                na.glide = None;
-            }
-        }
-        self.nodes.retain(|_, n| !n.is_empty());
+        drop_paint_state(&mut self.nodes, |id| !drawn.contains(&id) && under(id));
         // So is a jelly the frame did not sample (jelly-drag review): a
         // held node a preview left pending, or one still moving, whose
         // ancestor a diff hid before the frame would leave its surface
@@ -916,6 +925,15 @@ impl Animator {
         // and a content-sized surface is held at its size). It comes
         // back at rest, measured from its next painted frame.
         self.jellies.retain(|id| drawn.contains(&id) || !under(id));
+    }
+
+    /// (popup-reopen) The surface of the nodes `under` it closed: what
+    /// their props were drawn at goes with it, the poses its exit held
+    /// included. Opened again, it is a new surface whose enter starts
+    /// from its pose, as the first time; its nodes show at rest
+    /// otherwise. Size springs belong to layout and stay.
+    pub fn surface_closed(&mut self, under: impl FnMut(NodeId) -> bool) {
+        drop_paint_state(&mut self.nodes, under);
     }
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).

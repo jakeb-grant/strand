@@ -1,0 +1,51 @@
+id     = "popup-reopen-delegated"
+about  = """A menu popup with `enter { opacity: 0; scale: 0.9 }` opened, closed,
+and opened again: once as soon as its exit has ended and its surface has
+gone, once half a second later. Each opening is a new surface and plays
+its enter pose from the pose (`vanish` pop-in, each time it comes onto a
+surface). As its exit ends the renderer flattens the surface once more
+before the host lets it go, and that preview, with the exit no longer
+holding its props, snapped the pose the exit had held to rest; the next
+opening then started from rest and showed at opacity 1 at once
+(decisions.md popup-reopen). The compositor applies the poses here, as on Hyprland."""
+screen = { width = 300, scale = 1.0 }
+compositor_poses = true
+
+=== shell.strand
+state open = false
+bar Top {
+  height: 30
+  box { id: anchor; width: 40; height: 30; bg: #303030
+    popup { id: menu; open: open; width: 120; height: 60
+            enter { opacity: 0; scale: 0.9 }
+      col { id: items; pad: 6; gap: 4; bg: #202030
+        box { id: item1; width: 100; height: 20; bg: #ff8000 }
+        box { id: item2; width: 100; height: 20; bg: #0080ff }
+      }
+    }
+  }
+  text "12:00" { color: #ffffff }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+expect visible #item1
+mark close
+set open false
+rest
+expect hidden #item1
+mark reopen
+set open true
+rest
+expect visible #item1
+mark close-again
+set open false
+rest
+wait 500
+mark reopen-later
+set open true
+rest
+expect visible #item1

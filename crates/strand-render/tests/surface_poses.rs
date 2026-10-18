@@ -454,3 +454,74 @@ fn a_delegated_fade_claims_no_opaque_region() {
     let id = h.surface.as_ref().unwrap().0;
     assert_eq!(h.r.opaque_region(id).area(), 80 * 40, "opaque at rest");
 }
+
+/// (popup-reopen) A surface opened again after its closing pose ended
+/// plays its `enter` again, from its pose, as it did the first time:
+/// delegated or painted, at once or long after it closed. Its content
+/// goes as it closes and comes back as it opens (a popup mounts what it
+/// holds only while open), so the closing frames leave it to be drawn
+/// again before the surface goes; what the exit held must not decide
+/// where the enter starts.
+#[test]
+fn a_surface_opened_again_after_its_exit_enters_again() {
+    for poses in [true, false] {
+        for gap in [0, 30] {
+            let mut b = Builder::default();
+            let root = b.node(
+                NodeKind::Panel,
+                None,
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(40.0)),
+                    (Prop::Bg, color("#ff0000")),
+                    (Prop::Anchor, kw("top_right")),
+                    (Prop::Open, PropValue::Bool(false)),
+                    (
+                        Prop::Enter,
+                        PropValue::Pose(vec![(Prop::Opacity, num(0.0)), (Prop::Scale, num(0.9))]),
+                    ),
+                ],
+            );
+            let child = |b: &mut Builder| {
+                b.node(
+                    NodeKind::Box,
+                    Some(root),
+                    vec![
+                        (Prop::Width, num(40.0)),
+                        (Prop::Height, num(20.0)),
+                        (Prop::Bg, color("#00ff00")),
+                    ],
+                )
+            };
+            let first_child = child(&mut b);
+            let diff = std::mem::take(&mut b.diff);
+            let mut h = Host::new(poses, diff, root);
+            h.open(true);
+            let first = h.run();
+            let mut d = SceneDiff::new();
+            d.set(root, Prop::Open, PropValue::Bool(false));
+            d.remove(first_child);
+            h.apply(d);
+            let _ = h.run();
+            assert!(h.surface.is_none(), "closed once the exit settled");
+            h.k += gap;
+            child(&mut b);
+            let mut d = std::mem::take(&mut b.diff);
+            d.set(root, Prop::Open, PropValue::Bool(true));
+            h.apply(d);
+            let again = h.run();
+            let opacity = |s: &Seen| match s.pose {
+                Some(p) => p.opacity,
+                None => s.centre[3] as f32 / 255.0,
+            };
+            assert!(
+                opacity(&first[0]) < 0.5,
+                "poses {poses}: the first opening enters: {first:?}"
+            );
+            assert!(
+                again.len() >= 5 && opacity(&again[0]) < 0.5,
+                "poses {poses}, gap {gap}: opened again, it enters again: {again:?}"
+            );
+        }
+    }
+}
