@@ -989,7 +989,16 @@ fn token_swaps_glide_and_popin_scales() {
 #[test]
 fn a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel() {
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Panel, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    // In the top-right corner, as the example's (a centred panel's held
+    // content shrinks about its centre: decisions.md popup-shrink).
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("top_right".into())),
+        ],
+    );
     let col = b.node(
         NodeKind::Col,
         Some(root),
@@ -1842,6 +1851,7 @@ fn a_lone_toast_enters_with_its_panel_and_leaves_before_it_closes() {
         vec![
             (Prop::Bg, color("#1e1e2e")),
             (Prop::Open, PropValue::Bool(false)),
+            (Prop::Anchor, PropValue::Keyword("top_right".into())),
         ],
     );
     let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(100.0))]);
@@ -2042,6 +2052,76 @@ fn a_centred_panel_keeps_its_rows_in_place_as_it_grows() {
     assert!(
         ys.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] < 6.0),
         "glides there: {ys:?}"
+    );
+}
+
+/// (popup-shrink) A centred content-sized panel whose rows spring
+/// narrower is held at its larger size while they move, and re-centred
+/// by the compositor at its smaller size once they settle: its rows
+/// shrink about the screen's centre, laid out where the smaller box will
+/// be, and stay there as the buffer shrinks, never jumping by half the
+/// shrink.
+#[test]
+fn a_centred_panel_keeps_its_rows_in_place_as_it_shrinks() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("center".into())),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(100.0))]);
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    // Screen x of the red row's centre, twice (whole pixels): the
+    // compositor centres the buffer.
+    let screen = |h: &Host| {
+        let (_, buf, _) = h.surface.as_ref().unwrap();
+        let red: Vec<u32> = (0..buf.size.w)
+            .filter(|x| buf.px(*x, 15)[2] > 128)
+            .collect();
+        let (a, z) = (*red.first().unwrap(), *red.last().unwrap());
+        (a + z + 1) as i64 - buf.size.w as i64
+    };
+    assert_eq!(h.surface.as_ref().unwrap().1.size.w, 100);
+    assert_eq!(screen(&h), 0);
+    let mut d = SceneDiff::new();
+    d.set(col, Prop::Width, num(40.0));
+    h.apply(d);
+    // Read each frame as it is painted, before a resize it asks for
+    // replaces the buffer.
+    let (mut seen, mut widths) = (Vec::new(), Vec::new());
+    loop {
+        let Some((id, buf, age)) = h.surface.as_mut() else {
+            panic!("closed");
+        };
+        if !h.r.wants_frame(*id) {
+            break;
+        }
+        buf.paint_at(&mut h.r, *id, *age, frame(h.k));
+        *age = 1;
+        h.k += 1;
+        widths.push(buf.size.w);
+        seen.push(screen(&h));
+        if h.r.has_surface_changes() {
+            h.r.update();
+            h.sync();
+        }
+        assert!(seen.len() < 400, "never settled");
+    }
+    assert!(seen.len() >= 4, "springs: {seen:?}");
+    assert_eq!(widths[0], 100, "held at its larger size: {widths:?}");
+    assert_eq!(*widths.last().unwrap(), 40, "then shrinks: {widths:?}");
+    assert!(
+        seen.iter().all(|c| c.abs() <= 1),
+        "stays centred on screen: {seen:?} (buffers {widths:?})"
     );
 }
 

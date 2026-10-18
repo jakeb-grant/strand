@@ -337,8 +337,9 @@ pub struct Renderer {
     spec_wanted: HashMap<NodeId, Vec<TextSlot>>,
     /// Surface nodes whose content size or overhang may have changed.
     spec_dirty: BTreeSet<NodeId>,
-    /// Surface nodes sized by their content (as of the last refresh).
-    content_sized: BTreeSet<NodeId>,
+    /// Surface nodes sized by their content (as of the last refresh),
+    /// with the axes it sizes (width, height).
+    content_sized: BTreeMap<NodeId, (bool, bool)>,
     /// How long a content-sized surface holds a frame for the configure
     /// at its new size (zero: never; offline there is no compositor).
     resize_wait: Duration,
@@ -501,7 +502,7 @@ impl Renderer {
             query_wait: Duration::ZERO,
             spec_wanted: HashMap::new(),
             spec_dirty: BTreeSet::new(),
-            content_sized: BTreeSet::new(),
+            content_sized: BTreeMap::new(),
             bounds: HashMap::new(),
             resize_wait: Duration::ZERO,
             anim: Animator::default(),

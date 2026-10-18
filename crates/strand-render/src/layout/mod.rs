@@ -117,6 +117,19 @@ pub enum RootSize {
         width: Option<f32>,
         height: Option<f32>,
     },
+    /// (popup-shrink) Sized by its content as [`RootSize::Content`] is,
+    /// and placed inside `frame`, the surface's box: on each axis at
+    /// `at` (0 the start, 1 the end) of the room its content leaves
+    /// there, in whole logical pixels. An axis whose content is larger
+    /// than the frame is laid out at the frame's size, as
+    /// [`RootSize::Fixed`] does. `width` and `height` are the root's
+    /// definite sizes (a surface's own `width`/`height`).
+    Placed {
+        frame: LogicalRect,
+        width: Option<f32>,
+        height: Option<f32>,
+        at: (f32, f32),
+    },
 }
 
 enum Ctx {
@@ -444,8 +457,65 @@ pub(crate) fn layout(
                 },
             )
         }
+        RootSize::Placed {
+            frame,
+            width,
+            height,
+            ..
+        } => {
+            if let Ok(mut s) = b.taffy.style(t).cloned() {
+                if let Some(w) = width {
+                    s.size.width = length(w);
+                }
+                if let Some(h) = height {
+                    s.size.height = length(h);
+                }
+                s.margin = taffy::Rect::zero();
+                let _ = b.taffy.set_style(t, s);
+            }
+            (
+                (frame.x, frame.y),
+                taffy::Size {
+                    width: width.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite),
+                    height: height.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite),
+                },
+            )
+        }
     };
     b.compute(t, avail, texts, scrolls);
+    let mut origin = origin;
+    if let RootSize::Placed { frame, at, .. } = size
+        && let Ok(l) = b.taffy.layout(t).map(|l| l.size)
+    {
+        // Larger than the surface's box on an axis (it grows, and the
+        // configure at its new size is still to come): laid out at the
+        // box's size there, as a fixed root is.
+        let (wide, tall) = (l.width > frame.w + 0.5, l.height > frame.h + 0.5);
+        if (wide || tall)
+            && let Ok(mut s) = b.taffy.style(t).cloned()
+        {
+            let mut avail = avail;
+            if wide {
+                s.size.width = length(frame.w.max(0.0));
+                s.min_size.width = auto();
+                s.max_size.width = auto();
+                avail.width = AvailableSpace::Definite(frame.w);
+            }
+            if tall {
+                s.size.height = length(frame.h.max(0.0));
+                s.min_size.height = auto();
+                s.max_size.height = auto();
+                avail.height = AvailableSpace::Definite(frame.h);
+            }
+            let _ = b.taffy.set_style(t, s);
+            b.compute(t, avail, texts, scrolls);
+        }
+        if let Ok(l) = b.taffy.layout(t).map(|l| l.size) {
+            let room = |have: f32, used: f32, f: f32| ((have - used).max(0.0) * f).round();
+            origin.0 += room(frame.w, l.width, at.0);
+            origin.1 += room(frame.h, l.height, at.1);
+        }
+    }
     if matches!(size, RootSize::Content { .. })
         && let Ok(l) = b.taffy.layout(t).map(|l| l.size)
         && (l.width > MAX_CONTENT_SIZE || l.height > MAX_CONTENT_SIZE)

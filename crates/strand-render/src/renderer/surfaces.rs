@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use strand_scene::Curve;
 use strand_scene::{
-    Anchor, Damage, LogicalPoint, LogicalRect, NodeId, NodeKind, Prop, Scale, Size, SurfaceId,
-    TokenScope,
+    Damage, LogicalPoint, LogicalRect, NodeId, NodeKind, Prop, Scale, Size, SurfaceId, TokenScope,
 };
 
 use super::{Renderer, SurfaceState};
@@ -235,8 +234,9 @@ impl Renderer {
 
     /// A shown content-sized surface is about to grow: where its anchor
     /// moves its origin (centred: half the growth; anchored to the right
-    /// or bottom edge: all of it), its content is drawn where it was on
-    /// screen and glides to its new place, instead of jumping as the
+    /// or bottom edge: all of it; a popup as its positioner places it,
+    /// [`super::specs::resize_share`]), its content is drawn where it was
+    /// on screen and glides to its new place, instead of jumping as the
     /// compositor re-centres the buffer.
     pub(super) fn glide_origin(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
         let Some(s) = self.surfaces.get(&surface) else {
@@ -250,24 +250,19 @@ impl Renderer {
         let Some(spec) = self.specs.get(&root) else {
             return;
         };
-        if self.anim.reduced() || spec.kind == NodeKind::Bar || !self.content_sized.contains(&root)
+        if self.anim.reduced()
+            || spec.kind == NodeKind::Bar
+            || !self.content_sized.contains_key(&root)
         {
             return;
         }
-        let (fx, fy) = match spec.anchor {
-            Anchor::Center => (0.5, 0.5),
-            Anchor::Top => (0.5, 0.0),
-            Anchor::Bottom => (0.5, 1.0),
-            Anchor::Left => (0.0, 0.5),
-            Anchor::Right => (1.0, 0.5),
-            Anchor::TopLeft => (0.0, 0.0),
-            Anchor::TopRight => (1.0, 0.0),
-            Anchor::BottomLeft => (0.0, 1.0),
-            Anchor::BottomRight => (1.0, 1.0),
+        let Some((fx, fy)) = self.resize_share_of(root) else {
+            return;
         };
         // Growth only: content kept in place in a smaller buffer would be
-        // cut off at its edge (a shrink comes once everything settled,
-        // and steps; decisions.md, wave3-pixels fixer round 3).
+        // cut off at its edge. A shrink comes once everything settled,
+        // and the content is laid out where the smaller box will be
+        // before it comes (`RootSize::Placed`, decisions.md popup-shrink).
         let delta = [(new.w - old.w).max(0.0) * fx, (new.h - old.h).max(0.0) * fy];
         if delta.iter().all(|d| d.abs() < 0.5) {
             return;

@@ -1,0 +1,66 @@
+id     = "popup-shrink-centred"
+about  = """A content-sized popup below its anchor, centred on it across, at scale
+1.5 and 144 Hz, whose card springs narrower, taller, shorter and wider
+while it is open. Its positioner keeps the popup's top on the anchor and
+its centre on the anchor's centre (placement.rs `popup_request`), so the
+compositor moves it by half a change in width and not at all for a change
+in height. While a shrink springs the surface is held at its larger size;
+the content is laid out at its own size where the smaller box will be
+(layout_pass.rs `root_size`, `RootSize::Placed`), so it shrinks about its
+centre, and when the buffer shrinks and the popup is re-centred nothing
+moves on screen. A growth draws the content where it was and glides it to
+its new place (`glide_origin`) by the same share (specs.rs `resize_share`):
+across only, never down and back up. `#mark`, centred in the card's top
+row, stays where it is on screen throughout (docs/decisions.md
+popup-shrink)."""
+screen = { width = 400, scale = 1.5 }
+hz     = 144
+
+=== shell.strand
+state open = false
+state wide = true
+state tall = false
+bar Top {
+  height: 30
+  row { id: strip; height: 30; align: center
+    box { id: lead; width: 160; height: 30 }
+    box { id: anchor; width: 40; height: 30; bg: #303030
+      popup { id: pop; open: open; enter { opacity: 0; y: -6 }
+        col { id: card; bg: #202030; pad: 6; gap: 4; align: center
+              width: wide ? 220 : 160
+              height: tall ? 90 : 50
+          box { id: mark; width: 40; height: 10; bg: #ff8000 }
+          text "a centred card" { id: line; color: #ffffff }
+        }
+      }
+    }
+    text "12:00" { color: #ffffff }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+expect visible #card
+mark narrow
+set wide false
+rest
+expect still #mark
+mark taller
+set tall true
+rest
+expect still #mark
+mark shorter
+set tall false
+rest
+expect still #mark
+mark wider
+set wide true
+rest
+expect still #mark
+mark close
+set open false
+rest
+expect hidden #card

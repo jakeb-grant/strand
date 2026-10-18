@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use strand_scene::Curve;
-use strand_scene::{NodeId, Prop, Scale, SurfaceId, TokenScope};
+use strand_scene::{LogicalRect, NodeId, NodeKind, Prop, Scale, SurfaceId, TokenScope};
 
 use super::Renderer;
 use super::specs::{centred_overhang, within_edges};
@@ -222,6 +222,38 @@ impl Renderer {
         boxes
     }
 
+    /// (popup-shrink) How the surface node `root` is laid out in `frame`,
+    /// its buffer's box. A content-sized panel, OSD or popup held at its
+    /// larger size while something on it moves (it shrinks once nothing
+    /// does, [`Renderer::release_holds`]) is laid out at its content's
+    /// size and placed where the compositor will keep the smaller box
+    /// ([`super::specs::resize_share`]): its content is drawn where it
+    /// will be on screen, so nothing moves when the buffer shrinks, as
+    /// [`Renderer::glide_origin`] keeps it in place when the buffer
+    /// grows. Any other root fills its frame: a bar's or a lock's size is
+    /// the output's, and a surface configured at another size than it
+    /// asked for is drawn at the size it has.
+    fn root_size(&self, root: NodeId, frame: LogicalRect) -> RootSize {
+        let fixed = RootSize::Fixed(frame);
+        let (Some(&(cw, ch)), Some(spec)) = (self.content_sized.get(&root), self.specs.get(&root))
+        else {
+            return fixed;
+        };
+        let asks = matches!(spec.kind, NodeKind::Panel | NodeKind::Osd | NodeKind::Popup);
+        if !asks || !self.held.contains(&root) {
+            return fixed;
+        }
+        let Some(at) = self.resize_share_of(root) else {
+            return fixed;
+        };
+        RootSize::Placed {
+            frame,
+            width: (!cw).then_some(frame.w),
+            height: (!ch).then_some(frame.h),
+            at,
+        }
+    }
+
     /// Lays out surface `id` if anything layout reads changed, or its
     /// size springs moved. Sizes spring from the boxes of the last pass
     /// to the ones laid out at rest; a frame where only size springs
@@ -251,6 +283,7 @@ impl Renderer {
             scale: s.scale,
             estimate: false,
         };
+        let root_size = self.root_size(root, frame);
         // Replaced below on every path: taken, not copied.
         let old = self.surfaces.get_mut(&id).and_then(|s| s.boxes.take());
         let rest = self.anim.rest_sizes(&self.tree, root);
@@ -276,9 +309,9 @@ impl Renderer {
             // they started (nothing layout reads changed since), so one
             // pass with the in-flight sizes is enough.
             sizes = self.anim.size_overrides(&self.tree, root, &rest);
-            self.run_layout(root, RootSize::Fixed(frame), &info, &sizes)
+            self.run_layout(root, root_size, &info, &sizes)
         } else if sized {
-            let at_rest = self.run_layout(root, RootSize::Fixed(frame), &info, &rest);
+            let at_rest = self.run_layout(root, root_size, &info, &rest);
             rest_reach = Some(crate::fillet::grow(
                 &self.tree,
                 &at_rest,
@@ -292,12 +325,12 @@ impl Renderer {
             if sizes == rest {
                 at_rest
             } else {
-                self.run_layout(root, RootSize::Fixed(frame), &info, &sizes)
+                self.run_layout(root, root_size, &info, &sizes)
             }
         } else {
-            self.run_layout(root, RootSize::Fixed(frame), &info, &rest)
+            self.run_layout(root, root_size, &info, &rest)
         };
-        if !self.content_sized.contains(&root)
+        if !self.content_sized.contains_key(&root)
             && let Some(mut spec) = self.specs.get(&root).cloned()
             && spec.open
         {
@@ -417,7 +450,7 @@ impl Renderer {
             let mut a = self.tree.get(n)?.parent?;
             loop {
                 if a == root {
-                    if self.content_sized.contains(&root) {
+                    if self.content_sized.contains_key(&root) {
                         return None;
                     }
                     break;

@@ -50,7 +50,8 @@ use strand_core::Runtime;
 use strand_render::probe::{Axes, FrameTrace, Hidden, NodeTrace, TextDrawn};
 use strand_render::{Renderer, Router, TextBackend};
 use strand_scene::{
-    ButtonState, LogicalPoint, NodeId, PaintTarget, Painter, Prop, PropValue, SceneDiff, SurfaceId,
+    ButtonState, LogicalPoint, NodeId, PaintTarget, Painter, Prop, PropValue, SceneDiff, Size,
+    SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine};
 
@@ -280,6 +281,13 @@ struct Harness<'s> {
     /// (`commit.rs`), before the loop handles the surface changes the
     /// paint left (a closing surface's removal).
     poses: BTreeMap<u32, PoseRec>,
+    /// (popup-shrink) What each surface painted this tick committed: its
+    /// logical size, origin, buffer size and pixels (with images), read
+    /// right after its paint as `poses` is. A paint that leaves the
+    /// surface a new size is configured at it before the tick is
+    /// collected, and the frame shows the buffer the paint drew, where
+    /// it lay then.
+    committed: BTreeMap<u32, Committed>,
     /// The last tick run.
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
@@ -396,6 +404,7 @@ impl<'s> Harness<'s> {
             depth: 0,
             driven: false,
             poses: BTreeMap::new(),
+            committed: BTreeMap::new(),
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
@@ -1374,6 +1383,17 @@ impl<'s> Harness<'s> {
                     }
                 }
             }
+            if let Some(sh) = self.surfaces.get(id) {
+                self.committed.insert(
+                    id.0,
+                    Committed {
+                        logical: sh.logical,
+                        origin: sh.origin,
+                        size: sh.size,
+                        pixels: self.opts.images.then(|| sh.pixels.clone()),
+                    },
+                );
+            }
             match self.r.delegated_pose(id) {
                 Some(p) => {
                     self.poses.insert(
@@ -1520,6 +1540,7 @@ impl<'s> Harness<'s> {
                 text: format!("exec {}: {:?}", x.action, x.argv),
             });
         }
+        let committed = std::mem::take(&mut self.committed);
         if traces.is_empty() {
             return Ok(());
         }
@@ -1562,7 +1583,12 @@ impl<'s> Harness<'s> {
                 .surfaces
                 .shown
                 .iter()
-                .map(|s| (s.id.0, s.logical))
+                .map(|s| {
+                    (
+                        s.id.0,
+                        committed.get(&s.id.0).map_or(s.logical, |c| c.logical),
+                    )
+                })
                 .collect(),
             fresh: last.iter().map(|(s, f)| (*s, f.fresh)).collect(),
             held_text: held
@@ -1579,7 +1605,12 @@ impl<'s> Harness<'s> {
                 .surfaces
                 .shown
                 .iter()
-                .map(|s| (s.id.0, s.origin))
+                .map(|s| {
+                    (
+                        s.id.0,
+                        committed.get(&s.id.0).map_or(s.origin, |c| c.origin),
+                    )
+                })
                 .collect(),
             poses: std::mem::take(&mut self.poses)
                 .into_iter()
@@ -1592,20 +1623,22 @@ impl<'s> Harness<'s> {
             frame.regions.insert(*s, regions(&self.r, SurfaceId(*s)));
             if self.opts.images
                 && cost.get(s).is_some_and(|c| c.damage_px > 0)
-                && let Some(sh) = self.surfaces.get(SurfaceId(*s))
+                && self.surfaces.get(SurfaceId(*s)).is_some()
+                && let Some(c) = committed.get(s)
+                && let Some(pixels) = &c.pixels
             {
-                let rgba = to_rgba(&sh.pixels);
+                let rgba = to_rgba(pixels);
                 let name = format!(
                     "frames/{}.png",
                     &blake3::hash(&rgba).to_hex().as_str()[..16]
                 );
                 if !self.images.contains_key(&name) {
-                    let png = crate::report::png::encode(sh.size.w, sh.size.h, &rgba)?;
+                    let png = crate::report::png::encode(c.size.w, c.size.h, &rgba)?;
                     self.images.insert(
                         name.clone(),
                         Image {
-                            width: sh.size.w,
-                            height: sh.size.h,
+                            width: c.size.w,
+                            height: c.size.h,
                             png,
                         },
                     );
@@ -1768,6 +1801,15 @@ fn lp(p: Point) -> LogicalPoint {
 /// Milliseconds for an input event's timestamp.
 fn ms(t: Duration) -> u32 {
     t.as_millis() as u32
+}
+
+/// (popup-shrink) A surface as its paint left it, before the loop
+/// configured it again (`Harness::committed`).
+struct Committed {
+    logical: [f32; 2],
+    origin: [f32; 2],
+    size: Size,
+    pixels: Option<Vec<u8>>,
 }
 
 /// Logic's wall clock at presentation time `t`.

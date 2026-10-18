@@ -101,7 +101,75 @@ pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
     }
 }
 
+/// (popup-shrink) Where the compositor keeps the box of the surface
+/// `spec` describes as its size changes, as a share of the change on
+/// each axis: 0 keeps its start edge (left or top), 1 its end edge, 0.5
+/// its centre. `parent` is a popup's parent surface spec. A layer
+/// surface keeps the edges it is anchored to (`anchor:`, and a panel's
+/// `attach:`), as strand-surface's `placement::layer_config` anchors it.
+/// A popup keeps its side that faces its anchor and stays centred on
+/// the anchor across, or level with its row's top as a submenu beside
+/// it, as `placement::popup_config` and `popup_request` place it. The
+/// compositor's slide or flip of a popup that does not fit is not
+/// followed.
+pub(super) fn resize_share(spec: &SurfaceSpec, parent: Option<&SurfaceSpec>) -> (f32, f32) {
+    if spec.kind == NodeKind::Popup {
+        let bar_edge = parent
+            .filter(|p| p.kind == NodeKind::Bar)
+            .map(|p| p.edge.unwrap_or(Edge::Top));
+        let parent_popup = parent.is_some_and(|p| p.kind == NodeKind::Popup);
+        // The popup's edge that faces its anchor: it stays.
+        let facing = match spec.attach.or(bar_edge) {
+            _ if spec.tooltip => Edge::Top,
+            Some(e) => e,
+            None if parent_popup => match spec.anchor {
+                Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => Edge::Right,
+                Anchor::Top => Edge::Bottom,
+                Anchor::Bottom => Edge::Top,
+                _ => Edge::Left,
+            },
+            None => Edge::Top,
+        };
+        // A submenu beside its row starts level with it.
+        let aligned = parent_popup && spec.attach.is_none() && !spec.tooltip;
+        let across = if aligned { 0.0 } else { 0.5 };
+        return match facing {
+            Edge::Top => (0.5, 0.0),
+            Edge::Bottom => (0.5, 1.0),
+            Edge::Left => (0.0, across),
+            Edge::Right => (1.0, across),
+        };
+    }
+    let (mut fx, mut fy) = match spec.anchor {
+        Anchor::Center => (0.5, 0.5),
+        Anchor::Top => (0.5, 0.0),
+        Anchor::Bottom => (0.5, 1.0),
+        Anchor::Left => (0.0, 0.5),
+        Anchor::Right => (1.0, 0.5),
+        Anchor::TopLeft => (0.0, 0.0),
+        Anchor::TopRight => (1.0, 0.0),
+        Anchor::BottomLeft => (0.0, 1.0),
+        Anchor::BottomRight => (1.0, 1.0),
+    };
+    // `attach:` anchors a panel to that edge; the other axis stays.
+    match spec.attach.filter(|_| spec.kind == NodeKind::Panel) {
+        Some(Edge::Top) => fy = 0.0,
+        Some(Edge::Bottom) => fy = 1.0,
+        Some(Edge::Left) => fx = 0.0,
+        Some(Edge::Right) => fx = 1.0,
+        None => {}
+    }
+    (fx, fy)
+}
+
 impl Renderer {
+    /// (popup-shrink) [`resize_share`] of the surface node `root`.
+    pub(super) fn resize_share_of(&self, root: NodeId) -> Option<(f32, f32)> {
+        let spec = self.specs.get(&root)?;
+        let parent = spec.parent.and_then(|p| self.specs.get(&p));
+        Some(resize_share(spec, parent))
+    }
+
     /// Content-sized surfaces held at a larger size while things moved
     /// ask for their own size once nothing does, and any spec left dirty
     /// (an exit finished, a surface closed) is refreshed, so the host
@@ -152,7 +220,7 @@ impl Renderer {
         surface: SurfaceId,
         root: NodeId,
     ) -> Option<(Option<f32>, Option<f32>)> {
-        if !self.content_sized.contains(&root) {
+        if !self.content_sized.contains_key(&root) {
             return None;
         }
         let spec = self.specs.get(&root)?;
@@ -359,17 +427,14 @@ impl Renderer {
             }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
-            let content_sized = if bar {
-                if vertical {
-                    spec.width.is_none()
-                } else {
-                    spec.height.is_none()
-                }
-            } else {
-                spec.width.is_none() || spec.height.is_none()
+            let axes = match (bar, vertical) {
+                (true, true) => (spec.width.is_none(), false),
+                (true, false) => (false, spec.height.is_none()),
+                _ => (spec.width.is_none(), spec.height.is_none()),
             };
+            let content_sized = axes.0 || axes.1;
             if content_sized {
-                self.content_sized.insert(id);
+                self.content_sized.insert(id, axes);
             } else {
                 self.content_sized.remove(&id);
             }
@@ -487,7 +552,7 @@ impl Renderer {
             self.specs.remove(&id);
             self.surface_changes.push((id, SurfaceChange::Removed));
         }
-        self.content_sized.retain(|id| live.contains(id));
+        self.content_sized.retain(|id, _| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.held_reach.retain(|id, _| live.contains(id));
         self.opening.retain(|id| live.contains(id));
@@ -558,5 +623,64 @@ impl Renderer {
         }
         self.surface_changes.push((id, change));
         self.specs.insert(id, spec);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(kind: NodeKind, props: &[(Prop, &str)]) -> SurfaceSpec {
+        SurfaceSpec::resolve(kind, |p| {
+            props
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map(|(_, v)| strand_scene::PropValue::Keyword((*v).into()))
+        })
+    }
+
+    /// (popup-shrink) Where a resized surface's box stays, as the surface
+    /// manager places it (strand-surface placement.rs `layer_config`,
+    /// `popup_config`, `popup_request`): a layer surface by its anchor
+    /// and a panel's `attach:`; a popup by the side facing its anchor,
+    /// centred across it unless it is a submenu beside its row.
+    #[test]
+    fn a_resized_box_stays_where_the_surface_manager_keeps_it() {
+        let bar = spec(NodeKind::Bar, &[]);
+        let bottom_bar = spec(NodeKind::Bar, &[(Prop::Edge, "bottom")]);
+        let panel = spec(NodeKind::Panel, &[]);
+        let popup = spec(NodeKind::Popup, &[]);
+        let cases: [(SurfaceSpec, Option<&SurfaceSpec>, (f32, f32)); 9] = [
+            (panel.clone(), None, (0.5, 0.5)),
+            (
+                spec(NodeKind::Osd, &[(Prop::Anchor, "bottom_right")]),
+                None,
+                (1.0, 1.0),
+            ),
+            (
+                spec(NodeKind::Panel, &[(Prop::Attach, "top")]),
+                None,
+                (0.5, 0.0),
+            ),
+            // Below a top bar: its top stays, centred across.
+            (popup.clone(), Some(&bar), (0.5, 0.0)),
+            (popup.clone(), Some(&bottom_bar), (0.5, 1.0)),
+            (popup.clone(), Some(&panel), (0.5, 0.0)),
+            // A submenu: beside its row, level with its top.
+            (popup.clone(), Some(&popup), (0.0, 0.0)),
+            (
+                spec(NodeKind::Popup, &[(Prop::Anchor, "left")]),
+                Some(&popup),
+                (1.0, 0.0),
+            ),
+            (
+                spec(NodeKind::Popup, &[(Prop::Attach, "left")]),
+                Some(&panel),
+                (0.0, 0.5),
+            ),
+        ];
+        for (s, parent, want) in cases {
+            assert_eq!(resize_share(&s, parent), want, "{s:?} in {parent:?}");
+        }
     }
 }

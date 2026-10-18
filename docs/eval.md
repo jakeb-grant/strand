@@ -299,6 +299,10 @@ each shown surface lies on the output (`origins`: a content-sized popup
 the compositor re-centres as it grows moves), and, with
 `compositor_poses`, the pose each painted surface commits with its frame
 (`poses`), read right after its paint as the surface manager reads it.
+A painted surface's size, origin and image are read there too: a paint
+that leaves its surface a new size (a held surface let go) has it
+configured before the tick is collected, and the frame shows the buffer
+that paint drew, where it lay.
 
 The checks read the trace as the eye sees it (`RunTrace::on_screen`):
 every row moved with its surface since the surface was first placed, and
