@@ -3,6 +3,8 @@
 
 use strand_text::TextLayout;
 
+use strand_scene::{Damage, PaintTarget, SurfaceId};
+
 use super::Renderer;
 use crate::probe::{FrameTrace, HeldText};
 
@@ -86,6 +88,58 @@ impl Renderer {
             self.deliver(layout);
         }
         n
+    }
+
+    /// (eval-sandbox) Keeps each surface's last painted frame as drawn
+    /// from now on (on), for [`Renderer::repaint_fresh`], or nothing
+    /// (off, which drops those kept).
+    pub fn set_keep_frames(&mut self, on: bool) {
+        self.probe.keep = on;
+        if !on {
+            self.probe.last.clear();
+        }
+    }
+
+    /// (eval-sandbox) `surface`'s last painted frame drawn again in
+    /// full into `target`, as into a fresh buffer (age 0): the display
+    /// list that frame drew, flattened at its time, rasterised by a
+    /// raster with nothing cached ([`crate::raster::Raster`]'s `fresh`),
+    /// and blended over the crossfade snapshot at the frame's weight
+    /// when it was. What a partial redraw left in the presented buffer
+    /// must equal it (the `redraw` check). It reads the renderer and
+    /// changes nothing a later frame reads (`&self`).
+    ///
+    /// False, with `target` untouched, when no frame is kept for the
+    /// surface ([`Renderer::set_keep_frames`] off, or none painted since)
+    /// or `target` is not the frame's size and scale.
+    pub fn repaint_fresh(&self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> bool {
+        let Some(last) = self.probe.last.get(&surface) else {
+            return false;
+        };
+        if target.validate().is_err() || target.size != last.size || target.scale != last.scale {
+            return false;
+        }
+        let mut raster = self.raster.fresh();
+        raster.paint(
+            &last.items,
+            &Damage::full(target.size),
+            &self.atlas,
+            last.scale,
+            target,
+        );
+        if let Some(w) = last.fade {
+            self.blend_fade_into(surface, w, target);
+        }
+        true
+    }
+
+    /// (eval-sandbox, the `redraw` check's own tests only) A mutant:
+    /// from now on each frame's own damage, where it is worked out from
+    /// what changed, is shrunk by `px` pixels on every side, so a
+    /// partial redraw leaves a band of stale pixels around each change.
+    /// 0 turns it off. Nothing but eval/tests sets it.
+    pub fn set_damage_inset(&mut self, px: u32) {
+        self.probe.damage_inset = px;
     }
 
     /// Inline shaping made `layout` for `node`'s `text`: the layout to

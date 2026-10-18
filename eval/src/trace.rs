@@ -49,6 +49,12 @@ pub struct RunTrace {
     /// The ticks that painted something.
     pub frames: Vec<Frame>,
     pub digest: String,
+    /// How many painted frames (of a surface each) were compared with a
+    /// full repaint of the same frame (the `redraw` check;
+    /// `Frame::redraw` holds the differences); 0: none. Never in the
+    /// digest: the comparison changes nothing the run draws.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub redraw: u32,
     /// Rows and input regions moved by their surface's origin since it
     /// was first placed ([`RunTrace::on_screen`]); never written.
     #[serde(skip)]
@@ -252,6 +258,40 @@ pub struct Frame {
     /// compositor applies to it: absent is none (at rest).
     #[serde(default)]
     pub poses: BTreeMap<u32, PoseRec>,
+    /// With `RunTrace::redraw`, each painted surface whose buffer differs
+    /// at all from a full repaint of the same frame. Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub redraw: BTreeMap<u32, RedrawRec>,
+}
+
+/// How a painted surface's buffer, left by a partial redraw at its
+/// buffer's age, differs from the same frame repainted in full into a
+/// fresh buffer (the `redraw` check). Pixels are buffer pixels, compared
+/// premultiplied; rects are `[x, y, w, h]`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RedrawRec {
+    /// Pixels differing past the leg's tolerance on a channel
+    /// (`checks::redraw::tolerance`).
+    pub px: u64,
+    /// Of those, the pixels outside what the frame redrew (its damage
+    /// widened by the buffer's age): stale ones it should have redrawn.
+    pub stale: u64,
+    /// Pixels differing at all.
+    pub any: u64,
+    /// The largest channel difference.
+    pub worst: u8,
+    /// The bounding box of the pixels past the tolerance (of every
+    /// differing pixel when none is).
+    pub at: [u32; 4],
+    /// The bounding box of what the frame redrew; `None`: nothing.
+    pub redrawn: Option<[u32; 4]>,
+    /// Drawn by the GPU leg (the presented frame and its repaint both).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu: bool,
+    /// The full repaint's image (`frames/<hash>.png`), when the run keeps
+    /// images; `Frame::png` is the buffer's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png: Option<String>,
 }
 
 /// A surface pose the compositor applies (`strand_scene::SurfacePose`).
@@ -640,6 +680,10 @@ impl RunTrace {
     pub fn from_json(text: &str) -> Result<RunTrace, String> {
         serde_json::from_str(text).map_err(|e| e.to_string())
     }
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 mod erased {

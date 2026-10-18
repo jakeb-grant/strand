@@ -122,6 +122,12 @@ impl Offscreen {
         self.fades.enabled = on;
     }
 
+    /// (eval-sandbox) Whether fade layers are on.
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn fade_layers_on(&self) -> bool {
+        self.fades.enabled
+    }
+
     /// Fade layers built so far.
     pub fn fade_builds(&self) -> u64 {
         self.fades.builds

@@ -211,6 +211,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
         images: frames != Frames::None,
         build,
         backend,
+        ..RunOptions::default()
     };
     let mut entries = Vec::new();
     let mut lines = Vec::new();
@@ -284,6 +285,7 @@ pub fn check(args: &[String]) -> Result<(), Error> {
         images: true,
         build,
         backend: None,
+        ..RunOptions::default()
     };
     let mut lines = Vec::new();
     let mut failed = Vec::new();

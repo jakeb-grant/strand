@@ -132,12 +132,16 @@ pub fn check_with(
         // The pixel comparison needs both legs' images.
         opts.images = true;
     }
+    // Each leg's frames are held to their full repaints; the twin and
+    // the determinism run only to what they compare.
+    opts.redraw = sc.runs(CheckId::Redraw);
     let run = harness::run(sc, &opts)?;
     let mut twin_error = None;
     let twin = if sc.runs(CheckId::Twin) && !sc.reduce_motion && !opts.reduced_motion {
         let o = harness::RunOptions {
             reduced_motion: true,
             images: false,
+            redraw: false,
             ..opts.clone()
         };
         match harness::run(sc, &o) {
@@ -153,6 +157,7 @@ pub fn check_with(
     let again = if sc.runs(CheckId::Determinism) || curated(sc) {
         let o = harness::RunOptions {
             images: false,
+            redraw: false,
             ..opts.clone()
         };
         Some(harness::run(sc, &o)?.trace)
@@ -198,6 +203,13 @@ pub fn check_with(
             let cx = checks::Cx::new(sc, &run.trace);
             let findings = checks::cpu_gpu::run(&cx, &g.trace, &run.images, &g.images);
             report.set(sc, CheckId::CpuGpu, findings, None);
+            // The GPU leg's frames against their fresh repaints, beside
+            // the CPU leg's.
+            if g.trace.redraw > 0 {
+                let mut findings = checks::redraw::findings(&run.trace);
+                findings.extend(checks::redraw::findings(&g.trace));
+                report.set(sc, CheckId::Redraw, findings, None);
+            }
             Some(g)
         }
         Some(Err(Error::NoDevice(why))) if !gpu::required() => {

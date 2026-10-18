@@ -19,6 +19,7 @@
 //! frame-time statistics are the CPU's business) and `shader` passes
 //! (requests other than frames are dropped, and noted).
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -80,6 +81,34 @@ impl Device {
                 r.deliver_gpu(reply);
                 Ok(d)
             }
+            GpuReply::Unavailable(e) => Err(Error::NoDevice(e.to_string())),
+            _ => Err(Error::NoDevice("the GPU thread ended at its start".into())),
+        }
+    }
+
+    /// A device of its own, which no renderer drives (its `Ready` is
+    /// dropped): the `redraw` check's, where each frame is drawn as on a
+    /// GPU holding nothing from earlier ones ([`Fresh`]).
+    pub fn bare() -> Result<Device, Error> {
+        let (ping, pings) = mpsc::channel();
+        let gpu = Gpu::spawn(
+            Box::new(move || {
+                let _ = ping.send(());
+            }),
+            GpuOptions::from_env(),
+        );
+        let mut d = Device {
+            gpu,
+            pings,
+            dropped: Vec::new(),
+        };
+        match d.until(|m| {
+            matches!(
+                m,
+                GpuReply::Ready(_) | GpuReply::Unavailable(_) | GpuReply::Exited
+            )
+        })? {
+            GpuReply::Ready(_) => Ok(d),
             GpuReply::Unavailable(e) => Err(Error::NoDevice(e.to_string())),
             _ => Err(Error::NoDevice("the GPU thread ended at its start".into())),
         }
@@ -181,5 +210,78 @@ impl Device {
             while self.gpu.try_recv().is_some() {}
             let _ = self.pings.recv_timeout(Duration::from_millis(20));
         }
+    }
+}
+
+/// The `redraw` check's side of the GPU leg: a [`Device::bare`] drawing
+/// each presented frame again as `Renderer::fresh_gpu_frame` lowers it
+/// (every pixmap uploaded with it), retiring that frame's uploads with
+/// the next, so no frame draws with anything an earlier one left.
+#[derive(Debug)]
+pub struct Fresh {
+    dev: Device,
+    /// Each surface attached, at its size and scale.
+    attached: HashMap<SurfaceId, (Size, Scale)>,
+    /// The last frame's uploads, retired by the next.
+    held: Vec<u64>,
+    next_upload: u64,
+    next_frame: u64,
+}
+
+impl Fresh {
+    pub fn start() -> Result<Fresh, Error> {
+        Ok(Fresh {
+            dev: Device::bare()?,
+            attached: HashMap::new(),
+            held: Vec::new(),
+            next_upload: 0,
+            next_frame: 0,
+        })
+    }
+
+    /// `surface`'s last frame drawn fresh into `pixels` (premultiplied
+    /// BGRA, `size`); false when `r` keeps none of that size.
+    pub fn draw(
+        &mut self,
+        r: &Renderer,
+        surface: SurfaceId,
+        size: Size,
+        scale: Scale,
+        pixels: &mut [u8],
+    ) -> Result<bool, Error> {
+        self.next_frame += 1;
+        let Some(mut frame) = r.fresh_gpu_frame(surface, self.next_frame, self.next_upload) else {
+            return Ok(false);
+        };
+        if frame.size != size || frame.scale != scale {
+            return Ok(false);
+        }
+        match self.attached.get(&surface) {
+            None => {
+                self.dev.gpu.send(GpuRequest::Attach {
+                    surface,
+                    handles: None,
+                    size,
+                    scale,
+                    opaque: false,
+                });
+                self.attached.insert(surface, (size, scale));
+            }
+            Some(at) if *at != (size, scale) => {
+                self.dev.resize(surface, size, scale);
+                self.attached.insert(surface, (size, scale));
+            }
+            Some(_) => {}
+        }
+        frame.retire = std::mem::take(&mut self.held);
+        self.held = frame.uploads.iter().map(|u| u.id).collect();
+        self.next_upload = self.held.iter().copied().fold(self.next_upload, u64::max);
+        self.dev.draw(frame, pixels, size)?;
+        Ok(true)
+    }
+
+    /// Ends its thread ([`Device::finish`]).
+    pub fn finish(self) {
+        self.dev.finish();
     }
 }

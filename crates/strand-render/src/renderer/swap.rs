@@ -224,6 +224,15 @@ impl FadeFrame {
     pub(super) fn full(self) -> bool {
         self != FadeFrame::None
     }
+
+    /// (eval-sandbox) The new frame's weight when it is blended.
+    #[cfg(feature = "eval-hooks")]
+    pub(super) fn weight(self) -> Option<f32> {
+        match self {
+            FadeFrame::Blend(w) => Some(w),
+            _ => None,
+        }
+    }
 }
 
 /// Whether `text` can reach 3:1 over `bgs` both in `from` (the old
@@ -1601,6 +1610,20 @@ impl Renderer {
             blend(target, &snap.pixels, snap.size, w);
         }
         self.swap.blend += started.elapsed();
+    }
+
+    /// (eval-sandbox) [`Renderer::blend_fade`] again, into another
+    /// target, changing nothing (`Renderer::repaint_fresh`).
+    #[cfg(feature = "eval-hooks")]
+    pub(super) fn blend_fade_into(&self, surface: SurfaceId, w: f32, target: &mut PaintTarget<'_>) {
+        if let Some(snap) = self
+            .swap
+            .fade
+            .get(&surface)
+            .filter(|s| s.size == target.size)
+        {
+            blend(target, &snap.pixels, snap.size, w);
+        }
     }
 
     /// (M4) `surface`'s crossfade snapshot at `size`, taken (the CPU

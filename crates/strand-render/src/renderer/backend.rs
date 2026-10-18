@@ -1640,51 +1640,113 @@ impl Renderer {
         size: Size,
         scale: Scale,
     ) -> Frame {
-        let bounds = Rect::from_size(size);
-        let (cache, offscreen) = self.raster.gpu_parts();
-        // A frame of its own: what the last one built uncached (a sliced
-        // shadow's corner tiles) is cached if this one asks again.
-        cache.begin_frame();
-        // Groups the CPU filters (blur, colour matrix), drawn whole.
-        offscreen.prepare(
-            items,
-            &Damage::full(size),
-            bounds,
+        let mut frame = lower(
+            &mut self.raster,
+            &mut self.gpu.uploads,
             &self.atlas,
-            &*cache,
-            scale,
-        );
-        // The surface's own passes, run in the frame.
-        let passes: HashMap<NodeId, &PassWant> = passes
-            .iter()
-            .filter(|p| p.id.slot == Slot::Node)
-            .map(|p| (p.id.node, p))
-            .collect();
-        let mut l = Lowering {
-            atlas: &self.atlas,
-            cache,
-            groups: offscreen.current(),
-            scale,
-            surface: bounds,
-            uploads: &mut self.gpu.uploads,
-            passes: &passes,
-            ops: Vec::new(),
-            new: Vec::new(),
-        };
-        l.uploads.begin();
-        l.lower(items);
-        let (ops, uploads) = (l.ops, l.new);
-        let retire = self.gpu.uploads.retire();
-        Frame {
-            surface,
-            id,
+            (surface, id),
+            items,
+            passes,
             size,
             scale,
-            ops,
-            uploads,
-            retire,
-            clear: AlphaColor::TRANSPARENT,
+        );
+        frame.retire = self.gpu.uploads.retire();
+        frame
+    }
+
+    /// (eval-sandbox) `surface`'s last painted frame lowered again, as
+    /// for a GPU that holds nothing yet: by a raster with nothing cached
+    /// and an upload table of its own, so every pixmap it draws is in its
+    /// uploads (numbered from `first_upload + 1`, retiring nothing), with
+    /// the crossfade it was blended with. The `redraw` check draws it on a
+    /// device of its own and compares it with what the presented frame
+    /// drew. `id` is its frame number. It reads the renderer and changes
+    /// nothing a later frame reads (`&self`). `None` when no frame is kept
+    /// for the surface (`Renderer::set_keep_frames`).
+    #[cfg(feature = "eval-hooks")]
+    pub fn fresh_gpu_frame(&self, surface: SurfaceId, id: u64, first_upload: u64) -> Option<Frame> {
+        let last = self.probe.last.get(&surface)?;
+        let mut raster = self.raster.fresh();
+        let mut uploads = Uploads {
+            next: first_upload,
+            ..Uploads::default()
+        };
+        let mut frame = lower(
+            &mut raster,
+            &mut uploads,
+            &self.atlas,
+            (surface, id),
+            &last.items,
+            &last.passes,
+            last.size,
+            last.scale,
+        );
+        // As `gpu_present_paint` blends: over the snapshot, when there is
+        // one to upload.
+        if let Some(w) = last.fade
+            && let Some(px) = self.fade_pixels(surface, last.size)
+            && let (Ok(pw), Ok(ph)) = (u16::try_from(last.size.w), u16::try_from(last.size.h))
+        {
+            let mut pm = Pixmap::new(pw, ph);
+            let bytes = pm.data_as_u8_slice_mut();
+            if bytes.len() == px.len() {
+                bytes.copy_from_slice(px);
+                let image = uploads.id(&Arc::new(pm), &mut frame.uploads);
+                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), image, last.size, w);
+            }
         }
+        Some(frame)
+    }
+}
+
+/// Lowers `items` to a GPU frame of `surface` numbered `id` with `raster`'s
+/// caches and the pixmaps `uploads` holds (`retire` left empty).
+#[allow(clippy::too_many_arguments)]
+fn lower(
+    raster: &mut crate::raster::Raster,
+    uploads: &mut Uploads,
+    atlas: &AtlasMirror,
+    (surface, id): (SurfaceId, u64),
+    items: &[DisplayItem],
+    passes: &[PassWant],
+    size: Size,
+    scale: Scale,
+) -> Frame {
+    let bounds = Rect::from_size(size);
+    let (cache, offscreen) = raster.gpu_parts();
+    // A frame of its own: what the last one built uncached (a sliced
+    // shadow's corner tiles) is cached if this one asks again.
+    cache.begin_frame();
+    // Groups the CPU filters (blur, colour matrix), drawn whole.
+    offscreen.prepare(items, &Damage::full(size), bounds, atlas, &*cache, scale);
+    // The surface's own passes, run in the frame.
+    let passes: HashMap<NodeId, &PassWant> = passes
+        .iter()
+        .filter(|p| p.id.slot == Slot::Node)
+        .map(|p| (p.id.node, p))
+        .collect();
+    let mut l = Lowering {
+        atlas,
+        cache,
+        groups: offscreen.current(),
+        scale,
+        surface: bounds,
+        uploads,
+        passes: &passes,
+        ops: Vec::new(),
+        new: Vec::new(),
+    };
+    l.uploads.begin();
+    l.lower(items);
+    Frame {
+        surface,
+        id,
+        size,
+        scale,
+        ops: l.ops,
+        uploads: l.new,
+        retire: Vec::new(),
+        clear: AlphaColor::TRANSPARENT,
     }
 }
 

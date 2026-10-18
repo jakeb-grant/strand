@@ -118,6 +118,17 @@ impl Raster {
         self.offscreen.set_idle_free(idle);
     }
 
+    /// (eval-sandbox) A raster with nothing cached, nothing drawn before
+    /// and this one's settings (fade layers on or off): what draws a
+    /// frame as into a fresh buffer, for the `redraw` check
+    /// (`Renderer::repaint_fresh`).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn fresh(&self) -> Raster {
+        let mut r = Raster::default();
+        r.offscreen.set_fade_layers(self.offscreen.fade_layers_on());
+        r
+    }
+
     /// Pixels the last [`Raster::paint`] rasterised. Tracks damage, not
     /// buffer size.
     pub fn rasterised(&self) -> u64 {

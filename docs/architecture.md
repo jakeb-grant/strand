@@ -768,7 +768,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 - (eval-sandbox) The `eval-hooks` feature, off by default and never
   enabled by a crate of the root workspace (only `eval/` turns it on;
   `scripts/eval/check-isolation.sh`), adds the evaluation sandbox's
-  probe and changes nothing a frame draws:
+  probe and changes nothing a frame draws (but for the test-only damage
+  mutant below):
   - `probe.rs`, public as `strand_render::probe`: plain data,
     `FrameTrace` (one per `Painter::paint`, CPU or GPU, empty damage
     included, never `update`'s preview: the frame's time, backend,
@@ -794,6 +795,17 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     unset; and `take_inline_shaped() -> u32`, the layouts inline shaping
     delivered at once since the last call (each one a text worker would
     have woken the host's loop for);
+  - (eval-refs, the `redraw` check) `Renderer::set_keep_frames(bool)`:
+    keep each surface's last painted frame as drawn (its display list,
+    passes, size, scale and crossfade weight, in the probe);
+    `repaint_fresh(&self, SurfaceId, &mut PaintTarget) -> bool`: that
+    frame drawn again in full by a raster with nothing cached, blended
+    over its crossfade snapshot; `fresh_gpu_frame(&self, SurfaceId, id,
+    first_upload) -> Option<strand_gpu::Frame>` (with `gpu`): it lowered
+    again with a raster and an upload table of their own, every pixmap
+    in its uploads. Both read the renderer only. And
+    `set_damage_inset(u32)`, a mutant only eval/tests turns on: each
+    frame's own damage shrunk by that many pixels on every side;
   - `Router::set_now(Option<Instant>)`: the time the router reads for
     hover delays, grace and edits in place of the wall clock;
   - the trace is built in `flatten/probe.rs` from the locals

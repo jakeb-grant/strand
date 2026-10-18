@@ -6,7 +6,9 @@
 //! Built only with the `eval-hooks` feature, which no crate of the
 //! workspace enables: the `eval/` workspace does
 //! (`scripts/eval/check-isolation.sh` checks it). Plain data, read by the
-//! harness; nothing here changes what a frame draws.
+//! harness; nothing here changes what a frame draws, but for the one
+//! mutant the `redraw` check's own tests turn on
+//! ([`Renderer::set_damage_inset`]).
 //!
 //! - [`Renderer::set_frame_trace`] turns the trace on: every
 //!   `Painter::paint` (CPU, GPU readback or GPU present, empty damage
@@ -18,7 +20,15 @@
 //!   frame treat the text as a late worker's (placed by its estimate)
 //!   until [`Renderer::release_text`] delivers it.
 //!
+//! - [`Renderer::repaint_fresh`] (and, for a GPU-presented surface,
+//!   `Renderer::fresh_gpu_frame`) draws a surface's last frame again in
+//!   full, as into a fresh buffer, without touching what later frames
+//!   read: the `redraw` check compares it with the buffer the partial
+//!   redraw left.
+//!
 //! [`Renderer::set_frame_trace`]: crate::Renderer::set_frame_trace
+//! [`Renderer::repaint_fresh`]: crate::Renderer::repaint_fresh
+//! [`Renderer::set_damage_inset`]: crate::Renderer::set_damage_inset
 //! [`Renderer::take_frame_traces`]: crate::Renderer::take_frame_traces
 //! [`Renderer::set_text_hold`]: crate::Renderer::set_text_hold
 //! [`Renderer::set_text_hold_with`]: crate::Renderer::set_text_hold_with
@@ -265,6 +275,23 @@ pub struct HeldText {
     pub paints: u32,
 }
 
+/// (eval-sandbox) A surface's last painted frame as it was drawn: the
+/// display list (the scene flattened at the frame's time) and what the
+/// frame did with it besides, which `Renderer::repaint_fresh` draws
+/// again. Kept apart from the surface's flatten cache, which a frame's
+/// end may drop.
+#[derive(Debug)]
+pub(crate) struct LastFrame {
+    pub(crate) items: Vec<crate::flatten::DisplayItem>,
+    #[cfg(feature = "gpu")]
+    pub(crate) passes: Vec<crate::renderer::backend::PassWant>,
+    pub(crate) size: strand_scene::Size,
+    pub(crate) scale: strand_scene::Scale,
+    /// The crossfade weight it was blended over its snapshot at, if it
+    /// was.
+    pub(crate) fade: Option<f32>,
+}
+
 /// Which texts the hold keeps back (`Renderer::set_text_hold_with`): a
 /// layout's node and text, true to hold it.
 pub type HoldPick = Box<dyn FnMut(NodeId, &str) -> bool>;
@@ -284,6 +311,14 @@ pub(crate) struct Probe {
     /// `Renderer::take_inline_shaped`: each is one a text worker would
     /// have woken the loop for.
     pub(crate) shaped: u32,
+    /// Keep each surface's last frame as drawn (`Renderer::set_keep_frames`).
+    pub(crate) keep: bool,
+    /// Each surface's last frame as drawn, while `keep` is on.
+    pub(crate) last: std::collections::HashMap<SurfaceId, LastFrame>,
+    /// A mutant for the `redraw` check's own tests
+    /// (`Renderer::set_damage_inset`): each frame's own damage shrunk by
+    /// this many pixels on every side. 0, the default, is none.
+    pub(crate) damage_inset: u32,
 }
 
 impl std::fmt::Debug for Probe {
@@ -295,11 +330,41 @@ impl std::fmt::Debug for Probe {
             .field("held", &self.held.len())
             .field("now", &self.now)
             .field("shaped", &self.shaped)
+            .field("keep", &self.keep)
+            .field("last", &self.last.len())
+            .field("damage_inset", &self.damage_inset)
             .finish()
     }
 }
 
 impl Probe {
+    /// Keeps `f`, the frame of `surface` just painted at `size` and
+    /// `scale` (blended over its crossfade snapshot at `fade`), as drawn,
+    /// when `keep` is on.
+    pub(crate) fn keep_frame(
+        &mut self,
+        surface: SurfaceId,
+        f: &crate::flatten::Flattened,
+        size: strand_scene::Size,
+        scale: strand_scene::Scale,
+        fade: Option<f32>,
+    ) {
+        if !self.keep {
+            return;
+        }
+        self.last.insert(
+            surface,
+            LastFrame {
+                items: f.items.clone(),
+                #[cfg(feature = "gpu")]
+                passes: f.passes.clone(),
+                size,
+                scale,
+                fade,
+            },
+        );
+    }
+
     /// A frame of `surface` at `time` painted `f` (`fresh`: flattened
     /// for this paint): its trace, when on. `damage_px` is the frame's
     /// own damage, `layout_passes` those this paint ran, `layout_nodes`

@@ -301,6 +301,8 @@ impl Renderer {
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);
         self.last_damage.remove(&surface);
+        #[cfg(feature = "eval-hooks")]
+        self.probe.last.remove(&surface);
         self.frame_stats.forget(surface);
         self.inspect.forget(surface);
         self.raster.set_surfaces(self.surfaces.len());

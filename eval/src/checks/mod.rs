@@ -31,6 +31,7 @@ pub mod determinism;
 pub mod envelope;
 pub mod expect;
 pub mod ink;
+pub mod redraw;
 pub mod reference;
 pub mod regions;
 pub mod settle;
@@ -754,6 +755,11 @@ pub fn evaluate(
                 }
                 CheckId::Expect => (expect::run(&cx), None),
                 CheckId::Regions => (regions::run(&cx), None),
+                CheckId::Redraw if raw.redraw == 0 => (
+                    Vec::new(),
+                    skip("no frame was compared with its full repaint"),
+                ),
+                CheckId::Redraw => (redraw::findings(raw), None),
                 // `check_scenario` runs the GPU leg and replaces this.
                 CheckId::CpuGpu => (Vec::new(), skip("no GPU run to compare with")),
             }

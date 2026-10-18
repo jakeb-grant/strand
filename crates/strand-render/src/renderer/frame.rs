@@ -547,6 +547,12 @@ impl Renderer {
         if s.valid && !fade.full() {
             diff_records(&s.records, &f.records, &mut frame);
             frame.clip(bounds);
+            // (eval-sandbox) The `redraw` check's mutant: damage that
+            // misses a band around what changed.
+            #[cfg(feature = "eval-hooks")]
+            if self.probe.damage_inset > 0 {
+                frame = inset(&frame, self.probe.damage_inset);
+            }
         } else {
             frame = Damage::full(target.size);
         }
@@ -634,6 +640,10 @@ impl Renderer {
         if total.is_empty() {
             // Nothing drawn: no frame, so nothing enters the history and
             // the caller does not commit (see `Painter::paint`).
+            // (eval-sandbox) The buffer must still show this scene.
+            #[cfg(feature = "eval-hooks")]
+            self.probe
+                .keep_frame(surface, &f, target.size, target.scale, fade.weight());
             s.cache = Some(f);
             self.last_damage.insert(surface, total);
             #[cfg(feature = "gpu")]
@@ -702,6 +712,9 @@ impl Renderer {
             self.blend_fade(surface, w, target);
         }
         f.items.truncate(own);
+        #[cfg(feature = "eval-hooks")]
+        self.probe
+            .keep_frame(surface, &f, target.size, target.scale, fade.weight());
         // Nothing changed since flattening: the next paint can reuse it.
         // Stamped once the frame is drawn: a slow raster does not age the
         // surface into looking idle.
@@ -775,4 +788,19 @@ impl Renderer {
                     || self.inspect.wants(surface)
             })
     }
+}
+
+/// (eval-sandbox) `d` with each rect shrunk by `px` on every side (those
+/// it empties dropped): `Renderer::set_damage_inset`'s mutant.
+#[cfg(feature = "eval-hooks")]
+fn inset(d: &Damage, px: u32) -> Damage {
+    let n = i64::from(px);
+    let mut out = Damage::new();
+    for r in d.rects() {
+        let r = Rect::from_edges(r.left() + n, r.top() + n, r.right() - n, r.bottom() - n);
+        if !r.is_empty() {
+            out.add(r);
+        }
+    }
+    out
 }

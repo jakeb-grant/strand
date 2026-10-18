@@ -50,13 +50,14 @@ use strand_core::Runtime;
 use strand_render::probe::{Axes, FrameTrace, Hidden, NodeTrace, TextDrawn};
 use strand_render::{Renderer, Router, TextBackend};
 use strand_scene::{
-    ButtonState, LogicalPoint, NodeId, Painter, Prop, PropValue, SceneDiff, SurfaceId,
+    ButtonState, LogicalPoint, NodeId, PaintTarget, Painter, Prop, PropValue, SceneDiff, SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine};
 
 use crate::Error;
+use crate::checks::redraw;
 use crate::clock::{Clock, T0};
-use crate::gpu::Device;
+use crate::gpu::{Device, Fresh};
 use crate::input::{Pointer, to_logic};
 use crate::labels::Labels;
 use crate::scenario::{BackendMode, Config, Fonts, Scenario, Screen, TextMode};
@@ -66,7 +67,7 @@ use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
     BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, PoseRec,
-    Regions, RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
+    RedrawRec, Regions, RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
 };
 
 /// How to run a scenario.
@@ -81,6 +82,13 @@ pub struct RunOptions {
     /// `Gpu` (a `both` scenario runs once on each, docs/eval.md "CPU and
     /// GPU"). `None` runs the scenario's own, `both` as its CPU leg.
     pub backend: Option<BackendMode>,
+    /// Compare every painted frame's buffer with a full repaint of the
+    /// same frame into a fresh one (the `redraw` check: `Frame::redraw`).
+    pub redraw: bool,
+    /// The `redraw` check's own tests only: each frame's own damage
+    /// shrunk by this many pixels on every side
+    /// (`Renderer::set_damage_inset`, a mutant). 0 is none.
+    pub damage_inset: u32,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -282,6 +290,11 @@ struct Harness<'s> {
     on_gpu: bool,
     /// Surfaces attached to the GPU thread.
     gpu_attached: HashSet<SurfaceId>,
+    /// This tick's `redraw` comparisons by surface, with the difference
+    /// each found (`None`: none).
+    redraws: BTreeMap<u32, Option<RedrawRec>>,
+    /// The `redraw` check's GPU device, once a GPU-drawn frame needs it.
+    fresh_gpu: Option<Fresh>,
 }
 
 /// Input a time step sends at the start of a tick.
@@ -342,6 +355,8 @@ impl<'s> Harness<'s> {
         }
         r.set_promotion(false);
         r.set_frame_trace(true);
+        r.set_keep_frames(opts.redraw);
+        r.set_damage_inset(opts.damage_inset);
         // The compositor applies surface poses (as Hyprland, with
         // `wp_alpha_modifier_v1` and the viewporter, does): what each
         // frame commits besides its pixels is traced.
@@ -387,6 +402,8 @@ impl<'s> Harness<'s> {
             on_gpu: gpu.is_some(),
             gpu,
             gpu_attached: HashSet::new(),
+            redraws: BTreeMap::new(),
+            fresh_gpu: None,
         };
         h.set_screens()?;
         for (path, text) in &sc.services {
@@ -1344,11 +1361,17 @@ impl<'s> Harness<'s> {
         for id in ids {
             match self.gpu.as_mut() {
                 Some(dev) if self.gpu_attached.contains(&id) => {
-                    self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
+                    let drawn = self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
                     dev.changes(&mut self.r);
+                    if drawn && self.opts.redraw {
+                        self.redraw_gpu(id)?;
+                    }
                 }
                 _ => {
                     self.surfaces.paint(&mut self.r, id, t)?;
+                    if self.opts.redraw {
+                        self.redraw_cpu(id, t)?;
+                    }
                 }
             }
             match self.r.delegated_pose(id) {
@@ -1376,9 +1399,113 @@ impl<'s> Harness<'s> {
         Ok(())
     }
 
+    /// The `redraw` check on the CPU: surface `id`'s buffer, as the
+    /// paint at `t` left it, against the same frame repainted in full
+    /// into a fresh buffer (`Renderer::repaint_fresh`).
+    fn redraw_cpu(&mut self, id: SurfaceId, t: Duration) -> Result<(), Error> {
+        let scale = self.surfaces.scale()?;
+        let Some(sh) = self.surfaces.get(id) else {
+            return Ok(());
+        };
+        let mut fresh = vec![0u8; sh.pixels.len()];
+        let target = PaintTarget::new(&mut fresh, sh.size, sh.size.w * 4, scale, 0)
+            .map_err(|e| Error::Run(format!("surface {}: {e:?}", id.0)))?;
+        let mut target = target.at(t);
+        if !self.r.repaint_fresh(id, &mut target) {
+            return Ok(());
+        }
+        let redrawn: Vec<[u32; 4]> = self
+            .r
+            .last_damage(id)
+            .unwrap_or_default()
+            .rects()
+            .iter()
+            .map(|r| [r.x.max(0) as u32, r.y.max(0) as u32, r.w, r.h])
+            .collect();
+        let rec = redraw::compare(
+            &sh.pixels,
+            &fresh,
+            sh.size.w,
+            sh.size.h,
+            &redrawn,
+            redraw::CPU_TOLERANCE,
+        );
+        self.keep_redraw(id, rec, false, &fresh)
+    }
+
+    /// The `redraw` check on the GPU leg: surface `id`'s frame as the GPU
+    /// drew it, against the same frame drawn fresh on a device of its own
+    /// ([`Fresh`]). A GPU frame redraws the whole buffer.
+    fn redraw_gpu(&mut self, id: SurfaceId) -> Result<(), Error> {
+        let scale = self.surfaces.scale()?;
+        let Some(sh) = self.surfaces.get(id) else {
+            return Ok(());
+        };
+        if self.fresh_gpu.is_none() {
+            self.fresh_gpu = Some(Fresh::start()?);
+        }
+        let Some(dev) = self.fresh_gpu.as_mut() else {
+            return Ok(());
+        };
+        let mut fresh = vec![0u8; sh.pixels.len()];
+        if !dev.draw(&self.r, id, sh.size, scale, &mut fresh)? {
+            return Ok(());
+        }
+        let whole = [0, 0, sh.size.w, sh.size.h];
+        let rec = redraw::compare(
+            &sh.pixels,
+            &fresh,
+            sh.size.w,
+            sh.size.h,
+            &[whole],
+            redraw::GPU_TOLERANCE,
+        );
+        self.keep_redraw(id, rec, true, &fresh)
+    }
+
+    /// Keeps a `redraw` comparison's difference for this tick's frame,
+    /// with the full repaint's image when the run keeps images.
+    fn keep_redraw(
+        &mut self,
+        id: SurfaceId,
+        rec: Option<RedrawRec>,
+        gpu: bool,
+        fresh: &[u8],
+    ) -> Result<(), Error> {
+        let Some(mut rec) = rec else {
+            self.redraws.insert(id.0, None);
+            return Ok(());
+        };
+        rec.gpu = gpu;
+        if self.opts.images
+            && let Some(sh) = self.surfaces.get(id)
+        {
+            let rgba = to_rgba(fresh);
+            let name = format!(
+                "frames/{}.png",
+                &blake3::hash(&rgba).to_hex().as_str()[..16]
+            );
+            if !self.images.contains_key(&name) {
+                let png = crate::report::png::encode(sh.size.w, sh.size.h, &rgba)?;
+                self.images.insert(
+                    name.clone(),
+                    Image {
+                        width: sh.size.w,
+                        height: sh.size.h,
+                        png,
+                    },
+                );
+            }
+            rec.png = Some(name);
+        }
+        self.redraws.insert(id.0, Some(rec));
+        Ok(())
+    }
+
     /// The tick's frame traces, held texts and commands, into the trace.
     fn collect(&mut self, k: u32, t: Duration) -> Result<(), Error> {
         let traces = self.r.take_frame_traces();
+        let mut redraws = std::mem::take(&mut self.redraws);
         let held = self.r.held_text();
         self.text.seen(&held, k);
         for a in self.host.take_actions() {
@@ -1487,6 +1614,12 @@ impl<'s> Harness<'s> {
             }
         }
         frame.cost = cost;
+        redraws.retain(|s, _| last.contains_key(s));
+        self.trace.redraw += redraws.len() as u32;
+        frame.redraw = redraws
+            .into_iter()
+            .filter_map(|(s, r)| Some((s, r?)))
+            .collect();
         self.trace.frames.push(frame);
         Ok(())
     }
@@ -1574,6 +1707,9 @@ impl<'s> Harness<'s> {
                 self.notes
                     .push(format!("the GPU leg dropped {what} ({n} times)"));
             }
+            dev.finish();
+        }
+        if let Some(dev) = self.fresh_gpu.take() {
             dev.finish();
         }
         self.trace.nodes = std::mem::take(&mut self.labels.metas);

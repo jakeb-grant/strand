@@ -761,6 +761,7 @@ pub fn run_cell(
         images: true,
         build: build.clone(),
         backend: None,
+        ..RunOptions::default()
     };
     match check_with(&sc, &opts, refs) {
         Ok(c) => {

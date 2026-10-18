@@ -307,6 +307,12 @@ scale and offset into every visual box, the rows authored on the axes it
 moves). A trace whose surfaces never moved and were never posed is read
 as it is.
 
+With the `redraw` check, the trace counts the painted frames compared
+with their full repaints (`redraw`). Each frame records, for each surface
+whose buffer differed at all, the pixels past the tolerance, how many of
+them were stale, the worst difference, the region, what the frame redrew,
+the leg and the repaint's image (`redraw`). Neither is in the digest.
+
 A node's key is its origin plus its sibling path, stable across runs and
 builds. The digest hashes every deterministic field and none of the wall
 times.
@@ -348,6 +354,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `expect` | The `expect` steps. It always runs. |
 | `regions` | Opt-in. Where a surface takes input follows what it draws. |
 | `cpu-gpu` | Comes with `backend = "both"`. The CPU and GPU legs agree (see CPU and GPU). |
+| `redraw` | Every painted frame's buffer, left by a partial redraw at its buffer's age, is the same frame repainted in full into a fresh buffer: exactly on the CPU, and within one step per channel on the GPU leg (`backend = "both"`). |
 
 `tol` is `edge_px`, and at least one physical pixel at the coarsest scale
 any frame was drawn at.
@@ -369,6 +376,56 @@ reports a partial input region, the check holds two things:
 `eval/scenarios/curated/hover-island-regions.scn` is the example. It is
 opt-in because only a scenario built around such a popup states what its
 region should be.
+
+**`redraw`.** The renderer repaints only a frame's damage, widened by
+the buffer's age, over what the buffer kept from the frames before.
+Damage that misses something that changed leaves stale pixels, and no
+geometry check sees them: the nodes are where they belong, and the
+buffer is not. So after every paint the harness draws the same frame
+again in full into a fresh buffer and compares the two:
+
+- On the CPU, `Renderer::repaint_fresh` draws the display list that
+  frame drew, at its time, with a raster that has nothing cached, and
+  blends it over the crossfade snapshot when the frame was blended.
+- On the GPU leg, `Renderer::fresh_gpu_frame` lowers the frame again with
+  nothing cached and every pixmap uploaded with it. A device of its own
+  draws it, and each frame retires the last one's uploads. A GPU frame
+  always redraws the whole buffer, so what this holds is the state the
+  GPU and the renderer keep between frames: uploaded images, cached
+  shadows and gradients, offscreen groups.
+
+Both repaints read the renderer and change nothing a later frame reads.
+A run's digest and its frame images are the same with the check on and
+off (`eval/tests/redraw.rs`).
+
+Both sides are drawn by the same code on the same machine from the same
+display list, so the tolerance is as small as rounding allows:
+
+- On the CPU it is 0, and any differing channel counts. The raster draws
+  each pixel in the same fixed cell whatever the damage, so nothing
+  rounds differently.
+- On the GPU leg it is one step per channel. The fresh device places each
+  uploaded pixmap (a glyph atlas page, an image) somewhere else in its
+  image atlas than the presented device does, and a pixmap drawn under a
+  transform (a rotated, scaled or sheared glyph) is sampled at
+  coordinates offset by that place. The rounding can move a channel by
+  one. A stale or missing upload differs by far more.
+
+A difference within the tolerance is an info line. A failure names the surface, the leg and the tick (the count of
+later ticks follows). It gives the number of pixels that differ, the
+worst channel difference and the bounding box of the region, in buffer
+pixels. It also says how many of those pixels lie outside what the frame
+redrew: those are stale, left by a partial redraw. The full repaint's
+image is kept beside the frame's (`frames/<hash>.png`, named in the
+finding). A painted frame that was not compared also fails the check, so
+the check cannot go blind. The twin and the determinism run are not
+compared.
+
+The sandbox's surfaces each keep one buffer, which the compositor has
+released by the next frame, so every frame is painted at age 1, a state
+the shell's buffers also reach. The check therefore holds each frame's
+own damage. It does not hold the union with earlier frames' damage that
+an age of 2 or 3 adds.
 
 **Exempting a node.** Three mechanisms, from narrowest to widest:
 
@@ -766,7 +823,12 @@ owner's config becomes a committed scenario written from scratch.
   level from the CPU it runs on, and nothing here shows one hash
   agreeing between the laptop's container and GitHub's runners. A change
   of colour alone, or of a shader's output, is therefore not CHANGED.
-  `cpu-gpu` and the pixel tests in crates/strand-render cover pixels.
+  `cpu-gpu`, `redraw` and the pixel tests in crates/strand-render cover
+  pixels.
+- **`redraw` holds one buffer age.** Every frame is painted at age 1,
+  so damage widened by older frames (ages 2 and 3) is not compared.
+  On the GPU leg it compares against a fresh device, allows one step per
+  channel, and only synthetic traces have shown it failing there.
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.

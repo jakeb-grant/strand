@@ -36,6 +36,9 @@ pub enum CheckId {
     Determinism,
     Regions,
     CpuGpu,
+    /// A partial redraw leaves its buffer as a full repaint of the same
+    /// frame draws it.
+    Redraw,
     Budget,
     Reference,
     /// The `expect` steps (always evaluated; named for `expect_fail`).
@@ -43,7 +46,7 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 14] = [
+    pub const ALL: [CheckId; 15] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -55,6 +58,7 @@ impl CheckId {
         CheckId::Determinism,
         CheckId::Regions,
         CheckId::CpuGpu,
+        CheckId::Redraw,
         CheckId::Budget,
         CheckId::Reference,
         CheckId::Expect,
@@ -63,7 +67,7 @@ impl CheckId {
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
     /// is opt-in and `cpu-gpu` comes with `backend = "both"`.
-    pub const DEFAULT: [CheckId; 11] = [
+    pub const DEFAULT: [CheckId; 12] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -72,6 +76,7 @@ impl CheckId {
         CheckId::Coherence,
         CheckId::Ink,
         CheckId::Twin,
+        CheckId::Redraw,
         CheckId::Budget,
         CheckId::Reference,
         CheckId::Expect,
@@ -90,6 +95,7 @@ impl CheckId {
             CheckId::Determinism => "determinism",
             CheckId::Regions => "regions",
             CheckId::CpuGpu => "cpu-gpu",
+            CheckId::Redraw => "redraw",
             CheckId::Budget => "budget",
             CheckId::Reference => "reference",
             CheckId::Expect => "expect",
