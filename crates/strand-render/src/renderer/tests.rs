@@ -941,6 +941,59 @@ fn a_box_around_a_late_text_shows_it_whole() {
     }
 }
 
+/// (late-text-morph) A node whose only content is a late text takes no
+/// room until the text lands (late-text-dip), so its first frame lays it
+/// out at 0 × 0 and draws nothing. Mounted with the `morph` name of a box
+/// that leaves as it comes (the matrix's shared-morph cell), it morphs
+/// from that box on the frame its text lands, as an enter pose waits for
+/// it: the empty frame neither starts the morph nor counts as where the
+/// name is on screen. Before, that frame took the name's place, so the
+/// node then showed at rest with no morph.
+#[test]
+fn a_late_text_morphs_from_its_partner_once_it_lands() {
+    let (mut d, root, row) = status_row();
+    let partner = NodeId::new(9, 0);
+    let num = PropValue::Number;
+    d.create(partner, NodeKind::Box, Some(root), 0)
+        .set(partner, Prop::Place, PropValue::Keyword("absolute".into()))
+        .set(partner, Prop::X, num(10.0))
+        .set(partner, Prop::Y, num(10.0))
+        .set(partner, Prop::Width, num(30.0))
+        .set(partner, Prop::Height, num(10.0))
+        .set(
+            partner,
+            Prop::Bg,
+            PropValue::Color(Color::from_hex("#808080").unwrap()),
+        )
+        .set(partner, Prop::Morph, PropValue::Text("m".into()));
+    let (mut r, mut px, k) = late_bar(d, root);
+    let (wrap, txt) = (NodeId::new(5, 0), NodeId::new(6, 0));
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: partner,
+        window: false,
+    });
+    d.create(wrap, NodeKind::Row, Some(row), u32::MAX).set(
+        wrap,
+        Prop::Morph,
+        PropValue::Text("m".into()),
+    );
+    late_text(&mut d, txt, wrap, &[]);
+    let seen = mount_late(&mut r, &mut px, k, d);
+    assert!(seen[0].1.is_none(), "nothing drawn before the text lands");
+    let first = seen
+        .iter()
+        .find_map(|(_, m, _)| *m)
+        .expect("the text shows");
+    let (rest, _) = pixels_of(&px, [255, 0, 255], 40).expect("the text at rest");
+    // At rest at the bar's right end; its first frame on its way from the
+    // partner's box (10..40 across), well left of it.
+    assert!(
+        first.0 + 40 < rest.0,
+        "its first frame {first:?} morphs from the partner, not at rest {rest:?}: {seen:?}"
+    );
+}
+
 /// (late-text-dip) A paint keeps as never drawn only what waits for a
 /// late text: the text, and a box laid out empty around it. An empty box
 /// mounted beside it with nothing to wait for was drawn as what it is,

@@ -535,8 +535,9 @@ impl Animator {
     /// where each surface lies on its output), how far it is drawn from there
     /// (`[dx, dy, sx, sy]`), if it morphs. A node that starts a morph
     /// plays it in place of its enter pose. A node with a `morph` name
-    /// joins `drawn`, the scene's boxes its painted frames show
-    /// ([`Animator::shared_painted`]). Called before [`Animator::paint`].
+    /// and a box of some area joins `drawn`, the scene's boxes its
+    /// painted frames show ([`Animator::shared_painted`]). Called before
+    /// [`Animator::paint`].
     pub(crate) fn shared_morph(
         &mut self,
         node: &Node,
@@ -562,11 +563,17 @@ impl Animator {
             .find(|e| e.prop == Prop::Morph)
             .map_or(Transition::Default, |e| e.transition.clone());
         let curve = Curve::of(&scope.transition(&transition, Prop::X));
-        drawn.push(MorphBox {
-            key: key.clone(),
-            id: node.id,
-            rect,
-        });
+        // (late-text-morph) A box of no area shows nothing (a node whose
+        // text is not shaped yet takes no room, late-text-dip): its
+        // frame does not put the name there, and the box it was last
+        // seen at still starts morphs as one off screen does.
+        if rect.w > 0.0 && rect.h > 0.0 {
+            drawn.push(MorphBox {
+                key: key.clone(),
+                id: node.id,
+                rect,
+            });
+        }
         let frame = self.frame();
         let entering = self.enter.contains(&node.id);
         let (v, moving, started) =
