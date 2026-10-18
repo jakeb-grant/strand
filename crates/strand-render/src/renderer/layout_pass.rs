@@ -136,9 +136,11 @@ impl Renderer {
                 .iter()
                 .map(|(node, spec)| TextSlot::of(*node, spec))
                 .collect();
-            if settled {
-                // What a structural change mounted is measured: later
-                // passes move nothing it placed by an estimate.
+            s.flip_settled = settled;
+            if settled && s.flip_drawn {
+                // What a structural change mounted is measured and was
+                // drawn: later passes move nothing it placed by an
+                // estimate or in a buffer it outgrew.
                 s.flip_open = None;
             }
             if settled && s.prev_scale.take().is_some() {
@@ -376,13 +378,19 @@ impl Renderer {
             let flip = std::mem::take(&mut s.flip);
             let all = std::mem::take(&mut s.flip_all);
             let text = std::mem::take(&mut s.text_arrived);
+            // (eval-coverage) Laid out in a resized buffer: a content-
+            // sized surface configured at the size a change asked for.
+            // Before its first frame nothing was drawn to glide from.
+            let resized = s.painted && s.laid_frame.is_some_and(|f| f != frame);
+            s.laid_frame = Some(frame);
             let fresh = all || !flip.is_empty();
             if fresh {
                 let open = s.flip_open.get_or_insert_with(Default::default);
                 open.0.extend(flip);
                 open.1 |= all;
+                s.flip_drawn = false;
             }
-            let scope = s.flip_open.clone().filter(|_| fresh || text);
+            let scope = s.flip_open.clone().filter(|_| fresh || text || resized);
             if let (Some(old), Some(_)) = (&old, &s.flip_open) {
                 s.unpainted.extend(
                     boxes

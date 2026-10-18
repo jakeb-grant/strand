@@ -668,6 +668,12 @@ impl Renderer {
         }
         s.valid = true;
         s.painted = true;
+        // (eval-coverage) The change's FLIP scope was drawn: it closes
+        // now if its texts are shaped, or at the flatten they are.
+        s.flip_drawn = true;
+        if s.flip_settled {
+            s.flip_open = None;
+        }
         s.query_hold = None;
         s.query_held = false;
         let scale = s.scale;

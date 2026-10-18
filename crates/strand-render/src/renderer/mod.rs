@@ -219,6 +219,17 @@ struct SurfaceState {
     /// offset into its glide. Cleared once every
     /// text on the surface is shaped.
     flip_open: Option<(HashSet<NodeId>, bool)>,
+    /// (eval-coverage) Whether a frame painted since `flip_open` last
+    /// took a structural change, and whether every text was shaped at
+    /// the last flatten: the scope closes once both hold, so a pass that
+    /// lays the surface out at the size the change made it ask for (a
+    /// content-sized panel configured taller before the change's first
+    /// frame) glides what it moves too.
+    flip_drawn: bool,
+    flip_settled: bool,
+    /// (eval-coverage) The frame its last layout pass laid it out in
+    /// (its buffer, less the overhang): a pass in another one was resized.
+    laid_frame: Option<strand_scene::LogicalRect>,
     /// A text layout for it arrived since its last layout pass.
     text_arrived: bool,
     /// Nodes first laid out since it last painted, while `flip_open`:

@@ -473,7 +473,8 @@ Per painted tick:
   its box, the width it was shaped for (`fit`);
 - per node, what it painted itself that tick, read from the flattened
   scene, never from pixels: its fills (`bg`), borders (`bd`), drop shadows
-  with the area each may cover (`sh`), and its texts' paints (`fg`) with
+  with the area each may cover, before the node's transforms as `ink` is
+  (`sh`), and its texts' paints (`fg`) with
   the text each one's glyphs were shaped from (`gl`). A roll's two texts
   are both there, and a text of which only some glyphs were drawn names
   them (`gl=["43","41[1]"]`: "43" whole and the second glyph of "41",

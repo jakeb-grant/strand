@@ -2253,6 +2253,73 @@ fn a_toast_arriving_before_the_first_frame_enters_too() {
     assert!(!h.r.animating(h.surface.as_ref().unwrap().0));
 }
 
+/// (eval-coverage) A row mounted at the top of a content-sized panel
+/// pushes the rows under it down, and the panel grows to fit: laid out
+/// first in the buffer it had (too small, so its rows squeezed) and again
+/// once the surface is configured at its new size, the rows glide from
+/// where they were drawn to where they rest, together: the gap between
+/// two of them never opens or closes on the way (the sandbox's
+/// toast-stack: each started from where the squeezed pass put it).
+#[test]
+fn rows_pushed_down_in_a_growing_content_sized_panel_glide_together() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("top".into())),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Width, num(100.0)), (Prop::Gap, num(6.0))],
+    );
+    for c in ["#00ff00", "#0000ff"] {
+        b.node(
+            NodeKind::Box,
+            Some(col),
+            vec![(Prop::Height, num(30.0)), (Prop::Bg, color(c))],
+        );
+    }
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.height(), Some(66.0));
+    let top = |h: &Host, hit: fn([u8; 4]) -> bool| {
+        let rows = h.surface.as_ref().map_or(0, |(_, b, _)| b.size.h);
+        (0..rows).find(|y| h.px(50, *y).is_some_and(hit))
+    };
+    let green = |p: [u8; 4]| p[1] > 128 && p[0] < 128 && p[2] < 128;
+    // The buffer is BGRA.
+    let blue = |p: [u8; 4]| p[0] > 128 && p[1] < 128 && p[2] < 128;
+    assert_eq!((top(&h, green), top(&h, blue)), (Some(0), Some(36)));
+    let red = NodeId::new(60, 0);
+    let mut d = SceneDiff::new();
+    d.create(red, NodeKind::Box, Some(col), 0)
+        .set(red, Prop::Height, num(30.0))
+        .set(red, Prop::Bg, color("#ff0000"));
+    // As the runtime does: the diff's preview, then the surface manager's
+    // configure at the size it asks for.
+    assert!(h.r.apply(d).is_empty());
+    h.r.update();
+    h.sync();
+    assert_eq!(h.height(), Some(102.0));
+    let mut tops = Vec::new();
+    while h.frame() {
+        tops.push((top(&h, green), top(&h, blue)));
+        assert!(tops.len() < 400, "never settled");
+    }
+    assert_eq!(*tops.last().unwrap(), (Some(36), Some(72)), "{tops:?}");
+    assert!(tops[0].0 < Some(26), "starts near where it was: {tops:?}");
+    assert!(
+        tops.iter().all(
+            |(g, b)| matches!((g, b), (Some(g), Some(b)) if (*b as i32 - *g as i32 - 36).abs() <= 1)
+        ),
+        "the gap holds: {tops:?}"
+    );
+}
+
 /// A panel that opens with rows created at boot (reported closed, then
 /// opened by a later diff) shows them at rest: only rows born with the
 /// opening enter.
