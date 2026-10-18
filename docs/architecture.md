@@ -2213,8 +2213,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     surface wants the next frame only if that frame is the one nearest a
     tick, and otherwise `next_wake` is half a frame before the tick
     (mapped through the surface's last frame), after which `update` makes
-    `wants_frame` true. The frame period is the shortest gap between the
-    surface's frames, at most 1/60 s. A node is hidden, so it has no
+    `wants_frame` true. The frame period is the shortest of the
+    surface's last 8 frame gaps (gaps over 1/60 s and a tenth, skipped
+    frames or idle time, left out), at most 1/60 s. A node is hidden, so it has no
     clock, when it is not laid out, when its opacity or scale is 0, when
     it is under a hidden ancestor, or when all it draws is outside the
     clip. The first two count only while the hiding prop does not

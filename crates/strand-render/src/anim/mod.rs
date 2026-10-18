@@ -909,6 +909,13 @@ impl Animator {
             }
         }
         self.nodes.retain(|_, n| !n.is_empty());
+        // So is a jelly the frame did not sample (jelly-drag review): a
+        // held node a preview left pending, or one still moving, whose
+        // ancestor a diff hid before the frame would leave its surface
+        // busy until it was drawn again (no frame reuses its preview,
+        // and a content-sized surface is held at its size). It comes
+        // back at rest, measured from its next painted frame.
+        self.jellies.retain(|id| drawn.contains(&id) || !under(id));
     }
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).
@@ -988,6 +995,10 @@ impl Animator {
             t => Curve::of(&scope.transition(&t, Prop::Jelly)),
         };
         let frame = self.frame();
+        if self.commit {
+            // Drawn: its jelly survives `finish_undrawn`.
+            self.drawn.insert(node.id);
+        }
         let (d, moving) =
             self.jellies
                 .sample(node.id, amount, [offset.0, offset.1], held, curve, frame);

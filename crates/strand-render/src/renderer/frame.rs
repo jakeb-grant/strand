@@ -2,7 +2,7 @@
 //! query, a configure), damage between frames' node records, and
 //! [`Painter`](strand_scene::Painter) itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
@@ -605,17 +605,30 @@ impl Renderer {
         total.clip(bounds);
         // What this frame laid out is what the surface shows now, but
         // for what it drew nothing of (late-text-dip): a text still on
-        // its way, and a box laid out empty (one holding only such text,
-        // which takes no room). Neither has a place it was drawn to
-        // glide from when the text arrives and lays them out whole.
+        // its way, and a box laid out empty because such a text is under
+        // it (it takes no room). Neither has a place it was drawn to
+        // glide from when the text arrives and lays them out whole. A
+        // box laid out empty for any other reason, and a node no longer
+        // laid out, leave the set.
         if !s.unpainted.is_empty() {
             let shaping = super::text::still_shaping(&self.texts, &s.wanted);
+            let mut waiting: HashSet<NodeId> = HashSet::new();
+            for t in &shaping {
+                let mut at = self.tree.get(*t).and_then(|n| n.parent);
+                while let Some(p) = at {
+                    if !waiting.insert(p) {
+                        break;
+                    }
+                    at = self.tree.get(p).and_then(|n| n.parent);
+                }
+            }
             let boxes = s.boxes.as_ref();
             s.unpainted.retain(|n| {
                 shaping.contains(n)
-                    || boxes
-                        .and_then(|b| b.rects.get(n))
-                        .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0)
+                    || (waiting.contains(n)
+                        && boxes
+                            .and_then(|b| b.rects.get(n))
+                            .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0))
             });
         }
         if total.is_empty() {

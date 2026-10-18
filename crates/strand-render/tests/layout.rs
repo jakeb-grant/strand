@@ -122,6 +122,29 @@ fn row_lays_out_side_by_side() {
     assert_matches_ref("layout_row", &buf, TOLERANCE);
 }
 
+/// (late-text-dip) A `button` with no label has no text to wait for: it
+/// keeps its one empty line (13 px × 1.2, rounded up) whether or not
+/// anything was shaped, and what follows it starts below that line. A
+/// text not shaped yet takes no room; a leaf with nothing to shape is
+/// not late.
+#[test]
+fn a_button_with_no_label_keeps_its_line() {
+    let mut ids = Vec::new();
+    let (d, root) = panel(200, 60, |b, root| {
+        let col = b.node(NodeKind::Col, Some(root), vec![]);
+        ids.push(b.node(NodeKind::Button, Some(col), vec![]));
+        ids.push(swatch(b, col, "#a6e3a1", vec![(Prop::Height, num(10.0))]));
+    });
+    let (r, _) = show(d, root, 200, 60, Scale::ONE);
+    let (button, after) = (rect(&r, ids[0]), rect(&r, ids[1]));
+    // The line, and the button's own padding around it.
+    assert!(button.h >= 16.0, "{button:?}");
+    assert!(
+        (after.y - (button.y + button.h)).abs() < 0.51,
+        "{button:?} then {after:?}"
+    );
+}
+
 /// `col`: children stacked, stretched across; inherited `color` and `font`
 /// reach the text; `align: center` centres a text in its line.
 #[test]

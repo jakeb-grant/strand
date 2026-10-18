@@ -12,8 +12,9 @@
 //! nearest a tick, and otherwise [`Clocks::wake`] gives the instant to
 //! wake the loop at (half a frame before the tick), which
 //! [`crate::Renderer::next_wake`] includes. The frame period is
-//! estimated per surface from the shortest gap between its frames, at
-//! most 1/60 s (decisions.md, m4-runtime-w1).
+//! estimated per surface from the shortest of its last [`GAPS`] frame
+//! gaps, at most 1/60 s (decisions.md, m4-runtime-w1; first-frame-lead
+//! made it recover from a stray short gap).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -31,6 +32,17 @@ const DEFAULT_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / 60);
 /// Gaps shorter than this are not frame periods (two paints of one frame,
 /// a resize): the estimate never goes below it (360 Hz).
 const MIN_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / 360);
+
+/// Gaps longer than this are not frame periods either (frames skipped,
+/// or the surface idle): they leave the estimate as it was. A tenth over
+/// 1/60 s, so a 59.94 Hz output's frames count, as 1/60 s.
+const MAX_GAP: Duration = Duration::from_nanos(1_000_000_000 / 60 * 11 / 10);
+
+/// How many of a surface's last frame gaps (each between [`MIN_PERIOD`]
+/// and [`MAX_GAP`]) its period is the shortest of. A gap shorter than its
+/// refresh (a paint off the vblank grid, a jittery wake, an output that
+/// went to a lower rate) moves the estimate for as many frames only.
+pub(crate) const GAPS: usize = 8;
 
 /// How often a node's clock ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,11 +114,16 @@ struct Running {
     woken: bool,
 }
 
-/// A surface's frames: its period estimate, and its last frame's time on
-/// the presentation clock and on the wall clock.
+/// A surface's frames: its period estimate, the frame gaps it is the
+/// shortest of, and its last frame's time on the presentation clock and
+/// on the wall clock.
 #[derive(Clone, Copy, Debug)]
 struct Frames {
     period: Duration,
+    gaps: [Duration; GAPS],
+    /// How many of `gaps` are filled, and where the next one goes.
+    filled: usize,
+    next: usize,
     last: Duration,
     at: Instant,
 }
@@ -146,19 +163,30 @@ impl Clocks {
         }
         let f = self.frames.entry(surface).or_insert(Frames {
             period: DEFAULT_PERIOD,
+            gaps: [DEFAULT_PERIOD; GAPS],
+            filled: 0,
+            next: 0,
             last: time,
             at: now,
         });
         let gap = time.saturating_sub(f.last);
-        if gap >= MIN_PERIOD && gap < f.period {
-            f.period = gap;
+        if (MIN_PERIOD..=MAX_GAP).contains(&gap) {
+            f.gaps[f.next] = gap.min(DEFAULT_PERIOD);
+            f.next = (f.next + 1) % GAPS;
+            f.filled = (f.filled + 1).min(GAPS);
+            f.period = f.gaps[..f.filled]
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(DEFAULT_PERIOD);
         }
         f.last = time;
         f.at = now;
     }
 
-    /// The frame period of `surface`: the shortest gap between its
-    /// frames, at most 1/60 s.
+    /// The frame period of `surface`: the shortest of its last [`GAPS`]
+    /// frame gaps (gaps of skipped frames or idle time left out), at most
+    /// 1/60 s; 1/60 s until it has one.
     pub(crate) fn period(&self, surface: SurfaceId) -> Duration {
         self.frames
             .get(&surface)
@@ -257,6 +285,50 @@ mod tests {
         c.frame(S, ms(1107), now);
         c.frame(S, ms(1108), now);
         assert_eq!(c.period(S), ms(7), "a gap under 1/360 s is ignored");
+        c.frame(S, ms(5000), now);
+        assert_eq!(c.period(S), ms(7), "idle time keeps the estimate");
+    }
+
+    /// (first-frame-lead) A stray short gap (a paint off the vblank grid,
+    /// a late wake, a mode change to a lower rate) lowers the estimate for
+    /// the next few frames only: it does not stay the surface's period.
+    #[test]
+    fn the_period_recovers_from_a_stray_short_gap() {
+        let mut c = Clocks::default();
+        let now = Instant::now();
+        let hz60 = Duration::from_nanos(16_666_667);
+        let mut t = ms(1000);
+        for _ in 0..4 {
+            c.frame(S, t, now);
+            t += hz60;
+        }
+        assert_eq!(c.period(S), DEFAULT_PERIOD);
+        // One paint 5 ms after the last.
+        t -= hz60;
+        t += ms(5);
+        c.frame(S, t, now);
+        assert_eq!(c.period(S), ms(5));
+        for _ in 0..GAPS - 1 {
+            t += hz60;
+            c.frame(S, t, now);
+            assert_eq!(c.period(S), ms(5), "still in the window");
+        }
+        t += hz60;
+        c.frame(S, t, now);
+        assert_eq!(c.period(S), DEFAULT_PERIOD, "recovered to 60 Hz");
+        // A 144 Hz output's frames, then the output at 60 Hz (59.94):
+        // the period follows it down and back up.
+        let hz144 = Duration::from_nanos(6_944_444);
+        for _ in 0..GAPS {
+            t += hz144;
+            c.frame(S, t, now);
+        }
+        assert_eq!(c.period(S), hz144);
+        for _ in 0..GAPS {
+            t += Duration::from_nanos(16_683_350);
+            c.frame(S, t, now);
+        }
+        assert_eq!(c.period(S), DEFAULT_PERIOD);
     }
 
     #[test]

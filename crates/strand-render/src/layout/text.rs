@@ -85,12 +85,16 @@ pub(super) fn measure_text(
     // A list's rows are not waited for (`Renderer::await_unmeasured`):
     // a row scrolling in is measured by the guess, which keeps the
     // list's extent close to where its shaped rows put it. So is a
-    // surface's size (`TextSizes::estimates`).
+    // surface's size (`TextSizes::estimates`). A leaf with no text to
+    // shape (a `button` with no label) is never late: no layout ever
+    // comes for it, and it keeps the one empty line it always had.
     let natural = match texts.natural(node) {
         Some(n) => n,
         // Not shaped yet: a guess from its length, replaced when the
         // layout arrives.
-        None if estimated => LogicalSize::new(chars as f32 * font * 0.55, (font * 1.2).ceil()),
+        None if estimated || chars == 0 => {
+            LogicalSize::new(chars as f32 * font * 0.55, (font * 1.2).ceil())
+        }
         None => {
             return taffy::Size {
                 width: known

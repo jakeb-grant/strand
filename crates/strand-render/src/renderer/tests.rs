@@ -941,6 +941,53 @@ fn a_box_around_a_late_text_shows_it_whole() {
     }
 }
 
+/// (late-text-dip) A paint keeps as never drawn only what waits for a
+/// late text: the text, and a box laid out empty around it. An empty box
+/// mounted beside it with nothing to wait for was drawn as what it is,
+/// and leaves the set with the paint, as a node does once unmounted.
+#[test]
+fn only_what_waits_for_late_text_stays_unpainted() {
+    let (d, root, row) = status_row();
+    let (mut r, mut px, k) = late_bar(d, root);
+    let (wrap, txt, empty) = (NodeId::new(5, 0), NodeId::new(6, 0), NodeId::new(7, 0));
+    let mut d = SceneDiff::new();
+    d.create(wrap, NodeKind::Row, Some(row), u32::MAX).create(
+        empty,
+        NodeKind::Row,
+        Some(row),
+        u32::MAX,
+    );
+    late_text(&mut d, txt, wrap, &[]);
+    assert!(r.apply(d).is_empty());
+    let TextBackend::Worker(w) = &r.text else {
+        panic!("a worker");
+    };
+    let held = w
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .expect("the worker answers");
+    late_paint(&mut r, &mut px, k);
+    let unpainted = &r.surfaces[&SurfaceId(1)].unpainted;
+    assert!(
+        unpainted.contains(&txt) && unpainted.contains(&wrap),
+        "the late text and its empty box wait: {unpainted:?}"
+    );
+    assert!(
+        !unpainted.contains(&empty),
+        "an empty box with nothing to wait for was drawn: {unpainted:?}"
+    );
+    r.deliver(held);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut k = k + 1;
+    while r.wants_frame(SurfaceId(1)) {
+        late_paint(&mut r, &mut px, k);
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    let unpainted = &r.surfaces[&SurfaceId(1)].unpainted;
+    assert!(unpainted.is_empty(), "drawn at rest: {unpainted:?}");
+}
+
 /// (late-text-dip) A box that clips its content, holding only text, is
 /// laid out empty until the text is shaped, so it clips everything
 /// under it: its text is still asked for (as a hidden node's is), or it
@@ -977,6 +1024,32 @@ fn text_in_a_box_clipped_to_nothing_is_shaped() {
     assert!(
         bbox_of(&px, [255, 0, 255]).is_some(),
         "the clipped box shows its text"
+    );
+}
+
+/// (late-text-dip, exit-height0) The same box with its text later than
+/// the frame that mounts it, on the worker: that frame lays the box out
+/// empty and clips everything under it, so nothing visits the text. The
+/// box asks for its texts as a hidden node does; without that, nothing
+/// asks for the text (`mount_late` finds no request), it is never
+/// shaped, and the box never shows it.
+#[test]
+fn a_late_text_in_a_box_clipped_to_nothing_is_shown() {
+    let (d, root, row) = status_row();
+    let (mut r, mut px, k) = late_bar(d, root);
+    let (clip, txt) = (NodeId::new(5, 0), NodeId::new(6, 0));
+    let mut d = SceneDiff::new();
+    d.create(clip, NodeKind::Row, Some(row), u32::MAX)
+        .set(clip, Prop::Clip, PropValue::Bool(true));
+    late_text(&mut d, txt, clip, &[]);
+    let seen = mount_late(&mut r, &mut px, k, d);
+    assert!(
+        seen[0].1.is_none(),
+        "the first frame has no text to draw: {seen:?}"
+    );
+    assert!(
+        bbox_of(&px, [255, 0, 255]).is_some(),
+        "the clipped box shows its text at rest: {seen:?}"
     );
 }
 
@@ -1026,4 +1099,66 @@ fn a_popup_opened_before_its_text_is_shaped_is_sized_by_its_estimate() {
     // Twelve characters of the default 13 px font at 0.55 em, and the pad.
     let w = first.width.expect("content-sized");
     assert!(w > 24.0 + 60.0, "sized as if its text took no room: {w}");
+}
+
+/// (jelly-drag review) A drag whose move a preview saw (pending), hidden
+/// by a diff before its frame (its parent at opacity 0 at once): the
+/// frame does not draw it, so nothing measures the move. Its jelly is
+/// dropped with the rest of the paint state of what the frame did not
+/// draw, so the surface is not left moving (a content-sized surface is
+/// held at its size while anything on it moves) until the node is drawn
+/// again.
+#[test]
+fn a_jelly_hidden_before_its_frame_leaves_nothing_moving() {
+    let n = |i| NodeId::new(i, 0);
+    let (root, wrap, id) = (n(0), n(1), n(2));
+    let num = PropValue::Number;
+    let mut d = SceneDiff::new();
+    d.create(root, NodeKind::Bar, None, 0)
+        .set(root, Prop::Height, num(60.0))
+        .create(wrap, NodeKind::Box, Some(root), 0)
+        .set(wrap, Prop::Width, num(160.0))
+        .set(wrap, Prop::Height, num(60.0))
+        .create(id, NodeKind::Box, Some(wrap), 0)
+        .set(id, Prop::Width, num(20.0))
+        .set(id, Prop::Height, num(20.0))
+        .set(id, Prop::Jelly, num(0.4))
+        .set(
+            id,
+            Prop::Bg,
+            PropValue::Color(Color::from_hex("#f9e2af").unwrap()),
+        );
+    let mut r = renderer();
+    assert!(r.apply(d).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(160, 60), Scale::ONE);
+    let mut px = vec![0u8; 160 * 60 * 4];
+    let mut paint = |r: &mut Renderer, k: u64| {
+        let at = Duration::from_secs(1) + Duration::from_millis(16 * k);
+        let mut t = PaintTarget::new(&mut px, Size::new(160, 60), 640, Scale::ONE, 1)
+            .unwrap()
+            .at(at);
+        r.paint(SurfaceId(1), &mut t);
+    };
+    paint(&mut r, 0);
+    for k in 1..=3u64 {
+        r.lift(id, Some(LogicalPoint::new(20.0 * k as f32, 0.0)));
+        paint(&mut r, k);
+    }
+    r.lift(id, Some(LogicalPoint::new(80.0, 0.0)));
+    r.update();
+    assert!(r.anim.busy(&r.tree, root), "the previewed move is pending");
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: wrap,
+        prop: Prop::Opacity,
+        value: num(0.0),
+        transition: strand_scene::Transition::Instant,
+    });
+    assert!(r.apply(d).is_empty());
+    paint(&mut r, 4);
+    assert!(
+        !r.anim.busy(&r.tree, root),
+        "the hidden jelly is left moving"
+    );
 }
