@@ -472,6 +472,18 @@ mod tests {
         // A stale socket (its listener gone) is replaced.
         let path = dir.join("s.sock");
         drop(UnixListener::bind(&path).unwrap());
+        // A test of this binary that spawns a process at this moment
+        // holds a copy of the listener's descriptor until its child
+        // execs (close-on-exec closes it only then), so the socket can
+        // answer for that instant: wait until it no longer does.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while UnixStream::connect(&path).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped listener still answers"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let server = Server::bind(&path, &handle).expect("a stale socket is replaced");
         assert!(UnixStream::connect(&path).is_ok());
         // A live one is not.
