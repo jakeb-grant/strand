@@ -1,0 +1,507 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "popup-shrink-centred"
+verdict good
+note "new scenario (popup-shrink fix, 0229b874): #mark stays at screen x 160 through the narrow, taller, shorter and wider springs; the held 220 px buffer keeps the shrinking card centred and the re-centre at k63 moves nothing on screen; reviewed from the recording"
+date 2026-10-18
+rev "0229b874"
+approver "claude"
+scenario f6a2393e93c08e28
+seal 08e26df82401491e
+S1 0 - "bar Top"
+S2 1 175 "popup#pop"
+N0 "anchor|shell.strand:8:5|[Mock | DP-1]#1" "box#anchor"
+N1 "lead|shell.strand:7:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:6:3|[Mock | DP-1]#0" "row#strip"
+N3 "|shell.strand:18:5|[Mock | DP-1]#0" "text(\"12:00\")"
+N4 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N5 "pop|shell.strand:9:7|[Mock | DP-1]#0" "popup#pop"
+N6 "card|shell.strand:10:9|[Mock | DP-1]#0" "col#card"
+N7 "line|shell.strand:14:11|[Mock | DP-1]#0" "text#line"
+N8 "mark|shell.strand:13:11|[Mock | DP-1]#0" "box#mark"
+k0 p1
+s1 z=400,30
+n0 x=160 y=0 w=40 h=30
+n1 x=0 y=0 w=160 h=30
+n2 x=0 y=0 w=400 h=30
+n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S
+n4 x=0 y=0 w=400 h=30
+k1 p2
+s2 z=220,50 o=70,36
+n5 srf=2 x=0 y=-6 w=220 h=50 op=0 hid=opacity0
+k2
+n5 op=8 hid=-
+n6 srf=2 x=0 y=-6 w=220 h=50 op=8
+n7 srf=2 x=68 y=14 w=84 h=15 v=68,14,84,15.328125 op=8 txt=S
+n8 srf=2 x=90 y=0 w=40 h=10 op=8
+k3
+n5 y=-5 v=0,-5.328125,220,50.671875 op=27
+n6 y=-5 v=0,-5.328125,220,50.671875 op=27
+n7 y=15 v=68,15.328125,84,14.671875 op=27
+n8 y=1 v=90,1.328125,40,10 op=27
+k4
+n5 y=-4 v=d op=52
+n6 y=-4 v=d op=52
+n7 y=16 v=68,16,84,15.328125 op=52
+n8 y=2 v=d op=52
+k5
+n5 y=-3 v=0,-3.328125,220,50.671875 op=78
+n6 y=-3 v=0,-3.328125,220,50.671875 op=78
+n7 y=17 v=68,17.328125,84,14.671875 op=78
+n8 y=3 v=90,3.328125,40,10 op=78
+k6
+n5 y=-2 v=d op=103
+n6 y=-2 v=d op=103
+n7 y=18 v=68,18,84,15.328125 op=103
+n8 y=4 v=d op=103
+k7
+n5 y=-1 v=0,-1.328125,220,50.671875 op=127
+n6 y=-1 v=0,-1.328125,220,50.671875 op=127
+n7 y=19 v=68,19.328125,84,14.671875 op=127
+n8 y=5 v=90,5.328125,40,10 op=127
+k8
+n5 op=148
+n6 op=148
+n7 op=148
+n8 op=148
+k9
+n5 y=0 v=d op=166
+n6 y=0 v=d op=166
+n7 y=20 v=68,20,84,15.328125 op=166
+n8 y=6 v=d op=166
+k10
+n5 op=182
+n6 op=182
+n7 op=182
+n8 op=182
+k11
+n5 op=195
+n6 op=195
+n7 op=195
+n8 op=195
+k12
+n5 op=206
+n6 op=206
+n7 op=206
+n8 op=206
+k13
+n5 op=216
+n6 op=216
+n7 op=216
+n8 op=216
+k14
+n5 op=223
+n6 op=223
+n7 op=223
+n8 op=223
+k15
+n5 op=229
+n6 op=229
+n7 op=229
+n8 op=229
+k16
+n5 op=235
+n6 op=235
+n7 op=235
+n8 op=235
+k17
+n5 op=239
+n6 op=239
+n7 op=239
+n8 op=239
+k18
+n5 op=242
+n6 op=242
+n7 op=242
+n8 op=242
+k19
+n5 op=245
+n6 op=245
+n7 op=245
+n8 op=245
+k20
+n5 op=247
+n6 op=247
+n7 op=247
+n8 op=247
+k21
+n5 op=249
+n6 op=249
+n7 op=249
+n8 op=249
+k22
+n5 op=250
+n6 op=250
+n7 op=250
+n8 op=250
+k23
+n5 op=251
+n6 op=251
+n7 op=251
+n8 op=251
+k24
+n5 op=252
+n6 op=252
+n7 op=252
+n8 op=252
+k25
+n5 op=253
+n6 op=253
+n7 op=253
+n8 op=253
+k26
+k27
+k28
+n5 op=254
+n6 op=254
+n7 op=254
+n8 op=254
+k29
+k30
+k31
+k32
+n5 op=255
+n6 op=255
+n7 op=255
+n8 op=255
+k33
+k34
+k35
+k36
+k37
+k38
+n5 x=2 w=216
+n6 x=2 w=216
+k39
+n5 x=6 w=208
+n6 x=6 w=208
+k40
+n5 x=11 w=198 v=11.328125,0,198,50
+n6 x=11 w=198 v=11.328125,0,198,50
+k41
+n5 x=16 w=189 v=16,0,189.328125,50
+n6 x=16 w=189 v=16,0,189.328125,50
+k42
+n5 x=20 w=180 v=d
+n6 x=20 w=180 v=d
+k43
+n5 x=24 w=173 v=24,0,173.328125,50
+n6 x=24 w=173 v=24,0,173.328125,50
+k44
+n5 x=26 w=168 v=d
+n6 x=26 w=168 v=d
+k45
+n5 x=28 w=164
+n6 x=28 w=164
+k46
+n5 x=29 w=161 v=29.328125,0,160.671875,50
+n6 x=29 w=161 v=29.328125,0,160.671875,50
+k47
+n5 x=30 w=159 v=30,0,159.328125,50
+n6 x=30 w=159 v=30,0,159.328125,50
+k48
+n5 x=31 v=31.328125,0,158.671875,50
+n6 x=31 v=31.328125,0,158.671875,50
+k49
+n5 w=158 v=31.328125,0,158,50
+n6 w=158 v=31.328125,0,158,50
+k50
+k51
+n5 w=159 v=31.328125,0,158.671875,50
+n6 w=159 v=31.328125,0,158.671875,50
+k52
+k53
+n5 x=30 v=30,0,159.328125,50
+n6 x=30 v=30,0,159.328125,50
+k54
+k55
+n5 w=160 v=d
+n6 w=160 v=d
+k56
+k57
+k58
+k59
+k60
+k61
+k62
+k63
+s2 z=160,50 o=100,36
+n5 x=0
+n6 x=0
+n7 x=38 v=38,20,84,15.328125
+n8 x=60
+k64
+s2 z=160,90
+n5 h=90
+n6 h=52
+k65
+n6 h=58
+k66
+n6 h=64
+k67
+n6 h=71 v=0,0,160,71.328125
+k68
+n6 h=77 v=0,0,160,77.328125
+k69
+n6 h=81 v=0,0,160,81.328125
+k70
+n6 h=85 v=0,0,160,85.328125
+k71
+n6 h=88 v=d
+k72
+n6 h=89 v=0,0,160,89.328125
+k73
+n6 h=90 v=d
+k74
+n6 h=91 v=0,0,160,91.328125
+k75
+k76
+k77
+k78
+k79
+k80
+n6 h=90 v=d
+k81
+k82
+k83
+k84
+k85
+k86
+k87
+k88
+k89
+n5 h=88
+n6 h=88
+k90
+n5 h=82
+n6 h=82
+k91
+n5 h=76
+n6 h=76
+k92
+n5 h=69 v=0,0,160,69.328125
+n6 h=69 v=0,0,160,69.328125
+k93
+n5 h=63 v=0,0,160,63.328125
+n6 h=63 v=0,0,160,63.328125
+k94
+n5 h=59 v=0,0,160,59.328125
+n6 h=59 v=0,0,160,59.328125
+k95
+n5 h=55 v=0,0,160,55.328125
+n6 h=55 v=0,0,160,55.328125
+k96
+n5 h=52 v=d
+n6 h=52 v=d
+k97
+n5 h=51 v=0,0,160,51.328125
+n6 h=51 v=0,0,160,51.328125
+k98
+n5 h=50 v=d
+n6 h=50 v=d
+k99
+n5 h=49 v=0,0,160,49.328125
+n6 h=49 v=0,0,160,49.328125
+k100
+k101
+k102
+k103
+k104
+k105
+n5 h=50 v=d
+n6 h=50 v=d
+k106
+k107
+k108
+k109
+k110
+k111
+k112
+k113
+k114
+s2 z=160,50
+k115
+s2 z=220,50 o=70,36
+n5 w=220
+n6 x=28 w=164
+n7 x=68 v=68,20,84,15.328125
+n8 x=90
+k116
+n6 x=24 w=172
+k117
+n6 x=19 w=182 v=19.328125,0,182,50
+k118
+n6 x=14 w=192 v=d
+k119
+n6 x=10 w=200
+k120
+n6 x=6 w=208
+k121
+n6 x=4 w=212
+k122
+n6 x=2 w=216
+k123
+n6 x=1 w=218 v=1.328125,0,218,50
+k124
+n6 x=0 w=220 v=d
+k125
+n6 x=-1 w=222 v=-1.328125,0,222.671875,50
+k126
+k127
+k128
+k129
+k130
+n6 x=0 w=220 v=d
+k131
+k132
+k133
+k134
+k135
+k136
+k137
+k138
+k139
+k140
+n5 op=247
+n6 op=247 hid=inert
+n7 op=247 hid=inert
+n8 op=247 hid=inert
+k141
+n5 y=-1 v=0,-1.328125,220,50.671875 op=228
+n6 y=-1 v=0,-1.328125,220,50.671875 op=228
+n7 y=19 v=68,19.328125,84,14.671875 op=228
+n8 y=5 v=90,5.328125,40,10 op=228
+k142
+n5 y=-2 v=d op=203
+n6 y=-2 v=d op=203
+n7 y=18 v=68,18,84,15.328125 op=203
+n8 y=4 v=d op=203
+k143
+n5 y=-3 v=0,-3.328125,220,50.671875 op=177
+n6 y=-3 v=0,-3.328125,220,50.671875 op=177
+n7 y=17 v=68,17.328125,84,14.671875 op=177
+n8 y=3 v=90,3.328125,40,10 op=177
+k144
+n5 y=-4 v=d op=152
+n6 y=-4 v=d op=152
+n7 y=16 v=68,16,84,15.328125 op=152
+n8 y=2 v=d op=152
+k145
+n5 y=-5 v=0,-5.328125,220,50.671875 op=128
+n6 y=-5 v=0,-5.328125,220,50.671875 op=128
+n7 y=15 v=68,15.328125,84,14.671875 op=128
+n8 y=1 v=90,1.328125,40,10 op=128
+k146
+n5 op=107
+n6 op=107
+n7 op=107
+n8 op=107
+k147
+n5 y=-6 v=d op=89
+n6 y=-6 v=d op=89
+n7 y=14 v=68,14,84,15.328125 op=89
+n8 y=0 v=d op=89
+k148
+n5 op=73
+n6 op=73
+n7 op=73
+n8 op=73
+k149
+n5 op=60
+n6 op=60
+n7 op=60
+n8 op=60
+k150
+n5 op=49
+n6 op=49
+n7 op=49
+n8 op=49
+k151
+n5 op=39
+n6 op=39
+n7 op=39
+n8 op=39
+k152
+n5 op=32
+n6 op=32
+n7 op=32
+n8 op=32
+k153
+n5 op=26
+n6 op=26
+n7 op=26
+n8 op=26
+k154
+n5 op=20
+n6 op=20
+n7 op=20
+n8 op=20
+k155
+n5 op=16
+n6 op=16
+n7 op=16
+n8 op=16
+k156
+n5 op=13
+n6 op=13
+n7 op=13
+n8 op=13
+k157
+n5 op=10
+n6 op=10
+n7 op=10
+n8 op=10
+k158
+n5 op=8
+n6 op=8
+n7 op=8
+n8 op=8
+k159
+n5 op=6
+n6 op=6
+n7 op=6
+n8 op=6
+k160
+n5 op=5
+n6 op=5
+n7 op=5
+n8 op=5
+k161
+n5 op=4
+n6 op=4
+n7 op=4
+n8 op=4
+k162
+n5 op=3
+n6 op=3
+n7 op=3
+n8 op=3
+k163
+n5 op=2
+n6 op=2
+n7 op=2
+n8 op=2
+k164
+k165
+k166
+n5 op=1
+n6 op=1
+n7 op=1
+n8 op=1
+k167
+k168
+k169
+k170
+n5 op=0
+n6 op=0
+n7 op=0
+n8 op=0
+k171
+k172
+k173
+k174
+k175
+s2 -
+n5 hid=opacity0
+n6 -
+n7 -
+n8 -
