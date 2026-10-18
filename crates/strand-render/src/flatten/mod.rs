@@ -334,9 +334,6 @@ pub struct Flattened {
     /// boxes, in paint order: where each name is on screen once a frame
     /// paints this scene, flattened for it or reused.
     pub(crate) morphs: Vec<crate::anim::MorphBox>,
-    /// (eval-coverage) What it showed for the first time, flattened in a
-    /// preview: shown once a frame paints it.
-    pub(crate) firsts: crate::anim::Firsts,
     /// (M4) The passes of drawn `shader` nodes and bundled effects.
     #[cfg(feature = "gpu")]
     pub(crate) passes: Vec<crate::renderer::backend::PassWant>,
@@ -629,7 +626,6 @@ pub fn flatten(
         let trace = f.trace.take();
         out.trace = trace.map(Arc::from);
     }
-    out.firsts = anim.take_firsts();
     out
 }
 

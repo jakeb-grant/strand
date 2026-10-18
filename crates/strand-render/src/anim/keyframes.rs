@@ -177,6 +177,11 @@ impl Plays {
                 .any(|(id, p)| !p.done && p.seen.is_some() && p.seen == self.frame && under(*id))
     }
 
+    /// A preview saw a new `play` `under` a surface (roll-preview).
+    pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.pending.iter().any(|id| under(*id))
+    }
+
     /// Drops nodes `keep` rejects.
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.nodes.retain(|id, _| keep(*id));

@@ -255,6 +255,12 @@ impl SharedMorphs {
             .any(|id| under(*id))
     }
 
+    /// A preview saw a node `under` a surface start a morph
+    /// (roll-preview).
+    pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.pending.iter().any(|id| under(*id))
+    }
+
     /// `id` morphs no more (its box stays remembered, so a node replacing
     /// it can start there).
     pub(crate) fn forget(&mut self, id: NodeId) {

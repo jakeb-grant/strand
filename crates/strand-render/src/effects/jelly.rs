@@ -202,8 +202,12 @@ impl Jellies {
     /// rest is not: its next move marks the surface dirty itself, and
     /// a preview of that move leaves it pending).
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
-        self.nodes.iter().any(|(id, s)| s.moving && under(*id))
-            || self.pending.iter().any(|id| under(*id))
+        self.nodes.iter().any(|(id, s)| s.moving && under(*id)) || self.pending(under)
+    }
+
+    /// A preview saw a held node `under` a surface moved (roll-preview).
+    pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.pending.iter().any(|id| under(*id))
     }
 }
 

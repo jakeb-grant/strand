@@ -407,6 +407,45 @@ fn a_shape_drawn_from_previews_morphs_its_first_change() {
     assert!(buf.pixels == burst.pixels, "settled on the burst");
 }
 
+/// (roll-preview) design.md's `shape: cookie` → `when loading { shape:
+/// burst }` on a surface at rest. `Renderer::apply` previews the change
+/// (`update`), which draws the old shape and leaves the morph to the
+/// painted frame: the surface still wants that frame (before, the
+/// preview matched the last frame, so none was asked for and the shape
+/// never changed on screen). Painted from previews since its first
+/// frame, as a shell paints, it morphs frame for frame as one first
+/// painted afresh (before, it was never remembered, so it snapped).
+#[test]
+fn a_shape_change_painted_from_previews_morphs() {
+    use std::time::Duration;
+    let [direct, previewed] = [false, true].map(|preview| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(4.0, 4.0, 56.0, 56.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#cba6f7")),
+            (Prop::Shape, kw("cookie")),
+        ]);
+        let id = b.node(NodeKind::Box, Some(root), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, root);
+        let mut buf = Buffer::new(64, 64, Scale::ONE);
+        if preview {
+            r.configure_surface(S, Size::new(64, 64), Scale::ONE);
+        }
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let mut d = SceneDiff::new();
+        d.set(id, Prop::Shape, kw("burst"));
+        assert!(r.apply(d).is_empty());
+        wanted_frames(&mut r, &mut buf, 1000)
+    });
+    assert!(direct.len() > 2, "painted afresh, it morphs");
+    assert_eq!(previewed.len(), direct.len(), "as many frames");
+    assert!(previewed == direct, "the same frames");
+}
+
 /// design.md: `mask: shape(cookie)` masks a subtree with a shape of the
 /// library (ref `effects_mask_shapes.png`).
 #[test]
@@ -1489,6 +1528,13 @@ fn text_stroke_fill_and_letters_draw() {
 
 /// A `roll: true` text reading `value` in a 120×40 bar at 1 s.
 fn rolling(value: &str, reduced: bool) -> (Renderer, Buffer, NodeId) {
+    rolling_on(value, reduced, false)
+}
+
+/// [`rolling`], and with `preview` its surface configured first, so the
+/// boot frame reuses the scene `Renderer::update` flattened, as a shell's
+/// does.
+fn rolling_on(value: &str, reduced: bool, preview: bool) -> (Renderer, Buffer, NodeId) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let mut p = at_xy(10.0, 4.0, 100.0, 32.0);
@@ -1505,6 +1551,9 @@ fn rolling(value: &str, reduced: bool) -> (Renderer, Buffer, NodeId) {
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(120, 40, Scale::ONE);
+    if preview {
+        r.configure_surface(S, Size::new(120, 40), Scale::ONE);
+    }
     buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
     (r, buf, id)
 }
@@ -1643,6 +1692,41 @@ fn a_rolling_number_changed_before_its_first_frame_does_not_roll() {
         "42% at once, no roll from 41%"
     );
     assert!(!r.wants_frame(S), "nothing rolls");
+}
+
+/// (roll-preview) The frames `surface` S asks for from `t` ms on, painted
+/// a refresh apart, as a shell's loop paints them; at least one.
+fn wanted_frames(r: &mut Renderer, buf: &mut Buffer, mut t: u64) -> Vec<Vec<u8>> {
+    assert!(r.wants_frame(S), "the change wants a frame");
+    let mut frames = Vec::new();
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(r, S, 1, std::time::Duration::from_millis(t));
+        frames.push(buf.pixels.clone());
+        assert!(t < 10_000, "settles");
+    }
+    frames
+}
+
+/// (roll-preview) A shell paints a surface at rest from the scene
+/// `Renderer::update` flattened (a preview): `apply` and the text
+/// worker's waker run it between a change and the frame that shows it.
+/// A rolling number painted that way since its first frame rolls, frame
+/// for frame as one first painted afresh; before, it was never
+/// remembered (only a painted flatten did that) and so showed the new
+/// text at once.
+#[test]
+fn a_rolling_number_painted_from_previews_rolls() {
+    let [direct, previewed] = [false, true].map(|preview| {
+        let (mut r, mut buf, id) = rolling_on("41%", false, preview);
+        let mut d = SceneDiff::new();
+        d.set(id, Prop::Text, text("42%"));
+        assert!(r.apply(d).is_empty());
+        wanted_frames(&mut r, &mut buf, 1000)
+    });
+    assert!(direct.len() > 2, "painted afresh, it rolls");
+    assert_eq!(previewed.len(), direct.len(), "as many frames");
+    assert!(previewed == direct, "the same frames");
 }
 
 fn column_of(px: &[u8], x0: u32, x1: u32) -> Vec<[u8; 4]> {
@@ -1786,6 +1870,24 @@ fn keyframes_play_once_and_restart_on_a_new_seq() {
     buf.paint_at(&mut r, S, 1, Duration::from_millis(2000));
     buf.paint_at(&mut r, S, 1, Duration::from_millis(2100));
     assert_eq!(buf.px(4, 25), lilac, "playing again");
+}
+
+/// (roll-preview) A `play` started on a node at rest (a handler's `play
+/// shake`): `apply`'s preview draws the node as it was and leaves the
+/// play to the painted frame, so the surface still wants that frame and
+/// the shake plays; before, the preview matched the last frame, no frame
+/// was asked for and nothing played until something else repainted.
+#[test]
+fn a_play_on_a_node_at_rest_wants_its_frames() {
+    let (mut r, mut buf, ids) = boxes(vec![vec![]], Scale::ONE, 1000);
+    let rest = buf.pixels.clone();
+    let mut d = SceneDiff::new();
+    d.set(ids[0], Prop::Play, shake(1).1);
+    assert!(r.apply(d).is_empty());
+    let frames = wanted_frames(&mut r, &mut buf, 1000);
+    assert!(frames.len() > 10, "it plays: {} frames", frames.len());
+    assert!(frames.iter().any(|f| *f != rest), "it shakes");
+    assert!(buf.pixels == rest, "and ends at rest");
 }
 
 /// `reduced_motion`: a block that plays a fixed number of times is not
@@ -2932,6 +3034,43 @@ fn an_image_drawn_from_previews_wipes_its_first_swap_in() {
     assert_eq!(right, redpx, "the old one still at the right");
     settle(&mut r, &mut buf, t);
     assert_eq!(buf.px(47, 30), left, "all new");
+}
+
+/// (roll-preview) An image swap under `transition:` on a surface painted
+/// from the scenes `Renderer::update` flattens since its first frame (a
+/// shell's at rest) wipes frame for frame as one first painted afresh;
+/// before, the image was never remembered and swapped at once.
+#[test]
+fn an_image_swap_painted_from_previews_wipes() {
+    use std::time::Duration;
+    let red = solid_png("red-preview.png", [0xf3, 0x8b, 0xa8, 0xff]);
+    let blue = solid_png("blue-preview.png", [0x89, 0xb4, 0xfa, 0xff]);
+    let [direct, previewed] = [false, true].map(|preview| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(10.0, 10.0, 40.0, 40.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Source, text(&red)),
+            (Prop::Transition, call("wipe", vec![kw("left")])),
+        ]);
+        let img = b.node(NodeKind::Image, Some(root), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, root);
+        let mut buf = Buffer::new(60, 60, Scale::ONE);
+        if preview {
+            r.configure_surface(S, Size::new(60, 60), Scale::ONE);
+        }
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let mut d = SceneDiff::new();
+        d.set(img, Prop::Source, text(&blue));
+        assert!(r.apply(d).is_empty());
+        wanted_frames(&mut r, &mut buf, 1000)
+    });
+    assert!(direct.len() > 2, "painted afresh, it wipes");
+    assert_eq!(previewed.len(), direct.len(), "as many frames");
+    assert!(previewed == direct, "the same frames");
 }
 
 /// An image hidden mid-wipe (its parent's opacity set to 0 at once)

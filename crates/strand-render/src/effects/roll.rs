@@ -38,12 +38,10 @@ pub(crate) type Rolling = (Arc<TextLayout>, Arc<TextLayout>, f32);
 #[derive(Debug, Default)]
 pub(crate) struct Rolls {
     nodes: HashMap<NodeId, Roll>,
-    /// Texts a preview saw change: the next painted frame starts the roll.
+    /// Texts a preview saw first or saw change: the next painted frame
+    /// flattens afresh to remember the text or start the roll
+    /// (roll-preview).
     pending: HashSet<NodeId>,
-    /// (eval-coverage) Texts the scene being flattened lays out for the
-    /// first time, in a preview: shown once a frame paints that scene
-    /// ([`Rolls::painted`]).
-    previewed: Vec<(NodeId, Arc<TextLayout>)>,
 }
 
 /// The glyphs of `l` in visual order.
@@ -77,6 +75,9 @@ impl Rolls {
         curve: Curve,
         frame: Frame,
     ) -> (Option<Rolling>, bool) {
+        if frame.commit {
+            self.pending.remove(&id);
+        }
         let Some(r) = self.nodes.get_mut(&id) else {
             if frame.commit {
                 self.nodes.insert(
@@ -87,12 +88,11 @@ impl Rolls {
                     },
                 );
             } else {
-                // (eval-coverage) A surface at rest paints the scene
-                // `update` flattened: what it lays out is shown when that
-                // scene is painted, so a text whose every frame so far was
-                // a preview's rolls its first change. One whose preview
-                // is never painted (another replaced it) never was shown.
-                self.previewed.push((id, layout.clone()));
+                // A preview is not shown, so it remembers nothing; and a
+                // surface at rest paints the preview's scene, so the
+                // painted frame must flatten afresh to remember the text
+                // (roll-preview).
+                self.pending.insert(id);
             }
             return (None, false);
         };
@@ -101,7 +101,6 @@ impl Rolls {
                 self.pending.insert(id);
                 return (None, false);
             }
-            self.pending.remove(&id);
             let old = std::mem::replace(&mut r.shown, layout.clone());
             if frame.snap || curve == Curve::Instant {
                 r.from = None;
@@ -142,26 +141,17 @@ impl Rolls {
         (Some((from.clone(), layout.clone(), p)), true)
     }
 
-    /// A preview saw a text under `under` change.
+    /// A preview saw a text under `under` first or saw it change.
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
     }
 
-    /// (eval-coverage) The texts the scene just flattened laid out first
-    /// in a preview, for the scene to carry.
-    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, Arc<TextLayout>)> {
-        std::mem::take(&mut self.previewed)
-    }
-
-    /// (eval-coverage) A frame painted a scene a preview flattened: the
-    /// texts it laid out first are shown.
-    pub(crate) fn painted(&mut self, first: &[(NodeId, Arc<TextLayout>)]) {
-        for (id, layout) in first {
-            self.nodes.entry(*id).or_insert_with(|| Roll {
-                shown: layout.clone(),
-                from: None,
-            });
-        }
+    /// Drops the texts a preview left pending that the painted frame
+    /// just flattened did not draw (`under` names them): they are
+    /// remembered when a painted frame draws them, and keep no frame
+    /// flattening afresh meanwhile.
+    pub(crate) fn drop_pending(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        self.pending.retain(|id| !under(*id));
     }
 
     /// Drops texts `keep` rejects.

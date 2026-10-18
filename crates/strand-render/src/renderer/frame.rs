@@ -470,9 +470,6 @@ impl Renderer {
         // scene flattened for this frame or reused: a node at rest on a
         // surface that only reuses scenes is still a morph's start.
         self.anim.shared_painted(root, target.time, &f.morphs);
-        // (eval-coverage) And a reused scene's first texts, shapes and
-        // images are on screen now: their first change animates from them.
-        self.anim.firsts_painted(&f.firsts);
         self.paint_times = PaintTimes {
             flatten: flatten_start.elapsed(),
             text_wait: self.estimate_waited.saturating_sub(waited),

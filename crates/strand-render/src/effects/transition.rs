@@ -448,9 +448,9 @@ pub(crate) enum Decode {
 #[derive(Debug, Default)]
 pub(crate) struct ImageSwaps {
     nodes: HashMap<NodeId, ImageSwap>,
-    /// (eval-coverage) Sources the scene being flattened draws for the
-    /// first time, in a preview: shown once a frame paints that scene.
-    previewed: Vec<(NodeId, String)>,
+    /// Images a preview saw first: the next painted frame flattens
+    /// afresh to remember their source (roll-preview).
+    pending: HashSet<NodeId>,
 }
 
 impl ImageSwaps {
@@ -465,6 +465,9 @@ impl ImageSwaps {
         curve: Curve,
         frame: Frame,
     ) -> (Option<(String, f32)>, bool) {
+        if frame.commit {
+            self.pending.remove(&id);
+        }
         let Some(s) = self.nodes.get_mut(&id) else {
             if frame.commit {
                 self.nodes.insert(
@@ -475,9 +478,10 @@ impl ImageSwaps {
                     },
                 );
             } else {
-                // (eval-coverage) Shown when a frame paints the preview's
-                // scene, as a surface at rest does (`Rolls::roll`).
-                self.previewed.push((id, source.to_string()));
+                // A preview remembers nothing, and a surface at rest
+                // paints its scene: the painted frame flattens afresh to
+                // remember the source.
+                self.pending.insert(id);
             }
             return (None, false);
         };
@@ -523,40 +527,33 @@ impl ImageSwaps {
         self.nodes
             .iter()
             .any(|(id, s)| matches!(s.from, Some((_, Some(_)))) && under(*id))
+            || self.pending(under)
+    }
+
+    /// A preview saw an image `under` a surface first (roll-preview).
+    pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.pending.iter().any(|id| under(*id))
     }
 
     /// Ends the swaps of images `gone` names (not drawn in the frame just
     /// painted): they show their new source at rest when they come back.
+    /// A preview's pending image the frame did not draw is dropped too.
     pub(crate) fn end_undrawn(&mut self, mut gone: impl FnMut(NodeId) -> bool) {
         for (id, s) in self.nodes.iter_mut() {
             if s.from.is_some() && gone(*id) {
                 s.from = None;
             }
         }
-    }
-
-    /// (eval-coverage) The sources the scene just flattened drew first
-    /// in a preview, for the scene to carry.
-    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, String)> {
-        std::mem::take(&mut self.previewed)
-    }
-
-    /// (eval-coverage) A frame painted a scene a preview flattened: the
-    /// sources it drew first are shown.
-    pub(crate) fn painted(&mut self, first: &[(NodeId, String)]) {
-        for (id, source) in first {
-            self.nodes.entry(*id).or_insert_with(|| ImageSwap {
-                shown: source.clone(),
-                from: None,
-            });
-        }
+        self.pending.retain(|id| !gone(*id));
     }
 
     pub(crate) fn forget(&mut self, id: NodeId) {
         self.nodes.remove(&id);
+        self.pending.remove(&id);
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.nodes.retain(|id, _| keep(*id));
+        self.pending.retain(|id| keep(*id));
     }
 }

@@ -31,12 +31,10 @@ struct Morph {
 #[derive(Debug, Default)]
 pub(crate) struct Morphs {
     nodes: HashMap<NodeId, Morph>,
-    /// Nodes a preview saw change shape: the next painted frame must
-    /// flatten afresh to start the morph.
+    /// Nodes a preview saw first or saw change shape: the next painted
+    /// frame must flatten afresh to remember the shape or start the
+    /// morph (roll-preview).
     pending: HashSet<NodeId>,
-    /// (eval-coverage) Shapes the scene being flattened draws for the
-    /// first time, in a preview: shown once a frame paints that scene.
-    previewed: Vec<(NodeId, Shape)>,
 }
 
 /// The frame being drawn, as the animator sees it.
@@ -80,13 +78,17 @@ impl Morphs {
         curve: Curve,
         frame: Frame,
     ) -> (Outline, bool) {
+        if frame.commit {
+            self.pending.remove(&id);
+        }
         let Some(m) = self.nodes.get_mut(&id) else {
             if frame.commit {
                 self.nodes.insert(id, Morph { shape, from: None });
             } else {
-                // (eval-coverage) Shown when a frame paints the preview's
-                // scene, as a surface at rest does (`Rolls::roll`).
-                self.previewed.push((id, shape));
+                // A preview remembers nothing, and a surface at rest
+                // paints its scene: the painted frame flattens afresh to
+                // remember the shape (roll-preview).
+                self.pending.insert(id);
             }
             return (Outline::Shape(shape), false);
         };
@@ -97,7 +99,6 @@ impl Morphs {
                 self.pending.insert(id);
                 return (Outline::Shape(m.shape), false);
             }
-            self.pending.remove(&id);
             if frame.snap || curve == Curve::Instant {
                 m.shape = shape;
                 m.from = None;
@@ -140,26 +141,15 @@ impl Morphs {
         (Outline::Points(points), true)
     }
 
-    /// A preview saw a node under `under` change shape.
+    /// A preview saw a node under `under` first or saw it change shape.
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
     }
 
-    /// (eval-coverage) The shapes the scene just flattened drew first in
-    /// a preview, for the scene to carry.
-    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, Shape)> {
-        std::mem::take(&mut self.previewed)
-    }
-
-    /// (eval-coverage) A frame painted a scene a preview flattened: the
-    /// shapes it drew first are shown.
-    pub(crate) fn painted(&mut self, first: &[(NodeId, Shape)]) {
-        for (id, shape) in first {
-            self.nodes.entry(*id).or_insert(Morph {
-                shape: *shape,
-                from: None,
-            });
-        }
+    /// Drops the nodes a preview left pending that the painted frame just
+    /// flattened did not draw (`under` names them).
+    pub(crate) fn drop_pending(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        self.pending.retain(|id| !under(*id));
     }
 
     /// Drops nodes `keep` rejects.
@@ -248,5 +238,29 @@ mod tests {
         let (_, moving) = m.outline(id, Shape::Rect, 1.0, spring, frame(1016));
         assert!(moving);
         assert!(!m.pending(|_| true));
+    }
+
+    /// (roll-preview) A node only a preview has seen is pending, so the
+    /// painted frame flattens afresh and remembers it; one the painted
+    /// frame did not draw is dropped.
+    #[test]
+    fn a_preview_leaves_a_new_node_to_the_painted_frame() {
+        let id = NodeId::new(1, 0);
+        let spring = Curve::Spring(Spring::new(700.0, 0.9).unwrap());
+        let preview = |ms| Frame {
+            commit: false,
+            ..frame(ms)
+        };
+        let mut m = Morphs::default();
+        m.outline(id, Shape::Circle, 1.0, spring, preview(1000));
+        assert!(m.pending(|_| true), "seen only by a preview");
+        m.outline(id, Shape::Circle, 1.0, spring, frame(1016));
+        assert!(!m.pending(|_| true), "remembered");
+        let (_, moving) = m.outline(id, Shape::Rect, 1.0, spring, frame(1032));
+        assert!(moving, "a change morphs");
+        let other = NodeId::new(2, 0);
+        m.outline(other, Shape::Circle, 1.0, spring, preview(1040));
+        m.drop_pending(|n| n == other);
+        assert!(!m.pending(|_| true), "not drawn: dropped");
     }
 }

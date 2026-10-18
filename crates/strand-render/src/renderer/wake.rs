@@ -218,8 +218,14 @@ impl Renderer {
             };
             let wait = self.new_text_wait;
             let window = self.busy_window;
+            // (roll-preview) A change the preview left to the painted
+            // frame is not drawn in its scene.
+            let deferred = self
+                .surfaces
+                .get(&id)
+                .is_some_and(|s| self.anim.deferred(&self.tree, s.root));
             if let Some(s) = self.surfaces.get_mut(&id) {
-                if s.valid && s.records == f.records && s.opaque == f.opaque {
+                if s.valid && s.records == f.records && s.opaque == f.opaque && !deferred {
                     s.dirty = false;
                 }
                 s.animating = animating;
