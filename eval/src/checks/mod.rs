@@ -25,10 +25,12 @@ use crate::trace::{Frame, Row, RunTrace};
 
 pub mod budget;
 pub mod bystander;
+pub mod coherence;
 pub mod cpu_gpu;
 pub mod determinism;
 pub mod envelope;
 pub mod expect;
+pub mod ink;
 pub mod reference;
 pub mod regions;
 pub mod settle;
@@ -235,6 +237,9 @@ pub struct Timeline<'a> {
     pub ks: Vec<u32>,
     pub screens: Vec<HashMap<&'a str, &'a Row>>,
     pub frames: Vec<&'a Frame>,
+    /// Where each surface was first placed, when the rows are moved
+    /// with their surface ([`RunTrace::on_screen`]); else empty.
+    first: BTreeMap<u32, [f32; 2]>,
 }
 
 impl<'a> Timeline<'a> {
@@ -285,6 +290,11 @@ impl<'a> Timeline<'a> {
             ks,
             screens,
             frames,
+            first: if trace.on_screen {
+                trace.first_origins()
+            } else {
+                BTreeMap::new()
+            },
         }
     }
 
@@ -321,6 +331,12 @@ impl<'a> Timeline<'a> {
     pub fn visible(&self, i: usize, row: &Row) -> bool {
         let hidden = matches!(row.hidden.as_deref(), Some("opacity0" | "scale0"));
         let [x, y, w, h] = row.visual;
+        // On its surface, wherever the surface has moved to.
+        let [dx, dy] = self
+            .frames
+            .get(i)
+            .map_or([0.0, 0.0], |f| RunTrace::moved(&self.first, f, row.surface));
+        let (x, y) = (x - dx, y - dy);
         let on = self
             .size(i, row.surface)
             .is_none_or(|[sw, sh]| x < sw && y < sh && x + w > 0.0 && y + h > 0.0);
@@ -657,6 +673,11 @@ pub fn evaluate(
     again: Option<&RunTrace>,
     reference: Option<&Reference>,
 ) -> Report {
+    // The checks read what the eye sees: rows moved with their surface.
+    let moved = trace.on_screen();
+    let trace = moved.as_ref().unwrap_or(trace);
+    let twin_moved = twin.and_then(RunTrace::on_screen);
+    let twin = twin_moved.as_ref().or(twin);
     let cx = Cx::new(sc, trace);
     let mut results = Vec::new();
     for check in CheckId::ALL {
@@ -673,6 +694,8 @@ pub fn evaluate(
                 }
                 CheckId::Teleport => (teleport::run(&cx), None),
                 CheckId::Vanish => (vanish::run(&cx), None),
+                CheckId::Coherence => (coherence::run(&cx), None),
+                CheckId::Ink => (ink::run(&cx), None),
                 CheckId::Twin if trace.scenario.reduced_motion => {
                     (Vec::new(), skip("the scenario reduces motion itself"))
                 }

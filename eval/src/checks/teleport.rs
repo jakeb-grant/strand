@@ -1,7 +1,11 @@
 //! `teleport`: a moving node does not jump. Between two frames in which
 //! it shows, with any motion on it or an ancestor at either, each edge
 //! moves at most `max(teleport_px * 60 / hz, 0.75 * d) + tol` per tick
-//! between them. `d` is the segment's travel `|e - s|` or, for a node
+//! between them. `d` is the segment's travel, the span of its way
+//! ([`super::way`]: where it starts, where it rests and every place a
+//! frame counted laid it out, so a size spring sent out and back within
+//! one segment travels its whole excursion, not the nothing between its
+//! ends) or, for a node
 //! gliding (or carried by a gliding ancestor) at the second frame and
 //! gliding or lifted by a drag at the first, the glide (or drag) offset
 //! it had left at the first, its own and its ancestors' in flight (what
@@ -11,14 +15,18 @@
 //! still exceeds 0.75 of it. A glide retargeted in flight starts from
 //! where the node was drawn: its drawn box does not jump with its layout.
 //! A jump with no motion at either frame (layout snapping) is noted, not
-//! failed; on w and h only motion that sizes a box counts (a size spring
+//! failed; the retarget arm holds x and y only, since a glide moves a
+//! box and never sizes it (layout lengths snap, design.md "What can't
+//! interpolate"); on w and h only motion that sizes a box counts (a size spring
 //! or a morph, its own or an ancestor's, lean, jelly, or authored motion
 //! on w, h, scale or rotate: keyframes or `t` on those axes, a scale
 //! spring): a glide, a drag, an offset or opacity spring, a reveal, a
 //! stagger and a pose of opacity or offset move or fade a box, never size
 //! it. Skipped under reduced motion, where everything snaps.
 
-use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value};
+use std::collections::HashMap;
+
+use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value, way};
 use crate::scenario::CheckId;
 use strand_render::probe::{Axes, Motions};
 
@@ -32,6 +40,8 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         let (bi, ei) = (cx.tl.at(s), cx.tl.at(seg.e));
         let range = cx.tl.within(Some(s), seg.e);
         let start = bi.unwrap_or(range.start);
+        // Per node and axis, the segment's travel: the span of its way.
+        let mut travels: HashMap<(&str, usize), f64> = HashMap::new();
         for i in range {
             if i <= start {
                 continue;
@@ -76,13 +86,18 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         }
                         _ => !any.is_empty(),
                     };
-                    let travel = match (
-                        bi.and_then(|b| cx.tl.row(b, key)),
-                        ei.and_then(|e| cx.tl.row(e, key)),
-                    ) {
-                        (Some(b), Some(e)) => (value(e, a) - value(b, a)).abs(),
-                        _ => 0.0,
-                    };
+                    let travel = *travels.entry((*key, a as usize)).or_insert_with(|| {
+                        match (
+                            bi.and_then(|b| cx.tl.row(b, key)),
+                            ei.and_then(|e| cx.tl.row(e, key)),
+                        ) {
+                            (Some(b), Some(e)) => {
+                                let w = way(cx, key, s, seg.e, b, e, a);
+                                (value(e, a) - value(b, a)).abs().max(w.hi - w.lo)
+                            }
+                            _ => 0.0,
+                        }
+                    });
                     let left = match (carried, a) {
                         (true, super::Axis::X) => f64::from(q.glide[0] + q.flight[0]).abs(),
                         (true, super::Axis::Y) => f64::from(q.glide[1] + q.flight[1]).abs(),
@@ -113,7 +128,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         continue;
                     }
                     let dl = laid(r, a) - laid(q, a);
-                    if glides && dl.abs() > 1.0f64.max(cx.tol) && (d - dl).abs() <= cx.tol {
+                    let offset_axis = matches!(a, super::Axis::X | super::Axis::Y);
+                    if glides
+                        && offset_axis
+                        && dl.abs() > 1.0f64.max(cx.tol)
+                        && (d - dl).abs() <= cx.tol
+                    {
                         out.push(
                             Finding::fail(
                                 CheckId::Teleport,

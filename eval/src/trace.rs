@@ -15,12 +15,14 @@ pub const SCHEMA: u32 = 1;
 
 /// The columns of a row before `fx`, `fy` (still read).
 const OLD_COLS: usize = 34;
+/// The columns of a row before `fit`, `ink` (still read).
+const FLIGHT_COLS: usize = 36;
 
 /// The node row's columns, in order (`Row`'s array form).
-pub const COLS: [&str; 36] = [
+pub const COLS: [&str; 38] = [
     "key", "s", "x", "y", "w", "h", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "oo",
     "sx", "sy", "rot", "mot", "emot", "auth", "hid", "txt", "ix", "iy", "wx", "wy", "spx", "spy",
-    "gx", "gy", "mx", "my", "fx", "fy",
+    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink",
 ];
 
 /// A rect, `[x, y, w, h]`.
@@ -47,6 +49,10 @@ pub struct RunTrace {
     /// The ticks that painted something.
     pub frames: Vec<Frame>,
     pub digest: String,
+    /// Rows and input regions moved by their surface's origin since it
+    /// was first placed ([`RunTrace::on_screen`]); never written.
+    #[serde(skip)]
+    pub on_screen: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -96,6 +102,13 @@ pub struct NodeMeta {
     pub text: Option<String>,
     /// Its `enter` pose when it was first seen.
     pub enter: Option<Pose>,
+    /// Its shared-element `morph:` name, when written as text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph: Option<String>,
+    /// A text that cuts itself with an ellipsis (`ellipsis:`) rather
+    /// than wrapping when its box is narrower than it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ellipsis: bool,
 }
 
 /// The parts of an `enter` pose the checks read.
@@ -230,6 +243,27 @@ pub struct Frame {
     /// since the frame before: what is laid out anew may be theirs.
     #[serde(default)]
     pub driven: bool,
+    /// Where each shown surface's buffer lies on the output (logical
+    /// px): a popup the compositor re-centres as it grows moves.
+    #[serde(default)]
+    pub origins: BTreeMap<u32, [f32; 2]>,
+    /// With `compositor_poses`, the pose each painted surface commits
+    /// with this frame (`Renderer::delegated_pose`), which the
+    /// compositor applies to it: absent is none (at rest).
+    #[serde(default)]
+    pub poses: BTreeMap<u32, PoseRec>,
+}
+
+/// A surface pose the compositor applies (`strand_scene::SurfacePose`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PoseRec {
+    /// Multiplied into the surface's alpha.
+    pub opacity: f32,
+    /// The surface drawn this much of its size, its top-left kept.
+    pub scale: f32,
+    /// Logical px its top-left moves.
+    pub x: f32,
+    pub y: f32,
 }
 
 /// A surface's `Painter` regions after a frame.
@@ -283,6 +317,12 @@ pub struct Row {
     /// glides, a drag's lift included (what they have written at rest
     /// left out). The sandbox's sum of their `spring` and `glide`.
     pub flight: [f32; 2],
+    /// A text cut to its box: the line box width it asked to be shaped
+    /// for (its unbounded layout is wider than its box).
+    pub fit: Option<f32>,
+    /// A text's glyphs as drawn: the ink of the layout it drew, clipped
+    /// where the frame clips it (`[x, y, w, h]`, before transforms).
+    pub ink: Option<Rect>,
 }
 
 /// `v` to 1/64.
@@ -322,6 +362,8 @@ impl Serialize for Row {
             seq.serialize_element(&q(p[0]))?;
             seq.serialize_element(&q(p[1]))?;
         }
+        seq.serialize_element(&self.fit.map(q))?;
+        seq.serialize_element(&self.ink.map(|r| r.map(q)))?;
         seq.end()
     }
 }
@@ -331,7 +373,7 @@ impl<'de> Deserialize<'de> for Row {
         let v: Vec<serde_json::Value> = Vec::deserialize(d)?;
         // A trace from before `fx`, `fy` were recorded (an A/B against
         // an earlier revision) reads with nothing in flight.
-        if v.len() != COLS.len() && v.len() != OLD_COLS {
+        if ![COLS.len(), FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
             return Err(D::Error::custom(format!(
                 "a node row has {} columns, not {}",
                 v.len(),
@@ -382,6 +424,21 @@ impl<'de> Deserialize<'de> for Row {
             } else {
                 [0.0, 0.0]
             },
+            fit: match v.get(36) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => Some(f(36)?),
+            },
+            ink: match v.get(37) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(r) => {
+                    let r: Vec<f32> = serde_json::from_value(r.clone())
+                        .map_err(|_| D::Error::custom("column ink is not a rect"))?;
+                    match r.as_slice() {
+                        [x, y, w, h] => Some([*x, *y, *w, *h]),
+                        _ => return Err(D::Error::custom("column ink is not a rect")),
+                    }
+                }
+            },
         })
     }
 }
@@ -427,6 +484,7 @@ impl RunTrace {
             put(&(&det, &f.held_text, &f.n));
             put(&f.regions);
             put(&(f.scale, f.driven));
+            put(&(&f.origins, &f.poses));
         }
         put(&self.segments);
         put(&self.rests);
@@ -457,6 +515,116 @@ impl RunTrace {
             } else {
                 1.0
             })
+    }
+
+    /// Where each surface was first placed (its first frame's origin).
+    pub fn first_origins(&self) -> BTreeMap<u32, [f32; 2]> {
+        let mut first = BTreeMap::new();
+        for f in &self.frames {
+            for (s, o) in &f.origins {
+                first.entry(*s).or_insert(*o);
+            }
+        }
+        first
+    }
+
+    /// How far surface `s` has moved at `f` from where it was first
+    /// placed (`first`, [`RunTrace::first_origins`]).
+    pub fn moved(first: &BTreeMap<u32, [f32; 2]>, f: &Frame, s: u32) -> [f32; 2] {
+        match (f.origins.get(&s), first.get(&s)) {
+            (Some(o), Some(a)) => [o[0] - a[0], o[1] - a[1]],
+            _ => [0.0, 0.0],
+        }
+    }
+
+    /// The trace as the eye sees it, where the compositor moves or poses
+    /// a surface:
+    ///
+    /// - a surface that moves on the output (a content-sized popup the
+    ///   compositor re-centres as it grows): every row's boxes and ink,
+    ///   and every input region, moved by how far its surface has moved
+    ///   since it was first placed, so content render keeps in place on
+    ///   screen while its surface moves under it reads as still;
+    /// - a surface pose the compositor applies (`compositor_poses`): its
+    ///   opacity multiplied into every row's, and into the root's own;
+    ///   its scale (about the surface's top-left) and offset applied to
+    ///   every visual box and to the root's scale; the rows authored on
+    ///   every axis it moves, as a pose authors its subtree.
+    ///
+    /// `None` when no surface moved and none was posed (the trace as it
+    /// is).
+    pub fn on_screen(&self) -> Option<RunTrace> {
+        let first = self.first_origins();
+        let moves = self.frames.iter().any(|f| {
+            !f.poses.is_empty()
+                || f.origins
+                    .keys()
+                    .any(|s| RunTrace::moved(&first, f, *s) != [0.0, 0.0])
+        });
+        if !moves {
+            return None;
+        }
+        let roots: BTreeMap<u32, String> = self
+            .surfaces
+            .iter()
+            .map(|s| (s.id, s.root.clone()))
+            .collect();
+        let mut t = self.clone();
+        t.on_screen = true;
+        for f in &mut t.frames {
+            let shift: BTreeMap<u32, [f32; 2]> = f
+                .origins
+                .keys()
+                .map(|s| (*s, RunTrace::moved(&first, f, *s)))
+                .collect();
+            let by = |s: u32| shift.get(&s).copied().unwrap_or([0.0, 0.0]);
+            let mv = |r: &mut Rect, d: [f32; 2]| {
+                r[0] += d[0];
+                r[1] += d[1];
+            };
+            for r in &mut f.n {
+                if let Some(p) = f.poses.get(&r.surface) {
+                    let k = p.scale;
+                    r.op *= p.opacity;
+                    r.visual = [
+                        p.x + k * r.visual[0],
+                        p.y + k * r.visual[1],
+                        k * r.visual[2],
+                        k * r.visual[3],
+                    ];
+                    if roots.get(&r.surface) == Some(&r.key) {
+                        r.own_op *= p.opacity;
+                        r.scale = [r.scale[0] * k, r.scale[1] * k];
+                    }
+                    use strand_render::probe::Axes;
+                    let mut auth = Axes::NONE;
+                    if p.opacity != 1.0 {
+                        auth |= Axes::OPACITY;
+                    }
+                    if k != 1.0 {
+                        auth |= Axes::X | Axes::Y | Axes::W | Axes::H | Axes::SCALE;
+                    }
+                    if p.x != 0.0 || p.y != 0.0 {
+                        auth |= Axes::X | Axes::Y;
+                    }
+                    r.auth |= auth.0;
+                }
+                let d = by(r.surface);
+                mv(&mut r.drawn, d);
+                mv(&mut r.visual, d);
+                mv(&mut r.laid, d);
+                if let Some(ink) = r.ink.as_mut() {
+                    mv(ink, d);
+                }
+            }
+            for (s, reg) in &mut f.regions {
+                let d = by(*s);
+                for r in reg.input.iter_mut().flatten() {
+                    mv(r, d);
+                }
+            }
+        }
+        Some(t)
     }
 
     /// Fills in the digest.

@@ -1,0 +1,36 @@
+id     = "title-pill-cut-waker"
+about  = """title-pill-cut-late with the title's late layouts delivered between
+frames, as the runtime's `text_ready` wake does (`via waker`), and the
+screen at scale 1.5: a stand-in shaped at the frame before's width stays
+inside the pill and never draws less of the title as the pill grows."""
+screen = { width = 800, scale = 1.5 }
+
+=== shell.strand
+state grown = false
+bar Top {
+  height: 30
+  box { width: 100; height: 30
+    popup { id: big; open: true; width: 420; height: 40; margin: 0
+      row { id: pill; bg: #202020; clip: true; height: 40; align: center
+            width: grown ? 400 : 90 ~ spring(320, 0.62)
+        text "Firefox: a window title much too long for the pill it is in" {
+          id: title; shrink: 1; min_width: 0; ellipsis: end; color: #ffffff }
+        box { id: room; width: 30; height: 20; shrink: 0 }
+      }
+    }
+  }
+  text "12:00" { color: #ffffff }
+}
+
+=== steps
+text late 1 where "Firefox" via waker
+rest
+expect visible #title
+mark grow
+set grown true
+rest
+expect visible #title
+mark shrink
+set grown false
+rest
+expect visible #title

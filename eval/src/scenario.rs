@@ -27,6 +27,11 @@ pub enum CheckId {
     Envelope,
     Teleport,
     Vanish,
+    /// One frame's geometry hangs together (inherit, pivot, morph start,
+    /// stacking).
+    Coherence,
+    /// A text's glyphs fit its box.
+    Ink,
     Twin,
     Determinism,
     Regions,
@@ -38,12 +43,14 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 12] = [
+    pub const ALL: [CheckId; 14] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
         CheckId::Teleport,
         CheckId::Vanish,
+        CheckId::Coherence,
+        CheckId::Ink,
         CheckId::Twin,
         CheckId::Determinism,
         CheckId::Regions,
@@ -56,12 +63,14 @@ impl CheckId {
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
     /// is opt-in and `cpu-gpu` comes with `backend = "both"`.
-    pub const DEFAULT: [CheckId; 9] = [
+    pub const DEFAULT: [CheckId; 11] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
         CheckId::Teleport,
         CheckId::Vanish,
+        CheckId::Coherence,
+        CheckId::Ink,
         CheckId::Twin,
         CheckId::Budget,
         CheckId::Reference,
@@ -75,6 +84,8 @@ impl CheckId {
             CheckId::Envelope => "envelope",
             CheckId::Teleport => "teleport",
             CheckId::Vanish => "vanish",
+            CheckId::Coherence => "coherence",
+            CheckId::Ink => "ink",
             CheckId::Twin => "twin",
             CheckId::Determinism => "determinism",
             CheckId::Regions => "regions",
@@ -249,6 +260,10 @@ pub struct Scenario {
     pub tooltip_delay: Option<u64>,
     /// Motion reduced from the start.
     pub reduce_motion: bool,
+    /// The compositor applies surface poses (`Renderer::set_compositor_poses`):
+    /// a surface root's fade, scale and offset are committed beside its
+    /// pixels, which it paints at rest.
+    pub compositor_poses: bool,
     pub config: Config,
     pub steps: Vec<Step>,
     /// The scenario's text as parsed (a run keeps it beside its trace, so
@@ -277,6 +292,7 @@ struct Header {
     twin_pixels: Option<bool>,
     tooltip_delay: Option<u64>,
     reduce_motion: Option<bool>,
+    compositor_poses: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -704,6 +720,7 @@ impl Scenario {
             twin_pixels: h.twin_pixels.unwrap_or(false),
             tooltip_delay: h.tooltip_delay,
             reduce_motion: h.reduce_motion.unwrap_or(false),
+            compositor_poses: h.compositor_poses.unwrap_or(false),
             config,
             steps,
             source: text.to_string(),

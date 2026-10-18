@@ -83,6 +83,24 @@ fn enter_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
     Some(p)
 }
 
+/// The node's shared-element `morph:` name, when it is written as text.
+fn morph_of(tree: &SceneTree, node: NodeId) -> Option<String> {
+    match tree.get(node)?.get(Prop::Morph)? {
+        PropValue::Text(k) | PropValue::Keyword(k) if !k.is_empty() => Some(k.clone()),
+        _ => None,
+    }
+}
+
+/// Whether the node cuts its text with an ellipsis (`ellipsis: end`,
+/// `start`, `middle` or `true`).
+fn ellipsis_of(tree: &SceneTree, node: NodeId) -> bool {
+    match tree.get(node).and_then(|n| n.get(Prop::Ellipsis)) {
+        Some(PropValue::Keyword(k)) => strand_text::Ellipsis::from_name(k).is_some(),
+        Some(PropValue::Bool(b)) => *b,
+        _ => false,
+    }
+}
+
 fn text_of(tree: &SceneTree, node: NodeId) -> Option<String> {
     match tree.get(node)?.get(Prop::Text)? {
         PropValue::Text(t) => Some(t.clone()),
@@ -174,6 +192,8 @@ impl Labels {
             id,
             text,
             enter: enter_pose(tree, node),
+            morph: morph_of(tree, node),
+            ellipsis: ellipsis_of(tree, node),
         });
         key
     }

@@ -98,6 +98,15 @@ pub struct NodeTrace {
     pub hidden: Option<Hidden>,
     /// What a text, button or input drew its text from.
     pub text: Option<TextDrawn>,
+    /// A text's line box width when its unbounded layout is wider than
+    /// its box (the width it asked to be shaped for: cut, ellipsised or
+    /// wrapped); `None` when it fits, or for anything but a text.
+    pub fit: Option<f32>,
+    /// A text's glyphs as drawn this frame: the ink of the layout it
+    /// drew, where it drew it, clipped to its box when the frame clips
+    /// it there; surface logical pixels, before `scale` and `rotate`.
+    /// `None` when it drew no glyphs (an estimate, an empty text).
+    pub ink: Option<LogicalRect>,
 }
 
 /// The paint offsets between a node's laid box and its drawn box,

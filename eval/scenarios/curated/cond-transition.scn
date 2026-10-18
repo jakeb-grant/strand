@@ -1,0 +1,47 @@
+id     = "cond-transition"
+about  = """spec.md 6.6: a change takes the transition in effect after it, the `~`
+expression evaluated with the value (owner-testing.md bug 10). #card mounts
+closed and fades in over 160 ms and out over 1 s; #veil, its mirror, mounts
+with the 160 ms transition in effect and fades out over 1 s when `open`
+turns on. A `~` read once at mount would fade #card in over 1 s and #veil
+out over 160 ms."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state open = false
+bar Top {
+  height: 30
+  row { id: status; height: 24; gap: 6; align: center
+    box { id: card; width: 40; height: 16; bg: #ff8000
+          opacity: open ? 1 : 0 ~ (open ? 160ms : 1s) }
+    box { id: veil; width: 40; height: 16; bg: #0080ff
+          opacity: open ? 0 : 1 ~ (open ? 1s : 160ms) }
+    box { id: steady; width: 20; height: 12; bg: #00ff00 }
+  }
+}
+
+=== steps
+rest
+expect hidden #card
+expect visible #veil
+mark open
+set open true
+wait 400
+# 400 ms in: #card's 160 ms fade-in ended long ago; #veil's 1 s fade-out
+# is still on its way.
+expect visible #card
+expect still #card opacity from +15
+expect visible #veil
+expect moves #veil opacity from +15
+expect still #steady
+rest
+expect hidden #veil
+mark close
+set open false
+wait 400
+expect visible #card
+expect moves #card opacity from +15
+expect visible #veil
+expect still #veil opacity from +15
+rest
+expect hidden #card

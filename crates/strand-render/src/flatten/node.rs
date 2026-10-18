@@ -421,7 +421,7 @@ impl<'a> Flattener<'a> {
         // (logical), and the layout's shift in the box.
         let mut caret_at: Option<(Arc<TextLayout>, f32)> = None;
         #[cfg(feature = "eval-hooks")]
-        let mut probe_text = None;
+        let (mut probe_text, mut probe_fit) = (None, None);
         if is_text
             && let Some((natural, align, colors)) =
                 natural_spec(&text_get, &scope, &font, self.scale)
@@ -463,6 +463,7 @@ impl<'a> Flattener<'a> {
             #[cfg(feature = "eval-hooks")]
             {
                 probe_text = Some(super::probe::text_drawn(shaped, self.scale, fit));
+                probe_fit = fit;
             }
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
@@ -506,7 +507,7 @@ impl<'a> Flattener<'a> {
         };
         // (eval-sandbox) What moves it this frame, from the locals above.
         #[cfg(feature = "eval-hooks")]
-        let probe = self.trace.is_some().then(|| {
+        let mut probe = self.trace.is_some().then(|| {
             super::probe::Seen {
                 node: node.id,
                 parent: node.parent,
@@ -530,6 +531,7 @@ impl<'a> Flattener<'a> {
                 follows: super::probe::axes(&follows),
                 inherited: (inh.offset.0 + inh.flight.0, inh.offset.1 + inh.flight.1),
                 text: probe_text,
+                fit: probe_fit,
             }
             .trace()
         });
@@ -1245,6 +1247,19 @@ impl<'a> Flattener<'a> {
             } else {
                 bounds
             };
+            // (eval-sandbox) The glyphs' ink as this frame draws it.
+            #[cfg(feature = "eval-hooks")]
+            if let Some(t) = probe.as_mut()
+                && !bounds.is_empty()
+            {
+                let lg = |v: f64| (v / s) as f32;
+                t.ink = Some(LogicalRect::new(
+                    lg(f64::from(bounds.x)),
+                    lg(f64::from(bounds.y)),
+                    lg(f64::from(bounds.w)),
+                    lg(f64::from(bounds.h)),
+                ));
+            }
             let clip = (clip_text && !bounds.is_empty())
                 .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
             if let Some(i) = clip {

@@ -61,8 +61,9 @@ slots.subject = { exit = { height = "0" } }
 
 [[effect]]
 name = "flip-reorder"
-about = "two keyed boxes in the row swap places when `wide` turns on (FLIP glides)"
-slots.extra = 'for n in (wide ? ["b", "a"] : ["a", "b"]) key n { box { width: n == "a" ? 8 : 14; height: 10; bg: #ffffff } }'
+about = """two keyed boxes in the row swap places when `wide` turns on (FLIP glides);
+each holds a box, which its glide carries (a glider with children)"""
+slots.extra = 'for n in (wide ? ["b", "a"] : ["a", "b"]) key n { box { width: n == "a" ? 8 : 14; height: 10; bg: #ffffff; pad: 2; box { width: 4; height: 6; bg: #000000 } } }'
 
 [[effect]]
 name = "size-spring"
@@ -144,8 +145,10 @@ rules = ["text late 1 via paint"]
 
 [[effect]]
 name = "reduced-motion"
-about = "the desktop reduces motion: every transition snaps"
+about = """the desktop reduces motion: every transition snaps, and time signals stop
+(the subject turns on `rotate: t * 90deg`, which stands at t = 0)"""
 reduce_motion = true
+slots.subject = { rotate = "t * 90deg" }
 
 [[effect]]
 name = "scale-1.5"

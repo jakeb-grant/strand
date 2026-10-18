@@ -65,8 +65,8 @@ use crate::steps::{Button, ExpectKind, Intention, Point, Step, StepKind, Via};
 use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
-    BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, Regions,
-    RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
+    BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, PoseRec,
+    Regions, RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
 };
 
 /// How to run a scenario.
@@ -267,6 +267,11 @@ struct Harness<'s> {
     /// Logic's diff with changes, or input, reached the renderer since
     /// the last frame (`Frame::driven`).
     driven: bool,
+    /// The pose each surface painted this tick commits with its frame,
+    /// read right after its paint, as the surface manager reads it
+    /// (`commit.rs`), before the loop handles the surface changes the
+    /// paint left (a closing surface's removal).
+    poses: BTreeMap<u32, PoseRec>,
     /// The last tick run.
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
@@ -337,6 +342,10 @@ impl<'s> Harness<'s> {
         }
         r.set_promotion(false);
         r.set_frame_trace(true);
+        // The compositor applies surface poses (as Hyprland, with
+        // `wp_alpha_modifier_v1` and the viewporter, does): what each
+        // frame commits besides its pixels is traced.
+        r.set_compositor_poses(sc.compositor_poses);
         let gpu = match leg {
             BackendMode::Gpu => Some(Device::start(&mut r)?),
             _ => None,
@@ -371,6 +380,7 @@ impl<'s> Harness<'s> {
             forced_reduced: reduced,
             depth: 0,
             driven: false,
+            poses: BTreeMap::new(),
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
@@ -1341,6 +1351,22 @@ impl<'s> Harness<'s> {
                     self.surfaces.paint(&mut self.r, id, t)?;
                 }
             }
+            match self.r.delegated_pose(id) {
+                Some(p) => {
+                    self.poses.insert(
+                        id.0,
+                        PoseRec {
+                            opacity: q(p.opacity),
+                            scale: q(p.scale),
+                            x: q(p.offset.x),
+                            y: q(p.offset.y),
+                        },
+                    );
+                }
+                None => {
+                    self.poses.remove(&id.0);
+                }
+            }
         }
         // `Host::painted`: surface changes wake the loop, and so does
         // text the frame shaped (a worker's layout arrives with a wake).
@@ -1422,6 +1448,16 @@ impl<'s> Harness<'s> {
                 .collect(),
             scale: self.surfaces.screen.scale,
             driven: std::mem::take(&mut self.driven),
+            origins: self
+                .surfaces
+                .shown
+                .iter()
+                .map(|s| (s.id.0, s.origin))
+                .collect(),
+            poses: std::mem::take(&mut self.poses)
+                .into_iter()
+                .filter(|(s, _)| last.contains_key(s))
+                .collect(),
             ..Frame::default()
         };
         for (s, f) in &last {
@@ -1520,6 +1556,8 @@ impl<'s> Harness<'s> {
                 glide: pair(n.parts.glide),
                 morph: pair(n.parts.morph),
                 flight: pair(flight),
+                fit: n.fit.map(q),
+                ink: n.ink.map(rect),
             });
         }
         out

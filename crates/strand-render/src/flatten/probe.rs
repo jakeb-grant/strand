@@ -38,6 +38,8 @@ pub(super) struct Seen {
     pub follows: Axes,
     pub inherited: (f32, f32),
     pub text: Option<TextDrawn>,
+    /// The line box a text asked to be shaped for, when cut.
+    pub fit: Option<f32>,
 }
 
 impl Seen {
@@ -130,6 +132,8 @@ impl Seen {
             authored,
             hidden: None,
             text: self.text,
+            fit: self.fit,
+            ink: None,
         }
     }
 }

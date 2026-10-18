@@ -1,0 +1,44 @@
+id     = "time-signals-reduced"
+about  = """design.md "Runtime changes these need" 7 and spec.md 6.6: with the
+desktop's reduced-motion setting on, time signals stop. #dot sways on
+`x: 4 * wave(1s)` and breathes on `opacity: 0.6 + 0.4 * wave(2s)`, #spin
+turns on `rotate: t * 90deg`; once motion is reduced their clocks stand at
+t = 0 (time.rs `TimeContext::frozen`): the bar rests, and each stands
+where the reduced-motion twin, frozen from the start, draws it. A
+time-driven node mounted while motion is reduced stands still too."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state more = false
+bar Top {
+  height: 30
+  row { id: status; height: 24; gap: 6; align: center
+    box { id: dot; width: 10; height: 10; bg: #ff0000
+          x: 4 * wave(1s); opacity: 0.6 + 0.4 * wave(2s) }
+    box { id: spin; width: 12; height: 12; bg: #00ff00; rotate: t * 90deg }
+    if more {
+      box { id: late; width: 12; height: 12; bg: #ffff00; rotate: t * 45deg }
+    }
+    box { id: steady; width: 20; height: 12; bg: #0000ff }
+  }
+}
+
+=== steps
+frames 40
+expect moves #dot x
+expect moves #dot opacity
+expect moves #spin w
+mark reduce
+reduce-motion on
+rest
+mark still
+frames 30
+expect still #dot
+expect still #dot opacity
+expect still #spin
+mark mount
+set more true
+rest
+frames 30
+expect still #late from +2
+expect still #spin

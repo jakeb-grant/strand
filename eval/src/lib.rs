@@ -17,6 +17,7 @@
 use std::fmt;
 
 pub mod ab;
+pub mod bench;
 pub mod checks;
 pub mod cli;
 pub mod clock;
@@ -28,6 +29,7 @@ pub mod matrix;
 pub mod promote;
 pub mod refs;
 pub mod report;
+pub mod scaffold;
 pub mod scenario;
 pub mod select;
 pub mod steps;
@@ -238,6 +240,8 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
         "ab" => cli::ab(&args[1..]),
         "matrix" => cli::matrix(&args[1..]),
         "promote" => cli::promote(&args[1..]),
+        "bench" => cli::bench(&args[1..]),
+        "new" => cli::new(&args[1..]),
         // `selftest` is scripts/eval/ci.sh, run by scripts/eval/eval.sh.
         c if COMMANDS.contains(&c) => Err(Error::Unsupported(format!("strand-eval {c}"))),
         other => Err(Error::Usage(format!(
@@ -271,8 +275,16 @@ mod tests {
     }
 
     #[test]
-    fn a_known_command_not_built_yet_is_a_typed_error() {
-        let e = main_with(&["bench".into()]).unwrap_err();
+    fn selftest_is_the_scripts_and_a_typed_error_here() {
+        let e = main_with(&["selftest".into()]).unwrap_err();
         assert!(matches!(e, Error::Unsupported(_)), "{e}");
+    }
+
+    #[test]
+    fn bench_and_new_ask_for_their_arguments() {
+        for c in ["bench", "new"] {
+            let e = main_with(&[c.into()]).unwrap_err();
+            assert!(matches!(e, Error::Usage(ref m) if m.contains(c)), "{e}");
+        }
     }
 }

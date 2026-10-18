@@ -604,9 +604,10 @@ rest
     assert_eq!(last.flight, [0.0, 0.0], "{last:?}");
 }
 
-/// A row of a trace from before the in-flight columns (an A/B against an
-/// earlier revision) still reads, with nothing in flight; any other
-/// width is refused.
+/// A row of a trace from before the in-flight columns, or from before
+/// the text's `fit` and `ink` (an A/B against an earlier revision),
+/// still reads, with nothing in flight and no ink; any other width is
+/// refused.
 #[test]
 fn a_row_without_the_flight_columns_still_reads() {
     let t = go(FOCUS_OFF);
@@ -616,11 +617,17 @@ fn a_row_without_the_flight_columns_still_reads() {
     assert_eq!(a.len(), strand_eval::trace::COLS.len());
     a.truncate(a.len() - 2);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!((back.fit, back.ink), (None, None));
+    assert_eq!(back.flight, r.flight);
+    v.as_array_mut()
+        .unwrap()
+        .truncate(strand_eval::trace::COLS.len() - 4);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.flight, [0.0, 0.0]);
     assert_eq!(back.inherited, r.inherited);
     v.as_array_mut().unwrap().pop();
     let e = serde_json::from_value::<Row>(v).unwrap_err().to_string();
-    assert!(e.contains("has 33 columns, not 36"), "{e}");
+    assert!(e.contains("has 33 columns, not 38"), "{e}");
 }
 
 /// A `scale` step changes the screen's scale mid-run: each frame records

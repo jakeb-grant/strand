@@ -1,0 +1,47 @@
+id     = "popup-grow-centred"
+about  = """A content-sized popup centred under its anchor, at scale 1.5, whose card
+grows wider while it is open and which closes with its `enter` pose
+mirrored. The surface manager's positioner keeps it centred on its anchor
+(placement.rs `popup_request`), so as its surface grows the compositor
+moves it left by half the growth, and render draws its content where it
+was on screen and glides it to its new place (renderer/surfaces.rs
+`glide_origin`): on screen the card's centre stays put while it grows on
+both sides. The checks read the rows where the eye sees them, moved with
+their surface. Its last frame, as its exit ends, shows nothing and draws
+nothing."""
+screen = { width = 400, scale = 1.5 }
+
+=== shell.strand
+state open = false
+state wide = false
+bar Top {
+  height: 30
+  row { id: strip; height: 30; align: center
+    box { id: lead; width: 160; height: 30 }
+    box { id: anchor; width: 40; height: 30; bg: #303030
+      popup { id: pop; open: open; enter { opacity: 0; y: -6 }
+        col { id: card; height: 50; bg: #202030; pad: 6; gap: 4
+              width: wide ? 220 : 160
+          box { id: cardtop; width: 40; height: 10; bg: #ff8000 }
+          text "a card that grows" { id: line; color: #ffffff }
+        }
+      }
+    }
+    text "12:00" { color: #ffffff }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+expect visible #card
+mark grow
+set wide true
+rest
+expect visible #cardtop
+mark close
+set open false
+rest
+expect hidden #card

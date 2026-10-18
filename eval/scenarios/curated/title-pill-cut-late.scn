@@ -1,0 +1,51 @@
+id     = "title-pill-cut-late"
+about  = """owner-testing.md bug 13's pill (title-pill-cut) with the title's layouts
+arriving one tick late, as a text worker's do while a width springs: every
+frame of the spring asks for the width it is drawn at, which comes after
+that frame, so a layout shaped for another width stands in (flatten/text.rs
+`place_text`). The stand-in stays inside the pill (`ink` spill) and, while
+the pill grows, draws no less of the title than the frame before (`ink`
+over-cut). `fold-again` sends the grown pill back and out again inside one
+segment, a size spring whose way is out and back with nothing between its
+ends (`teleport` holds it to the span of that way, not to its ends)."""
+screen = { width = 800, scale = 1.0 }
+
+=== shell.strand
+state grown = false
+bar Top {
+  height: 30
+  box { width: 100; height: 30
+    popup { id: big; open: true; width: 420; height: 40; margin: 0
+      row { id: pill; bg: #202020; clip: true; height: 40; align: center
+            width: grown ? 400 : 90 ~ spring(320, 0.62)
+        text "Firefox: a window title much too long for the pill it is in" {
+          id: title; shrink: 1; min_width: 0; ellipsis: end; color: #ffffff }
+        box { id: room; width: 30; height: 20; shrink: 0 }
+      }
+    }
+  }
+  text "12:00" { color: #ffffff }
+}
+
+=== steps
+text late 1 where "Firefox" via paint
+rest
+expect visible #title
+mark grow
+set grown true
+rest
+expect visible #title
+mark shrink
+set grown false
+rest
+expect visible #title
+mark regrow
+set grown true
+rest
+expect visible #title
+mark fold-again
+set grown false
+frames 6
+set grown true
+rest
+expect visible #title

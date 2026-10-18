@@ -10,11 +10,19 @@
 //! - **pop-in**: an element with an `enter` pose, mounted after boot,
 //!   first shows near its pose: the pose's opacity and offset start its
 //!   springs, and its first frame shown has covered at most half the way
-//!   to rest (a pose skipped shows it at rest at once);
-//! - **blank**: a frame that damaged pixels and drew no item, unless
-//!   what it holds is drawn hidden by an `enter` or `exit` pose (a
-//!   popup's first frame at a pose's `opacity: 0`, its last as its
-//!   content's exit ends).
+//!   to rest (a pose skipped shows it at rest at once). It holds each
+//!   time the element comes onto a surface: when it mounts, and when the
+//!   surface it is on is attached anew (a popup opened again);
+//! - **blank**: a frame that damaged pixels and drew no item while
+//!   something inside its surface's root shows (a popup's first frame at
+//!   a pose's `opacity: 0`, or its last as its exit ends, shows nothing
+//!   and draws nothing);
+//! - **pose back**: with the compositor applying surface poses, a
+//!   surface whose root plays its exit commits, frame after frame until
+//!   it goes, a pose that never comes back toward rest (owner-testing.md
+//!   bug 7: the frame that ended a closing popup's exit committed the
+//!   rest pose, and the compositor faded the whole menu out from full
+//!   opacity).
 
 use std::collections::BTreeSet;
 
@@ -112,26 +120,83 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 }
             }
         }
-        // pop-in
+        // pop-in, each time it comes onto a surface: its first frame on
+        // each surface it is drawn on (a surface attached anew is another
+        // surface).
         let Some(pose) = cx.trace.nodes.get(key).and_then(|m| m.enter) else {
             continue;
         };
-        let Some(first) = (0..tl.ks.len()).find(|i| tl.row(*i, key).is_some()) else {
-            continue;
-        };
-        let k0 = tl.ks[first];
-        let Some((si, seg)) = seg_of(k0) else {
-            continue;
-        };
-        if k0 <= boot_end || seg.reduced_motion || cx.exempt(CheckId::Vanish, si, key, Axes::ALL) {
-            continue;
+        let mut onto: Vec<usize> = Vec::new();
+        let mut surfaces: BTreeSet<u32> = BTreeSet::new();
+        for i in 0..tl.ks.len() {
+            if let Some(r) = tl.row(i, key)
+                && surfaces.insert(r.surface)
+            {
+                onto.push(i);
+            }
         }
-        let Some(shown) = (first..tl.ks.len()).find(|i| vis[*i]) else {
-            continue;
-        };
-        let (Some(r0), Some(r)) = (tl.row(first, key), tl.row(shown, key)) else {
-            continue;
-        };
+        for first in onto {
+            if let Some(f) = pop_in(cx, key, &pose, first, boot_end, &vis, &seg_of) {
+                out.push(f);
+            }
+        }
+    }
+    // blank: something inside the surface's root shows (the root is the
+    // surface itself, whose own paint the trace cannot tell).
+    let roots: BTreeSet<&str> = cx.trace.surfaces.iter().map(|s| s.root.as_str()).collect();
+    for f in &cx.trace.frames {
+        let Some(i) = tl.at(f.k) else { continue };
+        for (s, c) in &f.cost {
+            let shows = tl.screens[i]
+                .values()
+                .any(|r| r.surface == *s && !roots.contains(r.key.as_str()) && tl.visible(i, r));
+            if c.damage_px > 0 && c.items == 0 && shows {
+                let mut b = Finding::fail(
+                    CheckId::Vanish,
+                    format!(
+                        "blank on surface {s}: damaged {} px and drew nothing, though what \
+                         it holds shows",
+                        c.damage_px
+                    ),
+                )
+                .at(f.k);
+                if let Some((_, seg)) = seg_of(f.k) {
+                    b = b.in_segment(&seg.name);
+                }
+                out.push(b);
+            }
+        }
+    }
+    out.extend(pose_back(cx));
+    first_per_node(out)
+}
+
+/// The segment tick `k` falls in.
+type SegOf<'a> = dyn Fn(u32) -> Option<(usize, &'a crate::trace::Segment)> + 'a;
+
+/// The pop-in finding of `key` coming onto a surface at timeline frame
+/// `first`, if its first frame shown there skipped its `pose`.
+fn pop_in<'a>(
+    cx: &Cx<'a>,
+    key: &'a str,
+    pose: &crate::trace::Pose,
+    first: usize,
+    boot_end: u32,
+    vis: &[bool],
+    seg_of: &SegOf<'a>,
+) -> Option<Finding> {
+    let tl = &cx.tl;
+    {
+        let k0 = tl.ks[first];
+        let (si, seg) = seg_of(k0)?;
+        if k0 <= boot_end || seg.reduced_motion || cx.exempt(CheckId::Vanish, si, key, Axes::ALL) {
+            return None;
+        }
+        let surface = tl.row(first, key)?.surface;
+        let shown = (first..tl.ks.len())
+            .take_while(|i| tl.row(*i, key).is_none_or(|r| r.surface == surface))
+            .find(|i| vis[*i])?;
+        let (r0, r) = (tl.row(first, key)?, tl.row(shown, key)?);
         let rest = tl.at(seg.e).and_then(|e| tl.row(e, key)).unwrap_or(r);
         let mut wrong = Vec::new();
         if !Motions(r0.mot).contains(Motions::ENTER) {
@@ -163,36 +228,75 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 ));
             }
         }
-        if !wrong.is_empty() {
-            out.push(
-                Finding::fail(CheckId::Vanish, format!("pop-in: {}", wrong.join("; ")))
-                    .at(tl.ks[shown])
-                    .node(key)
-                    .in_segment(&seg.name),
-            );
-        }
+        (!wrong.is_empty()).then(|| {
+            Finding::fail(CheckId::Vanish, format!("pop-in: {}", wrong.join("; ")))
+                .at(tl.ks[shown])
+                .node(key)
+                .in_segment(&seg.name)
+        })
     }
-    // blank
-    for f in &cx.trace.frames {
-        for (s, c) in &f.cost {
-            let posed = f.n.iter().any(|r| {
-                r.surface == *s
-                    && Motions(r.emot).intersects(Motions::ENTER | Motions::EXIT)
-                    && (matches!(r.hidden.as_deref(), Some("opacity0" | "scale0")) || r.op < 0.02)
-            });
-            if c.damage_px > 0 && c.items == 0 && !posed {
-                out.push(
-                    Finding::fail(
+}
+
+/// How much more a pose shows than rest's may come back per frame.
+pub const POSE_OPACITY_GIVE: f64 = 0.01;
+pub const POSE_SCALE_GIVE: f64 = 0.005;
+
+/// `pose back`: from the first frame a surface's root plays its exit to
+/// the last it paints, the pose it commits never comes back toward rest
+/// (a frame with no pose commits rest's).
+fn pose_back(cx: &Cx) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for sf in &cx.trace.surfaces {
+        let mut closing = false;
+        let mut last: Option<(f64, f64)> = None;
+        for f in &cx.trace.frames {
+            if !f.painted.contains(&sf.id) {
+                continue;
+            }
+            let root = f.n.iter().find(|r| r.surface == sf.id && r.key == sf.root);
+            closing |= root.is_some_and(|r| Motions(r.mot).contains(Motions::EXIT));
+            if !closing {
+                continue;
+            }
+            let p = f.poses.get(&sf.id);
+            let away = (
+                1.0 - f64::from(p.map_or(1.0, |p| p.opacity)),
+                (1.0 - f64::from(p.map_or(1.0, |p| p.scale))).abs(),
+            );
+            if let Some((o, sc)) = last {
+                let what = if away.0 + POSE_OPACITY_GIVE < o {
+                    Some(("opacity", "opacity", 1.0 - o, 1.0 - away.0))
+                } else if away.1 + POSE_SCALE_GIVE < sc {
+                    Some(("scale", "scale's distance from 1", sc, away.1))
+                } else {
+                    None
+                };
+                if let Some((axis, what, was, got)) = what {
+                    let mut b = Finding::fail(
                         CheckId::Vanish,
                         format!(
-                            "blank: surface {s} damaged {} px and drew nothing",
-                            c.damage_px
+                            "pose back: closing, surface {} committed a pose back toward \
+                             rest ({what} {was:.3} -> {got:.3})",
+                            sf.id
                         ),
                     )
-                    .at(f.k),
-                );
+                    .at(f.k)
+                    .node(&sf.root)
+                    .axis(axis);
+                    if let Some(seg) = cx
+                        .trace
+                        .segments
+                        .iter()
+                        .rev()
+                        .find(|s| s.s.is_none_or(|s| s < f.k) && f.k <= s.e)
+                    {
+                        b = b.in_segment(&seg.name);
+                    }
+                    out.push(b);
+                }
             }
+            last = Some(away);
         }
     }
-    first_per_node(out)
+    out
 }

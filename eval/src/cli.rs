@@ -679,3 +679,55 @@ pub fn promote(args: &[String]) -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// `strand-eval bench <run>... [--out FILE]`: per scenario, the p50, p95
+/// and max of each cost a paint records, as a markdown table (wall
+/// times advisory). It never fails on what it measures.
+pub fn bench(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse("bench", args, &["--out", "-o"], &[])?;
+    if a.words.is_empty() {
+        return Err(Error::Usage(
+            "usage: strand-eval bench <run>... [--out FILE]".into(),
+        ));
+    }
+    let mut scenarios: std::collections::BTreeMap<String, crate::bench::Samples> =
+        std::collections::BTreeMap::new();
+    for w in &a.words {
+        for d in report::entry_dirs(Path::new(w))? {
+            let e = report::read_entry(&d)?;
+            crate::bench::sample(scenarios.entry(e.id.clone()).or_default(), &e.trace);
+        }
+    }
+    let table = crate::bench::table(&scenarios);
+    print!("{table}");
+    if let Some(o) = a.value(&["--out", "-o"]) {
+        report::write(Path::new(o), table.as_bytes())?;
+        println!("wrote {o}");
+    }
+    Ok(())
+}
+
+/// `strand-eval new <id> [--config F] [--from-steps FILE] [--to DIR]`:
+/// a scenario skeleton in eval/scenarios/local/ (docs/eval.md,
+/// "Scaffolding").
+pub fn new(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse("new", args, &["--config", "--from-steps", "--to"], &[])?;
+    let [id] = a.words.as_slice() else {
+        return Err(Error::Usage(
+            "usage: strand-eval new <id> [--config F] [--from-steps FILE] [--to DIR]".into(),
+        ));
+    };
+    let ask = crate::scaffold::Ask {
+        id: id.clone(),
+        config: a.value(&["--config"]).map(String::from),
+        from_steps: a.value(&["--from-steps"]).map(PathBuf::from),
+        to: a.value(&["--to"]).map(PathBuf::from),
+    };
+    let path = crate::scaffold::scaffold(&ask)?;
+    println!("wrote {}", path.display());
+    println!(
+        "run it: scripts/container/run.sh eval check {}",
+        path.display()
+    );
+    Ok(())
+}

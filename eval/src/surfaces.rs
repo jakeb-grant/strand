@@ -4,12 +4,22 @@
 //! changes, and detached when it closes, each with a buffer of its own.
 //! Modelled on crates/strand-render/tests/morph.rs `Shell::sync` (lines
 //! 201-269), generalised from popups to every surface kind.
+//!
+//! A popup is placed where the surface manager's positioner asks the
+//! compositor to put it (crates/strand-surface/src/placement.rs
+//! `popup_config` and `popup_request`: across a bar from its edge, below
+//! its anchor otherwise, centred on it, a submenu level with its row),
+//! placed again whenever it is configured at a new size (a content-sized
+//! popup that grows is re-centred), and render is told where
+//! (`Renderer::set_surface_origin`, as `Host::send_origin` does). The
+//! trace records each surface's origin per frame, so the checks see a
+//! popup's content where the eye does.
 
 use std::collections::HashMap;
 
 use strand_render::{Renderer, Router};
 use strand_scene::{
-    Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
+    Anchor, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
     SurfaceId, SurfaceSpec,
 };
 
@@ -36,6 +46,8 @@ pub struct Shown {
     pub fresh: bool,
     /// The tick it was attached at.
     pub attached: u32,
+    /// Where its buffer's top-left lies on the output, logical pixels.
+    pub origin: [f32; 2],
 }
 
 /// What `sync` did to a surface.
@@ -113,6 +125,102 @@ impl Surfaces {
         ])
     }
 
+    /// Where a surface of `spec` lies on the output: a layer surface at
+    /// the output's corner (the sandbox's one screen), a popup where the
+    /// surface manager's positioner puts it (`popup_config` and
+    /// `popup_request` in crates/strand-surface/src/placement.rs, before
+    /// the compositor constrains it to the output), from its parent's
+    /// origin.
+    fn origin_of(&self, spec: &SurfaceSpec) -> [f32; 2] {
+        let (NodeKind::Popup, Some(a)) = (spec.kind, spec.anchor_rect) else {
+            return [0.0, 0.0];
+        };
+        let px = |v: f32| if v.is_finite() { v.round() as i32 } else { 0 };
+        let parent = spec.parent.and_then(|p| self.specs.get(&p));
+        let parent_at = spec
+            .parent
+            .and_then(|p| self.shown.iter().find(|s| s.node == p))
+            .map_or([0.0, 0.0], |s| s.origin);
+        let (pt, pl) = parent.map_or((0, 0), |p| {
+            (px(p.overhang.top).max(0), px(p.overhang.left).max(0))
+        });
+        let parent_popup = parent.is_some_and(|p| p.kind == NodeKind::Popup);
+        // The parent's window geometry: a popup's is its box, a layer
+        // surface's its whole buffer.
+        let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
+        let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
+        let bar_edge = parent
+            .filter(|p| p.kind == NodeKind::Bar)
+            .map(|p| p.edge.unwrap_or(Edge::Top));
+        #[derive(Clone, Copy, PartialEq)]
+        enum Side {
+            Below,
+            Above,
+            Right,
+            Left,
+        }
+        let side = match spec.attach.or(bar_edge) {
+            Some(Edge::Top) => Side::Below,
+            Some(Edge::Bottom) => Side::Above,
+            Some(Edge::Left) => Side::Right,
+            Some(Edge::Right) => Side::Left,
+            None if parent_popup => match spec.anchor {
+                Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => Side::Left,
+                Anchor::Top => Side::Above,
+                Anchor::Bottom => Side::Below,
+                _ => Side::Right,
+            },
+            None => Side::Below,
+        };
+        let side = if spec.tooltip { Side::Below } else { side };
+        let aligned = parent_popup
+            && spec.attach.is_none()
+            && !spec.tooltip
+            && matches!(side, Side::Right | Side::Left);
+        if let Some(edge) = bar_edge
+            && !spec.tooltip
+        {
+            let thick = parent
+                .and_then(|p| p.exclusive_zone())
+                .map_or(0, |t| px(t).max(0));
+            match edge {
+                Edge::Top | Edge::Bottom => (y, ah) = (pt, thick),
+                Edge::Left | Edge::Right => (x, aw) = (pl, thick),
+            }
+        }
+        let m = spec.margin;
+        let gap = match side {
+            Side::Below => m.top,
+            Side::Above => m.bottom,
+            Side::Right => m.left,
+            Side::Left => m.right,
+        };
+        let gap = match (spec.tooltip, spec.margin_set, spec.attach) {
+            (true, _, _) => 4,
+            (false, true, _) => px(gap),
+            (false, false, Some(_)) => 0,
+            (false, false, None) => 6,
+        };
+        let (w, h) = (
+            px(spec.width.unwrap_or(1.0)).max(1),
+            px(spec.height.unwrap_or(1.0)).max(1),
+        );
+        let (aw, ah) = (aw.max(1), ah.max(1));
+        let (bx, by) = match (side, aligned) {
+            (Side::Below, _) => (x + aw / 2 - w / 2, y + ah + gap),
+            (Side::Above, _) => (x + aw / 2 - w / 2, y - h - gap),
+            (Side::Right, false) => (x + aw + gap, y + ah / 2 - h / 2),
+            (Side::Left, false) => (x - w - gap, y + ah / 2 - h / 2),
+            (Side::Right, true) => (x + aw + gap, y),
+            (Side::Left, true) => (x - w - gap, y),
+        };
+        let o = spec.overhang;
+        [
+            parent_at[0] + (gx + bx) as f32 - o.left,
+            parent_at[1] + (gy + by) as f32 - o.top,
+        ]
+    }
+
     /// Hands the renderer's surface changes to the surfaces, as the
     /// surface manager would.
     pub fn sync(
@@ -160,6 +268,7 @@ impl Surfaces {
                 {
                     continue;
                 }
+                let origin = self.origin_of(&s);
                 let id = match at {
                     Some(i) => self.shown[i].id,
                     None => {
@@ -167,14 +276,6 @@ impl Surfaces {
                         self.next += 1;
                         r.attach_surface(id, node);
                         router.attached(id, node);
-                        let origin = match (s.kind, s.anchor_rect) {
-                            (NodeKind::Popup, Some(a)) => {
-                                let o = s.overhang;
-                                (None, LogicalPoint::new(a.x - o.left, a.y + a.h - o.top))
-                            }
-                            _ => (Some(OUTPUT.to_string()), LogicalPoint::new(0.0, 0.0)),
-                        };
-                        r.set_surface_origin(id, Some(origin));
                         self.shown.push(Shown {
                             id,
                             node,
@@ -184,6 +285,7 @@ impl Surfaces {
                             pixels: Vec::new(),
                             fresh: true,
                             attached: k,
+                            origin,
                         });
                         out.push(Change::Attached(id, node));
                         id
@@ -196,6 +298,9 @@ impl Surfaces {
                 sh.size = size;
                 sh.pixels = vec![0; (size.w * size.h * 4) as usize];
                 sh.fresh = true;
+                sh.origin = origin;
+                let output = (s.kind != NodeKind::Popup).then(|| OUTPUT.to_string());
+                r.set_surface_origin(id, Some((output, LogicalPoint::new(origin[0], origin[1]))));
                 r.configure_surface(id, size, scale);
                 out.push(Change::Configured(id, size, scale));
             }

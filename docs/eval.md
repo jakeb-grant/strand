@@ -57,10 +57,10 @@ The commands:
 - `ab <run A> <run B> [-o DIR]` makes one page of two reports (see A/B).
 - `matrix [--effects a,b|all] [--hz 60,144] [--singles] [--jobs N]
   [--out DIR]` runs the effect matrix.
-
-`bench` (a scenario's cost table) and `new` (a scenario skeleton) are
-reserved names. They are not built yet and return a typed "unsupported"
-error.
+- `bench <run>... [--out FILE]` prints each scenario's cost table (see
+  Cost).
+- `new <id> [--config F] [--from-steps FILE] [--to DIR]` writes a
+  scenario skeleton (see Scaffolding).
 
 A report lands in `--out`, or in `target/eval/runs/<seconds>-<rev>`, with
 `target/eval/latest` pointing at it.
@@ -115,6 +115,7 @@ expect still #after
 | `checks` | every CPU check | The checks to run (see Checks). |
 | `expect_fail` | none | `{ check = "why" }`: a known failure, reported as XFAIL. |
 | `reduce_motion` | false | Motion reduced from the start. |
+| `compositor_poses` | false | The compositor applies surface poses (`Renderer::set_compositor_poses`, as on Hyprland): a surface's `enter`/`exit` pose is committed as its pose, its content painted at rest. |
 | `twin_pixels` | false | `twin` compares pixels too. |
 | `tooltip_delay` | the renderer's | In ms. |
 | `config`, `config_dir` | none | A config named instead of written in (see Local configs and fonts). |
@@ -276,8 +277,25 @@ For each node the trace records:
 - why it is hidden;
 - its text state (estimate, shaped or held).
 
-Each frame also records the screen's scale it was drawn at, and whether
-logic's diff or input reached the renderer since the frame before.
+A text also records the line box it asked to be shaped for when its
+unbounded layout is wider than its box (`fit`), and its glyphs' ink as
+drawn: the layout it drew, where it drew it, clipped where the frame clips
+it (`ink`, before transforms). Both come from strand-render's
+`eval-hooks`.
+
+Each frame also records the screen's scale it was drawn at, whether
+logic's diff or input reached the renderer since the frame before, where
+each shown surface lies on the output (`origins`: a content-sized popup
+the compositor re-centres as it grows moves), and, with
+`compositor_poses`, the pose each painted surface commits with its frame
+(`poses`), read right after its paint as the surface manager reads it.
+
+The checks read the trace as the eye sees it (`RunTrace::on_screen`):
+every row moved with its surface since the surface was first placed, and
+a committed pose applied (its opacity multiplied into every row's, its
+scale and offset into every visual box, the rows authored on the axes it
+moves). A trace whose surfaces never moved and were never posed is read
+as it is.
 
 A node's key is its origin plus its sibling path, stable across runs and
 builds. The digest hashes every deterministic field and none of the wall
@@ -309,9 +327,11 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel, or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts. |
-| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose, or leaves a damaged frame blank. |
-| `twin` | The run with motion reduced ends each settled segment where the run does. |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only. |
+| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). |
+| `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
+| `ink` | A text's glyphs stay inside its box, give or take 2 px (`spill`: a stand-in drawn unclipped), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
+| `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
 | `reference` | The run does not reproduce a recording marked `bad` (see Verdicts and references). |
@@ -423,7 +443,11 @@ steps (on, wide, off). The matrix runs every effect alone and every
 unordered pair at each rate.
 
 Two effects that set the same prop of one slot cannot pair, and their cell
-is `n/a: conflict`. A cell fails the matrix in three cases:
+is `n/a: conflict`. Effects carry what their motion moves: `flip-reorder`'s
+keyed boxes each hold a child, so a glide carried to a subtree is checked
+(`coherence` inherit), and `reduced-motion` turns its subject with
+`rotate: t * 90deg`, so a time signal under reduced motion is checked
+(`twin`, `teleport`). A cell fails the matrix in three cases:
 
 - it fails a check `eval/matrix/known.toml` does not list for it, or a
   listed check on a node the entry does not name;
@@ -517,6 +541,47 @@ GPU-drawn frame's regions not reaching the compositor, and the surface
 manager that sends them is outside the sandbox. That bug's tests live in
 strand-surface and strand.
 
+## Cost
+
+Every painted surface records its deterministic cost proxies (damage_px,
+raster_px, items, records, layout_passes, layout_nodes, text_pending,
+text_held) and its wall times (flatten_us, text_wait_us, raster_us).
+`bench` reads one or more runs and prints, per scenario, the p50, p95 and
+max (nearest rank) of each, as a markdown table ready for
+docs/benchmarks.md:
+
+```text
+scripts/container/run.sh eval bench target/eval/latest --out target/eval/bench.md
+```
+
+Each painted surface of each frame is one sample; runs of the same
+scenario pool theirs, so a wall time's spread across runs shows in its
+p95. The wall times are marked advisory: they vary with the machine and
+never gate. Only `[budget]` lines, on the deterministic metrics, gate.
+
+## Scaffolding
+
+`new <id>` writes `eval/scenarios/local/<id>.scn` (`--to DIR` elsewhere),
+a header, a bar to write the shell into (or `config = "<F>"` with
+`--config F`, which may name `${VAR}`, see Local configs and fonts) and a
+steps section that starts and ends with `rest`. It never replaces a file.
+`--from-steps FILE` maps a shots-keys steps file one line to one step:
+
+| shots-keys | step |
+|---|---|
+| `ipc set <path> <value>` | `set <path> <value>` |
+| `pause <ms>` (`250`, `250ms`, `1.5s`) | `wait <ms>` |
+| `burst <n>` | `frames <n>` |
+| `pointer` with a point that clicks (`click`, `tap`, `press`, a button) | `click X,Y [button]` |
+| `pointer` with a point and a time, from a known place | `glide <last> -> X,Y over MS` |
+| `pointer` with a point | `pointer X,Y` |
+| `notify …` | `notify …` |
+
+A point is `X,Y` or two numbers. A line it does not understand, or one
+whose mapping the step parser refuses, is kept as a `# shots-keys:`
+comment; a mapping that drops words keeps the original line as a comment
+above its step. Nothing of the original is lost, and the skeleton parses.
+
 ## Local configs and fonts
 
 `eval/scenarios/local/` is gitignored, and is the only place a scenario
@@ -537,9 +602,12 @@ owner's config becomes a committed scenario written from scratch.
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not
   modelled.
-- **Wall time is not measured.** Frame times are recorded, but no check
-  gates on them. The timing tests in crates/strand-render hold the frame
-  budgets.
+- **Wall time is not gated.** Frame times are recorded and `bench`
+  reports them, marked advisory, but no check gates on them. The timing
+  tests in crates/strand-render hold the frame budgets.
+- **`ink` sees the layout drawn, not the pixels.** It reads the glyph
+  ink of the layout the frame drew, before transforms; a glyph clipped
+  by an ancestor's clip only is not told apart from one drawn.
 - **The GPU leg does not see bug 23**, as described above.
 - **`jelly` never shows.** Each pointer motion of a drag wakes the loop
   for the surface its last frame left idle, as `Host::input` does;

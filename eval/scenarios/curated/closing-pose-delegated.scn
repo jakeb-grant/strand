@@ -1,0 +1,39 @@
+id     = "closing-pose-delegated"
+about  = """owner-testing.md bug 7 with the compositor applying surface poses (as
+Hyprland does with `wp_alpha_modifier_v1` and the viewporter): a menu
+popup's `enter { opacity: 0; scale: 0.9 }` is handed to the compositor as
+its surface's pose, its content painted at rest. Opening, the pose it
+commits starts near its enter pose (`vanish` pop-in, on what the eye sees);
+closing, the pose it commits never comes back toward rest until the
+surface goes (`vanish` pose back), so its last commit carries the exit's
+last pose and the compositor never fades a snapshot of the whole menu out
+from full opacity."""
+screen = { width = 300, scale = 1.0 }
+compositor_poses = true
+
+=== shell.strand
+state open = false
+bar Top {
+  height: 30
+  box { id: anchor; width: 40; height: 30; bg: #303030
+    popup { id: menu; open: open; width: 120; height: 60
+            enter { opacity: 0; scale: 0.9 }
+      col { id: items; pad: 6; gap: 4; bg: #202030
+        box { id: item1; width: 100; height: 20; bg: #ff8000 }
+        box { id: item2; width: 100; height: 20; bg: #0080ff }
+      }
+    }
+  }
+  text "12:00" { color: #ffffff }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+expect visible #item1
+mark close
+set open false
+rest
+expect hidden #item1

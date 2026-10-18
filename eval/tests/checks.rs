@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use strand_eval::checks::{self, CheckId, Reference, Report, Sev, Status};
 use strand_eval::scenario::{Scenario, eval_root};
 use strand_eval::trace::{
-    Cost, ExpectRec, Frame, IntendRec, NodeMeta, Pose, RestRec, Row, RunTrace, ScenarioInfo,
-    Segment,
+    Cost, ExpectRec, Frame, IntendRec, NodeMeta, Pose, PoseRec, RestRec, Row, RunTrace,
+    ScenarioInfo, Segment, SurfaceInfo,
 };
 use strand_render::probe::{Axes, Motions};
 
@@ -1453,41 +1453,53 @@ fn gone_and_back_across_steps_is_not_a_blink() {
 }
 
 /// A popup's first frame shows its content at its `enter` pose's
-/// `opacity: 0`, which draws nothing: not a blank frame. The same frame
-/// with nothing posed is.
+/// `opacity: 0`, and its last, as its content's exit ends, at the exit's:
+/// it shows nothing and draws nothing, which is not a blank frame. The
+/// same frame drawing nothing while what it holds shows is, and the
+/// surface's root showing counts for nothing (the trace cannot tell
+/// whether the surface itself paints).
 #[test]
-fn a_frame_drawing_only_a_pose_at_opacity_0_is_not_blank() {
+fn a_frame_drawing_nothing_is_blank_only_where_something_inside_shows() {
     let sc = scenario("");
-    let posed = |m: Motions| {
+    let posed = |m: Motions, card_shows: bool| {
         let mut t = shape(3, |k| {
-            let card = row("card", [0.0, 0.0, 120.0, 40.0]);
-            if k == 1 {
+            let root = row("root", [0.0, 0.0, 300.0, 30.0]);
+            let card = row("card", [0.0, 0.0, 120.0, 30.0]);
+            if k == 1 && !card_shows {
                 let mut c = card.op(0.0).mot(m);
                 c.hidden = Some("opacity0".into());
-                vec![c]
+                vec![root, c]
             } else {
-                vec![card]
+                vec![root, card]
             }
         });
+        t.surfaces = vec![SurfaceInfo {
+            id: 1,
+            root: "root".into(),
+            ..Default::default()
+        }];
+        t.nodes.get_mut("card").unwrap().parent = Some("root".into());
         t.frames[1].cost.get_mut(&1).unwrap().items = 0;
         t.seal();
         t
     };
-    let t = posed(Motions::ENTER);
-    let r = check(&sc, &t);
-    assert!(
-        !r.failures(CheckId::Vanish)
-            .iter()
-            .any(|f| f.msg.starts_with("blank")),
-        "{}",
-        show(&r, &t)
-    );
-    let t = posed(Motions(0));
+    for m in [Motions::ENTER, Motions::EXIT, Motions(0)] {
+        let t = posed(m, false);
+        let r = check(&sc, &t);
+        assert!(
+            !r.failures(CheckId::Vanish)
+                .iter()
+                .any(|f| f.msg.starts_with("blank")),
+            "{}",
+            show(&r, &t)
+        );
+    }
+    let t = posed(Motions(0), true);
     let r = check(&sc, &t);
     assert!(
         r.failures(CheckId::Vanish)
             .iter()
-            .any(|f| f.msg.starts_with("blank") && f.k == Some(1)),
+            .any(|f| f.msg.starts_with("blank on surface 1") && f.k == Some(1)),
         "{}",
         show(&r, &t)
     );
@@ -1504,11 +1516,11 @@ fn a_detached_surface_shows_nothing_after_it_goes() {
     t.frames[2].painted.push(2);
     t.frames[2].sizes.insert(2, [120.0, 40.0]);
     t.surfaces = vec![
-        strand_eval::trace::SurfaceInfo {
+        SurfaceInfo {
             id: 1,
             ..Default::default()
         },
-        strand_eval::trace::SurfaceInfo {
+        SurfaceInfo {
             id: 2,
             attached: 2,
             detached: Some(5),
@@ -1688,7 +1700,7 @@ fn island(card_x: impl Fn(u32) -> f32, input: impl Fn(u32) -> Option<Vec<[f32; 4
             row("label", [x + 5.0, 8.0, 40.0, 14.0]),
         ]
     });
-    t.surfaces.push(strand_eval::trace::SurfaceInfo {
+    t.surfaces.push(SurfaceInfo {
         id: 1,
         label: "popup #pop".into(),
         kind: "popup".into(),
@@ -1756,4 +1768,637 @@ fn regions_fail_a_region_left_where_the_card_was() {
         "{f:?}"
     );
     assert!(f.iter().any(|f| f.msg.starts_with("follows")), "{f:?}");
+}
+
+// --- coherence
+
+/// `t` with each `(child, parent)` pair's parent set.
+fn with_parents(mut t: RunTrace, pairs: &[(&str, &str)]) -> RunTrace {
+    for (c, p) in pairs {
+        t.nodes.get_mut(*c).unwrap().parent = Some((*p).into());
+    }
+    t.seal();
+    t
+}
+
+fn coherence_fails(r: &Report, key: &str, rule: &str) -> bool {
+    r.failures(CheckId::Coherence)
+        .iter()
+        .any(|f| f.key.as_deref() == Some(key) && f.msg.starts_with(rule))
+}
+
+/// A parent gliding 12 px back home; its child carried with it, or left
+/// at its laid place (the glide drawn on the parent alone).
+fn gliding_parent(carried: bool) -> RunTrace {
+    let t = shape(4, move |k| {
+        let g = if k == 0 { 0.0 } else { 12.0 - 3.0 * k as f32 };
+        let mut p = row("p", [20.0, 0.0, 60.0, 30.0])
+            .at(20.0 + g, 0.0)
+            .mot(Motions::GLIDE);
+        p.glide = [g, 0.0];
+        let c = row("c", [24.0, 4.0, 10.0, 10.0]);
+        let c = if carried { c.at(24.0 + g, 4.0) } else { c };
+        vec![p, c]
+    });
+    with_parents(t, &[("c", "p")])
+}
+
+#[test]
+fn inherit_holds_a_child_to_its_parents_paint_offset() {
+    let sc = scenario("");
+    let t = gliding_parent(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Coherence),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = gliding_parent(false);
+    let r = check(&sc, &t);
+    assert!(coherence_fails(&r, "c", "inherit"), "{}", show(&r, &t));
+    assert!(!coherence_fails(&r, "p", "inherit"), "{}", show(&r, &t));
+    // Its own offsets are its own: a child springing 5 px on top of what
+    // it is carried by is coherent.
+    let t = with_parents(
+        shape(4, |k| {
+            let g = if k == 0 { 0.0 } else { 12.0 - 3.0 * k as f32 };
+            let mut p = row("p", [20.0, 0.0, 60.0, 30.0])
+                .at(20.0 + g, 0.0)
+                .mot(Motions::GLIDE);
+            p.glide = [g, 0.0];
+            let c = row("c", [24.0, 4.0, 10.0, 10.0])
+                .at(24.0 + g + 5.0, 4.0)
+                .spring(5.0, 0.0)
+                .mot(Motions::PROP_SPRING);
+            vec![p, c]
+        }),
+        &[("c", "p")],
+    );
+    let r = check(&sc, &t);
+    assert!(!coherence_fails(&r, "c", "inherit"), "{}", show(&r, &t));
+}
+
+/// A parent at half scale with a child; each turned about its box's
+/// centre, or about the parent's top-left.
+fn scaled(about_centre: bool) -> RunTrace {
+    let t = shape(2, move |_| {
+        let mut p = row("p", [0.0, 0.0, 100.0, 40.0]);
+        p.scale = [0.5, 0.5];
+        p.visual = if about_centre {
+            [25.0, 10.0, 50.0, 20.0]
+        } else {
+            [0.0, 0.0, 50.0, 20.0]
+        };
+        let mut c = row("c", [10.0, 10.0, 20.0, 20.0]);
+        c.visual = if about_centre {
+            [30.0, 15.0, 10.0, 10.0]
+        } else {
+            [5.0, 5.0, 10.0, 10.0]
+        };
+        vec![p, c]
+    });
+    with_parents(t, &[("c", "p")])
+}
+
+#[test]
+fn pivot_turns_a_node_and_its_subtree_about_the_box_centre() {
+    let sc = scenario("");
+    let t = scaled(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Coherence),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = scaled(false);
+    let r = check(&sc, &t);
+    assert!(coherence_fails(&r, "p", "pivot"), "{}", show(&r, &t));
+    assert!(coherence_fails(&r, "c", "pivot"), "{}", show(&r, &t));
+}
+
+/// `old` named `m` drawn at a 20 px square; `new` of the same name
+/// mounted at a 40 px square 100 px right, its first frame drawn with
+/// the morph's translate and scale taken from the old box's centre (as
+/// anim/morph.rs does), or from its top-left.
+fn morphing(from_centre: bool) -> RunTrace {
+    let mut t = shape(4, move |k| {
+        if k == 0 {
+            return vec![row("old", [0.0, 0.0, 20.0, 20.0])];
+        }
+        let own = row("new", [100.0, 0.0, 40.0, 40.0]);
+        if k > 1 {
+            return vec![own];
+        }
+        let d = if from_centre {
+            [-110.0, -10.0]
+        } else {
+            [-100.0, 0.0]
+        };
+        let mut r = own.at(100.0 + d[0], d[1]).mot(Motions::SHARED_MORPH);
+        r.morph = d;
+        r.scale = [0.5, 0.5];
+        let c = [r.drawn[0] + 20.0, r.drawn[1] + 20.0];
+        r.visual = [c[0] - 10.0, c[1] - 10.0, 20.0, 20.0];
+        vec![r]
+    });
+    for k in ["old", "new"] {
+        t.nodes.get_mut(k).unwrap().morph = Some("m".into());
+    }
+    t.seal();
+    t
+}
+
+#[test]
+fn a_shared_morph_starts_from_the_box_its_name_was_drawn_at() {
+    let sc = scenario("");
+    let t = morphing(true);
+    let r = check(&sc, &t);
+    assert!(
+        !coherence_fails(&r, "new", "morph start"),
+        "{}",
+        show(&r, &t)
+    );
+    let t = morphing(false);
+    let r = check(&sc, &t);
+    assert!(
+        coherence_fails(&r, "new", "morph start"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Siblings `a` and `b` under `p`, overlapping; `a` springing 5 px over
+/// `b` and drawn after it, until tick 2 draws it first: below `b`.
+/// `swap` also swaps their laid places then (a reorder, FLIP).
+fn stacked(pops: bool, swap: bool) -> RunTrace {
+    let t = shape(4, move |k| {
+        let p = row("p", [0.0, 0.0, 100.0, 30.0]);
+        let (ax, bx) = if swap && k >= 2 {
+            (20.0, 10.0)
+        } else {
+            (10.0, 20.0)
+        };
+        let s = if k == 0 { 0.0 } else { 5.0 };
+        let a = row("a", [ax, 0.0, 20.0, 20.0])
+            .at(ax + s, 0.0)
+            .spring(s, 0.0)
+            .mot(Motions::PROP_SPRING);
+        let b = row("b", [bx, 0.0, 20.0, 20.0]);
+        if pops && k >= 2 {
+            vec![p, a, b]
+        } else {
+            vec![p, b, a]
+        }
+    });
+    with_parents(t, &[("a", "p"), ("b", "p")])
+}
+
+#[test]
+fn a_node_in_flight_keeps_its_stacking_until_it_lands() {
+    let sc = scenario("");
+    let t = stacked(false, false);
+    let r = check(&sc, &t);
+    assert!(!coherence_fails(&r, "a", "stacking"), "{}", show(&r, &t));
+    let t = stacked(true, false);
+    let r = check(&sc, &t);
+    assert!(coherence_fails(&r, "a", "stacking"), "{}", show(&r, &t));
+    assert!(!coherence_fails(&r, "b", "stacking"), "{}", show(&r, &t));
+    // A reorder that swaps their places swaps their stacking too.
+    let t = stacked(true, true);
+    let r = check(&sc, &t);
+    assert!(!coherence_fails(&r, "a", "stacking"), "{}", show(&r, &t));
+}
+
+// --- ink
+
+fn text_row(key: &str, w: f32, ink_w: f32) -> Row {
+    let mut r = row(key, [0.0, 0.0, w, 15.0]);
+    r.ink = Some([1.0, 2.0, ink_w, 11.0]);
+    r.text = Some("I".into());
+    r
+}
+
+#[test]
+fn ink_spilling_past_its_box_fails() {
+    let sc = scenario("");
+    let t = shape(2, |_| vec![text_row("t", 50.0, 48.0)]);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Ink), Status::Pass, "{}", show(&r, &t));
+    // A stand-in wider than its box drawn unclipped.
+    let t = shape(2, |k| {
+        vec![text_row("t", 50.0, if k == 2 { 70.0 } else { 48.0 })]
+    });
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Ink, "t", "w"), "{}", show(&r, &t));
+    assert!(r.failures(CheckId::Ink)[0].msg.starts_with("spill"));
+}
+
+/// An ellipsised text whose box widens 100 → 120 px: its ink `before`
+/// px wide, then `after`.
+fn widening(before: f32, after: f32) -> RunTrace {
+    let mut t = shape(2, move |k| {
+        let (w, ink) = if k < 2 {
+            (100.0, before)
+        } else {
+            (120.0, after)
+        };
+        let mut r = text_row("t", w, ink);
+        r.fit = Some(w);
+        vec![r]
+    });
+    t.nodes.get_mut("t").unwrap().ellipsis = true;
+    t.seal();
+    t
+}
+
+#[test]
+fn an_ellipsised_text_never_draws_less_of_itself_as_its_box_widens() {
+    let sc = scenario("");
+    // A word more fits: it draws more.
+    let t = widening(80.0, 110.0);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Ink), Status::Pass, "{}", show(&r, &t));
+    // The narrowest stand-in drawn in a wider box: less of it.
+    let t = widening(80.0, 60.0);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Ink)
+            .iter()
+            .any(|f| f.msg.starts_with("over-cut") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+    // Ink reaching its box's edge before may have been a wider layout
+    // clipped there: a wider box need not draw it again.
+    let t = widening(98.0, 90.0);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Ink), Status::Pass, "{}", show(&r, &t));
+}
+
+// --- teleport: an out-and-back way, a glide over a size snap
+
+/// A width springing out toward 300 then, sent back at tick 4 (a second
+/// step), to its start of 100, `jump` px at most a tick on its way out.
+fn out_and_back(jump: f32) -> RunTrace {
+    let ws = [
+        100.0, 145.0, 190.0, 220.0, 235.0, 200.0, 160.0, 125.0, 105.0, 100.0,
+    ];
+    let mut t = shape(9, move |k| {
+        let mut w = ws[k as usize];
+        if k == 1 {
+            w = 100.0 + jump;
+        }
+        let laid = if (1..4).contains(&k) { 300.0 } else { 100.0 };
+        let mut r = row("pill", [0.0, 0.0, laid, 20.0]).mot(if k == 0 || k == 9 {
+            Motions(0)
+        } else {
+            Motions::SIZE_SPRING
+        });
+        r.visual[2] = w;
+        r.drawn[2] = w;
+        vec![r]
+    });
+    t.frames[1].driven = true;
+    t.frames[4].driven = true;
+    t.seal();
+    t
+}
+
+#[test]
+fn an_out_and_back_way_travels_its_excursion() {
+    let sc = scenario("");
+    let t = out_and_back(45.0);
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "pill", "w"),
+        "{}",
+        show(&r, &t)
+    );
+    // More than 0.75 of the whole excursion in one tick still jumps.
+    let t = out_and_back(170.0);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "pill", "w"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A glide moves a box and never sizes it: a width layout snaps while
+/// the box glides is not a glide retargeted from its layout.
+#[test]
+fn a_size_snap_under_a_glide_is_no_retarget() {
+    let sc = scenario("");
+    let t = shape(4, |k| {
+        let g = if k == 0 { 0.0 } else { 8.0 - 2.0 * k as f32 };
+        let w = if k >= 2 { 120.0 } else { 100.0 };
+        let mut r = row("card", [10.0, 0.0, w, 20.0])
+            .at(10.0 + g, 0.0)
+            .mot(Motions::GLIDE);
+        r.glide = [g, 0.0];
+        vec![r]
+    });
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "card", "w"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+// --- vanish: each surface a popup comes onto, the pose a closing one commits
+
+/// `pill` with `enter { opacity: 0 }` in a popup opened at tick 1
+/// (surface 2) and, after it closed, again at tick 7 (surface 3),
+/// playing its pose the second time or not.
+fn reopened(plays_again: bool) -> RunTrace {
+    let mut t = shape(12, move |k| {
+        let mut v = vec![row("bar", [0.0, 0.0, 300.0, 30.0])];
+        let (s, from) = match k {
+            1..=5 => (2, 1),
+            7..=12 => (3, 7),
+            _ => return v,
+        };
+        let i = k - from;
+        let played = s == 2 || plays_again;
+        let op = if played { ease(0.1, 1.0, i, 4) } else { 1.0 };
+        let mut p = row("pill", [10.0, 0.0, 80.0, 20.0])
+            .op(op)
+            .mot(if played && i < 4 {
+                Motions::ENTER | Motions::OPACITY_SPRING
+            } else {
+                Motions(0)
+            })
+            .auth(Axes::OPACITY);
+        p.surface = s;
+        v.push(p);
+        v
+    });
+    for f in &mut t.frames {
+        let s = match f.k {
+            1..=5 => 2,
+            7..=12 => 3,
+            _ => continue,
+        };
+        f.painted.push(s);
+        f.sizes.insert(s, [100.0, 20.0]);
+    }
+    t.surfaces = vec![
+        SurfaceInfo {
+            id: 1,
+            ..Default::default()
+        },
+        SurfaceInfo {
+            id: 2,
+            attached: 1,
+            detached: Some(6),
+            ..Default::default()
+        },
+        SurfaceInfo {
+            id: 3,
+            attached: 7,
+            ..Default::default()
+        },
+    ];
+    t.nodes.get_mut("pill").unwrap().enter = Some(Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    });
+    t.seal();
+    t
+}
+
+#[test]
+fn a_popup_opened_again_plays_its_enter_pose_again() {
+    let sc = scenario("");
+    let t = reopened(true);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-in")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = reopened(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-in") && f.k == Some(7)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A popup (surface 2, root `pop`) closing by its exit with the
+/// compositor applying its pose: opacity 0.8 down to 0 over ticks 1-4,
+/// and at tick 5, its last frame, `last` (none: rest).
+fn closing_posed(last: Option<f32>) -> RunTrace {
+    let mut t = shape(5, |k| {
+        let mut p = row("pop", [0.0, 0.0, 100.0, 40.0]).mot(if k == 0 {
+            Motions(0)
+        } else {
+            Motions::EXIT
+        });
+        p.surface = 2;
+        vec![p]
+    });
+    let ops = [0.8, 0.5, 0.2, 0.0];
+    for f in &mut t.frames {
+        f.painted = vec![2];
+        f.sizes.insert(2, [100.0, 40.0]);
+        f.cost = BTreeMap::from([(
+            2,
+            Cost {
+                paints: 1,
+                items: 1,
+                ..Cost::default()
+            },
+        )]);
+        let op = match f.k {
+            1..=4 => Some(ops[f.k as usize - 1]),
+            5 => last,
+            _ => None,
+        };
+        if let Some(op) = op {
+            f.poses.insert(
+                2,
+                PoseRec {
+                    opacity: op,
+                    scale: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                },
+            );
+        }
+    }
+    t.surfaces = vec![SurfaceInfo {
+        id: 2,
+        root: "pop".into(),
+        detached: Some(6),
+        ..Default::default()
+    }];
+    t.seal();
+    t
+}
+
+#[test]
+fn a_closing_surface_never_commits_a_pose_back_toward_rest() {
+    let sc = scenario("");
+    let t = closing_posed(Some(0.0));
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pose back")),
+        "{}",
+        show(&r, &t)
+    );
+    // Its last frame commits rest's pose: the compositor shows it whole.
+    let t = closing_posed(None);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pose back") && f.k == Some(5)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+// --- on screen: surfaces the compositor moves or poses
+
+#[test]
+fn rows_move_with_their_surface_and_take_its_pose() {
+    // A popup re-centred 30 px left at tick 2 as it grows, its content
+    // drawn 30 px right on it then: still on screen.
+    let mut t = shape(3, |k| {
+        let mut r = row("card", [0.0, 0.0, 100.0, 40.0]);
+        if k >= 2 {
+            r = r.at(30.0, 0.0);
+        }
+        r.surface = 2;
+        vec![r]
+    });
+    for f in &mut t.frames {
+        let x = if f.k >= 2 { 70.0 } else { 100.0 };
+        f.origins.insert(2, [x, 36.0]);
+    }
+    t.seal();
+    assert!(t.clone().on_screen().is_some());
+    let s = t.on_screen().unwrap();
+    assert!(s.on_screen);
+    for f in &s.frames {
+        assert_eq!(f.n[0].drawn[0], 0.0, "k{}", f.k);
+        assert_eq!(f.n[0].visual[0], 0.0, "k{}", f.k);
+    }
+    // Nothing moved, nothing posed: the trace as it is.
+    let still = shape(2, |_| vec![row("a", [0.0, 0.0, 10.0, 10.0])]);
+    assert!(still.on_screen().is_none());
+    // A pose's opacity multiplies in; its scale and offset map every
+    // visual box (about the surface's top-left) and the root's scale.
+    let mut t = shape(1, |_| {
+        let mut root = row("root", [0.0, 0.0, 100.0, 40.0]);
+        root.surface = 2;
+        let mut c = row("c", [10.0, 10.0, 20.0, 20.0]);
+        c.surface = 2;
+        vec![root, c]
+    });
+    t.surfaces = vec![SurfaceInfo {
+        id: 2,
+        root: "root".into(),
+        ..Default::default()
+    }];
+    t.nodes.get_mut("c").unwrap().parent = Some("root".into());
+    for f in &mut t.frames {
+        f.poses.insert(
+            2,
+            PoseRec {
+                opacity: 0.5,
+                scale: 0.9,
+                x: 0.0,
+                y: 3.0,
+            },
+        );
+    }
+    t.seal();
+    let s = t.on_screen().unwrap();
+    let f = &s.frames[1];
+    assert_eq!(f.n[0].op, 0.5);
+    assert_eq!(f.n[0].scale, [0.9, 0.9]);
+    assert_eq!(f.n[1].visual, [9.0, 12.0, 18.0, 18.0]);
+    assert!(Axes(f.n[1].auth).contains(Axes::OPACITY | Axes::SCALE));
+    // The pose turns the subtree about the surface's top-left: coherent.
+    let r = check(&scenario(""), &t);
+    assert!(
+        !r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("pivot")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+// --- twin: time-driven nodes at rest
+
+#[test]
+fn twin_compares_a_time_driven_node_at_rest() {
+    let sc = scenario("");
+    let run = |x: f32| {
+        shape(2, move |k| {
+            vec![
+                row("dot", [10.0, 0.0, 10.0, 10.0])
+                    .at(if k == 0 { 10.0 } else { x }, 0.0)
+                    .mot(Motions::TIME)
+                    .auth(Axes::X),
+            ]
+        })
+    };
+    let mut twin = run(10.0);
+    twin.scenario.reduced_motion = true;
+    let t = run(10.0);
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
+    // Its clock stopped elsewhere than t = 0.
+    let t = run(13.0);
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert!(fails_on(&r, CheckId::Twin, "dot", "x"), "{}", show(&r, &t));
+}
+
+/// Blank frames on two surfaces are two findings, each in its segment.
+#[test]
+fn blank_frames_are_told_apart_by_surface() {
+    let sc = scenario("");
+    let mut t = shape(3, |_| {
+        let a = row("a", [10.0, 10.0, 10.0, 10.0]);
+        let mut b = row("b", [0.0, 0.0, 10.0, 10.0]);
+        b.surface = 2;
+        vec![a, b]
+    });
+    for f in &mut t.frames {
+        f.painted.push(2);
+        f.sizes.insert(2, [50.0, 20.0]);
+        let mut c = f.cost[&1];
+        if f.k == 2 {
+            c.items = 0;
+            f.cost.get_mut(&1).unwrap().items = 0;
+        }
+        f.cost.insert(2, c);
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    let blanks: Vec<_> = r
+        .failures(CheckId::Vanish)
+        .into_iter()
+        .filter(|f| f.msg.starts_with("blank"))
+        .collect();
+    assert_eq!(blanks.len(), 2, "{}", show(&r, &t));
+    assert!(
+        blanks
+            .iter()
+            .all(|f| f.segment.as_deref() == Some("change"))
+    );
 }
