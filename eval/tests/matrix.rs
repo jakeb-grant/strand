@@ -47,13 +47,19 @@ fn show(done: &[matrix::Done]) -> String {
 #[test]
 fn every_effect_alone_compiles_and_passes_or_is_known() {
     let (set, _) = set();
-    // The starting set (plan section 7) and `gpu` (the GPU leg, step 10).
-    assert_eq!(set.effects.len(), 23, "the starting set and gpu");
+    // The starting set (plan section 7), `gpu` (the GPU leg, step 10)
+    // and eval-coverage's five: flip-nested, popup-content-height,
+    // shadow, roll-text and colour-shift.
+    assert_eq!(
+        set.effects.len(),
+        28,
+        "the starting set, gpu and eval-coverage's"
+    );
     let mut plan = Plan::new(BuildInfo::default());
     plan.singles = true;
     plan.jobs = 4;
     let done = matrix::run(&plan).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(done.len(), 23);
+    assert_eq!(done.len(), 28);
     assert!(done.iter().all(|d| !d.outcome.gates()), "{}", show(&done));
     // The gpu cell ran both legs and compared them (or skipped without a
     // device where none is required).
@@ -112,6 +118,9 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         ("lean", M::LEAN, &[]),
         ("jelly", M::JELLY, &[]),
         ("keyframes", M::KEYFRAMES, &[]),
+        ("flip-nested", M::GLIDE, &[]),
+        ("popup-content-height", M::SIZE_SPRING, &[]),
+        ("colour-shift", M::PROP_SPRING, &[]),
     ] {
         has(name, bit, segments);
     }
@@ -139,11 +148,11 @@ fn effects_that_set_the_same_prop_do_not_pair() {
     assert_eq!(c.id(), "m.enter-fade__exit-slide.60");
     let file = matrix::dir().join("cells").join("x.scn");
     Scenario::parse_in(&c.text, &file, Place::Committed).unwrap_or_else(|e| panic!("{e}"));
-    // 23 alone and 253 pairs.
+    // 28 alone and 378 pairs.
     let names: Vec<&str> = set.effects.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         matrix::cells(&set, &fixture, &names, &[60], false).len(),
-        276
+        406
     );
 }
 

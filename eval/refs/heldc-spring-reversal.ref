@@ -1,0 +1,49 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldc-spring-reversal"
+verdict good
+note "set C scenario, unedited: the pill springs right, is sent back three frames in and reverses from where it is drawn with no jump, resting at its start; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario f9f8aa8271388de1
+seal 4cc1b98292590260
+S1 0 - "bar Top"
+N0 "left_cap|shell.strand:5:5|[Mock | DP-1]#0" "box#left_cap"
+N1 "pill|shell.strand:6:5|[Mock | DP-1]#1" "box#pill"
+N2 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N3 "|shell.strand:4:3|[Mock | DP-1]#0" "row@shell.strand:4"
+k0 p1
+s1 z=300,30
+n0 x=8 y=6 w=12 h=12 ord=2 bg=e06c75ff
+n1 x=26 y=6 w=40 h=12 ord=3 bg=3a7bd5ff
+n2 x=0 y=0 w=300 h=30 bg=faf9ffff
+n3 x=0 y=0 w=300 h=24 ord=1
+k1
+n1 x=73
+k2
+n1 x=141
+k3
+n1 x=186
+k4
+n1 x=159
+k5
+n1 x=96
+k6
+n1 x=50
+k7
+n1 x=28
+k8
+n1 x=22
+k9
+k10
+n1 x=24
+k11
+n1 x=25
+k12
+n1 x=26
+k13
+k14
+k15
+k16
+k17
+k18

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "enter-exit-row"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario d99ee5f4923c6bfa
-seal b5e00d34a87d3d14
+seal ef631ee36c0a313d
 S1 0 - "bar Top"
 N0 "leave|shell.strand:8:14|[Mock | DP-1]#1" "box#leave"
 N1 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
@@ -17,16 +17,16 @@ N5 "fade|shell.strand:6:13|[Mock | DP-1]#1" "box#fade"
 N6 "slide|shell.strand:7:13|[Mock | DP-1]#2" "box#slide"
 k0 p1
 s1 z=300,30
-n0 x=36 y=7 w=16 h=16 ord=3
-n1 x=10 y=9 w=20 h=12 ord=2
-n2 x=58 y=9 w=20 h=12 ord=4
+n0 x=36 y=7 w=16 h=16 ord=3 bg=00ffffff
+n1 x=10 y=9 w=20 h=12 ord=2 bg=00ff00ff
+n2 x=58 y=9 w=20 h=12 ord=4 bg=0000ffff
 n3 x=0 y=0 w=300 h=30 ord=1
-n4 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30 bg=faf9ffff
 k1
 n0 x=50 op=218 hid=inert ord=5
 n2 x=69 ord=6
-n5 x=36 y=7 w=16 h=16 op=37 ord=3
-n6 x=54 y=7 w=16 h=16 op=37 ord=4
+n5 x=36 y=7 w=16 h=16 op=37 ord=3 bg=ff00ffff
+n6 x=54 y=7 w=16 h=16 op=37 ord=4 bg=ffff00ff
 k2
 n0 x=69 op=157
 n2 x=86
@@ -79,7 +79,7 @@ n5 op=255
 n6 op=255
 k14
 k15
-n0 hid=opacity0
+n0 hid=opacity0 bg=-
 k16
 n0 -
 n2 x=96 ord=5
@@ -98,7 +98,7 @@ k23
 k24
 k25
 k26
-n0 x=80 y=7 w=16 h=16 ord=5
+n0 x=80 y=7 w=16 h=16 ord=5 bg=00ffffff
 n2 x=86 ord=6
 n5 op=218 hid=inert
 n6 x=56 op=218 hid=inert
@@ -143,8 +143,8 @@ n5 op=0
 n6 op=0
 k39
 k40
-n5 hid=opacity0
-n6 hid=opacity0
+n5 hid=opacity0 bg=-
+n6 hid=opacity0 bg=-
 k41
 n0 x=69 ord=3
 n2 x=91 ord=4

@@ -1,0 +1,145 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "colour-mid-motion"
+verdict good
+note "new scenario: the hovered button's bg springs in from transparent while the pill slides across, then the theme swap springs every themed fill and text colour dark to light with no step; geometry moves only the pill; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario a46de8ee70ebf4a4
+seal fb698a1643036267
+S1 0 - "bar Top"
+N0 "button|shell.strand:10:5|[Mock | DP-1]#1" "box#button"
+N1 "label|shell.strand:14:5|[Mock | DP-1]#0" "text#label"
+N2 "lead|shell.strand:9:5|[Mock | DP-1]#0" "box#lead"
+N3 "pill|shell.strand:12:5|[Mock | DP-1]#2" "box#pill"
+N4 "strip|shell.strand:8:3|[Mock | DP-1]#0" "row#strip"
+N5 "|shell.strand:5:1|[Mock | DP-1]#0" "bar@shell.strand:5"
+k0 p1
+s1 z=320,30
+n0 x=30 y=3 w=40 h=18 ord=3 bg=ffffff00
+n1 x=126 y=5 w=41 h=15 txt=S ord=5 ink=126,6,40,11 fg=cdd6f4ff gl=["Theme"]
+n2 x=8 y=5 w=14 h=14 ord=2 bg=cba6f7ff
+n3 x=78 y=5 w=40 h=14 ord=4 bg=cba6f7ff
+n4 x=0 y=0 w=320 h=24 ord=1
+n5 x=0 y=0 w=320 h=30 bg=1e1e2eff
+k1
+n0 bg=ffffff25
+n3 x=117
+k2
+n0 bg=ffffff62
+n3 x=174
+k3
+n0 bg=ffffff97
+n3 x=211
+k4
+n0 bg=ffffffbe
+n3 x=228
+k5
+n0 bg=ffffffd8
+n1 fg=b9c1dfff
+n2 bg=c099f7ff
+n3 x=232 bg=c099f7ff
+n5 bg=373847ff
+k6
+n0 bg=ffffffe8
+n1 fg=d1d9f7ff
+n2 bg=af81f5ff
+n3 x=231 bg=af81f5ff
+n5 bg=666774ff
+k7
+n0 bg=fffffff1
+n1 fg=353952ff
+n2 bg=a16cf4ff
+n3 x=230 bg=a16cf4ff
+n5 bg=92949eff
+k8
+n0 bg=fffffff7
+n1 fg=484c65ff
+n2 bg=975bf2ff
+n3 x=229 bg=975bf2ff
+n5 bg=b4b5beff
+k9
+n0 bg=fffffffb
+n1 fg=4f526cff
+n2 bg=914ff1ff
+n3 x=228 bg=914ff1ff
+n5 bg=cbccd3ff
+k10
+n0 bg=fffffffd
+n1 fg=535671ff
+n2 bg=8d47f0ff
+n3 bg=8d47f0ff
+n5 bg=d9dbe1ff
+k11
+n0 bg=fffffffe
+n1 fg=525670ff
+n2 bg=8b41f0ff
+n3 bg=8b41f0ff
+n5 bg=e2e4e9ff
+k12
+n1 fg=50536dff
+n2 bg=8a3eefff
+n3 bg=8a3eefff
+n5 bg=e8eaeeff
+k13
+n0 bg=ffffffff
+n1 fg=4e516bff
+n2 bg=893cefff
+n3 bg=893cefff
+n5 bg=ebedf1ff
+k14
+n1 fg=4d506aff
+n2 bg=893befff
+n3 bg=893befff
+n5 bg=edeff3ff
+k15
+n2 bg=883aefff
+n3 bg=883aefff
+n5 bg=eef0f4ff
+k16
+n1 fg=4c4f69ff
+n2 bg=8839efff
+n3 bg=8839efff
+k17
+n5 bg=eff1f5ff
+k18
+k19
+k20
+k21
+k22
+n0 bg=ffffffda
+n3 x=189
+k23
+n0 bg=ffffff9d
+n3 x=132
+k24
+n0 bg=ffffff68
+n3 x=95
+k25
+n0 bg=ffffff41
+n3 x=78
+k26
+n0 bg=ffffff27
+n3 x=74
+k27
+n0 bg=ffffff17
+n3 x=75
+k28
+n0 bg=ffffff0e
+n3 x=76
+k29
+n0 bg=ffffff08
+n3 x=77
+k30
+n0 bg=ffffff04
+n3 x=78
+k31
+n0 bg=ffffff02
+k32
+n0 bg=ffffff01
+k33
+k34
+n0 bg=ffffff00
+k35
+k36
+n0 bg=00000000

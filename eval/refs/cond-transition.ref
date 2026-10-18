@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "cond-transition"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario c7a071a0c626f895
-seal 5ff4c3e761badfc3
+seal a0aeb214ac338c90
 S1 0 - "bar Top"
 N0 "card|shell.strand:5:5|[Mock | DP-1]#0" "box#card"
 N1 "status|shell.strand:4:3|[Mock | DP-1]#0" "row#status"
@@ -17,11 +17,11 @@ k0 p1
 s1 z=300,30
 n0 x=0 y=4 w=40 h=16 op=0 hid=opacity0 ord=2
 n1 x=0 y=0 w=300 h=24 ord=1
-n2 x=92 y=6 w=20 h=12 ord=4
-n3 x=46 y=4 w=40 h=16 ord=3
-n4 x=0 y=0 w=300 h=30
+n2 x=92 y=6 w=20 h=12 ord=4 bg=00ff00ff
+n3 x=46 y=4 w=40 h=16 ord=3 bg=0080ffff
+n4 x=0 y=0 w=300 h=30 bg=faf9ffff
 k1
-n0 op=44 hid=-
+n0 op=44 hid=- bg=ff8000ff
 n3 op=254
 k2
 n0 op=133
@@ -140,11 +140,11 @@ k57
 k58
 k59
 k60
-n3 hid=opacity0
+n3 hid=opacity0 bg=-
 k61
 k62
 n0 op=254
-n3 op=44 hid=-
+n3 op=44 hid=- bg=0080ffff
 k63
 n0 op=252
 n3 op=133
@@ -262,5 +262,5 @@ k118
 k119
 k120
 k121
-n0 hid=opacity0
+n0 hid=opacity0 bg=-
 k122

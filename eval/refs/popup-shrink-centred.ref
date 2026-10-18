@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-shrink-centred"
 verdict good
-note "new scenario (popup-shrink fix, 0229b874): #mark stays at screen x 160 through the narrow, taller, shorter and wider springs; the held 220 px buffer keeps the shrinking card centred and the re-centre at k63 moves nothing on screen; reviewed from the recording (re-recorded at 418231e6 with paint order, text ink and cut width; tick for tick the same as approved before apart from those)"
+note "new scenario (popup-shrink fix, 0229b874): #mark stays at screen x 160 through the narrow, taller, shorter and wider springs; the held 220 px buffer keeps the shrinking card centred and the re-centre at k63 moves nothing on screen; reviewed from the recording (re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change); tick for tick the same geometry as approved before apart from those)"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario f6a2393e93c08e28
-seal f7f7b58797d992d6
+seal c9c69b2ceb23eda1
 S1 0 - "bar Top"
 S2 1 175 "popup#pop"
 N0 "anchor|shell.strand:8:5|[Mock | DP-1]#1" "box#anchor"
@@ -20,19 +20,19 @@ N7 "line|shell.strand:14:11|[Mock | DP-1]#0" "text#line"
 N8 "mark|shell.strand:13:11|[Mock | DP-1]#0" "box#mark"
 k0 p1
 s1 z=400,30
-n0 x=160 y=0 w=40 h=30 ord=3
+n0 x=160 y=0 w=40 h=30 ord=3 bg=303030ff
 n1 x=0 y=0 w=160 h=30 ord=2
 n2 x=0 y=0 w=400 h=30 ord=1
-n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S ord=4 ink=200.671875,10.671875,32,10
-n4 x=0 y=0 w=400 h=30
+n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S ord=4 ink=200.671875,10.671875,32,10 fg=ffffffff gl=["12:00"]
+n4 x=0 y=0 w=400 h=30 bg=faf9ffff
 k1 p2
 s2 z=220,50 o=70,36
 n5 srf=2 x=0 y=-6 w=220 h=50 op=0 hid=opacity0
 k2
 n5 op=8 hid=-
-n6 srf=2 x=0 y=-6 w=220 h=50 op=8 ord=1
-n7 srf=2 x=68 y=14 w=84 h=15 v=68,14,84,15.328125 op=8 txt=S ord=3 ink=68,16,82.671875,10.671875
-n8 srf=2 x=90 y=0 w=40 h=10 op=8 ord=2
+n6 srf=2 x=0 y=-6 w=220 h=50 op=8 ord=1 bg=202030ff
+n7 srf=2 x=68 y=14 w=84 h=15 v=68,14,84,15.328125 op=8 txt=S ord=3 ink=68,16,82.671875,10.671875 fg=ffffffff gl=["a\u0020centred\u0020card"]
+n8 srf=2 x=90 y=0 w=40 h=10 op=8 ord=2 bg=ff8000ff
 k3
 n5 y=-5 v=0,-5.328125,220,50.671875 op=27
 n6 y=-5 v=0,-5.328125,220,50.671875 op=27

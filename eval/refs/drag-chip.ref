@@ -1,0 +1,72 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "drag-chip"
+verdict good
+note "new scenario: the pressed chip follows the pointer 80 px right while held, lifted out of its row, and springs back to its slot on release; its neighbours never move; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 5a4975781e5a5a2f
+seal 0f1a388007fec681
+S1 0 - "bar Top"
+N0 "chip|shell.strand:5:5|[Mock | DP-1]#1" "box#chip"
+N1 "left|shell.strand:4:5|[Mock | DP-1]#0" "box#left"
+N2 "right|shell.strand:6:5|[Mock | DP-1]#2" "box#right"
+N3 "strip|shell.strand:3:3|[Mock | DP-1]#0" "row#strip"
+N4 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+k0 p1
+s1 z=320,30
+n0 x=46 y=4 w=30 h=16 ord=3 bg=c678ddff
+n1 x=8 y=4 w=30 h=16 ord=2 bg=61afefff
+n2 x=84 y=4 w=30 h=16 ord=4 bg=98c379ff
+n3 x=0 y=0 w=320 h=24 ord=1
+n4 x=0 y=0 w=320 h=30 bg=faf9ffff
+k2
+n0 x=52.671875 v=53,4,30,16 ord=4
+n2 ord=3
+k3
+n0 x=59.328125 v=59,4,30,16
+k4
+n0 x=66 v=d
+k5
+n0 x=72.671875 v=73,4,30,16
+k6
+n0 x=79.328125 v=79,4,30,16
+k7
+n0 x=86 v=d
+k8
+n0 x=92.671875 v=93,4,30,16
+k9
+n0 x=99.328125 v=99,4,30,16
+k10
+n0 x=106 v=d
+k11
+n0 x=112.671875 v=113,4,30,16
+k12
+n0 x=119.328125 v=119,4,30,16
+k13
+n0 x=105.1875 v=105,4,30,16
+k14
+n0 x=74.78125 v=75,4,30,16
+k15
+n0 x=54.859375 v=55,4,30,16
+k16
+n0 x=46.03125 v=46,4,30,16
+k17
+n0 x=43.765625 v=44,4,30,16
+k18
+n0 x=44.140625
+k19
+n0 x=45.03125 v=45,4,30,16
+k20
+n0 x=45.65625 v=46,4,30,16
+k21
+n0 x=45.96875
+k22
+n0 x=46.0625
+k23
+k24
+n0 x=46.03125
+k25
+n0 x=46.015625
+k26
+n0 x=46 v=d

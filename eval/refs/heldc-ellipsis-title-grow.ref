@@ -1,0 +1,55 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldc-ellipsis-title-grow"
+verdict good
+note "set C scenario, unedited: the cut title widens on its spring, more of it showing each frame and still ellipsised, the dot after it moving out of its way; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 06aac268fe6f4c3a
+seal 319a058d8a5c40ed
+S1 0 - "bar Top"
+N0 "dot|shell.strand:5:5|[Mock | DP-1]#0" "box#dot"
+N1 "tail|shell.strand:8:5|[Mock | DP-1]#1" "box#tail"
+N2 "title|shell.strand:6:5|[Mock | DP-1]#0" "text#title"
+N3 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N4 "|shell.strand:4:3|[Mock | DP-1]#0" "row@shell.strand:4"
+k0 p1
+s1 z=300,30
+n0 x=8 y=7 w=10 h=10 ord=2 bg=e06c75ff
+n1 x=120 y=7 w=10 h=10 ord=4 bg=98c379ff
+n2 x=24 y=5 w=90 h=15 txt=S ord=3 ink=25,6,67,11 fit=90 fg=ddddddff gl=["Firefox\u0020—\u0020Strand\u0020design\u0020review\u0020notes,\u0020second\u0020draft"]
+n3 x=0 y=0 w=300 h=30 bg=faf9ffff
+n4 x=0 y=0 w=300 h=24 ord=1
+k1
+n1 x=154
+n2 w=124 ink=25,6,109,11 fit=124
+k2
+n1 x=203
+n2 w=173 ink=25,6,151,13 fit=173
+k3
+n1 x=236
+n2 w=206 ink=25,6,192,13 fit=206
+k4
+n1 x=250
+n2 w=220 fit=220
+k5
+n1 x=254
+n2 w=224 ink=25,6,221,13 fit=224
+k6
+n1 x=253
+n2 w=223 ink=25,6,214,13 fit=223
+k7
+n1 x=252
+n2 w=222 fit=222
+k8
+n1 x=251
+n2 w=221 fit=221
+k9
+n1 x=250
+n2 w=220 ink=25,6,192,13 fit=220
+k10
+k11
+k12
+k13
+k14
+k15

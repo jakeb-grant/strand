@@ -1,0 +1,144 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "roll-counter"
+verdict good
+note "new scenario: each changed digit rolls over the 300 ms tween, old up and out, new in, unchanged digits still; a change one frame into a roll rolls on from the text on screen; glyph sources show which text each digit was drawn from; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario bc86fcfba4751675
+seal ff56e50a4cf08779
+S1 0 - "bar Top"
+N0 "count|shell.strand:8:5|[Mock | DP-1]#0" "text#count"
+N1 "lead|shell.strand:7:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:6:3|[Mock | DP-1]#0" "row#strip"
+N3 "tail|shell.strand:12:5|[Mock | DP-1]#1" "box#tail"
+N4 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N5 "badge|shell.strand:10:7|[Mock | DP-1]#1" "text#badge"
+k0 p1
+s1 z=320,30
+n0 x=32 y=5 w=15 h=15 txt=S ord=3 ink=32,7,14,9 fg=ffffffff gl=["41"]
+n1 x=8 y=6 w=16 h=12 ord=2 bg=5c6370ff
+n2 x=0 y=0 w=320 h=24 ord=1
+n3 x=55 y=6 w=16 h=12 ord=4 bg=5c6370ff
+n4 x=0 y=0 w=320 h=30 bg=faf9ffff
+k1
+n0 ink=32,6,14,10 fg=ffffffff/ffffffff gl=["42","41[1]"]
+k2
+n0 ink=32,6,14,11 gl=["43","41[1]"]
+k3
+k4
+k5
+k6
+k7
+k8
+k9
+k10
+k11
+k12
+k13
+k14
+k15
+k16
+k17
+k18
+k19
+k20
+n0 fg=ffffffff gl=["43"]
+k21
+n0 w=8 ink=32,6,7,11 fg=ffffffff/ffffffff gl=["43","9"]
+n3 x=48
+k22
+k23
+k24
+n0 w=15 ink=32,6,14,11 gl=["9","10"]
+n3 x=55
+k25
+k26
+k27
+k28
+k29
+k30
+k31
+k32
+k33
+k34
+k35
+k36
+k37
+k38
+k39
+k40
+k41
+k42
+n0 fg=ffffffff gl=["10"]
+k43
+n0 w=14 ink=32,7,13,9 fg=ffffffff/ffffffff gl=["11","10[1]"]
+n3 x=54
+k44
+k45
+k46
+k47
+k48
+k49
+k50
+k51
+k52
+k53
+k54
+k55
+k56
+k57
+k58
+k59
+k60
+k61
+n0 fg=ffffffff gl=["11"]
+k62
+n3 x=58 ord=5
+n5 x=54 y=9 w=8 h=15 op=37 txt=S ord=4 ink=54,11,7,9 fg=e5c07bff gl=["7"]
+k63
+n3 x=64
+n5 y=7 op=98 ink=54,9,7,9
+k64
+n3 x=68
+n5 y=5 op=151 ink=54,6,7,11 fg=e5c07bff/e5c07bff gl=["7","8"]
+k65
+n3 x=70
+n5 op=190
+k66
+n5 y=4 op=216 ink=54,5,7,11
+k67
+n5 op=232
+k68
+n5 op=241
+k69
+n5 op=247
+k70
+n5 op=251
+k71
+n5 y=5 op=253 ink=54,6,7,11
+k72
+n5 op=254
+k73
+k74
+n5 op=255
+k75
+k76
+k77
+n5 fg=e5c07bff gl=["8"]
+k78
+n5 fg=e5c07bff/e5c07bff gl=["8","9"]
+k79
+k80
+k81
+k82
+k83
+k84
+k85
+k86
+k87
+k88
+k89
+k90
+k91
+n5 fg=e5c07bff gl=["9"]

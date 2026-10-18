@@ -1,0 +1,91 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldc-card-resize-150"
+verdict good
+note "set C scenario, unedited: at 1.5x the card body springs taller and back, the footer follows, the header stays; the content-sized card takes its grown size at once (root laid at the configured buffer, decisions.md popup-shrink) and follows the spring on shrink (held), an asymmetry recorded as open in decisions.md eval-coverage; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 9a64844c76557e62
+seal 89e75c9b6ce2132a
+S1 0 - "panel Card"
+N0 "body|shell.strand:10:5|#0" "box#body"
+N1 "card|shell.strand:4:3|#0" "col#card"
+N2 "foot|shell.strand:11:5|#1" "box#foot"
+N3 "head|shell.strand:6:5|#0" "row#head"
+N4 "icon|shell.strand:7:7|#0" "box#icon"
+N5 "label|shell.strand:8:7|#0" "text#label"
+N6 "|shell.strand:2:1|#0" "panel@shell.strand:2"
+k0 p1
+s1 z=218,113
+n0 x=29 y=38 w=160 h=23 v=29.328125,38,160,23.328125 ord=5 bg=3b4252ff
+n1 x=19 y=0 w=180 h=90 v=19.328125,0,180,90 ord=1 bg=22262eff sh=00000066@0.671875,-14.671875,217.328125,127.328125
+n2 x=29 y=69 w=160 h=11 v=29.328125,69.328125,160,10.671875 ord=6 bg=56b6c2ff
+n3 x=29 y=10 w=160 h=20 v=29.328125,10,160,20 ord=2
+n4 x=29 y=13 w=14 h=14 v=29.328125,13.328125,14,14 ord=3 bg=e5c07bff
+n5 x=49 y=13 w=42 h=15 v=49.328125,13.328125,42,14.671875 txt=S ord=4 ink=50,16,40.671875,12.671875 fg=eeeeeeff gl=["Battery"]
+n6 x=19 y=0 w=180 h=90 v=19.328125,0,180,90
+k1
+s1 z=218,154
+n0 h=34 v=29.328125,38,160,34
+n1 h=131 v=19.328125,0,180,131.328125 sh=00000066@0.671875,-14.671875,217.328125,168.671875
+n2 y=80 v=29.328125,80,160,11.328125
+n6 h=131 v=19.328125,0,180,131.328125
+k2
+n0 h=49 v=29.328125,38,160,49.328125
+n2 y=95 v=29.328125,95.328125,160,10.671875
+k3
+n0 h=59 v=29.328125,38,160,59.328125
+n2 y=105 v=29.328125,105.328125,160,10.671875
+k4
+n0 h=64 v=29.328125,38,160,64
+n2 y=110 v=29.328125,110,160,11.328125
+k5
+n5 y=12 v=49.328125,12,42,15.328125 ink=50,14.671875,40.671875,12.671875
+k6
+k7
+k8
+k9
+k10
+n5 y=13 v=49.328125,13.328125,42,14.671875 ink=50,16,40.671875,12.671875
+k11
+k12
+k13
+k14
+n0 h=53 v=29.328125,38,160,53.328125
+n1 h=120 v=19.328125,0,180,120 sh=00000066@0.671875,-14.671875,217.328125,157.328125
+n2 y=99 v=29.328125,99.328125,160,10.671875
+n6 h=120 v=19.328125,0,180,120
+k15
+n0 h=38 v=29.328125,38,160,38
+n1 h=105 v=19.328125,0,180,105.328125 sh=00000066@0.671875,-14.671875,217.328125,142.671875
+n2 y=84 v=29.328125,84,160,11.328125
+n6 h=105 v=19.328125,0,180,105.328125
+k16
+n0 h=28 v=29.328125,38,160,28
+n1 h=95 v=19.328125,0,180,95.328125 sh=00000066@0.671875,-14.671875,217.328125,132.671875
+n2 y=74 v=29.328125,74,160,11.328125
+n6 h=95 v=19.328125,0,180,95.328125
+k17
+n0 h=23 v=29.328125,38,160,23.328125
+n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
+n2 y=69 v=29.328125,69.328125,160,10.671875
+n6 h=90 v=19.328125,0,180,90
+k18
+n0 h=22 v=29.328125,38,160,22
+n1 h=89 v=19.328125,0,180,89.328125 sh=00000066@0.671875,-14.671875,217.328125,126.671875
+n2 y=68 v=29.328125,68,160,11.328125
+n6 h=89 v=19.328125,0,180,89.328125
+k19
+k20
+n0 h=23 v=29.328125,38,160,23.328125
+n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
+n2 y=69 v=29.328125,69.328125,160,10.671875
+n6 h=90 v=19.328125,0,180,90
+k21
+k22
+k23
+k24
+k25
+k26
+k27
+s1 z=218,113

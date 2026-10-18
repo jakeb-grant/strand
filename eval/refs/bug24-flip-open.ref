@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "bug24-flip-open"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario e21be17772b35817
-seal b13ce43ea84766ea
+seal b899ad995db28cff
 S1 0 - "bar Top"
 N0 "bars|shell.strand:7:9|[Mock | DP-1]#0" "box#bars"
 N1 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
@@ -21,14 +21,14 @@ N9 "focus|shell.strand:12:18|[Mock | DP-1]#0" "text#focus"
 k0 p1
 s1 z=300,30
 n0 x=270 y=9 w=16 h=12 ord=4
-n1 x=0 y=0 w=300 h=30
+n1 x=0 y=0 w=300 h=30 bg=faf9ffff
 n2 x=0 y=0 w=300 h=30 ord=1
 n3 x=150 y=0 w=136 h=30 ord=2
 n4 x=270 y=9 w=16 h=12 ord=3
 n5 x=270 y=9 w=16 h=12 ord=5
-n6 x=270 y=13 w=4 h=8 ord=6
-n7 x=276 y=11 w=4 h=10 ord=7
-n8 x=282 y=9 w=4 h=12 ord=8
+n6 x=270 y=13 w=4 h=8 ord=6 bg=00ff00ff
+n7 x=276 y=11 w=4 h=10 ord=7 bg=00ff00ff
+n8 x=282 y=9 w=4 h=12 ord=8 bg=00ff00ff
 k1
 n0 x=265
 n4 x=250 y=8 w=36 h=15
@@ -36,7 +36,7 @@ n5 x=265
 n6 x=265
 n7 x=271
 n8 x=277
-n9 x=272 y=8 w=14 h=15 txt=S ord=9 ink=272,9,11,10
+n9 x=272 y=8 w=14 h=15 txt=S ord=9 ink=272,9,11,10 fg=ff00ffff gl=["iiii"]
 k2
 n0 x=257
 n5 x=257

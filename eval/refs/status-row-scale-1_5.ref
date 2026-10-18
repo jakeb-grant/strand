@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "status-row-scale-1_5"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 924beef3c15f242d
-seal 8188d468e91a81bc
+seal 35c7cb313a009d65
 S1 0 - "bar Top"
 N0 "bars|status-row.strand:13:9|[Mock | DP-1]#0" "box#bars"
 N1 "count|status-row.strand:20:11|[Mock | DP-1]#0" "row#count"
@@ -25,16 +25,16 @@ k0 p1
 s1 z=300,30
 n0 x=224 y=9 w=16 h=12 v=224,9.328125,16,12 ord=4
 n1 x=246 y=8 w=14 h=15 v=246,8,14,15.328125 ord=9
-n2 x=266 y=10 w=20 h=10 ord=11
+n2 x=266 y=10 w=20 h=10 ord=11 bg=0000ffff
 n3 x=224 y=8 w=62 h=15 v=224,8,62,15.328125 ord=3
 n4 x=0 y=0 w=300 h=30 ord=1
 n5 x=150 y=0 w=136 h=30 ord=2
 n6 x=224 y=9 w=16 h=12 v=224,9.328125,16,12 ord=5
-n7 x=224 y=13 w=4 h=8 v=224,13.328125,4,8 ord=6
-n8 x=230 y=11 w=4 h=10 v=230,11.328125,4,10 ord=7
-n9 x=236 y=9 w=4 h=12 v=236,9.328125,4,12 ord=8
-n10 x=246 y=8 w=14 h=15 v=246,8,14,15.328125 txt=S ord=10 ink=246.671875,10,10.671875,10
-n11 x=0 y=0 w=300 h=30
+n7 x=224 y=13 w=4 h=8 v=224,13.328125,4,8 ord=6 bg=00ff00ff
+n8 x=230 y=11 w=4 h=10 v=230,11.328125,4,10 ord=7 bg=00ff00ff
+n9 x=236 y=9 w=4 h=12 v=236,9.328125,4,12 ord=8 bg=00ff00ff
+n10 x=246 y=8 w=14 h=15 v=246,8,14,15.328125 txt=S ord=10 ink=246.671875,10,10.671875,10 fg=ff00ffff gl=["llll"]
+n11 x=0 y=0 w=300 h=30 bg=faf9ffff
 k1
 n0 x=219 v=219.328125,9.328125,16,12
 n1 x=244 v=244,8,14,15.328125 op=218 hid=inert ord=10
@@ -45,7 +45,7 @@ n7 x=219 v=219.328125,13.328125,4,8
 n8 x=225 v=225.328125,11.328125,4,10
 n9 x=231 v=231.328125,9.328125,4,12
 n10 x=244 v=244,8,14,15.328125 op=218 hid=inert ord=11 ink=244.671875,10,10.671875,10
-n12 x=226 y=8 w=14 h=15 v=226,8,14,15.328125 txt=S ord=9 ink=226.671875,10,10.671875,10
+n12 x=226 y=8 w=14 h=15 v=226,8,14,15.328125 txt=S ord=9 ink=226.671875,10,10.671875,10 fg=ff00ffff gl=["iiii"]
 k2
 n0 x=211 v=211.328125,9.328125,16,12
 n1 x=242 v=242,8,14,15.328125 op=157
@@ -162,7 +162,7 @@ k25
 k26
 n1 x=242 y=8 w=14 h=15 v=242,8,14,15.328125 op=37 ord=9
 n2 ord=11
-n10 x=242 y=8 w=14 h=15 v=242,8,14,15.328125 op=37 txt=S ord=10 ink=242.671875,10,10.671875,10
+n10 x=242 y=8 w=14 h=15 v=242,8,14,15.328125 op=37 txt=S ord=10 ink=242.671875,10,10.671875,10 fg=ff00ffff gl=["llll"]
 n12 -
 k27
 n1 x=244 v=244,8,14,15.328125 op=98

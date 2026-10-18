@@ -1,0 +1,139 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "flip-nested"
+verdict good
+note "new scenario: the banner's height springs taller, the toolbar row moves down with it while gliding sideways to its new centre and its buttons glide inside it; nothing jumps; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 27f77af5d98a5cee
+seal 3cc9a6a64936c45f
+S1 0 - "panel Tools"
+N0 "b1|shell.strand:10:9|#0" "box#b1"
+N1 "b2|shell.strand:11:9|#1" "box#b2"
+N2 "b3|shell.strand:12:9|#2" "box#b3"
+N3 "banner|shell.strand:7:7|#0" "box#banner"
+N4 "frame|shell.strand:4:3|#0" "row#frame"
+N5 "side|shell.strand:5:5|#0" "box#side"
+N6 "stack|shell.strand:6:5|#0" "col#stack"
+N7 "tools|shell.strand:8:7|#0" "row#tools"
+N8 "|shell.strand:2:1|#0" "panel@shell.strand:2"
+k0 p1
+s1 z=276,68
+n0 x=133 y=35 w=14 h=14 ord=6 bg=e06c75ff
+n1 x=151 y=35 w=14 h=14 ord=7 bg=98c379ff
+n2 x=169 y=35 w=14 h=14 ord=8 bg=61afefff
+n3 x=98 y=14 w=120 h=10 ord=4 bg=3e4451ff
+n4 x=0 y=0 w=276 h=68 ord=1 bg=121418ff
+n5 x=8 y=8 w=30 h=30 ord=2 bg=4b5263ff
+n6 x=48 y=8 w=220 h=52 ord=3 bg=1d2027ff
+n7 x=133 y=30 w=50 h=24 ord=5 bg=2f3542ff
+n8 x=0 y=0 w=276 h=68
+k1
+s1 z=276,88
+n0 x=130 y=40
+n1 y=40
+n2 x=172 y=40
+n3 h=15
+n4 h=88
+n6 h=57
+n7 x=130 y=35 w=70
+n8 h=88
+k2
+n0 x=127 y=48
+n1 y=48
+n2 x=175 y=48
+n3 h=23
+n6 h=65
+n7 x=127 y=43
+k3
+n0 x=124 y=53
+n1 y=53
+n2 x=178 y=53
+n3 h=28
+n6 h=70
+n7 x=124 y=48
+k4
+n0 x=123 y=55
+n1 y=55
+n2 x=179 y=55
+n3 h=30
+n6 h=72
+n7 x=123 y=50
+k5
+n0 y=56
+n1 y=56
+n2 y=56
+n3 h=31
+n6 h=73
+n7 y=51
+k6
+n0 y=55
+n1 y=55
+n2 y=55
+n3 h=30
+n6 h=72
+n7 y=50
+k7
+k8
+k9
+k10
+k11
+n0 x=126 y=50
+n1 y=50
+n2 x=176 y=50
+n3 h=25
+n4 h=83
+n6 h=67
+n7 x=126 y=45 w=50
+n8 h=83
+k12
+n0 x=129 y=42
+n1 y=42
+n2 x=173 y=42
+n3 h=17
+n4 h=75
+n6 h=59
+n7 x=129 y=37
+n8 h=75
+k13
+n0 x=132 y=37
+n1 y=37
+n2 x=170 y=37
+n3 h=12
+n4 h=70
+n6 h=54
+n7 x=132 y=32
+n8 h=70
+k14
+n0 x=133 y=35
+n1 y=35
+n2 x=169 y=35
+n3 h=10
+n4 h=68
+n6 h=52
+n7 x=133 y=30
+n8 h=68
+k15
+n0 y=34
+n1 y=34
+n2 y=34
+n3 h=9
+n4 h=67
+n6 h=51
+n7 y=29
+n8 h=67
+k16
+n0 y=35
+n1 y=35
+n2 y=35
+n3 h=10
+n4 h=68
+n6 h=52
+n7 y=30
+n8 h=68
+k17
+k18
+k19
+k20
+k21
+s1 z=276,68

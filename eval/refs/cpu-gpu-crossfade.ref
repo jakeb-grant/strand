@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "cpu-gpu-crossfade"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 73f62f22b5954c1e
-seal ad70a1171d49e329
+seal 7048b8863e09eeef
 S1 0 - "bar Top"
 N0 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
 N1 "oldlabel|shell.strand:10:11|[Mock | DP-1]#0" "text#oldlabel"
@@ -20,34 +20,45 @@ N8 "new|shell.strand:14:9|[Mock | DP-1]#0" "row#new"
 N9 "slide|shell.strand:20:13|[Mock | DP-1]#1" "box#slide"
 k0 p1
 s1 z=300,40
-n0 x=10 y=14 w=20 h=12 ord=2
-n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11
-n2 x=36 y=6 w=90 h=28 ord=4
-n3 x=132 y=14 w=20 h=12 ord=6
+n0 x=10 y=14 w=20 h=12 ord=2 bg=00ff00ff
+n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11 fg=ffffffff gl=["Before"]
+n2 x=36 y=6 w=90 h=28 ord=4 bg=455e91ff
+n3 x=132 y=14 w=20 h=12 ord=6 bg=0000ffff
 n4 x=36 y=6 w=90 h=28 ord=3
 n5 x=0 y=0 w=300 h=40 ord=1
-n6 x=0 y=0 w=300 h=40
+n6 x=0 y=0 w=300 h=40 bg=faf9ffff
 k1
+n2 bg=4160a1ff
 k2
+n2 bg=3a63bbff
 k3
+n2 bg=3365d2ff
 k4
+n2 bg=2d66e2ff
 k5
+n2 bg=2966eeff
 k6
+n2 bg=2666f5ff
 k7
+n2 bg=2566f9ff
 k8
+n2 bg=2366fcff
 k9
+n2 bg=2366fdff
 k10
+n2 bg=2266feff
 k11
 k12
+n2 bg=2266ffff
 k13
 k14
 k15
 n1 op=218 hid=inert
 n2 op=218 hid=inert
 n3 x=138 ord=9
-n7 x=46 y=13 w=28 h=15 op=37 txt=S ord=7 ink=46,14,28,11
-n8 x=36 y=6 w=90 h=28 op=37 ord=6
-n9 x=128 y=12 w=16 h=16 op=37 ord=8
+n7 x=46 y=13 w=28 h=15 op=37 txt=S ord=7 ink=46,14,28,11 fg=ffcc00ff gl=["After"]
+n8 x=36 y=6 w=90 h=28 op=37 ord=6 bg=303030ff
+n9 x=128 y=12 w=16 h=16 op=37 ord=8 bg=ff00ffff
 k16
 n1 op=157
 n2 op=157
@@ -123,7 +134,7 @@ n9 op=255
 k28
 k29
 n1 -
-n2 hid=opacity0
+n2 hid=opacity0 bg=-
 n3 ord=8
 n7 ord=6
 n8 ord=5
@@ -135,8 +146,8 @@ n7 ord=5
 n8 ord=4
 n9 ord=6
 k31
-n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11
-n2 x=36 y=6 w=90 h=28 ord=4
+n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11 fg=ffffffff gl=["Before"]
+n2 x=36 y=6 w=90 h=28 ord=4 bg=2266ffff
 n3 ord=9
 n7 op=218 hid=inert ord=7
 n8 op=218 hid=inert ord=6
@@ -190,8 +201,8 @@ k44
 k45
 n3 ord=8
 n7 -
-n8 hid=opacity0
-n9 hid=opacity0 ord=7
+n8 hid=opacity0 bg=-
+n9 hid=opacity0 ord=7 bg=-
 k46
 n3 x=148 ord=6
 n8 -

@@ -1,0 +1,73 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "pill-title-ellipsis"
+verdict good
+note "new scenario: the pill's title is cut with an ellipsis to the room left in the fixed-width row, its ink inside its box, cutting more as the neighbour grows and less as it shrinks back; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 6cff2c39d7edfa8d
+seal 5cb2c9e350ca1ccd
+S1 0 - "bar Top"
+N0 "dot|shell.strand:6:5|[Mock | DP-1]#0" "box#dot"
+N1 "grower|shell.strand:11:5|[Mock | DP-1]#1" "box#grower"
+N2 "icon|shell.strand:8:7|[Mock | DP-1]#0" "box#icon"
+N3 "name|shell.strand:9:7|[Mock | DP-1]#0" "text#name"
+N4 "pill|shell.strand:7:5|[Mock | DP-1]#0" "row#pill"
+N5 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N6 "tail|shell.strand:12:5|[Mock | DP-1]#2" "box#tail"
+N7 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+k0 p1
+s1 z=320,30
+n0 x=8 y=7 w=10 h=10 ord=2 bg=e06c75ff
+n1 x=256 y=7 w=20 h=10 ord=6 bg=61afefff
+n2 x=30 y=6 w=12 h=12 ord=4 bg=e5c07bff
+n3 x=46 y=5 w=198 h=15 txt=S ord=5 ink=47,6,192,13 fit=198 fg=ddddddff gl=["Firefox\u0020—\u0020Strand\u0020design\u0020review\u0020notes,\u0020second\u0020draft"]
+n4 x=24 y=2 w=226 h=20 ord=3 bg=303540ff
+n5 x=0 y=0 w=300 h=24 ord=1
+n6 x=282 y=7 w=10 h=10 ord=7 bg=98c379ff
+n7 x=0 y=0 w=320 h=30 bg=faf9ffff
+k1
+n1 x=238 w=38
+n3 w=180 ink=47,6,151,13 fit=180
+n4 w=208
+k2
+n1 x=211 w=65
+n3 w=153 ink=47,6,144,13 fit=153
+n4 w=181
+k3
+n1 x=194 w=82
+n3 w=136 ink=47,6,109,11 fit=136
+n4 w=164
+k4
+n1 x=186 w=90
+n3 w=128 fit=128
+n4 w=156
+k5
+n1 x=184 w=92
+n3 w=126 fit=126
+n4 w=154
+k6
+k7
+n1 x=185 w=91
+n3 w=127 fit=127
+n4 w=155
+k8
+n1 x=186 w=90
+n3 w=128 fit=128
+n4 w=156
+k9
+k10
+k11
+k12
+k13
+k14
+k15
+n1 x=92
+n3 w=34 ink=47,7,33,10 fit=- gl=["Notes"]
+n4 w=62
+n6 x=188
+k16
+n1 x=186
+n3 w=128 ink=47,6,109,11 fit=128 gl=["Firefox\u0020—\u0020Strand\u0020design\u0020review\u0020notes,\u0020second\u0020draft"]
+n4 w=156
+n6 x=282

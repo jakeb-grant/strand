@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-grow-centred"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 0acde901fca5d0f0
-seal 53aa6cd2adda9b92
+seal 9aed11175fd3260d
 S1 0 - "bar Top"
 S2 1 45 "popup#pop"
 N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
@@ -20,19 +20,19 @@ N7 "card|shell.strand:9:9|[Mock | DP-1]#0" "col#card"
 N8 "line|shell.strand:12:11|[Mock | DP-1]#0" "text#line"
 k0 p1
 s1 z=400,30
-n0 x=160 y=0 w=40 h=30 ord=3
+n0 x=160 y=0 w=40 h=30 ord=3 bg=303030ff
 n1 x=0 y=0 w=160 h=30 ord=2
 n2 x=0 y=0 w=400 h=30 ord=1
-n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S ord=4 ink=200.671875,10.671875,32,10
-n4 x=0 y=0 w=400 h=30
+n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S ord=4 ink=200.671875,10.671875,32,10 fg=ffffffff gl=["12:00"]
+n4 x=0 y=0 w=400 h=30 bg=faf9ffff
 k1 p2
 s2 z=160,50 o=100,36
 n5 srf=2 x=0 y=-6 w=160 h=50 op=0 hid=opacity0
 k2
 n5 y=-4 op=37 hid=-
-n6 srf=2 x=6 y=2 w=40 h=10 op=37 ord=2
-n7 srf=2 x=0 y=-4 w=160 h=50 op=37 ord=1
-n8 srf=2 x=6 y=16 w=148 h=15 v=6,16,148,15.328125 op=37 txt=S ord=3 ink=6,18,99.328125,13.328125
+n6 srf=2 x=6 y=2 w=40 h=10 op=37 ord=2 bg=ff8000ff
+n7 srf=2 x=0 y=-4 w=160 h=50 op=37 ord=1 bg=202030ff
+n8 srf=2 x=6 y=16 w=148 h=15 v=6,16,148,15.328125 op=37 txt=S ord=3 ink=6,18,99.328125,13.328125 fg=ffffffff gl=["a\u0020card\u0020that\u0020grows"]
 k3
 n5 y=-2 op=98
 n6 y=4 op=98

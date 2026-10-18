@@ -540,10 +540,12 @@ A node's first line leaves out what is at its default: the first surface,
 (`bg`, `bd`, `sh`, `fg`, `gl`). Several of one kind are joined with `/`
 in paint order; `gl` is a JSON list.
 
-Everything together stays under 5 MB. As re-recorded with paint order and
-text ink (eval-refs-integration) it is 2.8 MB: the 24 scenarios 105 kB,
-`matrix-60.ref` 1.06 MB and `matrix-144.ref` 1.65 MB (6.1 kB a cell).
-Compressed, as git stores it, that is about 270 kB. eval/tests/refs.rs
+Everything together stays under 5 MB. With each node's paint and glyph
+sources (eval-coverage) it is 4.15 MB: the 41 scenarios 156 kB (the 24
+recorded before 110 kB, 105 kB without paint), `matrix-60.ref` 1.61 MB
+(4.0 kB a cell) and `matrix-144.ref` 2.39 MB (6.0 kB a cell), 401 cells
+each. Paint costs little because a field is written only on the ticks
+it changes. Compressed, as git stores it, that is about 380 kB. eval/tests/refs.rs
 holds the total to 5 MB, a scenario's file to 64 kB and a matrix file to
 8 kB a cell. Each is a tripwire for a recording that stopped being
 compact, not a cap on scenarios.

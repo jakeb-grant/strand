@@ -1,0 +1,109 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldc-popup-grow-shrink"
+verdict good
+note "set C scenario, unedited: the popup opens, the added row springs in and the card grows to its size at once (growth laid at the configured buffer), then the row collapses and the held card shrinks with it; the growth/shrink asymmetry is recorded as open in decisions.md eval-coverage; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+date 2026-10-18
+rev "24e5ed52"
+approver "claude"
+scenario 4f995b84b7a579ec
+seal 1c75c926c3ae9ab5
+S1 0 - "bar Top"
+S2 1 - "popup@shell.strand:7"
+N0 "anchor|shell.strand:6:5|[Mock | DP-1]#0" "box#anchor"
+N1 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N2 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+N3 "card|shell.strand:8:9|[Mock | DP-1]#0" "col#card"
+N4 "first|shell.strand:9:11|[Mock | DP-1]#0" "box#first"
+N5 "last|shell.strand:14:11|[Mock | DP-1]#1" "box#last"
+N6 "|shell.strand:7:7|[Mock | DP-1]#0" "popup@shell.strand:7"
+N7 "extra|shell.strand:11:13|[Mock | DP-1]#1" "box#extra"
+k0 p1
+s1 z=300,30
+n0 x=8 y=2 w=20 h=20 ord=2 bg=444b57ff
+n1 x=0 y=0 w=300 h=30 bg=faf9ffff
+n2 x=0 y=0 w=300 h=24 ord=1
+k1 p2
+s2 z=160,54 o=-62,36
+n3 srf=2 x=0 y=0 w=160 h=54 ord=1 bg=20242cff
+n4 srf=2 x=8 y=8 w=144 h=20 ord=2 bg=5b8defff
+n5 srf=2 x=8 y=34 w=144 h=12 ord=3 bg=c678ddff
+n6 srf=2 x=0 y=0 w=160 h=54
+k2
+s2 z=160,100
+n3 h=100
+n5 y=50 ord=4
+n6 h=100
+n7 srf=2 x=8 y=34 w=144 h=10 op=37 ord=3 bg=8bd17cff
+k3
+n5 y=66
+n7 h=26 op=98
+k4
+n5 y=76
+n7 h=36 op=151
+k5
+n5 y=80
+n7 h=40 op=190
+k6
+n7 op=216
+k7
+n7 op=232
+k8
+n7 op=241
+k9
+n7 op=247
+k10
+n7 op=251
+k11
+n7 op=253
+k12
+n7 op=254
+k13
+k14
+n7 op=255
+k15
+k16
+k17
+n3 h=90
+n5 y=70
+n6 h=90
+n7 h=30 op=218 hid=inert
+k18
+n3 h=74
+n5 y=54
+n6 h=74
+n7 h=14 op=157
+k19
+n3 h=63
+n5 y=43
+n6 h=63
+n7 h=4 op=104
+k20
+n3 h=54
+n5 y=34
+n6 h=54
+n7 h=0 op=65 bg=-
+k21
+n7 op=39
+k22
+n7 op=23
+k23
+n7 op=14
+k24
+n7 op=8
+k25
+n7 op=4
+k26
+n7 op=2
+k27
+n7 op=1
+k28
+k29
+n7 op=0
+k30
+k31
+n7 hid=opacity0
+k32
+n5 ord=3
+n7 -
+k33
+s2 z=160,54

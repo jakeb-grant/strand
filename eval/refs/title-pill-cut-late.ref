@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "title-pill-cut-late"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 7eb58bd227f6888f
-seal 55de4a3f7ad0c4f2
+seal b5214d7dd319cda6
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:5:5|[Mock | DP-1]#0" "popup#big"
@@ -20,11 +20,11 @@ k0 p1,2
 s1 z=800,30
 s2 z=420,40 o=-160,30
 n0 srf=2 x=0 y=0 w=420 h=40
-n1 srf=2 x=0 y=0 w=90 h=40 ord=1
+n1 srf=2 x=0 y=0 w=90 h=40 ord=1 bg=202020ff
 n2 srf=2 x=60 y=10 w=30 h=20 ord=3
-n3 srf=2 x=0 y=13 w=60 h=15 txt=S ord=2 ink=1,14,54,11 fit=60
-n4 x=0 y=0 w=800 h=30 txt=S ord=2 ink=0,1,32,11
-n5 x=0 y=0 w=800 h=30
+n3 srf=2 x=0 y=13 w=60 h=15 txt=S ord=2 ink=1,14,54,11 fit=60 fg=ffffffff gl=["Firefox:\u0020a\u0020window\u0020title\u0020much\u0020too\u0020long\u0020for\u0020the\u0020pill\u0020it\u0020is\u0020in"]
+n4 x=0 y=0 w=800 h=30 txt=S ord=2 ink=0,1,32,11 fg=ffffffff gl=["12:00"]
+n5 x=0 y=0 w=800 h=30 bg=faf9ffff
 n6 x=0 y=0 w=100 h=30 ord=1
 k1 p2
 n1 w=102

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "island-card-swell"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 616a2f7b6fa02cf2
-seal 3d51b7e4d8ffcede
+seal 820da2d817944e2c
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:8:5|[Mock | DP-1]#0" "popup#big"
@@ -51,9 +51,9 @@ k0 p1,2
 s1 z=1280,30
 s2 z=980,472 o=-280,30
 n0 srf=2 x=0 y=0 w=980 h=472
-n1 srf=2 x=280 y=0 w=420 h=32 ord=1
-n2 srf=2 x=50 y=0 w=880 h=32 ord=2
-n3 x=0 y=0 w=1280 h=30
+n1 srf=2 x=280 y=0 w=420 h=32 ord=1 bg=11111bff bd=585b70ff
+n2 srf=2 x=50 y=0 w=880 h=32 ord=2 bg=313244ff
+n3 x=0 y=0 w=1280 h=30 bg=faf9ffff
 n4 x=0 y=0 w=420 h=30 ord=1
 k1 p2
 n1 x=262 w=456 h=53
@@ -62,13 +62,13 @@ n6 srf=2 x=72 y=32 w=836 h=40 op=37 ord=4
 n7 srf=2 x=72 y=192 w=836 h=40 op=0 hid=opacity0 ord=14
 n8 srf=2 x=72 y=84 w=836 h=40 op=0 hid=opacity0 ord=12
 n9 srf=2 x=72 y=138 w=836 h=40 op=0 hid=opacity0 ord=13
-n10 srf=2 x=72 y=42 w=27 h=21 op=37 ord=5
-n11 srf=2 x=114 y=42 w=27 h=21 op=37 ord=6
-n12 srf=2 x=156 y=42 w=27 h=21 op=37 ord=7
-n13 srf=2 x=198 y=42 w=27 h=21 op=37 ord=8
-n14 srf=2 x=240 y=42 w=27 h=21 op=37 ord=9
-n15 srf=2 x=282 y=45 w=47 h=15 op=37 txt=S ord=10 ink=283,46,46,13
-n16 srf=2 x=344 y=36 w=131 h=33 op=37 ord=11
+n10 srf=2 x=72 y=42 w=27 h=21 op=37 ord=5 bg=89b4faff
+n11 srf=2 x=114 y=42 w=27 h=21 op=37 ord=6 bg=89b4faff
+n12 srf=2 x=156 y=42 w=27 h=21 op=37 ord=7 bg=89b4faff
+n13 srf=2 x=198 y=42 w=27 h=21 op=37 ord=8 bg=89b4faff
+n14 srf=2 x=240 y=42 w=27 h=21 op=37 ord=9 bg=89b4faff
+n15 srf=2 x=282 y=45 w=47 h=15 op=37 txt=S ord=10 ink=283,46,46,13 fg=cdd6f4ff gl=["Monday"]
+n16 srf=2 x=344 y=36 w=131 h=33 op=37 ord=11 bg=45475aff
 k2
 n1 x=222 w=536 h=102
 n6 y=35 op=98
@@ -112,13 +112,13 @@ n13 y=48 op=216
 n14 y=48 op=216
 n15 y=51 op=216 ink=283,52,46,13
 n16 y=42 op=216
-n17 srf=2 x=72 y=96 w=27 h=21 op=37 ord=13
-n18 srf=2 x=114 y=96 w=27 h=21 op=37 ord=14
-n19 srf=2 x=156 y=96 w=27 h=21 op=37 ord=15
-n20 srf=2 x=198 y=96 w=27 h=21 op=37 ord=16
-n21 srf=2 x=240 y=96 w=27 h=21 op=37 ord=17
-n22 srf=2 x=282 y=99 w=50 h=15 op=37 txt=S ord=18 ink=282,100,50,13
-n23 srf=2 x=347 y=90 w=131 h=33 op=37 ord=19
+n17 srf=2 x=72 y=96 w=27 h=21 op=37 ord=13 bg=89b4faff
+n18 srf=2 x=114 y=96 w=27 h=21 op=37 ord=14 bg=89b4faff
+n19 srf=2 x=156 y=96 w=27 h=21 op=37 ord=15 bg=89b4faff
+n20 srf=2 x=198 y=96 w=27 h=21 op=37 ord=16 bg=89b4faff
+n21 srf=2 x=240 y=96 w=27 h=21 op=37 ord=17 bg=89b4faff
+n22 srf=2 x=282 y=99 w=50 h=15 op=37 txt=S ord=18 ink=282,100,50,13 fg=cdd6f4ff gl=["Tuesday"]
+n23 srf=2 x=347 y=90 w=131 h=33 op=37 ord=19 bg=45475aff
 k6
 n1 x=72 w=836 h=326
 n6 op=232
@@ -193,13 +193,13 @@ n20 y=102 op=216
 n21 y=102 op=216
 n22 y=105 op=216 ink=282,106,50,13
 n23 y=96 op=216
-n24 srf=2 x=72 y=150 w=27 h=21 op=37 ord=21
-n25 srf=2 x=114 y=150 w=27 h=21 op=37 ord=22
-n26 srf=2 x=156 y=150 w=27 h=21 op=37 ord=23
-n27 srf=2 x=198 y=150 w=27 h=21 op=37 ord=24
-n28 srf=2 x=240 y=150 w=27 h=21 op=37 ord=25
-n29 srf=2 x=282 y=153 w=69 h=15 op=37 txt=S ord=26 ink=282,154,69,13
-n30 srf=2 x=366 y=144 w=131 h=33 op=37 ord=27
+n24 srf=2 x=72 y=150 w=27 h=21 op=37 ord=21 bg=89b4faff
+n25 srf=2 x=114 y=150 w=27 h=21 op=37 ord=22 bg=89b4faff
+n26 srf=2 x=156 y=150 w=27 h=21 op=37 ord=23 bg=89b4faff
+n27 srf=2 x=198 y=150 w=27 h=21 op=37 ord=24 bg=89b4faff
+n28 srf=2 x=240 y=150 w=27 h=21 op=37 ord=25 bg=89b4faff
+n29 srf=2 x=282 y=153 w=69 h=15 op=37 txt=S ord=26 ink=282,154,69,13 fg=cdd6f4ff gl=["Wednesday"]
+n30 srf=2 x=366 y=144 w=131 h=33 op=37 ord=27 bg=45475aff
 k10
 n1 x=39 w=902 h=429
 n6 op=253
@@ -297,13 +297,13 @@ n27 y=156 op=216
 n28 y=156 op=216
 n29 y=159 op=216 ink=282,160,69,13
 n30 y=150 op=216
-n31 srf=2 x=72 y=204 w=27 h=21 op=37 ord=29
-n32 srf=2 x=114 y=204 w=27 h=21 op=37 ord=30
-n33 srf=2 x=156 y=204 w=27 h=21 op=37 ord=31
-n34 srf=2 x=198 y=204 w=27 h=21 op=37 ord=32
-n35 srf=2 x=240 y=204 w=27 h=21 op=37 ord=33
-n36 srf=2 x=282 y=207 w=55 h=15 op=37 txt=S ord=34 ink=282,208,55,13
-n37 srf=2 x=352 y=198 w=131 h=33 op=37 ord=35
+n31 srf=2 x=72 y=204 w=27 h=21 op=37 ord=29 bg=89b4faff
+n32 srf=2 x=114 y=204 w=27 h=21 op=37 ord=30 bg=89b4faff
+n33 srf=2 x=156 y=204 w=27 h=21 op=37 ord=31 bg=89b4faff
+n34 srf=2 x=198 y=204 w=27 h=21 op=37 ord=32 bg=89b4faff
+n35 srf=2 x=240 y=204 w=27 h=21 op=37 ord=33 bg=89b4faff
+n36 srf=2 x=282 y=207 w=55 h=15 op=37 txt=S ord=34 ink=282,208,55,13 fg=cdd6f4ff gl=["Thursday"]
+n37 srf=2 x=352 y=198 w=131 h=33 op=37 ord=35 bg=45475aff
 k14
 n1 x=46 w=888 h=450
 n7 y=197 op=98

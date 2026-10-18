@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "stagger-list"
 verdict good
-note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
+note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "418231e6"
+rev "a38d1bc6"
 approver "claude"
 scenario 99043c9b589d32bc
-seal 2274d2221039d8a0
+seal 872068cdbbf4a593
 S1 0 - "bar Top"
 N0 "head|shell.strand:5:5|[Mock | DP-1]#0" "box#head"
 N1 "list|shell.strand:4:3|[Mock | DP-1]#0" "row#list"
@@ -25,26 +25,26 @@ N13 "|shell.strand:8:9|[Mock | DP-1][four]#0" "box@shell.strand:8"
 N14 "|shell.strand:9:9|[Mock | DP-1][four]#0" "text(\"four\")"
 k0 p1
 s1 z=300,30
-n0 x=10 y=9 w=20 h=12 ord=2
+n0 x=10 y=9 w=20 h=12 ord=2 bg=00ff00ff
 n1 x=0 y=0 w=300 h=30 ord=1
-n2 x=0 y=0 w=300 h=30
+n2 x=0 y=0 w=300 h=30 bg=faf9ffff
 n3 x=36 y=8 w=33 h=15 ord=3
-n4 x=36 y=11 w=8 h=8 ord=4
-n5 x=47 y=8 w=22 h=15 txt=S ord=5 ink=47,12,22,8
+n4 x=36 y=11 w=8 h=8 ord=4 bg=ff0000ff
+n5 x=47 y=8 w=22 h=15 txt=S ord=5 ink=47,12,22,8 fg=ffffffff gl=["one"]
 k1
 n6 x=160 y=14 w=34 h=15 op=0 hid=opacity0 ord=10
 n7 x=113 y=14 w=41 h=15 op=0 hid=opacity0 ord=9
 n8 x=75 y=12 w=32 h=15 op=37 ord=6
-n9 x=75 y=15 w=8 h=8 op=37 ord=7
-n10 x=86 y=12 w=21 h=15 op=37 txt=S ord=8 ink=86,14,20,10
+n9 x=75 y=15 w=8 h=8 op=37 ord=7 bg=ff0000ff
+n10 x=86 y=12 w=21 h=15 op=37 txt=S ord=8 ink=86,14,20,10 fg=ffffffff gl=["two"]
 k2
 n6 ord=12
 n7 y=12 op=37 hid=-
 n8 y=10 op=98
 n9 y=13 op=98
 n10 y=10 op=98 ink=86,12,20,10
-n11 x=113 y=15 w=8 h=8 op=37 ord=10
-n12 x=124 y=12 w=30 h=15 op=37 txt=S ord=11 ink=124,13,30,11
+n11 x=113 y=15 w=8 h=8 op=37 ord=10 bg=ff0000ff
+n12 x=124 y=12 w=30 h=15 op=37 txt=S ord=11 ink=124,13,30,11 fg=ffffffff gl=["three"]
 k3
 n7 y=10 op=98
 n8 y=8 op=151
@@ -60,8 +60,8 @@ n9 y=11 op=190
 n10 op=190
 n11 y=12 op=151
 n12 y=8 op=151 ink=124,9,30,11
-n13 x=160 y=15 w=8 h=8 op=37 ord=13
-n14 x=171 y=12 w=23 h=15 op=37 txt=S ord=14 ink=171,13,23,11
+n13 x=160 y=15 w=8 h=8 op=37 ord=13 bg=ff0000ff
+n14 x=171 y=12 w=23 h=15 op=37 txt=S ord=14 ink=171,13,23,11 fg=ffffffff gl=["four"]
 k5
 n6 y=10 op=98
 n7 op=190
