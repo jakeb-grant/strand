@@ -1,0 +1,38 @@
+id     = "roll-at-rest"
+about  = """decisions.md roll-preview: a bar at rest paints the scene Renderer::update
+flattened (a preview), and the driver runs update between a change and its frame
+as the shell's text waker does. A `roll: true` number there changes twice (the
+second mid-roll), and a box with `shape:` changes its shape. Each rolls or morphs
+for a few frames, which the reference holds as painted ticks; before the fix
+neither was remembered by any painted frame, so each change showed at once in a
+single frame and nothing after."""
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state n = "41"
+state loading = false
+bar Top {
+  height: 30
+  bg: #000000
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: lead; width: 16; height: 12; bg: #5c6370 }
+    text n { id: num; color: #ffffff; roll: true }
+    box { id: shaped; width: 20; height: 20; bg: #c678dd; shape: cookie; when loading { shape: burst } }
+  }
+}
+
+=== steps
+rest
+mark roll
+set n "42"
+frames 2
+set n "43"
+rest max 120
+expect still #lead
+expect still #shaped
+mark morph
+set loading true
+rest max 120
+expect still #lead
+expect still #num
