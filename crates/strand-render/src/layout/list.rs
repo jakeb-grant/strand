@@ -675,7 +675,8 @@ pub(super) fn place_list(
             laid = (laid.0.min(y), laid.1.max(y + r.h));
             continue;
         }
-        let mut b = Build::new(tree, false, sizes);
+        let mut b = Build::new(tree, false, sizes, texts);
+        b.estimate = true;
         let Some(t) = b.node(row, &inh, false) else {
             continue;
         };

@@ -1,0 +1,38 @@
+id     = "bug24-flip-open-min"
+about  = """owner-testing.md bug 24, its first frame's two layout passes with a text
+that has a minimum width (decisions.md late-text-dip): Focus turns on, mounting
+`min_width: 8` text that shapes far wider beside the music bars. The frame lays
+the row out before the text is shaped (the text at its minimum width), then
+again once it is; the bars glide left once, on their level, from where they were
+drawn. Its mutant (eval/mutants/bug24-flip-open.patch) reverts the fix: the glide
+starts where the first pass put them, and the bars jump most of the way in one
+frame."""
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state dnd = false
+bar Top {
+  height: 30
+  split { width: 300; height: 30; pad: 0, 14
+    end { align: center
+      row { gap: 6; align: center; shrink: 0
+        box { id: bars; enter { opacity: 0; scale: 0.6 }
+          row { gap: 2; height: 12; align: end
+            for i in [0, 1, 2] key i { box { width: 4; height: 8 + i * 2; bg: #00ff00 } }
+          }
+        }
+        if dnd { text "WWWWWW" { id: focus; min_width: 8; shrink: 0; color: #ff00ff } }
+      }
+    }
+  }
+}
+
+=== steps
+rest                     # boot: the bars enter
+mark flip-open
+set dnd true
+rest max 120
+expect still #bars y
+expect moves #bars x
+expect visible #focus

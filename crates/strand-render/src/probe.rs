@@ -246,7 +246,8 @@ pub enum Hidden {
 pub enum TextDrawn {
     /// The layout shaped for its scale and box.
     Shaped,
-    /// No layout yet: nothing drawn, its box laid out by an estimate.
+    /// No layout yet: nothing drawn, its box laid out without it (a
+    /// list's row's by an estimate; decisions.md late-text-dip).
     Estimate,
     /// Another width's or scale's layout stands in while its own is
     /// shaped.

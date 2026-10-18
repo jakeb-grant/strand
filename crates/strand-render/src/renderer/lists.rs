@@ -491,6 +491,7 @@ impl Renderer {
                 let info = TextInfo {
                     shaped: layouts,
                     scale,
+                    estimate: false,
                 };
                 let Some(boxes) = self
                     .surfaces

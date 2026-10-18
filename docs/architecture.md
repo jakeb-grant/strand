@@ -1879,7 +1879,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   until the pointer scrolls it, and each layout pass that changes the
   list's view places it again); a `list` lays out only the rows in
   view. Text is
-  measured from delivered layouts (estimated until the first arrives).
+  measured from delivered layouts; until the first arrives it takes no
+  room of its own (a list's row's is estimated; decisions.md
+  late-text-dip).
 - **Animation** (`anim/`, on the render thread): the render thread owns
   every spring. A prop of `ANIMATED` (`x`, `y`, `opacity`, `scale`,
   `rotate`, `bg`, `color`, `border`, `shadow`, `radius`, `value`,

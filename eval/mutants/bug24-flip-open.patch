@@ -1,13 +1,26 @@
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index c436ff88..d2200098 100644
+index 61d87577..1ee2375e 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
-@@ -603,8 +603,6 @@ impl Renderer {
+@@ -603,21 +603,6 @@ impl Renderer {
              }
          }
          total.clip(bounds);
--        // What this frame laid out is what the surface shows now.
--        s.unpainted.clear();
+-        // What this frame laid out is what the surface shows now, but
+-        // for what it drew nothing of (late-text-dip): a text still on
+-        // its way, and a box laid out empty (one holding only such text,
+-        // which takes no room). Neither has a place it was drawn to
+-        // glide from when the text arrives and lays them out whole.
+-        if !s.unpainted.is_empty() {
+-            let shaping = super::text::still_shaping(&self.texts, &s.wanted);
+-            let boxes = s.boxes.as_ref();
+-            s.unpainted.retain(|n| {
+-                shaping.contains(n)
+-                    || boxes
+-                        .and_then(|b| b.rects.get(n))
+-                        .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0)
+-            });
+-        }
          if total.is_empty() {
              // Nothing drawn: no frame, so nothing enters the history and
              // the caller does not commit (see `Painter::paint`).
@@ -100,10 +113,10 @@ index 41820131..495cbf4c 100644
                  if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
                      anim.glide(*c, [adj.0, adj.1], curve);
 diff --git a/crates/strand-render/src/renderer/mod.rs b/crates/strand-render/src/renderer/mod.rs
-index 58452a14..12d78f32 100644
+index 5f51e737..e6edf04b 100644
 --- a/crates/strand-render/src/renderer/mod.rs
 +++ b/crates/strand-render/src/renderer/mod.rs
-@@ -207,21 +207,6 @@ struct SurfaceState {
+@@ -208,25 +208,6 @@ struct SurfaceState {
      /// (a token swap).
      flip: HashSet<NodeId>,
      flip_all: bool,
@@ -111,16 +124,20 @@ index 58452a14..12d78f32 100644
 -    /// change's FLIP (and `flip_all`), kept while text that change
 -    /// mounted is still being shaped: a layout pass that a text's
 -    /// arrival causes glides what it moves in them from where it was
--    /// drawn too, so a box laid out by an estimate (a ligature's name
--    /// wrapped into ten lines) and then by the shaped size does not
--    /// carry the estimate's offset into its glide. Cleared once every
+-    /// drawn too, so a box laid out without the text (or, before
+-    /// late-text-dip, by its estimate: a ligature's name wrapped into ten
+-    /// lines) and then by the shaped size does not carry that pass's
+-    /// offset into its glide. Cleared once every
 -    /// text on the surface is shaped.
 -    flip_open: Option<(HashSet<NodeId>, bool)>,
 -    /// A text layout for it arrived since its last layout pass.
 -    text_arrived: bool,
 -    /// Nodes first laid out since it last painted, while `flip_open`:
 -    /// never drawn, so a later pass's glide does not start them where
--    /// an earlier pass of the same frame put them.
+-    /// an earlier pass of the same frame put them. (late-text-dip) A
+-    /// paint keeps those it drew nothing of (a text still being shaped,
+-    /// a box laid out empty), so the frame its text arrives in does not
+-    /// glide them from there either.
 -    unpainted: HashSet<NodeId>,
      /// Presentation time of the last frame it painted.
      painted_time: Option<Duration>,
@@ -140,10 +157,44 @@ index 6ebdcebb..54af91b2 100644
                  overhang: self
                      .specs
 diff --git a/crates/strand-render/src/renderer/text.rs b/crates/strand-render/src/renderer/text.rs
-index a49b0d2e..66dd74bf 100644
+index 3a635b2e..66dd74bf 100644
 --- a/crates/strand-render/src/renderer/text.rs
 +++ b/crates/strand-render/src/renderer/text.rs
-@@ -344,7 +344,6 @@ impl Renderer {
+@@ -66,33 +66,6 @@ impl TextSlot {
+     }
+ }
+ 
+-/// (late-text-dip) The nodes of `wanted` whose text has no unbounded
+-/// layout at any scale and is being shaped: a frame draws nothing of
+-/// them, and layout gives them no room of their own.
+-pub(super) fn still_shaping(
+-    texts: &HashMap<TextSlot, TextState>,
+-    wanted: &[TextSlot],
+-) -> HashSet<NodeId> {
+-    let mut out: HashSet<NodeId> = wanted
+-        .iter()
+-        .filter(|s| s.part == 0 && s.width.is_none())
+-        .filter(|s| {
+-            texts
+-                .get(s)
+-                .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
+-        })
+-        .map(|s| s.node)
+-        .collect();
+-    if !out.is_empty() {
+-        for (slot, t) in texts {
+-            if slot.part == 0 && slot.width.is_none() && t.layout.is_some() {
+-                out.remove(&slot.node);
+-            }
+-        }
+-    }
+-    out
+-}
+-
+ #[derive(Debug, Default)]
+ pub(super) struct TextState {
+     /// The layout being drawn (the last one delivered).
+@@ -371,7 +344,6 @@ impl Renderer {
          for s in self.surfaces.values_mut() {
              if Some(s.root) == root {
                  s.mark_layout();

@@ -747,6 +747,7 @@ fn every_committed_scenario_parses() {
     for want in [
         "bug24-flip-open",
         "bug24-flip-open-late1",
+        "bug24-flip-open-min",
         "bug25-hidden-text",
     ] {
         assert!(ids.iter().any(|i| i == want), "{want} missing: {ids:?}");

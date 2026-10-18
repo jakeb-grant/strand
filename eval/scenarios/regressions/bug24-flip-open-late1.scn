@@ -3,17 +3,13 @@ about  = """bug24-flip-open with the text one frame late: `text late 1 via waker
 is a text worker slower than the frame's waits (NEW_TEXT_WAIT and ESTIMATE_WAIT,
 crates/strand-render/src/renderer/mod.rs: a font's first load), answering after
 the frame that asked, then the runtime's text_ready (Renderer::update) before the
-next frame. That frame is laid out by the text's estimate (ten lines in its
-14 px), so the bars' layout drops 9 px for one frame; they start gliding there
-and turn back when the shaped text arrives, from where they were drawn. Their
-motion follows the layouts drawn (envelope) and settles; they leave their level
-by up to 3 px, which `expect still #bars y` records as a known failure.
-
-Not a mutant proof: under eval/mutants/bug24-flip-open.patch the bars go to y 6
-on the frame the text arrives (the glide carried across the new layout), inside
-the envelope of the layouts drawn (9 to 18, give 3.15). bug24-flip-open is the
-proof (docs/decisions.md eval-sandbox)."""
-expect_fail = { expect = "a text later than the frame's waits is laid out by its estimate for a frame (renderer/mod.rs ESTIMATE_WAIT accepts it), and the bars dip up to 3 px off their level and back: the owner's call (eval-sandbox finding)" }
+next frame. That frame is laid out with the text taking no room of its own
+(docs/decisions.md late-text-dip): its fixed 14 px width, no height. The bars
+glide left once from the frame that mounts it, on their level, and the glyph
+appears where it is shaped. Before late-text-dip the frame was laid out by the
+text's estimate (lines wrapped in its 14 px): the bars' layout dropped 9 px for
+that frame and they dipped up to 3 px off their level and back
+(crates/strand-render/src/renderer/tests.rs::a_late_text_moves_its_siblings_once)."""
 screen = { width = 300, scale = 1.0 }
 hz     = 60
 

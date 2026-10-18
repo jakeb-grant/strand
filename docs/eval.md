@@ -220,8 +220,9 @@ recorded, never executed.
 Texts no rule names are shaped inline, as if nothing held them:
 
 - `text hold` keeps matching texts back until a `text release`.
-- `text late N` holds each one for N ticks after the first frame drew its
-  estimate.
+- `text late N` holds each one for N ticks after the first frame drew it
+  unshaped (laid out with no room of its own, a list's row's by its
+  estimate; decisions.md late-text-dip).
 
 A release `via paint` delivers just before the next paint. A release `via
 waker` delivers between frames and runs `Renderer::update`, as the

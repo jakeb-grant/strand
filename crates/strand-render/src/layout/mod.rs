@@ -25,8 +25,11 @@
 //! - `spacer`: grows to take the space left.
 //!
 //! Text is measured from its delivered layouts (see [`TextSizes`]): never
-//! blocking, a text not shaped yet is estimated from its length, and the
-//! renderer lays out again when the layout arrives.
+//! blocking, a text not shaped yet takes no room of its own (nor the gap
+//! beside it, where its box is nothing on its row's axis; in a list's
+//! rows, which no frame waits for, and when a surface is sized, it is
+//! estimated from its length), and the renderer lays out again when the
+//! layout arrives.
 
 use std::collections::{HashMap, HashSet};
 
@@ -120,6 +123,10 @@ enum Ctx {
     Text {
         node: NodeId,
         font: f32,
+        /// (late-text-dip) Not shaped yet, it is measured by an estimate
+        /// of its length (a list row's text, which no frame waits for;
+        /// a surface's size) rather than as nothing.
+        estimated: bool,
         chars: usize,
         /// Characters in its longest word: its min-content width, as a
         /// share of its natural width.
@@ -176,6 +183,14 @@ struct Build<'a> {
     vertical_split: bool,
     /// Sizes springs (and exit poses) force on nodes this pass.
     sizes: &'a SizeMap,
+    /// Delivered text layouts: a text with none takes no room (and,
+    /// nothing on its row's axis, folds the gap beside it).
+    texts: &'a dyn TextSizes,
+    /// Its texts are measured by an estimate until shaped
+    /// (`Ctx::Text::estimated`), not as nothing: a list's row, which no
+    /// frame waits for, and a pass that sizes a surface
+    /// (`TextSizes::estimates`).
+    estimate: bool,
     /// For the child [`Build::node`] is about to build: its parent's
     /// main axis (0 width, 1 height) and the margins added before and
     /// after it there, folding the gap next to a collapsing sibling.
@@ -386,7 +401,7 @@ pub(crate) fn layout(
         surface.get(Prop::Edge),
         Some(PropValue::Keyword(k)) if k == "left" || k == "right"
     );
-    let mut b = Build::new(tree, vertical_split, sizes);
+    let mut b = Build::new(tree, vertical_split, sizes, texts);
     let Some(t) = b.node(node, &inh, true) else {
         return out;
     };
@@ -518,7 +533,12 @@ pub(crate) fn layout(
 }
 
 impl<'a> Build<'a> {
-    fn new(tree: &'a SceneTree, vertical_split: bool, sizes: &'a SizeMap) -> Self {
+    fn new(
+        tree: &'a SceneTree,
+        vertical_split: bool,
+        sizes: &'a SizeMap,
+        texts: &'a dyn TextSizes,
+    ) -> Self {
         // Rounded in `read_back`, from absolute positions: taffy rounds
         // each location relative to its parent, so a box under two
         // half-pixel offsets (the `end` of a `split` whose centre is an odd
@@ -528,6 +548,8 @@ impl<'a> Build<'a> {
         taffy.disable_rounding();
         Build {
             sizes,
+            texts,
+            estimate: texts.estimates(),
             fold: None,
             tree,
             taffy,

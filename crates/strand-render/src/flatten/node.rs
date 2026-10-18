@@ -209,6 +209,9 @@ impl<'a> Flattener<'a> {
             .clamp(0.0, 1.0)
         };
         let written_opacity = opacity_of(&props);
+        if self.anim.enter_starts(node.id) && self.late_text_under(node) {
+            self.anim.hold_enter(node.id);
+        }
         self.anim
             .paint(node, &mut props, &scope, inherited, Some(laid), parent);
         let sprung = offsets(&props);
@@ -1714,13 +1717,20 @@ impl<'a> Flattener<'a> {
                 }
             }
         } else {
-            // Clipped to nothing (collapsed to `height: 0`, or scrolled
-            // out of its clip): its subtree is not visited, but layout
-            // still places it, so its texts are asked for as a hidden
-            // node's are, and as a visited text out of view is
-            // (exit-height0).
-            let (font, weight) = (child_inh.font.clone(), child_inh.weight);
-            self.hidden_texts(node, font.as_ref(), weight, &child_inh.tokens);
+            // Clipped to nothing (a box its content has not sized yet, or
+            // one collapsed to `height: 0` or scrolled out of its clip):
+            // its subtree is not visited, but layout still places what it
+            // holds, and a text with no layout takes no room there, so its
+            // texts are asked for as a hidden node's are, and as a visited
+            // text out of view is. Else a box sized by its text alone would
+            // never show it, and a collapsing exit's texts would be pruned
+            // and placed by their estimates (exit-height0, late-text-dip).
+            self.hidden_texts(
+                node,
+                child_inh.font.as_ref(),
+                child_inh.weight,
+                &child_inh.tokens,
+            );
         }
         if let Some((at, distance, colors)) = goo_at {
             self.goo(node, at, distance, &colors, (frame, phys), inh.clip);
@@ -2089,11 +2099,44 @@ impl<'a> Flattener<'a> {
         )
     }
 
+    /// (late-text-dip) True if `node` or a node laid out under it is a
+    /// text (or a button's label) with something to show and no layout
+    /// at any scale or width yet: it is drawn as nothing and takes no
+    /// room until its layout arrives. Only a text written as text counts
+    /// (one a token gives is left out: it may resolve to nothing, which
+    /// never gets a layout).
+    fn late_text_under(&self, node: &Node) -> bool {
+        let mut work = vec![node.id];
+        while let Some(n) = work.pop() {
+            let Some(at) = self.tree.get(n) else { continue };
+            if n != node.id
+                && (crate::layout::out_of_flow(at.kind) || !self.boxes.rects.contains_key(&n))
+            {
+                continue;
+            }
+            if matches!(at.kind, NodeKind::Text | NodeKind::Button)
+                && matches!(at.get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty())
+                && pick(
+                    self.layouts.get(&n).map_or(&[], Vec::as_slice),
+                    self.scale,
+                    None,
+                )
+                .is_none()
+            {
+                return true;
+            }
+            work.extend(at.children.iter().copied());
+        }
+        false
+    }
+
     /// (owner-testing.md bug 25) The texts under `node`, which is drawn
     /// hidden (`opacity` or `scale` 0, as an `enter` pose starts) or
-    /// clips it to nothing (exit-height0): its subtree is not visited, but layout still places it, and a text
-    /// with no layout is placed by its estimate (a ligature's name
-    /// wrapped into lines). So their unbounded layouts are asked for
+    /// clips its children to nothing (exit-height0): its subtree is not
+    /// visited, but layout still places it, and a text with no layout
+    /// takes no room there until it arrives (late-text-dip; before, it
+    /// was placed by its estimate, a ligature's name wrapped into lines).
+    /// So their unbounded layouts are asked for
     /// and waited on here as when they are drawn, with no other part of
     /// the visit (no item, clock, hit or animation state): only what
     /// the text's spec reads, its props in its token scope and the

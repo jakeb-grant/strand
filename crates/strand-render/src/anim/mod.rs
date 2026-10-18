@@ -195,6 +195,11 @@ pub(crate) struct Animator {
     plays: keyframes::Plays,
     /// (M4) Children waiting for their turn to enter ([`stagger`]).
     staggers: stagger::Staggers,
+    /// (late-text-dip) Entering nodes held at their pose while text
+    /// under them is on its way: the frame each was first held.
+    text_holds: HashMap<NodeId, Duration>,
+    /// The ones held on the frame being drawn ([`Animator::hold_enter`]).
+    text_held: HashSet<NodeId>,
     /// (M4) Pointer parallax and tilt (`crate::effects::lean`).
     leans: crate::effects::lean::Leans,
     /// (M4) Transition masks in flight (`crate::effects::transition`).
@@ -721,6 +726,27 @@ impl Animator {
         }
     }
 
+    /// (late-text-dip) True if `id`'s enter pose starts when it is next
+    /// drawn (it is not exiting).
+    pub(crate) fn enter_starts(&self, id: NodeId) -> bool {
+        self.enter.contains(&id) && !self.exits.contains_key(&id)
+    }
+
+    /// (late-text-dip) Text under entering `id` has not arrived: its
+    /// enter holds at its pose on the frame being drawn, so it plays
+    /// from the first frame its text is drawn in rather than showing up
+    /// partway through it. A hold lasts at most
+    /// [`FIRST_FRAME_TEXT_WAIT`](crate::renderer::FIRST_FRAME_TEXT_WAIT) from its
+    /// first frame, as a new surface's first frame waits for its text,
+    /// so text that never comes (shaping that failed) holds nothing for
+    /// long.
+    pub(crate) fn hold_enter(&mut self, id: NodeId) {
+        let since = *self.text_holds.entry(id).or_insert(self.time);
+        if self.time < since.saturating_add(crate::renderer::FIRST_FRAME_TEXT_WAIT) {
+            self.text_held.insert(id);
+        }
+    }
+
     /// `id` plays its exit pose.
     pub fn exit(&mut self, id: NodeId, kind: ExitKind) {
         self.enter.remove(&id);
@@ -809,6 +835,7 @@ impl Animator {
         self.entered.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
+        self.text_holds.remove(&id);
         self.exits.remove(&id);
         self.exit_started.remove(&id);
     }
@@ -820,7 +847,13 @@ impl Animator {
     /// children waiting for their turn (a list's rows past its viewport,
     /// numbered with the rows in view) and image swaps mid-wipe.
     pub fn drop_undrawn_enters(&mut self, mut under: impl FnMut(NodeId) -> bool) {
-        self.enter.retain(|id| !under(*id));
+        // (late-text-dip) One drawn held at its pose for its text stays
+        // entering.
+        let (drawn, holds) = (&self.drawn, &self.text_holds);
+        self.enter
+            .retain(|id| drawn.contains(id) && holds.contains_key(id) || !under(*id));
+        let enter = &self.enter;
+        self.text_holds.retain(|id, _| enter.contains(id));
         let drawn = &self.drawn;
         self.staggers.retain(|id| drawn.contains(&id) || !under(id));
         self.image_swaps
@@ -894,6 +927,7 @@ impl Animator {
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
+        self.text_holds.retain(|id, _| keep(*id));
         self.exits.retain(|id, _| keep(*id));
         let exits = &self.exits;
         self.exit_started.retain(|id, _| exits.contains_key(id));
@@ -1100,6 +1134,7 @@ impl Animator {
             parent: (parent.w, parent.h),
         };
         let id = node.id;
+        let text_held = self.text_held.remove(&id);
         let exiting = self.exits.get(&id).copied();
         // Drawn this frame: its motions (an enter pose that starts now
         // included) survive `finish_undrawn`.
@@ -1142,8 +1177,13 @@ impl Animator {
                 .collect()
         };
         let chosen = self.poses.get(&id);
-        // A staggered child waiting for its turn holds at its pose.
-        if entering && exiting.is_none() && self.staggers.held(id, self.time) {
+        // A staggered child waiting for its turn holds at its pose; so
+        // does one whose text is on its way (late-text-dip), entering
+        // still.
+        if entering && exiting.is_none() && text_held {
+            self.enter.insert(id);
+        }
+        if entering && exiting.is_none() && (text_held || self.staggers.held(id, self.time)) {
             for (p, v) in chosen
                 .or(node.get(Prop::Enter))
                 .map(resolve)
@@ -1166,6 +1206,7 @@ impl Animator {
             .unwrap_or_default();
         if entering && exiting.is_none() {
             self.poses.remove(&id);
+            self.text_holds.remove(&id);
             #[cfg(feature = "eval-hooks")]
             self.entered.insert(id);
         }

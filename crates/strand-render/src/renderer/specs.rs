@@ -395,9 +395,12 @@ impl Renderer {
                         (true, true) => (spec.width, along),
                         _ => (spec.width, spec.height),
                     };
+                    // Sized by its texts' estimates until they are
+                    // shaped (`TextSizes::estimates`, late-text-dip).
                     let info = TextInfo {
                         shaped: layouts,
                         scale,
+                        estimate: true,
                     };
                     let root_size = RootSize::Content {
                         width: w,

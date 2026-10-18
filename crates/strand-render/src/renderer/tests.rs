@@ -654,3 +654,376 @@ fn an_image_worker_that_cannot_start_is_an_error_not_inline_decoding() {
     let (images, err) = image_backend(&inline, |_| Err(std::io::Error::other("unused")));
     assert!(matches!(images, ImageBackend::Inline(_)) && err.is_none());
 }
+
+/// (late-text-dip) The owner's crown status row, reduced (as
+/// tests/morph.rs STATUS_ROW): a 300 × 30 bar whose `split` packs a row
+/// (gap 6, centred) to its end, holding a 16 × 12 green box. Returns the
+/// diff, the bar and the row.
+fn status_row() -> (SceneDiff, NodeId, NodeId) {
+    let n = |i| NodeId::new(i, 0);
+    let (root, split, end, row, bars) = (n(0), n(1), n(2), n(3), n(4));
+    let num = PropValue::Number;
+    let mut d = SceneDiff::new();
+    d.create(root, NodeKind::Bar, None, 0)
+        .set(root, Prop::Height, num(30.0))
+        .create(split, NodeKind::Split, Some(root), 0)
+        .set(split, Prop::Width, num(300.0))
+        .set(split, Prop::Height, num(30.0))
+        .create(end, NodeKind::End, Some(split), 0)
+        .set(end, Prop::Align, PropValue::Keyword("center".into()))
+        .create(row, NodeKind::Row, Some(end), 0)
+        .set(row, Prop::Gap, num(6.0))
+        .set(row, Prop::Align, PropValue::Keyword("center".into()))
+        .set(row, Prop::Shrink, num(0.0))
+        .create(bars, NodeKind::Box, Some(row), 0)
+        .set(bars, Prop::Width, num(16.0))
+        .set(bars, Prop::Height, num(12.0))
+        .set(
+            bars,
+            Prop::Bg,
+            PropValue::Color(Color::from_hex("#00ff00").unwrap()),
+        );
+    (d, root, row)
+}
+
+/// (late-text-dip) A text "iiii" in magenta (narrow letters: its old
+/// estimate, 0.55 em a letter, is far from its shaped size), with
+/// `props`, mounted at the end of `parent`.
+fn late_text(d: &mut SceneDiff, id: NodeId, parent: NodeId, props: &[(Prop, PropValue)]) {
+    d.create(id, NodeKind::Text, Some(parent), u32::MAX)
+        .set(id, Prop::Text, PropValue::Text("iiii".into()))
+        .set(
+            id,
+            Prop::Color,
+            PropValue::Color(Color::from_hex("#ff00ff").unwrap()),
+        );
+    for (p, v) in props {
+        d.set(id, *p, v.clone());
+    }
+}
+
+/// A box of pixels: left, top, right, bottom (inclusive).
+type Px4 = (u32, u32, u32, u32);
+
+/// The box of the pixels close to `want` (straight RGB) with an alpha
+/// over `least` in a 300 × 30 premultiplied BGRA frame, and the largest
+/// alpha among them.
+fn pixels_of(px: &[u8], want: [u8; 3], least: u8) -> Option<(Px4, u8)> {
+    let close = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs() < 60;
+    let mut out: Option<(Px4, u8)> = None;
+    for y in 0..30u32 {
+        for x in 0..300u32 {
+            let i = ((y * 300 + x) * 4) as usize;
+            let (b, g, r, a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
+            if a <= least {
+                continue;
+            }
+            // Back to straight colour.
+            let s = |c: u8| (u32::from(c) * 255 / u32::from(a)).min(255) as u8;
+            if close(s(r), want[0]) && close(s(g), want[1]) && close(s(b), want[2]) {
+                out = Some(match out {
+                    None => ((x, y, x, y), a),
+                    Some(((x0, y0, x1, y1), m)) => {
+                        ((x0.min(x), y0.min(y), x1.max(x), y1.max(y)), m.max(a))
+                    }
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The box of the pixels close to `want`, faint edges left out.
+fn bbox_of(px: &[u8], want: [u8; 3]) -> Option<Px4> {
+    pixels_of(px, want, 40).map(|(b, _)| b)
+}
+
+/// `inner` lies inside `outer`.
+fn inside(inner: Px4, outer: Px4) -> bool {
+    inner.0 >= outer.0 && inner.1 >= outer.1 && inner.2 <= outer.2 && inner.3 <= outer.3
+}
+
+/// (late-text-dip) A renderer on the text worker that never waits for
+/// it, showing `diff` on a 300 × 30 bar, painted once at rest. Its
+/// frames are 60 Hz from `frame`.
+fn late_bar(diff: SceneDiff, root: NodeId) -> (Renderer, Vec<u8>, u32) {
+    let mut r = Renderer::new(worker());
+    r.set_first_frame_wait(Duration::ZERO);
+    r.set_new_text_wait(Duration::ZERO);
+    r.set_estimate_wait(Duration::ZERO);
+    r.set_busy_window(Duration::ZERO);
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(300, 30), Scale::ONE);
+    let mut px = vec![0u8; 300 * 30 * 4];
+    late_paint(&mut r, &mut px, 0);
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let mut k = 1;
+    while r.wants_frame(SurfaceId(1)) {
+        late_paint(&mut r, &mut px, k);
+        k += 1;
+        assert!(k < 200, "never settled");
+    }
+    (r, px, k)
+}
+
+fn late_paint(r: &mut Renderer, px: &mut [u8], k: u32) {
+    let at = Duration::from_secs(1) + Duration::from_micros(16_667 * u64::from(k));
+    let mut t = PaintTarget::new(px, Size::new(300, 30), 1200, Scale::ONE, 1)
+        .unwrap()
+        .at(at);
+    r.paint(SurfaceId(1), &mut t);
+}
+
+/// (late-text-dip) Applies `diff`, which mounts text, and paints its
+/// frames with the text later than the first: the worker's answer is
+/// taken before the renderer sees it (a worker slower than the frame's
+/// waits, as a font family's first load is) and delivered after that
+/// frame, as the runtime's `text_ready` would. Returns each frame's
+/// green and magenta boxes and the magenta's largest alpha, from that
+/// first frame to rest.
+fn mount_late(
+    r: &mut Renderer,
+    px: &mut [u8],
+    mut k: u32,
+    diff: SceneDiff,
+) -> Vec<(Option<Px4>, Option<Px4>, u8)> {
+    assert!(r.apply(diff).is_empty());
+    assert!(!r.pending.is_empty(), "the text is asked for");
+    let TextBackend::Worker(w) = &r.text else {
+        panic!("a worker");
+    };
+    let held = w
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .expect("the worker answers");
+    let mut seen = Vec::new();
+    let mut late = Some(held);
+    loop {
+        late_paint(r, px, k);
+        k += 1;
+        seen.push((
+            bbox_of(px, [0, 255, 0]),
+            bbox_of(px, [255, 0, 255]),
+            pixels_of(px, [255, 0, 255], 4).map_or(0, |(_, a)| a),
+        ));
+        if let Some(l) = late.take() {
+            r.deliver(l);
+            assert!(r.wait_for_text(Duration::from_secs(10)));
+        }
+        if !r.wants_frame(SurfaceId(1)) {
+            break;
+        }
+        assert!(seen.len() < 200, "never settled");
+    }
+    seen
+}
+
+/// (late-text-dip) Text mounted beside a box, with its layout later than
+/// the frame that mounts it, moves the box once and never off its level.
+/// That frame was laid out by the text's estimate (four narrow letters
+/// as lines wrapped in its 14 px): the row grew to three lines, the box's
+/// layout dropped 9 px for that frame and its glide dipped toward it and
+/// back (eval/scenarios/regressions/bug24-flip-open-late1.scn). Text with
+/// no layout takes no room of its own now: the box glides left on one
+/// level, and the text appears where it rests, never sliding in from
+/// where its box was before it was shaped.
+#[test]
+fn a_late_text_moves_its_siblings_once() {
+    let (d, root, row) = status_row();
+    let (mut r, mut px, k) = late_bar(d, root);
+    let rest = bbox_of(&px, [0, 255, 0]).expect("the box is drawn");
+    let mut d = SceneDiff::new();
+    let num = PropValue::Number;
+    late_text(
+        &mut d,
+        NodeId::new(5, 0),
+        row,
+        &[(Prop::Width, num(14.0)), (Prop::Shrink, num(0.0))],
+    );
+    let seen = mount_late(&mut r, &mut px, k, d);
+    let end = bbox_of(&px, [0, 255, 0]).expect("the box is drawn");
+    let glyph = bbox_of(&px, [255, 0, 255]).expect("the text is drawn");
+    assert!(end.0 < rest.0, "no room made: {rest:?} to {end:?}");
+    assert!(seen[0].2 == 0, "the first frame has no text: {seen:?}");
+    for (k, (b, m, _)) in seen.iter().enumerate() {
+        let b = b.unwrap_or_else(|| panic!("frame {k}: the box left the bar: {seen:?}"));
+        assert!(
+            (b.1, b.3) == (rest.1, rest.3),
+            "frame {k}: the box left its level: {seen:?}"
+        );
+        assert!(
+            b.0 + 3 >= end.0 && b.0 <= rest.0 + 3,
+            "frame {k}: the box went past its glide: {seen:?}"
+        );
+        if let Some(m) = m {
+            assert!(*m == glyph, "frame {k}: the text off its place: {seen:?}");
+        }
+    }
+}
+
+/// (late-text-dip) A late text whose box is nothing across until it is
+/// shaped (no `width`) takes no room, not even the row's gap beside it:
+/// on the frame laid out before it arrives the box stays where it was,
+/// then glides left once, on its level.
+#[test]
+fn a_late_text_takes_no_room_until_it_arrives() {
+    let (d, root, row) = status_row();
+    let (mut r, mut px, k) = late_bar(d, root);
+    let rest = bbox_of(&px, [0, 255, 0]).expect("the box is drawn");
+    let mut d = SceneDiff::new();
+    late_text(&mut d, NodeId::new(5, 0), row, &[]);
+    let seen = mount_late(&mut r, &mut px, k, d);
+    let end = bbox_of(&px, [0, 255, 0]).expect("the box is drawn");
+    assert!(end.0 < rest.0, "no room made: {rest:?} to {end:?}");
+    assert_eq!(
+        seen[0].0,
+        Some(rest),
+        "the box moved before the text arrived: {seen:?}"
+    );
+    for (k, (b, _, _)) in seen.iter().enumerate() {
+        let b = b.unwrap_or_else(|| panic!("frame {k}: the box left the bar: {seen:?}"));
+        assert!(
+            (b.1, b.3) == (rest.1, rest.3) && b.0 + 3 >= end.0 && b.0 <= rest.0,
+            "frame {k}: the box left its glide: {seen:?}"
+        );
+    }
+}
+
+/// (late-text-dip) A row holding only a late text is laid out empty
+/// until the text arrives: drawn as nothing there, it has no place to
+/// glide from, and the text appears where it rests (it slid down 7 px
+/// from the empty row's centre). An `enter` pose on it holds until its
+/// text is drawn: the fade plays from its start then, not from a frame
+/// that showed nothing.
+#[test]
+fn a_box_around_a_late_text_shows_it_whole() {
+    for enter in [false, true] {
+        let (d, root, row) = status_row();
+        let (mut r, mut px, k) = late_bar(d, root);
+        let (wrap, txt) = (NodeId::new(5, 0), NodeId::new(6, 0));
+        let mut d = SceneDiff::new();
+        d.create(wrap, NodeKind::Row, Some(row), u32::MAX)
+            .set(wrap, Prop::Gap, PropValue::Number(3.0))
+            .set(wrap, Prop::Align, PropValue::Keyword("center".into()));
+        if enter {
+            d.set(
+                wrap,
+                Prop::Enter,
+                PropValue::Pose(vec![(Prop::Opacity, PropValue::Number(0.0))]),
+            );
+        }
+        late_text(&mut d, txt, wrap, &[]);
+        let seen = mount_late(&mut r, &mut px, k, d);
+        let (glyph, full) = pixels_of(&px, [255, 0, 255], 40).expect("the text is drawn");
+        // Faint edges fade below the cut while it fades in: what shows
+        // lies inside where it rests.
+        for (k, (_, m, _)) in seen.iter().enumerate() {
+            if let Some(m) = m {
+                assert!(
+                    inside(*m, glyph),
+                    "enter {enter}, frame {k}: text off its place: {seen:?}"
+                );
+            }
+        }
+        if enter {
+            // The fade's first frame shows a sixth of the way at 60 Hz;
+            // one that started on the frame before, past a third.
+            let first = seen
+                .iter()
+                .find(|(_, _, a)| *a > 0)
+                .map_or(0, |(_, _, a)| *a);
+            assert!(
+                first > 0 && f32::from(first) < 0.25 * f32::from(full),
+                "the text showed {first} of {full} on its first frame: {seen:?}"
+            );
+        }
+    }
+}
+
+/// (late-text-dip) A box that clips its content, holding only text, is
+/// laid out empty until the text is shaped, so it clips everything
+/// under it: its text is still asked for (as a hidden node's is), or it
+/// would never be shaped and the box never show it.
+#[test]
+fn text_in_a_box_clipped_to_nothing_is_shaped() {
+    let (d, root, row) = status_row();
+    let mut r = renderer();
+    assert!(r.apply(d).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(300, 30), Scale::ONE);
+    let mut px = vec![0u8; 300 * 30 * 4];
+    late_paint(&mut r, &mut px, 0);
+    let (clip, txt) = (NodeId::new(5, 0), NodeId::new(6, 0));
+    let mut d = SceneDiff::new();
+    d.create(clip, NodeKind::Row, Some(row), u32::MAX)
+        .set(clip, Prop::Clip, PropValue::Bool(true))
+        .set(
+            clip,
+            Prop::Enter,
+            PropValue::Pose(vec![(Prop::Opacity, PropValue::Number(0.0))]),
+        );
+    late_text(&mut d, txt, clip, &[]);
+    // With motion reduced the pose is not played: the box is drawn, not
+    // hidden (which asks for its texts), from its first frame.
+    r.set_reduced_motion(true);
+    assert!(r.apply(d).is_empty());
+    let mut k = 1;
+    while r.wants_frame(SurfaceId(1)) {
+        late_paint(&mut r, &mut px, k);
+        k += 1;
+        assert!(k < 200, "never settled");
+    }
+    assert!(
+        bbox_of(&px, [255, 0, 255]).is_some(),
+        "the clipped box shows its text"
+    );
+}
+
+/// (late-text-dip) A content-sized surface (a popup) opened before its
+/// text is shaped is sized by the text's estimate, not as if the text
+/// took no room: its size is asked of the compositor, and a popup
+/// resized after it is shown is made again (dropping its keyboard grab
+/// where `xdg_wm_base` cannot reposition it).
+#[test]
+fn a_popup_opened_before_its_text_is_shaped_is_sized_by_its_estimate() {
+    let (root, clock, popup, card, txt) = (
+        NodeId::new(0, 0),
+        NodeId::new(1, 0),
+        NodeId::new(2, 0),
+        NodeId::new(3, 0),
+        NodeId::new(4, 0),
+    );
+    let num = PropValue::Number;
+    let mut d = SceneDiff::new();
+    d.create(root, NodeKind::Bar, None, 0)
+        .set(root, Prop::Height, num(30.0))
+        .create(clock, NodeKind::Box, Some(root), 0)
+        .set(clock, Prop::Width, num(40.0))
+        .set(clock, Prop::Height, num(20.0))
+        .create(popup, NodeKind::Popup, Some(clock), 0)
+        .set(popup, Prop::Open, PropValue::Bool(false))
+        .create(card, NodeKind::Col, Some(popup), 0)
+        .set(card, Prop::Pad, num(12.0))
+        .create(txt, NodeKind::Text, Some(card), 0)
+        .set(txt, Prop::Text, PropValue::Text("October 2026".into()));
+    let (mut r, _, _) = late_bar(d, root);
+    r.take_surface_changes();
+    let mut d = SceneDiff::new();
+    d.set(popup, Prop::Open, PropValue::Bool(true));
+    r.apply(d);
+    assert!(!r.pending.is_empty(), "the text is asked for, not shaped");
+    let first = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(n, c)| match c {
+            SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } if n == popup => {
+                Some(s)
+            }
+            _ => None,
+        })
+        .expect("the popup's spec");
+    // Twelve characters of the default 13 px font at 0.55 em, and the pad.
+    let w = first.width.expect("content-sized");
+    assert!(w > 24.0 + 60.0, "sized as if its text took no room: {w}");
+}

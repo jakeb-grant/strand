@@ -2,9 +2,12 @@ id     = "bug25-hidden-text"
 about  = """owner-testing.md bug 25 (crates/strand-render/tests/morph.rs FOCUS_OFF,
 with ids): Focus turns off, and the unread count re-enters with
 enter { opacity: 0; x: -6 }, its text far from its estimate. Text under a node
-drawn hidden is shaped before layout places it, so the bars and the last box
-stay on their level. Its mutant (eval/mutants/bug25-hidden-text.patch) reverts
-the fix: the bars and the last box drop and come back."""
+drawn hidden is shaped before layout places it, so the row keeps its height and
+the bars and the last box stay on their level. Its mutant
+(eval/mutants/bug25-hidden-text.patch) reverts the fix: the text is laid out
+unshaped for a frame (before late-text-dip, by its estimate, and the bars and the
+last box dropped and came back; since, with no height, and the row shrinks and
+grows back)."""
 screen = { width = 300, scale = 1.0 }
 hz     = 60
 
@@ -14,7 +17,7 @@ bar Top {
   height: 30
   split { width: 300; height: 30; pad: 0, 14
     end { align: center
-      row { gap: 6; align: center; shrink: 0
+      row { id: status; gap: 6; align: center; shrink: 0
         box { id: bars; width: 15; height: 12; bg: #00ff00 }
         if dnd { box { id: focus; width: 14; height: 14; bg: #ff00ff } }
         if !dnd {

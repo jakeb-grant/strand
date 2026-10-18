@@ -68,15 +68,16 @@ pub const NEW_TEXT_WAIT: Duration = Duration::from_millis(16);
 
 /// How long laying out a frame waits for the text worker to shape a
 /// text that has no layout at any scale or width yet (a node just
-/// added), before laying it out by an estimate of its width (its length
-/// in ems) instead: about a third of a refresh at 60 Hz. Shaping a label
-/// takes well under a millisecond, so the frame is laid out with its
-/// shaped size, and nothing beside it moves once to the estimate and
-/// again to the real size a frame later (an icon font's ligature,
-/// `battery_5_bar`, is one glyph but thirteen characters;
-/// owner-testing.md bug 14). Only the worker is waited for, never
-/// logic; a worker slower than this (a font family's first load) costs
-/// the frame no more.
+/// added), before laying it out without it instead (it takes no room of
+/// its own until it arrives; a list's row's by an estimate of its width,
+/// its length in ems): about a third of a refresh at 60 Hz. Shaping a
+/// label takes well under a millisecond, so the frame is laid out with
+/// its shaped size, and nothing beside it moves a frame later (an icon
+/// font's ligature, `battery_5_bar`, is one glyph but thirteen
+/// characters; owner-testing.md bug 14). Only the worker is waited for,
+/// never logic; a worker slower than this (a font family's first load)
+/// costs the frame no more, and what is beside the text moves once, to
+/// where it ends, when it arrives (decisions.md late-text-dip).
 pub const ESTIMATE_WAIT: Duration = Duration::from_millis(5);
 
 /// A surface that painted a frame this recently is in motion (an
@@ -211,16 +212,20 @@ struct SurfaceState {
     /// change's FLIP (and `flip_all`), kept while text that change
     /// mounted is still being shaped: a layout pass that a text's
     /// arrival causes glides what it moves in them from where it was
-    /// drawn too, so a box laid out by an estimate (a ligature's name
-    /// wrapped into ten lines) and then by the shaped size does not
-    /// carry the estimate's offset into its glide. Cleared once every
+    /// drawn too, so a box laid out without the text (or, before
+    /// late-text-dip, by its estimate: a ligature's name wrapped into ten
+    /// lines) and then by the shaped size does not carry that pass's
+    /// offset into its glide. Cleared once every
     /// text on the surface is shaped.
     flip_open: Option<(HashSet<NodeId>, bool)>,
     /// A text layout for it arrived since its last layout pass.
     text_arrived: bool,
     /// Nodes first laid out since it last painted, while `flip_open`:
     /// never drawn, so a later pass's glide does not start them where
-    /// an earlier pass of the same frame put them.
+    /// an earlier pass of the same frame put them. (late-text-dip) A
+    /// paint keeps those it drew nothing of (a text still being shaped,
+    /// a box laid out empty), so the frame its text arrives in does not
+    /// glide them from there either.
     unpainted: HashSet<NodeId>,
     /// Presentation time of the last frame it painted.
     painted_time: Option<Duration>,

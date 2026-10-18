@@ -66,6 +66,33 @@ impl TextSlot {
     }
 }
 
+/// (late-text-dip) The nodes of `wanted` whose text has no unbounded
+/// layout at any scale and is being shaped: a frame draws nothing of
+/// them, and layout gives them no room of their own.
+pub(super) fn still_shaping(
+    texts: &HashMap<TextSlot, TextState>,
+    wanted: &[TextSlot],
+) -> HashSet<NodeId> {
+    let mut out: HashSet<NodeId> = wanted
+        .iter()
+        .filter(|s| s.part == 0 && s.width.is_none())
+        .filter(|s| {
+            texts
+                .get(s)
+                .is_some_and(|t| t.layout.is_none() && t.requested.is_some())
+        })
+        .map(|s| s.node)
+        .collect();
+    if !out.is_empty() {
+        for (slot, t) in texts {
+            if slot.part == 0 && slot.width.is_none() && t.layout.is_some() {
+                out.remove(&slot.node);
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Default)]
 pub(super) struct TextState {
     /// The layout being drawn (the last one delivered).

@@ -1,11 +1,13 @@
 id     = "bug24-flip-open"
 about  = """owner-testing.md bug 24 (crates/strand-render/tests/morph.rs STATUS_ROW,
 with ids): Focus turns on, mounting a text whose estimate (narrow letters, as a
-ligature's name is one glyph) is far from its shaped size beside the music bars.
-The frame lays the row out by the estimate, then by the shaped text; the bars
-glide left once, on their level, from where they were drawn. Its mutant
-(eval/mutants/bug24-flip-open.patch) reverts the fix: the glide starts where the
-estimate's pass put them, and they drop out of the bar and fall back."""
+ligature's name is one glyph) is far from its shaped size beside the music bars;
+the bars glide left once, on their level, from where they were drawn. The fix
+glided them from where they were drawn after the frame's first pass laid the row
+out by the estimate (it wrapped into lines, and the bars fell); since
+late-text-dip (decisions.md) a text not shaped yet takes its width and no
+height, so that pass moves nothing here, and its mutant
+(eval/mutants/bug24-flip-open.patch) runs bug24-flip-open-min.scn instead."""
 screen = { width = 300, scale = 1.0 }
 hz     = 60
 

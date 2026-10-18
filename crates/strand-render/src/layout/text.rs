@@ -23,6 +23,17 @@ pub(crate) trait TextSizes {
         let _ = (node, part);
         None
     }
+    /// (late-text-dip) A text with no layout is measured by an estimate
+    /// of its length, not as taking no room: the pass that sizes a
+    /// content-sized surface (`Renderer::refresh_specs`). That size is
+    /// asked of the compositor, and changing it is a round trip that
+    /// remakes a popup (an `xdg_wm_base` too old to reposition one, which
+    /// drops its keyboard grab), so the guess closer to the shaped size
+    /// is the better one there; a surface's first frame waits for its
+    /// text (`FIRST_FRAME_TEXT_WAIT`), so its content is laid out shaped.
+    fn estimates(&self) -> bool {
+        false
+    }
 }
 
 /// A text leaf as measured: its node, font size, length and how it
@@ -30,6 +41,9 @@ pub(crate) trait TextSizes {
 pub(super) struct TextLeaf {
     pub(super) node: NodeId,
     pub(super) font: f32,
+    /// Measured by an estimate until shaped, not as nothing
+    /// (`Ctx::Text::estimated`).
+    pub(super) estimated: bool,
     pub(super) chars: usize,
     pub(super) word: usize,
     pub(super) shrinks: bool,
@@ -52,6 +66,7 @@ pub(super) fn measure_text(
     let TextLeaf {
         node,
         font,
+        estimated,
         chars,
         word,
         shrinks,
@@ -59,11 +74,32 @@ pub(super) fn measure_text(
         max_lines,
         ..
     } = *t;
-    let natural = texts.natural(node).unwrap_or_else(|| {
+    // (late-text-dip) Not shaped yet at any scale or width: its content
+    // takes no room until its layout arrives, and its box is what its
+    // props make it. A frame waits for new text (`ESTIMATE_WAIT`), so
+    // this reaches a drawn frame only when the text is later than that
+    // (a family's first load); a guess from its length could be off by
+    // any amount (a ligature's name is one glyph, wrapped into lines in
+    // a narrow box), and its siblings would move toward it and back.
+    // With none they move once, toward where they end, when it arrives.
+    // A list's rows are not waited for (`Renderer::await_unmeasured`):
+    // a row scrolling in is measured by the guess, which keeps the
+    // list's extent close to where its shaped rows put it. So is a
+    // surface's size (`TextSizes::estimates`).
+    let natural = match texts.natural(node) {
+        Some(n) => n,
         // Not shaped yet: a guess from its length, replaced when the
         // layout arrives.
-        LogicalSize::new(chars as f32 * font * 0.55, (font * 1.2).ceil())
-    });
+        None if estimated => LogicalSize::new(chars as f32 * font * 0.55, (font * 1.2).ceil()),
+        None => {
+            return taffy::Size {
+                width: known
+                    .width
+                    .unwrap_or_else(|| t.min_w.map_or(0.0, |m| m.max(0.0))),
+                height: known.height.unwrap_or(0.0),
+            };
+        }
+    };
     // Whole pixels up, so rounding the layout never cuts a text that fits.
     let natural = LogicalSize::new(natural.w.ceil(), natural.h.ceil());
     // Wrapping text's smallest width is its longest word (as in CSS),
@@ -134,6 +170,7 @@ pub(super) fn measure_leaf(
             Some(Ctx::Text {
                 node,
                 font,
+                estimated,
                 chars,
                 word,
                 shrinks,
@@ -150,6 +187,7 @@ pub(super) fn measure_leaf(
                 let leaf = TextLeaf {
                     node: *node,
                     font: *font,
+                    estimated: *estimated,
                     chars: *chars,
                     word: *word,
                     shrinks: *shrinks,

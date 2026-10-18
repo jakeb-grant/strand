@@ -19,6 +19,9 @@ use crate::tree::SceneTree;
 pub(super) struct TextInfo<'a> {
     pub(super) shaped: &'a HashMap<NodeId, Vec<Shaped>>,
     pub(super) scale: Scale,
+    /// Sizing a surface: text not shaped yet is estimated
+    /// (`TextSizes::estimates`).
+    pub(super) estimate: bool,
 }
 
 impl TextSizes for TextInfo<'_> {
@@ -32,6 +35,10 @@ impl TextSizes for TextInfo<'_> {
 
     fn part(&self, node: NodeId, part: u8) -> Option<strand_scene::LogicalSize> {
         crate::flatten::pick_part(self.shaped.get(&node)?, part, self.scale, None).map(|l| l.size)
+    }
+
+    fn estimates(&self) -> bool {
+        self.estimate
     }
 }
 
@@ -242,6 +249,7 @@ impl Renderer {
         let info = TextInfo {
             shaped: layouts,
             scale: s.scale,
+            estimate: false,
         };
         // Replaced below on every path: taken, not copied.
         let old = self.surfaces.get_mut(&id).and_then(|s| s.boxes.take());

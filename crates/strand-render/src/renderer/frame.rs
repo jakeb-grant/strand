@@ -603,8 +603,21 @@ impl Renderer {
             }
         }
         total.clip(bounds);
-        // What this frame laid out is what the surface shows now.
-        s.unpainted.clear();
+        // What this frame laid out is what the surface shows now, but
+        // for what it drew nothing of (late-text-dip): a text still on
+        // its way, and a box laid out empty (one holding only such text,
+        // which takes no room). Neither has a place it was drawn to
+        // glide from when the text arrives and lays them out whole.
+        if !s.unpainted.is_empty() {
+            let shaping = super::text::still_shaping(&self.texts, &s.wanted);
+            let boxes = s.boxes.as_ref();
+            s.unpainted.retain(|n| {
+                shaping.contains(n)
+                    || boxes
+                        .and_then(|b| b.rects.get(n))
+                        .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0)
+            });
+        }
         if total.is_empty() {
             // Nothing drawn: no frame, so nothing enters the history and
             // the caller does not commit (see `Painter::paint`).

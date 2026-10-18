@@ -9,8 +9,13 @@
 #   `check:#id:axis` (on that axis too).
 #
 # bug24-flip-open.patch: the reverse of ff92415c's crates/strand-render/src
-# hunks (flip-open; owner-testing.md bug 24), cut against this branch.
-# bug25-hidden-text.patch: the reverse of 2fab9622's node.rs hunks
-# (hidden-text; owner-testing.md bug 25), cut against this branch.
-bug24-flip-open.patch   regressions/bug24-flip-open.scn   bystander:#bars:y expect:#bars:y
-bug25-hidden-text.patch regressions/bug25-hidden-text.scn bystander:#bars:y bystander:#last:y expect:#bars:y expect:#last:y
+# hunks (flip-open; owner-testing.md bug 24), cut against this branch, with
+# late-text-dip's keeping of unpainted nodes (still_shaping) taken out too:
+# it extends that state. Since late-text-dip a text not shaped yet takes no
+# room, or only its width, so bug24-flip-open.scn's first pass moves nothing
+# and its mutant runs bug24-flip-open-min.scn, whose text has a minimum width.
+# bug25-hidden-text.patch: the reverse of 2fab9622's two hidden_texts calls
+# in node.rs (hidden-text; owner-testing.md bug 25), cut against this branch;
+# the function stays, late-text-dip calls it for a box clipped to nothing.
+bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
+bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h

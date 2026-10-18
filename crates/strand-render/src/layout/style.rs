@@ -189,6 +189,7 @@ impl<'a> Build<'a> {
                     Some(Ctx::Text {
                         node: node.id,
                         font,
+                        estimated: self.estimate,
                         chars: text,
                         word,
                         shrinks: ellipsis || max_lines.is_some(),
@@ -380,13 +381,16 @@ impl<'a> Build<'a> {
         // neighbour across that gap gives it up (a negative margin on the
         // collapsing node itself would not shrink an auto-sized parent:
         // an outer size never goes below zero).
+        // (late-text-dip) So does a text not shaped yet whose box is
+        // nothing on that axis: it takes no room until it arrives.
         let mut folds = vec![[0.0f32; 2]; count];
         if let Some(axis) = main.filter(|_| gap > 0.0 && count > 1) {
             for (i, (_, c)) in children.iter().enumerate() {
-                let Some(f) = self.sizes.get(&c.id) else {
-                    continue;
+                let v = match self.sizes.get(&c.id) {
+                    Some(f) if f.size[axis].is_some() => f.size[axis].filter(|_| f.collapse[axis]),
+                    _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
                 };
-                let Some(v) = f.size[axis].filter(|v| f.collapse[axis] && gap > *v) else {
+                let Some(v) = v.filter(|v| gap > *v) else {
                     continue;
                 };
                 if i + 1 < count {
@@ -431,6 +435,50 @@ impl<'a> Build<'a> {
         self.map.push((t, node.id));
         self.shadow(node, &get);
         Some(t)
+    }
+
+    /// (late-text-dip) True for a `text` with something to show that
+    /// is not shaped yet at any scale or width and whose box its props
+    /// leave as nothing on `axis` (0 across, 1 down): in flow, with no
+    /// size, smallest size, padding or grow there, and not estimated (a
+    /// list's row, a surface's size). It measures as nothing (`measure_text`), so it folds the gap
+    /// beside it as a slot collapsing to zero does, and its siblings
+    /// stay where they were until it arrives.
+    fn unshaped_nothing(&self, node: &Node, inh: &Inh<'a>, axis: usize) -> bool {
+        if node.kind != NodeKind::Text || self.estimate || self.texts.natural(node.id).is_some() {
+            return false;
+        }
+        let mut inh = inh.clone();
+        inherit(node, &mut inh);
+        let scope = TokenScope::new(&inh.tokens);
+        let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
+        if !matches!(get(Prop::Text).as_deref(), Some(PropValue::Text(t)) if !t.is_empty()) {
+            return false;
+        }
+        let font = inh.font.size;
+        let (len, least) = if axis == 0 {
+            (Prop::Width, Prop::MinWidth)
+        } else {
+            (Prop::Height, Prop::MinHeight)
+        };
+        let some = |l: Option<Len>| match l {
+            Some(Len::Px(v)) => v > 0.0,
+            Some(Len::Pct(p)) => p > 0.0,
+            Some(Len::Auto) | None => false,
+        };
+        let size = dim(get(len).as_deref(), font).or(dim(get(Prop::Size).as_deref(), font));
+        let pad = insets(get(Prop::Pad).as_deref()).unwrap_or_default();
+        let pad = if axis == 0 {
+            pad.left + pad.right
+        } else {
+            pad.top + pad.bottom
+        };
+        // An absolute one takes no gap anyway.
+        keyword(get(Prop::Place).as_deref()) != Some("absolute")
+            && !some(size)
+            && !some(dim(get(least).as_deref(), font))
+            && pad <= 0.0
+            && num(get(Prop::Grow).as_deref()).is_none_or(|g| g <= 0.0)
     }
 
     pub(super) fn shadow<V: AsRef<PropValue>>(
