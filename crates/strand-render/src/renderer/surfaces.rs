@@ -294,6 +294,8 @@ impl Renderer {
         {
             self.extras.placed.remove(&root);
             self.resolve_origins();
+            // Its morph boxes left the screen with its last frame.
+            self.anim.shared_hidden(root);
         }
         self.forget_fade(surface);
         self.extras.images.forget(surface);

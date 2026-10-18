@@ -330,6 +330,10 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
+    /// (shared-morph-on) The drawn nodes with a `morph` name and their
+    /// boxes, in paint order: where each name is on screen once a frame
+    /// paints this scene, flattened for it or reused.
+    pub(crate) morphs: Vec<crate::anim::MorphBox>,
     /// (M4) The passes of drawn `shader` nodes and bundled effects.
     #[cfg(feature = "gpu")]
     pub(crate) passes: Vec<crate::renderer::backend::PassWant>,

@@ -68,33 +68,52 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         "{}",
         show(&done)
     );
-    // Each effect does what it says: the motion it is named for shows.
-    // The jelly cell's drag is previewed by each pointer motion's wake
+    // Each effect does what it says: the motion it is named for shows,
+    // in each of the segments named (any frame when none is). The jelly
+    // cell's drag is previewed by each pointer motion's wake
     // (`Host::input`) and still squashes (docs/decisions.md jelly-drag).
-    let has = |name: &str, bit: strand_render::probe::Motions| {
+    // A shared morph goes both ways: the partner unmounting becomes the
+    // subject mounting (`on`, from a box painted only by scenes the
+    // frames reused: docs/decisions.md shared-morph-on), and back (`off`).
+    let has = |name: &str, bit: strand_render::probe::Motions, segments: &[&str]| {
         let d = done.iter().find(|d| d.cell.name == name).unwrap();
         let t = &d.entry.as_ref().unwrap().trace;
-        assert!(
+        let shows = |within: &dyn Fn(u32) -> bool| {
             t.frames
                 .iter()
+                .filter(|f| within(f.k))
                 .flat_map(|f| &f.n)
-                .any(|r| strand_render::probe::Motions(r.emot).contains(bit)),
-            "{name}: no {bit:?} in its trace"
-        );
+                .any(|r| strand_render::probe::Motions(r.emot).contains(bit))
+        };
+        if segments.is_empty() {
+            assert!(shows(&|_| true), "{name}: no {bit:?} in its trace");
+        }
+        for seg in segments {
+            let g = t
+                .segments
+                .iter()
+                .find(|g| g.name == *seg)
+                .unwrap_or_else(|| panic!("{name}: no segment {seg}"));
+            let (s, e) = (g.s.unwrap_or(0), g.e);
+            assert!(
+                shows(&|k| k > s && k <= e),
+                "{name}: no {bit:?} in its {seg} segment (ticks {s}..={e})"
+            );
+        }
     };
     use strand_render::probe::Motions as M;
-    for (name, bit) in [
-        ("enter-fade", M::ENTER),
-        ("exit-fade", M::EXIT),
-        ("size-spring", M::SIZE_SPRING),
-        ("shared-morph", M::SHARED_MORPH),
-        ("reveal", M::REVEAL),
-        ("stagger", M::STAGGER),
-        ("lean", M::LEAN),
-        ("jelly", M::JELLY),
-        ("keyframes", M::KEYFRAMES),
+    for (name, bit, segments) in [
+        ("enter-fade", M::ENTER, &[][..]),
+        ("exit-fade", M::EXIT, &[]),
+        ("size-spring", M::SIZE_SPRING, &[]),
+        ("shared-morph", M::SHARED_MORPH, &["on", "off"]),
+        ("reveal", M::REVEAL, &[]),
+        ("stagger", M::STAGGER, &[]),
+        ("lean", M::LEAN, &[]),
+        ("jelly", M::JELLY, &[]),
+        ("keyframes", M::KEYFRAMES, &[]),
     ] {
-        has(name, bit);
+        has(name, bit, segments);
     }
 }
 

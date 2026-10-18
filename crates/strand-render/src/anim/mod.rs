@@ -38,6 +38,8 @@ mod pose;
 mod sizes;
 mod stagger;
 
+pub(crate) use morph::MorphBox;
+use morph::Start;
 pub(crate) use motion::Extents;
 use motion::{PropMotion, decode, encode, glow_color};
 pub use pages::PageSwap;
@@ -532,15 +534,16 @@ impl Animator {
     /// (paint offsets included) on the surface of `root` (`origins`:
     /// where each surface lies on its output), how far it is drawn from there
     /// (`[dx, dy, sx, sy]`), if it morphs. A node that starts a morph
-    /// plays it in place of its enter pose. Called before
-    /// [`Animator::paint`].
-    pub fn shared_morph(
+    /// plays it in place of its enter pose. A node with a `morph` name
+    /// joins `drawn`, the scene's boxes its painted frames show
+    /// ([`Animator::shared_painted`]). Called before [`Animator::paint`].
+    pub(crate) fn shared_morph(
         &mut self,
         node: &Node,
         scope: &TokenScope<'_>,
-        root: NodeId,
-        rect: LogicalRect,
+        (root, rect): (NodeId, LogicalRect),
         origins: &morph::Origins,
+        drawn: &mut Vec<MorphBox>,
     ) -> Option<[f32; 4]> {
         let key = match node
             .get(Prop::Morph)
@@ -559,12 +562,22 @@ impl Animator {
             .find(|e| e.prop == Prop::Morph)
             .map_or(Transition::Default, |e| e.transition.clone());
         let curve = Curve::of(&scope.transition(&transition, Prop::X));
+        drawn.push(MorphBox {
+            key: key.clone(),
+            id: node.id,
+            rect,
+        });
         let frame = self.frame();
         let entering = self.enter.contains(&node.id);
         let (v, moving, started) =
             self.shared
                 .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
-        if started {
+        if started == Start::Missed {
+            // (shared-morph-on) A preview took its enter pose for a morph
+            // the painted frame cannot start: it plays the pose after all.
+            self.enter.insert(node.id);
+        }
+        if started == Start::Now {
             // In place of its enter pose. It is drawn for the first time
             // all the same: logic's writes that created it show at their
             // values, as [`Animator::paint`] shows an entering node's,
@@ -580,6 +593,19 @@ impl Animator {
             self.active = true;
         }
         v
+    }
+
+    /// (shared-morph-on) A frame of the surface of `root` painted at `at`
+    /// shows the morph boxes `drawn`, from a scene flattened for it or
+    /// reused ([`morph`]).
+    pub(crate) fn shared_painted(&mut self, root: NodeId, at: Duration, drawn: &[MorphBox]) {
+        self.shared.painted(root, at, drawn);
+    }
+
+    /// (shared-morph-on) No surface shows `root` any more: its morph
+    /// boxes are off screen.
+    pub(crate) fn shared_hidden(&mut self, root: NodeId) {
+        self.shared.hidden(root);
     }
 
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its

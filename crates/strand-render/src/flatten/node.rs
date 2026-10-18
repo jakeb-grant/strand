@@ -179,8 +179,13 @@ impl<'a> Flattener<'a> {
                 laid.w.max(0.0),
                 laid.h.max(0.0),
             );
-            self.anim
-                .shared_morph(node, &scope, root, at, &self.extras.origins)
+            self.anim.shared_morph(
+                node,
+                &scope,
+                (root, at),
+                &self.extras.origins,
+                &mut self.out.morphs,
+            )
         });
         // (M4) A transition mask, decided before the springs so a ghost
         // it needs is kept (`crate::effects::transition`).

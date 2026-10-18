@@ -466,6 +466,10 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        // (shared-morph-on) Where each `morph` name is on screen now, the
+        // scene flattened for this frame or reused: a node at rest on a
+        // surface that only reuses scenes is still a morph's start.
+        self.anim.shared_painted(root, target.time, &f.morphs);
         self.paint_times = PaintTimes {
             flatten: flatten_start.elapsed(),
             text_wait: self.estimate_waited.saturating_sub(waited),

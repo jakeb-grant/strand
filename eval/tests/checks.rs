@@ -1938,6 +1938,52 @@ fn a_shared_morph_starts_from_the_box_its_name_was_drawn_at() {
     );
 }
 
+/// (shared-morph-on) A node with an `enter` pose that mounts morphing
+/// plays the morph in place of its pose (anim/morph.rs): no pop-in. The
+/// same first frame at rest without the morph skipped its pose.
+#[test]
+fn a_morph_in_place_of_an_enter_pose_is_no_pop_in() {
+    let sc = scenario("");
+    let posed = |t: &mut RunTrace| {
+        t.nodes.get_mut("new").unwrap().enter = Some(Pose {
+            opacity: Some(0.0),
+            ..Pose::default()
+        });
+        t.seal();
+    };
+    let mut t = morphing(true);
+    posed(&mut t);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let mut t = shape(4, |k| {
+        let mut v = Vec::new();
+        if k == 0 {
+            v.push(row("old", [0.0, 0.0, 20.0, 20.0]));
+        } else {
+            v.push(row("new", [100.0, 0.0, 40.0, 40.0]));
+        }
+        v
+    });
+    posed(&mut t);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Fail,
+        "{}",
+        show(&r, &t)
+    );
+    assert!(
+        r.failures(CheckId::Vanish)[0].msg.starts_with("pop-in"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// Siblings `a` and `b` under `p`, overlapping; `a` springing 5 px over
 /// `b` and drawn after it, until tick 2 draws it first: below `b`.
 /// `swap` also swaps their laid places then (a reorder, FLIP).

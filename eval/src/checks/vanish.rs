@@ -12,7 +12,10 @@
 //!   springs, and its first frame shown has covered at most half the way
 //!   to rest (a pose skipped shows it at rest at once). It holds each
 //!   time the element comes onto a surface: when it mounts, and when the
-//!   surface it is on is attached anew (a popup opened again);
+//!   surface it is on is attached anew (a popup opened again). A shared
+//!   morph plays in place of the pose (design.md, "Motion and time";
+//!   anim/morph.rs), so a first frame that morphs is no pop-in: where it
+//!   starts is `coherence`'s morph start (decisions.md shared-morph-on);
 //! - **blank**: a frame that damaged pixels and drew no item while
 //!   something inside its surface's root shows (a popup's first frame at
 //!   a pose's `opacity: 0`, or its last as its exit ends, shows nothing
@@ -197,6 +200,9 @@ fn pop_in<'a>(
             .take_while(|i| tl.row(*i, key).is_none_or(|r| r.surface == surface))
             .find(|i| vis[*i])?;
         let (r0, r) = (tl.row(first, key)?, tl.row(shown, key)?);
+        if Motions(r0.mot).contains(Motions::SHARED_MORPH) {
+            return None;
+        }
         let rest = tl.at(seg.e).and_then(|e| tl.row(e, key)).unwrap_or(r);
         let mut wrong = Vec::new();
         if !Motions(r0.mot).contains(Motions::ENTER) {

@@ -2371,6 +2371,111 @@ fn a_shared_morph_crosses_surfaces_on_one_output() {
     }
 }
 
+/// Creates a `morph: "m"` box `id` under `parent` at `(x, y)`, `w × h`,
+/// with no `enter` pose (it shows at once unless it morphs).
+fn plain_morph_box(d: &mut SceneDiff, id: NodeId, parent: NodeId, rect: (f32, f32, f32, f32)) {
+    d.create(id, NodeKind::Box, Some(parent), 0);
+    let (x, y, w, h) = rect;
+    for (p, v) in at_xy(x, y, w, h) {
+        set_now(d, id, p, v);
+    }
+    set_now(d, id, Prop::Place, kw("absolute"));
+    set_now(d, id, Prop::Bg, color("#fab387"));
+    d.set(id, Prop::Morph, text("m"));
+}
+
+/// (shared-morph-on) A box is where its name was last drawn for as long
+/// as it is on screen, however its surface's frames were drawn: from a
+/// scene flattened afresh, or reusing the one `Renderer::update`
+/// flattened while nothing moved (a bar at rest paints so), and however
+/// long ago its surface last painted. A node entering with its name
+/// starts there. A box drawn only by reused scenes used to be remembered
+/// nowhere: the effect matrix's subject mounting as its partner unmounted
+/// showed in place (shared-morph's `on` direction), as did any morph from
+/// a box idle on screen for over a second.
+#[test]
+fn a_shared_morph_starts_from_a_box_still_on_screen() {
+    use std::time::Duration;
+    // The pill painted from `update`'s scene or afresh; the box mounting
+    // one refresh or 5 s later.
+    for (preview, idle) in [(true, 16), (true, 5000), (false, 5000)] {
+        let mut b = Builder::default();
+        let bar = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(10.0, 20.0, 20.0, 20.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#fab387")),
+            (Prop::Morph, text("m")),
+        ]);
+        let pill = b.node(NodeKind::Box, Some(bar), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, bar);
+        let mut buf = Buffer::new(200, 60, Scale::ONE);
+        if preview {
+            // Configured: its `update` flattens the scene the frame reuses.
+            r.configure_surface(S, Size::new(200, 60), Scale::ONE);
+        }
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let orange = buf.px(20, 30);
+        let bg = buf.px(100, 5);
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pill,
+            window: false,
+        });
+        plain_morph_box(&mut d, NodeId::new(400, 0), bar, (120.0, 5.0, 60.0, 50.0));
+        assert!(r.apply(d).is_empty());
+        if preview {
+            r.update();
+        }
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(1000 + idle));
+        let case = format!("preview {preview}, idle {idle} ms");
+        // From the pill (10..30 × 20..40), a refresh along: about
+        // 39..69 × 16..44, not yet at its box (120..180 × 5..55).
+        assert_eq!(buf.px(54, 30), orange, "{case}: starts at the pill");
+        assert_eq!(buf.px(175, 30), bg, "{case}: not yet at its box");
+        settle(&mut r, &mut buf, 1000 + idle);
+        assert_eq!(buf.px(150, 30), orange, "{case}: at its box");
+    }
+}
+
+/// (shared-morph-on) A box a painted frame no longer draws starts morphs
+/// for a second from that frame, not from when it was last drawn, and
+/// none after: a node entering with its name 0.9 s after its surface
+/// dropped it (5 s after it was last drawn) starts there; 1.1 s after, it
+/// plays its enter pose in place, though the preview at the last frame's
+/// time (within the second) saw a morph start and held its pose back.
+#[test]
+fn a_shared_morph_box_counts_for_a_second_once_off_screen() {
+    use std::time::Duration;
+    for (after, starts) in [(900, true), (1100, false)] {
+        let (mut r, mut buf, _, [pill, bar, _]) = morphing(false);
+        let orange = buf.px(20, 30);
+        // The pill goes at 6 s, the bar's frame then no longer drawing it.
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: pill,
+            window: false,
+        });
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(6000));
+        let mut d = SceneDiff::new();
+        morph_box(&mut d, NodeId::new(401, 0), bar, (120.0, 5.0, 60.0, 50.0));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(6000 + after));
+        let at_pill = buf.px(54, 30) == orange;
+        assert_eq!(at_pill, starts, "{after} ms after it went");
+        if !starts {
+            let p = buf.px(150, 30);
+            assert!(
+                p != orange && p != buf.px(100, 2),
+                "fading in in place: {p:?}"
+            );
+        }
+    }
+}
+
 /// The box of the pixels of `buf` that are not `bg`: `(x0, y0, x1, y1)`,
 /// edges exclusive.
 fn bbox_off(buf: &Buffer, bg: [u8; 4]) -> Option<(u32, u32, u32, u32)> {
