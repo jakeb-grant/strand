@@ -1,0 +1,37 @@
+id     = "slider-drag"
+about  = """A volume slider bound both ways (`value: <-> vol`) is dragged right,
+then quickly left past its start, then set from outside, with a meter of
+the same value beside it (spec.md 8.5: a slider dragged writes its
+target; decisions.md 2026-10-06 "only two-way values move": a drag and
+the drawing share one span, so the knob stays under the pointer). While
+it is held, the knob and the filled part of the track are under the
+pointer each frame:
+the drag writes the value and the slider draws it at once, never a frame
+behind. A value set from outside springs the knob and the fill, and the
+meter springs after it. The knob's and the fill's places in the slider
+are its parts in the trace (`pt`, docs/eval.md "Paint"). Held-out set
+D's slider-lag drew the knob one frame behind the pointer."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state vol = 0.3
+
+bar Top {
+  height: 30; bg: #1e1e2e
+  row { height: 24; gap: 8; align: center
+    slider { id: knob; width: 120; value: <-> vol }
+    meter vol { id: level; width: 100; height: 6; color: #89b4fa; track: #313244 }
+  }
+}
+
+=== steps
+rest
+mark drag
+drag 39,12 -> 91,12 over 400
+rest
+mark drag-back
+drag 91,12 -> 20,12 over 250
+rest
+mark external
+set vol 0.6
+rest

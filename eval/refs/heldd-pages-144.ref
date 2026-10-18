@@ -1,0 +1,491 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldd-pages-144"
+verdict good
+note "set D correct-motion scenario, unedited but its id: at 144 Hz pages slide in from the right and out to the left, mirrored backward, one switch landing during another; the tabs still; all checks pass; read with explain (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 44b0c4b30c640faa
+seal 50e177710c2d401b
+S1 0 - "panel Settings"
+N0 "body|shell.strand:10:5|#0" "pages#body"
+N1 "tabs|shell.strand:7:5|#0" "row#tabs"
+N2 "|shell.strand:11:18|#0" "col@shell.strand:11"
+N3 "|shell.strand:11:32|#0" "text(\"Network A\")"
+N4 "|shell.strand:11:50|#1" "text(\"Network B\")"
+N5 "|shell.strand:11:7|#0" "page@shell.strand:11"
+N6 "|shell.strand:4:1|#0" "panel@shell.strand:4"
+N7 "|shell.strand:6:3|#0" "col@shell.strand:6"
+N8 "|shell.strand:8:21|#1" "text(\"Bluetooth\")"
+N9 "|shell.strand:8:39|#2" "text(\"Power\")"
+N10 "|shell.strand:8:7|#0" "text(\"Wi-Fi\")"
+N11 "|shell.strand:12:19|#0" "col@shell.strand:12"
+N12 "|shell.strand:12:33|#0" "text(\"Headphones\")"
+N13 "|shell.strand:12:7|#0" "page@shell.strand:12"
+N14 "|shell.strand:13:21|#0" "col@shell.strand:13"
+N15 "|shell.strand:13:35|#0" "text(\"Balanced\")"
+N16 "|shell.strand:13:52|#1" "text(\"Performance\")"
+N17 "|shell.strand:13:7|#0" "page@shell.strand:13"
+k0 p1
+s1 z=240,163 o=30,219
+n0 x=10 y=33 w=220 h=120 ord=6
+n1 x=10 y=10 w=220 h=15 ord=2
+n2 x=10 y=33 w=220 h=120 ord=8
+n3 x=10 y=33 w=220 h=15 txt=S ord=9 ink=11,34,59,11 fg=cdd6f4ff gl=["Network\u0020A"]
+n4 x=10 y=52 w=220 h=15 txt=S ord=10 ink=11,53,59,11 fg=cdd6f4ff gl=["Network\u0020B"]
+n5 x=10 y=33 w=220 h=120 ord=7
+n6 x=0 y=0 w=240 h=163
+n7 x=0 y=0 w=240 h=163 ord=1 bg=1e1e2eff
+n8 x=47 y=10 w=55 h=15 txt=S ord=4 ink=48,11,54,11 fg=cdd6f4ff gl=["Bluetooth"]
+n9 x=108 y=10 w=37 h=15 txt=S ord=5 ink=109,12,36,10 fg=cdd6f4ff gl=["Power"]
+n10 x=10 y=10 w=31 h=15 txt=S ord=3 ink=10,11,30,10 fg=cdd6f4ff gl=["Wi-Fi"]
+k1
+n2 x=-3 hid=inert
+n3 x=-3 hid=inert ink=-2,34,59,11
+n4 x=-3 hid=inert ink=-2,53,59,11
+n5 x=-3 hid=inert
+n11 x=217 y=33 w=220 h=120 ord=12
+n12 x=217 y=33 w=220 h=15 txt=S ord=13 ink=218,34,73,13 fg=cdd6f4ff gl=["Headphones"]
+n13 x=217 y=33 w=220 h=120 ord=11
+k2
+n2 x=-33
+n3 x=-33 ink=-32,34,59,11
+n4 x=-33 ink=-32,53,59,11
+n5 x=-33
+n11 x=187
+n12 x=187 ink=188,34,73,13
+n13 x=187
+k3
+n2 x=-69
+n3 x=-69 ink=-68,34,59,11
+n4 x=-69 ink=-68,53,59,11
+n5 x=-69
+n11 x=151
+n12 x=151 ink=152,34,73,13
+n13 x=151
+k4
+n2 x=-105
+n3 x=-105 ink=-104,34,59,11
+n4 x=-105 ink=-104,53,59,11
+n5 x=-105
+n11 x=115
+n12 x=115 ink=116,34,73,13
+n13 x=115
+k5
+n2 x=-137
+n3 x=-137 ink=-136,34,59,11
+n4 x=-137 ink=-136,53,59,11
+n5 x=-137
+n11 x=83
+n12 x=83 ink=84,34,73,13
+n13 x=83
+k6
+n2 x=-163
+n3 x=-163 ink=-162,34,59,11
+n4 x=-163 ink=-162,53,59,11
+n5 x=-163
+n11 x=57
+n12 x=57 ink=58,34,73,13
+n13 x=57
+k7
+n2 x=-182
+n3 x=-182 ink=-181,34,59,11
+n4 x=-182 ink=-181,53,59,11
+n5 x=-182
+n11 x=38
+n12 x=38 ink=39,34,73,13
+n13 x=38
+k8
+n2 x=-197
+n3 x=-197 ink=-196,34,59,11
+n4 x=-197 ink=-196,53,59,11
+n5 x=-197
+n11 x=23
+n12 x=23 ink=24,34,73,13
+n13 x=23
+k9
+n2 x=-206
+n3 x=-206 ink=-205,34,59,11
+n4 x=-206 ink=-205,53,59,11
+n5 x=-206
+n11 x=14
+n12 x=14 ink=15,34,73,13
+n13 x=14
+k10
+n2 x=-212
+n3 x=-212 ink=-211,34,59,11
+n4 x=-212 ink=-211,53,59,11
+n5 x=-212
+n11 x=8
+n12 x=8 ink=9,34,73,13
+n13 x=8
+k11
+n2 x=-215
+n3 x=-215 ink=-214,34,59,11
+n4 x=-215 ink=-214,53,59,11
+n5 x=-215
+n11 x=5
+n12 x=5 ink=6,34,73,13
+n13 x=5
+k12
+n2 x=-216
+n3 x=-216 ink=-215,34,59,11
+n4 x=-216 ink=-215,53,59,11
+n5 x=-216
+n11 x=4
+n12 x=4 ink=5,34,73,13
+n13 x=4
+k13
+k14
+n2 x=-215
+n3 x=-215 ink=-214,34,59,11
+n4 x=-215 ink=-214,53,59,11
+n5 x=-215
+n11 x=5
+n12 x=5 ink=6,34,73,13
+n13 x=5
+k15
+k16
+n2 x=-213
+n3 x=-213 ink=-212,34,59,11
+n4 x=-213 ink=-212,53,59,11
+n5 x=-213
+n11 x=7
+n12 x=7 ink=8,34,73,13
+n13 x=7
+k17
+n2 x=-212
+n3 x=-212 ink=-211,34,59,11
+n4 x=-212 ink=-211,53,59,11
+n5 x=-212
+n11 x=8
+n12 x=8 ink=9,34,73,13
+n13 x=8
+k18
+k19
+n2 x=-211
+n3 x=-211 ink=-210,34,59,11
+n4 x=-211 ink=-210,53,59,11
+n5 x=-211
+n11 x=9
+n12 x=9 ink=10,34,73,13
+n13 x=9
+k20
+k21
+n2 x=-210
+n3 x=-210 ink=-209,34,59,11
+n4 x=-210 ink=-209,53,59,11
+n5 x=-210
+n11 x=10
+n12 x=10 ink=11,34,73,13
+n13 x=10
+k22
+k23
+k24
+k25
+k26
+k27
+k28
+k29
+k30
+k31
+k32
+k33
+k34
+k35
+k36
+n2 -
+n3 -
+n4 -
+n5 -
+n11 ord=8
+n12 ord=9
+n13 ord=7
+k37
+n11 x=-3 hid=inert
+n12 x=-3 hid=inert ink=-2,34,73,13
+n13 x=-3 hid=inert
+n14 x=217 y=33 w=220 h=120 ord=11
+n15 x=217 y=33 w=220 h=15 txt=S ord=12 ink=218,34,53,11 fg=cdd6f4ff gl=["Balanced"]
+n16 x=217 y=52 w=220 h=15 txt=S ord=13 ink=218,53,73,11 fg=cdd6f4ff gl=["Performance"]
+n17 x=217 y=33 w=220 h=120 ord=10
+k38
+n11 x=-33
+n12 x=-33 ink=-32,34,73,13
+n13 x=-33
+n14 x=187
+n15 x=187 ink=188,34,53,11
+n16 x=187 ink=188,53,73,11
+n17 x=187
+k39
+n11 x=-69
+n12 x=-69 ink=-68,34,73,13
+n13 x=-69
+n14 x=151
+n15 x=151 ink=152,34,53,11
+n16 x=151 ink=152,53,73,11
+n17 x=151
+k40
+n11 x=-105
+n12 x=-105 ink=-104,34,73,13
+n13 x=-105
+n14 x=115
+n15 x=115 ink=116,34,53,11
+n16 x=115 ink=116,53,73,11
+n17 x=115
+k41
+n11 x=-137
+n12 x=-137 ink=-136,34,73,13
+n13 x=-137
+n14 x=83
+n15 x=83 ink=84,34,53,11
+n16 x=83 ink=84,53,73,11
+n17 x=83
+k42
+n11 x=-163
+n12 x=-163 ink=-162,34,73,13
+n13 x=-163
+n14 x=57
+n15 x=57 ink=58,34,53,11
+n16 x=57 ink=58,53,73,11
+n17 x=57
+k43
+n11 x=-182
+n12 x=-182 ink=-181,34,73,13
+n13 x=-182
+n14 x=38
+n15 x=38 ink=39,34,53,11
+n16 x=38 ink=39,53,73,11
+n17 x=38
+k44
+n11 x=-197
+n12 x=-197 ink=-196,34,73,13
+n13 x=-197
+n14 x=23
+n15 x=23 ink=24,34,53,11
+n16 x=23 ink=24,53,73,11
+n17 x=23
+k45
+n11 x=-206
+n12 x=-206 ink=-205,34,73,13
+n13 x=-206
+n14 x=14
+n15 x=14 ink=15,34,53,11
+n16 x=14 ink=15,53,73,11
+n17 x=14
+k46
+n2 x=-197 y=33 w=220 h=120 ord=11
+n3 x=-197 y=33 w=220 h=15 txt=S ord=12 ink=-196,34,59,11 fg=cdd6f4ff gl=["Network\u0020A"]
+n4 x=-197 y=52 w=220 h=15 txt=S ord=13 ink=-196,53,59,11 fg=cdd6f4ff gl=["Network\u0020B"]
+n5 x=-197 y=33 w=220 h=120 ord=10
+n11 x=-212
+n12 x=-212 ink=-211,34,73,13
+n13 x=-212
+n14 x=21 hid=inert ord=15
+n15 x=21 hid=inert ord=16 ink=22,34,53,11
+n16 x=21 hid=inert ord=17 ink=22,53,73,11
+n17 x=21 hid=inert ord=14
+k47
+n2 x=-167
+n3 x=-167 ink=-166,34,59,11
+n4 x=-167 ink=-166,53,59,11
+n5 x=-167
+n11 x=-215
+n12 x=-215 ink=-214,34,73,13
+n13 x=-215
+n14 x=48
+n15 x=48 ink=49,34,53,11
+n16 x=48 ink=49,53,73,11
+n17 x=48
+k48
+n2 x=-131
+n3 x=-131 ink=-130,34,59,11
+n4 x=-131 ink=-130,53,59,11
+n5 x=-131
+n11 x=-216
+n12 x=-216 ink=-215,34,73,13
+n13 x=-216
+n14 x=83
+n15 x=83 ink=84,34,53,11
+n16 x=83 ink=84,53,73,11
+n17 x=83
+k49
+n2 x=-95
+n3 x=-95 ink=-94,34,59,11
+n4 x=-95 ink=-94,53,59,11
+n5 x=-95
+n14 x=119
+n15 x=119 ink=120,34,53,11
+n16 x=119 ink=120,53,73,11
+n17 x=119
+k50
+n2 x=-63
+n3 x=-63 ink=-62,34,59,11
+n4 x=-63 ink=-62,53,59,11
+n5 x=-63
+n11 x=-215
+n12 x=-215 ink=-214,34,73,13
+n13 x=-215
+n14 x=151
+n15 x=151 ink=152,34,53,11
+n16 x=151 ink=152,53,73,11
+n17 x=151
+k51
+n2 x=-37
+n3 x=-37 ink=-36,34,59,11
+n4 x=-37 ink=-36,53,59,11
+n5 x=-37
+n14 x=178
+n15 x=178 ink=179,34,53,11
+n16 x=178 ink=179,53,73,11
+n17 x=178
+k52
+n2 x=-18
+n3 x=-18 ink=-17,34,59,11
+n4 x=-18 ink=-17,53,59,11
+n5 x=-18
+n11 x=-213
+n12 x=-213 ink=-212,34,73,13
+n13 x=-213
+n14 x=199
+n15 x=199 ink=200,34,53,11
+n16 x=199 ink=200,53,73,11
+n17 x=199
+k53
+n2 x=-3
+n3 x=-3 ink=-2,34,59,11
+n4 x=-3 ink=-2,53,59,11
+n5 x=-3
+n11 x=-212
+n12 x=-212 ink=-211,34,73,13
+n13 x=-212
+n14 x=214
+n15 x=214 ink=215,34,53,11
+n16 x=214 ink=215,53,73,11
+n17 x=214
+k54
+n2 x=6
+n3 x=6 ink=7,34,59,11
+n4 x=6 ink=7,53,59,11
+n5 x=6
+n14 x=224
+n15 x=224 ink=225,34,53,11
+n16 x=224 ink=225,53,73,11
+n17 x=224
+k55
+n2 x=12
+n3 x=12 ink=13,34,59,11
+n4 x=12 ink=13,53,59,11
+n5 x=12
+n11 x=-211
+n12 x=-211 ink=-210,34,73,13
+n13 x=-211
+n14 x=231
+n15 x=231 ink=232,34,53,11
+n16 x=231 ink=232,53,73,11
+n17 x=231
+k56
+n2 x=15
+n3 x=15 ink=16,34,59,11
+n4 x=15 ink=16,53,59,11
+n5 x=15
+n14 x=234
+n15 x=234 ink=235,34,53,11
+n16 x=234 ink=235,53,73,11
+n17 x=234
+k57
+n2 x=16
+n3 x=16 ink=17,34,59,11
+n4 x=16 ink=17,53,59,11
+n5 x=16
+n11 x=-210
+n12 x=-210 ink=-209,34,73,13
+n13 x=-210
+n14 x=236
+n15 x=236 ink=237,34,53,11
+n16 x=236 ink=237,53,73,11
+n17 x=236
+k58
+k59
+n2 x=15
+n3 x=15 ink=16,34,59,11
+n4 x=15 ink=16,53,59,11
+n5 x=15
+k60
+n14 x=235
+n15 x=235 ink=236,34,53,11
+n16 x=235 ink=236,53,73,11
+n17 x=235
+k61
+n2 x=13
+n3 x=13 ink=14,34,59,11
+n4 x=13 ink=14,53,59,11
+n5 x=13
+n14 x=234
+n15 x=234 ink=235,34,53,11
+n16 x=234 ink=235,53,73,11
+n17 x=234
+k62
+n2 x=12
+n3 x=12 ink=13,34,59,11
+n4 x=12 ink=13,53,59,11
+n5 x=12
+n14 x=233
+n15 x=233 ink=234,34,53,11
+n16 x=233 ink=234,53,73,11
+n17 x=233
+k63
+n14 x=232
+n15 x=232 ink=233,34,53,11
+n16 x=232 ink=233,53,73,11
+n17 x=232
+k64
+n2 x=11
+n3 x=11 ink=12,34,59,11
+n4 x=11 ink=12,53,59,11
+n5 x=11
+n14 x=231
+n15 x=231 ink=232,34,53,11
+n16 x=231 ink=232,53,73,11
+n17 x=231
+k65
+k66
+n2 x=10
+n3 x=10 ink=11,34,59,11
+n4 x=10 ink=11,53,59,11
+n5 x=10
+n14 x=230
+n15 x=230 ink=231,34,53,11
+n16 x=230 ink=231,53,73,11
+n17 x=230
+k67
+k68
+k69
+k70
+k71
+k72
+n2 ord=8
+n3 ord=9
+n4 ord=10
+n5 ord=7
+n11 -
+n12 -
+n13 -
+n14 ord=12
+n15 ord=13
+n16 ord=14
+n17 ord=11
+k73
+k74
+k75
+k76
+k77
+k78
+k79
+k80
+k81
+k82
+n14 -
+n15 -
+n16 -
+n17 -

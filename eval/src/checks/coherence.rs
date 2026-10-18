@@ -358,7 +358,7 @@ fn painted<'a>(cx: &Cx<'a>) -> BTreeMap<u32, Vec<&'a Frame>> {
 
 fn shows(r: &Row) -> bool {
     r.op >= 0.02
-        && !matches!(r.hidden.as_deref(), Some("opacity0" | "scale0"))
+        && !matches!(r.hidden.as_deref(), Some("opacity0" | "scale0" | "clipped"))
         && r.visual[2] * r.visual[3] >= 1.0
 }
 

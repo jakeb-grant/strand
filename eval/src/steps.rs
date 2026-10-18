@@ -157,6 +157,12 @@ pub enum StepKind {
     Scroll {
         dy: f64,
     },
+    /// A touchpad swipe: `dy` logical px spread evenly over `ms`, one
+    /// axis frame a tick, then the fingers lift (which may fling).
+    Swipe {
+        dy: f64,
+        ms: u32,
+    },
     // Perturbations.
     TextHold {
         filter: Option<String>,
@@ -228,6 +234,7 @@ impl StepKind {
                 | StepKind::Rest { .. }
                 | StepKind::Glide { .. }
                 | StepKind::Drag { .. }
+                | StepKind::Swipe { .. }
         )
     }
 
@@ -540,6 +547,28 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                     .ok()
                     .filter(|v| v.is_finite())
                     .ok_or_else(|| format!("`{dy}` is not a distance"))?,
+            }
+        }
+        "swipe" => {
+            let usage = "`swipe DY over MS`";
+            let (dy, ms) = match (arg(1), arg(2), arg(3)) {
+                (Some(dy), Some("over"), Some(ms)) => (dy, ms),
+                _ => return Err(format!("`swipe` takes {usage}")),
+            };
+            only(4)?;
+            StepKind::Swipe {
+                dy: dy
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| format!("`{dy}` is not a distance"))?,
+                ms: ms
+                    .strip_suffix("ms")
+                    .unwrap_or(ms)
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&m| m > 0)
+                    .ok_or_else(|| format!("`{ms}` is not milliseconds"))?,
             }
         }
         "text" => match arg(1) {

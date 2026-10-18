@@ -1,0 +1,32 @@
+id     = "hover-inherited-colour"
+about  = """A label with no colour of its own inherits the bar's white (design.md
+"Overrides": inherited props work on any container); hovering turns it red and leaving turns it back. The
+colour springs from what is drawn, the inherited white, to red and back,
+never from transparent or black: a colour that was never written still
+has the value it inherits. Held-out set D's color-from-transparent
+started such a spring from transparent."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+bar Top {
+  height: 30; bg: #1e1e2e; color: #ffffff
+  row { height: 30; pad: 0, 8; gap: 8; align: center
+    box { id: lead; width: 14; height: 14; bg: #45475a }
+    text "hover me" { id: word; when hover { color: #ff0000 } }
+    text "steady" { id: other }
+  }
+}
+
+=== steps
+rest
+mark in
+pointer 50,15
+rest
+mark out
+pointer 280,15
+rest
+mark quick
+pointer 50,15
+frames 3
+pointer 280,15
+rest

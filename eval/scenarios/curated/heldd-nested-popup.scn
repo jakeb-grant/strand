@@ -1,0 +1,56 @@
+id     = "heldd-nested-popup"
+about  = "A bar menu opens a popup under its label, a submenu opens beside its first row and closes again, then the whole menu closes; a quick reopen and close at the end plays out without a jump. Held-out set D's correct-motion set (eval-coverage-2)."
+screen = { width = 400, height = 600, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state open = false
+state sub = false
+
+bar Top {
+  height: 30; bg: #1e1e2e; color: #cdd6f4
+  row { height: 30; pad: 0, 10; align: center
+    text "Menu" { id: menu_label
+      popup { open: <-> open
+        enter { opacity: 0 }
+        col { id: menu; width: 160; pad: 4; gap: 2; radius: 8; bg: #313244
+          row { id: entry_a; height: 24; pad: 0, 8; align: center; radius: 4; bg: #45475a
+            text "Display"
+            popup { open: <-> sub
+              enter { opacity: 0 }
+              col { id: submenu; width: 140; pad: 4; gap: 2; radius: 8; bg: #3b3f58
+                row { height: 24; pad: 0, 8; align: center; text "Brightness" }
+                row { height: 24; pad: 0, 8; align: center; text "Night light" }
+              }
+            }
+          }
+          row { id: entry_b; height: 24; pad: 0, 8; align: center; radius: 4
+            text "Sound"
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+mark submenu
+set sub true
+rest
+expect still #entry_b
+mark submenu_close
+set sub false
+rest
+expect still #entry_b
+mark close
+set open false
+rest
+mark flicker
+set open true
+wait 60
+set open false
+rest

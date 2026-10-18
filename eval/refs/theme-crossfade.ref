@@ -1,0 +1,82 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "theme-crossfade"
+verdict good
+note "new scenario: grey.yaml to split.yaml and back, each swap a snapshot crossfade (fades 0.14, 0.38, 0.59 ... 0.999 on k1-14 and k16-29), drawn on both backends; read with explain and the trace's fades (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 011a9a764be4767d
+seal 5ef35172b3b12c42
+S1 0 - "bar Top"
+N0 "label|shell.strand:9:5|[Mock | DP-1]#0" "text#label"
+N1 "lead|shell.strand:8:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:7:3|[Mock | DP-1]#0" "row#strip"
+N3 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+k0 p1
+s1 z=300,30
+n0 x=56 y=5 w=41 h=15 txt=S ord=3 ink=56,6,40,11 fg=292929ff gl=["Theme"]
+n1 x=8 y=5 w=40 h=14 ord=2 bg=777777ff
+n2 x=0 y=0 w=300 h=24 ord=1
+n3 x=0 y=0 w=300 h=30 bg=777777ff
+k1
+s1 f=37
+n0 fg=888888ff
+n1 bg=ffffffff
+n3 bg=000000ff
+k2
+s1 f=98
+k3
+s1 f=151
+k4
+s1 f=190
+k5
+s1 f=216
+k6
+s1 f=232
+k7
+s1 f=241
+k8
+s1 f=247
+k9
+s1 f=251
+k10
+s1 f=253
+k11
+s1 f=254
+k12
+k13
+s1 f=255
+k14
+k15
+s1 f=-
+k16
+s1 f=37
+n0 fg=292929ff
+n1 bg=777777ff
+n3 bg=777777ff
+k17
+s1 f=98
+k18
+s1 f=151
+k19
+s1 f=190
+k20
+s1 f=216
+k21
+s1 f=232
+k22
+s1 f=241
+k23
+s1 f=247
+k24
+s1 f=251
+k25
+s1 f=253
+k26
+s1 f=254
+k27
+k28
+s1 f=255
+k29
+k30
+s1 f=-

@@ -299,6 +299,12 @@ impl ScrollState {
         self.motion.is_some()
     }
 
+    /// (eval-sandbox) True while a touchpad lift's fling carries it on.
+    #[cfg(feature = "eval-hooks")]
+    pub fn flinging(&self) -> bool {
+        matches!(self.motion, Some(ScrollMotion::Fling { .. }))
+    }
+
     /// True when the boxes under it should move to its offset: while it
     /// moves, by more than a hundredth of a pixel; once at rest, by any
     /// amount, so a spring that settles a hair from where the last frame

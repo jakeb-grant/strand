@@ -1,0 +1,157 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "panel-odd-centre-1_5"
+verdict good
+note "new scenario: panel centred across at 90 (200 - 110) and 125 (200 - 75), popup at 70 and 105; each card shrinks about its centre held in the 221 px surface at x 35 (edge_shift floor(221/2) - floor(150/2)), the marks still through the re-centring, the widen glides from the old place; read with explain (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario f0667c1973fb847a
+seal c0cbd434c5d45b41
+S1 0 - "panel Note"
+S2 0 - "bar Top"
+S3 1 - "popup#pop"
+N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
+N1 "card|shell.strand:19:3|#0" "col#card"
+N2 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
+N3 "mark|shell.strand:21:5|#0" "box#mark"
+N4 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N5 "word|shell.strand:22:5|#0" "text#word"
+N6 "|shell.strand:17:1|#0" "panel@shell.strand:17"
+N7 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N8 "pcard|shell.strand:9:9|[Mock | DP-1]#0" "col#pcard"
+N9 "pmark|shell.strand:11:11|[Mock | DP-1]#0" "box#pmark"
+N10 "pop|shell.strand:8:7|[Mock | DP-1]#0" "popup#pop"
+k0 p1,2
+s1 z=221,60 o=90,30
+s2 z=400,30
+n0 srf=2 x=160 y=0 w=41 h=30 v=160,0,41.328125,30 ord=3 bg=303030ff
+n1 x=0 y=0 w=221 h=60 v=0,0,221.328125,60 ord=1 bg=1e1e2eff
+n2 srf=2 x=0 y=0 w=160 h=30 ord=2
+n3 x=8 y=8 w=40 h=10 ord=2 bg=89b4faff
+n4 srf=2 x=0 y=0 w=400 h=30 ord=1
+n5 x=8 y=22 w=44 h=15 v=8,22,44,15.328125 txt=S ord=3 ink=8,24,42.671875,10.671875 fg=cdd6f4ff gl=["centred"]
+n6 x=0 y=0 w=221 h=60 v=0,0,221.328125,60
+n7 srf=2 x=0 y=0 w=400 h=30 bg=faf9ffff
+k1 p3
+s3 z=221,40 o=70,36
+n8 srf=3 x=0 y=0 w=221 h=40 v=0,0,221.328125,40 ord=1 bg=202030ff
+n9 srf=3 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
+n10 srf=3 x=0 y=0 w=221 h=40 v=0,0,221.328125,40
+k2 p1,3
+n1 x=9 w=203 v=9.328125,0,202.671875,60
+n3 x=17 v=17.328125,8,40,10
+n5 x=17 v=17.328125,22,44,15.328125 ink=17.328125,24,42.671875,10.671875
+n6 x=9 w=203 v=9.328125,0,202.671875,60
+n8 x=9 w=203 v=9.328125,0,202.671875,40
+n9 x=15 v=15.328125,6,40,10
+n10 x=9 w=203 v=9.328125,0,202.671875,40
+k3
+n1 x=22 w=176 v=d
+n3 x=30 v=d
+n5 x=30 v=30,22,44,15.328125 ink=30,24,42.671875,10.671875
+n6 x=22 w=176 v=d
+n8 x=22 w=176 v=d
+n9 x=28 v=d
+n10 x=22 w=176 v=d
+k4
+n1 x=31 w=158 v=31.328125,0,158,60
+n3 x=39 v=39.328125,8,40,10
+n5 x=39 v=39.328125,22,44,15.328125 ink=39.328125,24,42.671875,10.671875
+n6 x=31 w=158 v=31.328125,0,158,60
+n8 x=31 w=158 v=31.328125,0,158,40
+n9 x=37 v=37.328125,6,40,10
+n10 x=31 w=158 v=31.328125,0,158,40
+k5
+n1 x=35 w=150 v=35.328125,0,150,60
+n3 x=43 v=43.328125,8,40,10
+n5 x=43 v=43.328125,22,44,15.328125 ink=43.328125,24,42.671875,10.671875
+n6 x=35 w=150 v=35.328125,0,150,60
+n8 x=35 w=150 v=35.328125,0,150,40
+n9 x=41 v=41.328125,6,40,10
+n10 x=35 w=150 v=35.328125,0,150,40
+k6
+n1 x=36 w=148 v=d
+n3 x=44 v=d
+n5 x=44 v=44,22,44,15.328125 ink=44,24,42.671875,10.671875
+n6 x=36 w=148 v=d
+n8 x=36 w=148 v=d
+n9 x=42 v=d
+n10 x=36 w=148 v=d
+k7
+k8
+n1 x=35 w=149 v=35.328125,0,148.671875,60
+n3 x=43 v=43.328125,8,40,10
+n5 x=43 v=43.328125,22,44,15.328125 ink=43.328125,24,42.671875,10.671875
+n6 x=35 w=149 v=35.328125,0,148.671875,60
+n8 x=35 w=149 v=35.328125,0,148.671875,40
+n9 x=41 v=41.328125,6,40,10
+n10 x=35 w=149 v=35.328125,0,148.671875,40
+k9
+n1 w=150 v=35.328125,0,150,60
+n6 w=150 v=35.328125,0,150,60
+n8 w=150 v=35.328125,0,150,40
+n10 w=150 v=35.328125,0,150,40
+k10
+k11
+k12
+k13
+k14
+k15
+k16
+s1 z=150,60 o=125,30
+s3 z=150,40 o=105,36
+n1 x=0 v=d
+n3 x=8 v=d
+n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
+n6 x=0 v=d
+n8 x=0 v=d
+n9 x=6 v=d
+n10 x=0 v=d
+k17
+s1 z=221,60 o=90,30
+s3 z=221,40 o=70,36
+n1 x=26 w=168
+n3 x=34
+n5 x=34 v=34,22,44,15.328125 ink=34,24,42.671875,10.671875
+n6 w=221 v=0,0,221.328125,60
+n8 x=26 w=168
+n9 x=32
+n10 w=221 v=0,0,221.328125,40
+k18
+n1 x=13 w=195 v=13.328125,0,194.671875,60
+n3 x=21 v=21.328125,8,40,10
+n5 x=21 v=21.328125,22,44,15.328125 ink=21.328125,24,42.671875,10.671875
+n8 x=13 w=195 v=13.328125,0,194.671875,40
+n9 x=19 v=19.328125,6,40,10
+k19
+n1 x=4 w=213 v=4,0,213.328125,60
+n3 x=12 v=d
+n5 x=12 v=12,22,44,15.328125 ink=12,24,42.671875,10.671875
+n8 x=4 w=213 v=4,0,213.328125,40
+n9 x=10 v=d
+k20
+n1 x=0 w=221 v=0,0,221.328125,60
+n3 x=8
+n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
+n8 x=0 w=221 v=0,0,221.328125,40
+n9 x=6
+k21
+n1 x=-1 w=223 v=-1.328125,0,223.328125,60
+n3 x=7 v=7.328125,8,40,10
+n5 x=7 v=7.328125,22,44,15.328125 ink=7.328125,24,42.671875,10.671875
+n8 x=-1 w=223 v=-1.328125,0,223.328125,40
+n9 x=5 v=5.328125,6,40,10
+k22
+k23
+n1 x=0 w=221 v=0,0,221.328125,60
+n3 x=8 v=d
+n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
+n8 x=0 w=221 v=0,0,221.328125,40
+n9 x=6 v=d
+k24
+k25
+k26
+k27
+k28
+k29
+k30

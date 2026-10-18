@@ -62,6 +62,24 @@ impl Pointer {
         })
     }
 
+    /// A touchpad's fingers moving `dy` logical pixels (positive down)
+    /// in one axis frame, `stop` when they lift with it (an
+    /// `axis_stop`, which may fling).
+    pub fn swipe(&self, dy: f64, stop: bool, time: u32) -> Option<InputEvent> {
+        Some(InputEvent::PointerAxis {
+            surface: self.surface?,
+            position: self.at,
+            horizontal: AxisDelta::default(),
+            vertical: AxisDelta {
+                pixels: dy,
+                value120: 0,
+                stop,
+            },
+            source: Some(strand_scene::AxisSource::Finger),
+            time,
+        })
+    }
+
     /// A wheel scroll of `dy` notches (positive down).
     pub fn scroll(&self, dy: f64, time: u32) -> Option<InputEvent> {
         Some(InputEvent::PointerAxis {

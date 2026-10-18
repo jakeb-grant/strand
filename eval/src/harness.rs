@@ -188,6 +188,21 @@ fn sources(sc: &Scenario) -> Result<SourceMap, Error> {
     Ok(map)
 }
 
+/// The directory `sc`'s config is read from: a named config's (the
+/// directory named, or a file's parent), else the scenario file's.
+fn config_dir(sc: &Scenario) -> std::path::PathBuf {
+    let dir = |p: &std::path::Path| {
+        p.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    };
+    match &sc.config {
+        Config::Path(p) if p.is_dir() => p.clone(),
+        Config::Path(p) => dir(p),
+        Config::Inline(_) => dir(&sc.file),
+    }
+}
+
 /// `sc`'s config compiled, with its sources: what it declares (the
 /// starter of `explore` reads it).
 pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
@@ -402,6 +417,8 @@ struct Harness<'s> {
 enum Input {
     Move(SurfaceId, LogicalPoint),
     Button(Button, ButtonState),
+    /// A touchpad axis frame: logical px, and whether the fingers lift.
+    Swipe(f64, bool),
 }
 
 impl<'s> Harness<'s> {
@@ -479,7 +496,13 @@ impl<'s> Harness<'s> {
         let i0 = Instant::now();
         router.set_now(Some(i0));
         r.set_now(Some(i0));
-        let inst = Instance::from_build(&rt, &build, host.clone(), Storage::none());
+        // Palette files (`import("base16:…")`) are read against the
+        // config's directory, as the shell reads them against its own.
+        let storage = Storage {
+            config_dir: Some(config_dir(sc)),
+            ..Storage::none()
+        };
+        let inst = Instance::from_build(&rt, &build, host.clone(), storage);
         let mut h = Harness {
             sc,
             opts: opts.clone(),
@@ -866,6 +889,7 @@ impl<'s> Harness<'s> {
                         content,
                     });
                 }
+                Change::Placed(_) => {}
                 Change::Detached(id) => {
                     if self.gpu_attached.remove(&id)
                         && let Some(dev) = self.gpu.as_mut()
@@ -1140,6 +1164,18 @@ impl<'s> Harness<'s> {
                     .ok_or_else(|| self.err(line, "the pointer is on no surface yet".into()))?;
                 self.send(vec![ev])?;
             }
+            StepKind::Swipe { dy, ms } => {
+                self.event(step);
+                if self.pointer.surface.is_none() {
+                    return Err(self.err(line, "the pointer is on no surface yet".into()));
+                }
+                // One axis frame a tick, the last one lifting the fingers
+                // as a touchpad's last frame does.
+                let n = self.clock.ticks_for(*ms).max(1);
+                for i in 0..n {
+                    self.tick(vec![Input::Swipe(dy / f64::from(n), i + 1 == n)])?;
+                }
+            }
             StepKind::TextHold { filter } => {
                 self.event(step);
                 self.text.hold(filter.clone());
@@ -1374,6 +1410,12 @@ impl<'s> Harness<'s> {
                 Input::Button(b, state) => {
                     self.pointer.button(b, state, ms(t)).into_iter().collect()
                 }
+                Input::Swipe(dy, stop) => match self.pointer.swipe(dy, stop, ms(t)) {
+                    Some(ev) => vec![ev],
+                    None => {
+                        return Err(Error::Run("a swipe with the pointer on no surface".into()));
+                    }
+                },
             };
             self.send(ev)?;
         }
@@ -1897,6 +1939,7 @@ impl<'s> Harness<'s> {
                         Hidden::Opacity0 => "opacity0",
                         Hidden::Scale0 => "scale0",
                         Hidden::Inert => "inert",
+                        Hidden::Clipped => "clipped",
                     }
                     .to_string()
                 }),
@@ -1917,7 +1960,7 @@ impl<'s> Harness<'s> {
                 fit: n.fit.map(q),
                 ink: n.ink.map(rect),
                 ov: n.overhang,
-                paint: crate::paint::PaintRec::of(&n.paint),
+                paint: crate::paint::PaintRec::of(&n.paint, n.drawn, self.surfaces.screen.scale),
             });
         }
         out
@@ -2021,6 +2064,12 @@ impl LoopSync for Harness<'_> {
                         host_loop::configured(self, id, size, scale)?;
                     }
                     Change::Detached(id) => host_loop::detached(self, id)?,
+                    // (eval-coverage-2) Arranged again with no configure:
+                    // the surface manager tells render where it went.
+                    Change::Placed(id) => {
+                        let origin = self.surfaces.origin(id);
+                        self.r.set_surface_origin(id, origin);
+                    }
                 }
                 done.push(c);
             }

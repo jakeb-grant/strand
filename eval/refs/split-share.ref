@@ -1,0 +1,88 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "split-share"
+verdict good
+note "new scenario: the start box grows to its 172 px share and stops there when asked for 240, shrinks back, a long title is cut at the share; #centre still throughout; read with explain (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario dbce505d65b94121
+seal 0c51612d8c9aed13
+S1 0 - "bar Top"
+N0 "centre|shell.strand:10:14|[Mock | DP-1]#0" "box#centre"
+N1 "lead|shell.strand:7:7|[Mock | DP-1]#0" "box#lead"
+N2 "sp|shell.strand:5:3|[Mock | DP-1]#0" "split#sp"
+N3 "ttl|shell.strand:8:7|[Mock | DP-1]#0" "text#ttl"
+N4 "|shell.strand:10:5|[Mock | DP-1]#0" "center@shell.strand:10"
+N5 "|shell.strand:11:5|[Mock | DP-1]#0" "end@shell.strand:11"
+N6 "|shell.strand:12:7|[Mock | DP-1]#0" "text(\"12:00\")"
+N7 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N8 "|shell.strand:6:5|[Mock | DP-1]#0" "start@shell.strand:6"
+k0 p1
+s1 z=400,30
+n0 x=180 y=7 w=40 h=16 ord=6 bg=89b4faff
+n1 x=8 y=7 w=60 h=16 ord=3 bg=45475aff
+n2 x=0 y=0 w=400 h=30 ord=1
+n3 x=72 y=8 w=26 h=15 txt=S ord=4 ink=72,10,26,10 fg=cdd6f4ff gl=["term"]
+n4 x=180 y=0 w=40 h=30 ord=5
+n5 x=220 y=0 w=172 h=30 ord=7
+n6 x=359 y=8 w=33 h=15 txt=S ord=8 ink=359,9,32,11 fg=cdd6f4ff gl=["12:00"]
+n7 x=0 y=0 w=400 h=30 bg=1e1e2eff
+n8 x=8 y=0 w=172 h=30 ord=2
+k1
+n1 w=88
+n3 x=100 y=15 w=0 h=0 ink=- fg=- gl=-
+k2
+n1 w=129
+n3 x=141
+k3
+n1 w=156
+n3 x=168
+k4
+n1 w=168
+n3 x=180
+k5
+k6
+k7
+k8
+k9
+k10
+k11
+k12
+k13
+k14
+k15
+k17
+n1 w=140
+n3 x=152 y=8 w=26 h=15 ink=152,10,26,10 fg=cdd6f4ff gl=["term"]
+k18
+n1 w=99
+n3 x=111 ink=111,10,26,10
+k19
+n1 w=72
+n3 x=84 ink=84,10,26,10
+k20
+n1 w=60
+n3 x=72 ink=72,10,26,10
+k21
+n1 w=57
+n3 x=69 ink=69,10,26,10
+k22
+k23
+n1 w=59
+n3 x=71 ink=71,10,26,10
+k24
+n1 w=60
+n3 x=72 ink=72,10,26,10
+k25
+k26
+k27
+k28
+k29
+k30
+k31
+k32
+n1 w=0 bg=-
+n3 x=12 w=290 ink=13,9,289,13 gl=["Mozilla_Firefox_-_a_rather_long_window_title_tab"]
+k33
+n1 w=60 bg=45475aff
+n3 x=72 w=21 ink=72,9,20,10 gl=["vim"]

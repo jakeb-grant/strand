@@ -368,9 +368,13 @@ impl<'a> Timeline<'a> {
 
     /// Whether `row` shows at frame `i` (docs/eval.md: present, not
     /// hidden, opacity at least 0.02, a visual area of at least one
-    /// pixel, on its surface). An exiting ghost (`inert`) shows.
+    /// pixel, on its surface, not clipped out by an ancestor). An exiting
+    /// ghost (`inert`) shows.
     pub fn visible(&self, i: usize, row: &Row) -> bool {
-        let hidden = matches!(row.hidden.as_deref(), Some("opacity0" | "scale0"));
+        let hidden = matches!(
+            row.hidden.as_deref(),
+            Some("opacity0" | "scale0" | "clipped")
+        );
         let [x, y, w, h] = row.visual;
         // On its surface, wherever the surface has moved to.
         let [dx, dy] = self
@@ -436,13 +440,16 @@ pub struct Way {
 /// with no change from logic or input: an exiting ghost holding its slot
 /// (`EXIT`, an inert node), a size that springs past its target, a
 /// keyframe or time-driven prop that places, a drag lifting an item out
-/// of its list, a text drawn by its estimate or held.
+/// of its list, a scroll's offset springing or flinging (a wheel step
+/// reversed mid-spring sends its rows past where they rest and back), a
+/// text drawn by its estimate or held.
 pub const LAYOUT_CAUSES: Motions = Motions(
     Motions::EXIT.0
         | Motions::SIZE_SPRING.0
         | Motions::KEYFRAMES.0
         | Motions::TIME.0
-        | Motions::LIFT.0,
+        | Motions::LIFT.0
+        | Motions::SCROLL.0,
 );
 
 /// `key`'s [`Way`] on `a` over the frames `(s, e_k]` (`b` its row at

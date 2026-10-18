@@ -1,0 +1,108 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "hover-inherited-colour"
+verdict good
+note "new scenario: the inherited white springs to red on hover (ffffff, ffe5df ... ff0000 by k14) and back, and a hover left after 3 frames turns from the colour drawn (ff8e7c at k31); read with explain (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 90ec69bf7fc98f95
+seal d5410b1139111bfe
+S1 0 - "bar Top"
+N0 "lead|shell.strand:4:5|[Mock | DP-1]#0" "box#lead"
+N1 "other|shell.strand:6:5|[Mock | DP-1]#1" "text#other"
+N2 "word|shell.strand:5:5|[Mock | DP-1]#0" "text#word"
+N3 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+N4 "|shell.strand:3:3|[Mock | DP-1]#0" "row@shell.strand:3"
+k0 p1
+s1 z=300,30
+n0 x=8 y=8 w=14 h=14 ord=2 bg=45475aff
+n1 x=93 y=8 w=39 h=15 txt=S ord=4 ink=93,9,39,13 fg=ffffffff gl=["steady"]
+n2 x=30 y=8 w=55 h=15 txt=S ord=3 ink=30,9,54,11 fg=ffffffff gl=["hover\u0020me"]
+n3 x=0 y=0 w=300 h=30 bg=1e1e2eff
+n4 x=0 y=0 w=300 h=30 ord=1
+k1
+n2 fg=ffe5dfff
+k2
+n2 fg=ffb8aaff
+k3
+n2 fg=ff8e7cff
+k4
+n2 fg=ff6c5aff
+k5
+n2 fg=ff5241ff
+k6
+n2 fg=ff3d2fff
+k7
+n2 fg=ff2d21ff
+k8
+n2 fg=ff2117ff
+k9
+n2 fg=ff170fff
+k10
+n2 fg=ff0f08ff
+k11
+n2 fg=ff0905ff
+k12
+n2 fg=ff0503ff
+k13
+n2 fg=ff0301ff
+k14
+n2 fg=ff0000ff
+k15
+n2 fg=ff4f3eff
+k16
+n2 fg=ff8978ff
+k17
+n2 fg=ffb3a6ff
+k18
+n2 fg=ffd0c7ff
+k19
+n2 fg=ffe3ddff
+k20
+n2 fg=ffeeebff
+k21
+n2 fg=fff5f3ff
+k22
+n2 fg=fff9f8ff
+k23
+n2 fg=fffcfbff
+k24
+n2 fg=fffdfdff
+k25
+n2 fg=fffefeff
+k26
+k27
+n2 fg=ffffffff
+k28
+k29
+n2 fg=ffe5dfff
+k30
+n2 fg=ffb8aaff
+k31
+n2 fg=ff8e7cff
+k32
+n2 fg=ff8c7bff
+k33
+n2 fg=ffa99aff
+k34
+n2 fg=ffc5baff
+k35
+n2 fg=ffdad2ff
+k36
+n2 fg=ffe8e4ff
+k37
+n2 fg=fff1efff
+k38
+n2 fg=fff7f5ff
+k39
+n2 fg=fffaf9ff
+k40
+n2 fg=fffcfcff
+k41
+n2 fg=fffefdff
+k42
+n2 fg=fffefeff
+k43
+n2 fg=fffffeff
+k44
+n2 fg=ffffffff

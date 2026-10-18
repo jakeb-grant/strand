@@ -5,8 +5,11 @@
 //!   or an ancestor around it, and no step bringing it back (none acts
 //!   between the frame it is gone in and the one it is back in);
 //! - **flash**: shown at one frame only, between frames it does not
-//!   show in, with no keyframes or time-driven motion, and no step
-//!   taking it out (none acts between that frame and the next);
+//!   show in, with no keyframes or time-driven motion, no scroll moving
+//!   it by itself (a spring or fling that moves more than the viewport
+//!   and a row in one frame carries a row across it between two
+//!   frames), and no step taking it out (none acts between that frame
+//!   and the next);
 //! - **pop-in**: an element with an `enter` pose, mounted after boot,
 //!   first shows near its pose: the pose's opacity and offset start its
 //!   springs, and its first frame shown has covered at most half the way
@@ -33,6 +36,7 @@ use strand_render::probe::{Axes, Motions};
 
 use super::{Cx, Finding, first_per_node, motions};
 use crate::scenario::CheckId;
+use crate::steps::StepKind;
 use crate::trace::Row;
 
 /// How far an entering node's first frame shown may be from its pose,
@@ -60,12 +64,44 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             .find(|(_, s)| s.s.is_none_or(|s| s < k) && k <= s.e)
     };
     // A step acted after tick `from` and by tick `to`: a segment starts
-    // there (its `s` is the tick before its first change).
+    // there (its `s` is the tick before its first change), or a later
+    // step of one acts at a tick in between (eval-coverage-2: a second
+    // `scroll` in one segment scrolls rows back into view as surely as
+    // the first; an event's `k` is the tick it acts at). A step that
+    // takes time (`glide`, `drag`, `swipe`) acts on every tick of its
+    // span, one input frame a tick: a swipe faster than the viewport
+    // moves rows across it between two frames as the fingers do.
+    let acts: Vec<(u32, u32)> = cx
+        .trace
+        .events
+        .iter()
+        .filter_map(|e| {
+            let st = cx
+                .sc
+                .steps
+                .iter()
+                .find(|st| st.line == e.line && st.kind.opens_segment())?;
+            let ms = match st.kind {
+                StepKind::Glide { ms, .. }
+                | StepKind::Drag { ms, .. }
+                | StepKind::Swipe { ms, .. } => ms,
+                _ => 0,
+            };
+            let hz = e
+                .segment
+                .and_then(|i| cx.trace.segments.get(i))
+                .map_or(cx.sc.hz, |s| s.hz)
+                .max(1);
+            let ticks = (u64::from(ms) * u64::from(hz)).div_ceil(1000) as u32;
+            Some((e.k, e.k.saturating_add(ticks)))
+        })
+        .collect();
     let stepped = |from: u32, to: u32| {
         cx.trace
             .segments
             .iter()
             .any(|s| s.s.is_some_and(|s| from <= s && s < to))
+            || acts.iter().any(|&(a, b)| a <= to && from < b)
     };
     for key in keys {
         let vis: Vec<bool> = (0..tl.ks.len()).map(|i| tl.visible_key(i, key)).collect();
@@ -110,9 +146,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 && !stepped(k, tl.ks[i + 1])
                 && !exempt(CheckId::Vanish)
             {
-                let free = tl
-                    .row(i, key)
-                    .is_some_and(|r| motions(r).intersects(Motions::KEYFRAMES | Motions::TIME));
+                // (eval-coverage-2) A scroll moving by itself carries its
+                // rows past its viewport at its own speed: one that
+                // moves more than the viewport and a row in a frame
+                // shows a row in one frame only.
+                let free = tl.row(i, key).is_some_and(|r| {
+                    motions(r).intersects(Motions::KEYFRAMES | Motions::TIME | Motions::SCROLL)
+                });
                 if !free {
                     out.push(
                         Finding::fail(CheckId::Vanish, "flash: shown for one frame only")

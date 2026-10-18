@@ -49,17 +49,18 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
     let (set, _) = set();
     // The starting set (plan section 7), `gpu` (the GPU leg, step 10)
     // and eval-coverage's five: flip-nested, popup-content-height,
-    // shadow, roll-text and colour-shift.
+    // shadow, roll-text and colour-shift; eval-coverage-2's two inputs,
+    // scroll and slider-drag.
     assert_eq!(
         set.effects.len(),
-        28,
-        "the starting set, gpu and eval-coverage's"
+        30,
+        "the starting set, gpu, eval-coverage's and eval-coverage-2's"
     );
     let mut plan = Plan::new(BuildInfo::default());
     plan.singles = true;
     plan.jobs = 4;
     let done = matrix::run(&plan).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(done.len(), 28);
+    assert_eq!(done.len(), 30);
     assert!(done.iter().all(|d| !d.outcome.gates()), "{}", show(&done));
     // The gpu cell ran both legs and compared them (or skipped without a
     // device where none is required).
@@ -121,9 +122,27 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         ("flip-nested", M::GLIDE, &[]),
         ("popup-content-height", M::SIZE_SPRING, &[]),
         ("colour-shift", M::PROP_SPRING, &[]),
+        ("scroll", M::SCROLL, &[]),
     ] {
         has(name, bit, segments);
     }
+    // (eval-coverage-2) The dragged slider's knob moves inside its box:
+    // its parts change while the slider's own box stays.
+    let d = done.iter().find(|d| d.cell.name == "slider-drag").unwrap();
+    let t = &d.entry.as_ref().unwrap().trace;
+    let sl = t
+        .nodes
+        .iter()
+        .find(|(_, m)| m.id.as_deref() == Some("sl"))
+        .map(|(k, _)| k.clone())
+        .unwrap_or_else(|| panic!("no #sl"));
+    let parts: std::collections::BTreeSet<Vec<String>> = t
+        .frames
+        .iter()
+        .flat_map(|f| f.n.iter().filter(|r| r.key == sl))
+        .filter_map(|r| r.paint.as_ref().map(|p| p.pt.clone()))
+        .collect();
+    assert!(parts.len() > 2, "the knob moved: {parts:?}");
 }
 
 #[test]
@@ -148,11 +167,15 @@ fn effects_that_set_the_same_prop_do_not_pair() {
     assert_eq!(c.id(), "m.enter-fade__exit-slide.60");
     let file = matrix::dir().join("cells").join("x.scn");
     Scenario::parse_in(&c.text, &file, Place::Committed).unwrap_or_else(|e| panic!("{e}"));
-    // 28 alone and 378 pairs.
+    // (eval-coverage-2) The two input effects fill the one `below`
+    // slot: they cannot pair.
+    let c = matrix::cell(&set, &fixture, &["scroll", "slider-drag"], 60);
+    assert!(c.na.is_some(), "two fragments in `below`");
+    // 30 alone and 435 pairs.
     let names: Vec<&str> = set.effects.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         matrix::cells(&set, &fixture, &names, &[60], false).len(),
-        406
+        465
     );
 }
 

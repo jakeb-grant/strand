@@ -5,9 +5,8 @@ surface `GpuPresent`, its frames drawn by strand-gpu and read back). A labelled
 pill crossfades into another (an exit fade under an enter fade), a box slides in
 beside them, and the accent token springs to a new colour under the pill. Every
 tick both legs paint, they agree node by node, in their regions and within the
-GPU tests' pixel tolerance. The theme-swap crossfade from a snapshot stays
-crates/strand-render/tests/gpu.rs's (it needs a token table no .strand file
-declares)."""
+GPU tests' pixel tolerance. The theme-swap crossfade from a snapshot is
+theme-crossfade's (two fixture palettes no spring can carry readably)."""
 screen  = { width = 300, scale = 1.0 }
 backend = "both"
 

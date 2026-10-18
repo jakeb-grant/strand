@@ -715,3 +715,79 @@ rest
     let c = strand_eval::checks::Cx::new(&sc, t);
     assert_eq!(c.tol, 1.0, "one physical pixel at scale 1");
 }
+
+/// (eval-coverage-2) A list's rows: what a wheel step and a swipe do to
+/// them as the trace says. A wheel step springs the offset (`SCROLL`, no
+/// `FLING`); a fast swipe lifts into a fling (`SCROLL` and `FLING`); a
+/// row the list's viewport hides while it is still on its surface is
+/// `clipped`, its own children traced beside it.
+const LIST: &str = r##"id = "list-hooks"
+screen = { width = 300, height = 300, scale = 1.0 }
+
+=== shell.strand
+let rows = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12"]
+panel Picker {
+  anchor: top_left; open: true
+  col { width: 200; height: 220; pad: 10; bg: #1e1e2e
+    list { id: picks; height: 100; gap: 4
+      for r in rows key r {
+        row { height: 30; bg: #313244
+          box { width: 20; height: 10; bg: #ffffff }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,50
+mark wheel
+scroll 1
+rest
+mark fling
+swipe 60 over 80ms
+rest
+"##;
+
+#[test]
+fn a_wheel_springs_a_swipe_flings_and_a_viewport_clips() {
+    let t = go(LIST);
+    let seg = |name: &str| {
+        t.segments
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no segment {name}"))
+    };
+    let in_seg = |name: &str| {
+        let s = seg(name);
+        t.frames
+            .iter()
+            .filter(move |f| f.k > s.s.unwrap_or(0) && f.k <= s.e)
+            .flat_map(|f| f.n.iter())
+    };
+    let mot = |r: &Row| Motions(r.mot | r.emot);
+    assert!(in_seg("wheel").any(|r| mot(r).contains(Motions::SCROLL)));
+    assert!(!in_seg("wheel").any(|r| mot(r).contains(Motions::FLING)));
+    assert!(in_seg("fling").any(|r| mot(r).contains(Motions::SCROLL | Motions::FLING)));
+    // At rest after the fling every row is on the panel's surface; those
+    // past the list's 100 px are clipped, and their boxes are traced too.
+    let last = t.frames.last().unwrap_or_else(|| panic!("no frames"));
+    let clipped: Vec<&Row> = last
+        .n
+        .iter()
+        .filter(|r| r.hidden.as_deref() == Some("clipped"))
+        .collect();
+    assert!(!clipped.is_empty(), "{:?}", last.n);
+    let shown = last.n.iter().filter(|r| r.hidden.is_none()).count();
+    assert!(shown > 0);
+    assert!(
+        clipped.iter().any(|r| last.n.iter().any(|c| t
+            .nodes
+            .get(&c.key)
+            .and_then(|m| m.parent.as_deref())
+            == Some(r.key.as_str()))),
+        "a clipped row's children are traced: {:?}",
+        clipped.iter().map(|r| &r.key).collect::<Vec<_>>()
+    );
+}

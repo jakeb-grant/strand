@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "toast-stack"
 verdict good
-note "new scenario: the added toast slides 120 px in fading, and the two below glide down 40 px together from where they were drawn (after the content-sized FLIP fix, 24e5ed52: before, 13 and 27 px off, their gap opening 16 px); a dismissed toast fades and collapses and the one below slides up; the header never moves; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "origin 40,30 (320/2 - 240/2, below the bar's 30 px zone): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario 2c006773271933ff
-seal a596c9c157a4ebba
+seal 11a4b5deed34b5d0
 S1 0 - "panel Toasts"
 S2 0 - "bar Top"
 N0 "header|shell.strand:10:5|#0" "text#header"
@@ -23,7 +23,7 @@ N10 "t_call|shell.strand:12:7|#0" "row#t_call"
 N11 "|shell.strand:14:9|#0" "box@shell.strand:14"
 N12 "|shell.strand:15:9|#0" "text(\"Incoming call\")"
 k0 p1,2
-s1 z=240,111
+s1 z=240,111 o=40,30
 s2 z=320,30
 n0 x=8 y=8 w=224 h=15 txt=S ord=2 ink=9,9,70,11 fg=d0d0d0ff gl=["Notifications"]
 n1 x=0 y=0 w=240 h=111 ord=1 bg=101216ff

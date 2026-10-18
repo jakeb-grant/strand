@@ -53,7 +53,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             let parent = |k: &str| cx.trace.nodes.get(k).and_then(|m| m.parent.as_deref());
             let kind = |k: &str| cx.trace.nodes.get(k).map_or("", |m| m.kind.as_str());
             let shown = |r: &Row| {
-                let hidden = matches!(r.hidden.as_deref(), Some("opacity0" | "scale0"));
+                let hidden = matches!(r.hidden.as_deref(), Some("opacity0" | "scale0" | "clipped"));
                 !hidden && r.op >= 0.02 && r.drawn[2] * r.drawn[3] >= 1.0
             };
             // The top-level elements, and the shown rows under each.

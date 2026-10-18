@@ -37,11 +37,14 @@
 //! cut text was shaped for. `bg`, `bd`, `sh` and `fg` are the node's
 //! fills, borders, shadows and glyph paints (`/` between several, `-`
 //! none), `gl` the texts its glyphs came from (a JSON array, its spaces
-//! written `\u0020`); a surface's `f` is its crossfade's weight (1/255).
+//! written `\u0020`), `pt` its parts (eval-coverage-2: each fill that is
+//! not its whole box, `x,y,w,h` from its box's top-left, `/` between
+//! them: a slider's knob); a surface's `f` is its crossfade's weight
+//! (1/255). `hid` is `opacity0`, `scale0`, `inert` or `clipped`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::paint::{PaintRec, paint_within, shadow_within};
+use crate::paint::{PaintRec, paint_within, part_within, shadow_within};
 use crate::trace::{Frame, NodeMeta, PoseRec, Regions, Row, RunTrace, SurfaceInfo};
 
 /// Quanta per unit: logical px, opacity, scale, degrees.
@@ -584,6 +587,9 @@ fn node_diff(a: &NodeState, r: &NodeState, tol: Tol, out: &mut Vec<(String, Stri
     if pa.gl != pr.gl {
         out.push(("glyphs".into(), glyphs_text(&pa.gl), glyphs_text(&pr.gl)));
     }
+    if !same(&pa.pt, &pr.pt, &|u, v| part_within(u, v, tol.px)) {
+        out.push(("paint.parts".into(), paint_list(&pa.pt), paint_list(&pr.pt)));
+    }
 }
 
 /// A list of paints as the text writes it: `/` between them, `-` none.
@@ -901,7 +907,7 @@ fn json_strs(s: &str) -> Option<Vec<String>> {
 }
 
 /// A node's fields as the text writes them, in order.
-fn node_fields(n: &NodeState) -> [(&'static str, String); 19] {
+fn node_fields(n: &NodeState) -> [(&'static str, String); 20] {
     [
         ("srf", n.surface.to_string()),
         ("x", dec(n.drawn[0], PX)),
@@ -929,12 +935,13 @@ fn node_fields(n: &NodeState) -> [(&'static str, String); 19] {
         ("sh", paint_list(&n.paint.sh)),
         ("fg", paint_list(&n.paint.fg)),
         ("gl", glyphs_text(&n.paint.gl)),
+        ("pt", paint_list(&n.paint.pt)),
     ]
 }
 
 /// A node's first line leaves out what is at these (and `srf` at the
 /// first surface listed).
-const NODE_DEFAULTS: [(&str, &str); 14] = [
+const NODE_DEFAULTS: [(&str, &str); 15] = [
     ("v", "d"),
     ("op", "255"),
     ("sc", "1,1"),
@@ -949,6 +956,7 @@ const NODE_DEFAULTS: [(&str, &str); 14] = [
     ("sh", "-"),
     ("fg", "-"),
     ("gl", "-"),
+    ("pt", "-"),
 ];
 
 fn surface_fields(s: &SurfaceState) -> [(&'static str, String); 5] {
@@ -996,7 +1004,7 @@ pub fn encode(rec: &Recording) -> String {
     }
     let srf0 = first_surface(rec).to_string();
     let mut last_s: BTreeMap<u32, [(&str, String); 5]> = BTreeMap::new();
-    let mut last_n: BTreeMap<&str, [(&str, String); 19]> = BTreeMap::new();
+    let mut last_n: BTreeMap<&str, [(&str, String); 20]> = BTreeMap::new();
     let mut painted: Option<&Vec<u32>> = None;
     for t in &rec.ticks {
         if painted == Some(&t.painted) {
@@ -1106,6 +1114,7 @@ fn set_node(n: &mut NodeState, name: &str, v: &str, vis_d: &mut bool) -> Option<
         "sh" => n.paint.sh = unpaint_list(v),
         "fg" => n.paint.fg = unpaint_list(v),
         "gl" => n.paint.gl = unglyphs(v)?,
+        "pt" => n.paint.pt = unpaint_list(v),
         _ => return None,
     }
     Some(())

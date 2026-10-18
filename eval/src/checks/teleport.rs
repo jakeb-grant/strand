@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value, way};
+use super::{Cx, Finding, GEOMETRY, Sev, authored, first_per_node, laid, value, way};
 use crate::scenario::CheckId;
 use strand_render::probe::{Axes, Motions};
 
@@ -43,7 +43,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         let range = cx.tl.within(Some(s), seg.e);
         let start = bi.unwrap_or(range.start);
         // Per node and axis, the segment's travel: the span of its way.
-        let mut travels: HashMap<(&str, usize), f64> = HashMap::new();
+        let mut travels: HashMap<(&str, usize, usize), f64> = HashMap::new();
         for i in range {
             if i <= start {
                 continue;
@@ -55,7 +55,11 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 if !cx.tl.visible(i, r) || !cx.tl.visible(p, q) || q.surface != r.surface {
                     continue;
                 }
-                let any = Motions(r.emot | q.emot);
+                // A scroll's offset in flight (a spring, or a fling, as
+                // fast as the fingers were) lays its content out at the
+                // offset each frame (laid where drawn): a jump it makes
+                // is layout's, noted as with no motion (eval-coverage-2).
+                let any = Motions((r.emot | q.emot) & !(Motions::SCROLL.0 | Motions::FLING.0));
                 let glides = Motions(r.mot).contains(Motions::GLIDE)
                     && Motions(q.mot).contains(Motions::GLIDE);
                 // Gliding itself or carried by a gliding ancestor, from a
@@ -88,33 +92,52 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         }
                         _ => !any.is_empty(),
                     };
-                    let travel = *travels.entry((*key, a as usize)).or_insert_with(|| {
+                    // (eval-coverage-2) The stretch of frames the node
+                    // shows in without a break that holds frame `i`: one
+                    // that leaves and comes back within the segment (a
+                    // branch shown again, morphing from where another was
+                    // drawn) travels from where it comes back.
+                    let (lo_i, hi_i) = stretch(cx, key, r.surface, i, start, seg.e);
+                    let travel = *travels.entry((*key, a as usize, lo_i)).or_insert_with(|| {
                         // Where it starts and ends: at `s` and the rest, or
                         // for a node that came onto its surface in the
                         // segment (a popup's content, a branch, an enter
                         // pose's slide, held as the same slide of a node
                         // already there is) or left it (an exit's ghost),
                         // its first or last frame shown there
-                        // (eval-coverage, eval-local).
-                        let shown = |j: usize| {
-                            cx.tl
-                                .row(j, key)
-                                .filter(|q| q.surface == r.surface && cx.tl.visible(j, q))
+                        // (eval-coverage, eval-local), and for one that
+                        // left and came back, the first frame of the
+                        // stretch it shows in since (eval-coverage-2).
+                        let at = |j: usize| cx.tl.row(j, key);
+                        let from = if lo_i == start + 1 {
+                            bi.and_then(at).or_else(|| at(lo_i))
+                        } else {
+                            at(lo_i)
                         };
-                        let span = cx.tl.within(Some(s), seg.e);
-                        let from = bi
-                            .and_then(|b| cx.tl.row(b, key))
-                            .or_else(|| span.clone().find_map(shown));
+                        let shown = |j: usize| {
+                            at(j).filter(|q| q.surface == r.surface && cx.tl.visible(j, q))
+                        };
                         let to = ei
-                            .and_then(|e| cx.tl.row(e, key))
-                            .or_else(|| span.rev().find_map(shown));
-                        match (from, to) {
-                            (Some(b), Some(e)) => {
-                                let w = way(cx, key, s, seg.e, b, e, a);
-                                (value(e, a) - value(b, a)).abs().max(w.hi - w.lo)
+                            .and_then(at)
+                            .or_else(|| cx.tl.within(Some(s), seg.e).rev().find_map(shown));
+                        let (Some(b), Some(e)) = (from, to) else {
+                            return 0.0;
+                        };
+                        let w = way(cx, key, s, seg.e, b, e, a);
+                        // (eval-coverage-2) And the way authored motion
+                        // takes it in the stretch: an offset or a pose
+                        // springs out and back (a page sliding in and,
+                        // switched away mid-flight, out again) travels
+                        // its excursion, not the little between its ends.
+                        let mut ex: Option<(f64, f64)> = None;
+                        for j in lo_i..=hi_i {
+                            if let Some(x) = at(j).filter(|x| authored(x, a)) {
+                                let v = value(x, a);
+                                ex = Some(ex.map_or((v, v), |(l, h)| (l.min(v), h.max(v))));
                             }
-                            _ => 0.0,
                         }
+                        let ex = ex.map_or(0.0, |(l, h)| h - l);
+                        (value(e, a) - value(b, a)).abs().max(w.hi - w.lo).max(ex)
                     });
                     let left = match (carried, a) {
                         (true, super::Axis::X) => f64::from(q.glide[0] + q.flight[0]).abs(),
@@ -157,9 +180,24 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         && q.glide[n] == 0.0
                         && r.glide[n] == 0.0
                         && cx.lays_out(i, r.surface);
+                    // (eval-coverage-2) A box whose own size snapped this
+                    // tick and that its parent keeps by its centre or an
+                    // edge (a centred card whose content shrank, placed
+                    // in its held surface): its place moved with its
+                    // size, which a glide never carries (it moves a box,
+                    // never sizes it), so its glide was not retargeted.
+                    let resized = offset_axis && {
+                        let (o, sz) = (n, n + 2);
+                        let (l0, l1) = (f64::from(q.laid[o]), f64::from(r.laid[o]));
+                        let (s0, s1) = (f64::from(q.laid[sz]), f64::from(r.laid[sz]));
+                        (s1 - s0).abs() > cx.tol
+                            && ((l1 + s1 / 2.0 - l0 - s0 / 2.0).abs() <= cx.tol
+                                || (l1 + s1 - l0 - s0).abs() <= cx.tol)
+                    };
                     if glides
                         && offset_axis
                         && !follows
+                        && !resized
                         && dl.abs() > 1.0f64.max(cx.tol)
                         && (d - dl).abs() <= cx.tol
                     {
@@ -185,4 +223,25 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     first_per_node(out)
+}
+
+/// (eval-coverage-2) The frames around frame `i` that `key` shows in on
+/// `surface` without a break, within the segment's frames after `start`
+/// (the frame at its `s`) up to its rest `e`: the first and the last.
+fn stretch(cx: &Cx, key: &str, surface: u32, i: usize, start: usize, e: u32) -> (usize, usize) {
+    let shown = |j: usize| {
+        cx.tl
+            .row(j, key)
+            .is_some_and(|q| q.surface == surface && cx.tl.visible(j, q))
+    };
+    let last = cx.tl.ks.partition_point(|x| *x <= e).saturating_sub(1);
+    let mut lo = i;
+    while lo > start + 1 && shown(lo - 1) {
+        lo -= 1;
+    }
+    let mut hi = i;
+    while hi < last && shown(hi + 1) {
+        hi += 1;
+    }
+    (lo, hi)
 }

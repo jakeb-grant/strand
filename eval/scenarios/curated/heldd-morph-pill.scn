@@ -1,0 +1,43 @@
+id     = "heldd-morph-pill"
+about  = "A small media pill in a bar morphs into a wide one with a shadow, a gradient cover and an ellipsised title, and back; a morph reversed half way starts from where the pill is on screen. The box before it never moves. Held-out set D's correct-motion set: teleport false-alarmed on a node that leaves its surface and comes back within one segment, before its travel was taken from where it came back (eval-coverage-2)."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state big = false
+
+bar Top {
+  height: 40; bg: #11111b
+  row { height: 40; pad: 0, 10; gap: 8; align: center
+    box { id: anchor_box; width: 20; height: 20; radius: 4; bg: #45475a }
+    if big {
+      row { width: 180; height: 34; pad: 0, 12; gap: 8; radius: 17; bg: #313244; align: center
+            morph: "media"; shadow: 0 2px 6px #00000080
+        box { width: 24; height: 24; radius: 6; bg: linear(90deg, #f38ba8, #fab387) }
+        text "A rather long song title" { color: #cdd6f4; ellipsis: end }
+      }
+    } else {
+      row { width: 60; height: 24; pad: 0, 8; radius: 12; bg: #313244; align: center
+            morph: "media"
+        box { width: 16; height: 16; radius: 4; bg: linear(90deg, #f38ba8, #fab387) }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark grow
+set big true
+rest
+expect still #anchor_box
+mark shrink
+set big false
+rest
+expect still #anchor_box
+mark reversed
+set big true
+wait 70
+set big false
+rest
+expect still #anchor_box

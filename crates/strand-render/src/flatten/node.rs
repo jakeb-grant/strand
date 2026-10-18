@@ -552,7 +552,7 @@ impl<'a> Flattener<'a> {
             if let Some(t) = probe {
                 let look = (opacity, [1.0, 1.0], 0.0);
                 let hidden = Some(crate::probe::Hidden::Opacity0);
-                self.probe_push(t, look, frame, self.xform, hidden);
+                self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
             }
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
@@ -569,7 +569,7 @@ impl<'a> Flattener<'a> {
             if let Some(t) = probe {
                 let look = (opacity, [0.0, 0.0], 0.0);
                 let hidden = Some(crate::probe::Hidden::Scale0);
-                self.probe_push(t, look, frame, self.xform, hidden);
+                self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
             }
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
@@ -1574,7 +1574,14 @@ impl<'a> Flattener<'a> {
             t.paint = super::probe::paint(&self.out.items[own_start..], s, &self.extras.texts);
             let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
             let hidden = inert.then_some(crate::probe::Hidden::Inert);
-            self.probe_push(t, (opacity, [sx, sy], turn), frame, self.xform, hidden);
+            self.probe_push(
+                t,
+                (opacity, [sx, sy], turn),
+                frame,
+                self.xform,
+                hidden,
+                inh.clip,
+            );
         }
 
         // Hit shape: the rounded box, grown by `hit: grow(n)`; none with

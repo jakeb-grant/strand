@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell"
 verdict good
-note "new scenario: the chip scales in from 0.6, its card widens at once and the shadow (extent before transforms) follows the box; the note mounted above pushes both cards down, shadows gliding with them; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "origin 8,0 (320/2 - 304/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario 620f647ac0c7a0e1
-seal 7af9b131f59e675e
+seal 4ceeb94e50d2734a
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -18,7 +18,7 @@ N6 "|shell.strand:3:1|#0" "panel@shell.strand:3"
 N7 "chip_c|shell.strand:16:9|#2" "box#chip_c"
 N8 "note|shell.strand:8:7|#0" "box#note"
 k0 p1
-s1 z=304,161
+s1 z=304,161 o=8,0
 n0 x=36 y=53 w=24 h=16 ord=4 bg=61afefff
 n1 x=66 y=53 w=24 h=16 ord=5 bg=98c379ff
 n2 x=12 y=0 w=280 h=143 ord=1 bg=15171cff

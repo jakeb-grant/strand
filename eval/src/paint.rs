@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use strand_render::probe::{GlyphsDrawn, NodePaint};
-use strand_scene::{Color, GradientStop, Paint};
+use strand_scene::{Color, GradientStop, LogicalRect, Paint};
 
 use crate::trace::q;
 
@@ -37,6 +37,13 @@ pub struct PaintRec {
     /// ... and, in the same order, the text each was shaped from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gl: Vec<String>,
+    /// (eval-coverage-2) Its parts: the box of each fill that is not its
+    /// own box (a slider's track, value and knob, a meter's value, an
+    /// input's selection), in paint order, from its drawn box's top-left
+    /// (`x,y,w,h`, 1/64 px), so a knob that moves inside a slider that
+    /// stays changes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pt: Vec<String>,
 }
 
 impl PaintRec {
@@ -46,14 +53,39 @@ impl PaintRec {
             && self.sh.is_empty()
             && self.fg.is_empty()
             && self.gl.is_empty()
+            && self.pt.is_empty()
     }
 
-    /// The paint a frame's node drew, as text; `None` when it drew none.
-    pub fn of(p: &NodePaint) -> Option<PaintRec> {
+    /// The paint a frame's node drew, as text, `drawn` its drawn box on
+    /// a screen of `scale`; `None` when it drew none.
+    pub fn of(p: &NodePaint, drawn: LogicalRect, scale: f64) -> Option<PaintRec> {
         if p.is_empty() {
             return None;
         }
+        // Its box as the flattener fills it: each edge on the physical
+        // pixel it falls on (decisions.md wave3-pixels).
+        let s = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let snap = |v: f32| ((f64::from(v) * s).round() / s) as f32;
+        let (x0, y0) = (snap(drawn.x), snap(drawn.y));
+        let (x1, y1) = (snap(drawn.x + drawn.w), snap(drawn.y + drawn.h));
+        let own = [q(x0), q(y0), q(x1 - x0), q(y1 - y0)];
+        let pt = p
+            .fill_boxes
+            .iter()
+            .map(|b| [q(b.x), q(b.y), q(b.w), q(b.h)])
+            .filter(|b| *b != own)
+            .map(|b| {
+                [b[0] - own[0], b[1] - own[1], b[2], b[3]]
+                    .map(|v| num(q(v)))
+                    .join(",")
+            })
+            .collect();
         Some(PaintRec {
+            pt,
             bg: p.fills.iter().map(paint).collect(),
             bd: p.borders.iter().map(paint).collect(),
             sh: p
@@ -173,6 +205,25 @@ pub fn paint_within(a: &str, b: &str, tol: i64) -> bool {
                 || matches!((rgba(x), rgba(y)), (Some(c), Some(d))
                     if c.iter().zip(&d).all(|(u, v)| (u - v).abs() <= tol))
         })
+}
+
+/// (eval-coverage-2) Two parts (`x,y,w,h`) are the same within `px`
+/// quanta (1/64 px) on each value.
+pub fn part_within(a: &str, b: &str, px: i64) -> bool {
+    if a == b {
+        return true;
+    }
+    let vals = |s: &str| -> Option<Vec<i64>> {
+        s.split(',')
+            .map(|v| v.parse::<f64>().ok().map(|v| (v * 64.0).round() as i64))
+            .collect()
+    };
+    match (vals(a), vals(b)) {
+        (Some(x), Some(y)) => {
+            x.len() == y.len() && x.iter().zip(&y).all(|(u, v)| (u - v).abs() <= px)
+        }
+        _ => false,
+    }
 }
 
 /// Two shadows as text are the same within `tol` colour steps and `px`

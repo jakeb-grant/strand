@@ -166,7 +166,14 @@ advance the clock.
 - `pointer X,Y [on <surface>]`.
 - `press` and `release`, each with `left`, `right` or `middle`.
 - `click X,Y [left|right|middle] [on <surface>]`.
-- `scroll DY`.
+- `scroll DY` turns the wheel `DY` notches (positive down; fractions
+  allowed), each 15 px (`strand_render::WHEEL_STEP`, as libinput's legacy
+  wheel), as one axis frame from a wheel: each notch springs the offset
+  from where the last one aims (m4-plan.md "Lists": wheel steps spring).
+- `swipe DY over MS` moves a touchpad's fingers `DY` logical px over `MS`,
+  one axis frame a tick, and lifts them with the last frame (`axis_stop`):
+  the offset follows the fingers at once, and a lift while they move
+  flings it on. Strand has no overscroll: an offset stops at either end.
 - `glide X,Y -> X,Y over MS [on <surface>]` moves the pointer.
 - `drag X,Y -> X,Y over MS [on <surface>]` is the same glide with the
   left button held: pressed at the start, released at the end.
@@ -249,6 +256,23 @@ A release `via paint` delivers just before the next paint. A release `via
 waker` delivers between frames and runs `Renderer::update`, as the
 runtime's `text_ready` wake does.
 
+### Theme swaps
+
+A theme swap needs no step of its own (eval-coverage-2): a palette chosen
+by a state (`let scheme: Palette = split ? import("base16:…") :
+import("base16:…")`, `use palette scheme`) swaps when a `set` changes the
+state, and logic sends the new table as the shell's does. `import`
+reads a palette file against the config's directory, as the shell does:
+the scenario file's for a config written in `===` sections. A committed
+scenario names only files inside eval/: eval/fixtures/palettes/ holds
+`grey.yaml` (every background one mid grey) and `split.yaml` (the
+background black, the lighter ones white). From one to the other no text
+lightness reaches 3:1 on both kinds half way, so that swap cannot spring
+and crossfades from a snapshot (design.md "How a swap animates"; the
+trace's `fades`); a swap between two readable palettes (catppuccin's
+latte and mocha, colour-mid-motion) springs. theme-crossfade runs the
+crossfade on both backends.
+
 ## Driver
 
 One scenario runs in one process: the logic VM, the input router and the
@@ -296,6 +320,23 @@ host loop (`attached`, `configured`, `detached`). A run that leaves a
 surface wanting frames at the end of a rest is a `settle` failure, not a
 hang.
 
+**Placement** (eval-coverage-2). A layer surface lies where the compositor
+puts it: its configure from crates/strand-surface's `layer_config` (the
+box's size rounded to whole logical pixels, the overhang added), placed in
+the area the exclusive zones before it leave (`arranged_area`) by
+`LayerConfig::position_in_rect`, wlroots' arrangement: anchored to an edge
+it keeps its margin there; on an axis anchored on neither side or on both
+it is centred, at `area / 2 - size / 2` in whole pixels. Every shown
+surface is placed again whenever one is attached, configured at a new
+size or detached (a centred panel that shrinks moves; a bar's zone moves
+the panels after it), and a popup moves with its parent. Its buffer is
+the configured size at the screen's scale as the surface manager sizes it
+(`buffer_size`: times the scale, rounded half away from zero at a
+fractional one, as `wp_fractional_scale_v1` says). Before, every layer
+surface lay at 0,0 and buffers were rounded up, so a centred panel's
+shrink and a 1.25 buffer one pixel wide differed from the compositor's
+(held-out set D's launcher-filter and edge-shift-centre).
+
 ## Trace
 
 Each run writes `trace.json` (schema 1): per tick, every painted surface's
@@ -307,11 +348,17 @@ For each node the trace records:
 - its effective opacity, scale and rotation;
 - its motions, both its own and its ancestors' (glide, spring, size
   spring, enter, exit, keyframes, morph, reveal, stagger, lean, jelly,
-  drag, time), and which of its own colours springs (fill, border, text);
+  drag, time, a `scroll` or `list` whose offset moves by itself (`SCROLL`:
+  a wheel step's spring or a fling) and a fling (`FLING`)), and which of
+  its own colours springs (fill, border, text);
 - its authored axes;
 - the parts of its offset (inherited, and of that the part in flight;
   written, spring, glide, morph);
-- why it is hidden;
+- why it is hidden: opacity 0, scale 0, an exit's ghost (`inert`, drawn
+  but never hit), or `clipped` (on its surface but wholly outside the clip
+  its ancestors set: a list's row scrolled out of its box, the overflow of
+  a `clip: true` box or of a box whose size springs), which the checks
+  read as not shown;
 - its text state (estimate, shaped or held).
 
 A text also records the line box it asked to be shaped for when its
@@ -322,7 +369,13 @@ it (`ink`, before transforms). Both come from strand-render's
 text paints it drew itself, from the display items the flattener gave it
 that frame, and for each text the source its glyphs came from (the text a
 layout was shaped from, kept by the renderer while tracing is on, and the
-glyphs of it drawn when not all were). A frame with a theme swap's
+glyphs of it drawn when not all were). Its parts (`pt`, eval-coverage-2)
+are where each fill that is not its whole box lies inside it, in order, as
+`x,y,w,h` from its box's top-left, its box's edges taken to physical
+pixels: a slider's track, value and knob, a meter's value, an `arc`'s
+track and value (stroke outlines it fills), a `segmented`'s chosen cell,
+a shaped box's path. (Strand draws no scrollbar and has no switch.) A control whose parts move (a knob dragged, a
+value springing) is recorded frame by frame where its box stays still. A frame with a theme swap's
 crossfade playing records its weight per surface (`fades`).
 
 Each frame also records the screen's scale it was drawn at, whether
@@ -388,15 +441,15 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
-| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion, and so does an authored offset or pose spring: the span of the values it is drawn at while authored; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last, and one that leaves and comes back in one segment travels from where it came back), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed, and so is a scroll's (`SCROLL`, or a fling's `FLING`: a list moving its rows by itself is a layout cause, not a motion of theirs). A glide retargeted while its box's own size snaps and its parent keeps it by its centre or far edge (a card held centred in a surface that shrinks) is not a retarget. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
+| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; and any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a step that takes time (`glide`, `drag`, `swipe`) acts on every tick of its span (a swipe faster than the viewport carries rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
 | `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), and an ellipsised text gives way before it is laid past its surface's edge (`give way`). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
-| `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). |
+| `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). A key made again while its predecessor exits (`~2`) is compared by its base when it is the only one of that base shown. A surface whose scroll flung is left out from the fling on: `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
 | `reference` | The run is its approved reference recording within a quantum, and does not come back to one marked bad (see Reference recordings). |
@@ -652,15 +705,17 @@ A node's first line leaves out what is at its default: the first surface,
 (`bg`, `bd`, `sh`, `fg`, `gl`). Several of one kind are joined with `/`
 in paint order; `gl` is a JSON list.
 
-Everything together stays under 5 MB. With each node's paint and glyph
+Everything together stays under 5 MiB. With each node's paint and glyph
 sources (eval-coverage) it was 4.15 MB, and with the integration's
-scenarios (eval-r3) it is 4.18 MB: the 49 scenarios 177 kB (the 24
-recorded before eval-coverage 110 kB, 105 kB without paint), `matrix-60.ref` 1.61 MB
-(4.0 kB a cell) and `matrix-144.ref` 2.39 MB (6.0 kB a cell), 401 cells
-each. Paint costs little because a field is written only on the ticks
-it changes. Compressed, as git stores it, that is about 390 kB. eval/tests/refs.rs
-holds the total to 5 MB, a scenario's file to 64 kB and a matrix file to
-8 kB a cell. Each is a tripwire for a recording that stopped being
+scenarios (eval-r3) 4.18 MB. With the scroll, control, placement and
+theme scenarios, the controls' parts and the two input effects
+(eval-coverage-2) it is 5.09 MB: the 68 scenarios 380 kB,
+`matrix-60.ref` 1.90 MB (4.2 kB a cell) and `matrix-144.ref` 2.81 MB
+(6.2 kB a cell), 457 cells each. Paint costs little because a field is
+written only on the ticks it changes. Compressed, as git stores it, that
+is about 530 kB. eval/tests/refs.rs
+holds the total to 5 MiB, a scenario's file to 64 KiB and a matrix file to
+8 KiB a cell. Each is a tripwire for a recording that stopped being
 compact, not a cap on scenarios.
 
 ### CHANGED
@@ -841,8 +896,11 @@ the offset parts say which mechanism moved the node.
 `eval/matrix/effects.toml` lists effects: poses, size springs, FLIP
 reorders and nested FLIP scopes, a content-sized popup whose height
 springs, morphs, reveal, stagger, lean, jelly, keyframes, a drop shadow,
-rolling text, a colour change, late text, screen scales, and the GPU leg
-(`gpu`). Each one is a set of fragments
+rolling text, a colour change, late text, screen scales, a list the
+wheel scrolls (`scroll`: two notches in quick steps and one back during
+the spring) and a two-way slider dragged from its knob (`slider-drag`)
+(eval-coverage-2), and the GPU leg (`gpu`). Each one is a set of
+fragments
 filled into `eval/matrix/fixture.strand.in`, then run with the standard
 steps (on, wide, off). The matrix runs every effect alone and every
 unordered pair at each rate.
@@ -852,7 +910,11 @@ is `n/a: conflict`. Effects carry what their motion moves: `flip-reorder`'s
 keyed boxes each hold a child, so a glide carried to a subtree is checked
 (`coherence` inherit), and `reduced-motion` turns its subject with
 `rotate: t * 90deg`, so a time signal under reduced motion is checked
-(`twin`, `teleport`). A cell fails the matrix in four cases:
+(`twin`, `teleport`). The two input effects act in the `mid` steps,
+after the `on` segment's rest, so each effect paired with one runs beside
+a list scrolled or a knob dragged (and its time-driven motion, a
+keyframe or a jelly, runs on through them); the two cannot pair, since
+both fill `below`. A cell fails the matrix in four cases:
 
 - it fails a check `eval/matrix/known.toml` does not list for it, or a
   listed check on a node the entry does not name;
@@ -877,8 +939,9 @@ scripts/container/run.sh eval promote target/eval/matrix/<cell>@<hz> --as <name>
 `promote` writes a cell's scenario, exactly as it ran, to
 `eval/scenarios/regressions/<name>.scn`. Add `--xfail CHECK --note "why"`
 when the finding stays open. The whole matrix, at 60 and 144 Hz, runs on
-every push as scripts/eval/ci.sh step 6 (about 90 s on the laptop with
-8 jobs), so a branch whose change moves a cell cannot pass CI until that
+every push as scripts/eval/ci.sh step 6 (about 110 s on the laptop for
+both rates' 930 cells with eval-coverage-2's two input effects, 90 s
+before them), so a branch whose change moves a cell cannot pass CI until that
 cell's new recording is approved. It also runs nightly and on demand in
 `.github/workflows/eval-matrix.yml`, with the mutants.
 
@@ -1162,7 +1225,9 @@ written from scratch, in the smallest shape that shows it.
   tests in crates/strand-render hold the frame budgets.
 - **`ink` sees the layout drawn, not the pixels.** It reads the glyph
   ink of the layout the frame drew, before transforms; a glyph clipped
-  by an ancestor's clip only is not told apart from one drawn.
+  by an ancestor's clip only is not told apart from one drawn. A node
+  wholly outside the clip its ancestors set is `hidden: clipped`
+  (eval-coverage-2); one partly inside is drawn as a whole.
 - **`ink`'s allowance follows the font** (eval-r3). A text drawn by its
   own layout may reach past its box as far as that layout's ink reaches
   past the layout's box; a layout drawn offset by less than that
@@ -1206,8 +1271,11 @@ written from scratch, in the smallest shape that shows it.
     `a_colourless_table_mid_crossfade_keeps_fading`);
   - stale or missing pixels after a partial redraw, and the GPU drawing
     differently from the CPU: `redraw` and `cpu-gpu` here.
-  Radii, blur radii, an image's pixels and a reveal mask's progress are
-  not recorded. `gl` names the text a
+  A gradient's geometry (how far its line runs across the box) is not
+  recorded either: paint.rs's three gradient pixel tests hold the
+  dithered pixmap every drawable gradient is painted from
+  (`cache::render_gradient_part`). Radii, blur radii, an image's pixels
+  and a reveal mask's progress are not recorded. `gl` names the text a
   layout was shaped from, not where an ellipsis cut it: the cut width
   (`fit`) and the ink record that. A text's paint is recorded once per
   run of glyphs drawn, so two texts with the same source, colour and

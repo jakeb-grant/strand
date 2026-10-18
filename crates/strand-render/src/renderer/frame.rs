@@ -616,6 +616,12 @@ impl Renderer {
             self.pending.len(),
             self.paint_times,
             fade.weight(),
+            &self
+                .scrolls
+                .iter()
+                .filter(|(_, st)| st.moving())
+                .map(|(id, st)| (*id, st.flinging()))
+                .collect::<Vec<_>>(),
         );
 
         // Widen by the buffer's age: it misses the last `age - 1` frames.

@@ -1,0 +1,53 @@
+id     = "split-share"
+about  = """A bar split whose start section holds a box that grows to exactly its
+share (half of what the centre leaves: (384 - 40) / 2 = 172), then past
+it, then shrinks back, and a window title that grows long and short
+(design.md "Containers": `split` is start/centre/end with a truly
+centred middle). Each
+side's track is `minmax(0, 1fr)`, so content larger than its share is
+cut at the share and never pushes the centre: `#centre` stays where it
+is throughout. Held-out set D's split-auto let a side's content widen
+its track."""
+screen = { width = 400, scale = 1.0 }
+
+=== shell.strand
+state grow = 60
+state wtitle = "term"
+bar Top {
+  height: 30; bg: #1e1e2e
+  split { id: sp; pad: 0, 8
+    start { align: center; gap: 4
+      box { id: lead; width: grow * 1px; height: 16; bg: #45475a }
+      text wtitle { id: ttl; color: #cdd6f4 }
+    }
+    center { box { id: centre; width: 40; height: 16; bg: #89b4fa } }
+    end { align: center
+      text "12:00" { color: #cdd6f4 }
+    }
+  }
+}
+
+=== steps
+rest
+mark at-share
+set wtitle ""
+set grow 172
+rest
+expect still #centre
+mark past-share
+set grow 240
+rest
+expect still #centre
+mark back
+set grow 60
+set wtitle "term"
+rest
+expect still #centre
+mark long-title
+set wtitle "Mozilla_Firefox_-_a_rather_long_window_title_tab"
+rest
+expect still #centre
+mark short-title
+set wtitle "vim"
+rest
+expect still #centre

@@ -1,0 +1,56 @@
+id     = "panel-odd-centre"
+about  = """A layer panel anchored to the top edge only, so the compositor
+centres it across (wlroots' arrangement: `area/2 - size/2` in whole
+logical pixels, placement.rs `position_in_rect`), and a popup centred
+below its anchor in the bar, at scale 1.0. Each is sized by its card,
+which narrows by an odd amount (221 to 150) and widens back: the
+compositor moves a centred surface by `floor(221/2) - floor(150/2)` =
+35, not 35.5 rounded, so the content is placed by the same whole-pixel
+share (layout/mod.rs `edge_shift`) and `#pmark` and `#mark`, at their
+cards' leading edge, stay where they are on screen once the cards have
+settled, through the moment the surfaces shrink and are centred anew.
+(A box centred in an odd span sits on a half pixel, which layout's
+whole-pixel snapping rounds either way, so the marks are not centred.) Held-out set D's edge-shift-centre rounded
+the half instead; the sandbox placed every layer surface at 0,0 then,
+so a centred panel could not show it."""
+screen = { width = 400, height = 300, scale = 1.0 }
+
+=== shell.strand
+state wide = true
+state open = false
+bar Top {
+  height: 30
+  row { id: strip; height: 30; align: center
+    box { id: lead; width: 160; height: 30 }
+    box { id: anchor; width: 41; height: 30; bg: #303030
+      popup { id: pop; open: open
+        col { id: pcard; bg: #202030; pad: 6; align: start
+              width: wide ? 221 : 150; height: 40
+          box { id: pmark; width: 40; height: 10; bg: #ff8000 }
+        }
+      }
+    }
+  }
+}
+panel Note {
+  anchor: top; open: true
+  col { id: card; bg: #1e1e2e; pad: 8; gap: 4; align: start
+        width: wide ? 221 : 150; height: 60
+    box { id: mark; width: 40; height: 10; bg: #89b4fa }
+    text "centred" { id: word; color: #cdd6f4 }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+mark narrow
+set wide false
+rest
+expect still #mark x from +10
+expect still #pmark x from +10
+mark widen
+set wide true
+rest

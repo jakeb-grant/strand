@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "roll-at-rest"
 verdict good
-note "roll-preview's roll-at-rest re-recorded at eval-r3 in eval-coverage's format (each node's paint and glyph sources); geometry, paint order and ink tick for tick as approved at 60389e96, and its gl fields show the roll's two texts on ticks 1-16 and the box's fill under its cookie-to-burst morph"
+note "box#shaped gains pt (its fill's part inside its box: the cookie-to-burst path's bounds, 0,0.14,20,19.73 and on), the new paint-parts field; read with explain: geometry and every other field tick for tick as approved (eval-coverage-2)"
 date 2026-10-18
-rev "b9d8aa4f"
+rev "0824d452+changes"
 approver "claude"
 scenario 4bb8a7bedc8df0a6
-seal ab666420a2386b98
+seal 6e12424669eb5cd0
 S1 0 - "bar Top"
 N0 "lead|shell.strand:7:5|[Mock | DP-1]#0" "box#lead"
 N1 "num|shell.strand:8:5|[Mock | DP-1]#0" "text#num"
@@ -17,7 +17,7 @@ k0 p1
 s1 z=300,30
 n0 x=8 y=6 w=16 h=12 ord=2 bg=5c6370ff
 n1 x=30 y=5 w=15 h=15 txt=S ord=3 ink=30,7,14,9 fg=ffffffff gl=["41"]
-n2 x=51 y=2 w=20 h=20 ord=4 bg=c678ddff
+n2 x=51 y=2 w=20 h=20 ord=4 bg=c678ddff pt=0,0.140625,20,19.734375
 n3 x=0 y=0 w=300 h=30 bg=000000ff
 n4 x=0 y=0 w=300 h=24 ord=1
 k1
@@ -40,13 +40,21 @@ k15
 k16
 n1 fg=ffffffff gl=["43"]
 k17
+n2 pt=0.40625,0.09375,19.1875,19
 k18
+n2 pt=0.296875,0.046875,19.40625,19.375
 k19
+n2 pt=0.09375,0.015625,19.8125,19.8125
 k20
+n2 pt=-
 k21
+n2 pt=-0.03125,0,20.046875,20.046875
 k22
+n2 pt=-0.015625,0,20.046875,20.046875
 k23
+n2 pt=-0.015625,0,20.015625,20.015625
 k24
+n2 pt=-
 k25
 k26
 k27

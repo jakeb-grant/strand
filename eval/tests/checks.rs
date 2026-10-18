@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use strand_eval::checks::{self, CheckId, Report, Sev, Status};
 use strand_eval::scenario::{Scenario, eval_root};
 use strand_eval::trace::{
-    Cost, ExpectRec, Frame, IntendRec, NodeMeta, Pose, PoseRec, RestRec, Row, RunTrace,
+    Cost, EventRec, ExpectRec, Frame, IntendRec, NodeMeta, Pose, PoseRec, RestRec, Row, RunTrace,
     ScenarioInfo, Segment, SurfaceInfo,
 };
 use strand_render::probe::{Axes, Motions};
@@ -3801,5 +3801,355 @@ fn regions_on_wire_holds_a_bare_commit_to_the_frame_that_drew_nothing() {
     assert!(
         found.iter().any(|f| f.msg.contains("input region")),
         "{found:?}"
+    );
+}
+
+// --- eval-coverage-2
+
+/// (eval-coverage-2) An authored offset spring sent out and back in one
+/// segment (a page slid in and, switched away mid-flight, out again)
+/// travels its excursion: 50 px steps of a 100 px excursion that ends
+/// 10 px from where it started pass. A 90 px step of it still fails.
+#[test]
+fn an_authored_spring_out_and_back_travels_its_excursion() {
+    let sc = scenario("");
+    let out_and_back = |xs: [f32; 5]| {
+        shape(8, move |k| {
+            let a = row("a", [0.0, 0.0, 20.0, 20.0]);
+            let m = Motions::PROP_SPRING;
+            match k {
+                0 => vec![a],
+                1..=5 => vec![a.at(xs[k as usize - 1], 0.0).mot(m).auth(Axes::X)],
+                _ => vec![a.at(10.0, 0.0)],
+            }
+        })
+    };
+    let t = out_and_back([50.0, 100.0, 60.0, 20.0, 10.0]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = out_and_back([90.0, 100.0, 60.0, 20.0, 10.0]);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A node that leaves its surface and comes back in one
+/// segment (a branch shown again, morphing from where another was drawn)
+/// travels from where it came back: back at 0 and morphing to 100, where
+/// it started the segment, its 45 px steps pass; back at 0 and home in
+/// one tick still fails.
+#[test]
+fn a_node_that_leaves_and_comes_back_travels_from_where_it_came_back() {
+    let sc = scenario("");
+    let back = |xs: [f32; 3]| {
+        shape(10, move |k| {
+            let a = row("a", [100.0, 0.0, 20.0, 20.0]).laid_at(100.0, 0.0);
+            let m = Motions::SHARED_MORPH;
+            match k {
+                0 => vec![a],
+                1 => vec![a.mot(m)],
+                2 => vec![],
+                3 => vec![a.at(0.0, 0.0).mot(m)],
+                4..=6 => vec![a.at(xs[k as usize - 4], 0.0).mot(m)],
+                _ => vec![a],
+            }
+        })
+    };
+    let t = back([45.0, 80.0, 100.0]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = back([100.0, 100.0, 100.0]);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A list's rows laid out at its offset each frame while
+/// it scrolls by itself (`SCROLL`, a wheel step's spring, or `FLING`, a
+/// lift's fling, into the list's end) jump as layout does: noted, not
+/// failed.
+#[test]
+fn a_rows_jump_under_a_scroll_is_noted_not_failed() {
+    for fling in [false, true] {
+        rows_jump_under_a_scroll(fling);
+    }
+}
+
+fn rows_jump_under_a_scroll(fling: bool) {
+    let sc = scenario("");
+    let t = shape(4, move |k| {
+        let a = row("a", [0.0, 0.0, 20.0, 20.0]);
+        let x = [0.0, 0.0, 150.0, 150.0, 150.0][k as usize];
+        let m = match (k, fling) {
+            (1, true) => Motions(Motions::SCROLL.0 | Motions::FLING.0),
+            (1..=3, _) => Motions::SCROLL,
+            _ => Motions::NONE,
+        };
+        vec![a.at(x, 0.0).laid_at(x, 0.0).mot(m)]
+    });
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let tp = r.results.iter().find(|c| c.check == "teleport").unwrap();
+    assert!(
+        tp.findings
+            .iter()
+            .any(|f| f.sev == Sev::Info && f.msg.starts_with("jump")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A gliding box whose own size snaps while its parent
+/// keeps it by its centre (a card shrinking in a held, centred surface)
+/// moves with its size: not a retarget. The same move with no change of
+/// size still is one (`a_glide_retargeted_from_its_layout_...`).
+#[test]
+fn a_glide_moved_by_its_own_size_about_its_centre_is_not_a_retarget() {
+    let sc = scenario("");
+    let t = shape(10, |k| {
+        let a = row("a", [0.0, 0.0, 100.0, 20.0]);
+        let g = Motions::GLIDE;
+        let narrow = |mut r: Row| {
+            for b in [&mut r.laid, &mut r.visual, &mut r.drawn] {
+                b[2] = 60.0;
+            }
+            r
+        };
+        match k {
+            0 => vec![a],
+            1 => vec![a.laid_at(40.0, 0.0).at(10.0, 0.0).mot(g)],
+            2 => vec![a.laid_at(40.0, 0.0).at(18.0, 0.0).mot(g)],
+            3 => vec![narrow(a.laid_at(60.0, 0.0).at(38.0, 0.0).mot(g))],
+            4 => vec![narrow(a.laid_at(60.0, 0.0).at(50.0, 0.0).mot(g))],
+            5 => vec![narrow(a.laid_at(60.0, 0.0).at(58.0, 0.0).mot(g))],
+            _ => vec![narrow(a.laid_at(60.0, 0.0).at(60.0, 0.0))],
+        }
+    });
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.msg.starts_with("retarget")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// The reduced-motion twin of `shape`: its rest at `end`.
+fn twin_of(end: u32, rows: impl Fn(u32) -> Vec<Row>) -> RunTrace {
+    let mut t = shape(end, rows);
+    t.scenario.reduced_motion = true;
+    t
+}
+
+/// (eval-coverage-2) A node made again while the one it replaces still
+/// exits takes the key with `~2`; with motion reduced the exit is over at
+/// once and it takes the plain key. Shown alone under that base in both
+/// runs, the two are compared as one node; shown beside a node of the
+/// plain key, the `~2` one is its own.
+#[test]
+fn twin_compares_a_key_made_again_by_its_base() {
+    let sc = scenario("");
+    let at_rest = [10.0, 5.0, 20.0, 10.0];
+    let t = shape(2, |k| match k {
+        0 => vec![],
+        _ => vec![row("label~2", at_rest)],
+    });
+    let twin = twin_of(2, |k| match k {
+        0 => vec![],
+        _ => vec![row("label", at_rest)],
+    });
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
+    let both = shape(2, |k| match k {
+        0 => vec![],
+        _ => vec![
+            row("label", at_rest),
+            row("label~2", [40.0, 5.0, 20.0, 10.0]),
+        ],
+    });
+    let r = checks::evaluate(&sc, &both, Some(&twin), None, None);
+    assert!(
+        r.failures(CheckId::Twin)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("label~2")),
+        "{}",
+        show(&r, &both)
+    );
+}
+
+/// (eval-coverage-2) `reduced_motion` flings nothing, so a surface whose
+/// scroll flung rests elsewhere by design and is left out from the
+/// fling on; the same rest with no fling is a difference.
+#[test]
+fn twin_leaves_out_a_surface_whose_scroll_flung() {
+    let sc = scenario("");
+    let rows = |fling: bool| {
+        move |k: u32| {
+            let a = row("row", [0.0, 0.0, 20.0, 20.0]);
+            let m = match (k, fling) {
+                (1 | 2, true) => Motions(Motions::SCROLL.0 | Motions::FLING.0),
+                _ => Motions::NONE,
+            };
+            let x = [0.0, 40.0, 70.0, 80.0][k as usize];
+            vec![a.at(x, 0.0).laid_at(x, 0.0).mot(m)]
+        }
+    };
+    let twin = twin_of(3, |_| vec![row("row", [0.0, 0.0, 20.0, 20.0])]);
+    let t = shape(3, rows(true));
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
+    let t = shape(3, rows(false));
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert!(fails_on(&r, CheckId::Twin, "row", "x"), "{}", show(&r, &t));
+}
+
+/// (eval-coverage-2) A node clipped out by an ancestor (`hidden:
+/// clipped`) does not show: clipped for one frame and back, it vanished.
+#[test]
+fn a_node_clipped_for_a_frame_and_back_vanishes() {
+    let sc = scenario("");
+    let t = shape(6, |k| {
+        let mut a = row("a", [10.0, 10.0, 10.0, 10.0]);
+        if k == 2 {
+            a.hidden = Some("clipped".into());
+        }
+        vec![a]
+    });
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A row a scroll carries past its viewport by itself
+/// (`SCROLL`) may show for one frame; and a step that acts inside a
+/// segment, not only its first, takes a node out (a second `scroll`).
+#[test]
+fn a_flash_under_a_scroll_or_a_later_step_passes() {
+    let t = blink(|k| k != 3, Motions::SCROLL);
+    assert_eq!(
+        status(&check(&scenario(""), &t), CheckId::Vanish),
+        Status::Pass
+    );
+    let text = "id = \"synth\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\npointer 5,5\nscroll 1\nscroll -1\nrest\n";
+    let file = eval_root().join("scenarios/regressions/synth.scn");
+    let sc = Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"));
+    let line = |s: &str| sc.steps.iter().find(|st| st.text == s).unwrap().line;
+    let mut t = blink(|k| k != 3, Motions(0));
+    assert!(
+        check(&sc, &t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("flash")),
+        "a flash with no step"
+    );
+    for (k, s) in [(3, "scroll 1"), (4, "scroll -1")] {
+        t.events.push(EventRec {
+            k,
+            line: line(s),
+            text: s.into(),
+            segment: Some(1),
+        });
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A list's rows scrolling (`SCROLL`, inherited) are
+/// laid out at the offset each frame, laid where drawn: still held to
+/// each other's edges.
+#[test]
+fn tiling_holds_rows_under_a_scroll() {
+    let sc = scenario("");
+    let mut t = flush(42.4, 43.2);
+    for f in &mut t.frames {
+        for r in &mut f.n {
+            r.emot = Motions::SCROLL.0;
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Tiling, "a", "x") || fails_on(&r, CheckId::Tiling, "b", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-2) A step that takes time acts on every tick of its
+/// span: a node gone at the swipe's second tick and back at its third (a
+/// 50 ms swipe is three input ticks at 60 Hz, after the tick it starts
+/// at) was moved by the fingers, not lost; the same blink once the swipe
+/// has ended still vanishes.
+#[test]
+fn a_timed_step_acts_over_its_whole_span() {
+    let text = "id = \"synth\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\npointer 5,5\nswipe 60 over 50ms\nrest\n";
+    let file = eval_root().join("scenarios/regressions/synth.scn");
+    let sc = Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"));
+    let line = sc
+        .steps
+        .iter()
+        .find(|st| st.text.starts_with("swipe"))
+        .unwrap()
+        .line;
+    let with_swipe = |gone: u32| {
+        let mut t = blink(move |k| k == gone, Motions(0));
+        t.events.push(EventRec {
+            k: 1,
+            line,
+            text: "swipe 60 over 50ms".into(),
+            segment: None,
+        });
+        t.seal();
+        t
+    };
+    let t = with_swipe(3);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = with_swipe(5);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish")),
+        "{}",
+        show(&r, &t)
     );
 }

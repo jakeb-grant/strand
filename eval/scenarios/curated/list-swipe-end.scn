@@ -1,0 +1,32 @@
+id     = "list-swipe-end"
+about  = """list-swipe's list, flung into its end by a fast touchpad swipe
+(`swipe 400 over 50ms`: far more than the rows left), where the offset
+stops (Strand has no overscroll: offsets clamp at either end), then
+flung back up by a swipe the other way, its speed decaying until it
+stops by itself (m4-plan.md "Lists": touchpad flings decay)."""
+screen = { width = 300, height = 600, scale = 1.0 }
+
+=== shell.strand
+let rows = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20"]
+panel Picker {
+  anchor: top_left; open: true
+  col { width: 220; pad: 8; bg: #1e1e2e; color: #cdd6f4
+    list { id: picks; height: 100; gap: 4
+      for r in rows key r {
+        row { height: 30; pad: 0, 10; bg: #313244; align: center
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,100
+mark to-end
+swipe 400 over 50ms
+rest
+mark back
+swipe -90 over 60ms
+rest

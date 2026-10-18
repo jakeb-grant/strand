@@ -1,0 +1,35 @@
+id     = "list-swipe"
+about  = """list-wheel's twenty rows in a list 100 px tall, moved by a touchpad
+(`swipe DY over MS`: the fingers' motion one axis frame a tick, then they
+lift; m4-plan.md "Lists": touchpad flings decay): the offset follows the
+fingers at once, and a lift while they move flings it on, its speed
+decaying, until it stops by itself. A slow swipe lifts with no fling.
+list-swipe-end runs a fling into the list's end and back. The list is
+short and the two apart so that each recording, every row moving every
+tick of a fling, stays compact."""
+screen = { width = 300, height = 600, scale = 1.0 }
+
+=== shell.strand
+let rows = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20"]
+panel Picker {
+  anchor: top_left; open: true
+  col { width: 220; pad: 8; bg: #1e1e2e; color: #cdd6f4
+    list { id: picks; height: 100; gap: 4
+      for r in rows key r {
+        row { height: 30; pad: 0, 10; bg: #313244; align: center
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,100
+mark slow
+swipe 4 over 200ms
+rest
+mark fling
+swipe 60 over 80ms
+rest

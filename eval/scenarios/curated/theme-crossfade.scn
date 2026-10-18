@@ -1,0 +1,34 @@
+id      = "theme-crossfade"
+about   = """A palette swap no spring can carry readably (design.md "How a swap
+animates"): eval/fixtures/palettes/grey.yaml has every background one
+mid grey, split.yaml the background black and the lighter ones white,
+so half way from one to the other no text lightness reaches 3:1 on both
+`$surface` and `$surface_container`. The swap snaps the table and the
+bar crossfades from a snapshot of its old frame, both ways. `both`
+draws every frame on each backend, so a blend that weights the snapshot
+the wrong way on one of them differs. Held-out set D's
+crossfade-inverted could not be reached from a scenario before."""
+screen  = { width = 300, scale = 1.0 }
+backend = "both"
+
+=== shell.strand
+state split = false
+let scheme: Palette = split ? import("base16:../../fixtures/palettes/split.yaml") : import("base16:../../fixtures/palettes/grey.yaml")
+use palette scheme
+bar Top {
+  height: 30
+  bg: $surface
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 40; height: 14; radius: 3; bg: $surface_container }
+    text "Theme" { id: label; color: $fg }
+  }
+}
+
+=== steps
+rest
+mark to-split
+set split true
+rest
+mark to-grey
+set split false
+rest

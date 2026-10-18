@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use strand_scene::{LogicalRect, NodeId, NodeKind, Paint, Prop, Scale};
+use strand_scene::{LogicalRect, NodeId, NodeKind, Paint, Prop, Rect, Scale};
 use strand_text::TextKey;
 use vello_cpu::kurbo;
 
@@ -163,7 +163,19 @@ pub(super) fn paint(
     let lg = |v: f64| (v / s) as f32;
     for i in items {
         match &i.item {
-            Item::Fill { paint, .. } => out.fills.push(paint.clone()),
+            Item::Fill { paint, shape, .. } => {
+                out.fills.push(paint.clone());
+                let b = match shape {
+                    super::FillShape::Rect(r) => *r,
+                    super::FillShape::Path(p) => kurbo::Shape::bounding_box(p),
+                };
+                out.fill_boxes.push(LogicalRect::new(
+                    lg(b.x0),
+                    lg(b.y0),
+                    lg(b.width()),
+                    lg(b.height()),
+                ));
+            }
             Item::Border { paint, .. } => out.borders.push(paint.clone()),
             Item::Shadow { color, extent, .. } => out.shadows.push(ShadowDrawn {
                 color: *color,
@@ -264,6 +276,8 @@ impl Flattener<'_> {
     /// Adds `t` to the frame's trace with its look this frame: `frame`
     /// is its drawn box in physical pixels and `xform` the transform it
     /// is drawn under.
+    /// `clip`: the clip its ancestors set (physical pixels); a node drawn
+    /// on its surface but wholly outside it is [`Hidden::Clipped`].
     pub(super) fn probe_push(
         &mut self,
         mut t: NodeTrace,
@@ -271,12 +285,21 @@ impl Flattener<'_> {
         frame: kurbo::Rect,
         xform: kurbo::Affine,
         hidden: Option<Hidden>,
+        clip: Rect,
     ) {
+        let surface = self.surface;
         let Some(trace) = self.trace.as_mut() else {
             return;
         };
         let s = self.scale.as_f64();
         let v = xform.transform_rect_bbox(frame);
+        let meets = |r: Rect| {
+            v.x1 > f64::from(r.x)
+                && v.y1 > f64::from(r.y)
+                && v.x0 < f64::from(r.x) + f64::from(r.w)
+                && v.y0 < f64::from(r.y) + f64::from(r.h)
+        };
+        let hidden = hidden.or_else(|| (meets(surface) && !meets(clip)).then_some(Hidden::Clipped));
         t.visual = LogicalRect::new(
             (v.x0 / s) as f32,
             (v.y0 / s) as f32,

@@ -1,0 +1,29 @@
+id     = "slider-oneway"
+about  = """A slider bound one way (`value: vol`, no `<->`) is display-only: a drag
+neither moves it nor writes (decisions.md 2026-10-06, "only two-way
+values move"), so the knob and the fill stay where they are under both
+drags. Logic setting the value from outside springs them to it. The
+knob's and the fill's places are the slider's parts in the trace
+(`pt`, docs/eval.md "Paint"), so a reference holds them frame by frame."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state vol = 0.3
+bar Top {
+  height: 30; bg: #1e1e2e
+  row { height: 24; gap: 8; align: center
+    slider { id: knob; width: 120; value: vol }
+  }
+}
+
+=== steps
+rest
+mark drag
+drag 39,12 -> 91,12 over 400
+rest
+mark external
+set vol 0.8
+rest
+mark drag2
+drag 96,12 -> 20,12 over 200
+rest

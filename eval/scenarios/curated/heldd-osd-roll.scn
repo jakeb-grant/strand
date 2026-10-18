@@ -1,0 +1,35 @@
+id     = "heldd-osd-roll"
+about  = "A volume OSD fades and scales in, its level changes in quick steps (each roll of the percentage interrupted by the next) while the meter springs along, then it fades out. Held-out set D's correct-motion set (eval-coverage-2)."
+screen = { width = 300, height = 600, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state level = 0.4
+state shown = false
+
+osd Level {
+  anchor: bottom; margin: 0, 0, 96; open: shown
+  enter { opacity: 0; scale: 0.9 }
+  row { width: 240; height: 40; pad: 0, 12; gap: 10; align: center; radius: 20; bg: #1e1e2e
+    meter level { id: bar_meter; grow: 1; height: 6; color: #a6e3a1; track: #313244 }
+    text pct(level) { id: pct_text; width: 44; align: end; color: #cdd6f4; roll: true }
+  }
+}
+
+=== steps
+rest
+mark show
+set shown true
+rest
+mark ramp
+set level 0.45
+wait 40
+set level 0.5
+wait 40
+set level 0.55
+wait 40
+set level 0.6
+rest
+mark hide
+set shown false
+rest

@@ -1,0 +1,34 @@
+id     = "heldd-scale2-dots"
+about  = "Workspace dots on a scale-2 output: the focused dot widens into a pill and its neighbours glide aside; a focus change interrupted by another retargets mid-flight. Held-out set D's correct-motion set (eval-coverage-2)."
+screen = { width = 300, scale = 2.0 }
+hz     = 60
+
+=== shell.strand
+state ws = 1
+let spaces = [1, 2, 3, 4, 5]
+
+bar Top {
+  height: 28; bg: #1e1e2e
+  row { id: dots; height: 28; gap: 6; pad: 0, 10; align: center
+    for n in spaces key n {
+      box { width: 8; height: 8; radius: full; bg: #585b70
+        when n == ws { width: 24; bg: #89b4fa }
+      }
+    }
+    box { id: tail; width: 30; height: 10; radius: 3; bg: #45475a }
+  }
+}
+
+=== steps
+rest
+mark move
+set ws 3
+rest
+mark retarget
+set ws 5
+wait 50
+set ws 2
+rest
+mark back
+set ws 1
+rest

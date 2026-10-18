@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "flip-nested"
 verdict good
-note "new scenario: the banner's height springs taller, the toolbar row moves down with it while gliding sideways to its new centre and its buttons glide inside it; nothing jumps; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "origin 22,0 (320/2 - 276/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario 27f77af5d98a5cee
-seal 3cc9a6a64936c45f
+seal e15d39cf3fb45b64
 S1 0 - "panel Tools"
 N0 "b1|shell.strand:10:9|#0" "box#b1"
 N1 "b2|shell.strand:11:9|#1" "box#b2"
@@ -18,7 +18,7 @@ N6 "stack|shell.strand:6:5|#0" "col#stack"
 N7 "tools|shell.strand:8:7|#0" "row#tools"
 N8 "|shell.strand:2:1|#0" "panel@shell.strand:2"
 k0 p1
-s1 z=276,68
+s1 z=276,68 o=22,0
 n0 x=133 y=35 w=14 h=14 ord=6 bg=e06c75ff
 n1 x=151 y=35 w=14 h=14 ord=7 bg=98c379ff
 n2 x=169 y=35 w=14 h=14 ord=8 bg=61afefff

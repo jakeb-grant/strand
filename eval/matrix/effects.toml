@@ -194,6 +194,25 @@ name = "scale-2"
 about = "the screen's scale is 2"
 screen_scale = 2.0
 
+# ---- input -----------------------------------------------------------------
+
+[[effect]]
+name = "scroll"
+about = """a short list beside the popup's anchor is scrolled by the wheel, two
+notches in quick steps and one back during the spring (m4-plan.md
+"Lists": wheel steps spring)"""
+slots.below = 'list { id: lst; width: 60; height: 20; gap: 2; for n in [1, 2, 3, 4, 5, 6] key n { box { width: 60; height: 12; bg: #606060 } } }'
+mid = ["pointer 140,42", "scroll 1", "frames 2", "scroll 1", "frames 2", "scroll -1", "rest"]
+
+[[effect]]
+name = "slider-drag"
+about = """a two-way slider beside the popup's anchor is dragged from its knob
+(decisions.md 2026-10-06 "only two-way values move": the knob stays
+under the pointer)"""
+slots.decls = 'state vol = 0.3'
+slots.below = 'slider { id: sl; width: 120; value: <-> vol }'
+mid = ["drag 151,42 -> 200,42 over 200", "rest"]
+
 # ---- backends -------------------------------------------------------------
 
 [[effect]]

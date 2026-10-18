@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "island-card-swell"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "the day boxes are hidden=clipped on k1-k4 while the clip: true card's springing box has not reached them (below it, or left of its left edge as its x springs 280 to 50): the new Hidden::Clipped reason; read with explain: geometry, opacity and paint tick for tick as approved (eval-coverage-2)"
 date 2026-10-18
-rev "a38d1bc6"
+rev "0824d452+changes"
 approver "claude"
 scenario 616a2f7b6fa02cf2
-seal 820da2d817944e2c
+seal 3eeffd625ecccb91
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:8:5|[Mock | DP-1]#0" "popup#big"
@@ -62,10 +62,10 @@ n6 srf=2 x=72 y=32 w=836 h=40 op=37 ord=4
 n7 srf=2 x=72 y=192 w=836 h=40 op=0 hid=opacity0 ord=14
 n8 srf=2 x=72 y=84 w=836 h=40 op=0 hid=opacity0 ord=12
 n9 srf=2 x=72 y=138 w=836 h=40 op=0 hid=opacity0 ord=13
-n10 srf=2 x=72 y=42 w=27 h=21 op=37 ord=5 bg=89b4faff
-n11 srf=2 x=114 y=42 w=27 h=21 op=37 ord=6 bg=89b4faff
-n12 srf=2 x=156 y=42 w=27 h=21 op=37 ord=7 bg=89b4faff
-n13 srf=2 x=198 y=42 w=27 h=21 op=37 ord=8 bg=89b4faff
+n10 srf=2 x=72 y=42 w=27 h=21 op=37 hid=clipped ord=5 bg=89b4faff
+n11 srf=2 x=114 y=42 w=27 h=21 op=37 hid=clipped ord=6 bg=89b4faff
+n12 srf=2 x=156 y=42 w=27 h=21 op=37 hid=clipped ord=7 bg=89b4faff
+n13 srf=2 x=198 y=42 w=27 h=21 op=37 hid=clipped ord=8 bg=89b4faff
 n14 srf=2 x=240 y=42 w=27 h=21 op=37 ord=9 bg=89b4faff
 n15 srf=2 x=282 y=45 w=47 h=15 op=37 txt=S ord=10 ink=283,46,46,13 fg=cdd6f4ff gl=["Monday"]
 n16 srf=2 x=344 y=36 w=131 h=33 op=37 ord=11 bg=45475aff
@@ -75,7 +75,7 @@ n6 y=35 op=98
 n10 y=45 op=98
 n11 y=45 op=98
 n12 y=45 op=98
-n13 y=45 op=98
+n13 y=45 op=98 hid=-
 n14 y=45 op=98
 n15 y=48 op=98 ink=283,49,46,13
 n16 y=39 op=98
@@ -84,7 +84,7 @@ n1 x=176 w=628 h=162
 n6 y=37 op=151
 n10 y=47 op=151
 n11 y=47 op=151
-n12 y=47 op=151
+n12 y=47 op=151 hid=-
 n13 y=47 op=151
 n14 y=47 op=151
 n15 y=50 op=151 ink=283,51,46,13
@@ -93,7 +93,7 @@ k4
 n1 x=133 w=714 h=223
 n6 y=38 op=190
 n10 op=190
-n11 op=190
+n11 op=190 hid=-
 n12 op=190
 n13 op=190
 n14 op=190
@@ -105,7 +105,7 @@ n6 op=216
 n7 ord=21
 n8 y=86 op=37 hid=-
 n9 ord=20
-n10 y=48 op=216
+n10 y=48 op=216 hid=-
 n11 y=48 op=216
 n12 y=48 op=216
 n13 y=48 op=216

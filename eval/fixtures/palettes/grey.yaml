@@ -1,0 +1,22 @@
+# A base16 scheme for eval/scenarios (docs/eval.md, "Theme swaps"): every
+# background one mid grey, so text of either lightness reads on it.
+system: "base16"
+name: "eval grey"
+variant: "dark"
+palette:
+  base00: "#777777"
+  base01: "#777777"
+  base02: "#777777"
+  base03: "#999999"
+  base04: "#bbbbbb"
+  base05: "#ffffff"
+  base06: "#ffffff"
+  base07: "#ffffff"
+  base08: "#e06c75"
+  base09: "#d19a66"
+  base0A: "#e5c07b"
+  base0B: "#98c379"
+  base0C: "#56b6c2"
+  base0D: "#61afef"
+  base0E: "#c678dd"
+  base0F: "#be5046"

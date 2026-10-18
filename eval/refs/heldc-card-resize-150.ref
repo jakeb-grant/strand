@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-card-resize-150"
 verdict good
-note "set C scenario, unedited: at 1.5x the card body springs taller and back, the footer follows, the header stays; the content-sized card takes its grown size at once (root laid at the configured buffer, decisions.md popup-shrink) and follows the spring on shrink (held), an asymmetry recorded as open in decisions.md eval-coverage; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "origin 41,0 (300/2 - 218/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario 9a64844c76557e62
-seal 89e75c9b6ce2132a
+seal 00c9e175685201ef
 S1 0 - "panel Card"
 N0 "body|shell.strand:10:5|#0" "box#body"
 N1 "card|shell.strand:4:3|#0" "col#card"
@@ -16,7 +16,7 @@ N4 "icon|shell.strand:7:7|#0" "box#icon"
 N5 "label|shell.strand:8:7|#0" "text#label"
 N6 "|shell.strand:2:1|#0" "panel@shell.strand:2"
 k0 p1
-s1 z=218,113
+s1 z=218,113 o=41,0
 n0 x=29 y=38 w=160 h=23 v=29.328125,38,160,23.328125 ord=5 bg=3b4252ff
 n1 x=19 y=0 w=180 h=90 v=19.328125,0,180,90 ord=1 bg=22262eff sh=00000066@0.671875,-14.671875,217.328125,127.328125
 n2 x=29 y=69 w=160 h=11 v=29.328125,69.328125,160,10.671875 ord=6 bg=56b6c2ff

@@ -1,0 +1,40 @@
+id     = "heldd-bar-crossfade"
+about  = "A bar module swaps between a clock and a media title: the two labels crossfade in one stack, the module's pill resizes to its new content and the box after it follows; a swap back during the fade reverses it smoothly. Held-out set D's correct-motion set: twin false-alarmed on a label made again while the one it replaces still exits (its key takes `~2`), before twin compared such keys by their base (eval-coverage-2)."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+enum Mode { hours, song }
+state mode = hours
+
+bar Top {
+  height: 30; bg: #181825; color: #cdd6f4
+  row { id: bar_row; height: 30; gap: 8; pad: 0, 8; align: center
+    box { id: left; width: 40; height: 16; radius: 4; bg: #45475a }
+    stack { id: module; height: 22; pad: 0, 8; radius: 11; bg: #313244; align: center
+      if mode == hours {
+        text "12:30" { enter { opacity: 0 } }
+      } else {
+        text "Now playing" { enter { opacity: 0 } }
+      }
+    }
+    box { id: right; width: 40; height: 16; radius: 4; bg: #45475a }
+  }
+}
+
+=== steps
+rest
+mark swap
+set mode song
+rest
+expect still #left
+mark back
+set mode hours
+rest
+expect still #left
+mark interrupted
+set mode song
+wait 80
+set mode hours
+rest
+expect still #left

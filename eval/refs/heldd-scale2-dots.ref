@@ -1,0 +1,168 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldd-scale2-dots"
+verdict good
+note "set D correct-motion scenario, unedited but its id: at scale 2 the focused dot widens into a pill, its neighbours glide aside, a retarget mid-flight; all checks pass; read with explain (eval-coverage-2)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 6f651bac51d7f051
+seal 7f9664a84b6919d7
+S1 0 - "bar Top"
+N0 "dots|shell.strand:6:3|[Mock | DP-1]#0" "row#dots"
+N1 "tail|shell.strand:12:5|[Mock | DP-1]#5" "box#tail"
+N2 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N3 "|shell.strand:8:7|[Mock | DP-1][1]#0" "box@shell.strand:8"
+N4 "|shell.strand:8:7|[Mock | DP-1][2]#1" "box@shell.strand:8"
+N5 "|shell.strand:8:7|[Mock | DP-1][3]#2" "box@shell.strand:8"
+N6 "|shell.strand:8:7|[Mock | DP-1][4]#3" "box@shell.strand:8"
+N7 "|shell.strand:8:7|[Mock | DP-1][5]#4" "box@shell.strand:8"
+k0 p1
+s1 z=300,28
+n0 x=0 y=0 w=300 h=28 ord=1
+n1 x=96 y=9 w=30 h=10 ord=7 bg=45475aff
+n2 x=0 y=0 w=300 h=28 bg=1e1e2eff
+n3 x=10 y=10 w=24 h=8 ord=2 bg=89b4faff
+n4 x=40 y=10 w=8 h=8 ord=3 bg=585b70ff
+n5 x=54 y=10 w=8 h=8 ord=4 bg=585b70ff
+n6 x=68 y=10 w=8 h=8 ord=5 bg=585b70ff
+n7 x=82 y=10 w=8 h=8 ord=6 bg=585b70ff
+k1
+n3 w=20 bg=82a7e5ff
+n4 x=36
+n5 x=50 w=12 bg=5f6783ff
+k2
+n3 w=14 bg=7691c3ff
+n4 x=30
+n5 x=44 w=18 bg=6b7ca3ff
+k3
+n3 w=10 bg=6c7ea6ff
+n4 x=26
+n5 x=40 w=22 bg=758fc0ff
+k4
+n3 w=8 bg=657191ff
+n4 x=24
+n5 x=38 w=24 bg=7d9cd5ff
+k5
+n3 bg=606884ff
+n5 bg=82a6e3ff
+k6
+n3 bg=5d637cff
+n5 bg=85abedff
+k7
+n3 bg=5b6077ff
+n5 bg=86aff2ff
+k8
+n3 bg=5a5e74ff
+n5 bg=88b1f6ff
+k9
+n3 bg=595c72ff
+n5 bg=88b2f7ff
+k10
+n3 bg=585c71ff
+n5 bg=89b3f9ff
+k11
+n3 bg=585b71ff
+k12
+n3 bg=585b70ff
+n5 bg=89b4faff
+k13
+k14
+n5 w=20 bg=82a7e5ff
+n6 x=64
+n7 x=78 w=12 bg=5f6783ff
+k15
+n5 w=14 bg=7691c3ff
+n6 x=58
+n7 x=72 w=18 bg=6b7ca3ff
+k16
+n5 w=10 bg=6c7ea6ff
+n6 x=54
+n7 x=68 w=22 bg=758fc0ff
+k17
+n5 w=8 bg=657191ff
+n6 x=52
+n7 x=66 w=24 bg=7d9cd5ff
+k18
+n4 w=12 bg=5f6783ff
+n5 x=42 bg=606884ff
+n6 x=56
+n7 x=70 w=20 bg=7b98cfff
+k19
+n4 w=18 bg=6b7ca3ff
+n5 x=48 bg=5d637cff
+n6 x=62
+n7 x=76 w=14 bg=7288b6ff
+k20
+n4 w=22 bg=758fc0ff
+n5 x=52 bg=5b6077ff
+n6 x=66
+n7 x=80 w=10 bg=69799fff
+k21
+n4 w=24 bg=7d9cd5ff
+n5 x=54 bg=5a5e74ff
+n6 x=68
+n7 x=82 w=8 bg=636e8dff
+k22
+n4 bg=82a6e3ff
+n5 bg=595c72ff
+n7 bg=5f6782ff
+k23
+n4 bg=85abedff
+n5 bg=585c71ff
+n7 bg=5c627bff
+k24
+n4 bg=86aff2ff
+n5 bg=585b71ff
+n7 bg=5a5f76ff
+k25
+n4 bg=88b1f6ff
+n5 bg=585b70ff
+n7 bg=595d74ff
+k26
+n4 bg=88b2f7ff
+n7 bg=595c72ff
+k27
+n4 bg=89b3f9ff
+n7 bg=585c71ff
+k28
+n7 bg=585b71ff
+k29
+n4 bg=89b4faff
+n7 bg=585b70ff
+k30
+k31
+n3 w=12 bg=5f6783ff
+n4 x=28 w=20 bg=82a7e5ff
+k32
+n3 w=18 bg=6b7ca3ff
+n4 x=34 w=14 bg=7691c3ff
+k33
+n3 w=22 bg=758fc0ff
+n4 x=38 w=10 bg=6c7ea6ff
+k34
+n3 w=24 bg=7d9cd5ff
+n4 x=40 w=8 bg=657191ff
+k35
+n3 bg=82a6e3ff
+n4 bg=606884ff
+k36
+n3 bg=85abedff
+n4 bg=5d637cff
+k37
+n3 bg=86aff2ff
+n4 bg=5b6077ff
+k38
+n3 bg=88b1f6ff
+n4 bg=5a5e74ff
+k39
+n3 bg=88b2f7ff
+n4 bg=595c72ff
+k40
+n3 bg=89b3f9ff
+n4 bg=585c71ff
+k41
+n4 bg=585b71ff
+k42
+n3 bg=89b4faff
+n4 bg=585b70ff
+k43

@@ -16,6 +16,8 @@
 
 use std::collections::BTreeMap;
 
+use strand_render::probe::Motions;
+
 use super::{Cx, Finding, first_per_node};
 use crate::scenario::CheckId;
 use crate::trace::Row;
@@ -35,11 +37,14 @@ type Edge<'a> = (f32, f32, &'a str, &'static str);
 /// Drawn where it is laid: nothing moves it or anything it is drawn
 /// with (no motion of its own or inherited: an entering row's layer is
 /// placed by its spring's whole pixels), and nothing offsets, scales or
-/// turns it.
+/// turns it. A scroll's offset in flight (`SCROLL`, a fling's `FLING`)
+/// is not such motion: it lays its content out at the offset each frame,
+/// laid where drawn.
 fn in_place(r: &Row) -> bool {
     let zero = |p: [f32; 2]| p == [0.0, 0.0];
-    r.mot == 0
-        && r.emot == 0
+    let laid_out = !(Motions::SCROLL.0 | Motions::FLING.0);
+    r.mot & laid_out == 0
+        && r.emot & laid_out == 0
         && zero(r.inherited)
         && zero(r.written)
         && zero(r.spring)

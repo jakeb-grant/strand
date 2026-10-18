@@ -107,7 +107,8 @@ pub struct NodeTrace {
     /// morphs, lean, jelly, drags, time) moves this frame on the node
     /// itself. A glide (FLIP, derived from layout) is not authored.
     pub authored: Axes,
-    /// Why nothing of it shows (its subtree is then absent).
+    /// Why nothing of it shows (its subtree is then absent, but under
+    /// [`Hidden::Clipped`]).
     pub hidden: Option<Hidden>,
     /// What a text, button or input drew its text from.
     pub text: Option<TextDrawn>,
@@ -140,6 +141,10 @@ pub struct NodePaint {
     /// Its fills, in paint order: its background (a meter's track and
     /// value, a button's themed one).
     pub fills: Vec<Paint>,
+    /// (eval-coverage-2) Where each of its fills lies, in the same order:
+    /// the bounds of the shape it fills, surface logical pixels, before
+    /// transforms (a slider's track, value and knob, a meter's value).
+    pub fill_boxes: Vec<LogicalRect>,
     /// Its borders' paints.
     pub borders: Vec<Paint>,
     /// Its drop shadows, a box's glow included.
@@ -250,6 +255,13 @@ impl Motions {
     pub const INK_SPRING: Self = Self(1 << 15);
     /// (eval-rules) Its own border springs.
     pub const LINE_SPRING: Self = Self(1 << 16);
+    /// (eval-coverage-2) A `scroll` or `list` whose offset moves by
+    /// itself this frame (a wheel step's spring, a fling): it lays its
+    /// content out anew each frame with no change from logic.
+    pub const SCROLL: Self = Self(1 << 17);
+    /// (eval-coverage-2) A scroll of [`Motions::SCROLL`] flinging on
+    /// after a touchpad lift (`reduced_motion` drops the fling).
+    pub const FLING: Self = Self(1 << 18);
 
     pub const NONE: Self = Self(0);
 
@@ -332,6 +344,11 @@ pub enum Hidden {
     /// Drawn, but inside an exit pose's subtree: never hit (its pixels
     /// show; the checks treat it as leaving).
     Inert,
+    /// (eval-coverage-2) On its surface, but wholly outside the clip its
+    /// ancestors set (a `scroll`'s or `list`'s rows scrolled out of its
+    /// box, a `clip: true` box's overflow): none of its pixels show. Its
+    /// children are traced, each with its own reason.
+    Clipped,
 }
 
 /// What a text node's glyphs came from.
@@ -452,7 +469,9 @@ impl Probe {
     /// for this paint): its trace, when on. `damage_px` is the frame's
     /// own damage, `layout_passes` those this paint ran, `layout_nodes`
     /// the boxes of the surface's layout, `pending` the text requests in
-    /// flight. Every held layout counts the paint.
+    /// flight, `scrolling` the scrolls whose offset moves by itself
+    /// ([`Motions::SCROLL`]), each with whether it flings
+    /// ([`Motions::FLING`]). Every held layout counts the paint.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn frame(
         &mut self,
@@ -467,6 +486,7 @@ impl Probe {
         pending: usize,
         times: PaintTimes,
         fade: Option<f32>,
+        scrolling: &[(NodeId, bool)],
     ) {
         for (h, _) in &mut self.held {
             h.paints += 1;
@@ -490,7 +510,23 @@ impl Probe {
             text_held: count(self.held.len() as u64),
             times,
             fade,
-            nodes: f.trace.clone().unwrap_or_else(|| Arc::from([])),
+            nodes: match f.trace.clone() {
+                Some(n) if n.iter().any(|t| scrolling.iter().any(|s| s.0 == t.node)) => n
+                    .iter()
+                    .map(|t| {
+                        let mut t = t.clone();
+                        if let Some((_, fling)) = scrolling.iter().find(|s| s.0 == t.node) {
+                            t.motions |= Motions::SCROLL;
+                            if *fling {
+                                t.motions |= Motions::FLING;
+                            }
+                        }
+                        t
+                    })
+                    .collect(),
+                Some(n) => n,
+                None => Arc::from([]),
+            },
         });
     }
 

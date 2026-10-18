@@ -1,0 +1,24 @@
+# A base16 scheme for eval/scenarios (docs/eval.md, "Theme swaps"): the
+# background black and the lighter backgrounds white, so only text of a
+# middle lightness reads on all of them. Swapped from grey.yaml, the two
+# kinds of background move apart, and half way no text reads on both.
+system: "base16"
+name: "eval split"
+variant: "dark"
+palette:
+  base00: "#000000"
+  base01: "#ffffff"
+  base02: "#ffffff"
+  base03: "#999999"
+  base04: "#bbbbbb"
+  base05: "#888888"
+  base06: "#888888"
+  base07: "#888888"
+  base08: "#e06c75"
+  base09: "#d19a66"
+  base0A: "#e5c07b"
+  base0B: "#98c379"
+  base0C: "#56b6c2"
+  base0D: "#61afef"
+  base0E: "#c678dd"
+  base0F: "#be5046"

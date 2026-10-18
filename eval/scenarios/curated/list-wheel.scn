@@ -1,0 +1,50 @@
+id     = "list-wheel"
+about  = """A list of twenty rows scrolled by a wheel (`scroll N` is N notches of
+15 px; m4-plan.md "Lists": wheel steps spring): one notch springs the offset from where it is;
+notches arriving while it springs retarget it from its target, not from
+the offset drawn; a notch back up during the spring reverses it in
+place; scrolling far past either end clamps there (Strand has no
+overscroll), and the rows outside the list's height are clipped.
+Held-out set D's wheel-from-offset made the spring start from the
+offset's rest instead."""
+screen = { width = 300, height = 600, scale = 1.0 }
+
+=== shell.strand
+let rows = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20"]
+panel Picker {
+  anchor: top_left; open: true
+  col { width: 220; pad: 8; bg: #1e1e2e; color: #cdd6f4
+    list { id: picks; height: 200; gap: 4
+      for r in rows key r {
+        row { height: 30; pad: 0, 10; bg: #313244; align: center
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,100
+mark one
+scroll 1
+rest
+mark rapid
+scroll 1
+frames 2
+scroll 1
+frames 2
+scroll 1
+rest
+mark reverse
+scroll 2
+frames 2
+scroll -1
+rest
+mark end
+scroll 60
+rest
+mark top
+scroll -60
+rest

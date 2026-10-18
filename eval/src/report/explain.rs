@@ -11,7 +11,7 @@ use crate::select::Selector;
 use crate::trace::{Row, RunTrace};
 
 /// `probe::Motions` bit names, by bit.
-pub const MOTIONS: [&str; 17] = [
+pub const MOTIONS: [&str; 19] = [
     "PROP_SPRING",
     "OPACITY_SPRING",
     "GLIDE",
@@ -29,6 +29,8 @@ pub const MOTIONS: [&str; 17] = [
     "FILL_SPRING",
     "INK_SPRING",
     "LINE_SPRING",
+    "SCROLL",
+    "FLING",
 ];
 
 /// `probe::Axes` bit names, by bit.
@@ -77,7 +79,13 @@ fn paint(r: &Row) -> String {
         return String::new();
     };
     let mut parts = Vec::new();
-    for (name, v) in [("bg", &p.bg), ("bd", &p.bd), ("sh", &p.sh), ("fg", &p.fg)] {
+    for (name, v) in [
+        ("bg", &p.bg),
+        ("bd", &p.bd),
+        ("sh", &p.sh),
+        ("fg", &p.fg),
+        ("pt", &p.pt),
+    ] {
         if !v.is_empty() {
             parts.push(format!("{name}={}", v.join("/")));
         }

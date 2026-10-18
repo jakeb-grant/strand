@@ -1,0 +1,44 @@
+id     = "heldd-hover-scroll"
+about  = "A picker list in a panel: the pointer glides down the rows, each row brightening and nudging right while hovered; then the wheel scrolls the list in single and rapid steps, and back to the top. Held-out set D's correct-motion set (eval-coverage-2)."
+screen = { width = 300, height = 600, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+let rows = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliett", "kilo", "lima"]
+
+panel Picker {
+  anchor: center; open: true
+  col { width: 220; pad: 8; radius: 10; bg: #1e1e2e; color: #cdd6f4
+    list { id: picks; height: 200; gap: 4
+      for r in rows key r {
+        row { height: 30; pad: 0, 10; radius: 6; align: center; bg: #313244
+          when hover { bg: #45475a; x: 4 }
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark hover
+glide 100,20 -> 100,190 over 500
+rest
+mark leave
+glide 100,190 -> 100,212 over 100
+rest
+mark wheel
+pointer 100,100
+scroll 45
+rest
+mark rapid
+scroll 45
+frames 2
+scroll 45
+frames 2
+scroll 45
+rest
+mark top
+scroll -400
+rest

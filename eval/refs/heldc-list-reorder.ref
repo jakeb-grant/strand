@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-list-reorder"
 verdict good
-note "set C scenario, unedited: four keyed rows glide to their new slots and the second reorder glides on from where they were drawn; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "origin 70,0 (300/2 - 160/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario a1aff03a2cca3113
-seal 6ca57bf8336046c1
+seal 9c6109e9b4a7cad2
 S1 0 - "panel Stack"
 N0 "list|shell.strand:4:3|#0" "col#list"
 N1 "|shell.strand:2:1|#0" "panel@shell.strand:2"
@@ -23,7 +23,7 @@ N11 "|shell.strand:8:9|[b]#0" "text(\"b\")"
 N12 "|shell.strand:8:9|[c]#0" "text(\"c\")"
 N13 "|shell.strand:8:9|[d]#0" "text(\"d\")"
 k0 p1
-s1 z=160,112
+s1 z=160,112 o=70,0
 n0 x=0 y=0 w=160 h=112 ord=1 bg=1d2027ff
 n1 x=0 y=0 w=160 h=112
 n2 x=6 y=6 w=148 h=22 ord=2 bg=2f3542ff

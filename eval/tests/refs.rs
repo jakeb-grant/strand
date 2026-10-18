@@ -121,7 +121,19 @@ fn a_recording_round_trips_through_its_text() {
         for r in &mut f.n {
             r.visual[0] += 1.25;
             r.drawn[1] += 0.015625;
-            r.hidden = Some("opacity0".into());
+            r.hidden = Some(
+                if r.key.len() % 2 == 0 {
+                    "opacity0"
+                } else {
+                    "clipped"
+                }
+                .into(),
+            );
+            r.paint = Some(strand_eval::paint::PaintRec {
+                bg: vec!["ff0000ff".into()],
+                pt: vec!["0,7,120,4".into(), "31.796875,2,14,14".into()],
+                ..Default::default()
+            });
             r.text = Some("E".into());
             r.scale = [0.5, 0.75];
             r.rotate = 12.5;
@@ -153,7 +165,11 @@ fn a_recording_round_trips_through_its_text() {
     let rec2 = Recording::from_trace(&t2);
     let text2 = encode(&rec2);
     assert_eq!(decode(&text2, 1).unwrap_or_else(|e| panic!("{e}")), rec2);
-    assert!(text2.contains("hid=opacity0"), "{text2}");
+    assert!(
+        text2.contains("hid=opacity0") || text2.contains("hid=clipped"),
+        "{text2}"
+    );
+    assert!(text2.contains("pt=0,7,120,4/31.796875,2,14,14"), "{text2}");
     assert!(text2.contains("P=128,0.9,3,-2.5"), "{text2}");
     assert!(text2.contains(" -\n"), "a node or surface leaves: {text2}");
 }
@@ -757,4 +773,30 @@ fn the_committed_references_cover_every_scenario_and_stay_small() {
         "eval/refs/: {total} bytes, over {}",
         refs::TOTAL_BUDGET
     );
+}
+
+/// (eval-coverage-2) A control whose part moved inside a box that stayed
+/// (a knob a frame behind its pointer) leaves its reference; a part
+/// within a quantum of it does not.
+#[test]
+fn a_part_that_moved_inside_its_box_is_a_change() {
+    let t = run(ROW);
+    let with_part = |knob: &str| {
+        let mut t = t.clone();
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                r.paint = Some(strand_eval::paint::PaintRec {
+                    bg: vec!["ff0000ff".into()],
+                    pt: vec![format!("{knob},2,14,14")],
+                    ..Default::default()
+                });
+            }
+        }
+        Recording::from_trace(&t)
+    };
+    let a = with_part("31.796875");
+    assert!(recording::diff(&a, &with_part("31.8125"), Tol::px(0.5)).is_none());
+    let d = recording::diff(&a, &with_part("33.796875"), Tol::px(0.5))
+        .unwrap_or_else(|| panic!("a knob 2 px over is a change"));
+    assert_eq!(d.first.field, "paint.parts", "{}", d.first.line());
 }

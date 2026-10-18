@@ -1,0 +1,35 @@
+id     = "heldd-pages-144"
+about  = "Settings pages on a 144 Hz output: forward switches slide the new page in from the right and the old one out to the left, a backward switch mirrors it, and one switch lands during another; the tab row above never moves. Held-out set D's correct-motion set: teleport false-alarmed on a page's offset spring, before an authored offset's excursion counted as its travel (eval-coverage-2)."
+screen = { width = 300, height = 600, scale = 1.0 }
+hz     = 144
+
+=== shell.strand
+enum Tab { net, pair, energy }
+state tab = net
+
+panel Settings {
+  anchor: center; open: true
+  col { width: 240; pad: 10; gap: 8; radius: 12; bg: #1e1e2e; color: #cdd6f4
+    row { id: tabs; gap: 6; align: center
+      text "Wi-Fi"; text "Bluetooth"; text "Power"
+    }
+    pages current: tab { id: body; height: 120
+      page net { col { gap: 4; text "Network A"; text "Network B" } }
+      page pair { col { gap: 4; text "Headphones" } }
+      page energy { col { gap: 4; text "Balanced"; text "Performance" } }
+    }
+  }
+}
+
+=== steps
+rest
+mark forward
+set tab pair
+rest
+expect still #tabs
+mark overlap
+set tab energy
+wait 60
+set tab net
+rest
+expect still #tabs
