@@ -2207,3 +2207,80 @@ fn the_gpu_is_off_after_three_lost_devices() {
     assert_ne!(buf.px(90, 30), buf.px(5, 5), "the bloomed box is drawn");
     assert_matches_ref("gpu_off", &buf, 0);
 }
+
+/// (gradient-cpu-gpu) Gradients between colours far apart in hue (red
+/// to blue across, green to magenta down), on boxes whose edges lie on
+/// whole pixels: the GPU's frame matches the CPU's within the tolerance
+/// at every pixel. Both draw design.md's OKLab ramp; the GPU interpolates
+/// per channel in sRGB between the stops it is given, and with 8 samples
+/// a segment its ramp left the OKLab one by up to 29 levels between them
+/// (round 3's probe: 750 of 16000 pixels past 6).
+#[test]
+fn a_gradient_far_apart_in_hue_is_drawn_by_the_gpu_like_the_cpu() {
+    let Some(opts) = device() else { return };
+    let lin = |angle: f32, a: &str, b: &str| {
+        PropValue::Paint(Paint::Linear {
+            angle,
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: hex(a),
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: hex(b),
+                },
+            ],
+        })
+    };
+    let scene = || {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#000000"))]);
+        for (x, w, h, paint) in [
+            (8.0, 200.0, 20.0, lin(90.0, "#ff0000", "#0000ff")),
+            (216.0, 12.0, 52.0, lin(0.0, "#00ff00", "#ff00ff")),
+        ] {
+            b.node(
+                NodeKind::Box,
+                Some(root),
+                vec![
+                    (Prop::X, num(x)),
+                    (Prop::Y, num(4.0)),
+                    (Prop::Width, num(w)),
+                    (Prop::Height, num(h)),
+                    (Prop::Bg, paint),
+                ],
+            );
+        }
+        b.diff
+    };
+    let mut cpu = renderer();
+    assert!(cpu.apply(scene()).is_empty());
+    cpu.attach_surface(S, cpu.tree().roots()[0]);
+    let mut want = Buffer::new(240, 60, Scale::ONE);
+    want.paint(&mut cpu, S, 0);
+
+    let mut r = renderer();
+    assert!(r.apply(scene()).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    let mut host = Host::new(opts);
+    r.promote_now(S);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Attached { .. }));
+    buf.pixels.fill(0);
+    buf.paint(&mut r, S, 0);
+    host.send(&mut r);
+    host.until(&mut r, |m| matches!(m, GpuReply::Pixels { .. }));
+    buf.pixels.fill(0);
+    let copied = r.gpu_frames_copied();
+    buf.paint(&mut r, S, 0);
+    assert_eq!(r.gpu_frames_copied(), copied + 1, "drawn by the GPU");
+    let (bad, worst) = compare(&buf, &want);
+    eprintln!("GPU vs CPU: {bad} pixels past {GPU_TOLERANCE}, worst {worst}");
+    assert_eq!(
+        bad, 0,
+        "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
+    );
+}

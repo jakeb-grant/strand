@@ -1,0 +1,12 @@
+diff --git a/crates/strand-render/src/raster/paint.rs b/crates/strand-render/src/raster/paint.rs
+--- a/crates/strand-render/src/raster/paint.rs
++++ b/crates/strand-render/src/raster/paint.rs
+@@ -92,7 +92,7 @@
+     // Pieces still to look at, the leftmost last.
+     let mut todo = vec![(0.0f32, 1.0f32, 0u32)];
+     while let Some((t0, t1, depth)) = todo.pop() {
+-        if depth >= RAMP_DEPTH || fits(t0, t1) {
++        if depth >= RAMP_DEPTH.min(3) || (depth > 3 && fits(t0, t1)) {
+             if t1 < 1.0 {
+                 out.push(t1);
+             }

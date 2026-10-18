@@ -25,6 +25,8 @@ mod paint;
 pub use atlas::AtlasMirror;
 pub(crate) use draw::{disjoint, draw as draw_group, skip_group};
 use draw::{draw, frame_px, to_kurbo};
+#[cfg(feature = "gpu")]
+pub(crate) use paint::ramp;
 
 /// Width of a raster cell: one vello wide tile.
 pub const CELL_W: u32 = 256;

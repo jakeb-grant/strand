@@ -2254,35 +2254,13 @@ fn straight(c: Color) -> AlphaColor<Srgb> {
     AlphaColor::new([c.r, c.g, c.b, c.a])
 }
 
-/// Samples between adjacent stops (as the CPU's gradients).
-const GRADIENT_SAMPLES: usize = 8;
-
+/// The gradient's stops as the CPU's vello paints take them
+/// ([`crate::raster::ramp`]), in straight colours.
 fn stops(stops: &[GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
-    let clean: Vec<GradientStop> = stops
-        .iter()
-        .map(|s| GradientStop {
-            offset: if s.offset.is_finite() {
-                s.offset.clamp(0.0, 1.0)
-            } else {
-                0.0
-            },
-            color: s.color.clamped(),
-        })
-        .collect();
-    let mut out = Vec::with_capacity(clean.len() * GRADIENT_SAMPLES);
-    for (i, s) in clean.iter().enumerate() {
-        out.push((s.offset, straight(s.color)));
-        let Some(next) = clean.get(i + 1) else { break };
-        if next.offset <= s.offset {
-            continue;
-        }
-        for k in 1..GRADIENT_SAMPLES {
-            let t = k as f32 / GRADIENT_SAMPLES as f32;
-            let offset = s.offset + (next.offset - s.offset) * t;
-            out.push((offset, straight(s.color.lerp_oklab(next.color, t))));
-        }
-    }
-    out
+    crate::raster::ramp(stops)
+        .into_iter()
+        .map(|(o, c)| (o, straight(c)))
+        .collect()
 }
 
 fn gradient(mut g: Gradient, s: &[GradientStop]) -> Brush {

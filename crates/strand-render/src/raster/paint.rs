@@ -12,15 +12,27 @@ pub(super) fn bgra(c: Color) -> AlphaColor<Srgb> {
     AlphaColor::new([c.b, c.g, c.r, c.a])
 }
 
-/// Samples between adjacent stops, so vello's per-channel sRGB
-/// interpolation follows the OKLab ramp design asks for.
-pub(super) const GRADIENT_SAMPLES: usize = 8;
+/// How many times a piece of a segment between two stops may be halved:
+/// down to 1/1024 of it (vello's ramps hold 512 samples over the whole
+/// gradient, so finer pieces draw nothing new).
+const RAMP_DEPTH: u32 = 10;
 
-/// Gradient stops for vello. Colours are interpolated in premultiplied
-/// OKLab by sampling each segment, then handed over with red and blue
-/// swapped; vello interpolates per channel in sRGB between the samples,
-/// which is symmetric in red and blue, so the swap stays valid.
-pub(super) fn stops(stops: &[GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
+/// How far, in levels of an 8-bit channel, the straight line between two
+/// samples may leave the OKLab ramp: under half a level, so the samples
+/// round to the levels the ramp itself does.
+const RAMP_LEVELS: f32 = 0.5;
+
+/// A gradient's stops as samples of design.md's ramp (premultiplied
+/// OKLab between stops) for a renderer that interpolates per channel in
+/// sRGB between the stops it is given (vello on the CPU and the GPU).
+/// Each segment is halved where the straight line between its samples
+/// leaves the ramp by more than [`RAMP_LEVELS`] in a channel, straight or
+/// premultiplied, down to [`RAMP_DEPTH`]: a few samples for colours near
+/// in hue, more where colours far apart curve (red to blue left the ramp
+/// by 29 levels with 8 even samples; decisions.md, gradient-cpu-gpu).
+/// Offsets are clamped to 0..1 and colours to their range, as the CPU's
+/// dithered ramp (`cache::lut`) takes them.
+pub(crate) fn ramp(stops: &[GradientStop]) -> Vec<(f32, Color)> {
     let clean: Vec<GradientStop> = stops
         .iter()
         .map(|s| GradientStop {
@@ -32,20 +44,81 @@ pub(super) fn stops(stops: &[GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
             color: s.color.clamped(),
         })
         .collect();
-    let mut out = Vec::with_capacity(clean.len() * GRADIENT_SAMPLES);
+    let mut out = Vec::with_capacity(clean.len() * 8);
     for (i, s) in clean.iter().enumerate() {
-        out.push((s.offset, bgra(s.color)));
+        out.push((s.offset, s.color));
         let Some(next) = clean.get(i + 1) else { break };
         if next.offset <= s.offset {
             continue;
         }
-        for k in 1..GRADIENT_SAMPLES {
-            let t = k as f32 / GRADIENT_SAMPLES as f32;
+        for t in cuts(s.color, next.color).iter() {
             let offset = s.offset + (next.offset - s.offset) * t;
-            out.push((offset, bgra(s.color.lerp_oklab(next.color, t))));
+            out.push((offset, s.color.lerp_oklab(next.color, *t).clamped()));
         }
     }
     out
+}
+
+/// Segments' cuts worked out so far, by their two colours: a frame
+/// lowers or paints its gradients every frame.
+const CUTS_KEPT: usize = 1024;
+
+thread_local! {
+    static CUTS: std::cell::RefCell<std::collections::HashMap<[u32; 8], std::rc::Rc<[f32]>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Where [`ramp`] cuts the segment from `a` to `b`, strictly inside it
+/// (0..1, in order).
+fn cuts(a: Color, b: Color) -> std::rc::Rc<[f32]> {
+    let key = [a.r, a.g, a.b, a.a, b.r, b.g, b.b, b.a].map(f32::to_bits);
+    if let Some(c) = CUTS.with(|c| c.borrow().get(&key).cloned()) {
+        return c;
+    }
+    let at = |t: f32| a.lerp_oklab(b, t).clamped();
+    // Straight and premultiplied channels, in levels.
+    let levels =
+        |c: Color| [c.r, c.g, c.b, c.a, c.r * c.a, c.g * c.a, c.b * c.a].map(|v| v * 255.0);
+    // Whether the line over `t0..t1` stays within the levels at seven
+    // points inside it.
+    let fits = |t0: f32, t1: f32| {
+        let (l0, l1) = (levels(at(t0)), levels(at(t1)));
+        (1..8).all(|k| {
+            let q = k as f32 / 8.0;
+            let exact = levels(at(t0 + (t1 - t0) * q));
+            (0..7).all(|c| (l0[c] + (l1[c] - l0[c]) * q - exact[c]).abs() <= RAMP_LEVELS)
+        })
+    };
+    let mut out = Vec::new();
+    // Pieces still to look at, the leftmost last.
+    let mut todo = vec![(0.0f32, 1.0f32, 0u32)];
+    while let Some((t0, t1, depth)) = todo.pop() {
+        if depth >= RAMP_DEPTH || fits(t0, t1) {
+            if t1 < 1.0 {
+                out.push(t1);
+            }
+            continue;
+        }
+        let mid = (t0 + t1) / 2.0;
+        todo.push((mid, t1, depth + 1));
+        todo.push((t0, mid, depth + 1));
+    }
+    let out: std::rc::Rc<[f32]> = out.into();
+    CUTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= CUTS_KEPT {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    });
+    out
+}
+
+/// Gradient stops for vello: [`ramp`]'s samples with red and blue
+/// swapped; vello interpolates per channel in sRGB between them, which
+/// is symmetric in red and blue, so the swap stays valid.
+pub(super) fn stops(stops: &[GradientStop]) -> Vec<(f32, AlphaColor<Srgb>)> {
+    ramp(stops).into_iter().map(|(o, c)| (o, bgra(c))).collect()
 }
 
 pub(super) fn gradient(mut g: Gradient, s: &[GradientStop]) -> PaintType {

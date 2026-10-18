@@ -31,8 +31,12 @@
 # shadow-redraw): a group that qualifies for a fade layer but has none kept
 # is rastered as a group again, so a partial frame differs from its full
 # repaint by a step where the fresh raster draws a layer.
+# gradient-far-hue.patch: gradient-cpu-gpu's fix reverted (decisions.md
+# gradient-cpu-gpu): the stops given vello are 8 even pieces per segment
+# again, so the GPU leg's red to blue leaves the CPU's OKLab ramp.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
 popup-still-pose.patch  regressions/popup-still-pose.scn    twin:#card expect
 fade-layer-redraw.patch regressions/fade-layer-redraw.scn redraw
+gradient-far-hue.patch  regressions/gradient-far-hue.scn  cpu-gpu

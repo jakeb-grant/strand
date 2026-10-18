@@ -1,0 +1,29 @@
+id      = "gradient-far-hue"
+about   = """A finding of round 3's probes (docs/decisions.md gradient-cpu-gpu): linear
+gradients between colours far apart in hue, red to blue across a pill and green
+to magenta down a bar, drawn on both legs while a box beside them widens. The
+CPU draws design.md's OKLab ramp from a dithered table; the GPU interpolates per
+channel in sRGB between the stops lowering gives it, and with 8 even samples a
+segment its ramp left the OKLab one by up to 29 levels between them, so
+`cpu-gpu` failed on 750 of 16000 pixels. Now each segment is halved where that
+line leaves the ramp by over half a level (eval/mutants/gradient-far-hue.patch
+reverts the fix)."""
+screen  = { width = 400, scale = 1.0 }
+backend = "both"
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 40; bg: #000000
+  row { height: 40; gap: 8; pad: 0, 8; align: center
+    box { id: pill; width: 200; height: 20; radius: 10; bg: linear(90deg, #ff0000, #0000ff) }
+    box { id: tall; width: 12; height: 36; bg: linear(0deg, #00ff00, #ff00ff) }
+    box { id: grow; height: 10; bg: #ffffff; width: wide ? 60 : 20 }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
