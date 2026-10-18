@@ -1,0 +1,41 @@
+id     = "stagger-slow-start"
+about  = """Boxes mounting together under `stagger: 40ms` (design.md "Motion and
+time"), whose enter fades in on curves that start slowly: two on
+`ease(ease_in, 600ms)` and two on `ease(in_back, 300ms)`
+(an enter pose plays on each property's own transition, design.md
+"Poses"). Each starts at its turn, 40 ms after the one before, though its
+first frames after that are still within a quantum of its pose; the box
+before them never moves."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state more = false
+bar Top {
+  height: 30
+  bg: #1e2127
+  row { id: list; height: 24; gap: 6; align: center; pad: 0, 8; stagger: 40ms
+    box { id: head; width: 16; height: 12; radius: 3; bg: #5c6370 }
+    if more {
+      box { id: a1; width: 16; height: 12; radius: 3; bg: #98c379
+            opacity: 1 ~ ease(ease_in, 600ms); enter { opacity: 0 } }
+      box { id: b1; width: 16; height: 12; radius: 3; bg: #61afef
+            opacity: 1 ~ ease(in_back, 300ms); enter { opacity: 0 } }
+      box { id: a2; width: 16; height: 12; radius: 3; bg: #c678dd
+            opacity: 1 ~ ease(ease_in, 600ms); enter { opacity: 0 } }
+      box { id: b2; width: 16; height: 12; radius: 3; bg: #e5c07b
+            opacity: 1 ~ ease(in_back, 300ms); enter { opacity: 0 } }
+    }
+  }
+}
+
+=== steps
+rest
+mark more
+set more true
+intend #a1 enters
+intend #b1 enters
+intend #a2 enters
+intend #b2 enters
+rest
+expect still #head
+expect visible #b2

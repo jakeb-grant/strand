@@ -632,36 +632,41 @@ rest
 }
 
 /// A row of a trace from before the in-flight columns, from before the
-/// text's `fit` and `ink`, or from before its paint (an A/B against an
-/// earlier revision), still reads, with nothing in flight, no ink and no
-/// paint; any other width is refused.
+/// text's `fit` and `ink`, from before its paint, or from before its
+/// layout's overhang (an A/B against an earlier revision), still reads,
+/// with nothing in flight, no ink, no paint and no overhang; any other
+/// width is refused.
 #[test]
 fn a_row_without_the_flight_columns_still_reads() {
     let t = go(FOCUS_OFF);
-    let r = t.frames[0].n[0].clone();
+    let mut r = t.frames[0].n[0].clone();
     assert!(r.paint.is_some(), "{r:?}");
+    r.ov = Some([0.5, 2.0]);
     let mut v = serde_json::to_value(&r).unwrap();
     let a = v.as_array_mut().unwrap();
     assert_eq!(a.len(), strand_eval::trace::COLS.len());
-    a.truncate(a.len() - 1);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(back.ov, Some([0.5, 2.0]));
+    let n = strand_eval::trace::COLS.len();
+    v.as_array_mut().unwrap().truncate(n - 1);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(back.ov, None);
+    assert_eq!(back.paint, r.paint);
+    v.as_array_mut().unwrap().truncate(n - 2);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.paint, None);
     assert_eq!((back.fit, back.ink), (r.fit, r.ink));
-    v.as_array_mut()
-        .unwrap()
-        .truncate(strand_eval::trace::COLS.len() - 3);
+    v.as_array_mut().unwrap().truncate(n - 4);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!((back.fit, back.ink), (None, None));
     assert_eq!(back.flight, r.flight);
-    v.as_array_mut()
-        .unwrap()
-        .truncate(strand_eval::trace::COLS.len() - 5);
+    v.as_array_mut().unwrap().truncate(n - 6);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.flight, [0.0, 0.0]);
     assert_eq!(back.inherited, r.inherited);
     v.as_array_mut().unwrap().pop();
     let e = serde_json::from_value::<Row>(v).unwrap_err().to_string();
-    assert!(e.contains("has 33 columns, not 39"), "{e}");
+    assert!(e.contains(&format!("has 33 columns, not {n}")), "{e}");
 }
 
 /// A `scale` step changes the screen's scale mid-run: each frame records

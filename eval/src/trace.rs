@@ -19,12 +19,14 @@ const OLD_COLS: usize = 34;
 const FLIGHT_COLS: usize = 36;
 /// The columns of a row before `paint` (still read).
 const INK_COLS: usize = 38;
+/// The columns of a row before `ov` (still read).
+const PAINT_COLS: usize = 39;
 
 /// The node row's columns, in order (`Row`'s array form).
-pub const COLS: [&str; 39] = [
+pub const COLS: [&str; 40] = [
     "key", "s", "x", "y", "w", "h", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "oo",
     "sx", "sy", "rot", "mot", "emot", "auth", "hid", "txt", "ix", "iy", "wx", "wy", "spx", "spy",
-    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink", "paint",
+    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink", "paint", "ov",
 ];
 
 /// A rect, `[x, y, w, h]`.
@@ -406,6 +408,10 @@ pub struct Row {
     /// (eval-coverage) What it painted itself (`crate::paint`); `None`:
     /// nothing.
     pub paint: Option<crate::paint::PaintRec>,
+    /// (eval-r3) How far the glyph ink of the layout a text drew reaches
+    /// past that layout's own box, left and right (the font's overhang:
+    /// an italic, an icon glyph wider than its advance), logical px.
+    pub ov: Option<[f32; 2]>,
 }
 
 /// `v` to 1/64.
@@ -448,6 +454,7 @@ impl Serialize for Row {
         seq.serialize_element(&self.fit.map(q))?;
         seq.serialize_element(&self.ink.map(|r| r.map(q)))?;
         seq.serialize_element(&self.paint)?;
+        seq.serialize_element(&self.ov.map(|p| p.map(q)))?;
         seq.end()
     }
 }
@@ -458,7 +465,7 @@ impl<'de> Deserialize<'de> for Row {
         // A trace from before `fx`, `fy` were recorded (an A/B against
         // an earlier revision) reads with nothing in flight; one from
         // before `fit` and `ink`, or before `paint`, without them.
-        if ![COLS.len(), INK_COLS, FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
+        if ![COLS.len(), PAINT_COLS, INK_COLS, FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
             return Err(D::Error::custom(format!(
                 "a node row has {} columns, not {}",
                 v.len(),
@@ -529,6 +536,13 @@ impl<'de> Deserialize<'de> for Row {
                 Some(p) => Some(
                     serde_json::from_value(p.clone())
                         .map_err(|_| D::Error::custom("column paint is not a paint"))?,
+                ),
+            },
+            ov: match v.get(39) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(p) => Some(
+                    serde_json::from_value(p.clone())
+                        .map_err(|_| D::Error::custom("column ov is not a pair"))?,
                 ),
             },
         })

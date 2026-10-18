@@ -1267,6 +1267,13 @@ impl<'a> Flattener<'a> {
                     lg(f64::from(bounds.w)),
                     lg(f64::from(bounds.h)),
                 ));
+                // (eval-r3) The layout's own ink past its own box.
+                let ls = l.scale.as_f64();
+                let (il, ir) = (l.ink.left() as f64 / ls, l.ink.right() as f64 / ls);
+                t.overhang = Some([
+                    (-il).max(0.0) as f32,
+                    (ir - f64::from(l.size.w)).max(0.0) as f32,
+                ]);
             }
             let clip = (clip_text && !bounds.is_empty())
                 .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));

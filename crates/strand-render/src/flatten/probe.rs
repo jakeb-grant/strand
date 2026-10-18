@@ -140,6 +140,7 @@ impl Seen {
             text: self.text,
             fit: self.fit,
             ink: None,
+            overhang: None,
             paint: NodePaint::default(),
         }
     }

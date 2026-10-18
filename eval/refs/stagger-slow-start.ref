@@ -1,0 +1,152 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "stagger-slow-start"
+verdict good
+note "new curated scenario (eval-r3 stagger review fix): read the trace; a1, b1, a2, b2 leave the stagger wait at k1, k3, k5, k8 (40 ms apart at 60 Hz) in child order; the ease_in children sit within a quantum of opacity 0 for frames after their turn and the in_back ones hold 0 for 11 frames (its undershoot clamped), then all rise to 1; #head never moves"
+date 2026-10-18
+rev "8b5e399b+changes"
+approver "claude"
+scenario a42db6f710833711
+seal 0033a4cc5870e577
+S1 0 - "bar Top"
+N0 "head|shell.strand:6:5|[Mock | DP-1]#0" "box#head"
+N1 "list|shell.strand:5:3|[Mock | DP-1]#0" "row#list"
+N2 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N3 "a1|shell.strand:8:7|[Mock | DP-1]#1" "box#a1"
+N4 "a2|shell.strand:12:7|[Mock | DP-1]#3" "box#a2"
+N5 "b1|shell.strand:10:7|[Mock | DP-1]#2" "box#b1"
+N6 "b2|shell.strand:14:7|[Mock | DP-1]#4" "box#b2"
+k0 p1
+s1 z=300,30
+n0 x=8 y=6 w=16 h=12 ord=2 bg=5c6370ff
+n1 x=0 y=0 w=300 h=24 ord=1
+n2 x=0 y=0 w=300 h=30 bg=1e2127ff
+k1
+n3 x=30 y=6 w=16 h=12 op=0 ord=3 bg=98c379ff
+n4 x=74 y=6 w=16 h=12 op=0 hid=opacity0 ord=5
+n5 x=52 y=6 w=16 h=12 op=0 hid=opacity0 ord=4
+n6 x=96 y=6 w=16 h=12 op=0 hid=opacity0 ord=6
+k2
+n3 op=1
+k3
+n3 op=3
+k4
+n3 op=5
+k5
+n3 op=8
+n4 hid=- bg=c678ddff
+k6
+n3 op=11
+n4 op=1
+k7
+n3 op=15
+n4 op=3
+k8
+n3 op=19
+n4 op=5
+k9
+n3 op=24
+n4 op=8
+k10
+n3 op=29
+n4 op=11
+k11
+n3 op=34
+n4 op=15
+k12
+n3 op=40
+n4 op=19
+k13
+n3 op=46
+n4 op=24
+k14
+n3 op=52
+n4 op=29
+n5 op=11 hid=- bg=61afefff
+k15
+n3 op=59
+n4 op=34
+n5 op=33
+k16
+n3 op=66
+n4 op=40
+n5 op=62
+k17
+n3 op=73
+n4 op=46
+n5 op=98
+k18
+n3 op=80
+n4 op=52
+n5 op=142
+k19
+n3 op=88
+n4 op=59
+n5 op=194
+n6 op=11 hid=- bg=e5c07bff
+k20
+n3 op=96
+n4 op=66
+n5 op=255
+n6 op=33
+k21
+n3 op=104
+n4 op=73
+n6 op=62
+k22
+n3 op=113
+n4 op=80
+n6 op=98
+k23
+n3 op=122
+n4 op=88
+n6 op=142
+k24
+n3 op=130
+n4 op=96
+n6 op=194
+k25
+n3 op=140
+n4 op=104
+n6 op=255
+k26
+n3 op=149
+n4 op=113
+k27
+n3 op=159
+n4 op=122
+k28
+n3 op=168
+n4 op=130
+k29
+n3 op=178
+n4 op=140
+k30
+n3 op=189
+n4 op=149
+k31
+n3 op=199
+n4 op=159
+k32
+n3 op=210
+n4 op=168
+k33
+n3 op=221
+n4 op=178
+k34
+n3 op=232
+n4 op=189
+k35
+n3 op=243
+n4 op=199
+k36
+n3 op=255
+n4 op=210
+k37
+n4 op=221
+k38
+n4 op=232
+k39
+n4 op=243
+k40
+n4 op=255
+k41

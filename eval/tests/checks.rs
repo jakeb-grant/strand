@@ -2137,6 +2137,37 @@ fn ink_spilling_past_its_box_fails() {
     assert!(r.failures(CheckId::Ink)[0].msg.starts_with("spill"));
 }
 
+/// (eval-r3) A text drawn by the layout shaped for its own box may reach
+/// past it by its font's own overhang (an icon glyph wider than its
+/// advance: the layout's ink past the layout's box, `ov`), and no more:
+/// the same layout drawn 6 px off where its box puts it spills.
+#[test]
+fn ink_gives_a_shaped_text_its_fonts_overhang_and_no_more() {
+    let sc = scenario("");
+    let shaped = |dx: f32| {
+        let mut r = row("icon", [10.0, 0.0, 14.0, 15.0]);
+        r.text = Some("S".into());
+        // The glyph overhangs its 14 px advance by 4 px on the right.
+        r.ink = Some([10.0 + dx, 2.0, 18.0, 11.0]);
+        r.ov = Some([0.0, 4.0]);
+        r
+    };
+    let t = shape(2, |_| vec![shaped(0.0)]);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Ink), Status::Pass, "{}", show(&r, &t));
+    let t = shape(2, |k| vec![shaped(if k == 2 { 6.0 } else { 0.0 })]);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Ink, "icon", "w"), "{}", show(&r, &t));
+    // Without the layout's own overhang known, the 4 px is a spill.
+    let t = shape(2, |_| {
+        let mut r = shaped(0.0);
+        r.ov = None;
+        vec![r]
+    });
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Ink, "icon", "w"), "{}", show(&r, &t));
+}
+
 /// An ellipsised text whose box widens 100 → 120 px: its ink `before`
 /// px wide, then `after`.
 fn widening(before: f32, after: f32) -> RunTrace {
@@ -2679,6 +2710,38 @@ fn colour_holds_only_its_own_spring_unretargeted() {
     );
 }
 
+/// (eval-r3) A colour still springing when its segment starts (an
+/// earlier segment set it moving, and this one's first change sends it
+/// to a third colour) keeps its velocity, so its way bends off the line
+/// from where it was drawn: not held. The same way from rest fails.
+#[test]
+fn colour_does_not_hold_a_colour_already_springing_when_its_segment_starts() {
+    let sc = scenario("");
+    let bent =
+        |s: f64| -> [f64; 4] { std::array::from_fn(|i| BLUE[i] + s * (YELLOW[i] - BLUE[i])) };
+    let mut t = fill(bent, true);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Colour, "chip", "bg"),
+        "from rest it is held: {}",
+        show(&r, &t)
+    );
+    for r in &mut t.frames[0].n {
+        if r.key == "chip" {
+            r.mot = (Motions::PROP_SPRING | Motions::FILL_SPRING).0;
+            r.emot = r.mot;
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// A node exiting over ticks 1..=`last`, drawn by `at(k)` and gone
 /// after; its exit pose is `pose`.
 fn exiting(pose: Pose, last: u32, at: impl Fn(u32) -> Row) -> RunTrace {
@@ -2822,6 +2885,13 @@ fn pop_out_holds_only_an_exit_played() {
 /// Three children mounting at tick 1 under a 30 ms stagger, child `n`
 /// leaving its enter pose (opacity 0) at the tick `start(n)`.
 fn staggered(start: impl Fn(usize) -> u32) -> RunTrace {
+    staggered_slow(start, |_| 0)
+}
+
+/// As [`staggered`], each child let go of its turn at `start(n)` but
+/// drawn within a quantum of its pose for `slow(n)` frames after it (an
+/// enter on a curve that starts slowly), before it shows moving.
+fn staggered_slow(start: impl Fn(usize) -> u32, slow: impl Fn(usize) -> u32) -> RunTrace {
     let keys = ["c0", "c1", "c2"];
     let mut t = shape(14, |k| {
         let mut v = vec![row("list", [0.0, 0.0, 300.0, 30.0])];
@@ -2830,10 +2900,15 @@ fn staggered(start: impl Fn(usize) -> u32) -> RunTrace {
                 let s = start(n);
                 let x = 10.0 + 40.0 * n as f32;
                 let r = row(key, [x, 6.0, 30.0, 18.0]);
+                let lag = slow(n);
                 v.push(if k < s {
                     r.op(0.0).mot(Motions::ENTER | Motions::STAGGER)
+                } else if k < s + lag {
+                    // Begun, but less than a quantum off its pose.
+                    r.op(0.5 / 255.0)
+                        .mot(Motions::OPACITY_SPRING | Motions::ENTER)
                 } else {
-                    let p = (((k - s + 1) as f32) / 6.0).min(1.0);
+                    let p = (((k - s - lag + 1) as f32) / 6.0).min(1.0);
                     r.op(p).mot(Motions::OPACITY_SPRING | Motions::ENTER)
                 });
             }
@@ -2891,6 +2966,45 @@ fn stagger_fails_children_numbered_wrong() {
         .filter_map(|f| f.key.clone())
         .collect();
     assert_eq!(late, ["c0", "c2"], "{}", show(&r, &t));
+}
+
+/// (eval-r3) An enter whose curve starts slowly (`ease(in, …)`,
+/// `in_back`, `emphasized_accelerate`) stays within a quantum of its pose
+/// for frames after its turn: its start is the frame it is let go of its
+/// turn, so it is on time. Drawn moving while it still waits for its
+/// turn, it starts early.
+#[test]
+fn stagger_takes_a_slow_start_from_its_turn_not_its_first_visible_frame() {
+    let sc = scenario("");
+    let t = staggered_slow(|n| [1, 2, 4][n], |_| 3);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // The rule before (the first frame off its pose) failed it: the
+    // children leave their pose three frames after their turn.
+    let mut t = staggered(|n| [1, 2, 4][n]);
+    for f in &mut t.frames {
+        for r in &mut f.n {
+            if r.key == "c2" && f.k < 4 {
+                // Waiting for its turn, yet drawn half in.
+                r.op = 0.5;
+                r.own_op = 0.5;
+            }
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c2") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 /// Under reduced motion every child shows at once: not held.
@@ -3336,4 +3450,26 @@ fn the_surface_checks_skip_without_the_leg() {
     for c in [CheckId::RegionsOnWire, CheckId::LatePresent] {
         assert!(matches!(status(&r, c), Status::Skip(_)), "{c:?}");
     }
+}
+
+/// (eval-r3) The manager's throttle gives up on real time, not the
+/// leg's clock: a frame replaced by the repaint of a tick it gave up in
+/// (a run slow enough to wait a second) is not judged, nor the next
+/// tick's, while one replaced elsewhere still fails.
+#[test]
+fn late_present_leaves_the_ticks_the_manager_gave_up_in_to_the_machine() {
+    let mut late = card_commit(2, 90);
+    late.superseded = true;
+    let frames = vec![card_frame(1, 90, 0), card_frame(2, 90, 1)];
+    let t = wired(frames.clone(), vec![card_commit(1, 90), late.clone()]);
+    assert_eq!(late_present(&t).len(), 1, "replaced: late");
+    let mut t = wired(frames, vec![card_commit(1, 90), late]);
+    if let Some(w) = t.wire.as_mut() {
+        w.gave_up = vec![1];
+    }
+    assert_eq!(late_present(&t), [], "the tick after a give-up");
+    if let Some(w) = t.wire.as_mut() {
+        w.gave_up = vec![5];
+    }
+    assert_eq!(late_present(&t).len(), 1, "a give-up elsewhere");
 }

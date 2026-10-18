@@ -494,8 +494,10 @@ says a node moves, not how, so it does not exempt from them; only an
   overshoot), drawn as the raster draws it, in premultiplied sRGB: within
   3 steps of 1/255 on every channel. It skips a colour the token graph
   derives each frame (a theme swap's derived tokens, the contrast guard),
-  one retargeted mid-flight (a frame logic or input drove), one keyframes
-  or time drive, gradients, and span colours.
+  one retargeted mid-flight (a frame logic or input drove), one still
+  springing at `s` (an earlier segment set it moving, so this segment's
+  change retargets it and its way bends with the velocity it kept), one
+  keyframes or time drive, gradients, and span colours.
 - **`contain`.** `cut`: a `popup` or `panel` with no `width`, or no
   `height`, is sized by its content on that axis; it grows to its content
   at once and is held while its content springs smaller (decisions.md
@@ -524,9 +526,16 @@ says a node moves, not how, so it does not exempt from them; only an
   before" (the schema; design.md `stagger: 30ms`). The children of a
   container with `stagger:` first drawn at one frame after boot are a
   batch, numbered in paint order. Child `n` is due `n` steps (at most
-  1 s) after the batch's change, a period before its first frame, and its
-  first frame off its enter pose must come within a period after that.
-  It skips a child without a pose, one whose text is on its way (it waits
+  1 s) after the batch's change, a period before its first frame. Its
+  start is the first frame it no longer waits for its turn (`Motions`
+  `STAGGER` cleared), or an earlier one that already shows it off its
+  enter pose, and must come within a period after it is due: not before
+  (drawn entering ahead of its turn) and not later. The start is not the
+  first frame drawn off the pose, since an enter on a curve that starts
+  slowly (`ease(ease_in, …)`, `in_back`) stays within a quantum of its
+  pose for frames after it began (eval/scenarios/curated/
+  stagger-slow-start.scn). It skips a child without a pose, one that never
+  leaves its pose in the segment, one whose text is on its way (it waits
   for its text, decisions.md late-text-dip) and reduced motion.
 - **`pop-out`** (in `vanish`). "A removed subtree plays `exit`, then
   unmounts" (design.md "Poses"). The last frame an exiting node is drawn
@@ -827,6 +836,21 @@ every push as scripts/eval/ci.sh step 6 (about 90 s on the laptop with
 cell's new recording is approved. It also runs nightly and on demand in
 `.github/workflows/eval-matrix.yml`, with the mutants.
 
+**Repeated runs.** The workflow's `repeat` input (on demand; default 1,
+one matrix run as nightly) runs scripts/eval/repeat.sh, which runs the
+scenario gate and the whole matrix that many times in one job on one
+runner. Each run must pass on its own, held to its approved references
+(so a recording that differs from the reference fails that run as
+CHANGED), and every scenario's and cell's trace digest in every run must
+be the first run's: a run that differs anywhere fails the job, and its
+summary names the run and the scenario or cell. A recording the laptop's
+container holds but another machine's lavapipe or scheduler wavers on
+shows up there. Locally, `scripts/container/run.sh eval repeat N` (at
+60 and 144 Hz; matrix flags such as `--effects a,b` follow N) runs the
+same, under
+target/eval/repeat; scripts/eval/test-repeat.sh tests it with a stand-in
+for the build.
+
 ## Mutants
 
 `eval/mutants/mutants.txt` pairs patches with regression scenarios. Each
@@ -1052,6 +1076,12 @@ owner's config becomes a committed scenario written from scratch.
   GPU thread's WSI. A real compositor's own handling of the regions (a
   blur it draws, input it routes) and the GPU thread's present latency
   are outside it (see Surface leg).
+- **The surface manager's throttle gives up on real time.** It stops
+  waiting for a refresh after a second of `Instant::now`, not of the
+  leg's virtual clock, so only a run that slow (a loaded machine) sees it
+  give up. The leg notes each tick it did (`WireLog::gave_up`) and
+  `late-present` does not judge that tick's frames or the next's: a
+  frame the product presents late only on such a tick goes unseen.
 - **References hold paint as the scene says, not pixels.** A recording
   holds geometry, opacity, transforms, paint order, text state and ink,
   and each node's fills, borders, shadows, text colours and glyph

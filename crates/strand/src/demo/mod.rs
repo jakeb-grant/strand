@@ -279,7 +279,11 @@ mod tests {
     /// sandbox's driver runs too (eval/tests/drift.rs holds its side):
     /// no step of them is taken by hand anywhere in the shell's code
     /// outside tests, so the sandbox cannot drift from the shell's order
-    /// unseen (docs/decisions.md, eval-host-loop).
+    /// unseen (docs/decisions.md, eval-host-loop). (eval-r3) A tripwire
+    /// on call spellings: an alias of the renderer or router gets past
+    /// it, and it holds every non-test file of the crate, so a new
+    /// product path that must take a step itself (a headless shot) goes
+    /// through a reaction or changes this test with a reason.
     #[test]
     fn the_shell_takes_the_host_loops_steps_only_through_its_reactions() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

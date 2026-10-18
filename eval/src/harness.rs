@@ -1859,6 +1859,7 @@ impl<'s> Harness<'s> {
                 flight: pair(flight),
                 fit: n.fit.map(q),
                 ink: n.ink.map(rect),
+                ov: n.overhang,
                 paint: crate::paint::PaintRec::of(&n.paint),
             });
         }

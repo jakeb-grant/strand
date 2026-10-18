@@ -19,8 +19,10 @@
 //! the token graph each frame (a theme swap, the contrast guard solving a
 //! text's lightness) has no spring of its own and is not held; nor is one
 //! retargeted in flight (logic's diff or input reaching the renderer after
-//! the colour left its start: a spring keeps its velocity, so its way
-//! curves), one that keyframes or time drive, or a gradient. A frame's
+//! the colour left its start, or a colour still springing from an earlier
+//! segment when this one's change reaches it: a spring keeps its
+//! velocity, so its way curves), one that keyframes or time drive, or a
+//! gradient. A frame's
 //! colour, as the recording writes it (straight-alpha sRGB to 1/255), is
 //! compared with the nearest point of that line drawn as the raster
 //! draws it (each channel clamped), premultiplied: within
@@ -205,6 +207,14 @@ fn transition(
     (from, to): ([f64; 4], [f64; 4]),
 ) -> Option<Finding> {
     let tl = &cx.tl;
+    // Held only from rest: a colour still springing when the segment
+    // starts (an earlier segment set it moving) has a velocity, so a
+    // change now (to a third colour, or back) curves off the line from
+    // where it was drawn, and the segment's first change is then itself
+    // a retarget.
+    if tl.row(bi, key).is_none_or(|r| Motions(r.mot).contains(bit)) {
+        return None;
+    }
     // The frames it is on its way: from the first that left `cb` to the
     // one before it arrives at `ce`.
     let mut way: Vec<(usize, &Row, &str)> = Vec::new();

@@ -12,6 +12,7 @@
 #        scripts/eval/eval.sh ab-revs <revA> [<revB>] [-- scenarios]
 #                                                    scripts/eval/ab.sh
 #        scripts/eval/eval.sh matrix-all [flags...]  scripts/eval/matrix.sh
+#        scripts/eval/eval.sh repeat N [flags...]    scripts/eval/repeat.sh
 # In the container: scripts/container/run.sh eval <command> [args...]
 
 set -euo pipefail
@@ -31,6 +32,10 @@ fi
 if [ "${1:-}" = ab-revs ]; then
   shift
   exec bash "$ROOT/scripts/eval/ab.sh" "$@"
+fi
+if [ "${1:-}" = repeat ]; then
+  shift
+  exec bash "$ROOT/scripts/eval/repeat.sh" "$@"
 fi
 if [ "${1:-}" = matrix-all ]; then
   shift

@@ -88,6 +88,15 @@ pub struct WireLog {
     /// What the leg could not mirror, as it ran.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// (eval-r3) The ticks in which the manager gave up waiting for a
+    /// frame callback or presentation and painted anyway
+    /// (`Stats::throttle_given_up`). Its give-up runs on real time
+    /// (`THROTTLE_GIVE_UP`, 1 s, `Instant::now`), not the leg's clock, so
+    /// it fires only when the run itself is that slow (a loaded
+    /// machine): `late-present` does not judge the frames of such a tick
+    /// or the next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gave_up: Vec<u32>,
 }
 
 /// One painted frame of one surface, as the renderer's painter left it.
@@ -410,6 +419,9 @@ pub struct Leg {
     frames: Vec<WireFrame>,
     /// The commits made by the end of each tick (`fake.commit_count()`).
     ticks: Vec<(u32, usize)>,
+    /// The manager's give-ups so far, and the ticks they came in.
+    given_up: u64,
+    gave_up: Vec<u32>,
     vblanks: Vec<VblankRec>,
     notes: Vec<String>,
     /// `late-present`'s own tests: refreshes that never come.
@@ -488,6 +500,8 @@ impl Leg {
             snaps: Vec::new(),
             frames: Vec::new(),
             ticks: Vec::new(),
+            given_up: 0,
+            gave_up: Vec::new(),
             vblanks: Vec::new(),
             notes: Vec::new(),
             lost,
@@ -634,6 +648,16 @@ impl Leg {
             self.settle()?;
         }
         self.ticks.push((k, self.fake.commit_count()));
+        let given_up = self.mgr.state().stats().throttle_given_up;
+        if given_up > self.given_up {
+            self.given_up = given_up;
+            self.gave_up.push(k);
+            self.notes.push(format!(
+                "k{k}: the surface manager gave up waiting for a refresh after a second of real \
+                 time (the run was that slow): late-present does not judge this tick's frames \
+                 or the next's"
+            ));
+        }
         Ok(())
     }
 
@@ -806,6 +830,7 @@ impl Leg {
             commits: Vec::with_capacity(raw.len()),
             vblanks: std::mem::take(&mut self.vblanks),
             notes: std::mem::take(&mut self.notes),
+            gave_up: std::mem::take(&mut self.gave_up),
         };
         let mut next = events.iter();
         let mut owner: HashMap<usize, u32> = HashMap::new();

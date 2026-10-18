@@ -120,6 +120,12 @@ pub struct NodeTrace {
     /// it there; surface logical pixels, before `scale` and `rotate`.
     /// `None` when it drew no glyphs (an estimate, an empty text).
     pub ink: Option<LogicalRect>,
+    /// (eval-r3) How far the ink of the layout it drew reaches past that
+    /// layout's own box (`TextLayout::ink` against `size`), on the left
+    /// and on the right, logical pixels: the font's own overhang, which
+    /// lets a check tell glyphs the shaper put past their box from a
+    /// layout drawn in the wrong place. `None` with `ink`.
+    pub overhang: Option<[f32; 2]>,
     /// (eval-coverage) What it painted itself this frame (its subtree's
     /// paint is its children's): empty for a hidden node.
     pub paint: NodePaint,

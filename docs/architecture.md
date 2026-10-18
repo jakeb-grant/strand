@@ -806,7 +806,16 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     advisory wall times, and its nodes), `NodeTrace` (per drawn or
     hidden node: laid, drawn and visual boxes, own opacity, scale and
     rotation, the offset parts, `Motions` and `authored` `Axes` bits,
-    `Hidden`, `TextDrawn`), `OffsetParts`, `HeldText`; (eval-rules)
+    `Hidden`, `TextDrawn`; a text's `fit` and `ink`, and (eval-r3)
+    `overhang`, how far the ink of the layout it drew reaches past that
+    layout's own box on the left and right), `OffsetParts`, `HeldText`;
+    (eval-coverage) `FrameTrace::fade`, a theme swap's crossfade weight
+    while one plays, and `NodeTrace::paint`, a `NodePaint` read from the
+    display items the node added itself (`fills` and `borders` as
+    `Paint`s, `shadows` as `ShadowDrawn` (its colour and the `extent` it
+    may cover, before transforms), `glyphs` as `GlyphsDrawn` (its paint,
+    span colours, the `text` its layout was shaped from and the `subset`
+    of glyphs drawn when not all were)); (eval-rules)
     `Motions` also says which of a node's own colours springs
     (`FILL_SPRING`: its `bg`, a meter's `value` or `track`;
     `INK_SPRING`: its text colour or solid `fill`; `LINE_SPRING`: its

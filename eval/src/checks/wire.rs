@@ -22,7 +22,10 @@
 //!   refresh (design.md, "Damage and pacing": timing comes from
 //!   `wp_presentation`), and render samples each at the time it is
 //!   painted for, so one shown a refresh late shows the animation a frame
-//!   behind.
+//!   behind. The frames of a tick in which the manager's throttle gave
+//!   up (`WireLog::gave_up`: a second of real time without a refresh,
+//!   which only a run that slow sees) and of the tick after it are not
+//!   judged: that give-up is the machine's pace, not the virtual clock's.
 
 use std::collections::HashMap;
 
@@ -166,7 +169,12 @@ pub fn late_present(trace: &RunTrace) -> Vec<Finding> {
     };
     let roots = roots(trace);
     let mut out = Vec::new();
-    for f in log.frames.iter().filter(|f| f.due) {
+    let slow = |k: u32| {
+        log.gave_up
+            .iter()
+            .any(|g| k == *g || k == g.saturating_add(1))
+    };
+    for f in log.frames.iter().filter(|f| f.due && !slow(f.k)) {
         let (kind, msg) = match f.commit.and_then(|i| log.commits.get(i).map(|c| (i, c))) {
             None => (
                 "never",

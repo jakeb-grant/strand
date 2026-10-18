@@ -6,9 +6,14 @@
 //! the children that mount together under a container with a stagger are
 //! numbered in child order, the first starting at once and child `n`
 //! holding at its enter pose for `n` steps (anim/stagger.rs; a step is
-//! capped at one second there). What is drawn shows it: a child holds at
-//! its pose until its turn, and the first frame that shows it off its
-//! pose is its start.
+//! capped at one second there). Its start is the first frame it no
+//! longer waits for its turn (`probe::Motions::STAGGER` cleared, as
+//! anim/stagger.rs `held` lets it go), and what is drawn must agree: it
+//! shows nothing of its enter before its turn (no frame off its pose
+//! before it is due). The start is not read off the first frame that
+//! shows it moving: an enter on a curve that starts slowly (`ease(in,
+//! …)`, `in_back`, `emphasized_accelerate`, a `bezier`) stays within a
+//! quantum of its pose for frames after it has begun.
 //!
 //! The batch is the container's children first drawn at one frame after
 //! boot (with an `enter` pose or not: every child mounting counts in the
@@ -16,9 +21,9 @@
 //! the batch's change: the tick before the batch's first frame, since
 //! its first frame shows the first child one frame on (a retarget starts
 //! one period before the frame that shows it, strand-scene motion.rs).
-//! Its first frame off its pose is the first at or after that, so it is
+//! It is let go on the first frame at or after that, so its start is
 //! held to lie between the moment due and one period after it: within a
-//! frame. A child whose text is still on its way waits for it
+//! frame; and no frame before the moment due shows it off its pose. A child whose text is still on its way waits for it
 //! instead (decisions.md late-text-dip) and is not held, nor is one
 //! without a pose to hold at, or a run under reduced motion (every child
 //! shows at once).
@@ -28,6 +33,7 @@ use std::collections::BTreeMap;
 use super::{Cx, Finding, first_per_node};
 use crate::scenario::CheckId;
 use crate::trace::{Pose, Row};
+use strand_render::probe::Motions;
 
 /// The longest step render plays (anim/stagger.rs `MAX_STEP`).
 pub const MAX_STEP_MS: f64 = 1000.0;
@@ -109,8 +115,10 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 if cx.allowed(CheckId::Stagger, key) {
                     continue;
                 }
-                // Its first frame off its pose, within the segment.
-                let mut start = None;
+                // Within the segment: the first frame it no longer waits
+                // for its turn, and the first that shows it off its pose.
+                let mut released = None;
+                let mut departed = None;
                 let mut waits_for_text = false;
                 for i in i0..tl.ks.len() {
                     if tl.ks[i] > seg.e {
@@ -122,20 +130,30 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             matches!(row.text.as_deref(), Some("E" | "I"))
                                 && cx.lineage(k).contains(key)
                         });
-                    match off_pose(r, &pose) {
-                        None => break,
-                        Some(true) => {
-                            start = Some(i);
-                            break;
+                    if released.is_none() && !Motions(r.mot).contains(Motions::STAGGER) {
+                        released = Some(i);
+                    }
+                    if departed.is_none() {
+                        match off_pose(r, &pose) {
+                            None => break,
+                            Some(true) => departed = Some(i),
+                            Some(false) => {}
                         }
-                        Some(false) => {}
+                    }
+                    if released.is_some() && departed.is_some() {
+                        break;
                     }
                 }
-                let Some(j) = start else { continue };
+                // One let go that never left its pose within the segment
+                // showed no start to judge.
+                let Some(d) = departed else { continue };
                 if waits_for_text {
                     continue;
                 }
                 let due = t0 + n as f64 * step_ns;
+                // Its start: the frame it was let go of its turn, unless
+                // it was drawn moving before that.
+                let j = released.map_or(d, |r| r.min(d));
                 let at = tl.frames[j].t_ns as f64;
                 let late = at - due;
                 if late < -SLACK_NS || late > period_ns + SLACK_NS {

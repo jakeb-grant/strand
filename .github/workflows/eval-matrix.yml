@@ -22,6 +22,12 @@ on:
       mutants:
         description: Run the mutants too ("true" or "false")
         default: "true"
+      repeat:
+        description: >-
+          Run the scenario gate and the matrix this many times in this job
+          and fail on any run that fails or differs from the first
+          (scripts/eval/repeat.sh; 1 runs the matrix once, as nightly)
+        default: "1"
 
 # As ci.yml: the GPU leg runs on lavapipe and fails without it.
 env:
@@ -48,10 +54,21 @@ jobs:
           cache-save: "false"
       # Appends its summary.md (the failing and stale cells) to the job's.
       - run: scripts/eval/matrix.sh
+        if: (inputs.repeat || '1') == '1'
         env:
           HZ: ${{ inputs.hz || '60,144' }}
           EFFECTS: ${{ inputs.effects }}
           OUT: target/eval/matrix-nightly
+      # The stability run (docs/eval.md, "Stability"): the gate and the
+      # matrix `repeat` times, each held to its references, and every
+      # run's trace digests the first run's.
+      - run: scripts/eval/repeat.sh "$REPEAT"
+        if: (inputs.repeat || '1') != '1'
+        env:
+          REPEAT: ${{ inputs.repeat }}
+          HZ: ${{ inputs.hz || '60,144' }}
+          EFFECTS: ${{ inputs.effects }}
+          OUT: target/eval/repeat
       - run: scripts/eval/mutants.sh
         if: always() && (inputs.mutants || 'true') == 'true'
       - uses: actions/upload-artifact@v4
@@ -60,6 +77,7 @@ jobs:
           name: eval-matrix
           path: |
             target/eval/matrix-nightly/
+            target/eval/repeat/
             target/eval/mutants/
             !target/eval/mutants/tree/
           if-no-files-found: ignore

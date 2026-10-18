@@ -10,7 +10,12 @@
 //!
 //! - **spill**: a text's ink stays across its own box, give or take
 //!   [`OVERHANG`] (a glyph's overhang, and the pixel a text may be wider
-//!   than its box before it is cut).
+//!   than its box before it is cut). A text drawn by the layout shaped
+//!   for its own box (`txt=S`) is also given, on each side, how far that
+//!   layout's own ink reaches past the layout's box (`Row::ov`: the
+//!   font's overhang, an icon glyph wider than its advance, an italic):
+//!   ink the shaper put there is the font's, while a layout drawn in the
+//!   wrong place (a wrong origin, an offset applied twice) still spills.
 //! - **over-cut**: a text cut with an ellipsis draws no less of itself
 //!   as its box widens: from one frame to the next its line box grows
 //!   and its ink does not narrow (an ellipsis cuts at a word or a glyph,
@@ -62,8 +67,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             let (left, right) = (f64::from(ink[0]), f64::from(ink[0] + ink[2]));
             let (bl, br) = (f64::from(r.drawn[0]), f64::from(r.drawn[0] + r.drawn[2]));
             let give = OVERHANG + cx.tol;
-            if left < bl - give || right > br + give {
-                let past = (bl - left).max(right - br);
+            let [ol, or] = match (r.text.as_deref(), r.ov) {
+                (Some("S"), Some([l, r])) => [f64::from(l), f64::from(r)],
+                _ => [0.0, 0.0],
+            };
+            if left < bl - give - ol || right > br + give + or {
+                let past = (bl - ol - left).max(right - br - or);
                 out.push(
                     Finding::fail(
                         CheckId::Ink,

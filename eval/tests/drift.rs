@@ -152,6 +152,13 @@ fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 /// its surfaces' attach, configure, detach and paints through the host
 /// loop's reactions, as the shell's main thread does, and takes none of
 /// their steps by hand outside tests.
+///
+/// (eval-r3) A tripwire, not a proof: it matches the call spellings in
+/// `STEPS`, so a step reached through an alias (`let r = &mut self.r;
+/// r.update()`) or a helper that takes the router by another name gets
+/// past it. The steps stay public because the crates' own tests and the
+/// shell's other hosts call them; what holds the order is review, with
+/// this test catching the plain case (docs/decisions.md eval-r3).
 #[test]
 fn the_driver_takes_the_host_loops_steps_only_through_its_reactions() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
