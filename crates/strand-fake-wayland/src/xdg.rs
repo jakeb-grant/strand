@@ -1,7 +1,10 @@
 //! The fake's `xdg_wm_base`, for popups only: enough for the surface
 //! manager to map an `xdg_popup` (on a layer surface or another popup),
-//! configured at its positioner's size on its first commit. Grabs are
-//! accepted and ignored; keyboard focus moves only by [`crate::Cmd`]s.
+//! configured at its positioner's size on its first commit, and at its
+//! new positioner's size when it is repositioned (xdg_popup v3: a
+//! `repositioned`, then the popup's and its surface's configure, at once
+//! once it was configured, else on its first commit). Grabs are accepted
+//! and ignored; keyboard focus moves only by [`crate::Cmd`]s.
 
 use std::sync::Mutex;
 
@@ -34,6 +37,32 @@ impl PopupState {
         self.popup.configure(0, 0, self.size.0, self.size.1);
         self.xdg_surface.configure(serial);
     }
+
+    /// Repositioned at `size` (`xdg_popup.reposition`, answered with
+    /// `token`): configured again at it now if it was configured (`serial`
+    /// is that configure's), else at its first commit, as a compositor
+    /// answers a reposition with the new geometry.
+    pub(crate) fn reposition(&mut self, token: u32, size: (i32, i32), serial: u32) -> bool {
+        self.size = size;
+        if !self.popup.is_alive() || !self.xdg_surface.is_alive() {
+            return false;
+        }
+        self.popup.repositioned(token);
+        if !self.configured {
+            return false;
+        }
+        self.popup.configure(0, 0, size.0, size.1);
+        self.xdg_surface.configure(serial);
+        true
+    }
+}
+
+/// The positioner's size.
+fn positioner_size(positioner: &XdgPositioner) -> (i32, i32) {
+    positioner
+        .data::<Mutex<(i32, i32)>>()
+        .and_then(|m| m.lock().ok().map(|s| *s))
+        .unwrap_or((1, 1))
 }
 
 pub(crate) fn create_global(dh: &DisplayHandle) {
@@ -104,11 +133,8 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
         init: &mut DataInit<'_, Self>,
     ) {
         if let xdg_surface::Request::GetPopup { id, positioner, .. } = request {
-            let popup = init.init(id, ());
-            let size = positioner
-                .data::<Mutex<(i32, i32)>>()
-                .and_then(|m| m.lock().ok().map(|s| *s))
-                .unwrap_or((1, 1));
+            let popup = init.init(id, surface.clone());
+            let size = positioner_size(&positioner);
             state.surf.set_popup(
                 surface,
                 PopupState {
@@ -122,20 +148,22 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
     }
 }
 
-impl Dispatch<XdgPopup, ()> for Server {
+impl Dispatch<XdgPopup, ObjectId> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
-        popup: &XdgPopup,
+        _: &XdgPopup,
         request: xdg_popup::Request,
-        _: &(),
+        surface: &ObjectId,
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
-        // A reposition is answered at once, in place (no configure: the
-        // manager's popups keep their size).
-        if let xdg_popup::Request::Reposition { token, .. } = request {
-            popup.repositioned(token);
+        // A reposition is answered at once, in place, at the new
+        // positioner's size.
+        if let xdg_popup::Request::Reposition { positioner, token } = request {
+            state
+                .surf
+                .reposition_popup(surface, token, positioner_size(&positioner));
         }
     }
 }

@@ -376,6 +376,20 @@ impl Surfaces {
         }
     }
 
+    /// `surface`'s popup repositioned at `size` (`xdg_popup.reposition`
+    /// with `token`), configured again at it if it was configured.
+    pub(crate) fn reposition_popup(&mut self, surface: &ObjectId, token: u32, size: (i32, i32)) {
+        let Some(l) = self.live.get_mut(surface) else {
+            return;
+        };
+        let Some(p) = l.popup.as_mut() else {
+            return;
+        };
+        if p.reposition(token, size, l.serial + 1) {
+            l.serial += 1;
+        }
+    }
+
     /// The live layer surface with `namespace`, if any.
     pub(crate) fn layer_surface(&self, namespace: &str) -> Option<wl_surface::WlSurface> {
         let records = self.records.lock().ok()?;

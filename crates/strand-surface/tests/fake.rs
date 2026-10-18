@@ -1188,6 +1188,67 @@ fn a_popup_moves_with_its_parent() {
     );
 }
 
+/// (eval-r3) A popup whose size changes is repositioned (xdg_popup v3),
+/// and the compositor's configure that answers it gives the new size:
+/// a popup resized before its first configure (a tooltip measured again
+/// in the tick it opens) is first configured at its new size, and one
+/// resized once mapped is configured again at it. The fake used to
+/// answer only `repositioned`, so the surface leg saw a tooltip's
+/// first buffer at its first size (docs/decisions.md eval-r3).
+#[test]
+fn a_repositioned_popup_is_configured_at_its_new_size() {
+    use strand_scene::{LogicalRect, SurfaceSpec};
+    const POPUP: NodeId = NodeId::new(8, 0);
+    let popup = |w: f32, h: f32| {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        spec.name = Some("Tip".into());
+        spec.parent = Some(PANEL);
+        spec.anchor_rect = Some(LogicalRect::new(10.0, 10.0, 40.0, 20.0));
+        spec.width = Some(w);
+        spec.height = Some(h);
+        spec
+    };
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    show_panel(&fake, &mut mgr);
+    let size = |s: &strand_surface::State<TestHost>| {
+        s.surfaces_of(POPUP)
+            .first()
+            .and_then(|id| s.surface(*id))
+            .filter(|i| i.configured)
+            .map(|i| i.logical_size)
+    };
+    // Resized before the compositor configured it.
+    mgr.state_mut()
+        .apply_surface_change(POPUP, SurfaceChange::Created(popup(113.0, 22.0)));
+    mgr.state_mut().apply_surface_change(
+        POPUP,
+        SurfaceChange::Updated {
+            spec: popup(99.0, 21.0),
+            recreate: false,
+        },
+    );
+    let ok = mgr.dispatch_until(WAIT, |s| size(s).is_some()).unwrap();
+    assert!(ok, "the popup is configured");
+    assert_eq!(size(mgr.state()), Some((99, 21)), "at its new size");
+    // Resized once mapped.
+    mgr.state_mut().apply_surface_change(
+        POPUP,
+        SurfaceChange::Updated {
+            spec: popup(140.0, 30.0),
+            recreate: false,
+        },
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| size(s) == Some((140, 30)))
+        .unwrap();
+    assert!(
+        ok,
+        "configured again at its new size: {:?}",
+        size(mgr.state())
+    );
+}
+
 /// (m4-audit) A frame whose callback never comes (a compositor that lost
 /// it: GitHub run 38064533227's replugged bar, which logic updated and
 /// never painted again) does not stop the surface for good: new content
