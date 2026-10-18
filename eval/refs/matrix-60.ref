@@ -58882,14 +58882,14 @@ n6 x=112 v=d
 k49
 ref "m.shared-morph__late-text-1.60"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "late-text-morph at eval-r3, recorded in eval-coverage's format: the subject, whose text lands late, morphs from its partner k2 once its text lands instead of starting nothing; geometry, order and ink tick for tick the cell fix-r3 approved at 19c9e5bf (6b39da76), paint as the scene draws it"
 date 2026-10-18
-rev "a38d1bc6"
+rev "b9d8aa4f+changes"
 approver "claude"
 scenario 7bd365e1e66324e6
-seal 2fe87f92282c274f
+seal 307f9d2b4ebe2182
 S1 0 - "bar Top"
-S2 1 26 "popup#pop"
+S2 1 31 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -58933,45 +58933,74 @@ n14 x=36 y=16 w=0 h=0 txt=E ord=5
 k2 p1
 n0 x=89
 n5 x=43 ink=43,10,27,11
-n13 y=9 w=12 h=15
-n14 y=9 w=12 h=15 txt=S ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
+n13 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 sc=2.11,0.753
+n14 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 txt=S ink=99,29,11,10 fg=ff00ffff gl=["iiii"]
 k3
 n0 x=95
 n5 x=49 ink=49,10,27,11
+n13 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 sc=1.54,0.88
+n14 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 ink=67,19,11,10
 k4
 n0 x=99
 n5 x=53 ink=53,10,27,11
+n13 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 sc=1.166,0.963
+n14 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 ink=45,13,11,10
 k5
 n0 x=100
 n5 x=54 ink=54,10,27,11
+n13 x=36.03125 y=9.015625 v=36,9,12,15 sc=1.001,1
+n14 x=36.03125 y=9.015625 v=36,9,12,15 ink=36,10,11,10
 k6
+n13 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 sc=0.958,1.009
+n14 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 ink=34,9,11,10
 k7
+n13 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375 sc=0.965,1.008
+n14 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375
 k8
+n13 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 sc=0.982,1.004
+n14 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 ink=35,10,11,10
 k9
+n13 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 sc=0.994,1.001
+n14 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 ink=36,10,11,10
 k10
+n13 x=35.96875 y=8.984375 v=36,9,12,15 sc=0.999,1
+n14 x=35.96875 y=8.984375 v=36,9,12,15
 k11
-k12 p2
-n11 w=201
+n13 x=36.0625 y=9.015625 v=36,9,12.015625,15 sc=1.001,1
+n14 x=36.0625 y=9.015625 v=36,9,12.015625,15
+k12
 k13
-n11 w=231
+n13 x=36.03125 v=36,9,12,15
+n14 x=36.03125 v=36,9,12,15
 k14
-n11 w=251
+n13 x=36.015625 y=9 sc=1,1
+n14 x=36.015625 y=9
 k15
-n11 w=260
+n13 x=36 v=d
+n14 x=36 v=d
 k16
-n11 w=262
-k17
+k17 p2
+n11 w=201
 k18
-n11 w=261
+n11 w=231
 k19
-n11 w=260
+n11 w=251
 k20
+n11 w=260
 k21
+n11 w=262
 k22
 k23
+n11 w=261
 k24
+n11 w=260
 k25
-k26 p1
+k26
+k27
+k28
+k29
+k30
+k31 p1
 s2 -
 n0 x=95 ord=5
 n1 ord=8
@@ -58984,52 +59013,52 @@ n11 -
 n12 -
 n13 -
 n14 -
-k27
+k32
 n0 x=88
 n5 x=42 ink=42,10,27,11
 n6 x=81.40625 y=27.828125 v=84.234375,27.09375,23.515625,11.796875 sc=0.784,1.18
-k28
+k33
 n0 x=84
 n5 x=38 ink=38,10,27,11
 n6 x=102.59375 y=34.171875 v=104,33.71875,28.015625,10.546875 sc=0.934,1.055
-k29
+k34
 n0 x=82
 n5 x=36 ink=36,10,27,11
 n6 x=111.96875 y=36.984375 v=112,37,30,10 sc=1,1
-k30
+k35
 n0 x=81
 n5 x=35 ink=35,10,27,11
 n6 x=114.359375 y=37.703125 v=113.75,38.0625,30.5,9.859375 sc=1.017,0.986
-k31
+k36
 n0 x=82
 n5 x=36 ink=36,10,27,11
 n6 x=113.96875 y=37.59375 v=113.796875,38.0625,30.421875,9.890625 sc=1.014,0.988
-k32
-n6 x=113.03125 y=37.3125 v=112.890625,37.03125,30.21875,9.9375 sc=1.007,0.994
-k33
-n6 x=112.359375 y=37.109375 v=111.96875,37.015625,30.078125,9.984375 sc=1.003,0.998
-k34
-n6 x=112.03125 y=37.015625 v=112,37,30,10 sc=1,1
-k35
-n6 x=111.9375 y=36.984375 v=112,37,29.984375,10
-k36
 k37
-n6 x=111.96875 v=112,37,30,10
+n6 x=113.03125 y=37.3125 v=112.890625,37.03125,30.21875,9.9375 sc=1.007,0.994
 k38
-n6 x=111.984375 y=37
+n6 x=112.359375 y=37.109375 v=111.96875,37.015625,30.078125,9.984375 sc=1.003,0.998
 k39
-n6 x=112 v=d
+n6 x=112.03125 y=37.015625 v=112,37,30,10 sc=1,1
 k40
+n6 x=111.9375 y=36.984375 v=112,37,29.984375,10
+k41
+k42
+n6 x=111.96875 v=112,37,30,10
+k43
+n6 x=111.984375 y=37
+k44
+n6 x=112 v=d
+k45
 ref "m.shared-morph__late-text-paint.60"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "late-text-morph at eval-r3, recorded in eval-coverage's format: the subject, whose text lands late, morphs from its partner k2 once its text lands instead of starting nothing; geometry, order and ink tick for tick the cell fix-r3 approved at 19c9e5bf (6b39da76), paint as the scene draws it"
 date 2026-10-18
-rev "a38d1bc6"
+rev "b9d8aa4f+changes"
 approver "claude"
 scenario fcdc6efa033d2564
-seal 9bdcffb19ac9134f
+seal 77dda1b827b1b09a
 S1 0 - "bar Top"
-S2 1 26 "popup#pop"
+S2 1 31 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -59073,45 +59102,74 @@ n14 x=36 y=16 w=0 h=0 txt=E ord=5
 k2 p1
 n0 x=89
 n5 x=43 ink=43,10,27,11
-n13 y=9 w=12 h=15
-n14 y=9 w=12 h=15 txt=S ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
+n13 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 sc=2.11,0.753
+n14 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 txt=S ink=99,29,11,10 fg=ff00ffff gl=["iiii"]
 k3
 n0 x=95
 n5 x=49 ink=49,10,27,11
+n13 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 sc=1.54,0.88
+n14 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 ink=67,19,11,10
 k4
 n0 x=99
 n5 x=53 ink=53,10,27,11
+n13 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 sc=1.166,0.963
+n14 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 ink=45,13,11,10
 k5
 n0 x=100
 n5 x=54 ink=54,10,27,11
+n13 x=36.03125 y=9.015625 v=36,9,12,15 sc=1.001,1
+n14 x=36.03125 y=9.015625 v=36,9,12,15 ink=36,10,11,10
 k6
+n13 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 sc=0.958,1.009
+n14 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 ink=34,9,11,10
 k7
+n13 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375 sc=0.965,1.008
+n14 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375
 k8
+n13 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 sc=0.982,1.004
+n14 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 ink=35,10,11,10
 k9
+n13 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 sc=0.994,1.001
+n14 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 ink=36,10,11,10
 k10
+n13 x=35.96875 y=8.984375 v=36,9,12,15 sc=0.999,1
+n14 x=35.96875 y=8.984375 v=36,9,12,15
 k11
-k12 p2
-n11 w=201
+n13 x=36.0625 y=9.015625 v=36,9,12.015625,15 sc=1.001,1
+n14 x=36.0625 y=9.015625 v=36,9,12.015625,15
+k12
 k13
-n11 w=231
+n13 x=36.03125 v=36,9,12,15
+n14 x=36.03125 v=36,9,12,15
 k14
-n11 w=251
+n13 x=36.015625 y=9 sc=1,1
+n14 x=36.015625 y=9
 k15
-n11 w=260
+n13 x=36 v=d
+n14 x=36 v=d
 k16
-n11 w=262
-k17
+k17 p2
+n11 w=201
 k18
-n11 w=261
+n11 w=231
 k19
-n11 w=260
+n11 w=251
 k20
+n11 w=260
 k21
+n11 w=262
 k22
 k23
+n11 w=261
 k24
+n11 w=260
 k25
-k26 p1
+k26
+k27
+k28
+k29
+k30
+k31 p1
 s2 -
 n0 x=95 ord=5
 n1 ord=8
@@ -59124,42 +59182,42 @@ n11 -
 n12 -
 n13 -
 n14 -
-k27
+k32
 n0 x=88
 n5 x=42 ink=42,10,27,11
 n6 x=81.40625 y=27.828125 v=84.234375,27.09375,23.515625,11.796875 sc=0.784,1.18
-k28
+k33
 n0 x=84
 n5 x=38 ink=38,10,27,11
 n6 x=102.59375 y=34.171875 v=104,33.71875,28.015625,10.546875 sc=0.934,1.055
-k29
+k34
 n0 x=82
 n5 x=36 ink=36,10,27,11
 n6 x=111.96875 y=36.984375 v=112,37,30,10 sc=1,1
-k30
+k35
 n0 x=81
 n5 x=35 ink=35,10,27,11
 n6 x=114.359375 y=37.703125 v=113.75,38.0625,30.5,9.859375 sc=1.017,0.986
-k31
+k36
 n0 x=82
 n5 x=36 ink=36,10,27,11
 n6 x=113.96875 y=37.59375 v=113.796875,38.0625,30.421875,9.890625 sc=1.014,0.988
-k32
-n6 x=113.03125 y=37.3125 v=112.890625,37.03125,30.21875,9.9375 sc=1.007,0.994
-k33
-n6 x=112.359375 y=37.109375 v=111.96875,37.015625,30.078125,9.984375 sc=1.003,0.998
-k34
-n6 x=112.03125 y=37.015625 v=112,37,30,10 sc=1,1
-k35
-n6 x=111.9375 y=36.984375 v=112,37,29.984375,10
-k36
 k37
-n6 x=111.96875 v=112,37,30,10
+n6 x=113.03125 y=37.3125 v=112.890625,37.03125,30.21875,9.9375 sc=1.007,0.994
 k38
-n6 x=111.984375 y=37
+n6 x=112.359375 y=37.109375 v=111.96875,37.015625,30.078125,9.984375 sc=1.003,0.998
 k39
-n6 x=112 v=d
+n6 x=112.03125 y=37.015625 v=112,37,30,10 sc=1,1
 k40
+n6 x=111.9375 y=36.984375 v=112,37,29.984375,10
+k41
+k42
+n6 x=111.96875 v=112,37,30,10
+k43
+n6 x=111.984375 y=37
+k44
+n6 x=112 v=d
+k45
 ref "m.shared-morph__lean.60"
 verdict good
 note "shared-morph-on fix (29f87dbd): the subject's on now morphs from #partner's box in place of its enter pose (before, it showed at its own box at once), keyframes adding on top; nothing else changed but the later ticks the morph's settle adds, except in exit-height0+shared-morph, where the partner's off morph starts from the subject's box as last painted (h 15) rather than its first exit step (h 12) (re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change); tick for tick the same geometry as approved before apart from those)"

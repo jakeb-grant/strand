@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "roll-at-rest"
 verdict good
-note "roll-preview: on a bar at rest painted from previews, the rolling number's two changes (the second mid-roll) roll over ticks 1-16 and the shaped box's when-block morphs cookie to burst over ticks 17-30, the surface painted on every tick of each (checked frame by frame in the PNGs); before the fix the roll showed at once (1 tick) and the shape change painted no frame at all"
+note "roll-preview's roll-at-rest re-recorded at eval-r3 in eval-coverage's format (each node's paint and glyph sources); geometry, paint order and ink tick for tick as approved at 60389e96, and its gl fields show the roll's two texts on ticks 1-16 and the box's fill under its cookie-to-burst morph"
 date 2026-10-18
-rev "60389e96"
+rev "b9d8aa4f"
 approver "claude"
 scenario 4bb8a7bedc8df0a6
-seal 0177abd08c17365f
+seal ab666420a2386b98
 S1 0 - "bar Top"
 N0 "lead|shell.strand:7:5|[Mock | DP-1]#0" "box#lead"
 N1 "num|shell.strand:8:5|[Mock | DP-1]#0" "text#num"
@@ -15,16 +15,16 @@ N3 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
 N4 "|shell.strand:6:3|[Mock | DP-1]#0" "row@shell.strand:6"
 k0 p1
 s1 z=300,30
-n0 x=8 y=6 w=16 h=12 ord=2
-n1 x=30 y=5 w=15 h=15 txt=S ord=3 ink=30,7,14,9
-n2 x=51 y=2 w=20 h=20 ord=4
-n3 x=0 y=0 w=300 h=30
+n0 x=8 y=6 w=16 h=12 ord=2 bg=5c6370ff
+n1 x=30 y=5 w=15 h=15 txt=S ord=3 ink=30,7,14,9 fg=ffffffff gl=["41"]
+n2 x=51 y=2 w=20 h=20 ord=4 bg=c678ddff
+n3 x=0 y=0 w=300 h=30 bg=000000ff
 n4 x=0 y=0 w=300 h=24 ord=1
 k1
-n1 ink=30,6,14,10
+n1 ink=30,6,14,10 fg=ffffffff/ffffffff gl=["42","41[1]"]
 k2
 k3
-n1 ink=30,6,14,11
+n1 ink=30,6,14,11 gl=["43","42[1]"]
 k4
 k5
 k6
@@ -38,6 +38,7 @@ k13
 k14
 k15
 k16
+n1 fg=ffffffff gl=["43"]
 k17
 k18
 k19
