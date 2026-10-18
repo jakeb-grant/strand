@@ -28,6 +28,18 @@ pub mod bystander;
 pub mod coherence;
 pub mod colour;
 pub mod contain;
+pub mod continuity;
+
+/// (eval-rules-2) With `$STRAND_EVAL_RULE_STATS` set, a rule arm says on
+/// stderr how much of a run it held (how many samples, boxes or frames
+/// it compared), so a sweep can tell a pass from a rule that saw nothing.
+pub fn stats(arm: &str, cx: &Cx, counts: &[(&str, u64)]) {
+    if std::env::var_os("STRAND_EVAL_RULE_STATS").is_none() {
+        return;
+    }
+    let c: Vec<String> = counts.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    eprintln!("rule-stats {arm} {}: {}", cx.trace.scenario.id, c.join(" "));
+}
 pub mod cpu_gpu;
 pub mod determinism;
 pub mod envelope;
@@ -761,6 +773,7 @@ pub fn evaluate(
                     (Vec::new(), skip("motion is reduced: children show at once"))
                 }
                 CheckId::Stagger => (stagger::run(&cx), None),
+                CheckId::Continuity => (continuity::run(&cx), None),
                 CheckId::Twin if trace.scenario.reduced_motion => {
                     (Vec::new(), skip("the scenario reduces motion itself"))
                 }

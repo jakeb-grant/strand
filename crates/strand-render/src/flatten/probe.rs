@@ -142,6 +142,9 @@ impl Seen {
             ink: None,
             overhang: None,
             paint: NodePaint::default(),
+            clip: None,
+            roll: None,
+            drag: None,
         }
     }
 }
@@ -300,6 +303,15 @@ impl Flattener<'_> {
                 && v.y0 < f64::from(r.y) + f64::from(r.h)
         };
         let hidden = hidden.or_else(|| (meets(surface) && !meets(clip)).then_some(Hidden::Clipped));
+        if clip != surface {
+            let c = LogicalRect::new(
+                (f64::from(clip.x) / s) as f32,
+                (f64::from(clip.y) / s) as f32,
+                (f64::from(clip.w) / s) as f32,
+                (f64::from(clip.h) / s) as f32,
+            );
+            t.clip = Some(c);
+        }
         t.visual = LogicalRect::new(
             (v.x0 / s) as f32,
             (v.y0 / s) as f32,

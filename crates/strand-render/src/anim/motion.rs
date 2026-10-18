@@ -303,6 +303,34 @@ impl Enc {
     }
 }
 
+/// (eval-rules-2) A prop's motion before a sample ([`PropMotion::view`]).
+#[cfg(feature = "eval-hooks")]
+pub(super) enum View {
+    One(strand_scene::MotionView<1>),
+    Four(strand_scene::MotionView<4>),
+    Five(strand_scene::MotionView<5>),
+}
+
+#[cfg(feature = "eval-hooks")]
+impl View {
+    /// The trace of the sample of `node`'s `what` at `at` that gave `e`.
+    pub(super) fn trace(
+        &self,
+        node: strand_scene::NodeId,
+        what: crate::probe::SpringOf,
+        at: Duration,
+        e: &Enc,
+    ) -> Option<crate::probe::SpringTrace> {
+        use crate::probe::SpringTrace;
+        Some(match (self, e) {
+            (View::One(v), Enc::One(c)) => SpringTrace::of(node, what, at, v, c),
+            (View::Four(v), Enc::Four(c)) => SpringTrace::of(node, what, at, v, c),
+            (View::Five(v), Enc::Five(c)) => SpringTrace::of(node, what, at, v, c),
+            _ => return None,
+        })
+    }
+}
+
 pub(super) fn decode(p: Prop, e: &Enc) -> PropValue {
     match (p, e) {
         (Prop::Rotate, Enc::One([v])) => PropValue::Angle(*v),
@@ -445,6 +473,19 @@ impl PropMotion {
                 shape: shape.clone(),
                 values: m.iter_mut().map(|m| one(m, at, commit, lead)[0]).collect(),
             }),
+        }
+    }
+
+    /// (eval-rules-2) The motion as it stands before a sample, for the
+    /// trace (`crate::probe::SpringTrace`): `None` for a shadow list or
+    /// uniforms, which the trace leaves out.
+    #[cfg(feature = "eval-hooks")]
+    pub(super) fn view(&self) -> Option<View> {
+        match self {
+            PropMotion::One(m) => Some(View::One(m.view())),
+            PropMotion::Four(m) => Some(View::Four(m.view())),
+            PropMotion::Five(m) => Some(View::Five(m.view())),
+            PropMotion::Shadows { .. } | PropMotion::Uniforms { .. } => None,
         }
     }
 

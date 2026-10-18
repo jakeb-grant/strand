@@ -43,6 +43,11 @@ pub enum CheckId {
     /// (eval-rules) Children entering together under `stagger:` start
     /// their enter one step apart.
     Stagger,
+    /// (eval-rules-2) A motion goes on from what is on screen: a spring's
+    /// way keeps its velocity through a change, starts one refresh before
+    /// its first frame, and a new node springs only its enter pose; an
+    /// interrupted roll rolls on from the text on screen.
+    Continuity,
     Twin,
     Determinism,
     Regions,
@@ -63,7 +68,7 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 21] = [
+    pub const ALL: [CheckId; 22] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -75,6 +80,7 @@ impl CheckId {
         CheckId::Contain,
         CheckId::Tiling,
         CheckId::Stagger,
+        CheckId::Continuity,
         CheckId::Twin,
         CheckId::Determinism,
         CheckId::Regions,
@@ -94,7 +100,7 @@ impl CheckId {
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
     /// is opt-in and `cpu-gpu` comes with `backend = "both"`.
-    pub const DEFAULT: [CheckId; 16] = [
+    pub const DEFAULT: [CheckId; 17] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -106,6 +112,7 @@ impl CheckId {
         CheckId::Contain,
         CheckId::Tiling,
         CheckId::Stagger,
+        CheckId::Continuity,
         CheckId::Twin,
         CheckId::Redraw,
         CheckId::Budget,
@@ -126,6 +133,7 @@ impl CheckId {
             CheckId::Contain => "contain",
             CheckId::Tiling => "tiling",
             CheckId::Stagger => "stagger",
+            CheckId::Continuity => "continuity",
             CheckId::Twin => "twin",
             CheckId::Determinism => "determinism",
             CheckId::Regions => "regions",

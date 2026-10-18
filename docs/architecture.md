@@ -819,7 +819,20 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `Motions` also says which of a node's own colours springs
     (`FILL_SPRING`: its `bg`, a meter's `value` or `track`;
     `INK_SPRING`: its text colour or solid `fill`; `LINE_SPRING`: its
-    border);
+    border); (eval-rules-2) `FrameTrace::period` (the surface's frame
+    period its changes start one of before their first frame) and
+    `FrameTrace::springs`, a `SpringTrace` per sample the frame took of a
+    prop's, a laid-out size's or a glide's `Motion` (`SpringOf::{Prop,
+    Size, Glide}`: the node, the sample's time, the value, the target
+    and `Curve` it moves along, `eps`, `rest` when it was at rest before,
+    `start` (`SpringStart`: its sample before and a FLIP's jump) when a
+    change started at it, and on the frame its node enters, `entering`:
+    whether its enter pose sets that prop), from `Motion::view` taken
+    before the sample; `NodeTrace::clip` (the clip its ancestors set,
+    logical, when narrower than its surface), `NodeTrace::roll`
+    (`RollDrawn`: a rolling text's two texts and progress, and on the
+    frame a change interrupted a roll, that roll) and `NodeTrace::drag`
+    (a slider's drag value while a drag holds it);
   - `Renderer::set_frame_trace(bool)`, `take_frame_traces() ->
     Vec<FrameTrace>`, `set_text_hold(bool)`,
     `set_text_hold_with(Option<HoldPick>)` (`HoldPick = Box<dyn
@@ -1757,7 +1770,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `retarget_at` starts at a given time;
   `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
   anything, and `probe(at)` reads all three at once (the curve evaluated
-  once: the theme swap's contrast play-through). Everything is a pure
+  once: the theme swap's contrast play-through). (eval-rules-2)
+  `view() -> MotionView<N>` is its state as plain data, read without
+  sampling: the segment in flight (`start`, `from`, `vel`, `target`,
+  `curve`), the change waiting for its first sample (`pending`: target,
+  curve and FLIP jump), its last sample's time and `eps`; strand-render's
+  `eval-hooks` probe records it beside each sample. Everything is a pure
   function of the timestamps sampled, so frames are testable as images. `color_channels`/`channels_color` map a
   colour to premultiplied OKLab plus alpha. `TokenScope::transition`
   falls back to `SPATIAL`/`EFFECTS`/`BOUNCY` when the table has no

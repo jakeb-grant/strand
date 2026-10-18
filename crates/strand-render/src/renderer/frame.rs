@@ -622,6 +622,8 @@ impl Renderer {
                 .filter(|(_, st)| st.moving())
                 .map(|(id, st)| (*id, st.flinging()))
                 .collect::<Vec<_>>(),
+            self.anim.period(),
+            std::mem::take(&mut self.anim.springs),
         );
 
         // Widen by the buffer's age: it misses the last `age - 1` frames.

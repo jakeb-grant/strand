@@ -21,12 +21,14 @@ const FLIGHT_COLS: usize = 36;
 const INK_COLS: usize = 38;
 /// The columns of a row before `ov` (still read).
 const PAINT_COLS: usize = 39;
+/// The columns of a row before `clip` (still read).
+const OV_COLS: usize = 40;
 
 /// The node row's columns, in order (`Row`'s array form).
-pub const COLS: [&str; 40] = [
+pub const COLS: [&str; 41] = [
     "key", "s", "x", "y", "w", "h", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "oo",
     "sx", "sy", "rot", "mot", "emot", "auth", "hid", "txt", "ix", "iy", "wx", "wy", "spx", "spy",
-    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink", "paint", "ov",
+    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink", "paint", "ov", "clip",
 ];
 
 /// A rect, `[x, y, w, h]`.
@@ -304,6 +306,150 @@ pub struct Frame {
     /// snapshot (a theme swap's), and the weight it was blended at.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fades: BTreeMap<u32, f32>,
+    /// (eval-rules-2) Per painted surface that sampled a spring, the
+    /// frame period (ns) a change it started began one of before it
+    /// (zero: not known yet, and `START_LEAD` stands in). In the digest
+    /// with everything below when any of it is there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub period: BTreeMap<u32, u64>,
+    /// (eval-rules-2) Every sample the painted surfaces took of a prop's,
+    /// a laid-out size's or a glide's spring, by surface, node and what,
+    /// each one's in the order taken.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sp: Vec<SpringRec>,
+    /// (eval-rules-2) The `roll: true` texts rolling in this frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rolls: Vec<RollRec>,
+    /// (eval-rules-2) Per shown surface, the sides of its buffer the
+    /// author's geometry puts at its output's edge, where a shadow may
+    /// be cut (`checks::contain`): bits 1 top, 2 right, 4 bottom, 8 left.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cuts: BTreeMap<u32, u8>,
+    /// (eval-rules-2) Where the pointer is after this tick's input: its
+    /// surface and its place there (logical px, as the rows').
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptr: Option<PtrRec>,
+    /// (eval-rules-2) The sliders held in a drag, by key: the value the
+    /// drag gives each.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drags: BTreeMap<String, f32>,
+}
+
+/// (eval-rules-2) The pointer at a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PtrRec {
+    pub s: u32,
+    pub at: [f32; 2],
+}
+
+/// (eval-rules-2) One sample of a spring (`strand_render::probe::
+/// SpringTrace`): the value it drew and what it was asked to do, never
+/// how fast it went or where its way began, which `continuity` works out.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpringRec {
+    pub key: String,
+    /// Its surface.
+    pub s: u32,
+    /// The prop (`x`, `opacity`, `bg`…), `w` or `h` (a laid-out size)
+    /// or `glide`.
+    pub of: String,
+    /// Sampled at (ns), when not the frame's time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// The value drawn, per channel.
+    pub v: Vec<f32>,
+    /// What it moves to, and along what.
+    pub to: Vec<f32>,
+    pub c: CurveRec,
+    pub eps: f32,
+    /// At rest before this sample, here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<Vec<f32>>,
+    /// A change started at this sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<StartRec>,
+    /// On the frame its node enters, whether its enter pose sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<bool>,
+}
+
+/// (eval-rules-2) A change that started at a sample: the motion's last
+/// sample before (ns) and a FLIP's jump.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StartRec {
+    pub last: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shift: Vec<f32>,
+}
+
+/// (eval-rules-2) A curve (`strand_scene::Curve`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CurveRec {
+    #[default]
+    Instant,
+    /// Stiffness and damping ratio.
+    Spring { k: f32, z: f32 },
+    /// A duration (ns) and its easing: `linear`, `elastic`, `bounce` or
+    /// a cubic bézier's four control values.
+    Timed { d: u64, ease: EaseRec },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EaseRec {
+    #[default]
+    Linear,
+    Elastic,
+    Bounce,
+    Bezier([f32; 4]),
+}
+
+impl CurveRec {
+    pub fn of(c: &strand_scene::Curve) -> CurveRec {
+        use strand_scene::protocol::Easing;
+        match *c {
+            strand_scene::Curve::Instant => CurveRec::Instant,
+            strand_scene::Curve::Spring(s) => CurveRec::Spring {
+                k: s.stiffness,
+                z: s.damping,
+            },
+            strand_scene::Curve::Timed { duration, easing } => CurveRec::Timed {
+                d: duration.as_nanos() as u64,
+                ease: match easing {
+                    Easing::Linear => EaseRec::Linear,
+                    Easing::OutElastic => EaseRec::Elastic,
+                    Easing::OutBounce => EaseRec::Bounce,
+                    Easing::Bezier { x1, y1, x2, y2 } => EaseRec::Bezier([x1, y1, x2, y2]),
+                },
+            },
+        }
+    }
+}
+
+impl EaseRec {
+    pub fn easing(self) -> strand_scene::protocol::Easing {
+        use strand_scene::protocol::Easing;
+        match self {
+            EaseRec::Linear => Easing::Linear,
+            EaseRec::Elastic => Easing::OutElastic,
+            EaseRec::Bounce => Easing::OutBounce,
+            EaseRec::Bezier([x1, y1, x2, y2]) => Easing::Bezier { x1, y1, x2, y2 },
+        }
+    }
+}
+
+/// (eval-rules-2) A rolling text in one frame: the texts it rolls from
+/// and to and how far (0 to 1), and the roll a change interrupted at
+/// this frame, as it stood then (its texts and its progress).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RollRec {
+    pub key: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub p: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<(Option<String>, Option<String>, f32)>,
 }
 
 /// How a painted surface's buffer, left by a partial redraw at its
@@ -412,6 +558,9 @@ pub struct Row {
     /// past that layout's own box, left and right (the font's overhang:
     /// an italic, an icon glyph wider than its advance), logical px.
     pub ov: Option<[f32; 2]>,
+    /// (eval-rules-2) The clip its ancestors set, `[x, y, w, h]`, when
+    /// narrower than its surface.
+    pub clip: Option<Rect>,
 }
 
 /// `v` to 1/64.
@@ -455,6 +604,7 @@ impl Serialize for Row {
         seq.serialize_element(&self.ink.map(|r| r.map(q)))?;
         seq.serialize_element(&self.paint)?;
         seq.serialize_element(&self.ov.map(|p| p.map(q)))?;
+        seq.serialize_element(&self.clip.map(|r| r.map(q)))?;
         seq.end()
     }
 }
@@ -465,7 +615,16 @@ impl<'de> Deserialize<'de> for Row {
         // A trace from before `fx`, `fy` were recorded (an A/B against
         // an earlier revision) reads with nothing in flight; one from
         // before `fit` and `ink`, or before `paint`, without them.
-        if ![COLS.len(), PAINT_COLS, INK_COLS, FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
+        if ![
+            COLS.len(),
+            OV_COLS,
+            PAINT_COLS,
+            INK_COLS,
+            FLIGHT_COLS,
+            OLD_COLS,
+        ]
+        .contains(&v.len())
+        {
             return Err(D::Error::custom(format!(
                 "a node row has {} columns, not {}",
                 v.len(),
@@ -545,6 +704,13 @@ impl<'de> Deserialize<'de> for Row {
                         .map_err(|_| D::Error::custom("column ov is not a pair"))?,
                 ),
             },
+            clip: match v.get(40) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(p) => Some(
+                    serde_json::from_value(p.clone())
+                        .map_err(|_| D::Error::custom("column clip is not a rect"))?,
+                ),
+            },
         })
     }
 }
@@ -563,7 +729,8 @@ impl RunTrace {
 
     /// The hash of everything deterministic the run drew: each frame's
     /// tick, surfaces and nodes, its deterministic costs and held texts,
-    /// the segments and rests. Wall times and images are left out.
+    /// its springs' samples, rolls and drags, the segments and rests.
+    /// Wall times and images are left out.
     pub fn compute_digest(&self) -> String {
         let mut h = blake3::Hasher::new();
         let mut put = |v: &dyn erased::Json| {
@@ -593,6 +760,18 @@ impl RunTrace {
             put(&(&f.origins, &f.poses));
             if !f.fades.is_empty() {
                 put(&f.fades);
+            }
+            // (eval-rules-2) Its springs' samples, rolls, cut sides, the
+            // pointer and the drags, when there are any: `determinism`
+            // holds them too.
+            if !(f.sp.is_empty()
+                && f.rolls.is_empty()
+                && f.cuts.is_empty()
+                && f.ptr.is_none()
+                && f.drags.is_empty())
+            {
+                put(&(&f.period, &f.sp, &f.rolls));
+                put(&(&f.cuts, &f.ptr, &f.drags));
             }
         }
         put(&self.segments);
@@ -701,6 +880,9 @@ impl RunTrace {
                         k * r.visual[2],
                         k * r.visual[3],
                     ];
+                    if let Some(c) = r.clip.as_mut() {
+                        *c = [p.x + k * c[0], p.y + k * c[1], k * c[2], k * c[3]];
+                    }
                     if roots.get(&r.surface) == Some(&r.key) {
                         r.own_op *= p.opacity;
                         r.scale = [r.scale[0] * k, r.scale[1] * k];
@@ -725,12 +907,19 @@ impl RunTrace {
                 if let Some(ink) = r.ink.as_mut() {
                     mv(ink, d);
                 }
+                if let Some(c) = r.clip.as_mut() {
+                    mv(c, d);
+                }
             }
             for (s, reg) in &mut f.regions {
                 let d = by(*s);
                 for r in reg.input.iter_mut().flatten() {
                     mv(r, d);
                 }
+            }
+            if let Some(q) = f.ptr.as_mut() {
+                let d = by(q.s);
+                q.at = [q.at[0] + d[0], q.at[1] + d[1]];
             }
         }
         Some(t)

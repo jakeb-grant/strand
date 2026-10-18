@@ -402,6 +402,33 @@ whose buffer differed at all, the pixels past the tolerance, how many of
 them were stale, the worst difference, the region, what the frame redrew,
 the leg and the repaint's image (`redraw`). Neither is in the digest.
 
+What `continuity`, `contain`'s `held` and `shadow` and `coherence`'s
+`drag` read (eval-rules-2), all from strand-render's `eval-hooks`:
+
+- every sample a painted frame took of a prop's spring, a laid-out
+  size's (`w`, `h`) or a glide's (`sp`): the node, its surface, the value
+  drawn per channel, the target and curve it moves along (a spring's
+  stiffness and damping, a timed curve's duration and easing), its
+  settling tolerance, `rest` when it was at rest before the sample,
+  `start` when a change started at it (the motion's sample before and a
+  FLIP's jump), and on the frame its node enters, whether its enter
+  pose sets that prop (`enter`). Never its velocity or where its way
+  began: the check works those out. With them, each surface's frame
+  period, which a change starts one of before its first frame
+  (`period`);
+- each `roll: true` text rolling (`rolls`): the texts it rolls from and
+  to, how far, and on the frame a change interrupted a roll, that roll as
+  it stood;
+- per node, the clip its ancestors set when narrower than its surface
+  (`clip`, axis aligned: a turned box's is its bounding box);
+- per shown surface, the sides of its buffer the author's geometry lays
+  at the output's edge (`cuts`: an anchored side whose margin caps the
+  overhang there, a panel's `attach:` side);
+- where the pointer is after the tick's input (`ptr`) and each slider a
+  drag holds, with the value the drag gives it (`drags`).
+
+They are in the digest when a frame has any.
+
 Once per node the trace records what the rule checks read from its
 config when it was first seen: its `enter` and `exit` poses (an exit
 mirrors its enter; a pose's width and height too), a container's
@@ -443,12 +470,13 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
 | `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion, and so does an authored offset or pose spring: the span of the values it is drawn at while authored; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last, and one that leaves and comes back in one segment travels from where it came back), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed, and so is a scroll's (`SCROLL`, or a fling's `FLING`: a list moving its rows by itself is a layout cause, not a motion of theirs). A glide retargeted while its box's own size snaps and its parent keeps it by its centre or far edge (a card held centred in a surface that shrinks) is not a retarget. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
 | `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; and any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a step that takes time (`glide`, `drag`, `swipe`) acts on every tick of its span (a swipe faster than the viewport carries rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
-| `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
+| `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. `drag`: a slider a drag holds draws its knob under the pointer (see below). |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
-| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), and an ellipsised text gives way before it is laid past its surface's edge (`give way`). See below. |
+| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), and a shadow at rest is drawn inside its buffer (`shadow`). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
+| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a new node springs only what its enter pose sets (`first frame`), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). A key made again while its predecessor exits (`~2`) is compared by its base when it is the only one of that base shown. A surface whose scroll flung is left out from the fling on: `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
@@ -531,11 +559,13 @@ the shell's buffers also reach. The check therefore holds each frame's
 own damage. It does not hold the union with earlier frames' damage that
 an age of 2 or 3 adds.
 
-**The rule checks** (`colour`, `contain`, `tiling`, `stagger` and
-`vanish`'s `pop-out`) each hold one guarantee of docs/design.md about how
+**The rule checks** (`colour`, `contain`, `tiling`, `stagger`,
+`continuity`, `vanish`'s `pop-out` and `coherence`'s `drag`) each hold one guarantee of docs/design.md about how
 a motion plays, read off the trace with no reference. Each was kept only
 with no false positive over every curated and regression scenario and the
-whole matrix at 60 and 144 Hz (decisions.md eval-rules). An `intend`
+whole matrix at 60 and 144 Hz (decisions.md eval-rules; the
+eval-rules-2 ones also over held-out sets C and D's correct scenarios and
+three owner shells run with `eval local`). An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
@@ -572,7 +602,24 @@ says a node moves, not how, so it does not exempt from them; only an
   edge, unless something that cannot give way puts it there: it or an
   ancestor past the edge with a width of its own, `shrink: 0` or a
   `min_width`, an image or icon, or a text with no ellipsis inside that
-  ancestor and past the edge too, or a clipping ancestor.
+  ancestor and past the edge too, or a clipping ancestor. `held`
+  (eval-rules-2): "a node whose size springs clips its content while it
+  does (a collapsing toast hides what no longer fits)" (decisions.md
+  wave3-pixels p2), and one exiting to a pose that sets its width or
+  height clips until it unmounts (exit-height0), so what a descendant
+  shows (its visual box cut by its ancestors' clip) lies inside the
+  sizing box's visual box, within `tol` plus a quantum, however small the
+  box has become. A box drawn turned, or under a turned ancestor, is left
+  out: its clip reaches the trace as a bounding box. `shadow`
+  (eval-rules-2): "Shadows enlarge the buffer but not the input region"
+  (design.md "Layout"): the buffer keeps an overhang for its shadows'
+  reach at rest (decisions.md wave3-pixels), so a box at rest (no
+  motion that moves it or lays it out, no authored geometry, no paint
+  offset, scale or turn, no clipping ancestor, and nothing on its
+  surface springing a size, whose overhang is held where the spring
+  started or rests, m6-owner-fixes bug 9) draws each shadow inside the
+  buffer, within `tol` plus a quantum, on every side but the ones its
+  surface's `cuts` name.
 - **`tiling`.** A box's edges are snapped from where they fall
   (decisions.md wave3-pixels), so two that share an edge in layout share
   its physical pixel. On every painted frame, among the nodes shown on
@@ -603,6 +650,43 @@ says a node moves, not how, so it does not exempt from them; only an
   and a pose's width or height within `tol`, or nothing at all (its
   effective opacity at most 1/255). A slide to an edge, whose offset is the
   node's size, is held on its opacity only. Reduced motion is not held.
+- **`continuity`** (eval-rules-2). "Retargeting mid-flight keeps
+  velocity, so interrupted animations never jolt" (design.md), a spring
+  is a unit-mass damped oscillator, and a change starts one refresh of
+  its surface before its first frame (at most 16.7 ms, never before the
+  motion's sample before), from where its way is then and with its
+  velocity, a timed curve carrying that velocity as `v0·t·(1 − t/d)²`
+  (architecture.md "Motion"; decisions.md first-frame-lead). From each
+  spring's samples (`sp`) alone the check works its way out, with an
+  oscillator of its own, and holds every value drawn to it within four
+  times the spring's settling tolerance plus 1e-4 of its span. A value off
+  its way after a change is reported as what fits it: `velocity` (the
+  change started from rest), `start` (it started 16.7 ms early on a
+  faster surface), else `way`. A way in flight that the next sample finds
+  at rest elsewhere, or there but moving, was dropped (`velocity`). A
+  surface whose frame says it wants no more frames shows its last frame
+  until something changes, so each spring it sampled last is exactly at
+  its target (within f32 rounding: a motion that settles snaps to its
+  target), unless its node is exiting (`end`). On the frame a node
+  enters, a prop its enter pose does not set has no value on screen to
+  spring from, so it starts at its value (`first frame`; decisions.md
+  m4-effects-finish). An interrupted roll rolls on from the nearer of its
+  two texts, either when the frame before showed the other side of half
+  way (`roll`; design.md "Rolling numbers"). A way met in flight with no
+  sample before it, or one its surface painted a frame without sampling
+  (reduced motion snaps), is picked up at its next rest.
+- **`drag`** (in `coherence`, eval-rules-2). "A dragged slider draws the
+  drag until the release", and its drag and its drawing share one span,
+  the knob centre running between the knob radii, "so the knob stays
+  under the pointer" (decisions.md wave3-pixels p3). On each frame a drag
+  holds a slider, its knob's centre (its last part) is the pointer's x,
+  held a knob radius in from either end of its box, within `tol` plus
+  one physical pixel.
+
+`$STRAND_EVAL_RULE_STATS` set (run.sh passes `STRAND_*` in) makes each
+eval-rules-2 arm say on stderr how much of a run it held (`rule-stats
+<arm> <scenario>: …`: samples, boxes, shadows, knobs), so a sweep can tell
+a pass from an arm that saw nothing.
 
 **Exempting a node.** Three mechanisms, from narrowest to widest:
 
@@ -1280,15 +1364,20 @@ written from scratch, in the smallest shape that shows it.
   (`fit`) and the ink record that. A text's paint is recorded once per
   run of glyphs drawn, so two texts with the same source, colour and
   glyphs drawn on one node are one entry.
-- **No check holds a retarget's velocity.** design.md: "Retargeting
-  mid-flight keeps velocity". A spring retargeted with its velocity
-  dropped is drawn as a smooth curve that differs from the right one by a
-  few pixels over a few frames, and the spring's stiffness and damping
-  are not in the trace, so no bound on the drawn frames alone told the two
-  apart at 60 Hz without failing correct reversals (decisions.md
-  eval-rules). The references catch it where a scenario reverses a
-  spring (`heldc-spring-reversal`, `heldc-list-reorder`,
-  `title-pill-cut-late`, and the matrix).
+- **`continuity` reads what the motion was asked, not how it moved.**
+  The trace records each spring's target, curve and changes as the
+  renderer's `Motion` holds them (eval-rules-2), and the check works the
+  way out itself, so a renderer that springs with the wrong stiffness, a
+  velocity lost or a start mistimed is caught; one that records a change
+  it never made, or makes one it does not record (a target changed with
+  no change started), is not judged until that spring's next rest.
+  Only props', laid-out sizes' and glides' springs are traced: a
+  shadow's, a shader uniform's, a roll's own progress, a shared morph's
+  box and a lean's tilt are held by other checks and the references.
+- **`held` and `drag` hold boxes, not shapes.** `held` skips a box drawn
+  turned (its clip is traced as a bounding box), and `drag` skips a
+  slider drawn turned or scaled (its knob's part is in its unturned
+  box).
 - **The rule checks read the scene, not the pixels.** `colour` reads
   the colours the flattened scene gives, `tiling` the snapped boxes the
   flattener places; how the raster fills them is the pixel tests'

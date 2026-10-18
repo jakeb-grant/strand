@@ -31,7 +31,7 @@ pub use input::{
     AxisDelta, AxisSource, ButtonState, ClipboardAsk, DropKind, DropPayload, InputEvent, KeyInput,
     Modifiers, drag_export, drag_identity, drag_type,
 };
-pub use motion::{Curve, Motion, Spring};
+pub use motion::{Curve, Motion, MotionView, Spring};
 pub use paint::{
     BYTES_PER_PIXEL, BlurRegion, DragImage, PaintTarget, Painter, SurfacePose, TargetError,
 };

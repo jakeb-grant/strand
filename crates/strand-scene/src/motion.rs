@@ -354,6 +354,29 @@ pub struct Motion<const N: usize> {
     last: Option<Duration>,
 }
 
+/// What a [`Motion`] holds, read without changing it ([`Motion::view`]):
+/// the segment it moves along and the change waiting for its next
+/// sample. Nothing drives a motion through it; the evaluation sandbox's
+/// trace reads it (docs/eval.md, "Trace": a spring's way).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MotionView<const N: usize> {
+    /// When its segment started (zero for one made at rest).
+    pub start: Duration,
+    /// Where and how fast it was moving then.
+    pub from: [f32; N],
+    pub vel: [f32; N],
+    pub target: [f32; N],
+    /// How it moves there; [`Curve::Instant`] at rest.
+    pub curve: Curve,
+    /// A change waiting for its first sample: its target, its curve and
+    /// the jump it adds where it starts (a FLIP's).
+    pub pending: Option<([f32; N], Curve, [f32; N])>,
+    /// Its last sample's time (or the frame it was made after).
+    pub last: Option<Duration>,
+    /// Its settling tolerance.
+    pub eps: f32,
+}
+
 /// The most a change starts before the first frame that samples it (one
 /// refresh at 60 Hz), so that frame already shows progress. A surface
 /// refreshing faster leads by its own refresh
@@ -543,6 +566,20 @@ impl<const N: usize> Motion<N> {
         (pos, vel, settled)
     }
 
+    /// Its state as it stands, nothing sampled ([`MotionView`]).
+    pub fn view(&self) -> MotionView<N> {
+        MotionView {
+            start: self.seg.start,
+            from: self.seg.from,
+            vel: self.seg.vel,
+            target: self.seg.target,
+            curve: self.seg.curve,
+            pending: self.pending.map(|p| (p.target, p.curve, p.shift)),
+            last: self.last,
+            eps: self.eps,
+        }
+    }
+
     /// At rest at its target, with nothing pending, at `at`.
     pub fn is_settled(&self, at: Duration) -> bool {
         self.pending.is_none() && self.seg.settled(at, self.eps)
@@ -624,6 +661,40 @@ mod tests {
 
     fn ms(v: u64) -> Duration {
         Duration::from_millis(v)
+    }
+
+    #[test]
+    fn a_view_shows_the_segment_and_the_change_waiting() {
+        // At rest: an instant segment from zero. A retarget with a FLIP
+        // shift waits as `pending`; its first sample starts it a frame
+        // before, from where the value was, keeping no velocity from
+        // rest, and the view then shows the segment it moves along.
+        let spring = Curve::Spring(SPATIAL);
+        let mut m = Motion::rest([4.0], 0.05).sampled_at(Some(ms(1000)));
+        let v = m.view();
+        assert_eq!(
+            (v.start, v.from, v.target, v.curve),
+            (Duration::ZERO, [4.0], [4.0], Curve::Instant)
+        );
+        assert_eq!((v.pending, v.last, v.eps), (None, Some(ms(1000)), 0.05));
+        m.retarget([10.0], spring);
+        m.shift([2.0], spring);
+        assert_eq!(m.view().pending, Some(([10.0], spring, [2.0])));
+        m.sample_frame(ms(1020), ms(10));
+        let v = m.view();
+        assert_eq!(
+            (v.start, v.from, v.vel, v.target),
+            (ms(1010), [6.0], [0.0], [10.0])
+        );
+        assert_eq!((v.curve, v.pending, v.last), (spring, None, Some(ms(1020))));
+        // Retargeted in flight, it keeps the velocity it had.
+        let v0 = m.velocity(ms(1020))[0];
+        assert!(v0 > 10.0, "{v0}");
+        m.retarget([0.0], spring);
+        m.sample_frame(ms(1030), ms(10));
+        let v = m.view();
+        assert_eq!(v.start, ms(1020));
+        assert!((v.vel[0] - v0).abs() < 1e-3, "{v:?} vs {v0}");
     }
 
     #[test]

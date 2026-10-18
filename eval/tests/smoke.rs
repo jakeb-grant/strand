@@ -632,35 +632,40 @@ rest
 }
 
 /// A row of a trace from before the in-flight columns, from before the
-/// text's `fit` and `ink`, from before its paint, or from before its
-/// layout's overhang (an A/B against an earlier revision), still reads,
-/// with nothing in flight, no ink, no paint and no overhang; any other
-/// width is refused.
+/// text's `fit` and `ink`, from before its paint, from before its
+/// layout's overhang, or from before its clip (an A/B against an earlier
+/// revision), still reads, with nothing in flight, no ink, no paint, no
+/// overhang and no clip; any other width is refused.
 #[test]
 fn a_row_without_the_flight_columns_still_reads() {
     let t = go(FOCUS_OFF);
     let mut r = t.frames[0].n[0].clone();
     assert!(r.paint.is_some(), "{r:?}");
     r.ov = Some([0.5, 2.0]);
+    r.clip = Some([1.0, 2.0, 3.0, 4.0]);
     let mut v = serde_json::to_value(&r).unwrap();
     let a = v.as_array_mut().unwrap();
     assert_eq!(a.len(), strand_eval::trace::COLS.len());
     let back: Row = serde_json::from_value(v.clone()).unwrap();
-    assert_eq!(back.ov, Some([0.5, 2.0]));
+    assert_eq!(back.clip, Some([1.0, 2.0, 3.0, 4.0]));
     let n = strand_eval::trace::COLS.len();
     v.as_array_mut().unwrap().truncate(n - 1);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(back.clip, None);
+    assert_eq!(back.ov, Some([0.5, 2.0]));
+    v.as_array_mut().unwrap().truncate(n - 2);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.ov, None);
     assert_eq!(back.paint, r.paint);
-    v.as_array_mut().unwrap().truncate(n - 2);
+    v.as_array_mut().unwrap().truncate(n - 3);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.paint, None);
     assert_eq!((back.fit, back.ink), (r.fit, r.ink));
-    v.as_array_mut().unwrap().truncate(n - 4);
+    v.as_array_mut().unwrap().truncate(n - 5);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!((back.fit, back.ink), (None, None));
     assert_eq!(back.flight, r.flight);
-    v.as_array_mut().unwrap().truncate(n - 6);
+    v.as_array_mut().unwrap().truncate(n - 7);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.flight, [0.0, 0.0]);
     assert_eq!(back.inherited, r.inherited);
@@ -790,4 +795,113 @@ fn a_wheel_springs_a_swipe_flings_and_a_viewport_clips() {
         "a clipped row's children are traced: {:?}",
         clipped.iter().map(|r| &r.key).collect::<Vec<_>>()
     );
+}
+
+/// (eval-rules-2) What `continuity`, `contain`'s held arm and
+/// `coherence`'s drag read: each spring's samples (a change starting, a
+/// rest), the clip a collapsing row sets, an interrupted roll, the
+/// pointer and a slider's drag.
+const MOTION_TRACE: &str = r##"id = "motion-trace"
+screen = { width = 400, scale = 1.0 }
+
+=== shell.strand
+state right = false
+state n = "41"
+state shown = true
+state vol = 0.3
+bar Top {
+  height: 40
+  row { height: 40; gap: 6; align: center; pad: 0, 8
+    slider { id: knob; width: 100; value: <-> vol }
+    box { id: pill; width: 30; height: 12; bg: #3a7bd5; x: right ? 120 : 0 }
+    text n { id: num; roll: true ~ 300ms; color: #ffffff }
+    if shown {
+      row { id: toast; height: 30; align: center; exit { height: 0 }
+        text "Mail" { id: mail; color: #ffffff }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark go
+set right true
+set n "42"
+frames 2
+set n "43"
+set right false
+set shown false
+rest
+mark drag
+drag 40,20 -> 80,20 over 100
+rest
+"##;
+
+#[test]
+fn the_trace_holds_springs_clips_rolls_and_drags() {
+    let t = go(MOTION_TRACE);
+    let pill = key(&t, "pill");
+    let samples: Vec<_> = t
+        .frames
+        .iter()
+        .flat_map(|f| f.sp.iter())
+        .filter(|r| r.key == pill && r.of == "x")
+        .collect();
+    assert!(samples.len() > 4, "{samples:?}");
+    // Two changes, the first from rest, the second in flight.
+    let starts: Vec<_> = samples.iter().filter(|r| r.start.is_some()).collect();
+    assert_eq!(starts.len(), 2, "{samples:?}");
+    assert!(
+        starts[0].rest.is_some() && starts[1].rest.is_none(),
+        "{starts:?}"
+    );
+    assert_eq!(starts[1].to, vec![0.0]);
+    // A 60 Hz output's refresh.
+    let period = t.frames.iter().find_map(|f| f.period.get(&1).copied());
+    assert!(
+        period.is_some_and(|p| (16_600_000..16_700_000).contains(&p)),
+        "{period:?}"
+    );
+    // The row collapsing clips its text.
+    let mail = key(&t, "mail");
+    assert!(
+        t.frames
+            .iter()
+            .any(|f| row(f, &mail).is_some_and(|r| r.clip.is_some())),
+        "no clip on the collapsing row's text"
+    );
+    // The roll the second change interrupted.
+    let num = key(&t, "num");
+    assert!(
+        t.frames
+            .iter()
+            .flat_map(|f| f.rolls.iter())
+            .any(|r| r.key == num && r.was.is_some()),
+        "no interrupted roll"
+    );
+    // The drag: the pointer and the slider it holds.
+    let knob = key(&t, "knob");
+    let dragged: Vec<_> = t
+        .frames
+        .iter()
+        .filter(|f| f.drags.contains_key(&knob))
+        .collect();
+    assert!(!dragged.is_empty(), "no drag traced");
+    assert!(dragged.iter().all(|f| f.ptr.is_some_and(|p| p.s == 1)));
+    // And the checks that read them pass the renderer's own motion.
+    let sc = scenario(MOTION_TRACE);
+    let r = strand_eval::checks::evaluate(&sc, &t, None, None, None);
+    for c in [
+        strand_eval::checks::CheckId::Continuity,
+        strand_eval::checks::CheckId::Contain,
+        strand_eval::checks::CheckId::Coherence,
+    ] {
+        assert_eq!(
+            r.status(c),
+            Some(&strand_eval::checks::Status::Pass),
+            "{}",
+            r.lines(&t).join("\n")
+        );
+    }
 }

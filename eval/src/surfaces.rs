@@ -431,6 +431,73 @@ impl Surfaces {
         Some((output, LogicalPoint::new(sh.origin[0], sh.origin[1])))
     }
 
+    /// (eval-rules-2) The sides of surface `id`'s buffer the author's
+    /// geometry lays at an edge a shadow may be cut by, as bits (1 top,
+    /// 2 right, 4 bottom, 8 left): a side a layer surface is anchored to
+    /// whose overhang its margin there caps (render's `within_edges`,
+    /// decisions.md m6-w2-surface: a bar by its edge and the two beside
+    /// it, a panel or OSD by its anchor and `attach`), and an `attach:`
+    /// side, past which there is no overhang (m4-surface-w1).
+    pub fn cuts(&self, id: SurfaceId) -> u8 {
+        let Some(spec) = self.get(id).and_then(|sh| self.specs.get(&sh.node)) else {
+            return 0;
+        };
+        const T: u8 = 1;
+        const R: u8 = 2;
+        const B: u8 = 4;
+        const L: u8 = 8;
+        let side = |e: Edge| match e {
+            Edge::Top => T,
+            Edge::Right => R,
+            Edge::Bottom => B,
+            Edge::Left => L,
+        };
+        let mut anchored = match spec.kind {
+            NodeKind::Bar => match spec.edge.unwrap_or(Edge::Top) {
+                Edge::Top => T | R | L,
+                Edge::Bottom => R | B | L,
+                Edge::Left => T | B | L,
+                Edge::Right => T | R | B,
+            },
+            NodeKind::Panel | NodeKind::Osd => match spec.anchor {
+                Anchor::Center => 0,
+                Anchor::Top => T,
+                Anchor::Bottom => B,
+                Anchor::Left => L,
+                Anchor::Right => R,
+                Anchor::TopLeft => T | L,
+                Anchor::TopRight => T | R,
+                Anchor::BottomLeft => B | L,
+                Anchor::BottomRight => B | R,
+            },
+            _ => 0,
+        };
+        if spec.kind == NodeKind::Panel
+            && let Some(e) = spec.attach
+        {
+            let opposite = match e {
+                Edge::Top => B,
+                Edge::Bottom => T,
+                Edge::Left => R,
+                Edge::Right => L,
+            };
+            anchored = (anchored | side(e)) & !opposite;
+        }
+        let (o, m) = (spec.overhang, spec.margin);
+        let capped = |bit: u8, o: f32, m: f32| {
+            if anchored & bit != 0 && o >= m.max(0.0) - 1e-3 {
+                bit
+            } else {
+                0
+            }
+        };
+        capped(T, o.top, m.top)
+            | capped(R, o.right, m.right)
+            | capped(B, o.bottom, m.bottom)
+            | capped(L, o.left, m.left)
+            | spec.attach.map_or(0, side)
+    }
+
     /// Every shown surface at the screen's (new) scale: the surfaces to
     /// configure again.
     pub fn rescale(&mut self) -> Result<Vec<Change>, Error> {

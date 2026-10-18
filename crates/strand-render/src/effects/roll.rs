@@ -42,6 +42,11 @@ pub(crate) struct Rolls {
     /// flattens afresh to remember the text or start the roll
     /// (roll-preview).
     pending: HashSet<NodeId>,
+    /// (eval-rules-2) The rolls a change interrupted in the painted frame
+    /// being drawn, as they stood at its time: the layouts each rolled
+    /// from and to, and its progress (`crate::probe::RollDrawn::was`).
+    #[cfg(feature = "eval-hooks")]
+    interrupted: HashMap<NodeId, Rolling>,
 }
 
 /// The glyphs of `l` in visual order.
@@ -108,6 +113,11 @@ impl Rolls {
             }
             // A roll in flight rolls on from what is on screen: the
             // nearer of its two texts.
+            #[cfg(feature = "eval-hooks")]
+            if let Some((before, m)) = &r.from {
+                self.interrupted
+                    .insert(id, (before.clone(), old.clone(), m.peek(frame.at)[0]));
+            }
             let from = match r.from.take() {
                 Some((before, m)) if m.peek(frame.at)[0] < 0.5 => before,
                 _ => old,
@@ -141,6 +151,13 @@ impl Rolls {
         (Some((from.clone(), layout.clone(), p)), true)
     }
 
+    /// (eval-rules-2) The roll of `id` a change interrupted in the frame
+    /// just drawn, if one did.
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn take_interrupted(&mut self, id: NodeId) -> Option<Rolling> {
+        self.interrupted.remove(&id)
+    }
+
     /// A preview saw a text under `under` first or saw it change.
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
@@ -158,12 +175,16 @@ impl Rolls {
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.nodes.retain(|id, _| keep(*id));
         self.pending.retain(|id| keep(*id));
+        #[cfg(feature = "eval-hooks")]
+        self.interrupted.retain(|id, _| keep(*id));
     }
 
     /// Forgets `id` (another node now, or it stopped rolling).
     pub(crate) fn forget(&mut self, id: NodeId) {
         self.nodes.remove(&id);
         self.pending.remove(&id);
+        #[cfg(feature = "eval-hooks")]
+        self.interrupted.remove(&id);
     }
 }
 

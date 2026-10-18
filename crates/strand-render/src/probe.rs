@@ -77,6 +77,92 @@ pub struct FrameTrace {
     /// before its children). Unplaced nodes and the subtrees of hidden
     /// nodes are absent.
     pub nodes: Arc<[NodeTrace]>,
+    /// (eval-rules-2) The frame period the frame's changes started one
+    /// of before it (`Animator::set_period`: its surface's estimated
+    /// refresh; zero when not known yet, and `START_LEAD` stands in).
+    pub period: Duration,
+    /// (eval-rules-2) Every sample the frame took of a prop's spring, a
+    /// laid-out size's or a glide's, in the order taken.
+    pub springs: Vec<SpringTrace>,
+}
+
+/// (eval-rules-2) What a spring is: a prop's (`x`, `opacity`, `bg`…), a
+/// laid-out size's (0 the width, 1 the height) or a glide's (FLIP, a
+/// drag's way back).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpringOf {
+    Prop(strand_scene::Prop),
+    Size(u8),
+    Glide,
+}
+
+/// (eval-rules-2) One sample a painted frame took of a spring: the
+/// value it drew, and what the motion was asked to do (its target, its
+/// curve, a change that started at this sample and from what), never
+/// the velocity or the place it started from, which the `continuity`
+/// check works out itself from where the value was (docs/eval.md,
+/// "Checks").
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpringTrace {
+    pub node: NodeId,
+    pub what: SpringOf,
+    /// The time it was sampled at, and the value it gave there (its
+    /// channels: one for a length, four for a colour in premultiplied
+    /// OKLab, five for a border).
+    pub at: Duration,
+    pub value: Vec<f32>,
+    /// What it moves to, and how (the curve of the change this sample
+    /// started, or of the one it was already on).
+    pub target: Vec<f32>,
+    pub curve: strand_scene::Curve,
+    pub eps: f32,
+    /// It was at rest before this sample, here (made at rest, or
+    /// settled).
+    pub rest: Option<Vec<f32>>,
+    /// A change it was asked for started at this sample.
+    pub start: Option<SpringStart>,
+    /// A prop's spring on the frame its node enters: whether its enter
+    /// pose sets that prop. `None` otherwise.
+    pub entering: Option<bool>,
+}
+
+/// (eval-rules-2) A change that started at a sample: the motion's last
+/// sample before it (or the frame it was made after) and the jump a
+/// FLIP adds where it starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpringStart {
+    pub last: Option<Duration>,
+    pub shift: Vec<f32>,
+}
+
+impl SpringTrace {
+    /// A sample of a motion that was `pre` before it, which gave `value`.
+    pub(crate) fn of<const N: usize>(
+        node: NodeId,
+        what: SpringOf,
+        at: Duration,
+        pre: &strand_scene::MotionView<N>,
+        value: &[f32],
+    ) -> SpringTrace {
+        let (target, curve) = pre
+            .pending
+            .map_or((pre.target, pre.curve), |(t, c, _)| (t, c));
+        SpringTrace {
+            node,
+            what,
+            at,
+            value: value.to_vec(),
+            target: target.to_vec(),
+            curve,
+            eps: pre.eps,
+            rest: (pre.curve == strand_scene::Curve::Instant).then(|| pre.target.to_vec()),
+            start: pre.pending.map(|(_, _, shift)| SpringStart {
+                last: pre.last,
+                shift: shift.to_vec(),
+            }),
+            entering: None,
+        }
+    }
 }
 
 /// One node of a frame. Rects are surface logical pixels.
@@ -130,7 +216,36 @@ pub struct NodeTrace {
     /// (eval-coverage) What it painted itself this frame (its subtree's
     /// paint is its children's): empty for a hidden node.
     pub paint: NodePaint,
+    /// (eval-rules-2) The clip its ancestors set (`clip: true`, a
+    /// `scroll`, `list` or `pages`, a box whose size springs), surface
+    /// logical pixels, axis aligned: `None` when nothing narrower than
+    /// its surface clips it.
+    pub clip: Option<LogicalRect>,
+    /// (eval-rules-2) A `roll: true` text rolling: the text it rolls
+    /// from, the one it rolls to and how far; and on the frame a change
+    /// interrupted a roll, that roll as it stood then.
+    pub roll: Option<RollDrawn>,
+    /// (eval-rules-2) A slider held in a drag: the value the drag gives
+    /// it (`Widgets::drags`), which it draws until the release.
+    pub drag: Option<f32>,
 }
+
+/// (eval-rules-2) A rolling text in one frame (`crate::effects::roll`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollDrawn {
+    /// The texts its layouts were shaped from (`None`: unknown, a layout
+    /// from before the trace was on), and its progress from 0 to 1.
+    pub from: Option<Arc<str>>,
+    pub to: Option<Arc<str>>,
+    pub p: f32,
+    /// The roll a change interrupted at this frame: its texts and its
+    /// progress at this frame's time.
+    pub was: Option<RollWas>,
+}
+
+/// (eval-rules-2) A roll as it stood when a change interrupted it: the
+/// text it rolled from, the one it rolled to, and its progress.
+pub type RollWas = (Option<Arc<str>>, Option<Arc<str>>, f32);
 
 /// (eval-coverage) What a node painted itself in one frame, read from
 /// the display items it added to the flattened scene (not from pixels):
@@ -471,7 +586,9 @@ impl Probe {
     /// the boxes of the surface's layout, `pending` the text requests in
     /// flight, `scrolling` the scrolls whose offset moves by itself
     /// ([`Motions::SCROLL`]), each with whether it flings
-    /// ([`Motions::FLING`]). Every held layout counts the paint.
+    /// ([`Motions::FLING`]), `period` the frame period its changes
+    /// started one of before it and `springs` the samples it took of
+    /// springs. Every held layout counts the paint.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn frame(
         &mut self,
@@ -487,6 +604,8 @@ impl Probe {
         times: PaintTimes,
         fade: Option<f32>,
         scrolling: &[(NodeId, bool)],
+        period: Duration,
+        springs: Vec<SpringTrace>,
     ) {
         for (h, _) in &mut self.held {
             h.paints += 1;
@@ -527,6 +646,8 @@ impl Probe {
                 Some(n) => n,
                 None => Arc::from([]),
             },
+            period,
+            springs,
         });
     }
 

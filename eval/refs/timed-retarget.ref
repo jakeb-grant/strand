@@ -1,0 +1,69 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "timed-retarget"
+verdict good
+note "new scenario (eval-rules-2): #pill eases right on ease_out 300 ms (26 to 114 by k6) and dims on its 240 ms curve (0.51 by k6); sent back at k7 it turns from where it is with the speed it had (117, 118, 118, 115: the carried velocity fading out over the new curve), opacity 0.51 to 0.61, and rests at 26 by k24 (opacity 1 by k21); #cap never moves; read with explain"
+date 2026-10-18
+rev "4717343e+changes"
+approver "claude"
+scenario e7d0245bd9bbd5ee
+seal 900f071001d025fc
+S1 0 - "bar Top"
+N0 "cap|shell.strand:5:5|[Mock | DP-1]#0" "box#cap"
+N1 "pill|shell.strand:6:5|[Mock | DP-1]#1" "box#pill"
+N2 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N3 "|shell.strand:4:3|[Mock | DP-1]#0" "row@shell.strand:4"
+k0 p1
+s1 z=300,30
+n0 x=8 y=6 w=12 h=12 ord=2 bg=e06c75ff
+n1 x=26 y=6 w=40 h=12 ord=3 bg=3a7bd5ff
+n2 x=0 y=0 w=300 h=30 bg=faf9ffff
+n3 x=0 y=0 w=300 h=24 ord=1
+k1
+n1 x=42 op=245
+k2
+n1 x=58 op=208
+k3
+n1 x=73 op=175
+k4
+n1 x=87 op=155
+k5
+n1 x=101 op=141
+k6
+n1 x=114 op=130
+k7
+n1 x=117
+k8
+n1 x=118 op=155
+k9
+n1 op=178
+k10
+n1 x=115 op=193
+k11
+n1 x=111 op=204
+k12
+n1 x=105 op=214
+k13
+n1 x=98 op=222
+k14
+n1 x=91 op=229
+k15
+n1 x=82 op=236
+k16
+n1 x=74 op=242
+k17
+n1 x=65 op=247
+k18
+n1 x=57 op=251
+k19
+n1 x=49 op=253
+k20
+n1 x=41 op=255
+k21
+n1 x=35
+k22
+n1 x=30
+k23
+n1 x=27
+k24
+n1 x=26
+k25

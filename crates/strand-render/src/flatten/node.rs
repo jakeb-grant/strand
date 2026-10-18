@@ -1297,6 +1297,21 @@ impl<'a> Flattener<'a> {
                     self.anim.forget_roll(node.id);
                     None
                 };
+                // (eval-rules-2) A roll in flight, and the one a change
+                // interrupted.
+                #[cfg(feature = "eval-hooks")]
+                if let Some(t) = probe.as_mut() {
+                    let was = self.anim.roll_interrupted(node.id);
+                    let texts = &self.extras.texts;
+                    let name =
+                        |l: &strand_text::TextLayout| texts.get(&l.key).map(|p| p.text.clone());
+                    t.roll = roll.as_ref().map(|(a, b, p)| crate::probe::RollDrawn {
+                        from: name(a),
+                        to: name(b),
+                        p: *p,
+                        was: was.as_ref().map(|(a, b, p)| (name(a), name(b), *p)),
+                    });
+                }
                 let lines: Vec<(Rect, Color)> = l
                     .runs
                     .iter()
@@ -1572,6 +1587,7 @@ impl<'a> Flattener<'a> {
         #[cfg(feature = "eval-hooks")]
         if let Some(mut t) = probe {
             t.paint = super::probe::paint(&self.out.items[own_start..], s, &self.extras.texts);
+            t.drag = self.extras.widgets.drags.get(&node.id).copied();
             let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
             let hidden = inert.then_some(crate::probe::Hidden::Inert);
             self.probe_push(

@@ -4153,3 +4153,440 @@ fn a_timed_step_acts_over_its_whole_span() {
         show(&r, &t)
     );
 }
+
+// --- (eval-rules-2) continuity, contain's held and shadow, coherence's drag
+
+use std::time::Duration;
+
+use strand_eval::paint::PaintRec;
+use strand_eval::trace::{CurveRec, PtrRec, RollRec, SpringRec, StartRec};
+use strand_scene::motion::{Curve, Motion, MotionView, Spring};
+
+/// A frame's time in [`shape`]'s traces.
+fn tick(k: u32) -> Duration {
+    Duration::from_nanos(1_000_000_000 + u64::from(k) * 16_666_667)
+}
+
+/// What the probe records of a sample: the motion before it (`pre`) and
+/// the value drawn.
+fn sample_rec(key: &str, of: &str, pre: &MotionView<1>, v: [f32; 1]) -> SpringRec {
+    let (to, c) = match pre.pending {
+        Some((t, c, _)) => (t, c),
+        None => (pre.target, pre.curve),
+    };
+    SpringRec {
+        key: key.into(),
+        s: 1,
+        of: of.into(),
+        v: v.to_vec(),
+        to: to.to_vec(),
+        c: CurveRec::of(&c),
+        eps: pre.eps,
+        rest: (pre.curve == Curve::Instant).then(|| pre.target.to_vec()),
+        start: pre.pending.map(|(_, _, shift)| StartRec {
+            last: pre.last.map(|l| l.as_nanos() as u64),
+            shift: if shift == [0.0] {
+                Vec::new()
+            } else {
+                shift.to_vec()
+            },
+        }),
+        ..SpringRec::default()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    None,
+    /// A retarget that starts again from rest where it was.
+    FromRest,
+    /// A change started `START_LEAD` before its first frame on a 144 Hz
+    /// surface (as at 60 Hz).
+    LeadMax,
+    /// The way in flight dropped for a fresh one at rest at zero.
+    Dropped,
+    /// The last frame drawn one frame short of settling.
+    Short,
+}
+
+/// A pill's `x` springing to 180 from tick 1, sent back to 0 at tick 4,
+/// sampled as the renderer samples it (`Motion::sample_frame`, each
+/// tick's surface period `period`), drawn wrong as `fault` says.
+fn pill_springs(fault: Fault, period: Duration) -> RunTrace {
+    let curve = Curve::Spring(Spring::new(170.0, 0.8).unwrap());
+    let mut m = Motion::rest([0.0], 0.05).sampled_at(Some(tick(0)));
+    let end = 240;
+    let mut recs: Vec<(SpringRec, bool)> = Vec::new();
+    for k in 0..=end {
+        match k {
+            1 => m.retarget([180.0], curve),
+            4 => m.retarget([0.0], curve),
+            _ => {}
+        }
+        let pre = m.view();
+        let lead = if fault == Fault::LeadMax && k == 1 {
+            Duration::from_micros(16_667)
+        } else {
+            period
+        };
+        if k == 4 && fault == Fault::FromRest {
+            // The velocity thrown away: a fresh way from where it is.
+            let here = m.peek(tick(3));
+            m = Motion::rest(here, 0.05).sampled_at(Some(tick(3)));
+            m.retarget([0.0], curve);
+        }
+        if k == 4 && fault == Fault::Dropped {
+            m = Motion::rest([0.0], 0.05).sampled_at(Some(tick(3)));
+        }
+        let pre = if k == 4 && fault == Fault::Dropped {
+            m.view()
+        } else {
+            pre
+        };
+        let mut v = m.sample_frame(tick(k), lead);
+        let moving = !m.is_settled(tick(k));
+        let mut rec = sample_rec("pill", "x", &pre, v);
+        if fault == Fault::Short && !moving && pre.curve != Curve::Instant {
+            v = [v[0] + 0.3];
+            rec.v = v.to_vec();
+        }
+        recs.push((rec, moving));
+        if !moving && k > 4 {
+            break;
+        }
+    }
+    assert!(!recs.last().unwrap().1, "settles within the trace");
+    let n = recs.len() as u32 - 1;
+    let mut t = shape(n, |_| vec![row("pill", [10.0, 8.0, 40.0, 12.0])]);
+    for (f, (rec, moving)) in t.frames.iter_mut().zip(recs) {
+        f.period.insert(1, period.as_nanos() as u64);
+        if moving {
+            f.wants = vec![1];
+        }
+        if f.k > 0 {
+            f.sp.push(rec);
+        }
+    }
+    t.frames[0].sp.clear();
+    t.seal();
+    t
+}
+
+fn continuity_fails_with(t: &RunTrace, word: &str) -> bool {
+    let sc = scenario("");
+    check(&sc, t)
+        .failures(CheckId::Continuity)
+        .iter()
+        .any(|f| f.key.as_deref() == Some("pill") && f.msg.starts_with(word))
+}
+
+/// The way a renderer samples, retargeted mid-flight and settled, is
+/// the way the check works out, at 60 and 144 Hz.
+#[test]
+fn continuity_passes_a_spring_retargeted_mid_flight() {
+    let sc = scenario("");
+    for period in [
+        Duration::from_nanos(16_666_667),
+        Duration::from_nanos(6_944_444),
+    ] {
+        let t = pill_springs(Fault::None, period);
+        assert!(t.frames.iter().filter(|f| !f.sp.is_empty()).count() > 10);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Continuity),
+            Status::Pass,
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
+/// design.md: "Retargeting mid-flight keeps velocity, so interrupted
+/// animations never jolt".
+#[test]
+fn continuity_fails_a_retarget_that_starts_again_from_rest() {
+    let t = pill_springs(Fault::FromRest, Duration::from_nanos(16_666_667));
+    assert!(continuity_fails_with(&t, "velocity"), "{}", {
+        let sc = scenario("");
+        show(&check(&sc, &t), &t)
+    });
+}
+
+/// A way in flight replaced by one at rest is a jump, not a retarget.
+#[test]
+fn continuity_fails_a_way_dropped_in_flight() {
+    let t = pill_springs(Fault::Dropped, Duration::from_nanos(16_666_667));
+    assert!(continuity_fails_with(&t, "velocity"), "{}", {
+        let sc = scenario("");
+        show(&check(&sc, &t), &t)
+    });
+}
+
+/// decisions.md first-frame-lead: a change starts one refresh of its
+/// surface before its first frame, at 144 Hz 6.9 ms, not 16.7.
+#[test]
+fn continuity_fails_a_change_started_a_60_hz_frame_early_at_144_hz() {
+    let t = pill_springs(Fault::LeadMax, Duration::from_nanos(6_944_444));
+    assert!(continuity_fails_with(&t, "start"), "{}", {
+        let sc = scenario("");
+        show(&check(&sc, &t), &t)
+    });
+}
+
+/// A surface that stops wanting frames shows its last frame: a motion
+/// drawn short of its target there stays short.
+#[test]
+fn continuity_fails_a_motion_left_short_of_its_target() {
+    let t = pill_springs(Fault::Short, Duration::from_nanos(16_666_667));
+    let sc = scenario("");
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.msg.contains("short of its target")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A node drawn for the first time springs only what its enter pose sets
+/// (decisions.md m4-effects-finish).
+#[test]
+fn continuity_fails_a_new_node_springing_a_prop_its_pose_does_not_set() {
+    let sc = scenario("");
+    let curve = Curve::Spring(Spring::new(170.0, 0.8).unwrap());
+    for (pose_sets_it, fails) in [(true, false), (false, true)] {
+        let mut m = Motion::rest([0.0], 0.002).sampled_at(Some(tick(0)));
+        m.retarget([1.0], curve);
+        let pre = m.view();
+        let v = m.sample_frame(tick(1), Duration::from_nanos(16_666_667));
+        let mut rec = sample_rec("pill", "opacity", &pre, v);
+        rec.enter = Some(pose_sets_it);
+        let mut t = shape(1, |_| vec![row("pill", [10.0, 8.0, 40.0, 12.0])]);
+        t.frames[1].sp.push(rec);
+        t.frames[1].wants = vec![1];
+        t.seal();
+        let r = check(&sc, &t);
+        assert_eq!(
+            r.failures(CheckId::Continuity)
+                .iter()
+                .any(|f| f.msg.starts_with("first frame")),
+            fails,
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
+/// An interrupted roll rolls on from the nearer of its two texts
+/// (design.md "Rolling numbers", effects/roll.rs).
+#[test]
+fn continuity_holds_an_interrupted_roll_to_the_text_on_screen() {
+    let sc = scenario("");
+    let roll = |p_before: f32, was: f32, from: &str| {
+        let mut t = shape(2, |_| vec![row("num", [10.0, 8.0, 20.0, 14.0])]);
+        t.frames[1].rolls.push(RollRec {
+            key: "num".into(),
+            from: Some("41".into()),
+            to: Some("42".into()),
+            p: p_before,
+            was: None,
+        });
+        t.frames[2].rolls.push(RollRec {
+            key: "num".into(),
+            from: Some(from.into()),
+            to: Some("43".into()),
+            p: 0.1,
+            was: Some((Some("41".into()), Some("42".into()), was)),
+        });
+        t.seal();
+        check(&sc, &t)
+    };
+    // A fifth of the way: "41" is on screen.
+    assert_eq!(
+        status(&roll(0.2, 0.2, "41"), CheckId::Continuity),
+        Status::Pass
+    );
+    let r = roll(0.2, 0.2, "42");
+    assert!(
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.msg.starts_with("roll")),
+        "{:?}",
+        r.failures(CheckId::Continuity)
+    );
+    // Nine tenths: "42".
+    assert_eq!(
+        status(&roll(0.85, 0.9, "42"), CheckId::Continuity),
+        Status::Pass
+    );
+    assert!(
+        !roll(0.85, 0.9, "41")
+            .failures(CheckId::Continuity)
+            .is_empty()
+    );
+    // The frame before showed the other side of half way: either text.
+    assert_eq!(
+        status(&roll(0.45, 0.55, "41"), CheckId::Continuity),
+        Status::Pass
+    );
+}
+
+/// A row collapsing (its height springing 30 to 6) over a 20 px text:
+/// clipped, or not.
+fn collapsing(clipped: bool, exit_pose: bool, rotate: f32) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let h = 30.0 - 4.0 * k as f32;
+        let mut toast = row("toast", [10.0, 0.0, 200.0, h]);
+        toast.rotate = rotate;
+        let m = if exit_pose {
+            Motions::EXIT
+        } else {
+            Motions::SIZE_SPRING
+        };
+        toast = toast.mot(m);
+        let mut text = row("text", [20.0, 5.0, 80.0, 20.0]);
+        if clipped {
+            text.clip = Some([10.0, 0.0, 200.0, h]);
+        }
+        text.mot = if exit_pose { Motions::EXIT.0 } else { 0 };
+        vec![toast, text]
+    });
+    t.nodes.get_mut("text").unwrap().parent = Some("toast".into());
+    if exit_pose {
+        t.nodes.get_mut("toast").unwrap().exit = Some(Pose {
+            h: Some(0.0),
+            ..Pose::default()
+        });
+    }
+    t.seal();
+    t
+}
+
+/// decisions.md wave3-pixels p2: "a node whose size springs clips its
+/// content while it does (a collapsing toast hides what no longer
+/// fits)", and exit-height0: one exiting to a size clips until it goes.
+#[test]
+fn contain_holds_what_a_collapsing_box_lays_out_inside_it() {
+    let sc = scenario("");
+    for exit_pose in [false, true] {
+        let t = collapsing(true, exit_pose, 0.0);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Contain),
+            Status::Pass,
+            "{}",
+            show(&r, &t)
+        );
+        let t = collapsing(false, exit_pose, 0.0);
+        let r = check(&sc, &t);
+        assert!(
+            r.failures(CheckId::Contain)
+                .iter()
+                .any(|f| f.key.as_deref() == Some("text") && f.msg.starts_with("held")),
+            "{}",
+            show(&r, &t)
+        );
+    }
+    // Turned, its clip reaches the trace as a bounding box: not held.
+    let t = collapsing(false, false, 8.0);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.msg.starts_with("held")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A card at rest with a shadow reaching `reach` px past its left edge
+/// on a bar whose buffer starts at the card's left edge.
+fn shadowed(reach: f32, cuts: u8, m: Motions) -> RunTrace {
+    let mut t = shape(2, |_| {
+        let mut card = row("card", [0.0, 4.0, 100.0, 20.0]).mot(m);
+        card.paint = Some(PaintRec {
+            sh: vec![format!("00000080@{},0,{},28", -reach, 100.0 + 2.0 * reach)],
+            ..PaintRec::default()
+        });
+        vec![card]
+    });
+    for f in &mut t.frames {
+        if cuts != 0 {
+            f.cuts.insert(1, cuts);
+        }
+    }
+    t.seal();
+    t
+}
+
+/// design.md: "Shadows enlarge the buffer but not the input region": a
+/// shadow at rest is drawn inside its buffer, but on a side the
+/// author's geometry lays at the output's edge.
+#[test]
+fn contain_holds_a_shadow_at_rest_inside_its_buffer() {
+    let sc = scenario("");
+    let r = check(&sc, &shadowed(0.0, 0, Motions(0)));
+    assert_eq!(status(&r, CheckId::Contain), Status::Pass);
+    let t = shadowed(6.0, 0, Motions(0));
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Contain, "card", "left"),
+        "{}",
+        show(&r, &t)
+    );
+    // Its left side anchored where the margin caps the overhang.
+    let r = check(&sc, &shadowed(6.0, 8, Motions(0)));
+    assert_eq!(status(&r, CheckId::Contain), Status::Pass);
+    // Gliding: the overhang is the one at rest (m6-owner-fixes bug 9).
+    let r = check(&sc, &shadowed(6.0, 0, Motions::GLIDE));
+    assert_eq!(status(&r, CheckId::Contain), Status::Pass);
+}
+
+/// decisions.md wave3-pixels p3: a dragged slider draws the drag, its
+/// knob under the pointer.
+#[test]
+fn coherence_holds_a_dragged_knob_under_the_pointer() {
+    let sc = scenario("");
+    let slider = |knob_x: f32, pointer: f32| {
+        let mut t = shape(2, |_| {
+            let mut s = row("knob", [10.0, 7.0, 120.0, 16.0]);
+            s.paint = Some(PaintRec {
+                pt: vec![
+                    "0,6,120,4".into(),
+                    "0,6,40,4".into(),
+                    format!("{knob_x},0,16,16"),
+                ],
+                ..PaintRec::default()
+            });
+            vec![s]
+        });
+        for f in &mut t.frames {
+            f.ptr = Some(PtrRec {
+                s: 1,
+                at: [pointer, 15.0],
+            });
+            f.drags.insert("knob".into(), 0.3);
+        }
+        t.seal();
+        check(&sc, &t)
+    };
+    // Knob centre 10 + 32 + 8 = 50 under a pointer at 50.
+    assert_eq!(
+        status(&slider(32.0, 50.0), CheckId::Coherence),
+        Status::Pass
+    );
+    let r = slider(26.0, 50.0);
+    assert!(
+        r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("drag")),
+        "{:?}",
+        r.failures(CheckId::Coherence)
+    );
+    // Past the end, the knob stops a radius in.
+    assert_eq!(
+        status(&slider(104.0, 200.0), CheckId::Coherence),
+        Status::Pass
+    );
+}

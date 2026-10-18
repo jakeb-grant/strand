@@ -25,6 +25,15 @@
 //!   item dropped under its neighbours mid-flight pops behind them). A
 //!   node rising above what it flies over (a drag lifting it) and a
 //!   reorder that swaps the siblings' laid places (FLIP) are not pops.
+//! - **drag** (eval-rules-2): a slider held in a drag draws its knob
+//!   under the pointer, on the frame the pointer gets there. "A dragged
+//!   slider draws the drag until the release", and "a slider's drag and
+//!   its drawing share one span (the knob centre runs between the knob
+//!   radii), so the knob stays under the pointer" (decisions.md
+//!   wave3-pixels p3; design.md's render-never-waits rule): the knob's
+//!   centre (its last part, `trace::Frame::drags` naming the sliders a
+//!   drag holds) is the pointer's x, held between a knob radius in from
+//!   either end of the slider's box.
 //!
 //! **inherit** leaves out a node moved by its own keyframes,
 //! time-driven props, lean or jelly, whose offsets the trace's parts do
@@ -221,7 +230,80 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     }
     out.extend(morph_start(cx));
     out.extend(stacking(cx));
+    out.extend(drag(cx));
     first_per_node(out)
+}
+
+/// A part's box (`x,y,w,h`, from its node's drawn box's top-left).
+fn part_of(s: &str) -> Option<[f64; 4]> {
+    let v: Vec<f64> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+    match v.as_slice() {
+        [x, y, w, h] => Some([*x, *y, *w, *h]),
+        _ => None,
+    }
+}
+
+/// `drag`: a dragged slider's knob is under the pointer.
+fn drag(cx: &Cx) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let mut knobs = 0u64;
+    for f in &cx.trace.frames {
+        let Some(ptr) = f.ptr else { continue };
+        let s = cx.trace.scale_at(f);
+        let snap = |v: f64| (v * s).round() / s;
+        let give = cx.tol + 1.0 / s;
+        for key in f.drags.keys() {
+            let Some(r) = f.n.iter().find(|r| &r.key == key) else {
+                continue;
+            };
+            // Its part is in its own box: one drawn turned or scaled is
+            // not held.
+            if r.surface != ptr.s
+                || cx.allowed(CheckId::Coherence, key)
+                || cx.lineage(key).iter().any(|a| {
+                    f.n.iter()
+                        .find(|n| n.key == *a)
+                        .is_some_and(|n| n.rotate.abs() > 1e-3 || n.scale != [1.0, 1.0])
+                })
+            {
+                continue;
+            }
+            let Some(knob) = r
+                .paint
+                .as_ref()
+                .and_then(|p| p.pt.last())
+                .and_then(|p| part_of(p))
+            else {
+                continue;
+            };
+            knobs += 1;
+            let x0 = snap(f64::from(r.drawn[0]));
+            let x1 = snap(f64::from(r.drawn[0]) + f64::from(r.drawn[2]));
+            let rad = knob[2] / 2.0;
+            let at = x0 + knob[0] + rad;
+            let want = f64::from(ptr.at[0]).clamp(x0 + rad, (x1 - rad).max(x0 + rad));
+            if (at - want).abs() <= give {
+                continue;
+            }
+            out.push(
+                Finding::fail(
+                    CheckId::Coherence,
+                    format!(
+                        "drag: held in a drag with the pointer at x {:.1}, it draws its knob \
+                         centred at {at:.1}, {:.1} px from where the pointer holds it ({want:.1})",
+                        ptr.at[0],
+                        (at - want).abs()
+                    ),
+                )
+                .at(f.k)
+                .node(key)
+                .axis("x")
+                .got(at, [want - give, want + give]),
+            );
+        }
+    }
+    super::stats("coherence.drag", cx, &[("knobs", knobs)]);
+    out
 }
 
 /// The latest frame before `before` (an index of `trace.frames`) that

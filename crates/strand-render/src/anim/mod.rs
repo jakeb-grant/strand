@@ -242,6 +242,10 @@ pub(crate) struct Animator {
     /// that starts the pose empties.
     #[cfg(feature = "eval-hooks")]
     entered: HashSet<NodeId>,
+    /// (eval-rules-2) The samples the painted frame being drawn took of
+    /// props' springs, sizes and glides (`crate::probe::SpringTrace`).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) springs: Vec<crate::probe::SpringTrace>,
 }
 
 /// (M4) A node's lift and glide, held aside by [`Animator::hold_still`].
@@ -268,7 +272,16 @@ impl Animator {
         self.drawn.clear();
         if commit {
             self.plays.begin(time);
+            #[cfg(feature = "eval-hooks")]
+            self.springs.clear();
         }
+    }
+
+    /// (eval-rules-2) The frame period changes start one of before the
+    /// frame that first shows them ([`Animator::lead`] before its cap).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn period(&self) -> Duration {
+        self.period
     }
 
     /// Something drawn since [`Animator::begin`] is still moving.
@@ -384,6 +397,13 @@ impl Animator {
             self.active = true;
         }
         roll
+    }
+
+    /// (eval-rules-2) The roll of `id` a change interrupted in the frame
+    /// being drawn, as it stood then (`crate::probe::RollDrawn::was`).
+    #[cfg(feature = "eval-hooks")]
+    pub(crate) fn roll_interrupted(&mut self, id: NodeId) -> Option<crate::effects::roll::Rolling> {
+        self.rolls.take_interrupted(id)
     }
 
     /// (M4) The transition mask `node` draws under this frame, if any
@@ -1191,11 +1211,23 @@ impl Animator {
             }
             return (0.0, 0.0);
         }
+        #[cfg(feature = "eval-hooks")]
+        let pre = g.view();
         let v = if commit {
             g.sample_frame(at, lead)
         } else {
             g.peek(at)
         };
+        #[cfg(feature = "eval-hooks")]
+        if commit {
+            self.springs.push(crate::probe::SpringTrace::of(
+                id,
+                crate::probe::SpringOf::Glide,
+                at,
+                &pre,
+                &v,
+            ));
+        }
         if g.is_settled(at) {
             if commit {
                 na.glide = None;
@@ -1375,7 +1407,18 @@ impl Animator {
             let Some(i) = na.props.iter().position(|(q, _)| *q == p) else {
                 continue;
             };
+            #[cfg(feature = "eval-hooks")]
+            let pre = commit.then(|| na.props[i].1.view()).flatten();
             let enc = na.props[i].1.value(at, commit, lead);
+            #[cfg(feature = "eval-hooks")]
+            if let Some(mut t) =
+                pre.and_then(|v| v.trace(id, crate::probe::SpringOf::Prop(p), at, &enc))
+            {
+                // On the frame it enters, whether its pose sets the prop.
+                t.entering = (entering && exiting.is_none())
+                    .then(|| enter_pose.iter().any(|(q, _)| *q == p));
+                self.springs.push(t);
+            }
             let settled = na.props[i].1.settled(at);
             let value = decode(p, &enc);
             match own {

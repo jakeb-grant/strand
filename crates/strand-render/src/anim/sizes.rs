@@ -194,11 +194,23 @@ impl Animator {
                 let Some(m) = na.size[axis].as_mut() else {
                     continue;
                 };
+                #[cfg(feature = "eval-hooks")]
+                let pre = m.view();
                 let v = if commit {
                     m.sample_frame(at, lead)
                 } else {
                     m.peek(at)
                 };
+                #[cfg(feature = "eval-hooks")]
+                if commit {
+                    self.springs.push(crate::probe::SpringTrace::of(
+                        *id,
+                        crate::probe::SpringOf::Size(axis as u8),
+                        at,
+                        &pre,
+                        &v,
+                    ));
+                }
                 if m.is_settled(at) {
                     if commit {
                         na.size[axis] = None;

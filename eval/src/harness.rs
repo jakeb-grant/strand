@@ -1854,6 +1854,35 @@ impl<'s> Harness<'s> {
         };
         for (s, f) in &last {
             frame.n.extend(self.rows(*s, &f.nodes));
+            // (eval-rules-2) Its springs' samples and its rolls.
+            if !f.springs.is_empty() {
+                frame.period.insert(*s, f.period.as_nanos() as u64);
+            }
+            for sp in &f.springs {
+                let rec = self.spring_rec(*s, t, sp);
+                frame.sp.push(rec);
+            }
+            for n in f.nodes.iter() {
+                if let Some(v) = n.drag {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    frame.drags.insert(key, v);
+                }
+                if let Some(r) = &n.roll {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    let text = |t: &Option<std::sync::Arc<str>>| t.as_deref().map(String::from);
+                    frame.rolls.push(crate::trace::RollRec {
+                        key,
+                        from: text(&r.from),
+                        to: text(&r.to),
+                        p: r.p,
+                        was: r.was.as_ref().map(|(a, b, p)| (text(a), text(b), *p)),
+                    });
+                }
+            }
             frame.regions.insert(*s, regions(&self.r, SurfaceId(*s)));
             if self.opts.images
                 && cost.get(s).is_some_and(|c| c.damage_px > 0)
@@ -1881,6 +1910,22 @@ impl<'s> Harness<'s> {
             }
         }
         frame.cost = cost;
+        // The renderer samples sizes in a map's order: by node and what,
+        // each one's samples in the order taken (a stable sort).
+        frame
+            .sp
+            .sort_by(|a, b| (a.s, &a.key, &a.of).cmp(&(b.s, &b.key, &b.of)));
+        frame.ptr = self.pointer.surface.map(|s| crate::trace::PtrRec {
+            s: s.0,
+            at: [self.pointer.at.x, self.pointer.at.y],
+        });
+        frame.cuts = self
+            .surfaces
+            .shown
+            .iter()
+            .map(|s| (s.id.0, self.surfaces.cuts(s.id)))
+            .filter(|(_, c)| *c != 0)
+            .collect();
         redraws.retain(|s, _| last.contains_key(s));
         self.trace.redraw += redraws.len() as u32;
         frame.redraw = redraws
@@ -1889,6 +1934,45 @@ impl<'s> Harness<'s> {
             .collect();
         self.trace.frames.push(frame);
         Ok(())
+    }
+
+    /// (eval-rules-2) A spring's sample on `surface` in the tick at `t`,
+    /// as the trace records it.
+    fn spring_rec(
+        &mut self,
+        surface: u32,
+        t: Duration,
+        sp: &strand_render::probe::SpringTrace,
+    ) -> crate::trace::SpringRec {
+        use strand_render::probe::SpringOf;
+        let key = self
+            .labels
+            .key(sp.node, &self.inst, self.r.tree(), &self.sources);
+        crate::trace::SpringRec {
+            key,
+            s: surface,
+            of: match sp.what {
+                SpringOf::Prop(p) => p.name().to_string(),
+                SpringOf::Size(0) => "w".into(),
+                SpringOf::Size(_) => "h".into(),
+                SpringOf::Glide => "glide".into(),
+            },
+            at: (sp.at != t).then_some(sp.at.as_nanos() as u64),
+            v: sp.value.clone(),
+            to: sp.target.clone(),
+            c: crate::trace::CurveRec::of(&sp.curve),
+            eps: sp.eps,
+            rest: sp.rest.clone(),
+            start: sp.start.as_ref().map(|st| crate::trace::StartRec {
+                last: st.last.map(|l| l.as_nanos() as u64),
+                shift: if st.shift.iter().all(|v| *v == 0.0) {
+                    Vec::new()
+                } else {
+                    st.shift.clone()
+                },
+            }),
+            enter: sp.entering,
+        }
     }
 
     /// A surface's traced nodes as rows: keys, effective opacity, motions
@@ -1960,6 +2044,7 @@ impl<'s> Harness<'s> {
                 fit: n.fit.map(q),
                 ink: n.ink.map(rect),
                 ov: n.overhang,
+                clip: n.clip.map(rect),
                 paint: crate::paint::PaintRec::of(&n.paint, n.drawn, self.surfaces.screen.scale),
             });
         }
