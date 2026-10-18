@@ -38,6 +38,7 @@ scripts/container/run.sh eval selftest                          # the CI gate (s
 scripts/container/run.sh eval matrix --hz 60,144                # the effect matrix (see Matrix)
 scripts/container/run.sh eval mutants                           # the bugs the regressions catch
 scripts/container/run.sh eval ab-revs HEAD~1                    # A/B: the last commit against this checkout
+scripts/eval/viewer-check.sh --selftest                         # the viewer in a real browser (on the host)
 ```
 
 `run.sh eval <command>` is `scripts/eval/eval.sh`. For anything except
@@ -757,12 +758,51 @@ writes nothing outside `--out`, so its tests and mutant runs never do.
 `index.html` is one self-contained file, with nothing loaded from
 elsewhere. It shows each scenario's frames:
 
-- scrubbable by tick;
+- scrubbable by tick, with a filmstrip of every frame and an onion skin
+  of the frames before;
+- at `fit` zoom by default: the largest whole zoom (or the fraction
+  below 1) at which the widest surface of the run fits the stage, so a
+  phone shows the whole surface and the frame does not jump in size as
+  the scrubber moves; A and B side by side only where each still gets
+  twice its size, else one above the other;
 - with nodes outlined by drawn, visual or laid box;
 - with the findings listed and linked to their frames;
-- with a node's path plotted per axis;
+- with a node's path plotted per axis, at the panel's width;
+- with an A/B tab when the page holds two runs: a pixel difference of
+  two runs with frames, and against an approved reference (which records
+  no pixels) the nodes drawn differently from it, the run's solid red
+  and the reference's dashed;
 - with an Approve tab: the run's approved reference and the command that
-  approves it (see Reference recordings).
+  approves it, with the note and the approver typed there (see
+  Reference recordings).
+
+The matrix grid lists, under each rate's grid, every cell that did not
+pass, linked to its page with its failed checks, so nothing needs a
+pointer's hover to be read.
+
+### The viewer in a browser
+
+`scripts/eval/viewer-check.sh [--expect KINDS] PAGE...` loads report
+pages in headless Chromium and drives every mode: the scrubber and its
+keys, the filmstrip, the overlays, the onion skin, zoom, the curves, the
+cost lane, each A/B view, the Approve tab (its buttons stay disabled until
+a verdict and a note are given, and the copied command is checked word
+for word), light and dark, at a desktop's and a phone's width (no page
+scroll sideways). It fails on any console error, uncaught exception,
+failed request or request off the page, and on any mode that does not
+work. Screenshots of each mode land in `target/eval/viewer-shots/`.
+
+It runs on the host's Docker, like `run.sh`, in
+`scripts/eval/Dockerfile.viewer`: Playwright's Python image pinned by
+version and digest, with its Python package of the same version, tagged by
+the file's hash. The container has no network and the pages are mounted
+read-only; the script fails if the container outlives it. `--selftest`
+makes its own pages first through `run.sh`: the curated and regression
+scenarios, the same under the bug25-hidden-text mutant (a failing
+scenario, CHANGED ones and their A/B against the reference) and a small
+matrix. `--expect pass,fail,changed,ab,matrix` names the kinds the pages
+must have held. The nightly eval-matrix workflow runs it on the mutants'
+pages and the matrix grid.
 
 When the images would not fit its size budget, it keeps the frames around
 findings, `shot` steps and segment ends. It draws the rest as wireframes

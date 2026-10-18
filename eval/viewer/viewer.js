@@ -164,7 +164,9 @@
   var S = {
     id: ids[0] || null,
     i: 0,
-    zoom: 2,
+    // 'fit': the largest whole zoom (a fraction below 1) at which the
+    // widest surface fits the stage; or a fixed one.
+    zoom: 'fit',
     boxes: true,
     laid: true,
     all: false,
@@ -188,6 +190,8 @@
     return null;
   }
   function A() { return scOf(0, S.id) || scOf(1, S.id); }
+  // The zoom the stage is drawn at (S.zoom resolved; see fitZoom).
+  var Z = 2;
   function B() { return AB ? scOf(1, S.id) : null; }
 
   // ---- theme --------------------------------------------------------------
@@ -267,7 +271,11 @@
     ].filter(function (x) { return x; });
     h.appendChild(el('div', { cls: 'meta', text: bits.join(' · ') }));
     var chips = el('div', { cls: 'chips' });
-    chips.appendChild(el('span', { cls: 'chip st-' + a.status, text: a.status.toUpperCase() }));
+    // Two runs: each side's status, as the list's worst of them would
+    // otherwise disagree with A's alone.
+    var bs = AB && !REF ? scOf(1, a.id) : null;
+    chips.appendChild(el('span', { cls: 'chip st-' + a.status, text: (bs ? 'A ' : '') + a.status.toUpperCase() }));
+    if (bs) chips.appendChild(el('span', { cls: 'chip st-' + bs.status, text: 'B ' + bs.status.toUpperCase() }));
     if (a.checks) {
       a.checks.results.forEach(function (r) {
         var st = r.status.status;
@@ -310,7 +318,7 @@
       c.addEventListener('change', function () { set(c.checked); draw(); });
       return el('label', { cls: 'field', title: title || null }, c, ' ' + labelText);
     }
-    t.appendChild(sel('zoom', S.zoom, [[1, '1×'], [2, '2×'], [3, '3×'], [4, '4×'], [6, '6×'], [8, '8×']], function (v) { S.zoom = +v; }));
+    t.appendChild(sel('zoom', S.zoom, [['fit', 'fit'], [1, '1×'], [2, '2×'], [3, '3×'], [4, '4×'], [6, '6×'], [8, '8×']], function (v) { S.zoom = v === 'fit' ? 'fit' : +v; }));
     t.appendChild(chk('boxes', S.boxes, function (v) { S.boxes = v; }, 'Drawn boxes solid: blue authored, orange derived, red failing'));
     t.appendChild(chk('laid', S.laid, function (v) { S.laid = v; }, 'Laid boxes dashed'));
     t.appendChild(chk('every node', S.all, function (v) { S.all = v; }, 'Boxes of nodes that do not move too'));
@@ -318,7 +326,8 @@
     t.appendChild(sel('as', S.onionMode, [['outline', 'outlines'], ['ghost', 'ghost pixels']], function (v) { S.onionMode = v; }));
     t.appendChild(chk('diff to previous', S.diff, function (v) { S.diff = v; }, 'Pixels that changed since the frame before, in red'));
     if (AB) {
-      t.appendChild(sel('A/B', S.view, [['a', 'A: ' + DATA.runs[0].label], ['b', 'B: ' + DATA.runs[1].label], ['side', 'side by side'], ['flicker', 'flicker'], ['difference', 'difference']], function (v) {
+      // A reference holds no pixels: its difference is of boxes.
+      t.appendChild(sel('A/B', S.view, [['a', 'A: ' + DATA.runs[0].label], ['b', 'B: ' + DATA.runs[1].label], ['side', 'side by side'], ['flicker', 'flicker'], ['difference', REF ? 'difference (boxes)' : 'difference']], function (v) {
         var was = S.view;
         S.view = v;
         // The verdict panel is of the run shown (B only on `b`): it
@@ -369,14 +378,15 @@
   function surfaceCanvas(sc, i, sid, other) {
     var scr = sc.tl.screens[i].get(sid);
     var scale = scr.scale || 1;
-    var z = S.zoom;
+    var z = Z;
     var size = scr.size || [1, 1];
     var W = Math.max(1, Math.ceil(size[0] * scale)), H = Math.max(1, Math.ceil(size[1] * scale));
-    var cv = el('canvas', { width: W * z, height: H * z });
+    var cv = el('canvas', { width: Math.max(1, Math.round(W * z)), height: Math.max(1, Math.round(H * z)) });
     var x = cv.getContext('2d');
     x.imageSmoothingEnabled = false;
     var im = img(sc, scr.png);
-    if (S.view === 'difference' && other) {
+    var refDiff = S.view === 'difference' && other && REF;
+    if (S.view === 'difference' && other && !REF) {
       // A against B, pixel by pixel.
       var j = at(other, sc.tl.ks[i]);
       var os = j >= 0 ? other.tl.screens[j].get(sid) : null;
@@ -404,7 +414,7 @@
     if (im) {
       x.drawImage(im, 0, 0, W * z, H * z);
     } else {
-      x.strokeStyle = '#6d6d78';
+      x.strokeStyle = '#9a9aa6';
       x.lineWidth = 1;
       scr.rows.forEach(function (r) {
         var o = obj(sc, r);
@@ -455,8 +465,10 @@
         x.drawImage(hc, 0, 0, W * z, H * z);
       }
     }
+    if (refDiff) refBoxes(x, sc, i, sid, other, scale, z);
     // Boxes.
     scr.rows.forEach(function (r) {
+      if (refDiff) return;
       var o = obj(sc, r);
       var show = S.all || S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o);
       if (!show) return;
@@ -487,11 +499,47 @@
     return cv;
   }
 
+  // A against its reference, which holds boxes and no pixels: each node
+  // drawn other than the reference drew it at this tick, A's box solid
+  // red and the reference's dashed; a node only one side drew, its box
+  // alone.
+  function refBoxes(x, sc, i, sid, ref, scale, z) {
+    var j = at(ref, sc.tl.ks[i]);
+    var rs = j >= 0 ? ref.tl.screens[j].get(sid) : null;
+    var mine = {}, theirs = {};
+    sc.tl.screens[i].get(sid).rows.forEach(function (r) { var o = obj(sc, r); mine[o.key] = o; });
+    if (rs) rs.rows.forEach(function (r) { var o = obj(ref, r); theirs[o.key] = o; });
+    function shown(o) { return o && o.hid !== 'opacity0' && o.hid !== 'scale0'; }
+    function differs(a, b) {
+      if (shown(a) !== shown(b)) return true;
+      if (!shown(a)) return false;
+      return Math.abs(a.vx - b.vx) > 0.5 || Math.abs(a.vy - b.vy) > 0.5 || Math.abs(a.vw - b.vw) > 0.5 ||
+        Math.abs(a.vh - b.vh) > 0.5 || Math.abs(a.op - b.op) > 1 / 255;
+    }
+    function box(o, col, dash) {
+      x.strokeStyle = col;
+      x.lineWidth = 2;
+      x.setLineDash(dash);
+      x.strokeRect(o.vx * scale * z + 1, o.vy * scale * z + 1, Math.max(1, o.vw * scale * z - 2), Math.max(1, o.vh * scale * z - 2));
+    }
+    var keys = {};
+    Object.keys(mine).forEach(function (k) { keys[k] = 1; });
+    Object.keys(theirs).forEach(function (k) { keys[k] = 1; });
+    Object.keys(keys).forEach(function (k) {
+      var a = mine[k], b = theirs[k];
+      if (!differs(a, b)) return;
+      if (shown(b)) box(b, css('--changed'), [4, 3]);
+      if (shown(a)) box(a, css('--fail'), []);
+    });
+    x.setLineDash([]);
+    x.lineWidth = 1;
+  }
+
   function hit(ev, sc, i, sid, cv) {
     var rect = cv.getBoundingClientRect();
     var scale = sc.tl.screens[i].get(sid).scale || 1;
-    var lx = (ev.clientX - rect.left) * (cv.width / rect.width) / S.zoom / scale;
-    var ly = (ev.clientY - rect.top) * (cv.height / rect.height) / S.zoom / scale;
+    var lx = (ev.clientX - rect.left) * (cv.width / rect.width) / Z / scale;
+    var ly = (ev.clientY - rect.top) * (cv.height / rect.height) / Z / scale;
     var best = null, area = Infinity;
     sc.tl.screens[i].get(sid).rows.forEach(function (r) {
       var o = obj(sc, r);
@@ -571,6 +619,7 @@
     var ib = b ? at(b, ka) : -1;
     // A scenario B does not have (a run that matches its reference) shows A.
     var view = b ? S.view : 'a';
+    Z = fitZoom(st, a, b, view);
     if (flickTimer && view !== 'flicker') { clearInterval(flickTimer); flickTimer = null; }
     if (!AB || view === 'a') st.appendChild(stageOf(a, S.i, b, AB && b ? 'A: ' + DATA.runs[0].label : null));
     else if (view === 'b') st.appendChild(stageOf(b, ib, a, 'B: ' + DATA.runs[1].label));
@@ -583,8 +632,33 @@
       st.appendChild(S.flickB ? stageOf(b, ib, a, 'B: ' + DATA.runs[1].label) : stageOf(a, S.i, b, 'A: ' + DATA.runs[0].label));
       if (!flickTimer) flickTimer = setInterval(function () { S.flickB = !S.flickB; renderStage(); }, 600);
     } else if (view === 'difference') {
-      st.appendChild(stageOf(a, S.i, b, 'A against B: changed pixels red'));
+      st.appendChild(stageOf(a, S.i, b, REF ? 'A against B: where A (solid red) drew a node other than the reference (dashed)' : 'A against B: changed pixels red'));
     }
+  }
+
+  // The widest surface of a scenario over its whole run, in pixels, so
+  // a fitted zoom does not change while scrubbing.
+  function widest(sc) {
+    if (!sc) return 1;
+    if (sc.widest) return sc.widest;
+    var w = 1;
+    sc.tl.screens.forEach(function (scr) {
+      scr.forEach(function (v) { if (v.size) w = Math.max(w, Math.ceil(v.size[0] * (v.scale || 1))); });
+    });
+    sc.widest = w;
+    return w;
+  }
+
+  // S.zoom, with 'fit' resolved against the stage's width. Side by side
+  // puts the two in columns when each still gets 2x; otherwise (a wide
+  // bar) they stack, each at the whole width.
+  function fitZoom(st, a, b, view) {
+    if (S.zoom !== 'fit') return S.zoom;
+    var room = Math.max(120, st.clientWidth - 22);
+    var w = Math.max(widest(a), b ? widest(b) : 1);
+    var z = room / w;
+    if (view === 'side' && b && (room - 14) / 2 / w >= 2) z = (room - 14) / 2 / w;
+    return z >= 1 ? Math.min(8, Math.floor(z)) : Math.max(0.25, z);
   }
 
   // ---- scrubber -------------------------------------------------------------------
@@ -649,13 +723,15 @@
         if (!scr) { c.width = 40; c.height = hgt; film.appendChild(c); return; }
         var scale = scr.scale || 1;
         var W = scr.size[0] * scale, H = scr.size[1] * scale;
-        var f = hgt / Math.max(1, H);
-        c.width = Math.max(8, Math.min(240, Math.round(W * f)));
-        c.height = hgt;
+        // The whole surface, at most 240 by 36: a wide bar is shrunk,
+        // not cut off on the right.
+        var f = Math.min(hgt / Math.max(1, H), 240 / Math.max(1, W));
+        c.width = Math.max(8, Math.round(W * f));
+        c.height = Math.max(4, Math.round(H * f));
         var x = c.getContext('2d');
         x.imageSmoothingEnabled = false;
         var im = img(a, scr.png);
-        if (im) x.drawImage(im, 0, 0, W * f, hgt);
+        if (im) x.drawImage(im, 0, 0, W * f, H * f);
         else {
           x.strokeStyle = '#777';
           scr.rows.forEach(function (r) {
@@ -733,7 +809,9 @@
         r.findings.forEach(function (f) {
           if (f.sev === 'info') return;
           var sheet = (a.sheets || []).filter(function (s) { return s.check === f.check && s.k === f.k && s.key === f.key; })[0];
-          var d = el('div', { cls: 'find st-' + (f.sev === 'fail' ? 'fail' : 'changed'), onclick: function () { jump(a, f); } }, describe(a, f));
+          // A reference finding reads as CHANGED (its chip's colour), not as a check's failure.
+          var tone = f.sev === 'fail' && f.check !== 'reference' ? 'fail' : 'changed';
+          var d = el('div', { cls: 'find st-' + tone, onclick: function () { jump(a, f); } }, describe(a, f));
           if (sheet) {
             d.appendChild(document.createTextNode(' '));
             d.appendChild(el('a', { href: sheet.path, target: '_blank', text: 'contact sheet', onclick: function (e) { e.stopPropagation(); } }));
@@ -789,7 +867,11 @@
   }
 
   var AXES_CURVE = [['x', 'vx', 'lx'], ['y', 'vy', 'ly'], ['w', 'vw', 'lw'], ['h', 'vh', 'lh'], ['opacity', 'op', null], ['scale', 'sx', null]];
-  var HUES = ['#2f6fe0', '#e2801c', '#27894a', '#c03fa8', '#8a6b2a', '#3aa6b9'];
+  // The series colours, theme tokens (--c1 to --c6) so dark mode lightens them.
+  function hues() { return [1, 2, 3, 4, 5, 6].map(function (n) { return css('--c' + n); }); }
+  // A chart's width in its own units: the panel's, within 300 to 640, so
+  // its 10 px labels are not shrunk on a phone.
+  function chartWidth(p) { return Math.round(Math.min(640, Math.max(300, p.clientWidth || 640))); }
 
   function curvesPanel(p) {
     var a = A(), b = B();
@@ -811,13 +893,14 @@
       lo = seg.s === null || seg.s === undefined ? 0 : Math.max(0, at(a, seg.s));
       hi = Math.max(lo, at(a, seg.e));
     }
+    var HUES = hues();
     var legend = el('div', { cls: 'legend' });
     keys.forEach(function (k, n) {
       legend.appendChild(el('span', { style: 'color:' + HUES[n % HUES.length], text: '■ ' + label(a, k) }));
     });
     legend.appendChild(el('span', { cls: 'note', text: 'solid drawn · dashed laid' + (AB ? ' · B dotted' : '') + ' · red band: the bound a failing finding held it to · grey: text held' }));
     p.appendChild(legend);
-    var W = 640, H = 110, L = 44, R = 8, T = 8, Bm = 18;
+    var W = chartWidth(p), H = 110, L = 44, R = 8, T = 8, Bm = 18;
     function xs(i) { return L + (hi > lo ? (i - lo) / (hi - lo) : 0) * (W - L - R); }
     AXES_CURVE.forEach(function (ax) {
       var series = [];
@@ -919,7 +1002,7 @@
       return t;
     }
     var metrics = [['damage_px', 'damage px'], ['raster_px', 'raster px'], ['items', 'items'], ['layout_passes', 'layout passes']];
-    var W = 640, H = 46, L = 92;
+    var W = chartWidth(p), H = 46, L = 92;
     var curK = a.tl.ks[S.i];
     metrics.forEach(function (m) {
       var vals = frames.map(function (f) { return sum(f, m[0]); });
@@ -961,9 +1044,13 @@
   function abPanel(p) {
     var a = scOf(0, S.id), b = scOf(1, S.id);
     var info = DATA.ab && DATA.ab.scenarios ? DATA.ab.scenarios[S.id] : null;
-    p.appendChild(el('div', { text: 'A: ' + DATA.runs[0].label + (a ? ' (' + a.status + ')' : ' (not run)') + ' · B: ' + DATA.runs[1].label + (b ? ' (' + b.status + ')' : ' (not run)') }));
+    // The reference side has no status of its own: it is not a run.
+    var bSays = REF ? (b ? '' : ' (none differs)') : (b ? ' (' + b.status + ')' : ' (not run)');
+    p.appendChild(el('div', { text: 'A: ' + DATA.runs[0].label + (a ? ' (' + a.status + ')' : ' (not run)') + ' · B: ' + DATA.runs[1].label + bSays }));
     if (!info) { p.appendChild(el('div', { cls: 'note', text: REF ? 'The run matches its approved reference, or has none: there is nothing to put beside it.' : 'Only one side ran this scenario.' })); return; }
     p.appendChild(el('div', { cls: 'note', text: info.same ? 'The two runs drew the same frames (equal digests).' : 'The first frame each node drew differently (beyond 0.5 px or 1/255 opacity), by key:' }));
+    // Equal digests list nothing: no empty table under the note.
+    if (!info.diverge.length) return;
     var t = el('table');
     t.appendChild(el('tr', null, el('th', { text: 'node' }), el('th', { text: 'k' }), el('th', { text: 'what' }), el('th', { text: 'A' }), el('th', { text: 'B' })));
     info.diverge.forEach(function (d) {
@@ -1012,14 +1099,24 @@
     var cmd = el('pre', { cls: 'cmd' });
     var note = el('textarea', { rows: 3, placeholder: 'Why this motion is right (Good) or wrong (Bad): required, kept in this browser until copied' });
     note.value = draft.note || '';
+    // Who looked: kept per browser, not per run. Empty leaves it to
+    // $STRAND_EVAL_APPROVER; `unknown` names nobody, as on the command line.
+    var who = el('input', { type: 'text', cls: 'who', placeholder: 'Approver: who looked (empty: $STRAND_EVAL_APPROVER)', 'aria-label': 'Approver' });
+    who.value = store.get('strand-eval:approver') || '';
+    var whoNote = el('div', { cls: 'note' });
     function update() {
       store.set(key, JSON.stringify(draft));
       var n = (draft.note || '').trim();
+      var w = who.value.trim();
+      var named = w && w.toLowerCase() !== 'unknown';
+      var by = named ? ' --approver ' + quote(w) : '';
       var at = run.out + '/' + sc.id;
       if (!draft.v) cmd.textContent = 'Pick Good (approve it as the reference) or Bad (record it as known bad).';
       else if (!n) cmd.textContent = 'Write a note: approving needs one, and the reference keeps it.';
-      else if (draft.v === 'good') cmd.textContent = 'scripts/container/run.sh eval approve ' + at + ' --note ' + quote(n);
-      else cmd.textContent = 'scripts/container/run.sh eval verdict ' + at + ' bad --note ' + quote(n);
+      else if (draft.v === 'good') cmd.textContent = 'scripts/container/run.sh eval approve ' + at + ' --note ' + quote(n) + by;
+      else cmd.textContent = 'scripts/container/run.sh eval verdict ' + at + ' bad --note ' + quote(n) + by;
+      whoNote.textContent = named ? '' : (w ? '"unknown" names nobody: the command takes $STRAND_EVAL_APPROVER, and writes nothing without it.'
+        : 'No approver typed: the command takes $STRAND_EVAL_APPROVER, and writes nothing without it.');
       copy.disabled = !(draft.v && n);
       good.className = 'btn' + (draft.v === 'good' ? ' on' : '');
       bad.className = 'btn' + (draft.v === 'bad' ? ' on' : '');
@@ -1027,6 +1124,7 @@
     var good = el('button', { type: 'button', text: 'Good', title: 'Approve this run as the reference', onclick: function () { draft.v = 'good'; update(); } });
     var bad = el('button', { type: 'button', text: 'Bad', title: 'Record this run as a known-bad recording', onclick: function () { draft.v = 'bad'; update(); } });
     note.addEventListener('input', function () { draft.note = note.value; update(); });
+    who.addEventListener('input', function () { store.set('strand-eval:approver', who.value); update(); });
     var copy = el('button', {
       type: 'button', cls: 'btn', text: 'Copy command', onclick: function () {
         var text = cmd.textContent;
@@ -1044,9 +1142,11 @@
     });
     p.appendChild(el('div', { cls: 'controls' }, good, bad));
     p.appendChild(note);
+    p.appendChild(who);
     p.appendChild(cmd);
+    p.appendChild(whoNote);
     p.appendChild(copy);
-    p.appendChild(el('div', { cls: 'note', text: 'Good writes the run as the approved reference in ' + (refs ? refs.file : 'eval/refs/') + ' with the note, the date, the revision and $STRAND_EVAL_APPROVER; a later run that leaves it is CHANGED and fails the gate. Bad records it as known bad: a run that comes back to it fails.' }));
+    p.appendChild(el('div', { cls: 'note', text: 'Good writes the run as the approved reference in ' + (refs ? refs.file : 'eval/refs/') + ' with the note, the date, the revision and the approver; a later run that leaves it is CHANGED and fails the gate. Bad records it as known bad: a run that comes back to it fails.' }));
     update();
   }
 
@@ -1096,6 +1196,14 @@
       playTimer = setTimeout(function () { setFrame(S.i + 1); step(); }, ms);
     })();
   }
+
+  // A fitted stage follows the window's width.
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    if (S.zoom !== 'fit') return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () { renderStage(); if (S.tab === 'curves' || S.tab === 'cost') renderPanel(); }, 120);
+  });
 
   $('slider').addEventListener('input', function () { setFrame(+$('slider').value); });
   $('first').addEventListener('click', function () { setFrame(0); });

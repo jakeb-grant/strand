@@ -291,6 +291,17 @@ fn a_failing_cell_promoted_with_xfail_is_a_regression_the_gate_reports_xfail() {
     let grid = std::fs::read_to_string(out.join("index.html")).unwrap();
     assert!(grid.contains("href=\"enter-fade@60/index.html\""), "{grid}");
     assert!(out.join("enter-fade@60/index.html").is_file());
+    // The failing cell is also listed as text under its grid, with its
+    // failed check (a phone has no hover for the cell's title).
+    let list = grid
+        .split("<ul class=\"cells\">")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no cell list: {grid}"));
+    assert!(
+        list.contains("<a href=\"enter-fade@60/index.html\">enter-fade</a>")
+            && list.contains("<span class=\"tag fail\">fail</span> expect"),
+        "{list}"
+    );
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(out.join("matrix.json")).unwrap()).unwrap();
     assert_eq!(json["counts"]["fail"], 1);

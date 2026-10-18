@@ -17,6 +17,7 @@
   --skip: #8b8d97;
   --band: rgba(216, 52, 52, 0.12);
   --held: rgba(120, 120, 140, 0.14);
+  --c1: #2f6fe0; --c2: #e2801c; --c3: #27894a; --c4: #c03fa8; --c5: #8a6b2a; --c6: #2f8fa0;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -38,6 +39,7 @@
     --skip: #7b7d88;
     --band: rgba(255, 95, 95, 0.16);
     --held: rgba(170, 170, 200, 0.14);
+    --c1: #7aa2f7; --c2: #ff9e44; --c3: #5fd07f; --c4: #e57ad0; --c5: #d2b26a; --c6: #5cc8db;
     color-scheme: dark;
   }
 }
@@ -59,6 +61,7 @@
   --skip: #7b7d88;
   --band: rgba(255, 95, 95, 0.16);
   --held: rgba(170, 170, 200, 0.14);
+  --c1: #7aa2f7; --c2: #ff9e44; --c3: #5fd07f; --c4: #e57ad0; --c5: #d2b26a; --c6: #5cc8db;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -74,7 +77,8 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
   display: flex; align-items: center; gap: 12px;
   padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
-.brand { font-weight: 700; }
+.brand { font-weight: 700; white-space: nowrap; }
+.top .btn { white-space: nowrap; }
 .title { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .spacer { flex: 1; }
 .btn {
@@ -112,7 +116,7 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
   background: var(--stage); border-radius: 8px; padding: 10px; overflow: auto; max-height: 70vh;
   display: flex; flex-direction: column; gap: 10px;
 }
-.stage .cols { display: flex; gap: 14px; align-items: flex-start; }
+.stage .cols { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
 .surface-label { color: #c8c8d2; font-size: 11px; margin-bottom: 2px; }
 .stage canvas { image-rendering: pixelated; display: block; }
 .tip {
@@ -130,7 +134,7 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
 .track .m.seg { height: 18px; background: var(--accent); }
 .track .m.bad { top: 9px; height: 9px; background: var(--fail); }
 .track .m.cur { height: 18px; width: 2px; background: var(--ink); }
-.film { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0; }
+.film { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0; align-items: center; min-height: 52px; }
 .film canvas { border: 2px solid transparent; border-radius: 3px; cursor: pointer; flex: none; background: var(--stage); image-rendering: pixelated; }
 .film canvas.bad { border-color: var(--fail); }
 .film canvas.cur { outline: 2px solid var(--accent); }
@@ -152,6 +156,7 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
 .chart { width: 100%; height: auto; display: block; margin-bottom: 6px; }
 .chart text { fill: var(--muted); font-size: 10px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 8px; }
+input.who { width: 100%; margin-top: 6px; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 textarea { width: 100%; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
 pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hover); padding: 6px 8px; border-radius: 6px; }
 @media (max-width: 760px) {

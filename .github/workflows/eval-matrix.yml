@@ -3,7 +3,8 @@ name: Eval matrix
 # The animation evaluation sandbox's long runs (docs/eval.md, "Matrix" and
 # "Mutants"): every effect of eval/matrix/effects.toml alone and every
 # pair, at 60 and 144 Hz, judged against eval/matrix/known.toml, and the
-# mutants (each regression scenario must catch the bug it is named for).
+# mutants (each regression scenario must catch the bug it is named for),
+# then their pages in a real browser (scripts/eval/viewer-check.sh).
 # Nightly and on demand; ci.yml's `eval` job runs the curated and
 # regression scenarios and this matrix, held to its references
 # (scripts/eval/ci.sh steps 5 and 6), on every push.
@@ -71,6 +72,18 @@ jobs:
           OUT: target/eval/repeat
       - run: scripts/eval/mutants.sh
         if: always() && (inputs.mutants || 'true') == 'true'
+      # The viewer in a real browser (docs/eval.md, "The viewer in a
+      # browser"): headless Chromium in a pinned Playwright image, no
+      # network, every mode of the pages the two steps above wrote (a
+      # passing and a failing run, their A/B page, the grid: the nightly
+      # matrix's, or the first repeated run's); any console error fails it. Its screenshots go up with the reports.
+      - run: >-
+          scripts/eval/viewer-check.sh --expect pass,fail,ab,matrix
+          target/eval/mutants/bug25-hidden-text-head
+          target/eval/mutants/bug25-hidden-text
+          target/eval/mutants/bug25-hidden-text-ab
+          ${{ (inputs.repeat || '1') == '1' && 'target/eval/matrix-nightly' || 'target/eval/repeat/1/matrix' }}
+        if: always() && (inputs.mutants || 'true') == 'true'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -80,4 +93,5 @@ jobs:
             target/eval/repeat/
             target/eval/mutants/
             !target/eval/mutants/tree/
+            target/eval/viewer-shots/
           if-no-files-found: ignore

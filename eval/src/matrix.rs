@@ -1133,6 +1133,41 @@ fn grid(set: &Effects, plan: &Plan, done: &[Done]) -> String {
             body += "</tr>";
         }
         body += "</table></div>";
+        // The cells that did not pass, as text: a cell's title shows only
+        // on hover, which a phone does not have.
+        let mut list = String::new();
+        for d in done
+            .iter()
+            .filter(|d| d.cell.hz == *hz && !matches!(d.outcome, Outcome::Pass | Outcome::Na))
+        {
+            let (cls, what) = match d.outcome {
+                Outcome::Known => ("known", "known"),
+                Outcome::Stale => ("stale", "stale known"),
+                Outcome::Changed => ("changed", "changed"),
+                Outcome::Fail => ("fail", "fail"),
+                _ => ("error", "error"),
+            };
+            let mut why = d.failed.join(", ");
+            if let Some(k) = &d.known {
+                why = format!("{} (known: {})", k.checks.join(", "), k.note);
+            }
+            list += &format!(
+                "<li><a href=\"{}/index.html\">{}</a> <span class=\"tag {cls}\">{what}</span> {}",
+                esc(&d.cell.dir_name()),
+                esc(&d.cell.name),
+                esc(&why)
+            );
+            // A failing check's first finding, then the reference's line.
+            let (changed, other): (Vec<&String>, Vec<&String>) =
+                d.lines.iter().partition(|l| l.starts_with("CHANGED"));
+            for l in other.into_iter().take(1).chain(changed) {
+                list += &format!("<div class=\"line\">{}</div>", esc(l));
+            }
+            list += "</li>";
+        }
+        if !list.is_empty() {
+            body += &format!("<ul class=\"cells\">{list}</ul>");
+        }
     }
     let count = |o: Outcome| done.iter().filter(|d| d.outcome == o).count();
     let head = format!(
@@ -1185,13 +1220,18 @@ h1 { font-size: 16px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 16px 0 6p
 .pass { background: var(--pass); } .known { background: var(--known); } .na { background: var(--na); color: var(--muted); }
 .fail { background: var(--fail); } .stale { background: var(--stale); } .changed { background: var(--changed); } .error { background: var(--error); }
 .legend span { display: inline-block; padding: 1px 8px; margin: 2px 4px 2px 0; border-radius: 4px; }
+.cells { list-style: none; padding: 0; margin: 8px 0 0; }
+.cells li { padding: 3px 0; overflow-wrap: anywhere; }
+.cells a { color: inherit; font-weight: 600; }
+.cells .tag { padding: 0 6px; border-radius: 4px; font-size: 11px; }
+.cells .line { color: var(--muted); font: 11px/1.4 ui-monospace, "DejaVu Sans Mono", monospace; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <h1>Effect matrix</h1>
 <div class="meta">{{HEAD}}</div>
 <div class="legend"><span class="pass">pass</span><span class="known">k known</span><span class="na">– n/a</span><span class="fail">✕ fail</span><span class="stale">s stale known</span><span class="changed">c changed from its reference</span><span class="error">! error</span></div>
-<div class="meta">The diagonal is each effect alone, below it each pair. Hover a cell for its findings; a cell that did not pass links to its run.</div>
+<div class="meta">The diagonal is each effect alone, below it each pair. Hover a cell for its findings; a cell that did not pass links to its run and is listed under its grid.</div>
 {{BODY}}
 </body>
 </html>
