@@ -1,34 +1,56 @@
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index 61d87577..1ee2375e 100644
+index b3e37cd9..6cf729b5 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
-@@ -603,21 +603,6 @@ impl Renderer {
+@@ -2,7 +2,7 @@
+ //! query, a configure), damage between frames' node records, and
+ //! [`Painter`](strand_scene::Painter) itself.
+ 
+-use std::collections::{BTreeMap, HashSet};
++use std::collections::BTreeMap;
+ use std::time::{Duration, Instant};
+ 
+ use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
+@@ -603,34 +603,6 @@ impl Renderer {
              }
          }
          total.clip(bounds);
 -        // What this frame laid out is what the surface shows now, but
 -        // for what it drew nothing of (late-text-dip): a text still on
--        // its way, and a box laid out empty (one holding only such text,
--        // which takes no room). Neither has a place it was drawn to
--        // glide from when the text arrives and lays them out whole.
+-        // its way, and a box laid out empty because such a text is under
+-        // it (it takes no room). Neither has a place it was drawn to
+-        // glide from when the text arrives and lays them out whole. A
+-        // box laid out empty for any other reason, and a node no longer
+-        // laid out, leave the set.
 -        if !s.unpainted.is_empty() {
 -            let shaping = super::text::still_shaping(&self.texts, &s.wanted);
+-            let mut waiting: HashSet<NodeId> = HashSet::new();
+-            for t in &shaping {
+-                let mut at = self.tree.get(*t).and_then(|n| n.parent);
+-                while let Some(p) = at {
+-                    if !waiting.insert(p) {
+-                        break;
+-                    }
+-                    at = self.tree.get(p).and_then(|n| n.parent);
+-                }
+-            }
 -            let boxes = s.boxes.as_ref();
 -            s.unpainted.retain(|n| {
 -                shaping.contains(n)
--                    || boxes
--                        .and_then(|b| b.rects.get(n))
--                        .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0)
+-                    || (waiting.contains(n)
+-                        && boxes
+-                            .and_then(|b| b.rects.get(n))
+-                            .is_some_and(|r| r.w <= 0.0 || r.h <= 0.0))
 -            });
 -        }
          if total.is_empty() {
              // Nothing drawn: no frame, so nothing enters the history and
              // the caller does not commit (see `Painter::paint`).
 diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
-index 41820131..495cbf4c 100644
+index aa388892..2ea6199c 100644
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -129,11 +129,6 @@ impl Renderer {
+@@ -136,11 +136,6 @@ impl Renderer {
                  .iter()
                  .map(|(node, spec)| TextSlot::of(*node, spec))
                  .collect();
@@ -40,7 +62,7 @@ index 41820131..495cbf4c 100644
              if settled && s.prev_scale.take().is_some() {
                  self.prune_scales();
              }
-@@ -326,32 +321,11 @@ impl Renderer {
+@@ -335,32 +330,11 @@ impl Renderer {
              }
          }
          // FLIP: boxes a structural change moved start where they were.
@@ -74,7 +96,7 @@ index 41820131..495cbf4c 100644
                  && !self.anim.reduced()
              {
                  let tables = [&self.tree.tokens];
-@@ -367,7 +341,6 @@ impl Renderer {
+@@ -376,7 +350,6 @@ impl Renderer {
                      &boxes.rects,
                      &flip,
                      all,
@@ -82,7 +104,7 @@ index 41820131..495cbf4c 100644
                      curve,
                  );
              }
-@@ -461,8 +434,7 @@ impl Renderer {
+@@ -471,8 +444,7 @@ impl Renderer {
  }
  
  /// FLIP: every node whose parent is in `parents` (all with `all`) and
@@ -92,7 +114,7 @@ index 41820131..495cbf4c 100644
  /// Visited top-down, so a node that moved with its parent adds nothing
  /// to the parent's glide.
  #[allow(clippy::too_many_arguments)]
-@@ -474,7 +446,6 @@ pub(super) fn glide_moved(
+@@ -484,7 +456,6 @@ pub(super) fn glide_moved(
      new: &HashMap<NodeId, strand_scene::LogicalRect>,
      parents: &HashSet<NodeId>,
      all: bool,
@@ -100,7 +122,7 @@ index 41820131..495cbf4c 100644
      curve: Curve,
  ) {
      let mut stack = vec![(root, (0.0f32, 0.0f32))];
-@@ -486,10 +457,7 @@ pub(super) fn glide_moved(
+@@ -496,10 +467,7 @@ pub(super) fn glide_moved(
                  continue;
              }
              let mut acc_c = acc;
