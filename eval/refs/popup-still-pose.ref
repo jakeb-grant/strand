@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-still-pose"
 verdict good
-note "eval-r3 fix of eval-local's open finding (an exit that moves nothing still ends): read the diff; up to k44 the geometry is the old recording's and only the paint fields are new (the old block was recorded before recordings held paint); at k45 the popup paints once more with the card's ghost at its pose (inert) and surface 2 is detached after it (attached k21..k45), and from k46 neither is on screen, where the old recording kept the popup mapped to the end with no frame after k21"
+note "eval-false-alarms: the sandbox places popup#pop as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -4, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "4cb3a118+changes"
+rev "0824d452+changes"
 approver "claude"
 scenario 168921f0de9dcc52
-seal 97a1b321db09b297
+seal be99244d2480f4b9
 S1 0 - "bar Top"
 S2 21 45 "popup#pop"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
@@ -26,7 +26,7 @@ n3 x=36 y=0 w=40 h=30 ord=3 bg=303030ff
 n4 x=0 y=0 w=300 h=30 ord=1
 n5 x=0 y=0 w=300 h=30 bg=faf9ffff
 k21 p1,2
-s2 z=120,40 o=-4,36 i=0,0,120,40
+s2 z=120,40 o=0,36 i=0,0,120,40
 n2 w=17
 n6 srf=2 x=0 y=0 w=120 h=40 ord=1 bg=ff0000ff
 n7 srf=2 x=0 y=0 w=120 h=40

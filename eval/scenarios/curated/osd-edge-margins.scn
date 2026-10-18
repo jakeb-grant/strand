@@ -1,0 +1,54 @@
+id     = "osd-edge-margins"
+about  = """An OSD at the screen's bottom-right corner, 14 px from the right
+edge and 22 px above a bottom bar's exclusive zone (the compositor
+arranges it in what the bar leaves: eval-false-alarms), sized by its
+content. It fades and slides in, its label changes width (a level, then
+a long word, then a short one) while its meter springs, and it fades out.
+Anchored right and bottom, the compositor keeps its right and bottom edges
+where they are as it resizes, so its content grows and shrinks leftwards
+and upwards; the meter's right end and the label's right edge stay put
+on screen."""
+screen = { width = 320, height = 480, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state level = 0.3
+state label = "30%"
+state shown = false
+
+bar Bottom {
+  edge: bottom; height: 26; bg: #11121a
+  row { height: 26; pad: 0, 8; align: center
+    box { id: dot; width: 10; height: 10; radius: 5; bg: #7aa2f7 }
+  }
+}
+
+osd Level {
+  anchor: bottom_right; margin: 0, 14, 22, 0; open: shown
+  enter { opacity: 0; y: 12 }
+  row { id: pill; height: 36; pad: 0, 11; gap: 9; align: center; radius: 18; bg: #1f2233
+    meter level { id: level_meter; width: 120; height: 6; color: #9ece6a; track: #33384f }
+    text label { id: level_text; color: #d5d9f0 }
+  }
+}
+
+=== steps
+rest
+mark show
+set shown true
+rest
+mark louder
+set level 0.75
+set label "75%"
+rest
+mark word
+set label "maximum"
+set level 1.0
+rest
+mark short
+set label "0"
+set level 0.0
+rest
+mark hide
+set shown false
+rest

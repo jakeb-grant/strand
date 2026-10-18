@@ -3,7 +3,13 @@
 //! moves at most `max(teleport_px * 60 / hz, 0.75 * d) + tol` per tick
 //! between them. `d` is the segment's travel (for a node that enters or
 //! leaves in the segment, from where it first shows or to where it last
-//! shows), the span of its way
+//! shows, and (eval-false-alarms) every place it comes back onto its
+//! surface or leaves it again, and where each later change of the
+//! segment found it: an offset sent out and turned back travels its
+//! excursion; and (integration-r4) for a node under a scroll that moved
+//! by itself, on y, how far the scroll's offset carried its content,
+//! though a windowed list shows the node only inside its viewport), the
+//! span of its way
 //! ([`super::way`]: where it starts, where it rests and every place a
 //! frame counted laid it out, so a size spring sent out and back within
 //! one segment travels its whole excursion, not the nothing between its
@@ -17,10 +23,14 @@
 //! still exceeds 0.75 of it. A glide retargeted in flight starts from
 //! where the node was drawn: its drawn box does not jump with its layout.
 //! A jump with no motion at either frame (layout snapping) is noted, not
-//! failed; the retarget arm holds x and y only, since a glide moves a
-//! box and never sizes it (layout lengths snap, design.md "What can't
-//! interpolate"); on w and h only motion that sizes a box counts (a size spring
-//! or a morph, its own or an ancestor's, lean, jelly, or authored motion
+//! failed (a row a scroll moves by itself moves: `SCROLL` and `FLING` are
+//! motion, held to the bound), and on x and y a fade or a colour spring (opacity, fill, ink,
+//! border, a meter's level: paint inside a box) is no motion
+//! (eval-false-alarms); the retarget arm holds x and y only, on the
+//! node's own move in its parent (what its parent's layout carried it by
+//! is the parent's), since a glide moves a box and never sizes it
+//! (layout lengths snap, design.md "What can't interpolate"); on w and h
+//! only motion that sizes a box counts (a size spring or a morph, its own or an ancestor's, lean, jelly, or authored motion
 //! on w, h, scale or rotate: keyframes or `t` on those axes, a scale
 //! spring): a glide, a drag, an offset or opacity spring, a reveal, a
 //! stagger and a pose of opacity or offset move or fade a box, never size
@@ -28,8 +38,9 @@
 
 use std::collections::HashMap;
 
-use super::{Cx, Finding, GEOMETRY, Sev, authored, first_per_node, laid, value, way};
+use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value, way};
 use crate::scenario::CheckId;
+use crate::trace::Row;
 use strand_render::probe::{Axes, Motions};
 
 pub fn run(cx: &Cx) -> Vec<Finding> {
@@ -39,11 +50,18 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             continue;
         }
         let per_tick = cx.sc.tolerance.teleport_px * 60.0 / f64::from(seg.hz.max(1));
+        // The frames showing just before each later change of the
+        // segment: where that change found its nodes.
+        let restarts: Vec<usize> = cx
+            .restarts(si)
+            .into_iter()
+            .filter_map(|k| cx.tl.at(k.saturating_sub(1)))
+            .collect();
         let (bi, ei) = (cx.tl.at(s), cx.tl.at(seg.e));
         let range = cx.tl.within(Some(s), seg.e);
         let start = bi.unwrap_or(range.start);
         // Per node and axis, the segment's travel: the span of its way.
-        let mut travels: HashMap<(&str, usize, usize), f64> = HashMap::new();
+        let mut travels: HashMap<(&str, usize), f64> = HashMap::new();
         for i in range {
             if i <= start {
                 continue;
@@ -55,11 +73,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 if !cx.tl.visible(i, r) || !cx.tl.visible(p, q) || q.surface != r.surface {
                     continue;
                 }
-                // A scroll's offset in flight (a spring, or a fling, as
-                // fast as the fingers were) lays its content out at the
-                // offset each frame (laid where drawn): a jump it makes
-                // is layout's, noted as with no motion (eval-coverage-2).
-                let any = Motions((r.emot | q.emot) & !(Motions::SCROLL.0 | Motions::FLING.0));
+                let any = Motions(r.emot | q.emot);
                 let glides = Motions(r.mot).contains(Motions::GLIDE)
                     && Motions(q.mot).contains(Motions::GLIDE);
                 // Gliding itself or carried by a gliding ancestor, from a
@@ -90,54 +104,90 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             ) || Axes(r.auth | q.auth)
                                 .intersects(a.bits() | Axes::SCALE | Axes::ROTATE)
                         }
-                        _ => !any.is_empty(),
+                        // (eval-false-alarms) On x and y only motion that
+                        // moves a box counts: a fade and a colour spring
+                        // (its fill, ink or border, a meter's level) paint
+                        // inside a box and never move it, so a place that
+                        // layout snaps under one is layout's, as with no
+                        // motion; a prop spring counts when what it
+                        // springs places the box (x, y, scale, rotate).
+                        _ => {
+                            let paint = Motions::OPACITY_SPRING.0
+                                | Motions::FILL_SPRING.0
+                                | Motions::INK_SPRING.0
+                                | Motions::LINE_SPRING.0
+                                | Motions::PROP_SPRING.0;
+                            any.0 & !paint != 0
+                                || (any.contains(Motions::PROP_SPRING)
+                                    && Axes(r.auth | q.auth)
+                                        .intersects(a.bits() | Axes::SCALE | Axes::ROTATE))
+                        }
                     };
-                    // (eval-coverage-2) The stretch of frames the node
-                    // shows in without a break that holds frame `i`: one
-                    // that leaves and comes back within the segment (a
-                    // branch shown again, morphing from where another was
-                    // drawn) travels from where it comes back.
-                    let (lo_i, hi_i) = stretch(cx, key, r.surface, i, start, seg.e);
-                    let travel = *travels.entry((*key, a as usize, lo_i)).or_insert_with(|| {
+                    let travel = *travels.entry((*key, a as usize)).or_insert_with(|| {
                         // Where it starts and ends: at `s` and the rest, or
                         // for a node that came onto its surface in the
                         // segment (a popup's content, a branch, an enter
                         // pose's slide, held as the same slide of a node
                         // already there is) or left it (an exit's ghost),
                         // its first or last frame shown there
-                        // (eval-coverage, eval-local), and for one that
-                        // left and came back, the first frame of the
-                        // stretch it shows in since (eval-coverage-2).
-                        let at = |j: usize| cx.tl.row(j, key);
-                        let from = if lo_i == start + 1 {
-                            bi.and_then(at).or_else(|| at(lo_i))
-                        } else {
-                            at(lo_i)
-                        };
+                        // (eval-coverage, eval-local).
                         let shown = |j: usize| {
-                            at(j).filter(|q| q.surface == r.surface && cx.tl.visible(j, q))
+                            cx.tl
+                                .row(j, key)
+                                .filter(|q| q.surface == r.surface && cx.tl.visible(j, q))
                         };
+                        let span = cx.tl.within(Some(s), seg.e);
+                        let from = bi
+                            .and_then(|b| cx.tl.row(b, key))
+                            .or_else(|| span.clone().find_map(shown));
                         let to = ei
-                            .and_then(at)
-                            .or_else(|| cx.tl.within(Some(s), seg.e).rev().find_map(shown));
+                            .and_then(|e| cx.tl.row(e, key))
+                            .or_else(|| span.rev().find_map(shown));
                         let (Some(b), Some(e)) = (from, to) else {
                             return 0.0;
                         };
                         let w = way(cx, key, s, seg.e, b, e, a);
-                        // (eval-coverage-2) And the way authored motion
-                        // takes it in the stretch: an offset or a pose
-                        // springs out and back (a page sliding in and,
-                        // switched away mid-flight, out again) travels
-                        // its excursion, not the little between its ends.
-                        let mut ex: Option<(f64, f64)> = None;
-                        for j in lo_i..=hi_i {
-                            if let Some(x) = at(j).filter(|x| authored(x, a)) {
-                                let v = value(x, a);
-                                ex = Some(ex.map_or((v, v), |(l, h)| (l.min(v), h.max(v))));
+                        let (mut lo, mut hi) = (w.lo, w.hi);
+                        // (eval-false-alarms) Its way starts again where a
+                        // later change found it, and each time it comes
+                        // back onto its surface (a morph reversed home,
+                        // a branch shown again) or leaves it: an offset
+                        // or pose sent out and turned back by a second
+                        // change travels its whole excursion, as a size
+                        // spring's laid places make it travel its own.
+                        let mut put = |r: &Row| {
+                            lo = lo.min(value(r, a));
+                            hi = hi.max(value(r, a));
+                        };
+                        for j in &restarts {
+                            if let Some(r) = shown(*j) {
+                                put(r);
                             }
                         }
-                        let ex = ex.map_or(0.0, |(l, h)| h - l);
-                        (value(e, a) - value(b, a)).abs().max(w.hi - w.lo).max(ex)
+                        let span = cx.tl.within(Some(s), seg.e);
+                        let mut was = bi.and_then(shown).is_some();
+                        for j in span.clone() {
+                            let now = shown(j);
+                            let next = j + 1 < span.end && shown(j + 1).is_some();
+                            if let Some(r) = now
+                                && (!was || !next)
+                            {
+                                put(r);
+                            }
+                            was = now.is_some();
+                        }
+                        // (integration-r4) A row under a scroll that moved
+                        // by itself travels as far as the scroll carried
+                        // its content, though it shows only while inside
+                        // the viewport: its per-tick bound is the
+                        // scroll's, so a wheel spring that snaps its way
+                        // in one tick still fails.
+                        let carried = if a == super::Axis::Y {
+                            cx.scroll_travel(key, s, seg.e)
+                        } else {
+                            0.0
+                        };
+                        (value(e, a) - value(b, a)).abs().max(hi - lo).max(carried)
                     });
                     let left = match (carried, a) {
                         (true, super::Axis::X) => f64::from(q.glide[0] + q.flight[0]).abs(),
@@ -169,6 +219,19 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         continue;
                     }
                     let dl = laid(r, a) - laid(q, a);
+                    // (eval-false-alarms) Its own move in its parent: what
+                    // its parent's layout carried it by is the parent's
+                    // move, judged on the parent (FLIP glides a node that
+                    // moved with its parent by nothing more,
+                    // `layout_pass::glide_moved`), so a glide that is
+                    // ending when an ancestor's layout snaps (a held
+                    // surface's root placed where its smaller box will
+                    // be) has nothing to retarget.
+                    let carried_by = cx
+                        .parent(key)
+                        .and_then(|pk| Some((cx.tl.row(p, pk)?, cx.tl.screens[i].get(pk)?)))
+                        .map_or(0.0, |(pq, pr)| laid(pr, a) - laid(pq, a));
+                    let own = dl - carried_by;
                     let offset_axis = matches!(a, super::Axis::X | super::Axis::Y);
                     // (eval-coverage) A glide on the other axis only, while
                     // something on the surface lays out anew each frame
@@ -179,26 +242,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     let follows = offset_axis
                         && q.glide[n] == 0.0
                         && r.glide[n] == 0.0
-                        && cx.lays_out(i, r.surface);
-                    // (eval-coverage-2) A box whose own size snapped this
-                    // tick and that its parent keeps by its centre or an
-                    // edge (a centred card whose content shrank, placed
-                    // in its held surface): its place moved with its
-                    // size, which a glide never carries (it moves a box,
-                    // never sizes it), so its glide was not retargeted.
-                    let resized = offset_axis && {
-                        let (o, sz) = (n, n + 2);
-                        let (l0, l1) = (f64::from(q.laid[o]), f64::from(r.laid[o]));
-                        let (s0, s1) = (f64::from(q.laid[sz]), f64::from(r.laid[sz]));
-                        (s1 - s0).abs() > cx.tol
-                            && ((l1 + s1 / 2.0 - l0 - s0 / 2.0).abs() <= cx.tol
-                                || (l1 + s1 - l0 - s0).abs() <= cx.tol)
-                    };
+                        && (cx.lays_out(i, r.surface) || cx.scrolled(i, key));
                     if glides
                         && offset_axis
                         && !follows
-                        && !resized
                         && dl.abs() > 1.0f64.max(cx.tol)
+                        && own.abs() > 1.0f64.max(cx.tol)
                         && (d - dl).abs() <= cx.tol
                     {
                         out.push(
@@ -223,25 +272,4 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     first_per_node(out)
-}
-
-/// (eval-coverage-2) The frames around frame `i` that `key` shows in on
-/// `surface` without a break, within the segment's frames after `start`
-/// (the frame at its `s`) up to its rest `e`: the first and the last.
-fn stretch(cx: &Cx, key: &str, surface: u32, i: usize, start: usize, e: u32) -> (usize, usize) {
-    let shown = |j: usize| {
-        cx.tl
-            .row(j, key)
-            .is_some_and(|q| q.surface == surface && cx.tl.visible(j, q))
-    };
-    let last = cx.tl.ks.partition_point(|x| *x <= e).saturating_sub(1);
-    let mut lo = i;
-    while lo > start + 1 && shown(lo - 1) {
-        lo -= 1;
-    }
-    let mut hi = i;
-    while hi < last && shown(hi + 1) {
-        hi += 1;
-    }
-    (lo, hi)
 }

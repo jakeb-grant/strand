@@ -317,3 +317,33 @@ fn every_committed_scenario_passes_the_surface_checks() {
     }
     assert!(ran > 15, "{ran} runs");
 }
+
+/// (eval-false-alarms) The fake compositor stretches a layer surface
+/// over the whole output, so a run in which another surface's exclusive
+/// zone sizes one (a left bar under a top bar's zone) is refused with the
+/// leg, and runs without it; a zone that only moves a surface (a panel
+/// below the bar) is no reason to refuse.
+#[test]
+fn the_leg_refuses_a_layer_surface_sized_by_another_ones_zone() {
+    let bars = |side: &str| {
+        format!(
+            "id = \"zones\"\nscreen = {{ width = 200, height = 120, scale = 1.0 }}\n\
+             === shell.strand\nbar Top {{ height: 20 }}\n{side}\
+             panel P {{ anchor: top; open: true; box {{ width: 40; height: 10 }} }}\n\
+             === steps\nrest\n"
+        )
+    };
+    let leg = || RunOptions {
+        surface: Some(true),
+        ..RunOptions::default()
+    };
+    let sc = scenario(&bars("bar Side { edge: left; width: 30 }\n"));
+    match run(&sc, &leg()) {
+        Err(Error::Unsupported(why)) => assert!(why.contains("exclusive zone"), "{why}"),
+        other => panic!("not refused: {:?}", other.map(|o| o.notes)),
+    }
+    go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    let sc = scenario(&bars(""));
+    let t = go(&sc, leg()).unwrap_or_else(|e| panic!("{e}"));
+    assert_clean(&t);
+}

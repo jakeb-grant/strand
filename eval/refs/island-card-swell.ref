@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "island-card-swell"
 verdict good
-note "the day boxes are hidden=clipped on k1-k4 while the clip: true card's springing box has not reached them (below it, or left of its left edge as its x springs 280 to 50): the new Hidden::Clipped reason; read with explain: geometry, opacity and paint tick for tick as approved (eval-coverage-2)"
+note "integration-r4 (eval-fa on eval-r4): popup#big is now shifted onto the screen by popup_shift (origin x -280 to 0); node rows, including the clipped day boxes on k1-k4, are unchanged"
 date 2026-10-18
-rev "0824d452+changes"
+rev "d0071862+changes"
 approver "claude"
 scenario 616a2f7b6fa02cf2
-seal 3eeffd625ecccb91
+seal e2001db3713315cc
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:8:5|[Mock | DP-1]#0" "popup#big"
@@ -49,7 +49,7 @@ N36 "|shell.strand:25:17|[Mock | DP-1][Thursday]#0" "text(\"Thursday\")"
 N37 "|shell.strand:26:17|[Mock | DP-1][Thursday]#5" "box@shell.strand:26"
 k0 p1,2
 s1 z=1280,30
-s2 z=980,472 o=-280,30
+s2 z=980,472 o=0,30
 n0 srf=2 x=0 y=0 w=980 h=472
 n1 srf=2 x=280 y=0 w=420 h=32 ord=1 bg=11111bff bd=585b70ff
 n2 srf=2 x=50 y=0 w=880 h=32 ord=2 bg=313244ff

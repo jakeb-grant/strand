@@ -1,0 +1,49 @@
+id     = "panel-fractional-1_25-1_75"
+about  = """A panel anchored to the top-left corner 7 px from both edges, at
+scale 1.25 and then 1.75: its card's width springs between 171 and 233
+px (odd sizes, which at these scales fall between physical pixels) while
+the heading stretches with it and the row of flush tiles under it keeps
+its place. The compositor keeps the panel's top-left corner
+where its margins put it (eval-false-alarms), so the card's left edge
+never moves on screen; at the scale change every surface is configured
+again at the new scale and its frames redrawn whole."""
+screen = { width = 360, scale = 1.25 }
+hz     = 60
+
+=== shell.strand
+state wide = false
+
+panel Tools {
+  anchor: top_left; margin: 7, 0, 0, 7; open: true
+  col { id: card; width: wide ? 233 : 171; pad: 9; gap: 7; radius: 11; bg: #1e2030
+    text "Quick settings" { id: heading; color: #cad3f5 }
+    row { id: tiles; gap: 0; height: 22
+      box { id: t1; width: 37; height: 22; bg: #ed8796 }
+      box { id: t2; width: 37; height: 22; bg: #a6da95 }
+      box { id: t3; width: 37; height: 22; bg: #8aadf4 }
+    }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+expect still #t1
+mark narrow
+set wide false
+rest
+mark scale
+scale 1.75
+rest
+mark widen-1_75
+set wide true
+rest
+expect still #t1
+mark narrow-1_75
+set wide false
+wait 80
+set wide true
+rest
+expect still #t1

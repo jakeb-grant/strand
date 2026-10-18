@@ -3806,41 +3806,6 @@ fn regions_on_wire_holds_a_bare_commit_to_the_frame_that_drew_nothing() {
 
 // --- eval-coverage-2
 
-/// (eval-coverage-2) An authored offset spring sent out and back in one
-/// segment (a page slid in and, switched away mid-flight, out again)
-/// travels its excursion: 50 px steps of a 100 px excursion that ends
-/// 10 px from where it started pass. A 90 px step of it still fails.
-#[test]
-fn an_authored_spring_out_and_back_travels_its_excursion() {
-    let sc = scenario("");
-    let out_and_back = |xs: [f32; 5]| {
-        shape(8, move |k| {
-            let a = row("a", [0.0, 0.0, 20.0, 20.0]);
-            let m = Motions::PROP_SPRING;
-            match k {
-                0 => vec![a],
-                1..=5 => vec![a.at(xs[k as usize - 1], 0.0).mot(m).auth(Axes::X)],
-                _ => vec![a.at(10.0, 0.0)],
-            }
-        })
-    };
-    let t = out_and_back([50.0, 100.0, 60.0, 20.0, 10.0]);
-    let r = check(&sc, &t);
-    assert_eq!(
-        status(&r, CheckId::Teleport),
-        Status::Pass,
-        "{}",
-        show(&r, &t)
-    );
-    let t = out_and_back([90.0, 100.0, 60.0, 20.0, 10.0]);
-    let r = check(&sc, &t);
-    assert!(
-        fails_on(&r, CheckId::Teleport, "a", "x"),
-        "{}",
-        show(&r, &t)
-    );
-}
-
 /// (eval-coverage-2) A node that leaves its surface and comes back in one
 /// segment (a branch shown again, morphing from where another was drawn)
 /// travels from where it came back: back at 0 and morphing to 100, where
@@ -3880,29 +3845,86 @@ fn a_node_that_leaves_and_comes_back_travels_from_where_it_came_back() {
     );
 }
 
-/// (eval-coverage-2) A list's rows laid out at its offset each frame while
-/// it scrolls by itself (`SCROLL`, a wheel step's spring, or `FLING`, a
-/// lift's fling, into the list's end) jump as layout does: noted, not
-/// failed.
+/// (integration-r4) A row a scroll moves by itself (`SCROLL`, a wheel
+/// step's spring, or `FLING`, a lift's fling) moves: its jumps are held to
+/// the per-tick bound, not noted as layout's. A wheel spring that snaps
+/// its 150 px of travel in one tick fails; the same travel sprung over
+/// several ticks passes.
 #[test]
-fn a_rows_jump_under_a_scroll_is_noted_not_failed() {
+fn a_scroll_that_snaps_its_rows_fails_teleport() {
     for fling in [false, true] {
-        rows_jump_under_a_scroll(fling);
+        rows_under_a_scroll(fling);
     }
 }
 
-fn rows_jump_under_a_scroll(fling: bool) {
+fn rows_under_a_scroll(fling: bool) {
     let sc = scenario("");
-    let t = shape(4, move |k| {
-        let a = row("a", [0.0, 0.0, 20.0, 20.0]);
-        let x = [0.0, 0.0, 150.0, 150.0, 150.0][k as usize];
-        let m = match (k, fling) {
-            (1, true) => Motions(Motions::SCROLL.0 | Motions::FLING.0),
-            (1..=3, _) => Motions::SCROLL,
-            _ => Motions::NONE,
+    let build = |xs: [f32; 5]| {
+        let mut t = shape(4, move |k| {
+            let l = row("list", [0.0, 0.0, 300.0, 30.0]);
+            let x = xs[k as usize];
+            let m = match (k, fling) {
+                (1, true) => Motions(Motions::SCROLL.0 | Motions::FLING.0),
+                (1..=3, _) => Motions::SCROLL,
+                _ => Motions::NONE,
+            };
+            let a = row("a", [0.0, 0.0, 20.0, 20.0]).at(x, 0.0).laid_at(x, 0.0);
+            let mut a = a;
+            a.emot = m.0;
+            vec![l.mot(m), a]
+        });
+        t.nodes.get_mut("a").unwrap().parent = Some("list".into());
+        t.seal();
+        t
+    };
+    let t = build([0.0, 0.0, 150.0, 150.0, 150.0]);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "fling {fling}: {}",
+        show(&r, &t)
+    );
+    let t = build([0.0, 60.0, 110.0, 140.0, 150.0]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "fling {fling}: {}",
+        show(&r, &t)
+    );
+}
+
+/// (integration-r4) A row of a windowed list shows only while it is in
+/// the viewport, but travels with the content: its per-tick bound is the
+/// span of the scroll's offset (`Frame::offsets`). Here the offset springs
+/// 400 px while the row is seen for two frames 130 px apart, which a
+/// travel of its own two frames would fail.
+#[test]
+fn a_row_seen_briefly_under_a_scroll_travels_with_its_content() {
+    let sc = scenario("");
+    let offsets = [0.0, 60.0, 200.0, 330.0, 390.0, 400.0];
+    let mut t = shape(5, move |k| {
+        let m = if (1..=4).contains(&k) {
+            Motions::SCROLL
+        } else {
+            Motions::NONE
         };
-        vec![a.at(x, 0.0).laid_at(x, 0.0).mot(m)]
+        let l = row("list", [0.0, 0.0, 200.0, 200.0]).mot(m);
+        let mut out = vec![l];
+        if k == 2 || k == 3 {
+            let y = 360.0 - offsets[k as usize];
+            let mut a = row("a", [0.0, 0.0, 200.0, 30.0]).at(0.0, y).laid_at(0.0, y);
+            a.emot = m.0;
+            out.push(a);
+        }
+        out
     });
+    t.nodes.get_mut("a").unwrap().parent = Some("list".into());
+    for f in &mut t.frames {
+        f.sizes.insert(1, [300.0, 400.0]);
+        f.offsets.insert("list".into(), offsets[f.k as usize]);
+    }
+    t.seal();
     let r = check(&sc, &t);
     assert_eq!(
         status(&r, CheckId::Teleport),
@@ -3910,47 +3932,13 @@ fn rows_jump_under_a_scroll(fling: bool) {
         "{}",
         show(&r, &t)
     );
-    let tp = r.results.iter().find(|c| c.check == "teleport").unwrap();
-    assert!(
-        tp.findings
-            .iter()
-            .any(|f| f.sev == Sev::Info && f.msg.starts_with("jump")),
-        "{}",
-        show(&r, &t)
-    );
-}
-
-/// (eval-coverage-2) A gliding box whose own size snaps while its parent
-/// keeps it by its centre (a card shrinking in a held, centred surface)
-/// moves with its size: not a retarget. The same move with no change of
-/// size still is one (`a_glide_retargeted_from_its_layout_...`).
-#[test]
-fn a_glide_moved_by_its_own_size_about_its_centre_is_not_a_retarget() {
-    let sc = scenario("");
-    let t = shape(10, |k| {
-        let a = row("a", [0.0, 0.0, 100.0, 20.0]);
-        let g = Motions::GLIDE;
-        let narrow = |mut r: Row| {
-            for b in [&mut r.laid, &mut r.visual, &mut r.drawn] {
-                b[2] = 60.0;
-            }
-            r
-        };
-        match k {
-            0 => vec![a],
-            1 => vec![a.laid_at(40.0, 0.0).at(10.0, 0.0).mot(g)],
-            2 => vec![a.laid_at(40.0, 0.0).at(18.0, 0.0).mot(g)],
-            3 => vec![narrow(a.laid_at(60.0, 0.0).at(38.0, 0.0).mot(g))],
-            4 => vec![narrow(a.laid_at(60.0, 0.0).at(50.0, 0.0).mot(g))],
-            5 => vec![narrow(a.laid_at(60.0, 0.0).at(58.0, 0.0).mot(g))],
-            _ => vec![narrow(a.laid_at(60.0, 0.0).at(60.0, 0.0))],
-        }
-    });
+    for f in &mut t.frames {
+        f.offsets.clear();
+    }
+    t.seal();
     let r = check(&sc, &t);
     assert!(
-        !r.failures(CheckId::Teleport)
-            .iter()
-            .any(|f| f.msg.starts_with("retarget")),
+        fails_on(&r, CheckId::Teleport, "a", "y"),
         "{}",
         show(&r, &t)
     );
@@ -3974,55 +3962,73 @@ fn twin_compares_a_key_made_again_by_its_base() {
     let at_rest = [10.0, 5.0, 20.0, 10.0];
     let t = shape(2, |k| match k {
         0 => vec![],
-        _ => vec![row("label~2", at_rest)],
+        _ => vec![row("|a.strand:3:5|0#0~2", at_rest)],
     });
     let twin = twin_of(2, |k| match k {
         0 => vec![],
-        _ => vec![row("label", at_rest)],
+        _ => vec![row("|a.strand:3:5|0#0", at_rest)],
     });
     let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
     assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
     let both = shape(2, |k| match k {
         0 => vec![],
         _ => vec![
-            row("label", at_rest),
-            row("label~2", [40.0, 5.0, 20.0, 10.0]),
+            row("|a.strand:3:5|0#0", at_rest),
+            row("|a.strand:3:5|0#0~2", [40.0, 5.0, 20.0, 10.0]),
         ],
     });
     let r = checks::evaluate(&sc, &both, Some(&twin), None, None);
     assert!(
         r.failures(CheckId::Twin)
             .iter()
-            .any(|f| f.key.as_deref() == Some("label~2")),
+            .any(|f| f.key.as_deref() == Some("|a.strand:3:5|0#0~2")),
         "{}",
         show(&r, &both)
     );
 }
 
-/// (eval-coverage-2) `reduced_motion` flings nothing, so a surface whose
-/// scroll flung rests elsewhere by design and is left out from the
-/// fling on; the same rest with no fling is a difference.
+/// (eval-coverage-2, integration-r4) `reduced_motion` flings nothing, so
+/// what lies under a scroll that flung rests elsewhere by design and is
+/// left out from the fling on; the same rest with no fling is a
+/// difference, and so is a stuck node beside the scroll on its surface.
 #[test]
-fn twin_leaves_out_a_surface_whose_scroll_flung() {
+fn twin_leaves_out_what_a_flung_scroll_holds() {
     let sc = scenario("");
-    let rows = |fling: bool| {
-        move |k: u32| {
-            let a = row("row", [0.0, 0.0, 20.0, 20.0]);
+    let build = |fling: bool, pill_x: f32| {
+        let mut t = shape(3, move |k| {
+            let l = row("list", [0.0, 0.0, 200.0, 30.0]);
             let m = match (k, fling) {
                 (1 | 2, true) => Motions(Motions::SCROLL.0 | Motions::FLING.0),
                 _ => Motions::NONE,
             };
             let x = [0.0, 40.0, 70.0, 80.0][k as usize];
-            vec![a.at(x, 0.0).laid_at(x, 0.0).mot(m)]
-        }
+            let mut a = row("row", [0.0, 0.0, 20.0, 20.0])
+                .at(x, 0.0)
+                .laid_at(x, 0.0);
+            a.emot = m.0;
+            let pill = row("pill", [250.0, 0.0, 20.0, 20.0]).at(pill_x, 0.0);
+            vec![l.mot(m), a, pill]
+        });
+        t.nodes.get_mut("row").unwrap().parent = Some("list".into());
+        t.seal();
+        t
     };
-    let twin = twin_of(3, |_| vec![row("row", [0.0, 0.0, 20.0, 20.0])]);
-    let t = shape(3, rows(true));
+    let twin = twin_of(3, |_| {
+        vec![
+            row("list", [0.0, 0.0, 200.0, 30.0]),
+            row("row", [0.0, 0.0, 20.0, 20.0]),
+            row("pill", [250.0, 0.0, 20.0, 20.0]),
+        ]
+    });
+    let t = build(true, 250.0);
     let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
     assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
-    let t = shape(3, rows(false));
+    let t = build(false, 250.0);
     let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
     assert!(fails_on(&r, CheckId::Twin, "row", "x"), "{}", show(&r, &t));
+    let t = build(true, 262.0);
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert!(fails_on(&r, CheckId::Twin, "pill", "x"), "{}", show(&r, &t));
 }
 
 /// (eval-coverage-2) A node clipped out by an ancestor (`hidden:
@@ -4042,6 +4048,48 @@ fn a_node_clipped_for_a_frame_and_back_vanishes() {
         r.failures(CheckId::Vanish)
             .iter()
             .any(|f| f.msg.starts_with("vanish") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (integration-r4) A gliding row an ancestor's clip cuts out for a
+/// frame (`hidden: clipped`, drawn whole but outside the card's clip, as
+/// c-launcher-filter's row was) blinked: being carried does not excuse a
+/// clip, only being carried off the surface does. The same glide off the
+/// surface's edge and back left view by moving.
+#[test]
+fn a_gliding_row_clipped_for_a_frame_still_vanishes() {
+    let sc = scenario("");
+    let build = |clipped: bool| {
+        shape(6, move |k| {
+            let mut a = row("a", [10.0, 10.0, 10.0, 10.0]).mot(Motions::GLIDE);
+            a.emot = Motions::GLIDE.0;
+            if k == 2 {
+                if clipped {
+                    a.hidden = Some("clipped".into());
+                } else {
+                    a = a.at(-40.0, 10.0);
+                }
+            }
+            vec![a]
+        })
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish")),
         "{}",
         show(&r, &t)
     );
@@ -4108,50 +4156,66 @@ fn tiling_holds_rows_under_a_scroll() {
     );
 }
 
-/// (eval-coverage-2) A step that takes time acts on every tick of its
-/// span: a node gone at the swipe's second tick and back at its third (a
-/// 50 ms swipe is three input ticks at 60 Hz, after the tick it starts
-/// at) was moved by the fingers, not lost; the same blink once the swipe
-/// has ended still vanishes.
+/// (eval-coverage-2, integration-r4) A `swipe` acts on every tick of its
+/// span on what lies under the scroll under the pointer: a row gone at
+/// the swipe's second tick and back at its third (a 50 ms swipe is three
+/// input ticks at 60 Hz, after the tick it starts at) was moved by the
+/// fingers, not lost. The same blink once the swipe has ended still
+/// vanishes, and so does one of a node beside the scroll during it, or
+/// of the row during a `drag` (which moves a pointer, not rows).
 #[test]
-fn a_timed_step_acts_over_its_whole_span() {
-    let text = "id = \"synth\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\npointer 5,5\nswipe 60 over 50ms\nrest\n";
+fn a_swipe_acts_over_its_span_on_the_scroll_it_moves() {
+    let text = "id = \"synth\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\npointer 5,5\nswipe 60 over 50ms\ndrag 5,5 -> 40,5 over 50ms\nrest\n";
     let file = eval_root().join("scenarios/regressions/synth.scn");
     let sc = Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"));
-    let line = sc
-        .steps
-        .iter()
-        .find(|st| st.text.starts_with("swipe"))
-        .unwrap()
-        .line;
-    let with_swipe = |gone: u32| {
-        let mut t = blink(move |k| k == gone, Motions(0));
+    let line = |w: &str| {
+        sc.steps
+            .iter()
+            .find(|st| st.text.starts_with(w))
+            .unwrap()
+            .line
+    };
+    let build = |step: &str, who: &'static str, gone: u32| {
+        let mut t = shape(6, move |k| {
+            let l = row("list", [0.0, 0.0, 200.0, 30.0]);
+            let a = row("a", [10.0, 10.0, 10.0, 10.0]);
+            let p = row("pill", [250.0, 10.0, 10.0, 10.0]);
+            let hide = |r: Row, me: &str| if k == gone && who == me { r.op(0.0) } else { r };
+            vec![l, hide(a, "a"), hide(p, "pill")]
+        });
+        t.nodes.get_mut("a").unwrap().parent = Some("list".into());
+        t.nodes.get_mut("list").unwrap().kind = "list".into();
+        for f in &mut t.frames {
+            f.ptr = Some(strand_eval::trace::PtrRec {
+                s: 1,
+                at: [5.0, 5.0],
+            });
+        }
         t.events.push(EventRec {
             k: 1,
-            line,
-            text: "swipe 60 over 50ms".into(),
+            line: line(step),
+            text: step.into(),
             segment: None,
         });
         t.seal();
         t
     };
-    let t = with_swipe(3);
-    let r = check(&sc, &t);
-    assert_eq!(
-        status(&r, CheckId::Vanish),
-        Status::Pass,
-        "{}",
-        show(&r, &t)
-    );
-    let t = with_swipe(5);
-    let r = check(&sc, &t);
-    assert!(
-        r.failures(CheckId::Vanish)
+    let vanished = |t: &RunTrace| {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
             .iter()
-            .any(|f| f.msg.starts_with("vanish")),
-        "{}",
-        show(&r, &t)
-    );
+            .any(|f| f.msg.starts_with("vanish"))
+    };
+    let t = build("swipe", "a", 3);
+    assert!(!vanished(&t), "{}", show(&check(&sc, &t), &t));
+    for (step, who, gone) in [("swipe", "a", 5), ("swipe", "pill", 3), ("drag", "a", 3)] {
+        let t = build(step, who, gone);
+        assert!(
+            vanished(&t),
+            "{step} {who} k{gone}: {}",
+            show(&check(&sc, &t), &t)
+        );
+    }
 }
 
 // --- (eval-rules-2) continuity, contain's held and shadow, coherence's drag
@@ -4588,5 +4652,419 @@ fn coherence_holds_a_dragged_knob_under_the_pointer() {
     assert_eq!(
         status(&slider(104.0, 200.0), CheckId::Coherence),
         Status::Pass
+    );
+}
+
+// --- (eval-false-alarms) travel, a node's own move, identity, scrolls
+
+/// A scenario whose steps are `steps`, and the line of its `n`th step.
+fn scenario_steps(steps: &str) -> Scenario {
+    let text =
+        format!("id = \"synth\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\n{steps}");
+    let file = eval_root().join("scenarios/regressions/synth.scn");
+    Scenario::parse(&text, &file).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// An offset spring sent out to 120 px and turned back home by a second
+/// change at tick 5 of the same segment: no net travel, but its way
+/// starts again where the second change found it, so its 45 px steps
+/// are within 0.75 of its 120 px excursion. Without that second change
+/// recorded (the same drawn path with nothing turning it back) the
+/// steps are a jump.
+#[test]
+fn a_spring_turned_back_by_a_later_change_travels_its_excursion() {
+    let sc = scenario_steps("rest\nscroll 1\nframes 4\nscroll -1\nrest\n");
+    let line = sc.steps[3].line;
+    let path = [0.0, 45.0, 90.0, 115.0, 120.0, 75.0, 30.0, 5.0];
+    let build = |turned: bool| {
+        let mut t = shape(10, |k| {
+            let a = row("a", [0.0, 0.0, 20.0, 20.0]);
+            match path.get(k as usize) {
+                Some(x) if k > 0 => vec![
+                    a.at(*x, 0.0)
+                        .spring(*x, 0.0)
+                        .mot(Motions::PROP_SPRING)
+                        .auth(Axes::X),
+                ],
+                _ => vec![a],
+            }
+        });
+        if turned {
+            t.events.push(strand_eval::trace::EventRec {
+                k: 5,
+                line,
+                text: "scroll -1".into(),
+                segment: Some(1),
+            });
+        }
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A node that leaves its surface and comes back in the segment (a
+/// morph reversed home, a branch shown again) travels from where it
+/// shows again: back at 200 and springing home in 45 px steps passes.
+/// Never gone, the same 200 is a jump from where it was drawn.
+#[test]
+fn a_node_back_on_its_surface_travels_from_where_it_shows_again() {
+    let sc = scenario("");
+    let build = |gone: bool| {
+        shape(9, move |k| {
+            let a = row("a", [0.0, 0.0, 20.0, 20.0]);
+            let m = |x: f32| {
+                a.clone()
+                    .at(x, 0.0)
+                    .spring(x, 0.0)
+                    .mot(Motions::PROP_SPRING)
+                    .auth(Axes::X)
+            };
+            match k {
+                2 | 3 if gone => vec![],
+                2 | 3 => vec![m(0.0)],
+                4 => vec![m(200.0)],
+                5 => vec![m(155.0)],
+                6 => vec![m(110.0)],
+                7 => vec![m(65.0)],
+                8 => vec![m(20.0)],
+                _ => vec![a],
+            }
+        })
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A glide ending while its parent's layout snaps 15 px (a held
+/// surface's root placed where its smaller box will be): the child is
+/// carried by its parent's move, which is the parent's to answer for,
+/// so its glide was not retargeted. The same 15 px laid move of its own,
+/// with its parent still, is a retarget.
+#[test]
+fn a_glide_carried_by_its_parents_layout_is_not_retargeted() {
+    let sc = scenario("");
+    let build = |parent_moves: bool| {
+        let mut t = shape(8, move |k| {
+            let px = if parent_moves && k >= 3 { 15.0 } else { 0.0 };
+            let p = row("p", [0.0, 0.0, 200.0, 30.0])
+                .laid_at(px, 0.0)
+                .at(px, 0.0);
+            let c = row("c", [0.0, 0.0, 20.0, 20.0]);
+            let g = Motions::GLIDE;
+            let c = match k {
+                0 => c,
+                1 => c.laid_at(40.0, 0.0).at(10.0, 0.0).mot(g),
+                2 => c.laid_at(40.0, 0.0).at(25.0, 0.0).mot(g),
+                3 => c.laid_at(55.0, 0.0).at(40.0, 0.0).mot(g),
+                4 => c.laid_at(55.0, 0.0).at(50.0, 0.0).mot(g),
+                5 => c.laid_at(55.0, 0.0).at(54.0, 0.0).mot(g),
+                _ => c.laid_at(55.0, 0.0).at(55.0, 0.0),
+            };
+            vec![p, c]
+        });
+        t.nodes.get_mut("c").unwrap().parent = Some("p".into());
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c") && f.msg.starts_with("retarget")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// On x and y a fade or a colour spring paints inside a box and never
+/// moves it: a layout snap under a meter's level spring is noted, not
+/// failed; under an offset spring on x it is a jump.
+#[test]
+fn a_layout_snap_under_a_colour_spring_is_noted_not_failed() {
+    let sc = scenario("");
+    let build = |m: Motions, a: Axes| {
+        shape(4, move |k| {
+            let r = row("meter", [11.0, 0.0, 120.0, 6.0]);
+            match k {
+                0 => vec![r],
+                _ => vec![r.laid_at(60.0, 0.0).at(60.0, 0.0).mot(m).auth(a)],
+            }
+        })
+    };
+    let paint = Motions(Motions::PROP_SPRING.0 | Motions::FILL_SPRING.0);
+    let t = build(paint, Axes::NONE);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let tp = r.results.iter().find(|c| c.check == "teleport").unwrap();
+    assert!(
+        tp.findings
+            .iter()
+            .any(|f| f.sev == Sev::Info && f.msg.starts_with("jump")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(Motions::PROP_SPRING, Axes::X);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "meter", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Rows a scroll's spring lays out anew each frame, past where they rest
+/// and back (a wheel reversed mid-spring, here across), travel their way:
+/// every frame the scroll moves lays them out for a reason. The same
+/// excursion with no scroll moving is out of its way.
+#[test]
+fn rows_under_a_moving_scroll_travel_where_it_lays_them() {
+    let sc = scenario("");
+    let xs = [0.0, 30.0, 60.0, 80.0, 70.0, 55.0, 47.0];
+    let build = |scrolling: bool| {
+        let mut t = shape(9, |k| {
+            let l = row("list", [0.0, 0.0, 300.0, 30.0]);
+            let x = xs.get(k as usize).copied().unwrap_or(45.0);
+            let c = row("c", [0.0, 2.0, 60.0, 26.0]).laid_at(x, 2.0).at(x, 2.0);
+            vec![l, c]
+        });
+        t.nodes.get_mut("c").unwrap().parent = Some("list".into());
+        if scrolling {
+            // The list's own SCROLL, and with its ancestors' on the row
+            // under it, as the probe reports a scroll moving by itself.
+            for f in &mut t.frames {
+                if (1..=6).contains(&f.k) {
+                    for r in &mut f.n {
+                        if r.key == "list" {
+                            r.mot |= Motions::SCROLL.0;
+                        }
+                        r.emot |= Motions::SCROLL.0;
+                    }
+                }
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    for c in [CheckId::Envelope, CheckId::Bystander, CheckId::Teleport] {
+        assert_eq!(status(&r, c), Status::Pass, "{c:?}: {}", show(&r, &t));
+    }
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        [CheckId::Envelope, CheckId::Bystander]
+            .iter()
+            .any(|c| fails_on(&r, *c, "c", "x")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A row a scroll's spring carries past its surface's top edge for a
+/// tick and back left view by moving: no blink. Out of view with
+/// nothing moving it, it vanished.
+#[test]
+fn a_row_scrolled_past_the_edge_and_back_does_not_vanish() {
+    let sc = scenario("");
+    let build = |scrolling: bool| {
+        let mut t = shape(6, |k| {
+            let l = row("list", [0.0, 0.0, 200.0, 30.0]);
+            let y = match k {
+                2 => -20.0,
+                _ => 5.0,
+            };
+            vec![l, row("c", [0.0, y, 60.0, 15.0])]
+        });
+        t.nodes.get_mut("c").unwrap().parent = Some("list".into());
+        if scrolling {
+            // The list's own SCROLL, and with its ancestors' on the row
+            // under it, as the probe reports a scroll moving by itself.
+            for f in &mut t.frames {
+                if (1..=3).contains(&f.k) {
+                    for r in &mut f.n {
+                        if r.key == "list" {
+                            r.mot |= Motions::SCROLL.0;
+                        }
+                        r.emot |= Motions::SCROLL.0;
+                    }
+                }
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c") && f.msg.starts_with("vanish")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Twin matches a node by its identity: the `~n` render counts a
+/// re-created branch by (`#0~2` in the run, `#0~3` in the reduced twin)
+/// names one node, while `#0` and `#1` (two children) are two.
+#[test]
+fn twin_matches_a_recreated_branch_by_its_identity() {
+    assert_eq!(checks::twin::identity("|a:1:1|#0~2"), "|a:1:1|#0");
+    assert_eq!(
+        checks::twin::identity("|a:1:1|#0~2>|b:2:2|#1~12"),
+        "|a:1:1|#0>|b:2:2|#1"
+    );
+    assert_eq!(checks::twin::identity("x~y|#3"), "x~y|#3");
+    let sc = scenario("");
+    let one = |key: &'static str| {
+        let mut t = shape(1, move |_| vec![row(key, [10.0, 5.0, 20.0, 20.0])]);
+        t.segments[1].e = 1;
+        t.seal();
+        t
+    };
+    let t = one("n|#0~2");
+    let mut twin = one("n|#0~3");
+    twin.scenario.reduced_motion = true;
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
+    let mut other = one("n|#1");
+    other.scenario.reduced_motion = true;
+    let r = checks::evaluate(&sc, &t, Some(&other), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Fail, "{}", show(&r, &t));
+}
+
+/// Twin compares where each run's nodes are on the output: a surface
+/// first placed elsewhere in the run (held at a larger size while its
+/// enter plays) that rests where the twin placed it at once matches;
+/// the same node 5 px off on the output does not.
+#[test]
+fn twin_compares_places_on_the_output() {
+    let sc = scenario("");
+    let build = |first: f32, rest: f32, x: f32| {
+        // Attached after boot: first placed at tick 1, resting at 2.
+        let mut t = shape(2, |k| match k {
+            0 => vec![],
+            _ => vec![row("n", [x, 5.0, 20.0, 20.0])],
+        });
+        for f in &mut t.frames {
+            match f.k {
+                0 => {}
+                1 => f.origins = BTreeMap::from([(1, [first, 0.0])]),
+                _ => f.origins = BTreeMap::from([(1, [rest, 0.0])]),
+            }
+        }
+        t.segments[1].e = 2;
+        t.seal();
+        t
+    };
+    let t = build(133.0, 144.0, 0.0);
+    let mut twin = build(144.0, 144.0, 0.0);
+    twin.scenario.reduced_motion = true;
+    let r = checks::evaluate(&sc, &t, Some(&twin), None, None);
+    assert_eq!(status(&r, CheckId::Twin), Status::Pass, "{}", show(&r, &t));
+    let mut off = build(144.0, 144.0, 5.0);
+    off.scenario.reduced_motion = true;
+    let r = checks::evaluate(&sc, &t, Some(&off), None, None);
+    assert!(fails_on(&r, CheckId::Twin, "n", "x"), "{}", show(&r, &t));
+}
+
+/// Children whose parent was drawn transparent the frame before they
+/// were first drawn show at rest by design (their poses dropped unseen):
+/// they play no enter and have no turn to wait for. Mounting at rest
+/// under a parent in view, they skipped their turns.
+#[test]
+fn stagger_leaves_out_children_whose_pose_was_dropped_unseen() {
+    let sc = scenario("");
+    let build = |parent_hidden: bool| {
+        let keys = ["c0", "c1", "c2"];
+        let mut t = shape(10, |k| {
+            let op = if parent_hidden && k == 1 { 0.0 } else { 1.0 };
+            let mut v = vec![row("list", [0.0, 0.0, 300.0, 30.0]).op(op)];
+            if k >= 2 {
+                for (n, key) in keys.iter().enumerate() {
+                    v.push(row(key, [10.0 + 40.0 * n as f32, 6.0, 30.0, 18.0]));
+                }
+            }
+            v
+        });
+        t.nodes.get_mut("list").unwrap().stagger = Some(30.0);
+        for key in keys {
+            let m = t.nodes.get_mut(key).unwrap();
+            m.parent = Some("list".into());
+            m.enter = Some(Pose {
+                opacity: Some(0.0),
+                ..Pose::default()
+            });
+        }
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Fail,
+        "{}",
+        show(&r, &t)
     );
 }

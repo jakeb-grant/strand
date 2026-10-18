@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-height-spring"
 verdict good
-note "new scenario: the content-sized popup grows at once to the card's taller size and the card springs inside it, then is held while the card springs shorter and shrinks once it rests; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "eval-false-alarms: the sandbox places popup#pop as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -36, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario a951d72f1c30d5ea
-seal 2794400112d116ab
+seal c247c7aad2b2d839
 S1 0 - "bar Top"
 S2 1 57 "popup#pop"
 N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
@@ -25,7 +25,7 @@ n1 x=8 y=2 w=20 h=20 ord=2 bg=3b4252ff
 n2 x=0 y=0 w=320 h=30 bg=faf9ffff
 n3 x=0 y=0 w=320 h=24 ord=1
 k1 p2
-s2 z=160,70 o=-36,36
+s2 z=160,70 o=0,36
 n4 srf=2 x=0 y=0 w=160 h=70 ord=1 bg=20242cff
 n5 srf=2 x=8 y=8 w=144 h=20 ord=2 bg=5b8defff
 n6 srf=2 x=8 y=34 w=144 h=10 ord=3 bg=2e3440ff

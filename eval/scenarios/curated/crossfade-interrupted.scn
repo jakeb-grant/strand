@@ -1,0 +1,51 @@
+id     = "crossfade-interrupted"
+about  = """A panel at the bottom of the screen, centred across, holds a
+200 by 56 px stack showing one of two cards (an `if`/`else`) and
+crossfades between them: the leaving card fades out over the arriving
+one. One swap plays out; then swaps come faster than the fade (each one
+reverses the fade in flight from where it is drawn: the card that was
+leaving comes back, a new node while its predecessor still fades out);
+then a last swap settles. The stack's size never changes, so the panel
+is never resized and never moves; the compositor keeps it 18 px above
+the screen's bottom edge (eval-false-alarms). At every rest only the
+shown card is drawn, as with motion reduced."""
+screen = { width = 360, height = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+
+panel Card {
+  anchor: bottom; margin: 0, 0, 18, 0; open: true
+  stack { id: holder; width: 200; height: 56; pad: 10; radius: 14; bg: #202336; align: center
+    if playing {
+      col { gap: 4; enter { opacity: 0 }; exit { opacity: 0 }
+        text "Now playing" { color: #e0e3f4 }
+        text "A song with a rather long title" { color: #a8adc8 }
+      }
+    } else {
+      row { gap: 6; align: center; enter { opacity: 0 }; exit { opacity: 0 }
+        box { width: 13; height: 13; radius: 4; bg: #8bd5ca }
+        text "Idle" { color: #e0e3f4 }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark swap
+set playing true
+rest
+mark quick
+set playing false
+wait 60
+set playing true
+wait 60
+set playing false
+wait 40
+set playing true
+rest
+mark back
+set playing false
+rest

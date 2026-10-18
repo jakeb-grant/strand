@@ -306,6 +306,11 @@ pub struct Frame {
     /// snapshot (a theme swap's), and the weight it was blended at.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fades: BTreeMap<u32, f32>,
+    /// (integration-r4) Each `scroll` and `list` on a painted surface, by
+    /// key: its offset (logical px from the top, `ScrollState::offset`),
+    /// so a check reads how far a scroll carried what it holds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub offsets: BTreeMap<String, f32>,
     /// (eval-rules-2) Per painted surface that sampled a spring, the
     /// frame period (ns) a change it started began one of before it
     /// (zero: not known yet, and `START_LEAD` stands in). In the digest
@@ -320,9 +325,10 @@ pub struct Frame {
     /// (eval-rules-2) The `roll: true` texts rolling in this frame.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rolls: Vec<RollRec>,
-    /// (eval-rules-2) Per shown surface, the sides of its buffer the
-    /// author's geometry puts at its output's edge, where a shadow may
-    /// be cut (`checks::contain`): bits 1 top, 2 right, 4 bottom, 8 left.
+    /// (eval-rules-2) Per shown surface, the sides of its buffer that lie
+    /// on or past its output's edge, or on its `attach:` side, where a
+    /// shadow may be cut (`checks::contain`, `Surfaces::cuts`): bits 1
+    /// top, 2 right, 4 bottom, 8 left.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cuts: BTreeMap<u32, u8>,
     /// (eval-rules-2) Where the pointer is after this tick's input: its
@@ -760,6 +766,9 @@ impl RunTrace {
             put(&(&f.origins, &f.poses));
             if !f.fades.is_empty() {
                 put(&f.fades);
+            }
+            if !f.offsets.is_empty() {
+                put(&f.offsets);
             }
             // (eval-rules-2) Its springs' samples, rolls, cut sides, the
             // pointer and the drags, when there are any: `determinism`

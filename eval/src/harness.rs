@@ -1869,6 +1869,12 @@ impl<'s> Harness<'s> {
                         .key(n.node, &self.inst, self.r.tree(), &self.sources);
                     frame.drags.insert(key, v);
                 }
+                if let Some(st) = self.r.scroll_state(n.node) {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    frame.offsets.insert(key, st.offset);
+                }
                 if let Some(r) = &n.roll {
                     let key = self
                         .labels
@@ -2148,16 +2154,26 @@ impl LoopSync for Harness<'_> {
                         self.r.set_surface_origin(id, origin);
                         host_loop::configured(self, id, size, scale)?;
                     }
-                    Change::Detached(id) => host_loop::detached(self, id)?,
-                    // (eval-coverage-2) Arranged again with no configure:
-                    // the surface manager tells render where it went.
                     Change::Placed(id) => {
                         let origin = self.surfaces.origin(id);
                         self.r.set_surface_origin(id, origin);
                     }
+                    Change::Detached(id) => host_loop::detached(self, id)?,
                 }
                 done.push(c);
             }
+        }
+        // (eval-false-alarms) The leg's fake compositor stretches a layer
+        // surface over the whole output: one another surface's zone
+        // sized here would be configured there at another size.
+        if self.leg.is_some()
+            && let Some(id) = self.surfaces.sized_by_a_zone()
+        {
+            return Err(Error::Unsupported(format!(
+                "the surface leg with surface {} sized by another surface's exclusive zone \
+                 (the fake compositor arranges no zones)",
+                id.0
+            )));
         }
         self.changed(done)
     }

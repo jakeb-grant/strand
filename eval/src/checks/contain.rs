@@ -42,9 +42,11 @@
 //!   a shadow drawn by a box at rest (no paint offset, transform or
 //!   motion on it or its ancestors, nothing on its surface springing a
 //!   size, no ancestor clipping it) lies inside its buffer, but on a side
-//!   the author's geometry lays at the output's edge: one the surface is
-//!   anchored to whose margin caps the overhang there (m6-w2-surface), or
-//!   its `attach:` side (m4-surface-w1), `trace::Frame::cuts`.
+//!   of the buffer that lies on or past the output's edge where the
+//!   driver placed it (past it nothing shows: render keeps an anchored
+//!   side's overhang within its margin, m6-w2-surface), or its `attach:`
+//!   side (m4-surface-w1), `trace::Frame::cuts` (integration-r4: from the
+//!   modelled buffer, not render's caps).
 
 use strand_render::probe::{Axes, Motions};
 

@@ -905,3 +905,76 @@ fn the_trace_holds_springs_clips_rolls_and_drags() {
         );
     }
 }
+
+/// (eval-false-alarms) The sandbox places surfaces as the compositor
+/// does, from strand-surface's placement: a bar at its edge reserves its
+/// zone, a centred content-sized panel is centred in what the bar leaves
+/// and centred again when it grows, a corner panel keeps its margins
+/// from the zone and the edge, and a popup wider than the room beside
+/// its anchor is shifted onto the screen (placement.rs `popup_shift`).
+const PLACED: &str = r##"id = "placed"
+screen = { width = 300, height = 400, scale = 1.0 }
+
+=== shell.strand
+state wide = false
+state open = false
+bar Top {
+  height: 30
+  row { height: 30
+    box { id: anchor; width: 20; height: 30
+      popup { id: pop; open: open
+        box { id: menu; width: 120; height: 40 }
+      }
+    }
+  }
+}
+panel Middle {
+  anchor: center; open: true
+  box { id: mid; width: wide ? 140 : 100; height: 40 }
+}
+panel Corner {
+  anchor: top_right; margin: 8, 8, 0, 0; open: true
+  box { id: corner; width: 60; height: 20 }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+mark open
+set open true
+rest
+"##;
+
+#[test]
+fn surfaces_are_placed_as_the_compositor_places_them() {
+    let t = go(PLACED);
+    let id = |label: &str| {
+        t.surfaces
+            .iter()
+            .find(|s| s.label == label)
+            .map(|s| s.id)
+            .unwrap_or_else(|| panic!("no {label} in {:?}", t.surfaces))
+    };
+    let at = |seg: &str, s: u32| {
+        let e = t.segments.iter().find(|g| g.name == seg).unwrap().e;
+        let f = t.frames.iter().rev().find(|f| f.k <= e).unwrap();
+        f.origins.get(&s).copied()
+    };
+    let (bar, mid, corner) = (id("bar Top"), id("panel Middle"), id("panel Corner"));
+    assert_eq!(at("boot", bar), Some([0.0, 0.0]));
+    // Centred in the 300 × 370 px left below the bar's zone.
+    assert_eq!(at("boot", mid), Some([100.0, 195.0]));
+    assert_eq!(at("widen", mid), Some([80.0, 195.0]));
+    // 8 px from the right edge and from the bar's zone.
+    assert_eq!(at("boot", corner), Some([232.0, 38.0]));
+    // Centred under its 20 px anchor it would start at -50; shifted on.
+    let pop = t
+        .surfaces
+        .iter()
+        .find(|s| s.kind == "popup")
+        .map(|s| s.id)
+        .unwrap_or_else(|| panic!("no popup in {:?}", t.surfaces));
+    assert_eq!(at("open", pop), Some([0.0, 36.0]));
+}

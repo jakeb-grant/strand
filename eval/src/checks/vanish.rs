@@ -3,7 +3,10 @@
 //! - **vanish**: shown at one frame, not at the next, shown again within
 //!   three ticks, with no exit, enter or authored opacity or scale on it
 //!   or an ancestor around it, and no step bringing it back (none acts
-//!   between the frame it is gone in and the one it is back in);
+//!   between the frame it is gone in and the one it is back in). One
+//!   still drawn whole while gone, only past its surface's edge where a
+//!   scroll's spring, a glide, a drag or an authored offset moved it, left
+//!   view by moving and did not blink (eval-false-alarms);
 //! - **flash**: shown at one frame only, between frames it does not
 //!   show in, with no keyframes or time-driven motion, no scroll moving
 //!   it by itself (a spring or fling that moves more than the viewport
@@ -67,41 +70,55 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     // there (its `s` is the tick before its first change), or a later
     // step of one acts at a tick in between (eval-coverage-2: a second
     // `scroll` in one segment scrolls rows back into view as surely as
-    // the first; an event's `k` is the tick it acts at). A step that
-    // takes time (`glide`, `drag`, `swipe`) acts on every tick of its
-    // span, one input frame a tick: a swipe faster than the viewport
-    // moves rows across it between two frames as the fingers do.
-    let acts: Vec<(u32, u32)> = cx
-        .trace
-        .events
-        .iter()
-        .filter_map(|e| {
-            let st = cx
-                .sc
-                .steps
-                .iter()
-                .find(|st| st.line == e.line && st.kind.opens_segment())?;
-            let ms = match st.kind {
-                StepKind::Glide { ms, .. }
-                | StepKind::Drag { ms, .. }
-                | StepKind::Swipe { ms, .. } => ms,
-                _ => 0,
-            };
+    // the first; an event's `k` is the tick it acts at).
+    let mut acts: Vec<u32> = Vec::new();
+    // (eval-coverage-2, integration-r4) A `swipe` acts on every tick of
+    // its span (one axis frame a tick), but only on what lies under the
+    // scrolls under the pointer as it starts, which its axis frames
+    // move: a swipe faster than the viewport carries those rows across
+    // it between two frames as the fingers do. Nothing else on screen is
+    // moved by it, and a `glide` or `drag` moves a pointer, not rows.
+    let mut swipes: Vec<(u32, u32, BTreeSet<&str>)> = Vec::new();
+    for e in &cx.trace.events {
+        let Some(st) = cx
+            .sc
+            .steps
+            .iter()
+            .find(|st| st.line == e.line && st.kind.opens_segment())
+        else {
+            continue;
+        };
+        acts.push(e.k);
+        if let StepKind::Swipe { ms, .. } = st.kind {
             let hz = e
                 .segment
                 .and_then(|i| cx.trace.segments.get(i))
                 .map_or(cx.sc.hz, |s| s.hz)
                 .max(1);
             let ticks = (u64::from(ms) * u64::from(hz)).div_ceil(1000) as u32;
-            Some((e.k, e.k.saturating_add(ticks)))
-        })
-        .collect();
-    let stepped = |from: u32, to: u32| {
+            swipes.push((e.k, e.k.saturating_add(ticks), swiped(cx, e.k)));
+        }
+    }
+    let under = |key: &str, scrolls: &BTreeSet<&str>| {
+        let mut at = cx.parent(key);
+        for _ in 0..256 {
+            let Some(p) = at else { return false };
+            if scrolls.contains(p) {
+                return true;
+            }
+            at = cx.parent(p);
+        }
+        false
+    };
+    let stepped = |key: &str, from: u32, to: u32| {
         cx.trace
             .segments
             .iter()
             .any(|s| s.s.is_some_and(|s| from <= s && s < to))
-            || acts.iter().any(|&(a, b)| a <= to && from < b)
+            || acts.iter().any(|&a| from < a && a <= to)
+            || swipes
+                .iter()
+                .any(|(a, b, sc)| *a <= to && from < *b && under(key, sc))
     };
     for key in keys {
         let vis: Vec<bool> = (0..tl.ks.len()).map(|i| tl.visible_key(i, key)).collect();
@@ -115,13 +132,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 let back = (i + 1..vis.len())
                     .take_while(|j| tl.ks[*j] <= k + BLINK_TICKS)
                     .find(|j| vis[*j])
-                    .filter(|j| !stepped(k, tl.ks[*j]));
+                    .filter(|j| !stepped(key, k, tl.ks[*j]));
                 if let Some(j) = back {
                     let around = [i - 1, i, j]
                         .iter()
                         .filter_map(|x| tl.row(*x, key))
                         .any(leaving);
-                    if !around {
+                    if !around && !carried_off(cx, i, key) {
                         out.push(
                             Finding::fail(
                                 CheckId::Vanish,
@@ -143,7 +160,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 && !vis[i - 1]
                 && vis[i]
                 && !vis[i + 1]
-                && !stepped(k, tl.ks[i + 1])
+                && !stepped(key, k, tl.ks[i + 1])
                 && !exempt(CheckId::Vanish)
             {
                 // (eval-coverage-2) A scroll moving by itself carries its
@@ -411,6 +428,68 @@ fn pop_in<'a>(
     }
 }
 
+/// (eval-false-alarms) True if `key`, not shown at timeline frame `i`,
+/// is still drawn there whole (its opacity, scale and size), hidden for
+/// no reason the renderer gives (never `clipped`: an ancestor's clip
+/// cutting it out is a blink, integration-r4), and lies wholly past its
+/// surface's edge, moved there by motion that moves a box: a scroll's
+/// spring under it, a glide or drag, or an authored offset. It left
+/// view by moving, as a list scrolled past its rows takes them out, and
+/// came back the same way; `teleport` and `bystander` judge how it
+/// moved.
+fn carried_off(cx: &Cx, i: usize, key: &str) -> bool {
+    let Some(r) = cx.tl.row(i, key) else {
+        return false;
+    };
+    let drawn = r.hidden.is_none() && r.op >= 0.02 && r.visual[2] * r.visual[3] >= 1.0;
+    // Not shown though drawn whole and not hidden: only its place off
+    // its surface can have taken it out of view.
+    let off = drawn && !cx.tl.visible(i, r);
+    let moved = cx.scrolled(i, key)
+        || (i > 0 && cx.scrolled(i - 1, key))
+        || Motions(r.emot).intersects(Motions::GLIDE | Motions::LIFT)
+        || Axes(r.auth).intersects(Axes::X | Axes::Y);
+    off && moved
+}
+
+/// (integration-r4) The `scroll` and `list` nodes under the pointer at
+/// tick `k`: those a wheel or touchpad axis frame sent then scrolls (the
+/// router gives it to the scrolls under the pointer).
+fn swiped<'a>(cx: &Cx<'a>, k: u32) -> BTreeSet<&'a str> {
+    let mut out = BTreeSet::new();
+    let Some(i) = cx.tl.at(k) else {
+        return out;
+    };
+    // The pointer as the swipe starts: the frame before its first input.
+    let ptr = cx
+        .tl
+        .frames
+        .get(i.saturating_sub(1))
+        .and_then(|f| f.ptr)
+        .or_else(|| cx.tl.frames.get(i).and_then(|f| f.ptr));
+    let Some(p) = ptr else {
+        return out;
+    };
+    for (key, r) in &cx.tl.screens[i] {
+        let scrolls = cx
+            .trace
+            .nodes
+            .get(*key)
+            .is_some_and(|m| matches!(m.kind.as_str(), "scroll" | "list"));
+        let [x, y, w, h] = r.visual;
+        if scrolls
+            && r.surface == p.s
+            && p.at[0] >= x
+            && p.at[0] < x + w
+            && p.at[1] >= y
+            && p.at[1] < y + h
+        {
+            out.insert(*key);
+        }
+    }
+    out
+}
+
 /// True if `key`, first drawn on `surface` at timeline frame `first`,
 /// was kept from view the frame before by an ancestor drawn there: one
 /// that did not show (drawn transparent or at scale 0), or one that
@@ -419,7 +498,7 @@ fn pop_in<'a>(
 /// clip it was outside of, a row out of view). (eval-r3) An ancestor that
 /// does not clip draws its children past its box, so being outside it
 /// kept nothing from view.
-fn dropped_unseen(cx: &Cx, key: &str, first: usize, surface: u32) -> bool {
+pub(super) fn dropped_unseen(cx: &Cx, key: &str, first: usize, surface: u32) -> bool {
     let (Some(p), Some(me)) = (first.checked_sub(1), cx.tl.row(first, key)) else {
         return false;
     };

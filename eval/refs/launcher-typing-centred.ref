@@ -1,0 +1,177 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "launcher-typing-centred"
+verdict good
+note "eval-false-alarms, new scenario: the centred launcher (216 px, card height springing with its result count) is centred at 72 and re-centred at each new height (origins 198 to 288 on y), held at its larger size while it shrinks; rows glide, fade out and fade in in their list as the query is typed faster than it settles and erased; every check passes; read with explain"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 921ae077ab85ccd6
+seal 423e45926fc6ffd5
+S1 0 - "panel Launcher"
+N0 "card|shell.strand:7:3|#0" "col#card"
+N1 "prompt|shell.strand:8:5|#0" "text#prompt"
+N2 "results|shell.strand:9:5|#0" "list#results"
+N3 "|shell.strand:5:1|#0" "panel@shell.strand:5"
+k0 p1
+s1 z=216,245 o=72,198
+n0 x=0 y=0 w=216 h=245 ord=1 bg=1b1d2bff
+n1 x=67 y=9 w=82 h=15 txt=S ord=2 ink=67,10,81,13 fg=c8cbe0ff gl=["type\u0020to\u0020search"]
+n2 x=108 y=29 w=0 h=207 ord=3
+n3 x=0 y=0 w=216 h=245
+k1
+n1 x=105 w=7 ink=105,13,7,8 gl=["c"]
+k2
+n0 y=15 h=214
+n1 x=101 y=24 w=14 ink=101,28,14,8 gl=["ca"]
+n2 y=44 h=176
+n3 y=15 h=214
+k3
+n0 y=38 h=168
+n1 y=47 ink=101,51,14,8
+n2 y=67 h=87
+n3 y=38 h=168
+k4
+n0 y=53 h=138
+n1 y=62 ink=101,66,14,8
+n2 y=82
+n3 y=53 h=138
+k5
+n0 y=59 h=125
+n1 y=68 ink=101,72,14,8
+n2 y=88
+n3 y=59 h=125
+k6
+n0 y=65 h=114
+n1 x=100 y=74 w=17 ink=100,75,16,11 gl=["cal"]
+n2 y=94 h=76
+n3 y=65 h=114
+k7
+n0 y=70 h=103
+n1 y=79 ink=100,80,16,11
+n2 y=99 h=57
+n3 y=70 h=103
+k8
+n0 y=74 h=97
+n1 y=83 ink=100,84,16,11
+n2 y=103
+n3 y=74 h=97
+k9
+n0 y=75 h=95
+n1 y=84 ink=100,85,16,11
+n2 y=104
+n3 y=75 h=95
+k10
+n0 y=79 h=86
+n1 x=96 y=88 w=24 ink=96,89,23,11 gl=["calc"]
+n2 y=108 h=48
+n3 y=79 h=86
+k11
+n0 y=84 h=75
+n1 y=93 ink=96,94,23,11
+n2 y=113 h=27
+n3 y=84 h=75
+k12
+n0 y=88 h=68
+n1 y=97 ink=96,98,23,11
+n2 y=117
+n3 y=88 h=68
+k13
+n0 y=90 h=65
+n1 y=99 ink=96,100,23,11
+n2 y=119
+n3 y=90 h=65
+k14
+n0 h=64
+n2 h=26
+n3 h=64
+k15
+k16
+n0 h=65
+n2 h=27
+n3 h=65
+k17
+k18
+k19
+n0 y=89
+n1 y=98 ink=96,99,23,11
+n2 y=118
+n3 y=89
+k20
+n0 y=90
+n1 y=99 ink=96,100,23,11
+n2 y=119
+n3 y=90
+k21
+s1 z=216,65 o=72,288
+n0 y=0
+n1 y=9 ink=96,10,23,11
+n2 y=29
+n3 y=0
+k22
+s1 z=216,95 o=72,273
+n0 y=11 h=73
+n1 x=100 y=20 w=17 ink=100,21,16,11 gl=["cal"]
+n2 y=40 h=35
+n3 h=95
+k23
+n0 y=5 h=85
+n1 y=14 ink=100,15,16,11
+n2 y=34 h=47
+k24
+n0 y=2 h=91
+n1 y=11 ink=100,12,16,11
+n2 y=31 h=53
+k25
+s1 z=216,125 o=72,258
+n0 y=11 h=103
+n1 x=101 y=20 w=14 ink=101,24,14,8 gl=["ca"]
+n2 y=40 h=65
+n3 h=125
+k26
+n0 y=5 h=115
+n1 y=14 ink=101,18,14,8
+n2 y=34 h=77
+k27
+n0 y=1 h=123
+n1 y=10 ink=101,14,14,8
+n2 y=30 h=85
+k28
+s1 z=216,245 o=72,198
+n0 y=44 h=157
+n1 x=105 y=53 w=7 ink=105,57,7,8 gl=["c"]
+n2 y=73 h=119
+n3 h=245
+k29
+n0 y=21 h=203
+n1 y=30 ink=105,34,7,8
+n2 y=50 h=165
+k30
+n0 y=6 h=233
+n1 y=15 ink=105,19,7,8
+n2 y=35 h=195
+k31
+n0 y=0 h=245
+n1 y=9 ink=105,13,7,8
+n2 y=29 h=207
+k32
+n0 y=-2 h=249
+n1 y=7 ink=105,11,7,8
+n2 y=27
+k33
+n0 y=-1 h=247
+n1 y=8 ink=105,12,7,8
+n2 y=28
+k34
+k35
+n0 y=0 h=245
+n1 y=9 ink=105,13,7,8
+n2 y=29
+k36
+k37
+k38
+k39
+k40
+k41
+k42
+k43
+n1 x=67 w=82 ink=67,10,81,13 gl=["type\u0020to\u0020search"]

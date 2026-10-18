@@ -33,7 +33,10 @@
 //! What the leg does not model: the buffer holds no pixels (the fake
 //! reads none), a CPU frame's damage is the harness buffer's (age 1),
 //! the stand-in WSI presents at once (the GPU thread's own latency is
-//! strand-gpu's), and the scale is 1 (the fake's output has no other).
+//! strand-gpu's), the scale is 1 (the fake's output has no other), and
+//! no layer surface is sized by another's exclusive zone (the fake
+//! stretches each over the whole output; a run that needs a zone is
+//! refused, eval-false-alarms).
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

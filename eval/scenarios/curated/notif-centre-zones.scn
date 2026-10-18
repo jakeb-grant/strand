@@ -1,0 +1,80 @@
+id     = "notif-centre-zones"
+about  = """A notification centre anchored to the top-right corner of a screen
+with a top bar, a bottom bar and a left bar, each reserving an exclusive
+zone: the compositor arranges the centre below the top bar and inside the
+others' zones (eval-false-alarms: `placement::arranged_area`), and a
+centred "do not disturb" OSD in the middle of what all three leave.
+Notifications arrive one by one (each sliding in from the right, the centre
+growing downwards from its top edge), one is dismissed (it slides out and
+collapses while the cards below it move up), and the OSD shows and goes.
+The bars never move, and the centre's top edge and the cards above the
+dismissed one stay where they are."""
+screen = { width = 360, height = 520, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state count = 1
+state gone = "none"
+state quiet = false
+let all = ["mail", "build", "call", "update"]
+let shown = all.take(count).filter(n => n != gone)
+
+bar Top {
+  edge: top; height: 28; bg: #15161e
+  row { height: 28; pad: 0, 10; align: center
+    text "12:00" { id: clock; color: #c0caf5 }
+  }
+}
+
+bar Side {
+  edge: left; width: 34; bg: #1a1b26
+}
+
+bar Foot {
+  edge: bottom; height: 22; bg: #15161e
+}
+
+panel Centre {
+  anchor: top_right; margin: 8, 8, 0, 0; open: true
+  col { id: list; width: 220; gap: 6
+    for n in shown key n {
+      col { pad: 9; gap: 3; radius: 9; bg: #24283b
+        enter { x: 230; opacity: 0 }
+        exit { x: 230; opacity: 0; height: 0 }
+        text n { color: #c0caf5 }
+        text "a notification" { color: #9aa5ce }
+      }
+    }
+  }
+}
+
+osd Quiet {
+  anchor: center; open: quiet
+  enter { opacity: 0; scale: 0.92 }
+  row { height: 34; pad: 0, 14; radius: 17; bg: #24283b; align: center
+    text "do not disturb" { id: quiet_text; color: #c0caf5 }
+  }
+}
+
+=== steps
+rest
+mark second
+set count 2
+rest
+expect still #clock
+mark third
+set count 3
+rest
+mark fourth
+set count 4
+rest
+mark dismiss
+set gone build
+rest
+expect still #clock
+mark quiet
+set quiet true
+rest
+mark loud
+set quiet false
+rest

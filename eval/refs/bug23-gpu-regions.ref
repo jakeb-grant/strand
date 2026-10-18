@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "bug23-gpu-regions"
 verdict good
-note "eval-surface-leg's bug23-gpu-regions re-recorded at eval-r3 in eval-coverage's format (each node's paint and glyph sources): geometry, paint order and ink tick for tick as approved at d2e4edd1; the hover popup's card and the blurred pill as before, with eval-rules' checks and the surface leg's passing on both legs"
+note "eval-false-alarms: the sandbox places popup#pop as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -64, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "119211a7"
+rev "0824d452+changes"
 approver "claude"
 scenario 2836e4e4adcbd7b7
-seal e083aaa4635ef231
+seal 2dd44b9e430d0d8d
 S1 0 - "bar Top"
 S2 14 - "popup#pop"
 N0 "before|shell.strand:5:5|[Mock | DP-1]#0" "box#before"
@@ -25,7 +25,7 @@ n2 x=36 y=0 w=40 h=30 ord=3 bg=303030ff
 n3 x=0 y=0 w=300 h=30 ord=1
 n4 x=0 y=0 w=300 h=30 bg=faf9ffff
 k14 p2
-s2 z=240,40 o=-64,36 i=0,0,90,32
+s2 z=240,40 o=0,36 i=0,0,90,32
 n5 srf=2 x=0 y=0 w=90 h=32 ord=1 bg=202020ff
 n6 srf=2 x=10 y=9 w=35 h=15 txt=S ord=2 ink=11,10,33,11 fg=ffffffff gl=["Island"]
 n7 srf=2 x=0 y=0 w=240 h=40

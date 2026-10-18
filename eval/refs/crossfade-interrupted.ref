@@ -1,0 +1,504 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "crossfade-interrupted"
+verdict good
+note "eval-false-alarms, new scenario: a fixed 200 x 56 stack in a bottom panel 18 px above the edge crossfades between two cards, then swaps faster than the fade reverse it in flight (a new node while its predecessor fades out) before it settles; the panel never resizes or moves; every check passes; read with explain"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 2deeeb6679307263
+seal b7b2e0bee5cf06b7
+S1 0 - "panel Card"
+N0 "holder|shell.strand:5:3|#0" "stack#holder"
+N1 "|shell.strand:12:7|#0" "row@shell.strand:12"
+N2 "|shell.strand:13:9|#0" "box@shell.strand:13"
+N3 "|shell.strand:14:9|#0" "text(\"Idle\")"
+N4 "|shell.strand:3:1|#0" "panel@shell.strand:3"
+N5 "|shell.strand:7:7|#0" "col@shell.strand:7"
+N6 "|shell.strand:8:9|#0" "text(\"Now playing\")"
+N7 "|shell.strand:9:9|#1" "text(\"A song with a rather lon\")"
+N8 "|shell.strand:7:7|#0~2" "col@shell.strand:7"
+N9 "|shell.strand:8:9|#0~2" "text(\"Now playing\")"
+N10 "|shell.strand:9:9|#1~2" "text(\"A song with a rather lon\")"
+N11 "|shell.strand:12:7|#0~2" "row@shell.strand:12"
+N12 "|shell.strand:13:9|#0~2" "box@shell.strand:13"
+N13 "|shell.strand:14:9|#0~2" "text(\"Idle\")"
+N14 "|shell.strand:7:7|#0~3" "col@shell.strand:7"
+N15 "|shell.strand:8:9|#0~3" "text(\"Now playing\")"
+N16 "|shell.strand:9:9|#1~3" "text(\"A song with a rather lon\")"
+k0 p1
+s1 z=200,56 o=80,326
+n0 x=0 y=0 w=200 h=56 ord=1 bg=202336ff
+n1 x=80 y=21 w=40 h=15 ord=2
+n2 x=80 y=22 w=13 h=13 ord=3 bg=8bd5caff
+n3 x=99 y=21 w=21 h=15 txt=S ord=4 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n4 x=0 y=0 w=200 h=56
+k1
+n1 op=218 hid=inert
+n2 op=218 hid=inert
+n3 op=218 hid=inert
+n5 x=17 y=11 w=167 h=34 op=37 ord=5
+n6 x=17 y=11 w=167 h=15 op=37 txt=S ord=6 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n7 x=17 y=30 w=167 h=15 op=37 txt=S ord=7 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+k2
+n1 op=157
+n2 op=157
+n3 op=157
+n5 op=98
+n6 op=98
+n7 op=98
+k3
+n1 op=104
+n2 op=104
+n3 op=104
+n5 op=151
+n6 op=151
+n7 op=151
+k4
+n1 op=65
+n2 op=65
+n3 op=65
+n5 op=190
+n6 op=190
+n7 op=190
+k5
+n1 op=39
+n2 op=39
+n3 op=39
+n5 op=216
+n6 op=216
+n7 op=216
+k6
+n1 op=23
+n2 op=23
+n3 op=23
+n5 op=232
+n6 op=232
+n7 op=232
+k7
+n1 op=14
+n2 op=14
+n3 op=14
+n5 op=241
+n6 op=241
+n7 op=241
+k8
+n1 op=8
+n2 op=8
+n3 op=8
+n5 op=247
+n6 op=247
+n7 op=247
+k9
+n1 op=4
+n2 op=4
+n3 op=4
+n5 op=251
+n6 op=251
+n7 op=251
+k10
+n1 op=2
+n2 op=2
+n3 op=2
+n5 op=253
+n6 op=253
+n7 op=253
+k11
+n1 op=1
+n2 op=1
+n3 op=1
+n5 op=254
+n6 op=254
+n7 op=254
+k12
+k13
+n1 op=0
+n2 op=0
+n3 op=0
+n5 op=255
+n6 op=255
+n7 op=255
+k14
+k15
+n1 hid=opacity0
+n2 -
+n3 -
+n5 ord=3
+n6 ord=4
+n7 ord=5
+k16
+n1 -
+n5 ord=2
+n6 ord=3
+n7 ord=4
+k17
+n1 x=80 y=21 w=40 h=15 op=37 ord=5
+n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
+n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n5 op=218 hid=inert
+n6 op=218 hid=inert
+n7 op=218 hid=inert
+k18
+n1 op=98
+n2 op=98
+n3 op=98
+n5 op=157
+n6 op=157
+n7 op=157
+k19
+n1 op=151
+n2 op=151
+n3 op=151
+n5 op=104
+n6 op=104
+n7 op=104
+k20
+n1 op=190
+n2 op=190
+n3 op=190
+n5 op=65
+n6 op=65
+n7 op=65
+k21
+n1 op=179 hid=inert
+n2 op=179 hid=inert
+n3 op=179 hid=inert
+n5 op=39
+n6 op=39
+n7 op=39
+n8 x=17 y=11 w=167 h=34 op=37 ord=8
+n9 x=17 y=11 w=167 h=15 op=37 txt=S ord=9 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n10 x=17 y=30 w=167 h=15 op=37 txt=S ord=10 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+k22
+n1 op=133
+n2 op=133
+n3 op=133
+n5 op=23
+n6 op=23
+n7 op=23
+n8 op=98
+n9 op=98
+n10 op=98
+k23
+n1 op=90
+n2 op=90
+n3 op=90
+n5 op=14
+n6 op=14
+n7 op=14
+n8 op=151
+n9 op=151
+n10 op=151
+k24
+n1 op=57
+n2 op=57
+n3 op=57
+n5 op=8
+n6 op=8
+n7 op=8
+n8 op=190
+n9 op=190
+n10 op=190
+k25
+n1 op=35
+n2 op=35
+n3 op=35
+n5 op=4
+n6 op=4
+n7 op=4
+n8 op=179 hid=inert
+n9 op=179 hid=inert
+n10 op=179 hid=inert
+n11 x=80 y=21 w=40 h=15 op=37 ord=11
+n12 x=80 y=22 w=13 h=13 op=37 ord=12 bg=8bd5caff
+n13 x=99 y=21 w=21 h=15 op=37 txt=S ord=13 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+k26
+n1 op=21
+n2 op=21
+n3 op=21
+n5 op=2
+n6 op=2
+n7 op=2
+n8 op=133
+n9 op=133
+n10 op=133
+n11 op=98
+n12 op=98
+n13 op=98
+k27
+n1 op=12
+n2 op=12
+n3 op=12
+n5 op=1
+n6 op=1
+n7 op=1
+n8 op=90
+n9 op=90
+n10 op=90
+n11 op=151
+n12 op=151
+n13 op=151
+k28
+n1 op=7
+n2 op=7
+n3 op=7
+n8 op=57
+n9 op=57
+n10 op=57
+n11 op=153 hid=inert
+n12 op=153 hid=inert
+n13 op=153 hid=inert
+n14 x=17 y=11 w=167 h=34 op=37 ord=14
+n15 x=17 y=11 w=167 h=15 op=37 txt=S ord=15 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n16 x=17 y=30 w=167 h=15 op=37 txt=S ord=16 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+k29
+n1 op=4
+n2 op=4
+n3 op=4
+n5 op=0
+n6 op=0
+n7 op=0
+n8 op=35
+n9 op=35
+n10 op=35
+n11 op=117
+n12 op=117
+n13 op=117
+n14 op=98
+n15 op=98
+n16 op=98
+k30
+n1 op=2
+n2 op=2
+n3 op=2
+n8 op=21
+n9 op=21
+n10 op=21
+n11 op=80
+n12 op=80
+n13 op=80
+n14 op=151
+n15 op=151
+n16 op=151
+k31
+n1 op=1 ord=3
+n2 op=1 ord=4
+n3 op=1 ord=5
+n5 hid=opacity0
+n6 -
+n7 -
+n8 op=12 ord=6
+n9 op=12 ord=7
+n10 op=12 ord=8
+n11 op=51 ord=9
+n12 op=51 ord=10
+n13 op=51 ord=11
+n14 op=190 ord=12
+n15 op=190 ord=13
+n16 op=190 ord=14
+k32
+n1 ord=2
+n2 ord=3
+n3 ord=4
+n5 -
+n8 op=7 ord=5
+n9 op=7 ord=6
+n10 op=7 ord=7
+n11 op=32 ord=8
+n12 op=32 ord=9
+n13 op=32 ord=10
+n14 op=216 ord=11
+n15 op=216 ord=12
+n16 op=216 ord=13
+k33
+n1 op=0
+n2 op=0
+n3 op=0
+n8 op=4
+n9 op=4
+n10 op=4
+n11 op=19
+n12 op=19
+n13 op=19
+n14 op=232
+n15 op=232
+n16 op=232
+k34
+n8 op=2
+n9 op=2
+n10 op=2
+n11 op=11
+n12 op=11
+n13 op=11
+n14 op=241
+n15 op=241
+n16 op=241
+k35
+n1 hid=opacity0
+n2 -
+n3 -
+n8 op=1 ord=3
+n9 op=1 ord=4
+n10 op=1 ord=5
+n11 op=6 ord=6
+n12 op=6 ord=7
+n13 op=6 ord=8
+n14 op=247 ord=9
+n15 op=247 ord=10
+n16 op=247 ord=11
+k36
+n1 -
+n8 ord=2
+n9 ord=3
+n10 ord=4
+n11 op=4 ord=5
+n12 op=4 ord=6
+n13 op=4 ord=7
+n14 op=251 ord=8
+n15 op=251 ord=9
+n16 op=251 ord=10
+k37
+n8 op=0
+n9 op=0
+n10 op=0
+n11 op=2
+n12 op=2
+n13 op=2
+n14 op=253
+n15 op=253
+n16 op=253
+k38
+n11 op=1
+n12 op=1
+n13 op=1
+n14 op=254
+n15 op=254
+n16 op=254
+k39
+n8 hid=opacity0
+n9 -
+n10 -
+n11 ord=3
+n12 ord=4
+n13 ord=5
+n14 ord=6
+n15 ord=7
+n16 ord=8
+k40
+n8 -
+n11 op=0 ord=2
+n12 op=0 ord=3
+n13 op=0 ord=4
+n14 op=255 ord=5
+n15 op=255 ord=6
+n16 op=255 ord=7
+k41
+k42
+n11 hid=opacity0
+n12 -
+n13 -
+n14 ord=3
+n15 ord=4
+n16 ord=5
+k43
+n11 -
+n14 ord=2
+n15 ord=3
+n16 ord=4
+k44
+n1 x=80 y=21 w=40 h=15 op=37 ord=5
+n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
+n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n14 op=218 hid=inert
+n15 op=218 hid=inert
+n16 op=218 hid=inert
+k45
+n1 op=98
+n2 op=98
+n3 op=98
+n14 op=157
+n15 op=157
+n16 op=157
+k46
+n1 op=151
+n2 op=151
+n3 op=151
+n14 op=104
+n15 op=104
+n16 op=104
+k47
+n1 op=190
+n2 op=190
+n3 op=190
+n14 op=65
+n15 op=65
+n16 op=65
+k48
+n1 op=216
+n2 op=216
+n3 op=216
+n14 op=39
+n15 op=39
+n16 op=39
+k49
+n1 op=232
+n2 op=232
+n3 op=232
+n14 op=23
+n15 op=23
+n16 op=23
+k50
+n1 op=241
+n2 op=241
+n3 op=241
+n14 op=14
+n15 op=14
+n16 op=14
+k51
+n1 op=247
+n2 op=247
+n3 op=247
+n14 op=8
+n15 op=8
+n16 op=8
+k52
+n1 op=251
+n2 op=251
+n3 op=251
+n14 op=4
+n15 op=4
+n16 op=4
+k53
+n1 op=253
+n2 op=253
+n3 op=253
+n14 op=2
+n15 op=2
+n16 op=2
+k54
+n1 op=254
+n2 op=254
+n3 op=254
+n14 op=1
+n15 op=1
+n16 op=1
+k55
+k56
+n1 op=255
+n2 op=255
+n3 op=255
+n14 op=0
+n15 op=0
+n16 op=0
+k57
+k58
+n1 ord=3
+n2 ord=4
+n3 ord=5
+n14 hid=opacity0
+n15 -
+n16 -
+k59
+n1 ord=2
+n2 ord=3
+n3 ord=4
+n14 -

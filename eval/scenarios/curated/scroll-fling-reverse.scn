@@ -1,0 +1,53 @@
+id     = "scroll-fling-reverse"
+about  = """A list in a centred panel is scrolled by the wheel (`scroll N` is N
+notches of 15 px, positive down): three notches at once, more notches
+while the scroll still springs, then one back up mid-spring, which turns
+the spring around with its velocity (the rows had already passed where
+they finally rest, on their way to the first steps' target); then flung
+past its end, where the offset stops at the last row, and reversed to the
+top. The rows move only with the list's offset; the header above the list
+never moves."""
+screen = { width = 320, height = 560, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+let names = ["r01", "r02", "r03", "r04", "r05", "r06", "r07", "r08", "r09", "r10", "r11", "r12", "r13", "r14", "r15", "r16", "r17", "r18"]
+
+panel Picker {
+  anchor: center; open: true
+  col { width: 200; pad: 7; gap: 6; radius: 10; bg: #1d2021; color: #ebdbb2
+    text "Pick one" { id: header }
+    list { id: rows; height: 180; gap: 3
+      for r in names key r {
+        row { height: 26; pad: 0, 9; radius: 5; align: center; bg: #3c3836
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,90
+mark three
+scroll 3
+rest
+expect still #header
+mark more
+scroll 2
+frames 2
+scroll 2
+frames 3
+scroll -1
+rest
+expect still #header
+mark fling
+scroll 30
+frames 4
+scroll -2
+rest
+mark home
+scroll -40
+rest
+expect still #header

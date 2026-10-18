@@ -452,16 +452,15 @@ pub struct Way {
 /// with no change from logic or input: an exiting ghost holding its slot
 /// (`EXIT`, an inert node), a size that springs past its target, a
 /// keyframe or time-driven prop that places, a drag lifting an item out
-/// of its list, a scroll's offset springing or flinging (a wheel step
-/// reversed mid-spring sends its rows past where they rest and back), a
-/// text drawn by its estimate or held.
+/// of its list, a text drawn by its estimate or held. (A scroll's
+/// offset springing or flinging lays out what is under it: `Cx::scrolled`,
+/// which `way` and the checks read per node.)
 pub const LAYOUT_CAUSES: Motions = Motions(
     Motions::EXIT.0
         | Motions::SIZE_SPRING.0
         | Motions::KEYFRAMES.0
         | Motions::TIME.0
-        | Motions::LIFT.0
-        | Motions::SCROLL.0,
+        | Motions::LIFT.0,
 );
 
 /// `key`'s [`Way`] on `a` over the frames `(s, e_k]` (`b` its row at
@@ -505,7 +504,7 @@ pub fn way(cx: &Cx, key: &str, s: u32, e_k: u32, b: &Row, e: &Row, a: Axis) -> W
         let l = laid(r, a);
         if l < span_lo || l > span_hi {
             run.push(l);
-            why |= cx.lays_out(i, r.surface);
+            why |= cx.lays_out(i, r.surface) || cx.scrolled(i, key);
             continue;
         }
         if !run.is_empty() {
@@ -615,6 +614,73 @@ impl<'a> Cx<'a> {
         self.causes.get(i).is_some_and(|c| c.contains(&surface))
     }
 
+    /// (eval-false-alarms) `key` is under a `scroll` or `list` whose
+    /// offset moves by itself at frame `i` (a wheel step's spring, a
+    /// fling: its row's own [`Motions::SCROLL`]): that scroll lays it out
+    /// anew each frame by itself, as a size spring lays out its surface.
+    pub fn scrolled(&self, i: usize, key: &str) -> bool {
+        let mut at = key;
+        for _ in 0..256 {
+            let Some(p) = self.parents.get(at).copied() else {
+                return false;
+            };
+            if self
+                .tl
+                .row(i, p)
+                .is_some_and(|r| Motions(r.mot).contains(Motions::SCROLL))
+            {
+                return true;
+            }
+            if p == at {
+                return false;
+            }
+            at = p;
+        }
+        false
+    }
+
+    /// (integration-r4) How far the scrolls `key` lies under carried
+    /// their content over the frames `[s, e]`: the span of each one's
+    /// offset (`Frame::offsets`), the largest, when one of them moved by
+    /// itself in that time (`scrolled`). A row under a wheel's spring or
+    /// a fling travels with the content, though it shows only while it
+    /// is inside the viewport (a windowed list mounts only those).
+    pub fn scroll_travel(&self, key: &str, s: u32, e: u32) -> f64 {
+        let span = self.tl.within(Some(s), e);
+        let from = self.tl.at(s).unwrap_or(span.start);
+        if !(from..span.end).any(|i| self.scrolled(i, key)) {
+            return 0.0;
+        }
+        let mut best = 0.0f64;
+        let mut at = key;
+        for _ in 0..256 {
+            let Some(p) = self.parents.get(at).copied() else {
+                break;
+            };
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for i in from..span.end {
+                if let Some(o) = self.tl.frames.get(i).and_then(|f| f.offsets.get(p)) {
+                    lo = lo.min(f64::from(*o));
+                    hi = hi.max(f64::from(*o));
+                }
+            }
+            if hi >= lo {
+                best = best.max(hi - lo);
+            }
+            if p == at {
+                break;
+            }
+            at = p;
+        }
+        best
+    }
+
+    /// `key`'s parent's key.
+    pub fn parent(&self, key: &str) -> Option<&'a str> {
+        self.parents.get(key).copied()
+    }
+
     /// `key` and its ancestors.
     pub fn lineage(&self, key: &'a str) -> Vec<&'a str> {
         let mut out = vec![key];
@@ -672,6 +738,31 @@ impl<'a> Cx<'a> {
     }
 
     /// The segments to check motion in: those with a frame before them.
+    /// (eval-false-alarms) The ticks at which segment `seg`'s steps
+    /// changed something after its first change (a second `set` that
+    /// turns a motion around mid-flight): each one restarts its nodes'
+    /// motion from where they are drawn.
+    pub fn restarts(&self, seg: usize) -> Vec<u32> {
+        let Some(first) = self.trace.segments.get(seg).and_then(|s| s.s) else {
+            return Vec::new();
+        };
+        let mut out: Vec<u32> = self
+            .trace
+            .events
+            .iter()
+            .filter(|e| e.segment == Some(seg) && e.k > first + 1)
+            .filter(|e| {
+                self.sc
+                    .steps
+                    .iter()
+                    .any(|st| st.line == e.line && st.kind.opens_segment())
+            })
+            .map(|e| e.k)
+            .collect();
+        out.dedup();
+        out
+    }
+
     pub fn segments(&self) -> impl Iterator<Item = (usize, &'a crate::trace::Segment, u32)> + '_ {
         self.trace
             .segments

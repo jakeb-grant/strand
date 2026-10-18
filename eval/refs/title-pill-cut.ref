@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "title-pill-cut"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "eval-false-alarms: the sandbox places popup#big as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -160, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "a38d1bc6"
+rev "0824d452+changes"
 approver "claude"
 scenario ed3d067045340ad5
-seal 80509e689c7bab21
+seal b5947560cc9aee8d
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:5:5|[Mock | DP-1]#0" "popup#big"
@@ -17,7 +17,7 @@ N4 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
 N5 "|shell.strand:4:3|[Mock | DP-1]#0" "box@shell.strand:4"
 k0 p1,2
 s1 z=800,30
-s2 z=420,40 o=-160,30
+s2 z=420,40 o=0,30
 n0 srf=2 x=0 y=0 w=420 h=40
 n1 srf=2 x=0 y=0 w=90 h=40 ord=1 bg=202020ff
 n2 srf=2 x=60 y=10 w=30 h=20 ord=3

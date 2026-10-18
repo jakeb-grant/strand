@@ -25,8 +25,10 @@
 //! held to lie between the moment due and one period after it: within a
 //! frame; and no frame before the moment due shows it off its pose. A child whose text is still on its way waits for it
 //! instead (decisions.md late-text-dip) and is not held, nor is one
-//! without a pose to hold at, or a run under reduced motion (every child
-//! shows at once).
+//! without a pose to hold at, one whose pose was dropped unseen (kept
+//! from view by an ancestor until its first frame, it shows at rest and
+//! plays no enter, as `vanish` reads it: eval-false-alarms), or a run
+//! under reduced motion (every child shows at once).
 
 use std::collections::BTreeMap;
 
@@ -113,6 +115,17 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     continue;
                 };
                 if cx.allowed(CheckId::Stagger, key) {
+                    continue;
+                }
+                // (eval-false-alarms) Its pose dropped unseen: kept from
+                // view by an ancestor until its first frame, it shows at
+                // rest by design and plays no enter, so it has no turn to
+                // wait for (`vanish`'s own reading of that frame,
+                // decisions.md wave3-pixels (p2)).
+                if let Some(r0) = tl.row(i0, key)
+                    && !Motions(r0.mot).intersects(Motions::ENTER | Motions::STAGGER)
+                    && super::vanish::dropped_unseen(cx, key, i0, r0.surface)
+                {
                     continue;
                 }
                 // Within the segment: the first frame it no longer waits

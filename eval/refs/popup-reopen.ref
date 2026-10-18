@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-reopen"
 verdict good
-note "new scenario (popup-reopen fix, 4a3aaf29): each of the three openings plays the enter pose from opacity 0 / scale 0.9 (painted, and through the compositor pose when delegated); reviewed with explain (re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change); tick for tick the same geometry as approved before apart from those)"
+note "eval-false-alarms: the sandbox places popup#menu, each time it opens, as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -40, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "a38d1bc6"
+rev "0824d452+changes"
 approver "claude"
 scenario a54aae74f6fcdafe
-seal 603c4f6c32af98dd
+seal 8a3de50172aacfd6
 S1 0 - "bar Top"
 S2 1 31 "popup#menu"
 S3 32 62 "popup#menu"
@@ -24,7 +24,7 @@ n0 x=0 y=0 w=40 h=30 ord=1 bg=303030ff
 n1 x=0 y=0 w=300 h=30 txt=S ord=2 ink=0,1,32,11 fg=ffffffff gl=["12:00"]
 n2 x=0 y=0 w=300 h=30 bg=faf9ffff
 k1 p2
-s2 z=120,60 o=-40,36
+s2 z=120,60 o=0,36
 n3 srf=2 x=0 y=0 w=120 h=60 op=0 hid=opacity0
 k2
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
@@ -158,7 +158,7 @@ n4 -
 n5 -
 n6 -
 k32 p3
-s3 z=120,60 o=-40,36
+s3 z=120,60 o=0,36
 n3 srf=3
 k33
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
@@ -292,7 +292,7 @@ n4 -
 n5 -
 n6 -
 k94 p4
-s4 z=120,60 o=-40,36
+s4 z=120,60 o=0,36
 n3 srf=4
 k95
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-

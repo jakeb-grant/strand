@@ -314,9 +314,19 @@ loop for each layout it delivers: the driver wakes the loop for each
 layout shaped inline, as that wake would. The renderer's wall-clock holds
 are neutralised with its own setters (the query hold excepted: logic always
 answers in time), so a run is a function of its scenario. Surfaces are
-attached (with the screen as their output's bounds), placed and configured
-at the size their spec asks, as the surface manager does, each through the
-host loop (`attached`, `configured`, `detached`). A run that leaves a
+attached (with the screen as their output's bounds) and configured at the
+size their spec asks, as the surface manager does, each through the host
+loop (`attached`, `configured`, `detached`), and placed on the output as
+the compositor places them, by strand-surface's own placement code
+(eval-false-alarms): a layer surface from `placement::layer_config` (its
+anchor, margins and exclusive zone), arranged with the other layer
+surfaces' zones in the order they were shown (`arranged_area`) and placed
+in what they leave (`position_in_rect`: centred on an axis it is not
+anchored to, in whole pixels), again at every new size; a popup from
+`popup_config` and its positioner (`popup_request`), shifted onto the
+screen (`popup_shift`), relative to its parent's window geometry, moving
+with its parent and placed again when its configuration changes. A popup
+waits for its parent to be shown, and closes with it. A run that leaves a
 surface wanting frames at the end of a rest is a `settle` failure, not a
 hang.
 
@@ -381,7 +391,9 @@ crossfade playing records its weight per surface (`fades`).
 Each frame also records the screen's scale it was drawn at, whether
 logic's diff or input reached the renderer since the frame before, where
 each shown surface lies on the output (`origins`: a content-sized popup
-the compositor re-centres as it grows moves), and, with
+the compositor re-centres as it grows moves), each painted `scroll`'s and
+`list`'s offset (`offsets`, integration-r4: how far a scroll carried
+what it holds, which `teleport` reads), and, with
 `compositor_poses`, the pose each painted surface commits with its frame
 (`poses`), read right after its paint as the surface manager reads it.
 A painted surface's size, origin and image are read there too: a paint
@@ -421,9 +433,11 @@ What `continuity`, `contain`'s `held` and `shadow` and `coherence`'s
   it stood;
 - per node, the clip its ancestors set when narrower than its surface
   (`clip`, axis aligned: a turned box's is its bounding box);
-- per shown surface, the sides of its buffer the author's geometry lays
-  at the output's edge (`cuts`: an anchored side whose margin caps the
-  overhang there, a panel's `attach:` side);
+- per shown surface, the sides of its buffer that lie on or past the
+  output's edge where the driver's placement put it, and its `attach:`
+  side (`cuts`; integration-r4: read from the modelled buffer, not from
+  render's own overhang caps, so a side render cuts away from the edge is
+  still a finding);
 - where the pointer is after the tick's input (`ptr`) and each slider a
   drag holds, with the value the drag gives it (`drags`).
 
@@ -452,8 +466,10 @@ node is either a mover or a bystander:
   different place at both (a written offset changed), or laid out
   elsewhere between them for a reason: something on its surface that lays
   out anew by itself (an exiting ghost holding its slot, a size spring,
-  keyframes, a time-driven prop, a drag, a text drawn by its estimate), or
-  logic's diff or input arriving at the frame it came back on.
+  keyframes, a time-driven prop, a drag, a text drawn by its estimate, a
+  `scroll` or `list` above it whose offset springs: it lays its rows out
+  anew each frame, eval-false-alarms), or logic's diff or input arriving
+  at the frame it came back on.
 - A **bystander** is any other node: laid out the same at `s` and `e`, and
   elsewhere between them for no reason. Such a layout is a wrong one
   drawn: it neither makes the node a mover nor widens the way `envelope`
@@ -468,8 +484,8 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion, and so does an authored offset or pose spring: the span of the values it is drawn at while authored; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last, and one that leaves and comes back in one segment travels from where it came back), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed, and so is a scroll's (`SCROLL`, or a fling's `FLING`: a list moving its rows by itself is a layout cause, not a motion of theirs). A glide retargeted while its box's own size snaps and its parent keeps it by its centre or far edge (a card held centred in a surface that shrinks) is not a retarget. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
-| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; and any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a step that takes time (`glide`, `drag`, `swipe`) acts on every tick of its span (a swipe faster than the viewport carries rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last, and so does each time it comes back or leaves again; a later change in the segment starts its way again where it found the node, so an offset sent out and turned back travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed; a row a scroll moves by itself (`SCROLL`, a fling's `FLING`) moves, so its jumps are held to the bound, and the scroll laying it out widens its way, as a size spring's does; on x and y a fade or a colour spring (opacity, fill, ink, border, a meter's level) is no motion. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on, and on the node's own move in its parent (what its parent's layout carried it by is the parent's; a node gliding across while a size spring or a scroll lays it out anew down follows its layout down, as the spring's neighbours do). |
+| `vanish` | Nothing blinks out and back within three ticks (one still drawn whole, hidden for no reason the renderer gives, and wholly past its surface's edge, moved there by a scroll's spring, a glide, a drag or an offset, left view by moving; one an ancestor's clip cut out, `hidden: clipped`, blinked), shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a `swipe` acts on every tick of its span, but only on what lies under the scrolls under the pointer as it starts (a swipe faster than the viewport carries those rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. `drag`: a slider a drag holds draws its knob under the pointer (see below). |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
@@ -477,7 +493,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
 | `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a new node springs only what its enter pose sets (`first frame`), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
-| `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). A key made again while its predecessor exits (`~2`) is compared by its base when it is the only one of that base shown. A surface whose scroll flung is left out from the fling on: `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
+| `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
 | `reference` | The run is its approved reference recording within a quantum, and does not come back to one marked bad (see Reference recordings). |
@@ -642,7 +658,10 @@ says a node moves, not how, so it does not exempt from them; only an
   pose for frames after it began (eval/scenarios/curated/
   stagger-slow-start.scn). It skips a child without a pose, one that never
   leaves its pose in the segment, one whose text is on its way (it waits
-  for its text, decisions.md late-text-dip) and reduced motion.
+  for its text, decisions.md late-text-dip), one whose pose was dropped
+  unseen (kept from view by an ancestor the frame before its first, it
+  shows at rest and plays no enter, as `vanish` reads it) and reduced
+  motion.
 - **`pop-out`** (in `vanish`). "A removed subtree plays `exit`, then
   unmounts" (design.md "Poses"). The last frame an exiting node is drawn
   in shows it at its exit pose (its `exit`, else its `enter`): its own
@@ -1198,6 +1217,10 @@ What the surface leg leaves out:
   tests call `sync_presented` themselves);
 - scales other than 1, since the fake's output has no other; a `scale`
   step with the leg is refused as unsupported;
+- exclusive zones: the fake stretches each layer surface over the whole
+  output, so a run in which another surface's zone sizes one (a left bar
+  under a top bar) is refused as unsupported with the leg
+  (eval-false-alarms);
 - the regions of a posed frame (see above).
 
 ## Cost
@@ -1300,6 +1323,21 @@ committed: a finding in an owner's config becomes a committed scenario
 written from scratch, in the smallest shape that shows it.
 
 ## Limits
+
+- **Placement is strand-surface's, not a compositor's** (eval-false-alarms).
+  The sandbox places surfaces with the code the surface manager sends
+  the compositor, and arranges layer surfaces as wlroots does from it. A
+  popup is shifted onto the screen but never flipped or resized past
+  that (its positioner asks for no more), a posed parent's scaled anchor
+  is not followed, only the config's own surfaces reserve zones, and how
+  a compositor treats unequal margins on an axis anchored at both ends
+  is taken from `position_in_rect`, not checked against wlroots.
+- **`contain` excuses whatever lies past both ends** (eval-false-alarms).
+  Its exception for a spring's overshoot also covers a box carried past
+  both where it started and where it rests by a glide (a content-sized
+  panel's card snapped taller and glided from where it was), so a cut
+  made in a single change can pass; one made while the rest moves on (a
+  second change mid-motion) fails.
 
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not

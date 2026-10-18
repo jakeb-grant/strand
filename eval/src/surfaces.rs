@@ -1,39 +1,51 @@
-//! The surface manager's side (docs/eval.md, "Driver"): every surface
-//! the renderer reports is attached and configured at the size its spec
-//! asks (its shadow overhang included), configured again when that
-//! changes, and detached when it closes, each with a buffer of its own.
-//! Modelled on crates/strand-render/tests/morph.rs `Shell::sync` (lines
-//! 201-269), generalised from popups to every surface kind.
+//! The surface manager's and the compositor's side (docs/eval.md,
+//! "Driver"): every surface the renderer reports is attached, configured
+//! at the size the compositor gives it, placed where the compositor puts
+//! it, configured or placed again when that changes, and detached when it
+//! closes, each with a buffer of its own. Modelled on
+//! crates/strand-render/tests/morph.rs `Shell::sync` (lines 201-269),
+//! generalised from popups to every surface kind.
 //!
-//! A popup is placed where the surface manager's positioner asks the
-//! compositor to put it (crates/strand-surface/src/placement.rs
-//! `popup_config` and `popup_request`: across a bar from its edge, below
-//! its anchor otherwise, centred on it, a submenu level with its row),
-//! placed again whenever it is configured at a new size (a content-sized
-//! popup that grows is re-centred), and render is told where
-//! (`Renderer::set_surface_origin`, as `Host::send_origin` does). The
-//! trace records each surface's origin per frame, so the checks see a
-//! popup's content where the eye does.
+//! (eval-false-alarms) Placement is strand-surface's own code, not a
+//! copy of it, so the driver cannot drift from the surface manager:
 //!
-//! (eval-coverage-2) A layer surface (a bar, panel or OSD) is placed as
-//! the compositor arranges it (strand-surface's `placement::layer_config`,
-//! `arranged_area` and `LayerConfig::position_in_rect`, which
-//! crates/strand-surface/src/manager/origin.rs `place_layer_only` derives
-//! its origin with: wlroots' arrangement): by its anchor and margins, in
-//! what the exclusive zones of the surfaces before it leave, centred on
-//! an axis it is anchored on neither or both sides of. It is placed again
-//! whenever it is configured at a new size (a centred content-sized panel
-//! that shrinks is re-centred) and whenever another surface's zone comes,
-//! goes or changes; a popup moves with its parent.
+//! - A layer surface (`bar`, `panel`, `osd`) is the state
+//!   `placement::layer_config_with` sends (`fit` to the screen), sized
+//!   and placed as a wlroots compositor arranges it
+//!   (`placement::arranged_area`, `LayerConfig::position_in_rect`, the
+//!   rules crates/strand-surface/src/manager/origin.rs places it by):
+//!   in the area the exclusive zones of the surfaces before it leave, a
+//!   stretched side across that area less its margins, at its margins
+//!   from the edges it is anchored to, centred in whole pixels on an axis
+//!   anchored on both sides or neither. Every shown layer surface is
+//!   arranged again after every change, so a centred content-sized panel
+//!   that grows is re-centred, and a bar whose zone comes, goes or
+//!   changes moves the surfaces arranged past it.
+//! - A popup is the state `placement::popup_config` gives it, its box
+//!   where its positioner asks (`popup_request`, moved inside the screen
+//!   along its anchor's edge by `popup_shift`, as the manager's
+//!   `positioner` asks it, from where its parent lies now), relative to
+//!   its parent's window geometry. It is placed again when its state
+//!   changes (a new size or anchor: the manager repositions it), and it
+//!   moves with its parent, as a configured popup does. It waits for its
+//!   parent to be shown, and goes with it.
+//!
+//! Render is told where each surface lies (`Renderer::set_surface_origin`,
+//! as `Host::send_origin` does) whenever that changes, and the trace
+//! records each surface's origin per frame, so the checks see a surface's
+//! content where the eye does. Not modelled: a compositor's flip or slide
+//! of a popup that does not fit even once shifted, a posed parent's
+//! scaled anchor (the manager's `posed_rect`), other programs' exclusive
+//! zones.
 
 use std::collections::HashMap;
 
 use strand_render::Renderer;
 use strand_scene::{
-    Anchor, Damage, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size,
-    SurfaceChange, SurfaceId, SurfaceSpec,
+    Damage, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
+    SurfaceId, SurfaceSpec,
 };
-use strand_surface::placement::{LayerConfig, arranged_area, layer_config};
+use strand_surface::placement::{self, LayerConfig, PopupConfig, UsableArea};
 
 use crate::Error;
 use crate::scenario::Screen;
@@ -60,9 +72,25 @@ pub struct Shown {
     pub attached: u32,
     /// Where its buffer's top-left lies on the output, logical pixels.
     pub origin: [f32; 2],
-    /// A popup's place on its parent's (its origin less the parent's),
-    /// as the compositor keeps it when the parent moves.
-    pub on_parent: Option<[f32; 2]>,
+    /// How the compositor places it.
+    place: Place,
+    /// Configured at least once.
+    configured: bool,
+}
+
+/// What a surface asked the compositor for.
+#[derive(Clone, Debug, PartialEq)]
+enum Place {
+    /// A layer surface's state.
+    Layer(LayerConfig),
+    /// A popup's positioner state, its parent's node, and its box's
+    /// top-left corner relative to its parent's window geometry, as its
+    /// configure gave it.
+    Popup {
+        config: PopupConfig,
+        parent: NodeId,
+        at: (i32, i32),
+    },
 }
 
 /// What the surface manager does to a surface (`Surfaces::change`).
@@ -72,11 +100,12 @@ pub enum Change {
     /// Configured at this buffer size and scale (after `Attached` for a
     /// new surface; again when its size or the scale changes).
     Configured(SurfaceId, Size, Scale),
-    Detached(SurfaceId),
-    /// (eval-coverage-2) Moved on the output with no configure of its
-    /// own: another surface's exclusive zone came, went or changed (the
-    /// compositor arranges it again), or its parent moved (a popup).
+    /// (eval-false-alarms) Moved on the output at the same size: a
+    /// layer surface arranged anew (another surface's exclusive zone
+    /// changed), a popup repositioned at its size or moved with its
+    /// parent. Render is told its new origin.
     Placed(SurfaceId),
+    Detached(SurfaceId),
 }
 
 /// The shown surfaces.
@@ -116,228 +145,58 @@ impl Surfaces {
         self.shown.iter().find(|s| s.id == id)
     }
 
-    /// The logical size a surface of `spec` is configured at.
-    fn logical(&self, spec: &SurfaceSpec) -> Result<[f32; 2], Error> {
-        let o = spec.overhang;
-        let m = spec.margin;
-        let sw = self.screen.width as f32;
-        let sh = self.screen.height as f32;
-        let (w, h) = match spec.kind {
-            NodeKind::Bar => match spec.edge {
-                Some(Edge::Left | Edge::Right) => (
-                    spec.width.unwrap_or(1.0),
-                    spec.height.unwrap_or(sh - m.top - m.bottom),
-                ),
-                _ => (
-                    spec.width.unwrap_or(sw - m.left - m.right),
-                    spec.height.unwrap_or(1.0),
-                ),
-            },
-            NodeKind::Lock => {
-                return Err(Error::Run(
-                    "a `lock` surface runs only in the lock VM (scripts/container/lockvm.sh), \
-                     never in the sandbox"
-                        .into(),
-                ));
-            }
-            _ => (spec.width.unwrap_or(1.0), spec.height.unwrap_or(1.0)),
-        };
-        // (eval-coverage-2) In whole logical pixels, as the surface
-        // manager asks for it (placement.rs `layer_config`: the box's
-        // size rounded, at least 1, plus the overhang rounded).
-        let whole = |v: f32| if v.is_finite() { v.round() } else { 0.0 };
-        Ok([
-            whole(w).max(1.0) + whole(o.left) + whole(o.right),
-            whole(h).max(1.0) + whole(o.top) + whole(o.bottom),
-        ])
+    /// The screen's logical size, as the output describes it.
+    fn full(&self) -> (u32, u32) {
+        (self.screen.width.max(1), self.screen.height.max(1))
     }
 
-    /// Where a surface of `spec` lies on the output: a layer surface at
-    /// the output's corner (the sandbox's one screen), a popup where the
-    /// surface manager's positioner puts it (`popup_config` and
-    /// `popup_request` in crates/strand-surface/src/placement.rs, before
-    /// the compositor constrains it to the output), from its parent's
-    /// origin.
-    fn origin_of(&self, node: NodeId, spec: &SurfaceSpec, logical: [f32; 2]) -> [f32; 2] {
-        let (NodeKind::Popup, Some(a)) = (spec.kind, spec.anchor_rect) else {
-            return self.layer_origin(node, spec, logical);
-        };
-        let px = |v: f32| if v.is_finite() { v.round() as i32 } else { 0 };
-        let parent = spec.parent.and_then(|p| self.specs.get(&p));
-        let parent_at = spec
-            .parent
-            .and_then(|p| self.shown.iter().find(|s| s.node == p))
-            .map_or([0.0, 0.0], |s| s.origin);
-        let (pt, pl) = parent.map_or((0, 0), |p| {
-            (px(p.overhang.top).max(0), px(p.overhang.left).max(0))
-        });
-        let parent_popup = parent.is_some_and(|p| p.kind == NodeKind::Popup);
-        // The parent's window geometry: a popup's is its box, a layer
-        // surface's its whole buffer.
-        let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
-        let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
-        let bar_edge = parent
-            .filter(|p| p.kind == NodeKind::Bar)
-            .map(|p| p.edge.unwrap_or(Edge::Top));
-        #[derive(Clone, Copy, PartialEq)]
-        enum Side {
-            Below,
-            Above,
-            Right,
-            Left,
-        }
-        let side = match spec.attach.or(bar_edge) {
-            Some(Edge::Top) => Side::Below,
-            Some(Edge::Bottom) => Side::Above,
-            Some(Edge::Left) => Side::Right,
-            Some(Edge::Right) => Side::Left,
-            None if parent_popup => match spec.anchor {
-                Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => Side::Left,
-                Anchor::Top => Side::Above,
-                Anchor::Bottom => Side::Below,
-                _ => Side::Right,
-            },
-            None => Side::Below,
-        };
-        let side = if spec.tooltip { Side::Below } else { side };
-        let aligned = parent_popup
-            && spec.attach.is_none()
-            && !spec.tooltip
-            && matches!(side, Side::Right | Side::Left);
-        if let Some(edge) = bar_edge
-            && !spec.tooltip
-        {
-            let thick = parent
-                .and_then(|p| p.exclusive_zone())
-                .map_or(0, |t| px(t).max(0));
-            match edge {
-                Edge::Top | Edge::Bottom => (y, ah) = (pt, thick),
-                Edge::Left | Edge::Right => (x, aw) = (pl, thick),
+    /// (eval-false-alarms) A shown layer surface whose configured size is
+    /// not the one it would have over the whole screen: another surface's
+    /// exclusive zone sized it (a left bar under a top bar's zone). The
+    /// surface leg's fake compositor arranges no zones, so it would
+    /// configure that surface at another size than the one painted.
+    pub fn sized_by_a_zone(&self) -> Option<SurfaceId> {
+        let full = UsableArea::full(self.full());
+        self.shown.iter().find_map(|s| match &s.place {
+            Place::Layer(c) if s.configured => {
+                let (w, h) = configured_size(c, full);
+                (s.logical != [w as f32, h as f32]).then_some(s.id)
             }
-        }
-        let m = spec.margin;
-        let gap = match side {
-            Side::Below => m.top,
-            Side::Above => m.bottom,
-            Side::Right => m.left,
-            Side::Left => m.right,
-        };
-        let gap = match (spec.tooltip, spec.margin_set, spec.attach) {
-            (true, _, _) => 4,
-            (false, true, _) => px(gap),
-            (false, false, Some(_)) => 0,
-            (false, false, None) => 6,
-        };
-        let (w, h) = (
-            px(spec.width.unwrap_or(1.0)).max(1),
-            px(spec.height.unwrap_or(1.0)).max(1),
-        );
-        let (aw, ah) = (aw.max(1), ah.max(1));
-        let (bx, by) = match (side, aligned) {
-            (Side::Below, _) => (x + aw / 2 - w / 2, y + ah + gap),
-            (Side::Above, _) => (x + aw / 2 - w / 2, y - h - gap),
-            (Side::Right, false) => (x + aw + gap, y + ah / 2 - h / 2),
-            (Side::Left, false) => (x - w - gap, y + ah / 2 - h / 2),
-            (Side::Right, true) => (x + aw + gap, y),
-            (Side::Left, true) => (x - w - gap, y),
-        };
-        let o = spec.overhang;
-        [
-            parent_at[0] + (gx + bx) as f32 - o.left,
-            parent_at[1] + (gy + by) as f32 - o.top,
-        ]
+            _ => None,
+        })
     }
 
-    /// (eval-coverage-2) The layer surface's config, as the surface
-    /// manager sends it (fitted to the output), or `None` for a surface
-    /// that is no layer surface (a popup).
-    fn layer_config(&self, spec: &SurfaceSpec) -> Option<LayerConfig> {
-        let mut c = layer_config(spec).ok()?;
-        c.fit((self.screen.width as i32, self.screen.height as i32));
-        Some(c)
+    /// True if a popup nested in layer-surface node `node` declares a
+    /// scrim, open or not (the manager's `has_nested_scrim`): such a
+    /// surface rises a layer (`placement::layer_config_with`).
+    fn has_nested_scrim(&self, node: NodeId) -> bool {
+        self.specs.values().any(|s| {
+            s.kind == NodeKind::Popup && s.scrim.is_some() && self.root_node(s) == Some(node)
+        })
     }
 
-    /// (eval-coverage-2) Where the compositor puts layer surface `node`
-    /// of `spec`, `logical` its configured size (box and overhang): as
-    /// the surface manager derives it (`place_layer_only`), in what the
-    /// exclusive zones of the shown layer surfaces made before it leave
-    /// of the one output.
-    fn layer_origin(&self, node: NodeId, spec: &SurfaceSpec, logical: [f32; 2]) -> [f32; 2] {
-        let Some(own) = self.layer_config(spec) else {
-            return [0.0, 0.0];
-        };
-        let full = (self.screen.width, self.screen.height);
-        // In the order they were made; one not attached yet is the newest.
-        let mut configs: Vec<(NodeId, LayerConfig)> = Vec::new();
-        for s in &self.shown {
-            if s.node == node {
-                configs.push((node, own.clone()));
-            } else if let Some(c) = self.layer_config_of(s.node) {
-                configs.push((s.node, c));
+    /// The layer-surface node a popup spec is nested in (the manager's
+    /// `root_node`).
+    fn root_node(&self, spec: &SurfaceSpec) -> Option<NodeId> {
+        let mut node = spec.parent?;
+        for _ in 0..64 {
+            let s = self.specs.get(&node)?;
+            if s.kind != NodeKind::Popup {
+                return Some(node);
             }
+            node = s.parent?;
         }
-        if !configs.iter().any(|(n, _)| *n == node) {
-            configs.push((node, own.clone()));
-        }
-        let refs: Vec<(NodeId, &LayerConfig)> = configs.iter().map(|(n, c)| (*n, c)).collect();
-        let area = arranged_area(full, &refs, &node);
-        // Logical pixels as the compositor configures them: whole.
-        let size = logical.map(|v| {
-            if v.is_finite() {
-                v.round().max(1.0) as u32
-            } else {
-                1
-            }
-        });
-        let (x, y) = own.position_in_rect((size[0], size[1]), area);
-        [x as f32, y as f32]
-    }
-
-    fn layer_config_of(&self, node: NodeId) -> Option<LayerConfig> {
-        self.layer_config(self.specs.get(&node)?)
-    }
-
-    /// (eval-coverage-2) Every shown surface placed again where the
-    /// compositor now puts it, parents before the popups on them: the
-    /// ones that moved, for render to be told.
-    fn replace_all(&mut self, out: &mut Vec<Change>) {
-        for i in 0..self.shown.len() {
-            let (id, node, kind, logical) = {
-                let s = &self.shown[i];
-                (s.id, s.node, s.kind, s.logical)
-            };
-            let origin = if kind == NodeKind::Popup {
-                let parent = self.specs.get(&node).and_then(|s| s.parent);
-                let parent_at = parent
-                    .and_then(|p| self.shown.iter().find(|s| s.node == p))
-                    .map(|s| s.origin);
-                match (parent_at, self.shown[i].on_parent) {
-                    (Some(p), Some(d)) => [p[0] + d[0], p[1] + d[1]],
-                    _ => continue,
-                }
-            } else {
-                let Some(spec) = self.specs.get(&node) else {
-                    continue;
-                };
-                self.layer_origin(node, spec, logical)
-            };
-            if origin != self.shown[i].origin {
-                self.shown[i].origin = origin;
-                let told = out.iter().any(
-                    |c| matches!(c, Change::Configured(x, ..) | Change::Placed(x) if *x == id),
-                );
-                if !told {
-                    out.push(Change::Placed(id));
-                }
-            }
-        }
+        None
     }
 
     /// What the surface manager does with one of the renderer's surface
     /// changes (`State::apply_surface_change`): the surfaces to attach,
-    /// configure and detach, in order, for the driver to run through the
-    /// host loop (`strand_render::host_loop::{attached, configured,
-    /// detached}`). A surface it attaches is shown from now on.
+    /// configure, place and detach, in order, for the driver to run
+    /// through the host loop (`strand_render::host_loop::{attached,
+    /// configured, detached}`). A surface it attaches is shown from now
+    /// on. Every shown surface is arranged again after it, as the
+    /// compositor arranges an output's layer surfaces when one of them
+    /// changes.
     pub fn change(
         &mut self,
         node: NodeId,
@@ -345,81 +204,225 @@ impl Surfaces {
         k: u32,
     ) -> Result<Vec<Change>, Error> {
         let mut out = Vec::new();
-        let scale = self.scale()?;
         if let Some(tee) = self.tee.as_mut() {
             tee.push((node, change.clone()));
         }
-        let spec = match change {
-            SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => Some(s),
-            SurfaceChange::Removed => None,
-        };
-        if let Some(s) = &spec {
-            self.specs.insert(node, s.clone());
-        } else {
-            self.specs.remove(&node);
-        }
-        let at = self.shown.iter().position(|s| s.node == node);
-        let Some(s) = spec.filter(|s| s.open) else {
-            if let Some(i) = at {
-                let gone = self.shown.remove(i);
-                out.push(Change::Detached(gone.id));
+        match change {
+            SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => {
+                self.specs.insert(node, s);
             }
-            self.replace_all(&mut out);
-            return Ok(out);
+            SurfaceChange::Removed => {
+                self.specs.remove(&node);
+            }
+        }
+        self.reconcile(node, k, &mut out)?;
+        // Arranged before its popups ask where it lies.
+        self.arrange(&mut out)?;
+        // The popups that waited for this surface (the manager's
+        // `reconcile_children`), in a fixed order.
+        let mut kids: Vec<NodeId> = self
+            .specs
+            .iter()
+            .filter(|(n, s)| {
+                s.kind == NodeKind::Popup
+                    && s.parent == Some(node)
+                    && s.open
+                    && !self.shown.iter().any(|x| x.node == **n)
+            })
+            .map(|(n, _)| *n)
+            .collect();
+        kids.sort();
+        if !kids.is_empty() {
+            for kid in kids {
+                self.reconcile(kid, k, &mut out)?;
+            }
+            self.arrange(&mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Shows, keeps or hides `node`'s surface for its spec now, with the
+    /// state it asks the compositor for; `arrange` sizes and places it.
+    fn reconcile(&mut self, node: NodeId, k: u32, out: &mut Vec<Change>) -> Result<(), Error> {
+        let at = self.shown.iter().position(|s| s.node == node);
+        let Some(spec) = self.specs.get(&node).filter(|s| s.open).cloned() else {
+            self.detach(node, out);
+            return Ok(());
         };
-        // A popup waits for its anchor's box.
-        if s.kind == NodeKind::Popup && s.anchor_rect.is_none() {
-            return Ok(out);
-        }
-        let logical = self.logical(&s)?;
-        let size = physical(logical, scale);
-        if let Some(i) = at
-            && self.shown[i].size == size
-        {
-            self.replace_all(&mut out);
-            return Ok(out);
-        }
-        let origin = self.origin_of(node, &s, logical);
-        let on_parent = (s.kind == NodeKind::Popup).then(|| {
-            let p = s
-                .parent
-                .and_then(|p| self.shown.iter().find(|x| x.node == p))
-                .map_or([0.0, 0.0], |x| x.origin);
-            [origin[0] - p[0], origin[1] - p[1]]
-        });
-        let id = match at {
-            Some(i) => self.shown[i].id,
+        let place = match spec.kind {
+            NodeKind::Lock => {
+                return Err(Error::Run(
+                    "a `lock` surface runs only in the lock VM (scripts/container/lockvm.sh), \
+                     never in the sandbox"
+                        .into(),
+                ));
+            }
+            NodeKind::Popup => {
+                // It waits for its parent to be shown, and for its size
+                // and anchor (`AutoSize`).
+                let Some(parent) = spec.parent else {
+                    return Ok(());
+                };
+                let (Some(ps), Some(p)) = (
+                    self.specs.get(&parent),
+                    self.shown.iter().find(|s| s.node == parent),
+                ) else {
+                    return Ok(());
+                };
+                let Ok(config) = placement::popup_config(&spec, ps) else {
+                    return Ok(());
+                };
+                if let Some(Place::Popup { config: had, .. }) = at.map(|i| &self.shown[i].place)
+                    && *had == config
+                {
+                    return Ok(());
+                }
+                Place::Popup {
+                    at: self.popup_at(&config, p),
+                    config,
+                    parent,
+                }
+            }
+            _ => {
+                let Ok(mut config) =
+                    placement::layer_config_with(&spec, self.has_nested_scrim(node))
+                else {
+                    // No size yet, or not a layer surface: none (yet),
+                    // as the manager's `create_surface` leaves it.
+                    return Ok(());
+                };
+                let (w, h) = self.full();
+                config.fit((w as i32, h as i32));
+                Place::Layer(config)
+            }
+        };
+        match at {
+            Some(i) => self.shown[i].place = place,
             None => {
                 let id = SurfaceId(self.next);
                 self.next += 1;
                 self.shown.push(Shown {
                     id,
                     node,
-                    kind: s.kind,
-                    logical,
-                    size,
+                    kind: spec.kind,
+                    logical: [0.0, 0.0],
+                    size: Size::new(1, 1),
                     pixels: Vec::new(),
                     fresh: true,
                     attached: k,
-                    origin,
-                    on_parent,
+                    origin: [0.0, 0.0],
+                    place,
+                    configured: false,
                 });
                 out.push(Change::Attached(id, node));
-                id
             }
-        };
-        let Some(sh) = self.shown.iter_mut().find(|x| x.id == id) else {
-            return Ok(out);
-        };
-        sh.logical = logical;
-        sh.size = size;
-        sh.pixels = vec![0; (size.w * size.h * 4) as usize];
-        sh.fresh = true;
-        sh.origin = origin;
-        sh.on_parent = on_parent;
-        out.push(Change::Configured(id, size, scale));
-        self.replace_all(&mut out);
-        Ok(out)
+        }
+        Ok(())
+    }
+
+    /// Hides `node`'s surface, and the popups nested in it before it (a
+    /// popup goes before its parent, as the manager destroys them).
+    fn detach(&mut self, node: NodeId, out: &mut Vec<Change>) {
+        let kids: Vec<NodeId> = self
+            .shown
+            .iter()
+            .filter(|s| matches!(&s.place, Place::Popup { parent, .. } if *parent == node))
+            .map(|s| s.node)
+            .collect();
+        for kid in kids {
+            self.detach(kid, out);
+        }
+        if let Some(i) = self.shown.iter().position(|s| s.node == node) {
+            let gone = self.shown.remove(i);
+            out.push(Change::Detached(gone.id));
+        }
+    }
+
+    /// Where popup `c`'s box lands relative to its parent `p`'s window
+    /// geometry: as the manager's `positioner` asks for it, moved inside
+    /// the screen along its anchor's edge from where its parent lies.
+    fn popup_at(&self, c: &PopupConfig, p: &Shown) -> (i32, i32) {
+        let (gx, gy) = geometry(p);
+        let (sw, sh) = self.full();
+        let within = (
+            -(whole(p.origin[0]) + gx),
+            -(whole(p.origin[1]) + gy),
+            sw as i32,
+            sh as i32,
+        );
+        let rect = c.anchor_rect;
+        let shift = placement::popup_shift(c, rect, within);
+        let (x, y, _, _) = placement::popup_request(c, rect, shift);
+        (x, y)
+    }
+
+    /// Arranges every shown surface as the compositor does after a
+    /// change: each layer surface sized and placed in the area the
+    /// exclusive zones before it leave, then each popup where its
+    /// configure put it on its parent. A surface given a new size is
+    /// configured at it; one only moved is placed.
+    fn arrange(&mut self, out: &mut Vec<Change>) -> Result<(), Error> {
+        let scale = self.scale()?;
+        let full = self.full();
+        let layers: Vec<(SurfaceId, LayerConfig)> = self
+            .shown
+            .iter()
+            .filter_map(|s| match &s.place {
+                Place::Layer(c) => Some((s.id, c.clone())),
+                Place::Popup { .. } => None,
+            })
+            .collect();
+        let list: Vec<(SurfaceId, &LayerConfig)> = layers.iter().map(|(i, c)| (*i, c)).collect();
+        let mut placed: Vec<(SurfaceId, [u32; 2], [f32; 2])> = Vec::new();
+        for (id, c) in &layers {
+            let area = placement::arranged_area(full, &list, id);
+            let size = configured_size(c, area);
+            let (x, y) = c.position_in_rect(size, area);
+            placed.push((*id, [size.0, size.1], [x as f32, y as f32]));
+        }
+        // Popups in the order they were shown: a parent before its
+        // popups.
+        for i in 0..self.shown.len() {
+            let Place::Popup { config, parent, at } = &self.shown[i].place else {
+                continue;
+            };
+            let Some(p) = self.shown.iter().find(|s| s.node == *parent) else {
+                continue;
+            };
+            let parent_at = placed
+                .iter()
+                .find(|(id, _, _)| *id == p.id)
+                .map_or(p.origin, |(_, _, o)| *o);
+            let (gx, gy) = geometry(p);
+            let [t, _, _, l] = config.overhang;
+            let (w, h) = config.buffer();
+            let o = [
+                parent_at[0] + (gx + at.0 - l) as f32,
+                parent_at[1] + (gy + at.1 - t) as f32,
+            ];
+            // A popup of this popup reads where it lies now, from here.
+            placed.push((self.shown[i].id, [w.max(1), h.max(1)], o));
+        }
+        for (id, size, origin) in placed {
+            let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
+                continue;
+            };
+            let logical = [size[0] as f32, size[1] as f32];
+            let moved = sh.origin != origin;
+            sh.origin = origin;
+            if !sh.configured || sh.logical != logical {
+                let size = physical(logical, scale);
+                sh.configured = true;
+                sh.logical = logical;
+                sh.size = size;
+                sh.pixels = vec![0; (size.w * size.h * 4) as usize];
+                sh.fresh = true;
+                out.push(Change::Configured(id, size, scale));
+            } else if moved {
+                out.push(Change::Placed(id));
+            }
+        }
+        Ok(())
     }
 
     /// Where surface `id` lies, for render (`Renderer::set_surface_origin`,
@@ -431,71 +434,43 @@ impl Surfaces {
         Some((output, LogicalPoint::new(sh.origin[0], sh.origin[1])))
     }
 
-    /// (eval-rules-2) The sides of surface `id`'s buffer the author's
-    /// geometry lays at an edge a shadow may be cut by, as bits (1 top,
-    /// 2 right, 4 bottom, 8 left): a side a layer surface is anchored to
-    /// whose overhang its margin there caps (render's `within_edges`,
-    /// decisions.md m6-w2-surface: a bar by its edge and the two beside
-    /// it, a panel or OSD by its anchor and `attach`), and an `attach:`
-    /// side, past which there is no overhang (m4-surface-w1).
+    /// (eval-rules-2) The sides of surface `id`'s buffer a shadow may be
+    /// cut by, as bits (1 top, 2 right, 4 bottom, 8 left): a side that
+    /// lies on or past the output's edge, where the compositor's placement
+    /// (`arrange`) put it (past it nothing shows: render keeps an anchored
+    /// side's overhang within its margin, decisions.md m6-w2-surface), and
+    /// an `attach:` side, past which there is no overhang (m4-surface-w1).
+    /// Read from the modelled buffer, not from render's own caps, so a
+    /// side render cuts that is not at the edge stays a finding
+    /// (integration-r4).
     pub fn cuts(&self, id: SurfaceId) -> u8 {
-        let Some(spec) = self.get(id).and_then(|sh| self.specs.get(&sh.node)) else {
+        let Some(sh) = self.get(id) else {
             return 0;
         };
-        const T: u8 = 1;
-        const R: u8 = 2;
-        const B: u8 = 4;
-        const L: u8 = 8;
-        let side = |e: Edge| match e {
-            Edge::Top => T,
-            Edge::Right => R,
-            Edge::Bottom => B,
-            Edge::Left => L,
-        };
-        let mut anchored = match spec.kind {
-            NodeKind::Bar => match spec.edge.unwrap_or(Edge::Top) {
-                Edge::Top => T | R | L,
-                Edge::Bottom => R | B | L,
-                Edge::Left => T | B | L,
-                Edge::Right => T | R | B,
-            },
-            NodeKind::Panel | NodeKind::Osd => match spec.anchor {
-                Anchor::Center => 0,
-                Anchor::Top => T,
-                Anchor::Bottom => B,
-                Anchor::Left => L,
-                Anchor::Right => R,
-                Anchor::TopLeft => T | L,
-                Anchor::TopRight => T | R,
-                Anchor::BottomLeft => B | L,
-                Anchor::BottomRight => B | R,
-            },
-            _ => 0,
-        };
-        if spec.kind == NodeKind::Panel
-            && let Some(e) = spec.attach
-        {
-            let opposite = match e {
-                Edge::Top => B,
-                Edge::Bottom => T,
-                Edge::Left => R,
-                Edge::Right => L,
-            };
-            anchored = (anchored | side(e)) & !opposite;
+        let (sw, shh) = self.full();
+        let [x, y] = sh.origin;
+        let [w, h] = sh.logical;
+        let at = |gap: f32| gap <= 0.5;
+        let mut bits = 0;
+        if at(y) {
+            bits |= 1;
         }
-        let (o, m) = (spec.overhang, spec.margin);
-        let capped = |bit: u8, o: f32, m: f32| {
-            if anchored & bit != 0 && o >= m.max(0.0) - 1e-3 {
-                bit
-            } else {
-                0
-            }
-        };
-        capped(T, o.top, m.top)
-            | capped(R, o.right, m.right)
-            | capped(B, o.bottom, m.bottom)
-            | capped(L, o.left, m.left)
-            | spec.attach.map_or(0, side)
+        if at(sw as f32 - (x + w)) {
+            bits |= 2;
+        }
+        if at(shh as f32 - (y + h)) {
+            bits |= 4;
+        }
+        if at(x) {
+            bits |= 8;
+        }
+        let attach = self.specs.get(&sh.node).and_then(|s| s.attach);
+        bits | attach.map_or(0, |e| match e {
+            Edge::Top => 1,
+            Edge::Right => 2,
+            Edge::Bottom => 4,
+            Edge::Left => 8,
+        })
     }
 
     /// Every shown surface at the screen's (new) scale: the surfaces to
@@ -560,6 +535,39 @@ impl Surfaces {
     }
 }
 
+/// The size a compositor configures a layer surface of `c` at in `area`
+/// (logical px): what it asked for, and on a side it stretches (0)
+/// across the area less its margins (wlroots'
+/// `wlr_scene_layer_surface_v1_configure`).
+fn configured_size(c: &LayerConfig, area: UsableArea) -> (u32, u32) {
+    let [mt, mr, mb, ml] = c.margin;
+    let stretch = |asked: u32, room: u32, a: i32, b: i32| -> u32 {
+        if asked != 0 {
+            return asked;
+        }
+        (i64::from(room) - i64::from(a) - i64::from(b)).clamp(1, i64::from(u32::MAX)) as u32
+    };
+    (
+        stretch(c.width, area.w, ml, mr),
+        stretch(c.height, area.h, mt, mb),
+    )
+}
+
+/// A surface's window geometry inside its buffer: a popup's is its box,
+/// inside its overhang; a layer surface's is its whole buffer.
+fn geometry(s: &Shown) -> (i32, i32) {
+    match &s.place {
+        Place::Popup { config, .. } => (config.overhang[3], config.overhang[0]),
+        Place::Layer(_) => (0, 0),
+    }
+}
+
+/// A whole logical pixel (origins are whole: the compositor places
+/// boxes on its integer grid).
+fn whole(v: f32) -> i32 {
+    if v.is_finite() { v.round() as i32 } else { 0 }
+}
+
 /// The physical size of a logical one at `scale`: its buffer's, as the
 /// surface manager sizes it (manager/mod.rs `buffer_size`: at a
 /// fractional scale rounded, half away from zero, as
@@ -602,21 +610,6 @@ mod tests {
         }
     }
 
-    fn shown(id: u32, node: NodeId, kind: NodeKind, logical: [f32; 2]) -> Shown {
-        Shown {
-            id: SurfaceId(id),
-            node,
-            kind,
-            logical,
-            size: Size::new(1, 1),
-            pixels: Vec::new(),
-            fresh: false,
-            attached: 0,
-            origin: [0.0, 0.0],
-            on_parent: None,
-        }
-    }
-
     /// (eval-coverage-2) A buffer is the configured size at the scale as
     /// the surface manager sizes it: rounded half away from zero at a
     /// fractional scale (221 px at 1.25 is 276 px, not 277), times the
@@ -642,21 +635,45 @@ mod tests {
             scale: 1.0,
         });
         let kw = |k: &str| PropValue::Keyword(k.into());
-        let panel = spec(
-            NodeKind::Panel,
-            &[
-                (Prop::Anchor, kw("top")),
-                (Prop::Width, PropValue::Number(221.0)),
-                (Prop::Height, PropValue::Number(60.0)),
-            ],
-        );
+        let panel = |w: f32| {
+            spec(
+                NodeKind::Panel,
+                &[
+                    (Prop::Anchor, kw("top")),
+                    (Prop::Width, PropValue::Number(w)),
+                    (Prop::Height, PropValue::Number(60.0)),
+                ],
+            )
+        };
         let p = node(2);
-        assert_eq!(s.layer_origin(p, &panel, [221.0, 60.0]), [90.0, 0.0]);
-        assert_eq!(s.layer_origin(p, &panel, [150.0, 60.0]), [125.0, 0.0]);
-        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        let at = |s: &Surfaces| s.shown.iter().find(|x| x.node == p).unwrap().origin;
+        s.change(p, SurfaceChange::Created(panel(221.0)), 0)
+            .unwrap();
+        assert_eq!(at(&s), [90.0, 0.0]);
+        s.change(
+            p,
+            SurfaceChange::Updated {
+                spec: panel(150.0),
+                recreate: false,
+            },
+            1,
+        )
+        .unwrap();
+        assert_eq!(at(&s), [125.0, 0.0]);
+        // A top bar's zone, shown from here on, moves it down; the panel
+        // made first is arranged first, so the bar is made first here.
+        let mut s = Surfaces::new(s.screen);
         let b = node(1);
-        s.specs.insert(b, bar);
-        s.shown.push(shown(1, b, NodeKind::Bar, [400.0, 30.0]));
-        assert_eq!(s.layer_origin(p, &panel, [150.0, 60.0]), [125.0, 30.0]);
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        s.change(b, SurfaceChange::Created(bar), 0).unwrap();
+        s.change(p, SurfaceChange::Created(panel(150.0)), 0)
+            .unwrap();
+        assert_eq!(at(&s), [125.0, 30.0]);
+        // (integration-r4) The cut sides are where the buffer meets the
+        // output's edge: the bar's top, left and right, none of the
+        // panel's under the bar's zone.
+        let id = |n: NodeId| s.shown.iter().find(|x| x.node == n).unwrap().id;
+        assert_eq!(s.cuts(id(b)), 1 | 2 | 8);
+        assert_eq!(s.cuts(id(p)), 0);
     }
 }

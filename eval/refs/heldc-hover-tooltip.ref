@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-hover-tooltip"
 verdict good
-note "set C scenario, unedited: the icon's hover colour springs in, its tooltip surface shows after the 300 ms delay, moving to the next icon swaps the tooltip, leaving takes both away; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "eval-false-alarms: the sandbox places the tooltip popup as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -32, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
 date 2026-10-18
-rev "24e5ed52"
+rev "0824d452+changes"
 approver "claude"
 scenario 5170084351934543
-seal c31bca1d7a589b69
+seal 0e70954fc970fd04
 S1 0 - "bar Top"
 S2 19 33 "popup tooltip"
 S3 54 68 "popup tooltip"
@@ -50,7 +50,7 @@ k11
 n2 bg=9fd0ffff
 k12
 k19 p2
-s2 z=99,21 o=-32,25
+s2 z=99,21 o=0,25
 n5 srf=2 x=0 y=0 w=99 h=21 bg=2f3036ff
 n6 srf=2 x=8 y=4 w=83 h=13 txt=S ord=1 ink=8,6,82,9 fg=ffffffff gl=["Wi-Fi:\u0020connected"]
 k33 p1
