@@ -653,11 +653,12 @@ A node's first line leaves out what is at its default: the first surface,
 in paint order; `gl` is a JSON list.
 
 Everything together stays under 5 MB. With each node's paint and glyph
-sources (eval-coverage) it is 4.15 MB: the 41 scenarios 156 kB (the 24
-recorded before 110 kB, 105 kB without paint), `matrix-60.ref` 1.61 MB
+sources (eval-coverage) it was 4.15 MB, and with the integration's
+scenarios (eval-r3) it is 4.18 MB: the 49 scenarios 177 kB (the 24
+recorded before eval-coverage 110 kB, 105 kB without paint), `matrix-60.ref` 1.61 MB
 (4.0 kB a cell) and `matrix-144.ref` 2.39 MB (6.0 kB a cell), 401 cells
 each. Paint costs little because a field is written only on the ticks
-it changes. Compressed, as git stores it, that is about 380 kB. eval/tests/refs.rs
+it changes. Compressed, as git stores it, that is about 390 kB. eval/tests/refs.rs
 holds the total to 5 MB, a scenario's file to 64 kB and a matrix file to
 8 kB a cell. Each is a tripwire for a recording that stopped being
 compact, not a cap on scenarios.
@@ -1162,6 +1163,14 @@ written from scratch, in the smallest shape that shows it.
 - **`ink` sees the layout drawn, not the pixels.** It reads the glyph
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
+- **`ink`'s allowance follows the font** (eval-r3). A text drawn by its
+  own layout may reach past its box as far as that layout's ink reaches
+  past the layout's box; a layout drawn offset by less than that
+  overhang is not told apart from one in place.
+- **The host loop's drift guards match spellings** (eval-r3).
+  eval/tests/drift.rs and its shell twin catch a step of the host loop
+  taken by hand under its own name; one reached through an alias passes
+  them, and review holds the rest.
 - **The surface leg's compositor is a fake.** It runs the real surface
   manager against strand-fake-wayland at scale 1, with a stand-in for the
   GPU thread's WSI. A real compositor's own handling of the regions (a
