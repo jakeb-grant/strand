@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use strand_eval::checks::{self, CheckId, Reference, Report, Sev, Status};
+use strand_eval::checks::{self, CheckId, Report, Sev, Status};
 use strand_eval::scenario::{Scenario, eval_root};
 use strand_eval::trace::{
     Cost, ExpectRec, Frame, IntendRec, NodeMeta, Pose, PoseRec, RestRec, Row, RunTrace,
@@ -1067,36 +1067,38 @@ fn budget_holds_each_frame_to_its_limits() {
 
 #[test]
 fn a_run_matching_a_bad_reference_fails_and_one_leaving_a_good_one_is_changed() {
+    use strand_eval::recording::{Recording, encode};
+    use strand_eval::refs::{Block, Meta, Refs, Verdict};
     let sc = scenario("");
     let bad = bug_24(false);
     let good = bug_24(true);
-    let reference = |t: &RunTrace, verdict: &str, by_path: bool| Reference {
-        verdict: verdict.into(),
-        note: "the bars drop".into(),
-        rev: "abc123".into(),
-        date: "2026-10-17".into(),
-        digest: if by_path {
-            String::new()
-        } else {
-            t.digest.clone()
-        },
-        path: if by_path {
-            checks::reference::paths(t)
-        } else {
-            BTreeMap::new()
-        },
+    let block = |t: &RunTrace, verdict: Verdict| {
+        let meta = Meta {
+            verdict,
+            note: "the bars drop",
+            date: "2026-10-17",
+            rev: "abc123",
+            approver: "test",
+            scenario: "",
+        };
+        Block::new(&sc.id, &meta, encode(&Recording::from_trace(t)))
     };
-    let rf = reference(&bad, "bad", false);
-    let r = checks::evaluate(&sc, &bad, None, None, Some(&rf));
-    assert_eq!(status(&r, CheckId::Reference), Status::Fail);
-    // By path, within tol.
-    let rf = reference(&bad, "bad", true);
+    let refs = |good: Option<Block>, bad: Vec<Block>| Refs {
+        good,
+        bad,
+        ..Refs::default()
+    };
+    // Bad: the run that reproduces it fails; another does not.
+    let rf = refs(None, vec![block(&bad, Verdict::Bad)]);
     let r = checks::evaluate(&sc, &bad, None, None, Some(&rf));
     assert_eq!(status(&r, CheckId::Reference), Status::Fail);
     let r = checks::evaluate(&sc, &good, None, None, Some(&rf));
-    assert_eq!(status(&r, CheckId::Reference), Status::Pass);
-    // Good: matching passes; differing is CHANGED, which never gates.
-    let rf = reference(&good, "good", true);
+    assert!(
+        matches!(status(&r, CheckId::Reference), Status::Skip(_)),
+        "no approved reference, none required"
+    );
+    // Good: matching passes; differing is CHANGED, which gates.
+    let rf = refs(Some(block(&good, Verdict::Good)), Vec::new());
     assert_eq!(
         status(
             &checks::evaluate(&sc, &good, None, None, Some(&rf)),
@@ -1109,7 +1111,14 @@ fn a_run_matching_a_bad_reference_fails_and_one_leaving_a_good_one_is_changed() 
     moved.seal();
     let r = checks::evaluate(&sc, &moved, None, None, Some(&rf));
     assert_eq!(status(&r, CheckId::Reference), Status::Changed);
-    assert!(r.ok());
+    assert!(!r.ok(), "CHANGED gates");
+    assert!(r.only_changed());
+    let line = r.changed_line().unwrap();
+    assert!(
+        line.starts_with(&format!("CHANGED: {}: k{} ", sc.id, moved.frames[3].k)),
+        "{line}"
+    );
+    assert!(line.contains("visual.x"), "{line}");
 }
 
 // --- expect

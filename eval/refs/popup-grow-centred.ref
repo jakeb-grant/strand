@@ -1,0 +1,195 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "popup-grow-centred"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 0acde901fca5d0f0
+seal f0949f274996c629
+S1 0 - "bar Top"
+S2 1 45 "popup#pop"
+N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
+N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N3 "|shell.strand:16:5|[Mock | DP-1]#0" "text(\"12:00\")"
+N4 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N5 "pop|shell.strand:8:7|[Mock | DP-1]#0" "popup#pop"
+N6 "cardtop|shell.strand:11:11|[Mock | DP-1]#0" "box#cardtop"
+N7 "card|shell.strand:9:9|[Mock | DP-1]#0" "col#card"
+N8 "line|shell.strand:12:11|[Mock | DP-1]#0" "text#line"
+k0 p1
+s1 z=400,30
+n0 x=160 y=0 w=40 h=30
+n1 x=0 y=0 w=160 h=30
+n2 x=0 y=0 w=400 h=30
+n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S
+n4 x=0 y=0 w=400 h=30
+k1 p2
+s2 z=160,50 o=100,36
+n5 srf=2 x=0 y=-6 w=160 h=50 op=0 hid=opacity0
+k2
+n5 y=-4 op=37 hid=-
+n6 srf=2 x=6 y=2 w=40 h=10 op=37
+n7 srf=2 x=0 y=-4 w=160 h=50 op=37
+n8 srf=2 x=6 y=16 w=148 h=15 v=6,16,148,15.328125 op=37 txt=S
+k3
+n5 y=-2 op=98
+n6 y=4 op=98
+n7 y=-2 op=98
+n8 y=18 v=6,18,148,15.328125 op=98
+k4
+n5 y=-1 v=0,-1.328125,160,50.671875 op=151
+n6 y=5 v=6,5.328125,40,10 op=151
+n7 y=-1 v=0,-1.328125,160,50.671875 op=151
+n8 y=19 v=6,19.328125,148,14.671875 op=151
+k5
+n5 y=0 v=d op=190
+n6 y=6 v=d op=190
+n7 y=0 v=d op=190
+n8 y=20 v=6,20,148,15.328125 op=190
+k6
+n5 op=216
+n6 op=216
+n7 op=216
+n8 op=216
+k7
+n5 op=232
+n6 op=232
+n7 op=232
+n8 op=232
+k8
+n5 op=241
+n6 op=241
+n7 op=241
+n8 op=241
+k9
+n5 op=247
+n6 op=247
+n7 op=247
+n8 op=247
+k10
+n5 op=251
+n6 op=251
+n7 op=251
+n8 op=251
+k11
+n5 op=253
+n6 op=253
+n7 op=253
+n8 op=253
+k12
+n5 op=254
+n6 op=254
+n7 op=254
+n8 op=254
+k13
+k14
+n5 op=255
+n6 op=255
+n7 op=255
+n8 op=255
+k15
+k16
+k17
+s2 z=220,50 o=70,36
+n5 w=220
+n6 x=28
+n7 x=22 w=176
+n8 x=28 w=164 v=28,20,164,15.328125
+k18
+n6 x=17 v=17.328125,6,40,10
+n7 x=11 w=198 v=11.328125,0,198,50
+n8 x=17 w=186 v=17.328125,20,186,15.328125
+k19
+n6 x=9 v=9.328125,6,40,10
+n7 x=3 w=214 v=3.328125,0,214,50
+n8 x=9 w=202 v=9.328125,20,202,15.328125
+k20
+n6 x=6 v=d
+n7 x=0 w=220 v=d
+n8 x=6 w=208 v=6,20,208,15.328125
+k21
+n6 x=5 v=5.328125,6,40,10
+n7 x=-1 w=222 v=-1.328125,0,222.671875,50
+n8 x=5 w=210 v=5.328125,20,210,15.328125
+k22
+k23
+n6 x=6 v=d
+n7 x=0 w=220 v=d
+n8 x=6 w=208 v=6,20,208,15.328125
+k24
+k25
+k26
+k27
+k28
+k29
+k30
+k31
+n5 y=-2 op=218
+n6 y=4 op=218 hid=inert
+n7 y=-2 op=218 hid=inert
+n8 y=18 v=6,18,208,15.328125 op=218 hid=inert
+k32
+n5 y=-4 op=157
+n6 y=2 op=157
+n7 y=-4 op=157
+n8 y=16 v=6,16,208,15.328125 op=157
+k33
+n5 y=-5 v=0,-5.328125,220,50.671875 op=104
+n6 y=1 v=6,1.328125,40,10 op=104
+n7 y=-5 v=0,-5.328125,220,50.671875 op=104
+n8 y=15 v=6,15.328125,208,14.671875 op=104
+k34
+n5 y=-6 v=d op=65
+n6 y=0 v=d op=65
+n7 y=-6 v=d op=65
+n8 y=14 v=6,14,208,15.328125 op=65
+k35
+n5 op=39
+n6 op=39
+n7 op=39
+n8 op=39
+k36
+n5 op=23
+n6 op=23
+n7 op=23
+n8 op=23
+k37
+n5 op=14
+n6 op=14
+n7 op=14
+n8 op=14
+k38
+n5 op=8
+n6 op=8
+n7 op=8
+n8 op=8
+k39
+n5 op=4
+n6 op=4
+n7 op=4
+n8 op=4
+k40
+n5 op=2
+n6 op=2
+n7 op=2
+n8 op=2
+k41
+n5 op=1
+n6 op=1
+n7 op=1
+n8 op=1
+k42
+k43
+n5 op=0
+n6 op=0
+n7 op=0
+n8 op=0
+k44
+k45
+s2 -
+n5 hid=opacity0
+n6 -
+n7 -
+n8 -

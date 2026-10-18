@@ -7,6 +7,9 @@
   var MOT = DATA.motions;
   var AX = DATA.axes;
   var AB = DATA.runs.length === 2;
+  // The B side is the run's approved references (a check report whose
+  // runs left them), not a second run.
+  var REF = AB && !!DATA.runs[1].reference;
   var GLIDE = 1 << MOT.indexOf('GLIDE');
 
   // ---- small helpers ------------------------------------------------------
@@ -223,13 +226,13 @@
     ul.textContent = '';
     ids.forEach(function (id) {
       var st = statusOf(id);
-      var any = DATA.runs.some(function (r) { return r.scenarios.some(function (s) { return s.id === id && s.verdict; }); });
+      var any = DATA.runs[0].scenarios.some(function (s) { return s.id === id && s.refs && s.refs.status === 'missing'; });
       if (q && (id + ' ' + st).toLowerCase().indexOf(q) < 0) return;
       var li = el('li', { cls: id === S.id ? 'cur' : '', title: id + ': ' + st, onclick: function () { pick(id); } },
         el('span', { cls: 'dot st-' + st }),
         el('span', { cls: 'name', text: id }),
         el('span', { cls: 'note st-' + st, text: st.toUpperCase() }),
-        any ? el('span', { cls: 'note', text: 'verdict' }) : null);
+        any ? el('span', { cls: 'note', text: 'no reference' }) : null);
       ul.appendChild(li);
     });
   }
@@ -566,18 +569,20 @@
     if (!a) return;
     var ka = a.tl.ks[S.i];
     var ib = b ? at(b, ka) : -1;
-    if (flickTimer && S.view !== 'flicker') { clearInterval(flickTimer); flickTimer = null; }
-    if (!AB || S.view === 'a') st.appendChild(stageOf(a, S.i, b, AB ? 'A: ' + DATA.runs[0].label : null));
-    else if (S.view === 'b') st.appendChild(stageOf(b, ib, a, 'B: ' + DATA.runs[1].label));
-    else if (S.view === 'side') {
+    // A scenario B does not have (a run that matches its reference) shows A.
+    var view = b ? S.view : 'a';
+    if (flickTimer && view !== 'flicker') { clearInterval(flickTimer); flickTimer = null; }
+    if (!AB || view === 'a') st.appendChild(stageOf(a, S.i, b, AB && b ? 'A: ' + DATA.runs[0].label : null));
+    else if (view === 'b') st.appendChild(stageOf(b, ib, a, 'B: ' + DATA.runs[1].label));
+    else if (view === 'side') {
       var cols = el('div', { cls: 'cols' });
       cols.appendChild(stageOf(a, S.i, b, 'A: ' + DATA.runs[0].label));
       cols.appendChild(stageOf(b, ib, a, 'B: ' + DATA.runs[1].label));
       st.appendChild(cols);
-    } else if (S.view === 'flicker') {
+    } else if (view === 'flicker') {
       st.appendChild(S.flickB ? stageOf(b, ib, a, 'B: ' + DATA.runs[1].label) : stageOf(a, S.i, b, 'A: ' + DATA.runs[0].label));
       if (!flickTimer) flickTimer = setInterval(function () { S.flickB = !S.flickB; renderStage(); }, 600);
-    } else if (S.view === 'difference') {
+    } else if (view === 'difference') {
       st.appendChild(stageOf(a, S.i, b, 'A against B: changed pixels red'));
     }
   }
@@ -673,7 +678,7 @@
 
   var TABS = [['findings', 'Findings'], ['nodes', 'Nodes'], ['curves', 'Curves'], ['cost', 'Cost']];
   if (AB) TABS.push(['ab', 'A/B']);
-  TABS.push(['verdict', 'Verdict']);
+  TABS.push(['verdict', 'Approve']);
   if (!TABS.some(function (t) { return t[0] === S.tab; })) S.tab = 'findings';
 
   function setTab(t) {
@@ -957,7 +962,7 @@
     var a = scOf(0, S.id), b = scOf(1, S.id);
     var info = DATA.ab && DATA.ab.scenarios ? DATA.ab.scenarios[S.id] : null;
     p.appendChild(el('div', { text: 'A: ' + DATA.runs[0].label + (a ? ' (' + a.status + ')' : ' (not run)') + ' · B: ' + DATA.runs[1].label + (b ? ' (' + b.status + ')' : ' (not run)') }));
-    if (!info) { p.appendChild(el('div', { cls: 'note', text: 'Only one side ran this scenario.' })); return; }
+    if (!info) { p.appendChild(el('div', { cls: 'note', text: REF ? 'The run matches its approved reference, or has none: there is nothing to put beside it.' : 'Only one side ran this scenario.' })); return; }
     p.appendChild(el('div', { cls: 'note', text: info.same ? 'The two runs drew the same frames (equal digests).' : 'The first frame each node drew differently (beyond 0.5 px or 1/255 opacity), by key:' }));
     var t = el('table');
     t.appendChild(el('tr', null, el('th', { text: 'node' }), el('th', { text: 'k' }), el('th', { text: 'what' }), el('th', { text: 'A' }), el('th', { text: 'B' })));
@@ -975,30 +980,52 @@
 
   function quote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
 
+  // The approval step: the run's reference state and the command that
+  // records it, Good as its approved reference, Bad as a known-bad
+  // recording. A note is required either way.
   function verdictPanel(p) {
-    var r = AB && S.view === 'b' ? 1 : 0;
+    var r = AB && !REF && S.view === 'b' ? 1 : 0;
     var sc = scOf(r, S.id) || A();
     if (!sc) return;
     var run = DATA.runs[DATA.runs[r] && scOf(r, S.id) ? r : 0];
-    if (sc.verdict) {
-      p.appendChild(el('div', { text: 'Recorded verdict: ' + sc.verdict.verdict + ' (' + sc.verdict.date + ', ' + sc.verdict.rev + ')' + (sc.verdict.note ? ': ' + sc.verdict.note : '') }));
+    var refs = sc.refs;
+    if (refs && refs.good) {
+      p.appendChild(el('div', { text: 'Approved reference (' + refs.file + '): ' + refs.good.date + ', ' + refs.good.rev + ', by ' + refs.good.approver + ': ' + refs.good.note }));
     } else {
-      p.appendChild(el('div', { cls: 'note', text: 'No verdict recorded for ' + sc.id + '.' }));
+      p.appendChild(el('div', { cls: 'note', text: 'No approved reference for ' + sc.id + (refs ? ' (' + refs.file + ')' : '') + '.' }));
     }
+    (refs ? refs.bad : []).forEach(function (b) {
+      p.appendChild(el('div', { cls: 'note', text: 'Known bad: ' + b.date + ', ' + b.rev + ', by ' + b.approver + ': ' + b.note }));
+    });
+    var said = {
+      match: 'The run matches it (within a quantum).',
+      changed: 'The run left it (CHANGED). The A/B view puts the reference (B, wireframes) beside the run.',
+      missing: 'The gate fails until it is approved.',
+      bad: 'The run reproduces a known-bad recording.',
+      skip: 'This run was not compared with it.'
+    };
+    if (refs && said[refs.status]) p.appendChild(el('div', { cls: refs.status === 'match' ? 'note' : 'warn', text: said[refs.status] }));
+    if (refs && refs.diff.length) p.appendChild(el('pre', { cls: 'cmd', text: refs.diff.join('\n') }));
     var key = 'strand-eval:verdict:' + run.out + '/' + sc.id;
     var draft = {};
     try { draft = JSON.parse(store.get(key) || '{}') || {}; } catch (e) { draft = {}; }
     var cmd = el('pre', { cls: 'cmd' });
-    var note = el('textarea', { rows: 3, placeholder: 'What is good or wrong about this motion (kept in this browser until copied)' });
+    var note = el('textarea', { rows: 3, placeholder: 'Why this motion is right (Good) or wrong (Bad): required, kept in this browser until copied' });
     note.value = draft.note || '';
     function update() {
       store.set(key, JSON.stringify(draft));
-      cmd.textContent = draft.v ? 'scripts/container/run.sh eval verdict ' + run.out + '/' + sc.id + ' ' + draft.v + (draft.note ? ' --note ' + quote(draft.note) : '') : 'Pick Good or Bad.';
+      var n = (draft.note || '').trim();
+      var at = run.out + '/' + sc.id;
+      if (!draft.v) cmd.textContent = 'Pick Good (approve it as the reference) or Bad (record it as known bad).';
+      else if (!n) cmd.textContent = 'Write a note: approving needs one, and the reference keeps it.';
+      else if (draft.v === 'good') cmd.textContent = 'scripts/container/run.sh eval approve ' + at + ' --note ' + quote(n);
+      else cmd.textContent = 'scripts/container/run.sh eval verdict ' + at + ' bad --note ' + quote(n);
+      copy.disabled = !(draft.v && n);
       good.className = 'btn' + (draft.v === 'good' ? ' on' : '');
       bad.className = 'btn' + (draft.v === 'bad' ? ' on' : '');
     }
-    var good = el('button', { type: 'button', text: 'Good', onclick: function () { draft.v = 'good'; update(); } });
-    var bad = el('button', { type: 'button', text: 'Bad', onclick: function () { draft.v = 'bad'; update(); } });
+    var good = el('button', { type: 'button', text: 'Good', title: 'Approve this run as the reference', onclick: function () { draft.v = 'good'; update(); } });
+    var bad = el('button', { type: 'button', text: 'Bad', title: 'Record this run as a known-bad recording', onclick: function () { draft.v = 'bad'; update(); } });
     note.addEventListener('input', function () { draft.note = note.value; update(); });
     var copy = el('button', {
       type: 'button', cls: 'btn', text: 'Copy command', onclick: function () {
@@ -1019,7 +1046,7 @@
     p.appendChild(note);
     p.appendChild(cmd);
     p.appendChild(copy);
-    p.appendChild(el('div', { cls: 'note', text: 'The command writes eval/refs/' + sc.id + '.ref.json: a run that reproduces a recording marked bad then fails its reference check; one that no longer matches a good one is CHANGED.' }));
+    p.appendChild(el('div', { cls: 'note', text: 'Good writes the run as the approved reference in ' + (refs ? refs.file : 'eval/refs/') + ' with the note, the date, the revision and $STRAND_EVAL_APPROVER; a later run that leaves it is CHANGED and fails the gate. Bad records it as known bad: a run that comes back to it fails.' }));
     update();
   }
 

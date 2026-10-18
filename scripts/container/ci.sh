@@ -219,7 +219,7 @@ step "cargo fmt --check (strand-eval)" 10 bash scripts/eval/ci.sh 1
 step "cargo clippy (eval/, -D warnings)" 60 bash scripts/eval/ci.sh 2
 step "check-lock.sh, check-isolation.sh and their self-tests" 10 bash scripts/eval/ci.sh 3
 step "cargo test (eval/)" 60 bash scripts/eval/ci.sh 4
-step "strand-eval check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
+step "strand-eval refs-check and check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
 
 echo
 # The compile cache's hits and misses (run.sh's sccache), when it ran.

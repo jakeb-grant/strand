@@ -1,0 +1,90 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "hover-popup"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario b9bf9acadaee0e6c
+seal d7b3627111650121
+S1 0 - "bar Top"
+S2 21 65 "popup#pop"
+N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
+N1 "before|shell.strand:4:5|[Mock | DP-1]#0" "box#before"
+N2 "item|shell.strand:5:5|[Mock | DP-1]#1" "box#item"
+N3 "strip|shell.strand:3:3|[Mock | DP-1]#0" "row#strip"
+N4 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+N5 "card|shell.strand:7:9|[Mock | DP-1]#0" "box#card"
+N6 "pop|shell.strand:6:7|[Mock | DP-1]#0" "popup#pop"
+k0 p1
+s1 z=300,30
+n0 x=82 y=5 w=30 h=20
+n1 x=0 y=5 w=30 h=20
+n2 x=36 y=0 w=40 h=30
+n3 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30
+k21 p2
+s2 z=120,40 o=-4,36 i=none
+n5 srf=2 x=0 y=-6 w=120 h=40 op=0 hid=opacity0
+n6 srf=2 x=0 y=0 w=120 h=40
+k22
+s2 i=0,-4,120,40
+n5 y=-4 op=37 hid=-
+k23
+s2 i=0,-2,120,40
+n5 y=-2 op=98
+k24
+s2 i=0,-1,120,40
+n5 y=-1 op=151
+k25
+s2 i=0,0,120,40
+n5 y=0 op=190
+k26
+n5 op=216
+k27
+n5 op=232
+k28
+n5 op=241
+k29
+n5 op=247
+k30
+n5 op=251
+k31
+n5 op=253
+k32
+n5 op=254
+k33
+k34
+n5 op=255
+k35
+k36
+k51
+s2 i=none
+n5 y=-2 op=218 hid=inert
+k52
+n5 y=-4 op=157
+k53
+n5 y=-5 op=104
+k54
+n5 y=-6 op=65
+k55
+n5 op=39
+k56
+n5 op=23
+k57
+n5 op=14
+k58
+n5 op=8
+k59
+n5 op=4
+k60
+n5 op=2
+k61
+n5 op=1
+k62
+k63
+n5 op=0
+k64
+k65
+s2 -
+n5 hid=opacity0

@@ -68,28 +68,31 @@ pub struct Entry {
     pub notes: Vec<String>,
     /// Why it could not run.
     pub error: Option<String>,
-    /// The owner's recorded verdict (`eval/refs/<id>.ref.json`).
-    pub verdict: Option<crate::checks::Reference>,
+    /// Its reference recordings, as the report shows them.
+    pub refs: Option<RefInfo>,
+    /// Its approved reference drawn as a trace (wireframes), when the run
+    /// left it: the viewer's B side.
+    pub reference: Option<RunTrace>,
     /// Its contact sheets, by `(result, finding)` index, relative to the
     /// run's directory.
     pub sheets: BTreeMap<(usize, usize), String>,
 }
 
 impl Entry {
-    /// `error`, `fail`, `xfail`, `changed`, `pass` or `run` (traced, not
-    /// checked).
+    /// `error`, `fail`, `changed` (it left its reference and failed
+    /// nothing else), `xfail`, `pass` or `run` (traced, not checked).
     pub fn status(&self) -> &'static str {
         if self.error.is_some() {
             return "error";
         }
         let Some(r) = &self.report else { return "run" };
         let has = |f: fn(&Status) -> bool| r.results.iter().any(|x| f(&x.status));
-        if !r.ok() {
+        if r.only_changed() {
+            "changed"
+        } else if !r.ok() {
             "fail"
         } else if has(|s| matches!(s, Status::Xfail(_))) {
             "xfail"
-        } else if has(|s| matches!(s, Status::Changed)) {
-            "changed"
         } else {
             "pass"
         }
@@ -169,6 +172,119 @@ pub fn write_entry(out: &Path, e: &mut Entry, frames: Frames) -> Result<(), Erro
     Ok(())
 }
 
+/// A reference recording's meta, as a report shows it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct RefMeta {
+    pub note: String,
+    pub date: String,
+    pub rev: String,
+    pub approver: String,
+}
+
+impl RefMeta {
+    fn of(b: &crate::refs::Block) -> RefMeta {
+        RefMeta {
+            note: b.note.clone(),
+            date: b.date.clone(),
+            rev: b.rev.clone(),
+            approver: b.approver.clone(),
+        }
+    }
+}
+
+/// What a report shows of a scenario's references.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct RefInfo {
+    /// `eval/refs/<id>.ref`, `eval/refs/matrix-60.ref`.
+    pub file: String,
+    /// `match`, `changed`, `missing`, `bad` (a known-bad recording
+    /// reproduced) or `skip` (not compared).
+    pub status: String,
+    pub good: Option<RefMeta>,
+    pub bad: Vec<RefMeta>,
+    /// The CHANGED line, then each node's first difference.
+    pub diff: Vec<String>,
+}
+
+/// What a report keeps of `refs` (`None`: not compared) after `report`:
+/// the reference's state, and its recording as a trace on `trace`'s
+/// scenario when the run left it.
+pub fn refs_of(
+    refs: Option<&crate::refs::Refs>,
+    report: &Report,
+    trace: &RunTrace,
+) -> (Option<RefInfo>, Option<RunTrace>) {
+    let Some(refs) = refs else {
+        return (None, None);
+    };
+    use crate::checks::CheckId;
+    let st = report.status(CheckId::Reference);
+    let status = match st {
+        Some(Status::Changed) if refs.good.is_none() => "missing",
+        Some(Status::Changed) => "changed",
+        Some(Status::Pass) => "match",
+        Some(Status::Fail) => "bad",
+        _ if refs.good.is_none() => "missing",
+        _ => "skip",
+    };
+    let mut diff = Vec::new();
+    for res in report
+        .results
+        .iter()
+        .filter(|r| r.check == CheckId::Reference.name())
+    {
+        for f in &res.findings {
+            diff.push(match (f.sev, st) {
+                (Sev::Fail, Some(Status::Changed)) => format!("CHANGED: {}: {}", report.id, f.msg),
+                _ => f.msg.clone(),
+            });
+        }
+    }
+    let reference = match (status, &refs.good) {
+        ("changed", Some(b)) => b.recording().ok().map(|r| r.to_trace(trace)),
+        _ => None,
+    };
+    let info = RefInfo {
+        file: crate::refs::shown(&refs.file),
+        status: status.into(),
+        good: refs.good.as_ref().map(RefMeta::of),
+        bad: refs.bad.iter().map(RefMeta::of).collect(),
+        diff,
+    };
+    (Some(info), reference)
+}
+
+/// The viewer page of `entries`: with, when any run left its approved
+/// reference, the references as a second run (B), drawn as wireframes.
+pub fn page_of(info: &RunInfo, entries: &[Entry]) -> Result<String, Error> {
+    let refs: Vec<Entry> = entries
+        .iter()
+        .filter_map(|e| {
+            Some(Entry {
+                id: e.id.clone(),
+                file: e.file.clone(),
+                source: e.source.clone(),
+                trace: e.reference.clone()?,
+                refs: e.refs.clone(),
+                ..Entry::default()
+            })
+        })
+        .collect();
+    let mut page = html::Page::run(info, entries);
+    if !refs.is_empty() {
+        page.runs[0].label = format!("run {}", page.runs[0].label);
+        page.runs.push(html::PageRun {
+            label: "approved reference".into(),
+            out: info.out.display().to_string(),
+            frames: Frames::None,
+            entries: &refs,
+            reference: true,
+        });
+        page.ab = Some(crate::ab::compare(entries, &refs));
+    }
+    html::page(&page)
+}
+
 /// What a run's report is of.
 #[derive(Debug)]
 pub struct RunInfo {
@@ -197,7 +313,7 @@ pub fn write_run(info: &RunInfo, entries: &mut [Entry], lines: &[String]) -> Res
     write(&info.out.join("summary.md"), md.as_bytes())?;
     let json = summary::json(info, entries);
     write(&info.out.join("summary.json"), json.as_bytes())?;
-    let page = html::page(&html::Page::run(info, entries))?;
+    let page = page_of(info, entries)?;
     write(&info.out.join("index.html"), page.as_bytes())?;
     Ok(())
 }

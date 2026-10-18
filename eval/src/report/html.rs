@@ -34,6 +34,9 @@ pub struct PageRun<'a> {
     pub out: String,
     pub frames: Frames,
     pub entries: &'a [Entry],
+    /// The approved references of the run beside it (wireframes), not a
+    /// run of its own.
+    pub reference: bool,
 }
 
 /// A page: one run, or two side by side (A/B).
@@ -69,6 +72,7 @@ impl<'a> Page<'a> {
                 out: info.out.display().to_string(),
                 frames: info.frames,
                 entries,
+                reference: false,
             }],
             ab: None,
             budget: BUDGET,
@@ -192,7 +196,7 @@ fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool) -> Value {
         "notes": e.notes,
         "trace": e.trace,
         "checks": e.report,
-        "verdict": e.verdict,
+        "refs": e.refs,
         "thinned": thinned,
         "images": images,
         "sheets": sheets,
@@ -247,6 +251,7 @@ pub fn page(p: &Page) -> Result<String, Error> {
                 json!({
                     "label": run.label,
                     "out": run.out,
+                    "reference": run.reference,
                     "frames": match run.frames { Frames::All => "all", Frames::Failing => "failing", Frames::None => "none" },
                     "scenarios": scenarios,
                 })

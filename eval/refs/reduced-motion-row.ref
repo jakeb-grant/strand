@@ -1,0 +1,45 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "reduced-motion-row"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario ae90c4f34d09aeaa
+seal ceab750bd8c8bff0
+S1 0 - "bar Top"
+N0 "bars|status-row.strand:13:9|[Mock | DP-1]#0" "box#bars"
+N1 "count|status-row.strand:20:11|[Mock | DP-1]#0" "row#count"
+N2 "last|status-row.strand:24:9|[Mock | DP-1]#1" "box#last"
+N3 "status|status-row.strand:12:7|[Mock | DP-1]#0" "row#status"
+N4 "|status-row.strand:10:3|[Mock | DP-1]#0" "split@status-row.strand:10"
+N5 "|status-row.strand:11:5|[Mock | DP-1]#0" "end@status-row.strand:11"
+N6 "|status-row.strand:14:11|[Mock | DP-1]#0" "row@status-row.strand:14"
+N7 "|status-row.strand:15:40|[Mock | DP-1][0]#0" "box@status-row.strand:15"
+N8 "|status-row.strand:15:40|[Mock | DP-1][1]#1" "box@status-row.strand:15"
+N9 "|status-row.strand:15:40|[Mock | DP-1][2]#2" "box@status-row.strand:15"
+N10 "|status-row.strand:21:13|[Mock | DP-1]#0" "text(\"llll\")"
+N11 "|status-row.strand:8:1|[Mock | DP-1]#0" "bar@status-row.strand:8"
+N12 "focus|status-row.strand:18:18|[Mock | DP-1]#0" "text#focus"
+k0 p1
+s1 z=300,30
+n0 x=224 y=9 w=16 h=12
+n1 x=246 y=8 w=14 h=15
+n2 x=266 y=10 w=20 h=10
+n3 x=224 y=8 w=62 h=15
+n4 x=0 y=0 w=300 h=30
+n5 x=150 y=0 w=136 h=30
+n6 x=224 y=9 w=16 h=12
+n7 x=224 y=13 w=4 h=8
+n8 x=230 y=11 w=4 h=10
+n9 x=236 y=9 w=4 h=12
+n10 x=246 y=8 w=14 h=15 txt=S
+n11 x=0 y=0 w=300 h=30
+k1
+n1 -
+n10 -
+n12 x=246 y=8 w=14 h=15 txt=S
+k2
+n1 x=246 y=8 w=14 h=15
+n10 x=246 y=8 w=14 h=15 txt=S
+n12 -

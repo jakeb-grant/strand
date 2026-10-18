@@ -58,12 +58,33 @@ pub fn markdown(info: &RunInfo, entries: &[Entry]) -> String {
                         "  - {} XPASS: now passes, remove expect_fail ({why})",
                         res.check
                     )),
-                    Status::Changed => md.push(format!("  - {} CHANGED", res.check)),
+                    Status::Changed => {
+                        for f in &res.findings {
+                            md.push(match f.sev {
+                                crate::checks::Sev::Fail => {
+                                    format!("  - CHANGED: {}: {}", e.id, f.msg)
+                                }
+                                _ => format!("    - {}", f.msg),
+                            });
+                        }
+                        md.push(format!(
+                            "  - approve: `scripts/container/run.sh eval approve {}/{} --note \"why\"`",
+                            info.out.display(),
+                            e.id
+                        ));
+                    }
                     _ => {}
                 }
             }
         }
+        let changed = e
+            .report
+            .as_ref()
+            .is_some_and(|r| r.status(crate::checks::CheckId::Reference) == Some(&Status::Changed));
         for (at, f) in e.failing() {
+            if changed && f.check == crate::checks::CheckId::Reference.name() {
+                continue;
+            }
             let mut line = format!("  - {}", describe(f, &e.trace));
             if let Some(s) = e.sheets.get(&at) {
                 line += &format!(" — sheet `{}/{s}`", info.out.display());
@@ -73,9 +94,17 @@ pub fn markdown(info: &RunInfo, entries: &[Entry]) -> String {
         for n in &e.notes {
             md.push(format!("  - note: {n}"));
         }
-        if matches!(st, "fail" | "error") {
+        if matches!(st, "fail" | "error" | "changed") {
             failed.push(e.id.as_str());
         }
+    }
+    let changed = entries.iter().filter(|e| e.status() == "changed").count();
+    if changed > 0 {
+        md.push(String::new());
+        md.push(format!(
+            "{changed} changed: approve them all with `scripts/container/run.sh eval approve --all-changed {} --note \"why\"`, once each change is seen to be right.",
+            info.out.display()
+        ));
     }
     md.push(String::new());
     md.push(if failed.is_empty() {
@@ -134,6 +163,7 @@ pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
                 "checks": checks,
                 "findings": findings,
                 "notes": e.notes,
+                "reference": e.refs,
             })
         })
         .collect();
@@ -144,7 +174,7 @@ pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
         "out": info.out.display().to_string(),
         "rev": build.map(|b| b.rev.clone()),
         "dirty": build.map(|b| b.dirty),
-        "ok": entries.iter().all(|e| !matches!(e.status(), "fail" | "error")),
+        "ok": entries.iter().all(|e| !matches!(e.status(), "fail" | "error" | "changed")),
         "scenarios": scenarios,
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()

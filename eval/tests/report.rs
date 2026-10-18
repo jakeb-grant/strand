@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use strand_eval::checks::{self, CheckId, Reference, Status};
+use strand_eval::checks::{self, CheckId, Status};
 use strand_eval::harness::{Image, RunOptions};
 use strand_eval::report::{self, Entry, Frames, RunInfo, html};
 use strand_eval::scenario::{Scenario, eval_root};
@@ -254,10 +254,10 @@ fn a_failing_finding_is_explained_headless() {
     .unwrap();
 }
 
-/// A verdict is a reference: a run that reproduces one marked bad fails
-/// `reference`, and one that no longer matches a good one is CHANGED.
+/// A bad verdict is a known-bad recording: a run that reproduces it fails
+/// `reference`; a verdict needs a note and is good or bad.
 #[test]
-fn a_verdict_becomes_a_reference_the_check_reads() {
+fn a_bad_verdict_becomes_a_recording_the_check_reads() {
     let out = scratch("verdict");
     let ok = ROW.replace("expect still #right x\n", "expect still #left x\n");
     let mut entries = vec![checked(&ok)];
@@ -273,32 +273,33 @@ fn a_verdict_becomes_a_reference_the_check_reads() {
         refs.display().to_string(),
     ])
     .unwrap();
-    let r = Reference::load(&refs.join("report-row.ref.json"))
+    let file = strand_eval::refs::RefFile::load(&refs.join("report-row.ref"))
         .unwrap()
         .unwrap();
-    assert_eq!(r.verdict, "bad");
-    assert_eq!(r.note, "the right box should not slide");
-    assert_eq!(r.digest, entries[0].trace.digest);
-    assert!(r.path.keys().any(|k| k.starts_with("right|")));
+    let bad = file.bad("report-row");
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0].note, "the right box should not slide");
+    assert!(file.good("report-row").is_none());
     let sc = scenario(&ok);
+    let r = strand_eval::refs::for_scenario(&sc, &refs, false);
     let rep = checks::evaluate(&sc, &entries[0].trace, None, None, Some(&r));
     assert_eq!(rep.status(CheckId::Reference), Some(&Status::Fail));
-    let good = Reference {
-        verdict: "good".into(),
-        digest: "blake3:other".into(),
-        path: BTreeMap::new(),
-        ..r
-    };
-    let rep = checks::evaluate(&sc, &entries[0].trace, None, None, Some(&good));
-    assert_eq!(rep.status(CheckId::Reference), Some(&Status::Changed));
-    assert!(rep.ok(), "CHANGED never gates");
-    let e = strand_eval::main_with(&[
-        "verdict".into(),
-        out.join("report-row").display().to_string(),
-        "meh".into(),
-    ])
-    .unwrap_err();
-    assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
+    assert!(
+        rep.failures(CheckId::Reference)[0]
+            .msg
+            .contains("reproduces a known-bad recording"),
+        "{:?}",
+        rep.failures(CheckId::Reference)
+    );
+    for args in [vec!["meh"], vec!["bad"], vec!["bad", "--note", "  "]] {
+        let mut v = vec![
+            "verdict".to_string(),
+            out.join("report-row").display().to_string(),
+        ];
+        v.extend(args.iter().map(|s| s.to_string()));
+        let e = strand_eval::main_with(&v).unwrap_err();
+        assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
+    }
 }
 
 /// A/B: two runs of one scenario where a node is drawn 3 px lower from

@@ -1,0 +1,174 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "enter-exit-row"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario d99ee5f4923c6bfa
+seal 40587b805d638342
+S1 0 - "bar Top"
+N0 "leave|shell.strand:8:14|[Mock | DP-1]#1" "box#leave"
+N1 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
+N2 "right|shell.strand:9:5|[Mock | DP-1]#2" "box#right"
+N3 "strip|shell.strand:4:3|[Mock | DP-1]#0" "row#strip"
+N4 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N5 "fade|shell.strand:6:13|[Mock | DP-1]#1" "box#fade"
+N6 "slide|shell.strand:7:13|[Mock | DP-1]#2" "box#slide"
+k0 p1
+s1 z=300,30
+n0 x=36 y=7 w=16 h=16
+n1 x=10 y=9 w=20 h=12
+n2 x=58 y=9 w=20 h=12
+n3 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30
+k1
+n0 x=50 op=218 hid=inert
+n2 x=69
+n5 x=36 y=7 w=16 h=16 op=37
+n6 x=54 y=7 w=16 h=16 op=37
+k2
+n0 x=69 op=157
+n2 x=86
+n5 op=98
+n6 x=56 op=98
+k3
+n0 x=82 op=104
+n2 x=97
+n5 op=151
+n6 x=57 op=151
+k4
+n0 x=88 op=65
+n2 x=102
+n5 op=190
+n6 x=58 op=190
+k5
+n0 x=89 op=39
+n2 x=103
+n5 op=216
+n6 op=216
+k6
+n0 op=23
+n5 op=232
+n6 op=232
+k7
+n0 op=14
+n5 op=241
+n6 op=241
+k8
+n0 x=88 op=8
+n2 x=102
+n5 op=247
+n6 op=247
+k9
+n0 op=4
+n5 op=251
+n6 op=251
+k10
+n0 op=2
+n5 op=253
+n6 op=253
+k11
+n0 op=1
+n5 op=254
+n6 op=254
+k12
+k13
+n0 op=0
+n5 op=255
+n6 op=255
+k14
+k15
+n0 hid=opacity0
+k16
+n0 -
+n2 x=96
+k17
+n2 x=88
+k18
+n2 x=82
+k19
+n2 x=80
+k20
+n2 x=79
+k21
+k22
+n2 x=80
+k23
+k24
+k25
+k26
+n0 x=80 y=7 w=16 h=16
+n2 x=86
+n5 op=218 hid=inert
+n6 x=56 op=218 hid=inert
+k27
+n2 x=94
+n5 op=157
+n6 x=54 op=157
+k28
+n2 x=100
+n5 op=104
+n6 x=53 op=104
+k29
+n2 x=102
+n5 op=65
+n6 x=52 op=65
+k30
+n2 x=103
+n5 op=39
+n6 op=39
+k31
+n5 op=23
+n6 op=23
+k32
+n2 x=102
+n5 op=14
+n6 op=14
+k33
+n5 op=8
+n6 op=8
+k34
+n5 op=4
+n6 op=4
+k35
+n5 op=2
+n6 op=2
+k36
+n5 op=1
+n6 op=1
+k37
+k38
+n5 op=0
+n6 op=0
+k39
+k40
+n5 hid=opacity0
+n6 hid=opacity0
+k41
+n0 x=69
+n2 x=91
+n5 -
+n6 -
+k42
+n0 x=52
+n2 x=74
+k43
+n0 x=41
+n2 x=63
+k44
+n0 x=36
+n2 x=58
+k45
+n0 x=35
+n2 x=57
+k46
+k47
+k48
+n0 x=36
+n2 x=58
+k49
+k50
+k51
+k52
+k53

@@ -38,8 +38,8 @@ pub mod teleport;
 pub mod twin;
 pub mod vanish;
 
+pub use crate::refs::Refs;
 pub use crate::scenario::CheckId;
-pub use reference::Reference;
 
 /// How bad a finding is.
 #[derive(
@@ -49,7 +49,7 @@ pub use reference::Reference;
 pub enum Sev {
     /// Fails the check.
     Fail,
-    /// Worth a look; never gates (a `good` reference that changed).
+    /// Worth a look; never gates.
     Warn,
     /// Context (a pure layout jump).
     Info,
@@ -131,7 +131,9 @@ pub enum Status {
     Xfail(String),
     /// Passed although `expect_fail` says it fails: the gate fails.
     Xpass(String),
-    /// A `good` reference no longer matches (never gates).
+    /// The run left its approved reference recording, or has none where
+    /// one is required: it gates until the run is approved
+    /// (`strand-eval approve`) or the change undone.
     Changed,
     /// Not run, and why.
     Skip(String),
@@ -152,12 +154,35 @@ pub struct Report {
 }
 
 impl Report {
-    /// Whether the gate passes: no check failed and none passed against
-    /// its `expect_fail`.
+    /// Whether the gate passes: no check failed, none passed against its
+    /// `expect_fail`, and the run is its approved reference.
     pub fn ok(&self) -> bool {
         self.results
             .iter()
-            .all(|r| !matches!(r.status, Status::Fail | Status::Xpass(_)))
+            .all(|r| !matches!(r.status, Status::Fail | Status::Xpass(_) | Status::Changed))
+    }
+
+    /// Whether the run left its reference (or has none where one is
+    /// required) and failed nothing else.
+    pub fn only_changed(&self) -> bool {
+        let mut changed = false;
+        for r in &self.results {
+            match r.status {
+                Status::Fail | Status::Xpass(_) => return false,
+                Status::Changed => changed = true,
+                _ => {}
+            }
+        }
+        changed
+    }
+
+    /// The `CHANGED: <id>: …` line, when the run left its reference.
+    pub fn changed_line(&self) -> Option<String> {
+        self.results
+            .iter()
+            .find(|r| r.check == CheckId::Reference.name() && r.status == Status::Changed)
+            .and_then(|r| r.findings.iter().find(|f| f.sev == Sev::Fail))
+            .map(|f| format!("CHANGED: {}: {}", self.id, f.msg))
     }
 
     pub fn status(&self, check: CheckId) -> Option<&Status> {
@@ -190,6 +215,16 @@ impl Report {
                 Status::Skip(why) => format!("skip ({why})"),
             };
             out.push(format!("{} {}: {status}", self.id, r.check));
+            if r.status == Status::Changed {
+                // The first difference, then each node's first.
+                for f in &r.findings {
+                    out.push(match f.sev {
+                        Sev::Fail => format!("  CHANGED: {}: {}", self.id, f.msg),
+                        _ => format!("    {}", f.msg),
+                    });
+                }
+                continue;
+            }
             for f in r.findings.iter().filter(|f| f.sev != Sev::Info) {
                 out.push(format!("  {}", describe(f, trace)));
             }
@@ -665,14 +700,15 @@ pub fn first_per_node(findings: Vec<Finding>) -> Vec<Finding> {
 
 /// Runs the trace checks `sc` asks for. `twin` is the reduced-motion
 /// re-run, `again` a second run for determinism, `reference` the
-/// scenario's recorded verdict.
+/// scenario's reference recordings (`None`: not compared).
 pub fn evaluate(
     sc: &Scenario,
     trace: &RunTrace,
     twin: Option<&RunTrace>,
     again: Option<&RunTrace>,
-    reference: Option<&Reference>,
+    reference: Option<&Refs>,
 ) -> Report {
+    let raw = trace;
     // The checks read what the eye sees: rows moved with their surface.
     let moved = trace.on_screen();
     let trace = moved.as_ref().unwrap_or(trace);
@@ -710,8 +746,8 @@ pub fn evaluate(
                 CheckId::Budget if sc.budget.is_empty() => (Vec::new(), skip("no [budget]")),
                 CheckId::Budget => (budget::run(&cx), None),
                 CheckId::Reference => match reference {
-                    Some(r) => (reference::run(&cx, r), None),
-                    None => (Vec::new(), skip("no reference recorded")),
+                    Some(r) => reference::run(&cx, raw, r),
+                    None => (Vec::new(), skip("not compared with references")),
                 },
                 CheckId::Expect if trace.expects.is_empty() => {
                     (Vec::new(), skip("no expect steps"))

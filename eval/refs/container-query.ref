@@ -1,0 +1,99 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "container-query"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 72d709c00c76668e
+seal 2dccead056b1a27d
+S1 0 - "bar Top"
+N0 "after|shell.strand:10:5|[Mock | DP-1]#0" "box#after"
+N1 "label|shell.strand:8:7|[Mock | DP-1]#0" "text#label"
+N2 "probe|shell.strand:5:5|[Mock | DP-1]#0" "row#probe"
+N3 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N4 "|shell.strand:4:3|[Mock | DP-1]#0" "row@shell.strand:4"
+k0 p1
+s1 z=300,30
+n0 x=10 y=10 w=20 h=10
+n1 x=0 y=8 w=6 h=15 op=128 txt=S
+n2 x=0 y=8 w=6 h=15 op=128
+n3 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30
+k2
+n0 x=120
+n1 w=116
+n2 w=116
+k3
+n1 op=146
+n2 op=146
+k4
+n1 op=177
+n2 op=177
+k5
+n1 op=203
+n2 op=203
+k6
+n1 op=223
+n2 op=223
+k7
+n1 op=235
+n2 op=235
+k8
+n1 op=243
+n2 op=243
+k9
+n1 op=248
+n2 op=248
+k10
+n1 op=251
+n2 op=251
+k11
+n1 op=253
+n2 op=253
+k12
+n1 op=254
+n2 op=254
+k13
+k14
+n1 op=255
+n2 op=255
+k15
+k16
+k17
+n0 x=10
+n1 w=6 op=237
+n2 w=6 op=237
+k18
+n1 op=206
+n2 op=206
+k19
+n1 op=179
+n2 op=179
+k20
+n1 op=160
+n2 op=160
+k21
+n1 op=147
+n2 op=147
+k22
+n1 op=139
+n2 op=139
+k23
+n1 op=134
+n2 op=134
+k24
+n1 op=131
+n2 op=131
+k25
+n1 op=130
+n2 op=130
+k26
+n1 op=129
+n2 op=129
+k27
+n1 op=128
+n2 op=128
+k28
+k29
+k30

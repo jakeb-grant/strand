@@ -1,0 +1,574 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "island-card-swell"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 616a2f7b6fa02cf2
+seal e067dd3e5bf50169
+S1 0 - "bar Top"
+S2 0 - "popup#big"
+N0 "big|shell.strand:8:5|[Mock | DP-1]#0" "popup#big"
+N1 "card|shell.strand:9:7|[Mock | DP-1]#0" "col#card"
+N2 "notch|shell.strand:17:9|[Mock | DP-1]#0" "box#notch"
+N3 "|shell.strand:5:1|[Mock | DP-1]#0" "bar@shell.strand:5"
+N4 "|shell.strand:7:3|[Mock | DP-1]#0" "box@shell.strand:7"
+N5 "days|shell.strand:19:11|[Mock | DP-1]#0" "col#days"
+N6 "|shell.strand:21:15|[Mock | DP-1][Monday]#0" "row@shell.strand:21"
+N7 "|shell.strand:21:15|[Mock | DP-1][Thursday]#3" "row@shell.strand:21"
+N8 "|shell.strand:21:15|[Mock | DP-1][Tuesday]#1" "row@shell.strand:21"
+N9 "|shell.strand:21:15|[Mock | DP-1][Wednesday]#2" "row@shell.strand:21"
+N10 "|shell.strand:23:19|[Mock | DP-1][Monday][1]#0" "box@shell.strand:23"
+N11 "|shell.strand:23:19|[Mock | DP-1][Monday][2]#1" "box@shell.strand:23"
+N12 "|shell.strand:23:19|[Mock | DP-1][Monday][3]#2" "box@shell.strand:23"
+N13 "|shell.strand:23:19|[Mock | DP-1][Monday][4]#3" "box@shell.strand:23"
+N14 "|shell.strand:23:19|[Mock | DP-1][Monday][5]#4" "box@shell.strand:23"
+N15 "|shell.strand:25:17|[Mock | DP-1][Monday]#0" "text(\"Monday\")"
+N16 "|shell.strand:26:17|[Mock | DP-1][Monday]#5" "box@shell.strand:26"
+N17 "|shell.strand:23:19|[Mock | DP-1][Tuesday][1]#0" "box@shell.strand:23"
+N18 "|shell.strand:23:19|[Mock | DP-1][Tuesday][2]#1" "box@shell.strand:23"
+N19 "|shell.strand:23:19|[Mock | DP-1][Tuesday][3]#2" "box@shell.strand:23"
+N20 "|shell.strand:23:19|[Mock | DP-1][Tuesday][4]#3" "box@shell.strand:23"
+N21 "|shell.strand:23:19|[Mock | DP-1][Tuesday][5]#4" "box@shell.strand:23"
+N22 "|shell.strand:25:17|[Mock | DP-1][Tuesday]#0" "text(\"Tuesday\")"
+N23 "|shell.strand:26:17|[Mock | DP-1][Tuesday]#5" "box@shell.strand:26"
+N24 "|shell.strand:23:19|[Mock | DP-1][Wednesday][1]#0" "box@shell.strand:23"
+N25 "|shell.strand:23:19|[Mock | DP-1][Wednesday][2]#1" "box@shell.strand:23"
+N26 "|shell.strand:23:19|[Mock | DP-1][Wednesday][3]#2" "box@shell.strand:23"
+N27 "|shell.strand:23:19|[Mock | DP-1][Wednesday][4]#3" "box@shell.strand:23"
+N28 "|shell.strand:23:19|[Mock | DP-1][Wednesday][5]#4" "box@shell.strand:23"
+N29 "|shell.strand:25:17|[Mock | DP-1][Wednesday]#0" "text(\"Wednesday\")"
+N30 "|shell.strand:26:17|[Mock | DP-1][Wednesday]#5" "box@shell.strand:26"
+N31 "|shell.strand:23:19|[Mock | DP-1][Thursday][1]#0" "box@shell.strand:23"
+N32 "|shell.strand:23:19|[Mock | DP-1][Thursday][2]#1" "box@shell.strand:23"
+N33 "|shell.strand:23:19|[Mock | DP-1][Thursday][3]#2" "box@shell.strand:23"
+N34 "|shell.strand:23:19|[Mock | DP-1][Thursday][4]#3" "box@shell.strand:23"
+N35 "|shell.strand:23:19|[Mock | DP-1][Thursday][5]#4" "box@shell.strand:23"
+N36 "|shell.strand:25:17|[Mock | DP-1][Thursday]#0" "text(\"Thursday\")"
+N37 "|shell.strand:26:17|[Mock | DP-1][Thursday]#5" "box@shell.strand:26"
+k0 p1,2
+s1 z=1280,30
+s2 z=980,472 o=-280,30
+n0 srf=2 x=0 y=0 w=980 h=472
+n1 srf=2 x=280 y=0 w=420 h=32
+n2 srf=2 x=50 y=0 w=880 h=32
+n3 x=0 y=0 w=1280 h=30
+n4 x=0 y=0 w=420 h=30
+k1 p2
+n1 x=262 w=456 h=53
+n5 srf=2 x=50 y=32 w=880 h=228
+n6 srf=2 x=72 y=32 w=836 h=40 op=37
+n7 srf=2 x=72 y=192 w=836 h=40 op=0 hid=opacity0
+n8 srf=2 x=72 y=84 w=836 h=40 op=0 hid=opacity0
+n9 srf=2 x=72 y=138 w=836 h=40 op=0 hid=opacity0
+n10 srf=2 x=72 y=42 w=27 h=21 op=37
+n11 srf=2 x=114 y=42 w=27 h=21 op=37
+n12 srf=2 x=156 y=42 w=27 h=21 op=37
+n13 srf=2 x=198 y=42 w=27 h=21 op=37
+n14 srf=2 x=240 y=42 w=27 h=21 op=37
+n15 srf=2 x=282 y=45 w=47 h=15 op=37 txt=S
+n16 srf=2 x=344 y=36 w=131 h=33 op=37
+k2
+n1 x=222 w=536 h=102
+n6 y=35 op=98
+n10 y=45 op=98
+n11 y=45 op=98
+n12 y=45 op=98
+n13 y=45 op=98
+n14 y=45 op=98
+n15 y=48 op=98
+n16 y=39 op=98
+k3
+n1 x=176 w=628 h=162
+n6 y=37 op=151
+n10 y=47 op=151
+n11 y=47 op=151
+n12 y=47 op=151
+n13 y=47 op=151
+n14 y=47 op=151
+n15 y=50 op=151
+n16 y=41 op=151
+k4
+n1 x=133 w=714 h=223
+n6 y=38 op=190
+n10 op=190
+n11 op=190
+n12 op=190
+n13 op=190
+n14 op=190
+n15 op=190
+n16 op=190
+k5
+n1 x=98 w=784 h=279
+n6 op=216
+n8 y=86 op=37 hid=-
+n10 y=48 op=216
+n11 y=48 op=216
+n12 y=48 op=216
+n13 y=48 op=216
+n14 y=48 op=216
+n15 y=51 op=216
+n16 y=42 op=216
+n17 srf=2 x=72 y=96 w=27 h=21 op=37
+n18 srf=2 x=114 y=96 w=27 h=21 op=37
+n19 srf=2 x=156 y=96 w=27 h=21 op=37
+n20 srf=2 x=198 y=96 w=27 h=21 op=37
+n21 srf=2 x=240 y=96 w=27 h=21 op=37
+n22 srf=2 x=282 y=99 w=50 h=15 op=37 txt=S
+n23 srf=2 x=347 y=90 w=131 h=33 op=37
+k6
+n1 x=72 w=836 h=326
+n6 op=232
+n8 y=89 op=98
+n10 op=232
+n11 op=232
+n12 op=232
+n13 op=232
+n14 op=232
+n15 op=232
+n16 op=232
+n17 y=99 op=98
+n18 y=99 op=98
+n19 y=99 op=98
+n20 y=99 op=98
+n21 y=99 op=98
+n22 y=102 op=98
+n23 y=93 op=98
+k7
+n1 x=55 w=870 h=364
+n6 op=241
+n8 y=91 op=151
+n10 op=241
+n11 op=241
+n12 op=241
+n13 op=241
+n14 op=241
+n15 op=241
+n16 op=241
+n17 y=101 op=151
+n18 y=101 op=151
+n19 y=101 op=151
+n20 y=101 op=151
+n21 y=101 op=151
+n22 y=104 op=151
+n23 y=95 op=151
+k8
+n1 x=45 w=890 h=393
+n6 op=247
+n8 y=92 op=190
+n10 op=247
+n11 op=247
+n12 op=247
+n13 op=247
+n14 op=247
+n15 op=247
+n16 op=247
+n17 op=190
+n18 op=190
+n19 op=190
+n20 op=190
+n21 op=190
+n22 op=190
+n23 op=190
+k9
+n1 x=41 w=898 h=414
+n6 op=251
+n8 op=216
+n9 y=140 op=37 hid=-
+n10 op=251
+n11 op=251
+n12 op=251
+n13 op=251
+n14 op=251
+n15 op=251
+n16 op=251
+n17 y=102 op=216
+n18 y=102 op=216
+n19 y=102 op=216
+n20 y=102 op=216
+n21 y=102 op=216
+n22 y=105 op=216
+n23 y=96 op=216
+n24 srf=2 x=72 y=150 w=27 h=21 op=37
+n25 srf=2 x=114 y=150 w=27 h=21 op=37
+n26 srf=2 x=156 y=150 w=27 h=21 op=37
+n27 srf=2 x=198 y=150 w=27 h=21 op=37
+n28 srf=2 x=240 y=150 w=27 h=21 op=37
+n29 srf=2 x=282 y=153 w=69 h=15 op=37 txt=S
+n30 srf=2 x=366 y=144 w=131 h=33 op=37
+k10
+n1 x=39 w=902 h=429
+n6 op=253
+n8 op=232
+n9 y=143 op=98
+n10 op=253
+n11 op=253
+n12 op=253
+n13 op=253
+n14 op=253
+n15 op=253
+n16 op=253
+n17 op=232
+n18 op=232
+n19 op=232
+n20 op=232
+n21 op=232
+n22 op=232
+n23 op=232
+n24 y=153 op=98
+n25 y=153 op=98
+n26 y=153 op=98
+n27 y=153 op=98
+n28 y=153 op=98
+n29 y=156 op=98
+n30 y=147 op=98
+k11
+n1 x=40 w=900 h=439
+n6 op=254
+n8 op=241
+n9 y=145 op=151
+n10 op=254
+n11 op=254
+n12 op=254
+n13 op=254
+n14 op=254
+n15 op=254
+n16 op=254
+n17 op=241
+n18 op=241
+n19 op=241
+n20 op=241
+n21 op=241
+n22 op=241
+n23 op=241
+n24 y=155 op=151
+n25 y=155 op=151
+n26 y=155 op=151
+n27 y=155 op=151
+n28 y=155 op=151
+n29 y=158 op=151
+n30 y=149 op=151
+k12
+n1 x=42 w=896 h=445
+n8 op=247
+n9 y=146 op=190
+n17 op=247
+n18 op=247
+n19 op=247
+n20 op=247
+n21 op=247
+n22 op=247
+n23 op=247
+n24 op=190
+n25 op=190
+n26 op=190
+n27 op=190
+n28 op=190
+n29 op=190
+n30 op=190
+k13
+n1 x=44 w=892 h=448
+n6 op=255
+n7 y=194 op=37 hid=-
+n8 op=251
+n9 op=216
+n10 op=255
+n11 op=255
+n12 op=255
+n13 op=255
+n14 op=255
+n15 op=255
+n16 op=255
+n17 op=251
+n18 op=251
+n19 op=251
+n20 op=251
+n21 op=251
+n22 op=251
+n23 op=251
+n24 y=156 op=216
+n25 y=156 op=216
+n26 y=156 op=216
+n27 y=156 op=216
+n28 y=156 op=216
+n29 y=159 op=216
+n30 y=150 op=216
+n31 srf=2 x=72 y=204 w=27 h=21 op=37
+n32 srf=2 x=114 y=204 w=27 h=21 op=37
+n33 srf=2 x=156 y=204 w=27 h=21 op=37
+n34 srf=2 x=198 y=204 w=27 h=21 op=37
+n35 srf=2 x=240 y=204 w=27 h=21 op=37
+n36 srf=2 x=282 y=207 w=55 h=15 op=37 txt=S
+n37 srf=2 x=352 y=198 w=131 h=33 op=37
+k14
+n1 x=46 w=888 h=450
+n7 y=197 op=98
+n8 op=253
+n9 op=232
+n17 op=253
+n18 op=253
+n19 op=253
+n20 op=253
+n21 op=253
+n22 op=253
+n23 op=253
+n24 op=232
+n25 op=232
+n26 op=232
+n27 op=232
+n28 op=232
+n29 op=232
+n30 op=232
+n31 y=207 op=98
+n32 y=207 op=98
+n33 y=207 op=98
+n34 y=207 op=98
+n35 y=207 op=98
+n36 y=210 op=98
+n37 y=201 op=98
+k15
+n1 x=48 w=884
+n7 y=199 op=151
+n8 op=254
+n9 op=241
+n17 op=254
+n18 op=254
+n19 op=254
+n20 op=254
+n21 op=254
+n22 op=254
+n23 op=254
+n24 op=241
+n25 op=241
+n26 op=241
+n27 op=241
+n28 op=241
+n29 op=241
+n30 op=241
+n31 y=209 op=151
+n32 y=209 op=151
+n33 y=209 op=151
+n34 y=209 op=151
+n35 y=209 op=151
+n36 y=212 op=151
+n37 y=203 op=151
+k16
+n1 x=49 w=882
+n7 y=200 op=190
+n9 op=247
+n24 op=247
+n25 op=247
+n26 op=247
+n27 op=247
+n28 op=247
+n29 op=247
+n30 op=247
+n31 op=190
+n32 op=190
+n33 op=190
+n34 op=190
+n35 op=190
+n36 op=190
+n37 op=190
+k17
+n1 x=50 w=880 h=449
+n7 op=216
+n8 op=255
+n9 op=251
+n17 op=255
+n18 op=255
+n19 op=255
+n20 op=255
+n21 op=255
+n22 op=255
+n23 op=255
+n24 op=251
+n25 op=251
+n26 op=251
+n27 op=251
+n28 op=251
+n29 op=251
+n30 op=251
+n31 y=210 op=216
+n32 y=210 op=216
+n33 y=210 op=216
+n34 y=210 op=216
+n35 y=210 op=216
+n36 y=213 op=216
+n37 y=204 op=216
+k18
+n1 h=448
+n7 op=232
+n9 op=253
+n24 op=253
+n25 op=253
+n26 op=253
+n27 op=253
+n28 op=253
+n29 op=253
+n30 op=253
+n31 op=232
+n32 op=232
+n33 op=232
+n34 op=232
+n35 op=232
+n36 op=232
+n37 op=232
+k19
+n1 h=447
+n7 op=241
+n9 op=254
+n24 op=254
+n25 op=254
+n26 op=254
+n27 op=254
+n28 op=254
+n29 op=254
+n30 op=254
+n31 op=241
+n32 op=241
+n33 op=241
+n34 op=241
+n35 op=241
+n36 op=241
+n37 op=241
+k20
+n1 h=446
+n7 op=247
+n31 op=247
+n32 op=247
+n33 op=247
+n34 op=247
+n35 op=247
+n36 op=247
+n37 op=247
+k21
+n7 op=251
+n9 op=255
+n24 op=255
+n25 op=255
+n26 op=255
+n27 op=255
+n28 op=255
+n29 op=255
+n30 op=255
+n31 op=251
+n32 op=251
+n33 op=251
+n34 op=251
+n35 op=251
+n36 op=251
+n37 op=251
+k22
+n1 h=445
+n7 op=253
+n31 op=253
+n32 op=253
+n33 op=253
+n34 op=253
+n35 op=253
+n36 op=253
+n37 op=253
+k23
+n7 op=254
+n31 op=254
+n32 op=254
+n33 op=254
+n34 op=254
+n35 op=254
+n36 op=254
+n37 op=254
+k24
+n1 h=444
+k25
+n7 op=255
+n31 op=255
+n32 op=255
+n33 op=255
+n34 op=255
+n35 op=255
+n36 op=255
+n37 op=255
+k26
+k27
+k28
+k29
+k30
+k31
+k32
+k33
+k34
+k35
+k36
+k37
+k38
+n1 x=69 w=842 h=410
+n5 -
+n6 -
+n7 -
+n8 -
+n9 -
+n10 -
+n11 -
+n12 -
+n13 -
+n14 -
+n15 -
+n16 -
+n17 -
+n18 -
+n19 -
+n20 -
+n21 -
+n22 -
+n23 -
+n24 -
+n25 -
+n26 -
+n27 -
+n28 -
+n29 -
+n30 -
+n31 -
+n32 -
+n33 -
+n34 -
+n35 -
+n36 -
+n37 -
+k39
+n1 x=107 w=766 h=342
+k40
+n1 x=148 w=684 h=269
+k41
+n1 x=183 w=614 h=205
+k42
+n1 x=212 w=556 h=154
+k43
+n1 x=233 w=514 h=116
+k44
+n1 x=249 w=482 h=88
+k45
+n1 x=260 w=460 h=69
+k46
+n1 x=267 w=446 h=55
+k47
+n1 x=272 w=436 h=47
+k48
+n1 x=275 w=430 h=41
+k49
+n1 x=277 w=426 h=37
+k50
+n1 x=278 w=424 h=35
+k51
+n1 x=279 w=422 h=34
+k52
+n1 h=33
+k53
+n1 x=280 w=420 h=32
+k54
+k55
+k56
+k57
+k58

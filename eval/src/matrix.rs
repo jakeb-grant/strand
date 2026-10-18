@@ -4,8 +4,9 @@
 //! checked like any scenario (a cell is materialised as scenario text and
 //! parsed, so `promote` writes it out as it ran). A cell fails the matrix
 //! when it fails a check `eval/matrix/known.toml` does not list for it,
-//! when a listed check passes (stale: remove the line), or when it cannot
-//! run.
+//! when a listed check passes (stale: remove the line), when it cannot
+//! run, or when it is CHANGED: it left its approved reference recording
+//! (`eval/refs/matrix-<hz>.ref`), or has none.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -14,12 +15,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
 
-use crate::checks::{Finding, Reference, Sev, Status};
+use crate::checks::{Finding, Sev, Status};
 use crate::harness::RunOptions;
 use crate::report::{self, Entry, Frames};
 use crate::scenario::{CheckId, Place, Scenario};
 use crate::select::Selector;
-use crate::{Error, check_scenario};
+use crate::{Error, check_with};
 
 /// The props slots of the fixture; every other slot takes text.
 pub const PROP_SLOTS: [&str; 3] = ["row", "subject", "card"];
@@ -590,6 +591,9 @@ pub enum Outcome {
     Known,
     /// A check known.toml lists passes: remove it.
     Stale,
+    /// It left its approved reference recording, or has none, and
+    /// failed nothing else.
+    Changed,
     Fail,
     /// It could not run.
     Error,
@@ -597,7 +601,10 @@ pub enum Outcome {
 
 impl Outcome {
     pub fn gates(&self) -> bool {
-        matches!(self, Outcome::Fail | Outcome::Stale | Outcome::Error)
+        matches!(
+            self,
+            Outcome::Fail | Outcome::Stale | Outcome::Changed | Outcome::Error
+        )
     }
 }
 
@@ -625,6 +632,8 @@ pub struct Plan {
     pub effects_file: PathBuf,
     pub known_file: PathBuf,
     pub fixture_file: PathBuf,
+    /// The reference files (`eval/refs/`): `matrix-<hz>.ref`.
+    pub refs_dir: PathBuf,
 }
 
 impl Plan {
@@ -638,6 +647,7 @@ impl Plan {
             effects_file: dir().join("effects.toml"),
             known_file: dir().join("known.toml"),
             fixture_file: dir().join("fixture.strand.in"),
+            refs_dir: crate::refs::dir(),
         }
     }
 }
@@ -654,8 +664,15 @@ fn judge(cell: Cell, known: Option<&Known>, entry: Entry) -> Done {
         })
         .unwrap_or_default();
     let mut lines = Vec::new();
+    let changed = report.and_then(|r| r.changed_line());
+    if let Some(l) = &changed {
+        lines.push(l.clone());
+    }
     if let Some(r) = report {
         for res in &r.results {
+            if res.status == Status::Changed {
+                continue;
+            }
             for f in res.findings.iter().filter(|f| f.sev == Sev::Fail) {
                 lines.push(crate::checks::describe(f, &entry.trace));
             }
@@ -667,12 +684,13 @@ fn judge(cell: Cell, known: Option<&Known>, entry: Entry) -> Done {
         (Some(k), Some(r)) => r
             .results
             .iter()
+            .filter(|x| x.status != Status::Changed)
             .flat_map(|x| x.findings.iter())
             .filter(|f| f.sev == Sev::Fail && !k.covers(f, &entry.trace))
             .collect(),
         _ => Vec::new(),
     };
-    let outcome = match known {
+    let mut outcome = match known {
         None if failed.is_empty() => Outcome::Pass,
         None => Outcome::Fail,
         Some(k) => {
@@ -703,6 +721,9 @@ fn judge(cell: Cell, known: Option<&Known>, entry: Entry) -> Done {
             }
         }
     };
+    if changed.is_some() && matches!(outcome, Outcome::Pass | Outcome::Known) {
+        outcome = Outcome::Changed;
+    }
     Done {
         cell,
         outcome,
@@ -713,8 +734,13 @@ fn judge(cell: Cell, known: Option<&Known>, entry: Entry) -> Done {
     }
 }
 
-/// Runs one cell.
-pub fn run_cell(cell: Cell, known: Option<&Known>, build: &crate::trace::BuildInfo) -> Done {
+/// Runs one cell against `refs` (its approved and known-bad recordings).
+pub fn run_cell(
+    cell: Cell,
+    known: Option<&Known>,
+    build: &crate::trace::BuildInfo,
+    refs: crate::refs::Refs,
+) -> Done {
     if cell.na.is_some() {
         return Done {
             cell,
@@ -736,8 +762,9 @@ pub fn run_cell(cell: Cell, known: Option<&Known>, build: &crate::trace::BuildIn
         build: build.clone(),
         backend: None,
     };
-    match check_scenario(&sc, &opts) {
+    match check_with(&sc, &opts, refs) {
         Ok(c) => {
+            let (refs, reference) = report::refs_of(c.refs.as_ref(), &c.report, &c.run.trace);
             let entry = Entry {
                 id: sc.id.clone(),
                 file: format!("eval/matrix ({})", cell.name),
@@ -746,9 +773,8 @@ pub fn run_cell(cell: Cell, known: Option<&Known>, build: &crate::trace::BuildIn
                 report: Some(c.report),
                 images: c.run.images,
                 notes: c.run.notes,
-                verdict: Reference::load(&crate::refs::ref_path(&sc.id))
-                    .ok()
-                    .flatten(),
+                refs,
+                reference,
                 ..Entry::default()
             };
             judge(cell, known, entry)
@@ -814,6 +840,15 @@ pub fn run(plan: &Plan) -> Result<Vec<Done>, Error> {
         }
     }
     let todo = cells(&set, &fixture, &names, &plan.hz, plan.singles);
+    // Each rate's reference file, read once.
+    let mut ref_files = BTreeMap::new();
+    for c in &todo {
+        ref_files.entry(c.hz).or_insert_with(|| {
+            let file = plan.refs_dir.join(format!("matrix-{}.ref", c.hz));
+            let read = crate::refs::RefFile::load(&file);
+            (file, read)
+        });
+    }
     let next = AtomicUsize::new(0);
     let done: Mutex<Vec<(usize, Done)>> = Mutex::new(Vec::new());
     let jobs = plan.jobs.max(1).min(todo.len().max(1));
@@ -823,7 +858,14 @@ pub fn run(plan: &Plan) -> Result<Vec<Done>, Error> {
                 loop {
                     let i = next.fetch_add(1, Ordering::SeqCst);
                     let Some(c) = todo.get(i) else { break };
-                    let d = run_cell(c.clone(), known_for(&known, c), &plan.build);
+                    let refs = match ref_files.get(&c.hz) {
+                        Some((file, read)) => crate::refs::Refs::of(file, read, &c.id(), true),
+                        None => crate::refs::Refs {
+                            required: true,
+                            ..crate::refs::Refs::default()
+                        },
+                    };
+                    let d = run_cell(c.clone(), known_for(&known, c), &plan.build, refs);
                     if let Ok(mut v) = done.lock() {
                         v.push((i, d));
                     }
@@ -860,8 +902,7 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
                 out: cell_dir.clone(),
                 frames: Frames::Failing,
             };
-            let page =
-                report::html::page(&report::html::Page::run(&info, std::slice::from_ref(e)))?;
+            let page = report::page_of(&info, std::slice::from_ref(e))?;
             report::write(&cell_dir.join("index.html"), page.as_bytes())?;
         }
     }
@@ -879,6 +920,7 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
                 "failed": d.failed,
                 "findings": d.lines,
                 "known": d.known.as_ref().map(|k| json!({"checks": k.checks, "nodes": k.nodes, "note": k.note, "since": k.since})),
+                "reference": d.entry.as_ref().and_then(|e| e.refs.as_ref()).map(|r| r.status.clone()),
             })
         })
         .collect();
@@ -889,6 +931,7 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
         "na": count(Outcome::Na),
         "fail": count(Outcome::Fail),
         "stale": count(Outcome::Stale),
+        "changed": count(Outcome::Changed),
         "error": count(Outcome::Error),
     });
     let rev = plan.build.rev.clone();
@@ -907,12 +950,35 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
             .unwrap_or_default()
             .as_bytes(),
     )?;
-    report::write(&out.join("summary.md"), summary_md(out, done).as_bytes())?;
+    let stale = stale_refs(plan, done)?;
+    report::write(
+        &out.join("summary.md"),
+        summary_md(out, done, &stale).as_bytes(),
+    )?;
     report::write(&out.join("index.html"), grid(&set, plan, done).as_bytes())?;
     Ok(())
 }
 
-fn summary_md(out: &Path, done: &[Done]) -> String {
+/// The blocks of each rate's reference file that name no cell, when
+/// `plan` ran the whole matrix (every effect alone and every pair): an
+/// effect removed or renamed. `approve --all-changed` prunes them.
+pub fn stale_refs(plan: &Plan, done: &[Done]) -> Result<Vec<String>, Error> {
+    if plan.effects.is_some() || plan.singles {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for hz in &plan.hz {
+        let ids: BTreeSet<String> = done
+            .iter()
+            .filter(|d| d.cell.hz == *hz)
+            .map(|d| d.cell.id())
+            .collect();
+        out.extend(crate::refs::stale_matrix(&plan.refs_dir, *hz, &ids)?);
+    }
+    Ok(out)
+}
+
+fn summary_md(out: &Path, done: &[Done], stale: &[String]) -> String {
     let mut md = vec![
         "# strand-eval matrix".to_string(),
         String::new(),
@@ -921,16 +987,22 @@ fn summary_md(out: &Path, done: &[Done]) -> String {
     ];
     let count = |o: Outcome| done.iter().filter(|d| d.outcome == o).count();
     md.push(format!(
-        "{} cells: {} pass, {} known, {} n/a, {} fail, {} stale, {} error.",
+        "{} cells: {} pass, {} known, {} n/a, {} fail, {} stale, {} changed, {} error.",
         done.len(),
         count(Outcome::Pass),
         count(Outcome::Known),
         count(Outcome::Na),
         count(Outcome::Fail),
         count(Outcome::Stale),
+        count(Outcome::Changed),
         count(Outcome::Error)
     ));
     md.push(String::new());
+    for id in stale {
+        md.push(format!(
+            "- **STALE REFERENCE** {id}: no such cell (`approve --all-changed` on a whole matrix run prunes it)"
+        ));
+    }
     for d in done.iter().filter(|d| d.outcome.gates()) {
         md.push(format!(
             "- **{}** {:?}: {}",
@@ -944,10 +1016,24 @@ fn summary_md(out: &Path, done: &[Done]) -> String {
         if d.lines.len() > 6 {
             md.push(format!("  - … {} more", d.lines.len() - 6));
         }
+        if d.outcome == Outcome::Changed {
+            md.push(format!(
+                "  - approve: `scripts/container/run.sh eval approve {}/{} --note \"why\"`",
+                out.display(),
+                d.cell.dir_name(),
+            ));
+        } else {
+            md.push(format!(
+                "  - promote: `scripts/container/run.sh eval promote {}/{} --as <name>`",
+                out.display(),
+                d.cell.dir_name(),
+            ));
+        }
+    }
+    if count(Outcome::Changed) > 0 {
         md.push(format!(
-            "  - promote: `scripts/container/run.sh eval promote {}/{} --as <name>`",
-            out.display(),
-            d.cell.dir_name(),
+            "- approve every changed cell, once each change is seen to be right: `scripts/container/run.sh eval approve --all-changed {} --note \"why\"`",
+            out.display()
         ));
     }
     for d in done.iter().filter(|d| d.outcome == Outcome::Known) {
@@ -1014,6 +1100,7 @@ fn grid(set: &Effects, plan: &Plan, done: &[Done]) -> String {
                     Outcome::Na => ("na", "–"),
                     Outcome::Known => ("known", "k"),
                     Outcome::Stale => ("stale", "s"),
+                    Outcome::Changed => ("changed", "c"),
                     Outcome::Fail => ("fail", "✕"),
                     Outcome::Error => ("error", "!"),
                 };
@@ -1046,7 +1133,7 @@ fn grid(set: &Effects, plan: &Plan, done: &[Done]) -> String {
     }
     let count = |o: Outcome| done.iter().filter(|d| d.outcome == o).count();
     let head = format!(
-        "{} cells at {}: {} pass, {} known, {} n/a, {} fail, {} stale, {} error · {}{}",
+        "{} cells at {}: {} pass, {} known, {} n/a, {} fail, {} stale, {} changed, {} error · {}{}",
         done.len(),
         hzs.iter()
             .map(|h| format!("{h} Hz"))
@@ -1057,6 +1144,7 @@ fn grid(set: &Effects, plan: &Plan, done: &[Done]) -> String {
         count(Outcome::Na),
         count(Outcome::Fail),
         count(Outcome::Stale),
+        count(Outcome::Changed),
         count(Outcome::Error),
         plan.build.rev,
         if plan.build.dirty {
@@ -1076,9 +1164,9 @@ const GRID: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Effect matrix</title>
 <style>
-:root { --bg: #f4f4f6; --ink: #1d1d23; --muted: #62646f; --line: #d9dae0; --pass: #cfe9d6; --known: #e3dcf7; --na: #ececf0; --fail: #f6c4c4; --stale: #f4e3a8; --error: #f0a0a0; color-scheme: light; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #121216; --ink: #e7e7ee; --muted: #9b9dab; --line: #30313b; --pass: #1f4a2c; --known: #3a3060; --na: #22232a; --fail: #6b2323; --stale: #5a4a14; --error: #8a2a2a; color-scheme: dark; } }
-:root[data-theme="dark"] { --bg: #121216; --ink: #e7e7ee; --muted: #9b9dab; --line: #30313b; --pass: #1f4a2c; --known: #3a3060; --na: #22232a; --fail: #6b2323; --stale: #5a4a14; --error: #8a2a2a; color-scheme: dark; }
+:root { --bg: #f4f4f6; --ink: #1d1d23; --muted: #62646f; --line: #d9dae0; --pass: #cfe9d6; --known: #e3dcf7; --na: #ececf0; --fail: #f6c4c4; --stale: #f4e3a8; --changed: #f7d9b0; --error: #f0a0a0; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #121216; --ink: #e7e7ee; --muted: #9b9dab; --line: #30313b; --pass: #1f4a2c; --known: #3a3060; --na: #22232a; --fail: #6b2323; --stale: #5a4a14; --changed: #6a4214; --error: #8a2a2a; color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #121216; --ink: #e7e7ee; --muted: #9b9dab; --line: #30313b; --pass: #1f4a2c; --known: #3a3060; --na: #22232a; --fail: #6b2323; --stale: #5a4a14; --changed: #6a4214; --error: #8a2a2a; color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 12px 16px; background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, sans-serif; overflow-x: hidden; }
 h1 { font-size: 16px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 16px 0 6px; }
@@ -1092,14 +1180,14 @@ h1 { font-size: 16px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 16px 0 6p
 .grid td.off { border: 0; }
 .grid td a { color: inherit; display: block; text-decoration: none; }
 .pass { background: var(--pass); } .known { background: var(--known); } .na { background: var(--na); color: var(--muted); }
-.fail { background: var(--fail); } .stale { background: var(--stale); } .error { background: var(--error); }
+.fail { background: var(--fail); } .stale { background: var(--stale); } .changed { background: var(--changed); } .error { background: var(--error); }
 .legend span { display: inline-block; padding: 1px 8px; margin: 2px 4px 2px 0; border-radius: 4px; }
 </style>
 </head>
 <body>
 <h1>Effect matrix</h1>
 <div class="meta">{{HEAD}}</div>
-<div class="legend"><span class="pass">pass</span><span class="known">k known</span><span class="na">– n/a</span><span class="fail">✕ fail</span><span class="stale">s stale known</span><span class="error">! error</span></div>
+<div class="legend"><span class="pass">pass</span><span class="known">k known</span><span class="na">– n/a</span><span class="fail">✕ fail</span><span class="stale">s stale known</span><span class="changed">c changed from its reference</span><span class="error">! error</span></div>
 <div class="meta">The diagonal is each effect alone, below it each pair. Hover a cell for its findings; a cell that did not pass links to its run.</div>
 {{BODY}}
 </body>

@@ -11,6 +11,7 @@ use strand_eval::checks::Status;
 use strand_eval::harness::RunOptions;
 use strand_eval::matrix::{self, Effects, Known, Outcome, Plan};
 use strand_eval::promote::{self, Ask};
+use strand_eval::refs::Refs;
 use strand_eval::scenario::{Place, Scenario};
 use strand_eval::trace::BuildInfo;
 
@@ -137,9 +138,50 @@ fn a_known_failure_that_passes_is_stale() {
         note: "for the test".into(),
         since: "2026-10-17".into(),
     };
-    let d = matrix::run_cell(c, Some(&known), &BuildInfo::default());
+    let d = matrix::run_cell(c, Some(&known), &BuildInfo::default(), Refs::default());
     assert_eq!(d.outcome, Outcome::Stale, "{:?}", d.lines);
     assert!(d.outcome.gates());
+}
+
+/// A cell with no approved reference, or one it left, is CHANGED: it
+/// gates, and its first line says so; failing a check it is not known
+/// for stays a failure.
+#[test]
+fn a_cell_without_its_reference_is_changed() {
+    let (set, fixture) = set();
+    let missing = || Refs {
+        required: true,
+        ..Refs::default()
+    };
+    let c = matrix::cell(&set, &fixture, &["enter-fade"], 60);
+    let d = matrix::run_cell(c, None, &BuildInfo::default(), missing());
+    assert_eq!(d.outcome, Outcome::Changed, "{:?}", d.lines);
+    assert!(d.outcome.gates());
+    assert!(
+        d.lines[0].starts_with("CHANGED: m.enter-fade.60: no approved reference"),
+        "{:?}",
+        d.lines
+    );
+    let known = Known {
+        checks: vec!["expect".into()],
+        nodes: vec!["#after".into()],
+        note: "for the test".into(),
+        since: "2026-10-17".into(),
+    };
+    let d = matrix::run_cell(
+        failing(&set, &fixture),
+        Some(&known),
+        &BuildInfo::default(),
+        missing(),
+    );
+    assert_eq!(d.outcome, Outcome::Changed, "{:?}", d.lines);
+    let d = matrix::run_cell(
+        failing(&set, &fixture),
+        None,
+        &BuildInfo::default(),
+        missing(),
+    );
+    assert_eq!(d.outcome, Outcome::Fail, "{:?}", d.lines);
 }
 
 /// A known entry accepts its checks on the nodes it names only: the
@@ -153,7 +195,14 @@ fn a_known_failure_covers_only_the_nodes_it_names() {
         note: "for the test".into(),
         since: "2026-10-17".into(),
     };
-    let run = |k: Known| matrix::run_cell(failing(&set, &fixture), Some(&k), &BuildInfo::default());
+    let run = |k: Known| {
+        matrix::run_cell(
+            failing(&set, &fixture),
+            Some(&k),
+            &BuildInfo::default(),
+            Refs::default(),
+        )
+    };
     let d = run(known(&["#after"]));
     assert_eq!(d.outcome, Outcome::Known, "{:?}", d.lines);
     let d = run(known(&["#subject"]));
@@ -199,7 +248,12 @@ fn failing(set: &Effects, fixture: &str) -> matrix::Cell {
 fn a_failing_cell_promoted_with_xfail_is_a_regression_the_gate_reports_xfail() {
     let (set, fixture) = set();
     let out = scratch("promote");
-    let d = matrix::run_cell(failing(&set, &fixture), None, &BuildInfo::default());
+    let d = matrix::run_cell(
+        failing(&set, &fixture),
+        None,
+        &BuildInfo::default(),
+        Refs::default(),
+    );
     assert_eq!(d.outcome, Outcome::Fail, "{:?}", d.lines);
     assert_eq!(d.failed, vec!["expect".to_string()]);
     let mut plan = Plan::new(BuildInfo::default());

@@ -1,112 +1,116 @@
-//! `reference`: the owner's verdict on a recording
-//! (`eval/refs/<id>.ref.json`). A run that reproduces one marked `bad`
-//! (the same digest, or every node's path within `tol`) fails; one that
-//! no longer matches a `good` one is CHANGED, a warning that never
-//! gates.
+//! `reference`: the run against its reference recordings
+//! (`eval/refs/`, docs/eval.md "Reference recordings"). A run that leaves
+//! its approved recording beyond a quantum is CHANGED, naming the first
+//! tick, node and field that differ; a run with no approved recording is
+//! CHANGED where one is required (`check --gate`, the matrix) and a skip
+//! elsewhere; a run that comes back to a recording marked bad (within
+//! `tol` on geometry) fails.
 
-use std::collections::BTreeMap;
-
-use serde::{Deserialize, Serialize};
-
-use super::{Cx, Finding, Sev};
+use super::{Cx, Finding, Sev, Status};
+use crate::recording::{self, Recording, Tol};
+use crate::refs::{self, Refs};
 use crate::scenario::CheckId;
 use crate::trace::RunTrace;
 
-/// One point of a node's path: tick, visual x, y, w, h and opacity.
-pub type PathPoint = [f32; 6];
+/// What a run without an approved reference says.
+pub const MISSING: &str = "no approved reference";
 
-/// A recorded verdict.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Reference {
-    /// `good` or `bad`.
-    pub verdict: String,
-    pub note: String,
-    pub date: String,
-    pub rev: String,
-    pub digest: String,
-    /// Each node's visual path through the run, quantised.
-    pub path: BTreeMap<String, Vec<PathPoint>>,
-}
+/// Why a `--reduced-motion` run is not compared (and `approve` refuses
+/// it).
+pub const REDUCED: &str = "a --reduced-motion run is not what the references record";
 
-impl Reference {
-    pub fn load(path: &std::path::Path) -> Result<Option<Reference>, crate::Error> {
-        match std::fs::read_to_string(path) {
-            Ok(t) => serde_json::from_str(&t)
-                .map(Some)
-                .map_err(|e| crate::Error::Config(format!("{}: {e}", path.display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(crate::Error::Io(path.display().to_string(), e)),
-        }
-    }
-}
+/// Per-node lines a CHANGED finding carries besides its first.
+pub const PER_NODE: usize = 8;
 
-/// Every node's visual path in `trace` (the shown frames).
-pub fn paths(trace: &RunTrace) -> BTreeMap<String, Vec<PathPoint>> {
-    let tl = super::Timeline::new(trace);
-    let mut out: BTreeMap<String, Vec<PathPoint>> = BTreeMap::new();
-    for (i, k) in tl.ks.iter().enumerate() {
-        for (key, r) in &tl.screens[i] {
-            if !tl.visible(i, r) {
-                continue;
-            }
-            let p = [
-                *k as f32,
-                r.visual[0],
-                r.visual[1],
-                r.visual[2],
-                r.visual[3],
-                r.op,
-            ];
-            out.entry(key.to_string()).or_default().push(p);
-        }
-    }
-    out
-}
-
-/// Whether two sets of paths agree within `tol` (px; opacity within
-/// 1/255).
-pub fn same_paths(
-    a: &BTreeMap<String, Vec<PathPoint>>,
-    b: &BTreeMap<String, Vec<PathPoint>>,
-    tol: f64,
-) -> bool {
-    a.len() == b.len()
-        && a.iter().all(|(k, pa)| {
-            b.get(k).is_some_and(|pb| {
-                pa.len() == pb.len()
-                    && pa.iter().zip(pb).all(|(x, y)| {
-                        x[0] == y[0]
-                            && (1..5).all(|i| f64::from((x[i] - y[i]).abs()) <= tol)
-                            && f64::from((x[5] - y[5]).abs()) <= 1.0 / 255.0
-                    })
-            })
-        })
-}
-
-pub fn run(cx: &Cx, r: &Reference) -> Vec<Finding> {
-    let matches = r.digest == cx.trace.digest || same_paths(&paths(cx.trace), &r.path, cx.tol);
-    match (r.verdict.as_str(), matches) {
-        ("bad", true) => vec![Finding::fail(
-            CheckId::Reference,
-            format!(
-                "reproduces a recording marked bad ({}, {}): {}",
-                r.rev, r.date, r.note
-            ),
-        )],
-        ("good", false) => vec![
-            Finding::fail(
+/// The findings, and the status they make when it is not what the
+/// findings say (CHANGED, a skip). `raw` is the run's trace as run (not
+/// moved by its surfaces: the recording keeps their origins and poses).
+pub fn run(cx: &Cx, raw: &RunTrace, r: &Refs) -> (Vec<Finding>, Option<Status>) {
+    if let Some(e) = &r.error {
+        return (
+            vec![Finding::fail(
                 CheckId::Reference,
-                format!(
-                    "CHANGED: no longer the recording marked good ({}, {})",
-                    r.rev, r.date
-                ),
-            )
-            .sev(Sev::Warn),
-        ],
-        ("good" | "bad", _) => Vec::new(),
-        (v, _) => vec![Finding::fail(
-            CheckId::Reference,
-            format!("the reference's verdict is `{v}`, not good or bad"),
-        )],
+                format!("{} could not be read: {e}", refs::shown(&r.file)),
+            )],
+            None,
+        );
     }
+    let rec = Recording::from_trace(raw);
+    let mut out = Vec::new();
+    let mut bad = false;
+    for b in &r.bad {
+        match b.recording() {
+            Ok(x) => {
+                if recording::diff(&x, &rec, Tol::px(cx.tol)).is_none() {
+                    bad = true;
+                    out.push(Finding::fail(
+                        CheckId::Reference,
+                        format!("reproduces a known-bad recording: {}", b.describe()),
+                    ));
+                }
+            }
+            Err(e) => out.push(Finding::fail(
+                CheckId::Reference,
+                format!("{}: {e}", refs::shown(&r.file)),
+            )),
+        }
+    }
+    let changed = |out: Vec<Finding>, bad: bool| {
+        let st = (!bad).then_some(Status::Changed);
+        (out, st)
+    };
+    let Some(good) = &r.good else {
+        if r.required {
+            out.push(Finding::fail(
+                CheckId::Reference,
+                format!("{MISSING} ({})", refs::shown(&r.file)),
+            ));
+            return changed(out, bad);
+        }
+        if out.is_empty() {
+            return (
+                out,
+                Some(Status::Skip(format!(
+                    "{MISSING} (strand-eval approve writes {})",
+                    refs::shown(&r.file)
+                ))),
+            );
+        }
+        return (out, None);
+    };
+    let reference = match good.recording() {
+        Ok(x) => x,
+        Err(e) => {
+            out.push(Finding::fail(
+                CheckId::Reference,
+                format!("{}: {e}", refs::shown(&r.file)),
+            ));
+            return (out, None);
+        }
+    };
+    let Some(d) = recording::diff(&reference, &rec, Tol::QUANTUM) else {
+        return (out, None);
+    };
+    let mut msg = format!(
+        "{}; {} (reference {})",
+        d.first.line(),
+        d.counts(),
+        good.describe()
+    );
+    if good.scenario != refs::source_hash(&cx.sc.source) {
+        msg += "; the scenario's text changed since it was approved";
+    }
+    let finding = |c: &recording::Change, msg: String, sev: Sev| {
+        let mut f = Finding::fail(CheckId::Reference, msg).sev(sev).at(c.k);
+        f.axis = Some(c.field.clone());
+        if let Some(k) = &c.key {
+            f = f.node(k);
+        }
+        f
+    };
+    out.push(finding(&d.first, msg, Sev::Fail));
+    for c in d.per_node.iter().skip(1).take(PER_NODE) {
+        out.push(finding(c, c.line(), Sev::Info));
+    }
+    changed(out, bad)
 }

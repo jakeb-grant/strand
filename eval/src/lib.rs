@@ -10,8 +10,9 @@
 //! - [`checks`]: the invariants over a trace, and [`check_scenario`],
 //!   which runs a scenario with its twin and checks it.
 //! - [`report`]: what a run writes (summaries, contact sheets, the
-//!   viewer page); [`refs`]: the owner's verdicts; [`ab`]: two runs
-//!   compared; [`matrix`]: every effect and pair of effects run on one
+//!   viewer page); [`recording`] and [`refs`]: a run's compact recording
+//!   and the approved (and known-bad) references it is held to; [`ab`]:
+//!   two runs compared; [`matrix`]: every effect and pair of effects run on one
 //!   fixture; [`promote`]: a run's scenario made a regression.
 
 use std::fmt;
@@ -27,6 +28,7 @@ pub mod input;
 pub mod labels;
 pub mod matrix;
 pub mod promote;
+pub mod recording;
 pub mod refs;
 pub mod report;
 pub mod scaffold;
@@ -90,6 +92,9 @@ pub struct Checked {
     /// The GPU leg's run, for a `backend = "both"` scenario.
     pub gpu: Option<harness::RunOutput>,
     pub report: checks::Report,
+    /// The references it was held to (`None`: not compared, as for a
+    /// `--reduced-motion` run).
+    pub refs: Option<refs::Refs>,
 }
 
 /// Whether `sc` is a curated scenario (determinism runs it twice).
@@ -102,12 +107,25 @@ pub fn curated(sc: &scenario::Scenario) -> bool {
 /// Runs `sc`, its reduced-motion twin, for a curated scenario or one
 /// asking for `determinism` a second run, and for a `backend = "both"`
 /// one its GPU leg, and checks them against the scenario's reference
-/// (`eval/refs/<id>.ref.json`) if it has one.
+/// recordings in `eval/refs/` (a missing approved one is a skip: see
+/// [`check_with`]).
 pub fn check_scenario(
     sc: &scenario::Scenario,
     opts: &harness::RunOptions,
 ) -> Result<Checked, Error> {
+    check_with(sc, opts, refs::for_scenario(sc, &refs::dir(), false))
+}
+
+/// [`check_scenario`] against `refs` (`refs.required`: a missing approved
+/// reference is CHANGED, as `check --gate` and the matrix hold it). A
+/// `--reduced-motion` or one-leg run is not compared.
+pub fn check_with(
+    sc: &scenario::Scenario,
+    opts: &harness::RunOptions,
+    refs: refs::Refs,
+) -> Result<Checked, Error> {
     use checks::{CheckId, Finding, Status};
+    let refs = (!opts.reduced_motion && opts.backend.is_none()).then_some(refs);
     let both = opts.backend.is_none() && sc.backend == scenario::BackendMode::Both;
     let mut opts = opts.clone();
     if both {
@@ -150,17 +168,15 @@ pub fn check_scenario(
     } else {
         None
     };
-    let refs = scenario::eval_root()
-        .join("refs")
-        .join(format!("{}.ref.json", sc.id));
-    let reference = checks::Reference::load(&refs)?;
-    let mut report = checks::evaluate(
-        sc,
-        &run.trace,
-        twin.as_ref(),
-        again.as_ref(),
-        reference.as_ref(),
-    );
+    let mut report = checks::evaluate(sc, &run.trace, twin.as_ref(), again.as_ref(), refs.as_ref());
+    if refs.is_none() && opts.reduced_motion {
+        report.set(
+            sc,
+            CheckId::Reference,
+            Vec::new(),
+            Some(Status::Skip(checks::reference::REDUCED.into())),
+        );
+    }
     if let Some(e) = twin_error
         && let Some(r) = report
             .results
@@ -214,13 +230,25 @@ pub fn check_scenario(
         twin,
         gpu,
         report,
+        refs,
     })
 }
 
 /// The subcommands `strand-eval` knows, in the order docs/eval.md
 /// describes them.
-pub const COMMANDS: [&str; 10] = [
-    "run", "check", "matrix", "promote", "verdict", "explain", "ab", "bench", "new", "selftest",
+pub const COMMANDS: [&str; 12] = [
+    "run",
+    "check",
+    "matrix",
+    "approve",
+    "promote",
+    "verdict",
+    "refs-check",
+    "explain",
+    "ab",
+    "bench",
+    "new",
+    "selftest",
 ];
 
 /// Runs `strand-eval` with `args` (without the program name).
@@ -237,6 +265,8 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
         "check" => cli::check(&args[1..]),
         "explain" => cli::explain(&args[1..]),
         "verdict" => cli::verdict(&args[1..]),
+        "approve" => cli::approve(&args[1..]),
+        "refs-check" => cli::refs_check(&args[1..]),
         "ab" => cli::ab(&args[1..]),
         "matrix" => cli::matrix(&args[1..]),
         "promote" => cli::promote(&args[1..]),

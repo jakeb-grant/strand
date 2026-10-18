@@ -1,0 +1,202 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "cpu-gpu-crossfade"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 73f62f22b5954c1e
+seal af187a8617aaa4c0
+S1 0 - "bar Top"
+N0 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
+N1 "oldlabel|shell.strand:10:11|[Mock | DP-1]#0" "text#oldlabel"
+N2 "old|shell.strand:8:9|[Mock | DP-1]#0" "row#old"
+N3 "right|shell.strand:21:5|[Mock | DP-1]#1" "box#right"
+N4 "slot|shell.strand:6:5|[Mock | DP-1]#0" "stack#slot"
+N5 "strip|shell.strand:4:3|[Mock | DP-1]#0" "row#strip"
+N6 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N7 "newlabel|shell.strand:16:11|[Mock | DP-1]#0" "text#newlabel"
+N8 "new|shell.strand:14:9|[Mock | DP-1]#0" "row#new"
+N9 "slide|shell.strand:20:13|[Mock | DP-1]#1" "box#slide"
+k0 p1
+s1 z=300,40
+n0 x=10 y=14 w=20 h=12
+n1 x=46 y=13 w=39 h=15 txt=S
+n2 x=36 y=6 w=90 h=28
+n3 x=132 y=14 w=20 h=12
+n4 x=36 y=6 w=90 h=28
+n5 x=0 y=0 w=300 h=40
+n6 x=0 y=0 w=300 h=40
+k1
+k2
+k3
+k4
+k5
+k6
+k7
+k8
+k9
+k10
+k11
+k12
+k13
+k14
+k15
+n1 op=218 hid=inert
+n2 op=218 hid=inert
+n3 x=138
+n7 x=46 y=13 w=28 h=15 op=37 txt=S
+n8 x=36 y=6 w=90 h=28 op=37
+n9 x=128 y=12 w=16 h=16 op=37
+k16
+n1 op=157
+n2 op=157
+n3 x=146
+n7 op=98
+n8 op=98
+n9 x=130 op=98
+k17
+n1 op=104
+n2 op=104
+n3 x=152
+n7 op=151
+n8 op=151
+n9 x=131 op=151
+k18
+n1 op=65
+n2 op=65
+n3 x=154
+n7 op=190
+n8 op=190
+n9 x=132 op=190
+k19
+n1 op=39
+n2 op=39
+n3 x=155
+n7 op=216
+n8 op=216
+n9 op=216
+k20
+n1 op=23
+n2 op=23
+n7 op=232
+n8 op=232
+n9 op=232
+k21
+n1 op=14
+n2 op=14
+n3 x=154
+n7 op=241
+n8 op=241
+n9 op=241
+k22
+n1 op=8
+n2 op=8
+n7 op=247
+n8 op=247
+n9 op=247
+k23
+n1 op=4
+n2 op=4
+n7 op=251
+n8 op=251
+n9 op=251
+k24
+n1 op=2
+n2 op=2
+n7 op=253
+n8 op=253
+n9 op=253
+k25
+n1 op=1
+n2 op=1
+n7 op=254
+n8 op=254
+n9 op=254
+k26
+k27
+n1 op=0
+n2 op=0
+n7 op=255
+n8 op=255
+n9 op=255
+k28
+k29
+n1 -
+n2 hid=opacity0
+k30
+n2 -
+k31
+n1 x=46 y=13 w=39 h=15 txt=S
+n2 x=36 y=6 w=90 h=28
+n7 op=218 hid=inert
+n8 op=218 hid=inert
+n9 x=130 op=218 hid=inert
+k32
+n7 op=157
+n8 op=157
+n9 x=128 op=157
+k33
+n7 op=104
+n8 op=104
+n9 x=127 op=104
+k34
+n7 op=65
+n8 op=65
+n9 x=126 op=65
+k35
+n7 op=39
+n8 op=39
+n9 op=39
+k36
+n7 op=23
+n8 op=23
+n9 op=23
+k37
+n7 op=14
+n8 op=14
+n9 op=14
+k38
+n7 op=8
+n8 op=8
+n9 op=8
+k39
+n7 op=4
+n8 op=4
+n9 op=4
+k40
+n7 op=2
+n8 op=2
+n9 op=2
+k41
+n7 op=1
+n8 op=1
+n9 op=1
+k42
+k43
+n7 op=0
+n8 op=0
+n9 op=0
+k44
+k45
+n7 -
+n8 hid=opacity0
+n9 hid=opacity0
+k46
+n3 x=148
+n8 -
+n9 -
+k47
+n3 x=140
+k48
+n3 x=134
+k49
+n3 x=132
+k50
+n3 x=131
+k51
+k52
+n3 x=132
+k53
+k54
+k55

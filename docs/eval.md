@@ -13,7 +13,9 @@ owner's shell. Both bugs were a few frames of bars dipping out of an
 island and coming back. The regression scenarios reproduce them, and the
 mutants prove the scenarios catch them. Curated scenarios, the regression
 scenarios and an effect matrix catch the next bug of that kind before it
-ships.
+ships. The checks catch the breakage they predict; every scenario and
+matrix cell is also held to an approved recording of its run, which
+catches any change at all (see Reference recordings).
 
 The sandbox is evaluation tooling, not product. It is a Cargo workspace of
 its own (`eval/Cargo.toml`), outside the root workspace, so `--workspace`
@@ -27,6 +29,7 @@ Everything runs through the container, like every other build here:
 
 ```text
 scripts/container/run.sh eval check eval/scenarios/curated      # run and check
+scripts/container/run.sh eval approve target/eval/latest/<id> --note "why"   # approve a change
 scripts/container/run.sh eval run my.scn --frames all           # run, no checks
 scripts/container/run.sh eval explain target/eval/latest/<id>   # a node's frames as text
 scripts/container/run.sh eval selftest                          # the CI gate (scripts/eval/ci.sh)
@@ -42,16 +45,22 @@ scripts/container/run.sh eval ab-revs HEAD~1                    # A/B: the last 
 The commands:
 
 - `check [--gate] <scn|dir>... [--out DIR] [--frames all|failing|none]`
-  runs and checks each scenario, and fails when any scenario fails.
-  `--gate` is CI's form: it refuses `eval/scenarios/local/` and an empty
-  set, and fails on an XPASS.
+  runs and checks each scenario, and fails when any scenario fails or is
+  CHANGED (it left its approved reference recording). `--gate` is CI's
+  form: it refuses `eval/scenarios/local/` and an empty set, and fails on
+  an XPASS and on a scenario with no approved reference.
 - `run <scn|dir>... [--out DIR] [--frames …] [--reduced-motion]
   [--backend cpu|gpu]` runs and writes the report without checking.
 - `explain <run>/<id> [--node SEL] [--frames a..b] [--check NAME]` prints
   a node's frames as a text table. By default it shows the nodes of the
   failing findings.
-- `verdict <run>/<id> good|bad [--note TEXT]` records a verdict (see
-  Verdicts and references).
+- `approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT` and `approve
+  --all-changed <run> --note TEXT` write approved references (see
+  Reference recordings).
+- `verdict <run>/<id> good|bad --note TEXT`: `good` approves the run,
+  `bad` records it as a known-bad recording.
+- `refs-check [--base REV]` checks the reference files (CI's side of
+  Reference recordings).
 - `promote <run>/<id> --as NAME [--xfail CHECK]... [--note TEXT]` writes a
   run's scenario out as a regression (see Matrix).
 - `ab <run A> <run B> [-o DIR]` makes one page of two reports (see A/B).
@@ -335,7 +344,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
-| `reference` | The run does not reproduce a recording marked `bad` (see Verdicts and references). |
+| `reference` | The run is its approved reference recording within a quantum, and does not come back to one marked bad (see Reference recordings). |
 | `expect` | The `expect` steps. It always runs. |
 | `regions` | Opt-in. Where a surface takes input follows what it draws. |
 | `cpu-gpu` | Comes with `backend = "both"`. The CPU and GPU legs agree (see CPU and GPU). |
@@ -374,16 +383,154 @@ region should be.
 None of these is for making a real finding pass. A finding the owner
 accepts gets a scenario that says why.
 
-## Verdicts and references
+## Reference recordings
 
-`strand-eval verdict <run>/<id> good|bad` stores the recording's digest
-and node paths as `eval/refs/<id>.ref.json`:
+The checks catch the breakage they predict. A reference recording catches
+any change: every committed scenario and every matrix cell, at 60 and
+144 Hz, has an approved recording of its run, and a run that differs from
+it fails as CHANGED until the change is undone or approved.
 
-- A later run that reproduces a `bad` recording fails `reference`. It
-  counts as reproduced when the digest matches, or when every node's path
-  is within `tol`.
-- A run that no longer matches a `good` recording is CHANGED, a warning
-  that never gates.
+### What a recording holds
+
+Per painted tick:
+
+- the surfaces painted;
+- per surface shown: its size, where it lies on the output, the pose the
+  compositor applies and its input region;
+- per node on screen: its drawn and visual boxes, effective opacity,
+  scale, rotation, hidden reason and text state.
+
+A surface not painted at a tick keeps what it showed, as the checks read a
+trace. The laid box, motions and offset parts are not in it: they explain
+a change, and the trace has them. Pixels are not in it either (see
+Limits).
+
+Each value is quantised: boxes, origins, pose offsets and regions to
+1/64 logical px, opacity to 1/255, scale to 1/1000, rotation to
+1/100 degree. A run matches its reference when every value is within one
+quantum of it. A last-bit difference that rounds the other way never
+counts; anything larger does, as does a tick painted in one and not the
+other, or a node shown in one and not the other.
+
+### The files
+
+`eval/refs/<id>.ref` holds a scenario's recordings, and
+`eval/refs/matrix-<hz>.ref` those of every cell at that rate. A file holds
+blocks, one per recording, sorted by scenario. Each block starts with its
+meta lines:
+
+```text
+ref "hover-popup"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 9d54c3d1545f228d
+seal c07234992c037f23
+```
+
+`rev` is the build the run came from, with `+changes` when it had
+uncommitted ones. `scenario` hashes the scenario text it ran, so a
+CHANGED line can say the scenario changed since. `seal` hashes the whole
+block.
+
+The recording follows, written so a change diffs line by line:
+
+```text
+S1 0 - "bar Top"                    surface 1: attached at k0, never detached
+N0 "<key>" "box#after"              node 0: its key and label
+k0 p1                               tick 0, surface 1 painted
+s1 z=420,60                         surface 1's size (o= origin, P= pose, i= input)
+n0 x=82 y=10 w=20 h=12 txt=S        node 0: its drawn box, its text shaped
+k1                                  tick 1, the same surfaces painted
+n0 x=83                             only what changed since its last line
+n3 -                                node 3 left the screen
+```
+
+A node's first line leaves out what is at its default: the first surface,
+`v=d` (a visual box equal to the drawn one), `op=255`, `sc=1,1`, `rot=0`,
+`hid=-` and `txt=-`.
+
+Everything together stays under 5 MB. As approved here it is 2.2 MB: the
+scenarios 67 kB, `matrix-60.ref` 0.85 MB and `matrix-144.ref` 1.34 MB.
+Compressed, as git stores it, that is about 215 kB. eval/tests/refs.rs
+holds the total to 5 MB, a scenario's file to 64 kB and a matrix file to
+8 kB a cell. Each is a tripwire for a recording that stopped being
+compact, not a cap on scenarios.
+
+### CHANGED
+
+`check` holds each scenario to its approved reference, and the matrix
+holds each cell to its rate's file. A run that differs prints its first
+difference, by tick, then surface, then node:
+
+```text
+CHANGED: hover-popup: k57 box#after drawn.x 101.5 (reference 100); differs at 12 of 140 ticks, on 3 nodes or surfaces, 40 values in all (reference good (2026-10-18, a2d4d726+changes, claude): initial references (eval round 2), a2d4d726)
+    k58 text("iiii") visual.w 41 (reference 40)
+  approve: scripts/container/run.sh eval approve target/eval/ci/hover-popup --note "why"
+```
+
+The indented lines are each other node's first difference. `summary.md`
+has them too, with the approve command. The viewer's A/B view puts the
+reference beside the run: the reference is the B side, drawn as
+wireframes from the recording, and the A/B tab lists the first tick each
+node differs at.
+
+A scenario with no approved reference is CHANGED under `check --gate`
+and in the matrix, and skipped under a plain `check`, so an ad hoc
+scenario runs without one. A `--reduced-motion` run is not compared.
+
+### Approving
+
+Approve a run once its change has been seen to be right:
+
+```text
+scripts/container/run.sh eval approve target/eval/ci/hover-popup --note "the popup now opens from its anchor"
+scripts/container/run.sh eval approve target/eval/matrix/jelly+lean@144 --note "why"
+scripts/container/run.sh eval approve --all-changed target/eval/ci --note "why"
+```
+
+The note is required. The block records it with today's date, the run's
+revision and `$STRAND_EVAL_APPROVER` (`unknown` when unset; `run.sh`
+passes it into the container). A run that matches its reference already
+writes nothing. A changed recording approved under the note its reference
+already has is refused: the note says why this recording is right.
+
+`--all-changed` approves every run in the report that left its reference
+or has none. On a matrix run that covered a whole rate, it also prunes the
+blocks of cells the matrix no longer has. The matrix reports those blocks
+as STALE REFERENCE and fails until they are pruned.
+
+`promote` writes a new regression with no reference: approve its run.
+
+The viewer's Approve tab is the same step. It shows the approved
+reference, the known-bad ones and the run's difference from it:
+
+- **Good** copies the approve command with the note typed there;
+- **Bad** copies `verdict <run>/<id> bad --note …`.
+
+### Known-bad recordings
+
+`verdict <run>/<id> bad --note TEXT` adds the run to its scenario's file
+as a block with `verdict bad`. A later run that comes back to it fails
+`reference`, "reproduces a known-bad recording". It counts as back when
+every value is within `tol` on geometry and a quantum elsewhere. `verdict
+<run>/<id> good` is `approve`.
+
+### The CI side
+
+`refs-check` runs before the gate, in scripts/eval/ci.sh step 5. It
+checks four things:
+
+- every file parses as `approve` writes it;
+- every block's seal holds, so nothing was edited by hand;
+- every block has a note and an approver;
+- every block lives in its own file.
+
+With `--base` (the merge base with main; GitHub's eval job fetches the
+history for it), it also refuses a recording that changed since the base
+under its old note. Every approval is therefore a line a reviewer reads.
 
 ## Reports
 
@@ -406,7 +553,9 @@ elsewhere. It shows each scenario's frames:
 - scrubbable by tick;
 - with nodes outlined by drawn, visual or laid box;
 - with the findings listed and linked to their frames;
-- with a node's path plotted per axis.
+- with a node's path plotted per axis;
+- with an Approve tab: the run's approved reference and the command that
+  approves it (see Reference recordings).
 
 When the images would not fit its size budget, it keeps the frames around
 findings, `shot` steps and segment ends. It draws the rest as wireframes
@@ -448,11 +597,13 @@ is `n/a: conflict`. Effects carry what their motion moves: `flip-reorder`'s
 keyed boxes each hold a child, so a glide carried to a subtree is checked
 (`coherence` inherit), and `reduced-motion` turns its subject with
 `rotate: t * 90deg`, so a time signal under reduced motion is checked
-(`twin`, `teleport`). A cell fails the matrix in three cases:
+(`twin`, `teleport`). A cell fails the matrix in four cases:
 
 - it fails a check `eval/matrix/known.toml` does not list for it, or a
   listed check on a node the entry does not name;
 - a check listed for it passes (stale: remove the entry);
+- it is CHANGED: it left its approved reference in
+  `eval/refs/matrix-<hz>.ref`, or has none (see Reference recordings);
 - it cannot run.
 
 Each known entry names its checks and the nodes their failures are on
@@ -610,6 +761,12 @@ owner's config becomes a committed scenario written from scratch.
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
 - **The GPU leg does not see bug 23**, as described above.
+- **References hold no pixels.** A recording holds geometry, opacity,
+  transforms and text state, not a pixel hash. vello_cpu picks its SIMD
+  level from the CPU it runs on, and nothing here shows one hash
+  agreeing between the laptop's container and GitHub's runners. A change
+  of colour alone, or of a shader's output, is therefore not CHANGED.
+  `cpu-gpu` and the pixel tests in crates/strand-render cover pixels.
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.

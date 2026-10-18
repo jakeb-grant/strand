@@ -1,0 +1,266 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "cond-transition"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario c7a071a0c626f895
+seal 25218d2da1fa682d
+S1 0 - "bar Top"
+N0 "card|shell.strand:5:5|[Mock | DP-1]#0" "box#card"
+N1 "status|shell.strand:4:3|[Mock | DP-1]#0" "row#status"
+N2 "steady|shell.strand:9:5|[Mock | DP-1]#2" "box#steady"
+N3 "veil|shell.strand:7:5|[Mock | DP-1]#1" "box#veil"
+N4 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1
+s1 z=300,30
+n0 x=0 y=4 w=40 h=16 op=0 hid=opacity0
+n1 x=0 y=0 w=300 h=24
+n2 x=92 y=6 w=20 h=12
+n3 x=46 y=4 w=40 h=16
+n4 x=0 y=0 w=300 h=30
+k1
+n0 op=44 hid=-
+n3 op=254
+k2
+n0 op=133
+n3 op=252
+k3
+n0 op=180
+n3 op=248
+k4
+n0 op=208
+n3 op=240
+k5
+n0 op=227
+n3 op=230
+k6
+n0 op=239
+n3 op=215
+k7
+n0 op=248
+n3 op=198
+k8
+n0 op=252
+n3 op=181
+k9
+n0 op=255
+n3 op=166
+k10
+n3 op=151
+k11
+n3 op=139
+k12
+n3 op=127
+k13
+n3 op=117
+k14
+n3 op=108
+k15
+n3 op=100
+k16
+n3 op=93
+k17
+n3 op=86
+k18
+n3 op=80
+k19
+n3 op=74
+k20
+n3 op=68
+k21
+n3 op=63
+k22
+n3 op=59
+k23
+n3 op=54
+k24
+n3 op=50
+k25
+n3 op=47
+k26
+n3 op=43
+k27
+n3 op=40
+k28
+n3 op=37
+k29
+n3 op=34
+k30
+n3 op=31
+k31
+n3 op=29
+k32
+n3 op=26
+k33
+n3 op=24
+k34
+n3 op=22
+k35
+n3 op=20
+k36
+n3 op=18
+k37
+n3 op=16
+k38
+n3 op=15
+k39
+n3 op=13
+k40
+n3 op=12
+k41
+n3 op=11
+k42
+n3 op=9
+k43
+n3 op=8
+k44
+n3 op=7
+k45
+n3 op=6
+k46
+n3 op=5
+k47
+k48
+n3 op=4
+k49
+n3 op=3
+k50
+k51
+n3 op=2
+k52
+k53
+n3 op=1
+k54
+k55
+k56
+n3 op=0
+k57
+k58
+k59
+k60
+n3 hid=opacity0
+k61
+k62
+n0 op=254
+n3 op=44 hid=-
+k63
+n0 op=252
+n3 op=133
+k64
+n0 op=248
+n3 op=180
+k65
+n0 op=240
+n3 op=208
+k66
+n0 op=230
+n3 op=227
+k67
+n0 op=215
+n3 op=239
+k68
+n0 op=198
+n3 op=248
+k69
+n0 op=181
+n3 op=252
+k70
+n0 op=166
+n3 op=255
+k71
+n0 op=151
+k72
+n0 op=139
+k73
+n0 op=127
+k74
+n0 op=117
+k75
+n0 op=108
+k76
+n0 op=100
+k77
+n0 op=93
+k78
+n0 op=86
+k79
+n0 op=80
+k80
+n0 op=74
+k81
+n0 op=68
+k82
+n0 op=63
+k83
+n0 op=59
+k84
+n0 op=54
+k85
+n0 op=50
+k86
+n0 op=47
+k87
+n0 op=43
+k88
+n0 op=40
+k89
+n0 op=37
+k90
+n0 op=34
+k91
+n0 op=31
+k92
+n0 op=29
+k93
+n0 op=26
+k94
+n0 op=24
+k95
+n0 op=22
+k96
+n0 op=20
+k97
+n0 op=18
+k98
+n0 op=16
+k99
+n0 op=15
+k100
+n0 op=13
+k101
+n0 op=12
+k102
+n0 op=11
+k103
+n0 op=9
+k104
+n0 op=8
+k105
+n0 op=7
+k106
+n0 op=6
+k107
+n0 op=5
+k108
+k109
+n0 op=4
+k110
+n0 op=3
+k111
+k112
+n0 op=2
+k113
+k114
+n0 op=1
+k115
+k116
+k117
+n0 op=0
+k118
+k119
+k120
+k121
+n0 hid=opacity0
+k122

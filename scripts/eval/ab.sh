@@ -40,6 +40,24 @@ fi
 [ "${#scen[@]}" -gt 0 ] || scen=(eval/scenarios/curated eval/scenarios/regressions)
 mkdir -p "$BASE"
 
+# forget_tree TREE: TREE removed with its worktree entry, and no other.
+# Never `git worktree prune`: in the container only this checkout (and
+# the common git dir) is mounted, so prune forgets every other worktree
+# on the laptop, whose directories it cannot see (docs/decisions.md
+# eval-refs).
+forget_tree() {
+  local tree=$1 abs admin
+  git worktree remove --force "$tree" 2>/dev/null && return 0
+  abs=$(cd "$(dirname "$tree")" 2>/dev/null && pwd)/$(basename "$tree")
+  rm -rf "$tree"
+  for admin in "$(git rev-parse --path-format=absolute --git-common-dir)"/worktrees/*; do
+    if [ "$(cat "$admin/gitdir" 2>/dev/null)" = "$abs/.git" ]; then
+      rm -rf "$admin"
+    fi
+  done
+  return 0
+}
+
 # run REV OUT: the scenarios on REV ("" for the checkout) into OUT;
 # check's exit 1 (a scenario failed) still makes a report.
 run() {
@@ -52,8 +70,7 @@ run() {
       echo "ab: $rev has no eval/ (A/B needs a revision with the sandbox)"
       return 2
     fi
-    rm -rf "$tree"
-    git worktree prune
+    forget_tree "$tree"
     git worktree add -q --detach "$tree" "$rev" || { echo "ab: no worktree at $tree"; return 2; }
     manifest=$tree/eval/Cargo.toml
     # The checkout's scenarios, inside the revision's eval/.
@@ -78,7 +95,7 @@ run() {
   rc=$?
   tail -n 1 "$out.log"
   if [ -n "$tree" ]; then
-    git worktree remove --force "$tree" 2>/dev/null || { rm -rf "$tree"; git worktree prune; }
+    forget_tree "$tree"
   fi
   [ "$rc" -le 1 ] || { echo "ab: the run on ${rev:-the checkout} failed (exit $rc): $out.log"; return 2; }
 }

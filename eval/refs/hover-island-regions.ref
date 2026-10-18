@@ -1,0 +1,189 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "hover-island-regions"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario 49454577baaf953a
+seal 48490a1b02be61fd
+S1 0 - "bar Top"
+S2 14 - "popup#pop"
+N0 "after|shell.strand:14:5|[Mock | DP-1]#2" "box#after"
+N1 "before|shell.strand:5:5|[Mock | DP-1]#0" "box#before"
+N2 "item|shell.strand:6:5|[Mock | DP-1]#1" "box#item"
+N3 "strip|shell.strand:4:3|[Mock | DP-1]#0" "row#strip"
+N4 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N5 "card|shell.strand:8:9|[Mock | DP-1]#0" "row#card"
+N6 "label|shell.strand:10:11|[Mock | DP-1]#0" "text#label"
+N7 "pop|shell.strand:7:7|[Mock | DP-1]#0" "popup#pop"
+k0 p1
+s1 z=300,30
+n0 x=82 y=5 w=30 h=20
+n1 x=0 y=5 w=30 h=20
+n2 x=36 y=0 w=40 h=30
+n3 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30
+k14 p2
+s2 z=240,40 o=-64,36 i=0,0,90,32
+n5 srf=2 x=0 y=0 w=90 h=32
+n6 srf=2 x=10 y=9 w=35 h=15 txt=S
+n7 srf=2 x=0 y=0 w=240 h=40
+k22
+s2 i=0,0,94,32
+n5 w=94
+k23
+s2 i=0,0,105,32
+n5 w=105
+k24
+s2 i=0,0,118,32
+n5 w=118
+k25
+s2 i=0,0,133,32
+n5 w=133
+k26
+s2 i=0,0,148,32
+n5 w=148
+k27
+s2 i=0,0,161,32
+n5 w=161
+k28
+s2 i=0,0,173,32
+n5 w=173
+k29
+s2 i=0,0,183,32
+n5 w=183
+k30
+s2 i=0,0,190,32
+n5 w=190
+k31
+s2 i=0,0,196,32
+n5 w=196
+k32
+s2 i=0,0,200,32
+n5 w=200
+k33
+s2 i=0,0,203,32
+n5 w=203
+k34
+s2 i=0,0,204,32
+n5 w=204
+k35
+s2 i=0,0,205,32
+n5 w=205
+k36
+k37
+k38
+s2 i=0,0,204,32
+n5 w=204
+k39
+k40
+s2 i=0,0,203,32
+n5 w=203
+k41
+s2 i=0,0,202,32
+n5 w=202
+k42
+k43
+s2 i=0,0,201,32
+n5 w=201
+k44
+k45
+s2 i=0,0,200,32
+n5 w=200
+k46
+k47
+k48
+k49
+k50
+k51
+k52
+k53
+k54
+k55
+k56
+k57
+k58
+k59
+k60
+k61
+k62
+k63
+s2 i=0,0,196,32
+n5 w=196
+k64
+s2 i=0,0,185,32
+n5 w=185
+k65
+s2 i=0,0,172,32
+n5 w=172
+k66
+s2 i=0,0,157,32
+n5 w=157
+k67
+s2 i=0,0,142,32
+n5 w=142
+k68
+s2 i=0,0,129,32
+n5 w=129
+k69
+s2 i=0,0,117,32
+n5 w=117
+k70
+s2 i=0,0,107,32
+n5 w=107
+k71
+s2 i=0,0,100,32
+n5 w=100
+k72
+s2 i=0,0,94,32
+n5 w=94
+k73
+s2 i=0,0,90,32
+n5 w=90
+k74
+s2 i=0,0,87,32
+n5 w=87
+k75
+s2 i=0,0,86,32
+n5 w=86
+k76
+s2 i=0,0,85,32
+n5 w=85
+k77
+k78
+k79
+s2 i=0,0,86,32
+n5 w=86
+k80
+k81
+s2 i=0,0,87,32
+n5 w=87
+k82
+s2 i=0,0,88,32
+n5 w=88
+k83
+k84
+s2 i=0,0,89,32
+n5 w=89
+k85
+k86
+s2 i=0,0,90,32
+n5 w=90
+k87
+k88
+k89
+k90
+k91
+k92
+k93
+k94
+k95
+k96
+k97
+k98
+k99
+k100
+k101
+k102
+k103

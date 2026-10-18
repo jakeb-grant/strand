@@ -1,24 +1,25 @@
 //! The commands (docs/eval.md, "Quick start"): `run` and `check` load
 //! scenarios from files or directories, run them and write a report
 //! (`report::write_run`) under an output directory, printing one line
-//! per check and per failing finding; `explain`, `verdict` and `ab` read
-//! reports back.
+//! per check and per failing finding; `explain`, `approve`, `verdict` and
+//! `ab` read reports back; `refs-check` is CI's check of the reference
+//! files (docs/eval.md, "Reference recordings").
 //!
 //! `check --gate` is CI's step (scripts/eval/ci.sh step 5): it refuses
 //! scenarios in `eval/scenarios/local/` and an empty set, and fails when
-//! any scenario fails a check or passes one it is marked `expect_fail`
-//! for (XPASS).
+//! any scenario fails a check, passes one it is marked `expect_fail`
+//! for (XPASS), or is CHANGED: it left its approved reference recording,
+//! or has none.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::checks::Reference;
 use crate::harness::{self, RunOptions};
 use crate::report::{self, Entry, Frames, RunInfo};
 use crate::scenario::{Place, Scenario};
 use crate::select::Selector;
 use crate::trace::BuildInfo;
-use crate::{Error, check_scenario};
+use crate::{Error, check_with};
 
 /// The `.scn` files `paths` name: files as given, directories walked
 /// (sorted, so a run's order is stable).
@@ -286,8 +287,10 @@ pub fn check(args: &[String]) -> Result<(), Error> {
     };
     let mut lines = Vec::new();
     let mut failed = Vec::new();
+    let mut changed = 0;
     let mut ids: Vec<String> = Vec::new();
     let mut entries = Vec::new();
+    let refs_dir = crate::refs::dir();
     for f in &files {
         let sc = Scenario::load(f)?;
         if gate && sc.place == Place::Local {
@@ -305,7 +308,8 @@ pub fn check(args: &[String]) -> Result<(), Error> {
             });
         }
         ids.push(sc.id.clone());
-        let c = match check_scenario(&sc, &opts) {
+        let refs = crate::refs::for_scenario(&sc, &refs_dir, gate);
+        let c = match check_with(&sc, &opts, refs) {
             Ok(c) => c,
             Err(e) => {
                 // A scenario that cannot run fails the gate, named.
@@ -326,10 +330,20 @@ pub fn check(args: &[String]) -> Result<(), Error> {
             println!("{l}");
             lines.push(l);
         }
+        if c.report.changed_line().is_some() {
+            changed += 1;
+            let l = format!(
+                "  approve: scripts/container/run.sh eval approve {}/{} --note \"why\"",
+                out.display(),
+                sc.id
+            );
+            println!("{l}");
+            lines.push(l);
+        }
         if !c.report.ok() {
             failed.push(sc.id.clone());
         }
-        let verdict = Reference::load(&crate::refs::ref_path(&sc.id))?;
+        let (refs, reference) = report::refs_of(c.refs.as_ref(), &c.report, &c.run.trace);
         entries.push(Entry {
             id: sc.id.clone(),
             file: sc.file.display().to_string(),
@@ -338,7 +352,8 @@ pub fn check(args: &[String]) -> Result<(), Error> {
             report: Some(c.report),
             images: c.run.images,
             notes: c.run.notes,
-            verdict,
+            refs,
+            reference,
             ..Entry::default()
         });
     }
@@ -352,6 +367,14 @@ pub fn check(args: &[String]) -> Result<(), Error> {
             failed.join(", ")
         )
     };
+    if changed > 0 {
+        let l = format!(
+            "{changed} CHANGED: once each change is seen to be right, scripts/container/run.sh eval approve --all-changed {} --note \"why\"",
+            out.display()
+        );
+        println!("{l}");
+        lines.push(l);
+    }
     println!("{tail}");
     lines.push(tail.clone());
     let info = RunInfo {
@@ -424,33 +447,208 @@ pub fn explain(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// `strand-eval verdict <run>/<id> good|bad [--note TEXT]`: records the
-/// owner's verdict as `eval/refs/<id>.ref.json`.
+/// `strand-eval verdict <run>/<id> good|bad --note TEXT [--refs DIR]`:
+/// `good` approves the run (`approve`); `bad` records it as a known-bad
+/// recording its scenario must not come back to.
 pub fn verdict(args: &[String]) -> Result<(), Error> {
     let a = Args::parse("verdict", args, &["--note", "--refs"], &[])?;
     let [dir, v] = a.words.as_slice() else {
         return Err(Error::Usage(
-            "usage: strand-eval verdict <run>/<id> good|bad [--note TEXT]".into(),
+            "usage: strand-eval verdict <run>/<id> good|bad --note TEXT".into(),
         ));
     };
-    let refs = a.value(&["--refs"]).map(PathBuf::from);
-    let out = crate::refs::record(
-        Path::new(dir),
-        v,
-        a.value(&["--note"]).unwrap_or(""),
-        refs.as_deref(),
-    )?;
-    println!("recorded {v}: {}", out.display());
+    let verdict = crate::refs::Verdict::parse(v)
+        .ok_or_else(|| Error::Usage(format!("verdict `{v}`: good or bad")))?;
+    record(&a, std::slice::from_ref(dir), verdict, false)
+}
+
+/// `strand-eval approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT
+/// [--refs DIR]`, or `approve --all-changed <run> --note TEXT`: writes
+/// each run's recording as its scenario's approved reference
+/// (`eval/refs/<id>.ref`, a matrix cell's in `eval/refs/matrix-<hz>.ref`)
+/// with the note, today's date, the run's revision and
+/// `$STRAND_EVAL_APPROVER`. `--all-changed` takes the runs that left
+/// their reference or have none, and prunes the blocks of cells a whole
+/// matrix rate no longer has.
+pub fn approve(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse("approve", args, &["--note", "--refs"], &["--all-changed"])?;
+    if a.words.is_empty() {
+        return Err(Error::Usage(
+            "usage: strand-eval approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT\n       strand-eval approve --all-changed <run> --note TEXT"
+                .into(),
+        ));
+    }
+    record(
+        &a,
+        &a.words,
+        crate::refs::Verdict::Good,
+        a.has("--all-changed"),
+    )
+}
+
+fn record(
+    a: &Args,
+    words: &[String],
+    verdict: crate::refs::Verdict,
+    all_changed: bool,
+) -> Result<(), Error> {
+    let note = a.value(&["--note"]).unwrap_or("").trim().to_string();
+    if note.is_empty() {
+        return Err(Error::Usage(
+            "a note is required: --note \"why this recording is right\" (or wrong, for bad)".into(),
+        ));
+    }
+    let dir = a
+        .value(&["--refs"])
+        .map_or_else(crate::refs::dir, PathBuf::from);
+    let mut dirs = Vec::new();
+    for w in words {
+        let p = Path::new(w);
+        if all_changed {
+            dirs.extend(crate::refs::changed(p, &dir)?);
+        } else {
+            let found = crate::refs::entry_dirs(p)?;
+            if found.len() > 1 && verdict == crate::refs::Verdict::Bad {
+                return Err(Error::Usage(format!(
+                    "{w}: a bad verdict is one scenario's (<run>/<id>)"
+                )));
+            }
+            dirs.extend(found);
+        }
+    }
+    for d in &dirs {
+        let e = report::read_entry(d)?;
+        let reduced = e.report.as_ref().is_some_and(|r| {
+            matches!(
+                r.status(crate::checks::CheckId::Reference),
+                Some(crate::checks::Status::Skip(why)) if why == crate::checks::reference::REDUCED
+            )
+        });
+        if reduced {
+            return Err(Error::Usage(format!(
+                "{}: {}",
+                d.display(),
+                crate::checks::reference::REDUCED
+            )));
+        }
+    }
+    let ask = crate::refs::Ask {
+        verdict,
+        note,
+        approver: crate::refs::approver(),
+        dir: dir.clone(),
+    };
+    let done = crate::refs::approve(&dirs, &ask)?;
+    let mut wrote = 0;
+    for x in &done {
+        if x.wrote {
+            wrote += 1;
+            println!(
+                "{} {}: {}",
+                if verdict == crate::refs::Verdict::Good {
+                    "approved"
+                } else {
+                    "recorded bad"
+                },
+                x.id,
+                crate::refs::shown(&x.file)
+            );
+        } else {
+            println!("unchanged {}: it matches its reference", x.id);
+        }
+    }
+    if all_changed {
+        for w in words {
+            for id in crate::refs::prune_matrix(Path::new(w), &dir)? {
+                println!("pruned {id}: the matrix no longer has it");
+            }
+        }
+    }
+    println!("{wrote} written, {} unchanged", done.len() - wrote);
     Ok(())
+}
+
+/// `strand-eval refs-check [--base REV] [--refs DIR]`: CI's check of the
+/// reference files: every block parses, holds its seal (nothing edited
+/// by hand), has a note and an approver and lives in its file; with
+/// `--base`, a recording that changed since REV under the same note is
+/// refused (so every approval shows in review).
+pub fn refs_check(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse("refs-check", args, &["--base", "--refs"], &[])?;
+    if !a.words.is_empty() {
+        return Err(Error::Usage(
+            "usage: strand-eval refs-check [--base REV] [--refs DIR]".into(),
+        ));
+    }
+    let dir = a
+        .value(&["--refs"])
+        .map_or_else(crate::refs::dir, PathBuf::from);
+    let mut problems = crate::refs::lint(&dir)?;
+    match a.value(&["--base"]) {
+        Some(base) => problems.extend(note_changes(&dir, base)?),
+        None => println!("refs-check: no --base: the note rule is not checked"),
+    }
+    for p in &problems {
+        println!("{p}");
+    }
+    if problems.is_empty() {
+        println!("refs-check: {} ok", crate::refs::shown(&dir));
+        Ok(())
+    } else {
+        Err(Error::Failed(format!(
+            "refs-check: {} problem(s) in {}",
+            problems.len(),
+            crate::refs::shown(&dir)
+        )))
+    }
+}
+
+/// [`crate::refs::note_rule`] for each reference file that differs from
+/// `base` (committed or not).
+fn note_changes(dir: &Path, base: &str) -> Result<Vec<String>, Error> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let git = |args: &[&str]| -> Result<std::process::Output, Error> {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .map_err(|e| Error::Io("git".into(), e))
+    };
+    let o = git(&["diff", "--name-only", "--relative", base, "--", "."])?;
+    if !o.status.success() {
+        return Err(Error::Run(format!(
+            "git diff {base}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )));
+    }
+    let mut out = Vec::new();
+    for name in String::from_utf8_lossy(&o.stdout).lines() {
+        let path = dir.join(name);
+        let Ok(new) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let old = git(&["show", &format!("{base}:./{name}")])?;
+        let old = old
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&old.stdout).to_string());
+        out.extend(crate::refs::note_rule(
+            old.as_deref(),
+            &new,
+            &crate::refs::shown(&path),
+        ));
+    }
+    Ok(out)
 }
 
 /// The entries of a report directory (a run's, or one scenario's).
 fn entries_of(path: &Path) -> Result<Vec<Entry>, Error> {
     let mut out = Vec::new();
     for d in report::entry_dirs(path)? {
-        let mut e = report::read_entry(&d)?;
-        e.verdict = Reference::load(&crate::refs::ref_path(&e.id))?;
-        out.push(e);
+        out.push(report::read_entry(&d)?);
     }
     Ok(out)
 }
@@ -503,12 +701,14 @@ pub fn ab(args: &[String]) -> Result<(), Error> {
                 out: pa.clone(),
                 frames: Frames::All,
                 entries: &ea,
+                reference: false,
             },
             report::html::PageRun {
                 label: lb,
                 out: pb.clone(),
                 frames: Frames::All,
                 entries: &eb,
+                reference: false,
             },
         ],
         ab: Some(cmp.clone()),
@@ -607,7 +807,14 @@ pub fn matrix(args: &[String]) -> Result<(), Error> {
     };
     let mut done = matrix::run(&plan)?;
     matrix::write(&out, &plan, &mut done)?;
-    let mut gating = 0;
+    let stale = matrix::stale_refs(&plan, &done)?;
+    let mut gating = stale.len();
+    for id in &stale {
+        println!(
+            "STALE REFERENCE: {id}: no such cell (approve --all-changed {} prunes it)",
+            out.display()
+        );
+    }
     for d in &done {
         match d.outcome {
             Outcome::Pass | Outcome::Na => {}
@@ -625,20 +832,36 @@ pub fn matrix(args: &[String]) -> Result<(), Error> {
                         d.failed.join(", ")
                     }
                 );
+                // The diff summary under the CHANGED line.
+                if d.outcome == Outcome::Changed
+                    && let Some(r) = d.entry.as_ref().and_then(|e| e.refs.as_ref())
+                {
+                    for l in r.diff.iter().skip(1) {
+                        println!("    {l}");
+                    }
+                }
             }
         }
     }
     let count = |o: Outcome| done.iter().filter(|d| d.outcome == o).count();
     let tail = format!(
-        "{} cells: {} pass, {} known, {} n/a, {} fail, {} stale, {} error",
+        "{} cells: {} pass, {} known, {} n/a, {} fail, {} stale, {} changed, {} error",
         done.len(),
         count(Outcome::Pass),
         count(Outcome::Known),
         count(Outcome::Na),
         count(Outcome::Fail),
         count(Outcome::Stale),
+        count(Outcome::Changed),
         count(Outcome::Error)
     );
+    if count(Outcome::Changed) > 0 {
+        println!(
+            "{} CHANGED: once each change is seen to be right, scripts/container/run.sh eval approve --all-changed {} --note \"why\"",
+            count(Outcome::Changed),
+            out.display()
+        );
+    }
     println!("{tail}");
     println!("report: {}/index.html", out.display());
     if gating > 0 {

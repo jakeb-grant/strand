@@ -83,6 +83,7 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
 }
 .btn:hover { background: var(--hover); }
 .btn.on { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
 .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: calc(100vh - 42px); }
 .rail { border-right: 1px solid var(--line); padding: 10px; background: var(--panel); min-width: 0; }
 .rail input { width: 100%; font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }

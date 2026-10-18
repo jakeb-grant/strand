@@ -1,0 +1,333 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "title-pill-cut"
+verdict good
+note "initial references (eval round 2), a2d4d726"
+date 2026-10-18
+rev "a2d4d726+changes"
+approver "claude"
+scenario ed3d067045340ad5
+seal 7f25c05f45f809e6
+S1 0 - "bar Top"
+S2 0 - "popup#big"
+N0 "big|shell.strand:5:5|[Mock | DP-1]#0" "popup#big"
+N1 "pill|shell.strand:6:7|[Mock | DP-1]#0" "row#pill"
+N2 "room|shell.strand:10:9|[Mock | DP-1]#0" "box#room"
+N3 "title|shell.strand:8:9|[Mock | DP-1]#0" "text#title"
+N4 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N5 "|shell.strand:4:3|[Mock | DP-1]#0" "box@shell.strand:4"
+k0 p1,2
+s1 z=800,30
+s2 z=420,40 o=-160,30
+n0 srf=2 x=0 y=0 w=420 h=40
+n1 srf=2 x=0 y=0 w=90 h=40
+n2 srf=2 x=60 y=10 w=30 h=20
+n3 srf=2 x=0 y=13 w=60 h=15 txt=S
+n4 x=0 y=0 w=800 h=30
+n5 x=0 y=0 w=100 h=30
+k1 p2
+n1 w=102
+n2 x=72
+n3 w=72
+k2
+n1 w=132
+n2 x=102
+n3 w=102
+k3
+n1 w=173
+n2 x=143
+n3 w=143
+k4
+n1 w=218
+n2 x=188
+n3 w=188
+k5
+n1 w=262
+n2 x=232
+n3 w=232
+k6
+n1 w=303
+n2 x=273
+n3 w=273
+k7
+n1 w=339
+n2 x=308
+n3 w=308
+k8
+n1 w=368
+k9
+n1 w=390
+k10
+n1 w=406
+k11
+n1 w=417
+k12
+n1 w=423
+k13
+n1 w=426
+k14
+k15
+n1 w=424
+k16
+n1 w=420
+k17
+n1 w=417
+k18
+n1 w=413
+k19
+n1 w=409
+k20
+n1 w=406
+k21
+n1 w=404
+k22
+n1 w=402
+k23
+n1 w=400
+k24
+n1 w=399
+k25
+n1 w=398
+k26
+k27
+k28
+k29
+k30
+k31
+n1 w=399
+k32
+k33
+k34
+n1 w=400
+k35
+k36
+k37
+k38
+k39
+k40
+k41
+k42
+k43
+k44
+k45
+k46
+k47
+k48
+k49
+k50
+k51
+k52
+n1 w=388
+k53
+n1 w=358
+k54
+n1 w=317
+n2 x=287
+n3 w=287
+k55
+n1 w=272
+n2 x=242
+n3 w=242
+k56
+n1 w=228
+n2 x=198
+n3 w=198
+k57
+n1 w=187
+n2 x=157
+n3 w=157
+k58
+n1 w=151
+n2 x=121
+n3 w=121
+k59
+n1 w=122
+n2 x=92
+n3 w=92
+k60
+n1 w=100
+n2 x=70
+n3 w=70
+k61
+n1 w=84
+n2 x=54
+n3 w=54
+k62
+n1 w=73
+n2 x=43
+n3 w=43
+k63
+n1 w=67
+n2 x=37
+n3 w=37
+k64
+n1 w=64
+n2 x=34
+n3 w=34
+k65
+k66
+n1 w=66
+n2 x=36
+n3 w=36
+k67
+n1 w=70
+n2 x=40
+n3 w=40
+k68
+n1 w=73
+n2 x=43
+n3 w=43
+k69
+n1 w=77
+n2 x=47
+n3 w=47
+k70
+n1 w=81
+n2 x=51
+n3 w=51
+k71
+n1 w=84
+n2 x=54
+n3 w=54
+k72
+n1 w=86
+n2 x=56
+n3 w=56
+k73
+n1 w=88
+n2 x=58
+n3 w=58
+k74
+n1 w=90
+n2 x=60
+n3 w=60
+k75
+n1 w=91
+n2 x=61
+n3 w=61
+k76
+n1 w=92
+n2 x=62
+n3 w=62
+k77
+k78
+k79
+k80
+k81
+k82
+n1 w=91
+n2 x=61
+n3 w=61
+k83
+k84
+k85
+n1 w=90
+n2 x=60
+n3 w=60
+k86
+k87
+k88
+k89
+k90
+k91
+k92
+k93
+k94
+k95
+k96
+k97
+k98
+k99
+k100
+k101
+k102
+k103
+n1 w=102
+n2 x=72
+n3 w=72
+k104
+n1 w=132
+n2 x=102
+n3 w=102
+k105
+n1 w=173
+n2 x=143
+n3 w=143
+k106
+n1 w=218
+n2 x=188
+n3 w=188
+k107
+n1 w=262
+n2 x=232
+n3 w=232
+k108
+n1 w=303
+n2 x=273
+n3 w=273
+k109
+n1 w=339
+n2 x=308
+n3 w=308
+k110
+n1 w=368
+k111
+n1 w=390
+k112
+n1 w=406
+k113
+n1 w=417
+k114
+n1 w=423
+k115
+n1 w=426
+k116
+k117
+n1 w=424
+k118
+n1 w=420
+k119
+n1 w=417
+k120
+n1 w=413
+k121
+n1 w=409
+k122
+n1 w=406
+k123
+n1 w=404
+k124
+n1 w=402
+k125
+n1 w=400
+k126
+n1 w=399
+k127
+n1 w=398
+k128
+k129
+k130
+k131
+k132
+k133
+n1 w=399
+k134
+k135
+k136
+n1 w=400
+k137
+k138
+k139
+k140
+k141
+k142
+k143
+k144
+k145
+k146
+k147
+k148
+k149
+k150
+k151
+k152
+k153
