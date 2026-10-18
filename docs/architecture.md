@@ -503,7 +503,10 @@ assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
 `eval/` (eval-sandbox) is the animation evaluation sandbox, the
 `strand-eval` package: scenario scripts run on a virtual clock against
 `Renderer` and the logic VM in one process, with per-node checks on
-every frame (docs/eval.md; docs/decisions.md eval-sandbox). It is a
+every frame (docs/eval.md; docs/decisions.md eval-sandbox). Its driver
+takes logic's diffs, wakes, input and its surfaces' events through
+`strand_render::host_loop`'s reactions, as the shell's main thread does
+(eval-host-loop). It is a
 Cargo workspace of its own (`eval/Cargo.toml` has `[workspace]`, and
 the root's `members = ["crates/*", …]` does not reach it), so root
 `--workspace` builds, tests and feature unification never see it. It
@@ -765,6 +768,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   paths, `Polygon` coverage for `mask: shape()`), `morph.rs` (`shape:`
   morphs, held by the `Animator`), `stroke.rs` (stroke styles: trim,
   wave, dash, caps; arc centre lines).
+- `host_loop.rs` (eval-host-loop, public as `strand_render::host_loop`):
+  the host loop's reactions and the `LoopHost` and `LoopSync` traits a
+  host gives its side through (see "Render loop"); the shell's main
+  thread and `eval/`'s driver both run them.
 - `layout/`: `mod.rs` (the pass, `Boxes`, `RootSize`, prop helpers),
   `style.rs` (a node's taffy style), `text.rs` (`TextSizes`, leaf
   measuring), `list.rs` (`ScrollState`, list virtualisation).
@@ -2057,6 +2064,36 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   by `hit: grow(n)` and cut by its ancestors' clips; shadows never count.
 
 - **Render loop** (the binary wires this; surface calls `Painter`):
+  The steps below that touch the renderer and the input router are
+  `strand_render::host_loop`'s reactions (eval-host-loop), which the
+  shell's main thread (`crates/strand/src/demo`: `apply`, `text_ready`,
+  `Host`'s `SurfaceHost` callbacks and `painted`) and the evaluation
+  sandbox's driver (`eval/src/harness.rs`) both run, each with its own
+  side behind `host_loop::LoopHost` (`parts() -> (&mut Renderer,
+  Option<&mut Router>)`, `shown`, `applied`, `intents(Cause, Vec<Intent>)`
+  with `Cause::{Settle, Tick, Input(&InputEvent)}`, `facts`, `wake`, and
+  default no-op hooks `attaching`, `configuring`, `detaching`,
+  `detached`, `after_paint` at fixed points) and `host_loop::LoopSync:
+  LoopHost` (`sync`: the surface changes to the surfaces). The
+  reactions, each generic and doing only what the host did by hand, in
+  the same order: `apply(h, diff)` (`Router::observe`,
+  `Renderer::apply`, `applied`, `Router::settle` and its intents, the
+  input wake, `sync`); `woke(h)` (`Router::tick` and its intents, the
+  input wake, `Renderer::update`, `sync`); `input(h, event, idle)` (the
+  shown surfaces not wanting a frame, `Router::handle` and its intents,
+  `set_pointer`, the input wake, `facts`, `wake` if surface changes
+  wait or an idle surface now wants a frame); `attached(h, surface,
+  node, bounds)` (`attach_surface`, `set_surface_bounds`, `attaching`,
+  `Router::attached`, `wake` if changes wait); `configured(h, surface,
+  size, scale)` (`configure_surface`, `configuring`, `facts`, `wake` if
+  changes wait); `detached(h, surface)` (`detach_surface`, `detaching`,
+  `Router::detached`, `detached`, the tick); `painted(h, surface)`
+  (`facts`, `after_paint`, `wake` if changes wait). The input wake is
+  `Renderer::set_input_wake(Router::next_wake())`; a host with no
+  router (the demo bar) skips routing's steps. No host takes these
+  steps by hand outside tests (`demo::tests::
+  the_shell_takes_the_host_loops_steps_only_through_its_reactions`,
+  `eval/tests/drift.rs`).
   0. After each `apply`, drain `take_surface_changes()` and hand them to
      the surface manager: create a layer surface (or xdg_popup, lock
      surface) per matching output for `Created`, reconfigure or recreate
@@ -2624,8 +2661,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
     `Renderer::set_input_wake(Option<Instant>)` after each routed event
     and each settle (which forgets removed popups), so the renderer's
     timer wakes the loop then, and calls `tick` on every wake before
-    `Renderer::update` (`demo::text_ready`, `Host::tick_input`) and
-    after a surface detaches, sending its intents like `handle`'s.
+    `Renderer::update` (`demo::text_ready`, `host_loop::woke`) and
+    after a surface detaches (`host_loop::detached`), sending its
+    intents like `handle`'s.
     `SurfaceSpec::hover_trigger` marks such a popup for the surface
     manager, which never grabs for it (it takes input).
 

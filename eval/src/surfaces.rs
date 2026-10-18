@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use strand_render::{Renderer, Router};
+use strand_render::Renderer;
 use strand_scene::{
     Anchor, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
     SurfaceId, SurfaceSpec,
@@ -50,8 +50,8 @@ pub struct Shown {
     pub origin: [f32; 2],
 }
 
-/// What `sync` did to a surface.
-#[derive(Debug, PartialEq)]
+/// What the surface manager does to a surface (`Surfaces::change`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Change {
     Attached(SurfaceId, NodeId),
     /// Configured at this buffer size and scale (after `Attached` for a
@@ -221,95 +221,92 @@ impl Surfaces {
         ]
     }
 
-    /// Hands the renderer's surface changes to the surfaces, as the
-    /// surface manager would.
-    pub fn sync(
+    /// What the surface manager does with one of the renderer's surface
+    /// changes (`State::apply_surface_change`): the surfaces to attach,
+    /// configure and detach, in order, for the driver to run through the
+    /// host loop (`strand_render::host_loop::{attached, configured,
+    /// detached}`). A surface it attaches is shown from now on.
+    pub fn change(
         &mut self,
-        r: &mut Renderer,
-        router: &mut Router,
+        node: NodeId,
+        change: SurfaceChange,
         k: u32,
     ) -> Result<Vec<Change>, Error> {
         let mut out = Vec::new();
         let scale = self.scale()?;
-        let mut rounds = 0;
-        while r.has_surface_changes() {
-            rounds += 1;
-            if rounds > 64 {
-                return Err(Error::Run("surface changes never settle".into()));
-            }
-            for (node, change) in r.take_surface_changes() {
-                let spec = match change {
-                    SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => Some(s),
-                    SurfaceChange::Removed => None,
-                };
-                if let Some(s) = &spec {
-                    self.specs.insert(node, s.clone());
-                } else {
-                    self.specs.remove(&node);
-                }
-                let at = self.shown.iter().position(|s| s.node == node);
-                let Some(s) = spec.filter(|s| s.open) else {
-                    if let Some(i) = at {
-                        let gone = self.shown.remove(i);
-                        r.detach_surface(gone.id);
-                        router.detached(gone.id);
-                        out.push(Change::Detached(gone.id));
-                    }
-                    continue;
-                };
-                // A popup waits for its anchor's box.
-                if s.kind == NodeKind::Popup && s.anchor_rect.is_none() {
-                    continue;
-                }
-                let logical = self.logical(&s)?;
-                let size = physical(logical, scale);
-                if let Some(i) = at
-                    && self.shown[i].size == size
-                {
-                    continue;
-                }
-                let origin = self.origin_of(&s);
-                let id = match at {
-                    Some(i) => self.shown[i].id,
-                    None => {
-                        let id = SurfaceId(self.next);
-                        self.next += 1;
-                        r.attach_surface(id, node);
-                        router.attached(id, node);
-                        self.shown.push(Shown {
-                            id,
-                            node,
-                            kind: s.kind,
-                            logical,
-                            size,
-                            pixels: Vec::new(),
-                            fresh: true,
-                            attached: k,
-                            origin,
-                        });
-                        out.push(Change::Attached(id, node));
-                        id
-                    }
-                };
-                let Some(sh) = self.shown.iter_mut().find(|x| x.id == id) else {
-                    continue;
-                };
-                sh.logical = logical;
-                sh.size = size;
-                sh.pixels = vec![0; (size.w * size.h * 4) as usize];
-                sh.fresh = true;
-                sh.origin = origin;
-                let output = (s.kind != NodeKind::Popup).then(|| OUTPUT.to_string());
-                r.set_surface_origin(id, Some((output, LogicalPoint::new(origin[0], origin[1]))));
-                r.configure_surface(id, size, scale);
-                out.push(Change::Configured(id, size, scale));
-            }
+        let spec = match change {
+            SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => Some(s),
+            SurfaceChange::Removed => None,
+        };
+        if let Some(s) = &spec {
+            self.specs.insert(node, s.clone());
+        } else {
+            self.specs.remove(&node);
         }
+        let at = self.shown.iter().position(|s| s.node == node);
+        let Some(s) = spec.filter(|s| s.open) else {
+            if let Some(i) = at {
+                let gone = self.shown.remove(i);
+                out.push(Change::Detached(gone.id));
+            }
+            return Ok(out);
+        };
+        // A popup waits for its anchor's box.
+        if s.kind == NodeKind::Popup && s.anchor_rect.is_none() {
+            return Ok(out);
+        }
+        let logical = self.logical(&s)?;
+        let size = physical(logical, scale);
+        if let Some(i) = at
+            && self.shown[i].size == size
+        {
+            return Ok(out);
+        }
+        let origin = self.origin_of(&s);
+        let id = match at {
+            Some(i) => self.shown[i].id,
+            None => {
+                let id = SurfaceId(self.next);
+                self.next += 1;
+                self.shown.push(Shown {
+                    id,
+                    node,
+                    kind: s.kind,
+                    logical,
+                    size,
+                    pixels: Vec::new(),
+                    fresh: true,
+                    attached: k,
+                    origin,
+                });
+                out.push(Change::Attached(id, node));
+                id
+            }
+        };
+        let Some(sh) = self.shown.iter_mut().find(|x| x.id == id) else {
+            return Ok(out);
+        };
+        sh.logical = logical;
+        sh.size = size;
+        sh.pixels = vec![0; (size.w * size.h * 4) as usize];
+        sh.fresh = true;
+        sh.origin = origin;
+        out.push(Change::Configured(id, size, scale));
         Ok(out)
     }
 
-    /// Every shown surface configured again at the screen's (new) scale.
-    pub fn rescale(&mut self, r: &mut Renderer) -> Result<Vec<Change>, Error> {
+    /// Where surface `id` lies, for render (`Renderer::set_surface_origin`,
+    /// as `Host::send_origin` sends it): a layer surface on the one
+    /// output, a popup on its parent's.
+    pub fn origin(&self, id: SurfaceId) -> Option<(Option<String>, LogicalPoint)> {
+        let sh = self.get(id)?;
+        let output = (sh.kind != NodeKind::Popup).then(|| OUTPUT.to_string());
+        Some((output, LogicalPoint::new(sh.origin[0], sh.origin[1])))
+    }
+
+    /// Every shown surface at the screen's (new) scale: the surfaces to
+    /// configure again.
+    pub fn rescale(&mut self) -> Result<Vec<Change>, Error> {
         let scale = self.scale()?;
         let mut out = Vec::new();
         for sh in &mut self.shown {
@@ -317,7 +314,6 @@ impl Surfaces {
             sh.size = size;
             sh.pixels = vec![0; (size.w * size.h * 4) as usize];
             sh.fresh = true;
-            r.configure_surface(sh.id, size, scale);
             out.push(Change::Configured(sh.id, size, scale));
         }
         Ok(out)

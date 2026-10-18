@@ -4,14 +4,16 @@
 //! `dropped` line for a painted frame whose commit then failed.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::time::Instant;
 
 use calloop::channel::Sender;
 use strand_compiler::instantiate::NodeFlag;
-use strand_render::{Flag, InputScene, Intent, NodeEvent as RouteEvent, Renderer, Router};
+use strand_render::host_loop::{self, Cause, LoopHost};
+use strand_render::{Flag, Intent, NodeEvent as RouteEvent, Renderer, Router};
 use strand_scene::{
     BlurRegion, CompositorCaps, Damage, InputEvent, NodeId, PaintTarget, Painter, Prop, Scale,
-    SceneDiff, Size, SurfaceId,
+    Size, SurfaceId,
 };
 use strand_surface::{Monitor, SurfaceHost};
 
@@ -201,11 +203,6 @@ impl Forward {
         self.send(ToLogic::Screens(list));
     }
 
-    pub(crate) fn attached(&mut self, surface: SurfaceId, node: NodeId) {
-        self.surfaces.insert(surface, node);
-        self.router.attached(surface, node);
-    }
-
     /// A surface's logical size: its buffer size over its scale, sent
     /// only when logic reads the surface node's size (`watched`: it
     /// carries `Prop::Watch`, as [`Renderer::take_layout_facts`] asks of
@@ -231,11 +228,6 @@ impl Forward {
                 height: (size.h as f64 / s) as f32,
             });
         }
-    }
-
-    pub(crate) fn detached(&mut self, surface: SurfaceId) {
-        self.surfaces.remove(&surface);
-        self.router.detached(surface);
     }
 
     /// Plugged in, or back within 30 s (`reconnected`) at its old place.
@@ -268,12 +260,13 @@ impl Forward {
         self.send(ToLogic::Forget(monitor.id.as_str().to_string()));
     }
 
-    /// Routes `event` (`strand_render::Router::handle`) and sends logic
-    /// what it asks for: flags, node events (bubbled by logic to the
-    /// nearest handler) and two-way writes.
-    pub(crate) fn input(&mut self, event: &InputEvent, scene: &mut dyn InputScene) {
+    /// What routing `event` asked for: logic hears the flags, node events
+    /// (bubbled by logic to the nearest handler) and two-way writes, with
+    /// the press the event is; the clipboard's asks are kept for the
+    /// surface manager.
+    pub(crate) fn routed(&mut self, event: &InputEvent, intents: Vec<Intent>) {
         let press = press_of(event, self.press, std::mem::take(&mut self.fresh));
-        for intent in self.router.handle(event, scene) {
+        for intent in intents {
             if let Intent::Clipboard(ask) = intent {
                 self.clipboard.push(ask);
             } else if let Some(msg) = to_logic(intent, press) {
@@ -605,22 +598,6 @@ impl Host {
         }
     }
 
-    /// (M6) The `trigger: hover` popups whose delay or grace is up open
-    /// or close (`Router::tick`): logic hears of it, and the next one's
-    /// time is the renderer's input wake. Run on every wake of the loop
-    /// ([`crate::demo::text_ready`]) and after a surface detaches.
-    pub(crate) fn tick_input(&mut self) {
-        let Some(f) = &mut self.logic else {
-            return;
-        };
-        for intent in f.router.tick(&mut self.renderer) {
-            if let Some(msg) = to_logic(intent, None) {
-                f.send(msg);
-            }
-        }
-        self.renderer.set_input_wake(f.router.next_wake());
-    }
-
     /// (M5) Pick mode ends on main's side (the surface picked on
     /// unmapped, a lock): logic is told.
     fn end_pick(&mut self) {
@@ -641,41 +618,10 @@ impl Host {
         self.renderer.set_highlight(None);
     }
 
-    /// Logic's next diff, before the renderer applies it: `input` texts
-    /// it sets answer (or override) the router's edits in flight.
-    pub(crate) fn observe(&mut self, diff: &SceneDiff) {
-        if let Some(f) = &mut self.logic {
-            f.router.observe(diff);
-        }
-    }
-
-    /// Applies logic's diff to the renderer; returns the ops that failed.
-    /// Fed nodes' producers follow it at once: a diff can change what a
-    /// shown node is fed by with no frame following (a resting
-    /// `spectrum` draws the same dots whichever device its source names,
-    /// so `update` finds nothing to paint and no paint's
-    /// [`Host::painted`] would ever retarget its tap).
-    pub(crate) fn apply_diff(&mut self, diff: SceneDiff) -> Vec<strand_render::SceneError> {
-        let errors = self.renderer.apply(diff);
+    /// Fed nodes' producers follow the renderer's visible fed nodes.
+    fn sync_feeds(&mut self) {
         if let Some(feeds) = &mut self.feeds {
             crate::run::feeds::sync(&mut self.renderer, feeds);
-        }
-        errors
-    }
-
-    /// After logic's diff is applied: what routing settles on the new
-    /// scene (`Router::settle`: a focused input's list selects its first
-    /// row) goes to logic.
-    pub(crate) fn settle_input(&mut self) {
-        if let Some(f) = &mut self.logic {
-            for intent in f.router.settle(&mut self.renderer) {
-                if let Some(msg) = to_logic(intent, None) {
-                    f.send(msg);
-                }
-            }
-            // (M6) Settling forgets the hover popups logic removed, and
-            // their graces.
-            self.renderer.set_input_wake(f.router.next_wake());
         }
     }
 
@@ -725,16 +671,9 @@ impl Host {
                 f.send(ToLogic::Notice(text));
             }
         }
-        self.forward_facts();
-        // Virtualised lists scrolled past their mounted rows ask logic
-        // for the rows they show.
-        self.forward_list_windows();
-        // Fed nodes shown or hidden: their producers start or stop.
-        if let Some(feeds) = &mut self.feeds {
-            crate::run::feeds::sync(&mut self.renderer, feeds);
-        }
-        self.rebase_pointer(surface);
-        self.wake_if_changed();
+        // Layout facts to logic, `LoopHost::after_paint`, and a wake
+        // for the surface changes the paint left.
+        let Ok(()) = host_loop::painted(self, surface);
     }
 
     /// (m6-owner-fixes, B-d) `popup` painted a frame: if the pointer is
@@ -1094,6 +1033,154 @@ impl Painter for Host {
     }
 }
 
+/// (eval-host-loop) The shell's side of the host loop's reactions
+/// (`strand_render::host_loop`, which the evaluation sandbox's driver
+/// runs too): routing's intents and layout facts go to the logic thread,
+/// and a wake is the loop's ping (`demo::text_ready` runs at its next
+/// turn). Surface changes reach the surface manager through
+/// [`crate::demo::Main`].
+impl LoopHost for Host {
+    type Error = Infallible;
+
+    fn parts(&mut self) -> (&mut Renderer, Option<&mut Router>) {
+        (
+            &mut self.renderer,
+            self.logic.as_mut().map(|f| &mut f.router),
+        )
+    }
+
+    fn shown(&self, out: &mut Vec<SurfaceId>) {
+        if let Some(f) = &self.logic {
+            out.extend(f.surfaces.keys().copied());
+        }
+    }
+
+    /// Fed nodes' producers follow logic's diff at once: a diff can
+    /// change what a shown node is fed by with no frame following (a
+    /// resting `spectrum` draws the same dots whichever device its
+    /// source names, so `update` finds nothing to paint and no paint's
+    /// [`Host::painted`] would ever retarget its tap).
+    fn applied(&mut self, errors: Vec<strand_render::SceneError>) -> Result<(), Infallible> {
+        self.sync_feeds();
+        for error in errors {
+            log::error!("scene: {error:?}");
+        }
+        Ok(())
+    }
+
+    fn intents(&mut self, cause: Cause<'_>, intents: Vec<Intent>) -> Result<(), Infallible> {
+        let Some(f) = &mut self.logic else {
+            return Ok(());
+        };
+        let Cause::Input(event) = cause else {
+            // Settling (a focused input's list selects its first row; M6:
+            // it forgets the hover popups logic removed, and their
+            // graces) and ticking (the `trigger: hover` popups whose
+            // delay or grace is up open or close) press nothing.
+            for intent in intents {
+                if let Some(msg) = to_logic(intent, None) {
+                    f.send(msg);
+                }
+            }
+            return Ok(());
+        };
+        f.routed(event, intents);
+        // (M5) Pick mode: the inspector has the pointer.
+        if f.router.picking() {
+            match event {
+                InputEvent::PointerEnter { surface, .. }
+                | InputEvent::PointerMotion { surface, .. } => f.picking_on = Some(*surface),
+                InputEvent::PointerLeave { .. } => f.picking_on = None,
+                _ => {}
+            }
+            if let Some((surface, node)) = self.renderer.pick_input(event) {
+                let seq = f.pick_seq;
+                f.send(ToLogic::Picked(PickEvent::Picked { surface, node, seq }));
+            }
+        }
+        Ok(())
+    }
+
+    fn facts(&mut self) -> Result<(), Infallible> {
+        self.forward_facts();
+        Ok(())
+    }
+
+    fn wake(&mut self) -> Result<(), Infallible> {
+        if let Some(p) = &self.wake {
+            p.ping();
+        }
+        Ok(())
+    }
+
+    fn attaching(&mut self, surface: SurfaceId, node: NodeId) -> Result<(), Infallible> {
+        let kind = self.renderer.tree().get(node).map(|n| n.kind);
+        self.lock.attached(surface, node, kind);
+        self.roots.insert(surface, node);
+        if let Some(f) = &mut self.logic {
+            f.surfaces.insert(surface, node);
+        }
+        Ok(())
+    }
+
+    fn configuring(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
+        self.lock.configured(surface);
+        if let Some(f) = &self.logic {
+            let tree = self.renderer.tree();
+            f.configured(surface, size, scale, |node| {
+                tree.get(node).is_some_and(|n| n.get(Prop::Watch).is_some())
+            });
+        }
+    }
+
+    fn detaching(&mut self, surface: SurfaceId) -> Result<(), Infallible> {
+        // Its fed nodes are hidden now, whether or not a paint follows.
+        self.sync_feeds();
+        self.roots.remove(&surface);
+        self.origins.remove(&surface);
+        self.outputs.remove(&surface);
+        self.blur_fallback.regions.remove(&surface);
+        // (M5) Pick mode ends with the surface it picks on.
+        if self
+            .logic
+            .as_ref()
+            .is_some_and(|f| f.picking_on == Some(surface))
+        {
+            self.end_pick();
+        }
+        if let Some(f) = &mut self.logic {
+            f.surfaces.remove(&surface);
+        }
+        Ok(())
+    }
+
+    fn detached(&mut self, surface: SurfaceId) -> Result<(), Infallible> {
+        // (m6-owner-fixes, B-d) A popup the pointer was taken onto went:
+        // the pointer is back on the surface the compositor has it on,
+        // unless the compositor left that surface.
+        if let Some(r) = self.rebase.filter(|r| r.to == surface || r.from == surface) {
+            self.rebase = None;
+            if r.to == surface && !r.left {
+                self.input(&InputEvent::PointerEnter {
+                    surface: r.from,
+                    position: r.at,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn after_paint(&mut self, surface: SurfaceId) -> Result<(), Infallible> {
+        // Virtualised lists scrolled past their mounted rows ask logic
+        // for the rows they show.
+        self.forward_list_windows();
+        // Fed nodes shown or hidden: their producers start or stop.
+        self.sync_feeds();
+        self.rebase_pointer(surface);
+        Ok(())
+    }
+}
+
 impl SurfaceHost for Host {
     fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: Option<&Monitor>) {
         if let Some(m) = monitor {
@@ -1103,19 +1190,13 @@ impl SurfaceHost for Host {
                 m.connector.as_deref().unwrap_or(m.id.as_str())
             );
         }
-        self.renderer.attach_surface(surface, node);
         if let Some(m) = monitor {
             self.outputs.insert(surface, m.id.as_str().to_string());
         }
-        let kind = self.renderer.tree().get(node).map(|n| n.kind);
-        self.lock.attached(surface, node, kind);
-        self.roots.insert(surface, node);
-        self.renderer
-            .set_surface_bounds(surface, monitor.and_then(monitor_bounds));
-        if let Some(f) = &mut self.logic {
-            f.attached(surface, node);
-        }
-        self.wake_if_changed();
+        // The renderer (with its output's bounds) and routing take it
+        // (`LoopHost::attaching`: the lock's and the host's bookkeeping).
+        let bounds = monitor.and_then(monitor_bounds);
+        let Ok(()) = host_loop::attached(self, surface, node, bounds);
     }
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
@@ -1132,18 +1213,10 @@ impl SurfaceHost for Host {
         if let Some(p) = &self.probe {
             p.0.configured(surface);
         }
-        self.renderer.configure_surface(surface, size, scale);
-        self.lock.configured(surface);
-        if let Some(f) = &self.logic {
-            let tree = self.renderer.tree();
-            f.configured(surface, size, scale, |node| {
-                tree.get(node).is_some_and(|n| n.get(Prop::Watch).is_some())
-            });
-        }
-        // Its first layout's sizes: a container query answers before the
+        // Laid out, its size to logic (`LoopHost::configuring`), and its
+        // first layout's sizes: a container query answers before the
         // first frame (the renderer holds it for that).
-        self.forward_facts();
-        self.wake_if_changed();
+        let Ok(()) = host_loop::configured(self, surface, size, scale);
     }
 
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
@@ -1154,41 +1227,10 @@ impl SurfaceHost for Host {
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.lock.detached(surface);
-        self.renderer.detach_surface(surface);
-        // Its fed nodes are hidden now, whether or not a paint follows.
-        if let Some(feeds) = &mut self.feeds {
-            crate::run::feeds::sync(&mut self.renderer, feeds);
-        }
-        self.roots.remove(&surface);
-        self.origins.remove(&surface);
-        self.outputs.remove(&surface);
-        self.blur_fallback.regions.remove(&surface);
-        // (M5) Pick mode ends with the surface it picks on.
-        if self
-            .logic
-            .as_ref()
-            .is_some_and(|f| f.picking_on == Some(surface))
-        {
-            self.end_pick();
-        }
-        if let Some(f) = &mut self.logic {
-            f.detached(surface);
-        }
-        // (m6-owner-fixes, B-d) A popup the pointer was taken onto went:
-        // the pointer is back on the surface the compositor has it on,
-        // unless the compositor left that surface.
-        if let Some(r) = self.rebase.filter(|r| r.to == surface || r.from == surface) {
-            self.rebase = None;
-            if r.to == surface && !r.left {
-                self.input(&InputEvent::PointerEnter {
-                    surface: r.from,
-                    position: r.at,
-                });
-            }
-        }
-        // (M6) The pointer gone with the surface may start a hover
-        // popup's grace.
-        self.tick_input();
+        // The renderer and routing forget it (`LoopHost::detaching` and
+        // `detached`), and (M6) the router ticks: the pointer gone with
+        // the surface may start a hover popup's grace.
+        let Ok(()) = host_loop::detached(self, surface);
     }
 
     fn monitor_added(&mut self, monitor: &Monitor, _reconnected: bool) {
@@ -1291,50 +1333,15 @@ impl SurfaceHost for Host {
         if let Some((x, y)) = self.press_point(event) {
             strand_services::tray::set_click_point(x, y);
         }
-        // Surfaces already wanting a frame (animating) get it anyway.
+        // Routed (`LoopHost::intents`: to logic, the clipboard's asks
+        // kept, pick mode), (M4) `parallax` and `tilt` follow the router's
+        // pointer, (M6) a hover popup's delay or grace ending wakes the
+        // loop, a scroll's new sizes go to logic, and the loop wakes for
+        // surface changes or a surface the input woke from idle (one
+        // already animating gets its frame anyway).
         let mut idle = std::mem::take(&mut self.idle);
-        idle.clear();
-        if let Some(f) = &self.logic {
-            idle.extend(
-                f.surfaces
-                    .keys()
-                    .copied()
-                    .filter(|s| !self.renderer.wants_frame(*s)),
-            );
-        }
-        if let Some(f) = &mut self.logic {
-            f.input(event, &mut self.renderer);
-            // (M5) Pick mode: the inspector has the pointer.
-            if f.router.picking() {
-                match event {
-                    InputEvent::PointerEnter { surface, .. }
-                    | InputEvent::PointerMotion { surface, .. } => f.picking_on = Some(*surface),
-                    InputEvent::PointerLeave { .. } => f.picking_on = None,
-                    _ => {}
-                }
-                if let Some((surface, node)) = self.renderer.pick_input(event) {
-                    let seq = f.pick_seq;
-                    f.send(ToLogic::Picked(PickEvent::Picked { surface, node, seq }));
-                }
-            }
-            // (M4) `parallax` and `tilt` follow the router's pointer.
-            let s = event.surface();
-            self.renderer.set_pointer(s, f.router.pointer(s));
-            // (M6) A hover popup's delay or grace ending wakes the loop
-            // (`tick_input`).
-            self.renderer.set_input_wake(f.router.next_wake());
-        }
-        // A scroll lays out again: its sizes go with it.
-        self.forward_facts();
-        self.wake_if_changed();
-        // Input that moved something on an idle surface with no logic
-        // diff to follow (a key scrolling a list to the row it selects)
-        // still needs a frame: only then is the loop woken.
-        let woke = idle.iter().any(|s| self.renderer.wants_frame(*s));
+        let Ok(()) = host_loop::input(self, event, &mut idle);
         self.idle = idle;
-        if woke && let Some(p) = &self.wake {
-            p.ping();
-        }
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
@@ -1391,9 +1398,81 @@ impl SurfaceHost for Host {
 mod tests {
     use super::*;
     use strand_render::HitOnly;
+    use strand_scene::SceneDiff;
     use strand_scene::input::button;
     use strand_scene::{AxisDelta, ButtonState, LogicalPoint};
     use strand_surface::MonitorId;
+
+    /// [`Forward`] without the host loop around it: `surface` shown,
+    /// gone, and input routed and [`Forward::routed`].
+    trait Routed {
+        fn attached(&mut self, surface: SurfaceId, node: NodeId);
+        fn detached(&mut self, surface: SurfaceId);
+        fn input(&mut self, event: &InputEvent, scene: &mut dyn strand_render::InputScene);
+    }
+
+    impl Routed for Forward {
+        fn attached(&mut self, surface: SurfaceId, node: NodeId) {
+            self.surfaces.insert(surface, node);
+            self.router.attached(surface, node);
+        }
+
+        fn detached(&mut self, surface: SurfaceId) {
+            self.surfaces.remove(&surface);
+            self.router.detached(surface);
+        }
+
+        fn input(&mut self, event: &InputEvent, scene: &mut dyn strand_render::InputScene) {
+            let intents = self.router.handle(event, scene);
+            self.routed(event, intents);
+        }
+    }
+
+    /// A host with no surface manager behind it: the host loop's
+    /// reactions hand its surface changes to nobody.
+    struct Bare<'a>(&'a mut Host);
+
+    impl LoopHost for Bare<'_> {
+        type Error = Infallible;
+
+        fn parts(&mut self) -> (&mut Renderer, Option<&mut Router>) {
+            self.0.parts()
+        }
+
+        fn shown(&self, out: &mut Vec<SurfaceId>) {
+            self.0.shown(out);
+        }
+
+        fn applied(&mut self, errors: Vec<strand_render::SceneError>) -> Result<(), Infallible> {
+            assert!(errors.is_empty(), "{errors:?}");
+            self.0.applied(errors)
+        }
+
+        fn intents(&mut self, cause: Cause<'_>, intents: Vec<Intent>) -> Result<(), Infallible> {
+            self.0.intents(cause, intents)
+        }
+
+        fn facts(&mut self) -> Result<(), Infallible> {
+            self.0.facts()
+        }
+
+        fn wake(&mut self) -> Result<(), Infallible> {
+            LoopHost::wake(self.0)
+        }
+    }
+
+    impl host_loop::LoopSync for Bare<'_> {
+        fn sync(&mut self) -> Result<(), Infallible> {
+            Ok(())
+        }
+    }
+
+    /// Logic's diff through the host loop (`demo::apply` without a
+    /// surface manager): observed, applied (it must apply cleanly),
+    /// settled.
+    fn apply(host: &mut Host, d: SceneDiff) {
+        let Ok(()) = host_loop::apply(&mut Bare(host), d);
+    }
 
     fn monitor(model: &str, connector: &str) -> Monitor {
         Monitor {
@@ -2448,7 +2527,7 @@ mod tests {
             .set(spectrum, Prop::Source, PropValue::Text("0".into()))
             .set(spectrum, Prop::Width, PropValue::Number(64.0))
             .set(spectrum, Prop::Height, PropValue::Number(32.0));
-        assert!(host.apply_diff(d).is_empty());
+        apply(&mut host, d);
         let s = SurfaceId(1);
         host.surface_attached(s, panel, None);
         host.surface_configured(s, Size::new(80, 40), Scale::ONE);
@@ -2461,7 +2540,7 @@ mod tests {
         // The default sink is known: logic names its id.
         let mut d = SceneDiff::new();
         d.set(spectrum, Prop::Source, PropValue::Text("42".into()));
-        assert!(host.apply_diff(d).is_empty());
+        apply(&mut host, d);
         assert!(
             !host.wants_frame(s),
             "the resting dots are unchanged: no frame follows"
@@ -2932,9 +3011,7 @@ mod tests {
         );
         let mut d = SceneDiff::new();
         d.remove(k.a);
-        k.host.observe(&d);
-        assert!(k.host.apply_diff(d).is_empty());
-        k.host.settle_input();
+        apply(&mut k.host, d);
         assert_eq!(
             k.host.renderer.next_wake(),
             None,

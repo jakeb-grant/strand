@@ -8,13 +8,15 @@ pub mod logic;
 pub mod scene;
 
 use std::cell::Cell;
+use std::convert::Infallible;
 use std::fmt;
 use std::rc::Rc;
 use std::time::Duration;
 
 use calloop::channel::Event;
-use strand_render::{Renderer, TextBackend};
-use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp};
+use strand_render::host_loop::{self, Cause, LoopHost, LoopSync};
+use strand_render::{Intent, Renderer, Router, TextBackend};
+use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId};
 use strand_surface::{Config, State, SurfaceError, SurfaceManager};
 use strand_text::{FontConfig, TextError, TextWorker};
 
@@ -54,20 +56,15 @@ impl From<SurfaceError> for DemoError {
 }
 
 /// Apply one logic tick's diff and hand surface changes to the manager
-/// (render loop steps 0 and 3).
+/// (render loop steps 0 and 3; `host_loop::apply`: the router observes
+/// it, the renderer applies it, routing settles, surfaces sync).
 pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
-    state.host_mut().observe(&diff);
     // (M6) The popups this diff creates or opens were opened by its press,
     // if it has one: only those grab (`State::set_popup_cause`).
     for (node, press) in popup_causes(&diff) {
         state.set_popup_cause(node, press);
     }
-    for error in state.host_mut().apply_diff(diff) {
-        log::error!("scene: {error:?}");
-    }
-    // A launcher's list refilled: its first row is selected again.
-    state.host_mut().settle_input();
-    sync(state);
+    let Ok(()) = host_loop::apply(&mut Main(state), diff);
 }
 
 /// (M6) What `diff` says opened each popup it touches: a popup it creates
@@ -95,25 +92,60 @@ pub(crate) fn popup_causes(diff: &SceneDiff) -> Vec<(NodeId, Option<u32>)> {
         .collect()
 }
 
-/// The text worker delivered layouts: collect them, and hand on what they
-/// changed (a content-sized surface's size, laid-out sizes).
+/// The text worker delivered layouts, or something else woke the loop:
+/// (M6) a hover grace that ended (the renderer's timer woke for it) ticks
+/// the router, `Renderer::update` collects and lays out, and what it
+/// changed (a content-sized surface's size, laid-out sizes) is handed on
+/// (`host_loop::woke`).
 pub(crate) fn text_ready(state: &mut State<Host>) {
-    // (M6) A hover grace that ended (the renderer's timer woke for it),
-    // before `update` lays out and repaints for it.
-    state.host_mut().tick_input();
-    state.host_mut().renderer.update();
-    sync(state);
+    let Ok(()) = host_loop::woke(&mut Main(state));
 }
 
-/// Hands the renderer's surface changes to the surface manager and its
-/// layout facts to logic, then asks every surface for a frame.
-fn sync(state: &mut State<Host>) {
-    let changes = state.host_mut().renderer.take_surface_changes();
-    for (node, change) in changes {
-        state.apply_surface_change(node, change);
+/// (eval-host-loop) The main thread's host with its surface manager: the
+/// host loop's reactions that hand surface changes over run on it.
+pub(crate) struct Main<'a>(pub(crate) &'a mut State<Host>);
+
+impl LoopHost for Main<'_> {
+    type Error = Infallible;
+
+    fn parts(&mut self) -> (&mut Renderer, Option<&mut Router>) {
+        self.0.host_mut().parts()
     }
-    state.host_mut().forward_facts();
-    state.poll();
+
+    fn shown(&self, out: &mut Vec<SurfaceId>) {
+        self.0.host().shown(out);
+    }
+
+    fn applied(&mut self, errors: Vec<strand_render::SceneError>) -> Result<(), Infallible> {
+        self.0.host_mut().applied(errors)
+    }
+
+    fn intents(&mut self, cause: Cause<'_>, intents: Vec<Intent>) -> Result<(), Infallible> {
+        self.0.host_mut().intents(cause, intents)
+    }
+
+    fn facts(&mut self) -> Result<(), Infallible> {
+        self.0.host_mut().facts()
+    }
+
+    fn wake(&mut self) -> Result<(), Infallible> {
+        LoopHost::wake(self.0.host_mut())
+    }
+}
+
+impl LoopSync for Main<'_> {
+    /// Hands the renderer's surface changes to the surface manager and
+    /// its layout facts to logic, then asks every surface for a frame.
+    fn sync(&mut self) -> Result<(), Infallible> {
+        let state = &mut *self.0;
+        let changes = state.host_mut().renderer.take_surface_changes();
+        for (node, change) in changes {
+            state.apply_surface_change(node, change);
+        }
+        state.host_mut().forward_facts();
+        state.poll();
+        Ok(())
+    }
 }
 
 /// How long a new bar holds its first frame for text being shaped. The
@@ -211,6 +243,94 @@ mod tests {
     use super::*;
 
     const GATE: u64 = 2000;
+
+    /// The host loop's steps (`strand_render::host_loop`) a host must
+    /// not take by hand: routing's, the input wake's, the surfaces' and
+    /// the renderer's own.
+    const STEPS: [&str; 12] = [
+        "router.observe(",
+        "router.settle(",
+        "router.tick(",
+        "router.handle(",
+        "router.attached(",
+        "router.detached(",
+        "set_input_wake(",
+        "attach_surface(",
+        "detach_surface(",
+        "configure_surface(",
+        "renderer.apply(",
+        "renderer.update()",
+    ];
+
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                sources(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// (eval-host-loop) The shell's main thread takes logic's diffs,
+    /// wakes, input and its surfaces' attach, configure, detach and
+    /// paints through the host loop's reactions, which the evaluation
+    /// sandbox's driver runs too (eval/tests/drift.rs holds its side):
+    /// no step of them is taken by hand anywhere in the shell's code
+    /// outside tests, so the sandbox cannot drift from the shell's order
+    /// unseen (docs/decisions.md, eval-host-loop).
+    #[test]
+    fn the_shell_takes_the_host_loops_steps_only_through_its_reactions() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&src, &mut files);
+        files.sort();
+        let tests_only = ["bench.rs", "fuzz.rs", "speed.rs", "run/tests.rs"];
+        let mut taken = Vec::new();
+        for f in &files {
+            let rel = f.strip_prefix(&src).unwrap().display().to_string();
+            if tests_only.contains(&rel.as_str()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(f).unwrap();
+            let lines: Vec<&str> = text.lines().map(str::trim_start).collect();
+            // A file's code ends where its test module starts.
+            let end = lines
+                .windows(2)
+                .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod tests"))
+                .unwrap_or(lines.len());
+            for (i, line) in lines[..end].iter().enumerate() {
+                if line.starts_with("//") {
+                    continue;
+                }
+                for step in STEPS.iter().filter(|s| line.contains(*s)) {
+                    taken.push(format!("{rel}:{}: {step}", i + 1));
+                }
+            }
+        }
+        assert!(
+            taken.is_empty(),
+            "host loop steps taken by hand (run them through strand_render::host_loop):\n{}",
+            taken.join("\n")
+        );
+        let host = std::fs::read_to_string(src.join("demo/host.rs")).unwrap()
+            + &std::fs::read_to_string(src.join("demo/mod.rs")).unwrap();
+        for reaction in [
+            "apply",
+            "woke",
+            "input",
+            "attached",
+            "configured",
+            "detached",
+            "painted",
+        ] {
+            assert!(
+                host.contains(&format!("host_loop::{reaction}(")),
+                "the shell runs no `host_loop::{reaction}`"
+            );
+        }
+    }
 
     #[test]
     fn a_closed_connection_is_a_normal_end() {

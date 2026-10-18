@@ -23,6 +23,7 @@ mod clock;
 mod effects;
 mod fillet;
 mod flatten;
+pub mod host_loop;
 pub mod hugepage;
 pub mod image;
 pub mod input;

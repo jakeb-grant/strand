@@ -244,22 +244,35 @@ runtime's `text_ready` wake does.
 
 One scenario runs in one process: the logic VM, the input router and the
 renderer, wired as the runtime wires them (crates/strand/src/demo and
-run/). The renderer's own timers (a tooltip's delay, a capped clock's tick)
+run/). What the shell's main thread does when logic's diff arrives, the
+loop wakes, an input event comes, a surface is attached, configured or
+detached, or a frame is painted is one function per reaction in
+strand-render, `strand_render::host_loop`, and the driver runs the same
+functions (docs/decisions.md eval-host-loop): the order inside each
+(observe, apply, settle, the input wake, update, sync, the after-paint
+facts and wakes) is the shell's by construction, and `eval/tests/drift.rs`
+fails if the driver takes one of their steps by hand. After each reaction
+the loop turns: a wake the reaction owed runs, then logic answers what
+routing told it, each as a reaction of its own, never inside the one that
+caused it (as the shell's loop runs its ping and logic's diff after the
+callback that caused them). The renderer's own timers (a tooltip's delay,
+a capped clock's tick)
 and the router read the virtual clock. Each tick does this, in order:
 
-1. The tick's input steps go through the router, as `Host::input` does:
-   input that leaves an idle surface wanting a frame wakes the loop.
+1. The tick's input steps go through the router, each event a reaction
+   (`host_loop::input`): input that leaves an idle surface wanting a
+   frame wakes the loop.
 2. Logic runs its timers and steps to `t`. Only a diff with something in
-   it is applied (as the logic thread sends), then the router settles and
-   surfaces follow.
+   it is applied (`host_loop::apply`, as the logic thread sends), then the
+   router settles and surfaces follow.
 3. The loop wakes between frames if a waker text is delivered or the
    renderer's next wake is due: the router ticks and `Renderer::update`
-   runs (`text_ready`).
+   runs (`host_loop::woke`, the shell's `text_ready`).
 4. A frame held for logic's answer to its layout facts (an idle surface's
    container query) gets it first.
 5. Paint texts are delivered, then every surface that wants a frame paints
    once at `t`. A paint that leaves surface changes wakes the loop
-   (`Host::painted`).
+   (`host_loop::painted`).
 6. The frame's traces are collected, and what the frame laid out goes to
    logic; its answer lands before the next frame.
 
@@ -267,8 +280,10 @@ Text is shaped inline, where the shell has a text worker that wakes the
 loop for each layout it delivers: the driver wakes the loop for each
 layout shaped inline, as that wake would. The renderer's wall-clock holds
 are neutralised with its own setters (the query hold excepted: logic always
-answers in time), so a run is a function of its scenario. Surfaces are attached and configured at
-the size their spec asks, as the surface manager does. A run that leaves a
+answers in time), so a run is a function of its scenario. Surfaces are
+attached (with the screen as their output's bounds), placed and configured
+at the size their spec asks, as the surface manager does, each through the
+host loop (`attached`, `configured`, `detached`). A run that leaves a
 surface wanting frames at the end of a rest is a `settle` failure, not a
 hang.
 

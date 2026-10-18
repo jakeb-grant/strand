@@ -1,27 +1,37 @@
 //! The driver (docs/eval.md, "Driver"): one scenario run in one process,
 //! the logic VM, the input router and the renderer on a virtual clock, as
-//! the runtime wires them (crates/strand/src/demo/mod.rs `apply`,
-//! `text_ready` and `sync`; crates/strand-render/tests/morph.rs `Shell`).
+//! the runtime wires them. Every reaction of the shell's main thread
+//! (logic's diff arriving, the loop waking, an input event, a surface
+//! attached, configured or detached, a frame painted) is the shell's own
+//! code, `strand_render::host_loop`, run with the driver's side behind
+//! `LoopHost` and `LoopSync` (docs/decisions.md, eval-host-loop); what is
+//! the driver's own is when they run, and its surfaces.
+//!
+//! After each reaction the loop turns ([`Harness::turn`]): a wake the
+//! reaction owed runs `host_loop::woke`, then logic answers what routing
+//! told it (`Instance::flush`) and the answer is applied, each as a
+//! reaction of its own, as the shell's loop runs its ping and logic's
+//! diff as callbacks after the one that caused them.
 //!
 //! Each tick `k` at time `t(k)`:
 //! 1. the instant steps before it have acted (state, input, environment);
+//!    an input event is a reaction (`host_loop::input`);
 //! 2. logic runs its timers due by `t` and steps to `t`; a diff that is
-//!    not empty goes to the router, then to render (whose `apply` runs
-//!    `Renderer::update`), routing settles on it and surfaces follow, as
-//!    the shell's logic thread sends only diffs with something in them;
+//!    not empty is applied (`host_loop::apply`), as the shell's logic
+//!    thread sends only diffs with something in them;
 //! 3. the loop wakes between frames only for what wakes the shell's
 //!    (crates/strand/src/demo/mod.rs `text_ready`): texts released `via
 //!    waker`, or the renderer's own due time ([`Renderer::next_wake`]: a
 //!    hover popup's delay or grace, a tooltip's delay, a capped clock's
-//!    tick, on the virtual clock). A wake ticks the router and runs
-//!    `Renderer::update`; so do surface changes a paint or input leaves,
-//!    input that wakes an idle surface (`Host::painted`, `Host::input`),
+//!    tick, on the virtual clock). So do the reactions that owe a wake
+//!    (surface changes left behind, input that wakes an idle surface),
 //!    and text shaped inline (a text worker wakes the loop for each
 //!    layout it delivers, `Renderer::take_inline_shaped`);
 //! 4. a frame held for logic's answer to its layout facts (a container
 //!    query on an idle surface, the renderer's `query_hold`) gets it;
 //! 5. texts released `via paint` are delivered, then every surface that
-//!    wants a frame (or was just configured) paints at `t`, once;
+//!    wants a frame (or was just configured) paints at `t`, once, each
+//!    paint a reaction (`host_loop::painted`);
 //! 6. the frame traces, held texts and commands are collected, and the
 //!    layout facts the frames laid out go to logic, whose answer is
 //!    applied before the next tick's frame (the shell's logic thread
@@ -47,11 +57,12 @@ use strand_compiler::ty::Ty;
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::{MOCK_TIME, SchemaHost};
 use strand_core::Runtime;
+use strand_render::host_loop::{self, Cause, LoopHost, LoopSync};
 use strand_render::probe::{Axes, FrameTrace, Hidden, NodeTrace, TextDrawn};
 use strand_render::{Renderer, Router, TextBackend};
 use strand_scene::{
-    ButtonState, LogicalPoint, NodeId, PaintTarget, Painter, Prop, PropValue, SceneDiff, Size,
-    SurfaceId,
+    ButtonState, LogicalPoint, LogicalSize, NodeId, PaintTarget, Painter, Prop, PropValue,
+    SceneDiff, Size, SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine};
 
@@ -129,11 +140,10 @@ pub fn run(sc: &Scenario, opts: &RunOptions) -> Result<RunOutput, Error> {
 const REST_HORIZON: Duration = Duration::from_secs(10);
 /// Rounds of layout facts a held frame waits on within one tick.
 const FACT_ROUNDS: usize = 8;
-/// Diffs applied inside one another (logic answering routing's settle,
-/// which settles again) before the run is called stuck.
-const APPLY_DEPTH: u32 = 32;
-/// Wakes in a row for text shaped inline before the run is called stuck.
-const WAKE_ROUNDS: usize = 16;
+/// Turns of the loop in a row with a wake or logic's answer still owed
+/// (logic answering routing's settle, which settles again; text shaped
+/// inline on each wake) before the run is called stuck.
+const TURN_ROUNDS: usize = 64;
 /// Logic timers run within one tick before the run is called stuck.
 const TIMER_ROUNDS: usize = 10_000;
 
@@ -281,8 +291,17 @@ struct Harness<'s> {
     /// Motion is reduced whatever the run sets (the twin, or the
     /// scenario's own `reduce_motion`).
     forced_reduced: bool,
-    /// Diffs being applied inside one another now.
-    depth: u32,
+    /// (eval-host-loop) A reaction asked the loop to wake
+    /// (`LoopHost::wake`): `host_loop::woke` runs at its next turn.
+    wake_owed: bool,
+    /// (eval-host-loop) Routing told logic something since its last
+    /// answer: logic answers (`Instance::flush`) at the loop's next
+    /// turn, after the reaction that told it, as the shell's logic
+    /// thread answers with a diff the main loop applies once its current
+    /// callback returns.
+    logic_owed: bool,
+    /// The loop is turning now (`Harness::turn`).
+    turning: bool,
     /// Logic's diff with changes, or input, reached the renderer since
     /// the last frame (`Frame::driven`).
     driven: bool,
@@ -413,7 +432,9 @@ impl<'s> Harness<'s> {
             drop_one: HashMap::new(),
             reduced: false,
             forced_reduced: reduced,
-            depth: 0,
+            wake_owed: false,
+            logic_owed: false,
+            turning: false,
             driven: false,
             poses: BTreeMap::new(),
             committed: BTreeMap::new(),
@@ -651,7 +672,7 @@ impl<'s> Harness<'s> {
     }
 
     /// Applies a logic update: its errors noted, its diff (with
-    /// `system.reduced_motion` when it changed) to the router and render
+    /// `system.reduced_motion` when it changed) through the host loop
     /// unless it is empty, as the shell's logic thread sends only diffs
     /// with something in them.
     fn update(&mut self, u: Update) -> Result<(), Error> {
@@ -666,74 +687,61 @@ impl<'s> Harness<'s> {
         self.apply(diff)
     }
 
-    /// A diff to the router and render, then what the host does after
-    /// it (crates/strand/src/demo/mod.rs `apply`): routing settles on the
-    /// new scene (its intents to logic), the renderer's input wake
-    /// follows the router's, surfaces sync.
+    /// Logic's diff through the host loop as the shell's main thread
+    /// takes it (`host_loop::apply`: the router observes it, render
+    /// applies it, routing settles, the input wake follows, surfaces
+    /// sync), then the loop's turn.
     fn apply(&mut self, diff: SceneDiff) -> Result<(), Error> {
-        self.depth += 1;
-        if self.depth > APPLY_DEPTH {
-            self.depth = 0;
-            return Err(Error::Run(
-                "logic and routing never settle (diffs applied inside one another)".into(),
-            ));
+        self.driven |= !diff.ops.is_empty();
+        host_loop::apply(self, diff)?;
+        self.turn()
+    }
+
+    /// The loop's turn after a reaction (eval-host-loop): a wake owed
+    /// runs `host_loop::woke` (so does text shaped inline meanwhile,
+    /// which a text worker would wake the loop for), then logic answers
+    /// what routing told it, each answer applied as a reaction of its
+    /// own, until nothing is owed. The shell's loop runs these as
+    /// callbacks of their own after the one that owed them; nothing runs
+    /// inside a reaction.
+    fn turn(&mut self) -> Result<(), Error> {
+        if self.turning {
+            return Ok(());
         }
-        let out = self.apply_inner(diff);
-        self.depth -= 1;
+        self.turning = true;
+        let out = self.turn_owed();
+        self.turning = false;
         out
     }
 
-    fn apply_inner(&mut self, diff: SceneDiff) -> Result<(), Error> {
-        self.driven |= !diff.ops.is_empty();
-        self.router.observe(&diff);
-        let errors = self.r.apply(diff);
-        if !errors.is_empty() {
-            return Err(Error::Run(format!(
-                "render refused logic's diff: {errors:?}"
-            )));
-        }
-        let intents = self.router.settle(&mut self.r);
-        self.route(intents)?;
-        self.r.set_input_wake(self.router.next_wake());
-        self.sync()?;
-        if self.r.take_inline_shaped() > 0 {
-            self.wake()?;
-        }
-        Ok(())
-    }
-
-    /// The loop woken between frames (crates/strand/src/demo/mod.rs
-    /// `text_ready`): the router ticks (a hover popup's delay or grace),
-    /// its intents reach logic, the renderer's input wake follows, and
-    /// `Renderer::update` runs, then surfaces sync. Text shaped inline
-    /// meanwhile is text a worker would wake the loop for again.
-    fn wake(&mut self) -> Result<(), Error> {
-        for _ in 0..WAKE_ROUNDS {
-            let intents = self.router.tick(&mut self.r);
-            self.route(intents)?;
-            self.r.set_input_wake(self.router.next_wake());
-            self.r.update();
-            self.sync()?;
-            if self.r.take_inline_shaped() == 0 {
-                return Ok(());
+    fn turn_owed(&mut self) -> Result<(), Error> {
+        for _ in 0..TURN_ROUNDS {
+            if std::mem::take(&mut self.wake_owed) || self.r.take_inline_shaped() > 0 {
+                host_loop::woke(self)?;
+                continue;
             }
+            if std::mem::take(&mut self.logic_owed) {
+                let u = self.inst.flush();
+                self.update(u)?;
+                continue;
+            }
+            return Ok(());
         }
         Err(Error::Run(format!(
-            "text is shaped again on each of {WAKE_ROUNDS} wakes in a row"
+            "the loop never goes quiet: a wake or logic's answer is owed after each of {TURN_ROUNDS} turns"
         )))
     }
 
-    /// Surface changes to the surfaces, noted in the trace.
-    fn sync(&mut self) -> Result<(), Error> {
-        let k = self.clock.k();
-        let changes = self.surfaces.sync(&mut self.r, &mut self.router, k)?;
-        self.changed(changes)
+    /// The loop woken between frames (crates/strand/src/demo/mod.rs
+    /// `text_ready`, `host_loop::woke`), and its turn.
+    fn wake(&mut self) -> Result<(), Error> {
+        self.wake_owed = true;
+        self.turn()
     }
 
     /// Surface changes noted in the trace, and handed to the GPU leg.
     fn changed(&mut self, changes: Vec<Change>) -> Result<(), Error> {
         let k = self.clock.k();
-        let mut detached = false;
         for c in changes {
             match c {
                 Change::Configured(id, size, scale) => {
@@ -778,7 +786,6 @@ impl<'s> Harness<'s> {
                     });
                 }
                 Change::Detached(id) => {
-                    detached = true;
                     if self.gpu_attached.remove(&id)
                         && let Some(dev) = self.gpu.as_mut()
                     {
@@ -795,13 +802,6 @@ impl<'s> Harness<'s> {
                     }
                 }
             }
-        }
-        // The pointer gone with a surface may start a hover popup's
-        // grace (`Host::surface_detached` ticks the router).
-        if detached {
-            let intents = self.router.tick(&mut self.r);
-            self.route(intents)?;
-            self.r.set_input_wake(self.router.next_wake());
         }
         Ok(())
     }
@@ -832,40 +832,17 @@ impl<'s> Harness<'s> {
         self.update(u)
     }
 
-    /// Routing's intents to logic, and logic's answer back.
-    fn route(&mut self, intents: Vec<strand_render::Intent>) -> Result<(), Error> {
-        if intents.is_empty() {
-            return Ok(());
-        }
-        if to_logic(&self.inst, &self.host, intents, &mut self.notes) {
-            let u = self.inst.flush();
-            self.update(u)?;
-        }
-        Ok(())
-    }
-
-    /// Input through the router, as `Host::input` sends it: intents to
-    /// logic, the pointer to lean and tilt, the renderer's input wake;
-    /// surface changes it leaves, or a surface it wakes from idle, wake
-    /// the loop.
+    /// Input as the surface manager hands it to the host, each event a
+    /// reaction (`host_loop::input`: routed, its intents to logic, the
+    /// pointer to lean and tilt, the renderer's input wake; surface
+    /// changes it leaves, or a surface it wakes from idle, wake the
+    /// loop), then the loop's turn.
     fn send(&mut self, events: Vec<strand_scene::InputEvent>) -> Result<(), Error> {
         self.driven |= !events.is_empty();
+        let mut idle = Vec::new();
         for e in events {
-            let idle: Vec<SurfaceId> = self
-                .surfaces
-                .shown
-                .iter()
-                .map(|s| s.id)
-                .filter(|s| !self.r.wants_frame(*s))
-                .collect();
-            let intents = self.router.handle(&e, &mut self.r);
-            self.route(intents)?;
-            let s = e.surface();
-            self.r.set_pointer(s, self.router.pointer(s));
-            self.r.set_input_wake(self.router.next_wake());
-            if self.r.has_surface_changes() || idle.iter().any(|s| self.r.wants_frame(*s)) {
-                self.wake()?;
-            }
+            host_loop::input(self, &e, &mut idle)?;
+            self.turn()?;
         }
         Ok(())
     }
@@ -1127,8 +1104,16 @@ impl<'s> Harness<'s> {
                 self.surfaces.screen.scale = *f;
                 self.surfaces.scale()?;
                 self.set_screens()?;
-                let changes = self.surfaces.rescale(&mut self.r)?;
+                // Each surface configured at the new scale, as the
+                // surface manager's next frame of it does.
+                let changes = self.surfaces.rescale()?;
+                for c in &changes {
+                    if let Change::Configured(id, size, scale) = *c {
+                        host_loop::configured(self, id, size, scale)?;
+                    }
+                }
                 self.changed(changes)?;
+                self.turn()?;
             }
             StepKind::Hz(n) => {
                 self.event(step);
@@ -1476,13 +1461,14 @@ impl<'s> Harness<'s> {
                     self.poses.remove(&id.0);
                 }
             }
+            // `Host::painted`: its facts (answered at the tick's end),
+            // and a wake owed for the surface changes it left.
+            host_loop::painted(self, id)?;
         }
-        // `Host::painted`: surface changes wake the loop, and so does
-        // text the frame shaped (a worker's layout arrives with a wake).
-        if self.r.take_inline_shaped() > 0 || self.r.has_surface_changes() {
-            self.wake()?;
-        }
-        Ok(())
+        // `host_loop::painted` woke the loop for surface changes a paint
+        // left; text the frames shaped wakes it too (a worker's layout
+        // arrives with a wake).
+        self.turn()
     }
 
     /// The `redraw` check on the CPU: surface `id`'s buffer, as the
@@ -1826,6 +1812,77 @@ impl<'s> Harness<'s> {
             images: self.images,
             notes: self.notes,
         })
+    }
+}
+
+/// (eval-host-loop) The driver's side of the host loop's reactions
+/// (`strand_render::host_loop`, which the shell's main thread runs too):
+/// routing's intents go to the logic VM, whose answer is owed to the
+/// loop's next turn; layout facts wait for the driver's own points
+/// (`answer`: a held frame's, and the tick's end), as the shell's logic
+/// thread answers between frames; a wake is owed to the next turn.
+impl LoopHost for Harness<'_> {
+    type Error = Error;
+
+    fn parts(&mut self) -> (&mut Renderer, Option<&mut Router>) {
+        (&mut self.r, Some(&mut self.router))
+    }
+
+    fn shown(&self, out: &mut Vec<SurfaceId>) {
+        out.extend(self.surfaces.shown.iter().map(|s| s.id));
+    }
+
+    fn applied(&mut self, errors: Vec<strand_render::SceneError>) -> Result<(), Error> {
+        if errors.is_empty() {
+            return Ok(());
+        }
+        Err(Error::Run(format!(
+            "render refused logic's diff: {errors:?}"
+        )))
+    }
+
+    fn intents(&mut self, _: Cause<'_>, intents: Vec<strand_render::Intent>) -> Result<(), Error> {
+        if !intents.is_empty() && to_logic(&self.inst, &self.host, intents, &mut self.notes) {
+            self.logic_owed = true;
+        }
+        Ok(())
+    }
+
+    fn facts(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn wake(&mut self) -> Result<(), Error> {
+        self.wake_owed = true;
+        Ok(())
+    }
+}
+
+impl LoopSync for Harness<'_> {
+    /// The renderer's surface changes to the surfaces, as the surface
+    /// manager takes them (`State::apply_surface_change`): each surface
+    /// attached (on the one screen), placed and configured, or detached,
+    /// through the host loop; then noted in the trace.
+    fn sync(&mut self) -> Result<(), Error> {
+        let k = self.clock.k();
+        let screen = self.surfaces.screen;
+        let bounds = Some(LogicalSize::new(screen.width as f32, screen.height as f32));
+        let mut done = Vec::new();
+        for (node, change) in self.r.take_surface_changes() {
+            for c in self.surfaces.change(node, change, k)? {
+                match c {
+                    Change::Attached(id, node) => host_loop::attached(self, id, node, bounds)?,
+                    Change::Configured(id, size, scale) => {
+                        let origin = self.surfaces.origin(id);
+                        self.r.set_surface_origin(id, origin);
+                        host_loop::configured(self, id, size, scale)?;
+                    }
+                    Change::Detached(id) => host_loop::detached(self, id)?,
+                }
+                done.push(c);
+            }
+        }
+        self.changed(done)
     }
 }
 

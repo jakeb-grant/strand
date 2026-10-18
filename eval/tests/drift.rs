@@ -2,6 +2,12 @@
 //! and lints: eval/Cargo.toml copies them, and this test keeps the copy
 //! equal (docs/decisions.md eval-sandbox). The precedent is
 //! crates/strand/tests/m5/plugin.rs's guide profile check.
+//!
+//! (eval-host-loop) The driver runs the shell's frame sequence through
+//! the host loop's reactions (`strand_render::host_loop`), and this test
+//! keeps it from taking any of their steps by hand, where it could drift
+//! from the shell unseen (crates/strand/src/demo/mod.rs holds the
+//! shell's side).
 
 use std::path::Path;
 
@@ -110,4 +116,85 @@ fn the_package_is_its_own_workspace_and_turns_the_hooks_on() {
         .find(|l| l.starts_with("strand-render ="))
         .expect("eval depends on strand-render");
     assert!(render.contains("\"eval-hooks\""), "{render}");
+}
+
+/// The host loop's steps a host must not take by hand: routing's, the
+/// input wake's, the surfaces' and the renderer's own.
+const STEPS: [&str; 14] = [
+    "router.observe(",
+    "router.settle(",
+    "router.tick(",
+    "router.handle(",
+    "router.attached(",
+    "router.detached(",
+    "set_input_wake(",
+    "attach_surface(",
+    "detach_surface(",
+    "configure_surface(",
+    ".r.apply(",
+    ".r.update()",
+    "renderer.apply(",
+    "renderer.update()",
+];
+
+fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            sources(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// (eval-host-loop) The driver takes logic's diffs, its wakes, input and
+/// its surfaces' attach, configure, detach and paints through the host
+/// loop's reactions, as the shell's main thread does, and takes none of
+/// their steps by hand outside tests.
+#[test]
+fn the_driver_takes_the_host_loops_steps_only_through_its_reactions() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&src, &mut files);
+    files.sort();
+    let mut taken = Vec::new();
+    for f in &files {
+        let rel = f.strip_prefix(&src).unwrap().display().to_string();
+        let text = std::fs::read_to_string(f).unwrap();
+        let lines: Vec<&str> = text.lines().map(str::trim_start).collect();
+        // A file's code ends where its test module starts.
+        let end = lines
+            .windows(2)
+            .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod tests"))
+            .unwrap_or(lines.len());
+        for (i, line) in lines[..end].iter().enumerate() {
+            if line.starts_with("//") {
+                continue;
+            }
+            for step in STEPS.iter().filter(|s| line.contains(*s)) {
+                taken.push(format!("{rel}:{}: {step}", i + 1));
+            }
+        }
+    }
+    assert!(
+        taken.is_empty(),
+        "host loop steps taken by hand (run them through strand_render::host_loop):\n{}",
+        taken.join("\n")
+    );
+    let harness = std::fs::read_to_string(src.join("harness.rs")).unwrap();
+    for reaction in [
+        "apply",
+        "woke",
+        "input",
+        "attached",
+        "configured",
+        "detached",
+        "painted",
+    ] {
+        assert!(
+            harness.contains(&format!("host_loop::{reaction}(")),
+            "the driver runs no `host_loop::{reaction}`"
+        );
+    }
 }
