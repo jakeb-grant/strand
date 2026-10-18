@@ -261,6 +261,30 @@ fn a_damage_band_mutant_fails_redraw() {
     assert_eq!(c.report.status(CheckId::Redraw), Some(&Status::Pass));
 }
 
+/// The inspector's overlay (here its damage flash, a tint over each
+/// frame's repaint) is drawn into the buffer after the frame's own items:
+/// the full repaint draws it too, so a frame with an overlay on compares
+/// equal to its repaint.
+#[test]
+fn a_frame_with_the_inspector_overlay_is_repainted_with_it() {
+    let sc = load("curated/island-card-swell.scn");
+    let o = RunOptions {
+        damage_flash: true,
+        ..opts(false)
+    };
+    let c = check_scenario(&sc, &o).unwrap_or_else(|e| panic!("{e}"));
+    // A pass: every painted frame compared, each equal to its repaint.
+    assert_eq!(
+        c.report.status(CheckId::Redraw),
+        Some(&Status::Pass),
+        "{:?}",
+        c.report.failures(CheckId::Redraw)
+    );
+    // The flash is on screen: the run's frames differ from one without it.
+    let plain = check_scenario(&sc, &opts(false)).unwrap_or_else(|e| panic!("{e}"));
+    assert_ne!(images(&c.run), images(&plain.run), "the flash drew");
+}
+
 /// The frames' images, by tick and surface.
 fn images(o: &RunOutput) -> BTreeMap<(u32, u32), Vec<u8>> {
     o.trace

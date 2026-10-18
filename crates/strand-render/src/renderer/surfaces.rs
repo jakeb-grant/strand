@@ -263,7 +263,10 @@ impl Renderer {
         // cut off at its edge. A shrink comes once everything settled,
         // and the content is laid out where the smaller box will be
         // before it comes (`RootSize::Placed`, decisions.md popup-shrink).
-        let delta = [(new.w - old.w).max(0.0) * fx, (new.h - old.h).max(0.0) * fy];
+        // As far as the compositor moves the larger box's edge the other
+        // way, in whole pixels (`layout::edge_shift`).
+        let grow = |from: f32, to: f32, f: f32| (-crate::layout::edge_shift(from, to, f)).max(0.0);
+        let delta = [grow(old.w, new.w, fx), grow(old.h, new.h, fy)];
         if delta.iter().all(|d| d.abs() < 0.5) {
             return;
         }

@@ -56,7 +56,7 @@ pub use input::{
 pub use inspect::LayoutInfo;
 pub use layout::{
     Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
-    MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
+    MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN, edge_shift,
 };
 pub use media::thumbnail::Frame as ThumbnailFrame;
 pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
@@ -65,7 +65,7 @@ pub use renderer::FrameSummary;
 pub use renderer::GPU_WAIT;
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, ESTIMATE_WAIT, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT,
-    QUERY_WAIT, RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend,
+    QUERY_WAIT, RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend, resize_share,
 };
 pub use renderer::{
     FeedDemand, FeedKind, ListFrames, PaintTimes, ScrollInput, ScrollKind, THUMBNAIL_STEP,

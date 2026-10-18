@@ -2125,6 +2125,84 @@ fn a_centred_panel_keeps_its_rows_in_place_as_it_shrinks() {
     );
 }
 
+/// The same at odd sizes, read as the compositor places the buffer: a
+/// centred layer surface at `output / 2 - width / 2` in whole pixels (on
+/// an output 1920 wide). A 101 px panel shrinking to 40 is laid out 30 px
+/// into its held buffer, where the 40 px box will be (50 - 20), not 30.5
+/// rounded: its row's left edge is at 940 on the last held frame and on
+/// the first frame at its new size. Growing back, the row glides out
+/// from where it was in the larger buffer (30 px in, `edge_shift`).
+#[test]
+fn a_centred_panel_at_odd_sizes_lands_where_the_compositor_puts_it() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("center".into())),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(101.0))]);
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    // The red row's left edge on screen.
+    let screen = |h: &Host| {
+        let (_, buf, _) = h.surface.as_ref().unwrap();
+        let a = (0..buf.size.w)
+            .find(|x| buf.px(*x, 15)[2] > 128)
+            .expect("the row is drawn");
+        960 - (buf.size.w / 2) as i64 + a as i64
+    };
+    assert_eq!(h.surface.as_ref().unwrap().1.size.w, 101);
+    assert_eq!(screen(&h), 910);
+    let run = |h: &mut Host, w: f32| {
+        let mut d = SceneDiff::new();
+        d.set(col, Prop::Width, num(w));
+        h.apply(d);
+        let (mut seen, mut widths) = (Vec::new(), Vec::new());
+        loop {
+            let Some((id, buf, age)) = h.surface.as_mut() else {
+                panic!("closed");
+            };
+            if !h.r.wants_frame(*id) {
+                break;
+            }
+            buf.paint_at(&mut h.r, *id, *age, frame(h.k));
+            *age = 1;
+            h.k += 1;
+            widths.push(h.surface.as_ref().unwrap().1.size.w);
+            seen.push(screen(h));
+            if h.r.has_surface_changes() {
+                h.r.update();
+                h.sync();
+            }
+            assert!(seen.len() < 400, "never settled");
+        }
+        (seen, widths)
+    };
+    let (seen, widths) = run(&mut h, 40.0);
+    assert_eq!(*widths.last().unwrap(), 40, "shrinks: {widths:?}");
+    let held = widths.iter().rposition(|w| *w == 101).expect("held");
+    assert_eq!(
+        (seen[held], *seen.last().unwrap()),
+        (940, 940),
+        "where the 40 px box will be, and stays: {seen:?} (buffers {widths:?})"
+    );
+    let (seen, widths) = run(&mut h, 101.0);
+    assert_eq!(widths[0], 101, "grows at once: {widths:?}");
+    assert!(
+        seen.windows(2).all(|p| p[1] <= p[0]) && seen[0] <= 940 && seen[0] > 910,
+        "glides out from where it was, never back: {seen:?}"
+    );
+    assert_eq!(*seen.last().unwrap(), 910, "{seen:?}");
+}
+
 /// Two toasts in quick succession: the first opens the panel, the second
 /// arrives in a later tick, before the panel's first frame (it waits for
 /// its configure). Both enter: the panel is still opening.

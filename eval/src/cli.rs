@@ -449,11 +449,12 @@ pub fn explain(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// `strand-eval verdict <run>/<id> good|bad --note TEXT [--refs DIR]`:
+/// `strand-eval verdict <run>/<id> good|bad --note TEXT [--refs DIR]
+/// [--approver NAME]`:
 /// `good` approves the run (`approve`); `bad` records it as a known-bad
 /// recording its scenario must not come back to.
 pub fn verdict(args: &[String]) -> Result<(), Error> {
-    let a = Args::parse("verdict", args, &["--note", "--refs"], &[])?;
+    let a = Args::parse("verdict", args, &["--note", "--refs", "--approver"], &[])?;
     let [dir, v] = a.words.as_slice() else {
         return Err(Error::Usage(
             "usage: strand-eval verdict <run>/<id> good|bad --note TEXT".into(),
@@ -465,15 +466,21 @@ pub fn verdict(args: &[String]) -> Result<(), Error> {
 }
 
 /// `strand-eval approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT
-/// [--refs DIR]`, or `approve --all-changed <run> --note TEXT`: writes
+/// [--refs DIR] [--approver NAME]`, or `approve --all-changed <run> --note
+/// TEXT`: writes
 /// each run's recording as its scenario's approved reference
 /// (`eval/refs/<id>.ref`, a matrix cell's in `eval/refs/matrix-<hz>.ref`)
-/// with the note, today's date, the run's revision and
-/// `$STRAND_EVAL_APPROVER`. `--all-changed` takes the runs that left
+/// with the note, today's date, the run's revision and the approver
+/// (`--approver`, else `$STRAND_EVAL_APPROVER`; required). `--all-changed` takes the runs that left
 /// their reference or have none, and prunes the blocks of cells a whole
 /// matrix rate no longer has.
 pub fn approve(args: &[String]) -> Result<(), Error> {
-    let a = Args::parse("approve", args, &["--note", "--refs"], &["--all-changed"])?;
+    let a = Args::parse(
+        "approve",
+        args,
+        &["--note", "--refs", "--approver"],
+        &["--all-changed"],
+    )?;
     if a.words.is_empty() {
         return Err(Error::Usage(
             "usage: strand-eval approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT\n       strand-eval approve --all-changed <run> --note TEXT"
@@ -500,6 +507,10 @@ fn record(
             "a note is required: --note \"why this recording is right\" (or wrong, for bad)".into(),
         ));
     }
+    let approver = crate::refs::approver(
+        a.value(&["--approver"]),
+        std::env::var(crate::refs::APPROVER_ENV).ok(),
+    )?;
     let dir = a
         .value(&["--refs"])
         .map_or_else(crate::refs::dir, PathBuf::from);
@@ -537,7 +548,7 @@ fn record(
     let ask = crate::refs::Ask {
         verdict,
         note,
-        approver: crate::refs::approver(),
+        approver,
         dir: dir.clone(),
     };
     let done = crate::refs::approve(&dirs, &ask)?;

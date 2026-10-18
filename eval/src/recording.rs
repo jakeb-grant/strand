@@ -3,7 +3,9 @@
 //! line. Per tick: the surfaces painted; per surface shown its size,
 //! where it lies on the output, the pose the compositor applies and its
 //! input region; per node on screen its drawn and visual boxes, effective
-//! opacity, scale, rotation, hidden reason and text state. A surface not
+//! opacity, scale, rotation, hidden reason, text state, place in its
+//! surface's paint order, and for a text its glyph ink and the width it
+//! was cut to. A surface not
 //! painted at a tick keeps what it showed (as `checks::Timeline` reads a
 //! trace).
 //!
@@ -26,8 +28,11 @@
 //! ```
 //!
 //! A node's first line names everything not at its default (`srf=` the
-//! first surface listed, `v=d op=255 sc=1,1 rot=0 hid=- txt=-`); `v=d` is
-//! a visual box equal to the drawn one, else `v=x,y,w,h`.
+//! first surface listed, `v=d op=255 sc=1,1 rot=0 hid=- txt=- ord=0
+//! ink=- fit=-`); `v=d` is a visual box equal to the drawn one, else
+//! `v=x,y,w,h`. `ord` is the node's place in its surface's paint order
+//! (0 first), `ink=x,y,w,h` a text's glyphs as drawn, `fit` the width a
+//! cut text was shaped for.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,13 +44,38 @@ pub const OP: f64 = 255.0;
 pub const SCALE: f64 = 1000.0;
 pub const DEG: f64 = 100.0;
 
+/// A quantised value past this is clamped to it, so no difference of two
+/// values overflows and none reaches the sentinels below.
+const BOUND: i64 = 1 << 52;
+/// What a value that is not a number quantises to: each never within any
+/// tolerance of a finite value or of the others, so a NaN or an infinity
+/// in a run always differs from a reference that has a number there.
+const NAN: i64 = -(1 << 60);
+const INF: i64 = 1 << 58;
+const NEG_INF: i64 = -(1 << 58);
+
 fn qz(v: f64, per: f64) -> i64 {
     let x = (v * per).round();
-    if x.is_finite() { x as i64 } else { 0 }
+    if x.is_nan() {
+        NAN
+    } else if x == f64::INFINITY {
+        if v.is_finite() { BOUND } else { INF }
+    } else if x == f64::NEG_INFINITY {
+        if v.is_finite() { -BOUND } else { NEG_INF }
+    } else {
+        (x as i64).clamp(-BOUND, BOUND)
+    }
 }
 
-/// A quantised value as decimal text (`per` 64: exact in six digits).
+/// A quantised value as decimal text (`per` 64: exact in six digits); a
+/// value that was not a number as `nan`, `inf` or `-inf`.
 fn dec(v: i64, per: f64) -> String {
+    match v {
+        NAN => return "nan".into(),
+        INF => return "inf".into(),
+        NEG_INF => return "-inf".into(),
+        _ => {}
+    }
     let per_i = per as i64;
     if v % per_i == 0 {
         return (v / per_i).to_string();
@@ -80,6 +110,14 @@ pub struct NodeState {
     pub rot: i64,
     pub hidden: Option<String>,
     pub text: Option<String>,
+    /// Where it is in its surface's paint order at the tick: 0 is drawn
+    /// first (the trace lists a surface's rows in the order they paint).
+    pub z: u32,
+    /// A text's glyphs as drawn (`Row::ink`), 1/64 px.
+    pub ink: Option<[i64; 4]>,
+    /// A text cut to its box: the width it was shaped for (`Row::fit`),
+    /// 1/64 px.
+    pub fit: Option<i64>,
 }
 
 /// A surface shown at a tick, quantised.
@@ -121,9 +159,12 @@ pub struct Recording {
     pub ticks: Vec<Tick>,
 }
 
-fn node_state(r: &Row) -> NodeState {
+fn node_state(r: &Row, z: u32) -> NodeState {
     let rect = |v: [f32; 4]| v.map(|x| qz(f64::from(x), PX));
     NodeState {
+        z,
+        ink: r.ink.map(rect),
+        fit: r.fit.map(|x| qz(f64::from(x), PX)),
         surface: r.surface,
         drawn: rect(r.drawn),
         visual: rect(r.visual),
@@ -159,8 +200,11 @@ impl Recording {
         for f in &trace.frames {
             nodes
                 .retain(|_, n| f.sizes.contains_key(&n.surface) && !f.painted.contains(&n.surface));
+            let mut z: BTreeMap<u32, u32> = BTreeMap::new();
             for r in &f.n {
-                nodes.insert(r.key.clone(), node_state(r));
+                let at = z.entry(r.surface).or_default();
+                nodes.insert(r.key.clone(), node_state(r, *at));
+                *at += 1;
                 seen.insert(r.key.as_str());
             }
             let mut next = BTreeMap::new();
@@ -298,10 +342,14 @@ impl Recording {
                     },
                 );
             }
-            for (key, n) in &tick.nodes {
-                if !tick.painted.contains(&n.surface) {
-                    continue;
-                }
+            // In paint order, as a trace lists them.
+            let mut shown: Vec<(&String, &NodeState)> = tick
+                .nodes
+                .iter()
+                .filter(|(_, n)| tick.painted.contains(&n.surface))
+                .collect();
+            shown.sort_by_key(|(k, n)| (n.surface, n.z, *k));
+            for (key, n) in shown {
                 let op = (n.op as f64 / OP) as f32;
                 f.n.push(Row {
                     key: key.clone(),
@@ -315,6 +363,8 @@ impl Recording {
                     rotate: (n.rot as f64 / DEG) as f32,
                     hidden: n.hidden.clone(),
                     text: n.text.clone(),
+                    ink: n.ink.map(|r| r.map(px)),
+                    fit: n.fit.map(px),
                     ..Row::default()
                 });
             }
@@ -459,6 +509,33 @@ fn node_diff(a: &NodeState, r: &NodeState, tol: Tol, out: &mut Vec<(String, Stri
     if a.text != r.text {
         out.push(("text".into(), opt(&a.text), opt(&r.text)));
     }
+    if a.z != r.z {
+        out.push(("order".into(), a.z.to_string(), r.z.to_string()));
+    }
+    let ink_same = match (&a.ink, &r.ink) {
+        (None, None) => true,
+        (Some(x), Some(y)) => within(x, y, tol.px),
+        _ => false,
+    };
+    if !ink_same {
+        out.push(("ink".into(), ink_text(&a.ink), ink_text(&r.ink)));
+    }
+    let fit_same = match (a.fit, r.fit) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() <= tol.px,
+        _ => false,
+    };
+    if !fit_same {
+        out.push((
+            "fit".into(),
+            a.fit.map_or_else(|| "-".into(), |v| dec(v, PX)),
+            r.fit.map_or_else(|| "-".into(), |v| dec(v, PX)),
+        ));
+    }
+}
+
+fn ink_text(r: &Option<[i64; 4]>) -> String {
+    r.as_ref().map_or_else(|| "-".into(), |r| list(r, PX))
 }
 
 fn within(a: &[i64], b: &[i64], t: i64) -> bool {
@@ -729,7 +806,7 @@ fn json_strs(s: &str) -> Option<Vec<String>> {
 }
 
 /// A node's fields as the text writes them, in order.
-fn node_fields(n: &NodeState) -> [(&'static str, String); 11] {
+fn node_fields(n: &NodeState) -> [(&'static str, String); 14] {
     [
         ("srf", n.surface.to_string()),
         ("x", dec(n.drawn[0], PX)),
@@ -749,18 +826,24 @@ fn node_fields(n: &NodeState) -> [(&'static str, String); 11] {
         ("rot", dec(n.rot, DEG)),
         ("hid", opt(&n.hidden)),
         ("txt", opt(&n.text)),
+        ("ord", n.z.to_string()),
+        ("ink", ink_text(&n.ink)),
+        ("fit", n.fit.map_or_else(|| "-".into(), |v| dec(v, PX))),
     ]
 }
 
 /// A node's first line leaves out what is at these (and `srf` at the
 /// first surface listed).
-const NODE_DEFAULTS: [(&str, &str); 6] = [
+const NODE_DEFAULTS: [(&str, &str); 9] = [
     ("v", "d"),
     ("op", "255"),
     ("sc", "1,1"),
     ("rot", "0"),
     ("hid", "-"),
     ("txt", "-"),
+    ("ord", "0"),
+    ("ink", "-"),
+    ("fit", "-"),
 ];
 
 fn surface_fields(s: &SurfaceState) -> [(&'static str, String); 4] {
@@ -807,7 +890,7 @@ pub fn encode(rec: &Recording) -> String {
     }
     let srf0 = first_surface(rec).to_string();
     let mut last_s: BTreeMap<u32, [(&str, String); 4]> = BTreeMap::new();
-    let mut last_n: BTreeMap<&str, [(&str, String); 11]> = BTreeMap::new();
+    let mut last_n: BTreeMap<&str, [(&str, String); 14]> = BTreeMap::new();
     let mut painted: Option<&Vec<u32>> = None;
     for t in &rec.ticks {
         if painted == Some(&t.painted) {
@@ -907,6 +990,11 @@ fn set_node(n: &mut NodeState, name: &str, v: &str, vis_d: &mut bool) -> Option<
         "rot" => n.rot = undec(v, DEG)?,
         "hid" => n.hidden = (v != "-").then(|| v.to_string()),
         "txt" => n.text = (v != "-").then(|| v.to_string()),
+        "ord" => n.z = v.parse().ok()?,
+        "ink" if v == "-" => n.ink = None,
+        "ink" => n.ink = Some(unlist(v, PX)?),
+        "fit" if v == "-" => n.fit = None,
+        "fit" => n.fit = Some(undec(v, PX)?),
         _ => return None,
     }
     Some(())

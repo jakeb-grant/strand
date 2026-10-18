@@ -715,10 +715,12 @@ impl Renderer {
         {
             self.blend_fade(surface, w, target);
         }
-        f.items.truncate(own);
+        // (eval-sandbox) Kept as drawn: the inspector's overlay
+        // included, which the buffer shows too.
         #[cfg(feature = "eval-hooks")]
         self.probe
             .keep_frame(surface, &f, target.size, target.scale, fade.weight());
+        f.items.truncate(own);
         // Nothing changed since flattening: the next paint can reuse it.
         // Stamped once the frame is drawn: a slow raster does not age the
         // surface into looking idle.

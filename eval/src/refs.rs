@@ -57,16 +57,31 @@ pub const TOTAL_BUDGET: u64 = 5 * 1024 * 1024;
 pub const SCENARIO_FILE_BUDGET: u64 = 64 * 1024;
 pub const MATRIX_CELL_BUDGET: u64 = 8 * 1024;
 
-/// Where approvals name their approver from (default `unknown`).
+/// Where approvals name their approver from when `--approver` does not.
 pub const APPROVER_ENV: &str = "STRAND_EVAL_APPROVER";
 
-/// The approver: `$STRAND_EVAL_APPROVER`, or `unknown`.
-pub fn approver() -> String {
-    std::env::var(APPROVER_ENV)
-        .ok()
+/// The approver: `--approver` (`flag`), else `$STRAND_EVAL_APPROVER`
+/// (`env`). Neither, or a name that says nobody ([`no_approver`]), is
+/// refused: an approval names who looked.
+pub fn approver(flag: Option<&str>, env: Option<String>) -> Result<String, Error> {
+    let name = flag
+        .map(str::to_string)
+        .or(env)
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
+        .unwrap_or_default();
+    if no_approver(&name) {
+        return Err(Error::Usage(format!(
+            "an approver is required: --approver NAME or ${APPROVER_ENV} (run.sh passes it in), naming who looked at the change"
+        )));
+    }
+    Ok(name)
+}
+
+/// Whether an approver names nobody: empty, or `unknown` (what an
+/// approval without one recorded before it was required).
+pub fn no_approver(name: &str) -> bool {
+    let n = name.trim();
+    n.is_empty() || n.eq_ignore_ascii_case("unknown")
 }
 
 /// The committed references: `eval/refs/`.
@@ -628,7 +643,7 @@ pub fn prune_matrix(run: &Path, dir: &Path) -> Result<Vec<String>, Error> {
 
 /// Every reference file in `dir` read and checked: each parses as
 /// `approve` writes it, each block's seal holds (nothing edited by hand),
-/// has a note and an approver, decodes, and lives in its file (a
+/// has a note and an approver (not `unknown`), decodes, and lives in its file (a
 /// scenario's alone, a matrix cell's in its rate's). One line per
 /// problem.
 pub fn lint(dir: &Path) -> Result<Vec<String>, Error> {
@@ -685,8 +700,11 @@ pub fn lint(dir: &Path) -> Result<Vec<String>, Error> {
             if b.note.trim().is_empty() {
                 out.push(format!("{at}: no note"));
             }
-            if b.approver.trim().is_empty() {
-                out.push(format!("{at}: no approver"));
+            if no_approver(&b.approver) {
+                out.push(format!(
+                    "{at}: no approver (approver \"{}\"): approve again with --approver or ${APPROVER_ENV}",
+                    b.approver
+                ));
             }
             if let Err(e) = b.recording() {
                 out.push(format!("{at}: {e}"));

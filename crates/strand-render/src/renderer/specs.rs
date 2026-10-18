@@ -112,7 +112,7 @@ pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
 /// it, as `placement::popup_config` and `popup_request` place it. The
 /// compositor's slide or flip of a popup that does not fit is not
 /// followed.
-pub(super) fn resize_share(spec: &SurfaceSpec, parent: Option<&SurfaceSpec>) -> (f32, f32) {
+pub fn resize_share(spec: &SurfaceSpec, parent: Option<&SurfaceSpec>) -> (f32, f32) {
     if spec.kind == NodeKind::Popup {
         let bar_edge = parent
             .filter(|p| p.kind == NodeKind::Bar)
@@ -681,6 +681,30 @@ mod tests {
         ];
         for (s, parent, want) in cases {
             assert_eq!(resize_share(&s, parent), want, "{s:?} in {parent:?}");
+        }
+    }
+
+    /// A box keeps its share of a resize in whole pixels, a centred one
+    /// at half its size taken down as the compositor places it.
+    #[test]
+    fn a_resized_box_moves_by_whole_pixels() {
+        use crate::layout::edge_shift;
+        for (from, to, share, want) in [
+            (221.0, 150.0, 0.5, 35.0),
+            (150.0, 221.0, 0.5, -35.0),
+            (220.0, 160.0, 0.5, 30.0),
+            (101.0, 40.0, 0.5, 30.0),
+            // A buffer's logical size at scale 1.5 (332 px for 221).
+            (221.333, 150.0, 0.5, 35.0),
+            (221.0, 150.0, 1.0, 71.0),
+            (150.0, 221.0, 1.0, -71.0),
+            (221.0, 150.0, 0.0, 0.0),
+        ] {
+            assert_eq!(
+                edge_shift(from, to, share),
+                want,
+                "{from} -> {to} at {share}"
+            );
         }
     }
 }

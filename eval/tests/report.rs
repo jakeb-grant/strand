@@ -271,6 +271,8 @@ fn a_bad_verdict_becomes_a_recording_the_check_reads() {
         "the right box should not slide".into(),
         "--refs".into(),
         refs.display().to_string(),
+        "--approver".into(),
+        "tester".into(),
     ])
     .unwrap();
     let file = strand_eval::refs::RefFile::load(&refs.join("report-row.ref"))

@@ -262,6 +262,13 @@ impl SharedMorphs {
         self.pending.remove(&id);
     }
 
+    /// Nodes `under` a surface that closed morph no more; the boxes
+    /// their names were drawn at stay remembered.
+    pub(crate) fn stop(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        self.flights.retain(|id, _| !under(*id));
+        self.pending.retain(|id| !under(*id));
+    }
+
     /// Drops the morphs a preview saw start for nodes `under` a surface
     /// whose painted frame did not draw them.
     pub(crate) fn drop_pending(&mut self, mut under: impl FnMut(NodeId) -> bool) {
@@ -349,6 +356,24 @@ mod tests {
         // Its surface gone: everything it remembered goes.
         m.retain(|id| id != root);
         assert!(m.seen.is_empty() && m.latest.is_empty());
+    }
+
+    /// (popup-reopen review) A surface that closes stops the morphs of
+    /// its nodes: nothing of them keeps its root busy, and the boxes
+    /// names were drawn at stay for a node elsewhere to start from.
+    #[test]
+    fn a_closed_surface_stops_its_morphs_and_keeps_its_boxes() {
+        let root = NodeId::new(1, 0);
+        let (pill, card) = (NodeId::new(10, 0), NodeId::new(20, 0));
+        let mut m = SharedMorphs::default();
+        m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
+        assert!(starts(&mut m, root, card, "m", 1016));
+        let closed = |id: NodeId| id == card;
+        assert!(m.busy(closed), "the card morphs");
+        m.stop(closed);
+        assert!(!m.busy(closed), "the closed surface's morph is stopped");
+        // The pill's box is still where a morph can start.
+        assert!(starts(&mut m, root, NodeId::new(21, 0), "m", 1032));
     }
 
     /// (shared-morph-on) A box drawn by its surface's latest painted

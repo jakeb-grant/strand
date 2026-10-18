@@ -249,6 +249,95 @@ fn one_quantum_is_the_same_and_two_are_not() {
     assert!(recording::diff(&rec, &m, Tol::px(0.5)).is_none());
 }
 
+/// What only paint order or a text's glyphs show is in the recording:
+/// two rows that swap their stacking, a text whose ink or cut width
+/// changes, are CHANGED though every box stays where it was.
+#[test]
+fn a_stacking_swap_and_a_text_cut_differently_are_changed() {
+    let t = run(ROW);
+    let rec = Recording::from_trace(&t);
+    let (left, right) = (key(&t, "left"), key(&t, "right"));
+    let mut swapped = t.clone();
+    for f in &mut swapped.frames {
+        let (Some(i), Some(j)) = (
+            f.n.iter().position(|r| r.key == left),
+            f.n.iter().position(|r| r.key == right),
+        ) else {
+            continue;
+        };
+        f.n.swap(i, j);
+    }
+    let swapped = Recording::from_trace(&swapped);
+    let d = recording::diff(&rec, &swapped, Tol::QUANTUM).expect("a stacking swap differs");
+    assert_eq!(d.first.field, "order");
+    assert_eq!(decode(&encode(&swapped), 1).unwrap(), swapped);
+    let inked = |ink: [f32; 4], fit: Option<f32>| {
+        let mut m = t.clone();
+        for f in &mut m.frames {
+            for r in f.n.iter_mut().filter(|r| r.key == right) {
+                r.ink = Some(ink);
+                r.fit = fit;
+            }
+        }
+        Recording::from_trace(&m)
+    };
+    let a = inked([0.0, 1.0, 18.0, 10.0], Some(20.0));
+    assert_eq!(decode(&encode(&a), 1).unwrap(), a);
+    let d = recording::diff(&rec, &a, Tol::QUANTUM).expect("ink where there was none");
+    assert_eq!(d.first.field, "ink");
+    // Less of the text drawn, its box the same.
+    let d = recording::diff(&a, &inked([0.0, 1.0, 14.0, 10.0], Some(20.0)), Tol::QUANTUM)
+        .expect("less ink");
+    assert_eq!(d.first.field, "ink");
+    let d = recording::diff(&a, &inked([0.0, 1.0, 18.0, 10.0], Some(16.0)), Tol::QUANTUM)
+        .expect("a narrower cut");
+    assert_eq!(d.first.field, "fit");
+    assert_eq!(
+        recording::diff(
+            &a,
+            &inked([0.0, 1.0 + 1.0 / 64.0, 18.0, 10.0], Some(20.0)),
+            Tol::QUANTUM
+        ),
+        None,
+        "one quantum of ink is the same"
+    );
+}
+
+#[test]
+fn a_value_that_is_not_a_number_never_matches_one_that_is() {
+    let t = run(ROW);
+    let rec = Recording::from_trace(&t);
+    let right = key(&t, "right");
+    let with = |x: f32| {
+        let mut m = t.clone();
+        for f in &mut m.frames {
+            for r in f.n.iter_mut().filter(|r| r.key == right) {
+                r.drawn[0] = x;
+                r.op = x;
+            }
+        }
+        Recording::from_trace(&m)
+    };
+    // A box at 0 is what a NaN used to quantise to.
+    let zero = with(0.0);
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let b = with(bad);
+        let d = recording::diff(&zero, &b, Tol::px(1e6)).expect("a non-finite value differs");
+        assert_eq!(d.first.field, "drawn.x", "{bad}");
+        assert!(recording::diff(&rec, &b, Tol::QUANTUM).is_some(), "{bad}");
+        // It survives the text as itself, and matches itself.
+        let back = decode(&encode(&b), 1).expect("decodes");
+        assert_eq!(back, b, "{bad}");
+        assert_eq!(recording::diff(&b, &back, Tol::QUANTUM), None, "{bad}");
+    }
+    let (nan, inf) = (with(f32::NAN), with(f32::INFINITY));
+    assert!(recording::diff(&nan, &inf, Tol::px(1e6)).is_some());
+    // A finite value too large for the quanta is clamped, not wrapped.
+    let huge = with(1e30);
+    assert!(recording::diff(&huge, &with(-1e30), Tol::QUANTUM).is_some());
+    assert!(recording::diff(&huge, &inf, Tol::QUANTUM).is_some());
+}
+
 // --- the gate
 
 #[test]
@@ -400,6 +489,8 @@ fn approve_round_trips_and_a_changed_run_is_named() {
         "nothing to do".into(),
         "--refs".into(),
         refs_dir.display().to_string(),
+        "--approver".into(),
+        "tester".into(),
     ]);
     assert!(done.is_ok(), "{done:?}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), new);
@@ -428,6 +519,52 @@ fn a_note_is_required() {
     let e = refs::approve(std::slice::from_ref(&one), &ask(&dir.join("refs"), " ")).unwrap_err();
     assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
     assert!(!dir.join("refs").exists(), "nothing written without a note");
+}
+
+/// An approval names who looked: `--approver`, else the environment's;
+/// neither, or `unknown`, is refused before anything is written.
+#[test]
+fn an_approver_is_required() {
+    assert_eq!(refs::approver(Some("owner"), None).unwrap(), "owner");
+    assert_eq!(
+        refs::approver(Some(" owner "), Some("ci".into())).unwrap(),
+        "owner"
+    );
+    assert_eq!(
+        refs::approver(None, Some("claude".into())).unwrap(),
+        "claude"
+    );
+    for (flag, env) in [
+        (None, None),
+        (Some(""), None),
+        (None, Some("  ".to_string())),
+        (None, Some("unknown".to_string())),
+        (Some("Unknown"), Some("claude".to_string())),
+    ] {
+        let e = refs::approver(flag, env.clone()).unwrap_err();
+        assert!(
+            matches!(e, strand_eval::Error::Usage(ref m) if m.contains("approver")),
+            "{flag:?} {env:?}: {e}"
+        );
+    }
+    let dir = scratch("approver");
+    let one = checked_run(ROW, &dir.join("one"), &dir.join("refs"));
+    let e = strand_eval::main_with(&[
+        "approve".into(),
+        one.display().to_string(),
+        "--note".into(),
+        "fine".into(),
+        "--refs".into(),
+        dir.join("refs").display().to_string(),
+        "--approver".into(),
+        "unknown".into(),
+    ])
+    .unwrap_err();
+    assert!(matches!(e, strand_eval::Error::Usage(_)), "{e}");
+    assert!(
+        !dir.join("refs").exists(),
+        "nothing written without an approver"
+    );
 }
 
 /// A matrix cell's reference lives in its rate's file beside the others;
@@ -539,6 +676,24 @@ fn a_hand_edit_and_a_change_under_the_old_note_are_refused() {
     assert!(refs::note_rule(Some(&text), &f.render(), "x").is_empty());
     // A new file only needs its notes (lint).
     assert!(refs::note_rule(None, &same_note, "x").is_empty());
+    // An approval that names nobody is refused: `unknown` is what an
+    // approve without an approver wrote before one was required.
+    let mut f = RefFile::parse(&text).unwrap();
+    let nobody = refs::Meta {
+        verdict: Verdict::Good,
+        note: "as approved",
+        date: "2026-10-18",
+        rev: "abc",
+        approver: "unknown",
+        scenario: "",
+    };
+    f.blocks[0] = refs::Block::new(&b.id, &nobody, b.body.clone());
+    std::fs::write(&file, f.render()).unwrap();
+    let problems = refs::lint(&refs_dir).unwrap();
+    assert!(
+        problems.iter().any(|p| p.contains("no approver")),
+        "{problems:?}"
+    );
     // Something else in the directory is named.
     std::fs::write(&file, &text).unwrap();
     std::fs::write(refs_dir.join("stray.json"), "{}").unwrap();

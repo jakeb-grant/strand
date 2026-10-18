@@ -1162,3 +1162,61 @@ fn a_jelly_hidden_before_its_frame_leaves_nothing_moving() {
         "the hidden jelly is left moving"
     );
 }
+
+/// (popup-reopen review) A surface that closes takes all its motion with
+/// it: a jelly still moving on it when it closed is not left moving the
+/// closed root (`Animator::busy`), so opened again it starts at rest and
+/// is not held at its size by a stale jelly.
+#[test]
+fn a_surface_that_closes_leaves_no_jelly_moving() {
+    let n = |i| NodeId::new(i, 0);
+    let (root, id) = (n(0), n(1));
+    let num = PropValue::Number;
+    let mut d = SceneDiff::new();
+    d.create(root, NodeKind::Panel, None, 0)
+        .set(root, Prop::Width, num(160.0))
+        .set(root, Prop::Height, num(60.0))
+        .create(id, NodeKind::Box, Some(root), 0)
+        .set(id, Prop::Width, num(20.0))
+        .set(id, Prop::Height, num(20.0))
+        .set(id, Prop::Jelly, num(0.4))
+        .set(
+            id,
+            Prop::Bg,
+            PropValue::Color(Color::from_hex("#f9e2af").unwrap()),
+        );
+    let mut r = renderer();
+    assert!(r.apply(d).is_empty());
+    r.update();
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(160, 60), Scale::ONE);
+    let mut px = vec![0u8; 160 * 60 * 4];
+    let mut paint = |r: &mut Renderer, k: u64| {
+        let at = Duration::from_secs(1) + Duration::from_millis(16 * k);
+        let mut t = PaintTarget::new(&mut px, Size::new(160, 60), 640, Scale::ONE, 1)
+            .unwrap()
+            .at(at);
+        r.paint(SurfaceId(1), &mut t);
+    };
+    paint(&mut r, 0);
+    for k in 1..=3u64 {
+        r.lift(id, Some(LogicalPoint::new(20.0 * k as f32, 0.0)));
+        paint(&mut r, k);
+    }
+    // Let go: it wobbles back to rest, and the panel closes meanwhile.
+    r.lift(id, None);
+    paint(&mut r, 4);
+    assert!(r.anim.busy(&r.tree, root), "the jelly moves");
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(false));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    assert!(
+        !r.specs.get(&root).is_some_and(|s| s.open),
+        "the panel closed"
+    );
+    assert!(
+        !r.anim.busy(&r.tree, root),
+        "the closed panel's jelly is left moving"
+    );
+}

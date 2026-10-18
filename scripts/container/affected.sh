@@ -16,8 +16,8 @@
 # pseudo-target `eval`: a change under eval/ or scripts/eval/, or to the
 # root Cargo.toml or Cargo.lock (its lock and profiles are checked
 # against them), runs scripts/eval/ci.sh (every step: its fmt and
-# clippy, lock and isolation, its tests, the scenario gate) before the
-# crates' tests. A product change does not pull it in. A change to
+# clippy, lock and isolation, its tests, the scenario gate, the effect
+# matrix against its references) before the crates' tests. A product change does not pull it in. A change to
 # strand-render's code builds strand-render with its `eval-hooks`
 # feature as well (`cargo check`: the sandbox's hooks are compiled by
 # nothing else in the root workspace) and prints the command that runs

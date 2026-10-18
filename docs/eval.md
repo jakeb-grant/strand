@@ -459,12 +459,16 @@ Per painted tick:
 - per surface shown: its size, where it lies on the output, the pose the
   compositor applies and its input region;
 - per node on screen: its drawn and visual boxes, effective opacity,
-  scale, rotation, hidden reason and text state.
+  scale, rotation, hidden reason and text state, and its place in its
+  surface's paint order (`ord`);
+- per text: the ink of the glyphs it drew (`ink`) and, when it is cut to
+  its box, the width it was shaped for (`fit`).
 
 A surface not painted at a tick keeps what it showed, as the checks read a
 trace. The laid box, motions and offset parts are not in it: they explain
-a change, and the trace has them. Pixels are not in it either (see
-Limits).
+a change, and the trace has them. Paint is not in it either: no colour,
+gradient, radius, border, shadow, blur or crossfade weight, and no pixels
+(see Limits for what covers those).
 
 Each value is quantised: boxes, origins, pose offsets and regions to
 1/64 logical px, opacity to 1/255, scale to 1/1000, rotation to
@@ -552,9 +556,13 @@ scripts/container/run.sh eval approve target/eval/matrix/jelly+lean@144 --note "
 scripts/container/run.sh eval approve --all-changed target/eval/ci --note "why"
 ```
 
-The note is required. The block records it with today's date, the run's
-revision and `$STRAND_EVAL_APPROVER` (`unknown` when unset; `run.sh`
-passes it into the container). A run that matches its reference already
+The note is required, and so is the approver: `--approver NAME`, else
+`$STRAND_EVAL_APPROVER` (`run.sh` passes it into the container). With
+neither, or with `unknown`, nothing is written. The block records the
+note with today's date, the run's revision and the approver. Approve from
+a committed build where you can: the revision then names a commit that
+reproduces the recording, and `+changes` marks one that does not. A run
+that matches its reference already
 writes nothing. A changed recording approved under the note its reference
 already has is refused: the note says why this recording is right.
 
@@ -586,12 +594,18 @@ checks four things:
 
 - every file parses as `approve` writes it;
 - every block's seal holds, so nothing was edited by hand;
-- every block has a note and an approver;
+- every block has a note and an approver other than `unknown`;
 - every block lives in its own file.
 
 With `--base` (the merge base with main; GitHub's eval job fetches the
 history for it), it also refuses a recording that changed since the base
 under its old note. Every approval is therefore a line a reviewer reads.
+
+The seal is an unkeyed hash of its block. It catches a hand edit made by
+mistake, and nothing more: anyone can recompute it, as `approve` does. The
+approver is a name, not a signature. What makes an approval trustworthy
+is review: the reference diff and its note are in the commit, and the
+owner reads them before a merge.
 
 ## Reports
 
@@ -682,8 +696,11 @@ scripts/container/run.sh eval promote target/eval/matrix/<cell>@<hz> --as <name>
 
 `promote` writes a cell's scenario, exactly as it ran, to
 `eval/scenarios/regressions/<name>.scn`. Add `--xfail CHECK --note "why"`
-when the finding stays open. The matrix runs nightly and on demand in
-`.github/workflows/eval-matrix.yml`.
+when the finding stays open. The whole matrix, at 60 and 144 Hz, runs on
+every push as scripts/eval/ci.sh step 6 (about 90 s on the laptop with
+8 jobs), so a branch whose change moves a cell cannot pass CI until that
+cell's new recording is approved. It also runs nightly and on demand in
+`.github/workflows/eval-matrix.yml`, with the mutants.
 
 ## Mutants
 
@@ -822,17 +839,34 @@ owner's config becomes a committed scenario written from scratch.
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
 - **The GPU leg does not see bug 23**, as described above.
-- **References hold no pixels.** A recording holds geometry, opacity,
-  transforms and text state, not a pixel hash. vello_cpu picks its SIMD
-  level from the CPU it runs on, and nothing here shows one hash
-  agreeing between the laptop's container and GitHub's runners. A change
-  of colour alone, or of a shader's output, is therefore not CHANGED.
-  `cpu-gpu`, `redraw` and the pixel tests in crates/strand-render cover
-  pixels.
+- **References hold no paint and no pixels.** A recording holds
+  geometry, opacity, transforms, paint order and text state and ink, not
+  a pixel hash. vello_cpu picks its SIMD level from the CPU it runs on,
+  and nothing here shows one hash agreeing between the laptop's
+  container and GitHub's runners. The trace carries no node's colour, so
+  a change of paint alone is not CHANGED. What covers each kind instead:
+  - a colour that snaps instead of springing, or springs the wrong way:
+    crates/strand-render/tests/motion.rs
+    (`springs_sampled_at_fixed_timestamps_match_reference`,
+    `colours_spring_in_oklab`) and crates/strand-scene's motion tests;
+  - gradients, corners, borders, shadows and blur drawn wrong:
+    crates/strand-render/tests/paint.rs (`gradients_linear_radial_conic`,
+    `corners_per_corner_full_and_squircle`,
+    `borders_solid_gradient_and_on_a_pill`,
+    `elevation_shadow_lists_are_drawn_and_cached`,
+    `blur_tints_until_the_compositor_blurs`) and layers.rs, pixel tests
+    on rendered buffers;
+  - a theme swap's crossfade: crates/strand-render/tests/theme_swap.rs
+    (`an_unreadable_spring_crossfades_from_a_snapshot`,
+    `a_colourless_table_mid_crossfade_keeps_fading`);
+  - stale or missing pixels after a partial redraw, and the GPU drawing
+    differently from the CPU: `redraw` and `cpu-gpu` here.
 - **`redraw` holds one buffer age.** Every frame is painted at age 1,
   so damage widened by older frames (ages 2 and 3) is not compared.
   On the GPU leg it compares against a fresh device, allows one step per
-  channel, and only synthetic traces have shown it failing there.
+  channel, and only synthetic traces have shown it failing there. The
+  step was measured on the laptop's lavapipe: the first nightly on
+  GitHub's runners must show no `redraw` failure on the GPU leg.
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.

@@ -90,6 +90,10 @@ pub struct RunOptions {
     /// shrunk by this many pixels on every side
     /// (`Renderer::set_damage_inset`, a mutant). 0 is none.
     pub damage_inset: u32,
+    /// The `redraw` check's own tests only: the inspector's damage flash
+    /// on (`Renderer::set_damage_flash`), so every frame draws an overlay
+    /// over its own items.
+    pub damage_flash: bool,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -365,6 +369,7 @@ impl<'s> Harness<'s> {
         r.set_frame_trace(true);
         r.set_keep_frames(opts.redraw);
         r.set_damage_inset(opts.damage_inset);
+        r.set_damage_flash(opts.damage_flash);
         // The compositor applies surface poses (as Hyprland, with
         // `wp_alpha_modifier_v1` and the viewporter, does): what each
         // frame commits besides its pixels is traced.

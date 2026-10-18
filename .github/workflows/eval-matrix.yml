@@ -5,7 +5,8 @@ name: Eval matrix
 # pair, at 60 and 144 Hz, judged against eval/matrix/known.toml, and the
 # mutants (each regression scenario must catch the bug it is named for).
 # Nightly and on demand; ci.yml's `eval` job runs the curated and
-# regression scenarios on every push.
+# regression scenarios and this matrix, held to its references
+# (scripts/eval/ci.sh steps 5 and 6), on every push.
 
 on:
   schedule:

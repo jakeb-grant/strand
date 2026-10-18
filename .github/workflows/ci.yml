@@ -307,12 +307,18 @@ jobs:
         with:
           cache-key: eval
       - run: scripts/eval/ci.sh
-      # The report: every scenario's trace, checks, frames and viewer.
+      # The report: every scenario's trace, checks, frames and viewer, and
+      # the matrix's grid and summary (a changed cell is approved from a
+      # local run, scripts/container/run.sh eval matrix-all).
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-report
-          path: target/eval/ci/
+          path: |
+            target/eval/ci/
+            target/eval/matrix-ci/index.html
+            target/eval/matrix-ci/matrix.json
+            target/eval/matrix-ci/summary.md
           if-no-files-found: ignore
 
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's

@@ -7,12 +7,16 @@
 #   1  cargo fmt --check of strand-eval (-p: its path dependencies are the
 #      root workspace's to format)
 #   2  cargo clippy of eval/, every target, -D warnings
-#   3  check-lock.sh, check-isolation.sh and their self-tests
+#   3  check-lock.sh, check-isolation.sh and their self-tests, and
+#      test-worktree.sh (ab.sh's and mutants.sh's worktree helpers)
 #   4  cargo test of eval/
 #   5  strand-eval refs-check (the reference files: seals, notes, and a
 #      recording changed since the merge base with main under its old
 #      note), then check --gate over the curated and regression
 #      scenarios (each must match its approved reference recording)
+#   6  the effect matrix, every cell at 60 and 144 Hz, judged against
+#      eval/matrix/known.toml and held to eval/refs/matrix-<hz>.ref (a
+#      cell whose recording changed fails until it is approved)
 #
 # Usage: scripts/eval/ci.sh [STEP...]   (default: all, as affected.sh runs it)
 # Stops at the first failing step and names it.
@@ -24,7 +28,7 @@ cd "$ROOT"
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-target}
 MANIFEST=eval/Cargo.toml
 steps=("$@")
-[ "${#steps[@]}" -gt 0 ] || steps=(1 2 3 4 5)
+[ "${#steps[@]}" -gt 0 ] || steps=(1 2 3 4 5 6)
 
 run() {
   local n=$1 name=$2
@@ -40,7 +44,8 @@ lock_and_isolation() {
   bash scripts/eval/check-lock.sh &&
     bash scripts/eval/test-check-lock.sh &&
     bash scripts/eval/check-isolation.sh &&
-    bash scripts/eval/test-check-isolation.sh
+    bash scripts/eval/test-check-isolation.sh &&
+    bash scripts/eval/test-worktree.sh
 }
 
 # The merge base with main, which refs-check holds changed references
@@ -74,7 +79,8 @@ for n in "${steps[@]}"; do
     3) run 3 "lock and isolation" lock_and_isolation ;;
     4) run 4 "tests" cargo test --locked --manifest-path "$MANIFEST" ;;
     5) run 5 "references and scenario gate" gate ;;
-    *) echo "scripts/eval/ci.sh: no step $n (1 to 5)" >&2; exit 2 ;;
+    6) run 6 "the effect matrix against its references" env OUT=target/eval/matrix-ci HZ=60,144 bash scripts/eval/matrix.sh ;;
+    *) echo "scripts/eval/ci.sh: no step $n (1 to 6)" >&2; exit 2 ;;
   esac
 done
 echo "=== eval: all steps passed (${steps[*]})"

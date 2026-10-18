@@ -955,11 +955,17 @@ impl Animator {
 
     /// (popup-reopen) The surface of the nodes `under` it closed: what
     /// their props were drawn at goes with it, the poses its exit held
-    /// included. Opened again, it is a new surface whose enter starts
+    /// included, and so does any motion still playing on it: a jelly
+    /// and a shared morph in flight or about to start (the boxes their
+    /// names were drawn at stay, so a node elsewhere can still morph
+    /// from one). Opened again, it is a new surface whose enter starts
     /// from its pose, as the first time; its nodes show at rest
-    /// otherwise. Size springs belong to layout and stay.
-    pub fn surface_closed(&mut self, under: impl FnMut(NodeId) -> bool) {
-        drop_paint_state(&mut self.nodes, under);
+    /// otherwise, and nothing left over keeps its root busy. Size springs
+    /// belong to layout and stay.
+    pub fn surface_closed(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        drop_paint_state(&mut self.nodes, &mut under);
+        self.jellies.retain(|id| !under(id));
+        self.shared.stop(&mut under);
     }
 
     /// Drops the state of nodes `keep` rejects (gone from the tree).

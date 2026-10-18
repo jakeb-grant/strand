@@ -132,6 +132,24 @@ pub enum RootSize {
     },
 }
 
+/// (popup-shrink) How far the surface manager moves a box's near edge
+/// (left or top) on an axis when its size there goes from `from` to `to`
+/// logical px, the box keeping `share` of it in place (0 its near edge,
+/// 1 its far edge, 0.5 its centre: `renderer::specs::resize_share`). In
+/// whole pixels, as the box is placed: sizes are whole, and a centred
+/// box is placed at half its size taken down, as `xdg_positioner`'s
+/// anchor point and gravity and a centred layer surface are
+/// (`placement::popup_request`; wlroots' `bounds / 2 - size / 2`). So a
+/// centred box going from 221 to 150 moves 35 (110 - 75), not 35.5.
+pub fn edge_shift(from: f32, to: f32, share: f32) -> f32 {
+    let (a, b) = (from.round(), to.round());
+    if (share - 0.5).abs() < 1e-3 {
+        (a / 2.0).floor() - (b / 2.0).floor()
+    } else {
+        ((a - b) * share).round()
+    }
+}
+
 enum Ctx {
     Text {
         node: NodeId,
@@ -511,7 +529,9 @@ pub(crate) fn layout(
             b.compute(t, avail, texts, scrolls);
         }
         if let Ok(l) = b.taffy.layout(t).map(|l| l.size) {
-            let room = |have: f32, used: f32, f: f32| ((have - used).max(0.0) * f).round();
+            // Where the smaller box's edge will be: the size it asks for
+            // is its content's, up to a whole pixel (`refresh_specs`).
+            let room = |have: f32, used: f32, f: f32| edge_shift(have, used.ceil(), f).max(0.0);
             origin.0 += room(frame.w, l.width, at.0);
             origin.1 += room(frame.h, l.height, at.1);
         }

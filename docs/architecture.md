@@ -690,7 +690,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   requests, delivery, pruning), `layout_pass.rs` (the layout step, size
   springs and FLIP, layout facts, flattening), `apply.rs` (scene diffs
   and the motions they start), `specs.rs` (surface specs, content
-  sizing, size holds), `surfaces.rs` (attach, configure, detach, hit),
+  sizing, size holds; `resize_share`, public with `layout::edge_shift`
+  so `crates/strand/tests/resize_parity.rs` holds where render keeps a
+  resized box to strand-surface's placement, which render cannot
+  depend on), `surfaces.rs` (attach, configure, detach, hit),
   `pose.rs` (exit poses and closing surfaces), `lists.rs` (scrolling),
   `tooltip.rs`, `swap.rs` (theme swaps), `tests.rs`, `feed.rs` (media
   sources for the nodes a diff creates, feeds and feed demand; built by

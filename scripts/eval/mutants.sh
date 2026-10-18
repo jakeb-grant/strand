@@ -31,27 +31,11 @@ if [ -n "$(git status --porcelain -- crates eval)" ]; then
 fi
 
 # forget_tree TREE: TREE removed with its worktree entry, and no other.
-# Never `git worktree prune`: in the container only this checkout (and
-# the common git dir) is mounted, so prune forgets every other worktree
-# on the laptop, whose directories it cannot see (docs/decisions.md
-# eval-refs).
-forget_tree() {
-  local tree=$1 abs admin
-  git worktree remove --force "$tree" 2>/dev/null && return 0
-  abs=$(cd "$(dirname "$tree")" 2>/dev/null && pwd)/$(basename "$tree")
-  rm -rf "$tree"
-  for admin in "$(git rev-parse --path-format=absolute --git-common-dir)"/worktrees/*; do
-    if [ "$(cat "$admin/gitdir" 2>/dev/null)" = "$abs/.git" ]; then
-      rm -rf "$admin"
-    fi
-  done
-  return 0
-}
+# shellcheck source=scripts/eval/worktree.sh
+source "$ROOT/scripts/eval/worktree.sh"
 
 remove_tree() {
-  [ -e "$TREE" ] || return 0
-  git -C "$TREE" checkout -q -- . 2>/dev/null
-  git worktree remove "$TREE" 2>/dev/null || forget_tree "$TREE"
+  remove_tree_at "$TREE"
 }
 
 # check SCENARIO OUT: strand-eval check from the worktree's own build;
