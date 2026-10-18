@@ -9,7 +9,8 @@
 #   2  cargo clippy of eval/, every target, -D warnings
 #   3  check-lock.sh, check-isolation.sh and their self-tests,
 #      test-worktree.sh (ab.sh's and mutants.sh's worktree helpers) and
-#      test-local-mounts.sh (what `run.sh eval local` mounts)
+#      test-local-mounts.sh (what `run.sh eval local` mounts) and
+#      test-repeat.sh (the repeated gate and matrix, on a stand-in build)
 #   4  cargo test of eval/
 #   5  strand-eval refs-check (the reference files: seals, notes, and a
 #      recording changed since the merge base with main under its old
@@ -47,7 +48,8 @@ lock_and_isolation() {
     bash scripts/eval/check-isolation.sh &&
     bash scripts/eval/test-check-isolation.sh &&
     bash scripts/eval/test-worktree.sh &&
-    bash scripts/eval/test-local-mounts.sh
+    bash scripts/eval/test-local-mounts.sh &&
+    bash scripts/eval/test-repeat.sh
 }
 
 # The merge base with main, which refs-check holds changed references
