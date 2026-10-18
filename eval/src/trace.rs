@@ -94,6 +94,14 @@ pub struct SurfaceInfo {
     pub root: String,
     pub attached: u32,
     pub detached: Option<u32>,
+    /// (eval-rules) The axes it is sized by its content on (a popup or
+    /// panel with no width, or no height): `[w, h]`.
+    #[serde(default, skip_serializing_if = "is_fixed")]
+    pub content: [bool; 2],
+}
+
+fn is_fixed(c: &[bool; 2]) -> bool {
+    !c[0] && !c[1]
 }
 
 /// What a node is (it does not change while it lives).
@@ -117,6 +125,21 @@ pub struct NodeMeta {
     /// than wrapping when its box is narrower than it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ellipsis: bool,
+    /// (eval-rules) Its `exit` pose when it was first seen (its `enter`
+    /// mirrored when it has none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Pose>,
+    /// (eval-rules) A container's `stagger:` step, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stagger: Option<f32>,
+    /// (eval-rules) It clips what it holds to its box (`clip: true`, a
+    /// `scroll`, a `list`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clips: bool,
+    /// (eval-rules) Its width does not give way in a full row
+    /// (`labels::rigid_of`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rigid: bool,
 }
 
 /// The parts of an `enter` pose the checks read.
@@ -126,6 +149,11 @@ pub struct Pose {
     pub x: Option<f32>,
     pub y: Option<f32>,
     pub scale: Option<f32>,
+    /// (eval-rules) A width or height it lays out at (`exit { height: 0 }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

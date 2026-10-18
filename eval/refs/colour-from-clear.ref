@@ -1,0 +1,131 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "colour-from-clear"
+verdict good
+note "new scenario (eval-rules): the chip's fill and border and the word's text colour spring in from transparent black keeping their hue (alpha alone rises: e5c07b25..e5c07bfd, 61afef25.., e06c7525..) and back out; the swatch springs 3366ff to ffcc00 through OKLab's light mid-point (aaafa6) and back; #lead never moves; read with explain"
+date 2026-10-18
+rev "bc7ffad1+changes"
+approver "claude"
+scenario 1fdd42b247e8831b
+seal 41c499e219e14f5d
+S1 0 - "bar Top"
+N0 "chip|shell.strand:7:5|[Mock | DP-1]#1" "box#chip"
+N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N3 "swatch|shell.strand:10:5|[Mock | DP-1]#2" "box#swatch"
+N4 "word|shell.strand:11:5|[Mock | DP-1]#0" "text#word"
+N5 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1
+s1 z=320,30
+n0 x=30 y=3 w=48 h=18 ord=3 bg=00000000 bd=00000000
+n1 x=8 y=5 w=14 h=14 ord=2 bg=5c6370ff
+n2 x=0 y=0 w=320 h=24 ord=1
+n3 x=86 y=3 w=30 h=18 ord=4 bg=3366ffff
+n4 x=124 y=5 w=35 h=15 txt=S ord=5 ink=124,7,35,10 fg=00000000 gl=["status"]
+n5 x=0 y=0 w=320 h=30 bg=1e2127ff
+k1
+n0 bg=e5c07b25 bd=61afef25
+n3 bg=4f7decff
+n4 fg=e06c7525
+k2
+n0 bg=e5c07b62 bd=61afef62
+n3 bg=7f9bcaff
+n4 fg=e06c7562
+k3
+n0 bg=e5c07b97 bd=61afef97
+n3 bg=aaafa6ff
+n4 fg=e06c7597
+k4
+n0 bg=e5c07bbe bd=61afefbe
+n3 bg=c9bb85ff
+n4 fg=e06c75be
+k5
+n0 bg=e5c07bd8 bd=61afefd8
+n3 bg=dec269ff
+n4 fg=e06c75d8
+k6
+n0 bg=e5c07be8 bd=61afefe8
+n3 bg=ecc652ff
+n4 fg=e06c75e8
+k7
+n0 bg=e5c07bf1 bd=61afeff1
+n3 bg=f4c93eff
+n4 fg=e06c75f1
+k8
+n0 bg=e5c07bf7 bd=61afeff7
+n3 bg=f9ca2eff
+n4 fg=e06c75f7
+k9
+n0 bg=e5c07bfb bd=61afeffb
+n3 bg=fbcb22ff
+n4 fg=e06c75fb
+k10
+n0 bg=e5c07bfd bd=61afefff
+n3 bg=fdcb17ff
+n4 fg=e06c75fd
+k11
+n0 bg=e5c07bfe
+n3 bg=fecc0fff
+n4 fg=e06c75fe
+k12
+n3 bg=fecc09ff
+k13
+n0 bg=e5c07bff
+n3 bg=ffcc05ff
+n4 fg=e06c75ff
+k14
+n3 bg=ffcc00ff
+k15
+k16
+n0 bg=e5c07bda bd=61afefda
+n3 bg=e1c366ff
+n4 fg=e06c75da
+k17
+n0 bg=e5c07b9d bd=61afef9d
+n3 bg=aeb0a2ff
+n4 fg=e06c759d
+k18
+n0 bg=e5c07b68 bd=61afef68
+n3 bg=839dc6ff
+n4 fg=e06c7568
+k19
+n0 bg=e5c07b41 bd=61afef41
+n3 bg=658cddff
+n4 fg=e06c7541
+k20
+n0 bg=e5c07b27 bd=61afef27
+n3 bg=517febff
+n4 fg=e06c7527
+k21
+n0 bg=e5c07b17 bd=61afef17
+n3 bg=4476f3ff
+n4 fg=e06c7517
+k22
+n0 bg=e5c07b0e bd=61afef0e
+n3 bg=3d6ff8ff
+n4 fg=e06c750e
+k23
+n0 bg=e5c07b08 bd=61afef08
+n3 bg=396cfbff
+n4 fg=e06c7508
+k24
+n0 bg=e5c07b04 bd=61afef04
+n3 bg=3669fdff
+n4 fg=e06c7504
+k25
+n0 bg=e5c07b02 bd=00000000
+n3 bg=3568feff
+n4 fg=e06c7502
+k26
+n0 bg=e5c07b01
+n3 bg=3467feff
+n4 fg=e06c7501
+k27
+n3 bg=3467ffff
+k28
+n0 bg=e5c07b00
+n3 bg=3366ffff
+n4 fg=e06c7500
+k29
+k30
+n0 bg=00000000
+n4 fg=00000000

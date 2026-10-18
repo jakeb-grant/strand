@@ -1,0 +1,49 @@
+id     = "exit-tween-pose"
+about  = """A removed subtree plays its `exit` pose, then unmounts (design.md
+"Poses"): four boxes leave a bar row together, one fading out on its
+opacity's linear 190 ms curve, one sinking 6 px on an `ease(ease_in, 230ms)` curve
+while it fades out faster, over 150 ms, one on the `popin(0.8)`
+preset's spring, and one that drops 24 px out of the bar without fading
+(an exit pose moves each property on that property's own transition). Each is drawn last at its exit pose
+(no opacity or offset left) and is gone the frame after; the box after them
+glides into the room they leave, and the box before them never moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state shown = true
+bar Top {
+  height: 30
+  bg: #1e2127
+  row { id: strip; height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: lead; width: 16; height: 12; radius: 3; bg: #5c6370 }
+    if shown {
+      box { id: fader; width: 16; height: 12; radius: 3; bg: #98c379
+            opacity: 1 ~ ease(linear, 190ms); exit { opacity: 0 } }
+      box { id: sinker; width: 16; height: 12; radius: 3; bg: #61afef
+            y: 0 ~ ease(ease_in, 230ms); opacity: 1 ~ ease(ease_in, 150ms)
+            exit { y: 6; opacity: 0 } }
+      box { id: popper; width: 16; height: 12; radius: 3; bg: #c678dd; exit: popin(0.8) }
+      box { id: diver; width: 16; height: 12; radius: 3; bg: #e06c75; exit { y: 24 } }
+    }
+    box { id: tail; width: 16; height: 12; radius: 3; bg: #e5c07b }
+  }
+}
+
+=== steps
+rest
+mark leave
+set shown false
+intend #fader exits
+intend #sinker exits
+intend #popper exits
+intend #diver exits
+intend #tail moves
+rest
+expect hidden #fader
+expect hidden #sinker
+expect hidden #popper
+expect hidden #diver
+expect still #lead
+mark settled
+frames 10
+expect still #tail

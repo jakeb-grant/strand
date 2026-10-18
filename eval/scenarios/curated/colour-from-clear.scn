@@ -1,0 +1,36 @@
+id     = "colour-from-clear"
+about  = """Colours that spring from and to transparent (design.md "Springs
+everywhere": `$motion.effects` for colour; colours spring in OKLab with alpha
+premultiplied, docs/decisions.md eval-rules): a chip's fill and border and a
+word's text colour spring in from fully transparent black and back out, and
+a swatch beside them springs from blue to yellow and back. A fade keeps its
+colour's hue the whole way (it never passes through a darker, olive one),
+and the swatch passes through OKLab's lighter mid-point, not sRGB's grey.
+The box at the start of the row never moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 30
+  bg: #1e2127
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 14; height: 14; radius: 3; bg: #5c6370 }
+    box { id: chip; width: 48; height: 18; radius: 6
+          bg: on ? #e5c07b : #00000000
+          border: 2, on ? #61afef : #00000000 }
+    box { id: swatch; width: 30; height: 18; radius: 4; bg: on ? #ffcc00 : #3366ff }
+    text "status" { id: word; color: on ? #e06c75 : #00000000 }
+  }
+}
+
+=== steps
+rest
+mark in
+set on true
+rest
+expect still #lead
+mark out
+set on false
+rest
+expect still #lead

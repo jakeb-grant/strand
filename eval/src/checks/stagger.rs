@@ -1,0 +1,170 @@
+//! (eval-rules) `stagger`: children entering together under `stagger:`
+//! start their enter one step apart, in child order.
+//!
+//! design.md ("Motion and time": `stagger: 30ms` on a container) and the
+//! schema ("Delays each child's `enter` this much after the one before"):
+//! the children that mount together under a container with a stagger are
+//! numbered in child order, the first starting at once and child `n`
+//! holding at its enter pose for `n` steps (anim/stagger.rs; a step is
+//! capped at one second there). What is drawn shows it: a child holds at
+//! its pose until its turn, and the first frame that shows it off its
+//! pose is its start.
+//!
+//! The batch is the container's children first drawn at one frame after
+//! boot (with an `enter` pose or not: every child mounting counts in the
+//! numbering), in paint order. Child `n`'s start is due `n` steps after
+//! the batch's change: the tick before the batch's first frame, since
+//! its first frame shows the first child one frame on (a retarget starts
+//! one period before the frame that shows it, strand-scene motion.rs).
+//! Its first frame off its pose is the first at or after that, so it is
+//! held to lie between the moment due and one period after it: within a
+//! frame. A child whose text is still on its way waits for it
+//! instead (decisions.md late-text-dip) and is not held, nor is one
+//! without a pose to hold at, or a run under reduced motion (every child
+//! shows at once).
+
+use std::collections::BTreeMap;
+
+use super::{Cx, Finding, first_per_node};
+use crate::scenario::CheckId;
+use crate::trace::{Pose, Row};
+
+/// The longest step render plays (anim/stagger.rs `MAX_STEP`).
+pub const MAX_STEP_MS: f64 = 1000.0;
+/// Slack on each side, for whole-nanosecond tick times.
+const SLACK_NS: f64 = 1.0e6;
+
+/// The row is off its pose: by an opacity quantum, 1/64 px of offset or
+/// a scale step of 1/1000.
+fn off_pose(r: &Row, p: &Pose) -> Option<bool> {
+    let mut any = false;
+    let mut off = false;
+    if let Some(o) = p.opacity {
+        any = true;
+        off |= (f64::from(r.own_op) - f64::from(o)).abs() > 1.0 / 255.0;
+    }
+    for (v, at) in [
+        (p.x, r.written[0] + r.spring[0]),
+        (p.y, r.written[1] + r.spring[1]),
+    ] {
+        if let Some(v) = v {
+            any = true;
+            off |= (f64::from(at) - f64::from(v)).abs() > 1.0 / 64.0;
+        }
+    }
+    if let Some(s) = p.scale {
+        any = true;
+        off |= (f64::from(r.scale[0].max(r.scale[1])) - f64::from(s)).abs() > 0.001;
+    }
+    any.then_some(off)
+}
+
+pub fn run(cx: &Cx) -> Vec<Finding> {
+    let tl = &cx.tl;
+    let trace = cx.trace;
+    let mut out = Vec::new();
+    let boot_end = trace.segments.first().map_or(0, |s| s.e);
+    for (parent, meta) in &trace.nodes {
+        let Some(step) = meta.stagger else { continue };
+        let step_ns = f64::from(step).min(MAX_STEP_MS) * 1.0e6;
+        // Its children, by the timeline frame each was first drawn in.
+        let mut batches: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+        for (key, m) in &trace.nodes {
+            if m.parent.as_deref() != Some(parent.as_str()) {
+                continue;
+            }
+            if let Some(i) = (0..tl.ks.len()).find(|i| tl.row(*i, key).is_some()) {
+                batches.entry(i).or_default().push(key.as_str());
+            }
+        }
+        for (i0, mut batch) in batches {
+            let k0 = tl.ks[i0];
+            let Some((_, seg)) = trace
+                .segments
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, s)| s.s.is_none_or(|s| s < k0) && k0 <= s.e)
+            else {
+                continue;
+            };
+            if k0 <= boot_end || seg.reduced_motion {
+                continue;
+            }
+            // Child order: paint order in the frame they were first drawn.
+            let order = |k: &str| {
+                tl.frames[i0]
+                    .n
+                    .iter()
+                    .position(|r| r.key == k)
+                    .unwrap_or(usize::MAX)
+            };
+            batch.sort_by_key(|k| order(k));
+            let period_ns = 1.0e9 / f64::from(seg.hz.max(1));
+            let t0 = tl.frames[i0].t_ns as f64 - period_ns;
+            for (n, key) in batch.iter().enumerate() {
+                let Some(pose) = trace.nodes.get(*key).and_then(|m| m.enter) else {
+                    continue;
+                };
+                if cx.allowed(CheckId::Stagger, key) {
+                    continue;
+                }
+                // Its first frame off its pose, within the segment.
+                let mut start = None;
+                let mut waits_for_text = false;
+                for i in i0..tl.ks.len() {
+                    if tl.ks[i] > seg.e {
+                        break;
+                    }
+                    let Some(r) = tl.row(i, key) else { break };
+                    waits_for_text |= !tl.frames[i].held_text.is_empty()
+                        || tl.screens[i].iter().any(|(k, row)| {
+                            matches!(row.text.as_deref(), Some("E" | "I"))
+                                && cx.lineage(k).contains(key)
+                        });
+                    match off_pose(r, &pose) {
+                        None => break,
+                        Some(true) => {
+                            start = Some(i);
+                            break;
+                        }
+                        Some(false) => {}
+                    }
+                }
+                let Some(j) = start else { continue };
+                if waits_for_text {
+                    continue;
+                }
+                let due = t0 + n as f64 * step_ns;
+                let at = tl.frames[j].t_ns as f64;
+                let late = at - due;
+                if late < -SLACK_NS || late > period_ns + SLACK_NS {
+                    let ms = |v: f64| v / 1.0e6;
+                    out.push(
+                        Finding::fail(
+                            CheckId::Stagger,
+                            format!(
+                                "start: child {} of {} entering together under {} ({step} ms \
+                                 apart) left its pose {:.1} ms after their change, due at {:.1} \
+                                 ms (within a frame)",
+                                n + 1,
+                                batch.len(),
+                                trace
+                                    .nodes
+                                    .get(parent)
+                                    .map_or(parent.as_str(), |m| m.label.as_str()),
+                                ms(at - t0),
+                                ms(due - t0),
+                            ),
+                        )
+                        .at(tl.ks[j])
+                        .node(key)
+                        .got(ms(at - t0), [ms(due - t0), ms(due - t0 + period_ns)])
+                        .in_segment(&seg.name),
+                    );
+                }
+            }
+        }
+    }
+    first_per_node(out)
+}

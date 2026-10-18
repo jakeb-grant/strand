@@ -283,7 +283,7 @@ For each node the trace records:
 - its effective opacity, scale and rotation;
 - its motions, both its own and its ancestors' (glide, spring, size
   spring, enter, exit, keyframes, morph, reveal, stagger, lean, jelly,
-  drag, time);
+  drag, time), and which of its own colours springs (fill, border, text);
 - its authored axes;
 - the parts of its offset (inherited, and of that the part in flight;
   written, spring, glide, morph);
@@ -325,6 +325,15 @@ whose buffer differed at all, the pixels past the tolerance, how many of
 them were stale, the worst difference, the region, what the frame redrew,
 the leg and the repaint's image (`redraw`). Neither is in the digest.
 
+Once per node the trace records what the rule checks read from its
+config when it was first seen: its `enter` and `exit` poses (an exit
+mirrors its enter; a pose's width and height too), a container's
+`stagger` step, whether it clips what it holds (`clip: true`, a
+`scroll`, a `list`) and whether it is rigid in a full row (a length
+width or `min_width`, `shrink: 0`, an image or icon, a text with no
+ellipsis). Per surface it records the axes its content sizes (`content`:
+a popup or panel with no `width`, or no `height`).
+
 A node's key is its origin plus its sibling path, stable across runs and
 builds. The digest hashes every deterministic field and none of the wall
 times.
@@ -356,9 +365,13 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
 | `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
-| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). |
+| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px (`spill`: a stand-in drawn unclipped), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
+| `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
+| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), and an ellipsised text gives way before it is laid past its surface's edge (`give way`). See below. |
+| `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
+| `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
@@ -439,10 +452,74 @@ the shell's buffers also reach. The check therefore holds each frame's
 own damage. It does not hold the union with earlier frames' damage that
 an age of 2 or 3 adds.
 
+**The rule checks** (`colour`, `contain`, `tiling`, `stagger` and
+`vanish`'s `pop-out`) each hold one guarantee of docs/design.md about how
+a motion plays, read off the trace with no reference. Each was kept only
+with no false positive over every curated and regression scenario and the
+whole matrix at 60 and 144 Hz (decisions.md eval-rules). An `intend`
+says a node moves, not how, so it does not exempt from them; only an
+`[allow]` does.
+
+- **`colour`.** design.md springs colour on `$motion.effects`, a theme
+  swap's palette in OKLab, and a colour's channels are premultiplied OKLab
+  plus alpha (decisions.md 2026-10-04 render, wave3-theme t2). A spring
+  moves every channel along one curve, so the colours drawn lie on the
+  line between the two ends: a fade from transparent keeps its hue (it
+  never passes a darker colour), and blue to yellow passes OKLab's light
+  middle, not sRGB's grey. It holds a node's own `bg`, border and text
+  colour where its own spring of that kind moves it (`Motions`
+  `FILL_SPRING`, `LINE_SPRING`, `INK_SPRING`), over a segment from the
+  colour at `s` to the colour at `e`. A frame's colour is compared with
+  the nearest point of the line (from -0.5 to 1.5 of the way, for
+  overshoot), drawn as the raster draws it, in premultiplied sRGB: within
+  3 steps of 1/255 on every channel. It skips a colour the token graph
+  derives each frame (a theme swap's derived tokens, the contrast guard),
+  one retargeted mid-flight (a frame logic or input drove), one keyframes
+  or time drive, gradients, and span colours.
+- **`contain`.** `cut`: a `popup` or `panel` with no `width`, or no
+  `height`, is sized by its content on that axis; it grows to its content
+  at once and is held while its content springs smaller (decisions.md
+  popup-shrink), so nothing it holds is drawn past its edge on that axis.
+  What is past both where it started the segment and where it rests (a
+  spring's overshoot) is excused, and so is a node moved by authored
+  motion on that axis (offset, pose, scale, turn) or held inside a
+  clipping ancestor (`clip: true`, a `scroll`, a `list`). The allowance is
+  `tol` plus a quantum. `give way`: a full row's children give way by
+  `shrink`, an ellipsised text's min-content is 0 and a surface root never
+  widens to its content (design.md "Layout", decisions.md wave3-pixels),
+  so an ellipsised text drawn whole is never laid past its surface's
+  edge, unless something that cannot give way puts it there: it or an
+  ancestor past the edge with a width of its own, `shrink: 0` or a
+  `min_width`, an image or icon, or a text with no ellipsis inside that
+  ancestor and past the edge too, or a clipping ancestor.
+- **`tiling`.** A box's edges are snapped from where they fall
+  (decisions.md wave3-pixels), so two that share an edge in layout share
+  its physical pixel. On every painted frame, among the nodes shown on
+  one surface that nothing moves (no motion of their own or inherited, no
+  offset, scale or turn), every two edges on an axis laid at one place
+  (within 1/128 px) are drawn (their `visual` boxes, snapped) within
+  1/32 px. A box in motion is placed by its layer's whole pixels and is
+  not held.
+- **`stagger`.** "Delays each child's `enter` this much after the one
+  before" (the schema; design.md `stagger: 30ms`). The children of a
+  container with `stagger:` first drawn at one frame after boot are a
+  batch, numbered in paint order. Child `n` is due `n` steps (at most
+  1 s) after the batch's change, a period before its first frame, and its
+  first frame off its enter pose must come within a period after that.
+  It skips a child without a pose, one whose text is on its way (it waits
+  for its text, decisions.md late-text-dip) and reduced motion.
+- **`pop-out`** (in `vanish`). "A removed subtree plays `exit`, then
+  unmounts" (design.md "Poses"). The last frame an exiting node is drawn
+  in shows it at its exit pose (its `exit`, else its `enter`): its own
+  opacity within 1/255, its offset within `tol`, its scale within 0.005
+  and a pose's width or height within `tol`, or nothing at all (its
+  effective opacity at most 1/255). A slide to an edge, whose offset is the
+  node's size, is held on its opacity only. Reduced motion is not held.
+
 **Exempting a node.** Three mechanisms, from narrowest to widest:
 
 - `intend #x moves x` in a segment exempts that node and its subtree on
-  those axes, in that segment only.
+  those axes, in that segment only (not from the rule checks).
 - `[allow] check = [{ node, why }]` exempts a node from one check for the
   whole scenario. The reason is required and shown in the report.
 - `expect_fail = { check = "why" }` turns the check's failure into XFAIL.
@@ -897,6 +974,19 @@ owner's config becomes a committed scenario written from scratch.
   (`fit`) and the ink record that. A text's paint is recorded once per
   run of glyphs drawn, so two texts with the same source, colour and
   glyphs drawn on one node are one entry.
+- **No check holds a retarget's velocity.** design.md: "Retargeting
+  mid-flight keeps velocity". A spring retargeted with its velocity
+  dropped is drawn as a smooth curve that differs from the right one by a
+  few pixels over a few frames, and the spring's stiffness and damping
+  are not in the trace, so no bound on the drawn frames alone told the two
+  apart at 60 Hz without failing correct reversals (decisions.md
+  eval-rules). The references catch it where a scenario reverses a
+  spring (`heldc-spring-reversal`, `heldc-list-reorder`,
+  `title-pill-cut-late`, and the matrix).
+- **The rule checks read the scene, not the pixels.** `colour` reads
+  the colours the flattened scene gives, `tiling` the snapped boxes the
+  flattener places; how the raster fills them is the pixel tests'
+  (above).
 - **`redraw` holds one buffer age.** Every frame is painted at age 1,
   so damage widened by older frames (ages 2 and 3) is not compared.
   On the GPU leg it compares against a fresh device, allows one step per

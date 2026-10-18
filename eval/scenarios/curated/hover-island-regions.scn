@@ -6,7 +6,8 @@ width spring while the pointer rests on the popup's anchor: on every frame the
 popup's input region is the card as drawn (the opt-in `regions` check), and the
 bar under the popup does not move."""
 screen = { width = 300, scale = 1.0 }
-checks = ["settle", "bystander", "envelope", "teleport", "vanish", "twin", "redraw",
+checks = ["settle", "bystander", "envelope", "teleport", "vanish", "colour", "contain",
+          "tiling", "stagger", "twin", "redraw",
           "budget", "reference", "expect", "regions"]
 
 === shell.strand

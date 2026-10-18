@@ -1,0 +1,40 @@
+id     = "title-gives-way"
+about  = """A bar's full row gives way to its content (design.md "Layout": children
+give way by `shrink`; docs/decisions.md wave3-pixels: an ellipsised text's
+min-content is 0 and a surface root never widens to its content): a window
+pill (an icon and a long ellipsised title, with no widths of their own) sits
+between a workspace dot and a status text that grows from a short clock to a
+long line and back. The title cuts itself shorter with its ellipsis as the
+status grows, so nothing is laid past the bar's right edge, and longer again
+as it shrinks. The dot at the start (`shrink: 0`) never moves."""
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state long = false
+bar Top {
+  height: 30
+  bg: #101317
+  row { id: strip; height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: dot; size: 10; shrink: 0; radius: full; bg: #e06c75 }
+    row { id: pill; gap: 4; align: center; pad: 0, 4; radius: 6; bg: #2c313a
+      box { id: icon; size: 12; radius: 3; bg: #e5c07b }
+      text "Strand design review notes, second draft — Firefox" { id: title; color: #dcdfe4; ellipsis: end }
+    }
+    text long ? "battery 81% · wifi strong · 12:00" : "12:00" { id: status; color: #98c379 }
+  }
+}
+
+=== steps
+rest
+mark grow
+set long true
+intend #title changes
+intend #status changes
+rest
+expect still #dot
+mark shrink
+set long false
+intend #title changes
+intend #status changes
+rest
+expect still #dot

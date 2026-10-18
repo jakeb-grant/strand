@@ -83,6 +83,112 @@ fn enter_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
     Some(p)
 }
 
+/// (eval-rules) The parts of a pose value the checks read: a pose
+/// block, or a preset as design.md names them (`fade`, `slidefade`,
+/// `popin(s)`; a `slide`'s distance is its box's, unknown here, so only
+/// its fade is kept). anim/pose.rs `pose_props` is what render plays.
+fn pose_of(v: &PropValue) -> Option<Pose> {
+    let mut p = Pose::default();
+    match v {
+        PropValue::Pose(props) => {
+            for (prop, v) in props {
+                match prop {
+                    Prop::Opacity => p.opacity = num(v),
+                    Prop::X => p.x = num(v),
+                    Prop::Y => p.y = num(v),
+                    Prop::Scale => p.scale = num(v),
+                    Prop::Width => p.w = num(v),
+                    Prop::Height => p.h = num(v),
+                    _ => {}
+                }
+            }
+        }
+        PropValue::Keyword(k) if k == "fade" => p.opacity = Some(0.0),
+        PropValue::Keyword(k) if k == "slidefade" => {
+            p.opacity = Some(0.0);
+            p.y = Some(8.0);
+        }
+        PropValue::Call { name, args } if name == "popin" => {
+            p.opacity = Some(0.0);
+            p.scale = Some(args.first().and_then(num).unwrap_or(0.8));
+        }
+        PropValue::Call { name, .. } if name == "slidefade" => p.opacity = Some(0.0),
+        _ => return None,
+    }
+    Some(p)
+}
+
+/// (eval-rules) The node's `exit` pose, else its `enter` (an exit
+/// mirrors its enter, anim/pose.rs `exit_pose`).
+fn exit_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
+    let n = tree.get(node)?;
+    pose_of(n.get(Prop::Exit).or_else(|| n.get(Prop::Enter))?)
+}
+
+/// (eval-rules) A container's `stagger:` step in ms, when written as a
+/// duration.
+fn stagger_of(tree: &SceneTree, node: NodeId) -> Option<f32> {
+    match tree.get(node)?.get(Prop::Stagger)? {
+        PropValue::Duration(d) if !d.is_zero() => Some(d.as_secs_f32() * 1000.0),
+        _ => None,
+    }
+}
+
+/// (eval-rules) The node clips what it holds to its box: `clip: true`,
+/// a `scroll` or a `list`.
+fn clips_of(tree: &SceneTree, node: NodeId) -> bool {
+    let Some(n) = tree.get(node) else {
+        return false;
+    };
+    matches!(n.kind.name(), "scroll" | "list")
+        || matches!(n.get(Prop::Clip), Some(PropValue::Bool(true)))
+}
+
+/// (eval-rules) The node's width does not give way in a full row
+/// (design.md "Shrinking"; decisions.md wave3-pixels "text in its box"):
+/// a `width`, `size` or `min_width` written as a length, `shrink: 0`, an
+/// image or icon, or a text that cuts nothing (its minimum is its
+/// longest word). An ellipsised or `max_lines` text, and a container
+/// with none of these, can shrink to nothing.
+fn rigid_of(tree: &SceneTree, node: NodeId) -> bool {
+    let Some(n) = tree.get(node) else {
+        return false;
+    };
+    let length = |p: Prop| match n.get(p) {
+        Some(PropValue::Number(_)) => true,
+        Some(PropValue::Length(l)) => {
+            matches!(l, strand_scene::Length::Px(_) | strand_scene::Length::Ch(_))
+        }
+        _ => false,
+    };
+    let kind = n.kind.name();
+    let cuts = ellipsis_of(tree, node) || n.get(Prop::MaxLines).is_some();
+    length(Prop::Width)
+        || length(Prop::Size)
+        || length(Prop::MinWidth)
+        || matches!(n.get(Prop::Shrink), Some(PropValue::Number(s)) if *s == 0.0)
+        || matches!(kind, "image" | "icon")
+        || (kind == "text" && !cuts)
+}
+
+/// (eval-rules) The axes on which a surface is sized by its content: a
+/// `popup` or `panel` with no `width` (or `size`) is as wide as what it
+/// holds, one with no `height` as tall. A bar is sized by its screen
+/// edge and its `height`.
+pub fn content_sized(tree: &SceneTree, node: NodeId) -> [bool; 2] {
+    let Some(n) = tree.get(node) else {
+        return [false, false];
+    };
+    if !matches!(n.kind.name(), "popup" | "panel") {
+        return [false, false];
+    }
+    let size = n.get(Prop::Size).is_some();
+    [
+        !size && n.get(Prop::Width).is_none(),
+        !size && n.get(Prop::Height).is_none(),
+    ]
+}
+
 /// The node's shared-element `morph:` name, when it is written as text.
 fn morph_of(tree: &SceneTree, node: NodeId) -> Option<String> {
     match tree.get(node)?.get(Prop::Morph)? {
@@ -194,6 +300,10 @@ impl Labels {
             enter: enter_pose(tree, node),
             morph: morph_of(tree, node),
             ellipsis: ellipsis_of(tree, node),
+            exit: exit_pose(tree, node),
+            stagger: stagger_of(tree, node),
+            clips: clips_of(tree, node),
+            rigid: rigid_of(tree, node),
         });
         key
     }

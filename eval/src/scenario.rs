@@ -32,6 +32,17 @@ pub enum CheckId {
     Coherence,
     /// A text's glyphs fit its box.
     Ink,
+    /// (eval-rules) A colour that springs stays on its way in OKLab.
+    Colour,
+    /// (eval-rules) What a surface sized by its content holds stays on
+    /// it; an ellipsised text gives way before it is cut.
+    Contain,
+    /// (eval-rules) Edges at one place in layout are drawn on one
+    /// physical pixel.
+    Tiling,
+    /// (eval-rules) Children entering together under `stagger:` start
+    /// their enter one step apart.
+    Stagger,
     Twin,
     Determinism,
     Regions,
@@ -46,7 +57,7 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 15] = [
+    pub const ALL: [CheckId; 19] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -54,6 +65,10 @@ impl CheckId {
         CheckId::Vanish,
         CheckId::Coherence,
         CheckId::Ink,
+        CheckId::Colour,
+        CheckId::Contain,
+        CheckId::Tiling,
+        CheckId::Stagger,
         CheckId::Twin,
         CheckId::Determinism,
         CheckId::Regions,
@@ -67,7 +82,7 @@ impl CheckId {
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
     /// is opt-in and `cpu-gpu` comes with `backend = "both"`.
-    pub const DEFAULT: [CheckId; 12] = [
+    pub const DEFAULT: [CheckId; 16] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -75,6 +90,10 @@ impl CheckId {
         CheckId::Vanish,
         CheckId::Coherence,
         CheckId::Ink,
+        CheckId::Colour,
+        CheckId::Contain,
+        CheckId::Tiling,
+        CheckId::Stagger,
         CheckId::Twin,
         CheckId::Redraw,
         CheckId::Budget,
@@ -91,6 +110,10 @@ impl CheckId {
             CheckId::Vanish => "vanish",
             CheckId::Coherence => "coherence",
             CheckId::Ink => "ink",
+            CheckId::Colour => "colour",
+            CheckId::Contain => "contain",
+            CheckId::Tiling => "tiling",
+            CheckId::Stagger => "stagger",
             CheckId::Twin => "twin",
             CheckId::Determinism => "determinism",
             CheckId::Regions => "regions",

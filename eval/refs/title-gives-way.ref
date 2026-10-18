@@ -1,0 +1,36 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "title-gives-way"
+verdict good
+note "new scenario (eval-rules): the title is laid 209 px wide beside the clock, cut to 150 px (and the 12 px icon to 10) when the status grows to its long line, and 209 again after; nothing is laid past the 300 px bar; #dot (shrink: 0) never moves; read with explain"
+date 2026-10-18
+rev "bc7ffad1+changes"
+approver "claude"
+scenario 3ddfe0e725b3a510
+seal 8bc3d809a90d1ce7
+S1 0 - "bar Top"
+N0 "dot|shell.strand:6:5|[Mock | DP-1]#0" "box#dot"
+N1 "icon|shell.strand:8:7|[Mock | DP-1]#0" "box#icon"
+N2 "pill|shell.strand:7:5|[Mock | DP-1]#0" "row#pill"
+N3 "status|shell.strand:11:5|[Mock | DP-1]#0" "text#status"
+N4 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N5 "title|shell.strand:9:7|[Mock | DP-1]#0" "text#title"
+N6 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1
+s1 z=300,30
+n0 x=8 y=7 w=10 h=10 ord=2 bg=e06c75ff
+n1 x=28 y=6 w=8 h=12 ord=4 bg=e5c07bff
+n2 x=24 y=5 w=229 h=15 ord=3 bg=2c313aff
+n3 x=259 y=5 w=33 h=15 txt=S ord=6 ink=259,6,32,11 fg=98c379ff gl=["12:00"]
+n4 x=0 y=0 w=300 h=24 ord=1
+n5 x=40 y=5 w=209 h=15 txt=S ord=5 ink=40,6,203,13 fit=209 fg=dcdfe4ff gl=["Strand\u0020design\u0020review\u0020notes,\u0020second\u0020draft\u0020—\u0020Firefox"]
+n6 x=0 y=0 w=300 h=30 bg=101317ff
+k1
+n1 w=6
+n2 w=168
+n3 x=198 y=-10 w=94 h=44 ink=197,-9,77,41 fit=94 gl=["battery\u002081%\u0020·\u0020wifi\u0020strong\u0020·\u002012:00"]
+n5 x=38 w=150 ink=38,6,133,13 fit=150
+k2
+n1 w=8
+n2 w=229
+n3 x=259 y=5 w=33 h=15 ink=259,6,32,11 fit=- gl=["12:00"]
+n5 x=40 w=209 ink=40,6,203,13 fit=209

@@ -11,7 +11,7 @@ use crate::select::Selector;
 use crate::trace::{Row, RunTrace};
 
 /// `probe::Motions` bit names, by bit.
-pub const MOTIONS: [&str; 14] = [
+pub const MOTIONS: [&str; 17] = [
     "PROP_SPRING",
     "OPACITY_SPRING",
     "GLIDE",
@@ -26,6 +26,9 @@ pub const MOTIONS: [&str; 14] = [
     "JELLY",
     "LIFT",
     "TIME",
+    "FILL_SPRING",
+    "INK_SPRING",
+    "LINE_SPRING",
 ];
 
 /// `probe::Axes` bit names, by bit.

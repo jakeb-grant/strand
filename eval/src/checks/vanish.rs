@@ -171,7 +171,102 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     out.extend(pose_back(cx));
+    out.extend(pop_out(cx));
     first_per_node(out)
+}
+
+/// How far from its exit pose an exiting node's last frame may show it:
+/// one opacity quantum (1/255, the step a recording holds), a scale step
+/// of 1/200, and `tol` on a place or size.
+pub const POP_OUT_OPACITY: f64 = 1.0 / 255.0;
+pub const POP_OUT_SCALE: f64 = 0.005;
+
+/// (eval-rules) `pop-out`: a node that plays its `exit` pose and then
+/// unmounts (design.md "Poses": "A removed subtree plays `exit`, then
+/// unmounts") is, at the last frame it is drawn in, at its pose: its own
+/// opacity, offset, scale and laid size where the pose puts them, or it
+/// shows nothing (its effective opacity at most a quantum: an ancestor
+/// faded it out). An exit cut short pops what is left of the node out in
+/// one frame. Not held under reduced motion, where a pose snaps.
+fn pop_out(cx: &Cx) -> Vec<Finding> {
+    let tl = &cx.tl;
+    let mut out = Vec::new();
+    for (key, meta) in &cx.trace.nodes {
+        let Some(pose) = meta.exit else { continue };
+        // The last frame each run of its rows is in, followed by a frame
+        // without it.
+        for i in 0..tl.ks.len() {
+            let Some(r) = tl.row(i, key) else { continue };
+            if i + 1 >= tl.ks.len() || tl.row(i + 1, key).is_some() {
+                continue;
+            }
+            if !Motions(r.mot).contains(Motions::EXIT) {
+                continue;
+            }
+            let k = tl.ks[i];
+            let Some((_, seg)) = cx
+                .trace
+                .segments
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, s)| s.s.is_none_or(|s| s < k) && k <= s.e)
+            else {
+                continue;
+            };
+            if seg.reduced_motion
+                || cx.trace.scenario.reduced_motion
+                || cx.allowed(CheckId::Vanish, key)
+                || f64::from(r.op) <= POP_OUT_OPACITY
+            {
+                continue;
+            }
+            let mut wrong = Vec::new();
+            if let Some(po) = pose.opacity
+                && (f64::from(r.own_op) - f64::from(po)).abs() > POP_OUT_OPACITY
+            {
+                wrong.push(format!("opacity {:.3} (its pose's {po})", r.own_op));
+            }
+            for (axis, p, at) in [
+                ("x", pose.x, r.written[0] + r.spring[0]),
+                ("y", pose.y, r.written[1] + r.spring[1]),
+            ] {
+                if let Some(p) = p
+                    && (f64::from(at) - f64::from(p)).abs() > cx.tol
+                {
+                    wrong.push(format!("offset {at:.2} on {axis} (its pose's {p})"));
+                }
+            }
+            if let Some(ps) = pose.scale {
+                let s = f64::from(r.scale[0].max(r.scale[1]));
+                if (s - f64::from(ps)).abs() > POP_OUT_SCALE {
+                    wrong.push(format!("scale {s:.3} (its pose's {ps})"));
+                }
+            }
+            for (axis, p, at) in [("w", pose.w, r.laid[2]), ("h", pose.h, r.laid[3])] {
+                if let Some(p) = p
+                    && (f64::from(at) - f64::from(p)).abs() > cx.tol
+                {
+                    wrong.push(format!("laid {axis} {at:.2} (its pose's {p})"));
+                }
+            }
+            if !wrong.is_empty() {
+                out.push(
+                    Finding::fail(
+                        CheckId::Vanish,
+                        format!(
+                            "pop-out: unmounted after this frame short of its exit pose: {}",
+                            wrong.join("; ")
+                        ),
+                    )
+                    .at(k)
+                    .node(key)
+                    .in_segment(&seg.name),
+                );
+            }
+        }
+    }
+    out
 }
 
 /// The segment tick `k` falls in.

@@ -781,7 +781,11 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     advisory wall times, and its nodes), `NodeTrace` (per drawn or
     hidden node: laid, drawn and visual boxes, own opacity, scale and
     rotation, the offset parts, `Motions` and `authored` `Axes` bits,
-    `Hidden`, `TextDrawn`), `OffsetParts`, `HeldText`;
+    `Hidden`, `TextDrawn`), `OffsetParts`, `HeldText`; (eval-rules)
+    `Motions` also says which of a node's own colours springs
+    (`FILL_SPRING`: its `bg`, a meter's `value` or `track`;
+    `INK_SPRING`: its text colour or solid `fill`; `LINE_SPRING`: its
+    border);
   - `Renderer::set_frame_trace(bool)`, `take_frame_traces() ->
     Vec<FrameTrace>`, `set_text_hold(bool)`,
     `set_text_hold_with(Option<HoldPick>)` (`HoldPick = Box<dyn

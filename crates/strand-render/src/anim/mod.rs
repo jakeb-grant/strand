@@ -1141,6 +1141,13 @@ impl Animator {
                     Prop::Opacity => Motions::OPACITY_SPRING,
                     _ => Motions::PROP_SPRING,
                 };
+                // (eval-rules) Which of its own colours springs.
+                m |= match p {
+                    Prop::Bg | Prop::Value | Prop::Track => Motions::FILL_SPRING,
+                    Prop::Color | Prop::Fill => Motions::INK_SPRING,
+                    Prop::Border => Motions::LINE_SPRING,
+                    _ => Motions::NONE,
+                };
                 a |= match p {
                     Prop::X => Axes::X,
                     Prop::Y => Axes::Y,

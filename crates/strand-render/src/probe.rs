@@ -234,6 +234,16 @@ impl Motions {
     pub const LIFT: Self = Self(1 << 12);
     /// A prop that places it follows time (`t`, `wave(…)`).
     pub const TIME: Self = Self(1 << 13);
+    /// (eval-rules) Its own background springs between colours (`bg`, a
+    /// meter's `value` or `track`). It comes with `PROP_SPRING`, and
+    /// tells a node's own colour transition from a colour the token
+    /// graph derives anew each frame (a theme swap).
+    pub const FILL_SPRING: Self = Self(1 << 14);
+    /// (eval-rules) Its own text colour springs (`color`, a text's solid
+    /// `fill`).
+    pub const INK_SPRING: Self = Self(1 << 15);
+    /// (eval-rules) Its own border springs.
+    pub const LINE_SPRING: Self = Self(1 << 16);
 
     pub const NONE: Self = Self(0);
 

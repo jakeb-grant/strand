@@ -766,6 +766,7 @@ impl<'s> Harness<'s> {
                         Some(n) => format!("{kind} {n}"),
                         None => self.trace_label(&root),
                     };
+                    let content = crate::labels::content_sized(self.r.tree(), node);
                     self.trace.surfaces.push(SurfaceInfo {
                         id: id.0,
                         label,
@@ -773,6 +774,7 @@ impl<'s> Harness<'s> {
                         root,
                         attached: k,
                         detached: None,
+                        content,
                     });
                 }
                 Change::Detached(id) => {

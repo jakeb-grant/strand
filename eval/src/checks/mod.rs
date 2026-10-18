@@ -26,6 +26,8 @@ use crate::trace::{Frame, Row, RunTrace};
 pub mod budget;
 pub mod bystander;
 pub mod coherence;
+pub mod colour;
+pub mod contain;
 pub mod cpu_gpu;
 pub mod determinism;
 pub mod envelope;
@@ -35,7 +37,9 @@ pub mod redraw;
 pub mod reference;
 pub mod regions;
 pub mod settle;
+pub mod stagger;
 pub mod teleport;
+pub mod tiling;
 pub mod twin;
 pub mod vanish;
 
@@ -609,9 +613,7 @@ impl<'a> Cx<'a> {
     /// entry, or an `intend` of the segment, names it or an ancestor.
     pub fn exempt(&self, check: CheckId, seg: usize, key: &'a str, axes: Axes) -> bool {
         let line = self.lineage(key);
-        if let Some(set) = self.allow.get(&check)
-            && line.iter().any(|k| set.contains(*k))
-        {
+        if self.allowed(check, key) {
             return true;
         }
         self.trace.segments.get(seg).is_some_and(|s| {
@@ -619,6 +621,17 @@ impl<'a> Cx<'a> {
                 Axes(i.axes).intersects(axes) && line.iter().any(|k| i.keys.iter().any(|x| x == k))
             })
         })
+    }
+
+    /// (eval-rules) The scenario's `allow` names `key` or an ancestor for
+    /// `check`. The rule checks (colour, contain, tiling, stagger,
+    /// pop-out) hold how a motion plays, so an `intend` (that it moves at
+    /// all) does not exempt from them; only an `allow` does.
+    pub fn allowed(&self, check: CheckId, key: &'a str) -> bool {
+        let line = self.lineage(key);
+        self.allow
+            .get(&check)
+            .is_some_and(|set| line.iter().any(|k| set.contains(*k)))
     }
 
     /// The keys present and visible at frame `i`.
@@ -733,6 +746,13 @@ pub fn evaluate(
                 CheckId::Vanish => (vanish::run(&cx), None),
                 CheckId::Coherence => (coherence::run(&cx), None),
                 CheckId::Ink => (ink::run(&cx), None),
+                CheckId::Colour => (colour::run(&cx), None),
+                CheckId::Contain => (contain::run(&cx), None),
+                CheckId::Tiling => (tiling::run(&cx), None),
+                CheckId::Stagger if trace.scenario.reduced_motion => {
+                    (Vec::new(), skip("motion is reduced: children show at once"))
+                }
+                CheckId::Stagger => (stagger::run(&cx), None),
                 CheckId::Twin if trace.scenario.reduced_motion => {
                     (Vec::new(), skip("the scenario reduces motion itself"))
                 }

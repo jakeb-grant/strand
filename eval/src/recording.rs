@@ -311,6 +311,7 @@ impl Recording {
                 root: roots.get(&s.id).map(|r| r.root.clone()).unwrap_or_default(),
                 attached: s.attached,
                 detached: s.detached,
+                content: [false, false],
             })
             .collect();
         for (k, label) in &self.labels {

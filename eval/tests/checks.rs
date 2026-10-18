@@ -1802,6 +1802,7 @@ fn island(card_x: impl Fn(u32) -> f32, input: impl Fn(u32) -> Option<Vec<[f32; 4
         root: "pop".into(),
         attached: 0,
         detached: None,
+        ..SurfaceInfo::default()
     });
     t.nodes.insert("card".into(), meta("card", Some("pop")));
     let mut label = meta("label", Some("card"));
@@ -2541,5 +2542,604 @@ fn blank_frames_are_told_apart_by_surface() {
         blanks
             .iter()
             .all(|f| f.segment.as_deref() == Some("change"))
+    );
+}
+
+// --- (eval-rules) colour, contain, tiling, stagger, pop-out
+
+/// `c` (straight-alpha channels in 0..=1) as the recording writes it.
+fn hex(c: [f64; 4]) -> String {
+    c.iter()
+        .map(|v| format!("{:02x}", (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+        .collect()
+}
+
+/// The colour `s` of the way from `a` to `b` in premultiplied OKLab, as
+/// a spring draws it.
+fn on_way(a: [f64; 4], b: [f64; 4], s: f64) -> [f64; 4] {
+    use strand_eval::checks::colour::{premultiplied, srgb};
+    let (p, q) = (premultiplied(a), premultiplied(b));
+    let m: [f64; 4] = std::array::from_fn(|i| p[i] + s * (q[i] - p[i]));
+    if m[3] <= 0.0 {
+        return [0.0; 4];
+    }
+    let [r, g, bl] = srgb([m[0] / m[3], m[1] / m[3], m[2] / m[3]]);
+    [r, g, bl, m[3]]
+}
+
+/// A box whose `bg` springs over ticks 1..=10 through `way(s)`, its own
+/// fill spring's bit set when `own`.
+fn fill(way: impl Fn(f64) -> [f64; 4], own: bool) -> RunTrace {
+    let mot = if own {
+        Motions::PROP_SPRING | Motions::FILL_SPRING
+    } else {
+        Motions::PROP_SPRING
+    };
+    shape(12, |k| {
+        let s = 1.0 - (1.0 - f64::from(k.min(10)) / 10.0).powi(3);
+        let mut b = row("chip", [10.0, 6.0, 40.0, 18.0]);
+        b.paint = Some(strand_eval::paint::PaintRec {
+            bg: vec![hex(way(s))],
+            ..Default::default()
+        });
+        vec![if (1..10).contains(&k) { b.mot(mot) } else { b }]
+    })
+}
+
+const CLEAR: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+const GOLD: [f64; 4] = [
+    0xe5 as f64 / 255.0,
+    0xc0 as f64 / 255.0,
+    0x7b as f64 / 255.0,
+    1.0,
+];
+const BLUE: [f64; 4] = [0x33 as f64 / 255.0, 0x66 as f64 / 255.0, 1.0, 1.0];
+const YELLOW: [f64; 4] = [1.0, 0xcc as f64 / 255.0, 0.0, 1.0];
+
+/// A fill springing from transparent black to gold keeps gold's hue (its
+/// alpha alone rises), and blue to yellow passes OKLab's light middle.
+#[test]
+fn colour_passes_a_spring_on_its_way_in_premultiplied_oklab() {
+    let sc = scenario("");
+    for (a, b) in [(CLEAR, GOLD), (GOLD, CLEAR), (BLUE, YELLOW)] {
+        let t = fill(|s| on_way(a, b, s), true);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Colour),
+            Status::Pass,
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
+/// Straight alpha: a fade from transparent black passes through a dark
+/// olive gold never has (strand-scene's premultiplication dropped).
+#[test]
+fn colour_fails_a_fade_through_a_darker_colour() {
+    use strand_eval::checks::colour::{oklab, srgb};
+    let sc = scenario("");
+    let lab = oklab([GOLD[0], GOLD[1], GOLD[2]]);
+    let t = fill(
+        |s| {
+            let [r, g, b] = srgb(lab.map(|v| v * s));
+            [r, g, b, s]
+        },
+        true,
+    );
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Colour, "chip", "bg"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// sRGB interpolation: blue to yellow through a dull grey.
+#[test]
+fn colour_fails_a_change_through_srgb_grey() {
+    let sc = scenario("");
+    let t = fill(
+        |s| std::array::from_fn(|i| BLUE[i] + s * (YELLOW[i] - BLUE[i])),
+        true,
+    );
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Colour, "chip", "bg"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A colour with no spring of its own (the token graph deriving it each
+/// frame, as a theme swap does) and one retargeted in flight are not
+/// held to a straight way.
+#[test]
+fn colour_holds_only_its_own_spring_unretargeted() {
+    let sc = scenario("");
+    let srgb_way =
+        |s: f64| -> [f64; 4] { std::array::from_fn(|i| BLUE[i] + s * (YELLOW[i] - BLUE[i])) };
+    let t = fill(srgb_way, false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let mut t = fill(srgb_way, true);
+    t.frames[4].driven = true;
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A node exiting over ticks 1..=`last`, drawn by `at(k)` and gone
+/// after; its exit pose is `pose`.
+fn exiting(pose: Pose, last: u32, at: impl Fn(u32) -> Row) -> RunTrace {
+    let mut t = shape(last + 4, |k| {
+        let mut v = vec![row("lead", [8.0, 6.0, 16.0, 12.0])];
+        if k == 0 {
+            v.push(row("leave", [30.0, 6.0, 16.0, 12.0]));
+        } else if k <= last {
+            v.push(at(k).mot(Motions::OPACITY_SPRING | Motions::PROP_SPRING | Motions::EXIT));
+        }
+        v
+    });
+    t.nodes.get_mut("leave").unwrap().exit = Some(pose);
+    t.seal();
+    t
+}
+
+/// An exit that ends at its pose, faded out or (unfaded) dropped 24 px,
+/// unmounts without a pop.
+#[test]
+fn pop_out_passes_an_exit_that_reaches_its_pose() {
+    let sc = scenario("");
+    let fade = Pose {
+        opacity: Some(0.0),
+        y: Some(6.0),
+        ..Pose::default()
+    };
+    let t = exiting(fade, 10, |k| {
+        let p = 1.0 - (1.0 - k as f32 / 10.0).powi(3);
+        row("leave", [30.0, 6.0, 16.0, 12.0])
+            .at(30.0, 6.0 + 6.0 * p)
+            .spring(0.0, 6.0 * p)
+            .op(1.0 - p)
+    });
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let drop = Pose {
+        y: Some(24.0),
+        ..Pose::default()
+    };
+    let t = exiting(drop, 10, |k| {
+        let p = 1.0 - (1.0 - k as f32 / 10.0).powi(3);
+        row("leave", [30.0, 6.0, 16.0, 12.0])
+            .at(30.0, 6.0 + 24.0 * p)
+            .spring(0.0, 24.0 * p)
+    });
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// An exit cut short: unmounted at a fifth of its opacity (its motion
+/// declared settled early), or at a quarter of its drop.
+#[test]
+fn pop_out_fails_an_exit_unmounted_short_of_its_pose() {
+    let sc = scenario("");
+    let fade = Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    };
+    let t = exiting(fade, 8, |k| {
+        row("leave", [30.0, 6.0, 16.0, 12.0]).op(1.0 - k as f32 / 10.0)
+    });
+    let r = check(&sc, &t);
+    let pops: Vec<_> = r
+        .failures(CheckId::Vanish)
+        .into_iter()
+        .filter(|f| f.msg.starts_with("pop-out") && f.k == Some(8))
+        .collect();
+    assert_eq!(pops.len(), 1, "{}", show(&r, &t));
+    let drop = Pose {
+        y: Some(24.0),
+        ..Pose::default()
+    };
+    let t = exiting(drop, 1, |_| {
+        row("leave", [30.0, 6.0, 16.0, 12.0])
+            .at(30.0, 12.0)
+            .spring(0.0, 6.0)
+    });
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out") && f.msg.contains("offset 6.00 on y")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Not held where nothing exits (a node taken away at once has no pose
+/// to reach) or motion is reduced (a pose snaps).
+#[test]
+fn pop_out_holds_only_an_exit_played() {
+    let fade = Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    };
+    let sc = scenario("");
+    let mut t = exiting(fade, 4, |k| {
+        row("leave", [30.0, 6.0, 16.0, 12.0]).op(1.0 - k as f32 / 10.0)
+    });
+    for f in &mut t.frames {
+        for r in &mut f.n {
+            r.mot = 0;
+            r.emot = 0;
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out")),
+        "{}",
+        show(&r, &t)
+    );
+    let mut t = exiting(fade, 4, |k| {
+        row("leave", [30.0, 6.0, 16.0, 12.0]).op(1.0 - k as f32 / 10.0)
+    });
+    t.segments[1].reduced_motion = true;
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Three children mounting at tick 1 under a 30 ms stagger, child `n`
+/// leaving its enter pose (opacity 0) at the tick `start(n)`.
+fn staggered(start: impl Fn(usize) -> u32) -> RunTrace {
+    let keys = ["c0", "c1", "c2"];
+    let mut t = shape(14, |k| {
+        let mut v = vec![row("list", [0.0, 0.0, 300.0, 30.0])];
+        if k >= 1 {
+            for (n, key) in keys.iter().enumerate() {
+                let s = start(n);
+                let x = 10.0 + 40.0 * n as f32;
+                let r = row(key, [x, 6.0, 30.0, 18.0]);
+                v.push(if k < s {
+                    r.op(0.0).mot(Motions::ENTER | Motions::STAGGER)
+                } else {
+                    let p = (((k - s + 1) as f32) / 6.0).min(1.0);
+                    r.op(p).mot(Motions::OPACITY_SPRING | Motions::ENTER)
+                });
+            }
+        }
+        v
+    });
+    t.nodes.get_mut("list").unwrap().stagger = Some(30.0);
+    for key in keys {
+        let m = t.nodes.get_mut(key).unwrap();
+        m.parent = Some("list".into());
+        m.enter = Some(Pose {
+            opacity: Some(0.0),
+            ..Pose::default()
+        });
+    }
+    t.seal();
+    t
+}
+
+/// Children 30 ms apart at 60 Hz start on the first frame at or after
+/// their turn: ticks 1, 2 and 4.
+#[test]
+fn stagger_passes_children_starting_a_step_apart() {
+    let sc = scenario("");
+    let t = staggered(|n| [1, 2, 4][n]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Numbered by their place among all the container's children (one
+/// already there before them), every child starts a step late; numbered
+/// backwards, the first starts last.
+#[test]
+fn stagger_fails_children_numbered_wrong() {
+    let sc = scenario("");
+    let t = staggered(|n| [2, 4, 6][n]);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c0") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = staggered(|n| [4, 2, 1][n]);
+    let r = check(&sc, &t);
+    let late: Vec<_> = r
+        .failures(CheckId::Stagger)
+        .into_iter()
+        .filter_map(|f| f.key.clone())
+        .collect();
+    assert_eq!(late, ["c0", "c2"], "{}", show(&r, &t));
+}
+
+/// Under reduced motion every child shows at once: not held.
+#[test]
+fn stagger_is_not_held_under_reduced_motion() {
+    let sc = scenario("");
+    let mut t = staggered(|n| [4, 2, 1][n]);
+    t.scenario.reduced_motion = true;
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        matches!(status(&r, CheckId::Stagger), Status::Skip(_)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Two boxes laid flush at x 43 drawn at `a_right` and `b_left`.
+fn flush(a_right: f32, b_left: f32) -> RunTrace {
+    shape(2, |_| {
+        let mut a = row("a", [10.0, 6.0, 33.0, 18.0]);
+        a.visual[2] = a_right - 10.0;
+        let mut b = row("b", [43.0, 6.0, 34.0, 18.0]);
+        b.visual[0] = b_left;
+        b.visual[2] = 77.0 - b_left;
+        vec![a, b]
+    })
+}
+
+/// Edges snapped from where they fall share a pixel (at 1.25x, 43 px is
+/// drawn at 43.2 on both sides).
+#[test]
+fn tiling_passes_flush_boxes_sharing_their_edge() {
+    let sc = scenario("");
+    let t = flush(43.2, 43.2);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Tiling),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A size rounded apart from its origin leaves a pixel's seam; a box
+/// covering every pixel it touches draws one pixel twice.
+#[test]
+fn tiling_fails_a_seam_or_an_overlap() {
+    let sc = scenario("");
+    for (a, b) in [(42.4, 43.2), (43.2, 42.4)] {
+        let t = flush(a, b);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Tiling, "a", "x") || fails_on(&r, CheckId::Tiling, "b", "x"),
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
+/// A box in motion (its layer placed by its spring's whole pixels) is
+/// not held to its neighbour's edge.
+#[test]
+fn tiling_skips_a_box_in_motion() {
+    let sc = scenario("");
+    let mut t = flush(42.4, 43.2);
+    for f in &mut t.frames {
+        f.n[0].mot = Motions::PROP_SPRING.0;
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Tiling),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A content-sized popup (surface 2, sized by its content's height)
+/// whose card springs from 80 px to 40 px tall over ticks 1..=6 while
+/// the surface is `size(k)` tall.
+fn shrinking(size: impl Fn(u32) -> f32, h: impl Fn(u32) -> f32) -> RunTrace {
+    let mut t = shape(8, |k| {
+        let mut pop = row("pop", [0.0, 0.0, 120.0, size(k)]);
+        pop.surface = 2;
+        let mut card = row("card", [0.0, 0.0, 120.0, 40.0]);
+        card.surface = 2;
+        card.visual[3] = h(k);
+        card.drawn[3] = h(k);
+        if k == 0 {
+            card.laid[3] = 80.0;
+        }
+        vec![row("bar", [0.0, 0.0, 300.0, 30.0]), pop, card]
+    });
+    for f in &mut t.frames {
+        f.painted.push(2);
+        f.sizes.insert(2, [120.0, size(f.k)]);
+        let c = f.cost[&1];
+        f.cost.insert(2, c);
+    }
+    t.surfaces = vec![
+        SurfaceInfo {
+            id: 1,
+            root: "bar".into(),
+            ..Default::default()
+        },
+        SurfaceInfo {
+            id: 2,
+            root: "pop".into(),
+            kind: "popup".into(),
+            content: [false, true],
+            ..Default::default()
+        },
+    ];
+    t.nodes.get_mut("card").unwrap().parent = Some("pop".into());
+    t.seal();
+    t
+}
+
+fn card_h(k: u32) -> f32 {
+    if k == 0 {
+        80.0
+    } else {
+        40.0 + 40.0 * (1.0 - k.min(6) as f32 / 6.0).powi(2)
+    }
+}
+
+/// Held at its larger size while its content springs smaller, the
+/// surface cuts nothing; a spring's overshoot past where it started and
+/// rests is not the surface's.
+#[test]
+fn contain_passes_a_surface_held_while_its_content_shrinks() {
+    let sc = scenario("");
+    let t = shrinking(|k| if k < 7 { 80.0 } else { 40.0 }, card_h);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = shrinking(
+        |k| if k < 7 { 80.0 } else { 40.0 },
+        |k| if k == 2 { 36.0 } else { card_h(k) },
+    );
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// The surface taking its content's laid size at once, mid-shrink: the
+/// card is drawn past its bottom edge.
+#[test]
+fn contain_fails_a_surface_that_cuts_its_shrinking_content() {
+    let sc = scenario("");
+    let t = shrinking(|k| if k == 0 { 80.0 } else { 40.0 }, card_h);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Contain, "card", "y"),
+        "{}",
+        show(&r, &t)
+    );
+    // The same cut on a surface sized by its own `height` is the author's.
+    let mut t = shrinking(|k| if k == 0 { 80.0 } else { 40.0 }, card_h);
+    t.surfaces[1].content = [false, false];
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A bar row holding a pill (`pill`, its ellipsised title `title` laid
+/// from 40 to `right`) and a status text (`status`, rigid: plain text
+/// keeps its width).
+fn titled(right: f32) -> RunTrace {
+    let mut t = shape(2, |_| {
+        let mut title = row("title", [40.0, 5.0, right - 40.0, 15.0]);
+        title.text = Some("S".into());
+        vec![
+            row("strip", [0.0, 0.0, 300.0, 24.0]),
+            row("pill", [24.0, 5.0, right - 20.0, 15.0]),
+            title,
+            row("status", [right + 10.0, 5.0, 33.0, 15.0]),
+        ]
+    });
+    let parents = [("pill", "strip"), ("title", "pill"), ("status", "strip")];
+    for (k, p) in parents {
+        t.nodes.get_mut(k).unwrap().parent = Some(p.into());
+    }
+    t.nodes.get_mut("title").unwrap().ellipsis = true;
+    t.nodes.get_mut("status").unwrap().rigid = true;
+    t.seal();
+    t
+}
+
+/// An ellipsised title that gives way inside the bar passes; one laid
+/// past the bar's edge, with nothing rigid putting it there, fails.
+#[test]
+fn contain_holds_an_ellipsised_text_to_give_way() {
+    let sc = scenario("");
+    let t = titled(249.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = titled(340.0);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Contain, "title", "w"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// Past the edge because something cannot give way (the pill has a
+/// width of its own) or inside a clipping ancestor: not the text's.
+#[test]
+fn contain_excuses_a_text_put_past_the_edge_by_what_cannot_give_way() {
+    let sc = scenario("");
+    let mut t = titled(340.0);
+    t.nodes.get_mut("pill").unwrap().rigid = true;
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let mut t = titled(340.0);
+    t.nodes.get_mut("pill").unwrap().clips = true;
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
     );
 }
