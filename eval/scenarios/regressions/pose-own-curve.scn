@@ -1,0 +1,35 @@
+id     = "pose-own-curve"
+about  = """A finding of round 4 (docs/decisions.md pose-transition): `exit { opacity: 0
+~ ease(linear, 200ms) }` parsed, and its `~` was never read: the exit faded on
+`$motion.effects`, the prop's default. design.md defines `~` per prop ("Override
+per prop with `~`") and a pose as where a node moves from or to, so a `~` inside
+a pose block, or on `enter:`/`exit:`, is now a load error (`check::pose_transition`,
+whose fix takes the `~` out and whose help puts it on the node's own prop). This
+is that help's form: the box's own `opacity: 1 ~ ease(linear, 200ms)` fades its
+exit linearly over 200 ms (12 ticks), drawn last at its pose (`vanish` pop-out),
+and the run rests two ticks later, once the frame that unmounts it has drawn."""
+screen = { width = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state shown = true
+bar Top {
+  height: 30
+  bg: #1e2127
+  row { id: strip; height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: lead; width: 16; height: 12; radius: 3; bg: #5c6370 }
+    if shown {
+      box { id: fader; width: 16; height: 12; radius: 3; bg: #98c379
+            opacity: 1 ~ ease(linear, 200ms); exit { opacity: 0 } }
+    }
+  }
+}
+
+=== steps
+rest
+mark leave
+set shown false
+intend #fader exits
+rest max 14
+expect hidden #fader
+expect still #lead

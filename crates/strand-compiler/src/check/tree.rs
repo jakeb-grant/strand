@@ -567,12 +567,61 @@ impl<'a> Checker<'a> {
         if !self.node_needed(place, "a pose", span) {
             return None;
         }
+        self.pose_transitions(&p.body.items, p.kind);
         let (props, _) = self.tree_items(&p.body.items, Place::Props);
         Some(Node::Pose(hir::Pose {
             kind: p.kind,
             props,
             span,
         }))
+    }
+
+    /// (pose-transition) A `~` in a pose block is an error: a pose is
+    /// where its node moves from (or to), and each prop moves along its
+    /// own `~` (design.md "Springs everywhere": "Override per prop with
+    /// `~`"), so a second curve there was parsed and never read. The fix
+    /// takes it out; the help says where it goes (decisions.md
+    /// pose-transition).
+    fn pose_transitions(&mut self, items: &'a [ast::Item], kind: hir::PoseKind) {
+        let pose = match kind {
+            hir::PoseKind::Enter => "enter",
+            hir::PoseKind::Exit => "exit",
+        };
+        for item in items {
+            if let ItemKind::Prop(q) = &item.kind
+                && let Some(t) = &q.transition
+            {
+                self.pose_transition(&q.name.name, q.value.span, t.span, Some(pose));
+            }
+        }
+    }
+
+    /// The error of [`Self::pose_transitions`], and of a `~` on `enter:`
+    /// or `exit:` itself (`pose: None`), whose preset moves props along
+    /// their own curves too.
+    fn pose_transition(&mut self, name: &str, value: Span, curve: Span, pose: Option<&str>) {
+        let (message, help) = match pose {
+            Some(pose) => (
+                format!("a pose takes no `~`: `{name}` moves along its own"),
+                format!(
+                    "put the curve on the node's own `{name}`: `{name}: <its value> ~ <curve>; {pose} {{ {name}: … }}`"
+                ),
+            ),
+            None => (
+                format!(
+                    "`{name}` takes no `~`: the props its pose moves each move along their own"
+                ),
+                format!(
+                    "put the curve on the props the pose moves, such as `opacity: 1 ~ <curve>; {name}: …`"
+                ),
+            ),
+        };
+        let d = self.error("check::pose_transition", message, curve, "never read");
+        d.help = Some(help);
+        d.add_suggestion(Span::new(value.end, curve.end), "");
+        if let Some(f) = d.suggestions.last_mut() {
+            f.title = Some("Remove the `~`".into());
+        }
     }
 
     #[inline(never)]
@@ -1915,6 +1964,11 @@ impl<'a> Checker<'a> {
         } else {
             self.prop_value(p.value, &ps.ty, &format!("`{name}`"))
         };
+        if matches!(name, "enter" | "exit")
+            && let Some(t) = p.transition
+        {
+            self.pose_transition(name, p.value.span, t.span, None);
+        }
         let transition = p.transition.map(|t| self.transition(t));
         let mut sub = Vec::new();
         if let Some(b) = p.block {

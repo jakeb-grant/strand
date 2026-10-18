@@ -1,0 +1,14 @@
+// expect: check::pose_transition
+// A pose is where its node moves from or to; each prop moves along its own
+// `~` (design.md "Springs everywhere"), so a `~` inside a pose block, or on
+// `enter:`/`exit:` itself, would never be read (decisions.md
+// pose-transition). The node's own `opacity: 1 ~ …` is the way to write it.
+state shown = true
+bar Top {
+  if shown {
+    box { width: 10; height: 10; exit { opacity: 0 ~ ease(linear, 200ms) } }
+    box { width: 10; height: 10; enter { y: 6 ~ 120ms; x: 4 } }
+    box { width: 10; height: 10; exit: popin(0.8) ~ 300ms }
+    box { width: 10; height: 10; opacity: 1 ~ ease(linear, 200ms); exit { opacity: 0 } }
+  }
+}

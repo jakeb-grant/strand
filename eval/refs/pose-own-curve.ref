@@ -1,0 +1,48 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "pose-own-curve"
+verdict good
+note "new scenario (pose-transition): the fader's own opacity curve, ease(linear, 200ms), fades its exit by 1/12 a tick to 0 at tick 12, drawn last at its pose, and the run rests at tick 14 once the frame that unmounts it has drawn; the lead box stays still"
+date 2026-10-18
+rev "c84b2df3+changes"
+approver "claude"
+scenario a35dc5ff5466df63
+seal 534e25d9f7b22e55
+S1 0 - "bar Top"
+N0 "fader|shell.strand:8:7|[Mock | DP-1]#1" "box#fader"
+N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N3 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1
+s1 z=200,30
+n0 x=30 y=6 w=16 h=12 ord=3 bg=98c379ff
+n1 x=8 y=6 w=16 h=12 ord=2 bg=5c6370ff
+n2 x=0 y=0 w=200 h=24 ord=1
+n3 x=0 y=0 w=200 h=30 bg=1e2127ff
+k1
+n0 op=234 hid=inert
+k2
+n0 op=213
+k3
+n0 op=191
+k4
+n0 op=170
+k5
+n0 op=149
+k6
+n0 op=128
+k7
+n0 op=106
+k8
+n0 op=85
+k9
+n0 op=64
+k10
+n0 op=43
+k11
+n0 op=21
+k12
+n0 op=0
+k13
+n0 hid=opacity0 bg=-
+k14
+n0 -

@@ -1,0 +1,44 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::pose_transition
+
+  × a pose takes no `~`: `opacity` moves along its own
+    ╭─[pose_transition.strand:9:54]
+  8 │   if shown {
+  9 │     box { width: 10; height: 10; exit { opacity: 0 ~ ease(linear, 200ms) } }
+    ·                                                      ─────────┬─────────
+    ·                                                               ╰── never read
+ 10 │     box { width: 10; height: 10; enter { y: 6 ~ 120ms; x: 4 } }
+    ╰────
+  help: put the curve on the node's own `opacity`: `opacity: <its value> ~ <curve>; exit
+        { opacity: … }`
+
+check::pose_transition
+
+  × a pose takes no `~`: `y` moves along its own
+    ╭─[pose_transition.strand:10:49]
+  9 │     box { width: 10; height: 10; exit { opacity: 0 ~ ease(linear, 200ms) } }
+ 10 │     box { width: 10; height: 10; enter { y: 6 ~ 120ms; x: 4 } }
+    ·                                                 ──┬──
+    ·                                                   ╰── never read
+ 11 │     box { width: 10; height: 10; exit: popin(0.8) ~ 300ms }
+    ╰────
+  help: put the curve on the node's own `y`: `y: <its value> ~ <curve>; enter { y: … }`
+
+check::pose_transition
+
+  × `exit` takes no `~`: the props its pose moves each move along their own
+    ╭─[pose_transition.strand:11:53]
+ 10 │     box { width: 10; height: 10; enter { y: 6 ~ 120ms; x: 4 } }
+ 11 │     box { width: 10; height: 10; exit: popin(0.8) ~ 300ms }
+    ·                                                     ──┬──
+    ·                                                       ╰── never read
+ 12 │     box { width: 10; height: 10; opacity: 1 ~ ease(linear, 200ms); exit { opacity: 0 } }
+    ╰────
+  help: put the curve on the props the pose moves, such as `opacity: 1 ~ <curve>; exit: …`
+
+fix [check::pose_transition] pose_transition.strand: ` ~ ease(linear, 200ms)` -> `` (Remove the `~`)
+fix [check::pose_transition] pose_transition.strand: ` ~ 120ms` -> `` (Remove the `~`)
+fix [check::pose_transition] pose_transition.strand: ` ~ 300ms` -> `` (Remove the `~`)
