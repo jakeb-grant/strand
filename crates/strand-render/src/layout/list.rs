@@ -311,9 +311,10 @@ impl ScrollState {
     }
 
     /// Advances the motion to frame time `at` (`snap`: no clock, or
-    /// `reduced_motion`: it lands at once). Returns true if the offset
-    /// changed.
-    pub fn advance(&mut self, at: Duration, snap: bool) -> bool {
+    /// `reduced_motion`: it lands at once), a scroll that waited for this
+    /// frame starting `lead` (one frame period) before it. Returns true
+    /// if the offset changed.
+    pub fn advance(&mut self, at: Duration, snap: bool, lead: Duration) -> bool {
         let before = self.offset;
         let max = self.max_offset();
         match &mut self.motion {
@@ -323,7 +324,7 @@ impl ScrollState {
                     self.offset = m.target()[0];
                     self.motion = None;
                 } else {
-                    self.offset = m.sample(at)[0];
+                    self.offset = m.sample_frame(at, lead)[0];
                     if m.is_settled(at) {
                         self.motion = None;
                     }
@@ -337,8 +338,8 @@ impl ScrollState {
             }) => {
                 // It starts a frame before the first one that shows it.
                 let t0 = *start.get_or_insert_with(|| {
-                    let lead = last.map_or(Duration::ZERO, |l| at.saturating_sub(l));
-                    at.saturating_sub(lead.min(strand_scene::motion::START_LEAD))
+                    let since = last.map_or(Duration::ZERO, |l| at.saturating_sub(l));
+                    at.saturating_sub(since.min(lead.min(strand_scene::motion::START_LEAD)))
                 });
                 let t = at.saturating_sub(t0).as_secs_f32();
                 let k = (-t / FLING_DECAY).exp();

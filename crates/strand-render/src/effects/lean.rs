@@ -128,7 +128,7 @@ impl Leans {
             m.retarget(target, curve);
         }
         let v = if frame.commit {
-            m.sample(frame.at)
+            frame.sample(m)
         } else {
             m.peek(frame.at)
         };

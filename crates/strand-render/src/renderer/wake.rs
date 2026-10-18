@@ -183,7 +183,7 @@ impl Renderer {
             if let Some(s) = self.surfaces.get(&id) {
                 // A preview: nothing starts until a frame samples it.
                 let (time, prev) = (s.time, s.painted_time);
-                self.anim.set_slack(self.clocks.slack(id));
+                self.anim.set_period(self.clocks.period(id));
                 self.sample_tokens(time, false);
                 self.anim.begin(time, prev, false);
             }

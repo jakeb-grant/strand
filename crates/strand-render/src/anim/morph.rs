@@ -174,7 +174,7 @@ impl SharedMorphs {
             return (None, false, started);
         };
         let v = if frame.commit {
-            m.sample(frame.at)
+            frame.sample(m)
         } else {
             m.peek(frame.at)
         };
@@ -247,6 +247,7 @@ mod tests {
             at: Duration::from_millis(ms),
             commit: true,
             prev: Some(Duration::from_millis(ms.saturating_sub(16))),
+            lead: strand_scene::motion::START_LEAD,
             snap: false,
         };
         let mut most = 0;

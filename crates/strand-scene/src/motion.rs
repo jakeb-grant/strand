@@ -341,8 +341,10 @@ struct Pending<const N: usize> {
 /// render thread learns the time of the frame that will show a change
 /// only when it paints. The change starts at the first
 /// [`Motion::sample`] after it, at that frame's time less one frame lead
-/// (at most [`START_LEAD`], and never before the previous sample), so
-/// the first frame after a change already shows it moving.
+/// (one refresh of the surface drawing it, given to
+/// [`Motion::sample_frame`]; at most [`START_LEAD`], and never before the
+/// previous sample), so the first frame after a change already shows it
+/// moving, as far as each frame after it does.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Motion<const N: usize> {
     seg: Segment<N>,
@@ -352,8 +354,10 @@ pub struct Motion<const N: usize> {
     last: Option<Duration>,
 }
 
-/// How far before the first frame that samples it a change starts (one
-/// refresh at 60 Hz), so that frame already shows progress.
+/// The most a change starts before the first frame that samples it (one
+/// refresh at 60 Hz), so that frame already shows progress. A surface
+/// refreshing faster leads by its own refresh
+/// ([`Motion::sample_frame`]): one frame of progress, never more.
 pub const START_LEAD: Duration = Duration::from_micros(16_667);
 
 impl<const N: usize> Motion<N> {
@@ -407,7 +411,7 @@ impl<const N: usize> Motion<N> {
     /// sample.
     pub fn retarget_at(&mut self, target: [f32; N], curve: Curve, at: Duration) {
         self.retarget(target, curve);
-        self.resolve(at, Some(at));
+        self.resolve(at, Some(at), Duration::ZERO);
     }
 
     /// Jumps by `delta` at the next sample (velocity kept), then moves
@@ -439,13 +443,15 @@ impl<const N: usize> Motion<N> {
         self.pending.is_some()
     }
 
-    fn resolve(&mut self, at: Duration, start: Option<Duration>) {
+    /// Starts a pending retarget at `start`, or `lead` (at most
+    /// [`START_LEAD`], never before the previous sample) before `at`.
+    fn resolve(&mut self, at: Duration, start: Option<Duration>, lead: Duration) {
         let Some(p) = self.pending.take() else {
             return;
         };
         let start = start.unwrap_or_else(|| {
             let lead = match self.last {
-                Some(last) => at.saturating_sub(last).min(START_LEAD),
+                Some(last) => at.saturating_sub(last).min(lead.min(START_LEAD)),
                 None => Duration::ZERO,
             };
             at.saturating_sub(lead)
@@ -467,10 +473,20 @@ impl<const N: usize> Motion<N> {
         }
     }
 
-    /// The value at `at`, starting a pending retarget there. Once
-    /// settled it is exactly its target.
+    /// The value at `at`, starting a pending retarget there (a frame of
+    /// at most [`START_LEAD`] earlier). Once settled it is exactly its
+    /// target.
     pub fn sample(&mut self, at: Duration) -> [f32; N] {
-        self.resolve(at, None);
+        self.sample_frame(at, START_LEAD)
+    }
+
+    /// [`Motion::sample`] in a frame at `at` of a surface refreshing
+    /// every `period`: a pending retarget starts one `period` before
+    /// `at` (at most [`START_LEAD`], never before the previous sample),
+    /// so the first frame that shows it has moved it by one frame's
+    /// progress, however long the surface sat idle before.
+    pub fn sample_frame(&mut self, at: Duration, period: Duration) -> [f32; N] {
+        self.resolve(at, None, period);
         self.last = Some(self.last.map_or(at, |l| l.max(at)));
         if self.seg.settled(at, self.eps) {
             self.seg.from = self.seg.target;
@@ -700,6 +716,35 @@ mod tests {
         fresh.retarget_at([10.0], Curve::Spring(EFFECTS), t1 - START_LEAD);
         assert_eq!(first, fresh.sample(t1)[0]);
         assert!(first > 0.0);
+    }
+
+    #[test]
+    fn a_change_on_a_faster_surface_leads_by_its_refresh() {
+        // 144 Hz, idle for three seconds: the first frame shows one
+        // refresh of progress, as each frame after it adds.
+        let period = Duration::from_nanos(1_000_000_000 / 144);
+        let t0 = Duration::from_secs(1);
+        let t1 = t0 + Duration::from_secs(3);
+        let started = |at: Duration| {
+            let mut m = Motion::<1>::rest([0.0], 0.01);
+            m.retarget_at([10.0], Curve::Spring(EFFECTS), at);
+            m.sample(t1)
+        };
+        let waiting = |last: Duration| {
+            let mut m = Motion::<1>::rest([0.0], 0.01).sampled_at(Some(last));
+            m.retarget([10.0], Curve::Spring(EFFECTS));
+            m
+        };
+        assert_eq!(waiting(t0).sample_frame(t1, period), started(t1 - period));
+        // Never more than START_LEAD, never before the previous sample.
+        assert_eq!(
+            waiting(t0).sample_frame(t1, Duration::from_secs(1)),
+            started(t1 - START_LEAD)
+        );
+        assert_eq!(
+            waiting(t1 - ms(2)).sample_frame(t1, period),
+            started(t1 - ms(2))
+        );
     }
 
     #[test]

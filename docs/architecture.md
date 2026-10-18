@@ -1694,7 +1694,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `rest(value, eps)`, `retarget(target, curve)` and `shift(delta, curve)`
   (a FLIP jump) take effect at the next `sample(at)`, which starts them
   at `at` less one frame (at most `START_LEAD`, never before the previous
-  sample: `sampled_at(prev)` seeds it) from wherever the value is there,
+  sample: `sampled_at(prev)` seeds it) from wherever the value is there;
+  `sample_frame(at, period)` is the renderer's form, the frame being one
+  refresh `period` of the surface drawing it (its estimated frame
+  period, so a 144 Hz surface's first frame shows one 144 Hz frame of
+  progress, whatever its idle frames painted),
   *keeping its velocity* (a spring starts with it; a timed curve adds
   it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
   `retarget_at` starts at a given time;

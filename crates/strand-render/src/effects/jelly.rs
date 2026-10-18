@@ -149,7 +149,7 @@ impl Jellies {
             s.motion.retarget(target, curve);
         }
         let v = if frame.commit {
-            s.motion.sample(frame.at)
+            frame.sample(&mut s.motion)
         } else {
             s.motion.peek(frame.at)
         };
@@ -188,6 +188,7 @@ mod tests {
             at: Duration::from_millis(ms),
             commit: true,
             prev: Some(Duration::from_millis(ms.saturating_sub(16))),
+            lead: strand_scene::motion::START_LEAD,
             snap: false,
         }
     }
@@ -272,6 +273,7 @@ mod tests {
                     at,
                     commit: true,
                     prev: Some(Duration::from_micros(us - 1_000_000 / hz)),
+                    lead: Duration::from_micros(1_000_000 / hz),
                     snap: false,
                 };
                 let x = 2400.0 * (k as f32 / hz as f32);

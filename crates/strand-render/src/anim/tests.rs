@@ -141,7 +141,7 @@ fn shader_uniforms_spring_between_values_of_one_shape() {
     assert!(m.retarget(&et, Curve::Spring(strand_scene::motion::SPATIAL), Some(t0)));
     let mid = decode(
         Prop::Uniforms,
-        &m.value(t0 + Duration::from_millis(60), true),
+        &m.value(t0 + Duration::from_millis(60), true, START_LEAD),
     );
     let PropValue::Uniforms(entries) = &mid else {
         panic!("{mid:?}");

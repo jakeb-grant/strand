@@ -169,7 +169,7 @@ impl Animator {
     /// `rest`. Settled springs end (their node lays out at rest).
     pub fn size_overrides(&mut self, tree: &SceneTree, root: NodeId, rest: &SizeMap) -> SizeMap {
         let mut out = rest.clone();
-        let (at, commit) = (self.time, self.commit);
+        let (at, commit, lead) = (self.time, self.commit, self.lead());
         if self.snapping() {
             // `reduced_motion` (or a frame without a clock): sizes in
             // flight snap to rest.
@@ -194,7 +194,11 @@ impl Animator {
                 let Some(m) = na.size[axis].as_mut() else {
                     continue;
                 };
-                let v = if commit { m.sample(at) } else { m.peek(at) };
+                let v = if commit {
+                    m.sample_frame(at, lead)
+                } else {
+                    m.peek(at)
+                };
                 if m.is_settled(at) {
                     if commit {
                         na.size[axis] = None;

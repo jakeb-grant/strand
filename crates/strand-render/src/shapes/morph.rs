@@ -42,8 +42,19 @@ pub(crate) struct Frame {
     pub at: Duration,
     pub commit: bool,
     pub prev: Option<Duration>,
+    /// How far before `at` a change it first shows starts: one frame
+    /// period of the surface (`Animator::lead`).
+    pub lead: Duration,
     /// Everything snaps (`reduced_motion`, no clock).
     pub snap: bool,
+}
+
+impl Frame {
+    /// `m` sampled in this frame: a change it waits on starts one frame
+    /// before `at` ([`Motion::sample_frame`]).
+    pub fn sample<const N: usize>(&self, m: &mut Motion<N>) -> [f32; N] {
+        m.sample_frame(self.at, self.lead)
+    }
 }
 
 /// `a` lerped towards `b` by `p`.
@@ -88,7 +99,7 @@ impl Morphs {
             let old = outline(m.shape, aspect);
             let shown = match &mut m.from {
                 Some((from, motion)) => {
-                    let p = motion.sample(frame.at)[0];
+                    let p = frame.sample(motion)[0];
                     lerp(from, &old, p)
                 }
                 None => old,
@@ -108,7 +119,7 @@ impl Morphs {
             return (Outline::Shape(shape), false);
         }
         let p = if frame.commit {
-            motion.sample(frame.at)[0]
+            frame.sample(motion)[0]
         } else {
             motion.peek(frame.at)[0]
         };
@@ -150,6 +161,7 @@ mod tests {
             at: Duration::from_millis(ms),
             commit: true,
             prev: Some(Duration::from_millis(ms.saturating_sub(16))),
+            lead: strand_scene::motion::START_LEAD,
             snap: false,
         }
     }

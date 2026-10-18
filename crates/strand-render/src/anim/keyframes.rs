@@ -344,6 +344,7 @@ mod tests {
             at: Duration::from_millis(ms),
             commit: true,
             prev: None,
+            lead: strand_scene::motion::START_LEAD,
             snap: false,
         }
     }

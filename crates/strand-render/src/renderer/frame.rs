@@ -405,7 +405,7 @@ impl Renderer {
         };
         s.time = target.time;
         self.clocks.frame(surface, target.time, self.now());
-        self.anim.set_slack(self.clocks.slack(surface));
+        self.anim.set_period(self.clocks.period(surface));
         self.glide_origin(surface, target.size, target.scale);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();

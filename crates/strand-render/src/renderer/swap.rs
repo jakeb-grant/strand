@@ -1491,6 +1491,8 @@ impl Renderer {
         }
         let started = Instant::now();
         let snap = self.anim.reduced();
+        // The frame's surface's period: a swap starts a frame before it.
+        let lead = self.anim.lead();
         let tokens = &mut self.tree.tokens.tokens;
         // Whether each root (in order) has settled at `at`, asked once.
         let mut settled = std::mem::take(&mut self.swap.settled);
@@ -1499,7 +1501,7 @@ impl Renderer {
             let ch = if snap {
                 None
             } else if commit {
-                Some(r.motion.sample(at))
+                Some(r.motion.sample_frame(at, lead))
             } else {
                 Some(r.motion.peek(at))
             };
@@ -1567,7 +1569,7 @@ impl Renderer {
             // The surface's first frame starts its fade; after that the
             // progress is a function of its own clock.
             if snap.progress.is_pending() {
-                snap.progress.sample(at);
+                snap.progress.sample_frame(at, self.anim.lead());
             }
             let p = snap.progress.peek(at)[0];
             if !snap.progress.is_settled(at) && snap.size == size {

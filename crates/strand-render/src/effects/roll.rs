@@ -118,7 +118,7 @@ impl Rolls {
             return (None, false);
         }
         let p = if frame.commit {
-            motion.sample(frame.at)[0]
+            frame.sample(motion)[0]
         } else {
             motion.peek(frame.at)[0]
         };

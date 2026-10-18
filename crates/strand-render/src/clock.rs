@@ -165,12 +165,6 @@ impl Clocks {
             .map_or(DEFAULT_PERIOD, |f| f.period)
     }
 
-    /// Half a frame of `surface`: a capped clock's tick is drawn by the
-    /// frame nearest it.
-    pub(crate) fn slack(&self, surface: SurfaceId) -> Duration {
-        self.period(surface) / 2
-    }
-
     /// True while `surface` drew a clocked node in its last fresh frame.
     pub(crate) fn running(&self, surface: SurfaceId) -> bool {
         self.surfaces.contains_key(&surface)

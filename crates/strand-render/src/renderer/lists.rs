@@ -428,11 +428,12 @@ impl Renderer {
         };
         let root = s.root;
         let snap = time.is_zero() || self.anim.reduced();
+        let lead = self.anim.lead();
         let tree = &self.tree;
         let mut moved = false;
         for (id, st) in self.scrolls.iter_mut() {
             if st.moving() && tree.root_of(*id) == Some(root) {
-                moved |= st.advance(time, snap);
+                moved |= st.advance(time, snap, lead);
             }
         }
         let Some(s) = self.surfaces.get_mut(&surface) else {

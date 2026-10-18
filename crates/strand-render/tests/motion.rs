@@ -417,6 +417,80 @@ fn keyed_reorder_glides_to_new_slots() {
     assert_eq!(st.red_top(10), Some(48));
 }
 
+/// (decisions.md first-frame-lead) A change starts one refresh of its
+/// surface before the first frame that shows it: on a 144 Hz surface
+/// that sat idle, a glide's first frame shows one 144 Hz frame of
+/// progress, not START_LEAD's 16.7 ms (2.4 frames in one). And it does
+/// not matter whether the idle frames drew nothing (buffer age 1, the
+/// CPU's damage-free frames) or the whole frame again (age 0, as a
+/// GPU-presented surface paints): both draw the same first frames.
+#[test]
+fn a_glide_after_idle_frames_leads_by_one_refresh_at_any_buffer_age() {
+    let period = Duration::from_nanos(1_000_000_000 / 144);
+    let tick = |k: u32| T0 + period * k;
+    // The red box's top, to a fraction of a pixel: the coverage-weighted
+    // centre of its red in column 40 (where only it and the background,
+    // red 0x1e, ever are), less half the box.
+    let top = |st: &Stage| {
+        let (mut sum, mut weight) = (0.0f64, 0.0f64);
+        for y in 0..st.buf.size.h {
+            let w = (f64::from(st.buf.px(40, y)[2]) - 30.0) / 225.0;
+            sum += (f64::from(y) + 0.5) * w;
+            weight += w;
+        }
+        (sum / weight - 10.0) as f32
+    };
+    let run = |age: u8| {
+        let mut ids = Vec::new();
+        let mut st = Stage::new(60, 80, |b, root| {
+            let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Gap, num(4.0))]);
+            ids.push(red_box(b, col, vec![(Prop::Width, num(50.0))]));
+            for c in ["#00ff00", "#0000ff"] {
+                ids.push(b.node(
+                    NodeKind::Box,
+                    Some(col),
+                    vec![(Prop::Size, num(20.0)), (Prop::Bg, color(c))],
+                ));
+            }
+        });
+        let col = st.r.tree().get(ids[0]).unwrap().parent.unwrap();
+        // Idle frames at 144 Hz: the loop runs, nothing changes.
+        for k in 1..=12 {
+            st.buf.paint_at(&mut st.r, S, age, tick(k));
+        }
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Move {
+            id: ids[0],
+            parent: Some(col),
+            index: 2,
+        });
+        st.apply(d);
+        (13..=18)
+            .map(|k| {
+                st.buf.paint_at(&mut st.r, S, age, tick(k));
+                top(&st)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (drawn_nothing, drawn_again) = (run(1), run(0));
+    assert_eq!(
+        drawn_nothing, drawn_again,
+        "the idle frames' buffer age changes the glide"
+    );
+    // The glide (48 px back to its new slot along $motion.spatial),
+    // started one refresh before the first frame; drawn at whole pixels.
+    let mut glide = Motion::<1>::rest([0.0], 0.01).sampled_at(Some(tick(12)));
+    glide.shift([-48.0], Curve::Spring(motion::SPATIAL));
+    let want: Vec<f32> = (13..=18).map(|k| 48.0 + glide.sample(tick(k))[0]).collect();
+    for (k, (got, at)) in drawn_nothing.iter().zip(&want).enumerate() {
+        assert!(
+            (got - at).abs() <= 0.5,
+            "frame {k}: drawn at {got}, one refresh's lead puts it at {at} \
+             ({drawn_nothing:?} against {want:?})"
+        );
+    }
+}
+
 /// A node created on a shown surface plays its `enter` pose; a removed
 /// one plays `exit` (here collapsing to `height: 0`, so the sibling
 /// below slides up to fill the gap), then unmounts. Its id is dead at

@@ -262,7 +262,7 @@ impl Reveals {
     pub(crate) fn progress(&mut self, id: NodeId, frame: Frame) -> Option<(f32, bool)> {
         let m = self.nodes.get_mut(&id)?;
         let p = if frame.commit {
-            m.sample(frame.at)[0]
+            frame.sample(m)[0]
         } else {
             m.peek(frame.at)[0]
         };
@@ -385,6 +385,7 @@ mod tests {
             at: Duration::from_millis(ms),
             commit: true,
             prev: None,
+            lead: strand_scene::motion::START_LEAD,
             snap: false,
         };
         let curve = Curve::Timed {
@@ -495,7 +496,7 @@ impl ImageSwaps {
             *motion = Some(m);
         }
         let p = match motion {
-            Some(m) if frame.commit => m.sample(frame.at)[0],
+            Some(m) if frame.commit => frame.sample(m)[0],
             Some(m) => m.peek(frame.at)[0],
             // Waiting for the decode: the old image, still.
             None => return (Some((old.clone(), 0.0)), false),

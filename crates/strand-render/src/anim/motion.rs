@@ -419,20 +419,31 @@ impl PropMotion {
         true
     }
 
-    pub(super) fn value(&mut self, at: Duration, commit: bool) -> Enc {
-        fn one<const N: usize>(m: &mut Motion<N>, at: Duration, commit: bool) -> [f32; N] {
-            if commit { m.sample(at) } else { m.peek(at) }
+    /// The value at `at`: sampled in a painted frame (`commit`, a change
+    /// starting `lead` before it), else peeked.
+    pub(super) fn value(&mut self, at: Duration, commit: bool, lead: Duration) -> Enc {
+        fn one<const N: usize>(
+            m: &mut Motion<N>,
+            at: Duration,
+            commit: bool,
+            lead: Duration,
+        ) -> [f32; N] {
+            if commit {
+                m.sample_frame(at, lead)
+            } else {
+                m.peek(at)
+            }
         }
         match self {
-            PropMotion::One(m) => Enc::One(one(m, at, commit)),
-            PropMotion::Four(m) => Enc::Four(one(m, at, commit)),
-            PropMotion::Five(m) => Enc::Five(one(m, at, commit)),
+            PropMotion::One(m) => Enc::One(one(m, at, commit, lead)),
+            PropMotion::Four(m) => Enc::Four(one(m, at, commit, lead)),
+            PropMotion::Five(m) => Enc::Five(one(m, at, commit, lead)),
             PropMotion::Shadows { m, .. } => {
-                Enc::Shadows(m.iter_mut().map(|m| one(m, at, commit)).collect())
+                Enc::Shadows(m.iter_mut().map(|m| one(m, at, commit, lead)).collect())
             }
             PropMotion::Uniforms { shape, m } => Enc::Uniforms(Uniforms {
                 shape: shape.clone(),
-                values: m.iter_mut().map(|m| one(m, at, commit)[0]).collect(),
+                values: m.iter_mut().map(|m| one(m, at, commit, lead)[0]).collect(),
             }),
         }
     }

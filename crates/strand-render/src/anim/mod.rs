@@ -23,6 +23,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use strand_scene::motion::START_LEAD;
 use strand_scene::{
     Color, Curve, LogicalRect, Motion, NodeId, Prop, PropValue, TokenScope, Transition,
 };
@@ -177,6 +178,9 @@ pub(crate) struct Animator {
     /// (M4) Half a frame of the surface being drawn: how early a capped
     /// clock's tick counts as reached ([`crate::clock`]).
     slack: Duration,
+    /// The frame period of the surface being drawn (zero: not known):
+    /// how far before its first frame a change starts ([`Animator::lead`]).
+    period: Duration,
     /// Poses render chose for nodes in place of their own `enter`/`exit`
     /// (a page's directional slide): read when the enter starts and on
     /// every frame of the exit.
@@ -245,10 +249,38 @@ impl Animator {
         self.active
     }
 
-    /// (M4) Half a frame of the surface about to be drawn (see
-    /// [`crate::clock`]).
-    pub fn set_slack(&mut self, slack: Duration) {
-        self.slack = slack;
+    /// The frame period of the surface about to be drawn (see
+    /// [`crate::clock`]): half of it is how early a capped clock's tick
+    /// counts as reached, and all of it how far before the first frame
+    /// that shows a change the change starts ([`Animator::lead`]).
+    pub fn set_period(&mut self, period: Duration) {
+        self.period = period;
+        self.slack = period / 2;
+    }
+
+    /// How far before the frame being drawn a change it first shows
+    /// starts: one frame period of its surface (decisions.md,
+    /// first-frame-lead), so that frame moves it as far as each frame
+    /// after does, however long the surface sat idle and whichever
+    /// backend paints it. At most [`START_LEAD`], which stands in for a
+    /// period not known yet.
+    pub(crate) fn lead(&self) -> Duration {
+        if self.period.is_zero() {
+            START_LEAD
+        } else {
+            self.period.min(START_LEAD)
+        }
+    }
+
+    /// The frame being drawn, as the effects' motions see it.
+    fn frame(&self) -> crate::shapes::morph::Frame {
+        crate::shapes::morph::Frame {
+            at: self.time,
+            commit: self.commit,
+            prev: self.prev,
+            lead: self.lead(),
+            snap: self.snapping(),
+        }
     }
 
     /// (M4) The time context of `id` in the frame being drawn: its own
@@ -297,12 +329,7 @@ impl Animator {
         aspect: f64,
         curve: Curve,
     ) -> crate::shapes::Outline {
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let (outline, moving) = self.shapes.outline(id, shape, aspect, curve, frame);
         if moving {
             self.active = true;
@@ -324,12 +351,7 @@ impl Animator {
         std::sync::Arc<strand_text::TextLayout>,
         f32,
     )> {
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let (roll, moving) = self.rolls.roll(id, layout, curve, frame);
         if moving {
             self.active = true;
@@ -371,12 +393,7 @@ impl Animator {
             },
             None => return None,
         };
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         if frame.snap {
             self.reveals.forget(id);
             return None;
@@ -470,12 +487,7 @@ impl Animator {
             .find(|e| e.prop == Prop::Transition)
             .map_or(Transition::Default, |e| e.transition.clone());
         let curve = Curve::of(&scope.transition(&transition, Prop::X));
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         if self.commit {
             // Drawn: a swap in flight survives `drop_undrawn_enters`.
             self.drawn.insert(node.id);
@@ -527,12 +539,7 @@ impl Animator {
             .find(|e| e.prop == Prop::Morph)
             .map_or(Transition::Default, |e| e.transition.clone());
         let curve = Curve::of(&scope.transition(&transition, Prop::X));
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let entering = self.enter.contains(&node.id);
         let (v, moving, started) =
             self.shared
@@ -586,12 +593,7 @@ impl Animator {
             .find(|e| matches!(e.prop, Prop::Parallax | Prop::Tilt))
             .map_or(Transition::Default, |e| e.transition.clone());
         let curve = Curve::of(&scope.transition(&transition, Prop::Parallax));
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let (v, moving) = self.leans.sample(node.id, target, curve, frame);
         if moving {
             self.active = true;
@@ -665,12 +667,7 @@ impl Animator {
             return None;
         };
         let k = k.clone();
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let (p, moving) = self.plays.progress(node.id, &k, frame);
         if let Some(p) = p {
             let boxes = Extents {
@@ -956,12 +953,7 @@ impl Animator {
             Transition::Default => crate::effects::jelly::wobble(),
             t => Curve::of(&scope.transition(&t, Prop::Jelly)),
         };
-        let frame = crate::shapes::morph::Frame {
-            at: self.time,
-            commit: self.commit,
-            prev: self.prev,
-            snap: self.snapping(),
-        };
+        let frame = self.frame();
         let (d, moving) =
             self.jellies
                 .sample(node.id, amount, [offset.0, offset.1], held, curve, frame);
@@ -1062,7 +1054,7 @@ impl Animator {
                 self.lifted.remove(&id);
             }
         }
-        let (at, commit, snap) = (self.time, self.commit, self.snapping());
+        let (at, commit, snap, lead) = (self.time, self.commit, self.snapping(), self.lead());
         let Some(na) = self.nodes.get_mut(&id) else {
             return (0.0, 0.0);
         };
@@ -1075,7 +1067,11 @@ impl Animator {
             }
             return (0.0, 0.0);
         }
-        let v = if commit { g.sample(at) } else { g.peek(at) };
+        let v = if commit {
+            g.sample_frame(at, lead)
+        } else {
+            g.peek(at)
+        };
         if g.is_settled(at) {
             if commit {
                 na.glide = None;
@@ -1173,7 +1169,7 @@ impl Animator {
             #[cfg(feature = "eval-hooks")]
             self.entered.insert(id);
         }
-        let (at, commit, last) = (self.time, self.commit, self.prev);
+        let (at, commit, last, lead) = (self.time, self.commit, self.prev, self.lead());
         let na = self.nodes.entry(id).or_default();
         let touched = std::mem::take(&mut na.touched);
         // A node drawn for the first time has no value on screen to spring
@@ -1248,7 +1244,7 @@ impl Animator {
             let Some(i) = na.props.iter().position(|(q, _)| *q == p) else {
                 continue;
             };
-            let enc = na.props[i].1.value(at, commit);
+            let enc = na.props[i].1.value(at, commit, lead);
             let settled = na.props[i].1.settled(at);
             let value = decode(p, &enc);
             match own {
