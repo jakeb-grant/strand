@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-reopen-delegated"
 verdict good
-note "new scenario (popup-reopen fix, 4a3aaf29): each of the three openings plays the enter pose from opacity 0 / scale 0.9 (painted, and through the compositor pose when delegated); reviewed with explain"
+note "new scenario (popup-reopen fix, 4a3aaf29): each of the three openings plays the enter pose from opacity 0 / scale 0.9 (painted, and through the compositor pose when delegated); reviewed with explain (re-recorded at 418231e6 with paint order, text ink and cut width; tick for tick the same as approved before apart from those)"
 date 2026-10-18
-rev "4a3aaf29"
+rev "418231e6"
 approver "claude"
 scenario 7b7d50ead2257457
-seal 8617d8ae08a5f98c
+seal 56363d8060abf077
 S1 0 - "bar Top"
 S2 1 31 "popup#menu"
 S3 32 62 "popup#menu"
@@ -20,14 +20,14 @@ N5 "items|shell.strand:7:7|[Mock | DP-1]#0" "col#items"
 N6 "menu|shell.strand:5:5|[Mock | DP-1]#0" "popup#menu"
 k0 p1
 s1 z=300,30 P=255,1,0,0
-n0 x=0 y=0 w=40 h=30
-n1 x=0 y=0 w=300 h=30 txt=S
+n0 x=0 y=0 w=40 h=30 ord=1
+n1 x=0 y=0 w=300 h=30 txt=S ord=2 ink=0,1,32,11
 n2 x=0 y=0 w=300 h=30
 k1 p2
 s2 z=120,60 o=-40,36 P=0,1,0,0
-n3 srf=2 x=6 y=6 w=100 h=20 v=11.40625,8.40625,90,18
-n4 srf=2 x=6 y=30 w=100 h=20 v=11.40625,30,90,18
-n5 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54
+n3 srf=2 x=6 y=6 w=100 h=20 v=11.40625,8.40625,90,18 ord=2
+n4 srf=2 x=6 y=30 w=100 h=20 v=11.40625,30,90,18 ord=3
+n5 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54 ord=1
 n6 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54 sc=0.9,0.9
 k2
 s2 P=36,1,0,0

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "closing-pose-delegated"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario b98fd5edcf65c470
-seal a150b9c0c20f44e3
+seal 9c44fd2a5c1ccb68
 S1 0 - "bar Top"
 S2 1 31 "popup#menu"
 N0 "anchor|shell.strand:4:3|[Mock | DP-1]#0" "box#anchor"
@@ -18,14 +18,14 @@ N5 "items|shell.strand:7:7|[Mock | DP-1]#0" "col#items"
 N6 "menu|shell.strand:5:5|[Mock | DP-1]#0" "popup#menu"
 k0 p1
 s1 z=300,30 P=255,1,0,0
-n0 x=0 y=0 w=40 h=30
-n1 x=0 y=0 w=300 h=30 txt=S
+n0 x=0 y=0 w=40 h=30 ord=1
+n1 x=0 y=0 w=300 h=30 txt=S ord=2 ink=0,1,32,11
 n2 x=0 y=0 w=300 h=30
 k1 p2
 s2 z=120,60 o=-40,36 P=0,1,0,0
-n3 srf=2 x=6 y=6 w=100 h=20 v=11.40625,8.40625,90,18
-n4 srf=2 x=6 y=30 w=100 h=20 v=11.40625,30,90,18
-n5 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54
+n3 srf=2 x=6 y=6 w=100 h=20 v=11.40625,8.40625,90,18 ord=2
+n4 srf=2 x=6 y=30 w=100 h=20 v=11.40625,30,90,18 ord=3
+n5 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54 ord=1
 n6 srf=2 x=0 y=0 w=120 h=60 v=6,3,108,54 sc=0.9,0.9
 k2
 s2 P=36,1,0,0

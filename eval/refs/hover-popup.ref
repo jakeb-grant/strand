@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "hover-popup"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario b9bf9acadaee0e6c
-seal d7b3627111650121
+seal 52eb0628fea39606
 S1 0 - "bar Top"
 S2 21 65 "popup#pop"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
@@ -18,14 +18,14 @@ N5 "card|shell.strand:7:9|[Mock | DP-1]#0" "box#card"
 N6 "pop|shell.strand:6:7|[Mock | DP-1]#0" "popup#pop"
 k0 p1
 s1 z=300,30
-n0 x=82 y=5 w=30 h=20
-n1 x=0 y=5 w=30 h=20
-n2 x=36 y=0 w=40 h=30
-n3 x=0 y=0 w=300 h=30
+n0 x=82 y=5 w=30 h=20 ord=4
+n1 x=0 y=5 w=30 h=20 ord=2
+n2 x=36 y=0 w=40 h=30 ord=3
+n3 x=0 y=0 w=300 h=30 ord=1
 n4 x=0 y=0 w=300 h=30
 k21 p2
 s2 z=120,40 o=-4,36 i=none
-n5 srf=2 x=0 y=-6 w=120 h=40 op=0 hid=opacity0
+n5 srf=2 x=0 y=-6 w=120 h=40 op=0 hid=opacity0 ord=1
 n6 srf=2 x=0 y=0 w=120 h=40
 k22
 s2 i=0,-4,120,40

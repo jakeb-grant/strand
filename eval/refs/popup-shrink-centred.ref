@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-shrink-centred"
 verdict good
-note "new scenario (popup-shrink fix, 0229b874): #mark stays at screen x 160 through the narrow, taller, shorter and wider springs; the held 220 px buffer keeps the shrinking card centred and the re-centre at k63 moves nothing on screen; reviewed from the recording"
+note "new scenario (popup-shrink fix, 0229b874): #mark stays at screen x 160 through the narrow, taller, shorter and wider springs; the held 220 px buffer keeps the shrinking card centred and the re-centre at k63 moves nothing on screen; reviewed from the recording (re-recorded at 418231e6 with paint order, text ink and cut width; tick for tick the same as approved before apart from those)"
 date 2026-10-18
-rev "0229b874"
+rev "418231e6"
 approver "claude"
 scenario f6a2393e93c08e28
-seal 08e26df82401491e
+seal f7f7b58797d992d6
 S1 0 - "bar Top"
 S2 1 175 "popup#pop"
 N0 "anchor|shell.strand:8:5|[Mock | DP-1]#1" "box#anchor"
@@ -20,43 +20,43 @@ N7 "line|shell.strand:14:11|[Mock | DP-1]#0" "text#line"
 N8 "mark|shell.strand:13:11|[Mock | DP-1]#0" "box#mark"
 k0 p1
 s1 z=400,30
-n0 x=160 y=0 w=40 h=30
-n1 x=0 y=0 w=160 h=30
-n2 x=0 y=0 w=400 h=30
-n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S
+n0 x=160 y=0 w=40 h=30 ord=3
+n1 x=0 y=0 w=160 h=30 ord=2
+n2 x=0 y=0 w=400 h=30 ord=1
+n3 x=200 y=8 w=33 h=15 v=200,8,33.328125,15.328125 txt=S ord=4 ink=200.671875,10.671875,32,10
 n4 x=0 y=0 w=400 h=30
 k1 p2
 s2 z=220,50 o=70,36
 n5 srf=2 x=0 y=-6 w=220 h=50 op=0 hid=opacity0
 k2
 n5 op=8 hid=-
-n6 srf=2 x=0 y=-6 w=220 h=50 op=8
-n7 srf=2 x=68 y=14 w=84 h=15 v=68,14,84,15.328125 op=8 txt=S
-n8 srf=2 x=90 y=0 w=40 h=10 op=8
+n6 srf=2 x=0 y=-6 w=220 h=50 op=8 ord=1
+n7 srf=2 x=68 y=14 w=84 h=15 v=68,14,84,15.328125 op=8 txt=S ord=3 ink=68,16,82.671875,10.671875
+n8 srf=2 x=90 y=0 w=40 h=10 op=8 ord=2
 k3
 n5 y=-5 v=0,-5.328125,220,50.671875 op=27
 n6 y=-5 v=0,-5.328125,220,50.671875 op=27
-n7 y=15 v=68,15.328125,84,14.671875 op=27
+n7 y=15 v=68,15.328125,84,14.671875 op=27 ink=68,17.328125,82.671875,10.671875
 n8 y=1 v=90,1.328125,40,10 op=27
 k4
 n5 y=-4 v=d op=52
 n6 y=-4 v=d op=52
-n7 y=16 v=68,16,84,15.328125 op=52
+n7 y=16 v=68,16,84,15.328125 op=52 ink=68,18,82.671875,10.671875
 n8 y=2 v=d op=52
 k5
 n5 y=-3 v=0,-3.328125,220,50.671875 op=78
 n6 y=-3 v=0,-3.328125,220,50.671875 op=78
-n7 y=17 v=68,17.328125,84,14.671875 op=78
+n7 y=17 v=68,17.328125,84,14.671875 op=78 ink=68,19.328125,82.671875,10.671875
 n8 y=3 v=90,3.328125,40,10 op=78
 k6
 n5 y=-2 v=d op=103
 n6 y=-2 v=d op=103
-n7 y=18 v=68,18,84,15.328125 op=103
+n7 y=18 v=68,18,84,15.328125 op=103 ink=68,20,82.671875,10.671875
 n8 y=4 v=d op=103
 k7
 n5 y=-1 v=0,-1.328125,220,50.671875 op=127
 n6 y=-1 v=0,-1.328125,220,50.671875 op=127
-n7 y=19 v=68,19.328125,84,14.671875 op=127
+n7 y=19 v=68,19.328125,84,14.671875 op=127 ink=68,21.328125,82.671875,10.671875
 n8 y=5 v=90,5.328125,40,10 op=127
 k8
 n5 op=148
@@ -66,7 +66,7 @@ n8 op=148
 k9
 n5 y=0 v=d op=166
 n6 y=0 v=d op=166
-n7 y=20 v=68,20,84,15.328125 op=166
+n7 y=20 v=68,20,84,15.328125 op=166 ink=68,22,82.671875,10.671875
 n8 y=6 v=d op=166
 k10
 n5 op=182
@@ -227,7 +227,7 @@ k63
 s2 z=160,50 o=100,36
 n5 x=0
 n6 x=0
-n7 x=38 v=38,20,84,15.328125
+n7 x=38 v=38,20,84,15.328125 ink=38,22,82.671875,10.671875
 n8 x=60
 k64
 s2 z=160,90
@@ -323,7 +323,7 @@ k115
 s2 z=220,50 o=70,36
 n5 w=220
 n6 x=28 w=164
-n7 x=68 v=68,20,84,15.328125
+n7 x=68 v=68,20,84,15.328125 ink=68,22,82.671875,10.671875
 n8 x=90
 k116
 n6 x=24 w=172
@@ -368,27 +368,27 @@ n8 op=247 hid=inert
 k141
 n5 y=-1 v=0,-1.328125,220,50.671875 op=228
 n6 y=-1 v=0,-1.328125,220,50.671875 op=228
-n7 y=19 v=68,19.328125,84,14.671875 op=228
+n7 y=19 v=68,19.328125,84,14.671875 op=228 ink=68,21.328125,82.671875,10.671875
 n8 y=5 v=90,5.328125,40,10 op=228
 k142
 n5 y=-2 v=d op=203
 n6 y=-2 v=d op=203
-n7 y=18 v=68,18,84,15.328125 op=203
+n7 y=18 v=68,18,84,15.328125 op=203 ink=68,20,82.671875,10.671875
 n8 y=4 v=d op=203
 k143
 n5 y=-3 v=0,-3.328125,220,50.671875 op=177
 n6 y=-3 v=0,-3.328125,220,50.671875 op=177
-n7 y=17 v=68,17.328125,84,14.671875 op=177
+n7 y=17 v=68,17.328125,84,14.671875 op=177 ink=68,19.328125,82.671875,10.671875
 n8 y=3 v=90,3.328125,40,10 op=177
 k144
 n5 y=-4 v=d op=152
 n6 y=-4 v=d op=152
-n7 y=16 v=68,16,84,15.328125 op=152
+n7 y=16 v=68,16,84,15.328125 op=152 ink=68,18,82.671875,10.671875
 n8 y=2 v=d op=152
 k145
 n5 y=-5 v=0,-5.328125,220,50.671875 op=128
 n6 y=-5 v=0,-5.328125,220,50.671875 op=128
-n7 y=15 v=68,15.328125,84,14.671875 op=128
+n7 y=15 v=68,15.328125,84,14.671875 op=128 ink=68,17.328125,82.671875,10.671875
 n8 y=1 v=90,1.328125,40,10 op=128
 k146
 n5 op=107
@@ -398,7 +398,7 @@ n8 op=107
 k147
 n5 y=-6 v=d op=89
 n6 y=-6 v=d op=89
-n7 y=14 v=68,14,84,15.328125 op=89
+n7 y=14 v=68,14,84,15.328125 op=89 ink=68,16,82.671875,10.671875
 n8 y=0 v=d op=89
 k148
 n5 op=73

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "cpu-gpu-crossfade"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario 73f62f22b5954c1e
-seal af187a8617aaa4c0
+seal ad70a1171d49e329
 S1 0 - "bar Top"
 N0 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
 N1 "oldlabel|shell.strand:10:11|[Mock | DP-1]#0" "text#oldlabel"
@@ -20,12 +20,12 @@ N8 "new|shell.strand:14:9|[Mock | DP-1]#0" "row#new"
 N9 "slide|shell.strand:20:13|[Mock | DP-1]#1" "box#slide"
 k0 p1
 s1 z=300,40
-n0 x=10 y=14 w=20 h=12
-n1 x=46 y=13 w=39 h=15 txt=S
-n2 x=36 y=6 w=90 h=28
-n3 x=132 y=14 w=20 h=12
-n4 x=36 y=6 w=90 h=28
-n5 x=0 y=0 w=300 h=40
+n0 x=10 y=14 w=20 h=12 ord=2
+n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11
+n2 x=36 y=6 w=90 h=28 ord=4
+n3 x=132 y=14 w=20 h=12 ord=6
+n4 x=36 y=6 w=90 h=28 ord=3
+n5 x=0 y=0 w=300 h=40 ord=1
 n6 x=0 y=0 w=300 h=40
 k1
 k2
@@ -44,10 +44,10 @@ k14
 k15
 n1 op=218 hid=inert
 n2 op=218 hid=inert
-n3 x=138
-n7 x=46 y=13 w=28 h=15 op=37 txt=S
-n8 x=36 y=6 w=90 h=28 op=37
-n9 x=128 y=12 w=16 h=16 op=37
+n3 x=138 ord=9
+n7 x=46 y=13 w=28 h=15 op=37 txt=S ord=7 ink=46,14,28,11
+n8 x=36 y=6 w=90 h=28 op=37 ord=6
+n9 x=128 y=12 w=16 h=16 op=37 ord=8
 k16
 n1 op=157
 n2 op=157
@@ -124,14 +124,23 @@ k28
 k29
 n1 -
 n2 hid=opacity0
+n3 ord=8
+n7 ord=6
+n8 ord=5
+n9 ord=7
 k30
 n2 -
+n3 ord=7
+n7 ord=5
+n8 ord=4
+n9 ord=6
 k31
-n1 x=46 y=13 w=39 h=15 txt=S
-n2 x=36 y=6 w=90 h=28
-n7 op=218 hid=inert
-n8 op=218 hid=inert
-n9 x=130 op=218 hid=inert
+n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11
+n2 x=36 y=6 w=90 h=28 ord=4
+n3 ord=9
+n7 op=218 hid=inert ord=7
+n8 op=218 hid=inert ord=6
+n9 x=130 op=218 hid=inert ord=8
 k32
 n7 op=157
 n8 op=157
@@ -179,11 +188,12 @@ n8 op=0
 n9 op=0
 k44
 k45
+n3 ord=8
 n7 -
 n8 hid=opacity0
-n9 hid=opacity0
+n9 hid=opacity0 ord=7
 k46
-n3 x=148
+n3 x=148 ord=6
 n8 -
 n9 -
 k47

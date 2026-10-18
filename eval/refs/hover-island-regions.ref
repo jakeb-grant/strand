@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "hover-island-regions"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
-scenario 49454577baaf953a
-seal 48490a1b02be61fd
+scenario 11b8a8411179e773
+seal c45916435c3b794e
 S1 0 - "bar Top"
 S2 14 - "popup#pop"
 N0 "after|shell.strand:14:5|[Mock | DP-1]#2" "box#after"
@@ -19,15 +19,15 @@ N6 "label|shell.strand:10:11|[Mock | DP-1]#0" "text#label"
 N7 "pop|shell.strand:7:7|[Mock | DP-1]#0" "popup#pop"
 k0 p1
 s1 z=300,30
-n0 x=82 y=5 w=30 h=20
-n1 x=0 y=5 w=30 h=20
-n2 x=36 y=0 w=40 h=30
-n3 x=0 y=0 w=300 h=30
+n0 x=82 y=5 w=30 h=20 ord=4
+n1 x=0 y=5 w=30 h=20 ord=2
+n2 x=36 y=0 w=40 h=30 ord=3
+n3 x=0 y=0 w=300 h=30 ord=1
 n4 x=0 y=0 w=300 h=30
 k14 p2
 s2 z=240,40 o=-64,36 i=0,0,90,32
-n5 srf=2 x=0 y=0 w=90 h=32
-n6 srf=2 x=10 y=9 w=35 h=15 txt=S
+n5 srf=2 x=0 y=0 w=90 h=32 ord=1
+n6 srf=2 x=10 y=9 w=35 h=15 txt=S ord=2 ink=11,10,33,11
 n7 srf=2 x=0 y=0 w=240 h=40
 k22
 s2 i=0,0,94,32

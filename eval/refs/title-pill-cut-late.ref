@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "title-pill-cut-late"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario 7eb58bd227f6888f
-seal ca4992bd7fed7e34
+seal 55de4a3f7ad0c4f2
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:5:5|[Mock | DP-1]#0" "popup#big"
@@ -20,40 +20,40 @@ k0 p1,2
 s1 z=800,30
 s2 z=420,40 o=-160,30
 n0 srf=2 x=0 y=0 w=420 h=40
-n1 srf=2 x=0 y=0 w=90 h=40
-n2 srf=2 x=60 y=10 w=30 h=20
-n3 srf=2 x=0 y=13 w=60 h=15 txt=S
-n4 x=0 y=0 w=800 h=30 txt=S
+n1 srf=2 x=0 y=0 w=90 h=40 ord=1
+n2 srf=2 x=60 y=10 w=30 h=20 ord=3
+n3 srf=2 x=0 y=13 w=60 h=15 txt=S ord=2 ink=1,14,54,11 fit=60
+n4 x=0 y=0 w=800 h=30 txt=S ord=2 ink=0,1,32,11
 n5 x=0 y=0 w=800 h=30
-n6 x=0 y=0 w=100 h=30
+n6 x=0 y=0 w=100 h=30 ord=1
 k1 p2
 n1 w=102
 n2 x=72
-n3 w=72 txt=I
+n3 w=72 txt=I fit=72
 k2
 n1 w=132
 n2 x=102
-n3 w=102
+n3 w=102 ink=1,14,65,11 fit=102
 k3
 n1 w=173
 n2 x=143
-n3 w=143
+n3 w=143 ink=1,14,95,11 fit=143
 k4
 n1 w=218
 n2 x=188
-n3 w=188
+n3 w=188 ink=1,14,136,11 fit=188
 k5
 n1 w=262
 n2 x=232
-n3 w=232
+n3 w=232 ink=1,14,185,11 fit=232
 k6
 n1 w=303
 n2 x=273
-n3 w=273
+n3 w=273 ink=1,14,228,13 fit=273
 k7
 n1 w=339
 n2 x=308
-n3 w=308 txt=S
+n3 w=308 txt=S ink=1,14,306,13 fit=-
 k8
 n1 w=368
 k9
@@ -124,93 +124,93 @@ n1 w=358
 k54
 n1 w=317
 n2 x=287
-n3 w=287 txt=I
+n3 w=287 txt=I ink=1,14,286,13 fit=287
 k55
 n1 w=272
 n2 x=242
-n3 w=242
+n3 w=242 ink=1,14,241,13 fit=242
 k56
 n1 w=228
 n2 x=198
-n3 w=198
+n3 w=198 ink=1,14,197,13 fit=198
 k57
 n1 w=187
 n2 x=157
-n3 w=157
+n3 w=157 ink=1,14,156,11 fit=157
 k58
 n1 w=151
 n2 x=121
-n3 w=121
+n3 w=121 ink=1,14,120,11 fit=121
 k59
 n1 w=122
 n2 x=92
-n3 w=92
+n3 w=92 ink=1,14,91,11 fit=92
 k60
 n1 w=100
 n2 x=70
-n3 w=70
+n3 w=70 ink=1,14,65,11 fit=70
 k61
 n1 w=84
 n2 x=54
-n3 w=54
+n3 w=54 ink=1,14,53,11 fit=54
 k62
 n1 w=73
 n2 x=43
-n3 w=43
+n3 w=43 ink=1,14,42,11 fit=43
 k63
 n1 w=67
 n2 x=37
-n3 w=37
+n3 w=37 ink=1,14,36,11 fit=37
 k64
 n1 w=64
 n2 x=34
-n3 w=34
+n3 w=34 ink=1,14,33,11 fit=34
 k65
-n3 txt=S
+n3 txt=S ink=1,14,26,10
 k66
 n1 w=66
 n2 x=36
-n3 w=36 txt=I
+n3 w=36 txt=I fit=36
 k67
 n1 w=70
 n2 x=40
-n3 w=40
+n3 w=40 ink=1,14,33,11 fit=40
 k68
 n1 w=73
 n2 x=43
-n3 w=43
+n3 w=43 ink=1,14,37,11 fit=43
 k69
 n1 w=77
 n2 x=47
-n3 w=47
+n3 w=47 fit=47
 k70
 n1 w=81
 n2 x=51
-n3 w=51
+n3 w=51 ink=1,14,44,11 fit=51
 k71
 n1 w=84
 n2 x=54
-n3 w=54
+n3 w=54 fit=54
 k72
 n1 w=86
 n2 x=56
-n3 w=56
+n3 w=56 ink=1,14,50,11 fit=56
 k73
 n1 w=88
 n2 x=58
-n3 w=58
+n3 w=58 ink=1,14,54,11 fit=58
 k74
 n1 w=90
 n2 x=60
-n3 w=60
+n3 w=60 fit=60
 k75
 n1 w=91
 n2 x=61
-n3 w=61
+n3 w=61 fit=61
 k76
 n1 w=92
 n2 x=62
-n3 w=62
+n3 w=62 fit=62
 k77
 n3 txt=S
 k78
@@ -220,14 +220,14 @@ k81
 k82
 n1 w=91
 n2 x=61
-n3 w=61 txt=I
+n3 w=61 txt=I fit=61
 k83
 n3 txt=S
 k84
 k85
 n1 w=90
 n2 x=60
-n3 w=60 txt=I
+n3 w=60 txt=I fit=60
 k86
 n3 txt=S
 k87
@@ -249,31 +249,31 @@ k102
 k103
 n1 w=102
 n2 x=72
-n3 w=72 txt=I
+n3 w=72 txt=I fit=72
 k104
 n1 w=132
 n2 x=102
-n3 w=102
+n3 w=102 ink=1,14,65,11 fit=102
 k105
 n1 w=173
 n2 x=143
-n3 w=143
+n3 w=143 ink=1,14,95,11 fit=143
 k106
 n1 w=218
 n2 x=188
-n3 w=188
+n3 w=188 ink=1,14,136,11 fit=188
 k107
 n1 w=262
 n2 x=232
-n3 w=232
+n3 w=232 ink=1,14,185,11 fit=232
 k108
 n1 w=303
 n2 x=273
-n3 w=273
+n3 w=273 ink=1,14,228,13 fit=273
 k109
 n1 w=339
 n2 x=308
-n3 w=308 txt=S
+n3 w=308 txt=S ink=1,14,306,13 fit=-
 k110
 n1 w=368
 k111
@@ -344,51 +344,51 @@ n1 w=358
 k156
 n1 w=317
 n2 x=287
-n3 w=287 txt=I
+n3 w=287 txt=I ink=1,14,286,13 fit=287
 k157
 n1 w=272
 n2 x=242
-n3 w=242
+n3 w=242 ink=1,14,241,13 fit=242
 k158
 n1 w=228
 n2 x=198
-n3 w=198
+n3 w=198 ink=1,14,197,13 fit=198
 k159
 n1 w=187
 n2 x=157
-n3 w=157
+n3 w=157 ink=1,14,156,11 fit=157
 k160
 n1 w=163
 n2 x=133
-n3 w=133
+n3 w=133 ink=1,14,132,11 fit=133
 k161
 n1 w=165
 n2 x=135
-n3 w=135
+n3 w=135 ink=1,14,128,11 fit=135
 k162
 n1 w=183
 n2 x=153
-n3 w=153
+n3 w=153 fit=153
 k163
 n1 w=212
 n2 x=182
-n3 w=182
+n3 w=182 ink=1,14,136,11 fit=182
 k164
 n1 w=246
 n2 x=216
-n3 w=216
+n3 w=216 ink=1,14,193,11 fit=216
 k165
 n1 w=280
 n2 x=250
-n3 w=250
+n3 w=250 ink=1,14,235,13 fit=250
 k166
 n1 w=313
 n2 x=283
-n3 w=283
+n3 w=283 ink=1,14,240,13 fit=283
 k167
 n1 w=342
 n2 x=308
-n3 w=308 txt=S
+n3 w=308 txt=S ink=1,14,306,13 fit=-
 k168
 n1 w=366
 k169

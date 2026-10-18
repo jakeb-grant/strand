@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "status-row-144hz"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario 842d863acdab9440
-seal 9739c433ece15cf6
+seal 971243d3a5147513
 S1 0 - "bar Top"
 N0 "bars|status-row.strand:13:9|[Mock | DP-1]#0" "box#bars"
 N1 "count|status-row.strand:20:11|[Mock | DP-1]#0" "row#count"
@@ -23,28 +23,29 @@ N11 "|status-row.strand:8:1|[Mock | DP-1]#0" "bar@status-row.strand:8"
 N12 "focus|status-row.strand:18:18|[Mock | DP-1]#0" "text#focus"
 k0 p1
 s1 z=300,30
-n0 x=224 y=9 w=16 h=12
-n1 x=246 y=8 w=14 h=15
-n2 x=266 y=10 w=20 h=10
-n3 x=224 y=8 w=62 h=15
-n4 x=0 y=0 w=300 h=30
-n5 x=150 y=0 w=136 h=30
-n6 x=224 y=9 w=16 h=12
-n7 x=224 y=13 w=4 h=8
-n8 x=230 y=11 w=4 h=10
-n9 x=236 y=9 w=4 h=12
-n10 x=246 y=8 w=14 h=15 txt=S
+n0 x=224 y=9 w=16 h=12 ord=4
+n1 x=246 y=8 w=14 h=15 ord=9
+n2 x=266 y=10 w=20 h=10 ord=11
+n3 x=224 y=8 w=62 h=15 ord=3
+n4 x=0 y=0 w=300 h=30 ord=1
+n5 x=150 y=0 w=136 h=30 ord=2
+n6 x=224 y=9 w=16 h=12 ord=5
+n7 x=224 y=13 w=4 h=8 ord=6
+n8 x=230 y=11 w=4 h=10 ord=7
+n9 x=236 y=9 w=4 h=12 ord=8
+n10 x=246 y=8 w=14 h=15 txt=S ord=10 ink=246,9,11,10
 n11 x=0 y=0 w=300 h=30
 k1
 n0 x=223
-n1 op=247 hid=inert
+n1 op=247 hid=inert ord=10
+n2 ord=12
 n3 x=204 w=82
 n6 x=223
 n7 x=223
 n8 x=229
 n9 x=235
-n10 op=247 hid=inert
-n12 x=226 y=8 w=14 h=15 txt=S
+n10 op=247 hid=inert ord=11
+n12 x=226 y=8 w=14 h=15 txt=S ord=9 ink=226,9,11,10
 k2
 n0 x=220
 n1 x=245 op=228
@@ -52,7 +53,7 @@ n6 x=220
 n7 x=220
 n8 x=226
 n9 x=232
-n10 x=245 op=228
+n10 x=245 op=228 ink=245,9,11,10
 k3
 n0 x=217
 n1 x=244 op=203
@@ -60,7 +61,7 @@ n6 x=217
 n7 x=217
 n8 x=223
 n9 x=229
-n10 x=244 op=203
+n10 x=244 op=203 ink=244,9,11,10
 k4
 n0 x=214
 n1 x=243 op=177
@@ -68,7 +69,7 @@ n6 x=214
 n7 x=214
 n8 x=220
 n9 x=226
-n10 x=243 op=177
+n10 x=243 op=177 ink=243,9,11,10
 k5
 n0 x=211
 n1 x=242 op=152
@@ -76,7 +77,7 @@ n6 x=211
 n7 x=211
 n8 x=217
 n9 x=223
-n10 x=242 op=152
+n10 x=242 op=152 ink=242,9,11,10
 k6
 n0 x=208
 n1 x=241 op=128
@@ -84,7 +85,7 @@ n6 x=208
 n7 x=208
 n8 x=214
 n9 x=220
-n10 x=241 op=128
+n10 x=241 op=128 ink=241,9,11,10
 k7
 n0 x=207
 n1 op=107
@@ -100,7 +101,7 @@ n6 x=205
 n7 x=205
 n8 x=211
 n9 x=217
-n10 x=240 op=89
+n10 x=240 op=89 ink=240,9,11,10
 k9
 n0 x=204
 n1 op=73
@@ -181,72 +182,74 @@ k34
 k35
 k36
 n1 hid=opacity0
+n2 ord=11
 n10 -
 k37
 n0 x=205
 n1 -
+n2 ord=10
 n3 x=224 w=62
 n6 x=205
 n7 x=205
 n8 x=211
 n9 x=217
-n12 x=227
+n12 x=227 ink=227,9,11,10
 k38
 n0 x=208
 n6 x=208
 n7 x=208
 n8 x=214
 n9 x=220
-n12 x=230
+n12 x=230 ink=230,9,11,10
 k39
 n0 x=211
 n6 x=211
 n7 x=211
 n8 x=217
 n9 x=223
-n12 x=233
+n12 x=233 ink=233,9,11,10
 k40
 n0 x=214
 n6 x=214
 n7 x=214
 n8 x=220
 n9 x=226
-n12 x=236
+n12 x=236 ink=236,9,11,10
 k41
 n0 x=217
 n6 x=217
 n7 x=217
 n8 x=223
 n9 x=229
-n12 x=239
+n12 x=239 ink=239,9,11,10
 k42
 n0 x=220
 n6 x=220
 n7 x=220
 n8 x=226
 n9 x=232
-n12 x=242
+n12 x=242 ink=242,9,11,10
 k43
 n0 x=221
 n6 x=221
 n7 x=221
 n8 x=227
 n9 x=233
-n12 x=243
+n12 x=243 ink=243,9,11,10
 k44
 n0 x=223
 n6 x=223
 n7 x=223
 n8 x=229
 n9 x=235
-n12 x=245
+n12 x=245 ink=245,9,11,10
 k45
 n0 x=224
 n6 x=224
 n7 x=224
 n8 x=230
 n9 x=236
-n12 x=246
+n12 x=246 ink=246,9,11,10
 k46
 k47
 k48
@@ -255,7 +258,7 @@ n6 x=225
 n7 x=225
 n8 x=231
 n9 x=237
-n12 x=247
+n12 x=247 ink=247,9,11,10
 k49
 k50
 n0 x=224
@@ -263,7 +266,7 @@ n6 x=224
 n7 x=224
 n8 x=230
 n9 x=236
-n12 x=246
+n12 x=246 ink=246,9,11,10
 k51
 k52
 k53
@@ -275,30 +278,31 @@ k58
 k59
 k60
 k61
-n1 x=240 y=8 w=14 h=15 op=8
-n10 x=240 y=8 w=14 h=15 op=8 txt=S
+n1 x=240 y=8 w=14 h=15 op=8 ord=9
+n2 ord=11
+n10 x=240 y=8 w=14 h=15 op=8 txt=S ord=10 ink=240,9,11,10
 n12 -
 k62
 n1 x=241 op=27
-n10 x=241 op=27
+n10 x=241 op=27 ink=241,9,11,10
 k63
 n1 x=242 op=52
-n10 x=242 op=52
+n10 x=242 op=52 ink=242,9,11,10
 k64
 n1 x=243 op=78
-n10 x=243 op=78
+n10 x=243 op=78 ink=243,9,11,10
 k65
 n1 x=244 op=103
-n10 x=244 op=103
+n10 x=244 op=103 ink=244,9,11,10
 k66
 n1 x=245 op=127
-n10 x=245 op=127
+n10 x=245 op=127 ink=245,9,11,10
 k67
 n1 op=148
 n10 op=148
 k68
 n1 x=246 op=166
-n10 x=246 op=166
+n10 x=246 op=166 ink=246,9,11,10
 k69
 n1 op=182
 n10 op=182

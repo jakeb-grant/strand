@@ -517,9 +517,10 @@ A node's first line leaves out what is at its default: the first surface,
 `v=d` (a visual box equal to the drawn one), `op=255`, `sc=1,1`, `rot=0`,
 `hid=-` and `txt=-`.
 
-Everything together stays under 5 MB. As approved here it is 2.2 MB: the
-scenarios 67 kB, `matrix-60.ref` 0.85 MB and `matrix-144.ref` 1.34 MB.
-Compressed, as git stores it, that is about 215 kB. eval/tests/refs.rs
+Everything together stays under 5 MB. As re-recorded with paint order and
+text ink (eval-refs-integration) it is 2.8 MB: the 24 scenarios 105 kB,
+`matrix-60.ref` 1.06 MB and `matrix-144.ref` 1.65 MB (6.1 kB a cell).
+Compressed, as git stores it, that is about 270 kB. eval/tests/refs.rs
 holds the total to 5 MB, a scenario's file to 64 kB and a matrix file to
 8 kB a cell. Each is a tripwire for a recording that stopped being
 compact, not a cap on scenarios.

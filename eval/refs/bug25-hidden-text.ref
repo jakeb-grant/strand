@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "bug25-hidden-text"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario 9d54c3d1545f228d
-seal c07234992c037f23
+seal 798df044eb1a905d
 S1 0 - "bar Top"
 N0 "bars|shell.strand:7:9|[Mock | DP-1]#0" "box#bars"
 N1 "focus|shell.strand:8:18|[Mock | DP-1]#1" "box#focus"
@@ -19,27 +19,28 @@ N7 "count|shell.strand:10:11|[Mock | DP-1]#0" "row#count"
 N8 "|shell.strand:11:13|[Mock | DP-1]#0" "text(\"iiii\")"
 k0 p1
 s1 z=300,30
-n0 x=225 y=9 w=15 h=12
-n1 x=246 y=8 w=14 h=14
-n2 x=266 y=10 w=20 h=10
-n3 x=225 y=8 w=61 h=14
+n0 x=225 y=9 w=15 h=12 ord=4
+n1 x=246 y=8 w=14 h=14 ord=5
+n2 x=266 y=10 w=20 h=10 ord=6
+n3 x=225 y=8 w=61 h=14 ord=3
 n4 x=0 y=0 w=300 h=30
-n5 x=0 y=0 w=300 h=30
-n6 x=150 y=0 w=136 h=30
+n5 x=0 y=0 w=300 h=30 ord=1
+n6 x=150 y=0 w=136 h=30 ord=2
 k1
 n1 -
+n2 ord=7
 n3 h=15
-n7 x=242 y=8 w=14 h=15 op=37
-n8 x=242 y=8 w=14 h=15 op=37 txt=S
+n7 x=242 y=8 w=14 h=15 op=37 ord=5
+n8 x=242 y=8 w=14 h=15 op=37 txt=S ord=6 ink=242,9,11,10
 k2
 n7 x=244 op=98
-n8 x=244 op=98
+n8 x=244 op=98 ink=244,9,11,10
 k3
 n7 x=245 op=151
-n8 x=245 op=151
+n8 x=245 op=151 ink=245,9,11,10
 k4
 n7 x=246 op=190
-n8 x=246 op=190
+n8 x=246 op=190 ink=246,9,11,10
 k5
 n7 op=216
 n8 op=216

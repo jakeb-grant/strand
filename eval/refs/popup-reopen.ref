@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-reopen"
 verdict good
-note "new scenario (popup-reopen fix, 4a3aaf29): each of the three openings plays the enter pose from opacity 0 / scale 0.9 (painted, and through the compositor pose when delegated); reviewed with explain"
+note "new scenario (popup-reopen fix, 4a3aaf29): each of the three openings plays the enter pose from opacity 0 / scale 0.9 (painted, and through the compositor pose when delegated); reviewed with explain (re-recorded at 418231e6 with paint order, text ink and cut width; tick for tick the same as approved before apart from those)"
 date 2026-10-18
-rev "4a3aaf29"
+rev "418231e6"
 approver "claude"
 scenario a54aae74f6fcdafe
-seal c0270acabb0eeb85
+seal 4a642f6ac247aafb
 S1 0 - "bar Top"
 S2 1 31 "popup#menu"
 S3 32 62 "popup#menu"
@@ -20,17 +20,17 @@ N5 "item2|shell.strand:9:9|[Mock | DP-1]#1" "box#item2"
 N6 "items|shell.strand:7:7|[Mock | DP-1]#0" "col#items"
 k0 p1
 s1 z=300,30
-n0 x=0 y=0 w=40 h=30
-n1 x=0 y=0 w=300 h=30 txt=S
+n0 x=0 y=0 w=40 h=30 ord=1
+n1 x=0 y=0 w=300 h=30 txt=S ord=2 ink=0,1,32,11
 n2 x=0 y=0 w=300 h=30
 k1 p2
 s2 z=120,60 o=-40,36
 n3 srf=2 x=0 y=0 w=120 h=60 op=0 hid=opacity0
 k2
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
-n4 srf=2 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37
-n5 srf=2 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37
-n6 srf=2 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37
+n4 srf=2 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37 ord=2
+n5 srf=2 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37 ord=3
+n6 srf=2 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37 ord=1
 k3
 n3 v=2.15625,1.078125,115.6875,57.84375 op=98 sc=0.964,0.964
 n4 v=7.9375,6.859375,96.40625,19.28125 op=98
@@ -162,9 +162,9 @@ s3 z=120,60 o=-40,36
 n3 srf=3
 k33
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
-n4 srf=3 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37
-n5 srf=3 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37
-n6 srf=3 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37
+n4 srf=3 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37 ord=2
+n5 srf=3 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37 ord=3
+n6 srf=3 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37 ord=1
 k34
 n3 v=2.15625,1.078125,115.6875,57.84375 op=98 sc=0.964,0.964
 n4 v=7.9375,6.859375,96.40625,19.28125 op=98
@@ -296,9 +296,9 @@ s4 z=120,60 o=-40,36
 n3 srf=4
 k95
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
-n4 srf=4 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37
-n5 srf=4 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37
-n6 srf=4 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37
+n4 srf=4 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37 ord=2
+n5 srf=4 x=6 y=30 w=100 h=20 v=10,30,92.609375,18.515625 op=37 ord=3
+n6 srf=4 x=0 y=0 w=120 h=60 v=4.4375,2.21875,111.125,55.5625 op=37 ord=1
 k96
 n3 v=2.15625,1.078125,115.6875,57.84375 op=98 sc=0.964,0.964
 n4 v=7.9375,6.859375,96.40625,19.28125 op=98

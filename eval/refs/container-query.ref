@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "container-query"
 verdict good
-note "initial references (eval round 2), a2d4d726"
+note "baseline re-recorded at 418231e6 with paint order, text ink and cut width: tick for tick the same as the initial references (eval round 2, a2d4d726+changes) apart from those; its checks pass; not reviewed by the owner"
 date 2026-10-18
-rev "a2d4d726+changes"
+rev "418231e6"
 approver "claude"
 scenario 72d709c00c76668e
-seal 2dccead056b1a27d
+seal 235e15b95ac6b0b3
 S1 0 - "bar Top"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#0" "box#after"
 N1 "label|shell.strand:8:7|[Mock | DP-1]#0" "text#label"
@@ -15,14 +15,14 @@ N3 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
 N4 "|shell.strand:4:3|[Mock | DP-1]#0" "row@shell.strand:4"
 k0 p1
 s1 z=300,30
-n0 x=10 y=10 w=20 h=10
-n1 x=0 y=8 w=6 h=15 op=128 txt=S
-n2 x=0 y=8 w=6 h=15 op=128
+n0 x=10 y=10 w=20 h=10 ord=4
+n1 x=0 y=8 w=6 h=15 op=128 txt=S ord=3 ink=0,9,6,10
+n2 x=0 y=8 w=6 h=15 op=128 ord=2
 n3 x=0 y=0 w=300 h=30
-n4 x=0 y=0 w=300 h=30
+n4 x=0 y=0 w=300 h=30 ord=1
 k2
 n0 x=120
-n1 w=116
+n1 w=116 ink=0,9,115,10
 n2 w=116
 k3
 n1 op=146
@@ -62,7 +62,7 @@ k15
 k16
 k17
 n0 x=10
-n1 w=6 op=237
+n1 w=6 op=237 ink=0,9,6,10
 n2 w=6 op=237
 k18
 n1 op=206
