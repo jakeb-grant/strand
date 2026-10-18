@@ -63,8 +63,10 @@ expected() {
   grep -qxF "$id $check: FAIL" "$summary" || return 1
   [ -n "$node" ] || return 0
   local label="[a-z_-]+${node//./\\.}"
-  local re="^  $check \\[[^]]*\\] $label \\([^)]*\\) k[0-9]+ "
-  [ -n "$axis" ] && re+="$axis "
+  # `k12 x 33.3 …` for a finding on an axis with a value, `k54: …` for
+  # one with neither (twin, expect).
+  local re="^  $check \\[[^]]*\\] $label \\([^)]*\\) k[0-9]+"
+  if [ -n "$axis" ]; then re+=" $axis "; else re+="[ :]"; fi
   grep -qE "$re" "$summary"
 }
 
