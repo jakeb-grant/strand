@@ -299,6 +299,7 @@ impl Recording {
         let mut t = RunTrace {
             frames: Vec::new(),
             digest: "reference".into(),
+            wire: None,
             ..run.clone()
         };
         t.surfaces = self

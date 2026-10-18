@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use strand_render::Renderer;
 use strand_scene::{
-    Anchor, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
-    SurfaceId, SurfaceSpec,
+    Anchor, Damage, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size,
+    SurfaceChange, SurfaceId, SurfaceSpec,
 };
 
 use crate::Error;
@@ -67,6 +67,9 @@ pub struct Surfaces {
     next: u32,
     specs: HashMap<NodeId, SurfaceSpec>,
     pub screen: Screen,
+    /// (eval-surface-leg) With the surface leg, every change the renderer
+    /// reported, as it reported it, for the real surface manager.
+    pub tee: Option<Vec<(NodeId, SurfaceChange)>>,
 }
 
 impl Surfaces {
@@ -76,6 +79,7 @@ impl Surfaces {
             next: 1,
             specs: HashMap::new(),
             screen,
+            tee: None,
         }
     }
 
@@ -234,6 +238,9 @@ impl Surfaces {
     ) -> Result<Vec<Change>, Error> {
         let mut out = Vec::new();
         let scale = self.scale()?;
+        if let Some(tee) = self.tee.as_mut() {
+            tee.push((node, change.clone()));
+        }
         let spec = match change {
             SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => Some(s),
             SurfaceChange::Removed => None,
@@ -319,23 +326,23 @@ impl Surfaces {
         Ok(out)
     }
 
-    /// Paints surface `id`'s frame presented at `time`; its damage area.
+    /// Paints surface `id`'s frame presented at `time`; its damage.
     pub fn paint(
         &mut self,
         r: &mut Renderer,
         id: SurfaceId,
         time: std::time::Duration,
-    ) -> Result<u64, Error> {
+    ) -> Result<Damage, Error> {
         let scale = self.scale()?;
         let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
-            return Ok(0);
+            return Ok(Damage::new());
         };
         let age = if sh.fresh { 0 } else { 1 };
         sh.fresh = false;
         let t = PaintTarget::new(&mut sh.pixels, sh.size, sh.size.w * 4, scale, age)
             .map_err(|e| Error::Run(format!("surface {}: {e:?}", id.0)))?;
         let mut t = t.at(time);
-        Ok(r.paint(id, &mut t).area())
+        Ok(r.paint(id, &mut t))
     }
 
     /// Paints surface `id`'s frame presented at `time` on the GPU leg:

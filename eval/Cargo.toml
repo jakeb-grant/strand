@@ -33,6 +33,14 @@ strand-scene = { path = "../crates/strand-scene" }
 strand-text = { path = "../crates/strand-text" }
 strand-gpu = { path = "../crates/strand-gpu" }
 strand-services-schema = { path = "../crates/strand-services-schema" }
+# The surface leg (src/wire.rs): the real surface manager (default
+# features keep `gpu`, its hand-off to the GPU thread) against the fake
+# compositor, in-process (docs/decisions.md eval-surface-leg).
+strand-surface = { path = "../crates/strand-surface" }
+strand-fake-wayland = { path = "../crates/strand-fake-wayland" }
+wayland-client = "0.31.15"
+raw-window-handle = "0.6.2"
+tempfile = "3.27.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.6"
@@ -112,6 +120,18 @@ opt-level = "s"
 # Startup and a font change only: opt 3 measured no faster (decisions.md,
 # m5-speed-profile).
 [profile.release.package.fontique]
+opt-level = "s"
+
+# Only wayland-scanner (a build-time macro) uses it.
+[profile.release.package.quick-xml]
+opt-level = "s"
+
+# A channel wake and a key's name measured the same at 3 (decisions.md,
+# m5-speed-input).
+[profile.release.package.calloop]
+opt-level = "s"
+
+[profile.release.package.xkeysym]
 opt-level = "s"
 
 [profile.release.package.miette]

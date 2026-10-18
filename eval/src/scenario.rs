@@ -54,10 +54,16 @@ pub enum CheckId {
     Reference,
     /// The `expect` steps (always evaluated; named for `expect_fail`).
     Expect,
+    /// (eval-surface-leg) The regions the compositor holds after each
+    /// commit are the ones the painter computed for the frame it carries.
+    RegionsOnWire,
+    /// (eval-surface-leg) Every frame that drew is shown at the refresh
+    /// it was painted for.
+    LatePresent,
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 19] = [
+    pub const ALL: [CheckId; 21] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -77,7 +83,13 @@ impl CheckId {
         CheckId::Budget,
         CheckId::Reference,
         CheckId::Expect,
+        CheckId::RegionsOnWire,
+        CheckId::LatePresent,
     ];
+
+    /// The surface leg's checks (`surface = true`, docs/eval.md "Surface
+    /// leg").
+    pub const SURFACE: [CheckId; 2] = [CheckId::RegionsOnWire, CheckId::LatePresent];
 
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
@@ -122,6 +134,8 @@ impl CheckId {
             CheckId::Budget => "budget",
             CheckId::Reference => "reference",
             CheckId::Expect => "expect",
+            CheckId::RegionsOnWire => "regions-on-wire",
+            CheckId::LatePresent => "late-present",
         }
     }
 
@@ -293,6 +307,10 @@ pub struct Scenario {
     /// a surface root's fade, scale and offset are committed beside its
     /// pixels, which it paints at rest.
     pub compositor_poses: bool,
+    /// (eval-surface-leg) The surface leg runs beside the run: its frames
+    /// through the real surface manager to a fake compositor
+    /// (`surface = true`, or a surface check named in `checks`).
+    pub surface: bool,
     pub config: Config,
     pub steps: Vec<Step>,
     /// The scenario's text as parsed (a run keeps it beside its trace, so
@@ -322,6 +340,7 @@ struct Header {
     tooltip_delay: Option<u64>,
     reduce_motion: Option<bool>,
     compositor_poses: Option<bool>,
+    surface: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -596,6 +615,25 @@ impl Scenario {
         if backend == BackendMode::Both && !checks.contains(&CheckId::CpuGpu) {
             checks.push(CheckId::CpuGpu);
         }
+        let surface =
+            h.surface.unwrap_or(false) || checks.iter().any(|c| CheckId::SURFACE.contains(c));
+        if surface {
+            if screen.scale != 1.0 {
+                return Err(err(
+                    hl("surface"),
+                    format!(
+                        "the surface leg runs at scale 1 (the fake compositor's output has no \
+                         other); this screen's is {}",
+                        screen.scale
+                    ),
+                ));
+            }
+            for c in CheckId::SURFACE {
+                if !checks.contains(&c) {
+                    checks.push(c);
+                }
+            }
+        }
         let mut expect_fail = BTreeMap::new();
         for (c, why) in h.expect_fail.unwrap_or_default() {
             let id = check(&c, "expect_fail")?;
@@ -750,6 +788,7 @@ impl Scenario {
             tooltip_delay: h.tooltip_delay,
             reduce_motion: h.reduce_motion.unwrap_or(false),
             compositor_poses: h.compositor_poses.unwrap_or(false),
+            surface,
             config,
             steps,
             source: text.to_string(),

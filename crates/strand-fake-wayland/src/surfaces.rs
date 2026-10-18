@@ -80,6 +80,13 @@ pub struct SurfaceGlobals {
     /// default: the manager then sets a cursor on every enter, which the
     /// other tests do not expect.
     pub pointer: bool,
+    /// (eval-surface-leg) Refreshes come only with [`crate::Cmd::Vblank`]:
+    /// every frame callback and presentation feedback committed waits for
+    /// the next one, as a compositor's wait for its next refresh, and each
+    /// commit is logged with the refresh that showed it
+    /// ([`crate::Fake::commits`]). Off by default: callbacks are done and
+    /// feedback presented at each commit.
+    pub vblank: bool,
 }
 
 impl Default for SurfaceGlobals {
@@ -95,6 +102,7 @@ impl Default for SurfaceGlobals {
             presentation: false,
             activation: true,
             pointer: false,
+            vblank: false,
         }
     }
 }
@@ -172,6 +180,12 @@ pub struct SurfaceRecord {
     /// The input region as of the last commit (`None`: the whole
     /// surface).
     pub input: Option<Region>,
+    /// (eval-surface-leg) The opaque region as of the last commit
+    /// (`None`: none).
+    pub opaque: Option<Region>,
+    /// (eval-surface-leg) The buffer scale as of the last commit (1
+    /// until one is set).
+    pub buffer_scale: i32,
     /// Each `set_input_region` request as it came, before the commit
     /// that applies it (`None`: the whole surface).
     pub input_requests: Vec<Option<Region>>,
@@ -206,12 +220,57 @@ pub struct SurfaceRecord {
     pub below_parent: bool,
 }
 
+/// (eval-surface-leg) One `wl_surface.commit`, as the compositor took
+/// it ([`crate::Fake::commits`]): what it attached and damaged, the
+/// state the surface holds after it, and, with [`SurfaceGlobals::vblank`],
+/// the refresh that showed it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommitRecord {
+    /// The surface, by its index in [`crate::Fake::surfaces`].
+    pub surface: usize,
+    /// The buffer this commit attached (`Some(None)`: it detached the
+    /// buffer; `None`: it attached nothing, a bare commit).
+    pub buffer: Option<Option<BufferKind>>,
+    /// The buffer scale after it.
+    pub buffer_scale: i32,
+    /// The viewport destination after it.
+    pub viewport: Option<(i32, i32)>,
+    /// `damage_buffer` rectangles (buffer pixels), this commit's.
+    pub damage: Vec<(i32, i32, i32, i32)>,
+    /// `wl_surface.damage` rectangles (surface coordinates), this
+    /// commit's.
+    pub surface_damage: Vec<(i32, i32, i32, i32)>,
+    /// The opaque region after it (`None`: none).
+    pub opaque: Option<Region>,
+    /// The input region after it (`None`: the whole surface).
+    pub input: Option<Region>,
+    /// The blur region after it (`None`: no blur).
+    pub blur: Option<Region>,
+    /// The alpha multiplier after it.
+    pub alpha: Option<u32>,
+    /// Frame callbacks it asked for.
+    pub frames: usize,
+    /// It asked for presentation feedback.
+    pub feedback: bool,
+    /// The [`crate::Cmd::Vblank`] (its `seq`) that showed it; `None`
+    /// until one came (or without [`SurfaceGlobals::vblank`]).
+    pub vblank: Option<u64>,
+    /// Another commit of the same surface attached a buffer before that
+    /// refresh: this commit's buffer was never shown (its feedback is
+    /// `discarded`).
+    pub superseded: bool,
+}
+
 /// What a surface has pending until its next commit.
 #[derive(Default)]
 struct Pending {
     buffer: Option<Option<wl_buffer::WlBuffer>>,
     viewport: Option<Option<(i32, i32)>>,
     input: Option<Option<Region>>,
+    opaque: Option<Option<Region>>,
+    buffer_scale: Option<i32>,
+    damage: Vec<(i32, i32, i32, i32)>,
+    surface_damage: Vec<(i32, i32, i32, i32)>,
     blur: Option<Option<Region>>,
     alpha: Option<u32>,
     frames: Vec<wl_callback::WlCallback>,
@@ -264,6 +323,14 @@ pub(crate) struct Surfaces {
     /// (m4-audit) The same for presentation feedback.
     hold_feedback: bool,
     held_feedback: Vec<WpPresentationFeedback>,
+    /// (eval-surface-leg) Every commit, in order ([`CommitRecord`]).
+    pub(crate) log: Arc<Mutex<Vec<CommitRecord>>>,
+    /// With [`SurfaceGlobals::vblank`]: the frame callbacks and the
+    /// feedback (with the index of its commit in `log`) waiting for the
+    /// next refresh, and the commits since the last one.
+    vblank_frames: Vec<wl_callback::WlCallback>,
+    vblank_feedback: Vec<(usize, WpPresentationFeedback)>,
+    unshown: Vec<usize>,
 }
 
 impl Surfaces {
@@ -416,20 +483,32 @@ impl Surfaces {
         }
         let index = live.index;
         let margin = live.layer.as_ref().map(|_| live.layer_request.margin);
-        if self.hold_frames {
-            self.held_frames.extend(pending.frames);
+        let vblank = self.globals.as_ref().is_some_and(|g| g.vblank);
+        let log_index = self.log.lock().map_or(0, |l| l.len());
+        let (frames, feedback) = (pending.frames.len(), !pending.feedbacks.is_empty());
+        if vblank {
+            // Shown at the next refresh: its callbacks and feedback wait.
+            self.vblank_frames.extend(pending.frames);
+            self.vblank_feedback
+                .extend(pending.feedbacks.into_iter().map(|f| (log_index, f)));
+            self.unshown.push(log_index);
         } else {
-            for cb in pending.frames {
-                cb.done(0);
+            if self.hold_frames {
+                self.held_frames.extend(pending.frames);
+            } else {
+                for cb in pending.frames {
+                    cb.done(0);
+                }
+            }
+            if self.hold_feedback {
+                self.held_feedback.extend(pending.feedbacks);
+            } else {
+                for f in &pending.feedbacks {
+                    present(f);
+                }
             }
         }
-        if self.hold_feedback {
-            self.held_feedback.extend(pending.feedbacks);
-        } else {
-            for f in &pending.feedbacks {
-                present(f);
-            }
-        }
+        let mut logged = None;
         if let Ok(mut r) = self.records.lock()
             && let Some(rec) = r.get_mut(index)
         {
@@ -462,6 +541,82 @@ impl Surfaces {
             }
             if let Some(c) = configure {
                 rec.configured = Some(c);
+            }
+            if let Some(o) = pending.opaque {
+                rec.opaque = o;
+            }
+            if let Some(b) = pending.buffer_scale {
+                rec.buffer_scale = b;
+            }
+            logged = Some(CommitRecord {
+                surface: index,
+                buffer: attached,
+                buffer_scale: rec.buffer_scale,
+                viewport: rec.viewport,
+                damage: pending.damage,
+                surface_damage: pending.surface_damage,
+                opaque: rec.opaque.clone(),
+                input: rec.input.clone(),
+                blur: rec.blur.clone(),
+                alpha: rec.alpha,
+                frames,
+                feedback,
+                vblank: None,
+                superseded: false,
+            });
+        }
+        if let (Some(c), Ok(mut log)) = (logged, self.log.lock()) {
+            log.push(c);
+        }
+    }
+
+    /// (eval-surface-leg) A refresh at `time` (on the presentation
+    /// clock), the `seq`th: every commit since the last one is shown by
+    /// it, but a buffer another commit of its surface replaced before it
+    /// (superseded, its feedback `discarded`); the frame callbacks are
+    /// done and the rest of the feedback is `presented` at `time`, with
+    /// `refresh` as the output's period.
+    pub(crate) fn vblank(
+        &mut self,
+        time: std::time::Duration,
+        refresh: std::time::Duration,
+        seq: u64,
+    ) {
+        let unshown = std::mem::take(&mut self.unshown);
+        let mut superseded = std::collections::HashSet::new();
+        if let Ok(mut log) = self.log.lock() {
+            // The last buffer each surface attached before this refresh
+            // is the one shown.
+            let mut last: HashMap<usize, usize> = HashMap::new();
+            for &i in &unshown {
+                if let Some(c) = log.get(i)
+                    && c.buffer.is_some()
+                    && let Some(old) = last.insert(c.surface, i)
+                {
+                    superseded.insert(old);
+                }
+            }
+            for &i in &unshown {
+                if let Some(c) = log.get_mut(i) {
+                    c.vblank = Some(seq);
+                    c.superseded = superseded.contains(&i);
+                }
+            }
+        }
+        let ms = u32::try_from(time.as_millis() % (1 << 32)).unwrap_or(0);
+        for cb in std::mem::take(&mut self.vblank_frames) {
+            if cb.is_alive() {
+                cb.done(ms);
+            }
+        }
+        for (i, f) in std::mem::take(&mut self.vblank_feedback) {
+            if !f.is_alive() {
+                continue;
+            }
+            if superseded.contains(&i) {
+                f.discarded();
+            } else {
+                present_at(&f, time, refresh, seq);
             }
         }
     }
@@ -502,7 +657,10 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Server {
                 let s = init.init(id, ());
                 let index = match state.surf.records.lock() {
                     Ok(mut r) => {
-                        r.push(SurfaceRecord::default());
+                        r.push(SurfaceRecord {
+                            buffer_scale: 1,
+                            ..SurfaceRecord::default()
+                        });
                         r.len() - 1
                     }
                     Err(_) => return,
@@ -562,6 +720,36 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
                     .record(&id, |r| r.input_requests.push(input.clone()));
                 if let Some(l) = state.surf.live.get_mut(&id) {
                     l.pending.input = Some(input);
+                }
+            }
+            wl_surface::Request::SetOpaqueRegion { region } => {
+                if let Some(l) = state.surf.live.get_mut(&id) {
+                    l.pending.opaque = Some(region_of(region.as_ref()));
+                }
+            }
+            wl_surface::Request::SetBufferScale { scale } => {
+                if let Some(l) = state.surf.live.get_mut(&id) {
+                    l.pending.buffer_scale = Some(scale);
+                }
+            }
+            wl_surface::Request::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(l) = state.surf.live.get_mut(&id) {
+                    l.pending.surface_damage.push((x, y, width, height));
+                }
+            }
+            wl_surface::Request::DamageBuffer {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(l) = state.surf.live.get_mut(&id) {
+                    l.pending.damage.push((x, y, width, height));
                 }
             }
             wl_surface::Request::Commit => state.surf.commit(&id),
@@ -812,6 +1000,26 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for Server {
 }
 
 // ---- wp_presentation --------------------------------------------------------------
+
+/// (eval-surface-leg) Sends `presented` at `time`, the `seq`th refresh
+/// of an output refreshing every `refresh`.
+fn present_at(
+    f: &WpPresentationFeedback,
+    time: std::time::Duration,
+    refresh: std::time::Duration,
+    seq: u64,
+) {
+    let secs = time.as_secs();
+    f.presented(
+        (secs >> 32) as u32,
+        secs as u32,
+        time.subsec_nanos(),
+        u32::try_from(refresh.as_nanos()).unwrap_or(u32::MAX),
+        (seq >> 32) as u32,
+        seq as u32,
+        wp_presentation_feedback::Kind::Vsync,
+    );
+}
 
 /// Sends `presented` now, on `CLOCK_MONOTONIC` (60 Hz, sequence 0).
 fn present(f: &WpPresentationFeedback) {

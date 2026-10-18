@@ -22,6 +22,12 @@
 //!   `wlr-data-control` ([`FakeBuilder::data_control`]; `data_control.rs`),
 //!   with a selection the fake can set itself ([`Cmd::SetSelection`],
 //!   [`Fake::selection`]).
+
+//! - eval's surface leg (docs/eval.md, "Surface leg"): every surface
+//!   commit logged with the state it leaves ([`Fake::commits`],
+//!   [`CommitRecord`]), and with [`SurfaceGlobals::vblank`] commits shown
+//!   only at refreshes the caller sends ([`Cmd::Vblank`]), on the
+//!   caller's clock.
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
@@ -37,7 +43,7 @@ pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 
 pub use data_control::{DataControl, Selection};
 
-pub use surfaces::{BufferKind, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
+pub use surfaces::{BufferKind, CommitRecord, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -137,6 +143,17 @@ pub enum Cmd {
     /// never answered (true), as a compositor that ignores the request;
     /// false answers them again (the held ones stay unanswered).
     HoldTokens(bool),
+    /// (eval-surface-leg) With [`SurfaceGlobals::vblank`], a refresh at
+    /// `time` on the presentation clock (`CLOCK_MONOTONIC`'s epoch), the
+    /// `seq`th, of an output refreshing every `refresh`: what was
+    /// committed since the last one is shown ([`Fake::commits`]), its
+    /// frame callbacks done and its feedback presented (a buffer
+    /// replaced before it, discarded).
+    Vblank {
+        time: std::time::Duration,
+        refresh: std::time::Duration,
+        seq: u64,
+    },
     /// Answered once every command sent before it is applied
     /// ([`Fake::sync`]).
     Sync(mpsc::Sender<()>),
@@ -492,6 +509,7 @@ impl Server {
             }
             Cmd::HoldFrames(on) => self.surf.hold_frames(on),
             Cmd::HoldFeedback(on) => self.surf.hold_feedback(on),
+            Cmd::Vblank { time, refresh, seq } => self.surf.vblank(time, refresh, seq),
             Cmd::Sync(done) => {
                 let _ = done.send(());
             }
@@ -981,6 +999,11 @@ pub struct Fake {
     activation_log: Arc<Mutex<Vec<ActivationRequest>>>,
     /// (m6-service-gaps) The selection now.
     selection: Arc<Mutex<Option<Selection>>>,
+    /// (eval-surface-leg) Every surface commit, in order.
+    commits: Arc<Mutex<Vec<CommitRecord>>>,
+    /// Wakes the fake's thread for a [`Cmd`] (a byte written), so a
+    /// command is applied at once rather than at its next poll timeout.
+    wake: std::os::unix::net::UnixStream,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -1057,6 +1080,13 @@ impl FakeBuilder {
     }
 
     pub fn start(self) -> Fake {
+        Fake::start_built(self).expect("the fake compositor starts")
+    }
+
+    /// (eval-surface-leg) [`FakeBuilder::start`], with an error instead of
+    /// a panic when its socket or directory cannot be made (the
+    /// evaluation sandbox runs it outside a test).
+    pub fn try_start(self) -> std::io::Result<Fake> {
         Fake::start_built(self)
     }
 }
@@ -1113,10 +1143,16 @@ impl Fake {
             .start()
     }
 
-    fn start_built(b: FakeBuilder) -> Fake {
-        let dir = tempfile::tempdir().expect("a temporary directory");
+    fn start_built(b: FakeBuilder) -> std::io::Result<Fake> {
+        let dir = tempfile::tempdir()?;
         let socket = dir.path().join("wayland-fake");
-        let listener = ListeningSocket::bind_absolute(socket.clone()).expect("the fake's socket");
+        let listener = ListeningSocket::bind_absolute(socket.clone())
+            .map_err(|e| std::io::Error::other(format!("the fake's socket: {e}")))?;
+        let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
+        woken.set_nonblocking(true)?;
+        wake.set_nonblocking(true)?;
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let thread_commits = commits.clone();
         let (tx, rx) = mpsc::channel::<Cmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let activated = Arc::new(Mutex::new(Vec::new()));
@@ -1185,9 +1221,15 @@ impl Fake {
                 .unwrap_or(0);
             state.surf.globals = surface_globals;
             state.surf.records = thread_surfaces;
+            state.surf.log = thread_commits;
             state.capture.log = thread_captures;
             state.dc.log = thread_selection;
             while !thread_stop.load(Ordering::SeqCst) {
+                {
+                    use std::io::Read;
+                    let mut sink = [0u8; 64];
+                    while matches!((&woken).read(&mut sink), Ok(n) if n > 0) {}
+                }
                 while let Ok(cmd) = rx.try_recv() {
                     state.apply(&dh, cmd);
                 }
@@ -1215,6 +1257,7 @@ impl Fake {
                 let mut fds = [
                     PollFd::new(&listener, PollFlags::IN),
                     PollFd::new(&poll_fd, PollFlags::IN),
+                    PollFd::new(&woken, PollFlags::IN),
                 ];
                 let timeout = rustix::event::Timespec {
                     tv_sec: 0,
@@ -1223,7 +1266,7 @@ impl Fake {
                 let _ = rustix::event::poll(&mut fds, Some(&timeout));
             }
         });
-        Fake {
+        Ok(Fake {
             _dir: dir,
             socket,
             tx,
@@ -1236,8 +1279,10 @@ impl Fake {
             captures,
             activation_log,
             selection,
+            commits,
+            wake,
             thread: Some(thread),
-        }
+        })
     }
 
     /// (m6-service-gaps) What the selection offers and which protocol set
@@ -1263,6 +1308,7 @@ impl Fake {
     pub fn cmd(&self, c: Cmd) {
         // The fake's thread outlives every `Fake` handle.
         let _ = self.tx.send(c);
+        let _ = std::io::Write::write(&mut &self.wake, &[1]);
     }
 
     /// Returns once the fake has applied every command sent before (10 s
@@ -1271,6 +1317,17 @@ impl Fake {
         let (tx, rx) = mpsc::channel();
         self.cmd(Cmd::Sync(tx));
         let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+    }
+
+    /// (eval-surface-leg) Every surface commit so far, in order
+    /// ([`CommitRecord`]).
+    pub fn commits(&self) -> Vec<CommitRecord> {
+        self.commits.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// (eval-surface-leg) How many surface commits there were so far.
+    pub fn commit_count(&self) -> usize {
+        self.commits.lock().map_or(0, |c| c.len())
     }
 
     /// Every surface created so far, in creation order, as last committed.
@@ -1303,6 +1360,12 @@ impl Fake {
     /// A connection to it.
     pub fn connect(&self) -> std::os::unix::net::UnixStream {
         std::os::unix::net::UnixStream::connect(&self.socket).expect("the fake's socket")
+    }
+
+    /// (eval-surface-leg) [`Fake::connect`], with an error instead of a
+    /// panic.
+    pub fn try_connect(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
+        std::os::unix::net::UnixStream::connect(&self.socket)
     }
 }
 

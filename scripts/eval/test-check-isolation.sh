@@ -100,5 +100,21 @@ fresh
 printf '#[cfg(feature = "eval-hooks")]\nfn hook() {}\n' >"$T/crates/strand/src/main.rs"
 expect 1 "eval-hooks code outside strand-render fails" run
 
+fresh
+printf '\n[dev-dependencies]\n# the fake compositor (strand-fake-wayland) for tests\nstrand-fake-wayland = { path = "../strand-fake-wayland" }\n' >>"$T/crates/strand/Cargo.toml"
+expect 0 "strand-fake-wayland as a dev-dependency passes" run
+
+fresh
+sed -i 's|^strand-render = .*|&\nstrand-fake-wayland = { path = "../strand-fake-wayland" }|' "$T/crates/strand/Cargo.toml"
+expect 1 "strand-fake-wayland as a dependency fails" run
+
+fresh
+printf '\n[dev-dependencies]\npng = "1"\n\n[target.'"'"'cfg(unix)'"'"'.dependencies]\nstrand-fake-wayland = { path = "../strand-fake-wayland" }\n' >>"$T/crates/strand/Cargo.toml"
+expect 1 "strand-fake-wayland as a target dependency fails" run
+
+fresh
+printf '\n[dependencies.strand-fake-wayland]\npath = "../strand-fake-wayland"\n' >>"$T/crates/strand/Cargo.toml"
+expect 1 "a [dependencies.strand-fake-wayland] table fails" run
+
 [ "$bad" = 0 ] && echo "test-check-isolation: all passed"
 exit "$bad"

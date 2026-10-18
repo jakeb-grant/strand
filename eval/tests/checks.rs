@@ -3143,3 +3143,197 @@ fn contain_excuses_a_text_put_past_the_edge_by_what_cannot_give_way() {
         show(&r, &t)
     );
 }
+
+// (eval-surface-leg) The surface leg's checks over synthetic logs.
+
+use strand_eval::checks::wire::{late_present, regions_on_wire};
+use strand_eval::wire::{Path, WireCommit, WireFrame, WireLog, normal};
+
+/// A trace whose surface leg sent `frames` in `commits`.
+fn wired(frames: Vec<WireFrame>, commits: Vec<WireCommit>) -> RunTrace {
+    RunTrace {
+        wire: Some(WireLog {
+            frames,
+            commits,
+            ..WireLog::default()
+        }),
+        ..RunTrace::default()
+    }
+}
+
+/// Popup frame `k` taking input in a card `w` wide, carried by commit `c`.
+fn card_frame(k: u32, w: i32, c: usize) -> WireFrame {
+    WireFrame {
+        k,
+        surface: 2,
+        path: Some(Path::Gpu),
+        size: [240, 40],
+        due: true,
+        input: Some(vec![[0, 0, w, 32]]),
+        opaque: vec![],
+        blur: vec![[0, 0, w, 32]],
+        posed: false,
+        commit: Some(c),
+    }
+}
+
+/// A commit at `k` of a 240x40 buffer, holding input and blur `w` wide.
+fn card_commit(k: u32, w: i32) -> WireCommit {
+    WireCommit {
+        k,
+        surface: Some(2),
+        by: Some(Path::Gpu),
+        frame: Some(k),
+        buffer: Some([240, 40]),
+        scale: 1,
+        damage: vec![[0, 0, 240, 40]],
+        input: Some(vec![[0, 0, w, 32]]),
+        blur: vec![[0, 0, w, 32]],
+        callbacks: 1,
+        shown: Some(k),
+        ..WireCommit::default()
+    }
+}
+
+#[test]
+fn regions_on_wire_passes_regions_that_follow_their_frames() {
+    let t = wired(
+        vec![card_frame(1, 90, 0), card_frame(2, 120, 1)],
+        vec![card_commit(1, 90), card_commit(2, 120)],
+    );
+    assert_eq!(regions_on_wire(&t), []);
+    // The same pixels sent as other rectangles are the same region: the
+    // leg records each region in its normal form.
+    let mut split = card_commit(2, 120);
+    split.input = Some(normal([(true, [0, 0, 60, 32]), (true, [60, 0, 60, 32])]));
+    let t = wired(
+        vec![card_frame(1, 90, 0), card_frame(2, 120, 1)],
+        vec![card_commit(1, 90), split],
+    );
+    assert_eq!(regions_on_wire(&t), []);
+}
+
+/// Bug 23's shape: the GPU frame grew, the compositor kept the last shm
+/// frame's regions.
+#[test]
+fn regions_on_wire_fails_a_present_that_keeps_the_last_regions() {
+    let t = wired(
+        vec![
+            card_frame(1, 90, 0),
+            card_frame(2, 120, 1),
+            card_frame(3, 150, 2),
+        ],
+        vec![card_commit(1, 90), card_commit(2, 90), card_commit(3, 90)],
+    );
+    let found = regions_on_wire(&t);
+    let input: Vec<_> = found
+        .iter()
+        .filter(|f| f.msg.contains("input region"))
+        .collect();
+    assert_eq!(input.len(), 1, "{found:#?}");
+    assert_eq!(input[0].k, Some(2));
+    assert_eq!(input[0].more, 1, "k3 is counted in");
+    assert_eq!(input[0].sev, Sev::Fail);
+    assert!(
+        found.iter().any(|f| f.msg.contains("blurs behind")),
+        "{found:#?}"
+    );
+    // A bare commit after a frame that puts the old region back fails too.
+    let mut bare = card_commit(2, 90);
+    bare.buffer = None;
+    bare.by = None;
+    bare.frame = None;
+    let t = wired(
+        vec![card_frame(1, 90, 0), card_frame(2, 120, 1)],
+        vec![card_commit(1, 90), card_commit(2, 120), bare],
+    );
+    let found = regions_on_wire(&t);
+    assert!(
+        found.iter().any(|f| f.msg.contains("(bare, k2)")),
+        "{found:#?}"
+    );
+    // A buffer of the wrong size.
+    let mut wrong = card_commit(2, 120);
+    wrong.buffer = Some([200, 40]);
+    let t = wired(
+        vec![card_frame(1, 90, 0), card_frame(2, 120, 1)],
+        vec![card_commit(1, 90), wrong],
+    );
+    assert!(
+        regions_on_wire(&t)
+            .iter()
+            .any(|f| f.msg.contains("200x40 buffer"))
+    );
+}
+
+/// A frame the compositor poses at a scale sends its regions in the
+/// pose's coordinates: not compared.
+#[test]
+fn regions_on_wire_leaves_a_posed_frame_alone() {
+    let mut posed = card_frame(2, 120, 1);
+    posed.posed = true;
+    let t = wired(
+        vec![card_frame(1, 90, 0), posed],
+        vec![card_commit(1, 90), card_commit(2, 60)],
+    );
+    assert_eq!(regions_on_wire(&t), []);
+}
+
+#[test]
+fn late_present_passes_frames_shown_at_their_refresh() {
+    let mut idle = card_frame(3, 120, 2);
+    idle.due = false;
+    idle.commit = None;
+    let t = wired(
+        vec![card_frame(1, 90, 0), card_frame(2, 120, 1), idle],
+        vec![card_commit(1, 90), card_commit(2, 120)],
+    );
+    assert_eq!(late_present(&t), []);
+}
+
+#[test]
+fn late_present_fails_a_frame_late_replaced_or_never_shown() {
+    let mut late = card_commit(2, 120);
+    late.k = 3;
+    late.shown = Some(3);
+    let mut replaced = card_commit(3, 150);
+    replaced.superseded = true;
+    let t = wired(
+        vec![
+            card_frame(1, 90, 0),
+            card_frame(2, 120, 1),
+            card_frame(3, 150, 2),
+            WireFrame {
+                commit: None,
+                ..card_frame(4, 160, 0)
+            },
+        ],
+        vec![card_commit(1, 90), late, replaced],
+    );
+    let found = late_present(&t);
+    let at = |k: u32| {
+        found
+            .iter()
+            .find(|f| f.k == Some(k))
+            .map(|f| f.msg.as_str())
+    };
+    assert_eq!(at(1), None);
+    assert!(
+        at(2).is_some_and(|m| m.contains("1 refresh late")),
+        "{found:#?}"
+    );
+    assert!(at(3).is_some_and(|m| m.contains("replaced")), "{found:#?}");
+    assert!(
+        at(4).is_some_and(|m| m.contains("never shown")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn the_surface_checks_skip_without_the_leg() {
+    let sc = scenario("surface = true\nscreen = { width = 300, scale = 1.0 }");
+    let r = check(&sc, &RunTrace::default());
+    for c in [CheckId::RegionsOnWire, CheckId::LatePresent] {
+        assert!(matches!(status(&r, c), Status::Skip(_)), "{c:?}");
+    }
+}

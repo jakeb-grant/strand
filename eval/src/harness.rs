@@ -61,7 +61,7 @@ use strand_render::host_loop::{self, Cause, LoopHost, LoopSync};
 use strand_render::probe::{Axes, FrameTrace, Hidden, NodeTrace, TextDrawn};
 use strand_render::{Renderer, Router, TextBackend};
 use strand_scene::{
-    ButtonState, LogicalPoint, LogicalSize, NodeId, PaintTarget, Painter, Prop, PropValue,
+    ButtonState, Damage, LogicalPoint, LogicalSize, NodeId, PaintTarget, Painter, Prop, PropValue,
     SceneDiff, Size, SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine};
@@ -81,6 +81,7 @@ use crate::trace::{
     BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, PoseRec,
     RedrawRec, Regions, RestRec, Row, RunTrace, ScenarioInfo, Segment, SurfaceInfo, q,
 };
+use crate::wire::{Leg, Snapshot};
 
 /// How to run a scenario.
 #[derive(Clone, Debug, Default)]
@@ -105,6 +106,15 @@ pub struct RunOptions {
     /// on (`Renderer::set_damage_flash`), so every frame draws an overlay
     /// over its own items.
     pub damage_flash: bool,
+    /// (eval-surface-leg) Run the surface leg (`Some(true)`) or not
+    /// (`Some(false)`: the twin and the determinism run, which compare
+    /// no commits), whatever the scenario says; `None` follows its
+    /// `surface`. The frames go through the real surface manager to a
+    /// fake compositor, recorded in `RunTrace::wire`.
+    pub surface: Option<bool>,
+    /// `late-present`'s own tests only: the fake compositor's refreshes
+    /// at these ticks never come (an output that stalls).
+    pub lost_vblanks: Vec<u32>,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -332,6 +342,8 @@ struct Harness<'s> {
     redraws: BTreeMap<u32, Option<RedrawRec>>,
     /// The `redraw` check's GPU device, once a GPU-drawn frame needs it.
     fresh_gpu: Option<Fresh>,
+    /// (eval-surface-leg) The surface leg, when it runs.
+    leg: Option<Leg>,
 }
 
 /// Input a time step sends at the start of a tick.
@@ -403,6 +415,14 @@ impl<'s> Harness<'s> {
             BackendMode::Gpu => Some(Device::start(&mut r)?),
             _ => None,
         };
+        let leg = if opts.surface.unwrap_or(sc.surface) {
+            Some(Leg::start(
+                sc.screen,
+                opts.lost_vblanks.iter().copied().collect(),
+            )?)
+        } else {
+            None
+        };
         let mut router = Router::new();
         let i0 = Instant::now();
         router.set_now(Some(i0));
@@ -446,7 +466,11 @@ impl<'s> Harness<'s> {
             gpu_attached: HashSet::new(),
             redraws: BTreeMap::new(),
             fresh_gpu: None,
+            leg,
         };
+        if h.leg.is_some() {
+            h.surfaces.tee = Some(Vec::new());
+        }
         h.set_screens()?;
         for (path, text) in &sc.services {
             h.set_service(path, text)
@@ -1101,6 +1125,11 @@ impl<'s> Harness<'s> {
             }
             StepKind::Scale(f) => {
                 self.event(step);
+                if self.leg.is_some() && *f != 1.0 {
+                    return Err(Error::Unsupported(format!(
+                        "`scale {f}` with the surface leg (its fake compositor's output has scale 1)"
+                    )));
+                }
                 self.surfaces.screen.scale = *f;
                 self.surfaces.scale()?;
                 self.set_screens()?;
@@ -1319,6 +1348,12 @@ impl<'s> Harness<'s> {
         }
         self.drop_one.retain(|_, v| *v > 0);
         self.drop_all = self.drop_all.saturating_sub(1);
+        if let Some(leg) = self.leg.as_mut() {
+            if let Some(tee) = self.surfaces.tee.as_mut() {
+                leg.surface_changes(tee.drain(..));
+            }
+            leg.end_tick(k, t, self.clock.period())?;
+        }
         self.last_k = Some(k);
         if let Some(i) = self.open {
             self.trace.segments[i].e = k;
@@ -1418,22 +1453,31 @@ impl<'s> Harness<'s> {
             .map(|s| s.id)
             .filter(|id| self.drop_all == 0 && !self.drop_one.contains_key(id))
             .collect();
+        // The surface leg's manager gets this tick's changes so far
+        // before its frames, the ones the paints leave after them.
+        if let (Some(leg), Some(tee)) = (self.leg.as_mut(), self.surfaces.tee.as_mut()) {
+            leg.surface_changes(tee.drain(..));
+        }
         for id in ids {
-            match self.gpu.as_mut() {
+            let mut cpu_damage = Damage::new();
+            let gpu_drawn = match self.gpu.as_mut() {
                 Some(dev) if self.gpu_attached.contains(&id) => {
                     let drawn = self.surfaces.paint_gpu(&mut self.r, dev, id, t)?;
                     dev.changes(&mut self.r);
                     if drawn && self.opts.redraw {
                         self.redraw_gpu(id)?;
                     }
+                    Some(drawn)
                 }
                 _ => {
-                    self.surfaces.paint(&mut self.r, id, t)?;
+                    cpu_damage = self.surfaces.paint(&mut self.r, id, t)?;
                     if self.opts.redraw {
                         self.redraw_cpu(id, t)?;
                     }
+                    None
                 }
-            }
+            };
+            self.mirror(id, gpu_drawn, cpu_damage);
             if let Some(sh) = self.surfaces.get(id) {
                 self.committed.insert(
                     id.0,
@@ -1469,6 +1513,41 @@ impl<'s> Harness<'s> {
         // left; text the frames shaped wakes it too (a worker's layout
         // arrives with a wake).
         self.turn()
+    }
+
+    /// (eval-surface-leg) Surface `id`'s frame, just painted (on the GPU
+    /// when `gpu_drawn` is `Some`: whether it drew), to the surface leg,
+    /// as the renderer answers right after the paint.
+    fn mirror(&mut self, id: SurfaceId, gpu_drawn: Option<bool>, cpu_damage: Damage) {
+        let Some(leg) = self.leg.as_mut() else {
+            return;
+        };
+        let Some(sh) = self.surfaces.get(id) else {
+            return;
+        };
+        let damage = match gpu_drawn {
+            Some(true) => Damage::full(sh.size),
+            Some(false) => Damage::new(),
+            None => cpu_damage,
+        };
+        let scale = match self.surfaces.scale() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        leg.frame(Snapshot {
+            k: self.clock.k(),
+            surface: id.0,
+            node: sh.node,
+            gpu: gpu_drawn.is_some(),
+            size: sh.size,
+            scale,
+            damage,
+            wants: self.r.wants_frame(id),
+            input: Painter::input_region(&self.r, id),
+            opaque: Painter::opaque_region(&self.r, id),
+            blur: Painter::blur_region(&self.r, id),
+            pose: Painter::surface_pose(&self.r, id),
+        });
     }
 
     /// The `redraw` check on the CPU: surface `id`'s buffer, as the
@@ -1790,6 +1869,12 @@ impl<'s> Harness<'s> {
         self.close(false)?;
         if let Some(e) = self.unmatched(None) {
             return Err(e);
+        }
+        if let Some(leg) = self.leg.take() {
+            let log = leg.finish()?;
+            self.notes
+                .extend(log.notes.iter().map(|n| format!("the surface leg: {n}")));
+            self.trace.wire = Some(log);
         }
         if let Some(dev) = self.gpu.take() {
             let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();

@@ -1623,3 +1623,96 @@ fn an_unanswered_token_is_given_up_on_its_own() {
     assert_eq!(token(&mut mgr, id, serial).as_deref(), Some("fake-token-2"));
     assert_eq!(mgr.state().activation_tokens_waiting(), 0);
 }
+
+/// Dispatches in short slices until `done` (a fake in vblank mode sends
+/// nothing back after a commit to end a longer dispatch); whether it was.
+fn pump_until(mgr: &mut SurfaceManager<TestHost>, done: impl Fn() -> bool) -> bool {
+    let end = Instant::now() + WAIT;
+    while Instant::now() < end {
+        mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
+        if done() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Indices of the buffer commits in `fake`'s log.
+fn buffer_commits(fake: &Fake) -> Vec<usize> {
+    fake.commits()
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c.buffer, Some(Some(_))))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// (eval-surface-leg) A fake in vblank mode shows commits only at the
+/// refreshes it is sent: a frame after a shown one waits for the next
+/// refresh (its feedback is held until then), every commit is logged with
+/// what it leaves and the refresh that showed it, and a buffer the
+/// manager replaced before a refresh (its give-up after a lost one) is
+/// never shown.
+#[test]
+fn a_vblank_fake_shows_commits_at_its_refreshes() {
+    let fake = Fake::compositor(SurfaceGlobals {
+        presentation: true,
+        vblank: true,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    let spec = layer_spec(NodeKind::Panel, "Dash", "top_right", 400.0, 300.0);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    assert!(pump_until(&mut mgr, || !buffer_commits(&fake).is_empty()));
+    let refresh = Duration::from_nanos(16_666_667);
+    let vblank = |seq: u64| {
+        fake.cmd(Cmd::Vblank {
+            time: Duration::from_secs(5) + refresh * seq as u32,
+            refresh,
+            seq,
+        });
+        fake.sync();
+    };
+    let first = buffer_commits(&fake);
+    assert_eq!(first.len(), 1, "{:?}", fake.commits());
+    let c = &fake.commits()[first[0]];
+    assert_eq!(c.buffer_scale, 1);
+    assert!(c.feedback, "the manager asks for feedback");
+    assert_eq!(c.vblank, None, "shown before any refresh");
+    assert!(!c.damage.is_empty(), "its damage is logged");
+    vblank(1);
+    assert_eq!(fake.commits()[first[0]].vblank, Some(1));
+
+    // A frame after a shown one, then one that waits for the refresh.
+    let square = |x: f32| Some(strand_scene::LogicalRect::new(x, 10.0, 20.0, 20.0));
+    let frame = |mgr: &mut SurfaceManager<TestHost>, x: f32| {
+        mgr.state_mut().host_mut().set_square(square(x));
+        mgr.state_mut().poll();
+    };
+    frame(&mut mgr, 40.0);
+    let ok = pump_until(&mut mgr, || buffer_commits(&fake).len() > 1);
+    assert!(ok, "no frame after a shown one");
+    frame(&mut mgr, 60.0);
+    mgr.dispatch_until(Duration::from_millis(300), |_| false)
+        .unwrap();
+    assert_eq!(buffer_commits(&fake).len(), 2, "painted before the refresh");
+    vblank(2);
+    let ok = pump_until(&mut mgr, || buffer_commits(&fake).len() > 2);
+    assert!(ok, "no frame after the refresh");
+    let log = fake.commits();
+    let b = buffer_commits(&fake);
+    assert_eq!((log[b[1]].vblank, log[b[1]].superseded), (Some(2), false));
+    assert_eq!(log[b[2]].vblank, None);
+
+    // The next refresh is lost: the manager gives up waiting and paints
+    // again, and only the last buffer is shown at the refresh after.
+    frame(&mut mgr, 80.0);
+    let ok = pump_until(&mut mgr, || buffer_commits(&fake).len() > 3);
+    assert!(ok, "the manager never gave up on the lost refresh");
+    vblank(3);
+    let log = fake.commits();
+    let b = buffer_commits(&fake);
+    assert_eq!((log[b[2]].vblank, log[b[2]].superseded), (Some(3), true));
+    assert_eq!((log[b[3]].vblank, log[b[3]].superseded), (Some(3), false));
+}

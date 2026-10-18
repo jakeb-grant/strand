@@ -61,6 +61,12 @@ pub struct RunTrace {
     /// was first placed ([`RunTrace::on_screen`]); never written.
     #[serde(skip)]
     pub on_screen: bool,
+    /// (eval-surface-leg) What the surface leg recorded (docs/eval.md,
+    /// "Surface leg"), when it ran. Never in the digest or a recording:
+    /// it is how the run's frames reached a compositor, not what they
+    /// drew, and the checks that read it compare it with the frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<crate::wire::WireLog>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

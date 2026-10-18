@@ -1,0 +1,53 @@
+id      = "bug23-gpu-regions"
+about   = """owner-testing.md bug 23 (decisions.md gpu-regions): a frame drawn on the GPU
+asks the compositor for its regions with its present, as a CPU frame does with
+its commit. Here, on both legs and through the surface leg (the real surface
+manager to a fake compositor), a blurred pill widens and narrows with a spring in
+the bar while a hover popup's island card swells and shrinks, so on every frame
+the bar's blur region and the popup's input region change. After each commit the compositor holds the regions the
+painter computed for the frame it carries (`regions-on-wire`), and each frame is
+shown at the refresh it was painted for (`late-present`). Its mutant
+(eval/mutants/bug23-gpu-regions.patch) reverts the fix: a handed-off surface
+keeps the regions of its last shm frame, so the island takes the pointer only
+where it was before it grew."""
+screen  = { width = 300, scale = 1.0 }
+backend = "both"
+surface = true
+checks  = ["settle", "bystander", "envelope", "teleport", "vanish", "coherence", "ink",
+           "twin", "redraw", "budget", "reference", "expect", "regions"]
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 30; gap: 6; align: center
+    box { id: before; width: 30; height: 20; bg: #0000ff }
+    box { id: item; width: 40; height: 30; bg: #303030
+      popup { id: pop; trigger: hover; delay: 100ms; width: 240; height: 40
+        row { id: card; height: 32; radius: 16; bg: #202020; align: center; pad: 0, 10
+              width: wide ? 200 : 90 ~ spring(320, 0.7)
+          text "Island" { id: label; color: #ffffff }
+        }
+      }
+    }
+    box { id: glass; height: 24; radius: 12; bg: #20202080; blur: 24
+          width: wide ? 70 : 40 ~ spring(320, 0.7) }
+  }
+}
+
+=== steps
+rest
+mark hover-in
+glide 250,10 -> 50,10 over 100
+wait 200
+rest
+expect visible #card
+mark swell
+set wide true
+rest
+expect visible #label
+expect still #before
+mark shrink
+set wide false
+rest
+expect visible #label

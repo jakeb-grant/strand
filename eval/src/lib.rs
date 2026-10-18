@@ -39,6 +39,7 @@ pub mod steps;
 pub mod surfaces;
 pub mod text;
 pub mod trace;
+pub mod wire;
 
 /// What the sandbox can fail with; every command returns one of these
 /// rather than panicking.
@@ -143,6 +144,7 @@ pub fn check_with(
             reduced_motion: true,
             images: false,
             redraw: false,
+            surface: Some(false),
             ..opts.clone()
         };
         match harness::run(sc, &o) {
@@ -159,6 +161,7 @@ pub fn check_with(
         let o = harness::RunOptions {
             images: false,
             redraw: false,
+            surface: Some(false),
             ..opts.clone()
         };
         Some(harness::run(sc, &o)?.trace)
@@ -204,6 +207,21 @@ pub fn check_with(
             let cx = checks::Cx::new(sc, &run.trace);
             let findings = checks::cpu_gpu::run(&cx, &g.trace, &run.images, &g.images);
             report.set(sc, CheckId::CpuGpu, findings, None);
+            // The GPU leg's commits beside the CPU leg's.
+            if g.trace.wire.is_some() {
+                let gpu_leg = |v: Vec<Finding>| {
+                    v.into_iter().map(|mut f| {
+                        f.msg = format!("GPU leg: {}", f.msg);
+                        f
+                    })
+                };
+                let mut findings = checks::wire::regions_on_wire(&run.trace);
+                findings.extend(gpu_leg(checks::wire::regions_on_wire(&g.trace)));
+                report.set(sc, CheckId::RegionsOnWire, findings, None);
+                let mut findings = checks::wire::late_present(&run.trace);
+                findings.extend(gpu_leg(checks::wire::late_present(&g.trace)));
+                report.set(sc, CheckId::LatePresent, findings, None);
+            }
             // The GPU leg's frames against their fresh repaints, beside
             // the CPU leg's.
             if g.trace.redraw > 0 {

@@ -1,0 +1,42 @@
+diff --git a/crates/strand-surface/src/gpu_handoff.rs b/crates/strand-surface/src/gpu_handoff.rs
+index 78c4747b..93d984a0 100644
+--- a/crates/strand-surface/src/gpu_handoff.rs
++++ b/crates/strand-surface/src/gpu_handoff.rs
+@@ -183,18 +183,7 @@ impl<H: SurfaceHost + 'static> State<H> {
+     /// lost hover as soon as the pointer left that (decisions.md
+     /// gpu-regions, owner-testing.md bug 23).
+     pub fn sync_presented(&mut self, surface: SurfaceId) {
+-        if !self.gpu.has(surface) {
+-            return;
+-        }
+-        let Some(scale) = self.surfaces.get(&surface).map(|s| s.scale) else {
+-            return;
+-        };
+-        self.sync_opaque(surface, scale);
+-        self.sync_painted_input(surface);
+-        if self.blurs() {
+-            let rects = self.blur_rects(surface, scale);
+-            self.set_blur(surface, rects);
+-        }
++        let _ = surface;
+     }
+ 
+     /// In `draw` for a handed-off surface: no paint and no commit, but a
+diff --git a/crates/strand/src/run/gpu.rs b/crates/strand/src/run/gpu.rs
+index f1e5e524..fce14810 100644
+--- a/crates/strand/src/run/gpu.rs
++++ b/crates/strand/src/run/gpu.rs
+@@ -504,11 +504,8 @@ mod host {
+                     p.in_flight = true;
+                     p.sent = Some((size, scale));
+                     // What follows a CPU frame follows this one too:
+-                    // its regions, as pending state the present commits
+-                    // (decisions.md gpu-regions); layout facts and list
+-                    // windows to logic, fed nodes (its `damage` line
+-                    // waits for `Presented`).
+-                    state.sync_presented(*id);
++                    // layout facts and list windows to logic, fed nodes
++                    // (its `damage` line waits for `Presented`).
+                     state.host_mut().painted(*id, &Damage::full(size));
+                 }
+             }

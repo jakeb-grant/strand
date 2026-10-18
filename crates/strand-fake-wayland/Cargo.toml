@@ -8,7 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 # Tests only: strand-services' protocol client and strand-surface's
-# manager dev-depend on it; nothing ships it.
+# manager dev-depend on it, and eval/'s surface leg (its own workspace)
+# depends on it; nothing ships it (scripts/eval/check-isolation.sh (d)).
 [dependencies]
 wayland-server = "0.31.14"
 wayland-protocols = { version = "0.32.13", features = ["server", "staging", "unstable"] }

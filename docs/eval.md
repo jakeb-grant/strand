@@ -20,7 +20,9 @@ catches any change at all (see Reference recordings).
 The sandbox is evaluation tooling, not product. It is a Cargo workspace of
 its own (`eval/Cargo.toml`), outside the root workspace, so `--workspace`
 builds, `affected` and the shipped binary never see it. It reads
-strand-render through its `eval-hooks` feature. docs/decisions.md
+strand-render through its `eval-hooks` feature, and its surface leg runs
+strand-surface against the fake compositor strand-fake-wayland, which is
+only ever a dev-dependency of the root's crates. docs/decisions.md
 (`eval-sandbox`) records why each part is the way it is.
 
 ## Quick start
@@ -125,6 +127,7 @@ expect still #after
 | `expect_fail` | none | `{ check = "why" }`: a known failure, reported as XFAIL. |
 | `reduce_motion` | false | Motion reduced from the start. |
 | `compositor_poses` | false | The compositor applies surface poses (`Renderer::set_compositor_poses`, as on Hyprland): a surface's `enter`/`exit` pose is committed as its pose, its content painted at rest. |
+| `surface` | false | Runs the surface leg and adds `regions-on-wire` and `late-present` (see Surface leg); naming either check turns it on too. Scale 1 only. |
 | `twin_pixels` | false | `twin` compares pixels too. |
 | `tooltip_delay` | the renderer's | In ms. |
 | `config`, `config_dir` | none | A config named instead of written in (see Local configs and fonts). |
@@ -395,6 +398,8 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `regions` | Opt-in. Where a surface takes input follows what it draws. |
 | `cpu-gpu` | Comes with `backend = "both"`. The CPU and GPU legs agree (see CPU and GPU). |
 | `redraw` | Every painted frame's buffer, left by a partial redraw at its buffer's age, is the same frame repainted in full into a fresh buffer: exactly on the CPU, and within one step per channel on the GPU leg (`backend = "both"`). |
+| `regions-on-wire` | Comes with `surface = true`. After each commit, the compositor holds the opaque, input and blur regions the painter computed for the frame that commit carries, on the shm path and the GPU's presents (bug 23). Its buffer is the frame's size (see Surface leg). |
+| `late-present` | Comes with `surface = true`. Every frame that drew is committed in its tick and shown by that tick's refresh: not later, not replaced first, not never (see Surface leg). |
 
 `tol` is `edge_px`, and at least one physical pixel at the coarsest scale
 any frame was drawn at.
@@ -825,8 +830,9 @@ cell's new recording is approved. It also runs nightly and on demand in
 ## Mutants
 
 `eval/mutants/mutants.txt` pairs patches with regression scenarios. Each
-patch reverts a fix in crates/strand-render, for example bug 24's flip-open
-and bug 25's hidden-text. In a detached worktree of HEAD, each scenario
+patch reverts a fix in the product's crates, for example bug 24's flip-open
+and bug 25's hidden-text in crates/strand-render, and bug 23's gpu-regions
+in crates/strand-surface and crates/strand (see Surface leg). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
@@ -885,11 +891,94 @@ The GPU leg leaves out three parts of the shell's GPU path:
 - `Presented` replies;
 - shader passes, which are dropped and noted.
 
-**The leg cannot catch bug 23.** Both legs flatten the same scene in the
-same renderer, so their regions agree by construction. Bug 23 was a
-GPU-drawn frame's regions not reaching the compositor, and the surface
-manager that sends them is outside the sandbox. That bug's tests live in
-strand-surface and strand.
+**The GPU leg alone cannot catch bug 23.** Both legs flatten the same
+scene in the same renderer, so their `Painter` regions agree by
+construction. Bug 23 was a GPU-drawn frame's regions not reaching the
+compositor, which only the surface manager's side sees: the surface leg
+below runs it, on both legs.
+
+## Surface leg
+
+`surface = true` runs the surface leg beside the run (`eval/src/wire.rs`).
+The harness still schedules and paints every tick as it always does. Its
+frames are then handed through the real surface manager
+(`strand_surface::SurfaceManager`) to the fake compositor
+(`strand_fake_wayland`), which runs in-process on its own thread. Both run
+on the run's virtual clock: the manager's `FakeClock` and the fake's
+presentation clock read the same time.
+
+- The renderer's surface changes reach the manager as the renderer
+  reported them, in their order around the tick's paints. The sandbox's
+  screen is the fake's one output.
+- The manager's painter answers with the harness's frame, as the renderer
+  answered right after painting it: its damage, whether it wants another
+  frame, and its `Painter` regions and pose. No pixels are copied; the
+  fake reads none.
+- A CPU frame is the manager's to paint and commit, through its shm
+  buffers.
+- A GPU frame goes as the shell's GPU host sends one
+  (crates/strand/src/run/gpu.rs `present`). The first time, the surface is
+  lent (`raw_handles`) and handed off (`hand_off`). After each frame,
+  `sync_presented` sets its regions as pending state, and a stand-in for
+  the GPU thread's WSI presents on the lent `wl_surface`: a buffer of the
+  surface's size, its whole damage and a frame callback. A surface's first
+  frame is the manager's whatever draws it. A surface the manager never
+  committed is not mapped for it, so no popup would open on it, and in the
+  shell a surface is promoted only after frames of its own on the CPU.
+- A `backend cpu` step takes the surface back (`take_back`), as the GPU
+  thread's `Released` does. So does a surface the manager has to destroy
+  while handed off (`gpu_release`).
+- The fake runs in vblank mode. Nothing is shown, no frame callback is
+  done and no feedback is presented until the leg's refresh at the end of
+  each tick, at the tick's time. A commit made in tick `k` is shown at
+  refresh `k`. A buffer that another commit replaces before the refresh is
+  never shown, and its feedback is discarded.
+
+The fake logs every commit (`Fake::commits`): its buffer, buffer scale,
+viewport, damage, the opaque, input and blur regions it holds after it,
+its alpha, frame callbacks and feedback, and the refresh that showed it.
+The leg matches each buffer commit to the paint or present that made it.
+Both are made in order on one connection, so the n-th buffer commit is the
+n-th of them. The result is `RunTrace::wire`: every frame with the
+regions its painter computed, converted as the manager converts them (the
+opaque region rounded in, the input region rounded out, the blur region by
+`strand_surface::blur::region_rects`), every commit, and every refresh.
+Regions are compared as the pixels they cover: each is kept in one normal
+form, so the same pixels sent as other rectangles compare equal. The log
+is in no digest and no recording, since it is how frames reach a
+compositor, not what they draw.
+
+`regions-on-wire` holds the compositor's regions after each commit that
+carries a frame, and after each bare commit after it, to that frame's. A
+frame whose painter asks for no input region keeps the manager's own,
+which is not compared. A frame whose surface the compositor poses at a
+scale (`compositor_poses`) sends its regions in the pose's coordinates,
+and is not compared either. `late-present` holds every frame that drew to
+a commit of its tick shown at its refresh. With `backend = "both"`, both
+legs run the surface leg, and the GPU leg's findings are marked `GPU
+leg:`. The twin and the determinism run do not run it.
+
+regressions/bug23-gpu-regions.scn is bug 23's scenario. Its mutant,
+eval/mutants/bug23-gpu-regions.patch, reverts the gpu-regions fix:
+`sync_presented` does nothing, and the shell's host no longer calls it.
+Under it, the island's presents keep the input and blur regions of its
+first, shm frame, and `regions-on-wire` fails on the GPU leg. The leg costs
+a few milliseconds a tick, so it runs in CI's eval job with the gate.
+
+What the surface leg leaves out:
+
+- the GPU thread's own latency, since the stand-in presents at once
+  (strand-gpu's tests hold the real one), and the window in which the
+  handles are lent before the hand-off, while the GPU thread builds its
+  swapchain;
+- the host's call site in crates/strand/src/run/gpu.rs, which the leg
+  mirrors rather than runs: of the mutant's two hunks the leg sees the
+  emptied `sync_presented`, not the removed call. No test runs that call
+  site (the shell's run loop is outside the sandbox and strand-surface's
+  tests call `sync_presented` themselves);
+- scales other than 1, since the fake's output has no other; a `scale`
+  step with the leg is refused as unsupported;
+- the regions of a posed frame (see above).
 
 ## Cost
 
@@ -958,7 +1047,11 @@ owner's config becomes a committed scenario written from scratch.
 - **`ink` sees the layout drawn, not the pixels.** It reads the glyph
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
-- **The GPU leg does not see bug 23**, as described above.
+- **The surface leg's compositor is a fake.** It runs the real surface
+  manager against strand-fake-wayland at scale 1, with a stand-in for the
+  GPU thread's WSI. A real compositor's own handling of the regions (a
+  blur it draws, input it routes) and the GPU thread's present latency
+  are outside it (see Surface leg).
 - **References hold paint as the scene says, not pixels.** A recording
   holds geometry, opacity, transforms, paint order, text state and ink,
   and each node's fills, borders, shadows, text colours and glyph

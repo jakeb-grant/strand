@@ -1,5 +1,5 @@
 # The mutants (docs/eval.md, "Mutants"; docs/decisions.md eval-sandbox):
-# each patch reverts a fix in crates/strand-render, and the regression
+# each patch reverts a fix in the product's crates, and the regression
 # scenario that reproduces its bug must pass on HEAD and fail under it
 # with at least the checks listed. scripts/eval/mutants.sh runs them.
 #
@@ -17,5 +17,12 @@
 # bug25-hidden-text.patch: the reverse of 2fab9622's two hidden_texts calls
 # in node.rs (hidden-text; owner-testing.md bug 25), cut against this branch;
 # the function stays, late-text-dip calls it for a box clipped to nothing.
+# bug23-gpu-regions.patch: b293b8ef's fix (gpu-regions; owner-testing.md
+# bug 23) reverted in what it does, cut against this branch:
+# `State::sync_presented` keeps its signature (eval's surface leg calls it,
+# as crates/strand's GPU host did) and does nothing, and that host's call
+# is removed. The surface leg sees the first hunk (docs/eval.md, "Surface
+# leg"): the island's presents keep its first frame's regions.
+bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h

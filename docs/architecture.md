@@ -469,18 +469,22 @@ strand-fake-wayland  (M4, tests only; publish = false) a fake compositor
                      it can hold, and data control; no Strand crate
   ^-- dev-dependency of strand-services (the wm protocol client's and the
       thumbnail capture tests) and strand-surface (the manager's tests,
-      tests/fake.rs)
+      tests/fake.rs); a dependency of eval/ (the surface leg), which is
+      outside the root workspace
 
 eval/ (strand-eval)  the animation evaluation sandbox: its own Cargo
                      workspace beside the root one, not a member; path
                      dependencies on strand-render (with `eval-hooks`),
                      strand-compiler, strand-core, strand-scene,
-                     strand-text, strand-gpu, strand-services-schema
+                     strand-text, strand-gpu, strand-services-schema,
+                     and for its surface leg strand-surface (default
+                     features, `gpu` among them) and strand-fake-wayland
   ^-- nothing: no crate under crates/ depends on it
 ```
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
-crate depends on it outside `[dev-dependencies]`, and it depends on no
+root crate depends on it outside `[dev-dependencies]`
+(`scripts/eval/check-isolation.sh` (d) checks it), and it depends on no
 Strand crate, so it adds no runtime edge to the graph above. It serves
 the toplevel and workspace protocols strand-services' wm client speaks
 (`ext-foreign-toplevel-list-v1`, `ext-workspace-v1`, optionally
@@ -498,7 +502,15 @@ keyboard whose focus the tests move, the viewporter, single-pixel
 buffers, the alpha modifier and `ext-background-effect-v1` for
 strand-surface, recording what each surface committed for the tests to
 assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
-`src/lib.rs`, lists the globals).
+`src/lib.rs`, lists the globals). For eval's surface leg
+(decisions.md eval-surface-leg) it also logs every commit with the
+state it leaves (`Fake::commits`, `CommitRecord`: buffer, scale,
+viewport, damage, opaque, input and blur regions, alpha, frame
+callbacks, feedback), and with `SurfaceGlobals::vblank` shows commits
+only at a refresh the test sends (`Cmd::Vblank`, at a time on the
+presentation clock it names), when it completes frame callbacks and
+presents or discards feedback. `FakeBuilder::try_start` and
+`Fake::try_connect` return an error where `start` and `connect` panic.
 
 `eval/` (eval-sandbox) is the animation evaluation sandbox, the
 `strand-eval` package: scenario scripts run on a virtual clock against
@@ -523,7 +535,13 @@ checks that no `crates/*/Cargo.toml` names `strand-eval`, a path into
 `eval/` or `eval-hooks` (strand-render's own `[features]` line
 aside), that the root resolution never enables `eval-hooks`, and that
 every `cfg(feature = "eval-hooks")` under `crates/` is in
-strand-render. Its commands run from the repository root with
+strand-render, and that strand-fake-wayland is only ever a root
+crate's dev-dependency. Its surface leg (docs/eval.md, "Surface leg")
+drives the real `strand_surface::SurfaceManager` through its public
+interface only: `apply_surface_change`, `repaint`, `raw_handles`,
+`hand_off`, `sync_presented` and `take_back`, as crates/strand's GPU host
+calls them, with a `SurfaceHost` of its own; strand-surface has no
+eval-only code. Its commands run from the repository root with
 `--manifest-path eval/Cargo.toml`, so the container's
 `CARGO_TARGET_DIR=target/container` and the shared compile cache serve
 both workspaces (`scripts/eval/eval.sh`, `scripts/container/run.sh

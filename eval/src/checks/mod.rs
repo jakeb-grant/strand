@@ -42,6 +42,7 @@ pub mod teleport;
 pub mod tiling;
 pub mod twin;
 pub mod vanish;
+pub mod wire;
 
 pub use crate::refs::Refs;
 pub use crate::scenario::CheckId;
@@ -782,6 +783,14 @@ pub fn evaluate(
                 CheckId::Redraw => (redraw::findings(raw), None),
                 // `check_scenario` runs the GPU leg and replaces this.
                 CheckId::CpuGpu => (Vec::new(), skip("no GPU run to compare with")),
+                CheckId::RegionsOnWire if raw.wire.is_none() => {
+                    (Vec::new(), skip("the surface leg did not run"))
+                }
+                CheckId::RegionsOnWire => (wire::regions_on_wire(raw), None),
+                CheckId::LatePresent if raw.wire.is_none() => {
+                    (Vec::new(), skip("the surface leg did not run"))
+                }
+                CheckId::LatePresent => (wire::late_present(raw), None),
             }
         };
         let mut findings = findings;

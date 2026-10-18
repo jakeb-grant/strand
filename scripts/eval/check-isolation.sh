@@ -10,7 +10,12 @@
 #       eval-hooks (`cargo tree --workspace -e features -i strand-render`);
 #   (c) every cfg(feature = "eval-hooks") under crates/ is in
 #       crates/strand-render/src (the count is printed, so growth shows in
-#       review).
+#       review);
+#   (d) the surface leg's compositor, strand-fake-wayland (its commit log
+#       and vblank mode, docs/decisions.md eval-surface-leg), is only ever
+#       a dev-dependency of a root crate: no `[dependencies]` or
+#       `[build-dependencies]` table (target-specific ones included)
+#       names it, so no product build links it.
 #
 # Usage: scripts/eval/check-isolation.sh [ROOT]   (default: this checkout)
 # Env:   EVAL_ISOLATION_TREE=FILE reads (b)'s cargo tree output from FILE
@@ -75,6 +80,18 @@ while IFS= read -r hit; do
   esac
 done < <(grep -rnE 'feature[[:space:]]*=[[:space:]]*"eval-hooks"' crates --include='*.rs' 2>/dev/null)
 echo "check-isolation: $count cfg(feature = \"eval-hooks\") sites, all expected under crates/strand-render/src"
+
+# (d)
+for f in "${manifests[@]}"; do
+  [ "$f" = crates/strand-fake-wayland/Cargo.toml ] && continue
+  while IFS= read -r hit; do
+    no "(d) $f:$hit: strand-fake-wayland outside [dev-dependencies]"
+  done < <(awk '
+    /^[[:space:]]*\[/ { t = $0; gsub(/[[:space:]]/, "", t); dev = (t ~ /dev-dependencies\]$/ || t ~ /dev-dependencies\./) }
+    /^[[:space:]]*#/ { next }
+    /strand-fake-wayland/ && !dev { print NR ":" $0 }
+  ' "$f")
+done
 
 [ "$bad" = 0 ] && echo "check-isolation: eval/ is isolated from the root workspace"
 exit "$bad"
