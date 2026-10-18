@@ -23,6 +23,11 @@
 # as crates/strand's GPU host did) and does nothing, and that host's call
 # is removed. The surface leg sees the first hunk (docs/eval.md, "Surface
 # leg"): the island's presents keep its first frame's regions.
+# popup-still-pose.patch: eval-r3's fix reverted (decisions.md eval-r3): a
+# preview that finds an exit at its pose with nothing to move no longer
+# leaves the surface wanting the frame that ends it, so the popup's card
+# never unmounts and the popup stays mapped.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
+popup-still-pose.patch  regressions/popup-still-pose.scn    twin:#card expect

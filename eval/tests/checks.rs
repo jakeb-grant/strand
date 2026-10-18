@@ -3473,3 +3473,333 @@ fn late_present_leaves_the_ticks_the_manager_gave_up_in_to_the_machine() {
     }
     assert_eq!(late_present(&t).len(), 1, "a give-up elsewhere");
 }
+
+// --- eval-local: what a real shell showed the checks misreading
+
+/// A card mounting in the segment (a popup's content) at 40 × 20 and
+/// springing its size to 400 × 200 over ticks 2..=10; `jump` lands it
+/// there from its first frame in one tick instead.
+fn mounting_card(jump: bool) -> RunTrace {
+    shape(14, move |k| {
+        let mut v = vec![row("a", [0.0, 0.0, 10.0, 10.0])];
+        if k >= 2 {
+            let p = if jump {
+                if k == 2 { 0.0 } else { 1.0 }
+            } else {
+                ease(0.0, 1.0, k - 2, 8)
+            };
+            let (w, h) = (40.0 + 360.0 * p, 20.0 + 180.0 * p);
+            let mut c = row("card", [200.0 - w / 2.0, 0.0, w, h]);
+            if k < 12 {
+                c = c.mot(Motions::SIZE_SPRING).auth(Axes::W | Axes::H);
+            }
+            v.push(c);
+        }
+        v
+    })
+}
+
+#[test]
+fn a_node_mounted_in_the_segment_travels_from_its_first_frame() {
+    let sc = scenario("");
+    let t = mounting_card(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Its whole way in one tick is still a jump.
+    let t = mounting_card(true);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "card", "w"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// `child` (`enter { opacity: 0; x: -6 }`) first drawn at tick 4, at rest
+/// and without `ENTER`, inside `veil`; `veil_hidden` draws the veil
+/// transparent on ticks 1..=3 (its subtree not drawn), else the veil
+/// shows from tick 1 and the child appears under it.
+fn under_veil(veil_hidden: bool) -> RunTrace {
+    let mut t = shape(10, move |k| {
+        let mut v = vec![row("a", [0.0, 0.0, 10.0, 10.0])];
+        if k >= 1 {
+            let op = if veil_hidden && k < 4 { 0.0 } else { 1.0 };
+            let mut veil = row("veil", [20.0, 0.0, 100.0, 30.0]).op(op);
+            if op == 0.0 {
+                veil.hidden = Some("opacity0".into());
+            }
+            v.push(veil);
+        }
+        if k >= 4 {
+            v.push(row("child", [20.0, 0.0, 50.0, 20.0]));
+        }
+        v
+    });
+    t.nodes.get_mut("child").unwrap().enter = Some(Pose {
+        opacity: Some(0.0),
+        x: Some(-6.0),
+        ..Pose::default()
+    });
+    with_parents(t, &[("child", "veil")])
+}
+
+#[test]
+fn an_enter_dropped_under_a_transparent_parent_is_no_pop_in() {
+    let sc = scenario("");
+    let t = under_veil(true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Under a parent that shows, the same first frame is a pop-in.
+    let t = under_veil(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("child") && f.msg.starts_with("pop-in")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// `card` mounted at tick 2 at rest with no `ENTER`, its pose `pose`;
+/// `sized` gives its first frames a size spring.
+fn posed(pose: Pose, sized: bool) -> RunTrace {
+    let mut t = shape(8, move |k| {
+        let mut v = vec![row("a", [0.0, 0.0, 10.0, 10.0])];
+        if k >= 2 {
+            let mut c = row("card", [20.0, 0.0, 100.0, 30.0]);
+            if sized && k < 6 {
+                c = c.mot(Motions::SIZE_SPRING).auth(Axes::W | Axes::H);
+            }
+            v.push(c);
+        }
+        v
+    });
+    t.nodes.get_mut("card").unwrap().enter = Some(pose);
+    t.seal();
+    t
+}
+
+#[test]
+fn a_pose_with_nothing_to_play_and_a_size_pose_are_no_pop_in() {
+    let sc = scenario("");
+    let pop = |t: &RunTrace| {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("card") && f.msg.starts_with("pop-in"))
+    };
+    // `enter { opacity: 1 }`: where it rests.
+    let still = Pose {
+        opacity: Some(1.0),
+        ..Pose::default()
+    };
+    assert!(!pop(&posed(still, false)));
+    // `enter { width: 56; height: 6 }`: the trace reads no axis of it,
+    // and its size springs from its first frame.
+    assert!(!pop(&posed(Pose::default(), true)));
+    // The same size pose not playing, and a pose of opacity 0.5 skipped.
+    assert!(pop(&posed(Pose::default(), false)));
+    let half = Pose {
+        opacity: Some(0.5),
+        ..Pose::default()
+    };
+    assert!(pop(&posed(half, false)));
+}
+
+#[test]
+fn a_shaped_text_overhanging_its_box_is_the_fonts_not_a_spill() {
+    let sc = scenario("");
+    // An icon glyph 4 px wider than its advance, drawn by its own layout,
+    // whose ink reaches that far past the layout's box (eval-r3: the
+    // overhang the probe records, `ov`).
+    let t = shape(2, |_| {
+        let mut r = text_row("t", 20.0, 24.0);
+        r.text = Some("S".into());
+        r.ov = Some([0.0, 5.0]);
+        vec![r]
+    });
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Ink), Status::Pass, "{}", show(&r, &t));
+    // The same ink from a layout standing in spills.
+    let t = shape(2, |_| vec![text_row("t", 20.0, 24.0)]);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Ink, "t", "w"), "{}", show(&r, &t));
+}
+
+/// A ghost springing 120 px left over ticks 1..=8 as it exits, gone
+/// from tick 9; `jump` sends it there in one tick.
+fn leaving(jump: bool) -> RunTrace {
+    shape(12, move |k| {
+        let mut v = vec![row("a", [0.0, 0.0, 10.0, 10.0])];
+        if k <= 8 {
+            let p = if jump {
+                if k == 0 { 0.0 } else { 1.0 }
+            } else {
+                ease(0.0, 1.0, k, 8)
+            };
+            let mut g = row("ghost", [100.0, 0.0, 50.0, 20.0])
+                .at(100.0 - 120.0 * p, 0.0)
+                .spring(-120.0 * p, 0.0);
+            if k >= 1 {
+                g = g.mot(Motions::EXIT | Motions::PROP_SPRING).auth(Axes::X);
+                g.hidden = Some("inert".into());
+            }
+            v.push(g);
+        }
+        v
+    })
+}
+
+#[test]
+fn a_node_leaving_in_the_segment_travels_to_its_last_frame() {
+    let sc = scenario("");
+    let t = leaving(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = leaving(true);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "ghost", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// `child` (`enter { opacity: 0 }`) first drawn at tick 4 inside `card`;
+/// `clipped`: the card is too short to reach it until then (its height
+/// springing open, the child clipped out of it), else the card already
+/// covers it. Drawn at rest, without `ENTER`. `clips`: the card clips
+/// what it holds (eval-r3: a card that does not draws the child past its
+/// box, so a frame does not drop its pose for being outside it).
+fn under_clip(clipped: bool) -> RunTrace {
+    under_card(clipped, true)
+}
+
+fn under_card(clipped: bool, clips: bool) -> RunTrace {
+    let mut t = shape(10, move |k| {
+        // The bar's root, which holds the card (and is its surface's
+        // root: the surface ends at its box).
+        let mut v = vec![
+            row("a", [0.0, 0.0, 10.0, 10.0]),
+            row("root", [0.0, 0.0, 300.0, 30.0]),
+        ];
+        if k >= 1 {
+            let h = if clipped {
+                (5.0 * k as f32).min(30.0)
+            } else {
+                30.0
+            };
+            v.push(row("card", [20.0, 0.0, 200.0, h]).mot(Motions::SIZE_SPRING));
+        }
+        if k >= 4 {
+            // Within the bar (30 px tall), below the card's 15 px at k3.
+            v.push(row("child", [20.0, 18.0, 100.0, 8.0]));
+        }
+        v
+    });
+    t.nodes.get_mut("child").unwrap().enter = Some(Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    });
+    t.nodes.get_mut("card").unwrap().clips = clips;
+    with_parents(t, &[("child", "card"), ("card", "root")])
+}
+
+#[test]
+fn an_enter_dropped_out_of_view_is_no_pop_in() {
+    let sc = scenario("");
+    let pop = |t: &RunTrace| {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("child") && f.msg.starts_with("pop-in"))
+    };
+    assert!(!pop(&under_clip(true)));
+    let t = under_clip(false);
+    assert!(pop(&t), "{}", show(&check(&sc, &t), &t));
+    // (eval-r3) Outside a card that does not clip it is drawn all the
+    // same: its first frame at rest skipped its pose.
+    let t = under_card(true, false);
+    assert!(pop(&t), "{}", show(&check(&sc, &t), &t));
+}
+
+/// `enter { opacity: 0 }` played (its first frame at 0.14, rising), the
+/// node gone (hidden by its parent) before the segment's rest.
+#[test]
+fn an_enter_played_by_a_node_gone_before_the_rest_is_no_pop_in() {
+    let sc = scenario("");
+    let mut t = shape(10, |k| {
+        let mut v = vec![row("a", [0.0, 0.0, 10.0, 10.0])];
+        if (2..6).contains(&k) {
+            v.push(
+                row("n", [20.0, 0.0, 40.0, 20.0])
+                    .op(ease(0.14, 1.0, k - 2, 8))
+                    .mot(Motions::ENTER | Motions::OPACITY_SPRING)
+                    .auth(Axes::OPACITY),
+            );
+        }
+        v
+    });
+    t.nodes.get_mut("n").unwrap().enter = Some(Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    });
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-in")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-r3) A frame that drew nothing has no buffer commit, but its
+/// regions go out with the bare commit after it: that commit is held to
+/// it (a ghost's last frame asking for no input), not to the last frame
+/// a buffer carried, and one that keeps the old regions still fails.
+#[test]
+fn regions_on_wire_holds_a_bare_commit_to_the_frame_that_drew_nothing() {
+    let mut quiet = card_frame(2, 120, 0);
+    quiet.commit = None;
+    quiet.due = false;
+    let bare = |w: i32| WireCommit {
+        k: 2,
+        surface: Some(2),
+        input: Some(vec![[0, 0, w, 32]]),
+        blur: vec![[0, 0, w, 32]],
+        shown: Some(2),
+        ..WireCommit::default()
+    };
+    let t = wired(
+        vec![card_frame(1, 90, 0), quiet.clone()],
+        vec![card_commit(1, 90), bare(120)],
+    );
+    assert_eq!(regions_on_wire(&t), []);
+    let t = wired(
+        vec![card_frame(1, 90, 0), quiet],
+        vec![card_commit(1, 90), bare(90)],
+    );
+    let found = regions_on_wire(&t);
+    assert!(
+        found.iter().any(|f| f.msg.contains("input region")),
+        "{found:?}"
+    );
+}

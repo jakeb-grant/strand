@@ -14,7 +14,10 @@
 #                                               sandbox (scripts/eval/eval.sh:
 #                                               strand-eval's commands,
 #                                               `selftest`, scripts/eval/ci.sh,
-#                                               `mutants`, `ab-revs`, `matrix-all`: their .sh)
+#                                               `mutants`, `ab-revs`, `matrix-all`: their .sh;
+#                                               `local`: with the local configs
+#                                               and host fonts read-only,
+#                                               scripts/eval/local-mounts.sh)
 #        scripts/container/run.sh CMD [ARGS...] e.g. cargo test -p strand-watch
 #        scripts/container/run.sh shell         an interactive bash
 # Env:   CARGO_BUILD_JOBS (default: the cores shared among the strand
@@ -37,7 +40,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,34p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,37p' "$0"; exit 2; }
 
 hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
 IMAGE=strand-ci:$hash
@@ -119,6 +122,14 @@ done
 
 tty=()
 [ -t 0 ] && [ -t 1 ] && tty=(-it)
+
+# `eval local`: the configs the gitignored local scenarios name and the
+# host's font directories, read-only, for this command alone
+# (scripts/eval/local-mounts.sh).
+if [ "$1" = eval ] && [ "${2:-}" = local ]; then
+  # shellcheck source=scripts/eval/local-mounts.sh
+  source "$HERE/../eval/local-mounts.sh" "${@:3}"
+fi
 
 case "$1" in
   ci) set -- bash "$HERE/ci.sh" ;;

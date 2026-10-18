@@ -947,10 +947,16 @@ pub fn bench(args: &[String]) -> Result<(), Error> {
 /// a scenario skeleton in eval/scenarios/local/ (docs/eval.md,
 /// "Scaffolding").
 pub fn new(args: &[String]) -> Result<(), Error> {
-    let a = Args::parse("new", args, &["--config", "--from-steps", "--to"], &[])?;
+    let a = Args::parse(
+        "new",
+        args,
+        &["--config", "--from-steps", "--to"],
+        &["--explore"],
+    )?;
     let [id] = a.words.as_slice() else {
         return Err(Error::Usage(
-            "usage: strand-eval new <id> [--config F] [--from-steps FILE] [--to DIR]".into(),
+            "usage: strand-eval new <id> [--config F [--explore]] [--from-steps FILE] [--to DIR]"
+                .into(),
         ));
     };
     let ask = crate::scaffold::Ask {
@@ -958,12 +964,68 @@ pub fn new(args: &[String]) -> Result<(), Error> {
         config: a.value(&["--config"]).map(String::from),
         from_steps: a.value(&["--from-steps"]).map(PathBuf::from),
         to: a.value(&["--to"]).map(PathBuf::from),
+        explore: a.has("--explore"),
     };
     let path = crate::scaffold::scaffold(&ask)?;
     println!("wrote {}", path.display());
     println!(
-        "run it: scripts/container/run.sh eval check {}",
+        "run it: scripts/container/run.sh eval {} {}",
+        if ask.explore { "local" } else { "check" },
         path.display()
     );
     Ok(())
+}
+
+/// `strand-eval local [check's flags] [scn...]`: `check` over the
+/// gitignored eval/scenarios/local/ (or the scenarios named in it);
+/// `strand-eval local new <id> --config PATH [--to DIR]`: a starter
+/// there that exercises what the config declares (`new --explore`).
+/// `scripts/container/run.sh eval local` mounts the configs the local
+/// scenarios name and the host's fonts, read-only (docs/eval.md, "Local
+/// configs and fonts").
+pub fn local(args: &[String]) -> Result<(), Error> {
+    let dir = crate::scenario::eval_root().join("scenarios").join("local");
+    if args.first().map(String::as_str) == Some("new") {
+        let mut rest: Vec<String> = args[1..].to_vec();
+        rest.push("--explore".into());
+        return new(&rest);
+    }
+    if args.iter().any(|a| a == "--gate") {
+        return Err(Error::Usage(
+            "local: eval/scenarios/local/ is the owner's own and never gates".into(),
+        ));
+    }
+    let mut words = Vec::new();
+    let mut flags = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a.starts_with('-') {
+            flags.push(a.clone());
+            if matches!(a.as_str(), "--out" | "-o" | "--frames")
+                && let Some(v) = it.next()
+            {
+                flags.push(v.clone());
+            }
+        } else {
+            words.push(a.clone());
+        }
+    }
+    for w in &words {
+        if crate::scenario::place_of(Path::new(w)) != Place::Local {
+            return Err(Error::Usage(format!(
+                "local: `{w}` is not in eval/scenarios/local/ (run committed scenarios with `check`)"
+            )));
+        }
+    }
+    if words.is_empty() {
+        if !dir.is_dir() || collect(std::slice::from_ref(&dir))?.is_empty() {
+            return Err(Error::Usage(format!(
+                "local: no scenarios in {}: scaffold one with `local new <id> --config PATH`",
+                dir.display()
+            )));
+        }
+        words.push(dir.display().to_string());
+    }
+    flags.extend(words);
+    check(&flags)
 }

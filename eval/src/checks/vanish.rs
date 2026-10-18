@@ -298,15 +298,48 @@ fn pop_in<'a>(
         if Motions(r0.mot).contains(Motions::SHARED_MORPH) {
             return None;
         }
-        let rest = tl.at(seg.e).and_then(|e| tl.row(e, key)).unwrap_or(r);
+        // Where it rests: at the segment's rest, else (gone by then, or
+        // not drawn) its last frame in the segment at rest, neither
+        // entering nor leaving; with neither, how far its first frame is
+        // along its pose cannot be told.
+        let at_rest = |q: &&crate::trace::Row| {
+            !Motions(q.mot).intersects(Motions::ENTER | Motions::EXIT)
+                && q.hidden.as_deref() != Some("inert")
+        };
+        let rest = tl.at(seg.e).and_then(|e| tl.row(e, key)).or_else(|| {
+            tl.within(Some(tl.ks[shown]), seg.e).rev().find_map(|j| {
+                tl.row(j, key)
+                    .filter(|q| q.surface == surface)
+                    .filter(at_rest)
+            })
+        });
+        let entered = Motions(r0.mot).contains(Motions::ENTER);
+        // Not drawn until an ancestor drawn transparent came into view:
+        // its pose was dropped unseen and it shows at rest by design
+        // (decisions.md 2026-10-06 wave3-pixels (p2), "Enter poses of
+        // nodes a frame did not draw (… under a transparent parent) are
+        // dropped: they show at rest when they come into view").
+        if !entered && dropped_unseen(cx, key, first, surface) {
+            return None;
+        }
         let mut wrong = Vec::new();
-        if !Motions(r0.mot).contains(Motions::ENTER) {
+        // A pose that moves nothing the trace reads (each axis it holds
+        // is where the node rests) has nothing to play, and a pose of its
+        // size alone plays as a size spring, which `ENTER` (the paint
+        // props' springs) does not report.
+        let sized = pose.opacity.is_none()
+            && pose.x.is_none()
+            && pose.y.is_none()
+            && pose.scale.is_none()
+            && Motions(r0.mot).contains(Motions::SIZE_SPRING);
+        if !entered && !sized && !rest.is_some_and(|rest| still_pose(pose, rest, cx.tol)) {
             wrong.push("it mounted without playing its pose".to_string());
         }
         let share = |at: f64, from: f64, to: f64| -> Option<f64> {
             ((to - from).abs() > 0.05).then(|| (at - from) / (to - from))
         };
         if let Some(po) = pose.opacity
+            && let Some(rest) = rest
             && let Some(sh) = share(f64::from(r.own_op), f64::from(po), f64::from(rest.own_op))
             && sh > POP_IN_SHARE
         {
@@ -336,6 +369,57 @@ fn pop_in<'a>(
                 .in_segment(&seg.name)
         })
     }
+}
+
+/// True if `key`, first drawn on `surface` at timeline frame `first`,
+/// was kept from view the frame before by an ancestor drawn there: one
+/// that did not show (drawn transparent or at scale 0), or one that
+/// clips what it holds (`clip: true`, a `scroll`, a `list`) or is the
+/// surface's root, whose box did not reach where the node first shows (a
+/// clip it was outside of, a row out of view). (eval-r3) An ancestor that
+/// does not clip draws its children past its box, so being outside it
+/// kept nothing from view.
+fn dropped_unseen(cx: &Cx, key: &str, first: usize, surface: u32) -> bool {
+    let (Some(p), Some(me)) = (first.checked_sub(1), cx.tl.row(first, key)) else {
+        return false;
+    };
+    let [x, y, w, h] = me.visual.map(f64::from);
+    let parent = |k: &str| cx.trace.nodes.get(k).and_then(|m| m.parent.as_deref());
+    let mut at = parent(key);
+    while let Some(k) = at {
+        if let Some(r) = cx.tl.row(p, k).filter(|r| r.surface == surface) {
+            let [ax, ay, aw, ah] = r.visual.map(f64::from);
+            // It clips, or it is its surface's root (no parent drawn on
+            // that surface), whose surface ends at its box.
+            let meta = cx.trace.nodes.get(k);
+            let bounds = meta.is_some_and(|m| {
+                m.clips
+                    || m.parent
+                        .as_deref()
+                        .is_none_or(|pk| cx.tl.row(p, pk).is_none_or(|pr| pr.surface != surface))
+            });
+            let apart = bounds && (x + w <= ax || ax + aw <= x || y + h <= ay || ay + ah <= y);
+            if !cx.tl.visible(p, r) || apart {
+                return true;
+            }
+        }
+        at = parent(k);
+    }
+    false
+}
+
+/// True if `pose` holds an axis the trace reads and each it holds is
+/// where `rest` is: its opacity, no offset, its scale.
+fn still_pose(pose: &crate::trace::Pose, rest: &crate::trace::Row, tol: f64) -> bool {
+    let near = |a: Option<f32>, b: f32, give: f64| {
+        a.is_none_or(|a| (f64::from(a) - f64::from(b)).abs() <= give)
+    };
+    let any =
+        pose.opacity.is_some() || pose.x.is_some() || pose.y.is_some() || pose.scale.is_some();
+    any && near(pose.opacity, rest.own_op, POSE_OPACITY_GIVE)
+        && near(pose.x, 0.0, tol)
+        && near(pose.y, 0.0, tol)
+        && near(pose.scale, rest.scale[0], POSE_SCALE_GIVE)
 }
 
 /// How much more a pose shows than rest's may come back per frame.

@@ -188,6 +188,40 @@ fn sources(sc: &Scenario) -> Result<SourceMap, Error> {
     Ok(map)
 }
 
+/// `sc`'s config compiled, with its sources: what it declares (the
+/// starter of `explore` reads it).
+pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
+    let map = sources(sc)?;
+    let services = strand_services_schema::schemas();
+    let schema = Schema::builtin_with(&services)
+        .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
+    let build = Build::compile_with(None, map.clone(), &schema)
+        .map_err(|d| Error::Config(diagnostics(sc, &map, &d)))?;
+    Ok((build.program, map))
+}
+
+/// The values `paths` (top-level states) have once `sc`'s config has
+/// booted, as `set` reads them: a bool's `true` or `false`, an enum's
+/// value name. A path that is neither is left out (the starter of
+/// `explore` puts each state back where it started).
+pub fn state_values(sc: &Scenario, paths: &[String]) -> Result<BTreeMap<String, String>, Error> {
+    let h = Harness::boot(sc, &RunOptions::default())?;
+    let types = &h.inst.vm().prog.types;
+    let mut out = BTreeMap::new();
+    for p in paths {
+        let text = match h.value_at(p) {
+            Ok(Value::Bool(b)) => b.to_string(),
+            Ok(Value::Enum(e, i)) => match types.enum_(e).variants.get(i as usize) {
+                Some(v) => v.clone(),
+                None => continue,
+            },
+            _ => continue,
+        };
+        out.insert(p.clone(), text);
+    }
+    Ok(out)
+}
+
 /// The compile errors, one per line, at `file:line`.
 fn diagnostics(sc: &Scenario, map: &SourceMap, diags: &[strand_compiler::Diagnostic]) -> String {
     let mut out = Vec::new();
@@ -216,35 +250,53 @@ fn diagnostics(sc: &Scenario, map: &SourceMap, diags: &[strand_compiler::Diagnos
     out.join("\n")
 }
 
-/// The fonts text is shaped with.
+/// The font files under `dir`, its subdirectories included, sorted.
+fn font_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), Error> {
+    let rd = std::fs::read_dir(dir).map_err(|e| Error::Io(dir.display().to_string(), e))?;
+    let mut here: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    here.sort();
+    for p in here {
+        if p.is_dir() {
+            font_files(&p, out)?;
+        } else if p
+            .extension()
+            .is_some_and(|x| x == "ttf" || x == "otf" || x == "ttc")
+        {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// The fonts text is shaped with: the bundled pair, isolated; or, for
+/// `fonts = "local"`, the machine's (fontconfig's, as the shell finds
+/// them; under `run.sh eval local` the host's font directories) and the
+/// files under each directory of `$STRAND_EVAL_FONTS` (`:`-separated).
 fn fonts(sc: &Scenario) -> Result<FontConfig, Error> {
     let read = |p: std::path::PathBuf| {
         std::fs::read(&p)
             .map(Arc::new)
             .map_err(|e| Error::Io(p.display().to_string(), e))
     };
-    let list = match sc.fonts {
-        Fonts::Bundled => vec![
+    match sc.fonts {
+        Fonts::Bundled => Ok(FontConfig::isolated(vec![
             read(strand_text::test_font_path())?,
             read(strand_text::test_bold_font_path())?,
-        ],
+        ])),
         Fonts::Local => {
-            let dir = std::env::var("STRAND_EVAL_FONTS").map_err(|_| {
-                Error::Config("fonts = \"local\" reads $STRAND_EVAL_FONTS, which is not set".into())
-            })?;
-            let mut paths: Vec<_> = std::fs::read_dir(&dir)
-                .map_err(|e| Error::Io(dir.clone(), e))?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    p.extension()
-                        .is_some_and(|x| x == "ttf" || x == "otf" || x == "ttc")
-                })
-                .collect();
-            paths.sort();
-            paths.into_iter().map(read).collect::<Result<Vec<_>, _>>()?
+            let mut paths = Vec::new();
+            if let Ok(dirs) = std::env::var("STRAND_EVAL_FONTS") {
+                for d in dirs.split(':').filter(|d| !d.is_empty()) {
+                    font_files(std::path::Path::new(d), &mut paths)?;
+                }
+            }
+            Ok(FontConfig {
+                system_fonts: true,
+                fonts: paths.into_iter().map(read).collect::<Result<Vec<_>, _>>()?,
+                ..FontConfig::default()
+            })
         }
-    };
-    Ok(FontConfig::isolated(list))
+    }
 }
 
 /// The type at a field path inside `ty`.
@@ -621,9 +673,11 @@ impl<'s> Harness<'s> {
         }
     }
 
-    fn toggle(&self, path: &str) -> Result<(), String> {
-        let v = match self.inst.get(path) {
-            Ok(v) => v,
+    /// The value at `path`: an exported value, or a top-level `state`
+    /// and a path into it.
+    fn value_at(&self, path: &str) -> Result<Value, String> {
+        match self.inst.get(path) {
+            Ok(v) => Ok(v),
             Err(e) => {
                 let (_, module, rest) = self.state_def(path).ok_or_else(|| e.to_string())?;
                 let mut it = rest.split('.');
@@ -638,10 +692,13 @@ impl<'s> Harness<'s> {
                         .cloned()
                         .ok_or_else(|| format!("no field `{f}`"))?;
                 }
-                v
+                Ok(v)
             }
-        };
-        match v {
+        }
+    }
+
+    fn toggle(&self, path: &str) -> Result<(), String> {
+        match self.value_at(path)? {
             Value::Bool(b) => self.set(path, if b { "false" } else { "true" }),
             _ => Err(format!("`{path}` is not a bool")),
         }

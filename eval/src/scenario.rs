@@ -191,7 +191,8 @@ pub enum Fonts {
     /// Liberation Sans regular and bold, from strand-text's assets.
     #[default]
     Bundled,
-    /// The fonts in `$STRAND_EVAL_FONTS` (scenarios/local only).
+    /// The machine's fonts, found as the shell finds them (fontconfig),
+    /// and those under `$STRAND_EVAL_FONTS` (scenarios/local only).
     Local,
 }
 

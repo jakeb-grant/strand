@@ -1406,6 +1406,110 @@ fn surface_poses_play_under_the_host_loop() {
     }
 }
 
+/// (eval-r3, popup-still-pose) A node removed with an exit pose at its
+/// own values (`enter { opacity: 1 }`, mirrored) has nothing to move, so
+/// the frame `update` previews matches the last one; the host loop still
+/// paints the frame that ends its exit, and it unmounts. Removed as its
+/// surface closes, the surface (kept open while it leaves) then closes
+/// too, with no other input.
+#[test]
+fn an_exit_that_moves_nothing_still_ends_under_the_host_loop() {
+    for close in [false, true] {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Width, num(60.0)),
+                (Prop::Height, num(30.0)),
+                (Prop::Open, PropValue::Bool(true)),
+            ],
+        );
+        let card = b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Width, num(40.0)),
+                (Prop::Height, num(20.0)),
+                (Prop::Bg, color("#ff0000")),
+                (Prop::Enter, pose(vec![(Prop::Opacity, num(1.0))])),
+            ],
+        );
+        let mut h = Host::new(b.diff, root);
+        h.run();
+        assert_eq!(h.px(10, 10).map(|p| p[3]), Some(255), "shown");
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: card,
+            window: false,
+        });
+        if close {
+            d.set(root, Prop::Open, PropValue::Bool(false));
+        }
+        h.apply(d);
+        assert!(h.r.tree().is_ghost(card), "it plays its exit");
+        let n = h.run();
+        assert!(n >= 1, "a frame ends the exit (close: {close})");
+        assert_eq!(h.r.tree().ghost_count(), 0, "unmounted (close: {close})");
+        if close {
+            assert!(h.surface.is_none(), "the surface closed with it");
+            assert!(!h.r.surface_spec(root).unwrap().open);
+        } else {
+            assert_eq!(h.px(10, 10).map(|p| p[3]), Some(0), "gone");
+        }
+    }
+}
+
+/// (eval-r3) The surface manager asks for a frame's blur region after
+/// the paint, when the frame's end (an exit finishing, its ghost
+/// unmounting) has already dropped the scene kept for the next frame:
+/// it is still the region of the buffer just painted, not none, until a
+/// frame without it is painted.
+#[test]
+fn the_frame_that_ends_an_exit_keeps_its_blur_region() {
+    use strand_scene::Painter;
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Bg, PropValue::Color(hex("#1e1e2e").with_alpha(0.72))),
+            (Prop::Blur, num(12.0)),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(20.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Exit, pose(vec![(Prop::Opacity, num(0.0))])),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    let id = h.surface.as_ref().map(|(id, ..)| *id).unwrap();
+    assert_eq!(h.r.blur_region(id).len(), 1, "the panel's blur");
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: card,
+        window: false,
+    });
+    h.apply(d);
+    let mut n = 0;
+    while h.frame() {
+        n += 1;
+        assert!(n < 400, "never settled");
+        assert_eq!(h.r.blur_region(id).len(), 1, "after frame {n}");
+    }
+    assert!(n >= 2, "the exit played: {n}");
+    assert_eq!(h.r.tree().ghost_count(), 0, "unmounted");
+}
+
 /// A content-sized panel shrinks after a change that moves nothing (a
 /// row removed at the end, a height set `~ instant`), and after one that
 /// springs, once it settled, all with no other input.

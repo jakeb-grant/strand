@@ -177,3 +177,108 @@ fn bench_tables_each_scenarios_costs_and_marks_wall_times_advisory() {
     let at = |m: &str| lines.iter().position(|l| l.contains(m)).unwrap();
     assert!(at("text_held") < at("flatten_us"));
 }
+
+// --- new --explore (docs/eval.md, "Local configs and fonts")
+
+/// A config of each thing a starter exercises, written for this test: a
+/// bool and an enum state, a hover popup whose content has a click
+/// handler only on screen once it opens, and a button outside it.
+const EXPLORED: &str = r#"enum Look { calm, loud }
+state on = false
+state look = calm
+
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 6; align: center
+    box { id: tip; width: 40; height: 30; bg: #303030
+      popup { id: pop; trigger: hover; delay: 100ms; width: 120; height: 40
+        if pop.open {
+          box { id: inner; width: 120; height: 40; bg: look == loud ? #ff0000 : #00ff00
+            on click { on = !on }
+          }
+        }
+      }
+    }
+    box { id: btn; width: on ? 60 : 30; height: 20; bg: #0000ff
+      on click { look = look == calm ? loud : calm }
+    }
+  }
+}
+"#;
+
+#[test]
+fn an_explored_starter_exercises_what_the_config_declares() {
+    let dir = scratch("explore");
+    let config = dir.join("shell.strand");
+    std::fs::write(&config, EXPLORED).unwrap();
+    let ask = Ask {
+        id: "explored".into(),
+        config: Some(config.display().to_string()),
+        to: Some(dir.clone()),
+        explore: true,
+        ..Ask::default()
+    };
+    let path = scaffold::scaffold(&ask).unwrap_or_else(|e| panic!("{e}"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let sc = Scenario::parse_in(&text, &path, Place::Local).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(sc.id, "explored");
+    assert!(text.contains("fonts  = \"local\""), "{text}");
+    // Each state's other values, then the one it booted at.
+    let at = |s: &str| {
+        text.find(s)
+            .unwrap_or_else(|| panic!("no `{s}` in\n{text}"))
+    };
+    assert!(at("set on true\nrest\nset on false\nrest") > at("mark state-on"));
+    assert!(at("set look loud\nrest\nset look calm\nrest") > at("mark state-look"));
+    // The popup's anchor is hovered, and the click inside the popup it
+    // opened is exercised from there, before the button outside it.
+    let hover = at("# shell.strand:8:5");
+    let inner = at("# shell.strand:11:11: on click");
+    let btn = at("# shell.strand:17:5: on click");
+    assert!(hover < inner && inner < btn, "{text}");
+    assert!(text.contains("on @shell.strand:9:7"), "{text}");
+    // It runs through, every rest arriving.
+    assert!(!text.contains("# this starter stops"), "{text}");
+    assert!(!text.contains("never came"), "{text}");
+    assert!(!text.contains("never on screen"), "{text}");
+    let run = strand_eval::harness::run(&sc, &Default::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(run.trace.rests.iter().all(|r| r.settled), "{text}");
+    // Exploring needs a config, and does not map a steps file too.
+    let bare = Ask {
+        id: "bare".into(),
+        to: Some(dir),
+        explore: true,
+        ..Ask::default()
+    };
+    assert!(scaffold::scaffold(&bare).is_err());
+}
+
+/// `fonts = "local"` shapes with the machine's fonts (fontconfig's): a
+/// text asking for DejaVu Sans, which the image has (CI's apt list), is
+/// laid out at DejaVu's width, not the bundled Liberation Sans standing in.
+#[test]
+fn local_fonts_are_the_machines() {
+    let dir = scratch("fonts");
+    let width = |fonts: &str| {
+        let text = format!(
+            "id = \"f\"\nfonts = \"{fonts}\"\n=== shell.strand\nbar Top {{\n  height: 30\n  \
+             row {{ text \"Wide wandering words\" {{ id: t; font: \"DejaVu Sans\" 20px }} }}\n}}\n\
+             === steps\nrest\n"
+        );
+        let path = dir.join(format!("{fonts}.scn"));
+        let sc = Scenario::parse_in(&text, &path, Place::Local).unwrap_or_else(|e| panic!("{e}"));
+        let run =
+            strand_eval::harness::run(&sc, &Default::default()).unwrap_or_else(|e| panic!("{e}"));
+        let last = run.trace.frames.last().unwrap();
+        last.n
+            .iter()
+            .find(|r| r.key.starts_with("t|"))
+            .map(|r| r.laid[2])
+            .unwrap_or_else(|| panic!("no #t"))
+    };
+    let (local, bundled) = (width("local"), width("bundled"));
+    assert!(
+        (local - bundled).abs() > 4.0,
+        "local {local} px, bundled {bundled} px"
+    );
+}

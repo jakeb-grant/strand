@@ -89,21 +89,26 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         _ => !any.is_empty(),
                     };
                     let travel = *travels.entry((*key, a as usize)).or_insert_with(|| {
-                        // (eval-coverage) A node that enters in the
-                        // segment travels from where it first shows, and
-                        // one that leaves to where it last shows: an
-                        // enter pose's slide is held as the same slide of
-                        // a node already there is.
-                        let mut shown = cx
-                            .tl
-                            .within(Some(s), seg.e)
-                            .filter_map(|j| cx.tl.row(j, key));
-                        let first = shown.next();
-                        let last = shown.next_back().or(first);
-                        match (
-                            bi.and_then(|b| cx.tl.row(b, key)).or(first),
-                            ei.and_then(|e| cx.tl.row(e, key)).or(last),
-                        ) {
+                        // Where it starts and ends: at `s` and the rest, or
+                        // for a node that came onto its surface in the
+                        // segment (a popup's content, a branch, an enter
+                        // pose's slide, held as the same slide of a node
+                        // already there is) or left it (an exit's ghost),
+                        // its first or last frame shown there
+                        // (eval-coverage, eval-local).
+                        let shown = |j: usize| {
+                            cx.tl
+                                .row(j, key)
+                                .filter(|q| q.surface == r.surface && cx.tl.visible(j, q))
+                        };
+                        let span = cx.tl.within(Some(s), seg.e);
+                        let from = bi
+                            .and_then(|b| cx.tl.row(b, key))
+                            .or_else(|| span.clone().find_map(shown));
+                        let to = ei
+                            .and_then(|e| cx.tl.row(e, key))
+                            .or_else(|| span.rev().find_map(shown));
+                        match (from, to) {
                             (Some(b), Some(e)) => {
                                 let w = way(cx, key, s, seg.e, b, e, a);
                                 (value(e, a) - value(b, a)).abs().max(w.hi - w.lo)

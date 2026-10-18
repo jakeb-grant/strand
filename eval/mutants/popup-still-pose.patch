@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
+--- a/crates/strand-render/src/anim/mod.rs
++++ b/crates/strand-render/src/anim/mod.rs
+@@ -1436,8 +1436,7 @@
+     /// a painted frame ends it.
+     pub fn deferred(&self, tree: &SceneTree, root: NodeId) -> bool {
+         let under = |id: NodeId| tree.root_of(id) == Some(root);
+-        self.exits_due.iter().any(|id| under(*id))
+-            || self.shapes.pending(under)
++        self.shapes.pending(under)
+             || self.rolls.pending(under)
+             || self.image_swaps.pending(under)
+             || self.plays.pending(under)

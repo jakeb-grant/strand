@@ -217,7 +217,7 @@ timing_step "cargo test --profile timing -p strand-compiler --test theme (theme 
 job=eval
 step "cargo fmt --check (strand-eval)" 10 bash scripts/eval/ci.sh 1
 step "cargo clippy (eval/, -D warnings)" 60 bash scripts/eval/ci.sh 2
-step "check-lock.sh, check-isolation.sh, their self-tests and test-worktree.sh" 10 bash scripts/eval/ci.sh 3
+step "check-lock.sh, check-isolation.sh, their self-tests, test-worktree.sh and test-local-mounts.sh" 10 bash scripts/eval/ci.sh 3
 step "cargo test (eval/)" 60 bash scripts/eval/ci.sh 4
 step "strand-eval refs-check and check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
 step "the effect matrix at 60 and 144 Hz against its references" 30 bash scripts/eval/ci.sh 6

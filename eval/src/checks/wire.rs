@@ -16,6 +16,10 @@
 //!   hover lost or a blur on nothing (owner-testing.md bug 23). A frame
 //!   whose surface the compositor poses at a scale (`compositor_poses`)
 //!   sends its regions in the pose's coordinates and is not compared.
+//!   (eval-r3) A frame that drew nothing (no damage, so no buffer
+//!   commit) still asks for its regions, which the manager sends with a
+//!   bare commit: a bare commit after such a frame is held to it, not to
+//!   the last frame a buffer carried.
 //! - `late-present`: every frame that drew is committed in the tick it
 //!   was painted for and shown by that tick's refresh: not later, not
 //!   replaced by another before it, not never. Frames lock to the
@@ -93,6 +97,15 @@ pub fn regions_on_wire(trace: &RunTrace) -> Vec<Finding> {
         let Some(s) = c.surface else { continue };
         let fresh = carried.get(&i).copied();
         if let Some(f) = fresh {
+            now.insert(s, f);
+        } else if let Some(f) = log.frames.iter().rfind(|f| {
+            f.surface == s
+                && f.commit.is_none()
+                && f.k <= c.k
+                && now.get(&s).is_none_or(|n| f.k > n.k)
+        }) {
+            // The latest frame painted since that drew nothing: its
+            // regions go out with this bare commit.
             now.insert(s, f);
         }
         let Some(f) = now.get(&s).copied() else {

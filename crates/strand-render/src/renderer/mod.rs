@@ -174,6 +174,13 @@ struct SurfaceState {
     /// change the pose of the frame just painted (owner-testing.md
     /// bug 7).
     posed: Option<strand_scene::SurfacePose>,
+    /// (eval-r3) The blur and input regions of the last painted frame,
+    /// kept apart from `cache` for the same reason as `posed`: the
+    /// surface manager asks for them after the paint, when the frame's
+    /// end (an exit finishing, its ghost unmounting) has already dropped
+    /// the cache for the next frame, and they must be the regions of the
+    /// buffer just painted.
+    painted_regions: Option<PaintedRegions>,
     /// The text slots the last flatten wanted.
     wanted: Vec<TextSlot>,
     /// The last layout pass, reused until something layout reads changes.
@@ -246,6 +253,15 @@ struct SurfaceState {
     /// root (`screens: all`) does not draw keeps its motions while this
     /// one still does.
     drawn: HashSet<NodeId>,
+}
+
+/// (eval-r3) What a painted frame asks the compositor for, besides its
+/// opaque region and pose (see `SurfaceState::painted_regions`).
+#[derive(Clone, Debug, Default)]
+struct PaintedRegions {
+    blur: Vec<strand_scene::BlurRegion>,
+    input: Vec<strand_scene::LogicalRect>,
+    root_paints: bool,
 }
 
 impl SurfaceState {

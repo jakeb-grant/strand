@@ -33,7 +33,7 @@ struct Source {
 }
 
 /// The 1-based line and column of byte `at` in `text`.
-fn line_col(text: &str, at: usize) -> (u32, u32) {
+pub(crate) fn line_col(text: &str, at: usize) -> (u32, u32) {
     let at = at.min(text.len());
     let before = &text[..text.floor_char_boundary(at)];
     let line = before.matches('\n').count() as u32 + 1;

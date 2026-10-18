@@ -38,6 +38,8 @@ scripts/container/run.sh eval selftest                          # the CI gate (s
 scripts/container/run.sh eval matrix --hz 60,144                # the effect matrix (see Matrix)
 scripts/container/run.sh eval mutants                           # the bugs the regressions catch
 scripts/container/run.sh eval ab-revs HEAD~1                    # A/B: the last commit against this checkout
+scripts/container/run.sh eval local new mine --config /path/to/shell.strand   # a starter for your own config
+scripts/container/run.sh eval local                             # run eval/scenarios/local/ (see Local configs)
 scripts/eval/viewer-check.sh --selftest                         # the viewer in a real browser (on the host)
 ```
 
@@ -71,8 +73,11 @@ The commands:
   [--out DIR]` runs the effect matrix.
 - `bench <run>... [--out FILE]` prints each scenario's cost table (see
   Cost).
-- `new <id> [--config F] [--from-steps FILE] [--to DIR]` writes a
-  scenario skeleton (see Scaffolding).
+- `new <id> [--config F [--explore]] [--from-steps FILE] [--to DIR]`
+  writes a scenario skeleton (see Scaffolding).
+- `local [<scn|dir>...] [--out DIR] [--frames …]` checks the local
+  scenarios, `eval/scenarios/local/` by default; `local new <id> --config
+  F` writes an explored starter there (see Local configs and fonts).
 
 A report lands in `--out`, or in `target/eval/runs/<seconds>-<rev>`, with
 `target/eval/latest` pointing at it.
@@ -383,10 +388,10 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
-| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
+| `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
-| `ink` | A text's glyphs stay inside its box, give or take 2 px (`spill`: a stand-in drawn unclipped), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
+| `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
 | `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), and an ellipsised text gives way before it is laid past its surface's edge (`give way`). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
@@ -896,7 +901,8 @@ for the build.
 `eval/mutants/mutants.txt` pairs patches with regression scenarios. Each
 patch reverts a fix in the product's crates, for example bug 24's flip-open
 and bug 25's hidden-text in crates/strand-render, and bug 23's gpu-regions
-in crates/strand-surface and crates/strand (see Surface leg). In a detached worktree of HEAD, each scenario
+in crates/strand-surface and crates/strand (see Surface leg), and popup-still-pose's
+exit-due fix in crates/strand-render (decisions.md eval-r3). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
@@ -1013,7 +1019,9 @@ is in no digest and no recording, since it is how frames reach a
 compositor, not what they draw.
 
 `regions-on-wire` holds the compositor's regions after each commit that
-carries a frame, and after each bare commit after it, to that frame's. A
+carries a frame, and after each bare commit after it, to that frame's;
+a bare commit after a frame that drew nothing (no damage, so no buffer
+of its own) is held to that frame's, whose regions it sends. A
 frame whose painter asks for no input region keeps the manager's own,
 which is not compared. A frame whose surface the compositor poses at a
 scale (`compositor_poses`) sends its regions in the pose's coordinates,
@@ -1068,6 +1076,32 @@ never gate. Only `[budget]` lines, on the deterministic metrics, gate.
 a header, a bar to write the shell into (or `config = "<F>"` with
 `--config F`, which may name `${VAR}`, see Local configs and fonts) and a
 steps section that starts and ends with `rest`. It never replaces a file.
+
+`--explore` (with `--config`; `local new` is `new --explore`) writes a
+starter that exercises what the config declares instead, found from its
+compiled program and its runs, knowing nothing of any shell:
+
+- each top-level `state` that is a `bool` or an `enum` is set to each of
+  its other values and back to the one it booted at, a rest after each;
+  other states are listed as `# set` comments to fill in;
+- each element whose `hover` or `pressed` is read, or that anchors a
+  `trigger:` popup, is hovered, and each with `on click`, `on secondary`,
+  `on middle` or `on scroll` is pointed at and given each input twice (a
+  scroll and its reverse), at the centre of where it is laid out, on its
+  surface;
+- after a hover or an input that may reveal more (a popup's anchor, a
+  click), and after each state value, the steps so far are run again, and
+  what is newly on screen is exercised there before going on (three
+  levels deep, at most 32 runs and 40 targets of each kind);
+- a target that moved is pointed at where it is now, a second input is
+  left out when the first took its target away, and a target whose run
+  fails is dropped and named.
+
+The starter ends with comments: what was never on screen, any step it
+stops at, and any `rest` that never came (a live readout or a running
+clock keeps the shell awake; `settle` reports each). It is a start: say
+what the scenario holds in `about` and add the `expect` steps a correct
+shell meets.
 `--from-steps FILE` maps a shots-keys steps file one line to one step:
 
 | shots-keys | step |
@@ -1090,15 +1124,32 @@ above its step. Nothing of the original is lost, and the skeleton parses.
 `eval/scenarios/local/` is gitignored, and is the only place a scenario
 may name things outside `eval/`:
 
-- `config = "${VAR}/shell.strand"` or `config_dir = "${VAR}"` names a
-  config. `${VAR}` is expanded from the environment.
-- `fonts = "local"` shapes text with the fonts in `$STRAND_EVAL_FONTS`.
+- `config = "/abs/path/shell.strand"`, `config = "${VAR}/shell.strand"`
+  or `config_dir = "…"` names a config where it is. `${VAR}` is expanded
+  from the environment.
+- `fonts = "local"` shapes text with the machine's fonts, found through
+  fontconfig as the shell finds them, plus any font files under the
+  `:`-separated directories of `$STRAND_EVAL_FONTS`.
 
-`run.sh` passes only `STRAND_*` variables into the container, and mounts
-only the checkout. So a local config must sit inside the checkout and be
-named through a `STRAND_*` variable. `check --gate` refuses local
-scenarios, and nothing from them is ever committed: a finding in an
-owner's config becomes a committed scenario written from scratch.
+```text
+scripts/container/run.sh eval local new my-shell --config /path/to/shell.strand
+scripts/container/run.sh eval local                  # every eval/scenarios/local/*.scn
+scripts/container/run.sh eval local eval/scenarios/local/my-shell.scn --frames all
+```
+
+`run.sh` mounts only the checkout, except for `run.sh eval local`
+(`scripts/eval/local-mounts.sh`): it mounts read-only, at their own
+paths, the directory of each config a local scenario's header names by an
+absolute path (and of each absolute path among the command's arguments),
+and the host's font directories (`/usr/share/fonts`,
+`/usr/local/share/fonts`, `~/.local/share/fonts`, `~/.fonts`) at
+`/opt/host-fonts/<n>`, with a fontconfig file
+(`target/eval/local/fonts.conf`) that adds them to the image's. Nothing is
+copied, and no other command sees them. It prints what it mounted.
+
+`check --gate` refuses local scenarios, and nothing from them is ever
+committed: a finding in an owner's config becomes a committed scenario
+written from scratch, in the smallest shape that shows it.
 
 ## Limits
 

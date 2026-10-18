@@ -32,6 +32,9 @@ pub struct Ask {
     pub from_steps: Option<PathBuf>,
     /// Where it goes (default eval/scenarios/local).
     pub to: Option<PathBuf>,
+    /// Steps that exercise what the config declares (`crate::explore`),
+    /// instead of a bare `rest`: needs `config`.
+    pub explore: bool,
 }
 
 /// The comment a line kept as it was starts with.
@@ -176,25 +179,41 @@ pub fn map_steps(text: &str) -> Vec<String> {
 }
 
 /// The scenario's text.
-pub fn skeleton(ask: &Ask, steps_text: Option<&str>) -> String {
+pub fn skeleton(ask: &Ask, steps_text: Option<&str>, explored: Option<&[String]>) -> String {
     let source = ask
         .from_steps
         .as_ref()
         .map(|p| format!(" from {}", p.display()))
         .unwrap_or_default();
+    let how = if ask.explore { "new --explore" } else { "new" };
     let mut s = format!(
-        "id     = \"{}\"\nabout  = \"\"\"Scaffolded by `strand-eval new`{source}. Say what it \
+        "id     = \"{}\"\nabout  = \"\"\"Scaffolded by `strand-eval {how}`{source}. Say what it \
          holds and what a correct shell does.\"\"\"\n",
         ask.id
     );
     if let Some(c) = &ask.config {
         s += &format!("config = \"{c}\"\n");
     }
+    if ask.explore {
+        // A whole monitor, not the 300 px strip a written-in bar gets,
+        // and the machine's fonts (under `run.sh eval local`, the host's).
+        s += "# The screen the shell runs on: set it to yours.\n";
+        s += "screen = { width = 1920, height = 1080, scale = 1.0 }\n";
+        s += "fonts  = \"local\"\n";
+    }
     s.push('\n');
     if ask.config.is_none() {
         s += "=== shell.strand\nbar Top {\n  height: 30\n}\n\n";
     }
-    s += "=== steps\nrest\n";
+    s += "=== steps\n";
+    if let Some(explored) = explored {
+        for l in explored {
+            s += l;
+            s.push('\n');
+        }
+        return s;
+    }
+    s += "rest\n";
     if let Some(t) = steps_text {
         let mapped = map_steps(t);
         for l in &mapped {
@@ -233,7 +252,6 @@ pub fn scaffold(ask: &Ask) -> Result<PathBuf, Error> {
         }
         None => None,
     };
-    let text = skeleton(ask, steps_text.as_deref());
     let dir = ask
         .to
         .clone()
@@ -245,6 +263,24 @@ pub fn scaffold(ask: &Ask) -> Result<PathBuf, Error> {
             path.display()
         )));
     }
+    let explored = if ask.explore {
+        if ask.config.is_none() {
+            return Err(Error::Usage(
+                "new --explore: name the config with --config".into(),
+            ));
+        }
+        if ask.from_steps.is_some() {
+            return Err(Error::Usage(
+                "new --explore writes its own steps: not with --from-steps".into(),
+            ));
+        }
+        let head = skeleton(ask, None, Some(&[]));
+        let head = head.split("=== steps\n").next().unwrap_or("");
+        Some(crate::explore::explore(head, &path)?)
+    } else {
+        None
+    };
+    let text = skeleton(ask, steps_text.as_deref(), explored.as_deref());
     // A config is read when the scenario runs, not here: only the steps
     // and the header must parse.
     if ask.config.is_none() {

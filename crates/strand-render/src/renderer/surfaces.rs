@@ -172,6 +172,7 @@ impl Renderer {
                 drawn: HashSet::new(),
                 cache: None,
                 posed: None,
+                painted_regions: None,
                 wanted: Vec::new(),
                 boxes: None,
                 layout_dirty: true,

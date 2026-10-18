@@ -1,0 +1,43 @@
+id     = "popup-still-pose"
+about  = """A finding of eval-local's triage (docs/decisions.md eval-local), fixed in
+eval-r3: a `trigger: hover` popup whose card has `enter { opacity: 1 }`, a pose at
+the card's own value, so its mirrored exit moves nothing either. The pointer
+opens it and leaves; logic closes it (`pop.open` is false again: `#flag` is back
+to 20 px wide). The card's exit has nothing to move, so the frame `update`
+previews matched the last one and nothing painted the frame that ends the exit:
+the popup was drawn once, stayed mapped and the run reported itself at rest with
+the card shown three seconds later. Now that preview leaves the surface wanting
+that frame: the card unmounts, the popup closes, and `twin` and `expect hidden
+#card` pass (eval/mutants/popup-still-pose.patch reverts the fix)."""
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 30; gap: 6; align: center
+    box { id: before; width: 30; height: 20; bg: #00ff00 }
+    box { id: item; width: 40; height: 30; bg: #303030
+      popup { id: pop; trigger: hover; delay: 200ms; width: 120; height: 40
+        box { id: card; width: 120; height: 40; bg: #ff0000; enter { opacity: 1 } }
+      }
+    }
+    box { id: after; width: 30; height: 20; bg: #0000ff }
+    box { id: flag; width: pop.open ? 10 : 20; height: 10; bg: #ffffff }
+  }
+}
+
+=== steps
+rest
+mark hover-in
+glide 250,10 -> 50,10 over 120
+wait 300
+rest
+expect visible #card
+mark hover-out
+glide 50,10 -> 250,10 over 120
+rest
+expect still #before
+wait 3000
+rest
+expect hidden #card

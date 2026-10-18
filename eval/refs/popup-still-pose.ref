@@ -1,0 +1,62 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "popup-still-pose"
+verdict good
+note "eval-r3 fix of eval-local's open finding (an exit that moves nothing still ends): read the diff; up to k44 the geometry is the old recording's and only the paint fields are new (the old block was recorded before recordings held paint); at k45 the popup paints once more with the card's ghost at its pose (inert) and surface 2 is detached after it (attached k21..k45), and from k46 neither is on screen, where the old recording kept the popup mapped to the end with no frame after k21"
+date 2026-10-18
+rev "4cb3a118+changes"
+approver "claude"
+scenario 168921f0de9dcc52
+seal 97a1b321db09b297
+S1 0 - "bar Top"
+S2 21 45 "popup#pop"
+N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
+N1 "before|shell.strand:4:5|[Mock | DP-1]#0" "box#before"
+N2 "flag|shell.strand:11:5|[Mock | DP-1]#3" "box#flag"
+N3 "item|shell.strand:5:5|[Mock | DP-1]#1" "box#item"
+N4 "strip|shell.strand:3:3|[Mock | DP-1]#0" "row#strip"
+N5 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+N6 "card|shell.strand:7:9|[Mock | DP-1]#0" "box#card"
+N7 "pop|shell.strand:6:7|[Mock | DP-1]#0" "popup#pop"
+k0 p1
+s1 z=300,30
+n0 x=82 y=5 w=30 h=20 ord=4 bg=0000ffff
+n1 x=0 y=5 w=30 h=20 ord=2 bg=00ff00ff
+n2 x=118 y=10 w=20 h=10 ord=5 bg=ffffffff
+n3 x=36 y=0 w=40 h=30 ord=3 bg=303030ff
+n4 x=0 y=0 w=300 h=30 ord=1
+n5 x=0 y=0 w=300 h=30 bg=faf9ffff
+k21 p1,2
+s2 z=120,40 o=-4,36 i=0,0,120,40
+n2 w=17
+n6 srf=2 x=0 y=0 w=120 h=40 ord=1 bg=ff0000ff
+n7 srf=2 x=0 y=0 w=120 h=40
+k22 p1
+n2 w=14
+k23
+n2 w=11
+k24
+n2 w=10
+k25
+k26
+k27
+k28
+k29
+k30
+k45 p1,2
+s2 -
+n2 w=13
+n6 hid=inert
+k46 p1
+n2 w=16
+n6 -
+n7 -
+k47
+n2 w=19
+k48
+n2 w=20
+k49
+k50
+k51
+k52
+k53
+k54

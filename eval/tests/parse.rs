@@ -781,5 +781,5 @@ fn every_mutant_line_names_what_exists() {
         }
         n += 1;
     }
-    assert_eq!(n, 3);
+    assert_eq!(n, 4);
 }

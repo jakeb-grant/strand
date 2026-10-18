@@ -282,6 +282,11 @@ impl Painter for Renderer {
         }
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
+            s.painted_regions = s.cache.as_ref().map(|f| super::PaintedRegions {
+                blur: f.blur.clone(),
+                input: f.input.clone(),
+                root_paints: f.root_paints,
+            });
             // The next frame waits for its own new text.
             s.text_deadline = None;
         }
@@ -317,11 +322,15 @@ impl Painter for Renderer {
     }
 
     fn blur_region(&self, surface: SurfaceId) -> Vec<strand_scene::BlurRegion> {
-        self.surfaces
-            .get(&surface)
-            .and_then(|s| s.cache.as_ref())
-            .map(|f| f.blur.clone())
-            .unwrap_or_default()
+        let Some(s) = self.surfaces.get(&surface) else {
+            return Vec::new();
+        };
+        // The last painted frame's (eval-r3), else the scene about to be.
+        match (&s.painted_regions, &s.cache) {
+            (Some(p), _) => p.blur.clone(),
+            (None, Some(f)) => f.blur.clone(),
+            (None, None) => Vec::new(),
+        }
     }
 
     fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
@@ -351,12 +360,18 @@ impl Painter for Renderer {
     fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
         let s = self.surfaces.get(&surface)?;
         let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
-        let f = s.cache.as_ref()?;
+        // The last painted frame's (eval-r3: not the cache, which the
+        // frame's end may have dropped), else the scene about to be.
+        let (input, root_paints) = match (&s.painted_regions, &s.cache) {
+            (Some(p), _) => (&p.input, p.root_paints),
+            (None, Some(f)) => (&f.input, f.root_paints),
+            (None, None) => return None,
+        };
         let held = self.extras.widgets.pressed.contains(&s.root);
-        if !hover || f.root_paints || held {
+        if !hover || root_paints || held {
             return None;
         }
-        Some(f.input.clone())
+        Some(input.clone())
     }
 }
 

@@ -187,6 +187,11 @@ pub(crate) struct Animator {
     /// When each exit started (wall clock): an exit no frame samples
     /// (its output asleep) is ended by `Renderer` after a while.
     exit_started: HashMap<NodeId, Instant>,
+    /// (eval-r3) Exits a preview found at their pose with nothing left
+    /// to move: they end with the next painted frame, which unmounts the
+    /// ghost or closes the surface (a pose at the node's own values
+    /// moves nothing, so its preview's scene matches the last frame's).
+    exits_due: HashSet<NodeId>,
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
@@ -810,6 +815,7 @@ impl Animator {
 
     /// A closing surface opened again: it springs back to its props.
     pub fn cancel_exit(&mut self, id: NodeId) {
+        self.exits_due.remove(&id);
         if self.exits.remove(&id).is_some() {
             let na = self.nodes.entry(id).or_default();
             na.respring = true;
@@ -860,6 +866,7 @@ impl Animator {
     /// did. Ended in an earlier pass, it laid out whole in the next and
     /// was drawn so for one frame.
     fn end_exit(&mut self, id: NodeId) {
+        self.exits_due.remove(&id);
         if let Some(k) = self.exits.get(&id).copied()
             && !self.finished.iter().any(|(f, _)| *f == id)
         {
@@ -888,6 +895,7 @@ impl Animator {
         self.text_holds.remove(&id);
         self.exits.remove(&id);
         self.exit_started.remove(&id);
+        self.exits_due.remove(&id);
     }
 
     /// Drops the enter poses of nodes `under` the surface just painted
@@ -924,6 +932,7 @@ impl Animator {
             self.poses.remove(id);
             self.exits.remove(id);
             self.exit_started.remove(id);
+            self.exits_due.remove(id);
         }
         std::mem::take(&mut self.finished)
     }
@@ -1000,6 +1009,7 @@ impl Animator {
         self.exits.retain(|id, _| keep(*id));
         let exits = &self.exits;
         self.exit_started.retain(|id, _| exits.contains_key(id));
+        self.exits_due.retain(|id| exits.contains_key(id));
     }
 
     /// A FLIP: `id` is drawn `delta` away from its new box, then glides
@@ -1399,8 +1409,14 @@ impl Animator {
         if moving {
             self.active = true;
         }
-        if commit && exiting.is_some() && exit_done {
-            self.end_exit(id);
+        if exiting.is_some() && exit_done {
+            if commit {
+                self.end_exit(id);
+            } else {
+                self.exits_due.insert(id);
+            }
+        } else if commit {
+            self.exits_due.remove(&id);
         }
         if self.nodes.get(&id).is_some_and(NodeAnim::is_empty) {
             self.nodes.remove(&id);
@@ -1415,10 +1431,13 @@ impl Animator {
     /// change, a `play` or shared morph it saw start, a held node it saw
     /// moved. It drew the node as the last frame did (the old shape, no
     /// play), so its scene matching the last frame's does not mean
-    /// nothing changed: the surface still wants that frame.
+    /// nothing changed: the surface still wants that frame. (eval-r3) So
+    /// does an exit it found at its pose with nothing left to move: only
+    /// a painted frame ends it.
     pub fn deferred(&self, tree: &SceneTree, root: NodeId) -> bool {
         let under = |id: NodeId| tree.root_of(id) == Some(root);
-        self.shapes.pending(under)
+        self.exits_due.iter().any(|id| under(*id))
+            || self.shapes.pending(under)
             || self.rolls.pending(under)
             || self.image_swaps.pending(under)
             || self.plays.pending(under)
