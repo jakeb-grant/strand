@@ -1,5 +1,5 @@
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index b3e37cd9..6cf729b5 100644
+index 116fc08a..128a2cad 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
 @@ -2,7 +2,7 @@
@@ -11,7 +11,7 @@ index b3e37cd9..6cf729b5 100644
  use std::time::{Duration, Instant};
  
  use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
-@@ -603,34 +603,6 @@ impl Renderer {
+@@ -617,34 +617,6 @@ impl Renderer {
              }
          }
          total.clip(bounds);
@@ -46,23 +46,38 @@ index b3e37cd9..6cf729b5 100644
          if total.is_empty() {
              // Nothing drawn: no frame, so nothing enters the history and
              // the caller does not commit (see `Painter::paint`).
+@@ -668,12 +640,6 @@ impl Renderer {
+         }
+         s.valid = true;
+         s.painted = true;
+-        // (eval-coverage) The change's FLIP scope was drawn: it closes
+-        // now if its texts are shaped, or at the flatten they are.
+-        s.flip_drawn = true;
+-        if s.flip_settled {
+-            s.flip_open = None;
+-        }
+         s.query_hold = None;
+         s.query_held = false;
+         let scale = s.scale;
 diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
-index aa388892..2ea6199c 100644
+index 6ef140b2..d0da52f9 100644
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -136,11 +136,6 @@ impl Renderer {
+@@ -136,13 +136,6 @@ impl Renderer {
                  .iter()
                  .map(|(node, spec)| TextSlot::of(*node, spec))
                  .collect();
--            if settled {
--                // What a structural change mounted is measured: later
--                // passes move nothing it placed by an estimate.
+-            s.flip_settled = settled;
+-            if settled && s.flip_drawn {
+-                // What a structural change mounted is measured and was
+-                // drawn: later passes move nothing it placed by an
+-                // estimate or in a buffer it outgrew.
 -                s.flip_open = None;
 -            }
              if settled && s.prev_scale.take().is_some() {
                  self.prune_scales();
              }
-@@ -335,32 +330,11 @@ impl Renderer {
+@@ -370,38 +363,11 @@ impl Renderer {
              }
          }
          // FLIP: boxes a structural change moved start where they were.
@@ -74,13 +89,19 @@ index aa388892..2ea6199c 100644
              let flip = std::mem::take(&mut s.flip);
              let all = std::mem::take(&mut s.flip_all);
 -            let text = std::mem::take(&mut s.text_arrived);
+-            // (eval-coverage) Laid out in a resized buffer: a content-
+-            // sized surface configured at the size a change asked for.
+-            // Before its first frame nothing was drawn to glide from.
+-            let resized = s.painted && s.laid_frame.is_some_and(|f| f != frame);
+-            s.laid_frame = Some(frame);
 -            let fresh = all || !flip.is_empty();
 -            if fresh {
 -                let open = s.flip_open.get_or_insert_with(Default::default);
 -                open.0.extend(flip);
 -                open.1 |= all;
+-                s.flip_drawn = false;
 -            }
--            let scope = s.flip_open.clone().filter(|_| fresh || text);
+-            let scope = s.flip_open.clone().filter(|_| fresh || text || resized);
 -            if let (Some(old), Some(_)) = (&old, &s.flip_open) {
 -                s.unpainted.extend(
 -                    boxes
@@ -96,7 +117,7 @@ index aa388892..2ea6199c 100644
                  && !self.anim.reduced()
              {
                  let tables = [&self.tree.tokens];
-@@ -376,7 +350,6 @@ impl Renderer {
+@@ -417,7 +383,6 @@ impl Renderer {
                      &boxes.rects,
                      &flip,
                      all,
@@ -104,7 +125,7 @@ index aa388892..2ea6199c 100644
                      curve,
                  );
              }
-@@ -471,8 +444,7 @@ impl Renderer {
+@@ -512,8 +477,7 @@ impl Renderer {
  }
  
  /// FLIP: every node whose parent is in `parents` (all with `all`) and
@@ -114,7 +135,7 @@ index aa388892..2ea6199c 100644
  /// Visited top-down, so a node that moved with its parent adds nothing
  /// to the parent's glide.
  #[allow(clippy::too_many_arguments)]
-@@ -484,7 +456,6 @@ pub(super) fn glide_moved(
+@@ -525,7 +489,6 @@ pub(super) fn glide_moved(
      new: &HashMap<NodeId, strand_scene::LogicalRect>,
      parents: &HashSet<NodeId>,
      all: bool,
@@ -122,7 +143,7 @@ index aa388892..2ea6199c 100644
      curve: Curve,
  ) {
      let mut stack = vec![(root, (0.0f32, 0.0f32))];
-@@ -496,10 +467,7 @@ pub(super) fn glide_moved(
+@@ -537,10 +500,7 @@ pub(super) fn glide_moved(
                  continue;
              }
              let mut acc_c = acc;
@@ -135,10 +156,10 @@ index aa388892..2ea6199c 100644
                  if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
                      anim.glide(*c, [adj.0, adj.1], curve);
 diff --git a/crates/strand-render/src/renderer/mod.rs b/crates/strand-render/src/renderer/mod.rs
-index 5f51e737..e6edf04b 100644
+index 71f29b83..d50382fd 100644
 --- a/crates/strand-render/src/renderer/mod.rs
 +++ b/crates/strand-render/src/renderer/mod.rs
-@@ -208,25 +208,6 @@ struct SurfaceState {
+@@ -209,36 +209,6 @@ struct SurfaceState {
      /// (a token swap).
      flip: HashSet<NodeId>,
      flip_all: bool,
@@ -152,6 +173,17 @@ index 5f51e737..e6edf04b 100644
 -    /// offset into its glide. Cleared once every
 -    /// text on the surface is shaped.
 -    flip_open: Option<(HashSet<NodeId>, bool)>,
+-    /// (eval-coverage) Whether a frame painted since `flip_open` last
+-    /// took a structural change, and whether every text was shaped at
+-    /// the last flatten: the scope closes once both hold, so a pass that
+-    /// lays the surface out at the size the change made it ask for (a
+-    /// content-sized panel configured taller before the change's first
+-    /// frame) glides what it moves too.
+-    flip_drawn: bool,
+-    flip_settled: bool,
+-    /// (eval-coverage) The frame its last layout pass laid it out in
+-    /// (its buffer, less the overhang): a pass in another one was resized.
+-    laid_frame: Option<strand_scene::LogicalRect>,
 -    /// A text layout for it arrived since its last layout pass.
 -    text_arrived: bool,
 -    /// Nodes first laid out since it last painted, while `flip_open`:
@@ -165,21 +197,24 @@ index 5f51e737..e6edf04b 100644
      painted_time: Option<Duration>,
      /// Nodes with motion state its last fresh frame drew. With
 diff --git a/crates/strand-render/src/renderer/surfaces.rs b/crates/strand-render/src/renderer/surfaces.rs
-index 6ebdcebb..54af91b2 100644
+index af4e9633..52c210d6 100644
 --- a/crates/strand-render/src/renderer/surfaces.rs
 +++ b/crates/strand-render/src/renderer/surfaces.rs
-@@ -185,9 +185,6 @@ impl Renderer {
+@@ -184,12 +184,6 @@ impl Renderer {
                  anim_layout: false,
                  flip: HashSet::new(),
                  flip_all: false,
 -                flip_open: None,
+-                flip_drawn: true,
+-                flip_settled: true,
+-                laid_frame: None,
 -                text_arrived: false,
 -                unpainted: HashSet::new(),
                  painted_time: None,
                  overhang: self
                      .specs
 diff --git a/crates/strand-render/src/renderer/text.rs b/crates/strand-render/src/renderer/text.rs
-index 3a635b2e..66dd74bf 100644
+index 58c29b36..9541a244 100644
 --- a/crates/strand-render/src/renderer/text.rs
 +++ b/crates/strand-render/src/renderer/text.rs
 @@ -66,33 +66,6 @@ impl TextSlot {
@@ -216,7 +251,7 @@ index 3a635b2e..66dd74bf 100644
  #[derive(Debug, Default)]
  pub(super) struct TextState {
      /// The layout being drawn (the last one delivered).
-@@ -371,7 +344,6 @@ impl Renderer {
+@@ -387,7 +360,6 @@ impl Renderer {
          for s in self.surfaces.values_mut() {
              if Some(s.root) == root {
                  s.mark_layout();
