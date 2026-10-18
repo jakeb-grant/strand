@@ -39,6 +39,17 @@ mod sizes;
 mod stagger;
 
 pub(crate) use morph::MorphBox;
+
+/// (eval-coverage) What a scene flattened in a preview showed for the
+/// first time: rolling texts' layouts, shapes and swapping images'
+/// sources. A frame that paints that scene shows them
+/// ([`Animator::firsts_painted`]); a preview never painted never did.
+#[derive(Debug, Default)]
+pub(crate) struct Firsts {
+    pub(crate) rolls: Vec<(NodeId, std::sync::Arc<strand_text::TextLayout>)>,
+    pub(crate) shapes: Vec<(NodeId, crate::shapes::Shape)>,
+    pub(crate) images: Vec<(NodeId, String)>,
+}
 use morph::Start;
 pub(crate) use motion::Extents;
 use motion::{PropMotion, decode, encode, glow_color};
@@ -600,6 +611,26 @@ impl Animator {
     /// reused ([`morph`]).
     pub(crate) fn shared_painted(&mut self, root: NodeId, at: Duration, drawn: &[MorphBox]) {
         self.shared.painted(root, at, drawn);
+    }
+
+    /// (eval-coverage) What the scene just flattened showed for the first
+    /// time in a preview (rolling texts, shapes, swapping images), for
+    /// the scene to carry ([`Animator::firsts_painted`]).
+    pub(crate) fn take_firsts(&mut self) -> Firsts {
+        Firsts {
+            rolls: self.rolls.take_previewed(),
+            shapes: self.shapes.take_previewed(),
+            images: self.image_swaps.take_previewed(),
+        }
+    }
+
+    /// (eval-coverage) A frame painted a scene `update` flattened (a
+    /// surface at rest): what it showed first is on screen, so its first
+    /// change rolls, morphs or swaps from it.
+    pub(crate) fn firsts_painted(&mut self, f: &Firsts) {
+        self.rolls.painted(&f.rolls);
+        self.shapes.painted(&f.shapes);
+        self.image_swaps.painted(&f.images);
     }
 
     /// (shared-morph-on) No surface shows `root` any more: its morph

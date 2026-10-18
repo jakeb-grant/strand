@@ -12,7 +12,8 @@
 #                 a table value is a block such as `enter { … }`, and
 #                 `play` is written as the statement `play name`), or a
 #                 string for a text slot (subject_body, with, extra,
-#                 below, card_width, card_body, decls)
+#                 below, card_width, card_body, decls, pop_size,
+#                 card_height)
 #   rules         standing steps before boot (`text late 1 via waker`)
 #   screen_scale, hz, reduce_motion
 #   pre, mid, post  steps at those places
@@ -24,6 +25,8 @@
 
 [defaults]
 subject_body = 'text "iiii" { shrink: 0; color: #ff00ff }'
+pop_size = '; width: 280; height: 60'
+card_height = '; height: 50'
 
 # ---- poses ----------------------------------------------------------------
 
@@ -74,6 +77,21 @@ slots.card_width = " ~ spring(700, 0.7)"
 name = "text-estimate-far"
 about = "the subject's text is wide letters, its estimate far narrower than its shaped size"
 slots.subject_body = 'text "WWWWWWWW" { shrink: 0; color: #ff00ff }'
+
+[[effect]]
+name = "flip-nested"
+about = """two keyed groups in the card swap places when `wide` turns on, and the two
+keyed boxes inside each swap too: FLIP scopes nested, each glide carrying the
+ones inside it"""
+slots.card_body = 'row { gap: 4; for g in (wide ? ["q", "p"] : ["p", "q"]) key g { row { gap: 2; pad: 2; bg: #404060; for n in (wide ? ["b", "a"] : ["a", "b"]) key n { box { width: n == "a" ? 6 : 12; height: 8; bg: g == "p" ? #ffffff : #00ff00 } } } } }'
+
+[[effect]]
+name = "popup-content-height"
+about = """the popup sizes its height by its content, and the card's height springs
+taller when `wide` turns on (`~ spring(500, 0.8)`): the surface grows to it at
+once and the card springs inside it, its top staying where it was"""
+slots.pop_size = '; width: 280'
+slots.card_height = '; height: wide ? 80 : 50 ~ spring(500, 0.8)'
 
 # ---- motion ---------------------------------------------------------------
 
@@ -126,6 +144,24 @@ slots.subject = { backdrop = "blur(6)" }
 name = "clip"
 about = "the subject clips its content to its rounded box"
 slots.subject = { clip = "true", radius = "4" }
+
+[[effect]]
+name = "shadow"
+about = """the subject casts a drop shadow (`shadow: 0 2px 6px #000000aa`), which
+reaches past its box: each frame it moves repaints where it was and is"""
+slots.subject = { shadow = "0 2px 6px #000000aa" }
+
+[[effect]]
+name = "roll-text"
+about = """the subject's text is a number that rolls (`roll: true`) from 41 to 42 when
+`wide` turns on, the changed digit rolling out as the new one rolls in"""
+slots.subject_body = 'text wide ? "42" : "41" { shrink: 0; color: #ff00ff; roll: true }'
+
+[[effect]]
+name = "colour-shift"
+about = """the subject's background changes colour when `wide` turns on, springing in
+OKLab while what it is paired with moves or sizes it"""
+slots.subject = { bg = "wide ? #ffcc00 : #3366ff" }
 
 # ---- perturbations and environment ------------------------------------------
 

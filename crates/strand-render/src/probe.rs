@@ -38,7 +38,7 @@ use std::ops::{BitOr, BitOrAssign};
 use std::sync::Arc;
 use std::time::Duration;
 
-use strand_scene::{Backend, LogicalRect, NodeId, NodeKind, SurfaceId};
+use strand_scene::{Backend, Color, LogicalRect, NodeId, NodeKind, Paint, SurfaceId};
 use strand_text::TextLayout;
 
 use crate::PaintTimes;
@@ -70,6 +70,9 @@ pub struct FrameTrace {
     pub text_held: u32,
     /// Wall-clock times: advisory only, never deterministic.
     pub times: PaintTimes,
+    /// (eval-coverage) The weight the frame was blended over its
+    /// crossfade snapshot at (a theme swap's crossfade), if it was.
+    pub fade: Option<f32>,
     /// Every node drawn, or found hidden, in paint order (a parent
     /// before its children). Unplaced nodes and the subtrees of hidden
     /// nodes are absent.
@@ -117,6 +120,70 @@ pub struct NodeTrace {
     /// it there; surface logical pixels, before `scale` and `rotate`.
     /// `None` when it drew no glyphs (an estimate, an empty text).
     pub ink: Option<LogicalRect>,
+    /// (eval-coverage) What it painted itself this frame (its subtree's
+    /// paint is its children's): empty for a hidden node.
+    pub paint: NodePaint,
+}
+
+/// (eval-coverage) What a node painted itself in one frame, read from
+/// the display items it added to the flattened scene (not from pixels):
+/// the colours each item was drawn in, where its shadows reach, and which
+/// text its glyphs came from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodePaint {
+    /// Its fills, in paint order: its background (a meter's track and
+    /// value, a button's themed one).
+    pub fills: Vec<Paint>,
+    /// Its borders' paints.
+    pub borders: Vec<Paint>,
+    /// Its drop shadows, a box's glow included.
+    pub shadows: Vec<ShadowDrawn>,
+    /// Its glyphs, by the text they were shaped from and the paint they
+    /// were drawn in.
+    pub glyphs: Vec<GlyphsDrawn>,
+}
+
+impl NodePaint {
+    pub fn is_empty(&self) -> bool {
+        self.fills.is_empty()
+            && self.borders.is_empty()
+            && self.shadows.is_empty()
+            && self.glyphs.is_empty()
+    }
+}
+
+/// One drop shadow as drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowDrawn {
+    pub color: Color,
+    /// The area it may cover (its offset, spread box grown by its blur's
+    /// reach), surface logical pixels, before transforms.
+    pub extent: LogicalRect,
+}
+
+/// A node's glyphs from one text, drawn in one paint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphsDrawn {
+    /// Its colour (`Paint::Solid`), or the `fill:` it was painted with.
+    pub paint: Paint,
+    /// The colours of its span slots (marks, markup links), if any.
+    pub spans: Vec<Color>,
+    /// The text its layout was shaped from; `None` when the renderer
+    /// does not know it (a layout from before the trace was on).
+    pub text: Option<Arc<str>>,
+    /// Which of that layout's glyphs were drawn (indices in visual
+    /// order), when not all of them were: a rolling text's letters
+    /// rolling out of an older text, or in from the new one.
+    pub subset: Option<Vec<u32>>,
+}
+
+/// (eval-coverage) A shaped text as the trace names it: its text and its
+/// glyphs' places in its layout (physical pixels, in visual order), so a
+/// letter drawn alone (`roll: true`, `letters`) is found in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProbeText {
+    pub(crate) text: Arc<str>,
+    pub(crate) glyphs: Arc<[(i32, i32)]>,
 }
 
 /// The paint offsets between a node's laid box and its drawn box,
@@ -383,6 +450,7 @@ impl Probe {
         layout_nodes: usize,
         pending: usize,
         times: PaintTimes,
+        fade: Option<f32>,
     ) {
         for (h, _) in &mut self.held {
             h.paints += 1;
@@ -405,6 +473,7 @@ impl Probe {
             text_pending: count(pending as u64),
             text_held: count(self.held.len() as u64),
             times,
+            fade,
             nodes: f.trace.clone().unwrap_or_else(|| Arc::from([])),
         });
     }

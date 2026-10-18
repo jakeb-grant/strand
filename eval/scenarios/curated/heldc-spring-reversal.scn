@@ -1,0 +1,30 @@
+id     = "heldc-spring-reversal"
+about  = "A pill springs to the right; three frames in it is sent back and reverses from where it is, keeping its speed, then rests at its start."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state right = false
+bar Top {
+  height: 30
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: left_cap; width: 12; height: 12; radius: 3; bg: #e06c75 }
+    box { id: pill; width: 40; height: 12; radius: full; bg: #3a7bd5
+          x: right ? 180 : 0 }
+  }
+}
+
+=== steps
+rest
+mark out
+set right true
+intend #pill moves
+frames 3
+mark back
+set right false
+intend #pill moves
+rest
+mark settled
+frames 10
+expect still #pill
+expect still #left_cap

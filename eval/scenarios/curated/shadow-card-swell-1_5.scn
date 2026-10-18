@@ -1,0 +1,62 @@
+id     = "shadow-card-swell-1_5"
+about  = """shadow-card-swell at a screen scale of 1.5, where a shadow's blurred edge
+and its box fall between physical pixels. Two shadowed cards in a panel, each as wide as its
+content: a chip enters the first card's row scaling up from 0.6, so the card
+widens at once to make room (layout lengths snap) and its shadow follows its
+box; a note mounted above them pushes both cards down, their shadows moving
+with them. The chips already there and the heading stay still. A drop shadow
+reaches past its box, so the frames these cards change in repaint where the
+shadows were and where they now are (the `redraw` check holds every buffer to
+a full repaint)."""
+screen = { width = 320, scale = 1.5 }
+
+=== shell.strand
+state more = false
+state noted = false
+panel Cards {
+  anchor: top; open: true
+  col { id: deck; width: 280; pad: 16; gap: 14; align: start; bg: #15171c
+    text "Devices" { id: heading; color: #e6e6e6 }
+    if noted {
+      box { id: note; width: 120; height: 18; radius: 4; bg: #3b4252
+            enter { opacity: 0; height: 0 } }
+    }
+    row { id: first; gap: 6; pad: 8; radius: 10; bg: #23262e; align: center
+          shadow: 0 4px 12px #000000aa
+      box { id: chip_a; width: 24; height: 16; radius: 4; bg: #61afef }
+      box { id: chip_b; width: 24; height: 16; radius: 4; bg: #98c379 }
+      if more {
+        box { id: chip_c; width: 40; height: 16; radius: 4; bg: #e5c07b
+              enter { opacity: 0; scale: 0.6 } }
+      }
+    }
+    box { id: second; width: 200; height: 36; radius: 10; bg: #2c313a
+          shadow: 0 6px 18px #000000cc, 0 1px 2px #00000080 }
+  }
+}
+
+=== steps
+rest
+mark chip
+set more true
+intend #chip_c enters
+intend #first changes
+rest
+expect still #chip_a
+expect still #heading
+expect visible #chip_c
+mark note
+set noted true
+intend #note enters
+intend #first moves y
+intend #chip_a moves y
+intend #chip_b moves y
+intend #chip_c moves y
+intend #second moves y
+rest
+expect still #heading
+expect visible #note
+mark settled
+frames 10
+expect still #first
+expect still #second

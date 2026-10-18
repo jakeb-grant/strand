@@ -1,0 +1,50 @@
+id     = "heldc-list-reorder"
+about  = "Four keyed rows in a panel are reordered; the rows glide to their new slots, and a second reorder in flight glides on from where they are."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state flip = false
+panel Stack {
+  anchor: top; open: true
+  col { id: list; width: 160; gap: 4; pad: 6; bg: #1d2027; radius: 8
+    for n in (flip ? ["d", "b", "a", "c"] : ["a", "b", "c", "d"]) key n {
+      row { height: 22; pad: 0, 6; gap: 6; align: center; radius: 4; bg: #2f3542
+        box { size: 10; radius: full; bg: #e0b04a }
+        text n { color: #e8e8e8 }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark reorder
+toggle flip
+intend panel>col>row[0] moves
+intend panel>col>row[1] moves
+intend panel>col>row[2] moves
+intend panel>col>row[3] moves
+intend text("a") moves
+intend text("b") moves
+intend text("c") moves
+intend text("d") moves
+rest
+mark interrupted
+toggle flip
+intend panel>col>row[0] moves
+intend panel>col>row[1] moves
+intend panel>col>row[2] moves
+intend panel>col>row[3] moves
+intend text("a") moves
+intend text("b") moves
+intend text("c") moves
+intend text("d") moves
+frames 5
+toggle flip
+rest
+mark settled
+frames 10
+expect still #list
+expect still text("a")
+expect still text("d")

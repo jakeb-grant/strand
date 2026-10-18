@@ -1563,7 +1563,8 @@ impl<'a> Flattener<'a> {
             },
         );
         #[cfg(feature = "eval-hooks")]
-        if let Some(t) = probe {
+        if let Some(mut t) = probe {
+            t.paint = super::probe::paint(&self.out.items[own_start..], s, &self.extras.texts);
             let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
             let hidden = inert.then_some(crate::probe::Hidden::Inert);
             self.probe_push(t, (opacity, [sx, sy], turn), frame, self.xform, hidden);

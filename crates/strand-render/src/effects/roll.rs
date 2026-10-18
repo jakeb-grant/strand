@@ -40,6 +40,10 @@ pub(crate) struct Rolls {
     nodes: HashMap<NodeId, Roll>,
     /// Texts a preview saw change: the next painted frame starts the roll.
     pending: HashSet<NodeId>,
+    /// (eval-coverage) Texts the scene being flattened lays out for the
+    /// first time, in a preview: shown once a frame paints that scene
+    /// ([`Rolls::painted`]).
+    previewed: Vec<(NodeId, Arc<TextLayout>)>,
 }
 
 /// The glyphs of `l` in visual order.
@@ -82,6 +86,13 @@ impl Rolls {
                         from: None,
                     },
                 );
+            } else {
+                // (eval-coverage) A surface at rest paints the scene
+                // `update` flattened: what it lays out is shown when that
+                // scene is painted, so a text whose every frame so far was
+                // a preview's rolls its first change. One whose preview
+                // is never painted (another replaced it) never was shown.
+                self.previewed.push((id, layout.clone()));
             }
             return (None, false);
         };
@@ -134,6 +145,23 @@ impl Rolls {
     /// A preview saw a text under `under` change.
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
+    }
+
+    /// (eval-coverage) The texts the scene just flattened laid out first
+    /// in a preview, for the scene to carry.
+    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, Arc<TextLayout>)> {
+        std::mem::take(&mut self.previewed)
+    }
+
+    /// (eval-coverage) A frame painted a scene a preview flattened: the
+    /// texts it laid out first are shown.
+    pub(crate) fn painted(&mut self, first: &[(NodeId, Arc<TextLayout>)]) {
+        for (id, layout) in first {
+            self.nodes.entry(*id).or_insert_with(|| Roll {
+                shown: layout.clone(),
+                from: None,
+            });
+        }
     }
 
     /// Drops texts `keep` rejects.

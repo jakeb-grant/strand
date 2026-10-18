@@ -67,6 +67,24 @@ fn pair(p: [f32; 2]) -> String {
     }
 }
 
+/// (eval-coverage) What a row painted itself, as the recording writes
+/// it (`crate::paint`), or nothing.
+fn paint(r: &Row) -> String {
+    let Some(p) = &r.paint else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for (name, v) in [("bg", &p.bg), ("bd", &p.bd), ("sh", &p.sh), ("fg", &p.fg)] {
+        if !v.is_empty() {
+            parts.push(format!("{name}={}", v.join("/")));
+        }
+    }
+    if !p.gl.is_empty() {
+        parts.push(format!("gl={:?}", p.gl));
+    }
+    format!(" | {}", parts.join(" "))
+}
+
 fn line(k: u32, r: &Row, mark: bool) -> String {
     let mot = motion_names(r.mot);
     let inherited = motion_names(r.emot & !r.mot);
@@ -78,7 +96,7 @@ fn line(k: u32, r: &Row, mark: bool) -> String {
         m += &format!("^{}", inherited.join("+"));
     }
     format!(
-        "{}{:>5} {:>8.2} {:>8.2} {:>7.2} {:>7.2} | {:>8.2} {:>8.2} {:>7.2} {:>7.2} | {:>5.3} {:>5.3} | {:<9} {:<3} | {:<22} | {:<14} | {} {} {} {} {}",
+        "{}{:>5} {:>8.2} {:>8.2} {:>7.2} {:>7.2} | {:>8.2} {:>8.2} {:>7.2} {:>7.2} | {:>5.3} {:>5.3} | {:<9} {:<3} | {:<22} | {:<14} | {} {} {} {} {}{}",
         if mark { '*' } else { ' ' },
         k,
         r.visual[0],
@@ -103,6 +121,7 @@ fn line(k: u32, r: &Row, mark: bool) -> String {
         pair(r.spring),
         pair(r.glide),
         pair(r.morph),
+        paint(r),
     )
 }
 
@@ -176,7 +195,7 @@ pub fn explain(trace: &RunTrace, findings: &[Finding], ask: &Ask) -> Result<Stri
         );
         let _ = writeln!(
             out,
-            "     k   visual x        y       w       h |   laid x        y       w       h |    op   own | hidden    txt | motions (^ inherited)  | authored       | offset parts: inherited written spring glide morph"
+            "     k   visual x        y       w       h |   laid x        y       w       h |    op   own | hidden    txt | motions (^ inherited)  | authored       | offset parts: inherited written spring glide morph | paint"
         );
         let mine: Vec<&Finding> = picked
             .iter()

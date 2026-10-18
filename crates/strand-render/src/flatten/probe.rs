@@ -3,12 +3,18 @@
 //! built from the locals `Flattener::node` already has (nothing is
 //! sampled twice: a spring's value is the one the frame draws).
 
-use strand_scene::{LogicalRect, NodeId, NodeKind, Prop, Scale};
+use std::collections::HashMap;
+
+use strand_scene::{LogicalRect, NodeId, NodeKind, Paint, Prop, Scale};
+use strand_text::TextKey;
 use vello_cpu::kurbo;
 
-use super::Flattener;
 use super::text::{Shaped, pick};
-use crate::probe::{Axes, Hidden, Motions, NodeTrace, OffsetParts, TextDrawn};
+use super::{DisplayItem, Flattener, Item};
+use crate::probe::{
+    Axes, GlyphsDrawn, Hidden, Motions, NodePaint, NodeTrace, OffsetParts, ProbeText, ShadowDrawn,
+    TextDrawn,
+};
 
 /// What `Flattener::node` knows of a node's motion once its springs,
 /// `play`, lean, jelly and glide are sampled.
@@ -134,8 +140,94 @@ impl Seen {
             text: self.text,
             fit: self.fit,
             ink: None,
+            paint: NodePaint::default(),
         }
     }
+}
+
+/// (eval-coverage) What a node painted itself: `items` are the display
+/// items it added (its own, before its children's), on a surface `s`
+/// device pixels a logical one; `texts` names the layouts' texts. Glyph
+/// items from one text in one paint are one entry, the letters a roll or
+/// `letters` draws one by one gathered back.
+pub(super) fn paint(
+    items: &[DisplayItem],
+    s: f64,
+    texts: &HashMap<TextKey, ProbeText>,
+) -> NodePaint {
+    let mut out = NodePaint::default();
+    // Per entry of `out.glyphs`: the glyphs of its layout drawn so far,
+    // and how many it has (unknown without its text).
+    let mut drawn: Vec<(Vec<u32>, Option<usize>)> = Vec::new();
+    let lg = |v: f64| (v / s) as f32;
+    for i in items {
+        match &i.item {
+            Item::Fill { paint, .. } => out.fills.push(paint.clone()),
+            Item::Border { paint, .. } => out.borders.push(paint.clone()),
+            Item::Shadow { color, extent, .. } => out.shadows.push(ShadowDrawn {
+                color: *color,
+                extent: LogicalRect::new(
+                    lg(extent.x0),
+                    lg(extent.y0),
+                    lg(extent.width()),
+                    lg(extent.height()),
+                ),
+            }),
+            Item::Glyphs {
+                layout,
+                color,
+                spans,
+                fill,
+                ..
+            } => {
+                let source = texts.get(&layout.key);
+                let paint = fill
+                    .as_ref()
+                    .map_or(Paint::Solid(*color), |f| f.paint.clone());
+                // Its glyphs' places in the layout it was shaped as.
+                let at: Vec<u32> = layout
+                    .runs
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter())
+                    .enumerate()
+                    .map(|(n, g)| {
+                        source
+                            .and_then(|t| t.glyphs.iter().position(|p| *p == (g.x, g.y)))
+                            .map_or(n as u32, |p| p as u32)
+                    })
+                    .collect();
+                let text = source.map(|t| t.text.clone());
+                let found = out
+                    .glyphs
+                    .iter()
+                    .position(|g| g.text == text && g.paint == paint && g.spans == *spans);
+                let n = match found {
+                    Some(n) => n,
+                    None => {
+                        out.glyphs.push(GlyphsDrawn {
+                            paint,
+                            spans: spans.clone(),
+                            text,
+                            subset: None,
+                        });
+                        drawn.push((Vec::new(), source.map(|t| t.glyphs.len())));
+                        out.glyphs.len() - 1
+                    }
+                };
+                drawn[n].0.extend(at);
+            }
+            _ => {}
+        }
+    }
+    for (g, (mut at, all)) in out.glyphs.iter_mut().zip(drawn) {
+        at.sort_unstable();
+        at.dedup();
+        // Indices are in sort order and distinct: as many as it has is
+        // every one of them.
+        let whole = all.is_none_or(|n| at.len() == n);
+        g.subset = (!whole).then_some(at);
+    }
+    out
 }
 
 /// The axes of the props that place a node and that `on` holds for.

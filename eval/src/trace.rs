@@ -17,12 +17,14 @@ pub const SCHEMA: u32 = 1;
 const OLD_COLS: usize = 34;
 /// The columns of a row before `fit`, `ink` (still read).
 const FLIGHT_COLS: usize = 36;
+/// The columns of a row before `paint` (still read).
+const INK_COLS: usize = 38;
 
 /// The node row's columns, in order (`Row`'s array form).
-pub const COLS: [&str; 38] = [
+pub const COLS: [&str; 39] = [
     "key", "s", "x", "y", "w", "h", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "oo",
     "sx", "sy", "rot", "mot", "emot", "auth", "hid", "txt", "ix", "iy", "wx", "wy", "spx", "spy",
-    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink",
+    "gx", "gy", "mx", "my", "fx", "fy", "fit", "ink", "paint",
 ];
 
 /// A rect, `[x, y, w, h]`.
@@ -262,6 +264,10 @@ pub struct Frame {
     /// at all from a full repaint of the same frame. Never in the digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub redraw: BTreeMap<u32, RedrawRec>,
+    /// (eval-coverage) Each painted surface blended over its crossfade
+    /// snapshot (a theme swap's), and the weight it was blended at.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fades: BTreeMap<u32, f32>,
 }
 
 /// How a painted surface's buffer, left by a partial redraw at its
@@ -363,6 +369,9 @@ pub struct Row {
     /// A text's glyphs as drawn: the ink of the layout it drew, clipped
     /// where the frame clips it (`[x, y, w, h]`, before transforms).
     pub ink: Option<Rect>,
+    /// (eval-coverage) What it painted itself (`crate::paint`); `None`:
+    /// nothing.
+    pub paint: Option<crate::paint::PaintRec>,
 }
 
 /// `v` to 1/64.
@@ -404,6 +413,7 @@ impl Serialize for Row {
         }
         seq.serialize_element(&self.fit.map(q))?;
         seq.serialize_element(&self.ink.map(|r| r.map(q)))?;
+        seq.serialize_element(&self.paint)?;
         seq.end()
     }
 }
@@ -412,8 +422,9 @@ impl<'de> Deserialize<'de> for Row {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v: Vec<serde_json::Value> = Vec::deserialize(d)?;
         // A trace from before `fx`, `fy` were recorded (an A/B against
-        // an earlier revision) reads with nothing in flight.
-        if ![COLS.len(), FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
+        // an earlier revision) reads with nothing in flight; one from
+        // before `fit` and `ink`, or before `paint`, without them.
+        if ![COLS.len(), INK_COLS, FLIGHT_COLS, OLD_COLS].contains(&v.len()) {
             return Err(D::Error::custom(format!(
                 "a node row has {} columns, not {}",
                 v.len(),
@@ -479,6 +490,13 @@ impl<'de> Deserialize<'de> for Row {
                     }
                 }
             },
+            paint: match v.get(38) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(p) => Some(
+                    serde_json::from_value(p.clone())
+                        .map_err(|_| D::Error::custom("column paint is not a paint"))?,
+                ),
+            },
         })
     }
 }
@@ -525,6 +543,9 @@ impl RunTrace {
             put(&f.regions);
             put(&(f.scale, f.driven));
             put(&(&f.origins, &f.poses));
+            if !f.fades.is_empty() {
+                put(&f.fades);
+            }
         }
         put(&self.segments);
         put(&self.rests);

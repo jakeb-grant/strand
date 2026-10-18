@@ -1,0 +1,51 @@
+id     = "heldc-popup-grow-shrink"
+about  = "A popup under a bar button opens; a row is added to its card (it grows), then taken away again (it collapses and the card shrinks back)."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state open = false
+state more = false
+bar Top {
+  height: 30
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: anchor; size: 20; radius: 6; bg: #444b57
+      popup { open: <-> open
+        col { id: card; width: 160; pad: 8; gap: 6; bg: #20242c; radius: 10
+          box { id: first; height: 20; radius: 4; bg: #5b8def }
+          if more {
+            box { id: extra; height: 40; radius: 4; bg: #8bd17c
+                  enter { height: 0; opacity: 0 } }
+          }
+          box { id: last; height: 12; radius: 4; bg: #c678dd }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+intend #card enters
+rest
+mark grow
+set more true
+intend #extra enters
+intend #card changes
+intend #last moves
+rest
+shot grown
+mark shrink
+set more false
+intend #extra exits
+intend #card changes
+intend #last moves
+rest
+mark settled
+frames 10
+expect hidden #extra
+expect still #card
+expect still #first
+expect still #last

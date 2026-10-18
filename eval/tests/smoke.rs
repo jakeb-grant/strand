@@ -254,6 +254,33 @@ fn a_selector_matching_nothing_is_an_error_at_its_line() {
     assert!(e.ends_with(&want), "{e}");
 }
 
+/// (eval-coverage) `intend #count enters` written before the step that
+/// mounts `#count` names the node once it shows: the segment's intend
+/// holds its key, and the run goes on.
+#[test]
+fn an_intend_names_a_node_its_segment_mounts_later() {
+    let text = FOCUS_OFF.replace("set dnd false\n", "intend #count enters\nset dnd false\n");
+    assert_ne!(text, FOCUS_OFF);
+    let t = go(&text);
+    let count = key(&t, "count");
+    let seg = t.segments.iter().find(|s| s.name == "focus-off").unwrap();
+    let rec = seg.intends.iter().find(|r| r.what == "enters").unwrap();
+    assert_eq!(rec.keys, vec![count], "{:#?}", seg.intends);
+}
+
+/// (eval-coverage) An intend that matches no node by the end of its
+/// segment is an error at its line.
+#[test]
+fn an_intend_that_never_matches_is_an_error_at_its_line() {
+    let text = FOCUS_OFF.replace("set dnd false\n", "intend #nothing enters\nset dnd false\n");
+    let line = text.lines().position(|l| l.contains("#nothing")).unwrap() + 1;
+    let e = run(&scenario(&text), &RunOptions::default())
+        .unwrap_err()
+        .to_string();
+    let want = format!("smoke.scn:{line}: `#nothing` matched no node before its segment ended");
+    assert!(e.ends_with(&want), "{e}");
+}
+
 /// On main (bugs 24 and 25 fixed) the focus-off scenario passes every
 /// check it runs, its twin included.
 #[test]
@@ -604,30 +631,37 @@ rest
     assert_eq!(last.flight, [0.0, 0.0], "{last:?}");
 }
 
-/// A row of a trace from before the in-flight columns, or from before
-/// the text's `fit` and `ink` (an A/B against an earlier revision),
-/// still reads, with nothing in flight and no ink; any other width is
-/// refused.
+/// A row of a trace from before the in-flight columns, from before the
+/// text's `fit` and `ink`, or from before its paint (an A/B against an
+/// earlier revision), still reads, with nothing in flight, no ink and no
+/// paint; any other width is refused.
 #[test]
 fn a_row_without_the_flight_columns_still_reads() {
     let t = go(FOCUS_OFF);
     let r = t.frames[0].n[0].clone();
+    assert!(r.paint.is_some(), "{r:?}");
     let mut v = serde_json::to_value(&r).unwrap();
     let a = v.as_array_mut().unwrap();
     assert_eq!(a.len(), strand_eval::trace::COLS.len());
-    a.truncate(a.len() - 2);
+    a.truncate(a.len() - 1);
+    let back: Row = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(back.paint, None);
+    assert_eq!((back.fit, back.ink), (r.fit, r.ink));
+    v.as_array_mut()
+        .unwrap()
+        .truncate(strand_eval::trace::COLS.len() - 3);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!((back.fit, back.ink), (None, None));
     assert_eq!(back.flight, r.flight);
     v.as_array_mut()
         .unwrap()
-        .truncate(strand_eval::trace::COLS.len() - 4);
+        .truncate(strand_eval::trace::COLS.len() - 5);
     let back: Row = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(back.flight, [0.0, 0.0]);
     assert_eq!(back.inherited, r.inherited);
     v.as_array_mut().unwrap().pop();
     let e = serde_json::from_value::<Row>(v).unwrap_err().to_string();
-    assert!(e.contains("has 33 columns, not 38"), "{e}");
+    assert!(e.contains("has 33 columns, not 39"), "{e}");
 }
 
 /// A `scale` step changes the screen's scale mid-run: each frame records

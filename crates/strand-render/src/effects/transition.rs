@@ -448,6 +448,9 @@ pub(crate) enum Decode {
 #[derive(Debug, Default)]
 pub(crate) struct ImageSwaps {
     nodes: HashMap<NodeId, ImageSwap>,
+    /// (eval-coverage) Sources the scene being flattened draws for the
+    /// first time, in a preview: shown once a frame paints that scene.
+    previewed: Vec<(NodeId, String)>,
 }
 
 impl ImageSwaps {
@@ -471,6 +474,10 @@ impl ImageSwaps {
                         from: None,
                     },
                 );
+            } else {
+                // (eval-coverage) Shown when a frame paints the preview's
+                // scene, as a surface at rest does (`Rolls::roll`).
+                self.previewed.push((id, source.to_string()));
             }
             return (None, false);
         };
@@ -525,6 +532,23 @@ impl ImageSwaps {
             if s.from.is_some() && gone(*id) {
                 s.from = None;
             }
+        }
+    }
+
+    /// (eval-coverage) The sources the scene just flattened drew first
+    /// in a preview, for the scene to carry.
+    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, String)> {
+        std::mem::take(&mut self.previewed)
+    }
+
+    /// (eval-coverage) A frame painted a scene a preview flattened: the
+    /// sources it drew first are shown.
+    pub(crate) fn painted(&mut self, first: &[(NodeId, String)]) {
+        for (id, source) in first {
+            self.nodes.entry(*id).or_insert_with(|| ImageSwap {
+                shown: source.clone(),
+                from: None,
+            });
         }
     }
 

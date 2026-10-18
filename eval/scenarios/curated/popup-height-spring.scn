@@ -1,0 +1,51 @@
+id     = "popup-height-spring"
+about  = """A content-sized popup (no width or height of its own) under a bar button,
+whose card's height springs taller and back (`~ spring(500, 0.8)`): the popup's
+surface takes its content's size, growing at once to the taller one so the card
+springs inside it, and held at that size while the card springs shorter, until
+it settles (docs/decisions.md popup-shrink); the card's last row rides its
+bottom edge. The rows above it stay still;
+the bar's other button never moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state open = false
+state tall = false
+bar Top {
+  height: 30
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: other; size: 20; radius: 6; bg: #3b4252 }
+    box { id: anchor; size: 20; radius: 6; bg: #444b57
+      popup { id: pop; open: open
+        col { id: card; width: 160; pad: 8; gap: 6; bg: #20242c; radius: 10
+              height: tall ? 140 : 70 ~ spring(500, 0.8)
+          box { id: first; height: 20; radius: 4; bg: #5b8def }
+          box { id: grow; grow: 1; radius: 4; bg: #2e3440 }
+          box { id: last; height: 12; radius: 4; bg: #c678dd }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+intend #card enters
+rest
+expect visible #card
+mark tall
+set tall true
+rest
+expect still #first
+expect still #other
+mark short
+set tall false
+rest
+expect still #first
+expect still #other
+mark close
+set open false
+rest
+expect hidden #card

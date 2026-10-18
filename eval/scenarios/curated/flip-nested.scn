@@ -1,0 +1,44 @@
+id     = "flip-nested"
+about  = """Nested FLIP scopes (design.md "Motion and time": layout changes glide): a
+centred column holds a toolbar row; the banner above it grows taller on its
+height's spring and the row's own gap widens at once, so the row moves down with
+the banner while it glides sideways to its new centre, and its buttons glide
+apart inside it. A child's glide is relative to its
+parent's: each button follows the row and adds only its own move within it,
+never the row's twice. The box beside the column stays still."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state wide = false
+panel Tools {
+  anchor: top; open: true
+  row { id: frame; gap: 10; pad: 8; align: start; bg: #121418
+    box { id: side; width: 30; height: 30; radius: 6; bg: #4b5263 }
+    col { id: stack; width: 220; gap: 6; align: center; bg: #1d2027; pad: 6
+      box { id: banner; width: 120; height: wide ? 30 : 10; radius: 4; bg: #3e4451 }
+      row { id: tools; height: 24; align: center; radius: 6; bg: #2f3542
+            gap: wide ? 14 : 4
+        box { id: b1; size: 14; radius: 3; bg: #e06c75 }
+        box { id: b2; size: 14; radius: 3; bg: #98c379 }
+        box { id: b3; size: 14; radius: 3; bg: #61afef }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+expect still #side
+expect still #banner x
+mark narrow
+set wide false
+rest
+expect still #side
+mark settled
+frames 10
+expect still #tools
+expect still #b1
+expect still #b3

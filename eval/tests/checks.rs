@@ -887,6 +887,92 @@ fn a_glide_retargeted_from_its_layout_not_where_it_was_drawn_fails() {
     );
 }
 
+/// (eval-coverage) A node that enters in the segment travels from where it
+/// first shows: an enter pose sliding 89 px in on a spring, 46 px in its
+/// largest step, passes as the same slide of a node already there does;
+/// one that shows at its pose and jumps the whole way home in one tick
+/// still fails.
+#[test]
+fn an_enter_pose_slide_is_held_as_a_slide_of_a_node_already_there() {
+    let sc = scenario("");
+    let slide = |xs: [f32; 4]| {
+        shape(8, move |k| {
+            let anchor = row("anchor", [0.0, 0.0, 10.0, 10.0]);
+            let a = row("a", [8.0, 4.0, 220.0, 20.0]);
+            let m = Motions(Motions::PROP_SPRING.0 | Motions::ENTER.0);
+            match k {
+                0 => vec![anchor],
+                1..=4 => vec![anchor, a.at(xs[k as usize - 1], 4.0).mot(m).auth(Axes::X)],
+                _ => vec![anchor, a],
+            }
+        })
+    };
+    let t = slide([97.0, 51.0, 21.0, 8.0]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = slide([97.0, 97.0, 8.0, 8.0]);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Teleport, "a", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage) A node gliding across while a sibling's size spring
+/// lays it out anew down each frame follows its layout down, as the
+/// spring's other neighbours do: no glide of its own was retargeted on y.
+/// The same follow with a glide in flight on y is a retarget.
+#[test]
+fn a_glide_across_under_a_size_spring_follows_its_layout_down() {
+    let sc = scenario("");
+    let go = |gy: f32| {
+        shape(8, move |k| {
+            let banner = row("banner", [0.0, 0.0, 120.0, 2.0]);
+            let a = row("a", [133.0, 4.0, 50.0, 10.0]);
+            let ys = [4.0f32, 7.0, 12.0, 15.0, 16.0];
+            let xs = [133.0f32, 130.0, 127.0, 124.0, 123.0];
+            let i = (k as usize).min(4);
+            let mut b = banner;
+            b.drawn[3] = 2.0 + (ys[i] - 4.0);
+            b.visual[3] = b.drawn[3];
+            b.laid[3] = b.drawn[3];
+            if k == 0 {
+                return vec![b, a];
+            }
+            let b = b.mot(Motions::SIZE_SPRING).auth(Axes::H);
+            let mut a = a.laid_at(123.0, ys[i]).at(xs[i], ys[i]);
+            if k < 4 {
+                a = a.mot(Motions::GLIDE);
+                a.glide = [xs[i] - 123.0, if k < 3 { gy } else { 0.0 }];
+            }
+            vec![b, a]
+        })
+    };
+    let t = go(0.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = go(4.0);
+    let r = check(&sc, &t);
+    let f = r.failures(CheckId::Teleport);
+    assert!(
+        f.iter()
+            .any(|f| f.msg.starts_with("retarget") && f.axis.as_deref() == Some("y")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 // --- vanish
 
 fn blink(gone: impl Fn(u32) -> bool, m: Motions) -> RunTrace {

@@ -1,0 +1,56 @@
+id     = "roll-counter"
+about  = """Rolling numbers (design.md "Motion and time": `text pct(level) { roll: true
+}`): a counter in a bar rolls each changed digit over 300 ms, the old one up
+and out as the new one rolls in, the others staying put. It changes again one frame into a
+roll (it rolls on from the text on screen, the nearer of its two), then twice
+more, from 9 to 10 (every digit rolls when the count of digits changes) and to
+11 after a rest. A second counter, on the default spring, mounts with an `enter`
+pose and changes while it fades in and after. The box before them stays still."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state n = "41"
+state m = "7"
+state shown = false
+bar Top {
+  height: 30
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 16; height: 12; radius: 3; bg: #5c6370 }
+    text n { id: count; color: #ffffff; roll: true ~ 300ms }
+    if shown {
+      text m { id: badge; color: #e5c07b; roll: true; enter { opacity: 0; y: 6 } }
+    }
+    box { id: tail; width: 16; height: 12; radius: 3; bg: #5c6370 }
+  }
+}
+
+=== steps
+rest
+mark roll
+set n "42"
+frames 1
+set n "43"
+rest
+expect still #lead
+expect still #count
+mark digits
+set n "9"
+frames 3
+set n "10"
+rest
+mark again
+set n "11"
+rest
+expect still #lead
+mark badge
+set shown true
+intend #badge enters
+frames 2
+set m "8"
+rest
+expect visible #badge
+mark badge-roll
+set m "9"
+rest
+expect still #lead
+expect still #badge

@@ -5,7 +5,9 @@
 //! input region; per node on screen its drawn and visual boxes, effective
 //! opacity, scale, rotation, hidden reason, text state, place in its
 //! surface's paint order, and for a text its glyph ink and the width it
-//! was cut to. A surface not
+//! was cut to; per node its paint (`crate::paint`: the colours it drew
+//! itself, its shadows' extents and the text its glyphs came from), and
+//! per surface the weight a crossfade blended it at. A surface not
 //! painted at a tick keeps what it showed (as `checks::Timeline` reads a
 //! trace).
 //!
@@ -32,10 +34,14 @@
 //! ink=- fit=-`); `v=d` is a visual box equal to the drawn one, else
 //! `v=x,y,w,h`. `ord` is the node's place in its surface's paint order
 //! (0 first), `ink=x,y,w,h` a text's glyphs as drawn, `fit` the width a
-//! cut text was shaped for.
+//! cut text was shaped for. `bg`, `bd`, `sh` and `fg` are the node's
+//! fills, borders, shadows and glyph paints (`/` between several, `-`
+//! none), `gl` the texts its glyphs came from (a JSON array, its spaces
+//! written `\u0020`); a surface's `f` is its crossfade's weight (1/255).
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::paint::{PaintRec, paint_within, shadow_within};
 use crate::trace::{Frame, NodeMeta, PoseRec, Regions, Row, RunTrace, SurfaceInfo};
 
 /// Quanta per unit: logical px, opacity, scale, degrees.
@@ -118,6 +124,8 @@ pub struct NodeState {
     /// A text cut to its box: the width it was shaped for (`Row::fit`),
     /// 1/64 px.
     pub fit: Option<i64>,
+    /// What it painted itself (`Row::paint`).
+    pub paint: PaintRec,
 }
 
 /// A surface shown at a tick, quantised.
@@ -130,6 +138,9 @@ pub struct SurfaceState {
     pub pose: Option<[i64; 4]>,
     /// Where it takes input (`None`: the surface manager's).
     pub input: Option<Vec<[i64; 4]>>,
+    /// The weight its frame was blended over its crossfade snapshot at
+    /// (1/255), while one is.
+    pub fade: Option<i64>,
 }
 
 /// One painted tick: everything on screen.
@@ -173,6 +184,7 @@ fn node_state(r: &Row, z: u32) -> NodeState {
         rot: qz(f64::from(r.rotate), DEG),
         hidden: r.hidden.clone(),
         text: r.text.clone(),
+        paint: r.paint.clone().unwrap_or_default(),
     }
 }
 
@@ -226,6 +238,11 @@ impl Recording {
                             input(f.regions.get(sid))
                         } else {
                             was.and_then(|w| w.input.clone())
+                        },
+                        fade: if painted {
+                            f.fades.get(sid).map(|w| qz(f64::from(*w), OP))
+                        } else {
+                            was.and_then(|w| w.fade)
                         },
                     },
                 );
@@ -320,6 +337,9 @@ impl Recording {
                 if !tick.painted.contains(sid) {
                     continue;
                 }
+                if let Some(w) = s.fade {
+                    f.fades.insert(*sid, (w as f64 / OP) as f32);
+                }
                 if let Some(p) = s.pose {
                     f.poses.insert(
                         *sid,
@@ -365,6 +385,7 @@ impl Recording {
                     text: n.text.clone(),
                     ink: n.ink.map(|r| r.map(px)),
                     fit: n.fit.map(px),
+                    paint: (!n.paint.is_empty()).then(|| n.paint.clone()),
                     ..Row::default()
                 });
             }
@@ -382,6 +403,8 @@ pub struct Tol {
     pub op: i64,
     pub scale: i64,
     pub rot: i64,
+    /// A colour channel (1/255).
+    pub color: i64,
 }
 
 impl Tol {
@@ -391,6 +414,7 @@ impl Tol {
         op: 1,
         scale: 1,
         rot: 1,
+        color: 1,
     };
 
     /// `px` logical px on geometry, a quantum elsewhere: what a run must
@@ -532,6 +556,67 @@ fn node_diff(a: &NodeState, r: &NodeState, tol: Tol, out: &mut Vec<(String, Stri
             r.fit.map_or_else(|| "-".into(), |v| dec(v, PX)),
         ));
     }
+    let (pa, pr) = (&a.paint, &r.paint);
+    let same = |x: &[String], y: &[String], f: &dyn Fn(&str, &str) -> bool| {
+        x.len() == y.len() && x.iter().zip(y).all(|(u, v)| f(u, v))
+    };
+    let colour = |u: &str, v: &str| paint_within(u, v, tol.color);
+    for (name, x, y) in [
+        ("paint.bg", &pa.bg, &pr.bg),
+        ("paint.border", &pa.bd, &pr.bd),
+        ("paint.text", &pa.fg, &pr.fg),
+    ] {
+        if !same(x, y, &colour) {
+            out.push((name.into(), paint_list(x), paint_list(y)));
+        }
+    }
+    if !same(&pa.sh, &pr.sh, &|u, v| {
+        shadow_within(u, v, tol.color, tol.px)
+    }) {
+        out.push((
+            "paint.shadow".into(),
+            paint_list(&pa.sh),
+            paint_list(&pr.sh),
+        ));
+    }
+    if pa.gl != pr.gl {
+        out.push(("glyphs".into(), glyphs_text(&pa.gl), glyphs_text(&pr.gl)));
+    }
+}
+
+/// A list of paints as the text writes it: `/` between them, `-` none.
+fn paint_list(v: &[String]) -> String {
+    if v.is_empty() {
+        "-".into()
+    } else {
+        v.join("/")
+    }
+}
+
+fn unpaint_list(v: &str) -> Vec<String> {
+    if v == "-" {
+        Vec::new()
+    } else {
+        v.split('/').map(String::from).collect()
+    }
+}
+
+/// The texts a node's glyphs came from: a JSON array whose spaces are
+/// escaped (a line's fields are split at spaces), `-` none.
+fn glyphs_text(v: &[String]) -> String {
+    if v.is_empty() {
+        return "-".into();
+    }
+    serde_json::to_string(v)
+        .unwrap_or_else(|_| "[]".into())
+        .replace(' ', "\\u0020")
+}
+
+fn unglyphs(v: &str) -> Option<Vec<String>> {
+    if v == "-" {
+        return Some(Vec::new());
+    }
+    serde_json::from_str(v).ok()
 }
 
 fn ink_text(r: &Option<[i64; 4]>) -> String {
@@ -575,6 +660,14 @@ fn surface_diff(
     };
     if !input_same {
         out.push(("input".into(), input_text(&a.input), input_text(&r.input)));
+    }
+    let fade_same = match (a.fade, r.fade) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() <= tol.op,
+        _ => false,
+    };
+    if !fade_same {
+        out.push(("crossfade".into(), opt(&a.fade), opt(&r.fade)));
     }
 }
 
@@ -806,7 +899,7 @@ fn json_strs(s: &str) -> Option<Vec<String>> {
 }
 
 /// A node's fields as the text writes them, in order.
-fn node_fields(n: &NodeState) -> [(&'static str, String); 14] {
+fn node_fields(n: &NodeState) -> [(&'static str, String); 19] {
     [
         ("srf", n.surface.to_string()),
         ("x", dec(n.drawn[0], PX)),
@@ -829,12 +922,17 @@ fn node_fields(n: &NodeState) -> [(&'static str, String); 14] {
         ("ord", n.z.to_string()),
         ("ink", ink_text(&n.ink)),
         ("fit", n.fit.map_or_else(|| "-".into(), |v| dec(v, PX))),
+        ("bg", paint_list(&n.paint.bg)),
+        ("bd", paint_list(&n.paint.bd)),
+        ("sh", paint_list(&n.paint.sh)),
+        ("fg", paint_list(&n.paint.fg)),
+        ("gl", glyphs_text(&n.paint.gl)),
     ]
 }
 
 /// A node's first line leaves out what is at these (and `srf` at the
 /// first surface listed).
-const NODE_DEFAULTS: [(&str, &str); 9] = [
+const NODE_DEFAULTS: [(&str, &str); 14] = [
     ("v", "d"),
     ("op", "255"),
     ("sc", "1,1"),
@@ -844,18 +942,24 @@ const NODE_DEFAULTS: [(&str, &str); 9] = [
     ("ord", "0"),
     ("ink", "-"),
     ("fit", "-"),
+    ("bg", "-"),
+    ("bd", "-"),
+    ("sh", "-"),
+    ("fg", "-"),
+    ("gl", "-"),
 ];
 
-fn surface_fields(s: &SurfaceState) -> [(&'static str, String); 4] {
+fn surface_fields(s: &SurfaceState) -> [(&'static str, String); 5] {
     [
         ("z", list(&s.size, PX)),
         ("o", list(&s.origin, PX)),
         ("P", pose_text(&s.pose)),
         ("i", input_text(&s.input)),
+        ("f", opt(&s.fade)),
     ]
 }
 
-const SURFACE_DEFAULTS: [(&str, &str); 3] = [("o", "0,0"), ("P", "-"), ("i", "-")];
+const SURFACE_DEFAULTS: [(&str, &str); 4] = [("o", "0,0"), ("P", "-"), ("i", "-"), ("f", "-")];
 
 /// The surface a node's first line leaves out: the first listed.
 fn first_surface(rec: &Recording) -> u32 {
@@ -889,8 +993,8 @@ pub fn encode(rec: &Recording) -> String {
         out += &format!("N{i} {} {}\n", json_str(k), json_str(rec.label(k)));
     }
     let srf0 = first_surface(rec).to_string();
-    let mut last_s: BTreeMap<u32, [(&str, String); 4]> = BTreeMap::new();
-    let mut last_n: BTreeMap<&str, [(&str, String); 14]> = BTreeMap::new();
+    let mut last_s: BTreeMap<u32, [(&str, String); 5]> = BTreeMap::new();
+    let mut last_n: BTreeMap<&str, [(&str, String); 19]> = BTreeMap::new();
     let mut painted: Option<&Vec<u32>> = None;
     for t in &rec.ticks {
         if painted == Some(&t.painted) {
@@ -995,6 +1099,11 @@ fn set_node(n: &mut NodeState, name: &str, v: &str, vis_d: &mut bool) -> Option<
         "ink" => n.ink = Some(unlist(v, PX)?),
         "fit" if v == "-" => n.fit = None,
         "fit" => n.fit = Some(undec(v, PX)?),
+        "bg" => n.paint.bg = unpaint_list(v),
+        "bd" => n.paint.bd = unpaint_list(v),
+        "sh" => n.paint.sh = unpaint_list(v),
+        "fg" => n.paint.fg = unpaint_list(v),
+        "gl" => n.paint.gl = unglyphs(v)?,
         _ => return None,
     }
     Some(())
@@ -1026,6 +1135,8 @@ fn set_surface(s: &mut SurfaceState, name: &str, v: &str) -> Option<()> {
                     .collect::<Option<Vec<_>>>()?,
             )
         }
+        "f" if v == "-" => s.fade = None,
+        "f" => s.fade = Some(v.parse().ok()?),
         _ => return None,
     }
     Some(())

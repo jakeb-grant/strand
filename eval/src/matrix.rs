@@ -25,7 +25,7 @@ use crate::{Error, check_with};
 /// The props slots of the fixture; every other slot takes text.
 pub const PROP_SLOTS: [&str; 3] = ["row", "subject", "card"];
 /// The text slots of the fixture.
-pub const TEXT_SLOTS: [&str; 7] = [
+pub const TEXT_SLOTS: [&str; 9] = [
     "subject_body",
     "with",
     "extra",
@@ -33,6 +33,8 @@ pub const TEXT_SLOTS: [&str; 7] = [
     "card_width",
     "card_body",
     "decls",
+    "pop_size",
+    "card_height",
 ];
 /// Slots where two effects' text is joined rather than a conflict.
 const JOINED: [&str; 1] = ["decls"];

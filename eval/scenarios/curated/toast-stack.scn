@@ -1,0 +1,63 @@
+id     = "toast-stack"
+about  = """A vertical stack of toasts with large poses: each enters sliding 120 px in
+from the right while it fades, and leaves by its own exit pose, fading as its
+height collapses to 0 (an exit pose is the exit's own; only a node with none
+mirrors its enter). A toast added at the top pushes the others down; the
+middle one leaving lets the one under it slide up into its place; the last two
+leave together. The header above the stack stays still."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state call = false
+state mail = true
+state build = true
+bar Top {
+  height: 30
+}
+panel Toasts {
+  anchor: top; open: true
+  col { id: stack; width: 240; gap: 6; pad: 8; bg: #101216
+    text "Notifications" { id: header; color: #d0d0d0 }
+    if call {
+      row { id: t_call; width: 220; height: 34; gap: 8; pad: 0, 10; radius: 8; align: center
+            bg: #2b303b; enter { x: 120; opacity: 0 }; exit { opacity: 0; height: 0 }
+        box { size: 12; radius: full; bg: #a3be8c }
+        text "Incoming call" { color: #eceff4 }
+      }
+    }
+    if mail {
+      row { id: t_mail; width: 220; height: 34; gap: 8; pad: 0, 10; radius: 8; align: center
+            bg: #2b303b; enter { x: 120; opacity: 0 }; exit { opacity: 0; height: 0 }
+        box { size: 12; radius: full; bg: #88c0d0 }
+        text "New mail" { color: #eceff4 }
+      }
+    }
+    if build {
+      row { id: t_build; width: 220; height: 34; gap: 8; pad: 0, 10; radius: 8; align: center
+            bg: #2b303b; enter { x: 120; opacity: 0 }; exit { opacity: 0; height: 0 }
+        box { size: 12; radius: full; bg: #ebcb8b }
+        text "Build finished" { color: #eceff4 }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark add
+set call true
+rest
+expect still #header
+expect visible #t_call
+mark dismiss
+set mail false
+rest
+expect still #header
+expect still #t_call
+expect hidden #t_mail
+mark clear
+set call false
+set build false
+rest
+expect still #header
+expect hidden #t_build

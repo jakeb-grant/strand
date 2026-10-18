@@ -1,0 +1,45 @@
+id     = "heldc-stagger-enter-exit"
+about  = "Five dots enter one after another under a 40 ms stagger, rising and fading in; later they all fade out together; the box before them never moves."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state shown = false
+bar Top {
+  height: 30
+  row { id: dots; height: 24; gap: 6; align: center; pad: 0, 8; stagger: 40ms
+    box { id: lead; width: 16; height: 12; radius: 3; bg: #5c6370 }
+    if shown {
+      box { id: d1; size: 12; radius: full; bg: #98c379; enter { opacity: 0; y: 8 } }
+      box { id: d2; size: 12; radius: full; bg: #98c379; enter { opacity: 0; y: 8 } }
+      box { id: d3; size: 12; radius: full; bg: #98c379; enter { opacity: 0; y: 8 } }
+      box { id: d4; size: 12; radius: full; bg: #98c379; enter { opacity: 0; y: 8 } }
+      box { id: d5; size: 12; radius: full; bg: #98c379; enter { opacity: 0; y: 8 } }
+    }
+  }
+}
+
+=== steps
+rest
+mark enter
+set shown true
+intend #d1 enters
+intend #d2 enters
+intend #d3 enters
+intend #d4 enters
+intend #d5 enters
+rest
+shot entered
+mark exit
+set shown false
+intend #d1 exits
+intend #d2 exits
+intend #d3 exits
+intend #d4 exits
+intend #d5 exits
+rest
+mark settled
+frames 10
+expect hidden #d1
+expect hidden #d5
+expect still #lead

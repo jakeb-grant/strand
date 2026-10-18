@@ -1,0 +1,40 @@
+id            = "heldc-hover-tooltip"
+about         = "The pointer rests on a bar icon: its hover colour springs in and its tooltip shows after the delay; it moves to the next icon and that one's tooltip follows; it leaves and both go."
+screen        = { width = 300, scale = 1.0 }
+hz            = 60
+tooltip_delay = 300
+
+=== shell.strand
+bar Top {
+  height: 30
+  row { height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: wifi; size: 18; radius: 4; bg: #61afef; tooltip: "Wi-Fi: connected"
+          when hover { bg: #9fd0ff } }
+    box { id: vol; size: 18; radius: 4; bg: #c678dd; tooltip: "Volume 40%"
+          when hover { bg: #e2a8f0 } }
+    box { id: rest_box; size: 18; radius: 4; bg: #5c6370 }
+  }
+}
+
+=== steps
+rest
+mark hover
+pointer 17,15
+intend #wifi changes
+wait 450
+shot first-tip
+mark next
+glide 17,15 -> 43,15 over 150
+intend #wifi changes
+intend #vol changes
+wait 450
+shot second-tip
+mark leave
+glide 43,15 -> 250,15 over 100
+intend #vol changes
+rest
+mark settled
+frames 10
+expect still #wifi
+expect still #vol
+expect still #rest_box

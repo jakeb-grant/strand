@@ -1,0 +1,53 @@
+id     = "heldc-reduced-motion-toggle"
+about  = "A knob springs across while a square turns with time; reduced motion goes on mid-flight, so the knob lands at once and the square stops turning; the square is then taken away and, with reduced motion off again, the knob springs back."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state open = false
+state spinning = true
+bar Top {
+  height: 30
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    if spinning {
+      box { id: spin; size: 14; radius: 3; bg: #61afef; rotate: t * 90deg }
+    }
+    box { id: knob; width: 24; height: 14; radius: full; bg: #d19a66
+          x: open ? 150 : 0 }
+  }
+}
+
+=== steps
+frames 6
+mark move
+set open true
+intend #knob moves
+intend #spin changes
+frames 4
+mark reduce
+reduce-motion on
+intend #knob moves
+intend #spin changes
+rest
+mark reduced
+frames 10
+expect still #knob
+expect still #spin
+mark reduced-change
+set open false
+intend #knob moves
+rest
+mark reduced-still
+frames 10
+expect still #knob
+mark back
+set spinning false
+reduce-motion off
+set open true
+intend #knob moves
+intend #spin exits
+rest
+mark settled
+frames 10
+expect still #knob
+expect hidden #spin

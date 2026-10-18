@@ -1,7 +1,9 @@
 //! `teleport`: a moving node does not jump. Between two frames in which
 //! it shows, with any motion on it or an ancestor at either, each edge
 //! moves at most `max(teleport_px * 60 / hz, 0.75 * d) + tol` per tick
-//! between them. `d` is the segment's travel, the span of its way
+//! between them. `d` is the segment's travel (for a node that enters or
+//! leaves in the segment, from where it first shows or to where it last
+//! shows), the span of its way
 //! ([`super::way`]: where it starts, where it rests and every place a
 //! frame counted laid it out, so a size spring sent out and back within
 //! one segment travels its whole excursion, not the nothing between its
@@ -87,9 +89,20 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         _ => !any.is_empty(),
                     };
                     let travel = *travels.entry((*key, a as usize)).or_insert_with(|| {
+                        // (eval-coverage) A node that enters in the
+                        // segment travels from where it first shows, and
+                        // one that leaves to where it last shows: an
+                        // enter pose's slide is held as the same slide of
+                        // a node already there is.
+                        let mut shown = cx
+                            .tl
+                            .within(Some(s), seg.e)
+                            .filter_map(|j| cx.tl.row(j, key));
+                        let first = shown.next();
+                        let last = shown.next_back().or(first);
                         match (
-                            bi.and_then(|b| cx.tl.row(b, key)),
-                            ei.and_then(|e| cx.tl.row(e, key)),
+                            bi.and_then(|b| cx.tl.row(b, key)).or(first),
+                            ei.and_then(|e| cx.tl.row(e, key)).or(last),
                         ) {
                             (Some(b), Some(e)) => {
                                 let w = way(cx, key, s, seg.e, b, e, a);
@@ -129,8 +142,19 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     }
                     let dl = laid(r, a) - laid(q, a);
                     let offset_axis = matches!(a, super::Axis::X | super::Axis::Y);
+                    // (eval-coverage) A glide on the other axis only, while
+                    // something on the surface lays out anew each frame
+                    // (a sibling's size spring): the node follows its
+                    // layout there, as a size spring's neighbours do, and
+                    // no glide was retargeted on this axis.
+                    let n = if a == super::Axis::X { 0 } else { 1 };
+                    let follows = offset_axis
+                        && q.glide[n] == 0.0
+                        && r.glide[n] == 0.0
+                        && cx.lays_out(i, r.surface);
                     if glides
                         && offset_axis
+                        && !follows
                         && dl.abs() > 1.0f64.max(cx.tol)
                         && (d - dl).abs() <= cx.tol
                     {

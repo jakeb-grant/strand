@@ -27,6 +27,7 @@ pub mod harness;
 pub mod input;
 pub mod labels;
 pub mod matrix;
+pub mod paint;
 pub mod promote;
 pub mod recording;
 pub mod refs;

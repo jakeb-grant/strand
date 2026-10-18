@@ -1,0 +1,41 @@
+id     = "heldc-card-resize-150"
+about  = "At 1.5x, a shadowed card's body grows and then shrinks on a size spring; the footer under it moves with it and the header stays put."
+screen = { width = 300, scale = 1.5 }
+hz     = 60
+
+=== shell.strand
+state big = false
+panel Card {
+  anchor: top; open: true
+  col { id: card; width: 180; pad: 10; gap: 8; radius: 12; bg: #22262e
+        shadow: 0 4px 12px #00000066
+    row { id: head; height: 20; gap: 6; align: center
+      box { id: icon; size: 14; radius: full; bg: #e5c07b }
+      text "Battery" { id: label; color: #eeeeee }
+    }
+    box { id: body; height: big ? 64 : 23; radius: 6; bg: #3b4252 }
+    box { id: foot; height: 11; radius: 3; bg: #56b6c2 }
+  }
+}
+
+=== steps
+rest
+mark grow
+set big true
+intend #body changes
+intend #foot moves
+intend #card changes
+rest
+shot grown
+mark shrink
+set big false
+intend #body changes
+intend #foot moves
+intend #card changes
+rest
+mark settled
+frames 10
+expect still #card
+expect still #head
+expect still #label
+expect still #foot

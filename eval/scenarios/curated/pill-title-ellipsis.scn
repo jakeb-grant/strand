@@ -1,0 +1,42 @@
+id     = "pill-title-ellipsis"
+about  = """A window pill (an icon and an ellipsised title, no width of its own) in a
+bar row of fixed width: the row's other items keep their size (`shrink: 0`),
+and the pill's title is cut with an ellipsis to the room left, its ink inside its box.
+A neighbour grows, so the pill shrinks and its title cuts more; the title
+changes to a short one that fits whole, then back. The items before the pill
+stay still."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state wide = false
+state title = "Firefox — Strand design review notes, second draft"
+bar Top {
+  height: 30
+  row { id: strip; width: 300; height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: dot; size: 10; shrink: 0; radius: full; bg: #e06c75 }
+    row { id: pill; gap: 4; pad: 0, 6; height: 20; radius: 10; align: center; bg: #303540
+      box { id: icon; size: 12; shrink: 0; radius: 3; bg: #e5c07b }
+      text title { id: name; color: #dddddd; ellipsis: end }
+    }
+    box { id: grower; width: wide ? 90 : 20; height: 10; shrink: 0; radius: 3; bg: #61afef }
+    box { id: tail; size: 10; shrink: 0; radius: full; bg: #98c379 }
+  }
+}
+
+=== steps
+rest
+expect visible #name
+mark grow
+set wide true
+rest
+expect still #dot
+expect visible #name
+mark short
+set title "Notes"
+rest
+expect still #dot
+mark long
+set title "Firefox — Strand design review notes, second draft"
+rest
+expect still #dot
+expect visible #name

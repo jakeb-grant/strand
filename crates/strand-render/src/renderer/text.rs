@@ -352,6 +352,22 @@ impl Renderer {
         }
         let mut replaced = false;
         if let Some((_, spec)) = state.requested.take() {
+            // (eval-coverage) The trace names the glyphs drawn from it.
+            #[cfg(feature = "eval-hooks")]
+            if self.probe.trace_on {
+                let glyphs = layout
+                    .runs
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter().map(|g| (g.x, g.y)))
+                    .collect();
+                self.extras.texts.insert(
+                    layout.key,
+                    crate::probe::ProbeText {
+                        text: Arc::from(spec.text.as_str()),
+                        glyphs,
+                    },
+                );
+            }
             // A retry (same spec) does not refresh anyone's retries.
             replaced = state.shaped.as_ref() != Some(&spec);
             if replaced {

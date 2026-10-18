@@ -29,8 +29,8 @@ bar Top {
     row { id: below; height: 20; gap: 6; align: center
       box { id: under; width: 60; height: 10; bg: #808080 }
       box { id: anchor; width: 30; height: 10; bg: #404040
-        popup { id: pop; open: on; width: 280; height: 60; margin: 0
-          col { id: card; height: 50; bg: #202030; pad: 6
+        popup { id: pop; open: on{{pop_size}}; margin: 0
+          col { id: card{{card_height}}; bg: #202030; pad: 6
                 width: wide ? 260 : 180{{card_width}}{{card}}
             box { id: cardtop; width: 40; height: 10; bg: #ff8000 }
             {{card_body}}

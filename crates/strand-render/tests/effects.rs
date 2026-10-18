@@ -362,6 +362,51 @@ fn a_shape_change_morphs_by_spring() {
     assert!(!r.wants_frame(S));
 }
 
+/// (eval-coverage) A shape on a surface at rest, every frame of it drawn
+/// from the scene `update` flattened (the shell's loop: a diff, `update`,
+/// a paint that reuses its preview), still morphs its first change.
+#[test]
+fn a_shape_drawn_from_previews_morphs_its_first_change() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(4.0, 4.0, 56.0, 56.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#cba6f7")),
+        (Prop::Shape, kw("cookie")),
+    ]);
+    let id = b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    r.configure_surface(S, Size::new(64, 64), Scale::ONE);
+    let mut buf = Buffer::new(64, 64, Scale::ONE);
+    let mut t = 1000;
+    for _ in 0..3 {
+        r.update();
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        t += 16;
+    }
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Shape, kw("burst"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    assert!(r.wants_frame(S), "the change morphs");
+    let (_, burst, _) = boxes(vec![vec![(Prop::Shape, kw("burst"))]], Scale::ONE, 1000);
+    assert!(
+        buf.pixels != burst.pixels,
+        "mid-morph, not the burst at once"
+    );
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        assert!(t < 4000, "settles");
+    }
+    assert!(buf.pixels == burst.pixels, "settled on the burst");
+}
+
 /// design.md: `mask: shape(cookie)` masks a subtree with a shape of the
 /// library (ref `effects_mask_shapes.png`).
 #[test]
@@ -1511,6 +1556,93 @@ fn rolling_numbers_roll_only_the_changed_digit() {
     assert!(r.apply(d).is_empty());
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
     assert!(buf.pixels == settled.pixels);
+}
+
+/// (eval-coverage) A rolling number on a surface at rest, every frame
+/// of it drawn from the scene `update` flattened (as the shell's loop
+/// runs: a diff, `update`, a paint that reuses its preview), still rolls
+/// its first change: the preview's layout is the one shown.
+#[test]
+fn a_rolling_number_drawn_from_previews_rolls_its_first_change() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 4.0, 100.0, 32.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text("41%")),
+        (Prop::Font, PropValue::Font(common::font(24.0))),
+        (Prop::Color, color("#cdd6f4")),
+        (Prop::Roll, PropValue::Bool(true)),
+    ]);
+    let id = b.node(NodeKind::Text, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    // Configured before its first frame, as the surface manager does:
+    // `update` flattens it, and that first frame reuses the preview.
+    r.configure_surface(S, Size::new(120, 40), Scale::ONE);
+    let mut buf = Buffer::new(120, 40, Scale::ONE);
+    let mut t = 1000;
+    for _ in 0..3 {
+        r.update();
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        t += 16;
+    }
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Text, text("42%"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    assert!(r.wants_frame(S), "the change rolls");
+    let (_, settled, _) = rolling("42%", false);
+    assert!(
+        buf.pixels != settled.pixels,
+        "mid-roll, not the new text at once"
+    );
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        assert!(t < 4000, "settles");
+    }
+    assert!(buf.pixels == settled.pixels, "settles on 42%");
+}
+
+/// (eval-coverage) A rolling number whose preview was never painted (a
+/// second change came before its first frame, and a second preview
+/// replaced it) was never on screen: its first frame shows the text it
+/// has then, not a roll from one nobody saw.
+#[test]
+fn a_rolling_number_changed_before_its_first_frame_does_not_roll() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 4.0, 100.0, 32.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Text, text("41%")),
+        (Prop::Font, PropValue::Font(common::font(24.0))),
+        (Prop::Color, color("#cdd6f4")),
+        (Prop::Roll, PropValue::Bool(true)),
+    ]);
+    let id = b.node(NodeKind::Text, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    r.configure_surface(S, Size::new(120, 40), Scale::ONE);
+    r.update();
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Text, text("42%"));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    let mut buf = Buffer::new(120, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1000));
+    let (_, settled, _) = rolling("42%", false);
+    assert!(
+        buf.pixels == settled.pixels,
+        "42% at once, no roll from 41%"
+    );
+    assert!(!r.wants_frame(S), "nothing rolls");
 }
 
 fn column_of(px: &[u8], x0: u32, x1: u32) -> Vec<[u8; 4]> {
@@ -2754,6 +2886,52 @@ fn an_image_swap_wipes_the_new_image_in() {
             assert!(left != redpx && left == right, "at once");
         }
     }
+}
+
+/// (eval-coverage) An image with `transition:` on a surface at rest,
+/// every frame of it drawn from the scene `update` flattened (the shell's
+/// loop: a diff, `update`, a paint that reuses its preview), still wipes
+/// its first new source in.
+#[test]
+fn an_image_drawn_from_previews_wipes_its_first_swap_in() {
+    use std::time::Duration;
+    let red = solid_png("red-preview.png", [0xf3, 0x8b, 0xa8, 0xff]);
+    let blue = solid_png("blue-preview.png", [0x89, 0xb4, 0xfa, 0xff]);
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 40.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Source, text(&red)),
+        (Prop::Transition, call("wipe", vec![kw("left")])),
+    ]);
+    let img = b.node(NodeKind::Image, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    r.configure_surface(S, Size::new(60, 60), Scale::ONE);
+    let mut buf = Buffer::new(60, 60, Scale::ONE);
+    let mut t = 1000;
+    for _ in 0..3 {
+        r.update();
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        t += 16;
+    }
+    let redpx = buf.px(30, 30);
+    assert_eq!(buf.px(12, 30), redpx, "the first image is drawn");
+    let mut d = SceneDiff::new();
+    d.set(img, Prop::Source, text(&blue));
+    assert!(r.apply(d).is_empty());
+    r.update();
+    for _ in 0..2 {
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        t += 16;
+    }
+    let (left, right) = (buf.px(12, 30), buf.px(47, 30));
+    assert_ne!(left, redpx, "the new image at the left");
+    assert_eq!(right, redpx, "the old one still at the right");
+    settle(&mut r, &mut buf, t);
+    assert_eq!(buf.px(47, 30), left, "all new");
 }
 
 /// An image hidden mid-wipe (its parent's opacity set to 0 at once)

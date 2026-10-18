@@ -1,0 +1,29 @@
+id     = "drag-chip"
+about  = """A drag (design.md "Drag and drop": `drag:` on the source): a chip in a bar
+row is pressed, dragged 80 px to the right and released; it follows the
+pointer while held, lifted out of its row's layout, and springs back to its
+slot after the release (there is no target to drop on). The chips either side
+of it stay still the whole time."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+bar Top {
+  height: 30
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: left; width: 30; height: 16; radius: 4; bg: #61afef }
+    box { id: chip; width: 30; height: 16; radius: 4; bg: #c678dd; drag: "chip" }
+    box { id: right; width: 30; height: 16; radius: 4; bg: #98c379 }
+  }
+}
+
+=== steps
+rest
+mark drag
+drag 61,15 -> 141,15 over 200
+intend #chip moves
+rest
+expect still #left
+expect still #right
+mark settled
+frames 10
+expect still #chip

@@ -1,0 +1,31 @@
+id     = "heldc-ellipsis-title-grow"
+about  = "A cut window title widens on a spring: more of it shows each frame, still cut with an ellipsis, and the dot after it moves out of its way."
+screen = { width = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state wide = false
+bar Top {
+  height: 30
+  row { height: 24; gap: 6; align: center; pad: 0, 8
+    box { id: dot; size: 10; radius: full; bg: #e06c75 }
+    text "Firefox — Strand design review notes, second draft" {
+      id: title; width: wide ? 220 : 90; color: #dddddd; ellipsis: end }
+    box { id: tail; size: 10; radius: full; bg: #98c379 }
+  }
+}
+
+=== steps
+rest
+shot narrow
+mark grow
+set wide true
+intend #title changes
+intend #tail moves
+rest
+shot wide
+mark settled
+frames 10
+expect still #dot
+expect still #title
+expect still #tail

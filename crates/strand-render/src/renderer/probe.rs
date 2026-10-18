@@ -16,6 +16,7 @@ impl Renderer {
         self.extras.trace = on;
         if !on {
             self.probe.frames.clear();
+            self.extras.texts.clear();
         }
         // A scene flattened before has no nodes to report.
         for s in self.surfaces.values_mut() {

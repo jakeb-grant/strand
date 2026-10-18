@@ -34,6 +34,9 @@ pub(crate) struct Morphs {
     /// Nodes a preview saw change shape: the next painted frame must
     /// flatten afresh to start the morph.
     pending: HashSet<NodeId>,
+    /// (eval-coverage) Shapes the scene being flattened draws for the
+    /// first time, in a preview: shown once a frame paints that scene.
+    previewed: Vec<(NodeId, Shape)>,
 }
 
 /// The frame being drawn, as the animator sees it.
@@ -80,6 +83,10 @@ impl Morphs {
         let Some(m) = self.nodes.get_mut(&id) else {
             if frame.commit {
                 self.nodes.insert(id, Morph { shape, from: None });
+            } else {
+                // (eval-coverage) Shown when a frame paints the preview's
+                // scene, as a surface at rest does (`Rolls::roll`).
+                self.previewed.push((id, shape));
             }
             return (Outline::Shape(shape), false);
         };
@@ -136,6 +143,23 @@ impl Morphs {
     /// A preview saw a node under `under` change shape.
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))
+    }
+
+    /// (eval-coverage) The shapes the scene just flattened drew first in
+    /// a preview, for the scene to carry.
+    pub(crate) fn take_previewed(&mut self) -> Vec<(NodeId, Shape)> {
+        std::mem::take(&mut self.previewed)
+    }
+
+    /// (eval-coverage) A frame painted a scene a preview flattened: the
+    /// shapes it drew first are shown.
+    pub(crate) fn painted(&mut self, first: &[(NodeId, Shape)]) {
+        for (id, shape) in first {
+            self.nodes.entry(*id).or_insert(Morph {
+                shape: *shape,
+                from: None,
+            });
+        }
     }
 
     /// Drops nodes `keep` rejects.

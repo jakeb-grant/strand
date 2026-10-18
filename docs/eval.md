@@ -209,7 +209,10 @@ advance the clock.
 A selector resolves against the nodes mounted when its step runs. When it
 matches none of those, it matches the nodes seen earlier in the run (so
 `expect hidden #x` names a node that has left). One that matches neither
-is an error at that line.
+is an error at that line, except in an `intend`: a node its segment
+mounts later (`intend #toast enters` before the `set` that shows it) is
+named when it first appears, and one that has not appeared by the end of
+the segment is an error at the `intend`'s line.
 
 ### Clock
 
@@ -291,7 +294,12 @@ A text also records the line box it asked to be shaped for when its
 unbounded layout is wider than its box (`fit`), and its glyphs' ink as
 drawn: the layout it drew, where it drew it, clipped where the frame clips
 it (`ink`, before transforms). Both come from strand-render's
-`eval-hooks`.
+`eval-hooks`, as does each node's `paint`: the fills, borders, shadows and
+text paints it drew itself, from the display items the flattener gave it
+that frame, and for each text the source its glyphs came from (the text a
+layout was shaped from, kept by the renderer while tracing is on, and the
+glyphs of it drawn when not all were). A frame with a theme swap's
+crossfade playing records its weight per surface (`fades`).
 
 Each frame also records the screen's scale it was drawn at, whether
 logic's diff or input reached the renderer since the frame before, where
@@ -347,7 +355,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `settle` | Every `rest` arrives within its max: no surface wants a frame, no wake is due soon and no text is held. |
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
-| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only. |
+| `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on (a node gliding across while a size spring lays it out anew down follows its layout down, as the spring's neighbours do). |
 | `vanish` | Nothing blinks out and back within three ticks, shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge), or leaves a damaged frame blank while something inside its surface's root shows. With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px (`spill`: a stand-in drawn unclipped), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
@@ -462,17 +470,29 @@ Per painted tick:
   scale, rotation, hidden reason and text state, and its place in its
   surface's paint order (`ord`);
 - per text: the ink of the glyphs it drew (`ink`) and, when it is cut to
-  its box, the width it was shaped for (`fit`).
+  its box, the width it was shaped for (`fit`);
+- per node, what it painted itself that tick, read from the flattened
+  scene, never from pixels: its fills (`bg`), borders (`bd`), drop shadows
+  with the area each may cover (`sh`), and its texts' paints (`fg`) with
+  the text each one's glyphs were shaped from (`gl`). A roll's two texts
+  are both there, and a text of which only some glyphs were drawn names
+  them (`gl=["43","41[1]"]`: "43" whole and the second glyph of "41",
+  rolling out), so drawing the wrong digit, or a stale one, changes it;
+- per surface, the weight of a theme swap's crossfade while one plays
+  (`f`).
 
 A surface not painted at a tick keeps what it showed, as the checks read a
 trace. The laid box, motions and offset parts are not in it: they explain
-a change, and the trace has them. Paint is not in it either: no colour,
-gradient, radius, border, shadow, blur or crossfade weight, and no pixels
-(see Limits for what covers those).
+a change, and the trace has them. Radii, blur and pixels are not in it
+either (see Limits for what covers those).
 
-Each value is quantised: boxes, origins, pose offsets and regions to
-1/64 logical px, opacity to 1/255, scale to 1/1000, rotation to
-1/100 degree. A run matches its reference when every value is within one
+A colour is straight-alpha sRGB, `rrggbbaa`, each channel clamped as the
+raster draws it; a gradient is its kind, angle and stops
+(`lin45:ff0000ff@0:0000ffff@1`); a shadow is its colour and extent
+(`000000aa@9,30,108,70`); a text paint with span colours adds them after
+`+`. Each value is quantised: boxes, origins, pose offsets, regions and
+shadow extents to 1/64 logical px, opacity, colour channels and the
+crossfade weight to 1/255, scale to 1/1000, rotation to 1/100 degree. A run matches its reference when every value is within one
 quantum of it. A last-bit difference that rounds the other way never
 counts; anything larger does, as does a tick painted in one and not the
 other, or a node shown in one and not the other.
@@ -515,7 +535,9 @@ n3 -                                node 3 left the screen
 
 A node's first line leaves out what is at its default: the first surface,
 `v=d` (a visual box equal to the drawn one), `op=255`, `sc=1,1`, `rot=0`,
-`hid=-` and `txt=-`.
+`hid=-` and `txt=-`, and `-` for each paint field it did not draw
+(`bg`, `bd`, `sh`, `fg`, `gl`). Several of one kind are joined with `/`
+in paint order; `gl` is a JSON list.
 
 Everything together stays under 5 MB. As re-recorded with paint order and
 text ink (eval-refs-integration) it is 2.8 MB: the 24 scenarios 105 kB,
@@ -662,8 +684,10 @@ the offset parts say which mechanism moved the node.
 ## Matrix
 
 `eval/matrix/effects.toml` lists effects: poses, size springs, FLIP
-reorders, morphs, reveal, stagger, lean, jelly, keyframes, late text,
-screen scales, and the GPU leg (`gpu`). Each one is a set of fragments
+reorders and nested FLIP scopes, a content-sized popup whose height
+springs, morphs, reveal, stagger, lean, jelly, keyframes, a drop shadow,
+rolling text, a colour change, late text, screen scales, and the GPU leg
+(`gpu`). Each one is a set of fragments
 filled into `eval/matrix/fixture.strand.in`, then run with the standard
 steps (on, wide, off). The matrix runs every effect alone and every
 unordered pair at each rate.
@@ -840,28 +864,36 @@ owner's config becomes a committed scenario written from scratch.
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
 - **The GPU leg does not see bug 23**, as described above.
-- **References hold no paint and no pixels.** A recording holds
-  geometry, opacity, transforms, paint order and text state and ink, not
-  a pixel hash. vello_cpu picks its SIMD level from the CPU it runs on,
-  and nothing here shows one hash agreeing between the laptop's
-  container and GitHub's runners. The trace carries no node's colour, so
-  a change of paint alone is not CHANGED. What covers each kind instead:
-  - a colour that snaps instead of springing, or springs the wrong way:
-    crates/strand-render/tests/motion.rs
-    (`springs_sampled_at_fixed_timestamps_match_reference`,
-    `colours_spring_in_oklab`) and crates/strand-scene's motion tests;
-  - gradients, corners, borders, shadows and blur drawn wrong:
+- **References hold paint as the scene says, not pixels.** A recording
+  holds geometry, opacity, transforms, paint order, text state and ink,
+  and each node's fills, borders, shadows, text colours and glyph
+  sources as the flattened scene gives them, not a pixel hash. vello_cpu
+  picks its SIMD level from the CPU it runs on, and nothing here shows
+  one hash agreeing between the laptop's container and GitHub's runners.
+  So a colour that snaps instead of springing, springs the wrong way or
+  ends wrong, a shadow left behind its box, a crossfade's weight and a
+  roll drawing the wrong text are CHANGED; what the raster then does with
+  them is not. What covers that:
+  - gradients, corners, borders, shadows and blur rasterised wrong:
     crates/strand-render/tests/paint.rs (`gradients_linear_radial_conic`,
     `corners_per_corner_full_and_squircle`,
     `borders_solid_gradient_and_on_a_pill`,
     `elevation_shadow_lists_are_drawn_and_cached`,
     `blur_tints_until_the_compositor_blurs`) and layers.rs, pixel tests
-    on rendered buffers;
-  - a theme swap's crossfade: crates/strand-render/tests/theme_swap.rs
+    on rendered buffers; a colour's spring curve itself:
+    crates/strand-render/tests/motion.rs (`colours_spring_in_oklab`);
+  - the pixels of a theme swap's crossfade (the recording has its
+    weight): crates/strand-render/tests/theme_swap.rs
     (`an_unreadable_spring_crossfades_from_a_snapshot`,
     `a_colourless_table_mid_crossfade_keeps_fading`);
   - stale or missing pixels after a partial redraw, and the GPU drawing
     differently from the CPU: `redraw` and `cpu-gpu` here.
+  Radii, blur radii, an image's pixels and a reveal mask's progress are
+  not recorded. `gl` names the text a
+  layout was shaped from, not where an ellipsis cut it: the cut width
+  (`fit`) and the ink record that. A text's paint is recorded once per
+  run of glyphs drawn, so two texts with the same source, colour and
+  glyphs drawn on one node are one entry.
 - **`redraw` holds one buffer age.** Every frame is painted at age 1,
   so damage widened by older frames (ages 2 and 3) is not compared.
   On the GPU leg it compares against a fresh device, allows one step per

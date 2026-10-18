@@ -1,0 +1,54 @@
+id     = "colour-mid-motion"
+about  = """Colours that spring while things move (design.md: "a theme swap springs
+the palette in OKLab"): the pointer rests on a button, whose hover background
+springs in from transparent while a pill beside it slides across; the theme
+then swaps from a dark palette to a light one, so every themed fill and text
+colour springs at once, mid-slide, and the label's text is solved against the
+bar's background as it is in each frame (the contrast guard), so it turns from
+light to dark where the background passes mid-grey; the pointer leaves and the
+hover fades out. A fade from transparent keeps its colour's hue (OKLab with
+premultiplied alpha), never passing through a darker one. The recording holds
+each frame's fills and text colours, so a colour that snaps or springs the
+wrong way changes the reference. The box at the start of the row never
+moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state dark = true
+state right = false
+let scheme: Palette = dark ? import("catppuccin:mocha") : import("catppuccin:latte")
+use palette scheme
+bar Top {
+  height: 30
+  bg: $surface
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 14; height: 14; radius: 3; bg: $accent }
+    box { id: button; width: 40; height: 18; radius: 6; bg: #ffffff00
+          when hover { bg: #ffffff } }
+    box { id: pill; width: 40; height: 14; radius: full; bg: $accent
+          x: right ? 150 : 0 }
+    text "Theme" { id: label; color: $fg }
+  }
+}
+
+=== steps
+rest
+mark hover
+pointer 47,15
+set right true
+intend #pill moves
+frames 4
+mark swap
+set dark false
+intend #pill moves
+rest
+expect still #lead
+mark leave
+pointer 300,15
+set right false
+intend #pill moves
+rest
+expect still #lead
+mark settled
+frames 10
+expect still #pill

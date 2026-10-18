@@ -267,6 +267,12 @@ struct Harness<'s> {
     /// The segment open now, and intends waiting for the next.
     open: Option<usize>,
     waiting_intends: Vec<IntendRec>,
+    /// (eval-coverage) `intend` steps whose selector matched nothing when
+    /// they ran: they name a node the segment mounts later (a popup's
+    /// card opening, a row entering), and resolve at the first tick that
+    /// shows one. One still unmatched when its segment ends is an error
+    /// at its line.
+    pending_intends: Vec<(Selector, u32)>,
     /// Ticks left without a paint: every surface's, one surface's.
     drop_all: u32,
     drop_one: HashMap<SurfaceId, u32>,
@@ -402,6 +408,7 @@ impl<'s> Harness<'s> {
             trace,
             open: Some(0),
             waiting_intends: Vec::new(),
+            pending_intends: Vec::new(),
             drop_all: 0,
             drop_one: HashMap::new(),
             reduced: false,
@@ -893,6 +900,19 @@ impl<'s> Harness<'s> {
 
     /// The nodes `sel` names now, with their keys.
     fn resolve(&mut self, sel: &Selector, line: u32) -> Result<Vec<(NodeId, String)>, Error> {
+        let found = self.matching(sel);
+        if found.is_empty() {
+            return Err(self.err(
+                line,
+                format!("`{sel}` matches no node mounted now or seen before"),
+            ));
+        }
+        Ok(found)
+    }
+
+    /// The nodes `sel` names now: those mounted, else those seen before
+    /// (`expect hidden` after a node left); none when neither matches.
+    fn matching(&mut self, sel: &Selector) -> Vec<(NodeId, String)> {
         let views = self.labels.views(&self.inst, self.r.tree(), &self.sources);
         let roots = self.r.tree().roots().to_vec();
         let found: Vec<(NodeId, String)> = sel
@@ -904,23 +924,56 @@ impl<'s> Harness<'s> {
             })
             .collect();
         if !found.is_empty() {
-            return Ok(found);
+            return found;
         }
         // A node no longer mounted (`expect hidden` after it left), by
         // what was seen of it.
-        let seen: Vec<(NodeId, String)> = self
-            .labels
+        self.labels
             .seen_matching(sel)
             .into_iter()
             .map(|(n, k)| (n, k.to_string()))
-            .collect();
-        if seen.is_empty() {
-            return Err(self.err(
-                line,
-                format!("`{sel}` matches no node mounted now or seen before"),
-            ));
+            .collect()
+    }
+
+    /// (eval-coverage) Resolves the pending intends that match a node
+    /// now: their records (in the open segment, or waiting for the next)
+    /// take its keys.
+    fn resolve_pending(&mut self) {
+        if self.pending_intends.is_empty() {
+            return;
         }
-        Ok(seen)
+        let pending = std::mem::take(&mut self.pending_intends);
+        for (sel, line) in pending {
+            let keys: Vec<String> = self.matching(&sel).into_iter().map(|(_, k)| k).collect();
+            if keys.is_empty() {
+                self.pending_intends.push((sel, line));
+                continue;
+            }
+            let open = self.open.map(|i| &mut self.trace.segments[i].intends);
+            let rec = open
+                .into_iter()
+                .flatten()
+                .chain(self.waiting_intends.iter_mut())
+                .find(|r| r.line == line && r.keys.is_empty());
+            if let Some(r) = rec {
+                r.keys = keys;
+            }
+        }
+    }
+
+    /// (eval-coverage) The first pending intend of `lines` (a segment's
+    /// intends; every one when `None`), as the error at its line: it
+    /// matched no node before its segment ended.
+    fn unmatched(&self, lines: Option<&[IntendRec]>) -> Option<Error> {
+        let (sel, line) = self
+            .pending_intends
+            .iter()
+            .filter(|(_, l)| lines.is_none_or(|ls| ls.iter().any(|r| r.line == *l)))
+            .min_by_key(|(_, l)| *l)?;
+        Some(self.err(
+            *line,
+            format!("`{sel}` matched no node before its segment ended"),
+        ))
     }
 
     fn event(&mut self, step: &Step) {
@@ -952,13 +1005,17 @@ impl<'s> Harness<'s> {
         self.open = Some(self.trace.segments.len() - 1);
     }
 
-    fn close(&mut self, settled: bool) {
+    fn close(&mut self, settled: bool) -> Result<(), Error> {
         if let Some(i) = self.open.take() {
+            if let Some(e) = self.unmatched(Some(&self.trace.segments[i].intends)) {
+                return Err(e);
+            }
             let seg = &mut self.trace.segments[i];
             seg.e = self.last_k.unwrap_or(0);
             seg.settled = settled;
             seg.hz = self.clock.hz();
         }
+        Ok(())
     }
 
     fn step(&mut self, step: &Step) -> Result<(), Error> {
@@ -1080,18 +1137,19 @@ impl<'s> Harness<'s> {
                 self.switch(*b, line)?;
             }
             StepKind::Mark(label) => {
-                self.close(false);
+                self.close(false)?;
                 self.opens(label.clone(), line);
                 self.event(step);
             }
             StepKind::Shot(_) | StepKind::Log(_) => self.event(step),
             StepKind::Intend { sel, what, axes } => {
                 self.event(step);
-                let keys = self
-                    .resolve(sel, line)?
-                    .into_iter()
-                    .map(|(_, k)| k)
-                    .collect();
+                // A node the segment mounts later resolves when it shows
+                // (`resolve_pending`).
+                let keys: Vec<String> = self.matching(sel).into_iter().map(|(_, k)| k).collect();
+                if keys.is_empty() {
+                    self.pending_intends.push((sel.clone(), line));
+                }
                 let rec = IntendRec {
                     line,
                     what: match what {
@@ -1170,7 +1228,7 @@ impl<'s> Harness<'s> {
                     max: *max,
                     settled,
                 });
-                self.close(settled);
+                self.close(settled)?;
             }
             StepKind::Glide { from, to, ms, on } | StepKind::Drag { from, to, ms, on } => {
                 self.event(step);
@@ -1278,6 +1336,7 @@ impl<'s> Harness<'s> {
         if let Some(i) = self.open {
             self.trace.segments[i].e = k;
         }
+        self.resolve_pending();
         self.clock.advance();
         Ok(())
     }
@@ -1596,6 +1655,10 @@ impl<'s> Harness<'s> {
                 })
                 .collect(),
             fresh: last.iter().map(|(s, f)| (*s, f.fresh)).collect(),
+            fades: last
+                .iter()
+                .filter_map(|(s, f)| Some((*s, f.fade?)))
+                .collect(),
             held_text: held
                 .iter()
                 .map(|h| HeldRec {
@@ -1729,13 +1792,17 @@ impl<'s> Harness<'s> {
                 flight: pair(flight),
                 fit: n.fit.map(q),
                 ink: n.ink.map(rect),
+                paint: crate::paint::PaintRec::of(&n.paint),
             });
         }
         out
     }
 
     fn finish(mut self) -> Result<RunOutput, Error> {
-        self.close(false);
+        self.close(false)?;
+        if let Some(e) = self.unmatched(None) {
+            return Err(e);
+        }
         if let Some(dev) = self.gpu.take() {
             let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
             for d in &dev.dropped {
