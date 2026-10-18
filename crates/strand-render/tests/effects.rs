@@ -2845,3 +2845,36 @@ fn jelly_stretches_a_dragged_node_and_wobbles_out() {
         );
     }
 }
+
+/// jelly-drag (docs/decisions.md): in the shell each pointer motion of
+/// a drag wakes the loop for the surface its last frame left idle, and
+/// `Renderer::update` previews the move before the frame is painted. The
+/// frame must not reuse that preview, which measured no speed: the same
+/// drag, with an update between each move and its frame, stretches as
+/// it does without one, and the frame is the one painted without it.
+#[test]
+fn jelly_stretches_a_drag_whose_moves_are_previewed() {
+    use std::time::Duration;
+    let drag = |previewed: bool| {
+        let (mut r, mut buf, id) = jellied(0.4, false);
+        let mut t = 1000;
+        for k in 1..=5 {
+            t += 16;
+            r.lift(id, Some(LogicalPoint::new(20.0 * k as f32, 0.0)));
+            if previewed {
+                r.update();
+            }
+            buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        }
+        (yellow_extent(&buf), buf)
+    };
+    let ((l, rt, top, bottom), buf) = drag(true);
+    let (w, h) = (rt - l + 1, bottom - top + 1);
+    assert!(w >= 22 && h <= 18, "stretched: {w} × {h}");
+    let (plain, plain_buf) = drag(false);
+    assert_eq!((l, rt, top, bottom), plain);
+    assert_eq!(
+        buf.pixels, plain_buf.pixels,
+        "the frame painted without a preview"
+    );
+}

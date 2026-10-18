@@ -19,11 +19,15 @@
 //! between painted frames, smoothed over [`SMOOTHING`] by each frame's own
 //! interval (so a drag stretches alike at 60 Hz and 144 Hz): render needs
 //! no pointer velocity from the `Router`, and frames at fixed timestamps
-//! give the same jelly every run. A node not lifted and at rest keeps no
+//! give the same jelly every run. Only a painted frame measures: a
+//! preview (`Renderer::update`'s flatten) that sees a held node away from
+//! where its last painted frame measured it leaves the node pending, so
+//! the next frame flattens afresh rather than reusing the preview, and
+//! measures the move (jelly-drag). A node not lifted and at rest keeps no
 //! state; a held node at rest keeps its state but wants no frames. `reduced_motion`
 //! and frames with no clock show it undeformed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use strand_scene::{Curve, Motion, NodeId, Spring};
@@ -65,6 +69,10 @@ struct State {
 #[derive(Debug, Default)]
 pub(crate) struct Jellies {
     nodes: HashMap<NodeId, State>,
+    /// Held nodes a preview saw moved since their last painted frame
+    /// measured them: the next painted frame must flatten afresh to
+    /// measure the move.
+    pending: HashSet<NodeId>,
 }
 
 /// The default curve of the deformation (see [`WOBBLE`]).
@@ -112,10 +120,25 @@ impl Jellies {
         if frame.snap || amount <= 0.0 || curve == Curve::Instant {
             if frame.commit {
                 self.nodes.remove(&id);
+                self.pending.remove(&id);
             }
             return (None, false);
         }
-        if !held && !self.nodes.contains_key(&id) {
+        if frame.commit {
+            self.pending.remove(&id);
+        } else if held
+            && self
+                .nodes
+                .get(&id)
+                .and_then(|s| s.last)
+                .is_none_or(|(o, _)| o != offset)
+        {
+            // A preview measures nothing: the painted frame does, so a
+            // move it saw keeps that frame from reusing it.
+            self.pending.insert(id);
+        }
+        if !self.nodes.contains_key(&id) && (!held || !frame.commit) {
+            // A preview starts nothing: the painted frame does.
             return (None, false);
         }
         let s = self.nodes.entry(id).or_insert_with(|| State {
@@ -166,16 +189,21 @@ impl Jellies {
 
     pub(crate) fn forget(&mut self, id: NodeId) {
         self.nodes.remove(&id);
+        self.pending.remove(&id);
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.nodes.retain(|id, _| keep(*id));
+        self.pending.retain(|id| keep(*id));
     }
 
-    /// Anything `under` a surface moving or wobbling (a held node at
-    /// rest is not: its next move marks the surface dirty itself).
+    /// Anything `under` a surface moving or wobbling, or moved by its
+    /// drag since its last painted frame measured it (a held node at
+    /// rest is not: its next move marks the surface dirty itself, and
+    /// a preview of that move leaves it pending).
     pub(crate) fn busy(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.nodes.iter().any(|(id, s)| s.moving && under(*id))
+            || self.pending.iter().any(|id| under(*id))
     }
 }
 
@@ -286,6 +314,53 @@ mod tests {
         // frame gave 2,325 at 60 Hz and 2,399 at 144 Hz.
         assert!((slow - 2325.0).abs() < 5.0, "{slow}");
         assert!((slow - fast).abs() < 3.0, "{slow} vs {fast}");
+    }
+
+    /// A preview measures nothing and starts nothing, but a held node
+    /// it sees moved is pending until a painted frame measures it; one
+    /// it sees where it was measured is not (jelly-drag).
+    #[test]
+    fn a_preview_leaves_a_dragged_node_to_the_painted_frame() {
+        let id = NodeId::new(1, 0);
+        let mut j = Jellies::default();
+        let curve = wobble();
+        let preview = |ms| Frame {
+            commit: false,
+            ..frame(ms)
+        };
+        // The drag's first move, previewed: no state, but pending.
+        assert_eq!(
+            j.sample(id, 0.4, [10.0, 0.0], true, curve, preview(1010)),
+            (None, false)
+        );
+        assert!(j.nodes.is_empty());
+        assert!(j.busy(|_| true), "pending");
+        j.sample(id, 0.4, [10.0, 0.0], true, curve, frame(1016));
+        assert!(!j.busy(|_| true), "measured, not yet moving");
+        // Each later move: previewed, pending; painted, measured.
+        let mut ms = 1016;
+        for k in 2..=5 {
+            j.sample(
+                id,
+                0.4,
+                [10.0 * k as f32, 0.0],
+                true,
+                curve,
+                preview(ms + 4),
+            );
+            assert!(j.pending.contains(&id));
+            ms += 16;
+            j.sample(id, 0.4, [10.0 * k as f32, 0.0], true, curve, frame(ms));
+            assert!(!j.pending.contains(&id));
+        }
+        assert!(j.nodes[&id].velocity[0] > 300.0, "measured the drag");
+        // Previewed where the last frame measured it: nothing pending.
+        j.sample(id, 0.4, [50.0, 0.0], true, curve, preview(ms + 4));
+        assert!(!j.pending.contains(&id));
+        // Nor for a node no drag holds.
+        let other = NodeId::new(2, 0);
+        j.sample(other, 0.4, [5.0, 0.0], false, curve, preview(ms + 4));
+        assert!(!j.pending.contains(&other));
     }
 
     /// A held node that stopped moving keeps its state (the drag goes

@@ -68,11 +68,8 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         show(&done)
     );
     // Each effect does what it says: the motion it is named for shows.
-    // The jelly cell is dragged (LIFT) but shows no JELLY: each pointer
-    // motion wakes the loop for the surface idle since its last frame
-    // (`Host::input`), `Renderer::update` flattens a preview and the
-    // drag frame reuses it, where `jelly` never measures speed (an open
-    // finding, docs/decisions.md eval-sandbox).
+    // The jelly cell's drag is previewed by each pointer motion's wake
+    // (`Host::input`) and still squashes (docs/decisions.md jelly-drag).
     let has = |name: &str, bit: strand_render::probe::Motions| {
         let d = done.iter().find(|d| d.cell.name == name).unwrap();
         let t = &d.entry.as_ref().unwrap().trace;
@@ -93,7 +90,7 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         ("reveal", M::REVEAL),
         ("stagger", M::STAGGER),
         ("lean", M::LEAN),
-        ("jelly", M::LIFT),
+        ("jelly", M::JELLY),
         ("keyframes", M::KEYFRAMES),
     ] {
         has(name, bit);

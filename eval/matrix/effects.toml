@@ -102,12 +102,10 @@ mid = ["glide 20,16 -> 140,16 over 200", "rest"]
 
 [[effect]]
 name = "jelly"
-about = """the subject is dragged (`drag:`) and squashes (`jelly: 0.4`). \
-Finding: no JELLY shows here; each pointer motion of the drag wakes \
-the loop for the surface left idle by the frame before (`Host::input`), \
-its `Renderer::update` flattens a preview, and the drag frame reuses \
-it, where jelly never measures speed (docs/decisions.md eval-sandbox \
-matrix and the driver's wakes)"""
+about = """the subject is dragged (`drag:`) and squashes (`jelly: 0.4`); \
+each pointer motion of the drag wakes the loop for the surface left \
+idle by the frame before (`Host::input`), so the drag frames follow a \
+preview (docs/decisions.md jelly-drag)"""
 slots.subject = { jelly = "0.4", drag = '"subject"' }
 mid = ["drag 42,16 -> 140,16 over 200", "rest"]
 

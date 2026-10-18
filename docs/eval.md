@@ -610,12 +610,6 @@ owner's config becomes a committed scenario written from scratch.
   ink of the layout the frame drew, before transforms; a glyph clipped
   by an ancestor's clip only is not told apart from one drawn.
 - **The GPU leg does not see bug 23**, as described above.
-- **`jelly` never shows.** Each pointer motion of a drag wakes the loop
-  for the surface its last frame left idle, as `Host::input` does;
-  `Renderer::update` flattens a preview and the drag frame reuses it,
-  where `jelly` never measures a speed. The matrix's jelly cell exercises
-  the drag (LIFT), not the squash. It is reported as the product's
-  (decisions.md, eval-sandbox), not worked around.
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.
