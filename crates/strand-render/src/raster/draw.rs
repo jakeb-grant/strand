@@ -405,7 +405,7 @@ pub(super) fn to_kurbo(r: Rect) -> kurbo::Rect {
 /// Splits damage into disjoint rectangles covering exactly the same
 /// pixels: horizontal bands between rectangle edges, each band's covered
 /// x-intervals merged, and vertically adjacent identical spans joined.
-pub(super) fn disjoint(damage: &Damage) -> Vec<Rect> {
+pub(crate) fn disjoint(damage: &Damage) -> Vec<Rect> {
     let rects = damage.rects();
     if rects.len() <= 1 {
         return rects.to_vec();

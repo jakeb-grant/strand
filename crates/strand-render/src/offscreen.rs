@@ -139,6 +139,12 @@ impl Offscreen {
         self.fades.draws
     }
 
+    /// Fade layers rastered uncached so far, only where their frame
+    /// repainted (a group whose layer is neither cached nor kept).
+    pub fn fade_passes(&self) -> u64 {
+        self.fades.passes
+    }
+
     /// Shortens (tests) how long an unused group lives.
     pub fn set_idle_free(&mut self, idle: Duration) {
         self.idle = Some(idle);

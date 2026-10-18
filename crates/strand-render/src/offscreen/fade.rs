@@ -26,12 +26,22 @@
 //!   within the group, a half-pixel phase at a fractional scale) has
 //!   another. Its pixels are those of its items drawn at their place, so
 //!   a key that matches is exact.
-//! - **When it is built.** On a frame that repaints the group whole (it
-//!   always does while its opacity or offset changes), when its node is
-//!   in flight ([`crate::flatten::Fade::moving`]) or the same key was
-//!   drawn in the node's recent frames. A node whose last two layers
-//!   were never drawn again (content changing every frame) builds no more
-//!   until it rests. A layer that is cached is drawn whatever the damage.
+//! - **When it is kept.** A layer is cached when built on a frame that
+//!   repaints the group whole (it always does while its opacity or
+//!   offset changes), when its node is in flight
+//!   ([`crate::flatten::Fade::moving`]) or the same key was drawn in the
+//!   node's recent frames. A node whose last two layers were never drawn
+//!   again (content changing every frame) keeps no more until it rests.
+//!   A layer that is cached is drawn whatever the damage.
+//! - **Always a layer.** A group that qualifies is drawn from its layer
+//!   on every frame: one not cached is rastered uncached, only where the
+//!   frame repaints, on the layer's own fixed grid of cells
+//!   ([`render_layer`]), so that part is bit-identical to the whole
+//!   layer. Its pixels never depend on what earlier frames cached: a
+//!   layer's pixels are 8-bit before they are composited, so a group
+//!   drawn from a layer on one frame and rastered as a group on another
+//!   differed by a step, and a partial repaint by a full one
+//!   (decisions.md, shadow-redraw).
 //! - **What it costs.** The group's pixels once per key, in the offscreen
 //!   groups' budget ([`super::OFFSCREEN_BYTES`], least recently used
 //!   first, freed when idle): at a fractional scale a fade moving by
@@ -46,10 +56,17 @@ use std::hash::{Hash, Hasher};
 use strand_scene::{Damage, NodeId, Rect, Scale};
 use vello_cpu::kurbo::Affine;
 
-use super::{Drawn, Offscreen, pins, rasterise};
+use vello_cpu::color::PremulRgba8;
+use vello_cpu::kurbo;
+use vello_cpu::{
+    Pixmap, PixmapMut, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources,
+    TargetInit,
+};
+
+use super::{Drawn, Offscreen, pins};
 use crate::cache::PaintCache;
 use crate::flatten::{DisplayItem, Item, Shift, hash_item_from};
-use crate::raster::{AtlasMirror, skip_group};
+use crate::raster::{AtlasMirror, CELL_H, CELL_W, disjoint, draw_group, skip_group};
 
 /// Frames (paints of any surface) a node's recent keys count for.
 const RECENT: u64 = 6;
@@ -69,6 +86,9 @@ pub(super) struct Fades {
     nodes: HashMap<NodeId, History>,
     pub(super) builds: u64,
     pub(super) draws: u64,
+    /// Layers rastered uncached, where a frame repaints (see
+    /// [`render_layer`]).
+    pub(super) passes: u64,
 }
 
 impl Default for Fades {
@@ -79,6 +99,7 @@ impl Default for Fades {
             nodes: HashMap::new(),
             builds: 0,
             draws: 0,
+            passes: 0,
         }
     }
 }
@@ -272,20 +293,6 @@ impl Offscreen {
             self.fades.draws += 1;
             return Some(at(g));
         }
-        // Built only on a frame that repaints all of it that shows.
-        let shows = bounds.intersect(surface)?;
-        if !damage.covers(shows) {
-            return None;
-        }
-        let hist = self.fades.nodes.entry(node).or_default();
-        if let Some((_, false)) = hist.built {
-            hist.wasted = hist.wasted.saturating_add(1);
-            hist.built = None;
-        }
-        if hist.wasted >= WASTED || !(moving || recent) {
-            return None;
-        }
-        hist.built = Some((key, false));
         // Drawn whole: no group in it is passed over for being clipped
         // away around the fade group (it may show on a later frame).
         let whole: Vec<DisplayItem> = inner
@@ -295,23 +302,155 @@ impl Offscreen {
                 bounds: if leaf(&d) { d.bounds } else { extent },
             })
             .collect();
-        let pm = rasterise(
-            &whole,
-            Affine::IDENTITY,
-            extent,
-            atlas,
-            cache,
-            scale,
-            &HashMap::new(),
-        )?;
-        let drawn = Drawn {
-            pixmap: std::sync::Arc::new(pm),
-            x: extent.x,
-            y: extent.y,
+        // Cached only when built on a frame that repaints all of it that
+        // shows, while its node is in flight or its key recurs, and while
+        // its layers are drawn again. Otherwise its layer is drawn all the
+        // same, rastered uncached where this frame repaints: whether a
+        // group is drawn from a layer depends on the frame alone, never
+        // on what earlier frames cached or built, so a partial repaint
+        // draws exactly what a full one does (decisions.md, shadow-redraw).
+        let shows = bounds.intersect(surface)?;
+        let admit = damage.covers(shows) && {
+            let hist = self.fades.nodes.entry(node).or_default();
+            if let Some((_, false)) = hist.built {
+                hist.wasted = hist.wasted.saturating_add(1);
+                hist.built = None;
+            }
+            hist.wasted < WASTED && (moving || recent)
         };
+        if !admit {
+            let parts: Vec<Rect> = disjoint(damage)
+                .into_iter()
+                .filter_map(|r| r.intersect(extent))
+                .collect();
+            let drawn = render_layer(&whole, extent, &parts, atlas, cache, scale)?;
+            self.fades.passes += 1;
+            return Some(drawn);
+        }
+        let hist = self.fades.nodes.entry(node).or_default();
+        hist.built = Some((key, false));
+        let drawn = render_layer(&whole, extent, &[extent], atlas, cache, scale)?;
         self.fades.builds += 1;
         self.fades.draws += 1;
         let pins = pins(inner, &HashMap::new());
         Some(self.insert(key, drawn, pins))
     }
+}
+
+/// A fade group's layer over `extent`, rastered where `parts` (disjoint,
+/// inside `extent`) lie, into a pixmap of the cells they touch. The layer
+/// is cut into a fixed grid of [`CELL_W`] × [`CELL_H`] cells from its
+/// top-left, each rastered by a context of its size with the items
+/// translated by the cell's origin, and clipped to the parts inside it
+/// by pixel-aligned rects, which leave the coverage inside them
+/// untouched. So a pixel of the layer is always rastered by the same
+/// cell with the same translation: the part a partial repaint rasters is
+/// bit-identical to that part of the whole layer a full one builds, as
+/// the surface's own cells are (`Raster::paint`). `None` when no part
+/// touches it or a side is too large.
+fn render_layer(
+    items: &[DisplayItem],
+    extent: Rect,
+    parts: &[Rect],
+    atlas: &AtlasMirror,
+    cache: &PaintCache,
+    scale: Scale,
+) -> Option<Drawn> {
+    let (cw, ch) = (CELL_W as i64, CELL_H as i64);
+    let (ex, ey) = (extent.left(), extent.top());
+    // The cells any part touches, and the bounds of them all.
+    let mut cells: Vec<(Rect, Vec<Rect>)> = Vec::new();
+    for gy in 0..(extent.h as i64 + ch - 1) / ch {
+        for gx in 0..(extent.w as i64 + cw - 1) / cw {
+            let x0 = ex + gx * cw;
+            let y0 = ey + gy * ch;
+            let Some(cell) = Rect::from_edges(x0, y0, x0 + cw, y0 + ch).intersect(extent) else {
+                continue;
+            };
+            let clips: Vec<Rect> = parts.iter().filter_map(|p| p.intersect(cell)).collect();
+            if !clips.is_empty() {
+                cells.push((cell, clips));
+            }
+        }
+    }
+    let area = cells.iter().map(|(c, _)| *c).reduce(|a, c| a.union(c))?;
+    let (w, h) = (u16::try_from(area.w).ok()?, u16::try_from(area.h).ok()?);
+    let mut pm = Pixmap::new(w, h);
+    let settings = RenderSettings {
+        num_threads: 0,
+        ..RenderSettings::default()
+    };
+    let raster = RasterizerSettings {
+        target_init: TargetInit::SrcOver,
+        render_mode: RenderMode::OptimizeQuality,
+        ..RasterizerSettings::default()
+    };
+    let mut contexts: Vec<RenderContext> = Vec::new();
+    let mut resources = Resources::new();
+    let mut scratch: Vec<u8> = Vec::new();
+    for (cell, clips) in &cells {
+        // Cells are at most CELL_W × CELL_H.
+        let (cw, ch) = (cell.w as u16, cell.h as u16);
+        let i = match contexts
+            .iter()
+            .position(|c| c.width() == cw && c.height() == ch)
+        {
+            Some(i) => i,
+            None => {
+                contexts.push(RenderContext::new_with(cw, ch, settings));
+                contexts.len() - 1
+            }
+        };
+        let ctx = &mut contexts[i];
+        ctx.reset();
+        let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
+        ctx.set_transform(base);
+        for clip in clips {
+            ctx.push_clip_rect(&kurbo::Rect::new(
+                clip.left() as f64,
+                clip.top() as f64,
+                clip.right() as f64,
+                clip.bottom() as f64,
+            ));
+            draw_group(
+                ctx,
+                items,
+                *clip,
+                atlas,
+                cache,
+                scale,
+                base,
+                Affine::IDENTITY,
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+            ctx.pop_clip();
+        }
+        ctx.flush();
+        let row = cell.w as usize * 4;
+        scratch.clear();
+        scratch.resize(row * cell.h as usize, 0);
+        if let Some(target) = PixmapMut::new(cw, ch, &mut scratch) {
+            ctx.render_with(target, &mut resources, raster);
+        }
+        ctx.reset();
+        let data = pm.data_mut();
+        let ox = (cell.left() - area.left()) as usize;
+        for y in 0..cell.h as usize {
+            let dy = (cell.top() - area.top()) as usize + y;
+            for (x, px) in scratch[y * row..(y + 1) * row].chunks_exact(4).enumerate() {
+                data[dy * area.w as usize + ox + x] = PremulRgba8 {
+                    r: px[0],
+                    g: px[1],
+                    b: px[2],
+                    a: px[3],
+                };
+            }
+        }
+    }
+    Some(Drawn {
+        pixmap: std::sync::Arc::new(pm),
+        x: area.x,
+        y: area.y,
+    })
 }

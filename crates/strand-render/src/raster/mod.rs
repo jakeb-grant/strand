@@ -23,8 +23,8 @@ mod draw;
 mod paint;
 
 pub use atlas::AtlasMirror;
-use draw::{disjoint, draw, frame_px, to_kurbo};
-pub(crate) use draw::{draw as draw_group, skip_group};
+pub(crate) use draw::{disjoint, draw as draw_group, skip_group};
+use draw::{draw, frame_px, to_kurbo};
 
 /// Width of a raster cell: one vello wide tile.
 pub const CELL_W: u32 = 256;

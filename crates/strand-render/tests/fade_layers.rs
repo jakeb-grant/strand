@@ -448,23 +448,30 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
     let (w, h) = (size.w, size.h);
     let mut reference = renderer();
     reference.set_fade_layers(false);
+    // (shadow-redraw) The same frames with layers, each repainted in
+    // full: a partial repaint must leave exactly what it draws.
+    let mut layered = renderer();
     let mut r = renderer();
     let mut bufs = [
         Buffer::new(w, h, scale),
         Buffer::new(w, h, scale),
         Buffer::new(w, h, scale),
     ];
-    for x in [&mut reference, &mut r] {
+    for x in [&mut reference, &mut layered, &mut r] {
         assert!(x.apply(b.diff.clone()).is_empty());
         x.attach_surface(S, root);
     }
     bufs[0].paint_at(&mut r, S, 0, T0);
     Buffer::new(w, h, scale).paint_at(&mut reference, S, 0, T0);
+    Buffer::new(w, h, scale).paint_at(&mut layered, S, 0, T0);
     let mut commits = 1usize;
     let mut painted_at: [Option<usize>; 3] = [Some(1), None, None];
     let mut front = 0;
     let mut log: Vec<String> = Vec::new();
     let mut edge_misses = 0usize;
+    let mut edge_worst = 0u8;
+    // The card's radius targets, by the frame that set them.
+    let mut radii: Vec<(u32, f32)> = vec![(0, 12.0)];
     // The second group is removed and made again (its exit, then its
     // enter) under fresh ids.
     let mut live2 = Some((g2, t2, k2));
@@ -500,7 +507,9 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
                     d.set(card, Prop::Width, num(120.0 + rnd(70) as f32));
                 }
                 6 => {
-                    d.set(card, Prop::Radius, num(rnd(16) as f32));
+                    let v = rnd(16) as f32;
+                    radii.push((k, v));
+                    d.set(card, Prop::Radius, num(v));
                 }
                 7 => {
                     d.set(
@@ -565,6 +574,7 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
         }
         log.push(format!("{d:?}"));
         reference.apply(d.clone());
+        layered.apply(d.clone());
         r.apply(d);
         let i = rnd(3) as usize;
         if r.wants_frame(S) {
@@ -579,21 +589,57 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
         }
         let mut full = Buffer::new(w, h, scale);
         full.paint_at(&mut reference, S, 0, frame(k));
+        let mut whole = Buffer::new(w, h, scale);
+        whole.paint_at(&mut layered, S, 0, frame(k));
+        let stale: Vec<(u32, u32)> = bufs[front]
+            .pixels
+            .chunks(4)
+            .zip(whole.pixels.chunks(4))
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| (i as u32 % w, i as u32 / w))
+            .collect();
+        if !stale.is_empty() {
+            for l in &log[log.len().saturating_sub(10)..] {
+                eprintln!("{l}");
+            }
+            panic!(
+                "scale {scale:?} frame {k}: {} pixels differ from the frame repainted in full with layers: {:?}",
+                stale.len(),
+                &stale[..stale.len().min(20)]
+            );
+        }
         // Past the tolerance only along the card's clip edge while it
         // springs between pixels: vello composites a group through a
         // clip's antialiased edge a little differently from the shapes
-        // in it one by one (up to 8 levels on the edge's pixels).
+        // in it one by one. The edge is the clip's outline, its rounded
+        // corners included, at any radius the card's springs between
+        // the radii set in the last 120 frames and the one before:
+        // pixels within 1.5 px of it. What a layered frame draws there is
+        // held exactly to the layered full repaint above.
         let edge = {
             // Its laid box, then its paint offset (`x: 10; y: 4`).
             let c = r.boxes(S).unwrap().rects[&card];
             let (cx, cy) = (c.x + 10.0, c.y + 4.0);
             let f = scale.as_f64() as f32;
-            let (x0, y0, x1, y1) = (cx * f, cy * f, (cx + c.w) * f, (cy + c.h) * f);
+            let (mx, my) = ((cx + c.w / 2.0) * f, (cy + c.h / 2.0) * f);
+            let (hw, hh) = (c.w / 2.0 * f, c.h / 2.0 * f);
+            let held = radii.iter().rposition(|(at, _)| *at + 120 < k).unwrap_or(0);
+            let (lo, hi) = radii[held..]
+                .iter()
+                .fold((f32::MAX, 0.0f32), |(a, b), (_, v)| (a.min(*v), b.max(*v)));
             move |x: u32, y: u32| {
                 let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
-                let near = |v: f32, e: f32| (v - e).abs() <= 1.5;
-                let inside = x >= x0 - 1.5 && x <= x1 + 1.5 && y >= y0 - 1.5 && y <= y1 + 1.5;
-                inside && (near(x, x0) || near(x, x1) || near(y, y0) || near(y, y1))
+                // The rounded rect's signed distance at radius `rad`.
+                let at = |rad: f32| {
+                    let rad = (rad * f).min(hw).min(hh);
+                    let qx = (x - mx).abs() - hw + rad;
+                    let qy = (y - my).abs() - hh + rad;
+                    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - rad
+                };
+                let steps = ((hi - lo) * 4.0).ceil() as u32;
+                (0..=steps)
+                    .any(|i| at(lo + (hi - lo) * i as f32 / steps.max(1) as f32).abs() <= 1.5)
             }
         };
         let bad: Vec<(u32, u32, u8)> = bufs[front]
@@ -612,10 +658,8 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
             })
             .collect();
         edge_misses += bad.len();
-        let off_edge: Vec<_> = bad
-            .iter()
-            .filter(|(x, y, d)| *d > 8 || !edge(*x, *y))
-            .collect();
+        edge_worst = bad.iter().fold(edge_worst, |w, (.., d)| w.max(*d));
+        let off_edge: Vec<_> = bad.iter().filter(|(x, y, _)| !edge(*x, *y)).collect();
         if !off_edge.is_empty() {
             for l in &log[log.len().saturating_sub(10)..] {
                 eprintln!("{l}");
@@ -627,10 +671,88 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
             );
         }
     }
-    eprintln!("{scale:?}: {edge_misses} pixels over the tolerance on the clip's edge");
+    eprintln!(
+        "{scale:?}: {edge_misses} pixels over the tolerance on the clip's edge (worst {edge_worst})"
+    );
     let (built, drawn) = r.fade_layers();
     assert!(
         drawn > built && built > 0,
         "{scale:?}: {built} built, {drawn} drawn"
     );
+}
+
+/// (shadow-redraw) A translucent panel with shadows that faded in and
+/// rests drawn from its cached layer, whose label then changes: the
+/// partial repaint, drawn only around the label, leaves the buffer
+/// exactly as a renderer that never cached a layer paints that frame in
+/// full, at scales 1 and 1.5. Before, the repaint rastered the group
+/// directly where it was damaged (its new key not cached, and the frame
+/// not repainting it whole), and the layer's pixels around it, 8-bit
+/// before they were composited, were a step off what the full repaint
+/// rastered: whether a group was drawn from a layer depended on what
+/// earlier frames had cached.
+#[test]
+fn a_resting_layered_panel_repaints_a_change_exactly() {
+    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+        let pose = vec![(Prop::Opacity, num(0.0))];
+        let translucent = |label: &str| {
+            let mut d = panel(NodeId::new(1, 0), pose.clone(), label);
+            d.set(NodeId::new(100, 0), Prop::Opacity, num(0.7));
+            d
+        };
+        let size = scale.physical_size(LogicalSize::new(W, H));
+        let mut b = Builder::default();
+        let root = stage(&mut b);
+        let mut r = renderer();
+        assert!(r.apply(b.diff.clone()).is_empty());
+        r.attach_surface(S, root);
+        let mut buf = Buffer::new(size.w, size.h, scale);
+        buf.paint_at(&mut r, S, 0, T0);
+        assert!(r.apply(translucent("12:00")).is_empty());
+        let mut k = 1;
+        while r.wants_frame(S) {
+            buf.paint_at(&mut r, S, 1, frame(k));
+            k += 1;
+            assert!(k < 400, "never settled");
+        }
+        let (built, drawn) = r.fade_layers();
+        assert!(built >= 1, "{scale:?}: the fade builds the panel's layer");
+        assert!(drawn > built, "{scale:?}: and draws it again");
+
+        let mut d = SceneDiff::new();
+        d.set(NodeId::new(101, 0), Prop::Text, text("12:01"));
+        assert!(r.apply(d).is_empty());
+        let passes = r.fade_passes();
+        let damage = buf.paint_at(&mut r, S, 1, frame(k));
+        assert!(
+            r.fade_passes() > passes,
+            "{scale:?}: the changed panel is drawn from a layer rastered where it repaints"
+        );
+        let whole = Rect::new(0, 0, size.w, size.h);
+        assert!(
+            damage.bounds().is_some() && !damage.covers(whole),
+            "{scale:?}: the label repaints only around itself: {damage:?}"
+        );
+
+        // A renderer that never drew the panel before: the same frame in
+        // full, with nothing cached.
+        let mut b = Builder::default();
+        let root = stage(&mut b);
+        let mut fresh = renderer();
+        assert!(fresh.apply(b.diff.clone()).is_empty());
+        assert!(fresh.apply(translucent("12:01")).is_empty());
+        fresh.attach_surface(S, root);
+        let mut full = Buffer::new(size.w, size.h, scale);
+        full.paint_at(&mut fresh, S, 0, frame(k));
+        let differ = buf
+            .pixels
+            .chunks_exact(4)
+            .zip(full.pixels.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "{scale:?}: {differ} pixels of the partial repaint differ from a full one"
+        );
+    }
 }

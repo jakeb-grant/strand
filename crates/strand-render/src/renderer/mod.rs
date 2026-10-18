@@ -591,6 +591,13 @@ impl Renderer {
         (o.fade_builds(), o.fade_draws())
     }
 
+    /// (shadow-redraw) Fade layers rastered uncached so far, only where
+    /// their frame repainted (a layered group whose layer is neither
+    /// cached nor kept).
+    pub fn fade_passes(&self) -> u64 {
+        self.raster.offscreen().fade_passes()
+    }
+
     /// (M4) Notices for CPU fallbacks drawn in place of GPU effects (a
     /// still aurora, particles capped at 1,000), each once a run: the host
     /// logs them and sends them to `strand watch`.

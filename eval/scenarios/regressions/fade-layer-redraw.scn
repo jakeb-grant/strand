@@ -1,0 +1,52 @@
+id     = "fade-layer-redraw"
+about  = """A finding of round 3's held-out set (docs/decisions.md shadow-redraw): an
+opacity group holding a shadow is drawn from a fade layer, whose pixels are 8-bit
+before they are composited, so it lands a step off the same group rastered as a
+group. Whether a frame drew it from a layer depended on what earlier frames had
+cached: a card whose exit shrinks it as it fades changes its layer's key every
+frame, stopped building layers after two and was rastered as a group, where a
+full repaint with nothing cached drew it from a layer; a translucent card that
+faded in and rests drawn from its layer, whose label then changes, was rastered
+as a group around the label inside the old layer's pixels. Now a group that
+qualifies is always drawn from its layer, rastered uncached where the frame
+repaints when none is kept, so every partial redraw is its frame repainted in
+full (`redraw`; eval/mutants/fade-layer-redraw.patch reverts the fix)."""
+screen = { width = 320, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state on = false
+state stamp = "12:00"
+state shown = true
+panel Cards {
+  anchor: top_left; margin: 12; open: true
+  col { id: stack; width: 260; gap: 8
+    if on {
+      col { id: clock; pad: 10; radius: 10; bg: #24273a; opacity: 0.7
+            shadow: 0 4px 12px #00000060
+        enter { opacity: 0 }
+        text stamp { id: readout; color: #cad3f5 }
+      }
+    }
+    if shown {
+      col { id: leaving; pad: 10; gap: 4; radius: 10; bg: #24273a; border: 1, #494d64
+            shadow: 0 4px 12px #00000060
+        exit { x: 280; opacity: 0; height: 0 }
+        text "build" { color: #cad3f5 }
+        text "Something happened" { color: #a5adcb }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark enter
+set on true
+rest
+mark stamp
+set stamp "12:01"
+rest
+mark leave
+set shown false
+rest

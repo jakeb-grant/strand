@@ -1,0 +1,134 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "fade-layer-redraw"
+verdict good
+note "new scenario (shadow-redraw): the translucent clock card fades in to 0.7 over 16 ticks and rests drawn from its layer, its stamp changes in one tick, and the shadowed card leaves by its exit (x to 280, opacity to 0, height to 0) in 17; every partial frame equals its full repaint (redraw passes on all 35 painted frames)"
+date 2026-10-18
+rev "0824d452+changes"
+approver "claude"
+scenario 72d7ba06a9514e64
+seal c8b8575f36076904
+S1 0 - "panel Cards"
+N0 "leaving|shell.strand:15:7|#0" "col#leaving"
+N1 "stack|shell.strand:6:3|#0" "col#stack"
+N2 "|shell.strand:18:9|#0" "text(\"build\")"
+N3 "|shell.strand:19:9|#1" "text(\"Something happened\")"
+N4 "|shell.strand:4:1|#0" "panel@shell.strand:4"
+N5 "clock|shell.strand:8:7|#0" "col#clock"
+N6 "readout|shell.strand:11:9|#0" "text#readout"
+k0 p1
+s1 z=291,89
+n0 x=12 y=12 w=260 h=54 ord=2 bg=24273aff bd=494d64ff sh=00000060@-7,-3,298,92
+n1 x=12 y=12 w=260 h=54 ord=1
+n2 x=22 y=22 w=240 h=15 txt=S ord=3 ink=22,23,27,11 fg=cad3f5ff gl=["build"]
+n3 x=22 y=41 w=240 h=15 txt=S ord=4 ink=22,42,123,13 fg=a5adcbff gl=["Something\u0020happened"]
+n4 x=12 y=12 w=260 h=54
+k1
+s1 z=291,133
+n0 y=23 ord=4 sh=00000060@-7,8,298,92
+n1 h=97
+n2 y=33 ord=5 ink=22,34,27,11
+n3 y=52 ord=6 ink=22,53,123,13
+n4 h=97
+n5 x=12 y=12 w=260 h=35 op=26 ord=2 bg=24273aff sh=00000060@-7,-3,298,73
+n6 x=22 y=22 w=240 h=15 op=26 txt=S ord=3 ink=22,23,32,11 fg=cad3f5ff gl=["12:00"]
+k2
+n0 y=40 sh=00000060@-7,25,298,92
+n2 y=50 ink=22,51,27,11
+n3 y=69 ink=22,70,123,13
+n5 op=69
+n6 op=69
+k3
+n0 y=50 sh=00000060@-7,35,298,92
+n2 y=60 ink=22,61,27,11
+n3 y=79 ink=22,80,123,13
+n5 op=106
+n6 op=106
+k4
+n0 y=55 sh=00000060@-7,40,298,92
+n2 y=65 ink=22,66,27,11
+n3 y=84 ink=22,85,123,13
+n5 op=133
+n6 op=133
+k5
+n0 y=56 sh=00000060@-7,41,298,92
+n2 y=66 ink=22,67,27,11
+n3 y=85 ink=22,86,123,13
+n5 op=151
+n6 op=151
+k6
+n5 op=162
+n6 op=162
+k7
+n5 op=169
+n6 op=169
+k8
+n0 y=55 sh=00000060@-7,40,298,92
+n2 y=65 ink=22,66,27,11
+n3 y=84 ink=22,85,123,13
+n5 op=173
+n6 op=173
+k9
+n5 op=175
+n6 op=175
+k10
+n5 op=177
+n6 op=177
+k11
+n5 op=178
+n6 op=178
+k12
+k13
+k14
+k15
+k16
+s1 z=291,132
+k17
+n6 gl=["12:01"]
+k18
+n0 x=85 h=40 op=218 hid=inert sh=00000060@66,40,298,78
+n1 h=83
+n2 x=95 op=218 hid=inert ink=95,66,27,11
+n3 x=95 op=218 hid=inert ink=95,85,123,13
+n4 h=83
+k19
+n0 x=191 h=19 op=157 sh=00000060@172,40,298,57
+n1 h=62
+n2 x=201 op=157 ink=201,66,27,11
+n3 x=201 op=157 ink=201,85,123,13
+n4 h=62
+k20
+n0 x=261 y=53 h=6 op=104 sh=00000060@242,38,298,44
+n1 h=47
+n2 x=271 y=56 op=104 ink=271,57,27,11
+n3 x=271 y=75 op=104 ink=271,76,123,13
+n4 h=47
+k21
+n0 x=292 y=47 h=0 op=65 bg=- bd=- sh=-
+n1 h=35
+n2 -
+n3 -
+n4 h=35
+k22
+n0 x=300 op=39
+k23
+n0 x=298 op=23
+k24
+n0 x=295 op=14
+k25
+n0 x=293 op=8
+k26
+n0 x=292 op=4
+k27
+n0 op=2
+k28
+n0 op=1
+k29
+k30
+n0 op=0
+k31
+k32
+n0 hid=opacity0
+k33
+n0 -
+k34
+s1 z=291,70
