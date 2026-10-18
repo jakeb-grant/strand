@@ -2153,7 +2153,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   at most `MAX_HOLD_PAUSE` (1 s) in all, so a configure that never
   matches costs a bounded wait, not a stall. An empty `text` lays out as 0 × 0. `marks:` arrives as a list of `[start, end]` pairs: the
   compiler's scene conversion turns a `Range` record into that pair. A `popup`'s spec gets `parent` and `anchor_rect` (its
-  element's laid-out box in the parent surface); `tooltip: expr` makes a
+  element's laid-out box in the parent surface; `None` until that box is
+  laid out, and the layout pass that lays it out reports the spec again,
+  decisions.md popup-boot-wake); `tooltip: expr` makes a
   render-owned popup (`SceneTree::add_overlay`, ids from `OVERLAY_INDEX`)
   after `TOOLTIP_DELAY` of rest, reported as a spec with `tooltip: true`;
   `Renderer::next_wake` includes its due time.

@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Anchor, Edge, Insets, LogicalSize, NodeId, NodeKind, Prop, Scale, Size, SurfaceChange,
-    SurfaceId, SurfaceSpec, TokenScope,
+    Anchor, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, Scale, Size,
+    SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 
 use super::Renderer;
@@ -287,12 +287,7 @@ impl Renderer {
                 let parent = anchor.and_then(|a| self.tree.root_of(a));
                 spec.parent = parent;
                 spec.tooltip = self.tree.is_overlay(id);
-                spec.anchor_rect = anchor.zip(parent).and_then(|(a, p)| {
-                    self.surfaces
-                        .values()
-                        .filter(|s| s.root == p)
-                        .find_map(|s| s.boxes.as_ref()?.rects.get(&a).copied())
-                });
+                spec.anchor_rect = anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p));
                 if parent.is_some_and(|p| self.specs.get(&p).is_some_and(|ps| !ps.open)) {
                     spec.open = false;
                 }
@@ -495,6 +490,43 @@ impl Renderer {
             self.refresh_specs();
         }
         self.refresh_size_holds();
+    }
+
+    /// The laid-out box of `anchor`, a popup's anchor element, on a
+    /// surface showing `root`, the surface node it is in: the popup's
+    /// `anchor_rect`.
+    fn anchor_box(&self, anchor: NodeId, root: NodeId) -> Option<LogicalRect> {
+        self.surfaces
+            .values()
+            .filter(|s| s.root == root)
+            .find_map(|s| s.boxes.as_ref()?.rects.get(&anchor).copied())
+    }
+
+    /// (popup-boot-wake) `root` was laid out: a popup anchored in it
+    /// that waits for its anchor's box (`anchor_rect` none, so the
+    /// surface manager has not made it) and now has one is re-resolved
+    /// by the next spec refresh, which the frame or wake that laid it
+    /// out runs (`release_holds`), so the host makes the popup at once
+    /// rather than at an unrelated wake (a bar with no text has none
+    /// at boot). An anchor that moves keeps its popup where it was until
+    /// the next refresh, as before: following it here would reposition
+    /// (or, below `xdg_wm_base` 3, make again) the popup every frame
+    /// it springs.
+    pub(super) fn place_waiting_popups(&mut self, root: NodeId) {
+        let waiting: Vec<NodeId> = self
+            .specs
+            .iter()
+            .filter(|(_, s)| {
+                s.kind == NodeKind::Popup && s.parent == Some(root) && s.anchor_rect.is_none()
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in waiting {
+            let anchor = self.tree.get(id).and_then(|n| n.parent);
+            if anchor.and_then(|a| self.anchor_box(a, root)).is_some() {
+                self.spec_dirty.insert(id);
+            }
+        }
     }
 
     /// Records `spec` as the spec of surface node `id`, reporting a

@@ -151,6 +151,115 @@ fn a_popup_reports_its_parent_anchor_and_size() {
     assert!(!spec_of(&changes, n.popup).unwrap().open);
 }
 
+/// A text-less bar's box and, inside it, a popup that is open as it
+/// mounts: `(bar, anchor, popup)`, added to `b`'s diff (the box and
+/// popup under `parent` when one is given).
+fn textless(b: &mut Builder, parent: Option<NodeId>) -> (NodeId, NodeId, NodeId) {
+    let bar = parent.unwrap_or_else(|| {
+        b.node(
+            NodeKind::Bar,
+            None,
+            vec![(Prop::Name, text("Top")), (Prop::Height, num(30.0))],
+        )
+    });
+    let anchor = b.node(
+        NodeKind::Box,
+        Some(bar),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(30.0))],
+    );
+    let popup = b.node(
+        NodeKind::Popup,
+        Some(anchor),
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(40.0)),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(popup),
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#202020")),
+        ],
+    );
+    (bar, anchor, popup)
+}
+
+/// (popup-boot-wake) A popup open at boot in a bar with no text is
+/// placed by the bar's first layout: the configure that lays the bar
+/// out leaves the popup's spec, with its anchor's box, for the host to
+/// take, as a text arriving would for a bar that shapes some. Before,
+/// it waited for whatever woke the loop next.
+#[test]
+fn a_popup_open_at_boot_is_placed_by_its_bars_first_layout() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let (bar, anchor, popup) = textless(&mut b, None);
+    assert!(r.apply(b.diff).is_empty());
+    let changes = r.take_surface_changes();
+    let spec = spec_of(&changes, popup).expect("the popup's spec");
+    assert!(spec.open);
+    assert_eq!(spec.anchor_rect, None, "its anchor is not laid out yet");
+    r.attach_surface(BAR, bar);
+    r.configure_surface(BAR, Size::new(800, 30), Scale::ONE);
+    assert!(
+        r.has_surface_changes(),
+        "the host is woken to place the popup"
+    );
+    let changes = r.take_surface_changes();
+    let spec = spec_of(&changes, popup).expect("the popup's spec, placed");
+    let rect = r.boxes(BAR).expect("the bar is laid out").rects[&anchor];
+    assert_eq!(spec.anchor_rect, Some(rect));
+    assert_eq!(rect, LogicalRect::new(0.0, 0.0, 100.0, 30.0));
+    // Painting the bar changes nothing more.
+    let mut buf = Buffer::new(800, 30, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    assert!(spec_of(&r.take_surface_changes(), popup).is_none());
+}
+
+/// (popup-boot-wake) A diff mounting an anchor with its popup open, at
+/// run time: by the end of the bar's next frame (the host's `painted`
+/// wakes the loop for surface changes) the popup's spec carries the
+/// anchor's box, with no update between; before, the last spec the host
+/// was handed had none.
+#[test]
+fn a_popup_mounted_open_is_placed_by_the_time_its_anchor_is_drawn() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Name, text("Top")), (Prop::Height, num(30.0))],
+    );
+    let row = b.node(NodeKind::Row, Some(bar), vec![]);
+    b.node(
+        NodeKind::Box,
+        Some(row),
+        vec![(Prop::Width, num(50.0)), (Prop::Height, num(30.0))],
+    );
+    assert!(r.apply(std::mem::take(&mut b.diff)).is_empty());
+    r.attach_surface(BAR, bar);
+    r.configure_surface(BAR, Size::new(800, 30), Scale::ONE);
+    let mut buf = Buffer::new(800, 30, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    r.take_surface_changes();
+    let (_, anchor, popup) = textless(&mut b, Some(row));
+    assert!(r.apply(b.diff).is_empty());
+    let mut changes = r.take_surface_changes();
+    assert!(r.wants_frame(BAR));
+    buf.paint(&mut r, BAR, 1);
+    changes.extend(r.take_surface_changes());
+    let spec = spec_of(&changes, popup).expect("the popup's spec");
+    assert_eq!(
+        spec.anchor_rect,
+        Some(LogicalRect::new(50.0, 0.0, 100.0, 30.0))
+    );
+    assert_eq!(spec.anchor_rect, Some(r.boxes(BAR).unwrap().rects[&anchor]));
+}
+
 /// The popup paints its own subtree on its own surface, inheriting the
 /// bar's colour and font, inside its overhang.
 #[test]

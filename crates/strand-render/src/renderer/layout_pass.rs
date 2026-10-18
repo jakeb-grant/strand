@@ -263,6 +263,7 @@ impl Renderer {
                 s.boxes = Some(boxes);
                 s.anim_layout = moving;
             }
+            self.place_waiting_popups(root);
             self.report_facts(id);
             return;
         }
@@ -389,6 +390,7 @@ impl Renderer {
             s.layout_dirty = false;
             s.anim_layout = moving;
         }
+        self.place_waiting_popups(root);
         self.report_facts(id);
     }
 
