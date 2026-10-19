@@ -65,3 +65,8 @@ border-fade-snap.patch  regressions/border-fade-snap.scn continuity:#chip contin
 text-exit-squeeze.patch regressions/text-exit-squeeze.scn contain:#plug contain:#badge expect
 clip-carries-rows.patch regressions/clip-carries-rows.scn vanish
 shrink-keeps-edge.patch regressions/shrink-keeps-edge.scn bystander expect
+# unhold-flip.patch: the same revert as shrink-keeps-edge's (boxes compared
+# in their buffers again), caught by the regression of the case it was
+# found by second: a held centred launcher letting go as a query lays its
+# rows out anew (decisions.md integration-r5, held-glides' unhold half).
+unhold-flip.patch       regressions/unhold-flip.scn       envelope contain

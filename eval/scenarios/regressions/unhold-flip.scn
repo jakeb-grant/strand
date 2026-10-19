@@ -1,0 +1,50 @@
+id     = "unhold-flip"
+about  = """A finding of round 4 (docs/decisions.md held-glides, integration-r5): a
+centred launcher, 216 px wide and as tall as its results, filters them while
+the query is typed a letter at a time, faster than its motion settles: rows
+that stay glide, rows that leave fade out and fold to nothing. While its
+rows fold the panel is held at its larger size, its content laid out where
+the smaller box will be (popup-shrink); as the hold lets go the compositor
+re-centres the smaller buffer, and a query typed in that frame lays the
+rows out anew. A row that stayed in place on screen used to glide 90 px
+from 67 px below where it was drawn: its FLIP read where the root was
+placed in the held buffer as the row's own move (`envelope`, `contain`;
+eval/mutants/unhold-flip.patch compares the change's boxes in their buffers
+again). The query is not erased: rows coming back grow the panel, which
+the content-sized growth rule covers (an owner question)."""
+screen = { width = 360, height = 640, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state query = ""
+let apps = ["calculator", "calendar", "camera", "chess", "clock", "contacts", "cheese"]
+let hits = apps.filter(a => a.starts_with(query))
+
+panel Launcher {
+  anchor: center; open: true
+  col { id: card; width: 216; pad: 9; gap: 5; radius: 12; bg: #1b1d2b; align: center
+    text query == "" ? "type to search" : query { id: prompt; color: #c8cbe0 }
+    col { id: results; gap: 3
+      for a in hits key a {
+        row { pad: 0, 7; height: 27; radius: 6; align: center; bg: #2b2f45
+          enter { opacity: 0; height: 0 }
+          exit { opacity: 0; height: 0 }
+          text a { color: #eceef8 }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark c
+set query c
+rest
+mark ca-cal-calc
+set query ca
+wait 50
+set query cal
+wait 50
+set query calc
+rest

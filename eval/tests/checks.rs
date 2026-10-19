@@ -5484,6 +5484,34 @@ fn a_slot_from_zero_folds_its_gap() {
     );
 }
 
+/// (integration-r5) The same step on a sibling that shows nothing at
+/// either frame (itself folded to nothing as it leaves, or faded out)
+/// opens no gap one sees: `fold` does not judge it (unhold-flip's rows
+/// leaving one after another).
+#[test]
+fn fold_leaves_a_sibling_that_shows_nothing() {
+    let sc = scenario("");
+    for blank in [|r: &mut Row| r.visual[3] = 0.0, |r: &mut Row| r.op = 0.0] {
+        let mut t = folding(10.6, 0.0);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key == "b" {
+                    blank(r);
+                }
+            }
+        }
+        t.seal();
+        let r = check(&sc, &t);
+        assert!(
+            !r.failures(CheckId::Continuity)
+                .iter()
+                .any(|f| f.key.as_deref() == Some("b") && f.msg.starts_with("fold")),
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
 /// (eval-rules-3) [`fill`] with its own spring's samples naming `curve`
 /// on each frame it moves.
 fn fill_on(way: impl Fn(f64) -> [f64; 4], curve: CurveRec) -> RunTrace {

@@ -1,0 +1,320 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "unhold-flip"
+verdict good
+note "integration-r5, first reference of the trimmed regression, read frame by frame: typing ca, cal, calc folds six rows away while the panel is held at 245 px with its card placed 90 px down; as the hold lets go at k27 the buffer shrinks to 65 px and the compositor re-centres it (origin 198 -> 288), and calculator, which stayed, is drawn at y 317 on screen before and after, the card and prompt at 288 and 297: nothing that stays moves"
+date 2026-10-19
+rev "b839d548+changes"
+approver "claude"
+scenario a60312620c8e1f33
+seal ff89545eaa119897
+S1 0 - "panel Launcher"
+N0 "card|shell.strand:7:3|#0" "col#card"
+N1 "prompt|shell.strand:8:5|#0" "text#prompt"
+N2 "results|shell.strand:9:5|#0" "col#results"
+N3 "|shell.strand:11:9|[calculator]#0" "row@shell.strand:11"
+N4 "|shell.strand:11:9|[calendar]#1" "row@shell.strand:11"
+N5 "|shell.strand:11:9|[camera]#2" "row@shell.strand:11"
+N6 "|shell.strand:11:9|[cheese]#6" "row@shell.strand:11"
+N7 "|shell.strand:11:9|[chess]#3" "row@shell.strand:11"
+N8 "|shell.strand:11:9|[clock]#4" "row@shell.strand:11"
+N9 "|shell.strand:11:9|[contacts]#5" "row@shell.strand:11"
+N10 "|shell.strand:14:11|[calculator]#0" "text(\"calculator\")"
+N11 "|shell.strand:14:11|[calendar]#0" "text(\"calendar\")"
+N12 "|shell.strand:14:11|[camera]#0" "text(\"camera\")"
+N13 "|shell.strand:14:11|[cheese]#0" "text(\"cheese\")"
+N14 "|shell.strand:14:11|[chess]#0" "text(\"chess\")"
+N15 "|shell.strand:14:11|[clock]#0" "text(\"clock\")"
+N16 "|shell.strand:14:11|[contacts]#0" "text(\"contacts\")"
+N17 "|shell.strand:5:1|#0" "panel@shell.strand:5"
+k0 p1
+s1 z=216,245 o=72,198
+n0 x=0 y=0 w=216 h=245 ord=1 bg=1b1d2bff
+n1 x=67 y=9 w=82 h=15 txt=S ord=2 ink=67,10,81,13 fg=c8cbe0ff gl=["type\u0020to\u0020search"]
+n2 x=73 y=29 w=70 h=207 ord=3
+n3 x=73 y=29 w=70 h=27 ord=4 bg=2b2f45ff
+n4 x=73 y=59 w=70 h=27 ord=6 bg=2b2f45ff
+n5 x=73 y=89 w=70 h=27 ord=8 bg=2b2f45ff
+n6 x=73 y=209 w=70 h=27 ord=16 bg=2b2f45ff
+n7 x=73 y=119 w=70 h=27 ord=10 bg=2b2f45ff
+n8 x=73 y=149 w=70 h=27 ord=12 bg=2b2f45ff
+n9 x=73 y=179 w=70 h=27 ord=14 bg=2b2f45ff
+n10 x=80 y=35 w=56 h=15 txt=S ord=5 ink=80,36,56,11 fg=eceef8ff gl=["calculator"]
+n11 x=80 y=65 w=50 h=15 txt=S ord=7 ink=80,66,50,11 fg=eceef8ff gl=["calendar"]
+n12 x=80 y=95 w=44 h=15 txt=S ord=9 ink=80,99,44,8 fg=eceef8ff gl=["camera"]
+n13 x=80 y=215 w=42 h=15 txt=S ord=17 ink=80,216,42,11 fg=eceef8ff gl=["cheese"]
+n14 x=80 y=125 w=34 h=15 txt=S ord=11 ink=80,126,34,11 fg=eceef8ff gl=["chess"]
+n15 x=80 y=155 w=30 h=15 txt=S ord=13 ink=80,156,30,11 fg=eceef8ff gl=["clock"]
+n16 x=80 y=185 w=49 h=15 txt=S ord=15 ink=80,187,49,10 fg=eceef8ff gl=["contacts"]
+n17 x=0 y=0 w=216 h=245
+k1
+n1 x=105 w=7 ink=105,13,7,8 gl=["c"]
+k2
+n0 y=14 h=217
+n1 x=101 y=23 w=14 ink=101,27,14,8 gl=["ca"]
+n2 y=43 h=179
+n3 y=43
+n4 y=73
+n5 y=103
+n6 y=202 h=20 op=218 hid=inert
+n7 y=133 h=20 op=218 hid=inert
+n8 y=156 h=20 op=218 hid=inert
+n9 h=20 op=218 hid=inert
+n10 y=49 ink=80,50,56,11
+n11 y=79 ink=80,80,50,11
+n12 y=109 ink=80,113,44,8
+n13 y=204 op=218 hid=inert ink=80,205,42,11
+n14 y=135 op=218 hid=inert ink=80,136,34,11
+n15 y=158 op=218 hid=inert ink=80,159,30,11
+n16 y=181 op=218 hid=inert ink=80,183,49,10
+n17 y=14 h=217
+k3
+n0 y=34 h=176
+n1 y=43 ink=101,47,14,8
+n2 y=63 h=138
+n3 y=63
+n4 y=93
+n5 y=123
+n6 y=191 h=10 op=157
+n7 y=153 h=10 op=157
+n8 y=166 h=9 op=157
+n9 y=178 h=10 op=157
+n10 y=69 ink=80,70,56,11
+n11 y=99 ink=80,100,50,11
+n12 y=129 ink=80,133,44,8
+n13 y=189 op=157 ink=80,190,42,11
+n14 y=150 op=157 ink=80,151,34,11
+n15 y=163 op=157 ink=80,164,30,11
+n16 y=176 op=157 ink=80,178,49,10
+n17 y=34 h=176
+k4
+n0 y=48 h=149
+n1 y=57 ink=101,61,14,8
+n2 y=77 h=111
+n3 y=77
+n4 y=107
+n5 y=137
+n6 y=185 h=3 op=104
+n7 y=167 h=3 op=104
+n8 y=173 h=3 op=104
+n9 y=179 h=3 op=104
+n10 y=83 ink=80,84,56,11
+n11 y=113 ink=80,114,50,11
+n12 y=143 ink=80,147,44,8
+n13 y=179 op=104 ink=80,180,42,11
+n14 y=161 op=104 ink=80,162,34,11
+n15 y=167 op=104 ink=80,168,30,11
+n16 y=173 op=104 ink=80,175,49,10
+n17 y=48 h=149
+k5
+n0 y=59 h=125
+n1 y=68 ink=101,72,14,8
+n2 y=88 h=87
+n3 y=88
+n4 y=118
+n5 y=148
+n6 y=175 h=0 op=65 ord=13 bg=-
+n7 y=178 h=0 op=65 bg=-
+n8 y=178 h=0 op=65 ord=11 bg=-
+n9 y=178 h=0 op=65 ord=12 bg=-
+n10 y=94 ink=80,95,56,11
+n11 y=124 ink=80,125,50,11
+n12 y=154 ink=80,158,44,8
+n13 -
+n14 -
+n15 -
+n16 -
+n17 y=59 h=125
+k6
+n0 y=57 h=130
+n1 x=100 y=66 w=17 ink=100,67,16,11 gl=["cal"]
+n2 y=86 h=92
+n3 y=86
+n4 y=116
+n5 y=146 h=20 op=218 hid=inert
+n6 y=166 op=39
+n7 y=169 op=39
+n8 y=169 op=39
+n9 y=169 op=39
+n10 y=92 ink=80,93,56,11
+n11 y=122 ink=80,123,50,11
+n12 y=148 op=218 hid=inert ink=80,152,44,8
+n17 y=57 h=130
+k7
+n0 y=62 h=120
+n1 y=71 ink=100,72,16,11
+n2 y=91 h=82
+n3 y=91
+n4 y=121
+n5 y=151 h=10 op=157
+n6 y=161 op=23
+n7 y=164 op=23
+n8 y=164 op=23
+n9 y=164 op=23
+n10 y=97 ink=80,98,56,11
+n11 y=127 ink=80,128,50,11
+n12 op=157
+n17 y=62 h=120
+k8
+n0 y=66 h=113
+n1 y=75 ink=100,76,16,11
+n2 y=95 h=75
+n3 y=95
+n4 y=125
+n5 y=155 h=3 op=104
+n6 y=158 op=14
+n7 y=161 op=14
+n8 y=161 op=14
+n9 y=161 op=14
+n10 y=101 ink=80,102,56,11
+n11 y=131 ink=80,132,50,11
+n12 y=149 op=104 ink=80,153,44,8
+n17 y=66 h=113
+k9
+n0 y=67 h=110
+n1 y=76 ink=100,77,16,11
+n2 y=96 h=72
+n3 y=96
+n4 y=126
+n5 y=156 h=0 op=65 bg=-
+n6 y=153 op=8 ord=12
+n7 y=156 op=8 ord=9
+n8 y=156 op=8 ord=10
+n9 y=156 op=8 ord=11
+n10 y=102 ink=80,103,56,11
+n11 y=132 ink=80,133,50,11
+n12 -
+n17 y=67 h=110
+k10
+n0 y=71 h=103
+n1 x=96 y=80 w=24 ink=96,81,23,11 gl=["calc"]
+n2 y=100 h=65
+n3 y=100
+n4 y=130 h=20 op=218 hid=inert
+n5 y=153 op=39
+n6 y=150 op=4
+n7 y=153 op=4
+n8 y=153 op=4
+n9 y=153 op=4
+n10 y=106 ink=80,107,56,11
+n11 op=218 hid=inert
+n17 y=71 h=103
+k11
+n0 y=76 h=93
+n1 y=85 ink=96,86,23,11
+n2 y=105 h=55
+n3 y=105
+n4 y=135 h=10 op=157
+n5 y=148 op=23
+n6 y=145 op=2
+n7 y=148 op=2
+n8 y=148 op=2
+n9 y=148 op=2
+n10 y=111 ink=80,112,56,11
+n11 op=157
+n17 y=76 h=93
+k12
+n0 y=79 h=86
+n1 y=88 ink=96,89,23,11
+n2 y=108 h=48
+n3 y=108
+n4 y=138 h=3 op=104
+n5 y=144 op=14
+n6 y=141 op=1
+n7 y=144 op=1
+n8 y=144 op=1
+n9 y=144 op=1
+n10 y=114 ink=80,115,56,11
+n11 op=104
+n17 y=79 h=86
+k13
+n0 y=80 h=83
+n1 y=89 ink=96,90,23,11
+n2 y=109 h=45
+n3 y=109
+n4 y=139 h=0 op=65 bg=-
+n5 y=139 op=8 ord=7
+n6 y=136 ord=11
+n7 y=139 ord=8
+n8 y=139 ord=9
+n9 y=139 ord=10
+n10 y=115 ink=80,116,56,11
+n11 -
+n17 y=80 h=83
+k14
+n0 y=81
+n1 y=90 ink=96,91,23,11
+n2 y=110
+n3 y=110
+n4 y=140 op=39
+n5 y=140 op=4
+n6 y=137 op=0
+n7 y=140 op=0
+n8 y=140 op=0
+n9 y=140 op=0
+n10 y=116 ink=80,117,56,11
+n17 y=81
+k15
+n4 op=23
+n5 op=2
+n6 hid=opacity0
+n7 hid=opacity0
+n8 hid=opacity0
+n9 hid=opacity0
+k16
+n0 y=87 h=71
+n1 y=96 ink=96,97,23,11
+n2 y=116 h=33
+n3 y=112
+n4 y=142 op=14
+n5 y=141 op=1
+n6 -
+n7 -
+n8 -
+n9 -
+n10 y=118 ink=80,119,56,11
+n17 y=87 h=71
+k17
+n3 y=114
+n4 y=144 op=8
+n5 y=142
+n10 y=120 ink=80,121,56,11
+k18
+n3 y=115
+n4 y=145 op=4
+n5 y=143 op=0
+n10 y=121 ink=80,122,56,11
+k19
+n3 y=116
+n4 y=146 op=2
+n5 hid=opacity0
+n10 y=122 ink=80,123,56,11
+k20
+n0 y=90 h=65
+n1 y=99 ink=96,100,23,11
+n2 y=119 h=27
+n3 y=117
+n4 op=1
+n5 -
+n10 y=123 ink=80,124,56,11
+n17 y=90 h=65
+k21
+n3 y=118
+n10 y=124 ink=80,125,56,11
+k22
+n3 y=119
+n4 op=0
+n10 y=125 ink=80,126,56,11
+k23
+n4 hid=opacity0
+k24
+n4 -
+k25
+k26
+k27
+s1 z=216,65 o=72,288
+n0 y=0
+n1 y=9 ink=96,10,23,11
+n2 y=29
+n3 y=29
+n10 y=35 ink=80,36,56,11
+n17 y=0

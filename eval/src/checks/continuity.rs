@@ -429,7 +429,9 @@ fn springs(cx: &Cx) -> Vec<Finding> {
 /// counted for every sibling folding there. Judged only where nothing
 /// else in the parent changes at that frame: every other sibling there
 /// at both frames keeps its laid size, and none comes or goes but those
-/// folding.
+/// folding. A sibling that shows nothing at both frames (no area, or no
+/// opacity) is not judged: where it is laid opens no gap one sees
+/// (integration-r5).
 fn fold(cx: &Cx) -> Vec<Finding> {
     use strand_render::probe::Motions;
     let tl = &cx.tl;
@@ -542,6 +544,16 @@ fn fold(cx: &Cx) -> Vec<Finding> {
                 let Some((_, rb)) = kb.iter().find(|(q, _)| q == k) else {
                     continue;
                 };
+                // (integration-r5) A sibling that shows nothing at both
+                // frames (no area, or no opacity: one leaving itself,
+                // folded to nothing and faded out) opens no gap the eye
+                // sees, wherever it is laid.
+                let blank = |r: &crate::trace::Row| {
+                    r.visual[2] < COLLAPSED || r.visual[3] < COLLAPSED || r.op <= 0.0
+                };
+                if blank(ra) && blank(rb) {
+                    continue;
+                }
                 held += 1;
                 let shift = f64::from(rb.laid[axis] - pb.laid[axis])
                     - f64::from(ra.laid[axis] - pa.laid[axis]);

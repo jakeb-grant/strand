@@ -2770,6 +2770,131 @@ fn rows_pushed_down_in_a_growing_content_sized_panel_glide_together() {
     );
 }
 
+/// (held-glides) Paints `h` until nothing moves, calling `read` on each
+/// frame as it is painted, before a resize it asks for replaces the
+/// buffer.
+fn paint_each(h: &mut Host, mut read: impl FnMut(&Buffer)) -> usize {
+    let mut n = 0;
+    loop {
+        let Some((id, buf, age)) = h.surface.as_mut() else {
+            panic!("closed");
+        };
+        if !h.r.wants_frame(*id) {
+            return n;
+        }
+        buf.paint_at(&mut h.r, *id, *age, frame(h.k));
+        *age = 1;
+        h.k += 1;
+        n += 1;
+        read(buf);
+        if h.r.has_surface_changes() {
+            h.r.update();
+            h.sync();
+        }
+        assert!(n < 400, "never settled");
+    }
+}
+
+/// The buffer is BGRA.
+fn is_red(p: [u8; 4]) -> bool {
+    p[2] > 128 && p[1] < 128 && p[0] < 128
+}
+
+fn is_green(p: [u8; 4]) -> bool {
+    p[1] > 128 && p[2] < 128 && p[0] < 128
+}
+
+/// (held-glides) Two rows of a centred content-sized panel swap places
+/// in the frame its hold lets go: the panel was held at its larger size
+/// while its other rows folded away, its content laid out where the
+/// smaller box would be (popup-shrink), and the compositor re-centres
+/// the smaller buffer as the swap is laid out. Each row glides from the
+/// slot it was drawn in on screen to the other: neither moves by where
+/// the root was placed in the held buffer (the sandbox's launcher: a row
+/// that stayed glided 90 px, starting 67 px below where it was).
+#[test]
+fn rows_swapped_as_a_centred_panels_hold_lets_go_glide_from_where_they_were() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Anchor, PropValue::Keyword("center".into()))],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Width, num(100.0))]);
+    let mut rows = Vec::new();
+    for (c, w) in [
+        ("#ff0000", 50.0),
+        ("#00ff00", 100.0),
+        ("#0000ff", 100.0),
+        ("#0000ff", 100.0),
+    ] {
+        rows.push(b.node(
+            NodeKind::Box,
+            Some(col),
+            vec![
+                (Prop::Width, num(w)),
+                (Prop::Height, num(30.0)),
+                (Prop::Bg, color(c)),
+                (Prop::Exit, pose(vec![(Prop::Height, num(0.0))])),
+            ],
+        ));
+    }
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.height(), Some(120.0));
+    let mut d = SceneDiff::new();
+    for id in &rows[2..] {
+        d.push(SceneOp::Remove {
+            id: *id,
+            window: false,
+        });
+    }
+    h.apply(d);
+    // Folded away in the held buffer, until it lets go.
+    let mut n = 0;
+    while h.surface.as_ref().unwrap().1.size.h == 120 {
+        assert!(h.frame(), "held while they fold");
+        n += 1;
+        assert!(n < 400, "never let go");
+    }
+    assert_eq!(h.surface.as_ref().unwrap().1.size.h, 60);
+    // The swap, before the first frame in the smaller buffer.
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Move {
+        id: rows[0],
+        parent: Some(col),
+        index: 1,
+    });
+    h.apply(d);
+    // Each row's top on screen (twice, whole pixels: the compositor
+    // centres the buffer): red was in the upper slot (-60), green in the
+    // lower (0). Red is the narrower: it is read left of 50, green right
+    // of it, where nothing passes over it.
+    let mut seen = Vec::new();
+    paint_each(&mut h, |buf| {
+        let top = |x: u32, hit: fn([u8; 4]) -> bool| {
+            (0..buf.size.h)
+                .find(|y| hit(buf.px(x, *y)))
+                .map(|y| 2 * y as i64 - buf.size.h as i64)
+        };
+        seen.push((top(25, is_red), top(75, is_green)));
+    });
+    assert!(seen.len() >= 4, "they glide: {seen:?}");
+    assert_eq!(*seen.last().unwrap(), (Some(0), Some(-60)), "{seen:?}");
+    let (red, green) = (seen[0].0.unwrap(), seen[0].1.unwrap());
+    // One refresh along $motion.spatial: about a quarter of the 30 px
+    // each moves, not more than half (60 and 30 here, counted twice).
+    assert!(
+        (-60..=-30).contains(&red) && (-30..=0).contains(&green),
+        "each starts from its slot: {seen:?}"
+    );
+    // And glides on along the spring, from the slot it left.
+    let reds: Vec<i32> = seen.iter().map(|s| s.0.unwrap() as i32).collect();
+    let greens: Vec<i32> = seen.iter().map(|s| s.1.unwrap() as i32).collect();
+    assert_springs_to(&reds, -60, 0);
+    assert_springs_to(&greens, 0, -60);
+}
+
 /// A panel that opens with rows created at boot (reported closed, then
 /// opened by a later diff) shows them at rest: only rows born with the
 /// opening enter.
