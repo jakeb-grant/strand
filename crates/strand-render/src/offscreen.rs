@@ -155,6 +155,7 @@ impl Offscreen {
         let idle = self.idle.unwrap_or(IDLE_FREE);
         self.entries
             .retain(|_, e| now.saturating_duration_since(e.at) < idle);
+        self.fades.trim_idle(now, idle);
         self.recount();
     }
 

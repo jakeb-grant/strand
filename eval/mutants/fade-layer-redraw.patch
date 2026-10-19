@@ -1,7 +1,7 @@
 diff --git a/crates/strand-render/src/offscreen/fade.rs b/crates/strand-render/src/offscreen/fade.rs
 --- a/crates/strand-render/src/offscreen/fade.rs
 +++ b/crates/strand-render/src/offscreen/fade.rs
-@@ -66,7 +66,7 @@
+@@ -67,7 +67,7 @@
  use super::{Drawn, Offscreen, pins};
  use crate::cache::PaintCache;
  use crate::flatten::{DisplayItem, Item, Shift, hash_item_from};
@@ -10,7 +10,7 @@ diff --git a/crates/strand-render/src/offscreen/fade.rs b/crates/strand-render/s
  
  /// Frames (paints of any surface) a node's recent keys count for.
  const RECENT: u64 = 6;
-@@ -319,13 +319,7 @@
+@@ -389,21 +389,7 @@
              hist.wasted < WASTED && (moving || recent)
          };
          if !admit {
@@ -18,7 +18,15 @@ diff --git a/crates/strand-render/src/offscreen/fade.rs b/crates/strand-render/s
 -                .into_iter()
 -                .filter_map(|r| r.intersect(extent))
 -                .collect();
--            let drawn = render_layer(&whole, extent, &parts, atlas, cache, scale)?;
+-            let drawn = render_layer(
+-                &mut self.fades.raster,
+-                &whole,
+-                extent,
+-                &parts,
+-                atlas,
+-                cache,
+-                scale,
+-            )?;
 -            self.fades.passes += 1;
 -            return Some(drawn);
 +            return None;

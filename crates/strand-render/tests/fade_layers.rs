@@ -659,13 +659,39 @@ fn random_fades(seed: u64, scale: Scale, frames: u32) {
             .collect();
         edge_misses += bad.len();
         edge_worst = bad.iter().fold(edge_worst, |w, (.., d)| w.max(*d));
-        let off_edge: Vec<_> = bad.iter().filter(|(x, y, _)| !edge(*x, *y)).collect();
+        // (integration-r4) On the edge the two differ only in how the
+        // clip's coverage `c` meets the group (an image at its alpha
+        // against a group composited): a mix of `c` and `c²` of what lies
+        // across the edge, never more than c(1 - c) <= 1/4 of the
+        // contrast there. The contrast is the reference's own: the widest
+        // channel range in the 5 x 5 pixels around (measured over 204
+        // runs, 24 seeds and 100 more at both scales: at most 0.255 of
+        // it, within the tolerance).
+        let contrast = |x: u32, y: u32| {
+            let mut range = 0u8;
+            for c in 0..4 {
+                let (mut lo, mut hi) = (u8::MAX, 0u8);
+                for yy in y.saturating_sub(2)..(y + 3).min(h) {
+                    for xx in x.saturating_sub(2)..(x + 3).min(w) {
+                        let v = full.pixels[((yy * w + xx) * 4) as usize + c];
+                        lo = lo.min(v);
+                        hi = hi.max(v);
+                    }
+                }
+                range = range.max(hi - lo);
+            }
+            range
+        };
+        let off_edge: Vec<_> = bad
+            .iter()
+            .filter(|(x, y, d)| !edge(*x, *y) || *d > contrast(*x, *y) / 4 + TOLERANCE)
+            .collect();
         if !off_edge.is_empty() {
             for l in &log[log.len().saturating_sub(10)..] {
                 eprintln!("{l}");
             }
             panic!(
-                "scale {scale:?} frame {k}: {} pixels differ by more than {TOLERANCE} off the card's edge: {:?}",
+                "scale {scale:?} frame {k}: {} pixels differ by more than {TOLERANCE} off the card's edge, or by more than a quarter of the contrast across it on it: {:?}",
                 off_edge.len(),
                 &off_edge[..off_edge.len().min(20)]
             );

@@ -52,6 +52,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use strand_scene::{Damage, NodeId, Rect, Scale};
 use vello_cpu::kurbo::Affine;
@@ -89,6 +90,74 @@ pub(super) struct Fades {
     /// Layers rastered uncached, where a frame repaints (see
     /// [`render_layer`]).
     pub(super) passes: u64,
+    /// What [`render_layer`] rasters with, kept between calls.
+    raster: LayerRaster,
+}
+
+/// Render contexts kept for a layer's distinct cell sizes: a layer's
+/// cells are full but for its right column, bottom row and corner, so
+/// two layers of different sizes use up to eight.
+const LAYER_CONTEXTS: usize = 8;
+
+/// (integration-r4) The contexts, resources and scratch [`render_layer`]
+/// rasters with, kept between calls as the surface raster keeps its own
+/// (`Raster::context`): a fade group that is not cached is rastered on
+/// every frame it repaints, and making a context per cell size, the
+/// resources and the scratch anew on each was measured (decisions.md
+/// shadow-redraw). Freed with the offscreen groups when idle.
+#[derive(Debug, Default)]
+struct LayerRaster {
+    /// One context per cell size in use, most recent first.
+    contexts: Vec<RenderContext>,
+    resources: Resources,
+    scratch: Vec<u8>,
+    /// When it last rastered.
+    used: Option<Instant>,
+}
+
+impl LayerRaster {
+    /// The context for a cell of `w` × `h`, first in the list.
+    fn context(&mut self, w: u16, h: u16) -> &mut RenderContext {
+        match self
+            .contexts
+            .iter()
+            .position(|c| c.width() == w && c.height() == h)
+        {
+            Some(i) => {
+                let c = self.contexts.remove(i);
+                self.contexts.insert(0, c);
+            }
+            None => {
+                // Single-threaded, as the surface raster's (feature
+                // unification could turn on vello's worker threads).
+                let settings = RenderSettings {
+                    num_threads: 0,
+                    ..RenderSettings::default()
+                };
+                self.contexts
+                    .insert(0, RenderContext::new_with(w, h, settings));
+                self.contexts.truncate(LAYER_CONTEXTS);
+            }
+        }
+        &mut self.contexts[0]
+    }
+
+    /// Frees it all when no layer was rastered for `idle`.
+    fn trim_idle(&mut self, now: Instant, idle: Duration) {
+        if self
+            .used
+            .is_some_and(|t| now.saturating_duration_since(t) >= idle)
+        {
+            *self = LayerRaster::default();
+        }
+    }
+}
+
+impl Fades {
+    /// (integration-r4) Frees the layer raster's contexts when idle.
+    pub(super) fn trim_idle(&mut self, now: Instant, idle: Duration) {
+        self.raster.trim_idle(now, idle);
+    }
 }
 
 impl Default for Fades {
@@ -100,6 +169,7 @@ impl Default for Fades {
             builds: 0,
             draws: 0,
             passes: 0,
+            raster: LayerRaster::default(),
         }
     }
 }
@@ -323,13 +393,29 @@ impl Offscreen {
                 .into_iter()
                 .filter_map(|r| r.intersect(extent))
                 .collect();
-            let drawn = render_layer(&whole, extent, &parts, atlas, cache, scale)?;
+            let drawn = render_layer(
+                &mut self.fades.raster,
+                &whole,
+                extent,
+                &parts,
+                atlas,
+                cache,
+                scale,
+            )?;
             self.fades.passes += 1;
             return Some(drawn);
         }
         let hist = self.fades.nodes.entry(node).or_default();
         hist.built = Some((key, false));
-        let drawn = render_layer(&whole, extent, &[extent], atlas, cache, scale)?;
+        let drawn = render_layer(
+            &mut self.fades.raster,
+            &whole,
+            extent,
+            &[extent],
+            atlas,
+            cache,
+            scale,
+        )?;
         self.fades.builds += 1;
         self.fades.draws += 1;
         let pins = pins(inner, &HashMap::new());
@@ -349,6 +435,7 @@ impl Offscreen {
 /// the surface's own cells are (`Raster::paint`). `None` when no part
 /// touches it or a side is too large.
 fn render_layer(
+    lr: &mut LayerRaster,
     items: &[DisplayItem],
     extent: Rect,
     parts: &[Rect],
@@ -376,32 +463,18 @@ fn render_layer(
     let area = cells.iter().map(|(c, _)| *c).reduce(|a, c| a.union(c))?;
     let (w, h) = (u16::try_from(area.w).ok()?, u16::try_from(area.h).ok()?);
     let mut pm = Pixmap::new(w, h);
-    let settings = RenderSettings {
-        num_threads: 0,
-        ..RenderSettings::default()
-    };
     let raster = RasterizerSettings {
         target_init: TargetInit::SrcOver,
         render_mode: RenderMode::OptimizeQuality,
         ..RasterizerSettings::default()
     };
-    let mut contexts: Vec<RenderContext> = Vec::new();
-    let mut resources = Resources::new();
-    let mut scratch: Vec<u8> = Vec::new();
+    lr.used = Some(Instant::now());
+    let mut resources = std::mem::take(&mut lr.resources);
+    let mut scratch = std::mem::take(&mut lr.scratch);
     for (cell, clips) in &cells {
         // Cells are at most CELL_W × CELL_H.
         let (cw, ch) = (cell.w as u16, cell.h as u16);
-        let i = match contexts
-            .iter()
-            .position(|c| c.width() == cw && c.height() == ch)
-        {
-            Some(i) => i,
-            None => {
-                contexts.push(RenderContext::new_with(cw, ch, settings));
-                contexts.len() - 1
-            }
-        };
-        let ctx = &mut contexts[i];
+        let ctx = lr.context(cw, ch);
         ctx.reset();
         let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
         ctx.set_transform(base);
@@ -448,9 +521,40 @@ fn render_layer(
             }
         }
     }
+    lr.resources = resources;
+    lr.scratch = scratch;
     Some(Drawn {
         pixmap: std::sync::Arc::new(pm),
         x: area.x,
         y: area.y,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (integration-r4) The layer raster keeps one context per cell size
+    /// between calls, most recent first, at most [`LAYER_CONTEXTS`], and
+    /// frees them all once idle.
+    #[test]
+    fn layer_contexts_are_kept_between_calls_and_freed_when_idle() {
+        let mut lr = LayerRaster::default();
+        let full = lr.context(CELL_W as u16, CELL_H as u16) as *const RenderContext;
+        lr.context(40, CELL_H as u16);
+        assert_eq!(lr.contexts.len(), 2);
+        let again = lr.context(CELL_W as u16, CELL_H as u16) as *const RenderContext;
+        assert_eq!(full, again, "the full cell's context is the one made first");
+        assert_eq!(lr.contexts.len(), 2);
+        for w in 1..=20 {
+            lr.context(w, 10);
+        }
+        assert_eq!(lr.contexts.len(), LAYER_CONTEXTS);
+        let t = Instant::now();
+        lr.used = Some(t);
+        lr.trim_idle(t + Duration::from_secs(1), Duration::from_secs(30));
+        assert_eq!(lr.contexts.len(), LAYER_CONTEXTS, "not idle yet");
+        lr.trim_idle(t + Duration::from_secs(31), Duration::from_secs(30));
+        assert!(lr.contexts.is_empty() && lr.scratch.capacity() == 0 && lr.used.is_none());
+    }
 }
