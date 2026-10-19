@@ -1,0 +1,86 @@
+id     = "qs-pager-sliders-1_25"
+about  = """A quick-settings sheet at scale 1.25 and 120 Hz with two pages in a
+clipped carousel: the strip holding both pages slides by its `x` (a paint
+offset that springs, design.md "Paint-only props"), and a mixer card under
+it lifts under the pointer (`when hover { scale: 1.04 }`). The sheet goes
+to its second page and its brightness slider is dragged there, under the
+strip's resting offset of a whole page; it goes back and forth once more,
+and the mixer's volume slider is dragged while the card is lifted, out to
+both ends. While a slider is held its knob stays under the pointer
+(`coherence`'s `drag`; decisions.md 2026-10-06 "only two-way values move":
+the drag reads the pointer where the slider is drawn, through its
+ancestors' offsets and transforms, renderer/surfaces.rs `to_laid`). The
+page dots and the sheet's header never move (eval-coverage-4: set H's
+m-h16, a slider under a paint offset, reached no committed scenario)."""
+screen = { width = 400, height = 400, scale = 1.25 }
+hz     = 120
+
+=== shell.strand
+state page = 0
+state bright = 0.4
+state vol = 0.5
+panel Quick {
+  anchor: top_right; margin: 8; open: true
+  col { id: sheet; width: 300; pad: 12; gap: 10; radius: 16; bg: #1e1e2e; color: #cdd6f4
+    row { id: header; gap: 8; align: center
+      text "Quick settings" { id: title; grow: 1; weight: 600 }
+      row { id: dots; gap: 6; align: center
+        box { id: dot1; size: 6; radius: full; bg: page == 0 ? #cdd6f4 : #585b70 }
+        box { id: dot2; size: 6; radius: full; bg: page == 1 ? #cdd6f4 : #585b70 }
+      }
+    }
+    box { id: viewport; width: 276; height: 92; clip: true
+      row { id: strip; x: page == 1 ? -276 : 0
+        row { id: toggles; width: 276; shrink: 0; gap: 8; align: start
+          box { id: wifi; width: 84; height: 56; radius: 12; bg: #89b4fa }
+          box { id: bt; width: 84; height: 56; radius: 12; bg: #45475a }
+          box { id: dnd; width: 84; height: 56; radius: 12; bg: #45475a }
+        }
+        col { id: display; width: 276; shrink: 0; gap: 8; pad: 4, 10
+          text "Brightness" { id: bright_label; color: #a6adc8 }
+          slider { id: bright_slider; width: 256; value: <-> bright }
+          text "Night light at sunset" { id: night; color: #a6adc8 }
+        }
+      }
+    }
+    col { id: mixer; pad: 10; gap: 6; radius: 12; bg: #313244
+          when hover { scale: 1.04 }
+      text "Speakers" { id: speakers; color: #cdd6f4 }
+      slider { id: vol_slider; width: 256; value: <-> vol }
+    }
+  }
+}
+
+=== steps
+rest
+mark to-display
+set page 1
+rest
+expect still #header
+mark drag-brightness
+pointer 124,83 on #sheet
+drag 124,83 -> 230,83 over 300 on #sheet
+rest
+expect still #header
+mark drag-back
+drag 230,83 -> 60,83 over 200 on #sheet
+rest
+mark to-toggles
+set page 0
+rest
+mark to-display-again
+set page 1
+rest
+expect still #header
+mark mixer-hover
+pointer 150,179 on #sheet
+rest
+mark drag-volume
+drag 150,179 -> 272,179 over 300 on #sheet
+rest
+drag 272,179 -> 28,179 over 300 on #sheet
+rest
+mark leave
+leave
+rest
+expect still #header

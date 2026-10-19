@@ -1,0 +1,59 @@
+id     = "clipboard-flick-reduced-2"
+about  = """A clipboard history panel at scale 2 with motion reduced: its list of
+fourteen entries, 200 px tall with its bottom edge faded (`mask: fade(bottom,
+24)`, design.md "Filters and compositing"), is turned by two wheel notches
+that land at once, flicked down on the touchpad and back up, then motion is
+turned on again and the same flick flings (m4-plan.md "Lists": touchpad
+flings decay; renderer/lists.rs `scroll_input`: under `reduced_motion` the
+wheel lands at once and nothing flings, the offset following the fingers
+alone). The flicks are short, so the rows in view before a lift stay
+mounted after it, and where the list stops is held to where the fingers
+left it: with motion reduced, nothing moves after the fingers lift
+(`expect still … from +K`, K the flick's ticks, the lift with the last).
+Motion is reduced by a step, not by the header, whose `reduce_motion`
+holds for the whole run. The panel's header never moves (eval-coverage-4:
+set H's m-h18, a swipe or fling under reduced motion, reached no
+committed scenario or cell)."""
+screen = { width = 300, height = 360, scale = 2.0 }
+
+=== shell.strand
+let clips = ["git push origin laptop/eval", "~/Pictures/shot-0142.png", "https://example.org/docs/motion", "cargo test -p strand-render", "Meeting moved to 15:30", "#89b4fa", "ssh build@10.0.0.4", "The quick brown fox", "make clean", "42", "docs/design.md", "SELECT * FROM notes", "lorem ipsum dolor", "wl-copy < notes.txt"]
+panel Clipboard {
+  anchor: top_left; margin: 8; open: true
+  col { id: sheet; width: 240; pad: 8; gap: 6; radius: 12; bg: #1e1e2e; color: #cdd6f4
+    text "Clipboard" { id: header; weight: 600 }
+    list { id: history; height: 200; gap: 4; mask: fade(bottom, 24)
+      for c in clips key c {
+        row { height: 32; pad: 0, 8; radius: 6; bg: #313244; align: center
+          text c { ellipsis: end }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+reduce-motion on
+rest
+pointer 120,120 on #sheet
+mark wheel
+scroll 1
+frames 2
+scroll 1
+rest
+expect still #header
+mark flick
+swipe 16 over 64ms
+rest
+expect still text("Meeting moved to 15:30") y from +4
+mark flick-back
+swipe -12 over 48ms
+rest
+expect still text("Meeting moved to 15:30") y from +3
+mark motion-on
+reduce-motion off
+rest
+mark fling
+swipe 16 over 64ms
+rest
+expect still #header

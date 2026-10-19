@@ -1,0 +1,62 @@
+id     = "media-pill-art-morph-1_5"
+about  = """A bar's media pill at scale 1.5 and 90 Hz, holding the album art,
+grows into a media panel (design.md: "the bar's media pill becomes the media
+panel", `morph: "media"` on both), whose card shows the same art large (a
+3:2 image under `fit: cover`); the track changes while the panel is open and
+the art swaps under `transition: dissolve` (design.md "Generative,
+data-driven and media": transition masks on image swaps), the panel closes
+back into the pill, and the track changes again on the pill. Each image is
+drawn where its fit puts it in its box on every frame (`placement`'s `fit`),
+under the morph's scale too; the art drawn on the frames the panel opens and
+closes is whole, never blank (eval-coverage-4: no committed image was drawn
+under a morph across surfaces or swapped under a transition). The bar's
+clock never moves."""
+screen = { width = 400, height = 320, scale = 1.5 }
+hz     = 90
+
+=== shell.strand
+state open = false
+state track = 0
+bar Top {
+  height: 32; bg: #11111b
+  row { height: 32; pad: 0, 10; gap: 8; align: center
+    text "12:30" { id: clock; color: #cdd6f4 }
+    if !open {
+      row { id: pill; height: 24; pad: 0, 8, 0, 4; gap: 6; radius: 12; bg: #313244; align: center
+            morph: "media"
+        image track == 0 ? "../../fixtures/images/art.png" : "../../fixtures/images/app.png" {
+          id: pill_art; size: 18; radius: 9; fit: cover; transition: dissolve }
+        text track == 0 ? "Small Hours" : "Night Ferry" { id: pill_title; color: #cdd6f4 }
+      }
+    }
+  }
+}
+panel Media {
+  anchor: top_left; margin: 40, 0, 0, 10; open: open
+  col { id: card; width: 240; pad: 12; gap: 10; radius: 16; bg: #313244; morph: "media"
+        shadow: 0 6px 18px #00000080
+    image track == 0 ? "../../fixtures/images/art.png" : "../../fixtures/images/app.png" {
+      id: card_art; width: 216; height: 120; radius: 10; fit: cover; transition: dissolve }
+    text track == 0 ? "Small Hours" : "Night Ferry" { id: card_title; color: #cdd6f4; weight: 600 }
+    text "Elsewhere Ensemble" { id: card_artist; color: #a6adc8 }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+expect still #clock
+mark next-track
+set track 1
+rest
+expect still #card
+mark close
+set open false
+rest
+expect still #clock
+mark next-track-pill
+set track 0
+rest
+expect still #clock

@@ -17,7 +17,10 @@
 //!
 //! The batch is the container's children first drawn at one frame after
 //! boot (with an `enter` pose or not: every child mounting counts in the
-//! numbering), in paint order. Child `n`'s start is due `n` steps after
+//! numbering), and (eval-coverage-4) those drawn again there after frames
+//! without them that play their enter again (a result filtered out and
+//! typed back mounts anew; a row that comes back at rest, as a list's
+//! window brings it, does not), in paint order. Child `n`'s start is due `n` steps after
 //! the batch's change: the tick before the batch's first frame, since
 //! its first frame shows the first child one frame on (a retarget starts
 //! one period before the frame that shows it, strand-scene motion.rs).
@@ -75,14 +78,27 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     for (parent, meta) in &trace.nodes {
         let Some(step) = meta.stagger else { continue };
         let step_ns = f64::from(step).min(MAX_STEP_MS) * 1.0e6;
-        // Its children, by the timeline frame each was first drawn in.
+        // Its children, by the timeline frame each mounted in: first
+        // drawn, or (eval-coverage-4) drawn again after frames without it
+        // and playing its enter there (a result filtered out and typed
+        // back), which enters with the children mounting beside it.
         let mut batches: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
         for (key, m) in &trace.nodes {
             if m.parent.as_deref() != Some(parent.as_str()) {
                 continue;
             }
-            if let Some(i) = (0..tl.ks.len()).find(|i| tl.row(*i, key).is_some()) {
-                batches.entry(i).or_default().push(key.as_str());
+            let mut seen = false;
+            let mut was = false;
+            for i in 0..tl.ks.len() {
+                let row = tl.row(i, key);
+                if let Some(r) = row
+                    && !was
+                    && (!seen || Motions(r.mot).intersects(Motions::ENTER | Motions::STAGGER))
+                {
+                    batches.entry(i).or_default().push(key.as_str());
+                }
+                seen |= row.is_some();
+                was = row.is_some();
             }
         }
         for (i0, mut batch) in batches {

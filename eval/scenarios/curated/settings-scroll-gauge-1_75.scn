@@ -1,0 +1,79 @@
+id     = "settings-scroll-gauge-1_75"
+about  = """A settings panel at scale 1.75 opened by a state on the `slidefade`
+preset (design.md "Motion and time": pose presets), with a battery gauge
+(`arc { value: level; sweep: 270deg; width: 3 }`, design.md "Shape and
+geometry": arc and ring gauges) whose value springs as the level drops and
+whose colour springs as charging starts, beside a rolling percentage; a
+charging tag whose fill snaps (`~ instant`) while everything else springs; a
+refresh button whose shape morphs from a circle to a cookie while it is busy
+(`shape:` morphs by spring); and a body in a `scroll` (design.md "Layout":
+a container that is not a list) turned by the wheel, two notches in quick
+steps and one back during the spring (m4-plan.md "Lists": wheel steps
+spring). The panel closes on its preset mirrored. The header row and the
+gauge never move while the body scrolls (eval-coverage-4: `scroll`, arc
+gauges, `slidefade` and `~ instant` were in no committed scenario or
+cell)."""
+screen = { width = 360, height = 420, scale = 1.75 }
+
+=== shell.strand
+state open = false
+state level = 0.62
+state charging = false
+state busy = false
+let rows = ["Wi-Fi", "Bluetooth", "Night light", "Do not disturb", "Power saver", "Airplane mode", "Hotspot", "Location", "Microphone", "Camera"]
+panel Settings {
+  anchor: top_right; margin: 8; open: open
+  enter: slidefade
+  col { id: sheet; width: 260; pad: 12; gap: 10; radius: 14; bg: #1e1e2e; color: #cdd6f4
+    row { id: header; gap: 8; align: center
+      arc { id: gauge; value: level; size: 28; sweep: 270deg; width: 3
+            color: charging ? #a6e3a1 : #f9e2af }
+      text pct(level) { id: percent; roll: true; shrink: 0 }
+      box { id: tag; width: 40; height: 14; radius: full; bg: charging ? #a6e3a1 : #45475a ~ instant }
+      spacer
+      box { id: refresh; size: 24; bg: #89b4fa; shape: circle
+            when busy { shape: cookie } }
+    }
+    scroll { id: body; height: 160
+      col { id: entries; gap: 6
+        for r in rows key r {
+          row { height: 28; pad: 0, 8; radius: 8; bg: #313244; align: center
+            text r { ellipsis: end }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+mark drain
+set level 0.35
+rest
+expect still #header
+mark charge
+set charging true
+rest
+expect still #header
+mark scroll
+pointer 130,120 on #sheet
+scroll 1
+frames 2
+scroll 1
+frames 2
+scroll -1
+rest
+expect still #header
+mark busy
+set busy true
+rest
+set busy false
+rest
+expect still #percent
+mark close
+set open false
+rest

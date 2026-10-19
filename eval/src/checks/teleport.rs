@@ -28,7 +28,9 @@
 //! border, a meter's level: paint inside a box) is no motion
 //! (eval-false-alarms); the retarget arm holds x and y only, on the
 //! node's own move in its parent (what its parent's layout carried it by
-//! is the parent's), since a glide moves a box and never sizes it
+//! is the parent's) and, while its surface lays out anew by itself
+//! (eval-coverage-4), beyond the gap to the sibling laid before it (slots
+//! folding before it carry it there), since a glide moves a box and never sizes it
 //! (layout lengths snap, design.md "What can't interpolate"); on w and h
 //! only motion that sizes a box counts (a size spring or a morph, its own or an ancestor's, lean, jelly, or authored motion
 //! on w, h, scale or rotate: keyframes or `t` on those axes, a scale
@@ -243,9 +245,20 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         && q.glide[n] == 0.0
                         && r.glide[n] == 0.0
                         && (cx.lays_out(i, r.surface) || cx.scrolled(i, key));
+                    // (eval-coverage-4) A node stacked after a sibling
+                    // moves with that sibling's far edge while the surface
+                    // lays out anew by itself: slots folding before it (an
+                    // exit's height spring) carry it as a parent's move
+                    // does, glide in flight or not. Its glide answers for
+                    // its move beyond the gap to the sibling before it.
+                    let beside = offset_axis
+                        && cx.lays_out(i, r.surface)
+                        && carried_beside(cx, p, i, key, a)
+                            .is_some_and(|c| (dl - c).abs() <= 1.0f64.max(cx.tol));
                     if glides
                         && offset_axis
                         && !follows
+                        && !beside
                         && dl.abs() > 1.0f64.max(cx.tol)
                         && own.abs() > 1.0f64.max(cx.tol)
                         && (d - dl).abs() <= cx.tol
@@ -272,4 +285,35 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     first_per_node(out)
+}
+
+/// (eval-coverage-4) How far the sibling laid just before `key` on axis
+/// `a` (x or y) moved its far edge between timeline frames `p` and `i`:
+/// of the siblings that end before `key` starts at both frames, the one
+/// ending nearest it at `i`. `None` when `key` has no parent or no such
+/// sibling shows at both frames on its surface.
+fn carried_beside(cx: &Cx, p: usize, i: usize, key: &str, a: super::Axis) -> Option<f64> {
+    let parent = cx.parent(key)?;
+    let (r, q) = (cx.tl.row(i, key)?, cx.tl.row(p, key)?);
+    let len = |s: &Row| match a {
+        super::Axis::X => f64::from(s.laid[2]),
+        _ => f64::from(s.laid[3]),
+    };
+    let end = |s: &Row| laid(s, a) + len(s);
+    let mut best: Option<(f64, f64)> = None;
+    for (k, s) in &cx.tl.screens[i] {
+        if *k == key || cx.parent(k) != Some(parent) || s.surface != r.surface {
+            continue;
+        }
+        let Some(t) = cx.tl.row(p, k).filter(|t| t.surface == q.surface) else {
+            continue;
+        };
+        if end(s) > laid(r, a) + cx.tol || end(t) > laid(q, a) + cx.tol {
+            continue;
+        }
+        if best.is_none_or(|(e, _)| end(s) > e) {
+            best = Some((end(s), end(s) - end(t)));
+        }
+    }
+    best.map(|(_, moved)| moved)
 }

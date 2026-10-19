@@ -1,0 +1,76 @@
+id     = "launcher-results-144"
+about  = """An app launcher on a 144 Hz output that shows results once something
+is typed: it opens on the `popin(0.92)` preset with only its search row,
+the first letter brings five results in staggered 25 ms apart, top to
+bottom in child order (design.md "Motion and time": `stagger: 30ms` on a
+container, pose presets), the next letters narrow them (rows leaving fold to
+height 0 while the rest glide up, and a result not shown before staggers
+in), the pointer runs down the rows lighting each in turn, the query is
+cleared and retyped quickly, and the launcher closes. The panel holds a
+fixed size, so the surface never resizes; the card inside it sizes to its
+rows. At 144 Hz each change starts one 6.9 ms refresh before its first
+frame, and staggered children start their turn while other motion runs, so
+the refresh's period is known (decisions.md first-frame-lead;
+eval-coverage-4: set H's stagger order and 144 Hz lead were caught by the
+matrix, not by a launcher; `stagger` judges children the first time they
+are drawn, so the results first appear after boot)."""
+screen = { width = 400, height = 460, scale = 1.0 }
+hz     = 144
+
+=== shell.strand
+state open = false
+state query = ""
+let apps = ["Files", "Firefox", "Terminal", "Calculator", "Calendar", "Settings"]
+panel Launcher {
+  anchor: top; margin: 24; open: open
+  enter: popin(0.92)
+  col { id: frame; width: 320; height: 400; align: center
+    col { id: card; width: 300; pad: 10; gap: 8; radius: 16; bg: #1e1e2e; clip: true
+          shadow: 0 8px 24px #00000066
+      row { id: search; height: 32; pad: 0, 10; radius: 10; bg: #313244; align: center
+        text query == "" ? "Search apps" : query { id: query_text; color: #a6adc8 }
+      }
+      col { id: results; gap: 2; stagger: 25ms
+        for a in (query == "" ? [] : apps.filter(a => a.lower().contains(query))) key a {
+          row { height: 30; pad: 0, 8; gap: 10; radius: 8; align: center
+                enter { opacity: 0; y: 6 }
+                exit { opacity: 0; height: 0 }
+                when hover { bg: #313244 }
+            box { size: 16; radius: 4; bg: #89b4fa }
+            text a { color: #cdd6f4 }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest
+mark type
+set query e
+rest
+expect still #search
+mark narrow
+set query ca
+rest
+expect still #search
+mark hover
+pointer 200,90 on #card
+glide 200,90 -> 200,130 over 150 on #card
+rest
+mark retype
+set query c
+frames 6
+set query ""
+frames 6
+set query e
+rest
+expect still #search
+mark close
+leave
+set open false
+rest

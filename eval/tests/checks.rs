@@ -982,6 +982,67 @@ fn a_glide_across_under_a_size_spring_follows_its_layout_down() {
     );
 }
 
+/// (eval-coverage-4) A box gliding the last of its glide on x while the
+/// exit before it in its row folds its slot (an exit's width spring)
+/// follows the folding sibling's far edge left, as the size spring's
+/// other neighbours do: its glide was not retargeted. The same box
+/// jumping 16 px of its own within its gap, the sibling's edge still, is
+/// a retarget.
+#[test]
+fn a_glide_ending_while_the_slot_before_it_folds_is_no_retarget() {
+    let sc = scenario("");
+    let build = |folds: bool| {
+        let mut t = shape(8, move |k| {
+            let strip = row("strip", [0.0, 0.0, 300.0, 30.0]);
+            let ws = [40.0f32, 32.0, 24.0, 16.0, 8.0, 0.0];
+            let i = (k as usize).min(5);
+            let w = if folds { ws[i] } else { 40.0 };
+            let mut a = row("a", [10.0, 5.0, w, 20.0]);
+            if k > 0 {
+                a = a.mot(Motions::SIZE_SPRING | Motions::EXIT).auth(Axes::W);
+            }
+            let lx = if folds {
+                10.0 + w + 2.0
+            } else if k >= 3 {
+                36.0
+            } else {
+                52.0
+            };
+            let gs = [0.0f32, -2.0, -1.5, -1.0, -0.5, 0.0];
+            let g = gs[i];
+            let mut b = row("b", [lx, 5.0, 60.0, 20.0]).at(lx + g, 5.0);
+            if (1..5).contains(&k) {
+                b = b.mot(Motions::GLIDE);
+                b.glide = [g, 0.0];
+            }
+            vec![strip, a, b]
+        });
+        for key in ["a", "b"] {
+            t.nodes.get_mut(key).unwrap().parent = Some("strip".into());
+        }
+        t.seal();
+        t
+    };
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.msg.starts_with("retarget")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("b") && f.msg.starts_with("retarget")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 // --- vanish
 
 fn blink(gone: impl Fn(u32) -> bool, m: Motions) -> RunTrace {
@@ -3106,6 +3167,82 @@ fn stagger_takes_a_slow_start_from_its_turn_not_its_first_visible_frame() {
         r.failures(CheckId::Stagger)
             .iter()
             .any(|f| f.key.as_deref() == Some("c2") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-coverage-4) The three children of [`staggered`] leave at tick
+/// 8 and mount again at tick 10 (a result filtered out and typed back),
+/// child `n` let go of its turn at `back(n)`, or drawn back at rest with
+/// no enter when `back(n)` is `None` (a list's window bringing it back).
+fn staggered_back(back: impl Fn(usize) -> Option<u32>) -> RunTrace {
+    let keys = ["c0", "c1", "c2"];
+    let mut t = shape(24, |k| {
+        let mut v = vec![row("list", [0.0, 0.0, 300.0, 30.0])];
+        let first = [1u32, 2, 4];
+        for (n, key) in keys.iter().enumerate() {
+            let x = 10.0 + 40.0 * n as f32;
+            let r = row(key, [x, 6.0, 30.0, 18.0]);
+            let s = match k {
+                1..=7 => Some(first[n]),
+                10.. => back(n),
+                _ => continue,
+            };
+            let Some(s) = s else {
+                v.push(r);
+                continue;
+            };
+            v.push(if k < s {
+                r.op(0.0).mot(Motions::ENTER | Motions::STAGGER)
+            } else {
+                let p = (((k - s + 1) as f32) / 6.0).min(1.0);
+                r.op(p).mot(Motions::OPACITY_SPRING | Motions::ENTER)
+            });
+        }
+        v
+    });
+    t.nodes.get_mut("list").unwrap().stagger = Some(30.0);
+    for key in keys {
+        let m = t.nodes.get_mut(key).unwrap();
+        m.parent = Some("list".into());
+        m.enter = Some(Pose {
+            opacity: Some(0.0),
+            ..Pose::default()
+        });
+    }
+    t.seal();
+    t
+}
+
+/// (eval-coverage-4) Children that leave and mount again together play
+/// their enter one step apart again, numbered among the children
+/// mounting beside them: on time they pass, all at once they fail. Drawn
+/// back at rest with no enter, they are no batch.
+#[test]
+fn stagger_holds_children_mounting_again() {
+    let sc = scenario("");
+    let t = staggered_back(|n| Some([10, 11, 13][n]));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = staggered_back(|_| Some(10));
+    let r = check(&sc, &t);
+    let early: Vec<_> = r
+        .failures(CheckId::Stagger)
+        .into_iter()
+        .filter_map(|f| f.key.clone())
+        .collect();
+    assert_eq!(early, ["c1", "c2"], "{}", show(&r, &t));
+    let t = staggered_back(|_| None);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
         "{}",
         show(&r, &t)
     );

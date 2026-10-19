@@ -213,18 +213,24 @@ screen_scale = 2.0
 name = "scroll"
 about = """a short list beside the popup's anchor is scrolled by the wheel, two
 notches in quick steps and one back during the spring (m4-plan.md
-"Lists": wheel steps spring)"""
+"Lists": wheel steps spring), then flicked on the touchpad, which flings
+it on into the list's end (a fling stops there), or with motion reduced
+stops it where the fingers lift
+(eval-coverage-4)"""
 slots.below = 'list { id: lst; width: 60; height: 20; gap: 2; for n in [1, 2, 3, 4, 5, 6] key n { box { width: 60; height: 12; bg: #606060 } } }'
-mid = ["pointer 140,42", "scroll 1", "frames 2", "scroll 1", "frames 2", "scroll -1", "rest"]
+mid = ["pointer 140,42", "scroll 1", "frames 2", "scroll 1", "frames 2", "scroll -1", "rest", "swipe 20 over 50", "rest"]
 
 [[effect]]
 name = "slider-drag"
 about = """a two-way slider beside the popup's anchor is dragged from its knob
 (decisions.md 2026-10-06 "only two-way values move": the knob stays
-under the pointer)"""
+under the pointer), in a box moved by a resting offset (`x: 12`), so the
+drag reads the pointer where the slider is drawn, through its ancestors'
+offsets (eval-coverage-4; `coherence`'s `drag` holds a knob only where
+nothing above it scales or turns it)"""
 slots.decls = 'state vol = 0.3'
-slots.below = 'slider { id: sl; width: 120; value: <-> vol }'
-mid = ["drag 151,42 -> 200,42 over 200", "rest"]
+slots.below = 'box { id: lift; x: 12; slider { id: sl; width: 120; value: <-> vol } }'
+mid = ["drag 163,42 -> 212,42 over 200", "rest"]
 
 # ---- backends -------------------------------------------------------------
 
