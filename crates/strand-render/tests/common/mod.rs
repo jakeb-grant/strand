@@ -140,13 +140,24 @@ pub fn refs_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/refs")
 }
 
+/// Writes an RGBA PNG at `path` whole: into a file of this thread's own,
+/// then renamed over `path`, so a test reading `path` while another
+/// (in parallel, on the same fixture name) writes it never reads it cut
+/// short (effects-flake).
 pub fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
-    let file = std::fs::File::create(path).unwrap();
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().unwrap();
-    writer.write_image_data(rgba).unwrap();
+    let mut part = path.as_os_str().to_owned();
+    part.push(format!(".{:?}.part", std::thread::current().id()));
+    let part = std::path::PathBuf::from(part);
+    {
+        let file = std::fs::File::create(&part).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().unwrap();
+        writer.write_image_data(rgba).unwrap();
+        writer.finish().unwrap();
+    }
+    std::fs::rename(&part, path).unwrap();
 }
 
 pub fn read_png(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
