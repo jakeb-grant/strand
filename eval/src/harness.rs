@@ -1992,18 +1992,8 @@ impl Harness {
                 }
             };
             self.mirror(id, gpu_drawn, cpu_damage);
-            if let Some(sh) = self.surfaces.get(id) {
-                self.committed.insert(
-                    id.0,
-                    Committed {
-                        logical: sh.logical,
-                        origin: sh.origin,
-                        size: sh.size,
-                        pixels: self.opts.images.then(|| sh.pixels.clone()),
-                    },
-                );
-            }
-            match self.r.delegated_pose(id) {
+            let pose = self.r.delegated_pose(id);
+            match pose {
                 Some(p) => {
                     self.poses.insert(
                         id.0,
@@ -2018,6 +2008,37 @@ impl Harness {
                 None => {
                     self.poses.remove(&id.0);
                 }
+            }
+            // (eval-rules-6) The pose commits with the frame: the
+            // manager sets the margins its offset moves a layer surface
+            // to (`State::sync_pose`), and places it there for the host
+            // (`surface_placed`, the host's `send_origin`).
+            let placed = self
+                .surfaces
+                .set_pose(id, pose.map(|p| [p.offset.x, p.offset.y]))?;
+            for c in &placed {
+                if let Change::Placed(pid) | Change::Configured(pid, ..) = *c {
+                    let origin = self.surfaces.origin(pid);
+                    self.r.set_surface_origin(pid, origin);
+                }
+            }
+            for c in &placed {
+                if let Change::Configured(pid, size, scale) = *c {
+                    host_loop::configured(self, pid, size, scale)?;
+                }
+            }
+            self.changed(placed)?;
+            if let Some(sh) = self.surfaces.get(id) {
+                self.committed.insert(
+                    id.0,
+                    Committed {
+                        logical: sh.logical,
+                        origin: sh.rest,
+                        shown_at: sh.origin,
+                        size: sh.size,
+                        pixels: self.opts.images.then(|| sh.pixels.clone()),
+                    },
+                );
             }
             // `Host::painted`: its facts (answered at the tick's end),
             // and a wake owed for the surface changes it left.
@@ -2061,6 +2082,7 @@ impl Harness {
             opaque: Painter::opaque_region(&self.r, id),
             blur: Painter::blur_region(&self.r, id),
             pose: Painter::surface_pose(&self.r, id),
+            layer: self.surfaces.layer_config(id).cloned(),
         });
     }
 
@@ -2264,11 +2286,15 @@ impl Harness {
                 .surfaces
                 .shown
                 .iter()
-                .map(|s| {
-                    (
-                        s.id.0,
-                        committed.get(&s.id.0).map_or(s.origin, |c| c.origin),
-                    )
+                .map(|s| (s.id.0, committed.get(&s.id.0).map_or(s.rest, |c| c.origin)))
+                .collect(),
+            // What each surface painted this tick committed with, the
+            // one closed by its paint included.
+            shifts: committed
+                .iter()
+                .filter_map(|(s, c)| {
+                    let d = [c.shown_at[0] - c.origin[0], c.shown_at[1] - c.origin[1]];
+                    (d != [0.0, 0.0]).then_some((*s, d))
                 })
                 .collect(),
             poses: std::mem::take(&mut self.poses)
@@ -2313,6 +2339,9 @@ impl Harness {
                         was: r.was.as_ref().map(|(a, b, p)| (text(a), text(b), *p)),
                     });
                 }
+                // (eval-rules-6) Its border's ring, a container's gap, and
+                // a text drawn whole that could break narrower.
+                self.flow_facts(*s, n, &mut frame);
                 // (eval-rules-4) Its images' decodes and its cut lines.
                 if !n.images.is_empty() || n.cut.is_some() {
                     let key = self
@@ -2398,6 +2427,72 @@ impl Harness {
             .collect();
         self.trace.frames.push(frame);
         Ok(())
+    }
+
+    /// (eval-rules-6) What `frame` records of node `n` on surface `s`
+    /// for the eval-rules-6 arms: its `border:` ring, measured along
+    /// [`crate::ring::rays`] (one drawn along a `shape:` or squircle
+    /// corners, or with a radius in a form `ring::radii` does not read,
+    /// is left out); a flex container's `gap:`; and, on a surface that
+    /// wants no more frames, a text drawn whole on one line that could
+    /// break narrower (its text as it is now, two words or more apart by
+    /// spaces, with no `ellipsis:` or `max_lines:` and no line break).
+    fn flow_facts(&mut self, s: u32, n: &strand_render::probe::NodeTrace, frame: &mut Frame) {
+        use strand_scene::{NodeKind, Prop, PropValue};
+        let flex = matches!(n.kind, NodeKind::Row | NodeKind::Col | NodeKind::Scroll);
+        let gap = n.gap.filter(|g| *g > 0.0 && flex);
+        let ring = n
+            .ring
+            .as_ref()
+            .filter(|r| !r.shaped)
+            .and_then(|r| Some((r, crate::ring::radii(r.radius.as_ref(), r.size)?)));
+        let at_rest = !frame.wants.contains(&s);
+        let loose = at_rest
+            && n.kind == NodeKind::Text
+            && n.hidden.is_none()
+            && n.fit.is_none()
+            && n.text == Some(strand_render::probe::TextDrawn::Shaped)
+            && self.r.tree().get(n.node).is_some_and(|t| {
+                let words = match t.get(Prop::Text) {
+                    Some(PropValue::Text(text)) if !text.contains('\n') => {
+                        text.split(' ').filter(|w| !w.is_empty()).count()
+                    }
+                    _ => 0,
+                };
+                words >= 2 && t.get(Prop::Ellipsis).is_none() && t.get(Prop::MaxLines).is_none()
+            });
+        if gap.is_none() && ring.is_none() && !loose {
+            return;
+        }
+        let key = self
+            .labels
+            .key(n.node, &self.inst, self.r.tree(), &self.sources);
+        if let Some(g) = gap {
+            frame.gaps.insert(key.clone(), g);
+        }
+        if let Some((r, radius)) = ring {
+            let drawn = crate::ring::rays(r.frame)
+                .into_iter()
+                .map(|ray| {
+                    crate::ring::crossings(&r.path, ray)
+                        .into_iter()
+                        .map(|t| t as f32)
+                        .collect()
+                })
+                .collect();
+            frame.rings.push(crate::ring::RingRec {
+                key: key.clone(),
+                s,
+                frame: r.frame,
+                scale: r.scale,
+                width: r.width,
+                radius,
+                drawn,
+            });
+        }
+        if loose {
+            frame.loose.push(key);
+        }
     }
 
     /// (eval-rules-2) A spring's sample on `surface` in the tick at `t`,
@@ -2700,7 +2795,11 @@ fn ms(t: Duration) -> u32 {
 /// configured it again (`Harness::committed`).
 struct Committed {
     logical: [f32; 2],
+    /// Where it lies at rest (`Shown::rest`).
     origin: [f32; 2],
+    /// (eval-rules-6) Where the compositor put it for this frame, at the
+    /// margins its pose's offset set (`Shown::origin`).
+    shown_at: [f32; 2],
     size: Size,
     pixels: Option<Vec<u8>>,
 }

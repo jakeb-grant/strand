@@ -37,6 +37,18 @@
 //!   the compositor's buffer arithmetic and not judged. A frame is
 //!   judged when no layer surface changed size or place since the
 //!   frame before.
+//! - `pose` (eval-rules-6): a surface whose pose the compositor applies
+//!   (`compositor_poses`) lies, for each frame, where its pose's offset
+//!   moves it from where it lies at rest: its offset is in output
+//!   coordinates (design.md "Poses": `y: 20` moves the surface 20 px
+//!   down, whatever edge it is anchored to), and layer shell's margins
+//!   are distances from the edges a surface is anchored to, so a pose on
+//!   a bottom-anchored OSD shrinks its bottom margin. Where the
+//!   compositor puts it is the margins the surface manager sent for the
+//!   frame (`Frame::shifts`); render delegates an offset only on an
+//!   axis margins can move (anchored on one side) and never on a popup,
+//!   so each frame's place is its rest place plus the offset, within
+//!   half a pixel (margins are whole pixels).
 //! - `centre`: a `split`'s `center` is centred on the split's content
 //!   box along the split's axis "whatever the other two hold" (spec.md
 //!   6, `split`); a side bar's split runs down.
@@ -63,6 +75,7 @@ pub const POPUP_GAP: f64 = 6.0;
 pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut out = anchor(cx);
     out.extend(margin(cx));
+    out.extend(pose(cx));
     out.extend(centre(cx));
     out.extend(fit(cx));
     first_per_node(out)
@@ -723,5 +736,53 @@ fn fit(cx: &Cx) -> Vec<Finding> {
         }
     }
     super::stats("placement.fit", cx, &[("images", judged)]);
+    out
+}
+
+/// (eval-rules-6) `pose`: each posed surface lies where its pose's
+/// offset moves it from its rest place (see the module's `pose`).
+fn pose(cx: &Cx) -> Vec<Finding> {
+    // Margins are whole logical pixels: an offset rounded to them.
+    const HALF: f64 = 0.5 + 1e-3;
+    let trace = cx.trace;
+    let mut out = Vec::new();
+    let mut judged = 0u64;
+    for f in &trace.frames {
+        for (s, p) in &f.poses {
+            if !f.painted.contains(s) {
+                continue;
+            }
+            let Some(info) = trace.surfaces.iter().find(|i| i.id == *s) else {
+                continue;
+            };
+            if cx.allowed(CheckId::Placement, &info.root) {
+                continue;
+            }
+            judged += 1;
+            let got = f.shifts.get(s).copied().unwrap_or([0.0, 0.0]);
+            for (a, (g, w)) in got.iter().zip([p.x, p.y]).enumerate() {
+                let (g, w) = (f64::from(*g), f64::from(w));
+                if (g - w).abs() <= HALF {
+                    continue;
+                }
+                let axis = ["x", "y"][a];
+                out.push(
+                    Finding::fail(
+                        CheckId::Placement,
+                        format!(
+                            "pose: {}'s pose moves it {w:.1} px on {axis} from where it lies at \
+                             rest, but the margins sent for it put it {g:.1} px from there",
+                            info.label
+                        ),
+                    )
+                    .at(f.k)
+                    .node(&info.root)
+                    .axis(axis)
+                    .got(g, [w - HALF, w + HALF]),
+                );
+            }
+        }
+    }
+    super::stats("placement.pose", cx, &[("frames", judged)]);
     out
 }

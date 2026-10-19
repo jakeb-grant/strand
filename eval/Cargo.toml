@@ -32,6 +32,10 @@ strand-core = { path = "../crates/strand-core" }
 strand-scene = { path = "../crates/strand-scene" }
 strand-text = { path = "../crates/strand-text" }
 strand-gpu = { path = "../crates/strand-gpu" }
+# (eval-rules-6) The ring a border fills, met along rays
+# (`src/ring.rs`): the kurbo strand-render draws with, so the lock gains
+# no package.
+kurbo = "0.13.1"
 strand-services-schema = { path = "../crates/strand-services-schema" }
 # The surface leg (src/wire.rs): the real surface manager (default
 # features keep `gpu`, its hand-off to the GPU thread) against the fake

@@ -20,6 +20,13 @@
 //!   commit) still asks for its regions, which the manager sends with a
 //!   bare commit: a bare commit after such a frame is held to it, not to
 //!   the last frame a buffer carried.
+//!   (eval-rules-6) A layer surface's margins after the commit that
+//!   carries a frame (or the bare one that sends a frame that drew
+//!   nothing) are the ones its state asks for at rest moved by the
+//!   frame's pose's offset as layer shell reads margins
+//!   (`wire::posed_margins`), within half a pixel:
+//!   the offset a compositor pose delegates goes out with its frame's
+//!   commit (design.md "Poses"), on the side the surface is anchored to.
 //! - `late-present`: every frame that drew is committed in the tick it
 //!   was painted for and shown by that tick's refresh: not later, not
 //!   replaced by another before it, not never. Frames lock to the
@@ -160,6 +167,28 @@ pub fn regions_on_wire(trace: &RunTrace) -> Vec<Finding> {
                     ),
                 );
             }
+        }
+        // (eval-rules-6) Its margins: where its pose's offset puts it.
+        // Held on the commit that carries the frame, or the bare one
+        // that sends a frame that drew nothing: a bare commit after a
+        // frame a buffer carried may send a state the paint changed
+        // after it (a new shadow's overhang moves the margins), which
+        // is not that frame's.
+        if (fresh.is_some() || f.commit.is_none())
+            && let (Some(want), Some(got)) = (f.margin, c.margin)
+            && got
+                .iter()
+                .zip(want)
+                .any(|(g, w)| (f64::from(*g) - f64::from(w)).abs() > 0.5 + 1e-3)
+        {
+            fail(
+                "margin",
+                format!(
+                    "after {what} the compositor holds margins {got:?}; its state's at rest moved \
+                     by its pose's offset are [{}] (layer shell: from the edges it is anchored to)",
+                    want.map(|v| format!("{v:.1}")).join(", ")
+                ),
+            );
         }
         if c.blur != f.blur {
             fail(

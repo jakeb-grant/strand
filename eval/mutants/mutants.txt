@@ -110,3 +110,22 @@ edge-overhang-swapped.patch    curated/osd-shadow-edges-1_5.scn  placement
 nested-glide-y.patch           curated/notif-groups-reorder.scn  envelope teleport
 last-fold-half.patch           curated/wifi-last-row-fold-2.scn  continuity:#nets
 text-width-rounded-scale.patch curated/bar-split-title-1_25.scn  ink:#ttl
+#
+# (eval-rules-6) Each a second case of a rule this round added, a defect
+# other than the held-out one it was found from:
+# ring-corners-swapped.patch: a border's inner radii taken in the wrong
+# corner order, so a tab's (14, 14, 0, 0) inner edge is square at the top
+# right (`coherence` ring).
+# fold-gap-late.patch: a collapsing slot folds its gap only once it is
+# nothing, so its siblings keep the whole gap until then and close it in
+# one frame (`continuity` fold: min(gap, size)).
+# ellipsis-min-content-natural.patch: an ellipsised text's least width is
+# its natural one, so a card's row overflows beside its title instead of
+# cutting it (`contain` wrap).
+# pose-margin-unsent.patch: the surface manager keeps a posed layer
+# surface's rest margins, so a delegated offset never reaches the
+# compositor (`regions-on-wire` margins, on the surface leg).
+ring-corners-swapped.patch          curated/border-ring-shapes-1_25.scn coherence:#tab
+fold-gap-late.patch                 curated/toast-stack.scn             continuity:#t_build:y
+ellipsis-min-content-natural.patch  curated/wrap-card-row.scn           contain:#words:w
+pose-margin-unsent.patch            curated/osd-pose-margins.scn        regions-on-wire

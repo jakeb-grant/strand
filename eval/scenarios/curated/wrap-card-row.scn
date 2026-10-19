@@ -1,0 +1,43 @@
+id     = "wrap-card-row"
+about  = """A notification card's row gives way to its text (design.md "Layout":
+in a full row children give way by `shrink`; decisions.md wave3-pixels:
+plain text's least width is its longest word, an ellipsised one's
+nothing): an app icon that keeps its size (`shrink: 0`) beside a column
+of a title and a long body, in a 240 px card on a 260 px panel. The body
+wraps onto more lines, the title cuts itself with its ellipsis, and
+nothing is laid past the row, at rest and after the body grows longer
+(`contain`'s `wrap`). A chip row under it holds a plain two-word label
+beside a badge that widens: both give way, the label breaking between
+its words onto two lines."""
+screen = { width = 300, height = 400, scale = 1.0 }
+
+=== shell.strand
+state long = false
+state wide = false
+panel Card {
+  anchor: top; margin: 12, 0, 0; width: 260; height: 140; open: true
+  col { id: card; width: 240; pad: 10; gap: 8; radius: 12; bg: #1d2029
+    row { id: head; gap: 10; align: start
+      box { id: app; size: 28; shrink: 0; radius: 8; bg: #7aa2f7 }
+      col { id: words; gap: 4
+        text "Software updates are ready to install now" { id: title; color: #e0e0e0; ellipsis: end }
+        text long ? "Eleven packages can be upgraded, among them the kernel, the graphics stack and the shell itself; restart when it suits you" : "Eleven packages can be upgraded today" { id: body; color: #a0a0a0 }
+      }
+    }
+    row { id: chips; gap: 6; align: center
+      text "Battery saver" { id: saver; color: #9ece6a }
+      box { id: badge; height: 16; width: wide ? 190 : 60; radius: full; bg: #33384f }
+    }
+  }
+}
+
+=== steps
+rest
+mark longer
+set long true
+intend #body changes
+rest
+mark wider
+set wide true
+intend #saver changes
+rest

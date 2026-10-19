@@ -188,6 +188,32 @@ pub struct NodeMeta {
     /// margin. `None` when not known (a token, a border) or another kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inset: Option<[f32; 4]>,
+    /// (eval-rules-6) How it sits in its parent's flow, as written when
+    /// it was first seen ([`Flow`] bits).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub flow: u8,
+}
+
+/// (eval-rules-6) [`NodeMeta::flow`]'s bits.
+#[derive(Debug)]
+pub struct Flow;
+
+impl Flow {
+    /// `place: absolute`: out of its parent's flow.
+    pub const ABSOLUTE: u8 = 1;
+    /// A `margin:` of its own (in any form).
+    pub const MARGIN: u8 = 1 << 1;
+    /// A `width`, `size` or `min_width` of its own (in any form), or an
+    /// image or icon: its width is not its content's.
+    pub const SIZED: u8 = 1 << 2;
+    /// A `shrink:` that is not a number over 0: it may not give way.
+    pub const NO_SHRINK: u8 = 1 << 3;
+    /// A container whose `justify:` spreads its children (`space_*`).
+    pub const SPREAD: u8 = 1 << 4;
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 /// The parts of an `enter` pose the checks read.
@@ -336,6 +362,12 @@ pub struct Frame {
     /// compositor applies to it: absent is none (at rest).
     #[serde(default)]
     pub poses: BTreeMap<u32, PoseRec>,
+    /// (eval-rules-6) How far from where it lies at rest (`origins`) the
+    /// compositor put each surface for this frame, logical px: by the
+    /// margins the surface manager sent for its pose's offset (layer
+    /// shell's `set_margin`, `placement::posed_margin`). Absent: at rest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shifts: BTreeMap<u32, [f32; 2]>,
     /// With `RunTrace::redraw`, each painted surface whose buffer differs
     /// at all from a full repaint of the same frame. Never in the digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -392,6 +424,24 @@ pub struct Frame {
     /// `blend` arm). Never in the digest, as `redraw`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub blend: BTreeMap<u32, BlendRec>,
+    /// (eval-rules-6) Each `border:` ring drawn this frame: its box, its
+    /// props and where the outline it filled meets [`crate::ring::rays`]
+    /// (`coherence`'s `ring`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rings: Vec<crate::ring::RingRec>,
+    /// (eval-rules-6) Each flex container (`row`, `col`, `scroll`)
+    /// drawn this frame with a `gap:` over 0, by key: the
+    /// gap its props give it (`continuity`'s `fold`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gaps: BTreeMap<String, f32>,
+    /// (eval-rules-6) On each painted surface that wants no more frames,
+    /// the texts drawn whole on one line that could break narrower: shaped,
+    /// not cut (no `fit`), with no `ellipsis:` or `max_lines:`, and two
+    /// words or more apart by spaces, so their least width (their longest
+    /// word, decisions.md wave3-pixels) is less than the width drawn
+    /// (`contain`'s `wrap`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loose: Vec<String>,
 }
 
 /// (eval-rules-4) One decode of an image node as drawn, surface logical
@@ -930,6 +980,13 @@ impl RunTrace {
             if !(f.imgs.is_empty() && f.lines.is_empty()) {
                 put(&(&f.imgs, &f.lines));
             }
+            // (eval-rules-6) Rings, gaps and texts that could break.
+            if !(f.rings.is_empty() && f.gaps.is_empty() && f.loose.is_empty()) {
+                put(&(&f.rings, &f.gaps, &f.loose));
+            }
+            if !f.shifts.is_empty() {
+                put(&f.shifts);
+            }
         }
         put(&self.segments);
         put(&self.rests);
@@ -992,9 +1049,12 @@ impl RunTrace {
     ///   screen while its surface moves under it reads as still;
     /// - a surface pose the compositor applies (`compositor_poses`): its
     ///   opacity multiplied into every row's, and into the root's own;
-    ///   its scale (about the surface's top-left) and offset applied to
-    ///   every visual box and to the root's scale; the rows authored on
-    ///   every axis it moves, as a pose authors its subtree.
+    ///   its scale (about the surface's top-left) applied to every visual
+    ///   box and to the root's scale, and every visual box moved where
+    ///   the compositor put the surface for its offset (`Frame::shifts`,
+    ///   the margins sent on the wire, eval-rules-6: not the offset render
+    ///   asked for); the rows authored on every axis it moves, as a pose
+    ///   authors its subtree.
     ///
     /// `None` when no surface moved and none was posed (the trace as it
     /// is).
@@ -1030,15 +1090,16 @@ impl RunTrace {
             for r in &mut f.n {
                 if let Some(p) = f.poses.get(&r.surface) {
                     let k = p.scale;
+                    let [px, py] = f.shifts.get(&r.surface).copied().unwrap_or([0.0, 0.0]);
                     r.op *= p.opacity;
                     r.visual = [
-                        p.x + k * r.visual[0],
-                        p.y + k * r.visual[1],
+                        px + k * r.visual[0],
+                        py + k * r.visual[1],
                         k * r.visual[2],
                         k * r.visual[3],
                     ];
                     if let Some(c) = r.clip.as_mut() {
-                        *c = [p.x + k * c[0], p.y + k * c[1], k * c[2], k * c[3]];
+                        *c = [px + k * c[0], py + k * c[1], k * c[2], k * c[3]];
                     }
                     if roots.get(&r.surface) == Some(&r.key) {
                         r.own_op *= p.opacity;
@@ -1052,7 +1113,7 @@ impl RunTrace {
                     if k != 1.0 {
                         auth |= Axes::X | Axes::Y | Axes::W | Axes::H | Axes::SCALE;
                     }
-                    if p.x != 0.0 || p.y != 0.0 {
+                    if p.x != 0.0 || p.y != 0.0 || px != 0.0 || py != 0.0 {
                         auth |= Axes::X | Axes::Y;
                     }
                     r.auth |= auth.0;

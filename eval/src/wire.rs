@@ -127,6 +127,12 @@ pub struct WireFrame {
     /// the pose's coordinates and are not compared.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub posed: bool,
+    /// (eval-rules-6) A layer surface's margins (top, right, bottom,
+    /// left) for this frame, worked out here: the ones its state asks for
+    /// at rest, the side it is anchored to on an axis anchored on one
+    /// side moved by its pose's offset ([`posed_margins`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<[f32; 4]>,
     /// The commit that carried it (an index into `commits`).
     pub commit: Option<usize>,
 }
@@ -155,6 +161,10 @@ pub struct WireCommit {
     pub input: Option<Vec<R>>,
     pub blur: Vec<R>,
     pub alpha: Option<u32>,
+    /// (eval-rules-6) A layer surface's margins after it (top, right,
+    /// bottom, left).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<[i32; 4]>,
     /// Frame callbacks it asked for, and presentation feedback.
     pub callbacks: u32,
     pub feedback: bool,
@@ -192,6 +202,8 @@ pub struct Snapshot {
     pub opaque: Damage,
     pub blur: Vec<BlurRegion>,
     pub pose: Option<SurfacePose>,
+    /// (eval-rules-6) A layer surface's state at rest (the driver's).
+    pub layer: Option<strand_surface::placement::LayerConfig>,
 }
 
 /// What made a buffer commit, in the order they were made.
@@ -572,6 +584,10 @@ impl Leg {
             opaque,
             blur,
             posed,
+            margin: snap.layer.as_ref().map(|c| {
+                let o = snap.pose.map_or([0.0, 0.0], |p| [p.offset.x, p.offset.y]);
+                posed_margins(c, o)
+            }),
             commit: None,
         });
         self.snaps.push(snap);
@@ -915,12 +931,40 @@ fn commit(c: &CommitRecord, k: u32) -> WireCommit {
         input: c.input.as_ref().map(|r| normal(ops(r))),
         blur: c.blur.as_ref().map_or(Vec::new(), |r| normal(ops(r))),
         alpha: c.alpha,
+        margin: c.margin,
         callbacks: c.frames as u32,
         feedback: c.feedback,
         shown: c.vblank.map(|v| v as u32),
         superseded: c.superseded,
         predicted_ns: None,
     }
+}
+
+/// (eval-rules-6) The margins (top, right, bottom, left) that put a
+/// layer surface of state `c` `offset` logical px (output coordinates,
+/// down and right positive) from where it lies at rest, as layer shell
+/// reads them: a margin is the distance from the edge a surface is
+/// anchored to, so on an axis anchored on one side that side's margin
+/// grows by the offset toward the far edge (top, left) or shrinks by it
+/// (bottom, right); an axis anchored on both sides or neither is placed
+/// by the compositor whatever its margins, and keeps them. Worked out
+/// here from the protocol, never by strand-surface's `posed_margin`,
+/// which it judges; unrounded (the wire's margins are whole pixels).
+pub fn posed_margins(c: &strand_surface::placement::LayerConfig, offset: [f32; 2]) -> [f32; 4] {
+    let a = c.anchors;
+    let [t, r, b, l] = c.margin.map(|m| m as f32);
+    let [dx, dy] = offset.map(|v| if v.is_finite() { v } else { 0.0 });
+    let (l, r) = match (a.left, a.right) {
+        (true, false) => (l + dx, r),
+        (false, true) => (l, r - dx),
+        _ => (l, r),
+    };
+    let (t, b) = match (a.top, a.bottom) {
+        (true, false) => (t + dy, b),
+        (false, true) => (t, b - dy),
+        _ => (t, b),
+    };
+    [t, r, b, l]
 }
 
 /// A region (rectangles added, `true`, or subtracted, in order) as the

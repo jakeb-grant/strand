@@ -34,6 +34,7 @@ pub mod promote;
 pub mod recording;
 pub mod refs;
 pub mod report;
+pub mod ring;
 pub mod scaffold;
 pub mod scenario;
 pub mod select;

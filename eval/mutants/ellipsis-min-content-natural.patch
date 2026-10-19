@@ -1,0 +1,12 @@
+diff --git a/crates/strand-render/src/layout/text.rs b/crates/strand-render/src/layout/text.rs
+--- a/crates/strand-render/src/layout/text.rs
++++ b/crates/strand-render/src/layout/text.rs
+@@ -121,7 +121,7 @@
+     };
+     let w = known.width.unwrap_or_else(|| {
+         let w = match avail.width {
+-            AvailableSpace::MinContent if shrinks => 0.0,
++            AvailableSpace::MinContent if shrinks => natural.w,
+             AvailableSpace::MinContent if wraps => least,
+             AvailableSpace::Definite(a) if shrinks => natural.w.min(a.max(0.0)),
+             AvailableSpace::Definite(a) if wraps => natural.w.min(a.max(least)),

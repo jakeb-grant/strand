@@ -2598,6 +2598,8 @@ fn rows_move_with_their_surface_and_take_its_pose() {
                 y: 3.0,
             },
         );
+        // (eval-rules-6) The margins sent for its offset put it there.
+        f.shifts.insert(2, [0.0, 3.0]);
     }
     t.seal();
     let s = t.on_screen().unwrap();
@@ -3389,6 +3391,7 @@ fn card_frame(k: u32, w: i32, c: usize) -> WireFrame {
         opaque: vec![],
         blur: vec![[0, 0, w, 32]],
         posed: false,
+        margin: None,
         commit: Some(c),
     }
 }
@@ -3408,6 +3411,32 @@ fn card_commit(k: u32, w: i32) -> WireCommit {
         callbacks: 1,
         shown: Some(k),
         ..WireCommit::default()
+    }
+}
+
+/// (eval-rules-6) A layer surface's margins on the wire are its rest
+/// ones moved by its pose's offset, within half a pixel: a bottom margin
+/// of 40 posed 23.6 px down is 16 (held-out set H's pose-sign mutant
+/// sent 64; a manager that never sends the posed ones leaves 40).
+#[test]
+fn regions_on_wire_holds_a_posed_surfaces_margins() {
+    let frame = |k: u32, c: usize| WireFrame {
+        margin: Some([0.0, 0.0, 16.4, 0.0]),
+        ..card_frame(k, 90, c)
+    };
+    let commit = |k: u32, m: [i32; 4]| WireCommit {
+        margin: Some(m),
+        ..card_commit(k, 90)
+    };
+    let t = wired(vec![frame(1, 0)], vec![commit(1, [0, 0, 16, 0])]);
+    assert_eq!(regions_on_wire(&t), []);
+    for bad in [[0, 0, 64, 0], [0, 0, 40, 0]] {
+        let t = wired(vec![frame(1, 0)], vec![commit(1, bad)]);
+        let found = regions_on_wire(&t);
+        assert!(
+            found.iter().any(|f| f.msg.contains("margins")),
+            "{bad:?}: {found:?}"
+        );
     }
 }
 
@@ -6476,4 +6505,310 @@ fn other_axis_waits_only_for_the_nodes_own_held_text() {
     let t = badge_with_held_text(false);
     let r = check(&sc, &t);
     assert!(other(&r), "{}", show(&r, &t));
+}
+
+// --- eval-rules-6: rings, folded gaps, wrapping rows, posed margins
+
+mod eval_rules_6 {
+    use super::*;
+    use strand_eval::ring::{RingRec, crossings, rays};
+    use strand_eval::trace::{CurveRec, Flow, PlaceRec, SpringRec, StartRec};
+
+    /// A 100 × 60 card with `radius: 14` and a 1 px border at scale 1,
+    /// its ring drawn as kurbo draws two rounded boxes, the inner one's
+    /// radius `inner_r`.
+    fn ringed(inner_r: f64) -> RunTrace {
+        use kurbo::{RoundedRect, Shape as _};
+        let frame = [10.0, 10.0, 110.0, 70.0];
+        let mut path = RoundedRect::new(frame[0], frame[1], frame[2], frame[3], 14.0).to_path(0.1);
+        path.extend(RoundedRect::new(11.0, 11.0, 109.0, 69.0, inner_r).to_path(0.1));
+        let drawn = rays(frame)
+            .into_iter()
+            .map(|ray| {
+                crossings(&path, ray)
+                    .into_iter()
+                    .map(|v| v as f32)
+                    .collect()
+            })
+            .collect();
+        let mut t = shape(2, |_| vec![row("card", [10.0, 10.0, 100.0, 60.0]).draws()]);
+        for f in &mut t.frames {
+            f.rings.push(RingRec {
+                key: "card".into(),
+                s: 1,
+                frame,
+                scale: 1.0,
+                width: 1.0,
+                radius: [14.0; 4],
+                drawn: Vec::clone(&drawn),
+            });
+        }
+        t.seal();
+        t
+    }
+
+    /// A border's inner edge is its box inset by its width, each radius
+    /// less the width (CSS): drawn so, `coherence` passes; drawn with the
+    /// outer radius kept inside (held-out sets G and H's inner-radius
+    /// mutants), the ring is thicker on each corner's bisector and fails.
+    #[test]
+    fn coherence_holds_a_border_to_its_css_ring() {
+        let sc = scenario("");
+        let t = ringed(13.0);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Coherence),
+            Status::Pass,
+            "{}",
+            show(&r, &t)
+        );
+        let t = ringed(14.0);
+        let r = check(&sc, &t);
+        assert!(
+            r.failures(CheckId::Coherence)
+                .iter()
+                .any(|f| f.key.as_deref() == Some("card") && f.msg.starts_with("ring:")),
+            "{}",
+            show(&r, &t)
+        );
+    }
+
+    /// A col (`gap: 6`) of `a`, `n` (its height springing from 10 to 0)
+    /// and `b`, `b` laid `gap(h)` past `n` at each frame.
+    fn collapsing(gap: impl Fn(f32) -> f32) -> RunTrace {
+        let hs = [10.0, 10.0, 7.0, 4.0, 2.0, 0.0];
+        let mut t = shape(5, |k| {
+            let h = hs[k as usize];
+            vec![
+                row("col", [0.0, 0.0, 100.0, 60.0]),
+                row("a", [0.0, 0.0, 100.0, 10.0]).draws(),
+                row("n", [0.0, 16.0, 100.0, h]).draws(),
+                row("b", [0.0, 16.0 + h + gap(h), 100.0, 10.0]).draws(),
+            ]
+        });
+        t.nodes.get_mut("col").unwrap().kind = "col".into();
+        for k in ["a", "n", "b"] {
+            t.nodes.get_mut(k).unwrap().parent = Some("col".into());
+        }
+        for f in &mut t.frames {
+            f.wants = vec![1];
+            f.gaps.insert("col".into(), 6.0);
+            if f.k >= 1 {
+                f.sp.push(SpringRec {
+                    key: "n".into(),
+                    s: 1,
+                    of: "h".into(),
+                    at: None,
+                    v: vec![hs[f.k as usize]],
+                    to: vec![0.0],
+                    c: CurveRec::Spring { k: 300.0, z: 1.0 },
+                    eps: vec![0.01],
+                    rest: (f.k == 1).then(|| vec![10.0]),
+                    start: (f.k == 1).then(|| StartRec {
+                        last: Some(1_000_000_000),
+                        shift: Vec::new(),
+                    }),
+                    enter: None,
+                    ask: None,
+                });
+            }
+        }
+        t.seal();
+        t
+    }
+
+    fn folded_gap_findings(r: &Report) -> usize {
+        r.failures(CheckId::Continuity)
+            .iter()
+            .filter(|f| f.msg.contains("min(gap, size)"))
+            .count()
+    }
+
+    /// The gap beside a collapsing slot folds with it, `min(gap, size)`
+    /// at every frame (decisions.md wave3-pixels p2): kept whole while
+    /// the slot is smaller than the gap (held-out sets G and H's
+    /// gap-jump mutants: the gap gone at once, or kept until the end) is
+    /// a finding on the sibling across it.
+    #[test]
+    fn continuity_folds_a_collapsing_slots_gap() {
+        let sc = scenario("");
+        let t = collapsing(|h| h.min(6.0));
+        let r = check(&sc, &t);
+        assert_eq!(folded_gap_findings(&r), 0, "{}", show(&r, &t));
+        for bad in [|_: f32| 6.0f32, |h: f32| if h < 6.0 { 0.0 } else { 6.0 }] {
+            let t = collapsing(bad);
+            let r = check(&sc, &t);
+            assert!(
+                r.failures(CheckId::Continuity)
+                    .iter()
+                    .any(|f| f.key.as_deref() == Some("b") && f.msg.contains("min(gap, size)")),
+                "{}",
+                show(&r, &t)
+            );
+        }
+        // A sibling with a margin of its own is not judged.
+        let mut t = collapsing(|_| 6.0);
+        t.nodes.get_mut("b").unwrap().flow = Flow::MARGIN;
+        t.seal();
+        let r = check(&sc, &t);
+        assert_eq!(folded_gap_findings(&r), 0, "{}", show(&r, &t));
+    }
+
+    /// A 100 px row holding a text 80 px wide and a 40 px box of its own
+    /// width, 20 px past the row, at rest.
+    fn full_row(loose: bool) -> RunTrace {
+        let mut t = shape(2, |_| {
+            vec![
+                row("r", [0.0, 0.0, 100.0, 20.0]),
+                row("t", [0.0, 0.0, 80.0, 20.0]).draws(),
+                row("i", [80.0, 0.0, 40.0, 20.0]).draws(),
+            ]
+        });
+        t.nodes.get_mut("r").unwrap().kind = "row".into();
+        t.nodes.get_mut("t").unwrap().kind = "text".into();
+        t.nodes.get_mut("i").unwrap().flow = Flow::SIZED;
+        for k in ["t", "i"] {
+            t.nodes.get_mut(k).unwrap().parent = Some("r".into());
+        }
+        for f in &mut t.frames {
+            if loose {
+                f.loose = vec!["t".into()];
+            }
+        }
+        t.seal();
+        t
+    }
+
+    /// A full row's children give way down to their least width, a plain
+    /// text's its longest word (design.md "Layout"; decisions.md
+    /// wave3-pixels): a row laid past its box beside a text of several
+    /// words drawn on one line (held-out set G's wrap mutant) fails
+    /// `contain`; one whose text is a single word (it cannot break) does
+    /// not.
+    #[test]
+    fn contain_holds_a_full_row_to_its_wrapping_text() {
+        let sc = scenario("");
+        let t = full_row(false);
+        let r = check(&sc, &t);
+        assert!(
+            !r.failures(CheckId::Contain)
+                .iter()
+                .any(|f| f.msg.starts_with("wrap:")),
+            "{}",
+            show(&r, &t)
+        );
+        let t = full_row(true);
+        let r = check(&sc, &t);
+        assert!(fails_on(&r, CheckId::Contain, "t", "w"), "{}", show(&r, &t));
+        // `shrink: 0` on the text: it does not give way.
+        let mut t = full_row(true);
+        t.nodes.get_mut("t").unwrap().flow = Flow::NO_SHRINK;
+        t.seal();
+        let r = check(&sc, &t);
+        assert!(
+            !r.failures(CheckId::Contain)
+                .iter()
+                .any(|f| f.msg.starts_with("wrap:")),
+            "{}",
+            show(&r, &t)
+        );
+    }
+
+    /// A bar and an OSD anchored to the bottom (surface 2) whose
+    /// delegated pose moves it 24 px down, put `shift` from its rest
+    /// place by the margins sent.
+    fn posed(shift: [f32; 2]) -> RunTrace {
+        let mut t = shape(3, |_| {
+            let bar = row("bar", [0.0, 0.0, 400.0, 30.0]).draws();
+            let mut osd = row("osd", [0.0, 0.0, 100.0, 24.0]).draws();
+            osd.surface = 2;
+            vec![bar, osd]
+        });
+        for f in &mut t.frames {
+            f.sizes.insert(2, [100.0, 24.0]);
+            f.origins.insert(1, [0.0, 0.0]);
+            f.origins.insert(2, [150.0, 236.0]);
+            f.painted = vec![1, 2];
+            f.poses.insert(
+                2,
+                PoseRec {
+                    opacity: 1.0,
+                    scale: 1.0,
+                    x: 0.0,
+                    y: 23.6,
+                },
+            );
+            f.shifts.insert(2, shift);
+        }
+        let mut bar = PlaceRec {
+            anchor: "center".into(),
+            layer: Some("top".into()),
+            ..PlaceRec::default()
+        };
+        bar.edge = Some("top".into());
+        let mut osd = PlaceRec {
+            anchor: "bottom".into(),
+            layer: Some("overlay".into()),
+            ..PlaceRec::default()
+        };
+        osd.margin = [0.0, 0.0, 40.0, 0.0];
+        osd.margin_set = true;
+        t.surfaces = vec![
+            SurfaceInfo {
+                id: 1,
+                label: "bar bar".into(),
+                kind: "bar".into(),
+                root: "bar".into(),
+                places: vec![bar],
+                ..SurfaceInfo::default()
+            },
+            SurfaceInfo {
+                id: 2,
+                label: "osd osd".into(),
+                kind: "osd".into(),
+                root: "osd".into(),
+                places: vec![osd],
+                ..SurfaceInfo::default()
+            },
+        ];
+        t.seal();
+        t
+    }
+
+    /// A delegated pose's offset is in output coordinates, and layer
+    /// shell's margins count from the anchored edge: the margins sent
+    /// for it put the surface where the offset says, to the whole pixel
+    /// (`placement`'s `pose`); a bottom margin grown instead of shrunk
+    /// (held-out set H's pose-sign mutant) moves it up and fails. What
+    /// the eye sees moves by the margins sent, not by the offset asked.
+    #[test]
+    fn placement_holds_a_posed_surface_where_its_offset_puts_it() {
+        let sc = scenario("screen = { width = 400, height = 300, scale = 1.0 }");
+        let t = posed([0.0, 24.0]);
+        let r = check(&sc, &t);
+        assert!(
+            !r.failures(CheckId::Placement)
+                .iter()
+                .any(|f| f.msg.starts_with("pose:")),
+            "{}",
+            show(&r, &t)
+        );
+        let on = t.on_screen().expect("posed");
+        let osd = on.frames[1].n.iter().find(|r| r.key == "osd").unwrap();
+        assert_eq!(osd.visual[1], 24.0, "moved by the margins sent");
+        let t = posed([0.0, -24.0]);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Placement, "osd", "y"),
+            "{}",
+            show(&r, &t)
+        );
+        let t = posed([0.0, 0.0]);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Placement, "osd", "y"),
+            "{}",
+            show(&r, &t)
+        );
+    }
 }

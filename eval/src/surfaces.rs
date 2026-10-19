@@ -70,8 +70,16 @@ pub struct Shown {
     pub fresh: bool,
     /// The tick it was attached at.
     pub attached: u32,
-    /// Where its buffer's top-left lies on the output, logical pixels.
+    /// Where its buffer's top-left lies on the output, logical pixels:
+    /// (eval-rules-6) at the margins its compositor pose's offset set.
     pub origin: [f32; 2],
+    /// (eval-rules-6) Where it lies at rest: at the margins its state
+    /// asks for, no pose's offset in them (`origin` when unposed).
+    pub rest: [f32; 2],
+    /// (eval-rules-6) The offset of the compositor pose the surface
+    /// manager last set (`Painter::surface_pose`, set with the frame's
+    /// commit), logical pixels.
+    pub pose: [f32; 2],
     /// How the compositor places it.
     place: Place,
     /// Configured at least once.
@@ -92,6 +100,10 @@ enum Place {
         at: (i32, i32),
     },
 }
+
+/// A surface as `Surfaces::arrange` places it: its id, its size, where
+/// it lies and where it lies at rest (without its pose's offset).
+type Arranged = (SurfaceId, [u32; 2], [f32; 2], [f32; 2]);
 
 /// What the surface manager does to a surface (`Surfaces::change`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -345,6 +357,8 @@ impl Surfaces {
                     fresh: true,
                     attached: k,
                     origin: [0.0, 0.0],
+                    rest: [0.0, 0.0],
+                    pose: [0.0, 0.0],
                     place,
                     configured: false,
                 });
@@ -407,12 +421,28 @@ impl Surfaces {
             })
             .collect();
         let list: Vec<(SurfaceId, &LayerConfig)> = layers.iter().map(|(i, c)| (*i, c)).collect();
-        let mut placed: Vec<(SurfaceId, [u32; 2], [f32; 2])> = Vec::new();
+        let mut placed: Vec<Arranged> = Vec::new();
         for (id, c) in &layers {
             let area = placement::arranged_area(full, &list, id);
             let size = configured_size(c, area);
             let (x, y) = c.position_in_rect(size, area);
-            placed.push((*id, [size.0, size.1], [x as f32, y as f32]));
+            // (eval-rules-6) At the margins the manager sends for its
+            // compositor pose's offset (`State::sync_pose`, through
+            // `placement::posed_margin`), as the compositor places it.
+            let pose = self
+                .shown
+                .iter()
+                .find(|s| s.id == *id)
+                .map_or([0.0, 0.0], |s| s.pose);
+            let mut posed = c.clone();
+            posed.margin = placement::posed_margin(c, LogicalPoint::new(pose[0], pose[1]));
+            let (px, py) = posed.position_in_rect(size, area);
+            placed.push((
+                *id,
+                [size.0, size.1],
+                [px as f32, py as f32],
+                [x as f32, y as f32],
+            ));
         }
         // Popups in the order they were shown: a parent before its
         // popups.
@@ -425,8 +455,8 @@ impl Surfaces {
             };
             let parent_at = placed
                 .iter()
-                .find(|(id, _, _)| *id == p.id)
-                .map_or(p.origin, |(_, _, o)| *o);
+                .find(|(id, _, _, _)| *id == p.id)
+                .map_or(p.origin, |(_, _, o, _)| *o);
             let (gx, gy) = geometry(p);
             let [t, _, _, l] = config.overhang;
             let (w, h) = config.buffer();
@@ -435,15 +465,16 @@ impl Surfaces {
                 parent_at[1] + (gy + at.1 - t) as f32,
             ];
             // A popup of this popup reads where it lies now, from here.
-            placed.push((self.shown[i].id, [w.max(1), h.max(1)], o));
+            placed.push((self.shown[i].id, [w.max(1), h.max(1)], o, o));
         }
-        for (id, size, origin) in placed {
+        for (id, size, origin, rest) in placed {
             let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
                 continue;
             };
             let logical = [size[0] as f32, size[1] as f32];
             let moved = sh.origin != origin;
             sh.origin = origin;
+            sh.rest = rest;
             if !sh.configured || sh.logical != logical {
                 let size = physical(logical, scale);
                 sh.configured = true;
@@ -457,6 +488,41 @@ impl Surfaces {
             }
         }
         Ok(())
+    }
+
+    /// (eval-rules-6) Surface `id`'s frame commits with a compositor
+    /// pose of `offset` (`None`: none): a layer surface's margins move by
+    /// it, as the manager sets them (`State::sync_pose`), and it and its
+    /// popups are placed again where the compositor puts them; a popup
+    /// takes no offset (the manager sends none). The surfaces placed anew.
+    pub fn set_pose(
+        &mut self,
+        id: SurfaceId,
+        offset: Option<[f32; 2]>,
+    ) -> Result<Vec<Change>, Error> {
+        let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
+            return Ok(Vec::new());
+        };
+        let offset = match sh.place {
+            Place::Layer(_) => offset.unwrap_or([0.0, 0.0]),
+            Place::Popup { .. } => [0.0, 0.0],
+        };
+        if sh.pose == offset {
+            return Ok(Vec::new());
+        }
+        sh.pose = offset;
+        let mut out = Vec::new();
+        self.arrange(&mut out)?;
+        Ok(out)
+    }
+
+    /// (eval-rules-6) The state layer surface `id` asks for at rest (its
+    /// margins without a pose's offset), for the surface leg.
+    pub fn layer_config(&self, id: SurfaceId) -> Option<&LayerConfig> {
+        match &self.get(id)?.place {
+            Place::Layer(c) => Some(c),
+            Place::Popup { .. } => None,
+        }
     }
 
     /// Where surface `id` lies, for render (`Renderer::set_surface_origin`,
@@ -482,7 +548,7 @@ impl Surfaces {
             return 0;
         };
         let (sw, shh) = self.full();
-        let [x, y] = sh.origin;
+        let [x, y] = sh.rest;
         let [w, h] = sh.logical;
         let at = |gap: f32| gap <= 0.5;
         let mut bits = 0;

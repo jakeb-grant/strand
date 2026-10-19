@@ -147,6 +147,8 @@ impl Seen {
             drag: None,
             images: Vec::new(),
             cut: None,
+            ring: None,
+            gap: None,
         }
     }
 }

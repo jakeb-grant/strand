@@ -1,0 +1,15 @@
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -1138,9 +1138,9 @@
+             if inner.width() > 0.0 && inner.height() > 0.0 {
+                 let ir = RoundedRectRadii::new(
+                     (r.top_left - bw).max(0.0),
+-                    (r.top_right - bw).max(0.0),
+-                    (r.bottom_right - bw).max(0.0),
+                     (r.bottom_left - bw).max(0.0),
++                    (r.bottom_right - bw).max(0.0),
++                    (r.top_right - bw).max(0.0),
+                 );
+                 match &outline {
+                     Some(o) => path.extend(crate::shapes::path(o, inner)),

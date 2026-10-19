@@ -38,6 +38,18 @@
 //!   `shrink: 0` or a `min_width` (`labels::rigid_of`), something else
 //!   rigid inside the outermost such ancestor laid past the edge too, or
 //!   a clipping ancestor (a `scroll` lays its content wider on purpose).
+//! - **wrap** (eval-rules-6): a full row's children give way by `shrink`
+//!   down to their least width (design.md "Layout"; CSS flex's automatic
+//!   minimum, the min-content), and plain text's least width is its
+//!   longest word (decisions.md wave3-pixels "text in its box"), an
+//!   ellipsised one's nothing. So a `row` whose children are laid past
+//!   its box, at a rest, has none that could still give way: no child
+//!   with no width of its own and a `shrink:` over 0 that is a text drawn
+//!   whole on one line with two words or more (`trace::Frame::loose`),
+//!   an ellipsised text, or a `col` or `box` all of whose children could
+//!   give way, or a `row` that holds one and is not full itself. A long
+//!   label that stops wrapping pushes its siblings out of the row
+//!   instead (held-out set G's wrap mutant).
 //! - **held** (eval-rules-2): a box whose size springs holds what it
 //!   lays out inside it. design.md's toast exits to `height: 0` while its
 //!   "siblings slide up to fill the gap", and "a node whose size springs
@@ -76,6 +88,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut out = cut(cx);
     out.extend(pushed(cx));
     out.extend(give_way(cx));
+    out.extend(wrap(cx));
     out.extend(held(cx));
     out.extend(other_axis(cx));
     out.extend(shadow(cx));
@@ -857,5 +870,150 @@ fn give_way(cx: &Cx) -> Vec<Finding> {
             );
         }
     }
+    out
+}
+
+/// (eval-rules-6) `wrap`: at each frame a surface comes to rest, a
+/// `row` whose in-flow children are laid past its box has no child that
+/// could still give way (see the module's `wrap`).
+fn wrap(cx: &Cx) -> Vec<Finding> {
+    use crate::trace::Flow;
+    use std::collections::{HashMap, HashSet};
+    let trace = cx.trace;
+    let mut out = Vec::new();
+    let (mut rows_seen, mut loose_seen, mut judged) = (0u64, 0u64, 0u64);
+    for f in &trace.frames {
+        loose_seen += f.loose.len() as u64;
+        if f.loose.is_empty()
+            && !f
+                .n
+                .iter()
+                .any(|r| trace.nodes.get(&r.key).is_some_and(|m| m.ellipsis))
+        {
+            continue;
+        }
+        let loose: HashSet<&str> = f.loose.iter().map(String::as_str).collect();
+        let resting: HashSet<u32> = f
+            .painted
+            .iter()
+            .copied()
+            .filter(|s| !f.wants.contains(s))
+            .collect();
+        let meta = |k: &str| trace.nodes.get(k);
+        // In-flow children by parent, on the parent's surface.
+        let rows: HashMap<&str, &Row> =
+            f.n.iter()
+                .filter(|r| resting.contains(&r.surface))
+                .map(|r| (r.key.as_str(), r))
+                .collect();
+        let mut kids: HashMap<&str, Vec<&Row>> = HashMap::new();
+        for r in f.n.iter().filter(|r| resting.contains(&r.surface)) {
+            let Some(p) = cx.parent(&r.key) else { continue };
+            if rows.get(p).is_some_and(|q| q.surface == r.surface)
+                && meta(&r.key).is_some_and(|m| m.flow & Flow::ABSOLUTE == 0)
+            {
+                kids.entry(p).or_default().push(r);
+            }
+        }
+        let past = |r: &Row| -> Option<f64> {
+            let k = kids.get(r.key.as_str())?;
+            let lo = k
+                .iter()
+                .map(|q| f64::from(q.laid[0]))
+                .fold(f64::INFINITY, f64::min);
+            let hi = k
+                .iter()
+                .map(|q| f64::from(q.laid[0] + q.laid[2]))
+                .fold(f64::NEG_INFINITY, f64::max);
+            let (x0, x1) = (f64::from(r.laid[0]), f64::from(r.laid[0] + r.laid[2]));
+            let by = (hi - x1).max(x0 - lo);
+            (by > cx.tol).then_some(by)
+        };
+        // Whether `r` could be laid narrower than it is: its least width
+        // is less than its width.
+        fn gives(
+            r: &Row,
+            depth: u32,
+            kids: &HashMap<&str, Vec<&Row>>,
+            loose: &HashSet<&str>,
+            nodes: &std::collections::BTreeMap<String, crate::trace::NodeMeta>,
+            past: &dyn Fn(&Row) -> Option<f64>,
+        ) -> bool {
+            let meta = |k: &str| nodes.get(k);
+            let Some(m) = meta(&r.key) else { return false };
+            if m.flow & Flow::SIZED != 0 || depth > 16 || r.laid[2] <= 1.0 {
+                return false;
+            }
+            match m.kind.as_str() {
+                "text" => {
+                    loose.contains(r.key.as_str()) || (m.ellipsis && r.text.as_deref() == Some("S"))
+                }
+                "col" | "box" => kids.get(r.key.as_str()).is_some_and(|k| {
+                    !k.is_empty()
+                        && k.iter()
+                            .all(|q| gives(q, depth + 1, kids, loose, nodes, past))
+                }),
+                "row" => {
+                    past(r).is_none()
+                        && kids.get(r.key.as_str()).is_some_and(|k| {
+                            k.iter().any(|q| {
+                                meta(&q.key).is_some_and(|m| m.flow & Flow::NO_SHRINK == 0)
+                                    && gives(q, depth + 1, kids, loose, nodes, past)
+                            })
+                        })
+                }
+                _ => false,
+            }
+        }
+        for r in f.n.iter().filter(|r| resting.contains(&r.surface)) {
+            if meta(&r.key).is_none_or(|m| m.kind != "row" || m.flow & Flow::SPREAD != 0)
+                || cx.allowed(CheckId::Contain, &r.key)
+            {
+                continue;
+            }
+            if kids.contains_key(r.key.as_str()) {
+                rows_seen += 1;
+            }
+            let Some(by) = past(r) else { continue };
+            judged += 1;
+            let Some(k) = kids.get(r.key.as_str()) else {
+                continue;
+            };
+            let Some(c) = k.iter().find(|q| {
+                meta(&q.key).is_some_and(|m| m.flow & Flow::NO_SHRINK == 0)
+                    && !cx.allowed(CheckId::Contain, &q.key)
+                    && gives(q, 0, &kids, &loose, &trace.nodes, &past)
+            }) else {
+                continue;
+            };
+            let label = |k: &str| meta(k).map_or(k.to_string(), |m| m.label.clone());
+            out.push(
+                Finding::fail(
+                    CheckId::Contain,
+                    format!(
+                        "wrap: {} lays its children {by:.1} px past its box, yet {} ({:.1} px \
+                         wide) could still give way: it is or holds only text that would \
+                         break narrower (its least width is its longest word) or cut itself",
+                        label(&r.key),
+                        label(&c.key),
+                        c.laid[2]
+                    ),
+                )
+                .at(f.k)
+                .node(&c.key)
+                .axis("w")
+                .got(by, [0.0, cx.tol]),
+            );
+        }
+    }
+    super::stats(
+        "contain.wrap",
+        cx,
+        &[
+            ("rows", rows_seen),
+            ("loose", loose_seen),
+            ("full-rows", judged),
+        ],
+    );
     out
 }

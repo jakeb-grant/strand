@@ -1,0 +1,64 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "wrap-card-row"
+verdict good
+note "new scenario (eval-rules-6): #app keeps 28 px (shrink: 0), #words 182 px; #body wraps to 2 lines (30 px) then 5 lines (75 px) when it grows; #title stays one 15 px line cut by its ellipsis; #badge springs 60 -> 190 and both give way: #saver breaks to 2 lines (62x30), #badge ends 152 px; nothing laid past a row; read with explain"
+date 2026-10-19
+rev "bbda3d6c+changes"
+approver "claude"
+scenario 36cb311bdb22307c
+seal fb9e5ad25ca9553a
+S1 0 - "panel Card"
+N0 "app|shell.strand:7:7|#0" "box#app"
+N1 "badge|shell.strand:15:7|#0" "box#badge"
+N2 "body|shell.strand:10:9|#1" "text#body"
+N3 "card|shell.strand:5:3|#0" "col#card"
+N4 "chips|shell.strand:13:5|#1" "row#chips"
+N5 "head|shell.strand:6:5|#0" "row#head"
+N6 "saver|shell.strand:14:7|#0" "text#saver"
+N7 "title|shell.strand:9:9|#0" "text#title"
+N8 "words|shell.strand:8:7|#0" "col#words"
+N9 "|shell.strand:3:1|#0" "panel@shell.strand:3"
+k0 p1
+s1 z=260,140 o=20,12
+n0 x=10 y=10 w=28 h=28 ord=3 bg=7aa2f7ff
+n1 x=93 y=67 w=60 h=16 ord=9 bg=33384fff
+n2 x=48 y=29 w=182 h=30 txt=S ord=6 ink=48,30,142,28 fit=182 fg=a0a0a0ff gl=["Eleven\u0020packages\u0020can\u0020be\u0020upgraded\u0020today"]
+n3 x=0 y=0 w=240 h=140 ord=1 bg=1d2029ff
+n4 x=10 y=67 w=220 h=16 ord=7
+n5 x=10 y=10 w=220 h=49 ord=2
+n6 x=10 y=67 w=77 h=15 txt=S ord=8 ink=11,69,76,12 fg=9ece6aff gl=["Battery\u0020saver"]
+n7 x=48 y=10 w=182 h=15 txt=S ord=5 ink=48,11,179,13 fit=182 fg=e0e0e0ff gl=["Software\u0020updates\u0020are\u0020ready\u0020to\u0020install\u0020now"]
+n8 x=48 y=10 w=182 h=49 ord=4
+n9 x=0 y=0 w=260 h=140
+k1
+n1 y=112
+n2 h=75 ink=48,30,172,73 gl=["Eleven\u0020packages\u0020can\u0020be\u0020upgraded,\u0020among\u0020them\u0020the\u0020kernel,\u0020the\u0020graphics\u0020stack\u0020and\u0020the\u0020shell\u0020itself;\u0020restart\u0020when\u0020it\u0020suits\u0020you"]
+n4 y=112
+n5 h=94
+n6 y=112 ink=11,114,76,12
+n8 h=94
+k2
+n1 w=84
+k3
+n1 w=119
+k4
+n1 x=91 y=119 w=139
+n4 h=30
+n6 w=75 h=30 ink=10,114,42,25 fit=75
+k5
+n1 x=88 w=142
+n6 w=72 fit=72
+k6
+n1 x=87 w=143
+n6 w=71 fit=71
+k7
+k8
+n1 x=88 w=142
+n6 w=72 fit=72
+k9
+k10
+k11
+k12
+k13
+n1 x=78 w=152
+n6 w=62 fit=62

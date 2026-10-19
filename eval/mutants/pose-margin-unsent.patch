@@ -1,0 +1,12 @@
+diff --git a/crates/strand-surface/src/manager/pose.rs b/crates/strand-surface/src/manager/pose.rs
+--- a/crates/strand-surface/src/manager/pose.rs
++++ b/crates/strand-surface/src/manager/pose.rs
+@@ -99,7 +99,7 @@
+         }
+         let moved = want.offset != old.offset
+             && if let Role::Layer(layer) = &s.role {
+-                let [t, r, b, l] = crate::placement::posed_margin(&s.config, want.offset);
++                let [t, r, b, l] = s.config.margin;
+                 layer.set_margin(t, r, b, l);
+                 true
+             } else {

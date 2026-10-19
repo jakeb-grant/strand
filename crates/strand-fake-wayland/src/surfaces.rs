@@ -248,6 +248,9 @@ pub struct CommitRecord {
     pub blur: Option<Region>,
     /// The alpha multiplier after it.
     pub alpha: Option<u32>,
+    /// (eval-rules-6) A layer surface's margins (top, right, bottom,
+    /// left) after it.
+    pub margin: Option<[i32; 4]>,
     /// Frame callbacks it asked for.
     pub frames: usize,
     /// It asked for presentation feedback.
@@ -573,6 +576,7 @@ impl Surfaces {
                 input: rec.input.clone(),
                 blur: rec.blur.clone(),
                 alpha: rec.alpha,
+                margin: rec.margin,
                 frames,
                 feedback,
                 vblank: None,

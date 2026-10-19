@@ -1147,6 +1147,20 @@ impl<'a> Flattener<'a> {
                     None => path.extend(shape_path(inner, ir, squircle)),
                 }
             }
+            // (eval-rules-6) The ring as drawn, and what it was drawn
+            // from.
+            #[cfg(feature = "eval-hooks")]
+            if let Some(t) = probe.as_mut() {
+                t.ring = Some(crate::probe::RingDrawn {
+                    frame: [frame.x0, frame.y0, frame.x1, frame.y1],
+                    path: path.clone(),
+                    width,
+                    radius: get(Prop::Radius).or(default_radius.as_ref()).cloned(),
+                    size: [rect.w, rect.h],
+                    shaped: outline.is_some() || squircle,
+                    scale: s,
+                });
+            }
             let item = Item::Border {
                 path,
                 paint: paint.clone(),
@@ -1632,6 +1646,7 @@ impl<'a> Flattener<'a> {
         #[cfg(feature = "eval-hooks")]
         if let Some(mut t) = probe {
             t.paint = super::probe::paint(&self.out.items[own_start..], s, &self.extras.texts);
+            t.gap = number(get(Prop::Gap)).filter(|g| g.is_finite());
             t.drag = self.extras.widgets.drags.get(&node.id).copied();
             t.cut = probe_cut;
             let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.probe_images)

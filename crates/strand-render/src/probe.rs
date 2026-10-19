@@ -40,6 +40,7 @@ use std::time::Duration;
 
 use strand_scene::{Backend, Color, LogicalRect, NodeId, NodeKind, Paint, SurfaceId};
 use strand_text::TextLayout;
+use vello_cpu::kurbo;
 
 use crate::PaintTimes;
 
@@ -252,6 +253,37 @@ pub struct NodeTrace {
     /// unbounded layout's cluster stops, so a check sees whether each
     /// line keeps all that fits.
     pub cut: Option<CutDrawn>,
+    /// (eval-rules-6) Its `border:` ring as drawn: the outline the
+    /// border fills, and the props it was drawn from, so a check sets
+    /// the drawn ring beside the shape the props ask for.
+    pub ring: Option<RingDrawn>,
+    /// (eval-rules-6) A container's `gap:` as its props give it this
+    /// frame, logical px; `None` when unset (or not a number).
+    pub gap: Option<f32>,
+}
+
+/// (eval-rules-6) A `border:` ring as the flattener drew it (the facts,
+/// never the shape it should have): the even-odd outline it filled, in
+/// device pixels before the node's transforms, and the props it was
+/// drawn from as this frame's props resolve them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RingDrawn {
+    /// The box it is drawn inside: the node's drawn box, its edges on
+    /// the physical pixels they fall on, device px (`x0, y0, x1, y1`).
+    pub frame: [f64; 4],
+    /// The outline it filled (even-odd), device px.
+    pub path: kurbo::BezPath,
+    /// `border:`'s width as the props give it, logical px.
+    pub width: f32,
+    /// `radius:` as the props give it (its kind's default when unset:
+    /// a button's or a meter's); `None`: square.
+    pub radius: Option<strand_scene::PropValue>,
+    /// The drawn box's logical size, which a percentage radius is of.
+    pub size: [f32; 2],
+    /// Drawn along a `shape:` outline or with `corners: squircle`.
+    pub shaped: bool,
+    /// Device pixels per logical pixel.
+    pub scale: f64,
 }
 
 /// (eval-rules-4) One decode of an `image` or `icon` as drawn: the facts

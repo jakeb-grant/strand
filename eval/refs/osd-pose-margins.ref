@@ -1,0 +1,104 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "osd-pose-margins"
+verdict good
+note "new scenario (eval-rules-6): content paints at rest (poses delegated); the OSD's surface is put 24 px below its rest place and slides up to it (margins 16 -> 40), then back down and goes; the corner panel slides in from 37 px right (30 + its scale's centre shift) at scale 0.906 -> 1 and back out 30 px; the trace's shifts follow each pose within half a pixel; read with explain and the trace's poses and shifts"
+date 2026-10-19
+rev "bbda3d6c+changes"
+approver "claude"
+scenario 92603d1727bccaa4
+seal 7cf8452b7aa6da6f
+S1 1 29 "osd Level"
+S2 1 29 "panel Corner"
+N0 "card|shell.strand:16:3|#0" "col#card"
+N1 "line1|shell.strand:17:5|#0" "box#line1"
+N2 "line2|shell.strand:18:5|#1" "box#line2"
+N3 "pill|shell.strand:6:3|#0" "row#pill"
+N4 "vol_bar|shell.strand:9:5|#1" "box#vol_bar"
+N5 "vol_icon|shell.strand:8:5|#0" "box#vol_icon"
+N6 "|shell.strand:12:1|#0" "panel@shell.strand:12"
+N7 "|shell.strand:2:1|#0" "osd@shell.strand:2"
+k1 p1,2
+s1 z=200,36 o=100,224 P=0,1,0,24
+s2 z=140,46 o=248,12 P=0,0.906,37,2.296875
+n0 srf=2 x=0 y=0 w=140 h=46 ord=1 bg=20232bff
+n1 srf=2 x=10 y=10 w=120 h=10 ord=2 bg=7aa2f7ff
+n2 srf=2 x=10 y=26 w=80 h=10 ord=3 bg=e0af68ff
+n3 x=0 y=0 w=200 h=36 ord=1 bg=1d2029ff
+n4 x=38 y=15 w=150 h=6 ord=3 bg=9ece6aff
+n5 x=12 y=10 w=16 h=16 ord=2 bg=9ece6aff
+n6 srf=2 x=0 y=0 w=140 h=46
+n7 x=0 y=0 w=200 h=36
+k2
+s1 P=36,1,0,17.75
+s2 P=36,0.922,27.375,1.703125
+k3
+s1 P=100,1,0,8.640625
+s2 P=100,0.969,13.3125,0.828125
+k4
+s1 P=151,1,0,2.65625
+s2 P=151,0.984,4.09375,0.25
+k5
+s1 P=191,1,0,0.015625
+s2 P=191,1,0.015625,0
+k6
+s1 P=215,1,0,-0.671875
+s2 P=215,1,-1.03125,-0.0625
+k7
+s1 P=231,1,0,-0.5625
+s2 P=231,1,-0.859375,-0.046875
+k8
+s1 P=243,1,0,-0.296875
+s2 P=243,1,-0.453125,-0.03125
+k9
+s1 P=247,1,0,-0.09375
+s2 P=247,1,-0.15625,-0.015625
+k10
+s1 P=251,1,0,-0.015625
+s2 P=251,1,-0.015625,0
+k11
+s1 P=251,1,0,0
+s2 P=251,1,0,0
+k12
+s1 P=255,1,0,0
+s2 P=255,1,0,0
+k13
+k14
+k15
+k16
+s1 P=219,1,0,6.25
+s2 P=219,1,7.8125,0
+k17
+s1 P=155,1,0,15.359375
+s2 P=155,1,19.203125,0
+k18
+s1 P=104,1,0,21.34375
+s2 P=104,1,26.6875,0
+k19
+s1 P=64,1,0,23.984375
+s2 P=64,1,29.984375,0
+k20
+s1 P=40,1,0,24.671875
+s2 P=40,1,30.828125,0
+k21
+s1 P=24,1,0,24.5625
+s2 P=24,1,30.703125,0
+k22
+s1 P=12,1,0,24.296875
+s2 P=12,1,30.359375,0
+k23
+s1 P=8,1,0,24.09375
+s2 P=8,1,30.125,0
+k24
+s1 P=4,1,0,24.015625
+s2 P=4,1,30.015625,0
+k25
+s1 P=4,1,0,24
+s2 P=4,1,30,0
+k26
+s1 P=0,1,0,24
+s2 P=0,1,30,0
+k27
+k28
+k29
+s1 -
+s2 -

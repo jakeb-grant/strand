@@ -46,6 +46,21 @@
 //!   (eval-coverage-3: a last row's gap left behind and dropped when it
 //!   unmounts). A gap that opens at once and a glide that hides the step
 //!   (set E's enter-from-zero mutant) is not a fold;
+//!   (eval-rules-6) And on every frame between: the gap beside a slot
+//!   that folds is no more than its size there, `min(gap, size)`
+//!   (decisions.md wave3-pixels p2: "the parent's gap beside it folds,
+//!   so the slot is `h + min(gap, h)`"; the neighbour across the gap, the
+//!   next sibling or the previous one for the last child, gives it up),
+//!   so the siblings after a toast collapsing to `height: 0` slide up
+//!   with it, never by the gap in one frame once it is smaller than the
+//!   gap. Read from each flex container's `gap:` and the laid boxes of
+//!   its children in order: a slot whose size springs to or from zero
+//!   (its spring's way left zero or was sent there) or that exits to a
+//!   pose of size zero on the container's axis, against its neighbour
+//!   across the gap. Not judged: a container that spreads its children
+//!   (`justify: space_*`) or holds one out of its flow, a pair either of
+//!   which has a margin of its own, a gap two folding slots share, and
+//!   a slot whose way was met in flight;
 //! - **roll**: a `roll: true` text a change interrupts rolls on from the
 //!   text on screen, the nearer of the two it was rolling between
 //!   (design.md "Rolling numbers"; `effects/roll.rs`), not from the one
@@ -77,6 +92,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     out.extend(short(cx));
     out.extend(rolls(cx));
     out.extend(fold(cx));
+    out.extend(fold_gaps(cx));
     first_per_node(out)
 }
 
@@ -691,6 +707,170 @@ fn fold(cx: &Cx) -> Vec<Finding> {
 
 /// The nodes folding at a frame, each with its slot's size there.
 type Folding<'a> = Vec<(&'a str, f64)>;
+
+/// (eval-rules-6) `fold`'s gaps: on every frame, the gap a flex
+/// container's folding child leaves beside it (to the next sibling, or
+/// the previous one for the last child) is `min(gap, size)` of its
+/// laid size, within `tol`. See the module's `fold`.
+fn fold_gaps(cx: &Cx) -> Vec<Finding> {
+    use crate::trace::Flow;
+    use strand_render::probe::Motions;
+    let mut out = Vec::new();
+    let mut held = 0u64;
+    // (key, axis) of a size spring in flight: whether its way folds
+    // (`None`: met in flight, not known).
+    let mut ways: HashMap<(String, usize), Option<bool>> = HashMap::new();
+    for f in &cx.trace.frames {
+        let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
+        // The size each springing slot was laid out at this frame,
+        // unrounded.
+        let mut sprung: HashMap<(&str, usize), f64> = HashMap::new();
+        for r in &f.sp {
+            let axis = match r.of.as_str() {
+                "w" => 0,
+                "h" => 1,
+                _ => continue,
+            };
+            let id = (r.key.clone(), axis);
+            if let Some(v) = r.v.first() {
+                sprung.insert((r.key.as_str(), axis), f64::from(*v).max(0.0));
+            }
+            let to_zero = r.to.first().is_some_and(|v| *v < COLLAPSED);
+            let state = match (&r.start, &r.rest) {
+                (Some(_), Some(rest)) => {
+                    Some(to_zero || rest.first().is_some_and(|v| *v < COLLAPSED))
+                }
+                _ => match ways.get(&id) {
+                    Some(Some(c)) => Some(*c || to_zero),
+                    Some(None) | None => to_zero.then_some(true),
+                },
+            };
+            ways.insert(id.clone(), state);
+            seen.insert(id);
+        }
+        // A spring its surface painted without sampling has ended.
+        let surface_of: HashMap<&str, u32> =
+            f.n.iter().map(|r| (r.key.as_str(), r.surface)).collect();
+        ways.retain(|id, _| {
+            seen.contains(id)
+                || surface_of
+                    .get(id.0.as_str())
+                    .is_none_or(|s| !f.painted.contains(s))
+        });
+        for (p, gap) in &f.gaps {
+            let g = f64::from(*gap);
+            let Some(pm) = cx.trace.nodes.get(p) else {
+                continue;
+            };
+            let axis = match pm.kind.as_str() {
+                "row" => 0,
+                "col" | "scroll" => 1,
+                _ => continue,
+            };
+            if pm.flow & Flow::SPREAD != 0 || cx.allowed(CheckId::Continuity, p) {
+                continue;
+            }
+            let Some(prow) = f.n.iter().find(|r| r.key == *p) else {
+                continue;
+            };
+            let kids: Vec<&crate::trace::Row> =
+                f.n.iter()
+                    .filter(|r| r.surface == prow.surface && cx.parent(&r.key) == Some(p.as_str()))
+                    .collect();
+            let meta = |k: &str| cx.trace.nodes.get(k);
+            if kids.len() < 2
+                || kids
+                    .iter()
+                    .any(|r| meta(&r.key).is_some_and(|m| m.flow & Flow::ABSOLUTE != 0))
+            {
+                continue;
+            }
+            // Whether a child folds on the axis here: `Some(true)` it
+            // does, `None` not known.
+            let folds = |r: &crate::trace::Row| -> Option<bool> {
+                if let Some(w) = ways.get(&(r.key.clone(), axis)) {
+                    return *w;
+                }
+                let exit = meta(&r.key)
+                    .and_then(|m| m.exit)
+                    .and_then(|e| [e.w, e.h][axis]);
+                let gone = Motions(r.mot).contains(Motions::EXIT)
+                    && exit.is_some_and(|v| v < COLLAPSED)
+                    && r.laid[2 + axis] < COLLAPSED;
+                Some(gone)
+            };
+            let margined =
+                |r: &crate::trace::Row| meta(&r.key).is_none_or(|m| m.flow & Flow::MARGIN != 0);
+            let unshaped = |r: &crate::trace::Row| r.text.as_deref() == Some("E");
+            let n = kids.len();
+            for (j, c) in kids.iter().enumerate() {
+                if folds(c) != Some(true) || cx.allowed(CheckId::Continuity, &c.key) {
+                    continue;
+                }
+                // Layout snaps each edge to whole logical px from where it
+                // falls (layout/mod.rs), and folds the gap by the size it
+                // was given: against that size, the gap read from two
+                // snapped edges is within a pixel; against the snapped
+                // size, within two.
+                let (size, slack) = match sprung.get(&(c.key.as_str(), axis)) {
+                    Some(v) => (*v, 1.0),
+                    None => (f64::from(c.laid[2 + axis]).max(0.0), 2.0),
+                };
+                let tol = cx.tol.max(slack) + 1e-3;
+                // The neighbour across the gap it folds, and the gap
+                // between them.
+                let (other, got) = if j + 1 < n {
+                    let next = kids[j + 1];
+                    // The last child folding too gives up this gap as
+                    // well.
+                    if j + 2 == n && folds(next) != Some(false) {
+                        continue;
+                    }
+                    (
+                        next,
+                        f64::from(next.laid[axis]) - f64::from(c.laid[axis] + c.laid[2 + axis]),
+                    )
+                } else {
+                    let prev = kids[j - 1];
+                    if folds(prev) != Some(false) {
+                        continue;
+                    }
+                    (
+                        prev,
+                        f64::from(c.laid[axis]) - f64::from(prev.laid[axis] + prev.laid[2 + axis]),
+                    )
+                };
+                if margined(c) || margined(other) || unshaped(c) || unshaped(other) {
+                    continue;
+                }
+                held += 1;
+                let want = g.min(size);
+                if (got - want).abs() <= tol {
+                    continue;
+                }
+                let label = |k: &str| meta(k).map_or(k.to_string(), |m| m.label.clone());
+                out.push(
+                    Finding::fail(
+                        CheckId::Continuity,
+                        format!(
+                            "fold: {} folds to {size:.1} px here, so the {g:.0} px gap beside it \
+                             should be {want:.1} px (min(gap, size): it folds with its slot), \
+                             yet {} is laid {got:.1} px from it",
+                            label(&c.key),
+                            label(&other.key)
+                        ),
+                    )
+                    .at(f.k)
+                    .node(&other.key)
+                    .axis(["x", "y"][axis])
+                    .got(got, [want - tol, want + tol]),
+                );
+            }
+        }
+    }
+    super::stats("continuity.fold-gap", cx, &[("gaps", held)]);
+    out
+}
 
 /// A size this small is zero: its slot collapses (strand-render anim
 /// `COLLAPSED`).

@@ -35,6 +35,19 @@
 //!   drag holds) is the pointer's x, held between a knob radius in from
 //!   either end of the slider's box.
 //!
+//! - **ring** (eval-rules-6): a `border:` is a ring of one width, its
+//!   inner edge its rounded box inset by the border's width, each
+//!   radius reduced by that width and never below 0, as CSS draws a
+//!   border ("Corner Shaping"), the width rounded to whole device pixels,
+//!   at least one (decisions.md 2026-10-05 render), and the outer radii
+//!   the ones asked for, shrunk as CSS shrinks them. Measured on the
+//!   outline the border filled along each corner's bisector and each
+//!   edge's midpoint (`crate::ring`), against that shape worked out from
+//!   the box, the `radius:` and the `border:` width, at every frame
+//!   (fractional scales and sizes in flight included): each crossing
+//!   within [`RING_TOL`] device px. A border along a `shape:` outline or
+//!   squircle corners is not judged.
+//!
 //! **inherit** leaves out a node moved by its own keyframes,
 //! time-driven props, lean or jelly, whose offsets the trace's parts do
 //! not carry.
@@ -231,6 +244,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     out.extend(morph_start(cx));
     out.extend(stacking(cx));
     out.extend(drag(cx));
+    out.extend(ring(cx));
     first_per_node(out)
 }
 
@@ -540,5 +554,84 @@ fn stacking(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
+    out
+}
+
+/// (eval-rules-6) How far a crossing of a drawn ring may lie from the
+/// shape asked for, device px: an arc is drawn as cubic curves within
+/// 0.1 px of it (the flattener's tolerance), and the rest is f32 slack.
+/// A ring whose inner radius is not reduced by a 1 px border lies
+/// `√2 − 1` px off on each corner's bisector.
+pub const RING_TOL: f64 = 0.25;
+
+/// `ring`: each border's outline, as filled, is the CSS ring its props
+/// ask for.
+fn ring(cx: &Cx) -> Vec<Finding> {
+    const RAYS: [&str; 8] = [
+        "top-left corner's bisector",
+        "top-right corner's bisector",
+        "bottom-right corner's bisector",
+        "bottom-left corner's bisector",
+        "top edge's middle",
+        "right edge's middle",
+        "bottom edge's middle",
+        "left edge's middle",
+    ];
+    let mut out = Vec::new();
+    let mut judged = 0u64;
+    for f in &cx.trace.frames {
+        for r in &f.rings {
+            let [x0, y0, x1, y1] = r.frame;
+            if x1 - x0 < 1.0 || y1 - y0 < 1.0 || cx.allowed(CheckId::Coherence, &r.key) {
+                continue;
+            }
+            judged += 1;
+            let want = crate::ring::expected(r);
+            for (i, (got, want)) in r.drawn.iter().zip(&want).enumerate() {
+                let off = if got.len() == want.len() {
+                    got.iter()
+                        .zip(want)
+                        .map(|(g, w)| f64::from(*g) - w)
+                        .fold(0.0f64, |m, d| if d.abs() > m.abs() { d } else { m })
+                } else {
+                    f64::INFINITY
+                };
+                if off.abs() <= RING_TOL {
+                    continue;
+                }
+                let label = cx
+                    .trace
+                    .nodes
+                    .get(&r.key)
+                    .map_or(r.key.as_str(), |m| m.label.as_str());
+                let list = |v: &mut dyn Iterator<Item = f64>| {
+                    v.map(|t| format!("{t:.2}")).collect::<Vec<_>>().join(", ")
+                };
+                let msg = format!(
+                    "ring: {label}'s border, {} px wide on a {:.0}x{:.0} px box with radii {}, is \
+                     drawn crossing its {} at [{}] px where its CSS ring (its box inset by its \
+                     width, each radius less the width) crosses it at [{}]",
+                    crate::ring::border_px(r.width, r.scale),
+                    x1 - x0,
+                    y1 - y0,
+                    crate::ring::outer_radii(r.radius, r.scale, x1 - x0, y1 - y0)
+                        .map(|v| format!("{v:.1}"))
+                        .join("/"),
+                    RAYS.get(i).copied().unwrap_or("ray"),
+                    list(&mut got.iter().map(|v| f64::from(*v))),
+                    list(&mut want.iter().copied()),
+                );
+                let got_off = if off.is_finite() { off.abs() } else { 0.0 };
+                out.push(
+                    Finding::fail(CheckId::Coherence, msg)
+                        .at(f.k)
+                        .node(&r.key)
+                        .got(got_off, [0.0, RING_TOL]),
+                );
+                break;
+            }
+        }
+    }
+    super::stats("coherence.ring", cx, &[("rings", judged)]);
     out
 }

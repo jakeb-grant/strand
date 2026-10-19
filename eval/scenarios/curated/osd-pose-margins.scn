@@ -1,0 +1,48 @@
+id     = "osd-pose-margins"
+about  = """Surface poses the compositor applies (`compositor_poses`, as on
+Hyprland), through the real surface manager and a fake compositor
+(`surface = true`): a volume OSD anchored to the bottom with a margin
+slides in from 24 px below its place and out again (`enter`/`exit
+{ y: 24; opacity: 0 }`), and a corner panel anchored top right slides in
+from 30 px to its right while it grows from 0.9 (`enter { x: 30; scale:
+0.9 }`, the compositor scaling about its top-left corner, so the offset
+also carries what keeps its centre in place) and slides back out. The offsets go to the compositor as layer-shell margins, the
+side each surface is anchored to moved by the offset (a bottom margin
+shrinks as the OSD moves down): each frame lies where its pose's offset
+puts it from its rest place (`placement`'s `pose`), the margins on the
+wire are those (`regions-on-wire`), and what the eye sees slides the way
+the pose does."""
+screen = { width = 400, height = 300, scale = 1.0 }
+compositor_poses = true
+surface = true
+
+=== shell.strand
+state shown = false
+osd Level {
+  anchor: bottom; margin: 0, 0, 40; open: shown
+  enter { y: 24; opacity: 0 }
+  exit { y: 24; opacity: 0 }
+  row { id: pill; width: 200; height: 36; pad: 0, 12; gap: 10; align: center; radius: full
+        bg: #1d2029
+    box { id: vol_icon; size: 16; radius: 4; bg: #9ece6a }
+    box { id: vol_bar; grow: 1; height: 6; radius: 3; bg: #9ece6a }
+  }
+}
+panel Corner {
+  anchor: top_right; margin: 12, 12, 0, 0; open: shown
+  enter { x: 30; scale: 0.9; opacity: 0 }
+  exit { x: 30; opacity: 0 }
+  col { id: card; width: 140; pad: 10; gap: 6; radius: 12; bg: #20232b
+    box { id: line1; height: 10; radius: 3; bg: #7aa2f7 }
+    box { id: line2; height: 10; width: 80; radius: 3; bg: #e0af68 }
+  }
+}
+
+=== steps
+rest
+mark show
+set shown true
+rest
+mark hide
+set shown false
+rest

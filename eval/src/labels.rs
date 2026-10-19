@@ -188,6 +188,48 @@ fn inset_of(tree: &SceneTree, node: NodeId) -> Option<[f32; 4]> {
     }
 }
 
+/// (eval-rules-6) How the node sits in its parent's flow, as written
+/// ([`crate::trace::Flow`] bits): out of it (`place: absolute`), with a
+/// margin of its own, with a width of its own (`width`, `size`,
+/// `min_width`, in any form; an image or icon), with a `shrink:` that
+/// is not a number over 0, and, for a container, a `justify:` that
+/// spreads its children (`space_between`, `space_around`,
+/// `space_evenly`). A form not read here (a token, an expression) counts
+/// as set: the checks then leave the node alone.
+fn flow_of(tree: &SceneTree, node: NodeId) -> u8 {
+    use crate::trace::Flow;
+    let Some(n) = tree.get(node) else {
+        return 0;
+    };
+    let mut bits = 0;
+    match n.get(Prop::Place) {
+        None => {}
+        Some(PropValue::Keyword(k)) if k != "absolute" => {}
+        Some(_) => bits |= Flow::ABSOLUTE,
+    }
+    if n.get(Prop::Margin).is_some() {
+        bits |= Flow::MARGIN;
+    }
+    if [Prop::Width, Prop::Size, Prop::MinWidth]
+        .into_iter()
+        .any(|p| n.get(p).is_some())
+        || matches!(n.kind.name(), "image" | "icon")
+    {
+        bits |= Flow::SIZED;
+    }
+    match n.get(Prop::Shrink) {
+        None => {}
+        Some(PropValue::Number(s)) if *s > 0.0 => {}
+        Some(_) => bits |= Flow::NO_SHRINK,
+    }
+    match n.get(Prop::Justify) {
+        None => {}
+        Some(PropValue::Keyword(k)) if !k.starts_with("space") => {}
+        Some(_) => bits |= Flow::SPREAD,
+    }
+    bits
+}
+
 /// (eval-rules) The axes on which a surface is sized by its content: a
 /// `popup` or `panel` with no `width` (or `size`) is as wide as what it
 /// holds, one with no `height` as tall. A bar is sized by its screen
@@ -322,6 +364,7 @@ impl Labels {
             clips: clips_of(tree, node),
             rigid: rigid_of(tree, node),
             inset: inset_of(tree, node),
+            flow: flow_of(tree, node),
         });
         key
     }

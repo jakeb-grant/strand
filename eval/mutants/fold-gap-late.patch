@@ -1,0 +1,12 @@
+diff --git a/crates/strand-render/src/layout/style.rs b/crates/strand-render/src/layout/style.rs
+--- a/crates/strand-render/src/layout/style.rs
++++ b/crates/strand-render/src/layout/style.rs
+@@ -421,7 +421,7 @@
+                     Some(f) if f.size[axis].is_some() => f.size[axis].filter(|_| f.collapse[axis]),
+                     _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
+                 };
+-                let Some(v) = v.filter(|v| gap > *v) else {
++                let Some(v) = v.filter(|v| *v < 0.5) else {
+                     continue;
+                 };
+                 if i + 1 < count {

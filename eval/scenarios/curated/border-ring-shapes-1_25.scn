@@ -1,0 +1,40 @@
+id     = "border-ring-shapes-1_25"
+about  = """Bordered boxes of every corner kind at scale 1.25, one of them
+springing wider and back: a card (`radius: 14`, a 1 px border), a thick
+ring (`radius: 16`, a 6 px border), a pill (`radius: full`, a 1.5 px
+border), a tab (`radius: 14, 14, 0, 0`, a 2 px border), a square chip
+and a box whose rounded corners meet (`radius: 30` on a 40 px box,
+shrunk as CSS shrinks them). A border is drawn inside its box and its
+inner edge is the box inset by the border's width, each radius less that
+width (CSS; decisions.md 2026-10-05 render: the width rounded to whole
+device pixels), so every ring is as wide at its corners as along its
+edges, at rest and while the card's width springs (`coherence`'s
+`ring`)."""
+screen = { width = 360, height = 300, scale = 1.25 }
+
+=== shell.strand
+state wide = false
+panel Rings {
+  anchor: top; margin: 12, 0, 0; open: true
+  col { id: sheet; width: 320; pad: 12; gap: 10; bg: #15171c; radius: 18; border: 1, #2c313a
+    row { gap: 10; align: center
+      box { id: card; width: wide ? 200 : 120; height: 60; radius: 14; border: 1, #7aa2f7; bg: #1d2029 }
+      box { id: thick; width: 72; height: 60; radius: 16; border: 6, #e0af68; bg: #1d2029 }
+    }
+    row { gap: 10; align: center
+      box { id: pill; width: 112; height: 28; radius: full; border: 1.5, #9ece6a; bg: #1d2029 }
+      box { id: tab; width: 92; height: 36; radius: 14, 14, 0, 0; border: 2, #bb9af7; bg: #1d2029 }
+      box { id: chip; width: 40; height: 24; border: 1, #f7768e }
+      box { id: knot; size: 40; radius: 30; border: 3, #7dcfff }
+    }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+mark narrow
+set wide false
+rest
