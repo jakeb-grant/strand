@@ -1,8 +1,8 @@
 diff --git a/crates/strand-render/src/flatten/image.rs b/crates/strand-render/src/flatten/image.rs
-index 20169526..87898774 100644
+index ec687647..0b7aea3a 100644
 --- a/crates/strand-render/src/flatten/image.rs
 +++ b/crates/strand-render/src/flatten/image.rs
-@@ -107,7 +107,7 @@ impl Flattener<'_> {
+@@ -109,7 +109,7 @@ impl Flattener<'_> {
          }
          let clip = (!radii_zero(r)).then(|| self.marker(Item::PushClip(box_path.clone())));
          if let Some(i) = clip {
@@ -11,9 +11,9 @@ index 20169526..87898774 100644
          }
          let rect = kurbo::Rect::new(
              frame.x0,
-@@ -141,7 +141,7 @@ impl Flattener<'_> {
-             });
-             draw(self, d, sig);
+@@ -174,7 +174,7 @@ impl Flattener<'_> {
+             #[cfg(not(feature = "eval-hooks"))]
+             draw(self, d, sig, false);
              if let Some((i, pop)) = mask {
 -                self.group_bounds(i, phys);
 +                self.out.items[i].bounds = phys;
@@ -21,7 +21,7 @@ index 20169526..87898774 100644
              }
          }
 diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
-index fac0ddf9..759dfb36 100644
+index 8cf886fa..8efe8fe2 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
 @@ -82,15 +82,6 @@ impl<'a> Flattener<'a> {
@@ -40,7 +40,7 @@ index fac0ddf9..759dfb36 100644
      /// Pushes a group marker; returns its index so a push marker's bounds
      /// can be set to its group's once known.
      pub(super) fn marker(&mut self, item: Item) -> usize {
-@@ -1317,7 +1308,7 @@ impl<'a> Flattener<'a> {
+@@ -1323,7 +1314,7 @@ impl<'a> Flattener<'a> {
              let clip = (clip_text && !bounds.is_empty())
                  .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
              if let Some(i) = clip {
