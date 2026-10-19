@@ -606,7 +606,15 @@ its end` and `palette`) were kept only with no false alarm over the gate
 (88 scenarios), the matrix at 60 and 144 Hz (914 pass, 16 n/a), held-out
 sets C, D and E's correct scenarios (38: only open product findings
 fail, set D's launcher-filter and set E's module swap) and the two owner
-shells that load (decisions.md eval-rules-3). An `intend`
+shells that load (decisions.md eval-rules-3). At round 5's integration
+(integration-r5, with border-eps' `snap` and bar-blank-on-exit's `other
+axis` beside them, and `cut`, `other axis` and `fold` refined) the same
+sweep: the gate's 93 scenarios and the matrix's 930 cells pass; of C, D
+and E's 38 correct scenarios only D's launcher-filter fails, by `cut`
+alone (its centred card snapped taller and glided past its panel, the
+growth glide the owner is deciding; its blink is fixed), and E's module
+swap passes now that the product keeps a squeezed label's layout; the
+owner's `qs` and `launcher` shells pass every check run. An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
