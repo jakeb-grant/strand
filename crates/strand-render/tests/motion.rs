@@ -586,6 +586,85 @@ fn enter_and_exit_poses_and_siblings_slide_to_fill_the_gap() {
     assert_eq!(white(&st), Some(0));
 }
 
+/// (bar-blank-on-exit) A pose that squeezes a width leaves the height
+/// at rest: a text leaving with `exit { width: 0 }`, and a box holding a
+/// text, keep the height of their line while they narrow, so the row
+/// around them never grows and the box beside them never moves. Before,
+/// the text wrapped letter by letter into a column hundreds of pixels
+/// tall and the centred box was carried down with the row's middle.
+#[test]
+fn a_width_exit_squeezes_its_text_without_rewrapping_it() {
+    let exit = || {
+        (
+            Prop::Exit,
+            pose(vec![(Prop::Opacity, num(0.0)), (Prop::Width, num(0.0))]),
+        )
+    };
+    let (mut label, mut badge, mut inner, mut red) = (None, None, None, None);
+    let mut st = Stage::new(240, 60, |b, root| {
+        let row = b.node(
+            NodeKind::Row,
+            Some(root),
+            vec![
+                (Prop::Gap, num(6.0)),
+                (Prop::Align, PropValue::Keyword("center".into())),
+            ],
+        );
+        label = Some(b.node(
+            NodeKind::Text,
+            Some(row),
+            vec![
+                (Prop::Text, text("plugged in")),
+                (Prop::Color, color("#ffffff")),
+                exit(),
+            ],
+        ));
+        let bx = b.node(
+            NodeKind::Box,
+            Some(row),
+            vec![(Prop::Bg, color("#00ff00")), exit()],
+        );
+        badge = Some(bx);
+        inner = Some(b.node(
+            NodeKind::Text,
+            Some(bx),
+            vec![(Prop::Text, text("Muted")), (Prop::Color, color("#000000"))],
+        ));
+        red = Some(red_box(b, row, vec![]));
+    });
+    let (label, badge, inner, red) = (label.unwrap(), badge.unwrap(), inner.unwrap(), red.unwrap());
+    let at_rest = [st.rect(label), st.rect(badge), st.rect(inner), st.rect(red)];
+    assert!(at_rest[0].w > 40.0 && at_rest[0].h < 30.0, "{at_rest:?}");
+    let mut d = SceneDiff::new();
+    d.remove(label).remove(badge);
+    st.apply(d);
+    let mut k = 1;
+    let mut seen = Vec::new();
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        k += 1;
+        assert!(k < 200, "never settled");
+        let Some(boxes) = st.r.boxes(S) else { continue };
+        let (Some(l), Some(b)) = (boxes.rects.get(&label), boxes.rects.get(&badge)) else {
+            continue;
+        };
+        seen.push((l.w, l.h, b.w, b.h));
+        assert!(l.h <= at_rest[0].h + 0.5, "the label grew tall: {l:?}");
+        assert!(b.h <= at_rest[1].h + 0.5, "the badge grew tall: {b:?}");
+        let r = boxes.rects[&red];
+        assert!(
+            (r.y - at_rest[3].y).abs() < 0.5,
+            "the box beside moved: {r:?}"
+        );
+    }
+    assert!(
+        seen.iter()
+            .any(|s| s.0 < at_rest[0].w / 2.0 && s.2 < at_rest[1].w / 2.0),
+        "both narrowed: {seen:?}"
+    );
+    assert_eq!(st.r.tree().ghost_count(), 0, "unmounted after the exit");
+}
+
 /// A surface whose `open` goes false plays its exit pose first: its spec
 /// stays open until the pose settles. Opening plays `enter`.
 #[test]

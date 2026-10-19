@@ -500,7 +500,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. `drag`: a slider a drag holds draws its knob under the pointer (see below). |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`), no further past either end than its spring overshoots (`past its end`, eval-rules-3), and a theme swap springs each palette root along the curve its table asks a colour to take (`palette`, eval-rules-3). See below. |
-| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), a shadow at rest is drawn inside its buffer (`shadow`), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
+| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), a pose that sizes one axis leaves the other at rest (`other axis`), a shadow at rest is drawn inside its buffer (`shadow`), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
 | `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it (`fold`, eval-rules-3), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
@@ -681,7 +681,15 @@ says a node moves, not how, so it does not exempt from them; only an
   shows (its visual box cut by its ancestors' clip) lies inside the
   sizing box's visual box, within `tol` plus a quantum, however small the
   box has become. A box drawn turned, or under a turned ancestor, is left
-  out: its clip reaches the trace as a bounding box. `shadow`
+  out: its clip reaches the trace as a bounding box. `other axis`
+  (bar-blank-on-exit): a pose sets the props it names and leaves the rest
+  at rest (design.md "Poses"), so a pose that sizes one axis of its node
+  alone (`enter { width: 0; opacity: 0 }`, mirrored by its exit) squeezes
+  that axis only: on each frame the node plays it, its laid size on the
+  other axis lies between its sizes at rest either side of the pose (the
+  frame before its exit began, the frame after its enter ended), within
+  `tol` plus a quantum. A frame whose text is not shaped yet is left out,
+  and so is a pose with no rest frame beside it. `shadow`
   (eval-rules-2): "Shadows enlarge the buffer but not the input region"
   (design.md "Layout"): the buffer keeps an overhang for its shadows'
   reach at rest (decisions.md wave3-pixels), so a box at rest (no
@@ -1155,7 +1163,8 @@ exit-due fix in crates/strand-render (decisions.md eval-r3), and round 4's
 fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
 (`settle`, in crates/strand-scene) fixes (decisions.md shadow-redraw,
 gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
-(`continuity`, decisions.md border-eps). In a detached worktree of HEAD, each scenario
+(`continuity`, decisions.md border-eps) and text-exit-squeeze (`contain`,
+`expect`; decisions.md bar-blank-on-exit). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

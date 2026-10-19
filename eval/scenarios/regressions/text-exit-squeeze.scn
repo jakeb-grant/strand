@@ -1,0 +1,65 @@
+id     = "text-exit-squeeze"
+about  = """A finding of round 5 (docs/decisions.md bar-blank-on-exit): a text whose exit
+mirrors `enter { opacity: 0; width: 0 }` (design.md "Poses") was laid out at
+each width its exit squeezed it to and wrapped there, letter by letter, into
+a column up to 750 px tall: the split's end grew past the bar and pushed every
+other text off it, so the bar showed nothing but the leaving label for seven
+frames; a badge box holding a text did the same, its text wrapping inside it.
+A text a pose squeezes now keeps the line box it leaves from: its lines are
+laid out and drawn for that width, cut to its shrinking box, so its height
+stays its line's; a squeezed box's children keep their widths at rest and the
+box clips them. A label, then a badge, grows in beside a percentage at the
+end of a split bar and leaves again; the centred clock never moves (`contain`'s `other
+axis`: a pose that sizes the width alone leaves the height at rest;
+eval/mutants/text-exit-squeeze.patch reverts the fix)."""
+screen = { width = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state plugged = false
+state muted = false
+
+bar Top {
+  edge: top; height: 30; bg: #181825
+  split { pad: 0, 8
+    start { text "notes.md" { id: title; color: #a6adc8 } }
+    center { text "09:41" { id: clock; color: #cdd6f4 } }
+    end { gap: 6
+      if muted {
+        box { id: badge; pad: 2, 6; radius: 6; bg: #f38ba8; color: #1e1e2e
+          enter { opacity: 0; width: 0 }
+          text "Muted"
+        }
+      }
+      if plugged {
+        text "plugged in" { id: plug; color: #a6e3a1; enter { opacity: 0; width: 0 } }
+      }
+      text "80%" { id: level; color: #cdd6f4 }
+    }
+  }
+}
+
+=== steps
+rest
+mark plug
+intend #plug enters
+set plugged true
+rest
+expect still #clock
+mark unplug
+intend #plug exits
+set plugged false
+rest
+expect still #clock
+expect still #title
+mark mute
+intend #badge enters
+set muted true
+rest
+expect still #clock
+mark unmute
+intend #badge exits
+set muted false
+rest
+expect still #clock
+expect still #title

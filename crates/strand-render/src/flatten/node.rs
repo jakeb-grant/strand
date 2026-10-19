@@ -464,8 +464,17 @@ impl<'a> Flattener<'a> {
                     });
                 (None, placed)
             } else {
-                let (fit, placed, clip) = place_text(shaped, self.scale, content, align);
-                clip_text = clip;
+                // (bar-blank-on-exit) A box an `enter` or `exit` pose
+                // squeezes keeps its text's line box: its lines are drawn
+                // for the width it has at rest, cut to the box, as layout
+                // measured them ([`crate::anim::Forced`]'s `hold`).
+                let held = self.anim.line_hold(node.id).map(|h| LogicalRect {
+                    w: (h - pad.left.max(0.0) - pad.right.max(0.0)).max(0.0),
+                    ..content
+                });
+                let (fit, placed, clip) =
+                    place_text(shaped, self.scale, held.unwrap_or(content), align);
+                clip_text = clip || held.is_some();
                 (fit, placed)
             };
             #[cfg(feature = "eval-hooks")]

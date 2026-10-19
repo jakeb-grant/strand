@@ -288,6 +288,9 @@ impl Renderer {
         let root_size = self.root_size(root, frame);
         // Replaced below on every path: taken, not copied.
         let old = self.surfaces.get_mut(&id).and_then(|s| s.boxes.take());
+        if let Some(old) = &old {
+            self.anim.hold_exits(&self.tree, root, &old.rects);
+        }
         let rest = self.anim.rest_sizes(&self.tree, root);
         if !full
             && let Some(old) = &old

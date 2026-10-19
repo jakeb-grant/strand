@@ -54,6 +54,9 @@ pub(super) struct TextLeaf {
     /// `max_width` is as tall as its wrapped lines.
     pub(super) min_w: Option<f32>,
     pub(super) max_w: Option<f32>,
+    /// (bar-blank-on-exit) The content width its lines keep while a
+    /// pose squeezes its box: its height is measured at it.
+    pub(super) hold: Option<f32>,
 }
 
 /// The text size taffy is told for a text leaf.
@@ -127,11 +130,14 @@ pub(super) fn measure_text(
         let w = t.max_w.map_or(w, |m| w.min(m));
         t.min_w.map_or(w, |m| w.max(m))
     });
+    // (bar-blank-on-exit) A box a pose squeezes keeps its text's line
+    // box: as tall as its lines are there, however narrow it is drawn.
+    let lw = t.hold.map_or(w, |h| h.max(0.0));
     let h = known.height.unwrap_or_else(|| {
-        if w + 1.0 < natural.w && wraps {
-            texts.fitted(node, w.round()).map_or_else(
+        if lw + 1.0 < natural.w && wraps {
+            texts.fitted(node, lw.round()).map_or_else(
                 || {
-                    let lines = (natural.w / w.max(1.0)).ceil().max(1.0);
+                    let lines = (natural.w / lw.max(1.0)).ceil().max(1.0);
                     let lines = max_lines.map_or(lines, |m| lines.min(m as f32));
                     natural.h * lines
                 },
@@ -181,6 +187,7 @@ pub(super) fn measure_leaf(
                 wraps,
                 max_lines,
                 empty,
+                hold,
             }) => {
                 if *empty {
                     return taffy::Size {
@@ -199,6 +206,7 @@ pub(super) fn measure_leaf(
                     max_lines: *max_lines,
                     min_w: min_w(),
                     max_w: max_w(),
+                    hold: *hold,
                 };
                 measure_text(texts, &leaf, known, avail)
             }

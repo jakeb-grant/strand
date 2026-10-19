@@ -169,6 +169,10 @@ enum Ctx {
         /// A `text` showing nothing (`h.app.comment ?? ""`): no line, as
         /// an empty block in CSS.
         empty: bool,
+        /// (bar-blank-on-exit) The content width its lines are laid out
+        /// for while a pose squeezes its box ([`crate::anim::Forced`]'s
+        /// `hold`): its height is theirs, not a column of letters'.
+        hold: Option<f32>,
     },
     /// A leaf with a size of its own when its props give none.
     Fixed(f32, f32),

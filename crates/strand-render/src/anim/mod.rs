@@ -113,6 +113,24 @@ pub(crate) struct Forced {
     /// with it, so its slot reaches zero as the spring settles and
     /// unmounting it moves nothing.
     pub collapse: [bool; 2],
+    /// (bar-blank-on-exit) What a box an `enter` or `exit` pose squeezes
+    /// on its width keeps of its layout at rest (where its enter lands,
+    /// where its exit left from), so it never wraps into a column of
+    /// letters taller than the row it sits in. On the squeezed box (its
+    /// `size[0]` forced): a text's line box, the border-box width its
+    /// lines are laid out and drawn for, clipped to the box. On each of
+    /// its children (`size[0]` free): the width it has at rest, its
+    /// least, so what it holds keeps its layout and the squeezed box
+    /// clips it. `None`: laid out for its box.
+    pub hold: Option<f32>,
+}
+
+/// (bar-blank-on-exit) What a node a pose squeezes on its width keeps
+/// of its layout at rest: its own border-box width, and each child's.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LineHold {
+    own: f32,
+    children: Vec<(NodeId, f32)>,
 }
 
 /// Laid-out sizes forced on nodes for one layout pass.
@@ -200,6 +218,11 @@ pub(crate) struct Animator {
     /// ghost or closes the surface (a pose at the node's own values
     /// moves nothing, so its preview's scene matches the last frame's).
     exits_due: HashSet<NodeId>,
+    /// (bar-blank-on-exit) What each node an `enter` or `exit` pose
+    /// squeezes on its width keeps of its layout at rest ([`Forced::hold`]):
+    /// set as the pose's size spring starts, kept while it moves or the
+    /// node exits.
+    line_holds: HashMap<NodeId, LineHold>,
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
@@ -921,6 +944,7 @@ impl Animator {
         self.enter.remove(&id);
         self.enter_size.remove(&id);
         self.text_holds.remove(&id);
+        self.line_holds.remove(&id);
         self.exits.remove(&id);
         self.exit_started.remove(&id);
         self.exits_due.remove(&id);
@@ -958,6 +982,7 @@ impl Animator {
     pub fn take_finished(&mut self) -> Vec<(NodeId, ExitKind)> {
         for (id, _) in &self.finished {
             self.poses.remove(id);
+            self.line_holds.remove(id);
             self.exits.remove(id);
             self.exit_started.remove(id);
             self.exits_due.remove(id);

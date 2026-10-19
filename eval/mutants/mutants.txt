@@ -40,6 +40,10 @@
 # border-fade-snap.patch: border-eps's fix reverted (decisions.md border-eps):
 # a border's, stroke's or glow's five channels settle by its width's
 # tolerance again, so a fade of its colour snaps by up to 0.05 of alpha.
+# text-exit-squeeze.patch: bar-blank-on-exit's fix reverted in layout
+# (decisions.md bar-blank-on-exit): a box an exit pose squeezes keeps no line
+# box and its children no width at rest, so a text wraps letter by letter
+# into a column and a badge grows tall around its wrapped text.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
@@ -48,3 +52,4 @@ fade-layer-redraw.patch regressions/fade-layer-redraw.scn redraw
 gradient-far-hue.patch  regressions/gradient-far-hue.scn  cpu-gpu
 roll-rate.patch         regressions/roll-rate.scn         settle
 border-fade-snap.patch  regressions/border-fade-snap.scn continuity:#chip continuity:#dot
+text-exit-squeeze.patch regressions/text-exit-squeeze.scn contain:#plug contain:#badge expect

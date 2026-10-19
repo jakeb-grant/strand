@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use strand_scene::{Curve, LogicalRect, Motion, NodeId, Prop, TokenScope, Transition};
 
 use super::pose::{exit_pose, pose_sizes};
-use super::{Animator, COLLAPSED, Forced, PX_EPS, SizeMap};
+use super::{Animator, COLLAPSED, Forced, LineHold, PX_EPS, SizeMap};
 use crate::tree::{Node, SceneTree};
 
 impl Animator {
@@ -21,6 +21,58 @@ impl Animator {
             || (self.exits.contains_key(&node.id)
                 && exit_pose(node)
                     .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))
+    }
+
+    /// (bar-blank-on-exit) The line box `node`'s text keeps while an
+    /// `enter` or `exit` pose squeezes its width ([`Forced::hold`]).
+    pub fn line_hold(&self, node: NodeId) -> Option<f32> {
+        self.line_holds
+            .get(&node)
+            .map(|h| h.own)
+            .filter(|_| self.holds_line(node))
+    }
+
+    /// What `node` and its children keep of their layout at rest while
+    /// a pose squeezes its width (`rects`: its layout there).
+    fn line_hold_of(node: &Node, rects: &HashMap<NodeId, LogicalRect>) -> Option<LineHold> {
+        Some(LineHold {
+            own: rects.get(&node.id)?.w,
+            children: node
+                .children
+                .iter()
+                .filter_map(|c| Some((*c, rects.get(c)?.w)))
+                .collect(),
+        })
+    }
+
+    /// Adds to `out` the holds of the nodes squeezed in it: each one's
+    /// line box, and its children's widths at rest.
+    fn add_holds(&self, out: &mut SizeMap) {
+        let squeezed: Vec<NodeId> = out
+            .iter()
+            .filter(|(id, f)| f.size[0].is_some() && self.line_holds.contains_key(*id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in squeezed {
+            let Some(h) = self.line_holds.get(&id) else {
+                continue;
+            };
+            if let Some(f) = out.get_mut(&id) {
+                f.hold = Some(h.own);
+            }
+            for (c, w) in &h.children {
+                let f = out.entry(*c).or_default();
+                if f.size[0].is_none() {
+                    f.hold = Some(*w);
+                }
+            }
+        }
+    }
+
+    /// A line box kept for `node` still holds: it exits, or its width
+    /// springs (the enter that kept it, or an exit called off).
+    fn holds_line(&self, node: NodeId) -> bool {
+        self.exits.contains_key(&node) || self.nodes.get(&node).is_some_and(|n| n.size[0].is_some())
     }
 
     /// Nodes under `root` whose laid-out size may spring: the layout step
@@ -41,6 +93,42 @@ impl Animator {
             || self.enter_size.iter().any(under)
     }
 
+    /// (bar-blank-on-exit) Each node under `root` exiting to a pose that
+    /// squeezes its width keeps the line box it leaves from: the one an
+    /// enter it interrupts kept, else the width it was last laid out at
+    /// (`old`). Kept before the pass that learns the exit's targets, so
+    /// its height's target is its lines' at that width, not a column of
+    /// letters'.
+    pub fn hold_exits(
+        &mut self,
+        tree: &SceneTree,
+        root: NodeId,
+        old: &HashMap<NodeId, LogicalRect>,
+    ) {
+        self.drop_stale_holds();
+        for id in self.exits.keys() {
+            // Kept already: by this exit, or by an enter it interrupts.
+            if self.line_holds.contains_key(id) || tree.root_of(*id) != Some(root) {
+                continue;
+            }
+            let Some(node) = tree.get(*id) else { continue };
+            if exit_pose(node).is_some_and(|p| pose_sizes(tree, node, p)[0].is_some())
+                && let Some(h) = Self::line_hold_of(node, old)
+            {
+                self.line_holds.insert(*id, h);
+            }
+        }
+    }
+
+    /// Line boxes that no longer hold: their node neither exits nor has
+    /// its width springing.
+    fn drop_stale_holds(&mut self) {
+        let (nodes, exits) = (&self.nodes, &self.exits);
+        self.line_holds.retain(|id, _| {
+            exits.contains_key(id) || nodes.get(id).is_some_and(|n| n.size[0].is_some())
+        });
+    }
+
     /// The sizes exiting nodes under `root` take at rest: their exit
     /// pose's `width`/`height`/`size` (toasts collapse to `height: 0`).
     pub fn rest_sizes(&self, tree: &SceneTree, root: NodeId) -> SizeMap {
@@ -59,9 +147,17 @@ impl Animator {
             let size = pose_sizes(tree, node, pose);
             if size.iter().any(Option::is_some) {
                 let collapse = size.map(|v| v.is_some_and(|v| v < COLLAPSED));
-                out.insert(*id, Forced { size, collapse });
+                out.insert(
+                    *id,
+                    Forced {
+                        size,
+                        collapse,
+                        hold: None,
+                    },
+                );
             }
         }
+        self.add_holds(&mut out);
         out
     }
 
@@ -159,6 +255,16 @@ impl Animator {
                     }
                 }
             }
+            // (bar-blank-on-exit) An enter pose that squeezes the width
+            // keeps the line box of the node at rest, where it lands (an
+            // exit's is kept as it starts, [`Animator::hold_exits`]).
+            if entering
+                && pose[0].is_some()
+                && na.size[0].is_some()
+                && let Some(h) = Self::line_hold_of(node, targets)
+            {
+                self.line_holds.insert(id, h);
+            }
             if na.is_empty() {
                 self.nodes.remove(&id);
             }
@@ -181,6 +287,7 @@ impl Animator {
                     }
                 }
                 self.nodes.retain(|_, n| !n.is_empty());
+                self.drop_stale_holds();
             }
             return out;
         }
@@ -227,6 +334,12 @@ impl Animator {
             }
         }
         self.nodes.retain(|_, n| !n.is_empty());
+        if commit {
+            // A line box is kept while its pose's width moves, or its node
+            // exits (laid out at its exit pose until it unmounts).
+            self.drop_stale_holds();
+        }
+        self.add_holds(&mut out);
         if moving {
             self.active = true;
         }

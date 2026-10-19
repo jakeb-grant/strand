@@ -46,6 +46,10 @@
 //!   clip is a whole number of physical pixels). A box drawn turned (a
 //!   `rotate`, a `tilt`'s lean, on it or an ancestor) is left out: the
 //!   trace has its clip as the bounding box, which holds its corners.
+//! - **other axis** (bar-blank-on-exit): a pose that sizes one axis of
+//!   its node alone squeezes that axis and leaves the other at rest
+//!   (design.md "Poses"): while the node plays it, its laid size on the
+//!   other axis stays between its sizes at rest either side of the pose.
 //! - **shadow** (eval-rules-2): "Shadows enlarge the buffer but not the
 //!   input region" (design.md "Layout"): a surface's buffer keeps an
 //!   overhang for the reach of its shadows at rest (blur reach 1.5 ×
@@ -70,6 +74,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     out.extend(pushed(cx));
     out.extend(give_way(cx));
     out.extend(held(cx));
+    out.extend(other_axis(cx));
     out.extend(shadow(cx));
     first_per_node(out)
 }
@@ -187,6 +192,118 @@ fn held(cx: &Cx) -> Vec<Finding> {
         }
     }
     super::stats("contain.held", cx, &[("boxes", boxes)]);
+    out
+}
+
+/// (bar-blank-on-exit) `other axis`: a pose sets the props it names
+/// and leaves the rest at rest (design.md "Poses": `enter {}` is where a
+/// node animates in from, `exit {}` mirrors it; `enter { width: 0;
+/// opacity: 0 }`). A pose that sizes one axis of its node alone (`width`
+/// or `height`) squeezes that axis and no other: on each frame the node
+/// plays it, its laid size on the other axis stays between the sizes it
+/// has at rest on either side of the pose (the frame before its exit
+/// began, the frame after its enter ended), give or take `tol`. A text
+/// squeezed by `exit { width: 0 }` wrapped into a column of letters
+/// hundreds of pixels tall and pushed its whole bar off screen. A frame
+/// whose text is not shaped yet is left out (its layout arrives), and so
+/// is a pose with no rest frame beside it.
+fn other_axis(cx: &Cx) -> Vec<Finding> {
+    let tl = &cx.tl;
+    let trace = cx.trace;
+    let mut out = Vec::new();
+    let mut frames = 0u64;
+    for (key, meta) in &trace.nodes {
+        if cx.allowed(CheckId::Contain, key) {
+            continue;
+        }
+        // The axis a pose leaves free: 3 (h) when it sizes the width
+        // alone, 2 (w) when it sizes the height alone.
+        let free = |p: Option<crate::trace::Pose>| match p.map(|p| (p.w.is_some(), p.h.is_some())) {
+            Some((true, false)) => Some(3usize),
+            Some((false, true)) => Some(2usize),
+            _ => None,
+        };
+        for (flag, ax) in [
+            (Motions::ENTER, free(meta.enter)),
+            (Motions::EXIT, free(meta.exit)),
+        ] {
+            let Some(ax) = ax else { continue };
+            let posing = |i: usize| {
+                tl.row(i, key)
+                    .is_some_and(|r| Motions(r.mot).contains(flag))
+            };
+            let mut i = 0;
+            while i < tl.ks.len() {
+                if !posing(i) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < tl.ks.len() && posing(i) {
+                    i += 1;
+                }
+                // The frames [start, i) play the pose; its rest beside it.
+                let rest_at = |j: Option<usize>| {
+                    j.and_then(|j| tl.row(j, key))
+                        .filter(|r| {
+                            let m = Motions(r.mot);
+                            !m.contains(Motions::ENTER) && !m.contains(Motions::EXIT)
+                        })
+                        .map(|r| f64::from(r.laid[ax]))
+                };
+                let ends: Vec<f64> = [rest_at(start.checked_sub(1)), rest_at(Some(i))]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if ends.is_empty() {
+                    continue;
+                }
+                let lo = ends.iter().copied().fold(f64::INFINITY, f64::min) - cx.tol - 1.0 / 64.0;
+                let hi =
+                    ends.iter().copied().fold(f64::NEG_INFINITY, f64::max) + cx.tol + 1.0 / 64.0;
+                for j in start..i {
+                    let Some(r) = tl.row(j, key) else { continue };
+                    if r.text.as_deref().is_some_and(|t| t != "S") {
+                        continue;
+                    }
+                    frames += 1;
+                    let at = f64::from(r.laid[ax]);
+                    if at >= lo && at <= hi {
+                        continue;
+                    }
+                    let (set, other) = if ax == 3 {
+                        ("width", "height")
+                    } else {
+                        ("height", "width")
+                    };
+                    let which = if flag == Motions::ENTER {
+                        "enter"
+                    } else {
+                        "exit"
+                    };
+                    out.push(
+                        Finding::fail(
+                            CheckId::Contain,
+                            format!(
+                                "other axis: its {which} pose sizes its {set} alone, yet it is \
+                                 laid out {at:.1} px in {other}, where it rests at {}: a pose \
+                                 squeezes what it sets and leaves the rest at rest",
+                                ends.iter()
+                                    .map(|v| format!("{v:.1}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" and ")
+                            ),
+                        )
+                        .at(tl.ks[j])
+                        .node(key)
+                        .axis(["x", "y", "w", "h"][ax])
+                        .got(at, [lo, hi]),
+                    );
+                }
+            }
+        }
+    }
+    super::stats("contain.other-axis", cx, &[("frames", frames)]);
     out
 }
 

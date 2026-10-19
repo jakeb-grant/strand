@@ -1,0 +1,12 @@
+--- a/crates/strand-render/src/anim/sizes.rs
++++ b/crates/strand-render/src/anim/sizes.rs
+@@ -48,6 +48,9 @@
+     /// Adds to `out` the holds of the nodes squeezed in it: each one's
+     /// line box, and its children's widths at rest.
+     fn add_holds(&self, out: &mut SizeMap) {
++        if !out.is_empty() {
++            return;
++        }
+         let squeezed: Vec<NodeId> = out
+             .iter()
+             .filter(|(id, f)| f.size[0].is_some() && self.line_holds.contains_key(*id))

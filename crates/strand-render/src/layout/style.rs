@@ -65,6 +65,11 @@ impl<'a> Build<'a> {
             style.size.width = length(w);
             style.min_size.width = LengthPercentageAuto::length(0.0);
             style.max_size.width = LengthPercentageAuto::auto();
+        } else if let Some(w) = forced.hold {
+            // (bar-blank-on-exit) A child of a box a pose squeezes keeps
+            // the width it has at rest, so what it holds keeps its
+            // layout (a text its lines) and the squeezed box clips it.
+            style.min_size.width = LengthPercentageAuto::length(w.max(0.0));
         }
         if let Some(h) = forced.size[1] {
             style.size.height = length(h);
@@ -196,6 +201,12 @@ impl<'a> Build<'a> {
                         wraps: !ellipsis || max_lines.is_some_and(|n| n > 1),
                         max_lines,
                         empty,
+                        // (bar-blank-on-exit) Its line box's content
+                        // width, while a pose squeezes it.
+                        hold: forced.hold.filter(|_| forced.size[0].is_some()).map(|h| {
+                            let side = pad.map_or(0.0, |p| p.left.max(0.0) + p.right.max(0.0));
+                            (h - side).max(0.0)
+                        }),
                     })
                 }
                 NodeKind::Spacer => {
