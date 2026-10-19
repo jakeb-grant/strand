@@ -414,7 +414,10 @@
     if (im) {
       x.drawImage(im, 0, 0, W * z, H * z);
     } else {
-      x.strokeStyle = '#9a9aa6';
+      // A thinned frame's wireframe, dimmer than the boxes the overlays
+      // draw (a node at rest's are #9a9aa6), so an overlay is told from
+      // the wireframe it lies on (integration-r5).
+      x.strokeStyle = '#62626c';
       x.lineWidth = 1;
       scr.rows.forEach(function (r) {
         var o = obj(sc, r);
