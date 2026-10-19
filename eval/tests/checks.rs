@@ -46,6 +46,8 @@ trait Shape {
     fn auth(self, a: Axes) -> Row;
     fn op(self, op: f32) -> Row;
     fn spring(self, x: f32, y: f32) -> Row;
+    /// (eval-rules-3) It draws something of its own: a fill.
+    fn draws(self) -> Row;
 }
 
 impl Shape for Row {
@@ -77,6 +79,13 @@ impl Shape for Row {
     }
     fn spring(mut self, x: f32, y: f32) -> Row {
         self.spring = [x, y];
+        self
+    }
+    fn draws(mut self) -> Row {
+        self.paint = Some(strand_eval::paint::PaintRec {
+            bg: vec!["404040ff".into()],
+            ..Default::default()
+        });
         self
     }
 }
@@ -998,9 +1007,50 @@ fn a_node_gone_for_a_frame_and_back_vanishes() {
     // Taken out by its exit and put back by its enter, it does not.
     let t = blink(|k| k == 2, Motions::EXIT);
     assert_eq!(status(&check(&sc, &t), CheckId::Vanish), Status::Pass);
-    // Away for longer than three ticks it does not either.
+    // (eval-rules-3) Away for longer than three ticks and back before
+    // its segment's rest, with no step bringing it back, it vanishes as
+    // surely (set E's module swap: seven frames).
     let t = blink(|k| (2..=5).contains(&k), Motions(0));
+    let r = check(&sc, &t);
+    let f = r.failures(CheckId::Vanish);
+    assert!(
+        f.iter()
+            .any(|f| f.msg.starts_with("vanish: gone for 4") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+    // Taken out by an exit and brought back by an enter over that time,
+    // it does not.
+    let t = blink(|k| (2..=5).contains(&k), Motions::EXIT);
     assert_eq!(status(&check(&sc, &t), CheckId::Vanish), Status::Pass);
+}
+
+/// (eval-rules-3) Gone for longer than three ticks and back only after
+/// its segment's rest, or brought back by a step, a node did not blink:
+/// a later change put it back.
+#[test]
+fn a_node_back_after_its_segments_rest_or_by_a_step_does_not_vanish() {
+    let sc = scenario("");
+    let mut t = blink(|k| (2..=5).contains(&k), Motions(0));
+    // The segment rests at tick 4; tick 6 is the next one's.
+    t.segments[1].e = 4;
+    t.segments.push(Segment {
+        name: "next".into(),
+        line: 4,
+        s: Some(5),
+        e: 6,
+        settled: true,
+        hz: 60,
+        ..Segment::default()
+    });
+    t.seal();
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
 }
 
 #[test]
@@ -1022,13 +1072,65 @@ fn a_node_shown_for_one_frame_flashes() {
 #[test]
 fn a_damaged_frame_that_drew_nothing_is_blank() {
     let sc = scenario("");
-    let mut t = shape(3, |_| vec![row("a", [10.0, 10.0, 10.0, 10.0])]);
+    let mut t = shape(3, |_| vec![row("a", [10.0, 10.0, 10.0, 10.0]).draws()]);
     t.frames[2].cost.get_mut(&1).unwrap().items = 0;
     let r = check(&sc, &t);
     let f = r.failures(CheckId::Vanish);
     assert!(
         f.iter()
             .any(|f| f.msg.starts_with("blank") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-3) Set E's toast stack: a panel's first frame holds a
+/// bare `col` (it paints nothing) and in it a toast at its pose's
+/// `opacity: 0`. The frame draws no item, and nothing in it that draws
+/// shows: not a blank frame. A container that draws a fill there is.
+#[test]
+fn a_frame_showing_only_what_draws_nothing_is_not_blank() {
+    let sc = scenario("");
+    let build = |col_draws: bool| {
+        let mut t = shape(3, |k| {
+            let root = row("root", [0.0, 0.0, 300.0, 30.0]);
+            let col = row("col", [0.0, 0.0, 200.0, 30.0]);
+            let col = if col_draws { col.draws() } else { col };
+            let toast = row("toast", [0.0, 0.0, 200.0, 30.0]).draws();
+            if k == 1 {
+                let mut t = toast.op(0.0).mot(Motions::ENTER);
+                t.hidden = Some("opacity0".into());
+                vec![root, col, t]
+            } else {
+                vec![root, col, toast]
+            }
+        });
+        t.surfaces = vec![SurfaceInfo {
+            id: 1,
+            root: "root".into(),
+            ..Default::default()
+        }];
+        t.nodes.get_mut("col").unwrap().parent = Some("root".into());
+        t.nodes.get_mut("toast").unwrap().parent = Some("col".into());
+        t.frames[1].cost.get_mut(&1).unwrap().items = 0;
+        t.seal();
+        t
+    };
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("blank")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("blank on surface 1") && f.k == Some(1)),
         "{}",
         show(&r, &t)
     );
@@ -1559,7 +1661,7 @@ fn a_frame_drawing_nothing_is_blank_only_where_something_inside_shows() {
     let posed = |m: Motions, card_shows: bool| {
         let mut t = shape(3, |k| {
             let root = row("root", [0.0, 0.0, 300.0, 30.0]);
-            let card = row("card", [0.0, 0.0, 120.0, 30.0]);
+            let card = row("card", [0.0, 0.0, 120.0, 30.0]).draws();
             if k == 1 && !card_shows {
                 let mut c = card.op(0.0).mot(m);
                 c.hidden = Some("opacity0".into());
@@ -2546,8 +2648,8 @@ fn twin_compares_a_time_driven_node_at_rest() {
 fn blank_frames_are_told_apart_by_surface() {
     let sc = scenario("");
     let mut t = shape(3, |_| {
-        let a = row("a", [10.0, 10.0, 10.0, 10.0]);
-        let mut b = row("b", [0.0, 0.0, 10.0, 10.0]);
+        let a = row("a", [10.0, 10.0, 10.0, 10.0]).draws();
+        let mut b = row("b", [0.0, 0.0, 10.0, 10.0]).draws();
         b.surface = 2;
         vec![a, b]
     });
@@ -5092,4 +5194,425 @@ fn a_way_rests_when_the_products_spring_does() {
     assert!(way(0.2).settled(0));
     // strand-scene's own rule is held by motion.rs
     // `a_spring_settles_at_the_same_moment_at_every_frame_rate`.
+}
+
+// --- (eval-rules-3) vanish's segment-long blink, contain's `pushed` and
+// bounded overshoot, continuity's `fold`
+
+/// A bar (30 px tall) whose label rests at y 10 before and after a
+/// change, laid at `y(k)` between them; `m` its motions there.
+fn pushed_label(y: impl Fn(u32) -> f32, m: Motions) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let bar = row("bar", [0.0, 0.0, 300.0, 30.0]);
+        let mut label = row("label", [10.0, y(k), 40.0, 10.0]).draws();
+        if (1..6).contains(&k) {
+            label = label.mot(m);
+        }
+        vec![bar, label]
+    });
+    t.surfaces = vec![SurfaceInfo {
+        id: 1,
+        root: "bar".into(),
+        ..Default::default()
+    }];
+    t.nodes.get_mut("label").unwrap().parent = Some("bar".into());
+    t.seal();
+    t
+}
+
+/// Set E's module swap in small: a label laid at the same place before
+/// and after a change is laid past its bar's bottom between them, by
+/// layout alone. Wholly past it, it is gone (`vanish`, for longer than
+/// three ticks); partly past it, it is cut (`contain`'s `pushed`). A
+/// glide carrying it there is motion, which `teleport` and `envelope`
+/// judge.
+#[test]
+fn a_label_pushed_off_its_bar_and_back_vanishes_or_is_cut() {
+    let sc = scenario("");
+    let gone = |k: u32| if (1..6).contains(&k) { 40.0 } else { 10.0 };
+    let t = pushed_label(gone, Motions(0));
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("label") && f.msg.starts_with("vanish: gone for 5")),
+        "{}",
+        show(&r, &t)
+    );
+    let cut = |k: u32| if (1..6).contains(&k) { 25.0 } else { 10.0 };
+    let t = pushed_label(cut, Motions(0));
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("label") && f.msg.starts_with("pushed")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = pushed_label(cut, Motions::GLIDE);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Inside the bar throughout, it is held to nothing here.
+    let t = pushed_label(|k| if k == 3 { 15.0 } else { 10.0 }, Motions(0));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// `pushed` holds a node to the clip its ancestors set too, except a
+/// clip a box whose size springs sets: that box cuts what no longer fits
+/// on purpose (`held`).
+#[test]
+fn pushed_holds_the_clip_but_not_a_size_springs() {
+    let sc = scenario("");
+    let build = |m: Motions| {
+        let mut t = pushed_label(|k| if k == 3 { 16.0 } else { 10.0 }, m);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key == "label" {
+                    r.clip = Some([0.0, 0.0, 300.0, 22.0]);
+                }
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = build(Motions(0));
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.msg.contains("the clip its ancestors set")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(Motions::SIZE_SPRING);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-3) A card that rests where it started in a content-sized
+/// popup, carried 20 px down and back by a glide, is cut at the popup's
+/// bottom: an overshoot is bounded by how far the node travels, and
+/// this one travels nowhere (set D's launcher-filter's 33 px cut).
+#[test]
+fn contain_cuts_a_glide_past_both_ends_of_a_node_that_does_not_travel() {
+    let sc = scenario("");
+    let mut t = shrinking(|_| 40.0, |_| 40.0);
+    for f in &mut t.frames {
+        for r in &mut f.n {
+            if r.key == "card" {
+                r.laid[3] = 40.0;
+                let dy = if (1..6).contains(&f.k) {
+                    20.0 * (1.0 - f.k as f32 / 6.0)
+                } else {
+                    0.0
+                };
+                r.visual[1] = dy;
+                r.drawn[1] = dy;
+                if dy > 0.0 {
+                    r.mot = Motions::GLIDE.0;
+                    r.emot = Motions::GLIDE.0;
+                }
+            }
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("card") && f.msg.starts_with("cut")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A col (`col`) holding `a` (at 0, 10 tall), then `n`, entering at
+/// tick 1 from height 0 (a size spring to 10, `first` px at its first
+/// frame), then `b`; the col's gap is 8. `b` is laid `step` px further
+/// on tick 1, and `glide` is the FLIP jump a glide on it starts there
+/// with.
+fn folding(step: f32, glide: f32) -> RunTrace {
+    use strand_eval::checks::continuity::spring;
+    let dt = 16_666_667.0 / 1e9;
+    let first = (10.0 + spring(3000.0, 0.75, -10.0, 0.0, dt).0) as f32;
+    let mut t = shape(4, |k| {
+        let col = row("col", [0.0, 0.0, 100.0, 60.0]);
+        let a = row("a", [0.0, 0.0, 100.0, 10.0]).draws();
+        let b_y = if k == 0 { 18.0 } else { 18.0 + step };
+        let mut b = row("b", [0.0, b_y, 100.0, 10.0]).draws();
+        if k == 1 && glide != 0.0 {
+            b = b.mot(Motions::GLIDE);
+        }
+        let mut v = vec![col, a, b];
+        if k >= 1 {
+            v.push(row("n", [0.0, 18.0, 100.0, first]).draws());
+        }
+        v
+    });
+    for (k, p) in [("a", "col"), ("b", "col"), ("n", "col")] {
+        t.nodes.get_mut(k).unwrap().parent = Some(p.into());
+    }
+    for f in &mut t.frames {
+        f.wants = vec![1];
+    }
+    let rec = |key: &str, of: &str, v: Vec<f32>, to: Vec<f32>, rest, shift: Vec<f32>| SpringRec {
+        key: key.into(),
+        s: 1,
+        of: of.into(),
+        at: None,
+        v,
+        to,
+        c: CurveRec::Spring { k: 3000.0, z: 0.75 },
+        eps: 0.01,
+        rest,
+        start: Some(StartRec {
+            last: Some(1_000_000_000),
+            shift,
+        }),
+        enter: None,
+        ask: None,
+    };
+    t.frames[1].sp.push(rec(
+        "n",
+        "h",
+        vec![first],
+        vec![10.0],
+        Some(vec![0.0]),
+        Vec::new(),
+    ));
+    if glide != 0.0 {
+        let v = spring(3000.0, 0.75, f64::from(glide), 0.0, dt).0 as f32;
+        t.frames[1].sp.push(rec(
+            "b",
+            "glide",
+            vec![0.0, v],
+            vec![0.0, 0.0],
+            Some(vec![0.0, 0.0]),
+            vec![0.0, glide],
+        ));
+    }
+    t.seal();
+    t
+}
+
+/// A slot sized from zero folds its gap: on its first frame its sibling
+/// moves by its size and a gap folded to at most that. The gap opening
+/// at once (its size and the whole 8 px gap) is a step, and so is a
+/// glide started over one (set E's enter-from-zero mutant).
+#[test]
+fn a_slot_from_zero_folds_its_gap() {
+    let sc = scenario("");
+    let t = folding(5.0, 0.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Continuity),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = folding(10.6, 0.0);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("b") && f.msg.starts_with("fold")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = folding(5.0, -8.0);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("b") && f.msg.contains("started a glide")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-3) [`fill`] with its own spring's samples naming `curve`
+/// on each frame it moves.
+fn fill_on(way: impl Fn(f64) -> [f64; 4], curve: CurveRec) -> RunTrace {
+    let mut t = fill(way, true);
+    for f in &mut t.frames {
+        if (1..10).contains(&f.k) {
+            f.sp.push(SpringRec {
+                key: "chip".into(),
+                s: 1,
+                of: "bg".into(),
+                v: vec![0.0; 4],
+                to: vec![0.0; 4],
+                c: curve,
+                ..SpringRec::default()
+            });
+        }
+    }
+    t.seal();
+    t
+}
+
+/// A colour's way along its line goes no further past its end than its
+/// spring overshoots: a critically damped spring not at all, an
+/// underdamped one to its first peak (ζ 0.5: 16%).
+#[test]
+fn colour_bounds_a_spring_past_its_end_by_its_overshoot() {
+    let sc = scenario("");
+    // 10% past yellow, then back.
+    let past = |s: f64| on_way(BLUE, YELLOW, if s > 0.6 && s < 0.99 { 1.1 } else { s });
+    let effects = CurveRec::Spring { k: 1600.0, z: 1.0 };
+    let loose = CurveRec::Spring { k: 500.0, z: 0.5 };
+    let t = fill_on(past, effects);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Colour)
+            .iter()
+            .any(|f| f.msg.starts_with("past its end")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = fill_on(past, loose);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Back past where it started: no spring from rest does that.
+    let back = |s: f64| on_way(BLUE, YELLOW, if s > 0.0 && s < 0.3 { -0.2 } else { s });
+    let t = fill_on(back, loose);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Colour)
+            .iter()
+            .any(|f| f.msg.starts_with("past its end")),
+        "{}",
+        show(&r, &t)
+    );
+    // With no sample naming its curve, half the way is as far as it goes.
+    let t = fill(past, true);
+    assert_eq!(status(&check(&sc, &t), CheckId::Colour), Status::Pass);
+}
+
+#[test]
+fn curve_overshoot_is_a_springs_first_peak() {
+    let z = |z: f32| CurveRec::Spring { k: 3000.0, z }.overshoot().unwrap();
+    assert_eq!(z(1.0), 0.0);
+    assert!((z(0.75) - 0.0284).abs() < 1e-3);
+    assert!((z(0.5) - 0.163).abs() < 1e-3);
+    let bez = |y1: f32, y2: f32| {
+        CurveRec::Timed {
+            d: 1,
+            ease: strand_eval::trace::EaseRec::Bezier([0.3, y1, 0.6, y2]),
+        }
+        .overshoot()
+    };
+    assert_eq!(bez(0.0, 1.0), Some(0.0));
+    assert!((bez(1.56, 1.0).unwrap() - 0.56).abs() < 1e-6);
+    assert_eq!(
+        CurveRec::Timed {
+            d: 1,
+            ease: strand_eval::trace::EaseRec::Elastic
+        }
+        .overshoot(),
+        None
+    );
+}
+
+/// A palette root's samples each name the curve their swap's table asks
+/// a colour to take: one sprung along another curve fails, once per swap.
+#[test]
+fn a_palette_root_springs_along_the_curve_its_table_asks() {
+    let sc = scenario("");
+    let effects = CurveRec::Spring { k: 1600.0, z: 1.0 };
+    let spatial = CurveRec::Spring { k: 3000.0, z: 0.75 };
+    let build = |c: CurveRec| {
+        let mut t = shape(3, |_| vec![row("bar", [0.0, 0.0, 300.0, 30.0])]);
+        for f in &mut t.frames {
+            for key in ["$accent", "$surface"] {
+                f.sp.push(SpringRec {
+                    key: key.into(),
+                    s: 1,
+                    of: "palette".into(),
+                    v: vec![0.5, 0.0, 0.0, 1.0],
+                    to: vec![0.5, 0.0, 0.0, 1.0],
+                    c,
+                    start: (f.k == 1).then(StartRec::default),
+                    ask: Some(effects),
+                    ..SpringRec::default()
+                });
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = build(effects);
+    assert_eq!(status(&check(&sc, &t), CheckId::Colour), Status::Pass);
+    let t = build(spatial);
+    let r = check(&sc, &t);
+    let f = r.failures(CheckId::Colour);
+    assert!(
+        f.len() == 1
+            && f[0]
+                .msg
+                .starts_with("palette: the theme swap springs $accent (and 1 more"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-3) A colour a hair short of its end is on its way: the
+/// matrix's colour-shift at 144 Hz draws `fecc0b` on its way from
+/// `3366ff` to `ffcc00`, where the line's blue falls 11 steps in the
+/// last 0.3% of the way.
+#[test]
+fn a_colour_a_hair_short_of_its_end_is_on_its_way() {
+    use strand_eval::checks::colour::{off_way, off_way_in, rgba};
+    let c = rgba("fecc0bff").unwrap();
+    let (a, b) = (rgba("3366ffff").unwrap(), rgba("ffcc00ff").unwrap());
+    assert!(off_way(c, a, b) <= 3.0);
+    assert!(off_way_in(c, a, b, (0.0, 1.0)) <= 3.0);
+}
+
+/// (eval-rules-3) A glide that carries a sibling with its whole parent
+/// (a centred panel shrinking as a fold ends moves the list in it) hides
+/// no step within the parent (set D's launcher-open-narrow).
+#[test]
+fn a_glide_carrying_the_whole_parent_is_no_fold_step() {
+    let sc = scenario("");
+    let mut t = folding(5.0, -8.0);
+    for f in &mut t.frames {
+        if f.k >= 1 {
+            for r in &mut f.n {
+                r.laid[1] += 8.0;
+                r.visual[1] += 8.0;
+                r.drawn[1] += 8.0;
+            }
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.msg.starts_with("fold")),
+        "{}",
+        show(&r, &t)
+    );
 }

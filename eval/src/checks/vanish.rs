@@ -1,7 +1,9 @@
 //! `vanish`: what shows does not blink.
 //!
 //! - **vanish**: shown at one frame, not at the next, shown again within
-//!   three ticks, with no exit, enter or authored opacity or scale on it
+//!   three ticks or before its segment rests (eval-rules-3: a node gone
+//!   for seven frames with nothing taking it out blinked as surely, set
+//!   E's module swap), with no exit, enter or authored opacity or scale on it
 //!   or an ancestor around it, and no step bringing it back (none acts
 //!   between the frame it is gone in and the one it is back in). One
 //!   still drawn whole while gone, only past its surface's edge where a
@@ -23,7 +25,9 @@
 //!   anim/morph.rs), so a first frame that morphs is no pop-in: where it
 //!   starts is `coherence`'s morph start (decisions.md shared-morph-on);
 //! - **blank**: a frame that damaged pixels and drew no item while
-//!   something inside its surface's root shows (a popup's first frame at
+//!   something inside its surface's root that draws (eval-rules-3: a
+//!   paint of its own, an image, icon or shader; a bare container shows
+//!   nothing) shows (a popup's first frame at
 //!   a pose's `opacity: 0`, or its last as its exit ends, shows nothing
 //!   and draws nothing);
 //! - **pose back**: with the compositor applying surface poses, a
@@ -127,17 +131,21 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             let seg = seg_of(k);
             let exempt = |c| seg.is_some_and(|(si, _)| cx.exempt(c, si, key, Axes::ALL));
             let name = seg.map(|(_, s)| s.name.as_str()).unwrap_or("");
-            // vanish
+            // vanish: back within three ticks, or (eval-rules-3) by the
+            // rest of the segment it went in. Nothing but a step brings
+            // a node back once its segment's change has played out of
+            // it, so one gone for longer and back before that rest, with
+            // no step and nothing leaving, blinked as surely (set E's
+            // module swap: a bar's every node laid out past its bottom
+            // for seven frames while a label's exit wrapped it).
             if vis[i - 1] && !vis[i] && !exempt(CheckId::Vanish) {
+                let until = seg.map_or(0, |(_, s)| s.e).max(k + BLINK_TICKS);
                 let back = (i + 1..vis.len())
-                    .take_while(|j| tl.ks[*j] <= k + BLINK_TICKS)
+                    .take_while(|j| tl.ks[*j] <= until)
                     .find(|j| vis[*j])
                     .filter(|j| !stepped(key, k, tl.ks[*j]));
                 if let Some(j) = back {
-                    let around = [i - 1, i, j]
-                        .iter()
-                        .filter_map(|x| tl.row(*x, key))
-                        .any(leaving);
+                    let around = (i - 1..=j).filter_map(|x| tl.row(x, key)).any(leaving);
                     if !around && !carried_off(cx, i, key) {
                         out.push(
                             Finding::fail(
@@ -202,14 +210,23 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     // blank: something inside the surface's root shows (the root is the
-    // surface itself, whose own paint the trace cannot tell).
+    // surface itself, whose own paint the trace cannot tell) that draws
+    // something of its own. (eval-rules-3) A container that paints
+    // nothing shows nothing: a panel's first frame, its one toast at its
+    // pose's `opacity: 0` inside a bare `col`, draws no item and is
+    // right to (set E's toast stack). What draws is read from the run: a
+    // node that painted a fill, border, shadow or text on some frame, or
+    // an image, icon or shader, whose pixels the paint record leaves out.
     let roots: BTreeSet<&str> = cx.trace.surfaces.iter().map(|s| s.root.as_str()).collect();
     for f in &cx.trace.frames {
         let Some(i) = tl.at(f.k) else { continue };
         for (s, c) in &f.cost {
-            let shows = tl.screens[i]
-                .values()
-                .any(|r| r.surface == *s && !roots.contains(r.key.as_str()) && tl.visible(i, r));
+            let shows = tl.screens[i].values().any(|r| {
+                r.surface == *s
+                    && !roots.contains(r.key.as_str())
+                    && cx.draws(&r.key)
+                    && tl.visible(i, r)
+            });
             if c.damage_px > 0 && c.items == 0 && shows {
                 let mut b = Finding::fail(
                     CheckId::Vanish,

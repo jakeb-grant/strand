@@ -29,6 +29,17 @@
 //!   screen to spring from, so on the frame it enters only what its enter
 //!   pose sets springs (design.md "Poses"; decisions.md
 //!   m4-effects-finish);
+//! - **fold** (eval-rules-3): a size that springs from zero, or to zero
+//!   and then unmounts, carries its slot with it: "its padding and the
+//!   parent's gap beside it fold with it, so its slot reaches zero as the
+//!   spring settles and unmounting it moves nothing" (strand-render
+//!   anim `Forced::collapse`; design.md's toast, whose "siblings slide
+//!   up to fill the gap"). So on the frame such a node first draws, its
+//!   siblings are laid out no further from where the frame before laid
+//!   them than its slot then takes (its size, and a gap folded to at most
+//!   its size), and on the frame after it unmounts no further than its
+//!   last frame's slot. A gap that opens at once and a glide that hides
+//!   the step (set E's enter-from-zero mutant) is not a fold;
 //! - **roll**: a `roll: true` text a change interrupts rolls on from the
 //!   text on screen, the nearer of the two it was rolling between
 //!   (design.md "Rolling numbers"; `effects/roll.rs`), not from the one
@@ -59,6 +70,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut out = springs(cx);
     out.extend(short(cx));
     out.extend(rolls(cx));
+    out.extend(fold(cx));
     first_per_node(out)
 }
 
@@ -393,6 +405,201 @@ fn springs(cx: &Cx) -> Vec<Finding> {
     );
     out
 }
+
+/// `fold`: the frame a node sized from zero first draws, and the frame
+/// after one sized to zero unmounts, lay its siblings out no further from
+/// where the frame before laid them (from their parent) than its slot
+/// then takes: its laid size and a gap folded to at most that, both
+/// counted for every sibling folding there. Judged only where nothing
+/// else in the parent changes at that frame: every other sibling there
+/// at both frames keeps its laid size, and none comes or goes but those
+/// folding.
+fn fold(cx: &Cx) -> Vec<Finding> {
+    use strand_render::probe::Motions;
+    let tl = &cx.tl;
+    let mut out = Vec::new();
+    let mut held = 0u64;
+    // (timeline frame before, frame after, axis): the nodes folding
+    // there, each with its slot's size at the frame it draws in.
+    let mut at: std::collections::BTreeMap<(usize, usize, usize), Folding> =
+        std::collections::BTreeMap::new();
+    for f in &cx.trace.frames {
+        for r in &f.sp {
+            let axis = match r.of.as_str() {
+                "w" => 0,
+                "h" => 1,
+                _ => continue,
+            };
+            let from_zero = r.start.is_some()
+                && r.rest
+                    .as_ref()
+                    .is_some_and(|v| v.first().is_some_and(|x| *x < COLLAPSED));
+            if !from_zero || cx.allowed(CheckId::Continuity, &r.key) {
+                continue;
+            }
+            let Some(i) = tl.at(f.k).filter(|i| *i > 0) else {
+                continue;
+            };
+            // Its first frame: not drawn the frame before.
+            let Some(row) = tl.row(i, &r.key) else {
+                continue;
+            };
+            if tl.row(i - 1, &r.key).is_some() {
+                continue;
+            }
+            at.entry((i - 1, i, axis))
+                .or_default()
+                .push((r.key.as_str(), f64::from(row.laid[2 + axis])));
+        }
+    }
+    for (key, meta) in &cx.trace.nodes {
+        let Some(pose) = meta.exit else { continue };
+        if cx.allowed(CheckId::Continuity, key) {
+            continue;
+        }
+        for (axis, p) in [(0, pose.w), (1, pose.h)] {
+            if !p.is_some_and(|p| p < COLLAPSED) {
+                continue;
+            }
+            // The last frame it is drawn in, exiting, then gone.
+            for i in 0..tl.ks.len().saturating_sub(1) {
+                let Some(r) = tl.row(i, key) else { continue };
+                if tl.row(i + 1, key).is_some() || !Motions(r.mot).contains(Motions::EXIT) {
+                    continue;
+                }
+                // Unmounted, not its surface gone.
+                if !tl.frames[i + 1].painted.contains(&r.surface)
+                    || !tl.screens[i + 1].values().any(|q| q.surface == r.surface)
+                {
+                    continue;
+                }
+                at.entry((i, i + 1, axis))
+                    .or_default()
+                    .push((key.as_str(), f64::from(r.laid[2 + axis])));
+            }
+        }
+    }
+    for ((a, b, axis), folding) in at {
+        // By parent.
+        let mut parents: std::collections::BTreeMap<&str, Vec<(&str, f64)>> =
+            std::collections::BTreeMap::new();
+        for (k, size) in folding {
+            if let Some(p) = cx.parent(k) {
+                parents.entry(p).or_default().push((k, size));
+            }
+        }
+        for (p, folding) in parents {
+            let (Some(pa), Some(pb)) = (tl.row(a, p), tl.row(b, p)) else {
+                continue;
+            };
+            let kids = |i: usize| -> Vec<(&str, &crate::trace::Row)> {
+                tl.screens[i]
+                    .iter()
+                    .filter(|(k, _)| cx.parent(k) == Some(p))
+                    .map(|(k, r)| (*k, *r))
+                    .collect()
+            };
+            let (ka, kb) = (kids(a), kids(b));
+            let folds = |k: &str| folding.iter().any(|(f, _)| *f == k);
+            let came_or_went = ka
+                .iter()
+                .filter(|(k, _)| !kb.iter().any(|(q, _)| q == k))
+                .chain(kb.iter().filter(|(k, _)| !ka.iter().any(|(q, _)| q == k)))
+                .any(|(k, _)| !folds(k));
+            let resized = ka.iter().any(|(k, ra)| {
+                !folds(k)
+                    && kb.iter().any(|(q, rb)| {
+                        q == k
+                            && (0..2)
+                                .any(|j| (ra.laid[2 + j] - rb.laid[2 + j]).abs() > cx.tol as f32)
+                    })
+            });
+            if came_or_went || resized {
+                continue;
+            }
+            let slot: f64 = folding.iter().map(|(_, s)| 2.0 * s.max(0.0)).sum();
+            let bound = slot + cx.tol;
+            for (k, ra) in &ka {
+                if folds(k) || cx.allowed(CheckId::Continuity, k) {
+                    continue;
+                }
+                let Some((_, rb)) = kb.iter().find(|(q, _)| q == k) else {
+                    continue;
+                };
+                held += 1;
+                let shift = f64::from(rb.laid[axis] - pb.laid[axis])
+                    - f64::from(ra.laid[axis] - pa.laid[axis]);
+                // A FLIP glide started here on this axis over a step of
+                // its layout within its parent: the glide hides the step
+                // (a slot that folds lays its siblings out anew each
+                // frame, with nothing to glide over). Its jump less its
+                // parent's move (a FLIP's jump is where it was drawn
+                // less where it is laid): what carries the whole parent
+                // (a centred panel shrinking once the fold is done) is
+                // not a step within it (set D's launcher-open-narrow).
+                let moved = f64::from(pb.laid[axis] - pa.laid[axis]);
+                let glided = tl.frames[b]
+                    .sp
+                    .iter()
+                    .filter(|g| g.key == *k && g.of == "glide")
+                    .filter_map(|g| g.start.as_ref())
+                    .map(|st| st.shift.get(axis).map_or(0.0, |v| f64::from(*v)) + moved)
+                    .fold(0.0f64, |m, v| m.max(v.abs()));
+                if shift.abs() <= bound && glided <= cx.tol {
+                    continue;
+                }
+                let (who, how) = (
+                    folding[0].0,
+                    if tl.row(b, folding[0].0).is_some() {
+                        "enters from"
+                    } else {
+                        "unmounts at"
+                    },
+                );
+                let label = cx.trace.nodes.get(who).map_or(who, |m| m.label.as_str());
+                let (msg, got, lim) = if shift.abs() > bound {
+                    (
+                        format!(
+                            "fold: {label} {how} size 0 here, taking a slot of at most \
+                             {slot:.1} px, yet this sibling is laid {shift:.1} px from where \
+                             the frame before laid it: its gap opened (or closed) at once \
+                             instead of folding with it"
+                        ),
+                        shift.abs(),
+                        bound,
+                    )
+                } else {
+                    (
+                        format!(
+                            "fold: {label} {how} size 0 here, yet this sibling started a glide \
+                             over a {glided:.1} px step of its layout: its gap opened (or \
+                             closed) at once and the glide hides it, where a folding slot lays \
+                             its siblings out anew each frame"
+                        ),
+                        glided,
+                        cx.tol,
+                    )
+                };
+                out.push(
+                    Finding::fail(CheckId::Continuity, msg)
+                        .at(tl.ks[b])
+                        .node(k)
+                        .axis(["x", "y"][axis])
+                        .got(got, [0.0, lim]),
+                );
+            }
+        }
+    }
+    super::stats("continuity.fold", cx, &[("siblings", held)]);
+    out
+}
+
+/// The nodes folding at a frame, each with its slot's size there.
+type Folding<'a> = Vec<(&'a str, f64)>;
+
+/// A size this small is zero: its slot collapses (strand-render anim
+/// `COLLAPSED`).
+const COLLAPSED: f32 = 0.5;
 
 /// `end`: a surface that stops wanting frames shows what it
 /// drew last until something changes, so each spring it sampled last is

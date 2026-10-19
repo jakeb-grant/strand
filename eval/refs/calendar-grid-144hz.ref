@@ -1,0 +1,711 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "calendar-grid-144hz"
+verdict good
+note "eval-rules-3 coverage, read: as before but each change follows a 300 ms pause (an idle surface, as a click does): at 144 Hz the selected day's fill springs from #313244 to #89b4fa on day 20, then on day 3 (day 20's back); the six-week month grows the popup at once (203 to 235 px) and its seven new cells fade in; going back fades them out and the popup shrinks once they have gone; no cell moves, the heading never moves"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario a0b1db86aec4ac2d
+seal 91547a2e084fa043
+S1 0 - "panel Calendar"
+N0 "cal|shell.strand:7:3|#0" "col#cal"
+N1 "days|shell.strand:9:5|#0" "grid#days"
+N2 "heading|shell.strand:8:5|#0" "text#heading"
+N3 "|shell.strand:11:9|[10]#9" "box@shell.strand:11"
+N4 "|shell.strand:11:9|[11]#10" "box@shell.strand:11"
+N5 "|shell.strand:11:9|[12]#11" "box@shell.strand:11"
+N6 "|shell.strand:11:9|[13]#12" "box@shell.strand:11"
+N7 "|shell.strand:11:9|[14]#13" "box@shell.strand:11"
+N8 "|shell.strand:11:9|[15]#14" "box@shell.strand:11"
+N9 "|shell.strand:11:9|[16]#15" "box@shell.strand:11"
+N10 "|shell.strand:11:9|[17]#16" "box@shell.strand:11"
+N11 "|shell.strand:11:9|[18]#17" "box@shell.strand:11"
+N12 "|shell.strand:11:9|[19]#18" "box@shell.strand:11"
+N13 "|shell.strand:11:9|[1]#0" "box@shell.strand:11"
+N14 "|shell.strand:11:9|[20]#19" "box@shell.strand:11"
+N15 "|shell.strand:11:9|[21]#20" "box@shell.strand:11"
+N16 "|shell.strand:11:9|[22]#21" "box@shell.strand:11"
+N17 "|shell.strand:11:9|[23]#22" "box@shell.strand:11"
+N18 "|shell.strand:11:9|[24]#23" "box@shell.strand:11"
+N19 "|shell.strand:11:9|[25]#24" "box@shell.strand:11"
+N20 "|shell.strand:11:9|[26]#25" "box@shell.strand:11"
+N21 "|shell.strand:11:9|[27]#26" "box@shell.strand:11"
+N22 "|shell.strand:11:9|[28]#27" "box@shell.strand:11"
+N23 "|shell.strand:11:9|[29]#28" "box@shell.strand:11"
+N24 "|shell.strand:11:9|[2]#1" "box@shell.strand:11"
+N25 "|shell.strand:11:9|[30]#29" "box@shell.strand:11"
+N26 "|shell.strand:11:9|[31]#30" "box@shell.strand:11"
+N27 "|shell.strand:11:9|[32]#31" "box@shell.strand:11"
+N28 "|shell.strand:11:9|[33]#32" "box@shell.strand:11"
+N29 "|shell.strand:11:9|[34]#33" "box@shell.strand:11"
+N30 "|shell.strand:11:9|[35]#34" "box@shell.strand:11"
+N31 "|shell.strand:11:9|[3]#2" "box@shell.strand:11"
+N32 "|shell.strand:11:9|[4]#3" "box@shell.strand:11"
+N33 "|shell.strand:11:9|[5]#4" "box@shell.strand:11"
+N34 "|shell.strand:11:9|[6]#5" "box@shell.strand:11"
+N35 "|shell.strand:11:9|[7]#6" "box@shell.strand:11"
+N36 "|shell.strand:11:9|[8]#7" "box@shell.strand:11"
+N37 "|shell.strand:11:9|[9]#8" "box@shell.strand:11"
+N38 "|shell.strand:5:1|#0" "panel@shell.strand:5"
+N39 "|shell.strand:11:9|[36]#35" "box@shell.strand:11"
+N40 "|shell.strand:11:9|[37]#36" "box@shell.strand:11"
+N41 "|shell.strand:11:9|[38]#37" "box@shell.strand:11"
+N42 "|shell.strand:11:9|[39]#38" "box@shell.strand:11"
+N43 "|shell.strand:11:9|[40]#39" "box@shell.strand:11"
+N44 "|shell.strand:11:9|[41]#40" "box@shell.strand:11"
+N45 "|shell.strand:11:9|[42]#41" "box@shell.strand:11"
+k0 p1
+s1 z=244,203 o=78,10
+n0 x=0 y=0 w=244 h=203 ord=1 bg=1e1e2eff
+n1 x=12 y=35 w=220 h=156 ord=3
+n2 x=12 y=12 w=220 h=15 txt=S ord=2 ink=12,13,50,11 fg=cdd6f4ff gl=["October"]
+n3 x=76 y=67 w=28 h=28 ord=13 bg=313244ff
+n4 x=108 y=67 w=28 h=28 ord=14 bg=313244ff
+n5 x=140 y=67 w=28 h=28 ord=15 bg=89b4faff
+n6 x=172 y=67 w=28 h=28 ord=16 bg=313244ff
+n7 x=204 y=67 w=28 h=28 ord=17 bg=313244ff
+n8 x=12 y=99 w=28 h=28 ord=18 bg=313244ff
+n9 x=44 y=99 w=28 h=28 ord=19 bg=313244ff
+n10 x=76 y=99 w=28 h=28 ord=20 bg=313244ff
+n11 x=108 y=99 w=28 h=28 ord=21 bg=313244ff
+n12 x=140 y=99 w=28 h=28 ord=22 bg=313244ff
+n13 x=12 y=35 w=28 h=28 ord=4 bg=313244ff
+n14 x=172 y=99 w=28 h=28 ord=23 bg=313244ff
+n15 x=204 y=99 w=28 h=28 ord=24 bg=313244ff
+n16 x=12 y=131 w=28 h=28 ord=25 bg=313244ff
+n17 x=44 y=131 w=28 h=28 ord=26 bg=313244ff
+n18 x=76 y=131 w=28 h=28 ord=27 bg=313244ff
+n19 x=108 y=131 w=28 h=28 ord=28 bg=313244ff
+n20 x=140 y=131 w=28 h=28 ord=29 bg=313244ff
+n21 x=172 y=131 w=28 h=28 ord=30 bg=313244ff
+n22 x=204 y=131 w=28 h=28 ord=31 bg=313244ff
+n23 x=12 y=163 w=28 h=28 ord=32 bg=313244ff
+n24 x=44 y=35 w=28 h=28 ord=5 bg=313244ff
+n25 x=44 y=163 w=28 h=28 ord=33 bg=313244ff
+n26 x=76 y=163 w=28 h=28 ord=34 bg=313244ff
+n27 x=108 y=163 w=28 h=28 ord=35 bg=313244ff
+n28 x=140 y=163 w=28 h=28 ord=36 bg=313244ff
+n29 x=172 y=163 w=28 h=28 ord=37 bg=313244ff
+n30 x=204 y=163 w=28 h=28 ord=38 bg=313244ff
+n31 x=76 y=35 w=28 h=28 ord=6 bg=313244ff
+n32 x=108 y=35 w=28 h=28 ord=7 bg=313244ff
+n33 x=140 y=35 w=28 h=28 ord=8 bg=313244ff
+n34 x=172 y=35 w=28 h=28 ord=9 bg=313244ff
+n35 x=204 y=35 w=28 h=28 ord=10 bg=313244ff
+n36 x=12 y=67 w=28 h=28 ord=11 bg=313244ff
+n37 x=44 y=67 w=28 h=28 ord=12 bg=313244ff
+n38 x=0 y=0 w=244 h=203
+k45
+n5 bg=7ca0ddff
+n14 bg=3d435cff
+k46
+n5 bg=7392caff
+n14 bg=464f6cff
+k47
+n5 bg=6984b7ff
+n14 bg=4e5c7eff
+k48
+n5 bg=6177a5ff
+n14 bg=57688fff
+k49
+n5 bg=596c94ff
+n14 bg=5e74a0ff
+k50
+n5 bg=526286ff
+n14 bg=657eaeff
+k51
+n5 bg=4c597aff
+n14 bg=6b87bbff
+k52
+n5 bg=475270ff
+n14 bg=718fc6ff
+k53
+n5 bg=434c68ff
+n14 bg=7596cfff
+k54
+n5 bg=404761ff
+n14 bg=799bd7ff
+k55
+n5 bg=3d435bff
+n14 bg=7ca0deff
+k56
+n5 bg=3b3f57ff
+n14 bg=7ea4e3ff
+k57
+n5 bg=393d53ff
+n14 bg=81a7e8ff
+k58
+n5 bg=373b50ff
+n14 bg=82aaebff
+k59
+n5 bg=36394dff
+n14 bg=84aceeff
+k60
+n5 bg=35374bff
+n14 bg=85adf1ff
+k61
+n5 bg=34364aff
+n14 bg=86aff3ff
+k62
+n5 bg=333549ff
+n14 bg=86b0f4ff
+k63
+n5 bg=333548ff
+n14 bg=87b1f5ff
+k64
+n5 bg=333447ff
+n14 bg=87b1f6ff
+k65
+n5 bg=323446ff
+n14 bg=88b2f7ff
+k66
+n5 bg=323346ff
+n14 bg=88b2f8ff
+k67
+n5 bg=323345ff
+n14 bg=88b3f8ff
+k68
+n14 bg=88b3f9ff
+k69
+n5 bg=313345ff
+k70
+n5 bg=313245ff
+n14 bg=89b3f9ff
+k71
+n5 bg=313244ff
+n14 bg=89b4faff
+k116
+n14 bg=86aff4ff
+n31 bg=343649ff
+k117
+n14 bg=7fa5e5ff
+n31 bg=3a3f55ff
+k118
+n14 bg=7698d2ff
+n31 bg=424a65ff
+k119
+n14 bg=6d8abeff
+n31 bg=4b5777ff
+k120
+n14 bg=647cacff
+n31 bg=536389ff
+k121
+n14 bg=5c709bff
+n31 bg=5b6f99ff
+k122
+n14 bg=55658cff
+n31 bg=637aa8ff
+k123
+n14 bg=4f5c7fff
+n31 bg=6984b6ff
+k124
+n14 bg=495474ff
+n31 bg=6f8cc2ff
+k125
+n14 bg=454e6bff
+n31 bg=7393ccff
+k126
+n14 bg=414963ff
+n31 bg=7799d4ff
+k127
+n14 bg=3e445dff
+n31 bg=7b9edbff
+k128
+n14 bg=3b4158ff
+n31 bg=7da2e1ff
+k129
+n14 bg=393e54ff
+n31 bg=80a6e6ff
+k130
+n14 bg=383b51ff
+n31 bg=82a9eaff
+k131
+n14 bg=36394eff
+n31 bg=83abedff
+k132
+n14 bg=35384cff
+n31 bg=84adf0ff
+k133
+n14 bg=34374aff
+n31 bg=85aef2ff
+k134
+n14 bg=343649ff
+n31 bg=86aff4ff
+k135
+n14 bg=333548ff
+n31 bg=87b0f5ff
+k136
+n14 bg=333447ff
+n31 bg=87b1f6ff
+k137
+n14 bg=323447ff
+n31 bg=88b2f7ff
+k138
+n14 bg=323346ff
+n31 bg=88b2f8ff
+k139
+n31 bg=88b3f8ff
+k140
+n14 bg=323345ff
+k141
+n14 bg=313345ff
+n31 bg=88b3f9ff
+k142
+n31 bg=89b3f9ff
+k143
+n14 bg=313245ff
+k144
+n14 bg=313244ff
+n31 bg=89b4faff
+k189
+s1 z=244,235
+n0 h=235
+n1 h=188
+n38 h=235
+n39 x=12 y=195 w=28 h=28 op=8 ord=39 bg=313244ff
+n40 x=44 y=195 w=28 h=28 op=8 ord=40 bg=313244ff
+n41 x=76 y=195 w=28 h=28 op=8 ord=41 bg=313244ff
+n42 x=108 y=195 w=28 h=28 op=8 ord=42 bg=313244ff
+n43 x=140 y=195 w=28 h=28 op=8 ord=43 bg=313244ff
+n44 x=172 y=195 w=28 h=28 op=8 ord=44 bg=313244ff
+n45 x=204 y=195 w=28 h=28 op=8 ord=45 bg=313244ff
+k190
+n39 op=27
+n40 op=27
+n41 op=27
+n42 op=27
+n43 op=27
+n44 op=27
+n45 op=27
+k191
+n39 op=52
+n40 op=52
+n41 op=52
+n42 op=52
+n43 op=52
+n44 op=52
+n45 op=52
+k192
+n39 op=78
+n40 op=78
+n41 op=78
+n42 op=78
+n43 op=78
+n44 op=78
+n45 op=78
+k193
+n39 op=103
+n40 op=103
+n41 op=103
+n42 op=103
+n43 op=103
+n44 op=103
+n45 op=103
+k194
+n39 op=127
+n40 op=127
+n41 op=127
+n42 op=127
+n43 op=127
+n44 op=127
+n45 op=127
+k195
+n39 op=148
+n40 op=148
+n41 op=148
+n42 op=148
+n43 op=148
+n44 op=148
+n45 op=148
+k196
+n39 op=166
+n40 op=166
+n41 op=166
+n42 op=166
+n43 op=166
+n44 op=166
+n45 op=166
+k197
+n39 op=182
+n40 op=182
+n41 op=182
+n42 op=182
+n43 op=182
+n44 op=182
+n45 op=182
+k198
+n39 op=195
+n40 op=195
+n41 op=195
+n42 op=195
+n43 op=195
+n44 op=195
+n45 op=195
+k199
+n39 op=206
+n40 op=206
+n41 op=206
+n42 op=206
+n43 op=206
+n44 op=206
+n45 op=206
+k200
+n39 op=216
+n40 op=216
+n41 op=216
+n42 op=216
+n43 op=216
+n44 op=216
+n45 op=216
+k201
+n39 op=223
+n40 op=223
+n41 op=223
+n42 op=223
+n43 op=223
+n44 op=223
+n45 op=223
+k202
+n39 op=229
+n40 op=229
+n41 op=229
+n42 op=229
+n43 op=229
+n44 op=229
+n45 op=229
+k203
+n39 op=235
+n40 op=235
+n41 op=235
+n42 op=235
+n43 op=235
+n44 op=235
+n45 op=235
+k204
+n39 op=239
+n40 op=239
+n41 op=239
+n42 op=239
+n43 op=239
+n44 op=239
+n45 op=239
+k205
+n39 op=242
+n40 op=242
+n41 op=242
+n42 op=242
+n43 op=242
+n44 op=242
+n45 op=242
+k206
+n39 op=245
+n40 op=245
+n41 op=245
+n42 op=245
+n43 op=245
+n44 op=245
+n45 op=245
+k207
+n39 op=247
+n40 op=247
+n41 op=247
+n42 op=247
+n43 op=247
+n44 op=247
+n45 op=247
+k208
+n39 op=249
+n40 op=249
+n41 op=249
+n42 op=249
+n43 op=249
+n44 op=249
+n45 op=249
+k209
+n39 op=250
+n40 op=250
+n41 op=250
+n42 op=250
+n43 op=250
+n44 op=250
+n45 op=250
+k210
+n39 op=251
+n40 op=251
+n41 op=251
+n42 op=251
+n43 op=251
+n44 op=251
+n45 op=251
+k211
+n39 op=252
+n40 op=252
+n41 op=252
+n42 op=252
+n43 op=252
+n44 op=252
+n45 op=252
+k212
+n39 op=253
+n40 op=253
+n41 op=253
+n42 op=253
+n43 op=253
+n44 op=253
+n45 op=253
+k213
+k214
+k215
+n39 op=254
+n40 op=254
+n41 op=254
+n42 op=254
+n43 op=254
+n44 op=254
+n45 op=254
+k216
+k217
+k218
+k219
+n39 op=255
+n40 op=255
+n41 op=255
+n42 op=255
+n43 op=255
+n44 op=255
+n45 op=255
+k220
+k265
+n39 op=247 hid=inert
+n40 op=247 hid=inert
+n41 op=247 hid=inert
+n42 op=247 hid=inert
+n43 op=247 hid=inert
+n44 op=247 hid=inert
+n45 op=247 hid=inert
+k266
+n39 op=228
+n40 op=228
+n41 op=228
+n42 op=228
+n43 op=228
+n44 op=228
+n45 op=228
+k267
+n39 op=203
+n40 op=203
+n41 op=203
+n42 op=203
+n43 op=203
+n44 op=203
+n45 op=203
+k268
+n39 op=177
+n40 op=177
+n41 op=177
+n42 op=177
+n43 op=177
+n44 op=177
+n45 op=177
+k269
+n39 op=152
+n40 op=152
+n41 op=152
+n42 op=152
+n43 op=152
+n44 op=152
+n45 op=152
+k270
+n39 op=128
+n40 op=128
+n41 op=128
+n42 op=128
+n43 op=128
+n44 op=128
+n45 op=128
+k271
+n39 op=107
+n40 op=107
+n41 op=107
+n42 op=107
+n43 op=107
+n44 op=107
+n45 op=107
+k272
+n39 op=89
+n40 op=89
+n41 op=89
+n42 op=89
+n43 op=89
+n44 op=89
+n45 op=89
+k273
+n39 op=73
+n40 op=73
+n41 op=73
+n42 op=73
+n43 op=73
+n44 op=73
+n45 op=73
+k274
+n39 op=60
+n40 op=60
+n41 op=60
+n42 op=60
+n43 op=60
+n44 op=60
+n45 op=60
+k275
+n39 op=49
+n40 op=49
+n41 op=49
+n42 op=49
+n43 op=49
+n44 op=49
+n45 op=49
+k276
+n39 op=39
+n40 op=39
+n41 op=39
+n42 op=39
+n43 op=39
+n44 op=39
+n45 op=39
+k277
+n39 op=32
+n40 op=32
+n41 op=32
+n42 op=32
+n43 op=32
+n44 op=32
+n45 op=32
+k278
+n39 op=26
+n40 op=26
+n41 op=26
+n42 op=26
+n43 op=26
+n44 op=26
+n45 op=26
+k279
+n39 op=20
+n40 op=20
+n41 op=20
+n42 op=20
+n43 op=20
+n44 op=20
+n45 op=20
+k280
+n39 op=16
+n40 op=16
+n41 op=16
+n42 op=16
+n43 op=16
+n44 op=16
+n45 op=16
+k281
+n39 op=13
+n40 op=13
+n41 op=13
+n42 op=13
+n43 op=13
+n44 op=13
+n45 op=13
+k282
+n39 op=10
+n40 op=10
+n41 op=10
+n42 op=10
+n43 op=10
+n44 op=10
+n45 op=10
+k283
+n39 op=8
+n40 op=8
+n41 op=8
+n42 op=8
+n43 op=8
+n44 op=8
+n45 op=8
+k284
+n39 op=6
+n40 op=6
+n41 op=6
+n42 op=6
+n43 op=6
+n44 op=6
+n45 op=6
+k285
+n39 op=5
+n40 op=5
+n41 op=5
+n42 op=5
+n43 op=5
+n44 op=5
+n45 op=5
+k286
+n39 op=4
+n40 op=4
+n41 op=4
+n42 op=4
+n43 op=4
+n44 op=4
+n45 op=4
+k287
+n39 op=3
+n40 op=3
+n41 op=3
+n42 op=3
+n43 op=3
+n44 op=3
+n45 op=3
+k288
+n39 op=2
+n40 op=2
+n41 op=2
+n42 op=2
+n43 op=2
+n44 op=2
+n45 op=2
+k289
+k290
+k291
+n39 op=1
+n40 op=1
+n41 op=1
+n42 op=1
+n43 op=1
+n44 op=1
+n45 op=1
+k292
+k293
+k294
+k295
+n39 op=0
+n40 op=0
+n41 op=0
+n42 op=0
+n43 op=0
+n44 op=0
+n45 op=0
+k296
+n39 hid=opacity0 bg=-
+n40 hid=opacity0 bg=-
+n41 hid=opacity0 bg=-
+n42 hid=opacity0 bg=-
+n43 hid=opacity0 bg=-
+n44 hid=opacity0 bg=-
+n45 hid=opacity0 bg=-
+k297
+n0 h=203
+n1 h=156
+n38 h=203
+n39 -
+n40 -
+n41 -
+n42 -
+n43 -
+n44 -
+n45 -
+k298
+s1 z=244,203

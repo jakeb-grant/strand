@@ -1,0 +1,60 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "osd-bottom-grow-1_5"
+verdict good
+note "eval-rules-3 coverage, read: as osd-bottom-grow at scale 1.5: the surface grows at k1 to the new content size, the level row keeps its output place on every frame, the new row springs in from height 0 and fades in; nothing drawn past the surface"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario 9ad01102c8f99e41
+seal 7682451a24dccdef
+S1 0 - "osd Level"
+N0 "head|shell.strand:10:7|#0" "text#head"
+N1 "icon|shell.strand:9:7|#0" "box#icon"
+N2 "|shell.strand:2:1|#0" "osd@shell.strand:2"
+N3 "|shell.strand:4:3|#0" "col@shell.strand:4"
+N4 "|shell.strand:8:5|#0" "row@shell.strand:8"
+N5 "more|shell.strand:6:7|#0" "box#more"
+k0 p1
+s1 z=220,40 o=90,212
+n0 x=36 y=13 w=73 h=15 v=36,13.328125,73.328125,14.671875 txt=S ord=4 ink=36,15.328125,72.671875,10.671875 fg=cdd6f4ff gl=["Volume\u002040%"]
+n1 x=12 y=12 w=16 h=16 ord=3 bg=a6e3a1ff
+n2 x=0 y=0 w=220 h=40
+n3 x=0 y=0 w=220 h=40 ord=1 bg=1e1e2ee6
+n4 x=12 y=12 w=196 h=16 ord=2
+k1
+s1 z=220,76 o=90,176
+n0 y=49 v=36,49.328125,73.328125,14.671875 ord=5 ink=36,51.328125,72.671875,10.671875
+n1 y=48 ord=4
+n2 h=76
+n3 y=27 h=76 v=0,27.328125,220,76
+n4 y=48 ord=3
+n5 x=12 y=39 w=196 h=28 v=12,39.328125,196,28 op=37 ord=2 bg=89b4faff
+k2
+n3 y=13 v=0,13.328125,220,76
+n5 y=25 v=12,25.328125,196,28 op=98
+k3
+n3 y=4 v=d
+n5 y=16 v=d op=151
+k4
+n3 y=0
+n5 y=12 op=190
+k5
+n3 y=-1 v=0,-1.328125,220,76.671875
+n5 y=11 v=12,11.328125,196,28 op=216
+k6
+n5 op=232
+k7
+n3 y=0 v=d
+n5 y=12 v=d op=241
+k8
+n5 op=247
+k9
+n5 op=251
+k10
+n5 op=253
+k11
+n5 op=254
+k12
+k13
+n5 op=255
+k14

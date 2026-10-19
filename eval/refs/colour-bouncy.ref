@@ -1,0 +1,103 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "colour-bouncy"
+verdict good
+note "eval-rules-3 coverage, read: the chip's fill springs blue to yellow on $motion.bouncy and its border grey to green on spring(500, 0.5), each ringing slightly past its end on the straight OKLab way and back, then the reverse; the lead box never moves"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario ad55bdd27451f186
+seal 6f754a8c8f9f4a5e
+S1 0 - "bar Top"
+N0 "chip|shell.strand:7:5|[Mock | DP-1]#1" "box#chip"
+N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
+N2 "strip|shell.strand:5:3|[Mock | DP-1]#0" "row#strip"
+N3 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1
+s1 z=320,30
+n0 x=30 y=3 w=48 h=18 ord=3 bg=3366ffff bd=5c6370ff
+n1 x=8 y=5 w=14 h=14 ord=2 bg=5c6370ff
+n2 x=0 y=0 w=320 h=24 ord=1
+n3 x=0 y=0 w=320 h=30 bg=1e2127ff
+k1
+n0 bg=3b6ef9ff bd=5f6971ff
+k2
+n0 bg=507eebff bd=687774ff
+k3
+n0 bg=6b90d8ff bd=738976ff
+k4
+n0 bg=889fc2ff bd=809c78ff
+k5
+n0 bg=a4acabff bd=8bae79ff
+k6
+n0 bg=bdb694ff bd=94bd79ff
+k7
+n0 bg=d1bd7cff bd=9bc879ff
+k8
+n0 bg=e2c364ff bd=98c379ff
+k9
+n0 bg=eec74cff
+k10
+n0 bg=f8ca32ff
+k11
+n0 bg=fecc10ff
+k12
+n0 bg=ffcd00ff
+k13
+k14
+n0 bg=ffce00ff
+k15
+k16
+k17
+n0 bg=ffcd00ff
+k18
+k19
+k20
+k21
+n0 bg=ffcc00ff
+k22
+k23
+k24
+k25
+n0 bg=f6c939ff bd=94bd79ff
+k26
+n0 bg=dfc268ff bd=8bae79ff
+k27
+n0 bg=c3b88dff bd=7f9b78ff
+k28
+n0 bg=a5adaaff bd=738876ff
+k29
+n0 bg=89a0c1ff bd=687774ff
+k30
+n0 bg=7193d4ff bd=5f6971ff
+k31
+n0 bg=5d87e2ff bd=595e6fff
+k32
+n0 bg=4d7dedff bd=5c6370ff
+k33
+n0 bg=4274f5ff
+k34
+n0 bg=396cfbff
+k35
+n0 bg=3467feff
+k36
+n0 bg=3164ffff
+k37
+n0 bg=2f62ffff
+k38
+n0 bg=2e61ffff
+k39
+k40
+k41
+n0 bg=2f62ffff
+k42
+n0 bg=3062ffff
+k43
+n0 bg=3063ffff
+k44
+n0 bg=3164ffff
+k45
+n0 bg=3265ffff
+k46
+k47
+k48
+n0 bg=3366ffff

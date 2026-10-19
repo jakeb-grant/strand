@@ -1,0 +1,62 @@
+id     = "hover-card-rest-move-leave"
+about  = """The pointer on an open hover card (design.md "Popups": `trigger:
+hover` opens after its delay and closes after its grace once the pointer has
+left both the anchor and the popup): resting on the bar's network pill opens
+its card; the pointer then moves from the pill onto the card, rests there
+past the grace, moves about within the card, and leaves it for the bar's
+empty end (on the bar's surface). The card stays open, still and in place while the pointer is on
+it (the pill keeps its lit fill), and fades out once the pointer has left
+(decisions.md eval-rules-3: set E's coverage of a pointer resting on, moving
+within and leaving an open hover card)."""
+screen = { width = 500, height = 400, scale = 1.0 }
+
+=== shell.strand
+bar Top {
+  edge: top; height: 30; bg: #1e1e2e
+  row { pad: 0, 10; gap: 10; align: center
+    box { id: net_pill; width: 40; height: 18; radius: 9; bg: #94e2d5
+      when net_card.open { bg: #a6e3a1 }
+      popup { id: net_card; trigger: hover; delay: 250ms
+        enter { opacity: 0; y: -4 }
+        col { id: card; width: 200; pad: 10; gap: 4; radius: 12; bg: #313244
+              shadow: 0 6px 18px #00000055
+          text "Wi-Fi: home" { id: wifi; weight: 600; color: #cdd6f4 }
+          text "Signal 78% · 5 GHz" { id: signal; color: #a6adc8 }
+          box { id: bar_meter; height: 6; radius: 3; bg: #a6e3a1 }
+        }
+      }
+    }
+    box { id: other; width: 40; height: 18; radius: 9; bg: #89b4fa }
+  }
+}
+
+=== steps
+rest
+mark hover
+pointer 30,15
+wait 400
+rest
+expect visible #wifi
+mark onto-card
+pointer 60,30 on #net_card
+wait 1500
+rest
+expect visible #wifi
+expect still #wifi
+mark within
+pointer 120,40 on #net_card
+frames 6
+pointer 150,60 on #net_card
+frames 6
+pointer 40,50 on #net_card
+wait 800
+rest
+expect visible #wifi
+expect still #wifi
+expect still #other
+mark leave
+pointer 400,15 on #other
+wait 1500
+rest
+expect hidden #wifi
+expect still #other

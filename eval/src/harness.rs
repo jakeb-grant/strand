@@ -2317,9 +2317,13 @@ impl Harness {
         sp: &strand_render::probe::SpringTrace,
     ) -> crate::trace::SpringRec {
         use strand_render::probe::SpringOf;
-        let key = self
-            .labels
-            .key(sp.node, &self.inst, self.r.tree(), &self.sources);
+        // (eval-rules-3) A palette root is named by its token path.
+        let key = match (&sp.what, &sp.token) {
+            (SpringOf::Palette, Some(t)) => format!("${t}"),
+            _ => self
+                .labels
+                .key(sp.node, &self.inst, self.r.tree(), &self.sources),
+        };
         crate::trace::SpringRec {
             key,
             s: surface,
@@ -2328,6 +2332,7 @@ impl Harness {
                 SpringOf::Size(0) => "w".into(),
                 SpringOf::Size(_) => "h".into(),
                 SpringOf::Glide => "glide".into(),
+                SpringOf::Palette => "palette".into(),
             },
             at: (sp.at != t).then_some(sp.at.as_nanos() as u64),
             v: sp.value.clone(),
@@ -2344,6 +2349,7 @@ impl Harness {
                 },
             }),
             enter: sp.entering,
+            ask: sp.asked.as_ref().map(crate::trace::CurveRec::of),
         }
     }
 

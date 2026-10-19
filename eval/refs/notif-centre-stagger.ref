@@ -1,0 +1,576 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "notif-centre-stagger"
+verdict good
+note "eval-rules-3 coverage, read: four cards fade and slide in about 40 ms apart (k1, k3, k5, k8), top first; Chat enters at the top while the four glide down 56 px; clear all fades and slides every card right at once; the header never moves"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario 2773d1c057d23553
+seal 6468d318296d2978
+S1 0 - "panel Centre"
+N0 "centre|shell.strand:6:3|#0" "col#centre"
+N1 "clear|shell.strand:9:7|#0" "box#clear"
+N2 "header|shell.strand:7:5|#0" "row#header"
+N3 "list|shell.strand:11:5|#0" "col#list"
+N4 "title|shell.strand:8:7|#0" "text#title"
+N5 "|shell.strand:4:1|#0" "panel@shell.strand:4"
+N6 "|shell.strand:13:9|[Build]#2" "col@shell.strand:13"
+N7 "|shell.strand:13:9|[Calendar]#1" "col@shell.strand:13"
+N8 "|shell.strand:13:9|[Mail]#0" "col@shell.strand:13"
+N9 "|shell.strand:13:9|[Music]#3" "col@shell.strand:13"
+N10 "|shell.strand:16:11|[Mail]#0" "text(\"Mail\")"
+N11 "|shell.strand:17:11|[Mail]#1" "text(\"Just now\")"
+N12 "|shell.strand:16:11|[Calendar]#0" "text(\"Calendar\")"
+N13 "|shell.strand:17:11|[Calendar]#1" "text(\"Just now\")"
+N14 "|shell.strand:16:11|[Build]#0" "text(\"Build\")"
+N15 "|shell.strand:17:11|[Build]#1" "text(\"Just now\")"
+N16 "|shell.strand:16:11|[Music]#0" "text(\"Music\")"
+N17 "|shell.strand:17:11|[Music]#1" "text(\"Just now\")"
+N18 "|shell.strand:13:9|[Chat]#0" "col@shell.strand:13"
+N19 "|shell.strand:16:11|[Chat]#0" "text(\"Chat\")"
+N20 "|shell.strand:17:11|[Chat]#1" "text(\"Just now\")"
+k0 p1
+s1 z=280,54 o=70,10
+n0 x=0 y=0 w=280 h=54 ord=1 bg=1e1e2eff
+n1 x=218 y=14 w=50 h=16 ord=4 bg=45475aff
+n2 x=12 y=12 w=256 h=20 ord=2
+n3 x=12 y=42 w=256 h=0 ord=5
+n4 x=12 y=15 w=206 h=15 txt=S ord=3 ink=12,16,79,11 fg=cdd6f4ff gl=["Notifications"]
+n5 x=0 y=0 w=280 h=54
+k1
+s1 z=280,278
+n0 h=270
+n3 h=216
+n5 h=270
+n6 x=12 y=146 w=256 h=48 op=0 hid=opacity0 ord=10
+n7 x=12 y=90 w=256 h=48 op=0 hid=opacity0 ord=9
+n8 x=12 y=36 w=256 h=48 op=37 ord=6 bg=313244ff
+n9 x=12 y=202 w=256 h=48 op=0 hid=opacity0 ord=11
+n10 x=20 y=44 w=240 h=15 op=37 txt=S ord=7 ink=20,45,25,11 fg=cdd6f4ff gl=["Mail"]
+n11 x=20 y=61 w=240 h=15 op=37 txt=S ord=8 ink=20,63,52,10 fg=a6adc8ff gl=["Just\u0020now"]
+k2
+n8 y=39 op=98
+n10 y=47 op=98 ink=20,48,25,11
+n11 y=64 op=98 ink=20,66,52,10
+k3
+n6 ord=12
+n7 y=92 op=37 hid=- bg=313244ff
+n8 y=41 op=151
+n9 ord=13
+n10 y=49 op=151 ink=20,50,25,11
+n11 y=66 op=151 ink=20,68,52,10
+n12 x=20 y=100 w=240 h=15 op=37 txt=S ord=10 ink=20,101,56,11 fg=cdd6f4ff gl=["Calendar"]
+n13 x=20 y=117 w=240 h=15 op=37 txt=S ord=11 ink=20,119,52,10 fg=a6adc8ff gl=["Just\u0020now"]
+k4
+n7 y=95 op=98
+n8 y=42 op=190
+n10 y=50 op=190 ink=20,51,25,11
+n11 y=67 op=190 ink=20,69,52,10
+n12 y=103 op=98 ink=20,104,56,11
+n13 y=120 op=98 ink=20,122,52,10
+k5
+n6 y=148 op=37 hid=- bg=313244ff
+n7 y=97 op=151
+n8 op=216
+n9 ord=15
+n10 op=216
+n11 op=216
+n12 y=105 op=151 ink=20,106,56,11
+n13 y=122 op=151 ink=20,124,52,10
+n14 x=20 y=156 w=240 h=15 op=37 txt=S ord=13 ink=20,157,32,11 fg=cdd6f4ff gl=["Build"]
+n15 x=20 y=173 w=240 h=15 op=37 txt=S ord=14 ink=20,175,52,10 fg=a6adc8ff gl=["Just\u0020now"]
+k6
+n6 y=151 op=98
+n7 y=98 op=190
+n8 op=232
+n10 op=232
+n11 op=232
+n12 y=106 op=190 ink=20,107,56,11
+n13 y=123 op=190 ink=20,125,52,10
+n14 y=159 op=98 ink=20,160,32,11
+n15 y=176 op=98 ink=20,178,52,10
+k7
+n6 y=153 op=151
+n7 op=216
+n8 op=241
+n10 op=241
+n11 op=241
+n12 op=216
+n13 op=216
+n14 y=161 op=151 ink=20,162,32,11
+n15 y=178 op=151 ink=20,180,52,10
+k8
+n6 y=154 op=190
+n7 op=232
+n8 op=247
+n9 y=204 op=37 hid=- bg=313244ff
+n10 op=247
+n11 op=247
+n12 op=232
+n13 op=232
+n14 y=162 op=190 ink=20,163,32,11
+n15 y=179 op=190 ink=20,181,52,10
+n16 x=20 y=212 w=240 h=15 op=37 txt=S ord=16 ink=20,213,37,11 fg=cdd6f4ff gl=["Music"]
+n17 x=20 y=229 w=240 h=15 op=37 txt=S ord=17 ink=20,231,52,10 fg=a6adc8ff gl=["Just\u0020now"]
+k9
+n6 op=216
+n7 op=241
+n8 op=251
+n9 y=207 op=98
+n10 op=251
+n11 op=251
+n12 op=241
+n13 op=241
+n14 op=216
+n15 op=216
+n16 y=215 op=98 ink=20,216,37,11
+n17 y=232 op=98 ink=20,234,52,10
+k10
+n6 op=232
+n7 op=247
+n8 op=253
+n9 y=209 op=151
+n10 op=253
+n11 op=253
+n12 op=247
+n13 op=247
+n14 op=232
+n15 op=232
+n16 y=217 op=151 ink=20,218,37,11
+n17 y=234 op=151 ink=20,236,52,10
+k11
+n6 op=241
+n7 op=251
+n8 op=254
+n9 y=210 op=190
+n10 op=254
+n11 op=254
+n12 op=251
+n13 op=251
+n14 op=241
+n15 op=241
+n16 y=218 op=190 ink=20,219,37,11
+n17 y=235 op=190 ink=20,237,52,10
+k12
+n6 op=247
+n7 op=253
+n9 op=216
+n12 op=253
+n13 op=253
+n14 op=247
+n15 op=247
+n16 op=216
+n17 op=216
+k13
+n6 op=251
+n7 op=254
+n8 op=255
+n9 op=232
+n10 op=255
+n11 op=255
+n12 op=254
+n13 op=254
+n14 op=251
+n15 op=251
+n16 op=232
+n17 op=232
+k14
+n6 op=253
+n9 op=241
+n14 op=253
+n15 op=253
+n16 op=241
+n17 op=241
+k15
+n6 op=254
+n7 op=255
+n9 op=247
+n12 op=255
+n13 op=255
+n14 op=254
+n15 op=254
+n16 op=247
+n17 op=247
+k16
+n9 op=251
+n16 op=251
+n17 op=251
+k17
+n6 op=255
+n9 op=253
+n14 op=255
+n15 op=255
+n16 op=253
+n17 op=253
+k18
+n9 op=254
+n16 op=254
+n17 op=254
+k19
+k20
+n9 op=255
+n16 op=255
+n17 op=255
+k21
+k22
+s1 z=280,270
+k23
+s1 z=280,328
+n0 h=326
+n3 h=272
+n5 h=326
+n6 y=169 ord=15
+n7 y=113 ord=12
+n8 y=57 ord=9
+n9 y=225 ord=18
+n10 y=65 ord=10 ink=20,66,25,11
+n11 y=82 ord=11 ink=20,84,52,10
+n12 y=121 ord=13 ink=20,122,56,11
+n13 y=138 ord=14 ink=20,140,52,10
+n14 y=177 ord=16 ink=20,178,32,11
+n15 y=194 ord=17 ink=20,196,52,10
+n16 y=233 ord=19 ink=20,234,37,11
+n17 y=250 ord=20 ink=20,252,52,10
+n18 x=12 y=36 w=256 h=48 op=37 ord=6 bg=313244ff
+n19 x=20 y=44 w=240 h=15 op=37 txt=S ord=7 ink=20,45,29,11 fg=cdd6f4ff gl=["Chat"]
+n20 x=20 y=61 w=240 h=15 op=37 txt=S ord=8 ink=20,63,52,10 fg=a6adc8ff gl=["Just\u0020now"]
+k24
+n6 y=190
+n7 y=134
+n8 y=78
+n9 y=246
+n10 y=86 ink=20,87,25,11
+n11 y=103 ink=20,105,52,10
+n12 y=142 ink=20,143,56,11
+n13 y=159 ink=20,161,52,10
+n14 y=198 ink=20,199,32,11
+n15 y=215 ink=20,217,52,10
+n16 y=254 ink=20,255,37,11
+n17 y=271 ink=20,273,52,10
+n18 y=39 op=98
+n19 y=47 op=98 ink=20,48,29,11
+n20 y=64 op=98 ink=20,66,52,10
+k25
+n6 y=204
+n7 y=148
+n8 y=92
+n9 y=260
+n10 y=100 ink=20,101,25,11
+n11 y=117 ink=20,119,52,10
+n12 y=156 ink=20,157,56,11
+n13 y=173 ink=20,175,52,10
+n14 y=212 ink=20,213,32,11
+n15 y=229 ink=20,231,52,10
+n16 y=268 ink=20,269,37,11
+n17 y=285 ink=20,287,52,10
+n18 y=41 op=151
+n19 y=49 op=151 ink=20,50,29,11
+n20 y=66 op=151 ink=20,68,52,10
+k26
+n6 y=210
+n7 y=154
+n8 y=98
+n9 y=266
+n10 y=106 ink=20,107,25,11
+n11 y=123 ink=20,125,52,10
+n12 y=162 ink=20,163,56,11
+n13 y=179 ink=20,181,52,10
+n14 y=218 ink=20,219,32,11
+n15 y=235 ink=20,237,52,10
+n16 y=274 ink=20,275,37,11
+n17 y=291 ink=20,293,52,10
+n18 y=42 op=190
+n19 y=50 op=190 ink=20,51,29,11
+n20 y=67 op=190 ink=20,69,52,10
+k27
+n6 y=212
+n7 y=156
+n8 y=100
+n9 y=268
+n10 y=108 ink=20,109,25,11
+n11 y=125 ink=20,127,52,10
+n12 y=164 ink=20,165,56,11
+n13 y=181 ink=20,183,52,10
+n14 y=220 ink=20,221,32,11
+n15 y=237 ink=20,239,52,10
+n16 y=276 ink=20,277,37,11
+n17 y=293 ink=20,295,52,10
+n18 op=216
+n19 op=216
+n20 op=216
+k28
+n6 y=211
+n7 y=155
+n8 y=99
+n9 y=267
+n10 y=107 ink=20,108,25,11
+n11 y=124 ink=20,126,52,10
+n12 y=163 ink=20,164,56,11
+n13 y=180 ink=20,182,52,10
+n14 y=219 ink=20,220,32,11
+n15 y=236 ink=20,238,52,10
+n16 y=275 ink=20,276,37,11
+n17 y=292 ink=20,294,52,10
+n18 op=232
+n19 op=232
+n20 op=232
+k29
+n18 op=241
+n19 op=241
+n20 op=241
+k30
+n6 y=210
+n7 y=154
+n8 y=98
+n9 y=266
+n10 y=106 ink=20,107,25,11
+n11 y=123 ink=20,125,52,10
+n12 y=162 ink=20,163,56,11
+n13 y=179 ink=20,181,52,10
+n14 y=218 ink=20,219,32,11
+n15 y=235 ink=20,237,52,10
+n16 y=274 ink=20,275,37,11
+n17 y=291 ink=20,293,52,10
+n18 op=247
+n19 op=247
+n20 op=247
+k31
+n18 op=251
+n19 op=251
+n20 op=251
+k32
+n18 op=253
+n19 op=253
+n20 op=253
+k33
+n18 op=254
+n19 op=254
+n20 op=254
+k34
+k35
+n18 op=255
+n19 op=255
+n20 op=255
+k36
+k37
+s1 z=280,326
+k38
+n6 x=18 op=218 hid=inert
+n7 x=18 op=218 hid=inert
+n8 x=18 op=218 hid=inert
+n9 x=18 op=218 hid=inert
+n10 x=26 op=218 hid=inert ink=26,107,25,11
+n11 x=26 op=218 hid=inert ink=26,125,52,10
+n12 x=26 op=218 hid=inert ink=26,163,56,11
+n13 x=26 op=218 hid=inert ink=26,181,52,10
+n14 x=26 op=218 hid=inert ink=26,219,32,11
+n15 x=26 op=218 hid=inert ink=26,237,52,10
+n16 x=26 op=218 hid=inert ink=26,275,37,11
+n17 x=26 op=218 hid=inert ink=26,293,52,10
+n18 x=18 op=218 hid=inert
+n19 x=26 op=218 hid=inert ink=26,51,29,11
+n20 x=26 op=218 hid=inert ink=26,69,52,10
+k39
+n6 x=27 op=157
+n7 x=27 op=157
+n8 x=27 op=157
+n9 x=27 op=157
+n10 x=35 op=157 ink=35,107,25,11
+n11 x=35 op=157 ink=35,125,52,10
+n12 x=35 op=157 ink=35,163,56,11
+n13 x=35 op=157 ink=35,181,52,10
+n14 x=35 op=157 ink=35,219,32,11
+n15 x=35 op=157 ink=35,237,52,10
+n16 x=35 op=157 ink=35,275,37,11
+n17 x=35 op=157 ink=35,293,52,10
+n18 x=27 op=157
+n19 x=35 op=157 ink=35,51,29,11
+n20 x=35 op=157 ink=35,69,52,10
+k40
+n6 x=33 op=104
+n7 x=33 op=104
+n8 x=33 op=104
+n9 x=33 op=104
+n10 x=41 op=104 ink=41,107,25,11
+n11 x=41 op=104 ink=41,125,52,10
+n12 x=41 op=104 ink=41,163,56,11
+n13 x=41 op=104 ink=41,181,52,10
+n14 x=41 op=104 ink=41,219,32,11
+n15 x=41 op=104 ink=41,237,52,10
+n16 x=41 op=104 ink=41,275,37,11
+n17 x=41 op=104 ink=41,293,52,10
+n18 x=33 op=104
+n19 x=41 op=104 ink=41,51,29,11
+n20 x=41 op=104 ink=41,69,52,10
+k41
+n6 x=36 op=65
+n7 x=36 op=65
+n8 x=36 op=65
+n9 x=36 op=65
+n10 x=44 op=65 ink=44,107,25,11
+n11 x=44 op=65 ink=44,125,52,10
+n12 x=44 op=65 ink=44,163,56,11
+n13 x=44 op=65 ink=44,181,52,10
+n14 x=44 op=65 ink=44,219,32,11
+n15 x=44 op=65 ink=44,237,52,10
+n16 x=44 op=65 ink=44,275,37,11
+n17 x=44 op=65 ink=44,293,52,10
+n18 x=36 op=65
+n19 x=44 op=65 ink=44,51,29,11
+n20 x=44 op=65 ink=44,69,52,10
+k42
+n6 x=37 op=39
+n7 x=37 op=39
+n8 x=37 op=39
+n9 x=37 op=39
+n10 x=45 op=39 ink=45,107,25,11
+n11 x=45 op=39 ink=45,125,52,10
+n12 x=45 op=39 ink=45,163,56,11
+n13 x=45 op=39 ink=45,181,52,10
+n14 x=45 op=39 ink=45,219,32,11
+n15 x=45 op=39 ink=45,237,52,10
+n16 x=45 op=39 ink=45,275,37,11
+n17 x=45 op=39 ink=45,293,52,10
+n18 x=37 op=39
+n19 x=45 op=39 ink=45,51,29,11
+n20 x=45 op=39 ink=45,69,52,10
+k43
+n6 op=23
+n7 op=23
+n8 op=23
+n9 op=23
+n10 op=23
+n11 op=23
+n12 op=23
+n13 op=23
+n14 op=23
+n15 op=23
+n16 op=23
+n17 op=23
+n18 op=23
+n19 op=23
+n20 op=23
+k44
+n6 x=36 op=14
+n7 x=36 op=14
+n8 x=36 op=14
+n9 x=36 op=14
+n10 x=44 op=14 ink=44,107,25,11
+n11 x=44 op=14 ink=44,125,52,10
+n12 x=44 op=14 ink=44,163,56,11
+n13 x=44 op=14 ink=44,181,52,10
+n14 x=44 op=14 ink=44,219,32,11
+n15 x=44 op=14 ink=44,237,52,10
+n16 x=44 op=14 ink=44,275,37,11
+n17 x=44 op=14 ink=44,293,52,10
+n18 x=36 op=14
+n19 x=44 op=14 ink=44,51,29,11
+n20 x=44 op=14 ink=44,69,52,10
+k45
+n6 op=8
+n7 op=8
+n8 op=8
+n9 op=8
+n10 op=8
+n11 op=8
+n12 op=8
+n13 op=8
+n14 op=8
+n15 op=8
+n16 op=8
+n17 op=8
+n18 op=8
+n19 op=8
+n20 op=8
+k46
+n6 op=4
+n7 op=4
+n8 op=4
+n9 op=4
+n10 op=4
+n11 op=4
+n12 op=4
+n13 op=4
+n14 op=4
+n15 op=4
+n16 op=4
+n17 op=4
+n18 op=4
+n19 op=4
+n20 op=4
+k47
+n6 op=2
+n7 op=2
+n8 op=2
+n9 op=2
+n10 op=2
+n11 op=2
+n12 op=2
+n13 op=2
+n14 op=2
+n15 op=2
+n16 op=2
+n17 op=2
+n18 op=2
+n19 op=2
+n20 op=2
+k48
+n6 op=1
+n7 op=1
+n8 op=1
+n9 op=1
+n10 op=1
+n11 op=1
+n12 op=1
+n13 op=1
+n14 op=1
+n15 op=1
+n16 op=1
+n17 op=1
+n18 op=1
+n19 op=1
+n20 op=1
+k49
+k50
+n6 op=0
+n7 op=0
+n8 op=0
+n9 op=0
+n10 op=0
+n11 op=0
+n12 op=0
+n13 op=0
+n14 op=0
+n15 op=0
+n16 op=0
+n17 op=0
+n18 op=0
+n19 op=0
+n20 op=0
+k51
+n6 hid=opacity0 ord=9 bg=-
+n7 hid=opacity0 ord=8 bg=-
+n8 hid=opacity0 ord=7 bg=-
+n9 hid=opacity0 ord=10 bg=-
+n10 -
+n11 -
+n12 -
+n13 -
+n14 -
+n15 -
+n16 -
+n17 -
+n18 hid=opacity0 bg=-
+n19 -
+n20 -
+k52
+n0 h=54
+n3 h=0
+n5 h=54
+n6 -
+n7 -
+n8 -
+n9 -
+n18 -
+k53
+s1 z=280,54

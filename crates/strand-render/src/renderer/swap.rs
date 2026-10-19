@@ -120,6 +120,10 @@ struct Root {
     motion: Motion<4>,
     /// Exactly what logic sent: written once the spring settles.
     target: Color,
+    /// (eval-rules-3) The curve a colour takes in the table the swap
+    /// sent, for the trace (`probe::SpringTrace::asked`).
+    #[cfg(feature = "eval-hooks")]
+    asked: Curve,
 }
 
 /// A surface's old frame: tightly packed premultiplied ARGB8888 at the
@@ -185,6 +189,10 @@ pub(super) struct Swap {
     /// [`Renderer::sample_tokens`]'s scratch: whether each root has
     /// settled at the frame's time.
     settled: Vec<bool>,
+    /// (eval-rules-3) The samples the frame being painted took of the
+    /// palette roots, for its trace (`Renderer::take_palette_traces`).
+    #[cfg(feature = "eval-hooks")]
+    traced: Vec<crate::probe::SpringTrace>,
 }
 
 /// What a `SetTokens` will do, worked out before the diff applies (the
@@ -1039,6 +1047,17 @@ impl Renderer {
             }
             _ => Curve::Instant,
         };
+        // (eval-rules-3) What a colour's curve is in this table, worked
+        // out apart from the plan's own, for the trace: the `colour`
+        // check holds each root's curve to it.
+        #[cfg(feature = "eval-hooks")]
+        let asked = match shown_at {
+            Some(_) if !reduced && *transition != Transition::Instant => {
+                let tables = [table];
+                Curve::of(&TokenScope::new(&tables).transition(transition, Prop::Color))
+            }
+            _ => Curve::Instant,
+        };
         let mut plan = Plan {
             roots: BTreeMap::new(),
             snap: false,
@@ -1085,6 +1104,8 @@ impl Renderer {
                 Root {
                     motion,
                     target: *target,
+                    #[cfg(feature = "eval-hooks")]
+                    asked,
                 },
             );
         }
@@ -1506,7 +1527,11 @@ impl Renderer {
         // Whether each root (in order) has settled at `at`, asked once.
         let mut settled = std::mem::take(&mut self.swap.settled);
         settled.clear();
+        #[cfg(feature = "eval-hooks")]
+        self.swap.traced.clear();
         for (path, r) in self.swap.roots.iter_mut() {
+            #[cfg(feature = "eval-hooks")]
+            let pre = r.motion.view();
             let ch = if snap {
                 None
             } else if commit {
@@ -1514,6 +1539,22 @@ impl Renderer {
             } else {
                 Some(r.motion.peek(at))
             };
+            #[cfg(feature = "eval-hooks")]
+            if commit && let Some(ch) = &ch {
+                let mut t = crate::probe::SpringTrace::of(
+                    NodeId {
+                        index: 0,
+                        generation: 0,
+                    },
+                    crate::probe::SpringOf::Palette,
+                    at,
+                    &pre,
+                    ch,
+                );
+                t.token = Some(path.as_str().into());
+                t.asked = Some(r.asked);
+                self.swap.traced.push(t);
+            }
             let c = match ch {
                 Some(ch) => {
                     let done = r.motion.is_settled(at);
@@ -1548,6 +1589,18 @@ impl Renderer {
         // nodes read it (derived tokens and guarded text exact).
         self.tree.tokens.freeze();
         self.swap.work += started.elapsed();
+    }
+
+    /// (eval-rules-3) The samples [`Renderer::sample_tokens`] took of
+    /// the palette roots for the frame being painted, each given that
+    /// surface's root as its node.
+    #[cfg(feature = "eval-hooks")]
+    pub(super) fn take_palette_traces(&mut self, root: NodeId) -> Vec<crate::probe::SpringTrace> {
+        let mut out = std::mem::take(&mut self.swap.traced);
+        for t in &mut out {
+            t.node = root;
+        }
+        out
     }
 
     /// The swap keeps `surface` moving: roots in flight, a crossfade on
@@ -1732,6 +1785,8 @@ mod tests {
                         Root {
                             motion,
                             target: *to,
+                            #[cfg(feature = "eval-hooks")]
+                            asked: curve,
                         },
                     )
                 })

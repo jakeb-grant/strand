@@ -377,6 +377,11 @@ pub struct SpringRec {
     /// On the frame its node enters, whether its enter pose sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enter: Option<bool>,
+    /// (eval-rules-3) A palette root's (`of` "palette", `key` "$" and
+    /// its token path): the curve a colour takes in the table its swap
+    /// sent (`probe::SpringTrace::asked`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<CurveRec>,
 }
 
 /// (eval-rules-2) A change that started at a sample: the motion's last
@@ -428,6 +433,43 @@ impl CurveRec {
                     Easing::OutBounce => EaseRec::Bounce,
                     Easing::Bezier { x1, y1, x2, y2 } => EaseRec::Bezier([x1, y1, x2, y2]),
                 },
+            },
+        }
+    }
+}
+
+impl CurveRec {
+    /// (eval-rules-3) The most a value moved along this curve from rest
+    /// goes past its target, as a share of the way: a spring's first
+    /// peak, `exp(−ζπ/√(1−ζ²))` below critical damping and nothing at
+    /// or above it; a bézier's no more than its control values lie
+    /// outside 0..1 (the curve stays in their hull); linear and bounce
+    /// easings none; an elastic one's first peak (`OutElastic`, under
+    /// 0.4: `None` holds it to the old half-way bound).
+    pub fn overshoot(self) -> Option<f64> {
+        match self {
+            CurveRec::Instant => Some(0.0),
+            CurveRec::Spring { z, .. } => {
+                let z = f64::from(z);
+                Some(if z >= 1.0 {
+                    0.0
+                } else {
+                    (-z * std::f64::consts::PI / (1.0 - z * z).sqrt()).exp()
+                })
+            }
+            CurveRec::Timed { ease, .. } => match ease {
+                EaseRec::Linear | EaseRec::Bounce => Some(0.0),
+                EaseRec::Elastic => None,
+                EaseRec::Bezier([_, y1, _, y2]) => Some(
+                    [
+                        f64::from(y1) - 1.0,
+                        f64::from(y2) - 1.0,
+                        -f64::from(y1),
+                        -f64::from(y2),
+                    ]
+                    .into_iter()
+                    .fold(0.0, f64::max),
+                ),
             },
         }
     }

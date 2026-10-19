@@ -1,0 +1,56 @@
+id     = "calendar-grid-144hz"
+about  = """A calendar-like grid on a 144 Hz output (design.md's Calendar: a
+`grid` of seven columns of day cells under a month heading): a five-week
+month opens, the selected day moves twice (its fill springs off one cell and
+onto another), then the next month shows six weeks, so the grid's new last
+row fades in and the popup grows, and it goes back. Each change comes after a
+pause, as a click does, so its first frame follows an idle surface. Cells
+keep their places in the grid while the selection moves, and the heading
+never moves
+(decisions.md eval-rules-3: set E's coverage of 144 Hz calendar-like
+grids)."""
+screen = { width = 400, height = 400, scale = 1.0 }
+hz     = 144
+
+=== shell.strand
+state next = false
+state sel = 12
+let five = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+let six = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+panel Calendar {
+  anchor: top; margin: 10, 0, 0, 0; layer: overlay; keyboard: none
+  col { id: cal; pad: 12; gap: 8; radius: 14; bg: #1e1e2e
+    text "October" { id: heading; weight: 600; color: #cdd6f4 }
+    grid { id: days; columns: 7; gap: 4
+      for d in (next ? six : five) key d {
+        box { width: 28; height: 28; radius: 14; bg: #313244
+              enter { opacity: 0 }
+          when d == sel { bg: #89b4fa }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+wait 300
+mark select
+set sel 20
+rest
+expect still #heading
+wait 300
+mark select-again
+set sel 3
+rest
+expect still #heading
+wait 300
+mark next
+set next true
+rest
+expect still #heading
+wait 300
+mark back
+set next false
+rest
+expect still #heading

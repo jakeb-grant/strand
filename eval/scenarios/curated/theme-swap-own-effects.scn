@@ -1,0 +1,38 @@
+id     = "theme-swap-own-effects"
+about  = """A theme swap along a shell's own `$motion.effects` (design.md
+"Tokens": a theme swap springs the palette in OKLab; "Springs everywhere":
+colour uses `$motion.effects`, which a shell's `tokens` block may set): the
+shell's base tokens make `effects` a slower `spring(500, 1)`, and a bar whose
+fill, accent pill and label are themed swaps from a dark palette to a light
+one and back. Each palette root springs along the shell's spring, not the
+design's default (docs/decisions.md eval-rules-3). The box at the start of
+the row never moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state dark = true
+let scheme: Palette = dark ? import("catppuccin:mocha") : import("catppuccin:latte")
+tokens base {
+  motion { spatial: spring(3000, 0.75); effects: spring(500, 1); bouncy: spring(380, 0.75) }
+}
+use tokens base, palette scheme
+bar Top {
+  height: 30
+  bg: $surface
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 14; height: 14; radius: 3; bg: #5c6370 }
+    box { id: pill; width: 40; height: 14; radius: full; bg: $accent }
+    text "Theme" { id: label; color: $fg }
+  }
+}
+
+=== steps
+rest
+mark light
+set dark false
+rest
+expect still #lead
+mark dark
+set dark true
+rest
+expect still #lead

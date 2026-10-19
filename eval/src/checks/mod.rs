@@ -554,6 +554,11 @@ pub struct Cx<'a> {
     /// Per frame of the timeline, the surfaces with something on them
     /// that lays out anew by itself ([`LAYOUT_CAUSES`]).
     causes: Vec<HashSet<u32>>,
+    /// (eval-rules-3) The nodes that draw something of their own: a
+    /// fill, border, shadow, text or part on some frame of the run
+    /// (`Row::paint`), or an image, icon or shader, whose pixels the
+    /// paint record leaves out.
+    draws: HashSet<&'a str>,
 }
 
 impl<'a> Cx<'a> {
@@ -597,6 +602,20 @@ impl<'a> Cx<'a> {
                     .collect()
             })
             .collect();
+        let draws = trace
+            .frames
+            .iter()
+            .flat_map(|f| f.n.iter())
+            .filter(|r| r.paint.as_ref().is_some_and(|p| !p.is_empty()))
+            .map(|r| r.key.as_str())
+            .chain(
+                trace
+                    .nodes
+                    .iter()
+                    .filter(|(_, m)| matches!(m.kind.as_str(), "image" | "icon" | "shader"))
+                    .map(|(k, _)| k.as_str()),
+            )
+            .collect();
         Cx {
             sc,
             trace,
@@ -606,7 +625,15 @@ impl<'a> Cx<'a> {
             unmatched_allows: unmatched,
             parents,
             causes,
+            draws,
         }
+    }
+
+    /// (eval-rules-3) `key` draws something of its own on some frame of
+    /// the run: a node that draws nothing (a bare container) shows
+    /// nothing wherever it is laid.
+    pub fn draws(&self, key: &str) -> bool {
+        self.draws.contains(key)
     }
 
     /// Something on `surface` at frame `i` lays out anew by itself.

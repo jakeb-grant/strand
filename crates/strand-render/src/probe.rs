@@ -94,6 +94,9 @@ pub enum SpringOf {
     Prop(strand_scene::Prop),
     Size(u8),
     Glide,
+    /// (eval-rules-3) A palette root's spring in a theme swap
+    /// ([`SpringTrace::token`] names it): premultiplied OKLab plus alpha.
+    Palette,
 }
 
 /// (eval-rules-2) One sample a painted frame took of a spring: the
@@ -124,6 +127,15 @@ pub struct SpringTrace {
     /// A prop's spring on the frame its node enters: whether its enter
     /// pose sets that prop. `None` otherwise.
     pub entering: Option<bool>,
+    /// (eval-rules-3) A palette root's token path ([`SpringOf::Palette`];
+    /// `node` is then the root of the surface whose frame sampled it).
+    pub token: Option<std::sync::Arc<str>>,
+    /// (eval-rules-3) A palette root's: the curve a colour takes in the
+    /// table the swap sent, `$motion.effects` unless the swap names
+    /// another (`TokenScope::transition` of the swap's transition for
+    /// `Prop::Color`), which the `colour` check holds the root's own
+    /// curve to (design.md "Springs everywhere").
+    pub asked: Option<strand_scene::Curve>,
 }
 
 /// (eval-rules-2) A change that started at a sample: the motion's last
@@ -161,6 +173,8 @@ impl SpringTrace {
                 shift: shift.to_vec(),
             }),
             entering: None,
+            token: None,
+            asked: None,
         }
     }
 }

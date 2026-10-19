@@ -1,0 +1,189 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "theme-swap-own-effects"
+verdict good
+note "eval-rules-3 coverage, read: the bar's fill, accent pill and label colour spring from mocha to latte along the shell's own effects spring(500, 1) (every palette root's sample names it, as its table asks) and back; the lead box never moves"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario 4fab90442c7340c1
+seal 85c0d52547071349
+S1 0 - "bar Top"
+N0 "label|shell.strand:13:5|[Mock | DP-1]#0" "text#label"
+N1 "lead|shell.strand:11:5|[Mock | DP-1]#0" "box#lead"
+N2 "pill|shell.strand:12:5|[Mock | DP-1]#1" "box#pill"
+N3 "strip|shell.strand:10:3|[Mock | DP-1]#0" "row#strip"
+N4 "|shell.strand:7:1|[Mock | DP-1]#0" "bar@shell.strand:7"
+k0 p1
+s1 z=320,30
+n0 x=78 y=5 w=41 h=15 txt=S ord=4 ink=78,6,40,11 fg=cdd6f4ff gl=["Theme"]
+n1 x=8 y=5 w=14 h=14 ord=2 bg=5c6370ff
+n2 x=30 y=5 w=40 h=14 ord=3 bg=cba6f7ff
+n3 x=0 y=0 w=320 h=24 ord=1
+n4 x=0 y=0 w=320 h=30 bg=1e1e2eff
+k1
+n0 fg=c5ceecff
+n2 bg=c7a1f7ff
+n4 bg=272737ff
+k2
+n0 fg=b8c0ddff
+n2 bg=be96f7ff
+n4 bg=3c3d4cff
+k3
+n0 fg=c8cfeeff
+n2 bg=b589f6ff
+n4 bg=575766ff
+k4
+n0 fg=d8dffeff
+n2 bg=ac7cf5ff
+n4 bg=71727fff
+k5
+n0 fg=2e3249ff
+n2 bg=a470f4ff
+n4 bg=8a8b96ff
+k6
+n0 fg=40445dff
+n2 bg=9d65f3ff
+n4 bg=9fa1abff
+k7
+n0 fg=474b64ff
+n2 bg=985cf2ff
+n4 bg=b1b3bbff
+k8
+n0 fg=4b4f69ff
+n2 bg=9455f2ff
+n4 bg=c0c2c9ff
+k9
+n0 fg=4f526cff
+n2 bg=914ff1ff
+n4 bg=cbcdd4ff
+k10
+n0 fg=51556fff
+n2 bg=8f4af1ff
+n4 bg=d4d6dcff
+k11
+n0 fg=535771ff
+n2 bg=8d46f0ff
+n4 bg=dbdde2ff
+k12
+n2 bg=8c43f0ff
+n4 bg=e0e2e7ff
+k13
+n0 fg=51556fff
+n2 bg=8b40f0ff
+n4 bg=e4e6ebff
+k14
+n0 fg=50536dff
+n2 bg=8a3eefff
+n4 bg=e7e9eeff
+k15
+n0 fg=4f526cff
+n2 bg=893defff
+n4 bg=e9ebf0ff
+k16
+n0 fg=4e516bff
+n2 bg=893cefff
+n4 bg=ebedf1ff
+k17
+n2 bg=893befff
+n4 bg=eceef2ff
+k18
+n0 fg=4d506aff
+n4 bg=edeff3ff
+k19
+n2 bg=883aefff
+k20
+n4 bg=eef0f4ff
+k21
+n0 fg=4c4f69ff
+k22
+n2 bg=8839efff
+k23
+n4 bg=eff1f5ff
+k24
+k25
+k26
+k27
+k28
+n0 fg=525670ff
+n2 bg=8b41f0ff
+n4 bg=e2e4e9ff
+k29
+n0 fg=4d516bff
+n2 bg=9251f1ff
+n4 bg=c7c8cfff
+k30
+n0 fg=444861ff
+n2 bg=9b61f3ff
+n4 bg=a8a9b3ff
+k31
+n0 fg=2f334bff
+n2 bg=a36ff4ff
+n4 bg=8b8c97ff
+k32
+n0 fg=d9e0feff
+n2 bg=ab7bf5ff
+n4 bg=727380ff
+k33
+n0 fg=cdd4f2ff
+n2 bg=b285f6ff
+n4 bg=5e5f6dff
+k34
+n0 fg=c3cbe9ff
+n2 bg=b88df6ff
+n4 bg=4e4f5eff
+k35
+n0 fg=bbc3e1ff
+n2 bg=bc93f6ff
+n4 bg=424352ff
+k36
+n0 fg=b8c0deff
+n2 bg=c098f7ff
+n4 bg=393949ff
+k37
+n0 fg=bdc6e3ff
+n2 bg=c39bf7ff
+n4 bg=323242ff
+k38
+n0 fg=c1cae8ff
+n2 bg=c59ef7ff
+n4 bg=2d2d3dff
+k39
+n0 fg=c4cdebff
+n2 bg=c6a0f7ff
+n4 bg=292939ff
+k40
+n0 fg=c7cfedff
+n2 bg=c8a2f7ff
+n4 bg=262636ff
+k41
+n0 fg=c8d1efff
+n2 bg=c8a3f7ff
+n4 bg=242434ff
+k42
+n0 fg=cad2f0ff
+n2 bg=c9a4f7ff
+n4 bg=222232ff
+k43
+n0 fg=cbd3f1ff
+n2 bg=caa4f7ff
+n4 bg=212131ff
+k44
+n0 fg=cbd4f2ff
+n2 bg=caa5f7ff
+n4 bg=202030ff
+k45
+n0 fg=ccd5f3ff
+k46
+n4 bg=1f1f2fff
+k47
+n2 bg=cba6f7ff
+k48
+n0 fg=cdd5f3ff
+k49
+n0 fg=cdd6f4ff
+n4 bg=1e1e2eff
+k50
+k51
+k52
+k53
+k54

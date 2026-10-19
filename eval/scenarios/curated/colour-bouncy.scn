@@ -1,0 +1,34 @@
+id     = "colour-bouncy"
+about  = """Colours on an underdamped spring (design.md "Springs everywhere":
+`~ $motion.bouncy` overrides a prop's curve): a chip's fill springs from blue
+to yellow along `$motion.bouncy` and its border from grey to green along a
+looser `spring(500, 0.5)`, and back. Each rings a little past its end along
+the straight way between its two colours in premultiplied OKLab, never
+further than its spring overshoots, and never back past where it started
+(docs/decisions.md eval-rules-3). The box at the start of the row never
+moves."""
+screen = { width = 320, scale = 1.0 }
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 30
+  bg: #1e2127
+  row { id: strip; height: 24; gap: 8; align: center; pad: 0, 8
+    box { id: lead; width: 14; height: 14; radius: 3; bg: #5c6370 }
+    box { id: chip; width: 48; height: 18; radius: 6
+          bg: on ? #ffcc00 : #3366ff ~ $motion.bouncy
+          border: 2, on ? #98c379 : #5c6370 ~ spring(500, 0.5) }
+  }
+}
+
+=== steps
+rest
+mark in
+set on true
+rest
+expect still #lead
+mark out
+set on false
+rest
+expect still #lead

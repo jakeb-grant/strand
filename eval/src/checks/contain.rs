@@ -8,11 +8,22 @@
 //!   nothing it holds is drawn past its edge on that axis, mid-motion
 //!   included. A spring's overshoot past both where it started and where
 //!   it rests is the one exception: the surface takes its content's
-//!   resting size, never the overshoot (popup-height-spring's card). Not
+//!   resting size, never the overshoot (popup-height-spring's card). A
+//!   spring overshoots by a share of how far it travels, so the excuse is
+//!   the overshoot tolerance's share of the node's travel (eval-rules-3):
+//!   a box glided past the edge and back to where it started is cut (set
+//!   D's launcher-filter, 33.5 px past its panel). Not
 //!   held for a node moved by authored motion on that axis (an offset, a
 //!   pose, a scale or a turn: an `enter: slide(top)` leaves the surface on
 //!   purpose) or held inside a clipping ancestor (`clip: true`, a
 //!   `scroll`, a `list`).
+//! - **pushed** (eval-rules-3): a node that draws, wholly inside its
+//!   surface and the clip its ancestors set at a segment's start and at
+//!   its rest, and laid at one place at both, is not drawn past them on a
+//!   frame between unless something moves it there (a motion that carries
+//!   it, authored geometry, a scroll): layout pushed it out (set E's
+//!   module swap: a wrapping exit laid a bar's labels below it for seven
+//!   frames). A clip a springing size sets is `held`'s.
 //! - **give way**: an ellipsised text gives way before it is cut
 //!   (design.md "Layout": in a full row children give way by `shrink`;
 //!   decisions.md wave3-pixels "text in its box": "Text with `ellipsis`
@@ -56,6 +67,7 @@ use crate::trace::{Row, RunTrace};
 
 pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut out = cut(cx);
+    out.extend(pushed(cx));
     out.extend(give_way(cx));
     out.extend(held(cx));
     out.extend(shadow(cx));
@@ -296,6 +308,125 @@ fn shadow(cx: &Cx) -> Vec<Finding> {
     out
 }
 
+/// What moves a node off its place on purpose, or lays it out anew by
+/// itself, for `pushed`: its own or an ancestor's.
+const CARRIES: Motions =
+    Motions(MOVES.0 & !Motions::SIZE_SPRING.0 & !Motions::STAGGER.0 | Motions::FLING.0);
+
+/// (eval-rules-3) `pushed`: what shows wholly inside its surface and
+/// its ancestors' clip at a segment's start and at its rest, laid at
+/// the same place at both, stays wholly inside them while the segment
+/// plays, unless something moves it on purpose: an authored offset,
+/// scale or turn, a pose, a glide, a drag, keyframes or time, a morph,
+/// or a scroll carrying it. Layout settles between two frames that both
+/// lay it there, so a frame laying it past the edge it was inside of at
+/// both ends is a layout drawn wrong (set E's module swap: a label's
+/// exit wrapped into a column and laid its bar's every node past the
+/// bar's bottom for seven frames). A spring's overshoot is no excuse
+/// here: it carries a node past where it rests, and this node rests
+/// where it started. A node that draws nothing of its own (a bare
+/// container) shows nothing past the edge and is left out, and the
+/// clip of a box whose size springs cuts what no longer fits on purpose
+/// (`held`), so under one only the surface's edges hold. Only `[allow]`
+/// exempts.
+fn pushed(cx: &Cx) -> Vec<Finding> {
+    let tl = &cx.tl;
+    let mut out = Vec::new();
+    let mut held = 0u64;
+    let give = cx.tol + 1.0 / 64.0;
+    // How far a box lies past its surface's edges and its clip, and
+    // which side the most.
+    // A clip set by a box whose size springs (or that exits to a size)
+    // cuts what no longer fits on purpose (`held`'s rule): only the
+    // surface's edges hold a node under one.
+    let past = |i: usize, r: &Row| -> Option<(f64, usize, bool)> {
+        let size = tl.size(i, r.surface)?.map(f64::from);
+        let v = on_surface(cx, i, r, r.visual);
+        let mut worst = (f64::MIN, 0, false);
+        let mut side = |by: f64, s: usize, clip: bool| {
+            if by > worst.0 {
+                worst = (by, s, clip);
+            }
+        };
+        side(-v[0], 0, false);
+        side(-v[1], 1, false);
+        side(v[0] + v[2] - size[0], 2, false);
+        side(v[1] + v[3] - size[1], 3, false);
+        if let Some(c) = r
+            .clip
+            .filter(|_| !Motions(r.emot).intersects(Motions::SIZE_SPRING))
+        {
+            let c = on_surface(cx, i, r, c);
+            side(c[0] - v[0], 0, true);
+            side(c[1] - v[1], 1, true);
+            side(v[0] + v[2] - (c[0] + c[2]), 2, true);
+            side(v[1] + v[3] - (c[1] + c[3]), 3, true);
+        }
+        Some(worst)
+    };
+    for (_, seg, s) in cx.segments() {
+        let (Some(bi), Some(ei)) = (tl.at(s), tl.at(seg.e)) else {
+            continue;
+        };
+        for (key, b) in &tl.screens[bi] {
+            let Some(e) = tl.row(ei, key) else { continue };
+            if b.surface != e.surface
+                || !tl.visible(bi, b)
+                || !tl.visible(ei, e)
+                || !cx.draws(key)
+                || cx.allowed(CheckId::Contain, key)
+                || (0..4).any(|j| (b.laid[j] - e.laid[j]).abs() > cx.tol as f32)
+                || (0..4).any(|j| (b.visual[j] - e.visual[j]).abs() > cx.tol as f32)
+                || past(bi, b).is_none_or(|p| p.0 > give)
+                || past(ei, e).is_none_or(|p| p.0 > give)
+            {
+                continue;
+            }
+            for i in tl.within(Some(s), seg.e) {
+                let Some(r) = tl.row(i, key) else { continue };
+                if r.surface != b.surface
+                    || !tl.visible(i, r)
+                    || Motions(r.emot).intersects(CARRIES)
+                    || Axes(r.auth).intersects(Axes::GEOMETRY)
+                    || cx.scrolled(i, key)
+                {
+                    continue;
+                }
+                held += 1;
+                let Some((by, side, clip)) = past(i, r) else {
+                    continue;
+                };
+                if by <= give {
+                    continue;
+                }
+                let edge = ["left", "top", "right", "bottom"][side];
+                let of = if clip {
+                    "the clip its ancestors set".to_string()
+                } else {
+                    format!("surface {}", r.surface)
+                };
+                out.push(
+                    Finding::fail(
+                        CheckId::Contain,
+                        format!(
+                            "pushed: inside {of} at the segment's start and at its rest, laid \
+                             at the same place at both, it is drawn {by:.1} px past its {edge} \
+                             edge here, with nothing moving it there"
+                        ),
+                    )
+                    .at(tl.ks[i])
+                    .node(key)
+                    .axis(["x", "y", "w", "h"][side])
+                    .got(by, [0.0, give])
+                    .in_segment(&seg.name),
+                );
+            }
+        }
+    }
+    super::stats("contain.pushed", cx, &[("frames", held)]);
+    out
+}
+
 /// The segment tick `k` falls in.
 fn segment_of(trace: &RunTrace, k: u32) -> Option<(usize, &crate::trace::Segment)> {
     trace
@@ -346,9 +477,10 @@ fn cut(cx: &Cx) -> Vec<Finding> {
                     continue;
                 };
                 let k = tl.ks[i];
-                let Some((_, seg)) = segment_of(trace, k) else {
+                let Some((si, seg)) = segment_of(trace, k) else {
                     continue;
                 };
+                let restarts = cx.restarts(si);
                 for (key, r) in &tl.screens[i] {
                     if r.surface != sf.id
                         || *key == sf.root.as_str()
@@ -363,8 +495,13 @@ fn cut(cx: &Cx) -> Vec<Finding> {
                     let (near, far) = (b[axis], b[axis] + b[axis + 2]);
                     // Where it started the segment and where it rests:
                     // a spring's overshoot past both is not the surface's.
+                    // (eval-rules-3) And where each later change of the
+                    // segment found it: a second `set` turns the motion
+                    // around there, and its overshoot is of the way from
+                    // there.
                     let ends: Vec<[f64; 4]> = [seg.s.and_then(|s| tl.at(s)), tl.at(seg.e)]
                         .into_iter()
+                        .chain(restarts.iter().map(|k| tl.at(k.saturating_sub(1))))
                         .flatten()
                         .filter_map(|j| tl.row(j, key).map(|q| on_surface(cx, j, q, q.visual)))
                         .collect();
@@ -376,8 +513,29 @@ fn cut(cx: &Cx) -> Vec<Finding> {
                         .map(|e| e[axis] + e[axis + 2])
                         .fold(f64::MIN, f64::max);
                     let near_end = ends.iter().map(|e| e[axis]).fold(f64::MAX, f64::min);
-                    let over_far = far - f64::from(size[axis]) - (far - far_end).max(0.0);
-                    let over_near = -near - (near_end - near).max(0.0);
+                    // (eval-rules-3) An overshoot is bounded by the motion
+                    // that overshoots: `overshoot` (the `[tolerance]`,
+                    // as `envelope` holds a mover) of how far the node
+                    // travels on that axis between the segment's start
+                    // and its rest, by either edge or by its size (a
+                    // centred box springing wider overshoots on both
+                    // sides). A node that rests where it started, at
+                    // the size it started, has no overshoot to excuse,
+                    // so a glide that carries it past both, mid-motion,
+                    // is cut (set E's held-out 33 px cut passed as one).
+                    let span = |f: &dyn Fn(&[f64; 4]) -> f64| {
+                        let (lo, hi) = ends
+                            .iter()
+                            .map(f)
+                            .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+                        hi - lo
+                    };
+                    let ov = cx.sc.tolerance.overshoot
+                        * span(&|e| e[axis])
+                            .max(span(&|e| e[axis] + e[axis + 2]))
+                            .max(span(&|e| e[axis + 2]));
+                    let over_far = far - f64::from(size[axis]) - (far - far_end).clamp(0.0, ov);
+                    let over_near = -near - (near_end - near).clamp(0.0, ov);
                     let over = over_far.max(over_near);
                     if over > cx.tol + 1.0 / 64.0 {
                         out.push(

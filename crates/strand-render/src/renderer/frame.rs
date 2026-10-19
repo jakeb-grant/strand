@@ -475,6 +475,12 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
+        // (eval-rules-3) The palette roots' samples join the frame's.
+        #[cfg(feature = "eval-hooks")]
+        if fresh {
+            let traced = self.take_palette_traces(root);
+            self.anim.springs.extend(traced);
+        }
         let flatten_start = Instant::now();
         let waited = self.estimate_waited;
         let mut f = match cached {

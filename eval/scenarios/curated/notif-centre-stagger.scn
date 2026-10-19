@@ -1,0 +1,52 @@
+id     = "notif-centre-stagger"
+about  = """A notification centre whose cards stagger (design.md "Poses":
+`stagger` delays each child's enter after the one before): the panel's list
+fills with four cards, each fading and sliding in 40 ms after the one above;
+a fifth arrives at the top and pushes the others down; then "clear all"
+takes every card out at once (a stagger delays enters, not exits), each
+fading and sliding right, while the header above the list never moves
+(decisions.md eval-rules-3: set E's coverage of stagger in a notification
+centre)."""
+screen = { width = 360, height = 520, scale = 1.0 }
+
+=== shell.strand
+state shown = 0
+let all = ["Chat", "Mail", "Calendar", "Build", "Music"]
+let items = shown == 4 ? all.skip(1) : all.take(shown)
+panel Centre {
+  anchor: top_right; margin: 10, 10, 0, 0; layer: overlay; keyboard: none
+  col { id: centre; width: 280; pad: 12; gap: 10; radius: 14; bg: #1e1e2e
+    row { id: header; height: 20; align: center
+      text "Notifications" { id: title; grow: 1; weight: 600; color: #cdd6f4 }
+      box { id: clear; width: 50; height: 16; radius: 8; bg: #45475a }
+    }
+    col { id: list; gap: 8; stagger: 40ms
+      for n in items key n {
+        col { pad: 8; gap: 2; radius: 10; bg: #313244
+              enter { opacity: 0; y: -8 }
+              exit { opacity: 0; x: 24 }
+          text n { weight: 600; color: #cdd6f4 }
+          text "Just now" { color: #a6adc8 }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark fill
+set shown 4
+rest
+expect still #title
+expect visible text("Music")
+mark arrive
+set shown 5
+rest
+expect still #title
+expect visible text("Chat")
+mark clear
+set shown 0
+rest
+expect still #title
+expect hidden text("Mail")

@@ -27,6 +27,21 @@
 //! compared with the nearest point of that line drawn as the raster
 //! draws it (each channel clamped), premultiplied: within
 //! [`STEPS`] steps of 1/255 on every channel.
+//!
+//! (eval-rules-3) Along that line it goes no further past either end
+//! than its spring overshoots (`CurveRec::overshoot` of the curve its
+//! own spring's samples name; half the way when no sample names one, or
+//! for an elastic easing): a colour on the line but past its end is a
+//! colour neither end has as surely as one off it.
+//!
+//! - **palette**: a theme swap springs each palette root along the curve
+//!   a colour takes in the table it sent ("Springs everywhere": colour
+//!   and opacity use `$motion.effects`, unless the swap names its own
+//!   transition), which the trace records with each root's samples
+//!   (`SpringRec::ask`); a root sprung along another curve (set E's
+//!   theme-swap mutant: a spatial spring that rings past the new
+//!   palette) fails, once per root. `continuity` holds the roots'
+//!   samples to their way as it does any spring's.
 
 use strand_render::probe::Motions;
 
@@ -133,6 +148,11 @@ fn drawn(p: [f64; 4]) -> [f64; 4] {
 /// channel, at the nearest point of the line through them (a share from
 /// -0.5 to 1.5 of the way: a bouncy spring overshoots its end).
 pub fn off_way(c: [f64; 4], from: [f64; 4], to: [f64; 4]) -> f64 {
+    off_way_in(c, from, to, (-0.5, 1.5))
+}
+
+/// [`off_way`] with the share of the way bounded to `lo..=hi`.
+pub fn off_way_in(c: [f64; 4], from: [f64; 4], to: [f64; 4], (lo, hi): (f64, f64)) -> f64 {
     let (p0, p1) = (premultiplied(from), premultiplied(to));
     let at = |s: f64| -> f64 {
         let p: [f64; 4] = std::array::from_fn(|i| p0[i] + s * (p1[i] - p0[i]));
@@ -140,10 +160,11 @@ pub fn off_way(c: [f64; 4], from: [f64; 4], to: [f64; 4]) -> f64 {
         let e = [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]];
         (0..4).map(|i| (d[i] - e[i]).abs()).fold(0.0, f64::max) * 255.0
     };
-    // Coarse, then fine around the nearest.
-    let mut best = (f64::INFINITY, 0.0);
-    for i in -50..=150 {
-        let s = f64::from(i) / 100.0;
+    // Coarse (the bounds among the points), then fine around the nearest.
+    let mut best = (f64::INFINITY, lo);
+    let n = ((hi - lo) * 100.0).ceil().max(1.0) as i32;
+    for i in 0..=n {
+        let s = lo + (hi - lo) * f64::from(i) / f64::from(n);
         let e = at(s);
         if e < best.0 {
             best = (e, s);
@@ -151,7 +172,7 @@ pub fn off_way(c: [f64; 4], from: [f64; 4], to: [f64; 4]) -> f64 {
     }
     let centre = best.1;
     for i in -40..=40 {
-        let s = centre + f64::from(i) / 4000.0;
+        let s = (centre + f64::from(i) / 4000.0).clamp(lo, hi);
         let e = at(s);
         if e < best.0 {
             best = (e, s);
@@ -160,9 +181,21 @@ pub fn off_way(c: [f64; 4], from: [f64; 4], to: [f64; 4]) -> f64 {
     best.0
 }
 
+/// The spring prop that moves each paint field.
+fn prop_of(name: &str) -> &str {
+    match name {
+        "bg" => "bg",
+        "bd" => "border",
+        _ => "color",
+    }
+}
+
 pub fn run(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
-    let mut out = Vec::new();
+    let mut out = palette(cx);
+    // (eval-rules-3) Ways held, and of those bounded by their curve's
+    // overshoot.
+    let counts = std::cell::Cell::new([0u64; 2]);
     for (_, seg, s) in cx.segments() {
         let (Some(bi), Some(ei)) = (tl.at(s), tl.at(seg.e)) else {
             continue;
@@ -181,15 +214,25 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     let (Some(from), Some(to)) = (rgba(cb), rgba(ce)) else {
                         continue;
                     };
-                    if let Some(f) =
-                        transition(cx, key, name, bit, slot, (bi, ei), (cb, ce), (from, to))
-                    {
+                    if let Some(f) = transition(
+                        cx,
+                        key,
+                        name,
+                        bit,
+                        slot,
+                        (bi, ei),
+                        (cb, ce),
+                        (from, to),
+                        &counts,
+                    ) {
                         out.push(f.in_segment(&seg.name));
                     }
                 }
             }
         }
     }
+    let [ways, bounded] = counts.get();
+    super::stats("colour.way", cx, &[("ways", ways), ("bounded", bounded)]);
     first_per_node(out)
 }
 
@@ -205,6 +248,7 @@ fn transition(
     (bi, ei): (usize, usize),
     (cb, ce): (&str, &str),
     (from, to): ([f64; 4], [f64; 4]),
+    counts: &std::cell::Cell<[u64; 2]>,
 ) -> Option<Finding> {
     let tl = &cx.tl;
     // Held only from rest: a colour still springing when the segment
@@ -244,26 +288,98 @@ fn transition(
     if way.is_empty() || !own || retargeted {
         return None;
     }
-    let mut worst: Option<(f64, u32, &str)> = None;
+    // (eval-rules-3) How far past either end its spring takes it: the
+    // overshoot of the curve its samples over the way name.
+    let prop = prop_of(name);
+    let ov = way
+        .iter()
+        .find_map(|(i, _, _)| {
+            tl.frames[*i]
+                .sp
+                .iter()
+                .find(|r| r.key == key && r.of == prop)
+                .map(|r| r.c.overshoot())
+        })
+        .flatten();
+    let bound = ov.map_or((-0.5, 1.5), |o| (-o, 1.0 + o));
+    let [ways, bounded] = counts.get();
+    counts.set([ways + 1, bounded + u64::from(ov.is_some())]);
+    let mut worst: Option<(f64, u32, &str, bool)> = None;
     for (i, _, c) in &way {
         let Some(at) = rgba(c) else { continue };
-        let e = off_way(at, from, to);
+        let e = off_way_in(at, from, to, bound);
         if e > STEPS && worst.is_none_or(|w| e > w.0) {
-            worst = Some((e, tl.ks[*i], c));
+            let off = off_way(at, from, to) > STEPS;
+            worst = Some((e, tl.ks[*i], c, off));
         }
     }
-    let (e, k, c) = worst?;
-    Some(
-        Finding::fail(
-            CheckId::Colour,
-            format!(
-                "off its way: its {name} springing from {cb} to {ce} was drawn {c}, {e:.1} steps \
-                 of 1/255 from the way between them in premultiplied OKLab"
-            ),
+    let (e, k, c, off) = worst?;
+    let msg = if off || ov.is_none() {
+        format!(
+            "off its way: its {name} springing from {cb} to {ce} was drawn {c}, {e:.1} steps \
+             of 1/255 from the way between them in premultiplied OKLab"
         )
-        .at(k)
-        .node(key)
-        .axis(name)
-        .got(e, [0.0, STEPS]),
+    } else {
+        format!(
+            "past its end: its {name} springing from {cb} to {ce} was drawn {c}, on the way \
+             between them in premultiplied OKLab but {e:.1} steps of 1/255 past where its \
+             spring's overshoot ({:.1}% of the way) takes it",
+            ov.unwrap_or(0.0) * 100.0
+        )
+    };
+    Some(
+        Finding::fail(CheckId::Colour, msg)
+            .at(k)
+            .node(key)
+            .axis(name)
+            .got(e, [0.0, STEPS]),
     )
+}
+
+/// `palette`: each theme-swap root springs along the curve its table
+/// asks a colour to take. One finding per swap (the frame its roots
+/// start on), naming how many roots took another curve.
+fn palette(cx: &Cx) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let mut held = 0u64;
+    for f in &cx.trace.frames {
+        let wrong: Vec<_> =
+            f.sp.iter()
+                .filter(|r| r.of == "palette" && r.start.is_some())
+                .filter_map(|r| r.ask.map(|a| (r, a)))
+                .inspect(|_| held += 1)
+                .filter(|(r, a)| r.c != *a && !cx.allowed(CheckId::Colour, &r.key))
+                .collect();
+        let Some((r, ask)) = wrong.first() else {
+            continue;
+        };
+        out.push(
+            Finding::fail(
+                CheckId::Colour,
+                format!(
+                    "palette: the theme swap springs {} (and {} more palette roots) along {}, \
+                     where its table asks a colour to take {}: colour springs with \
+                     `$motion.effects` unless the swap names its own transition",
+                    r.key,
+                    wrong.len() - 1,
+                    curve(r.c),
+                    curve(*ask)
+                ),
+            )
+            .at(f.k)
+            .node(&r.key)
+            .axis("palette"),
+        );
+    }
+    super::stats("colour.palette", cx, &[("changes", held)]);
+    out
+}
+
+fn curve(c: crate::trace::CurveRec) -> String {
+    use crate::trace::CurveRec;
+    match c {
+        CurveRec::Instant => "no curve (a snap)".into(),
+        CurveRec::Spring { k, z } => format!("spring({k}, {z})"),
+        CurveRec::Timed { d, ease } => format!("{} ms {ease:?}", d / 1_000_000),
+    }
 }

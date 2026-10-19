@@ -1,0 +1,36 @@
+id     = "osd-bottom-grow-1_25"
+about  = """A content-sized OSD anchored to the bottom edge grows at scale
+1.25 (design.md "Surfaces": an `osd` sized by its content; a content-sized
+surface lays out at its new size at once as it grows): a row that springs in
+from height 0 above the level label. The
+surface grows upward from its anchored bottom edge, so the label at its
+bottom never moves on the output, and nothing is drawn past the surface's
+edges on any frame (decisions.md eval-rules-3: set E's coverage of
+bottom-anchored surfaces resizing). Its shrinking back, and a second growth
+over a first, are not here: see decisions.md eval-rules-3 for the open
+findings."""
+screen = { width = 400, height = 300, scale = 1.25 }
+
+=== shell.strand
+state extra = false
+osd Level {
+  anchor: bottom; margin: 0, 0, 48; open: true
+  col { width: 220; pad: 12; gap: 8; radius: 16; bg: #1e1e2ee6
+    if extra {
+      box { id: more; height: 28; radius: 8; bg: #89b4fa; enter { height: 0; opacity: 0 } }
+    }
+    row { gap: 8; align: center
+      box { id: icon; size: 16; radius: 4; bg: #a6e3a1 }
+      text "Volume 40%" { id: head; color: #cdd6f4 }
+    }
+  }
+}
+
+=== steps
+rest
+mark grow
+set extra true
+intend #more enters
+rest
+expect still #head
+expect still #icon

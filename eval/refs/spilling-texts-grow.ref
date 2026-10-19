@@ -1,0 +1,181 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "spilling-texts-grow"
+verdict good
+note "eval-rules-3 coverage, read: the three cards spring from 90 to 220 px wide and back; the wrapped text's card goes from 72 to 42 px tall as it widens and the two cards below move up with it (and back down), the ellipsised title shows more of itself, the spilling text stays laid at its card's left; the heading never moves"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario 975e1d5b29fd6435
+seal b868bfc5b17a7dcc
+S1 0 - "panel Cards"
+N0 "ell_card|shell.strand:9:5|#1" "box#ell_card"
+N1 "heading|shell.strand:5:5|#0" "text#heading"
+N2 "spill_card|shell.strand:12:5|#2" "box#spill_card"
+N3 "spill|shell.strand:13:7|#0" "text#spill"
+N4 "stack|shell.strand:4:3|#0" "col#stack"
+N5 "title|shell.strand:10:7|#0" "text#title"
+N6 "wrap_card|shell.strand:6:5|#0" "box#wrap_card"
+N7 "wrapped|shell.strand:7:7|#0" "text#wrapped"
+N8 "|shell.strand:2:1|#0" "panel@shell.strand:2"
+k0 p1
+s1 z=260,182 o=20,20
+n0 x=10 y=113 w=90 h=27 ord=5 bg=45475aff
+n1 x=10 y=10 w=240 h=15 txt=S ord=2 ink=10,11,37,11 fg=cdd6f4ff gl=["Cards"]
+n2 x=10 y=148 w=90 h=24 ord=7 bg=585b70ff
+n3 x=10 y=148 w=90 h=24 txt=S ord=8 ink=10,149,58,13 fg=f9e2afff gl=["spills\u0020past"]
+n4 x=0 y=0 w=260 h=182 ord=1 bg=1e1e2eff
+n5 x=16 y=119 w=78 h=15 txt=S ord=6 ink=16,120,65,13 fit=78 fg=cdd6f4ff gl=["Quarterly\u0020report\u0020final\u0020v2.pdf"]
+n6 x=10 y=33 w=90 h=72 ord=3 bg=313244ff
+n7 x=16 y=39 w=78 h=60 txt=S ord=4 ink=16,41,72,55 fit=78 fg=cdd6f4ff gl=["A\u0020message\u0020long\u0020enough\u0020to\u0020wrap\u0020onto\u0020several\u0020lines"]
+n8 x=0 y=0 w=260 h=182
+k1
+n0 y=105 w=124
+n2 y=140 w=124
+n3 y=140 w=124 ink=10,141,58,13
+n4 h=174
+n5 y=111 w=112 ink=16,112,103,13 fit=112
+n6 w=124 h=64
+n7 w=112 h=52 ink=16,40,101,41 fit=112
+n8 h=174
+k2
+n0 y=94 w=173
+n2 y=129 w=173
+n3 y=129 w=173 ink=10,130,58,13
+n4 h=163
+n5 y=100 w=161 ink=16,101,158,13 fit=-
+n6 w=173 h=53
+n7 w=161 h=41 ink=15,40,155,28 fit=161
+n8 h=163
+k3
+n0 y=86 w=206
+n2 y=121 w=206
+n3 y=121 w=206 ink=10,122,58,13
+n4 h=155
+n5 y=92 w=194 ink=16,93,158,13
+n6 w=206 h=45
+n7 w=194 h=33 ink=16,40,186,26 fit=194
+n8 h=155
+k4
+n0 y=83 w=220
+n2 y=118 w=220
+n3 y=118 w=220 ink=10,119,58,13
+n4 h=152
+n5 y=89 w=208 ink=16,90,158,13
+n6 w=220 h=42
+n7 w=208 h=30 fit=208
+n8 h=152
+k5
+n0 y=82 w=224
+n2 y=117 w=224
+n3 y=117 w=224 ink=10,118,58,13
+n4 h=151
+n5 y=88 w=212 ink=16,89,158,13
+n6 w=224 h=41
+n7 w=212 h=29 fit=212
+n8 h=151
+k6
+n0 w=223
+n2 w=223
+n3 w=223
+n5 w=211
+n6 w=223
+n7 w=211 fit=211
+k7
+n0 y=83 w=222
+n2 y=118 w=222
+n3 y=118 w=222 ink=10,119,58,13
+n4 h=152
+n5 y=89 w=210 ink=16,90,158,13
+n6 w=222 h=42
+n7 w=210 h=30 fit=210
+n8 h=152
+k8
+n0 w=221
+n2 w=221
+n3 w=221
+n5 w=209
+n6 w=221
+n7 w=209 fit=209
+k9
+n0 w=220
+n2 w=220
+n3 w=220
+n5 w=208
+n6 w=220
+n7 w=208 fit=208
+k10
+k11
+k12
+k13
+k14
+s1 z=260,152
+k15
+s1 z=260,182
+n0 y=91 w=186
+n2 y=126 w=186
+n3 y=126 w=186 ink=10,127,58,13
+n4 h=182
+n5 y=97 w=174 ink=16,98,158,13
+n6 w=186 h=50
+n7 w=174 h=38 ink=15,40,155,28 fit=174
+n8 h=182
+k16
+n0 y=102 w=137
+n2 y=137 w=137
+n3 y=137 w=137 ink=10,138,58,13
+n5 y=108 w=125 ink=16,109,120,13 fit=125
+n6 w=137 h=61
+n7 w=125 h=49 ink=16,40,118,41 fit=125
+k17
+n0 y=110 w=104
+n2 y=145 w=104
+n3 y=145 w=104 ink=10,146,58,13
+n5 y=116 w=92 ink=16,117,87,13 fit=92
+n6 w=104 h=69
+n7 w=92 h=57 ink=15,41,87,55 fit=92
+k18
+n0 y=113 w=90
+n2 y=148 w=90
+n3 y=148 w=90 ink=10,149,58,13
+n5 y=119 w=78 ink=16,120,65,13 fit=78
+n6 w=90 h=72
+n7 w=78 h=60 ink=16,41,72,55 fit=78
+k19
+n0 w=86
+n2 w=86
+n3 w=86
+n5 w=74 fit=74
+n6 w=86
+n7 w=74 fit=74
+k20
+n0 w=87
+n2 w=87
+n3 w=87
+n5 w=75 fit=75
+n6 w=87
+n7 w=75 fit=75
+k21
+n0 w=88
+n2 w=88
+n3 w=88
+n5 w=76 fit=76
+n6 w=88
+n7 w=76 fit=76
+k22
+n0 w=89
+n2 w=89
+n3 w=89
+n5 w=77 fit=77
+n6 w=89
+n7 w=77 fit=77
+k23
+n0 w=90
+n2 w=90
+n3 w=90
+n5 w=78 fit=78
+n6 w=90
+n7 w=78 fit=78
+k24
+k25
+k26
+k27

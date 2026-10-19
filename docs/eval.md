@@ -427,7 +427,9 @@ What `continuity`, `contain`'s `held` and `shadow` and `coherence`'s
 `drag` read (eval-rules-2), all from strand-render's `eval-hooks`:
 
 - every sample a painted frame took of a prop's spring, a laid-out
-  size's (`w`, `h`) or a glide's (`sp`): the node, its surface, the value
+  size's (`w`, `h`), a glide's or, in a theme swap, a palette root's
+  (`palette`, keyed `$` and its token path, with `ask`: the curve the
+  swap's table gives a colour; eval-rules-3) (`sp`): the node, its surface, the value
   drawn per channel, the target and curve it moves along (a spring's
   stiffness and damping, a timed curve's duration and easing), its
   settling tolerance, `rest` when it was at rest before the sample,
@@ -494,14 +496,14 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `bystander` | A bystander is not drawn elsewhere while the segment runs (bugs 24 and 25). |
 | `envelope` | Derived motion stays between where a mover started, where it rests and where each frame counted laid it out, plus an overshoot of `max(3 px, overshoot × travel)`. |
 | `teleport` | A moving node's edge moves at most `max(teleport_px × 60 / hz, 0.75 × what is left) + tol` per tick; what is left is the travel (the span of its way, so a spring sent out and back in one segment travels its excursion; a node that comes onto its surface in the segment, or leaves it, travels from its first frame shown there or to its last, and so does each time it comes back or leaves again; a later change in the segment starts its way again where it found the node, so an offset sent out and turned back travels its excursion), or its own and its ancestors' glide (or drag) still in flight. A jump with no motion (layout snapping) is noted, not failed; a row a scroll moves by itself (`SCROLL`, a fling's `FLING`) moves, so its jumps are held to the bound, and the scroll laying it out widens its way, as a size spring's does; on x and y a fade or a colour spring (opacity, fill, ink, border, a meter's level) is no motion. On w and h, only motion that sizes a box counts, and a glide retargeted from its layout is held on x and y only, on an axis its glide moves it on, and on the node's own move in its parent (what its parent's layout carried it by is the parent's; a node gliding across while a size spring or a scroll lays it out anew down follows its layout down, as the spring's neighbours do). |
-| `vanish` | Nothing blinks out and back within three ticks (one still drawn whole, hidden for no reason the renderer gives, and wholly past its surface's edge, moved there by a scroll's spring, a glide, a drag or an offset, left view by moving; one an ancestor's clip cut out, `hidden: clipped`, blinked), shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root shows. A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a `swipe` acts on every tick of its span, but only on what lies under the scrolls under the pointer as it starts (a swipe faster than the viewport carries those rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
+| `vanish` | Nothing blinks out and back within three ticks, nor, with nothing taking it out, at any length before its segment comes to rest (eval-rules-3: set E's module swap pushed a bar's labels out of it for seven frames) (one still drawn whole, hidden for no reason the renderer gives, and wholly past its surface's edge, moved there by a scroll's spring, a glide, a drag or an offset, left view by moving; one an ancestor's clip cut out, `hidden: clipped`, blinked), shows for one frame only, pops in past half its enter pose (each time it comes onto a surface: a popup opened again plays its pose again; a shared morph plays in place of the pose, so a first frame that morphs is `coherence`'s morph start to judge; a node kept from view until then by an ancestor drawn the frame before, transparent, or clipping (or its surface's root) and not reaching it, shows at rest by design; a pose that moves nothing has nothing to play, and a pose of size alone plays as a size spring), or leaves a damaged frame blank while something inside its surface's root that draws something of its own shows (a fill, a border, a shadow, glyphs, an image or icon or shader; eval-rules-3: a bare container showing over a toast at its enter pose's `opacity: 0` is a frame with nothing to draw). A row a scroll carries past its viewport by itself (`SCROLL`) may show for one frame; a clipped node (`hidden: clipped`) does not show; any step that acts counts as bringing a node back or taking it out, not only a segment's first (a second `scroll` in one segment), and a `swipe` acts on every tick of its span, but only on what lies under the scrolls under the pointer as it starts (a swipe faster than the viewport carries those rows across it). With `compositor_poses`, a closing surface never commits a pose back toward rest before it goes (`pose back`, bug 7). An exit's last frame is at its exit pose (`pop-out`, see below). |
 | `coherence` | One frame hangs together. `inherit`: a node is drawn at its laid offset from its parent, its parent's paint offset carrying it. `pivot`: scale, rotate and a morph's scale turn a node about its box's centre, through its ancestors' transforms. `morph start`: a shared morph's first frame is one share (at most 0.5) of the way from the box its name was last drawn at to its own, on all four edges. `stacking`: a node in flight never goes below an overlapping sibling while their layout keeps its order. `drag`: a slider a drag holds draws its knob under the pointer (see below). |
 | `ink` | A text's glyphs stay inside its box, give or take 2 px, and a text drawn by the layout shaped for its own box the font's own overhang of that layout besides (`spill`: a stand-in drawn unclipped, or a layout drawn in the wrong place), and an ellipsised text never draws less of itself as its box widens (`over-cut`). |
-| `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`). See below. |
-| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), and a shadow at rest is drawn inside its buffer (`shadow`). See below. |
+| `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`), no further past either end than its spring overshoots (`past its end`, eval-rules-3), and a theme swap springs each palette root along the curve its table asks a colour to take (`palette`, eval-rules-3). See below. |
+| `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), a shadow at rest is drawn inside its buffer (`shadow`), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
-| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a new node springs only what its enter pose sets (`first frame`), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
+| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it (`fold`, eval-rules-3), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
@@ -596,7 +598,14 @@ correct scenarios only D's launcher-filter fails (`vanish`, the product's
 blink of a gliding row that starts outside its card's clip, left open in
 eval-coverage-2), and two owner shells pass every check run; the third
 no longer loads, since pose-transition made a `~` in a pose a load error
-(its owner takes the `~` out). An `intend`
+(its owner takes the `~` out). The eval-rules-3 arms (`vanish`'s
+segment-long blink and its `blank` held to what draws, `contain`'s
+`pushed` and bounded overshoot, `continuity`'s `fold`, `colour`'s `past
+its end` and `palette`) were kept only with no false alarm over the gate
+(88 scenarios), the matrix at 60 and 144 Hz (914 pass, 16 n/a), held-out
+sets C, D and E's correct scenarios (38: only open product findings
+fail, set D's launcher-filter and set E's module swap) and the two owner
+shells that load (decisions.md eval-rules-3). An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
@@ -617,7 +626,21 @@ says a node moves, not how, so it does not exempt from them; only an
   one retargeted mid-flight (a frame logic or input drove), one still
   springing at `s` (an earlier segment set it moving, so this segment's
   change retargets it and its way bends with the velocity it kept), one
-  keyframes or time drive, gradients, and span colours.
+  keyframes or time drive, gradients, and span colours. `past its end`
+  (eval-rules-3): along that line it goes no further past either end
+  than the curve its own spring's samples name overshoots from rest (a
+  spring's first peak, `exp(−ζπ/√(1−ζ²))` below critical damping and
+  none at or above it; a bézier no further than its control values lie
+  outside 0..1; linear and bounce easings none), so a critically damped
+  `$motion.effects` colour never passes its end and none passes back
+  past where it started. With no sample naming its curve, or an elastic
+  easing, the old -0.5..1.5 holds. `palette` (eval-rules-3): a theme
+  swap springs each palette root along the curve its table gives a colour
+  (`$motion.effects` unless the swap names its own transition, as the
+  table it sent defines it); each root's sample records both (`sp`'s
+  `ask`), and a swap whose roots spring along another curve fails, once
+  per swap, naming how many roots did. `continuity` holds the roots'
+  samples to their way like any spring's.
 - **`contain`.** `cut`: a `popup` or `panel` with no `width`, or no
   `height`, is sized by its content on that axis; it grows to its content
   at once and is held while its content springs smaller (decisions.md
@@ -626,7 +649,24 @@ says a node moves, not how, so it does not exempt from them; only an
   spring's overshoot) is excused, and so is a node moved by authored
   motion on that axis (offset, pose, scale, turn) or held inside a
   clipping ancestor (`clip: true`, a `scroll`, a `list`). The allowance is
-  `tol` plus a quantum. `give way`: a full row's children give way by
+  `tol` plus a quantum. The overshoot excused is bounded (eval-rules-3):
+  no more than the tolerance's overshoot share of how far the node
+  travels (its near edge's, far edge's or size's span from where it
+  started to where it rests, or to where a change mid-segment found it),
+  so a box that rests where it started and is glided past the surface's
+  edge between is cut (set D's launcher-filter, its card glided 33.5 px
+  past its panel). `pushed` (eval-rules-3): a node that draws something,
+  wholly inside its surface (and the clip its ancestors set) and laid at
+  one place (within `tol`) where a segment starts and where it rests, is
+  not drawn past that surface's edge or that clip by more than `tol` plus
+  a quantum on any frame between, unless something moves it there: a
+  motion of its own or inherited that carries it (a glide, a slide, a
+  lift, a scroll, a fling, keyframes, time; not a size spring or a
+  stagger, which lay out), authored geometry, or a scroll. A clip a
+  springing size sets is `held`'s to judge. Set E's module swap: an
+  exiting text whose width springs to 0 wraps taller, and the bar's other
+  modules are laid out below its 30 px for seven frames; set E's
+  correct scenarios, the gate and the matrix lay nothing so. `give way`: a full row's children give way by
   `shrink`, an ellipsised text's min-content is 0 and a surface root never
   widens to its content (design.md "Layout", decisions.md wave3-pixels),
   so an ellipsised text drawn whole is never laid past its surface's
@@ -711,7 +751,20 @@ says a node moves, not how, so it does not exempt from them; only an
   two texts, either when the frame before showed the other side of half
   way (`roll`; design.md "Rolling numbers"). A way met in flight with no
   sample before it, or one its surface painted a frame without sampling
-  (reduced motion snaps), is picked up at its next rest.
+  (reduced motion snaps), is picked up at its next rest. `fold`
+  (eval-rules-3): a size sprung from zero, or exiting to a width or
+  height of zero and then unmounted, folds the gap beside it with its
+  slot (strand-render's `Forced::collapse`: "its padding and the
+  parent's gap beside it fold with it, so its slot reaches zero as the
+  spring settles and unmounting it moves nothing"). On the frame it
+  first draws, and on the frame after it unmounts, each sibling (where
+  nothing else in the parent comes, goes or changes size) is laid,
+  relative to the parent, no further from the frame before than twice
+  the folding slots' sizes plus `tol`, and starts no glide over a step
+  within the parent (a glide's jump less the parent's move: one that
+  carries the whole parent, a centred panel shrinking once a fold
+  ends, is not one). Set E's enter-from-zero mutant opened the gap at
+  once and glided the siblings over it.
 - **`drag`** (in `coherence`, eval-rules-2). "A dragged slider draws the
   drag until the release", and its drag and its drawing share one span,
   the knob centre running between the knob radii, "so the knob stays
@@ -721,9 +774,12 @@ says a node moves, not how, so it does not exempt from them; only an
   one physical pixel.
 
 `$STRAND_EVAL_RULE_STATS` set (run.sh passes `STRAND_*` in) makes each
-eval-rules-2 arm say on stderr how much of a run it held (`rule-stats
-<arm> <scenario>: …`: samples, boxes, shadows, knobs), so a sweep can tell
-a pass from an arm that saw nothing.
+eval-rules-2 and eval-rules-3 arm say on stderr how much of a run it held
+(`rule-stats <arm> <scenario>: …`: samples, boxes, shadows, knobs, the
+frames `contain.pushed` held a node on, the siblings `continuity.fold`
+held, the colour ways `colour.way` held and bounded by a curve, the
+palette changes `colour.palette` read), so a sweep can tell a pass from
+an arm that saw nothing.
 
 **Exempting a node.** Three mechanisms, from narrowest to widest:
 
@@ -830,9 +886,10 @@ Everything together stays under 6 MiB. With each node's paint and glyph
 sources (eval-coverage) it was 4.15 MB, and with the integration's
 scenarios (eval-r3) 4.18 MB. With the scroll, control, placement and
 theme scenarios, the controls' parts and the two input effects
-(eval-coverage-2), and round 4's integration (integration-r4) it is
-5.09 MB: the 79 scenarios 448 kB, `matrix-60.ref` 1.88 MB (4.1 kB a
-cell) and `matrix-144.ref` 2.77 MB (6.1 kB a cell), 457 cells each. Paint
+(eval-coverage-2), and round 4's integration (integration-r4) it was
+5.09 MB; with eval-rules-3's nine scenarios it is 5.13 MB: the 88
+scenarios 489 kB, `matrix-60.ref` 1.88 MB (4.1 kB a cell) and
+`matrix-144.ref` 2.77 MB (6.1 kB a cell), 457 cells each. Paint
 costs little because a field is written only on the ticks it changes.
 Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
 holds the total to 6 MiB (5 MiB until integration-r4, when the
@@ -1464,12 +1521,18 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   is not followed, only the config's own surfaces reserve zones, and how
   a compositor treats unequal margins on an axis anchored at both ends
   is taken from `position_in_rect`, not checked against wlroots.
-- **`contain` excuses whatever lies past both ends** (eval-false-alarms).
-  Its exception for a spring's overshoot also covers a box carried past
-  both where it started and where it rests by a glide (a content-sized
-  panel's card snapped taller and glided from where it was), so a cut
-  made in a single change can pass; one made while the rest moves on (a
-  second change mid-motion) fails.
+- **`contain`'s overshoot allowance is a share of the travel**
+  (eval-false-alarms; bounded in eval-rules-3). What lies past both
+  where a box started and where it rests is excused up to the
+  tolerance's overshoot share of how far it travels, so a glide that
+  carries a box past both ends by less than that passes `cut`.
+- **A label nudged on the output by its parent's glide**
+  (eval-rules-3). A content-sized surface anchored to an edge that grows
+  a second time while its first growth's glide still runs, or shrinks,
+  moves the label at its anchored edge on the output for a few frames
+  (decisions.md eval-rules-3); only an `expect still` holds it, since
+  the label is laid elsewhere in the resized surface and carried by its
+  parent's glide, which `bystander`, `envelope` and `pushed` excuse.
 
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not

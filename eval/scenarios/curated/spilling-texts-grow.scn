@@ -1,0 +1,56 @@
+id     = "spilling-texts-grow"
+about  = """Boxes that grow around texts too long for them (design.md "Text":
+a text wraps, ellipsises or, unbounded, spills past its box): three cards in
+a column widen on a spring from 90 to 220 px and back. The first wraps its
+text, so it grows shorter as it widens and the cards below it move up; the
+second ellipsises its title, which shows more of itself as it widens; the
+third's text spills past it on the right, clipped by nothing. Each text stays
+inside the card that holds it where the card clips, the cards never overlap,
+and the column's heading never moves (decisions.md eval-rules-3: set E's
+coverage of growing boxes with spilling texts)."""
+screen = { width = 320, height = 400, scale = 1.0 }
+
+=== shell.strand
+state wide = false
+panel Cards {
+  anchor: top_left; margin: 20, 0, 0, 20; layer: overlay; keyboard: none
+  col { id: stack; width: 260; pad: 10; gap: 8; radius: 12; bg: #1e1e2e
+    text "Cards" { id: heading; weight: 600; color: #cdd6f4 }
+    box { id: wrap_card; width: wide ? 220 : 90; pad: 6; radius: 8; bg: #313244; clip: true
+      text "A message long enough to wrap onto several lines" { id: wrapped; color: #cdd6f4 }
+    }
+    box { id: ell_card; width: wide ? 220 : 90; pad: 6; radius: 8; bg: #45475a; clip: true
+      text "Quarterly report final v2.pdf" { id: title; ellipsis: end; color: #cdd6f4 }
+    }
+    box { id: spill_card; width: wide ? 220 : 90; height: 24; radius: 8; bg: #585b70
+      text "spills past" { id: spill; color: #f9e2af }
+    }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+intend #wrap_card changes
+intend #ell_card changes
+intend #spill_card changes
+intend #wrapped changes
+intend #title changes
+intend #ell_card moves
+intend #spill_card moves
+intend #spill moves
+rest
+expect still #heading
+mark narrow
+set wide false
+intend #wrap_card changes
+intend #ell_card changes
+intend #spill_card changes
+intend #wrapped changes
+intend #title changes
+intend #ell_card moves
+intend #spill_card moves
+intend #spill moves
+rest
+expect still #heading

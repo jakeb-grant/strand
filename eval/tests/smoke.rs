@@ -978,3 +978,62 @@ fn surfaces_are_placed_as_the_compositor_places_them() {
         .unwrap_or_else(|| panic!("no popup in {:?}", t.surfaces));
     assert_eq!(at("open", pop), Some([0.0, 36.0]));
 }
+
+const THEME_SWAP: &str = r##"id = "palette-trace"
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+state dark = true
+let scheme: Palette = dark ? import("catppuccin:mocha") : import("catppuccin:latte")
+tokens base {
+  motion { spatial: spring(3000, 0.75); effects: spring(500, 1); bouncy: spring(380, 0.75) }
+}
+use tokens base, palette scheme
+bar Top {
+  height: 30
+  bg: $surface
+  box { id: pill; width: 40; height: 14; bg: $accent }
+}
+
+=== steps
+rest
+mark swap
+set dark false
+rest
+"##;
+
+/// (eval-rules-3) A theme swap's palette roots are in the trace: each
+/// root's samples keyed `$` and its path, `palette`, along the curve the
+/// swap's table gives a colour (the shell's own `$motion.effects`), which
+/// each records as asked, and followed to rest.
+#[test]
+fn the_trace_holds_a_theme_swaps_palette_roots() {
+    use strand_eval::trace::CurveRec;
+    let t = go(THEME_SWAP);
+    let accent: Vec<_> = t
+        .frames
+        .iter()
+        .flat_map(|f| f.sp.iter())
+        .filter(|r| r.key == "$accent" && r.of == "palette")
+        .collect();
+    assert!(accent.len() > 4, "{accent:?}");
+    let own = CurveRec::Spring { k: 500.0, z: 1.0 };
+    assert!(
+        accent
+            .iter()
+            .all(|r| r.c == own && r.ask == Some(own) && r.v.len() == 4),
+        "{accent:?}"
+    );
+    assert_eq!(accent.iter().filter(|r| r.start.is_some()).count(), 1);
+    let r = strand_eval::checks::evaluate(&scenario(THEME_SWAP), &t, None, None, None);
+    for c in [
+        strand_eval::checks::CheckId::Continuity,
+        strand_eval::checks::CheckId::Colour,
+    ] {
+        assert_eq!(
+            r.status(c),
+            Some(&strand_eval::checks::Status::Pass),
+            "{c:?}"
+        );
+    }
+}

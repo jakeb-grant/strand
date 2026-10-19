@@ -1,0 +1,207 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "hover-card-rest-move-leave"
+verdict good
+note "eval-rules-3 coverage, read: the card opens at k17 after the 250 ms delay (fade and 4 px drop), stays open and still from k29 while the pointer rests on it, moves within it and rests again, and fades out from k200 once the pointer has left for the bar; the pill and its neighbour never move"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario 3d28c57111080d6c
+seal b0a923dbba69c6b3
+S1 0 - "bar Top"
+S2 17 213 "popup#net_card"
+N0 "net_pill|shell.strand:4:5|[Mock | DP-1]#0" "box#net_pill"
+N1 "other|shell.strand:16:5|[Mock | DP-1]#1" "box#other"
+N2 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+N3 "|shell.strand:3:3|[Mock | DP-1]#0" "row@shell.strand:3"
+N4 "net_card|shell.strand:6:7|[Mock | DP-1]#0" "popup#net_card"
+N5 "bar_meter|shell.strand:12:11|[Mock | DP-1]#0" "box#bar_meter"
+N6 "card|shell.strand:8:9|[Mock | DP-1]#0" "col#card"
+N7 "signal|shell.strand:11:11|[Mock | DP-1]#1" "text#signal"
+N8 "wifi|shell.strand:10:11|[Mock | DP-1]#0" "text#wifi"
+k0 p1
+s1 z=500,30
+n0 x=10 y=6 w=40 h=18 ord=2 bg=94e2d5ff
+n1 x=60 y=6 w=40 h=18 ord=3 bg=89b4faff
+n2 x=0 y=0 w=500 h=30 bg=1e1e2eff
+n3 x=0 y=0 w=500 h=30 ord=1
+k17 p1,2
+s2 z=256,122 o=-28,14 i=none
+n0 bg=97e2ceff
+n4 srf=2 x=28 y=18 w=200 h=64 op=0 hid=opacity0
+k18
+s2 i=28,19,200,64
+n0 bg=9be3c2ff
+n4 y=19 op=37 hid=-
+n5 srf=2 x=38 y=67 w=180 h=6 op=37 ord=4 bg=a6e3a1ff
+n6 srf=2 x=28 y=19 w=200 h=64 op=37 ord=1 bg=313244ff sh=00000055@0,-3,256,120
+n7 srf=2 x=38 y=48 w=180 h=15 op=37 txt=S ord=3 ink=38,49,114,13 fg=a6adc8ff gl=["Signal\u002078%\u0020·\u00205\u0020GHz"]
+n8 srf=2 x=38 y=29 w=180 h=15 op=37 txt=S ord=2 ink=38,30,74,11 fg=cdd6f4ff gl=["Wi-Fi:\u0020home"]
+k19
+s2 i=28,21,200,64
+n0 bg=9fe3b7ff
+n4 y=21 op=98
+n5 y=69 op=98
+n6 y=21 op=98 sh=00000055@0,-1,256,120
+n7 y=50 op=98 ink=38,51,114,13
+n8 y=31 op=98 ink=38,32,74,11
+k20
+s2 i=28,22,200,64
+n0 bg=a1e3afff
+n4 y=22 op=151
+n5 y=70 op=151
+n6 y=22 op=151 sh=00000055@0,0,256,120
+n7 y=51 op=151 ink=38,52,114,13
+n8 y=32 op=151 ink=38,33,74,11
+k21
+n0 bg=a3e3aaff
+n4 op=190
+n5 op=190
+n6 op=190
+n7 op=190
+n8 op=190
+k22
+n0 bg=a4e3a6ff
+n4 op=216
+n5 op=216
+n6 op=216
+n7 op=216
+n8 op=216
+k23
+n0 bg=a5e3a4ff
+n4 op=232
+n5 op=232
+n6 op=232
+n7 op=232
+n8 op=232
+k24
+n0 bg=a5e3a3ff
+n4 op=241
+n5 op=241
+n6 op=241
+n7 op=241
+n8 op=241
+k25
+n0 bg=a6e3a1ff
+n4 op=247
+n5 op=247
+n6 op=247
+n7 op=247
+n8 op=247
+k26 p2
+n4 op=251
+n5 op=251
+n6 op=251
+n7 op=251
+n8 op=251
+k27
+n4 op=253
+n5 op=253
+n6 op=253
+n7 op=253
+n8 op=253
+k28
+n4 op=254
+n5 op=254
+n6 op=254
+n7 op=254
+n8 op=254
+k29
+k30
+n4 op=255
+n5 op=255
+n6 op=255
+n7 op=255
+n8 op=255
+k31
+k32
+s2 z=256,120
+k200 p1,2
+s2 i=none
+n0 bg=a3e3a9ff
+n4 y=21 op=218
+n5 y=69 op=218 hid=inert
+n6 y=21 op=218 hid=inert sh=00000055@0,-1,256,120
+n7 y=50 op=218 hid=inert ink=38,51,114,13
+n8 y=31 op=218 hid=inert ink=38,32,74,11
+k201
+n0 bg=9fe3b6ff
+n4 y=19 op=157
+n5 y=67 op=157
+n6 y=19 op=157 sh=00000055@0,-3,256,120
+n7 y=48 op=157 ink=38,49,114,13
+n8 y=29 op=157 ink=38,30,74,11
+k202
+n0 bg=9be3c1ff
+n4 y=18 op=104
+n5 y=66 op=104
+n6 y=18 op=104 sh=00000055@0,-4,256,120
+n7 y=47 op=104 ink=38,48,114,13
+n8 y=28 op=104 ink=38,29,74,11
+k203
+n0 bg=99e2c8ff
+n4 op=65
+n5 op=65
+n6 op=65
+n7 op=65
+n8 op=65
+k204
+n0 bg=97e2cdff
+n4 op=39
+n5 op=39
+n6 op=39
+n7 op=39
+n8 op=39
+k205
+n0 bg=96e2d1ff
+n4 op=23
+n5 op=23
+n6 op=23
+n7 op=23
+n8 op=23
+k206
+n0 bg=95e2d2ff
+n4 op=14
+n5 op=14
+n6 op=14
+n7 op=14
+n8 op=14
+k207
+n0 bg=95e2d4ff
+n4 op=8
+n5 op=8
+n6 op=8
+n7 op=8
+n8 op=8
+k208
+n0 bg=94e2d5ff
+n4 op=4
+n5 op=4
+n6 op=4
+n7 op=4
+n8 op=4
+k209 p2
+n4 op=2
+n5 op=2
+n6 op=2
+n7 op=2
+n8 op=2
+k210
+n4 op=1
+n5 op=1
+n6 op=1
+n7 op=1
+n8 op=1
+k211
+k212
+n4 op=0
+n5 op=0
+n6 op=0
+n7 op=0
+n8 op=0
+k213
+s2 -
+n4 hid=opacity0
+n5 -
+n6 -
+n7 -
+n8 -
