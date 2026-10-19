@@ -2338,7 +2338,7 @@ impl Harness {
             v: sp.value.clone(),
             to: sp.target.clone(),
             c: crate::trace::CurveRec::of(&sp.curve),
-            eps: sp.eps,
+            eps: sp.eps.clone(),
             rest: sp.rest.clone(),
             start: sp.start.as_ref().map(|st| crate::trace::StartRec {
                 last: st.last.map(|l| l.as_nanos() as u64),

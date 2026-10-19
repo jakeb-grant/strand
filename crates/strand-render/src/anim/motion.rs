@@ -6,7 +6,7 @@ use std::time::Duration;
 use strand_scene::motion::{channels_color, color_channels};
 use strand_scene::{Border, Color, Corners, Curve, Length, Motion, Paint, Prop, PropValue, Shadow};
 
-use super::eps;
+use super::{COLOUR_EPS, eps};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Enc {
@@ -368,6 +368,12 @@ pub(super) fn decode(p: Prop, e: &Enc) -> PropValue {
     }
 }
 
+/// Settling tolerance of a shadow's channels: its geometry (offsets,
+/// blur, spread) in pixels, its colour as every colour's.
+const SHADOW_EPS: [f32; 8] = [
+    0.01, 0.01, 0.01, 0.01, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS,
+];
+
 /// A shadow's geometry with no colour: what a shorter list is padded with.
 pub(super) fn clear(s: [f32; 8]) -> [f32; 8] {
     [s[0], s[1], s[2], s[3], 0.0, 0.0, 0.0, 0.0]
@@ -379,11 +385,16 @@ impl PropMotion {
         match e {
             Enc::One(v) => PropMotion::One(Motion::rest(*v, k).sampled_at(last)),
             Enc::Four(v) => PropMotion::Four(Motion::rest(*v, k).sampled_at(last)),
-            Enc::Five(v) => PropMotion::Five(Motion::rest(*v, k).sampled_at(last)),
+            // A width (border, stroke) or radius (glow) and a colour:
+            // each settles by its own tolerance (decisions.md border-eps).
+            Enc::Five(v) => PropMotion::Five(
+                Motion::rest_each(*v, [k, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS])
+                    .sampled_at(last),
+            ),
             Enc::Shadows(list) => PropMotion::Shadows {
                 m: list
                     .iter()
-                    .map(|s| Motion::rest(*s, 0.01).sampled_at(last))
+                    .map(|s| Motion::rest_each(*s, SHADOW_EPS).sampled_at(last))
                     .collect(),
                 len: list.len(),
             },
@@ -429,7 +440,7 @@ impl PropMotion {
                     motion.retarget(t, curve);
                 }
                 for s in list.iter().skip(m.len()) {
-                    let mut motion = Motion::rest(clear(*s), 0.01).sampled_at(last);
+                    let mut motion = Motion::rest_each(clear(*s), SHADOW_EPS).sampled_at(last);
                     motion.retarget(*s, curve);
                     m.push(motion);
                 }

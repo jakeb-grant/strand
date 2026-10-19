@@ -80,17 +80,25 @@ pub(crate) fn is_size(p: Prop) -> bool {
     matches!(p, Prop::Width | Prop::Height | Prop::Size)
 }
 
-/// Settling tolerance per prop, in its own units.
+/// Settling tolerance per prop, in its own units: of a border's, a
+/// stroke's or a glow's width (their colour channels settle by
+/// [`COLOUR_EPS`], [`motion::PropMotion::rest`]).
 fn eps(p: Prop) -> f32 {
     match p {
         Prop::Opacity => 0.002,
         Prop::Scale => 0.0005,
         Prop::Rotate => 0.05,
-        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill | Prop::Uniforms => 0.002,
+        Prop::Bg | Prop::Color | Prop::Track | Prop::Fill | Prop::Uniforms => COLOUR_EPS,
         Prop::Value => 0.0005,
         _ => 0.05,
     }
 }
+
+/// Settling tolerance of a colour channel (premultiplied OKLab plus
+/// alpha): half a step of 1/255, so the snap that ends a fade moves
+/// nothing the eye sees, wherever the colour is (a fill, or a border,
+/// glow or shadow beside its geometry; decisions.md border-eps).
+const COLOUR_EPS: f32 = 0.002;
 
 /// Settling tolerance of laid-out sizes and glides, logical pixels.
 const PX_EPS: f32 = 0.05;

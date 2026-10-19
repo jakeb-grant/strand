@@ -758,6 +758,51 @@ fn colours_spring_in_oklab() {
     assert!(want[1] as f32 > srgb_green, "OKLab passes through {want:?}");
 }
 
+/// (border-eps) A border fading out ends where the eye no longer sees it
+/// move: its colour settles by a colour's tolerance, not its width's
+/// (0.05 px, which snapped the fade off from an alpha of 0x08–0x0e), so
+/// the last frame before it rests is within a step or two of the
+/// background, on the way in too.
+#[test]
+fn a_fading_border_settles_without_a_visible_snap() {
+    let border = |c: &str| {
+        PropValue::Border(Border {
+            width: 4.0,
+            paint: Paint::Solid(hex(c)),
+        })
+    };
+    let mut id = None;
+    let mut st = Stage::new(40, 40, |b, root| {
+        id = Some(b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![(Prop::Size, num(30.0)), (Prop::Border, border("#ffffff00"))],
+        ))
+    });
+    let id = id.unwrap();
+    for (to, k0) in [("#ffffff", 1), ("#ffffff00", 200)] {
+        let mut d = SceneDiff::new();
+        d.set(id, Prop::Border, border(to));
+        st.apply(d);
+        // The green channel of a pixel on the border, frame by frame.
+        let mut greens = Vec::new();
+        let mut k = k0;
+        while st.r.wants_frame(S) {
+            st.paint(frame(k));
+            greens.push(st.buf.px(1, 15)[1]);
+            k += 1;
+            assert!(k < k0 + 190, "never settled");
+        }
+        let n = greens.len();
+        assert!(n > 3, "it fades over frames: {greens:?}");
+        let (last, rest) = (greens[n - 2], greens[n - 1]);
+        assert!(
+            last.abs_diff(rest) <= 2,
+            "fading to {to}, the frame before rest is {last}, then {rest}: {greens:?}"
+        );
+    }
+}
+
 /// Snap rules: fonts snap; shadow lists of different lengths pad with
 /// transparent shadows and spring; layout lengths (`pad`) snap while the
 /// boxes they move glide; `reduced_motion` snaps everything; a frame at

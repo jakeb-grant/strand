@@ -1,0 +1,34 @@
+id     = "border-fade-snap"
+about  = """A finding of round 5 (docs/decisions.md border-eps): a border's colour sprang
+under its width's settling tolerance, 0.05 (a pixel's twentieth), so a border
+fading out on `$motion.effects` snapped off from an alpha of 0x08 to 0x0e, a
+step the eye sees, where a fill fading beside it settled by 0.002 (half a step
+of 1/255). A glow, a radius and a colour on one spring, did the same. Each
+channel now settles by its own tolerance: the width or radius in pixels, the
+colour as every colour does. A chip's border and a dot's glow fade in from
+transparent and back out (`continuity`'s `snap`: a fade ends where the eye no
+longer sees it move; eval/mutants/border-fade-snap.patch reverts the fix)."""
+screen = { width = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 40
+  bg: #1e2127
+  row { height: 40; gap: 16; align: center; pad: 0, 12
+    box { id: chip; width: 60; height: 24; radius: 6
+          border: 3, on ? #ffffff : #ffffff00 }
+    box { id: dot; width: 12; height: 12; radius: 6; bg: #61afef
+          glow: 8, on ? #ffffff : #ffffff00 }
+  }
+}
+
+=== steps
+rest
+mark in
+set on true
+rest
+mark out
+set on false
+rest

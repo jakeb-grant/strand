@@ -118,7 +118,8 @@ pub struct SpringTrace {
     /// started, or of the one it was already on).
     pub target: Vec<f32>,
     pub curve: strand_scene::Curve,
-    pub eps: f32,
+    /// Its settling tolerance, per channel (decisions.md border-eps).
+    pub eps: Vec<f32>,
     /// It was at rest before this sample, here (made at rest, or
     /// settled).
     pub rest: Option<Vec<f32>>,
@@ -166,7 +167,7 @@ impl SpringTrace {
             value: value.to_vec(),
             target: target.to_vec(),
             curve,
-            eps: pre.eps,
+            eps: pre.eps.to_vec(),
             rest: (pre.curve == strand_scene::Curve::Instant).then(|| pre.target.to_vec()),
             start: pre.pending.map(|(_, _, shift)| SpringStart {
                 last: pre.last,

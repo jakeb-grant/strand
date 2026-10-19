@@ -1,0 +1,98 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "border-fade-snap"
+verdict good
+note "border-eps: initial reference; a chip's border and a dot's glow fade in from clear and out on $motion.effects, each colour settling within half a step of 1/255 (continuity snap holds it)"
+date 2026-10-19
+rev "c554aa84+changes"
+approver "claude"
+scenario b2b1b57c99c8742c
+seal 876a53e03c86aa31
+S1 0 - "bar Top"
+N0 "chip|shell.strand:6:5|[Mock | DP-1]#0" "box#chip"
+N1 "dot|shell.strand:8:5|[Mock | DP-1]#1" "box#dot"
+N2 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+N3 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+k0 p1
+s1 z=200,40
+n0 x=12 y=8 w=60 h=24 ord=2 bd=ffffff00
+n1 x=88 y=14 w=12 h=12 ord=3 bg=61afefff
+n2 x=0 y=0 w=200 h=40 bg=1e2127ff
+n3 x=0 y=0 w=200 h=40 ord=1
+k1
+n0 bd=ffffff25
+n1 sh=ffffff25@79,5,30,30
+k2
+n0 bd=ffffff62
+n1 sh=ffffff62@79,5,30,30
+k3
+n0 bd=ffffff97
+n1 sh=ffffff97@79,5,30,30
+k4
+n0 bd=ffffffbe
+n1 sh=ffffffbe@79,5,30,30
+k5
+n0 bd=ffffffd8
+n1 sh=ffffffd8@79,5,30,30
+k6
+n0 bd=ffffffe8
+n1 sh=ffffffe8@79,5,30,30
+k7
+n0 bd=fffffff1
+n1 sh=fffffff1@79,5,30,30
+k8
+n0 bd=fffffff7
+n1 sh=fffffff7@79,5,30,30
+k9
+n0 bd=fffffffb
+n1 sh=fffffffb@79,5,30,30
+k10
+n0 bd=fffffffd
+n1 sh=fffffffd@79,5,30,30
+k11
+n0 bd=fffffffe
+n1 sh=fffffffe@79,5,30,30
+k12
+k13
+n0 bd=ffffffff
+n1 sh=ffffffff@79,5,30,30
+k14
+k15
+n0 bd=ffffffda
+n1 sh=ffffffda@79,5,30,30
+k16
+n0 bd=ffffff9d
+n1 sh=ffffff9d@79,5,30,30
+k17
+n0 bd=ffffff68
+n1 sh=ffffff68@79,5,30,30
+k18
+n0 bd=ffffff41
+n1 sh=ffffff41@79,5,30,30
+k19
+n0 bd=ffffff27
+n1 sh=ffffff27@79,5,30,30
+k20
+n0 bd=ffffff17
+n1 sh=ffffff17@79,5,30,30
+k21
+n0 bd=ffffff0e
+n1 sh=ffffff0e@79,5,30,30
+k22
+n0 bd=ffffff08
+n1 sh=ffffff08@79,5,30,30
+k23
+n0 bd=ffffff04
+n1 sh=ffffff04@79,5,30,30
+k24
+n0 bd=ffffff02
+n1 sh=ffffff02@79,5,30,30
+k25
+n0 bd=ffffff01
+n1 sh=ffffff01@79,5,30,30
+k26
+k27
+n0 bd=ffffff00
+n1 sh=ffffff00@79,5,30,30
+k28
+n0 bd=00000000
+n1 sh=-

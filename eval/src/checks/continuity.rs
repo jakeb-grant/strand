@@ -23,6 +23,9 @@
 //!   frame after does (decisions.md first-frame-lead);
 //! - **way**: between changes, each frame draws the value where its curve
 //!   is at the frame's time, settled within its tolerance;
+//! - **snap**: a spring that comes to rest snaps to its target, and on
+//!   an opacity or a colour that jump is at most a step of 1/255
+//!   (decisions.md border-eps);
 //! - **end**: a surface that wants no more frames shows each spring it
 //!   sampled last exactly at its target (a settled motion snaps to it);
 //! - **first frame**: a node drawn for the first time has no value on
@@ -83,20 +86,27 @@ pub struct Way {
     pub vel: Vec<f64>,
     pub target: Vec<f64>,
     pub curve: CurveRec,
-    pub eps: f64,
+    /// Its settling tolerance per channel (decisions.md border-eps).
+    pub eps: Vec<f64>,
 }
 
 impl Way {
     /// At rest at `v`.
-    pub fn rest(v: &[f32], eps: f32) -> Way {
+    pub fn rest(v: &[f32], eps: &[f32]) -> Way {
         let v: Vec<f64> = v.iter().map(|x| f64::from(*x)).collect();
+        // One tolerance per channel; a trace that gives one for all (or
+        // fewer) repeats its last.
+        let last = eps.last().copied().unwrap_or(1e-3);
+        let eps = (0..v.len())
+            .map(|i| f64::from(eps.get(i).copied().unwrap_or(last)))
+            .collect();
         Way {
             start: 0,
             vel: vec![0.0; v.len()],
             from: v.clone(),
             target: v,
             curve: CurveRec::Instant,
-            eps: f64::from(eps),
+            eps,
         }
     }
 
@@ -147,7 +157,7 @@ impl Way {
     /// At rest at its target by `t`, by the rule the product's springs
     /// rest by (strand-scene motion.rs `Segment::rest`, decisions.md
     /// roll-rate; integration-r4): each channel's amplitude,
-    /// `√(x² + (v/ω₀)²)`, within `eps`, `ω₀ = √k`. A damped spring's
+    /// `√(x² + (v/ω₀)²)`, within its own `eps`, `ω₀ = √k`. A damped spring's
     /// amplitude never grows, so a way at rest stays at rest, and it
     /// ends at the moment the product's spring does, whatever the rate.
     pub fn settled(&self, t: u64) -> bool {
@@ -162,7 +172,7 @@ impl Way {
                 (0..p.len()).all(|i| {
                     let x = p[i] - self.target[i];
                     let v = v[i] / w0;
-                    (x * x + v * v).sqrt() <= self.eps
+                    (x * x + v * v).sqrt() <= self.eps.get(i).copied().unwrap_or(1e-3)
                 })
             }
         }
@@ -178,7 +188,7 @@ impl Way {
                 vel: vec![0.0; self.target.len()],
                 target: self.target.clone(),
                 curve: CurveRec::Instant,
-                eps: self.eps,
+                eps: self.eps.clone(),
             };
             return self.target.clone();
         }
@@ -201,7 +211,7 @@ impl Way {
                 vel: vec![0.0; target.len()],
                 target,
                 curve,
-                eps: self.eps,
+                eps: self.eps.clone(),
             };
         }
         Way {
@@ -210,7 +220,7 @@ impl Way {
             vel,
             target,
             curve,
-            eps: self.eps,
+            eps: self.eps.clone(),
         }
     }
 
@@ -259,7 +269,7 @@ pub fn spring(k: f64, z: f64, x0: f64, v0: f64, t: f64) -> (f64, f64) {
 /// tolerance (a settle the way reaches a frame apart from the renderer's
 /// f32 arithmetic moves it by at most one), plus 1e-4 of the distance.
 fn tolerance(w: &Way, i: usize) -> f64 {
-    4.0 * w.eps + 1e-4 * (w.target[i] - w.from[i]).abs() + 1e-5
+    4.0 * w.eps.get(i).copied().unwrap_or(1e-3) + 1e-4 * (w.target[i] - w.from[i]).abs() + 1e-5
 }
 
 /// The most a channel of `v` is off `want`, against its tolerance:
@@ -304,7 +314,8 @@ fn springs(cx: &Cx) -> Vec<Finding> {
     let mut out = Vec::new();
     // samples, held to a way, starts followed, met with no way, lost.
     // first-frame records, rests met with a way known.
-    let mut stats = [0u64; 7];
+    // snaps drawn.
+    let mut stats = [0u64; 8];
     let mut known: HashMap<(&str, &str), Option<Known>> = HashMap::new();
     for f in &cx.trace.frames {
         let sampled: std::collections::HashSet<(&str, &str)> =
@@ -344,7 +355,7 @@ fn springs(cx: &Cx) -> Vec<Finding> {
                     }
                 }
                 *slot = Some(Known {
-                    way: Way::rest(rest, r.eps),
+                    way: Way::rest(rest, &r.eps),
                     began: None,
                     last: (t, f.k),
                     s: r.s,
@@ -381,6 +392,10 @@ fn springs(cx: &Cx) -> Vec<Finding> {
             }
             stats[1] += 1;
             kn.last = (t, f.k);
+            if let Some(v) = snap(f, r, &kn.way, t) {
+                stats[7] += 1;
+                out.push(v);
+            }
             let want = kn.way.sample(t);
             let Some((ch, got, wanted)) = off(&kn.way, &r.v, &want) else {
                 continue;
@@ -401,6 +416,7 @@ fn springs(cx: &Cx) -> Vec<Finding> {
             ("lost", stats[4]),
             ("first", stats[5]),
             ("rests", stats[6]),
+            ("snaps", stats[7]),
         ],
     );
     out
@@ -601,6 +617,67 @@ type Folding<'a> = Vec<(&'a str, f64)>;
 /// `COLLAPSED`).
 const COLLAPSED: f32 = 0.5;
 
+/// The most a spring's settle may move a colour channel or an opacity:
+/// one step of 1/255, what the raster draws apart.
+const SNAP: f64 = 1.0 / 255.0;
+
+/// `snap`: a spring comes to rest by snapping to its target from where
+/// its way is then, by at most its settling tolerance per channel
+/// (architecture.md "Motion"). On an opacity and on a colour's channels
+/// (premultiplied OKLab plus alpha: a fill's, a text's, a track's, and
+/// the colour of a border, a stroke or a glow beside its width) that
+/// snap is drawn, and a fade or a colour change ends in a jump the eye
+/// sees when it is over a step of 1/255: a tolerance set for a
+/// channel of other units (a border's width in pixels) is too coarse
+/// for its colour (decisions.md border-eps).
+fn snap(f: &Frame, r: &SpringRec, w: &Way, t: u64) -> Option<Finding> {
+    if !matches!(w.curve, CurveRec::Spring { .. })
+        || t.saturating_sub(w.start) >= MAX_MOTION
+        || !w.settled(t)
+    {
+        return None;
+    }
+    let chans: &[usize] = match r.of.as_str() {
+        "opacity" => &[0],
+        "bg" | "color" | "track" | "fill" => &[0, 1, 2, 3],
+        "border" | "stroke" | "glow" => &[1, 2, 3, 4],
+        _ => return None,
+    };
+    let (p, _) = w.at(t);
+    let ch = chans
+        .iter()
+        .copied()
+        .filter(|i| *i < p.len() && *i < w.target.len())
+        .max_by(|a, b| {
+            (p[*a] - w.target[*a])
+                .abs()
+                .total_cmp(&(p[*b] - w.target[*b]).abs())
+        })
+        .filter(|i| (p[*i] - w.target[*i]).abs() > SNAP)?;
+    let chan = if p.len() > 1 {
+        format!("{}[{ch}]", r.of)
+    } else {
+        r.of.clone()
+    };
+    Some(
+        Finding::fail(
+            CheckId::Continuity,
+            format!(
+                "snap: its spring settles at k{} by jumping from {} to its target {}, more than \
+                 a step of 1/255: a fade or a colour change ends where the eye no longer sees it \
+                 move, not by a jump",
+                f.k,
+                num(p[ch]),
+                num(w.target[ch])
+            ),
+        )
+        .at(f.k)
+        .node(&r.key)
+        .axis(&chan)
+        .got(p[ch], [w.target[ch], w.target[ch]]),
+    )
+}
+
 /// `end`: a surface that stops wanting frames shows what it
 /// drew last until something changes, so each spring it sampled last is
 /// exactly its target there (a motion that settles snaps to its target,
@@ -731,9 +808,9 @@ fn first_frame(f: &Frame, r: &SpringRec) -> Option<Finding> {
     let (Some(false), Some(_), Some(rest)) = (r.enter, &r.start, &r.rest) else {
         return None;
     };
-    let tol = f64::from(r.eps);
+    let tol = |i: usize| f64::from(r.eps.get(i).or(r.eps.last()).copied().unwrap_or(1e-3));
     let ch = (0..rest.len().min(r.to.len()))
-        .find(|i| (f64::from(rest[*i]) - f64::from(r.to[*i])).abs() > tol)?;
+        .find(|i| (f64::from(rest[*i]) - f64::from(r.to[*i])).abs() > tol(*i))?;
     Some(
         Finding::fail(
             CheckId::Continuity,

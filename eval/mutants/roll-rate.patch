@@ -1,14 +1,14 @@
 diff --git a/crates/strand-scene/src/motion.rs b/crates/strand-scene/src/motion.rs
 --- a/crates/strand-scene/src/motion.rs
 +++ b/crates/strand-scene/src/motion.rs
-@@ -339,8 +339,8 @@
+@@ -342,8 +342,8 @@
          let w0 = (s.stiffness.max(1e-6) as f64).sqrt();
          (0..N).all(|i| {
              let x = (p[i] - self.target[i]) as f64;
 -            let v = v[i] as f64 / w0;
--            (x * x + v * v).sqrt() <= eps as f64
+-            (x * x + v * v).sqrt() <= eps[i] as f64
 +            let _ = w0;
-+            x.abs() <= eps as f64 && (v[i] as f64).abs() <= eps as f64 * 10.0
++            x.abs() <= eps[i] as f64 && (v[i] as f64).abs() <= eps[i] as f64 * 10.0
          })
      }
  }

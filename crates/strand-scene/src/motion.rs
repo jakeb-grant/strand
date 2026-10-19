@@ -293,7 +293,7 @@ impl<const N: usize> Segment<N> {
 
     /// Position and velocity at `at`, or `None` once settled there (as
     /// [`Segment::settled`]), the curve evaluated at most once.
-    fn moving(&self, at: Duration, eps: f32) -> Option<([f32; N], [f32; N])> {
+    fn moving(&self, at: Duration, eps: &[f32; N]) -> Option<([f32; N], [f32; N])> {
         let t = at.saturating_sub(self.start);
         match self.curve {
             Curve::Instant => None,
@@ -309,7 +309,7 @@ impl<const N: usize> Segment<N> {
 
     /// At rest at its target by `at`: within `eps` of it from then on
     /// (see [`Segment::rest`]).
-    fn settled(&self, at: Duration, eps: f32) -> bool {
+    fn settled(&self, at: Duration, eps: &[f32; N]) -> bool {
         let t = at.saturating_sub(self.start);
         match self.curve {
             Curve::Instant => true,
@@ -325,8 +325,10 @@ impl<const N: usize> Segment<N> {
     /// Whether a spring at position `p` with velocity `v` is at rest:
     /// each channel's amplitude, `√(x² + (v/ω₀)²)` (`x` its distance
     /// from the target, `ω₀` the spring's natural frequency), within
-    /// `eps`, so it never strays further than `eps` from its target again
-    /// and snapping it there moves it by `eps` at most. That is its
+    /// that channel's `eps`, so it never strays further than that from
+    /// its target again and snapping it there moves it by that at most
+    /// (a border's width and its colour each by their own, decisions.md
+    /// border-eps). That is its
     /// energy, `v² + ω₀²·x²`, over `ω₀²`, and a damped spring's energy
     /// never grows: once at rest it stays at rest, and the moment it
     /// comes to rest is a time of the curve alone, so every frame rate
@@ -335,12 +337,12 @@ impl<const N: usize> Segment<N> {
     /// as at rest only near a turning point, a short window that 144 Hz
     /// frames landed in more often than 60 Hz ones: the default spring
     /// ended a roll 60 ms sooner at 144 Hz (decisions.md, roll-rate).
-    fn rest(&self, s: Spring, p: [f32; N], v: [f32; N], eps: f32) -> bool {
+    fn rest(&self, s: Spring, p: [f32; N], v: [f32; N], eps: &[f32; N]) -> bool {
         let w0 = (s.stiffness.max(1e-6) as f64).sqrt();
         (0..N).all(|i| {
             let x = (p[i] - self.target[i]) as f64;
             let v = v[i] as f64 / w0;
-            (x * x + v * v).sqrt() <= eps as f64
+            (x * x + v * v).sqrt() <= eps[i] as f64
         })
     }
 }
@@ -369,8 +371,8 @@ struct Pending<const N: usize> {
 pub struct Motion<const N: usize> {
     seg: Segment<N>,
     pending: Option<Pending<N>>,
-    /// Settling tolerance, in the channels' units.
-    eps: f32,
+    /// Settling tolerance per channel, in its own units.
+    eps: [f32; N],
     last: Option<Duration>,
 }
 
@@ -393,8 +395,8 @@ pub struct MotionView<const N: usize> {
     pub pending: Option<([f32; N], Curve, [f32; N])>,
     /// Its last sample's time (or the frame it was made after).
     pub last: Option<Duration>,
-    /// Its settling tolerance.
-    pub eps: f32,
+    /// Its settling tolerance, per channel.
+    pub eps: [f32; N],
 }
 
 /// The most a change starts before the first frame that samples it (one
@@ -405,8 +407,15 @@ pub const START_LEAD: Duration = Duration::from_micros(16_667);
 
 impl<const N: usize> Motion<N> {
     /// A value at rest; `eps` is how close to its target (in its own
-    /// units) it must come to count as settled.
+    /// units) every channel must come to count as settled.
     pub fn rest(value: [f32; N], eps: f32) -> Self {
+        Self::rest_each(value, [eps; N])
+    }
+
+    /// [`Motion::rest`] with a tolerance per channel: channels of
+    /// different units (a border's width in pixels and its colour)
+    /// each settle by their own (decisions.md border-eps).
+    pub fn rest_each(value: [f32; N], eps: [f32; N]) -> Self {
         Motion {
             seg: Segment {
                 start: Duration::ZERO,
@@ -416,11 +425,7 @@ impl<const N: usize> Motion<N> {
                 curve: Curve::Instant,
             },
             pending: None,
-            eps: if eps.is_finite() && eps > 0.0 {
-                eps
-            } else {
-                1e-3
-            },
+            eps: eps.map(|e| if e.is_finite() && e > 0.0 { e } else { 1e-3 }),
             last: None,
         }
     }
@@ -477,7 +482,7 @@ impl<const N: usize> Motion<N> {
     pub fn snap(&mut self, value: [f32; N]) {
         *self = Motion {
             last: self.last,
-            ..Motion::rest(value, self.eps)
+            ..Motion::rest_each(value, self.eps)
         };
     }
 
@@ -531,7 +536,7 @@ impl<const N: usize> Motion<N> {
     pub fn sample_frame(&mut self, at: Duration, period: Duration) -> [f32; N] {
         self.resolve(at, None, period);
         self.last = Some(self.last.map_or(at, |l| l.max(at)));
-        if self.seg.settled(at, self.eps) {
+        if self.seg.settled(at, &self.eps) {
             self.seg.from = self.seg.target;
             self.seg.vel = [0.0; N];
             self.seg.curve = Curve::Instant;
@@ -544,7 +549,7 @@ impl<const N: usize> Motion<N> {
     /// shows where the value would start (its current one, shifted).
     pub fn peek(&self, at: Duration) -> [f32; N] {
         let at = at.max(self.seg.start);
-        let mut pos = if self.seg.settled(at, self.eps) {
+        let mut pos = if self.seg.settled(at, &self.eps) {
             self.seg.target
         } else {
             self.seg.at(at).0
@@ -559,7 +564,7 @@ impl<const N: usize> Motion<N> {
 
     /// Velocity at `at` (zero once settled), in units per second.
     pub fn velocity(&self, at: Duration) -> [f32; N] {
-        if self.seg.settled(at, self.eps) {
+        if self.seg.settled(at, &self.eps) {
             return [0.0; N];
         }
         self.seg.at(at).1
@@ -569,7 +574,7 @@ impl<const N: usize> Motion<N> {
     /// at `at` in one go, the curve evaluated once (twice only for a
     /// time before the segment starts): (position, velocity, settled).
     pub fn probe(&self, at: Duration) -> ([f32; N], [f32; N], bool) {
-        let state = self.seg.moving(at, self.eps);
+        let state = self.seg.moving(at, &self.eps);
         let vel = state.map_or([0.0; N], |(_, v)| v);
         let settled = self.pending.is_none() && state.is_none();
         let pos = if at >= self.seg.start {
@@ -602,7 +607,7 @@ impl<const N: usize> Motion<N> {
 
     /// At rest at its target, with nothing pending, at `at`.
     pub fn is_settled(&self, at: Duration) -> bool {
-        self.pending.is_none() && self.seg.settled(at, self.eps)
+        self.pending.is_none() && self.seg.settled(at, &self.eps)
     }
 }
 
@@ -696,7 +701,7 @@ mod tests {
             (v.start, v.from, v.target, v.curve),
             (Duration::ZERO, [4.0], [4.0], Curve::Instant)
         );
-        assert_eq!((v.pending, v.last, v.eps), (None, Some(ms(1000)), 0.05));
+        assert_eq!((v.pending, v.last, v.eps), (None, Some(ms(1000)), [0.05]));
         m.retarget([10.0], spring);
         m.shift([2.0], spring);
         assert_eq!(m.view().pending, Some(([10.0], spring, [2.0])));
@@ -735,6 +740,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// (border-eps) Each channel settles by its own tolerance: a coarse
+    /// one (a width in pixels) does not end a fine one (its colour) early,
+    /// and the motion rests only once every channel is within its own.
+    #[test]
+    fn each_channel_settles_by_its_own_tolerance() {
+        let spring = Curve::Spring(SPATIAL);
+        let mut fine = Motion::rest_each([0.0, 0.0], [0.05, 0.002]).sampled_at(Some(ms(1000)));
+        let mut coarse = Motion::rest([0.0, 0.0], 0.05).sampled_at(Some(ms(1000)));
+        assert_eq!(fine.view().eps, [0.05, 0.002]);
+        assert_eq!(coarse.view().eps, [0.05, 0.05]);
+        fine.retarget([1.0, 1.0], spring);
+        coarse.retarget([1.0, 1.0], spring);
+        let rest = |m: &mut Motion<2>| {
+            (1..200)
+                .map(|k| ms(1000 + 16 * k))
+                .find(|t| {
+                    m.sample_frame(*t, ms(16));
+                    m.is_settled(*t)
+                })
+                .unwrap()
+        };
+        let (tf, tc) = (rest(&mut fine), rest(&mut coarse));
+        assert!(tf > tc, "the fine channel rests later: {tf:?} vs {tc:?}");
+        // Snapping it to its target moved it by its own tolerance at most.
+        let mut probe = Motion::rest_each([0.0, 0.0], [0.05, 0.002]).sampled_at(Some(ms(1000)));
+        probe.retarget([1.0, 1.0], spring);
+        let before = (1..200)
+            .map(|k| ms(1000 + 16 * k))
+            .take_while(|t| *t < tf)
+            .map(|t| probe.sample_frame(t, ms(16)))
+            .last()
+            .unwrap();
+        assert!((1.0 - before[1]).abs() <= 0.002 * 4.0, "{before:?}");
+        // A tolerance that is not a positive number falls back.
+        let m = Motion::rest_each([0.0, 0.0], [f32::NAN, -1.0]);
+        assert_eq!(m.view().eps, [1e-3, 1e-3]);
     }
 
     /// (roll-rate) A spring comes to rest at one moment of its curve:

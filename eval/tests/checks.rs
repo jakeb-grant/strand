@@ -4347,7 +4347,7 @@ fn sample_rec(key: &str, of: &str, pre: &MotionView<1>, v: [f32; 1]) -> SpringRe
         v: v.to_vec(),
         to: to.to_vec(),
         c: CurveRec::of(&c),
-        eps: pre.eps,
+        eps: pre.eps.to_vec(),
         rest: (pre.curve == Curve::Instant).then(|| pre.target.to_vec()),
         start: pre.pending.map(|(_, _, shift)| StartRec {
             last: pre.last.map(|l| l.as_nanos() as u64),
@@ -5186,7 +5186,7 @@ fn a_way_rests_when_the_products_spring_does() {
         vel: vec![v],
         target: vec![0.0],
         curve: CurveRec::Spring { k: 25.0, z: 0.3 },
-        eps: 0.05,
+        eps: vec![0.05],
     };
     // ω₀ = 5: 0.4 px/s is 0.08 of amplitude, past eps (the old rule's
     // |v| <= 0.5 called it at rest); 0.2 px/s is 0.04, within it.
@@ -5379,7 +5379,7 @@ fn folding(step: f32, glide: f32) -> RunTrace {
         v,
         to,
         c: CurveRec::Spring { k: 3000.0, z: 0.75 },
-        eps: 0.01,
+        eps: vec![0.01],
         rest,
         start: Some(StartRec {
             last: Some(1_000_000_000),

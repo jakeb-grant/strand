@@ -367,7 +367,9 @@ pub struct SpringRec {
     /// What it moves to, and along what.
     pub to: Vec<f32>,
     pub c: CurveRec,
-    pub eps: f32,
+    /// Its settling tolerance per channel (decisions.md border-eps).
+    #[serde(default)]
+    pub eps: Vec<f32>,
     /// At rest before this sample, here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest: Option<Vec<f32>>,

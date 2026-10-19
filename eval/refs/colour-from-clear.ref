@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "colour-from-clear"
 verdict good
-note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
-date 2026-10-18
-rev "40b54cc2+changes"
+note "border-eps: a border's colour settles by a colour's tolerance (0.002), not its width's (0.05); read against the reference, the 9 values that differ are the chip's border alone, which snapped to 61afefff at k8 (from f1) and to clear at k22 (from 0e) and now follows its fill's alpha (f7, fb, fd, fe, fe, ff in; 08, 04, 02, 01, 01, 00 out) to its rest; nothing else changed"
+date 2026-10-19
+rev "c554aa84+changes"
 approver "claude"
 scenario 1fdd42b247e8831b
-seal a877dfa30ea1db99
+seal bddc8fbd918f7ea9
 S1 0 - "bar Top"
 N0 "chip|shell.strand:7:5|[Mock | DP-1]#1" "box#chip"
 N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
@@ -51,25 +51,25 @@ n0 bg=e5c07bf1 bd=61afeff1
 n3 bg=f4c93eff
 n4 fg=e06c75f1
 k8
-n0 bg=e5c07bf7 bd=61afefff
+n0 bg=e5c07bf7 bd=61afeff7
 n3 bg=f9ca2eff
 n4 fg=e06c75f7
 k9
-n0 bg=e5c07bfb
+n0 bg=e5c07bfb bd=61afeffb
 n3 bg=fbcb22ff
 n4 fg=e06c75fb
 k10
-n0 bg=e5c07bfd
+n0 bg=e5c07bfd bd=61afeffd
 n3 bg=fdcb17ff
 n4 fg=e06c75fd
 k11
-n0 bg=e5c07bfe
+n0 bg=e5c07bfe bd=61afeffe
 n3 bg=fecc0fff
 n4 fg=e06c75fe
 k12
 n3 bg=ffcc00ff
 k13
-n0 bg=e5c07bff
+n0 bg=e5c07bff bd=61afefff
 n4 fg=e06c75ff
 k14
 k15
@@ -101,26 +101,26 @@ n0 bg=e5c07b0e bd=61afef0e
 n3 bg=3d6ff8ff
 n4 fg=e06c750e
 k22
-n0 bg=e5c07b08 bd=00000000
+n0 bg=e5c07b08 bd=61afef08
 n3 bg=396cfbff
 n4 fg=e06c7508
 k23
-n0 bg=e5c07b04
+n0 bg=e5c07b04 bd=61afef04
 n3 bg=3669fdff
 n4 fg=e06c7504
 k24
-n0 bg=e5c07b02
+n0 bg=e5c07b02 bd=61afef02
 n3 bg=3568feff
 n4 fg=e06c7502
 k25
-n0 bg=e5c07b01
+n0 bg=e5c07b01 bd=61afef01
 n3 bg=3467feff
 n4 fg=e06c7501
 k26
 n3 bg=3366ffff
 k27
-n0 bg=e5c07b00
+n0 bg=e5c07b00 bd=61afef00
 n4 fg=e06c7500
 k28
-n0 bg=00000000
+n0 bg=00000000 bd=00000000
 n4 fg=00000000

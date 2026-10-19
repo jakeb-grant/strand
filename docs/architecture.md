@@ -1757,7 +1757,9 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   owner: add `in_out_back`, `emphasized_decelerate`,
   `emphasized_accelerate` and the aliases there, or keep them out).
   `Motion<N>` is an `N`-channel value in flight:
-  `rest(value, eps)`, `retarget(target, curve)` and `shift(delta, curve)`
+  `rest(value, eps)` (or `rest_each(value, [eps; N])`, a tolerance per
+  channel: a border's width and its colour, decisions.md border-eps),
+  `retarget(target, curve)` and `shift(delta, curve)`
   (a FLIP jump) take effect at the next `sample(at)`, which starts them
   at `at` less one frame (at most `START_LEAD`, never before the previous
   sample: `sampled_at(prev)` seeds it) from wherever the value is there;
@@ -1778,7 +1780,7 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `view() -> MotionView<N>` is its state as plain data, read without
   sampling: the segment in flight (`start`, `from`, `vel`, `target`,
   `curve`), the change waiting for its first sample (`pending`: target,
-  curve and FLIP jump), its last sample's time and `eps`; strand-render's
+  curve and FLIP jump), its last sample's time and `eps` (per channel); strand-render's
   `eval-hooks` probe records it beside each sample. Everything is a pure
   function of the timestamps sampled, so frames are testable as images. `color_channels`/`channels_color` map a
   colour to premultiplied OKLab plus alpha. `TokenScope::transition`

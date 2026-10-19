@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/anim/motion.rs
++++ b/crates/strand-render/src/anim/motion.rs
+@@ -388,7 +388,7 @@
+             // A width (border, stroke) or radius (glow) and a colour:
+             // each settles by its own tolerance (decisions.md border-eps).
+             Enc::Five(v) => PropMotion::Five(
+-                Motion::rest_each(*v, [k, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS, COLOUR_EPS])
++                Motion::rest_each(*v, [k; 5])
+                     .sampled_at(last),
+             ),
+             Enc::Shadows(list) => PropMotion::Shadows {

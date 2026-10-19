@@ -503,7 +503,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out (`held`), a shadow at rest is drawn inside its buffer (`shadow`), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
-| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it (`fold`, eval-rules-3), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
+| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it (`fold`, eval-rules-3), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
@@ -736,7 +736,13 @@ says a node moves, not how, so it does not exempt from them; only an
   times the spring's settling tolerance plus 1e-4 of its span. A way
   comes to rest by the product's rule: each channel's amplitude,
   `√(x² + (v/ω₀)²)`, within the tolerance (decisions.md roll-rate,
-  integration-r4). A value off
+  integration-r4), each channel by its own tolerance (decisions.md
+  border-eps). When a way comes to rest on a spring, the jump from where
+  its curve is to its target is drawn: on an opacity or a colour's
+  channels (a fill's, a text's, a track's, and a border's, a stroke's or a
+  glow's colour) it is at most a step of 1/255 (`snap`), a threshold of
+  the check's own, so a tolerance too coarse for what it settles is
+  found. A value off
   its way after a change is reported as what fits it: `velocity` (the
   change started from rest), `start` (it started 16.7 ms early on a
   faster surface), else `way`. A way in flight that the next sample finds
@@ -1148,7 +1154,8 @@ in crates/strand-surface and crates/strand (see Surface leg), popup-still-pose's
 exit-due fix in crates/strand-render (decisions.md eval-r3), and round 4's
 fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
 (`settle`, in crates/strand-scene) fixes (decisions.md shadow-redraw,
-gradient-cpu-gpu and roll-rate). In a detached worktree of HEAD, each scenario
+gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
+(`continuity`, decisions.md border-eps). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
