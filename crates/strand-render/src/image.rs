@@ -850,11 +850,19 @@ fn within(w: f64, h: f64, max_pixels: u64) -> (u32, u32) {
 }
 
 /// A vello pixmap of premultiplied RGBA, red and blue swapped.
+///
+/// (image-redraw) It never claims to be opaque, though its pixels may
+/// all be: a decode standing in for another size, or drawn under a
+/// scale or turn, is sampled smoothly, and its bilinear samples are not
+/// quite opaque (four f32 weights summing to a hair under 1). vello
+/// writes a paint claimed opaque over what is under it in a tile wholly
+/// inside the clip, and blends it in a tile the clip's edge cuts; a
+/// partial repaint clips to the damage, so those differed from a full
+/// repaint where what is under shows through by that hair, a channel a
+/// level off here and there. Blended in both, they are the same.
 fn to_pixmap(r: &Raster) -> Pixmap {
     let mut pm = Pixmap::new(r.w as u16, r.h as u16);
-    let mut opaque = true;
     for (d, s) in pm.data_mut().iter_mut().zip(r.rgba.chunks_exact(4)) {
-        opaque &= s[3] == 255;
         *d = PremulRgba8 {
             r: s[2],
             g: s[1],
@@ -862,7 +870,6 @@ fn to_pixmap(r: &Raster) -> Pixmap {
             a: s[3],
         };
     }
-    pm.set_may_have_transparency(!opaque);
     pm
 }
 

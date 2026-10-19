@@ -1,0 +1,41 @@
+id     = "image-redraw"
+about  = """Round 7's image-redraw (docs/decisions.md image-redraw): a cover
+image in a rounded clip box whose size springs is drawn from a decode at
+another size, scaled over the box's own fill, while the thumbnail of the
+same file beside it keeps its decode. A partial repaint clips to the
+damage, and vello drew the scaled decode, which claimed to be opaque
+though its bilinear samples are not quite, over the fill where the
+damage's edge cut a tile and in place of it where it did not: a channel
+a level off from a full repaint here and there (`redraw`;
+eval/mutants/image-redraw.patch puts the claim back)."""
+screen = { width = 280, height = 160, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state big = false
+panel P {
+  anchor: top_left; margin: 6; open: true
+  row { id: deck; width: 260; height: 140; pad: 7; gap: 7; align: center; bg: #1c1f26
+    box { id: frame; width: big ? 90 : 30; height: big ? 70 : 24; radius: 6; clip: true; bg: #303446
+      image "../../fixtures/images/art.png" { id: art; fit: cover; grow: 1 }
+    }
+    col { gap: 3
+      image "../../fixtures/images/art.png" { id: thumb; fit: cover; width: 26.5; height: big ? 21 : 13.5; radius: 3 }
+      image "../../fixtures/images/app.png" { id: icon; fit: contain; width: big ? 19 : 31; height: 22.5 }
+    }
+  }
+}
+
+=== steps
+rest
+mark grow
+set big true
+rest
+mark shrink
+set big false
+rest
+mark again
+set big true
+frames 5
+set big false
+rest

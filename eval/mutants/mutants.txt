@@ -135,3 +135,11 @@ ring-corners-swapped.patch          curated/border-ring-shapes-1_25.scn coherenc
 fold-gap-late.patch                 curated/toast-stack.scn             continuity:#t_build:y
 ellipsis-min-content-natural.patch  curated/wrap-card-row.scn           contain:#words:w
 pose-margin-unsent.patch            curated/osd-pose-margins.scn        regions-on-wire
+#
+# image-redraw.patch: image-redraw's fix reverted (decisions.md
+# image-redraw): decodes and gradient pixmaps claim to be opaque again, so
+# a decode standing in, drawn scaled over its box's fill, is written over
+# the fill in a tile wholly inside the damage and blended over it in a
+# tile the damage's edge cuts: a channel a level off from a full repaint
+# (`redraw`).
+image-redraw.patch      regressions/image-redraw.scn      redraw

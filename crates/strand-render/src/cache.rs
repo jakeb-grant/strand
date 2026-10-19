@@ -950,7 +950,10 @@ pub fn render_gradient_part(
         }
     };
     let table = lut(stops);
-    let opaque = stops.iter().all(|s| s.color.clamped().a >= 1.0);
+    // Never claimed opaque, though opaque stops make it so: drawn under
+    // a scale or turn it is sampled smoothly, not quite opaque, and a
+    // paint claimed opaque is drawn otherwise where a clip's edge cuts
+    // a tile (image-redraw, `crate::image`'s `to_pixmap`).
     let mut pm = Pixmap::new(pw as u16, ph as u16);
     let data = pm.data_mut();
     for py in 0..ph {
@@ -974,7 +977,6 @@ pub fn render_gradient_part(
             };
         }
     }
-    pm.set_may_have_transparency(!opaque);
     Some(pm)
 }
 
