@@ -1005,6 +1005,10 @@ says a node moves, not how, so it does not exempt from them; only an
   where its `fit:` puts it in its box (`contain` whole and centred,
   `cover` covering it centred, `fill` stretched; `none` is not judged), a
   decode for another size standing in while its box springs included.
+  The source placed is the file's own pixels, by the size its header
+  gives (a PNG, JPEG or GIF file, read by the sandbox, `filesize.rs`,
+  png-aspect), else the size the decode reports, so a decode that
+  reports another aspect for its source is seen.
   `pose` (eval-rules-6): with `compositor_poses`, a posed surface lies,
   on each frame, its pose's offset from where it lies at rest, within
   half a pixel (margins are whole pixels). The offset is in output
@@ -1877,12 +1881,9 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
 
 - **An image's pixels are not recorded** (eval-coverage-3). `im` holds
   where a decode is drawn and at what size, and `placement`'s `fit` judges that
-  placement; what the decode holds is not seen. A PNG reduced by an
-  integer factor before it is resampled rounds each side up apart
-  (`decode_png`'s `div_ceil`), so `art.png` (60 x 40) is reduced to 20 x
-  14 for a 16 x 12 box and its content drawn about 5% taller than its
-  aspect; neither `fit` nor a reference sees it (left open,
-  decisions.md eval-coverage-3).
+  placement against the file's own size; what the decode holds is not
+  seen. (`decode_png`'s per-side rounding, which this left open, is fixed
+  and caught: png-aspect.)
 - **A morph across surfaces has no rule** (cross-surface-morph,
   integration-r6). A node with a `morph` name that comes on screen while
   its partner was just drawn on another surface of the same output should

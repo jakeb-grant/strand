@@ -23,6 +23,7 @@ pub mod checks;
 pub mod cli;
 pub mod clock;
 pub mod explore;
+pub mod filesize;
 pub mod gpu;
 pub mod harness;
 pub mod input;

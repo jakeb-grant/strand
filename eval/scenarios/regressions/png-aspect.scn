@@ -1,0 +1,37 @@
+id     = "png-aspect"
+about  = """A finding of eval-coverage-3, fixed in round 7 (docs/decisions.md png-aspect):
+a PNG drawn at half its size or less is reduced by a whole factor as it is
+read, and a side the factor did not divide was rounded up to a whole pixel,
+so `art.png` (60 x 40) read for a 16 x 12 box reported a 20 x 14 source and
+was drawn about 5% taller than its aspect. A thumbnail of it (`fit: cover`)
+grows to 64 x 48, its 16 x 12 decode standing in, placed again by its fit,
+while the box springs, and shrinks back; the app icon beside it (`fit:
+contain`) does the same. `placement`'s `fit` places the file's own pixels,
+by the size its header gives (read by the sandbox), so a decode that
+reports another aspect is seen, most of all while it is stretched over a
+box four times its size (eval/mutants/png-aspect.patch reverts the fix)."""
+screen = { width = 240, height = 120, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state big = false
+panel Art {
+  anchor: top_left; margin: 8; open: true
+  row { id: deck; width: 200; height: 80; pad: 8; gap: 8; align: start; bg: #1c1f26
+    image "../../fixtures/images/art.png" { id: art; fit: cover
+      width: big ? 64 : 16; height: big ? 48 : 12 }
+    image "../../fixtures/images/app.png" { id: icon; fit: contain
+      width: big ? 48 : 8; height: big ? 60 : 10 }
+  }
+}
+
+=== steps
+rest
+mark grow
+set big true
+rest
+expect still #deck
+mark shrink
+set big false
+rest
+expect still #deck

@@ -6196,6 +6196,7 @@ fn image_at(px: [u32; 2], dest: [f32; 4]) -> RunTrace {
             fit: "contain".into(),
             pfit: "contain".into(),
             stand_in: px != [100, 50],
+            file: None,
         });
     }
     t.seal();
@@ -6230,6 +6231,63 @@ fn placement_fits_an_image_and_its_stand_in() {
         "{}",
         show(&r, &t)
     );
+}
+
+/// (png-aspect) `fit` places the file's own pixels, by the size its
+/// header gives, not the size the decode reports: a 60 × 40 file whose
+/// decode reports 20 × 14 (a reduced side rounded up), drawn from a
+/// 16 × 12 decode standing in over a 64 × 48 box with `fit: cover`, is
+/// 3.4 px narrower than 3:2 puts it; reported as 20 × 13⅓ it is where it
+/// belongs, and with no file size the report is trusted, as before.
+#[test]
+fn placement_fits_an_image_by_its_files_own_size() {
+    let sc = scenario("");
+    let at = |src: [f64; 2], file: Option<[u32; 2]>| {
+        let mut t = shape(2, |_| vec![row("art", [0.0, 0.0, 64.0, 48.0]).draws()]);
+        // The 16 × 12 decode holds the source covered at its size; drawn
+        // over the box as the renderer places a stand-in (`placed_in`).
+        let (sw, sh) = (src[0], src[1]);
+        let k0 = (16.0 / sw).max(12.0 / sh);
+        let k1 = (64.0 / sw).max(48.0 / sh);
+        let k = k1 / k0;
+        let (ox0, oy0) = ((16.0 - sw * k0) / 2.0, (12.0 - sh * k0) / 2.0);
+        let (ox1, oy1) = ((64.0 - sw * k1) / 2.0, (48.0 - sh * k1) / 2.0);
+        let dest = [
+            (ox1 - ox0 * k) as f32,
+            (oy1 - oy0 * k) as f32,
+            (16.0 * k) as f32,
+            (12.0 * k) as f32,
+        ];
+        for f in &mut t.frames {
+            f.imgs.push(ImageRec {
+                key: "art".into(),
+                s: 1,
+                rect: [0.0, 0.0, 64.0, 48.0],
+                dest,
+                px: [16, 12],
+                src,
+                fit: "cover".into(),
+                pfit: "cover".into(),
+                stand_in: true,
+                file,
+            });
+        }
+        t.seal();
+        t
+    };
+    for (src, file, pass) in [
+        ([20.0, 14.0], Some([60, 40]), false),
+        ([20.0, 40.0 / 3.0], Some([60, 40]), true),
+        ([20.0, 14.0], None, true),
+    ] {
+        let t = at(src, file);
+        let r = check(&sc, &t);
+        let failed = r
+            .failures(CheckId::Placement)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("art") && f.msg.starts_with("fit"));
+        assert_eq!(failed, !pass, "{src:?} {file:?}: {}", show(&r, &t));
+    }
 }
 
 /// "aaa bbb ccc", 10 px a character, in a line box `fit` wide, drawn on
@@ -6545,6 +6603,7 @@ fn image_fit(fit: &str, dest: [f32; 4]) -> RunTrace {
             fit: fit.into(),
             pfit: fit.into(),
             stand_in,
+            file: None,
         });
     }
     t.seal();

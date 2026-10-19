@@ -687,8 +687,14 @@ fn fit(cx: &Cx) -> Vec<Finding> {
             if !(pw > 0.0 && ph > 0.0 && rw > 0.0 && rh > 0.0) {
                 continue;
             }
+            // (png-aspect) Where the fit puts the file's own pixels, by
+            // the size its header gives, else the decode's report; the
+            // decode's place in its pixmap is its own report.
+            let (fw, fh) = im
+                .file
+                .map_or((sw, sh), |[w, h]| (f64::from(w), f64::from(h)));
             let (Some(want), Some(inpx)) = (
-                fitted(sw, sh, rw, rh, &im.fit),
+                fitted(fw, fh, rw, rh, &im.fit),
                 fitted(sw, sh, pw, ph, &im.pfit),
             ) else {
                 continue;

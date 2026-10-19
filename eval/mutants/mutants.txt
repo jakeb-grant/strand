@@ -89,6 +89,12 @@ morph-group-bounds.patch regressions/cross-surface-morph.scn redraw
 # shaped, from 0 to 0, so the label arrives at full width (`vanish` pop-in)
 # and the badge's padding shows for a frame (`flash`).
 unshaped-enter.patch    regressions/unshaped-enter.scn    vanish
+# png-aspect.patch: png-aspect's fix reverted (decisions.md png-aspect): a
+# PNG reduced by a factor that does not divide a side reports that side
+# rounded up, so the thumbnail's 16 x 12 decode, standing in while its box
+# grows to 64 x 48, shows its source 2.5 px narrower than its file's 3:2
+# (`placement` fit, which places the file's own pixels by its header).
+png-aspect.patch        regressions/png-aspect.scn        placement:#art
 # eval-coverage-3's coverage mutants (decisions.md eval-coverage-3,
 # integration-r6), each a bug planted where that round's scenarios reach,
 # caught by a rule on the scenario named:

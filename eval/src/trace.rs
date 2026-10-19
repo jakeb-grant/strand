@@ -447,8 +447,8 @@ pub struct Frame {
 /// (eval-rules-4) One decode of an image node as drawn, surface logical
 /// px before transforms: the node's box, where the whole pixmap went,
 /// the pixmap's size, the source's size, the fit asked for and the fit
-/// the pixmap was decoded by, and whether it stands in for a decode of
-/// another box size.
+/// the pixmap was decoded by, whether it stands in for a decode of
+/// another box size, and the file's own size.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ImageRec {
     pub key: String,
@@ -461,6 +461,11 @@ pub struct ImageRec {
     pub pfit: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stand_in: bool,
+    /// (png-aspect) The size the image file's header gives, when its
+    /// source is a PNG, JPEG or GIF file ([`crate::filesize`]): read by
+    /// the sandbox, not by the renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<[u32; 2]>,
 }
 
 /// (eval-rules-4) A text drawn cut to its line box `fit` (the row's).

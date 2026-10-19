@@ -346,6 +346,24 @@ struct Raster {
     h: u32,
     /// Premultiplied RGBA8.
     rgba: Vec<u8>,
+    /// (png-aspect) The source's size in this raster's pixels: `(w, h)`,
+    /// but less for a source reduced by a factor that does not divide a
+    /// side, whose last column or row then holds a part block (a 60 × 40
+    /// PNG reduced by 3 is 20 × 14 pixels holding 20 × 13⅓ of source).
+    /// Placement and resampling read this, so the content keeps the
+    /// source's aspect.
+    extent: (f64, f64),
+}
+
+impl Raster {
+    fn new(w: u32, h: u32, rgba: Vec<u8>) -> Raster {
+        Raster {
+            w,
+            h,
+            rgba,
+            extent: (w as f64, h as f64),
+        }
+    }
 }
 
 /// Loads `key`: finds the file, decodes it and fits it into its drawn
@@ -398,7 +416,7 @@ pub fn load_with(
             let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
             rgba.extend_from_slice(&[pm(px[0]), pm(px[1]), pm(px[2]), px[3]]);
         }
-        let src = Raster { w: sw, h: sh, rgba };
+        let src = Raster::new(sw, sh, rgba);
         return Ok(Decoded {
             pixmap: Arc::new(to_pixmap(&fit_raster(&src, w, h, key.fit))),
             symbolic,
@@ -428,10 +446,7 @@ pub fn load_with(
                 "not a PNG, JPEG, SVG, GIF or WebP".into(),
             ));
         };
-        (
-            fit_raster(&src, w, h, key.fit),
-            (src.w as f64, src.h as f64),
-        )
+        (fit_raster(&src, w, h, key.fit), src.extent)
     };
     Ok(Decoded {
         pixmap: Arc::new(to_pixmap(&out)),
@@ -502,7 +517,7 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
         if rgba.len() != n * 4 {
             return Err(ImageError::Decode("short PNG".into()));
         }
-        return Ok(Raster { w, h, rgba });
+        return Ok(Raster::new(w, h, rgba));
     }
     if pixels > MAX_STREAMED_PIXELS {
         return Err(ImageError::TooLarge);
@@ -548,10 +563,13 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
             rows_in_band = 0;
         }
     }
+    // The last block of a side `f` does not divide holds less than `f`
+    // source pixels: its pixel covers that fraction of one.
     Ok(Raster {
         w: rw,
         h: rh,
         rgba: out,
+        extent: (sw as f64 / f as f64, sh as f64 / f as f64),
     })
 }
 
@@ -609,7 +627,16 @@ fn decode_jpeg_inner(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, 
     if rgba.len() != n * 4 {
         return Err(ImageError::Decode("short JPEG".into()));
     }
-    Ok(Raster { w, h, rgba })
+    // The IDCT scales by `d / 8` and rounds each side up apart
+    // (jpeg-decoder's `update_idct_size`), so the last column or row
+    // holds a part block: the source's extent is its size times `d / 8`.
+    let extent = [1u32, 2, 4, 8]
+        .into_iter()
+        .find(|d| (sw * d).div_ceil(8) == w && (sh * d).div_ceil(8) == h)
+        .map_or((w as f64, h as f64), |d| {
+            (sw as f64 * d as f64 / 8.0, sh as f64 * d as f64 / 8.0)
+        });
+    Ok(Raster { w, h, rgba, extent })
 }
 
 /// Where a `sw × sh` source goes in a `w × h` box: its scaled size and
@@ -634,7 +661,9 @@ pub(crate) fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64
 /// output pixel averages the source area it covers (downscaling) or
 /// interpolates bilinearly (upscaling).
 fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
-    let (sw, sh) = (src.w as f64, src.h as f64);
+    // The source's extent: a part block at a reduced side's end counts
+    // for its part, so the content keeps the source's aspect.
+    let (sw, sh) = src.extent;
     let (ox, oy, dw, dh) = placement(sw, sh, w as f64, h as f64, fit);
     let (kx, ky) = (sw / dw.max(1e-9), sh / dh.max(1e-9));
     let mut out = vec![0u8; (w * h * 4) as usize];
@@ -668,9 +697,17 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
                     at(ix, iy + 1),
                     at(ix + 1, iy + 1),
                 );
+                // (png-aspect) A pixel the source's edge passes through
+                // fades by the part it covers, as a downscaled one does,
+                // so a contained source is drawn at its placed size, not
+                // grown to whole pixels at each edge.
+                let cover = ((sx1.min(sw) - sx0.max(0.0)) * (sy1.min(sh) - sy0.max(0.0))
+                    / (kx * ky))
+                    .clamp(0.0, 1.0);
                 for k in 0..4 {
-                    acc[k] = (a[k] * (1.0 - tx) + b[k] * tx) * (1.0 - ty)
-                        + (c[k] * (1.0 - tx) + d[k] * tx) * ty;
+                    acc[k] = ((a[k] * (1.0 - tx) + b[k] * tx) * (1.0 - ty)
+                        + (c[k] * (1.0 - tx) + d[k] * tx) * ty)
+                        * cover;
                 }
             } else {
                 // Downscaling: the area average, partial pixels weighted.
@@ -709,7 +746,7 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
             }
         }
     }
-    Raster { w, h, rgba: out }
+    Raster::new(w, h, out)
 }
 
 /// Renders an SVG into a `w × h` box by `fit`.
@@ -735,14 +772,7 @@ fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f6
         oy as f32,
     );
     resvg::render(&tree, t, &mut pm.as_mut());
-    Ok((
-        Raster {
-            w,
-            h,
-            rgba: pm.take(),
-        },
-        (sw, sh),
-    ))
+    Ok((Raster::new(w, h, pm.take()), (sw, sh)))
 }
 
 /// (M4) Decodes a PNG or JPEG held in memory (a Lottie's image asset)
@@ -755,7 +785,13 @@ pub(crate) fn decode_rgba(
     want: Option<(u32, u32)>,
     max_pixels: u64,
 ) -> Result<Pixmap, ImageError> {
-    let want = want.map(|(w, h)| within(w.clamp(1, MAX_SIDE), h.clamp(1, MAX_SIDE), max_pixels));
+    let want = want.map(|(w, h)| {
+        within(
+            w.clamp(1, MAX_SIDE) as f64,
+            h.clamp(1, MAX_SIDE) as f64,
+            max_pixels,
+        )
+    });
     let ask = want.unwrap_or((MAX_SIDE, MAX_SIDE));
     let src = if data.starts_with(b"\x89PNG") {
         decode_png(data, ask, Fit::Fill)?
@@ -766,16 +802,15 @@ pub(crate) fn decode_rgba(
     };
     let (w, h) = match want {
         Some(wh) => wh,
-        None => within(
-            src.w.clamp(1, MAX_SIDE),
-            src.h.clamp(1, MAX_SIDE),
-            max_pixels,
-        ),
+        None => {
+            let side = |v: f64| v.clamp(1.0, MAX_SIDE as f64);
+            within(side(src.extent.0), side(src.extent.1), max_pixels)
+        }
     };
     if u64::from(w) * u64::from(h) > max_pixels {
         return Err(ImageError::TooLarge);
     }
-    let r = if (src.w, src.h) == (w, h) {
+    let r = if (src.w, src.h) == (w, h) && src.extent == (w as f64, h as f64) {
         src
     } else {
         fit_raster(&src, w, h, Fit::Fill)
@@ -792,16 +827,26 @@ pub(crate) fn decode_rgba(
     Ok(pm)
 }
 
-/// `w × h` shrunk, its aspect kept, to at most `max_pixels` (each side at
-/// least 1, so a very long, thin size can stay above it).
-fn within(w: u32, h: u32, max_pixels: u64) -> (u32, u32) {
-    let n = u64::from(w) * u64::from(h);
-    if n <= max_pixels {
-        return (w, h);
-    }
-    let k = (max_pixels as f64 / n as f64).sqrt();
-    let side = |v: u32| ((v as f64 * k).floor() as u32).max(1);
-    (side(w), side(h))
+/// `w × h` (a source's extent, whole or not) shrunk, its aspect kept, to
+/// at most `max_pixels` (each side at least 1, so a very long, thin size
+/// can stay above it). Each side is rounded, so the aspect is kept within
+/// half a pixel a side; where rounding both up would pass `max_pixels`
+/// the side that rounded up is rounded down instead, within a pixel.
+fn within(w: f64, h: f64, max_pixels: u64) -> (u32, u32) {
+    let k = (max_pixels as f64 / (w * h).max(1e-9)).sqrt().min(1.0);
+    let (x, y) = (w * k, h * k);
+    let fits = |a: f64, b: f64| (a.max(1.0) as u64).saturating_mul(b.max(1.0) as u64) <= max_pixels;
+    let (rx, ry) = (x.round(), y.round());
+    let (a, b) = if fits(rx, ry) {
+        (rx, ry)
+    } else if fits(x.floor(), ry) && x.fract() >= 0.5 {
+        (x.floor(), ry)
+    } else if fits(rx, y.floor()) {
+        (rx, y.floor())
+    } else {
+        (x.floor(), y.floor())
+    };
+    (a.max(1.0) as u32, b.max(1.0) as u32)
 }
 
 /// A vello pixmap of premultiplied RGBA, red and blue swapped.
@@ -1622,7 +1667,7 @@ mod tests {
                 rgba.extend_from_slice(&f(x, y));
             }
         }
-        Raster { w, h, rgba }
+        Raster::new(w, h, rgba)
     }
 
     fn base64(bytes: &[u8]) -> String {
@@ -1887,6 +1932,53 @@ mod tests {
         // Drawn at its own size: decoded whole.
         let r = decode_png(&png_bytes, (3000, 2000), Fit::Contain).unwrap();
         assert_eq!((r.w, r.h), (3000, 2000));
+    }
+
+    /// (png-aspect) `within` keeps a size's aspect within half a pixel a
+    /// side where rounding fits `max_pixels`, and never passes it; a
+    /// reduced PNG reports its source's extent.
+    #[test]
+    fn within_rounds_each_side_and_keeps_its_budget() {
+        for (w, h, max) in [
+            (20.0, 13.0 + 1.0 / 3.0, 1_000),
+            (250.0, 9.0, 1_000),
+            (3000.0, 2000.0, 10_000),
+            (61.0, 37.0, 500),
+            (1e6, 1.0, 100),
+        ] {
+            let (a, b) = within(w, h, max);
+            assert!(u64::from(a) * u64::from(b) <= max.max(u64::from(a.max(b))));
+            let k = (max as f64 / (w * h)).sqrt().min(1.0);
+            let (x, y) = (w * k, h * k);
+            if (x.round().max(1.0) * y.round().max(1.0)) as u64 <= max {
+                assert!(
+                    (a as f64 - x.max(1.0)).abs() <= 0.5,
+                    "{w}x{h} in {max}: {a}x{b}"
+                );
+                assert!(
+                    (b as f64 - y.max(1.0)).abs() <= 0.5,
+                    "{w}x{h} in {max}: {a}x{b}"
+                );
+            } else {
+                assert!((a as f64 - x).abs() < 1.0 && (b as f64 - y).abs() < 1.0);
+            }
+        }
+        // A 60 × 40 PNG read for a box a third its size keeps 20 × 13⅓ of
+        // source in its 20 × 14 pixels; a Lottie asset with no size
+        // within 300 pixels is 21 × 14 (21.2 × 14.1).
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, 60, 40);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[90u8; 60 * 40 * 3]).unwrap();
+        }
+        let r = decode_png(&png_bytes, (20, 14), Fit::Contain).unwrap();
+        assert_eq!((r.w, r.h), (20, 14));
+        assert!((r.extent.0 - 20.0).abs() < 1e-9 && (r.extent.1 - 40.0 / 3.0).abs() < 1e-9);
+        let pm = decode_rgba(&png_bytes, None, 300).unwrap();
+        assert_eq!((pm.width(), pm.height()), (21, 14));
     }
 
     #[test]

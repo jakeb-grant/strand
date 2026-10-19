@@ -611,6 +611,8 @@ struct Harness {
     /// (a bare name reading a builtin where a variant was meant) is often
     /// why.
     warnings: String,
+    /// (png-aspect) Image files' own sizes by path ([`crate::filesize`]).
+    file_sizes: HashMap<String, Option<[u32; 2]>>,
     /// The GPU leg's device, once started, and whether surfaces are drawn
     /// by it now (the `backend` header or step).
     gpu: Option<Device>,
@@ -813,6 +815,7 @@ impl Harness {
             images: BTreeMap::new(),
             notes: Vec::new(),
             warnings,
+            file_sizes: HashMap::new(),
             on_gpu: gpu.is_some(),
             gpu,
             gpu_attached: HashSet::new(),
@@ -1038,6 +1041,25 @@ impl Harness {
         self.host
             .emit(&self.rt, path, values)
             .map_err(|e| e.to_string())
+    }
+
+    /// (png-aspect) The size the header of `node`'s image file gives
+    /// (its `source`, a path the compiler made absolute or a `file://`
+    /// URL), read once per path.
+    fn file_size(&mut self, node: strand_scene::NodeId) -> Option<[u32; 2]> {
+        let src = match self.r.tree().get(node)?.get(strand_scene::Prop::Source)? {
+            strand_scene::PropValue::Text(t) | strand_scene::PropValue::Keyword(t) => t.clone(),
+            _ => return None,
+        };
+        let src = src.trim();
+        let path = src.strip_prefix("file://").unwrap_or(src);
+        if !path.starts_with('/') {
+            return None;
+        }
+        *self
+            .file_sizes
+            .entry(path.to_string())
+            .or_insert_with(|| crate::filesize::of(std::path::Path::new(path)))
     }
 
     fn err(&self, line: u32, msg: String) -> Error {
@@ -2381,6 +2403,7 @@ impl Harness {
                         .labels
                         .key(n.node, &self.inst, self.r.tree(), &self.sources);
                     let rect = |r: strand_scene::LogicalRect| [r.x, r.y, r.w, r.h];
+                    let file = self.file_size(n.node);
                     for i in &n.images {
                         frame.imgs.push(crate::trace::ImageRec {
                             key: key.clone(),
@@ -2392,6 +2415,7 @@ impl Harness {
                             fit: i.fit.to_string(),
                             pfit: i.pixmap_fit.to_string(),
                             stand_in: i.stand_in,
+                            file,
                         });
                     }
                     if let Some(c) = &n.cut {

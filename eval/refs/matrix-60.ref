@@ -6691,12 +6691,12 @@ k48
 k49
 ref "m.enter-fade__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 3c9fdcc6ada22a88
-seal bd6b8f375c82e4c6
+seal ffb4f055ad467f01
 S1 0 - "bar Top"
 S2 1 27 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -6786,25 +6786,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k16
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k17
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k18
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k19
 n10 w=262
 k20
@@ -12510,12 +12510,12 @@ k40
 k41
 ref "m.enter-scale__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 96913f7496898655
-seal ec16a41368b2ad27
+seal eacbf17c6b647cea
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -12595,25 +12595,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -18301,12 +18301,12 @@ k48
 k49
 ref "m.enter-slide__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 81d0625ff5b52af9
-seal 04a00a294feeb3d6
+seal 2692f484def51dc6
 S1 0 - "bar Top"
 S2 1 27 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -18396,25 +18396,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k16
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k17
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k18
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k19
 n10 w=262
 k20
@@ -23766,12 +23766,12 @@ k43
 k44
 ref "m.exit-fade__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario b2f7199183958008
-seal 4a202a8b06b633b5
+seal d54b2118e483eee4
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -23835,25 +23835,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -28481,12 +28481,12 @@ k38
 k39
 ref "m.exit-height0__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 1ac1ce296702ea6e
-seal 2762d2fa6a372b29
+seal 29e8b1963826cfeb
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -28550,25 +28550,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -33090,12 +33090,12 @@ k43
 k44
 ref "m.exit-slide__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 1f5b32c1f1f21d58
-seal 0f88c1e29ad8d1fa
+seal 67425647bc689e2e
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -33159,25 +33159,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -37748,12 +37748,12 @@ k29
 k30
 ref "m.flip-nested__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 7dba4129fc4eece6
-seal 031eea079a523660
+seal 1d4d40d04b1b6ac8
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -37839,7 +37839,7 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 n14 w=189
 n15 x=19 ord=12
 n16 x=21 ord=10
@@ -37856,7 +37856,7 @@ n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 n14 w=219
 n15 x=35
 n16 x=29
@@ -37873,7 +37873,7 @@ n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 n14 w=239
 n15 x=45
 n16 x=34
@@ -37890,7 +37890,7 @@ n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 n14 w=248
 n15 x=50
 n16 x=36
@@ -43149,12 +43149,12 @@ k29
 k30
 ref "m.flip-reorder__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario a3d52c0597e1afe6
-seal 1200eb132b38b9a8
+seal 094c58269253b926
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
@@ -43254,7 +43254,7 @@ n11 x=113 ord=9
 n12 ord=7
 n14 w=201
 n16 w=20
-n17 w=20 im=0.671875,-1,18.671875,14@16,12
+n17 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=147
 n5 x=67 ink=67,10,27,11
@@ -43262,7 +43262,7 @@ n9 x=128
 n11 x=126
 n14 w=231
 n16 w=25
-n17 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n17 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=150
 n5 x=70 ink=70,10,27,11
@@ -43270,7 +43270,7 @@ n9 x=136
 n11 x=134
 n14 w=251
 n16 w=28
-n17 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n17 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=152
 n5 x=72 ink=72,10,27,11
@@ -43278,7 +43278,7 @@ n9 x=140
 n11 x=138
 n14 w=260
 n16 w=30
-n17 w=30 im=1,-4.5,28,21@16,12
+n17 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n9 x=141
 n11 x=139
@@ -47527,12 +47527,12 @@ k29
 k30
 ref "m.image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario bcd97714179a673a
-seal 9e68096b442f4ee7
+seal 38866080208222f4
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -47596,25 +47596,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -47660,12 +47660,12 @@ k31
 k32
 ref "m.image__blur.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 2feadc6baacde5fb
-seal 706776d855881247
+seal e539adf7a040bdb1
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -47729,25 +47729,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -47793,12 +47793,12 @@ k31
 k32
 ref "m.image__clip.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 4928d9848eeffb13
-seal e0faece267b1f8a4
+seal 9995fac6c74f9501
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -47862,25 +47862,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -47926,12 +47926,12 @@ k31
 k32
 ref "m.image__colour-shift.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario d61ca7ed47c36071
-seal 782d7f28a2ca20a3
+seal ff4e82fe2e14211c
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -47995,25 +47995,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20 bg=4f7decff
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25 bg=7f9bcaff
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28 bg=aaafa6ff
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30 bg=c9bb85ff
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 n12 bg=dec269ff
@@ -48067,12 +48067,12 @@ k31
 k32
 ref "m.image__gpu.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 34c08a635e72c0c4
-seal a1f0f6d07bcadb41
+seal 873391e00d6b0af4
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -48136,25 +48136,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -48200,12 +48200,12 @@ k31
 k32
 ref "m.image__jelly.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 60c70915d11e95e6
-seal a203125823c23576
+seal 2b5b54b3615ec3f0
 S1 0 - "bar Top"
 S2 1 91 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -48466,25 +48466,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k80
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k81
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k82
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k83
 n10 w=262
 k84
@@ -48530,12 +48530,12 @@ k99
 k100
 ref "m.image__keyframes.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 1f1a0cf738f525fb
-seal 1838a4e700138d8a
+seal c07bb385f8692c4d
 S1 0 - "bar Top"
 S2 1 33 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -48641,25 +48641,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k22
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k23
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k24
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k25
 n10 w=262
 k26
@@ -48705,12 +48705,12 @@ k41
 k42
 ref "m.image__late-text-1.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario a0429475ff1af0f8
-seal de5e61c9893dff7d
+seal 6ffa6f53040e2219
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -48774,25 +48774,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -48838,12 +48838,12 @@ k31
 k32
 ref "m.image__late-text-paint.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 7ce1966ebaa5656a
-seal c993f4ccba65731f
+seal a3c4c4b74e83c4d3
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -48907,25 +48907,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -48971,12 +48971,12 @@ k31
 k32
 ref "m.image__lean.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 0a2289624b0366aa
-seal 5856e52ae17ecba8
+seal 9d0e9de9674f958d
 S1 0 - "bar Top"
 S2 1 37 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -49076,25 +49076,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20 v=35.265625,8.671875,21.46875,14.671875
-n13 w=20 v=35.265625,8.671875,21.46875,14.671875 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 v=35.265625,8.671875,21.46875,14.671875 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k26
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25 v=35.28125,8.3125,26.421875,15.359375
-n13 w=25 v=35.28125,8.3125,26.421875,15.359375 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 v=35.28125,8.3125,26.421875,15.359375 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k27
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28 v=35.296875,8.109375,29.390625,15.78125
-n13 w=28 v=35.296875,8.109375,29.390625,15.78125 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 v=35.296875,8.109375,29.390625,15.78125 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k28
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30 v=35.3125,7.96875,31.375,16.0625
-n13 w=30 v=35.3125,7.96875,31.375,16.0625 im=1,-4.5,28,21@16,12
+n13 w=30 v=35.3125,7.96875,31.375,16.0625 im=1.671875,-4,26.671875,20@16,12
 k29
 n10 w=262
 k30
@@ -49205,12 +49205,12 @@ n12 -
 n13 -
 ref "m.image__reveal.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 0f06ab2ab0270c39
-seal cf2812ad06aeff04
+seal d6bf7defb52a0994
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -49274,25 +49274,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -49616,12 +49616,12 @@ k31
 k32
 ref "m.image__scroll.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
+note "integration-r7, two causes: eval-coverage-4's flick (scroll) or x: 12 slider box (slider-drag), already in the reference this block replaces, and png-aspect: against that reference only the image node's paint.images (im) changed, on the ticks its 16 x 12 decode of the 3:2 art.png stands in, now where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14)"
 date 2026-10-19
-rev "bbda3d6c+changes"
+rev "93423f48"
 approver "claude"
 scenario 2a2fabf839803a94
-seal 2d06ff8467167e40
+seal 37b615168eb25abe
 S1 0 - "bar Top"
 S2 1 44 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -49847,7 +49847,7 @@ n12 ord=12
 n13 ord=13
 n15 w=201
 n17 w=20
-n18 w=20 im=0.671875,-1,18.671875,14@16,12
+n18 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 n19 ord=14
 n20 ord=15
 k33
@@ -49855,19 +49855,19 @@ n0 x=113
 n5 x=67 ink=67,10,27,11
 n15 w=231
 n17 w=25
-n18 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n18 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k34
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n15 w=251
 n17 w=28
-n18 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n18 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k35
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n15 w=260
 n17 w=30
-n18 w=30 im=1,-4.5,28,21@16,12
+n18 w=30 im=1.671875,-4,26.671875,20@16,12
 k36
 n15 w=262
 k37
@@ -49918,12 +49918,12 @@ k52
 k53
 ref "m.image__shadow.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 1137ae46a24107ad
-seal 213aa3d28e307fbc
+seal 8e208e68ca0a6b7c
 S1 0 - "bar Top"
 S2 1 23 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -49987,25 +49987,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201
 n12 w=20 sh=000000aa@26,2,40,32
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231
 n12 w=25 sh=000000aa@26,2,45,32
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251
 n12 w=28 sh=000000aa@26,2,48,32
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260
 n12 w=30 sh=000000aa@26,2,50,32
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262
 k16
@@ -50051,12 +50051,12 @@ k31
 k32
 ref "m.image__shared-morph.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario daa197eaf789284e
-seal 990278d9a045a191
+seal aa57cef9702a457d
 S1 0 - "bar Top"
 S2 1 27 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -50151,25 +50151,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n11 w=201
 n13 w=20
-n14 w=20 im=0.671875,-1,18.671875,14@16,12
+n14 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k16
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n11 w=231
 n13 w=25
-n14 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n14 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k17
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n11 w=251
 n13 w=28
-n14 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n14 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k18
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n11 w=260
 n13 w=30
-n14 w=30 im=1,-4.5,28,21@16,12
+n14 w=30 im=1.671875,-4,26.671875,20@16,12
 k19
 n11 w=262
 k20
@@ -50233,12 +50233,12 @@ k40
 n6 x=112 v=d
 ref "m.image__slider-drag.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
+note "integration-r7, two causes: eval-coverage-4's flick (scroll) or x: 12 slider box (slider-drag), already in the reference this block replaces, and png-aspect: against that reference only the image node's paint.images (im) changed, on the ticks its 16 x 12 decode of the 3:2 art.png stands in, now where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14)"
 date 2026-10-19
-rev "bbda3d6c+changes"
+rev "93423f48"
 approver "claude"
 scenario 1550628183e9b96b
-seal 258efb870c39ad62
+seal 95284a5ac1f35d13
 S1 0 - "bar Top"
 S2 1 43 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -50347,25 +50347,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n12 w=201
 n14 w=20
-n15 w=20 im=0.671875,-1,18.671875,14@16,12
+n15 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k32
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n12 w=231
 n14 w=25
-n15 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n15 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k33
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n12 w=251
 n14 w=28
-n15 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n15 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k34
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n12 w=260
 n14 w=30
-n15 w=30 im=1,-4.5,28,21@16,12
+n15 w=30 im=1.671875,-4,26.671875,20@16,12
 k35
 n12 w=262
 k36
@@ -50413,12 +50413,12 @@ k51
 k52
 ref "m.image__stagger.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 74c697658a2ca43f
-seal 1232e21ecd39f57b
+seal d8871761954e7cbe
 S1 0 - "bar Top"
 S2 1 30 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -50519,7 +50519,7 @@ n10 w=201
 n12 w=20
 n13 x=62
 n14 x=76
-n15 w=20 im=0.671875,-1,18.671875,14@16,12
+n15 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k19
 n0 x=141
 n5 x=95 ink=95,10,27,11
@@ -50527,7 +50527,7 @@ n10 w=231
 n12 w=25
 n13 x=67
 n14 x=81
-n15 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n15 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k20
 n0 x=144
 n5 x=98 ink=98,10,27,11
@@ -50535,7 +50535,7 @@ n10 w=251
 n12 w=28
 n13 x=70
 n14 x=84
-n15 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n15 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k21
 n0 x=146
 n5 x=100 ink=100,10,27,11
@@ -50543,7 +50543,7 @@ n10 w=260
 n12 w=30
 n13 x=72
 n14 x=86
-n15 w=30 im=1,-4.5,28,21@16,12
+n15 w=30 im=1.671875,-4,26.671875,20@16,12
 k22
 n10 w=262
 k23
@@ -63083,12 +63083,12 @@ k41
 k42
 ref "m.popup-content-height__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario b9e5794c503aae0b
-seal 657ec2cb78ee31f2
+seal c256fc96aff88ca9
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63154,25 +63154,25 @@ n5 x=62 ink=62,10,27,11
 n10 w=201 h=52
 n11 h=80
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231 h=56
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251 h=60
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260 h=65
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=262 h=69
 k16
@@ -77731,12 +77731,12 @@ k43
 k44
 ref "m.size-spring__image.60"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
+note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
 date 2026-10-19
-rev "a7965714+changes"
+rev "93423f48"
 approver "claude"
 scenario 40083fc9014ab910
-seal b5ef95edc73c5b8c
+seal 456f7daee4bfdde3
 S1 0 - "bar Top"
 S2 1 37 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -77800,25 +77800,25 @@ n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=186
 n12 w=20
-n13 w=20 im=0.671875,-1,18.671875,14@16,12
+n13 w=20 im=1.109375,-0.671875,17.78125,13.328125@16,12
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=200
 n12 w=25
-n13 w=25 im=0.828125,-2.75,23.328125,17.5@16,12
+n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=216
 n12 w=28
-n13 w=28 im=0.9375,-3.796875,26.140625,19.59375@16,12
+n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=231
 n12 w=30
-n13 w=30 im=1,-4.5,28,21@16,12
+n13 w=30 im=1.671875,-4,26.671875,20@16,12
 k15
 n10 w=243
 k16

@@ -671,3 +671,86 @@ fn an_icon_theme_change_redraws_icons_looked_up_afresh() {
     buf.paint(&mut r, SurfaceId(1), 3);
     assert_eq!(body(&buf), [0, 0, 0, 0xff], "removed");
 }
+
+/// (png-aspect) A source reduced before it is resampled keeps its aspect:
+/// `decode_png` reduces a PNG drawn at half its size or less by a whole
+/// factor `f`, and the JPEG decoder scales its IDCT by 1/2, 1/4 or 1/8;
+/// either rounds a side that the factor does not divide up to a whole
+/// pixel holding a part block. Read as whole, a 60 × 40 PNG reduced by 3
+/// for a 16 × 12 box was 20 × 14 and drawn 16 × 11.2 instead of
+/// 16 × 10.7 (decisions.md eval-coverage-3). Through `load`, the path
+/// every image takes: at every box size from 4 to 40 px a side and the
+/// sizes a JPEG reduces at, a source contained in its box is drawn at
+/// its placement's size within half a pixel a side (its short side the
+/// alpha across the long side's middle, its long side the alpha's area
+/// over that), and the source size the
+/// decode reports has the source's aspect, so a decode standing in for
+/// another box is placed by it.
+#[test]
+fn a_reduced_image_keeps_its_aspect() {
+    let theme = IconTheme::named("StrandTest");
+    let mut sources: Vec<(String, f64, f64)> = Vec::new();
+    for (w, h) in [(60u32, 40u32), (61, 37), (97, 13), (13, 97), (250, 9)] {
+        let path = theme_dir().join(format!("aspect-{w}x{h}.png"));
+        write_png(&path, w, h, |_, _| [0x40, 0x80, 0xc0, 0xff]);
+        sources.push((path.to_string_lossy().into_owned(), w as f64, h as f64));
+    }
+    for (name, w, h) in [
+        ("aspect-100x60.jpg", 100.0, 60.0),
+        ("aspect-61x37.jpg", 61.0, 37.0),
+    ] {
+        sources.push((fixture(name), w, h));
+    }
+    let mut worst = (0.0f64, String::new());
+    for (src, sw, sh) in &sources {
+        for bw in 4..=40u32 {
+            for bh in 4..=40u32 {
+                let key = ImageKey {
+                    source: src.clone(),
+                    icon: false,
+                    w: bw,
+                    h: bh,
+                    fit: Fit::Contain,
+                    scale: 1,
+                    frame: 0,
+                };
+                let d = load(&key, &theme).unwrap();
+                let (rw, rh) = d.source;
+                assert!(
+                    (rw / rh - sw / sh).abs() < 1e-9 * (sw / sh),
+                    "{src} at {bw}x{bh}: reported {rw}x{rh}"
+                );
+                let k = (bw as f64 / sw).min(bh as f64 / sh);
+                let (ew, eh) = (sw * k, sh * k);
+                let (pw, ph) = (d.pixmap.width() as usize, d.pixmap.height() as usize);
+                assert_eq!((pw, ph), (bw as usize, bh as usize));
+                let px = d.pixmap.data();
+                let a = |x: usize, y: usize| px[y * pw + x].a as f64 / 255.0;
+                // The short side down (or across) the long side's middle
+                // line, which the content covers whole; the long side
+                // from the area.
+                let area: f64 = (0..ph)
+                    .flat_map(|y| (0..pw).map(move |x| (x, y)))
+                    .map(|(x, y)| a(x, y))
+                    .sum();
+                let (across, down) = if ew >= eh {
+                    let down: f64 = (0..ph).map(|y| a(pw / 2, y)).sum();
+                    (area / down, down)
+                } else {
+                    let across: f64 = (0..pw).map(|x| a(x, ph / 2)).sum();
+                    (across, area / across)
+                };
+                for (got, want, side) in [(across, ew, "width"), (down, eh, "height")] {
+                    let off = (got - want).abs();
+                    if off > worst.0 {
+                        worst = (
+                            off,
+                            format!("{src} at {bw}x{bh}: {side} {got:.3} for {want:.3}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(worst.0 <= 0.5, "drawn off its aspect: {}", worst.1);
+}
