@@ -3152,3 +3152,167 @@ fn a_transformed_groups_clip_repaints_where_it_is_drawn() {
         }
     }
 }
+
+/// (slider-clip) Every group and clip a node draws under a transform is
+/// bounded where the transform puts it: a slider's track and knob, a
+/// segmented control's pill, a rounded image's clip, an image swap's
+/// wipe mask, a clipping box's rounded clip over a child that moves and
+/// a rolling text's clip, each changed under `scale: 0.5`, `scale: 1.4`
+/// and `rotate: 30deg` at 1.2 and 1.8 (each near a corner of its card,
+/// so its transformed place is away from its untransformed one), repaint
+/// a partial frame equal to a full one on every frame until they rest (`a_transformed_groups_clip_
+/// repaints_where_it_is_drawn` covers the meter and the cut title).
+#[test]
+fn every_transformed_group_repaints_where_it_is_drawn() {
+    use std::time::Duration;
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let call = |name: &str, args: Vec<PropValue>| PropValue::Call {
+        name: name.into(),
+        args,
+    };
+    let dir = std::env::temp_dir().join(format!("strand-damage-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = |name: &str, c: [u8; 4]| {
+        let path = dir.join(name);
+        let px: Vec<u8> = (0..24 * 16)
+            .flat_map(|i| {
+                if i % 24 < 12 {
+                    c
+                } else {
+                    [c[2], c[0], c[1], 255]
+                }
+            })
+            .collect();
+        write_png(&path, 24, 16, &px);
+        path.to_string_lossy().into_owned()
+    };
+    let (red, blue) = (
+        png("xform-red.png", [0xf3, 0x8b, 0xa8, 0xff]),
+        png("xform-blue.png", [0x89, 0xb4, 0xfa, 0xff]),
+    );
+    let at = |x: f32, y: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(y)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, kw("absolute")),
+        ]
+    };
+    for scale in [120, 180] {
+        let scale = Scale::new(scale).unwrap();
+        for turn in [
+            (Prop::Scale, num(0.5)),
+            (Prop::Scale, num(1.4)),
+            (Prop::Rotate, PropValue::Angle(30.0)),
+        ] {
+            let what = format!("{scale:?} {:?} {:?}", turn.0, turn.1);
+            let mut b = Builder::default();
+            let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+            let mut p = at(40.0, 30.0, 220.0, 150.0);
+            p.extend([(Prop::Bg, color("#313244")), turn.clone()]);
+            let card = b.node(NodeKind::Box, Some(root), p);
+            let slider = b.node(NodeKind::Slider, Some(card), {
+                let mut p = at(10.0, 8.0, 120.0, 20.0);
+                p.push((Prop::Value, num(0.2)));
+                p
+            });
+            let seg = b.node(NodeKind::Segmented, Some(card), {
+                let mut p = at(10.0, 34.0, 150.0, 24.0);
+                p.extend([
+                    (
+                        Prop::Options,
+                        PropValue::List(vec![kw("auto"), kw("light"), kw("dark")]),
+                    ),
+                    (Prop::Value, kw("auto")),
+                ]);
+                p
+            });
+            let rounded = b.node(NodeKind::Image, Some(card), {
+                let mut p = at(176.0, 8.0, 36.0, 24.0);
+                p.extend([(Prop::Source, text(&red)), (Prop::Radius, num(8.0))]);
+                p
+            });
+            let wiped = b.node(NodeKind::Image, Some(card), {
+                let mut p = at(178.0, 118.0, 36.0, 24.0);
+                p.extend([
+                    (Prop::Source, text(&red)),
+                    (Prop::Transition, call("wipe", vec![kw("left")])),
+                ]);
+                p
+            });
+            let holder = b.node(NodeKind::Box, Some(card), {
+                let mut p = at(8.0, 100.0, 60.0, 40.0);
+                p.extend([
+                    (Prop::Clip, PropValue::Bool(true)),
+                    (Prop::Radius, num(12.0)),
+                    (Prop::Bg, color("#45475a")),
+                ]);
+                p
+            });
+            let inner = b.node(NodeKind::Box, Some(holder), {
+                let mut p = at(-10.0, -6.0, 30.0, 30.0);
+                p.push((Prop::Bg, color("#a6e3a1")));
+                p
+            });
+            let roll = b.node(NodeKind::Text, Some(card), {
+                let mut p = at(96.0, 124.0, 60.0, 20.0);
+                p.extend([
+                    (Prop::Roll, PropValue::Bool(true)),
+                    (Prop::Font, PropValue::Font(font(13.0))),
+                    (Prop::Color, color("#cdd6f4")),
+                    (Prop::Text, text("12:41")),
+                ]);
+                p
+            });
+            let size = scale.physical_size(LogicalSize::new(300.0, 220.0));
+            let diff = b.diff;
+            let mut pair = [0u8, 1].map(|_| {
+                let mut r = renderer();
+                assert!(r.apply(diff.clone()).is_empty());
+                r.attach_surface(BAR, r.tree().roots()[0]);
+                let mut buf = Buffer::new(size.w, size.h, scale);
+                buf.paint_at(&mut r, BAR, 0, Duration::from_millis(1000));
+                (r, buf)
+            });
+            let mut t = 1000;
+            for (i, (p, v, id)) in [
+                (Prop::Value, num(0.8), slider),
+                (Prop::Value, kw("dark"), seg),
+                (Prop::Source, text(&blue), rounded),
+                (Prop::Source, text(&blue), wiped),
+                (Prop::X, num(36.0), inner),
+                (Prop::Text, text("12:42"), roll),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (r, _) in pair.iter_mut() {
+                    let mut d = SceneDiff::new();
+                    d.set(id, p, v.clone());
+                    assert!(r.apply(d).is_empty());
+                }
+                let mut frames = 0;
+                loop {
+                    t += 16;
+                    frames += 1;
+                    assert!(frames < 200, "{what} step {i}: settles");
+                    for (age, (r, buf)) in pair.iter_mut().enumerate() {
+                        buf.paint_at(r, BAR, 1 - age as u8, Duration::from_millis(t));
+                    }
+                    let n = pair[0]
+                        .1
+                        .pixels
+                        .chunks_exact(4)
+                        .zip(pair[1].1.pixels.chunks_exact(4))
+                        .filter(|(x, y)| x != y)
+                        .count();
+                    assert_eq!(n, 0, "{what} step {i} at {t} ms: partial differs from full");
+                    if !pair[0].0.wants_frame(BAR) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
