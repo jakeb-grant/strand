@@ -1,16 +1,16 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldd-nested-popup"
 verdict good
-note "integration-r4 (eval-fa on eval-r4): the menu popup is now shifted onto the screen by strand-surface's popup_shift (origin x -54 to 0) and its submenu moves with it (108 to 162); no node row changes"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 82 -> 76 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "d0071862+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 8a2deb952853c0a6
-seal edf2607337d95e88
+seal 5dcffed1ac6f7f49
 S1 0 - "bar Top"
-S2 1 62 "popup@shell.strand:8"
-S3 17 47 "popup@shell.strand:13"
-S4 63 81 "popup@shell.strand:8"
+S2 1 58 "popup@shell.strand:8"
+S3 16 44 "popup@shell.strand:13"
+S4 59 75 "popup@shell.strand:8"
 N0 "menu_label|shell.strand:7:5|[Mock | DP-1]#0" "text#menu_label"
 N1 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
 N2 "|shell.strand:6:3|[Mock | DP-1]#0" "row@shell.strand:6"
@@ -120,184 +120,181 @@ n6 op=255
 n7 op=255
 n8 op=255
 k15
-k16
-k17 p3
+k16 p3
 s3 z=140,58 o=162,40
 n9 srf=3 x=0 y=0 w=140 h=58 op=0 hid=opacity0
-k18
+k17
 n9 op=37 hid=-
 n10 srf=3 x=0 y=0 w=140 h=58 op=37 ord=1 bg=3b3f58ff
 n11 srf=3 x=4 y=4 w=132 h=24 op=37 ord=2
 n12 srf=3 x=12 y=9 w=62 h=15 op=37 txt=S ord=3 ink=13,10,61,13 fg=cdd6f4ff gl=["Brightness"]
 n13 srf=3 x=4 y=30 w=132 h=24 op=37 ord=4
 n14 srf=3 x=12 y=35 w=58 h=15 op=37 txt=S ord=5 ink=13,36,57,13 fg=cdd6f4ff gl=["Night\u0020light"]
-k19
+k18
 n9 op=98
 n10 op=98
 n11 op=98
 n12 op=98
 n13 op=98
 n14 op=98
-k20
+k19
 n9 op=151
 n10 op=151
 n11 op=151
 n12 op=151
 n13 op=151
 n14 op=151
-k21
+k20
 n9 op=190
 n10 op=190
 n11 op=190
 n12 op=190
 n13 op=190
 n14 op=190
-k22
+k21
 n9 op=216
 n10 op=216
 n11 op=216
 n12 op=216
 n13 op=216
 n14 op=216
-k23
+k22
 n9 op=232
 n10 op=232
 n11 op=232
 n12 op=232
 n13 op=232
 n14 op=232
-k24
+k23
 n9 op=241
 n10 op=241
 n11 op=241
 n12 op=241
 n13 op=241
 n14 op=241
-k25
+k24
 n9 op=247
 n10 op=247
 n11 op=247
 n12 op=247
 n13 op=247
 n14 op=247
-k26
+k25
 n9 op=251
 n10 op=251
 n11 op=251
 n12 op=251
 n13 op=251
 n14 op=251
-k27
+k26
 n9 op=253
 n10 op=253
 n11 op=253
 n12 op=253
 n13 op=253
 n14 op=253
-k28
+k27
 n9 op=254
 n10 op=254
 n11 op=254
 n12 op=254
 n13 op=254
 n14 op=254
+k28
 k29
-k30
 n9 op=255
 n10 op=255
 n11 op=255
 n12 op=255
 n13 op=255
 n14 op=255
+k30
 k31
-k32
-k33
 n9 op=218
 n10 op=218 hid=inert
 n11 op=218 hid=inert
 n12 op=218 hid=inert
 n13 op=218 hid=inert
 n14 op=218 hid=inert
-k34
+k32
 n9 op=157
 n10 op=157
 n11 op=157
 n12 op=157
 n13 op=157
 n14 op=157
-k35
+k33
 n9 op=104
 n10 op=104
 n11 op=104
 n12 op=104
 n13 op=104
 n14 op=104
-k36
+k34
 n9 op=65
 n10 op=65
 n11 op=65
 n12 op=65
 n13 op=65
 n14 op=65
-k37
+k35
 n9 op=39
 n10 op=39
 n11 op=39
 n12 op=39
 n13 op=39
 n14 op=39
-k38
+k36
 n9 op=23
 n10 op=23
 n11 op=23
 n12 op=23
 n13 op=23
 n14 op=23
-k39
+k37
 n9 op=14
 n10 op=14
 n11 op=14
 n12 op=14
 n13 op=14
 n14 op=14
-k40
+k38
 n9 op=8
 n10 op=8
 n11 op=8
 n12 op=8
 n13 op=8
 n14 op=8
-k41
+k39
 n9 op=4
 n10 op=4
 n11 op=4
 n12 op=4
 n13 op=4
 n14 op=4
-k42
+k40
 n9 op=2
 n10 op=2
 n11 op=2
 n12 op=2
 n13 op=2
 n14 op=2
-k43
+k41
 n9 op=1
 n10 op=1
 n11 op=1
 n12 op=1
 n13 op=1
 n14 op=1
-k44
-k45
+k42
+k43
 n9 op=0
 n10 op=0
 n11 op=0
 n12 op=0
 n13 op=0
 n14 op=0
-k46
-k47
+k44
 s3 -
 n9 hid=opacity0
 n10 -
@@ -305,7 +302,7 @@ n11 -
 n12 -
 n13 -
 n14 -
-k48 p2
+k45 p2
 n3 op=218
 n4 op=218 hid=inert
 n5 op=218 hid=inert
@@ -313,86 +310,85 @@ n6 op=218 hid=inert
 n7 op=218 hid=inert
 n8 op=218 hid=inert
 n9 -
-k49
+k46
 n3 op=157
 n4 op=157
 n5 op=157
 n6 op=157
 n7 op=157
 n8 op=157
-k50
+k47
 n3 op=104
 n4 op=104
 n5 op=104
 n6 op=104
 n7 op=104
 n8 op=104
-k51
+k48
 n3 op=65
 n4 op=65
 n5 op=65
 n6 op=65
 n7 op=65
 n8 op=65
-k52
+k49
 n3 op=39
 n4 op=39
 n5 op=39
 n6 op=39
 n7 op=39
 n8 op=39
-k53
+k50
 n3 op=23
 n4 op=23
 n5 op=23
 n6 op=23
 n7 op=23
 n8 op=23
-k54
+k51
 n3 op=14
 n4 op=14
 n5 op=14
 n6 op=14
 n7 op=14
 n8 op=14
-k55
+k52
 n3 op=8
 n4 op=8
 n5 op=8
 n6 op=8
 n7 op=8
 n8 op=8
-k56
+k53
 n3 op=4
 n4 op=4
 n5 op=4
 n6 op=4
 n7 op=4
 n8 op=4
-k57
+k54
 n3 op=2
 n4 op=2
 n5 op=2
 n6 op=2
 n7 op=2
 n8 op=2
-k58
+k55
 n3 op=1
 n4 op=1
 n5 op=1
 n6 op=1
 n7 op=1
 n8 op=1
-k59
-k60
+k56
+k57
 n3 op=0
 n4 op=0
 n5 op=0
 n6 op=0
 n7 op=0
 n8 op=0
-k61
-k62
+k58
 s2 -
 n3 hid=opacity0
 n4 -
@@ -400,119 +396,111 @@ n5 -
 n6 -
 n7 -
 n8 -
-k63 p4
+k59 p4
 s4 z=160,58 o=0,36
 n3 srf=4
-k64
+k60
 n3 op=37 hid=-
 n4 srf=4 x=4 y=4 w=152 h=24 op=37 ord=2 bg=45475aff
 n5 srf=4 x=4 y=30 w=152 h=24 op=37 ord=4
 n6 srf=4 x=0 y=0 w=160 h=58 op=37 ord=1 bg=313244ff
 n7 srf=4 x=12 y=9 w=43 h=15 op=37 txt=S ord=3 ink=13,10,42,13 fg=cdd6f4ff gl=["Display"]
 n8 srf=4 x=12 y=35 w=38 h=15 op=37 txt=S ord=5 ink=12,36,37,11 fg=cdd6f4ff gl=["Sound"]
-k65
+k61
 n3 op=98
 n4 op=98
 n5 op=98
 n6 op=98
 n7 op=98
 n8 op=98
-k66
+k62
 n3 op=151
 n4 op=151
 n5 op=151
 n6 op=151
 n7 op=151
 n8 op=151
-k67
+k63
 n3 op=153
 n4 op=153 hid=inert
 n5 op=153 hid=inert
 n6 op=153 hid=inert
 n7 op=153 hid=inert
 n8 op=153 hid=inert
-k68
+k64
 n3 op=117
 n4 op=117
 n5 op=117
 n6 op=117
 n7 op=117
 n8 op=117
-k69
+k65
 n3 op=80
 n4 op=80
 n5 op=80
 n6 op=80
 n7 op=80
 n8 op=80
-k70
+k66
 n3 op=51
 n4 op=51
 n5 op=51
 n6 op=51
 n7 op=51
 n8 op=51
-k71
+k67
 n3 op=32
 n4 op=32
 n5 op=32
 n6 op=32
 n7 op=32
 n8 op=32
-k72
+k68
 n3 op=19
 n4 op=19
 n5 op=19
 n6 op=19
 n7 op=19
 n8 op=19
-k73
+k69
 n3 op=11
 n4 op=11
 n5 op=11
 n6 op=11
 n7 op=11
 n8 op=11
-k74
+k70
 n3 op=6
 n4 op=6
 n5 op=6
 n6 op=6
 n7 op=6
 n8 op=6
-k75
+k71
 n3 op=4
 n4 op=4
 n5 op=4
 n6 op=4
 n7 op=4
 n8 op=4
-k76
+k72
 n3 op=2
 n4 op=2
 n5 op=2
 n6 op=2
 n7 op=2
 n8 op=2
-k77
+k73
 n3 op=1
 n4 op=1
 n5 op=1
 n6 op=1
 n7 op=1
 n8 op=1
-k78
-k79
-n3 op=0
-n4 op=0
-n5 op=0
-n6 op=0
-n7 op=0
-n8 op=0
-k80
-k81
+k74
+k75
 s4 -
-n3 hid=opacity0
+n3 op=0 hid=opacity0
 n4 -
 n5 -
 n6 -

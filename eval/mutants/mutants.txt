@@ -34,9 +34,13 @@
 # gradient-far-hue.patch: gradient-cpu-gpu's fix reverted (decisions.md
 # gradient-cpu-gpu): the stops given vello are 8 even pieces per segment
 # again, so the GPU leg's red to blue leaves the CPU's OKLab ramp.
+# roll-rate.patch: roll-rate's fix reverted (decisions.md roll-rate): a
+# spring is at rest when one frame's position and velocity are, so the roll
+# at 60 Hz ends 60 ms after its 144 Hz twin.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
 popup-still-pose.patch  regressions/popup-still-pose.scn    twin:#card expect
 fade-layer-redraw.patch regressions/fade-layer-redraw.scn redraw
 gradient-far-hue.patch  regressions/gradient-far-hue.scn  cpu-gpu
+roll-rate.patch         regressions/roll-rate.scn         settle

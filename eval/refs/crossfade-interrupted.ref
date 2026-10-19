@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "crossfade-interrupted"
 verdict good
-note "eval-false-alarms, new scenario: a fixed 200 x 56 stack in a bottom panel 18 px above the edge crossfades between two cards, then swaps faster than the fade reverse it in flight (a new node while its predecessor fades out) before it settles; the panel never resizes or moves; every check passes; read with explain"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 60 -> 56 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 2deeeb6679307263
-seal b7b2e0bee5cf06b7
+seal cf675bf42bf4c402
 S1 0 - "panel Card"
 N0 "holder|shell.strand:5:3|#0" "stack#holder"
 N1 "|shell.strand:12:7|#0" "row@shell.strand:12"
@@ -118,47 +118,46 @@ n5 op=255
 n6 op=255
 n7 op=255
 k14
-k15
 n1 hid=opacity0
 n2 -
 n3 -
 n5 ord=3
 n6 ord=4
 n7 ord=5
-k16
+k15
 n1 -
 n5 ord=2
 n6 ord=3
 n7 ord=4
-k17
+k16
 n1 x=80 y=21 w=40 h=15 op=37 ord=5
 n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
 n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
 n5 op=218 hid=inert
 n6 op=218 hid=inert
 n7 op=218 hid=inert
-k18
+k17
 n1 op=98
 n2 op=98
 n3 op=98
 n5 op=157
 n6 op=157
 n7 op=157
-k19
+k18
 n1 op=151
 n2 op=151
 n3 op=151
 n5 op=104
 n6 op=104
 n7 op=104
-k20
+k19
 n1 op=190
 n2 op=190
 n3 op=190
 n5 op=65
 n6 op=65
 n7 op=65
-k21
+k20
 n1 op=179 hid=inert
 n2 op=179 hid=inert
 n3 op=179 hid=inert
@@ -168,7 +167,7 @@ n7 op=39
 n8 x=17 y=11 w=167 h=34 op=37 ord=8
 n9 x=17 y=11 w=167 h=15 op=37 txt=S ord=9 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
 n10 x=17 y=30 w=167 h=15 op=37 txt=S ord=10 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
-k22
+k21
 n1 op=133
 n2 op=133
 n3 op=133
@@ -178,7 +177,7 @@ n7 op=23
 n8 op=98
 n9 op=98
 n10 op=98
-k23
+k22
 n1 op=90
 n2 op=90
 n3 op=90
@@ -188,7 +187,7 @@ n7 op=14
 n8 op=151
 n9 op=151
 n10 op=151
-k24
+k23
 n1 op=57
 n2 op=57
 n3 op=57
@@ -198,7 +197,7 @@ n7 op=8
 n8 op=190
 n9 op=190
 n10 op=190
-k25
+k24
 n1 op=35
 n2 op=35
 n3 op=35
@@ -211,7 +210,7 @@ n10 op=179 hid=inert
 n11 x=80 y=21 w=40 h=15 op=37 ord=11
 n12 x=80 y=22 w=13 h=13 op=37 ord=12 bg=8bd5caff
 n13 x=99 y=21 w=21 h=15 op=37 txt=S ord=13 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
-k26
+k25
 n1 op=21
 n2 op=21
 n3 op=21
@@ -224,7 +223,7 @@ n10 op=133
 n11 op=98
 n12 op=98
 n13 op=98
-k27
+k26
 n1 op=12
 n2 op=12
 n3 op=12
@@ -237,7 +236,7 @@ n10 op=90
 n11 op=151
 n12 op=151
 n13 op=151
-k28
+k27
 n1 op=7
 n2 op=7
 n3 op=7
@@ -250,7 +249,7 @@ n13 op=153 hid=inert
 n14 x=17 y=11 w=167 h=34 op=37 ord=14
 n15 x=17 y=11 w=167 h=15 op=37 txt=S ord=15 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
 n16 x=17 y=30 w=167 h=15 op=37 txt=S ord=16 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
-k29
+k28
 n1 op=4
 n2 op=4
 n3 op=4
@@ -266,50 +265,47 @@ n13 op=117
 n14 op=98
 n15 op=98
 n16 op=98
-k30
-n1 op=2
-n2 op=2
-n3 op=2
-n8 op=21
-n9 op=21
-n10 op=21
-n11 op=80
-n12 op=80
-n13 op=80
-n14 op=151
-n15 op=151
-n16 op=151
-k31
-n1 op=1 ord=3
-n2 op=1 ord=4
-n3 op=1 ord=5
+k29
+n1 op=2 ord=3
+n2 op=2 ord=4
+n3 op=2 ord=5
 n5 hid=opacity0
 n6 -
 n7 -
-n8 op=12 ord=6
-n9 op=12 ord=7
-n10 op=12 ord=8
-n11 op=51 ord=9
-n12 op=51 ord=10
-n13 op=51 ord=11
-n14 op=190 ord=12
-n15 op=190 ord=13
-n16 op=190 ord=14
-k32
-n1 ord=2
-n2 ord=3
-n3 ord=4
+n8 op=21 ord=6
+n9 op=21 ord=7
+n10 op=21 ord=8
+n11 op=80 ord=9
+n12 op=80 ord=10
+n13 op=80 ord=11
+n14 op=151 ord=12
+n15 op=151 ord=13
+n16 op=151 ord=14
+k30
+n1 op=1 ord=2
+n2 op=1 ord=3
+n3 op=1 ord=4
 n5 -
-n8 op=7 ord=5
-n9 op=7 ord=6
-n10 op=7 ord=7
-n11 op=32 ord=8
-n12 op=32 ord=9
-n13 op=32 ord=10
-n14 op=216 ord=11
-n15 op=216 ord=12
-n16 op=216 ord=13
-k33
+n8 op=12 ord=5
+n9 op=12 ord=6
+n10 op=12 ord=7
+n11 op=51 ord=8
+n12 op=51 ord=9
+n13 op=51 ord=10
+n14 op=190 ord=11
+n15 op=190 ord=12
+n16 op=190 ord=13
+k31
+n8 op=7
+n9 op=7
+n10 op=7
+n11 op=32
+n12 op=32
+n13 op=32
+n14 op=216
+n15 op=216
+n16 op=216
+k32
 n1 op=0
 n2 op=0
 n3 op=0
@@ -322,41 +318,38 @@ n13 op=19
 n14 op=232
 n15 op=232
 n16 op=232
-k34
-n8 op=2
-n9 op=2
-n10 op=2
-n11 op=11
-n12 op=11
-n13 op=11
-n14 op=241
-n15 op=241
-n16 op=241
-k35
+k33
 n1 hid=opacity0
 n2 -
 n3 -
-n8 op=1 ord=3
-n9 op=1 ord=4
-n10 op=1 ord=5
-n11 op=6 ord=6
-n12 op=6 ord=7
-n13 op=6 ord=8
-n14 op=247 ord=9
-n15 op=247 ord=10
-n16 op=247 ord=11
-k36
+n8 op=2 ord=3
+n9 op=2 ord=4
+n10 op=2 ord=5
+n11 op=11 ord=6
+n12 op=11 ord=7
+n13 op=11 ord=8
+n14 op=241 ord=9
+n15 op=241 ord=10
+n16 op=241 ord=11
+k34
 n1 -
-n8 ord=2
-n9 ord=3
-n10 ord=4
-n11 op=4 ord=5
-n12 op=4 ord=6
-n13 op=4 ord=7
-n14 op=251 ord=8
-n15 op=251 ord=9
-n16 op=251 ord=10
-k37
+n8 op=1 ord=2
+n9 op=1 ord=3
+n10 op=1 ord=4
+n11 op=6 ord=5
+n12 op=6 ord=6
+n13 op=6 ord=7
+n14 op=247 ord=8
+n15 op=247 ord=9
+n16 op=247 ord=10
+k35
+n11 op=4
+n12 op=4
+n13 op=4
+n14 op=251
+n15 op=251
+n16 op=251
+k36
 n8 op=0
 n9 op=0
 n10 op=0
@@ -366,138 +359,129 @@ n13 op=2
 n14 op=253
 n15 op=253
 n16 op=253
-k38
-n11 op=1
-n12 op=1
-n13 op=1
-n14 op=254
-n15 op=254
-n16 op=254
-k39
+k37
 n8 hid=opacity0
 n9 -
 n10 -
-n11 ord=3
-n12 ord=4
-n13 ord=5
-n14 ord=6
-n15 ord=7
-n16 ord=8
-k40
+n11 op=1 ord=3
+n12 op=1 ord=4
+n13 op=1 ord=5
+n14 op=254 ord=6
+n15 op=254 ord=7
+n16 op=254 ord=8
+k38
 n8 -
-n11 op=0 ord=2
-n12 op=0 ord=3
-n13 op=0 ord=4
-n14 op=255 ord=5
-n15 op=255 ord=6
-n16 op=255 ord=7
-k41
-k42
-n11 hid=opacity0
+n11 ord=2
+n12 ord=3
+n13 ord=4
+n14 ord=5
+n15 ord=6
+n16 ord=7
+k39
+n11 op=0 hid=opacity0
 n12 -
 n13 -
-n14 ord=3
-n15 ord=4
-n16 ord=5
-k43
+n14 op=255 ord=3
+n15 op=255 ord=4
+n16 op=255 ord=5
+k40
 n11 -
 n14 ord=2
 n15 ord=3
 n16 ord=4
-k44
+k41
 n1 x=80 y=21 w=40 h=15 op=37 ord=5
 n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
 n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
 n14 op=218 hid=inert
 n15 op=218 hid=inert
 n16 op=218 hid=inert
-k45
+k42
 n1 op=98
 n2 op=98
 n3 op=98
 n14 op=157
 n15 op=157
 n16 op=157
-k46
+k43
 n1 op=151
 n2 op=151
 n3 op=151
 n14 op=104
 n15 op=104
 n16 op=104
-k47
+k44
 n1 op=190
 n2 op=190
 n3 op=190
 n14 op=65
 n15 op=65
 n16 op=65
-k48
+k45
 n1 op=216
 n2 op=216
 n3 op=216
 n14 op=39
 n15 op=39
 n16 op=39
-k49
+k46
 n1 op=232
 n2 op=232
 n3 op=232
 n14 op=23
 n15 op=23
 n16 op=23
-k50
+k47
 n1 op=241
 n2 op=241
 n3 op=241
 n14 op=14
 n15 op=14
 n16 op=14
-k51
+k48
 n1 op=247
 n2 op=247
 n3 op=247
 n14 op=8
 n15 op=8
 n16 op=8
-k52
+k49
 n1 op=251
 n2 op=251
 n3 op=251
 n14 op=4
 n15 op=4
 n16 op=4
-k53
+k50
 n1 op=253
 n2 op=253
 n3 op=253
 n14 op=2
 n15 op=2
 n16 op=2
-k54
+k51
 n1 op=254
 n2 op=254
 n3 op=254
 n14 op=1
 n15 op=1
 n16 op=1
-k55
-k56
+k52
+k53
 n1 op=255
 n2 op=255
 n3 op=255
 n14 op=0
 n15 op=0
 n16 op=0
-k57
-k58
+k54
 n1 ord=3
 n2 ord=4
 n3 ord=5
 n14 hid=opacity0
 n15 -
 n16 -
-k59
+k55
 n1 ord=2
 n2 ord=3
 n3 ord=4

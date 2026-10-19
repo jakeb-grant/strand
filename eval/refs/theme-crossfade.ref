@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "theme-crossfade"
 verdict good
-note "new scenario: grey.yaml to split.yaml and back, each swap a snapshot crossfade (fades 0.14, 0.38, 0.59 ... 0.999 on k1-14 and k16-29), drawn on both backends; read with explain and the trace's fades (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 31 -> 29 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 011a9a764be4767d
-seal 5ef35172b3b12c42
+seal 1e4d9599d8ad14db
 S1 0 - "bar Top"
 N0 "label|shell.strand:9:5|[Mock | DP-1]#0" "text#label"
 N1 "lead|shell.strand:8:5|[Mock | DP-1]#0" "box#lead"
@@ -47,36 +47,34 @@ k12
 k13
 s1 f=255
 k14
-k15
 s1 f=-
-k16
+k15
 s1 f=37
 n0 fg=292929ff
 n1 bg=777777ff
 n3 bg=777777ff
-k17
+k16
 s1 f=98
-k18
+k17
 s1 f=151
-k19
+k18
 s1 f=190
-k20
+k19
 s1 f=216
-k21
+k20
 s1 f=232
-k22
+k21
 s1 f=241
-k23
+k22
 s1 f=247
-k24
+k23
 s1 f=251
-k25
+k24
 s1 f=253
-k26
+k25
 s1 f=254
+k26
 k27
-k28
 s1 f=255
-k29
-k30
+k28
 s1 f=-

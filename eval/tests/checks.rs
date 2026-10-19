@@ -5068,3 +5068,28 @@ fn stagger_leaves_out_children_whose_pose_was_dropped_unseen() {
         show(&r, &t)
     );
 }
+
+/// (integration-r4) `continuity`'s ways rest by the product's rule
+/// (roll-rate): a spring crossing its target with `|v| <= 10·eps` but an
+/// amplitude `√(x² + (v/ω₀)²)` past `eps` still moves, so its way goes
+/// on, as strand-scene's spring does (motion.rs `Segment::rest`); within
+/// the amplitude it is at rest.
+#[test]
+fn a_way_rests_when_the_products_spring_does() {
+    use strand_eval::checks::continuity::Way;
+    use strand_eval::trace::CurveRec;
+    let way = |v: f64| Way {
+        start: 0,
+        from: vec![0.0],
+        vel: vec![v],
+        target: vec![0.0],
+        curve: CurveRec::Spring { k: 25.0, z: 0.3 },
+        eps: 0.05,
+    };
+    // ω₀ = 5: 0.4 px/s is 0.08 of amplitude, past eps (the old rule's
+    // |v| <= 0.5 called it at rest); 0.2 px/s is 0.04, within it.
+    assert!(!way(0.4).settled(0));
+    assert!(way(0.2).settled(0));
+    // strand-scene's own rule is held by motion.rs
+    // `a_spring_settles_at_the_same_moment_at_every_frame_rate`.
+}

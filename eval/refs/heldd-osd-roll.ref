@@ -1,13 +1,13 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldd-osd-roll"
 verdict good
-note "set D correct-motion scenario, unedited but its id: the OSD fades and scales in, its percentage rolls in interrupted steps while the meter springs, then fades out; all checks pass; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 54 -> 48 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 07011753af5f412d
-seal 2532252ddb4e2b97
-S1 1 54 "osd Level"
+seal 8030b5c4b5fb1399
+S1 1 48 "osd Level"
 N0 "|shell.strand:4:1|#0" "osd@shell.strand:4"
 N1 "bar_meter|shell.strand:8:5|#0" "meter#bar_meter"
 N2 "pct_text|shell.strand:9:5|#0" "text#pct_text"
@@ -56,15 +56,15 @@ n1 v=11.953125,17,162.0625,6 op=247
 n2 v=184.03125,13,44.015625,15 op=247
 n3 v=-0.046875,-0.015625,240.09375,40.015625 op=247
 k10
-n0 v=0,0,240.015625,40 op=251
+n0 v=d op=251
 n1 v=d op=251
 n2 v=d op=251
-n3 v=0,0,240.015625,40 op=251
+n3 v=d op=251
 k11
-n0 v=d op=253
+n0 op=253
 n1 op=253
 n2 op=253
-n3 v=d op=253
+n3 op=253
 k12
 n0 op=254
 n1 op=254
@@ -78,115 +78,108 @@ n2 op=255
 n3 op=255
 k15
 k16
-k17
 n1 pt=0,0,66.90625,6
 n2 fg=cdd6f4ff/cdd6f4ff gl=["45%","40%[1]"]
-k18
+k17
 n1 pt=0,0,69.984375,6
-k19
+k18
 n1 pt=0,0,72,6
-k20
+k19
 n1 pt=0,0,75,6
 n2 gl=["45%[0,1]","50%"]
-k21
+k20
 n1 pt=0,0,78.3125,6
-k22
+k21
 n1 pt=0,0,80.296875,6
-k23
+k22
 n1 pt=0,0,83.203125,6
 n2 gl=["55%","50%[1]"]
-k24
+k23
 n1 pt=0,0,86.4375,6
-k25
+k24
 n1 pt=0,0,88.390625,6
-k26
+k25
 n1 pt=0,0,91.296875,6
 n2 gl=["55%[0,1]","60%"]
-k27
+k26
 n1 pt=0,0,94.53125,6
-k28
+k27
 n1 pt=0,0,96.484375,6
-k29
+k28
 n1 pt=0,0,97.28125,6
-k30
+k29
 n1 pt=0,0,97.453125,6
-k31
+k30
 n1 pt=0,0,97.390625,6
-k32
+k31
 n1 pt=0,0,97.296875,6
-k33
-n1 pt=0,0,97.234375,6
-k34
+k32
 n1 pt=0,0,97.203125,6
-k35
-k36
-k37
-k38
-k39
+k33
+k34
 n2 fg=cdd6f4ff gl=["60%"]
-k40
+k35
 n0 v=3.125,0.515625,233.75,38.953125 op=218 sc=0.974,0.974
 n1 v=14.8125,17.078125,157.78125,5.84375 op=218
 n2 v=182.328125,13.1875,42.859375,14.609375 op=218
 n3 v=3.125,0.515625,233.75,38.953125 op=218
-k41
+k36
 n0 v=7.6875,1.28125,224.640625,37.4375 op=157 sc=0.936,0.936
 n1 v=18.90625,17.1875,151.625,5.609375 op=157
 n2 v=179.90625,13.453125,41.1875,14.046875 op=157
 n3 v=7.6875,1.28125,224.640625,37.4375 op=157
-k42
+k37
 n0 v=10.671875,1.78125,218.65625,36.4375 op=104 sc=0.911,0.911
 n1 v=21.609375,17.265625,147.59375,5.46875 op=104
 n2 v=178.3125,13.625,40.09375,13.671875 op=104
 n3 v=10.671875,1.78125,218.65625,36.4375 op=104
-k43
+k38
 n0 v=12,2,216.015625,36 op=65 sc=0.9,0.9
 n1 v=22.796875,17.296875,145.8125,5.40625 op=65
 n2 v=177.609375,13.703125,39.59375,13.5 op=65
 n3 v=12,2,216.015625,36 op=65
-k44
+k39
 n0 v=12.328125,2.0625,215.328125,35.890625 op=39 sc=0.897,0.897
 n1 v=23.09375,17.3125,145.34375,5.390625 op=39
 n2 v=177.421875,13.71875,39.484375,13.453125 op=39
 n3 v=12.328125,2.0625,215.328125,35.890625 op=39
-k45
+k40
 n0 v=12.28125,2.046875,215.4375,35.90625 op=23 sc=0.898,0.898
 n1 v=23.046875,17.3125,145.421875,5.390625 op=23
 n2 v=177.453125,13.71875,39.5,13.46875 op=23
 n3 v=12.28125,2.046875,215.4375,35.90625 op=23
-k46
+k41
 n0 v=12.140625,2.03125,215.703125,35.953125 op=14 sc=0.899,0.899
 n1 v=22.9375,17.296875,145.609375,5.390625 op=14
 n2 v=177.515625,13.703125,39.546875,13.484375 op=14
 n3 v=12.140625,2.03125,215.703125,35.953125 op=14
-k47
+k42
 n0 v=12.046875,2.015625,215.90625,35.984375 op=8 sc=0.9,0.9
 n1 v=22.84375,17.296875,145.734375,5.390625 op=8
 n2 v=177.578125,13.703125,39.578125,13.5 op=8
 n3 v=12.046875,2.015625,215.90625,35.984375 op=8
-k48
-n0 v=12,2,215.984375,36 op=4
+k43
+n0 v=12,2,216,36 op=4
 n1 v=22.796875,17.296875,145.796875,5.40625 op=4
 n2 v=177.59375,13.703125,39.59375,13.5 op=4
-n3 v=12,2,215.984375,36 op=4
-k49
-n0 v=12,2,216,36 op=2
+n3 v=12,2,216,36 op=4
+k44
+n0 op=2
 n1 op=2
 n2 op=2
-n3 v=12,2,216,36 op=2
-k50
+n3 op=2
+k45
 n0 op=1
 n1 op=1
 n2 op=1
 n3 op=1
-k51
-k52
+k46
+k47
 n0 op=0
 n1 op=0
 n2 op=0
 n3 op=0
-k53
-k54
+k48
 s1 -
 n0 v=d sc=1,1 hid=opacity0
 n1 -

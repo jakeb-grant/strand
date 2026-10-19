@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-stagger-enter-exit"
 verdict good
-note "set C scenario, unedited: the five dots enter 40 ms apart rising and fading in, later fade out together; the box before them never moves; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "24e5ed52"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 4da1c02d57ad8524
-seal 1577ab318b2d1784
+seal a28acda6ba870973
 S1 0 - "bar Top"
 N0 "dots|shell.strand:4:3|[Mock | DP-1]#0" "row#dots"
 N1 "lead|shell.strand:5:5|[Mock | DP-1]#0" "box#lead"
@@ -109,87 +109,85 @@ k22
 n7 op=255
 k23
 k24
-k25
 n3 y=8 op=218 hid=inert
 n4 y=8 op=218 hid=inert
 n5 y=8 op=218 hid=inert
 n6 y=8 op=218 hid=inert
 n7 y=8 op=218 hid=inert
-k26
+k25
 n3 y=11 op=157
 n4 y=11 op=157
 n5 y=11 op=157
 n6 y=11 op=157
 n7 y=11 op=157
-k27
+k26
 n3 y=13 op=104
 n4 y=13 op=104
 n5 y=13 op=104
 n6 y=13 op=104
 n7 y=13 op=104
-k28
+k27
 n3 y=14 op=65
 n4 y=14 op=65
 n5 y=14 op=65
 n6 y=14 op=65
 n7 y=14 op=65
-k29
+k28
 n3 op=39
 n4 op=39
 n5 op=39
 n6 op=39
 n7 op=39
-k30
+k29
 n3 op=23
 n4 op=23
 n5 op=23
 n6 op=23
 n7 op=23
-k31
+k30
 n3 op=14
 n4 op=14
 n5 op=14
 n6 op=14
 n7 op=14
-k32
+k31
 n3 op=8
 n4 op=8
 n5 op=8
 n6 op=8
 n7 op=8
-k33
+k32
 n3 op=4
 n4 op=4
 n5 op=4
 n6 op=4
 n7 op=4
-k34
+k33
 n3 op=2
 n4 op=2
 n5 op=2
 n6 op=2
 n7 op=2
-k35
+k34
 n3 op=1
 n4 op=1
 n5 op=1
 n6 op=1
 n7 op=1
+k35
 k36
-k37
 n3 op=0
 n4 op=0
 n5 op=0
 n6 op=0
 n7 op=0
-k38
-k39
+k37
 n3 hid=opacity0 bg=-
 n4 hid=opacity0 bg=-
 n5 hid=opacity0 bg=-
 n6 hid=opacity0 bg=-
 n7 hid=opacity0 bg=-
-k40
+k38
 n3 -
 n4 -
 n5 -

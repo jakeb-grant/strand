@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-card-resize-150"
 verdict good
-note "origin 41,0 (300/2 - 218/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 9a64844c76557e62
-seal 00c9e175685201ef
+seal a7e741e3e924488b
 S1 0 - "panel Card"
 N0 "body|shell.strand:10:5|#0" "box#body"
 N1 "card|shell.strand:4:3|#0" "col#card"
@@ -48,44 +48,38 @@ k9
 k10
 n5 y=13 v=49.328125,13.328125,42,14.671875 ink=50,16,40.671875,12.671875
 k11
-k12
-k13
-k14
 n0 h=53 v=29.328125,38,160,53.328125
 n1 h=120 v=19.328125,0,180,120 sh=00000066@0.671875,-14.671875,217.328125,157.328125
 n2 y=99 v=29.328125,99.328125,160,10.671875
 n6 h=120 v=19.328125,0,180,120
-k15
+k12
 n0 h=38 v=29.328125,38,160,38
 n1 h=105 v=19.328125,0,180,105.328125 sh=00000066@0.671875,-14.671875,217.328125,142.671875
 n2 y=84 v=29.328125,84,160,11.328125
 n6 h=105 v=19.328125,0,180,105.328125
-k16
+k13
 n0 h=28 v=29.328125,38,160,28
 n1 h=95 v=19.328125,0,180,95.328125 sh=00000066@0.671875,-14.671875,217.328125,132.671875
 n2 y=74 v=29.328125,74,160,11.328125
 n6 h=95 v=19.328125,0,180,95.328125
+k14
+n0 h=23 v=29.328125,38,160,23.328125
+n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
+n2 y=69 v=29.328125,69.328125,160,10.671875
+n6 h=90 v=19.328125,0,180,90
+k15
+n0 h=22 v=29.328125,38,160,22
+n1 h=89 v=19.328125,0,180,89.328125 sh=00000066@0.671875,-14.671875,217.328125,126.671875
+n2 y=68 v=29.328125,68,160,11.328125
+n6 h=89 v=19.328125,0,180,89.328125
+k16
 k17
 n0 h=23 v=29.328125,38,160,23.328125
 n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
 n2 y=69 v=29.328125,69.328125,160,10.671875
 n6 h=90 v=19.328125,0,180,90
 k18
-n0 h=22 v=29.328125,38,160,22
-n1 h=89 v=19.328125,0,180,89.328125 sh=00000066@0.671875,-14.671875,217.328125,126.671875
-n2 y=68 v=29.328125,68,160,11.328125
-n6 h=89 v=19.328125,0,180,89.328125
 k19
 k20
-n0 h=23 v=29.328125,38,160,23.328125
-n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
-n2 y=69 v=29.328125,69.328125,160,10.671875
-n6 h=90 v=19.328125,0,180,90
 k21
-k22
-k23
-k24
-k25
-k26
-k27
 s1 z=218,113

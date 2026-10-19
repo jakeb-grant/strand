@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "cpu-gpu-crossfade"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "a38d1bc6"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 73f62f22b5954c1e
-seal 7048b8863e09eeef
+seal d3a96b0adc859658
 S1 0 - "bar Top"
 N0 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
 N1 "oldlabel|shell.strand:10:11|[Mock | DP-1]#0" "text#oldlabel"
@@ -52,172 +52,169 @@ k12
 n2 bg=2266ffff
 k13
 k14
-k15
 n1 op=218 hid=inert
 n2 op=218 hid=inert
 n3 x=138 ord=9
 n7 x=46 y=13 w=28 h=15 op=37 txt=S ord=7 ink=46,14,28,11 fg=ffcc00ff gl=["After"]
 n8 x=36 y=6 w=90 h=28 op=37 ord=6 bg=303030ff
 n9 x=128 y=12 w=16 h=16 op=37 ord=8 bg=ff00ffff
-k16
+k15
 n1 op=157
 n2 op=157
 n3 x=146
 n7 op=98
 n8 op=98
 n9 x=130 op=98
-k17
+k16
 n1 op=104
 n2 op=104
 n3 x=152
 n7 op=151
 n8 op=151
 n9 x=131 op=151
-k18
+k17
 n1 op=65
 n2 op=65
 n3 x=154
 n7 op=190
 n8 op=190
 n9 x=132 op=190
-k19
+k18
 n1 op=39
 n2 op=39
 n3 x=155
 n7 op=216
 n8 op=216
 n9 op=216
-k20
+k19
 n1 op=23
 n2 op=23
 n7 op=232
 n8 op=232
 n9 op=232
-k21
+k20
 n1 op=14
 n2 op=14
 n3 x=154
 n7 op=241
 n8 op=241
 n9 op=241
-k22
+k21
 n1 op=8
 n2 op=8
 n7 op=247
 n8 op=247
 n9 op=247
-k23
+k22
 n1 op=4
 n2 op=4
 n7 op=251
 n8 op=251
 n9 op=251
-k24
+k23
 n1 op=2
 n2 op=2
 n7 op=253
 n8 op=253
 n9 op=253
-k25
+k24
 n1 op=1
 n2 op=1
 n7 op=254
 n8 op=254
 n9 op=254
+k25
 k26
-k27
 n1 op=0
 n2 op=0
 n7 op=255
 n8 op=255
 n9 op=255
-k28
-k29
+k27
 n1 -
 n2 hid=opacity0 bg=-
 n3 ord=8
 n7 ord=6
 n8 ord=5
 n9 ord=7
-k30
+k28
 n2 -
 n3 ord=7
 n7 ord=5
 n8 ord=4
 n9 ord=6
-k31
+k29
 n1 x=46 y=13 w=39 h=15 txt=S ord=5 ink=47,14,37,11 fg=ffffffff gl=["Before"]
 n2 x=36 y=6 w=90 h=28 ord=4 bg=2266ffff
 n3 ord=9
 n7 op=218 hid=inert ord=7
 n8 op=218 hid=inert ord=6
 n9 x=130 op=218 hid=inert ord=8
-k32
+k30
 n7 op=157
 n8 op=157
 n9 x=128 op=157
-k33
+k31
 n7 op=104
 n8 op=104
 n9 x=127 op=104
-k34
+k32
 n7 op=65
 n8 op=65
 n9 x=126 op=65
-k35
+k33
 n7 op=39
 n8 op=39
 n9 op=39
-k36
+k34
 n7 op=23
 n8 op=23
 n9 op=23
-k37
+k35
 n7 op=14
 n8 op=14
 n9 op=14
-k38
+k36
 n7 op=8
 n8 op=8
 n9 op=8
-k39
+k37
 n7 op=4
 n8 op=4
 n9 op=4
-k40
+k38
 n7 op=2
 n8 op=2
 n9 op=2
-k41
+k39
 n7 op=1
 n8 op=1
 n9 op=1
-k42
-k43
+k40
+k41
 n7 op=0
 n8 op=0
 n9 op=0
-k44
-k45
+k42
 n3 ord=8
 n7 -
 n8 hid=opacity0 bg=-
 n9 hid=opacity0 ord=7 bg=-
-k46
+k43
 n3 x=148 ord=6
 n8 -
 n9 -
-k47
+k44
 n3 x=140
-k48
+k45
 n3 x=134
+k46
+n3 x=132
+k47
+n3 x=131
+k48
 k49
 n3 x=132
 k50
-n3 x=131
 k51
 k52
-n3 x=132
-k53
-k54
-k55

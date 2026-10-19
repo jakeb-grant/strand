@@ -1,14 +1,14 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "closing-pose-delegated"
 verdict good
-note "eval-false-alarms: the sandbox places popup#menu as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -40, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario b98fd5edcf65c470
-seal b8417dadaad60c9a
+seal d52dc0159dde24fb
 S1 0 - "bar Top"
-S2 1 31 "popup#menu"
+S2 1 29 "popup#menu"
 N0 "anchor|shell.strand:4:3|[Mock | DP-1]#0" "box#anchor"
 N1 "|shell.strand:13:3|[Mock | DP-1]#0" "text(\"12:00\")"
 N2 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
@@ -88,65 +88,63 @@ k13
 k14
 k15
 k16
-k17
 s2 P=219,1,0,0
 n3 v=7.40625,6.625,97.390625,19.484375 hid=inert
 n4 v=7.40625,30,97.390625,19.484375 hid=inert
 n5 v=1.5625,0.78125,116.875,58.4375 hid=inert
 n6 v=1.5625,0.78125,116.875,58.4375 sc=0.974,0.974
-k18
+k17
 s2 P=155,1,0,0
 n3 v=9.453125,7.53125,93.59375,18.71875
 n4 v=9.453125,30,93.59375,18.71875
 n5 v=3.84375,1.921875,112.3125,56.15625
 n6 v=3.84375,1.921875,112.3125,56.15625 sc=0.936,0.936
-k19
+k18
 s2 P=104,1,0,0
 n3 v=10.796875,8.140625,91.109375,18.21875
 n4 v=10.796875,30,91.109375,18.21875
 n5 v=5.34375,2.671875,109.328125,54.65625
 n6 v=5.34375,2.671875,109.328125,54.65625 sc=0.911,0.911
-k20
+k19
 s2 P=64,1,0,0
 n3 v=11.390625,8.40625,90,18
 n4 v=11.390625,30,90,18
 n5 v=6,3,108,54
 n6 v=6,3,108,54 sc=0.9,0.9
-k21
+k20
 s2 P=40,1,0,0
 n3 v=11.546875,8.46875,89.71875,17.9375
 n4 v=11.546875,30,89.71875,17.9375
 n5 v=6.171875,3.078125,107.671875,53.828125
 n6 v=6.171875,3.078125,107.671875,53.828125 sc=0.897,0.897
-k22
+k21
 s2 P=24,1,0,0
 n3 v=11.53125,8.453125,89.765625,17.953125
 n4 v=11.53125,30,89.765625,17.953125
 n5 v=6.140625,3.0625,107.71875,53.859375
 n6 v=6.140625,3.0625,107.71875,53.859375 sc=0.898,0.898
-k23
+k22
 s2 P=12,1,0,0
 n3 v=11.46875,8.421875,89.875,17.96875
 n4 v=11.46875,30,89.875,17.96875
 n5 v=6.078125,3.03125,107.859375,53.921875
 n6 v=6.078125,3.03125,107.859375,53.921875 sc=0.899,0.899
-k24
+k23
 s2 P=8,1,0,0
 n3 v=11.421875,8.40625,89.953125,17.984375
 n4 v=11.421875,30,89.953125,17.984375
 n5 v=6.03125,3.015625,107.953125,53.96875
 n6 v=6.03125,3.015625,107.953125,53.96875 sc=0.9,0.9
-k25
+k24
 s2 P=4,1,0,0
 n3 v=11.40625,8.40625,90,18
 n4 v=11.40625,30,90,18
 n5 v=6,3,108,54
 n6 v=6,3,108,54
+k25
 k26
-k27
 s2 P=0,1,0,0
+k27
 k28
 k29
-k30
-k31
 s2 -

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "container-query"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "a38d1bc6"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 72d709c00c76668e
-seal b8a4c53faad5d504
+seal 08df591fd4b12469
 S1 0 - "bar Top"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#0" "box#after"
 N1 "label|shell.strand:8:7|[Mock | DP-1]#0" "text#label"
@@ -60,40 +60,38 @@ n1 op=255
 n2 op=255
 k15
 k16
-k17
 n0 x=10
 n1 w=6 op=237 ink=0,9,6,10 gl=["ii"]
 n2 w=6 op=237
-k18
+k17
 n1 op=206
 n2 op=206
-k19
+k18
 n1 op=179
 n2 op=179
-k20
+k19
 n1 op=160
 n2 op=160
-k21
+k20
 n1 op=147
 n2 op=147
-k22
+k21
 n1 op=139
 n2 op=139
-k23
+k22
 n1 op=134
 n2 op=134
-k24
+k23
 n1 op=131
 n2 op=131
-k25
+k24
 n1 op=130
 n2 op=130
-k26
+k25
 n1 op=129
 n2 op=129
-k27
+k26
 n1 op=128
 n2 op=128
+k27
 k28
-k29
-k30

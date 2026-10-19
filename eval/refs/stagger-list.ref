@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "stagger-list"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "a38d1bc6"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 99043c9b589d32bc
-seal 872068cdbbf4a593
+seal 76b91fadb78cfa0d
 S1 0 - "bar Top"
 N0 "head|shell.strand:5:5|[Mock | DP-1]#0" "box#head"
 N1 "list|shell.strand:4:3|[Mock | DP-1]#0" "row#list"
@@ -95,43 +95,43 @@ n14 op=190
 k8
 n6 y=7 op=216
 n7 op=241
-n8 op=247
+n8 y=8 op=247
 n9 op=247
-n10 op=247
+n10 y=8 op=247 ink=86,10,20,10
 n11 op=241
 n12 op=241
 n13 op=216
 n14 y=7 op=216 ink=171,8,23,11
 k9
 n6 op=232
-n7 op=247
+n7 y=8 op=247
 n8 op=251
 n9 op=251
 n10 op=251
 n11 op=247
-n12 op=247
+n12 y=8 op=247 ink=124,9,30,11
 n13 op=232
 n14 op=232
 k10
 n6 op=241
 n7 op=251
-n8 y=8 op=253
+n8 op=253
 n9 op=253
-n10 y=8 op=253 ink=86,10,20,10
+n10 op=253
 n11 op=251
 n12 op=251
 n13 op=241
 n14 op=241
 k11
-n6 op=247
-n7 y=8 op=253
+n6 y=8 op=247
+n7 op=253
 n8 op=254
 n9 op=254
 n10 op=254
 n11 op=253
-n12 y=8 op=253 ink=124,9,30,11
+n12 op=253
 n13 op=247
-n14 op=247
+n14 y=8 op=247 ink=171,9,23,11
 k12
 n6 op=251
 n7 op=254
@@ -140,12 +140,12 @@ n12 op=254
 n13 op=251
 n14 op=251
 k13
-n6 y=8 op=253
+n6 op=253
 n8 op=255
 n9 op=255
 n10 op=255
 n13 op=253
-n14 y=8 op=253 ink=171,9,23,11
+n14 op=253
 k14
 n6 op=254
 n7 op=255
@@ -160,7 +160,6 @@ n13 op=255
 n14 op=255
 k17
 k18
-k19
 n6 y=9 op=218 hid=inert
 n7 y=9 op=218 hid=inert
 n8 y=9 op=218 hid=inert
@@ -170,7 +169,7 @@ n11 y=13 op=218 hid=inert
 n12 y=9 op=218 hid=inert ink=124,10,30,11
 n13 y=13 op=218 hid=inert
 n14 y=9 op=218 hid=inert ink=171,10,23,11
-k20
+k19
 n6 y=11 op=157
 n7 y=11 op=157
 n8 y=11 op=157
@@ -180,7 +179,7 @@ n11 y=15 op=157
 n12 y=11 op=157 ink=124,12,30,11
 n13 y=15 op=157
 n14 y=11 op=157 ink=171,12,23,11
-k21
+k20
 n6 y=13 op=104
 n7 y=13 op=104
 n8 y=13 op=104
@@ -190,7 +189,7 @@ n11 y=16 op=104
 n12 y=13 op=104 ink=124,14,30,11
 n13 y=16 op=104
 n14 y=13 op=104 ink=171,14,23,11
-k22
+k21
 n6 op=65
 n7 op=65
 n8 op=65
@@ -200,7 +199,7 @@ n11 y=17 op=65
 n12 op=65
 n13 y=17 op=65
 n14 op=65
-k23
+k22
 n6 y=14 op=39
 n7 y=14 op=39
 n8 y=14 op=39
@@ -210,7 +209,7 @@ n11 op=39
 n12 y=14 op=39 ink=124,15,30,11
 n13 op=39
 n14 y=14 op=39 ink=171,15,23,11
-k24
+k23
 n6 op=23
 n7 op=23
 n8 op=23
@@ -220,7 +219,7 @@ n11 op=23
 n12 op=23
 n13 op=23
 n14 op=23
-k25
+k24
 n6 op=14
 n7 op=14
 n8 op=14
@@ -230,7 +229,7 @@ n11 op=14
 n12 op=14
 n13 op=14
 n14 op=14
-k26
+k25
 n6 op=8
 n7 op=8
 n8 op=8
@@ -240,7 +239,7 @@ n11 op=8
 n12 op=8
 n13 op=8
 n14 op=8
-k27
+k26
 n6 op=4
 n7 op=4
 n8 op=4
@@ -250,7 +249,7 @@ n11 op=4
 n12 op=4
 n13 op=4
 n14 op=4
-k28
+k27
 n6 op=2
 n7 op=2
 n8 op=2
@@ -260,7 +259,7 @@ n11 op=2
 n12 op=2
 n13 op=2
 n14 op=2
-k29
+k28
 n6 op=1
 n7 op=1
 n8 op=1
@@ -270,8 +269,8 @@ n11 op=1
 n12 op=1
 n13 op=1
 n14 op=1
+k29
 k30
-k31
 n6 op=0
 n7 op=0
 n8 op=0
@@ -281,8 +280,7 @@ n11 op=0
 n12 op=0
 n13 op=0
 n14 op=0
-k32
-k33
+k31
 n6 hid=opacity0 ord=8
 n7 hid=opacity0 ord=7
 n8 hid=opacity0
@@ -292,7 +290,7 @@ n11 -
 n12 -
 n13 -
 n14 -
-k34
+k32
 n6 -
 n7 -
 n8 -

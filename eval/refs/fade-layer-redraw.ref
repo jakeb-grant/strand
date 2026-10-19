@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "fade-layer-redraw"
 verdict good
-note "new scenario (shadow-redraw): the translucent clock card fades in to 0.7 over 16 ticks and rests drawn from its layer, its stamp changes in one tick, and the shadowed card leaves by its exit (x to 280, opacity to 0, height to 0) in 17; every partial frame equals its full repaint (redraw passes on all 35 painted frames)"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "0824d452+changes"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 72d7ba06a9514e64
-seal c8b8575f36076904
+seal 9f4822f2bd8db4d6
 S1 0 - "panel Cards"
 N0 "leaving|shell.strand:15:7|#0" "col#leaving"
 N1 "stack|shell.strand:6:3|#0" "col#stack"
@@ -79,56 +79,53 @@ n6 op=178
 k12
 k13
 k14
-k15
-k16
 s1 z=291,132
-k17
+k15
 n6 gl=["12:01"]
-k18
+k16
 n0 x=85 h=40 op=218 hid=inert sh=00000060@66,40,298,78
 n1 h=83
 n2 x=95 op=218 hid=inert ink=95,66,27,11
 n3 x=95 op=218 hid=inert ink=95,85,123,13
 n4 h=83
-k19
+k17
 n0 x=191 h=19 op=157 sh=00000060@172,40,298,57
 n1 h=62
 n2 x=201 op=157 ink=201,66,27,11
 n3 x=201 op=157 ink=201,85,123,13
 n4 h=62
-k20
+k18
 n0 x=261 y=53 h=6 op=104 sh=00000060@242,38,298,44
 n1 h=47
 n2 x=271 y=56 op=104 ink=271,57,27,11
 n3 x=271 y=75 op=104 ink=271,76,123,13
 n4 h=47
-k21
+k19
 n0 x=292 y=47 h=0 op=65 bg=- bd=- sh=-
 n1 h=35
 n2 -
 n3 -
 n4 h=35
-k22
+k20
 n0 x=300 op=39
-k23
+k21
 n0 x=298 op=23
-k24
+k22
 n0 x=295 op=14
-k25
+k23
 n0 x=293 op=8
-k26
+k24
 n0 x=292 op=4
-k27
+k25
 n0 op=2
-k28
+k26
 n0 op=1
-k29
-k30
+k27
+k28
 n0 op=0
-k31
-k32
+k29
 n0 hid=opacity0
-k33
+k30
 n0 -
-k34
+k31
 s1 z=291,70

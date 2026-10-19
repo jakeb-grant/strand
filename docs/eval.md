@@ -678,7 +678,10 @@ says a node moves, not how, so it does not exempt from them; only an
   (architecture.md "Motion"; decisions.md first-frame-lead). From each
   spring's samples (`sp`) alone the check works its way out, with an
   oscillator of its own, and holds every value drawn to it within four
-  times the spring's settling tolerance plus 1e-4 of its span. A value off
+  times the spring's settling tolerance plus 1e-4 of its span. A way
+  comes to rest by the product's rule: each channel's amplitude,
+  `√(x² + (v/ω₀)²)`, within the tolerance (decisions.md roll-rate,
+  integration-r4). A value off
   its way after a change is reported as what fits it: `velocity` (the
   change started from rest), `start` (it started 16.7 ms early on a
   faster surface), else `way`. A way in flight that the next sample finds
@@ -1068,8 +1071,11 @@ for the build.
 `eval/mutants/mutants.txt` pairs patches with regression scenarios. Each
 patch reverts a fix in the product's crates, for example bug 24's flip-open
 and bug 25's hidden-text in crates/strand-render, and bug 23's gpu-regions
-in crates/strand-surface and crates/strand (see Surface leg), and popup-still-pose's
-exit-due fix in crates/strand-render (decisions.md eval-r3). In a detached worktree of HEAD, each scenario
+in crates/strand-surface and crates/strand (see Surface leg), popup-still-pose's
+exit-due fix in crates/strand-render (decisions.md eval-r3), and round 4's
+fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
+(`settle`, in crates/strand-scene) fixes (decisions.md shadow-redraw,
+gradient-cpu-gpu and roll-rate). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

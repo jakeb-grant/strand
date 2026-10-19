@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-hover-tooltip"
 verdict good
-note "eval-false-alarms: the sandbox places the tooltip popup as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -32, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 5170084351934543
-seal 0e70954fc970fd04
+seal fcce713e3fb2e4ce
 S1 0 - "bar Top"
 S2 19 33 "popup tooltip"
 S3 54 68 "popup tooltip"
@@ -45,10 +45,7 @@ n2 bg=9dcfffff
 k9
 n2 bg=9ecfffff
 k10
-n2 bg=9ed0ffff
-k11
 n2 bg=9fd0ffff
-k12
 k19 p2
 s2 z=99,21 o=0,25
 n5 srf=2 x=0 y=0 w=99 h=21 bg=2f3036ff
@@ -83,14 +80,11 @@ n1 bg=e1a5efff
 n2 bg=62b0efff
 k42
 n1 bg=e1a7efff
-n2 bg=62afefff
+n2 bg=61afefff
 k43
 n1 bg=e2a7f0ff
-n2 bg=61afefff
 k44
 n1 bg=e2a8f0ff
-k45
-k46
 k54 p3
 s3 z=78,21 o=4,25
 n7 srf=3 x=0 y=0 w=78 h=21 bg=2f3036ff
@@ -118,5 +112,3 @@ k76
 n1 bg=c679ddff
 k77
 n1 bg=c678ddff
-k78
-k79

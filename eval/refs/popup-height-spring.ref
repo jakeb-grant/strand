@@ -1,14 +1,14 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-height-spring"
 verdict good
-note "eval-false-alarms: the sandbox places popup#pop as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -36, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario a951d72f1c30d5ea
-seal c247c7aad2b2d839
+seal 04405f78815ca55d
 S1 0 - "bar Top"
-S2 1 57 "popup#pop"
+S2 1 53 "popup#pop"
 N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
 N1 "other|shell.strand:6:5|[Mock | DP-1]#0" "box#other"
 N2 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
@@ -98,85 +98,81 @@ k24
 k25
 k26
 k27
-k28
-k29
 n4 h=136
 n6 h=76
 n7 y=116
 n8 h=136
-k30
+k28
 n4 h=127
 n6 h=67
 n7 y=107
 n8 h=127
-k31
+k29
 n4 h=116
 n6 h=56
 n7 y=96
 n8 h=116
-k32
+k30
 n4 h=105
 n6 h=45
 n7 y=85
 n8 h=105
-k33
+k31
 n4 h=96
 n6 h=36
 n7 y=76
 n8 h=96
-k34
+k32
 n4 h=88
 n6 h=28
 n7 y=68
 n8 h=88
-k35
+k33
 n4 h=82
 n6 h=22
 n7 y=62
 n8 h=82
-k36
+k34
 n4 h=77
 n6 h=17
 n7 y=57
 n8 h=77
-k37
+k35
 n4 h=74
 n6 h=14
 n7 y=54
 n8 h=74
-k38
+k36
 n4 h=72
 n6 h=12
 n7 y=52
 n8 h=72
-k39
+k37
 n4 h=70
 n6 h=10
 n7 y=50
 n8 h=70
-k40
+k38
 n4 h=69
 n6 h=9
 n7 y=49
 n8 h=69
+k39
+k40
 k41
 k42
 k43
 k44
 k45
-k46
-k47
 n4 h=70
 n6 h=10
 n7 y=50
 n8 h=70
+k46
+k47
 k48
 k49
 k50
 k51
 k52
-k53
-k54
-k55
-k56
 s2 z=160,70

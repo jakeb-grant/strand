@@ -1607,6 +1607,39 @@ fn rolling_numbers_roll_only_the_changed_digit() {
     assert!(buf.pixels == settled.pixels);
 }
 
+/// (roll-rate) A roll on the default spring ends at the same moment at
+/// 60 and 144 Hz, within a frame: motion follows time, not the frame
+/// rate. Before, its spring counted as at rest at a turning point near
+/// the end, which 144 Hz frames landed in more often: the roll ended
+/// 173 ms after the change there and 233 ms at 60 Hz.
+#[test]
+fn a_roll_ends_at_the_same_moment_at_every_frame_rate() {
+    use std::time::Duration;
+    let ends = |hz: u64| {
+        let (mut r, mut buf, id) = rolling("41", false);
+        let mut d = SceneDiff::new();
+        d.set(id, Prop::Text, text("42"));
+        assert!(r.apply(d).is_empty());
+        let at =
+            |k: u64| Duration::from_millis(1000) + Duration::from_nanos(1_000_000_000 * k / hz);
+        let mut k = 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+        assert!(r.wants_frame(S), "{hz} Hz: it rolls");
+        while r.wants_frame(S) {
+            k += 1;
+            buf.paint_at(&mut r, S, 1, at(k));
+            assert!(k < 10 * hz, "{hz} Hz: settles");
+        }
+        at(k) - Duration::from_millis(1000)
+    };
+    let (slow, fast) = (ends(60), ends(144));
+    eprintln!("the roll ends {slow:?} after the change at 60 Hz, {fast:?} at 144 Hz");
+    assert!(
+        slow.abs_diff(fast) < Duration::from_nanos(1_000_000_000 / 60),
+        "60 Hz: {slow:?}, 144 Hz: {fast:?}"
+    );
+}
+
 /// (eval-coverage) A rolling number on a surface at rest, every frame
 /// of it drawn from the scene `update` flattened (as the shell's loop
 /// runs: a diff, `update`, a paint that reuses its preview), still rolls

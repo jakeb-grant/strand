@@ -1,17 +1,17 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "notif-centre-zones"
 verdict good
-note "eval-false-alarms, new scenario: with top, left and bottom bars reserving 28, 34 and 22 px, the top-right notification centre sits at 132,36 and the centred OSD at 144,246 in what they leave (bar Foot at 34,498 after the left zone); cards slide in and one slides out and collapses while the cards below move up; every check passes; read with explain"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 98 -> 92 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario b4df102d9285d9b5
-seal cad314dfd268ffb5
+seal a2563e9f817c5c19
 S1 0 - "panel Centre"
 S2 0 - "bar Top"
 S3 0 - "bar Side"
 S4 0 - "bar Foot"
-S5 66 97 "osd Quiet"
+S5 62 91 "osd Quiet"
 N0 "clock|shell.strand:10:5|[Mock | DP-1]#0" "text#clock"
 N1 "list|shell.strand:24:3|#0" "col#list"
 N2 "|shell.strand:14:1|[Mock | DP-1]#1" "bar@shell.strand:14"
@@ -103,121 +103,118 @@ n11 op=255
 n12 op=255
 k14
 k15
-k16
 s1 z=220,108
-k17
+k16
 s1 z=220,167
 n1 h=165
 n4 h=165
 n13 x=170 y=114 w=220 h=51 op=37 ord=8 bg=24283bff
 n14 x=179 y=123 w=202 h=15 op=37 txt=S ord=9 ink=179,124,19,11 fg=c0caf5ff gl=["call"]
 n15 x=179 y=141 w=202 h=15 op=37 txt=S ord=10 ink=179,142,73,11 fg=9aa5ceff gl=["a\u0020notification"]
-k18
+k17
 n13 x=83 op=98
 n14 x=92 op=98 ink=92,124,19,11
 n15 x=92 op=98 ink=92,142,73,11
-k19
+k18
 n13 x=25 op=151
 n14 x=34 op=151 ink=34,124,19,11
 n15 x=34 op=151 ink=34,142,73,11
-k20
+k19
 n13 x=0 op=190
 n14 x=9 op=190 ink=9,124,19,11
 n15 x=9 op=190 ink=9,142,73,11
-k21
+k20
 n13 x=-6 op=216
 n14 x=3 op=216 ink=3,124,19,11
 n15 x=3 op=216 ink=3,142,73,11
-k22
+k21
 n13 x=-5 op=232
 n14 x=4 op=232 ink=4,124,19,11
 n15 x=4 op=232 ink=4,142,73,11
-k23
+k22
 n13 x=-3 op=241
 n14 x=6 op=241 ink=6,124,19,11
 n15 x=6 op=241 ink=6,142,73,11
-k24
+k23
 n13 x=-1 op=247
 n14 x=8 op=247 ink=8,124,19,11
 n15 x=8 op=247 ink=8,142,73,11
-k25
+k24
 n13 x=0 op=251
 n14 x=9 op=251 ink=9,124,19,11
 n15 x=9 op=251 ink=9,142,73,11
-k26
+k25
 n13 op=253
 n14 op=253
 n15 op=253
-k27
+k26
 n13 op=254
 n14 op=254
 n15 op=254
+k27
 k28
-k29
 n13 op=255
 n14 op=255
 n15 op=255
+k29
 k30
-k31
-k32
 s1 z=220,165
-k33
+k31
 s1 z=220,224
 n1 h=222
 n4 h=222
 n16 x=170 y=171 w=220 h=51 op=37 ord=11 bg=24283bff
 n17 x=179 y=180 w=202 h=15 op=37 txt=S ord=12 ink=179,181,40,13 fg=c0caf5ff gl=["update"]
 n18 x=179 y=198 w=202 h=15 op=37 txt=S ord=13 ink=179,199,73,11 fg=9aa5ceff gl=["a\u0020notification"]
-k34
+k32
 n16 x=83 op=98
 n17 x=92 op=98 ink=92,181,40,13
 n18 x=92 op=98 ink=92,199,73,11
-k35
+k33
 n16 x=25 op=151
 n17 x=34 op=151 ink=34,181,40,13
 n18 x=34 op=151 ink=34,199,73,11
-k36
+k34
 n16 x=0 op=190
 n17 x=9 op=190 ink=9,181,40,13
 n18 x=9 op=190 ink=9,199,73,11
-k37
+k35
 n16 x=-6 op=216
 n17 x=3 op=216 ink=3,181,40,13
 n18 x=3 op=216 ink=3,199,73,11
-k38
+k36
 n16 x=-5 op=232
 n17 x=4 op=232 ink=4,181,40,13
 n18 x=4 op=232 ink=4,199,73,11
-k39
+k37
 n16 x=-3 op=241
 n17 x=6 op=241 ink=6,181,40,13
 n18 x=6 op=241 ink=6,199,73,11
-k40
+k38
 n16 x=-1 op=247
 n17 x=8 op=247 ink=8,181,40,13
 n18 x=8 op=247 ink=8,199,73,11
-k41
+k39
 n16 x=0 op=251
 n17 x=9 op=251 ink=9,181,40,13
 n18 x=9 op=251 ink=9,199,73,11
-k42
+k40
 n16 op=253
 n17 op=253
 n18 op=253
-k43
+k41
 n16 op=254
 n17 op=254
 n18 op=254
-k44
-k45
+k42
+k43
 n16 op=255
 n17 op=255
 n18 op=255
-k46
-k47
-k48
+k44
+k45
 s1 z=220,222
-k49
+k46
 n1 h=209
 n4 h=209
 n10 x=60 h=38 op=218 hid=inert
@@ -229,7 +226,7 @@ n15 y=128 ink=9,129,73,11
 n16 y=158
 n17 y=167 ink=9,168,40,13
 n18 y=185 ink=9,186,73,11
-k50
+k47
 n1 h=189
 n4 h=189
 n10 x=147 h=18 op=157
@@ -241,7 +238,7 @@ n15 y=108 ink=9,109,73,11
 n16 y=138
 n17 y=147 ink=9,148,40,13
 n18 y=165 ink=9,166,73,11
-k51
+k48
 n1 h=176
 n4 h=176
 n10 x=205 h=6 op=104
@@ -253,7 +250,7 @@ n15 y=95 ink=9,96,73,11
 n16 y=125
 n17 y=134 ink=9,135,40,13
 n18 y=152 ink=9,153,73,11
-k52
+k49
 n1 h=165
 n4 h=165
 n10 x=230 h=0 op=65 bg=-
@@ -265,27 +262,26 @@ n15 y=84 ord=8 ink=9,85,73,11
 n16 y=114 ord=9
 n17 y=123 ord=10 ink=9,124,40,13
 n18 y=141 ord=11 ink=9,142,73,11
-k53
+k50
 n10 x=236 op=39
-k54
+k51
 n10 x=235 op=23
-k55
+k52
 n10 x=233 op=14
-k56
+k53
 n10 x=231 op=8
-k57
+k54
 n10 x=230 op=4
-k58
+k55
 n10 op=2
-k59
+k56
 n10 op=1
-k60
-k61
+k57
+k58
 n10 op=0
-k62
-k63
+k59
 n10 hid=opacity0
-k64
+k60
 n10 -
 n13 ord=5
 n14 ord=6
@@ -293,118 +289,116 @@ n15 ord=7
 n16 ord=8
 n17 ord=9
 n18 ord=10
-k65
+k61
 s1 z=220,165
-k66 p5
+k62 p5
 s5 z=129,34 o=133,246
 n19 srf=5 x=11 y=0 w=107 h=34 op=0 hid=opacity0
-k67
+k63
 n19 v=14.171875,1,100.671875,31.984375 op=37 sc=0.941,0.941 hid=-
 n20 srf=5 x=25 y=10 w=79 h=15 v=27.34375,10.421875,74.328125,14.109375 op=37 txt=S ord=2 ink=25,11,79,11 fg=c0caf5ff gl=["do\u0020not\u0020disturb"]
 n21 srf=5 x=11 y=0 w=107 h=34 v=14.171875,1,100.671875,31.984375 op=37 ord=1 bg=24283bff
-k68
+k64
 n19 v=12.546875,0.484375,103.921875,33.015625 op=98 sc=0.971,0.971
 n20 v=26.140625,10.203125,76.71875,14.5625 op=98
 n21 v=12.546875,0.484375,103.921875,33.015625 op=98
-k69
+k65
 n19 v=11.46875,0.15625,106.046875,33.703125 op=151 sc=0.991,0.991
 n20 v=25.34375,10.0625,78.296875,14.875 op=151
 n21 v=11.46875,0.15625,106.046875,33.703125 op=151
-k70
+k66
 n19 v=d op=190 sc=1,1
 n20 v=d op=190
 n21 v=d op=190
-k71
+k67
 n19 v=10.875,-0.03125,107.234375,34.078125 op=216 sc=1.002,1.002
 n20 v=24.90625,9.984375,79.171875,15.03125 op=216
 n21 v=10.875,-0.03125,107.234375,34.078125 op=216
-k72
+k68
 n19 v=10.90625,-0.03125,107.203125,34.0625 op=232
 n20 v=24.921875,9.984375,79.140625,15.03125 op=232
 n21 v=10.90625,-0.03125,107.203125,34.0625 op=232
-k73
+k69
 n19 v=10.953125,-0.015625,107.109375,34.03125 op=241 sc=1.001,1.001
 n20 v=24.96875,10,79.078125,15.015625 op=241
 n21 v=10.953125,-0.015625,107.109375,34.03125 op=241
-k74
+k70
 n19 v=10.984375,0,107.03125,34.015625 op=247 sc=1,1
 n20 v=24.984375,10,79.03125,15 op=247
 n21 v=10.984375,0,107.03125,34.015625 op=247
-k75
+k71
 n19 v=d op=251
 n20 v=d op=251
 n21 v=d op=251
-k76
+k72
 n19 op=253
 n20 op=253
 n21 op=253
-k77
+k73
 n19 op=254
 n20 op=254
 n21 op=254
-k78
-k79
+k74
+k75
 n19 op=255
 n20 op=255
 n21 op=255
-k80
-k81
-k82
+k76
+k77
 s5 z=107,34 o=144,246
 n19 x=0
 n20 x=14 ink=14,11,79,11
 n21 x=0
-k83
+k78
 n19 v=1.109375,0.359375,104.765625,33.296875 op=218 sc=0.979,0.979
 n20 v=14.828125,10.140625,77.359375,14.6875 op=218
 n21 v=1.109375,0.359375,104.765625,33.296875 op=218
-k84
+k79
 n19 v=2.734375,0.875,101.515625,32.265625 op=157 sc=0.949,0.949
 n20 v=16.015625,10.359375,74.953125,14.234375 op=157
 n21 v=2.734375,0.875,101.515625,32.265625 op=157
-k85
+k80
 n19 v=3.8125,1.203125,99.390625,31.578125 op=104 sc=0.929,0.929
 n20 v=16.8125,10.5,73.375,13.9375 op=104
 n21 v=3.8125,1.203125,99.390625,31.578125 op=104
-k86
+k81
 n19 v=4.28125,1.359375,98.4375,31.28125 op=65 sc=0.92,0.92
 n20 v=17.15625,10.5625,72.6875,13.796875 op=65
 n21 v=4.28125,1.359375,98.4375,31.28125 op=65
-k87
+k82
 n19 v=4.40625,1.390625,98.203125,31.203125 op=39 sc=0.918,0.918
 n20 v=17.25,10.578125,72.5,13.765625 op=39
 n21 v=4.40625,1.390625,98.203125,31.203125 op=39
-k88
+k83
 n19 v=4.375,1.390625,98.234375,31.21875 op=23
 n20 v=17.234375,10.578125,72.53125,13.765625 op=23
 n21 v=4.375,1.390625,98.234375,31.21875 op=23
-k89
+k84
 n19 v=4.328125,1.375,98.328125,31.25 op=14 sc=0.919,0.919
 n20 v=17.203125,10.5625,72.609375,13.78125 op=14
 n21 v=4.328125,1.375,98.328125,31.25 op=14
-k90
+k85
 n19 v=4.296875,1.359375,98.40625,31.265625 op=8 sc=0.92,0.92
 n20 v=17.171875,10.5625,72.65625,13.796875 op=8
 n21 v=4.296875,1.359375,98.40625,31.265625 op=8
-k91
+k86
 n19 v=4.28125,1.359375,98.4375,31.28125 op=4
-n20 v=17.15625,10.5625,72.671875,13.796875 op=4
+n20 v=17.15625,10.5625,72.6875,13.796875 op=4
 n21 v=4.28125,1.359375,98.4375,31.28125 op=4
-k92
+k87
 n19 op=2
-n20 v=17.15625,10.5625,72.6875,13.796875 op=2
+n20 op=2
 n21 op=2
-k93
+k88
 n19 op=1
 n20 op=1
 n21 op=1
-k94
-k95
+k89
+k90
 n19 op=0
 n20 op=0
 n21 op=0
-k96
-k97
+k91
 s5 -
 n19 v=d sc=1,1 hid=opacity0
 n20 -

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldd-pages-144"
 verdict good
-note "set D correct-motion scenario, unedited but its id: at 144 Hz pages slide in from the right and out to the left, mirrored backward, one switch landing during another; the tabs still; all checks pass; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 83 -> 76 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 44b0c4b30c640faa
-seal 50e177710c2d401b
+seal a08f500a3006a738
 S1 0 - "panel Settings"
 N0 "body|shell.strand:10:5|#0" "pages#body"
 N1 "tabs|shell.strand:7:5|#0" "row#tabs"
@@ -191,9 +191,6 @@ k30
 k31
 k32
 k33
-k34
-k35
-k36
 n2 -
 n3 -
 n4 -
@@ -201,7 +198,7 @@ n5 -
 n11 ord=8
 n12 ord=9
 n13 ord=7
-k37
+k34
 n11 x=-3 hid=inert
 n12 x=-3 hid=inert ink=-2,34,73,13
 n13 x=-3 hid=inert
@@ -209,7 +206,7 @@ n14 x=217 y=33 w=220 h=120 ord=11
 n15 x=217 y=33 w=220 h=15 txt=S ord=12 ink=218,34,53,11 fg=cdd6f4ff gl=["Balanced"]
 n16 x=217 y=52 w=220 h=15 txt=S ord=13 ink=218,53,73,11 fg=cdd6f4ff gl=["Performance"]
 n17 x=217 y=33 w=220 h=120 ord=10
-k38
+k35
 n11 x=-33
 n12 x=-33 ink=-32,34,73,13
 n13 x=-33
@@ -217,7 +214,7 @@ n14 x=187
 n15 x=187 ink=188,34,53,11
 n16 x=187 ink=188,53,73,11
 n17 x=187
-k39
+k36
 n11 x=-69
 n12 x=-69 ink=-68,34,73,13
 n13 x=-69
@@ -225,7 +222,7 @@ n14 x=151
 n15 x=151 ink=152,34,53,11
 n16 x=151 ink=152,53,73,11
 n17 x=151
-k40
+k37
 n11 x=-105
 n12 x=-105 ink=-104,34,73,13
 n13 x=-105
@@ -233,7 +230,7 @@ n14 x=115
 n15 x=115 ink=116,34,53,11
 n16 x=115 ink=116,53,73,11
 n17 x=115
-k41
+k38
 n11 x=-137
 n12 x=-137 ink=-136,34,73,13
 n13 x=-137
@@ -241,7 +238,7 @@ n14 x=83
 n15 x=83 ink=84,34,53,11
 n16 x=83 ink=84,53,73,11
 n17 x=83
-k42
+k39
 n11 x=-163
 n12 x=-163 ink=-162,34,73,13
 n13 x=-163
@@ -249,7 +246,7 @@ n14 x=57
 n15 x=57 ink=58,34,53,11
 n16 x=57 ink=58,53,73,11
 n17 x=57
-k43
+k40
 n11 x=-182
 n12 x=-182 ink=-181,34,73,13
 n13 x=-182
@@ -257,7 +254,7 @@ n14 x=38
 n15 x=38 ink=39,34,53,11
 n16 x=38 ink=39,53,73,11
 n17 x=38
-k44
+k41
 n11 x=-197
 n12 x=-197 ink=-196,34,73,13
 n13 x=-197
@@ -265,7 +262,7 @@ n14 x=23
 n15 x=23 ink=24,34,53,11
 n16 x=23 ink=24,53,73,11
 n17 x=23
-k45
+k42
 n11 x=-206
 n12 x=-206 ink=-205,34,73,13
 n13 x=-206
@@ -273,7 +270,7 @@ n14 x=14
 n15 x=14 ink=15,34,53,11
 n16 x=14 ink=15,53,73,11
 n17 x=14
-k46
+k43
 n2 x=-197 y=33 w=220 h=120 ord=11
 n3 x=-197 y=33 w=220 h=15 txt=S ord=12 ink=-196,34,59,11 fg=cdd6f4ff gl=["Network\u0020A"]
 n4 x=-197 y=52 w=220 h=15 txt=S ord=13 ink=-196,53,59,11 fg=cdd6f4ff gl=["Network\u0020B"]
@@ -285,7 +282,7 @@ n14 x=21 hid=inert ord=15
 n15 x=21 hid=inert ord=16 ink=22,34,53,11
 n16 x=21 hid=inert ord=17 ink=22,53,73,11
 n17 x=21 hid=inert ord=14
-k47
+k44
 n2 x=-167
 n3 x=-167 ink=-166,34,59,11
 n4 x=-167 ink=-166,53,59,11
@@ -297,7 +294,7 @@ n14 x=48
 n15 x=48 ink=49,34,53,11
 n16 x=48 ink=49,53,73,11
 n17 x=48
-k48
+k45
 n2 x=-131
 n3 x=-131 ink=-130,34,59,11
 n4 x=-131 ink=-130,53,59,11
@@ -309,7 +306,7 @@ n14 x=83
 n15 x=83 ink=84,34,53,11
 n16 x=83 ink=84,53,73,11
 n17 x=83
-k49
+k46
 n2 x=-95
 n3 x=-95 ink=-94,34,59,11
 n4 x=-95 ink=-94,53,59,11
@@ -318,7 +315,7 @@ n14 x=119
 n15 x=119 ink=120,34,53,11
 n16 x=119 ink=120,53,73,11
 n17 x=119
-k50
+k47
 n2 x=-63
 n3 x=-63 ink=-62,34,59,11
 n4 x=-63 ink=-62,53,59,11
@@ -330,7 +327,7 @@ n14 x=151
 n15 x=151 ink=152,34,53,11
 n16 x=151 ink=152,53,73,11
 n17 x=151
-k51
+k48
 n2 x=-37
 n3 x=-37 ink=-36,34,59,11
 n4 x=-37 ink=-36,53,59,11
@@ -339,7 +336,7 @@ n14 x=178
 n15 x=178 ink=179,34,53,11
 n16 x=178 ink=179,53,73,11
 n17 x=178
-k52
+k49
 n2 x=-18
 n3 x=-18 ink=-17,34,59,11
 n4 x=-18 ink=-17,53,59,11
@@ -351,7 +348,7 @@ n14 x=199
 n15 x=199 ink=200,34,53,11
 n16 x=199 ink=200,53,73,11
 n17 x=199
-k53
+k50
 n2 x=-3
 n3 x=-3 ink=-2,34,59,11
 n4 x=-3 ink=-2,53,59,11
@@ -363,7 +360,7 @@ n14 x=214
 n15 x=214 ink=215,34,53,11
 n16 x=214 ink=215,53,73,11
 n17 x=214
-k54
+k51
 n2 x=6
 n3 x=6 ink=7,34,59,11
 n4 x=6 ink=7,53,59,11
@@ -372,7 +369,7 @@ n14 x=224
 n15 x=224 ink=225,34,53,11
 n16 x=224 ink=225,53,73,11
 n17 x=224
-k55
+k52
 n2 x=12
 n3 x=12 ink=13,34,59,11
 n4 x=12 ink=13,53,59,11
@@ -384,7 +381,7 @@ n14 x=231
 n15 x=231 ink=232,34,53,11
 n16 x=231 ink=232,53,73,11
 n17 x=231
-k56
+k53
 n2 x=15
 n3 x=15 ink=16,34,59,11
 n4 x=15 ink=16,53,59,11
@@ -393,7 +390,7 @@ n14 x=234
 n15 x=234 ink=235,34,53,11
 n16 x=234 ink=235,53,73,11
 n17 x=234
-k57
+k54
 n2 x=16
 n3 x=16 ink=17,34,59,11
 n4 x=16 ink=17,53,59,11
@@ -405,18 +402,18 @@ n14 x=236
 n15 x=236 ink=237,34,53,11
 n16 x=236 ink=237,53,73,11
 n17 x=236
-k58
-k59
+k55
+k56
 n2 x=15
 n3 x=15 ink=16,34,59,11
 n4 x=15 ink=16,53,59,11
 n5 x=15
-k60
+k57
 n14 x=235
 n15 x=235 ink=236,34,53,11
 n16 x=235 ink=236,53,73,11
 n17 x=235
-k61
+k58
 n2 x=13
 n3 x=13 ink=14,34,59,11
 n4 x=13 ink=14,53,59,11
@@ -425,7 +422,7 @@ n14 x=234
 n15 x=234 ink=235,34,53,11
 n16 x=234 ink=235,53,73,11
 n17 x=234
-k62
+k59
 n2 x=12
 n3 x=12 ink=13,34,59,11
 n4 x=12 ink=13,53,59,11
@@ -434,12 +431,12 @@ n14 x=233
 n15 x=233 ink=234,34,53,11
 n16 x=233 ink=234,53,73,11
 n17 x=233
-k63
+k60
 n14 x=232
 n15 x=232 ink=233,34,53,11
 n16 x=232 ink=233,53,73,11
 n17 x=232
-k64
+k61
 n2 x=11
 n3 x=11 ink=12,34,59,11
 n4 x=11 ink=12,53,59,11
@@ -448,8 +445,8 @@ n14 x=231
 n15 x=231 ink=232,34,53,11
 n16 x=231 ink=232,53,73,11
 n17 x=231
-k65
-k66
+k62
+k63
 n2 x=10
 n3 x=10 ink=11,34,59,11
 n4 x=10 ink=11,53,59,11
@@ -458,12 +455,9 @@ n14 x=230
 n15 x=230 ink=231,34,53,11
 n16 x=230 ink=231,53,73,11
 n17 x=230
-k67
-k68
-k69
-k70
-k71
-k72
+k64
+k65
+k66
 n2 ord=8
 n3 ord=9
 n4 ord=10
@@ -475,16 +469,15 @@ n14 ord=12
 n15 ord=13
 n16 ord=14
 n17 ord=11
+k67
+k68
+k69
+k70
+k71
+k72
 k73
 k74
 k75
-k76
-k77
-k78
-k79
-k80
-k81
-k82
 n14 -
 n15 -
 n16 -

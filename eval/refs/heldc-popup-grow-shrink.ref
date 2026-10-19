@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-popup-grow-shrink"
 verdict good
-note "eval-false-alarms: the sandbox places the popup as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -62, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 4f995b84b7a579ec
-seal 985888988ed42303
+seal dbb4e3517d302eb8
 S1 0 - "bar Top"
 S2 1 - "popup@shell.strand:7"
 N0 "anchor|shell.strand:6:5|[Mock | DP-1]#0" "box#anchor"
@@ -62,48 +62,46 @@ k14
 n7 op=255
 k15
 k16
-k17
 n3 h=90
 n5 y=70
 n6 h=90
 n7 h=30 op=218 hid=inert
-k18
+k17
 n3 h=74
 n5 y=54
 n6 h=74
 n7 h=14 op=157
-k19
+k18
 n3 h=63
 n5 y=43
 n6 h=63
 n7 h=4 op=104
-k20
+k19
 n3 h=54
 n5 y=34
 n6 h=54
 n7 h=0 op=65 bg=-
-k21
+k20
 n7 op=39
-k22
+k21
 n7 op=23
-k23
+k22
 n7 op=14
-k24
+k23
 n7 op=8
-k25
+k24
 n7 op=4
-k26
+k25
 n7 op=2
-k27
+k26
 n7 op=1
+k27
 k28
-k29
 n7 op=0
-k30
-k31
+k29
 n7 hid=opacity0
-k32
+k30
 n5 ord=3
 n7 -
-k33
+k31
 s2 z=160,54

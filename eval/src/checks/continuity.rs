@@ -132,17 +132,25 @@ impl Way {
         (pos, vel)
     }
 
-    /// At rest at its target by `t`.
+    /// At rest at its target by `t`, by the rule the product's springs
+    /// rest by (strand-scene motion.rs `Segment::rest`, decisions.md
+    /// roll-rate; integration-r4): each channel's amplitude,
+    /// `√(x² + (v/ω₀)²)`, within `eps`, `ω₀ = √k`. A damped spring's
+    /// amplitude never grows, so a way at rest stays at rest, and it
+    /// ends at the moment the product's spring does, whatever the rate.
     pub fn settled(&self, t: u64) -> bool {
         let dt = t.saturating_sub(self.start);
         match self.curve {
             CurveRec::Instant => true,
             CurveRec::Timed { d, .. } => dt >= d,
             CurveRec::Spring { .. } if dt >= MAX_MOTION => true,
-            CurveRec::Spring { .. } => {
+            CurveRec::Spring { k, .. } => {
                 let (p, v) = self.at(t);
+                let w0 = f64::from(k).max(1e-6).sqrt();
                 (0..p.len()).all(|i| {
-                    (p[i] - self.target[i]).abs() <= self.eps && v[i].abs() <= self.eps * 10.0
+                    let x = p[i] - self.target[i];
+                    let v = v[i] / w0;
+                    (x * x + v * v).sqrt() <= self.eps
                 })
             }
         }

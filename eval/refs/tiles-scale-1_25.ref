@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "tiles-scale-1_25"
 verdict good
-note "new scenario (eval-rules): at 1.25x the three grown tiles (33, 34, 33 px at x 10, 43, 77) and the 15/14/14/14 px boxes after them share each edge's physical pixel at rest (b drawn at 43.2, its left neighbour's right edge 43.2); the control springs to 130 px and back with its tiles; read with explain"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "bc7ffad1+changes"
+rev "40b54cc2+changes"
 approver "claude"
 scenario a1d7320b6b923899
-seal 21cba5574bae818f
+seal 2e1d042d8cc78d73
 S1 0 - "bar Top"
 N0 "a|shell.strand:7:7|[Mock | DP-1]#0" "box#a"
 N1 "b|shell.strand:8:7|[Mock | DP-1]#1" "box#b"
@@ -89,7 +89,6 @@ k8
 k9
 k10
 k11
-k12
 n0 w=41 v=10.40625,3.203125,40.796875,17.59375
 n1 x=51 w=40 v=51.203125,3.203125,40,17.59375
 n2 x=91 w=41 v=91.203125,3.203125,40.796875,17.59375
@@ -98,7 +97,7 @@ n5 x=132 v=132,6.40625,15.203125,12
 n6 x=147 v=147.203125,6.40625,13.59375,12
 n7 x=161 v=160.796875,6.40625,14.40625,12
 n8 x=175 v=175.203125,6.40625,13.59375,12
-k13
+k12
 n0 w=37 v=10.40625,3.203125,36.796875,17.59375
 n1 x=47 w=37 v=47.203125,3.203125,36.796875,17.59375
 n2 x=84 w=37 v=84,3.203125,36.796875,17.59375
@@ -107,7 +106,7 @@ n5 x=121 v=120.796875,6.40625,15.203125,12
 n6 x=136 v=136,6.40625,14.40625,12
 n7 x=150 v=150.40625,6.40625,13.59375,12
 n8 x=164 v=164,6.40625,14.40625,12
-k14
+k13
 n0 w=34 v=10.40625,3.203125,33.59375,17.59375
 n1 x=44 w=35 v=44,3.203125,35.203125,17.59375
 n2 x=79 w=34 v=79.203125,3.203125,33.59375,17.59375
@@ -116,7 +115,7 @@ n5 x=113 v=112.796875,6.40625,15.203125,12
 n6 x=128 v=128,6.40625,14.40625,12
 n7 x=142 v=142.40625,6.40625,13.59375,12
 n8 x=156 v=156,6.40625,14.40625,12
-k15
+k14
 n0 w=33 v=10.40625,3.203125,32.796875,17.59375
 n1 x=43 w=34 v=43.203125,3.203125,33.59375,17.59375
 n2 x=77 w=33 v=76.796875,3.203125,33.59375,17.59375
@@ -125,7 +124,7 @@ n5 x=110 v=110.40625,6.40625,14.40625,12
 n6 x=125 v=124.796875,6.40625,14.40625,12
 n7 x=139 v=139.203125,6.40625,13.59375,12
 n8 x=153 v=152.796875,6.40625,14.40625,12
-k16
+k15
 n1 w=33 v=43.203125,3.203125,32.796875,17.59375
 n2 x=76 v=76,3.203125,32.796875,17.59375
 n3 w=99 v=10.40625,3.203125,98.40625,17.59375
@@ -133,17 +132,16 @@ n5 x=109 v=108.796875,6.40625,15.203125,12
 n6 x=124 v=124,6.40625,14.40625,12
 n7 x=138 v=138.40625,6.40625,13.59375,12
 n8 x=152 v=152,6.40625,14.40625,12
+k16
 k17
-k18
 n2 w=34 v=76,3.203125,34.40625,17.59375
 n3 w=100 v=10.40625,3.203125,100,17.59375
 n5 x=110 v=110.40625,6.40625,14.40625,12
 n6 x=125 v=124.796875,6.40625,14.40625,12
 n7 x=139 v=139.203125,6.40625,13.59375,12
 n8 x=153 v=152.796875,6.40625,14.40625,12
-k19
+k18
 n1 w=34 v=43.203125,3.203125,33.59375,17.59375
 n2 x=77 w=33 v=76.796875,3.203125,33.59375,17.59375
+k19
 k20
-k21
-k22

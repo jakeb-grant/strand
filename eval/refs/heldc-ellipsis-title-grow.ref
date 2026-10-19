@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-ellipsis-title-grow"
 verdict good
-note "set C scenario, unedited: the cut title widens on its spring, more of it showing each frame and still ellipsised, the dot after it moving out of its way; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "24e5ed52"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 06aac268fe6f4c3a
-seal 319a058d8a5c40ed
+seal 36b747c105dab1fd
 S1 0 - "bar Top"
 N0 "dot|shell.strand:5:5|[Mock | DP-1]#0" "box#dot"
 N1 "tail|shell.strand:8:5|[Mock | DP-1]#1" "box#tail"
@@ -51,5 +51,3 @@ k10
 k11
 k12
 k13
-k14
-k15

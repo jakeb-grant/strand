@@ -1,14 +1,14 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-edge-margins"
 verdict good
-note "integration-r4 (eval-fa on eval-r4): the level meter's value box is now recorded as its control part (pt=0,0,36,6 and on, eval-coverage-2's NodePaint::fill_boxes); placement and every other field unchanged"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 72 -> 64 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "d0071862+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 9cd0f0ffd092f719
-seal 3947e42baec65764
+seal 26168c3cec781a08
 S1 0 - "bar Bottom"
-S2 1 71 "osd Level"
+S2 1 63 "osd Level"
 N0 "dot|shell.strand:8:5|[Mock | DP-1]#0" "box#dot"
 N1 "|shell.strand:5:1|[Mock | DP-1]#0" "bar@shell.strand:5"
 N2 "|shell.strand:7:3|[Mock | DP-1]#0" "row@shell.strand:7"
@@ -67,12 +67,12 @@ n6 op=247
 k10
 n3 op=251
 n4 op=251
-n5 op=251
+n5 y=11 op=251 ink=140,12,26,11
 n6 op=251
 k11
 n3 op=253
 n4 op=253
-n5 y=11 op=253 ink=140,12,26,11
+n5 op=253
 n6 op=253
 k12
 n3 op=254
@@ -87,163 +87,149 @@ n5 op=255
 n6 op=255
 k15
 k16
-k17
 n4 pt=0,0,50.046875,6
 n5 gl=["75%"]
-k18
+k17
 n4 pt=0,0,70.5625,6
-k19
+k18
 n4 pt=0,0,84.03125,6
+k19
+n4 pt=0,0,89.984375,6
 k20
-n4 pt=0,0,89.984375,6
-k21
 n4 pt=0,0,91.5,6
-k22
+k21
 n4 pt=0,0,91.25,6
-k23
+k22
 n4 pt=0,0,90.65625,6
-k24
+k23
 n4 pt=0,0,90.234375,6
-k25
+k24
 n4 pt=0,0,90.015625,6
-k26
-n4 pt=0,0,89.953125,6
-k27
-n4 pt=0,0,89.96875,6
-k28
-n4 pt=0,0,89.984375,6
-k29
-k30
+k25
 n4 pt=0,0,90,6
-k31
+k26
 s2 z=208,36 o=98,396
 n3 w=208
 n4 x=33 pt=0,0,97.8125,6
 n5 x=162 w=57 ink=162,12,56,11 gl=["maximum"]
 n6 x=22 w=208
-k32
+k27
 n4 x=22 pt=0,0,109.203125,6
 n5 x=151 ink=151,12,56,11
 n6 x=11
-k33
+k28
 n4 x=14 pt=0,0,116.6875,6
 n5 x=143 ink=143,12,56,11
 n6 x=3
-k34
+k29
 n4 x=11 pt=0,0,119.984375,6
 n5 x=140 ink=140,12,56,11
 n6 x=0
-k35
+k30
 n4 x=10 pt=-
 n5 x=139 ink=139,12,56,11
 n6 x=-1
-k36
-k37
+k31
+k32
 n4 x=11
 n5 x=140 ink=140,12,56,11
 n6 x=0
-k38
-k39
-k40
-n4 pt=0,0,119.984375,6
-k41
-n4 pt=-
-k42
+k33
+k34
+k35
+k36
 n3 x=49 w=159
 n4 x=60 pt=0,0,88.765625,6
 n5 x=189 w=8 ink=189,12,7,11 gl=["0"]
 n6 x=49 w=159
-k43
+k37
 n4 pt=0,0,43.1875,6
-k44
+k38
 n4 pt=0,0,13.28125,6
+k39
+n4 pt=0,0,0.046875,6
+k40
+n4 bg=33384fff pt=-
+k41
+k42
+k43
+k44
 k45
-n4 pt=0,0,0.046875,6
-k46
-n4 bg=33384fff pt=-
-k47
-k48
-k49
-k50
-k51
 n4 bg=33384fff/9ece6aff pt=0,0,0.09375,6
-k52
+k46
 n4 pt=0,0,0.078125,6
-k53
+k47
 n4 pt=0,0,0.046875,6
-k54
-n4 pt=0,0,0.015625,6
-k55
+k48
 n4 bg=33384fff pt=-
-k56
+k49
 s2 z=159,36 o=147,396
 n3 x=0
 n4 x=11
 n5 x=140 ink=140,12,7,11
 n6 x=0
-k57
+k50
 n3 y=3 op=218
 n4 y=18 op=218
 n5 y=14 op=218 ink=140,15,7,11
 n6 y=3 op=218
-k58
+k51
 n3 y=8 op=157
 n4 y=23 op=157
 n5 y=18 op=157 ink=140,19,7,11
 n6 y=8 op=157
-k59
+k52
 n3 y=11 op=104
 n4 y=26 op=104
 n5 y=21 op=104 ink=140,22,7,11
 n6 y=11 op=104
-k60
+k53
 n3 y=12 op=65
 n4 y=27 op=65
 n5 y=22 op=65 ink=140,23,7,11
 n6 y=12 op=65
-k61
+k54
 n3 op=39
 n4 op=39
 n5 y=23 op=39 ink=140,24,7,11
 n6 op=39
-k62
+k55
 n3 op=23
 n4 op=23
 n5 op=23
 n6 op=23
-k63
+k56
 n3 op=14
 n4 op=14
 n5 op=14
 n6 op=14
-k64
+k57
 n3 op=8
 n4 op=8
 n5 op=8
 n6 op=8
-k65
+k58
 n3 op=4
 n4 op=4
 n5 op=4
 n6 op=4
-k66
+k59
 n3 op=2
 n4 op=2
 n5 op=2
 n6 op=2
-k67
+k60
 n3 op=1
 n4 op=1
 n5 op=1
 n6 op=1
-k68
-k69
+k61
+k62
 n3 op=0
 n4 op=0
 n5 op=0
 n6 op=0
-k70
-k71
+k63
 s2 -
 n3 hid=opacity0
 n4 -

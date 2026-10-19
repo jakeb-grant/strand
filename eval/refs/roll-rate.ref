@@ -1,0 +1,123 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "roll-rate"
+verdict good
+note "new scenario (roll-rate): the spring roll ends 10 ticks after its change at 60 Hz (166.7 ms) and 22 at 144 Hz (152.8 ms, one 60 Hz frame apart), the 300 ms tween 19 (316.7 ms) and 44 (305.6 ms); every rest is within its one wall-clock bound at both rates"
+date 2026-10-18
+rev "40b54cc2+changes"
+approver "claude"
+scenario fa2ee9ea848f73cf
+seal 7fb4b4d18034aa52
+S1 0 - "bar Top"
+N0 "sprung|shell.strand:6:5|[Mock | DP-1]#0" "text#sprung"
+N1 "timed|shell.strand:7:5|[Mock | DP-1]#1" "text#timed"
+N2 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N3 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+k0 p1
+s1 z=200,30
+n0 x=8 y=8 w=15 h=15 txt=S ord=2 ink=8,10,14,9 fg=ffffffff gl=["41"]
+n1 x=35 y=8 w=15 h=15 txt=S ord=3 ink=35,10,14,9 fg=ffffffff gl=["41"]
+n2 x=0 y=0 w=200 h=30 bg=faf9ffff
+n3 x=0 y=0 w=200 h=30 ord=1
+k1
+n0 ink=8,9,14,10 fg=ffffffff/ffffffff gl=["42","41[1]"]
+k2
+k3
+k4
+k5
+k6
+k7
+k8
+k9
+k10
+n0 fg=ffffffff gl=["42"]
+k11
+n1 ink=35,9,14,10 fg=ffffffff/ffffffff gl=["42","41[1]"]
+k12
+k13
+k14
+k15
+k16
+k17
+k18
+k19
+k20
+k21
+k22
+k23
+k24
+k25
+k26
+k27
+k28
+k29
+n1 fg=ffffffff gl=["42"]
+k31
+n0 ink=8,9,14,11 fg=ffffffff/ffffffff gl=["43","42[1]"]
+k32
+k33
+k34
+k35
+k36
+k37
+k38
+k39
+k40
+k41
+k42
+k43
+k44
+k45
+k46
+k47
+k48
+k49
+k50
+k51
+k52
+n0 fg=ffffffff gl=["43"]
+k53
+n1 ink=35,9,14,11 fg=ffffffff/ffffffff gl=["43","42[1]"]
+k54
+k55
+k56
+k57
+k58
+k59
+k60
+k61
+k62
+k63
+k64
+k65
+k66
+k67
+k68
+k69
+k70
+k71
+k72
+k73
+k74
+k75
+k76
+k77
+k78
+k79
+k80
+k81
+k82
+k83
+k84
+k85
+k86
+k87
+k88
+k89
+k90
+k91
+k92
+k93
+k94
+k95
+k96
+n1 fg=ffffffff gl=["43"]

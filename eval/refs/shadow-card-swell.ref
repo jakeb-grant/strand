@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell"
 verdict good
-note "origin 8,0 (320/2 - 304/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 620f647ac0c7a0e1
-seal 4ceeb94e50d2734a
+seal 5ea1a3ce9318ea2a
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -47,16 +47,14 @@ n7 v=95.96875,52.984375,40.0625,16.03125 op=247 sc=1.002,1.002
 k9
 n7 v=d op=251 sc=1,1
 k10
-n7 v=96,53,39.984375,16 op=253
+n7 op=253
 k11
 n7 op=254
 k12
-n7 v=d
 k13
 n7 op=255
 k14
 k15
-k16
 s1 z=304,193
 n0 y=62 ord=5
 n1 y=62 ord=6
@@ -66,43 +64,42 @@ n5 y=100 ord=8 sh=000000cc@0,78,256,92/00000080@24,97,208,44
 n6 h=175
 n7 y=62 ord=7
 n8 x=28 y=45 w=120 h=5 op=37 ord=3 bg=3b4252ff
-k17
+k16
 n0 y=76
 n1 y=76
 n3 y=68 sh=000000aa@9,53,154,70
 n5 y=114 sh=000000cc@0,92,256,92/00000080@24,111,208,44
 n7 y=76
 n8 h=12 op=98
-k18
+k17
 n0 y=83
 n1 y=83
 n3 y=75 sh=000000aa@9,60,154,70
 n5 y=121 sh=000000cc@0,99,256,92/00000080@24,118,208,44
 n7 y=83
 n8 h=16 op=151
-k19
+k18
 n0 y=85
 n1 y=85
 n3 y=77 sh=000000aa@9,62,154,70
 n5 y=123 sh=000000cc@0,101,256,92/00000080@24,120,208,44
 n7 y=85
 n8 h=18 op=190
-k20
+k19
 n8 op=216
-k21
+k20
 n8 op=232
-k22
+k21
 n8 op=241
-k23
+k22
 n8 op=247
-k24
+k23
 n8 op=251
-k25
+k24
 n8 op=253
-k26
+k25
 n8 op=254
+k26
 k27
-k28
 n8 op=255
-k29
-k30
+k28

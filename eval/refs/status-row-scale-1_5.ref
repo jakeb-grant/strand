@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "status-row-scale-1_5"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "a38d1bc6"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 924beef3c15f242d
-seal 35c7cb313a009d65
+seal 4340cec780e6b319
 S1 0 - "bar Top"
 N0 "bars|status-row.strand:13:9|[Mock | DP-1]#0" "box#bars"
 N1 "count|status-row.strand:20:11|[Mock | DP-1]#0" "row#count"
@@ -106,11 +106,10 @@ k13
 n1 op=0
 n10 op=0
 k14
-k15
 n1 hid=opacity0
 n2 ord=11
 n10 -
-k16
+k15
 n0 x=209 v=209.328125,9.328125,16,12
 n1 -
 n2 ord=10
@@ -120,83 +119,81 @@ n7 x=209 v=209.328125,13.328125,4,8
 n8 x=215 v=215.328125,11.328125,4,10
 n9 x=221 v=221.328125,9.328125,4,12
 n12 x=231 v=231.328125,8,14,15.328125 ink=232,10,10.671875,10
-k17
+k16
 n0 x=217 v=217.328125,9.328125,16,12
 n6 x=217 v=217.328125,9.328125,16,12
 n7 x=217 v=217.328125,13.328125,4,8
 n8 x=223 v=223.328125,11.328125,4,10
 n9 x=229 v=229.328125,9.328125,4,12
 n12 x=239 v=239.328125,8,14,15.328125 ink=240,10,10.671875,10
-k18
+k17
 n0 x=222 v=222,9.328125,16,12
 n6 x=222 v=222,9.328125,16,12
 n7 x=222 v=222,13.328125,4,8
 n8 x=228 v=228,11.328125,4,10
 n9 x=234 v=234,9.328125,4,12
 n12 x=244 v=244,8,14,15.328125 ink=244.671875,10,10.671875,10
-k19
+k18
 n0 x=224 v=224,9.328125,16,12
 n6 x=224 v=224,9.328125,16,12
 n7 x=224 v=224,13.328125,4,8
 n8 x=230 v=230,11.328125,4,10
 n9 x=236 v=236,9.328125,4,12
 n12 x=246 v=246,8,14,15.328125 ink=246.671875,10,10.671875,10
-k20
+k19
 n0 x=225 v=225.328125,9.328125,16,12
 n6 x=225 v=225.328125,9.328125,16,12
 n7 x=225 v=225.328125,13.328125,4,8
 n8 x=231 v=231.328125,11.328125,4,10
 n9 x=237 v=237.328125,9.328125,4,12
 n12 x=247 v=247.328125,8,14,15.328125 ink=248,10,10.671875,10
-k21
+k20
 n0 x=224 v=224,9.328125,16,12
 n6 x=224 v=224,9.328125,16,12
 n7 x=224 v=224,13.328125,4,8
 n8 x=230 v=230,11.328125,4,10
 n9 x=236 v=236,9.328125,4,12
 n12 x=246 v=246,8,14,15.328125 ink=246.671875,10,10.671875,10
+k21
 k22
 k23
 k24
-k25
-k26
 n1 x=242 y=8 w=14 h=15 v=242,8,14,15.328125 op=37 ord=9
 n2 ord=11
 n10 x=242 y=8 w=14 h=15 v=242,8,14,15.328125 op=37 txt=S ord=10 ink=242.671875,10,10.671875,10 fg=ff00ffff gl=["llll"]
 n12 -
-k27
+k25
 n1 x=244 v=244,8,14,15.328125 op=98
 n10 x=244 v=244,8,14,15.328125 op=98 ink=244.671875,10,10.671875,10
-k28
+k26
 n1 x=245 v=245.328125,8,14,15.328125 op=151
 n10 x=245 v=245.328125,8,14,15.328125 op=151 ink=246,10,10.671875,10
-k29
+k27
 n1 x=246 v=246,8,14,15.328125 op=190
 n10 x=246 v=246,8,14,15.328125 op=190 ink=246.671875,10,10.671875,10
-k30
+k28
 n1 op=216
 n10 op=216
-k31
+k29
 n1 op=232
 n10 op=232
-k32
+k30
 n1 op=241
 n10 op=241
-k33
+k31
 n1 op=247
 n10 op=247
-k34
+k32
 n1 op=251
 n10 op=251
-k35
+k33
 n1 op=253
 n10 op=253
-k36
+k34
 n1 op=254
 n10 op=254
-k37
-k38
+k35
+k36
 n1 op=255
 n10 op=255
-k39
-k40
+k37

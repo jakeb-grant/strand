@@ -300,28 +300,48 @@ impl<const N: usize> Segment<N> {
             Curve::Timed { duration, .. } if t >= duration => None,
             Curve::Spring(_) if t >= MAX_MOTION => None,
             Curve::Timed { .. } => Some(self.at(at)),
-            Curve::Spring(_) => {
+            Curve::Spring(s) => {
                 let (p, v) = self.at(at);
-                let rest = (0..N)
-                    .all(|i| (p[i] - self.target[i]).abs() <= eps && v[i].abs() <= eps * 10.0);
-                (!rest).then_some((p, v))
+                (!self.rest(s, p, v, eps)).then_some((p, v))
             }
         }
     }
 
-    /// At rest at its target by `at`, within `eps` of position (and
-    /// `eps` × 10 per second of velocity).
+    /// At rest at its target by `at`: within `eps` of it from then on
+    /// (see [`Segment::rest`]).
     fn settled(&self, at: Duration, eps: f32) -> bool {
         let t = at.saturating_sub(self.start);
         match self.curve {
             Curve::Instant => true,
             Curve::Timed { duration, .. } => t >= duration,
             Curve::Spring(_) if t >= MAX_MOTION => true,
-            Curve::Spring(_) => {
+            Curve::Spring(s) => {
                 let (p, v) = self.at(at);
-                (0..N).all(|i| (p[i] - self.target[i]).abs() <= eps && v[i].abs() <= eps * 10.0)
+                self.rest(s, p, v, eps)
             }
         }
+    }
+
+    /// Whether a spring at position `p` with velocity `v` is at rest:
+    /// each channel's amplitude, `√(x² + (v/ω₀)²)` (`x` its distance
+    /// from the target, `ω₀` the spring's natural frequency), within
+    /// `eps`, so it never strays further than `eps` from its target again
+    /// and snapping it there moves it by `eps` at most. That is its
+    /// energy, `v² + ω₀²·x²`, over `ω₀²`, and a damped spring's energy
+    /// never grows: once at rest it stays at rest, and the moment it
+    /// comes to rest is a time of the curve alone, so every frame rate
+    /// settles it at the first frame from that moment on. Read off the
+    /// position and velocity of the frame, an underdamped spring counted
+    /// as at rest only near a turning point, a short window that 144 Hz
+    /// frames landed in more often than 60 Hz ones: the default spring
+    /// ended a roll 60 ms sooner at 144 Hz (decisions.md, roll-rate).
+    fn rest(&self, s: Spring, p: [f32; N], v: [f32; N], eps: f32) -> bool {
+        let w0 = (s.stiffness.max(1e-6) as f64).sqrt();
+        (0..N).all(|i| {
+            let x = (p[i] - self.target[i]) as f64;
+            let v = v[i] as f64 / w0;
+            (x * x + v * v).sqrt() <= eps as f64
+        })
     }
 }
 
@@ -713,6 +733,63 @@ mod tests {
                     assert!((ex - x).abs() < 2e-3, "{s:?} x {ex} vs {x}");
                     assert!((ev - v).abs() < 5e-2, "{s:?} v {ev} vs {v}");
                 }
+            }
+        }
+    }
+
+    /// (roll-rate) A spring comes to rest at one moment of its curve:
+    /// once at rest it stays at rest, so 60 and 144 Hz frames settle it
+    /// at the first frame from that moment on, within a frame of each
+    /// other. Before, an underdamped spring counted as at rest at a
+    /// turning point near its target, and the default spring's 0 to 1
+    /// settled at 233 ms at 60 Hz and 173 ms at 144 Hz.
+    #[test]
+    fn a_spring_settles_at_the_same_moment_at_every_frame_rate() {
+        for (curve, eps, x0, v0) in [
+            (SPATIAL, 1e-3, 0.0, 0.0),
+            (SPATIAL, 0.01, -40.0, 0.0),
+            (BOUNCY, 1e-3, 0.0, 0.0),
+            (EFFECTS, 1e-3, 0.0, 3.0),
+            (Spring::new(200.0, 0.3).unwrap(), 0.01, 10.0, -50.0),
+            (Spring::new(5000.0, 1.6).unwrap(), 1e-3, 0.0, 0.0),
+        ] {
+            let start = Duration::from_secs(1);
+            let motion = || {
+                let mut m = Motion::rest([x0], eps).sampled_at(Some(start));
+                m.retarget_at([1.0], Curve::Spring(curve), start);
+                m.seg.vel = [v0];
+                m
+            };
+            // Monotone on a 0.1 ms grid: never at rest and then not.
+            let m = motion();
+            let mut rested = None;
+            for i in 0..30_000u64 {
+                let at = start + Duration::from_micros(100 * i);
+                match (m.is_settled(at), rested) {
+                    (true, None) => rested = Some(at),
+                    (false, Some(r)) => panic!("{curve:?}: at rest at {r:?}, moving at {at:?}"),
+                    _ => {}
+                }
+            }
+            let rested = rested.expect("it settles");
+            // Sampled frame by frame, as a surface does.
+            let settle = |hz: u64| {
+                let mut m = motion();
+                (1..)
+                    .map(|k| start + Duration::from_nanos(1_000_000_000 * k / hz))
+                    .find(|&at| {
+                        m.sample(at);
+                        m.is_settled(at)
+                    })
+                    .unwrap()
+            };
+            for hz in [60, 144, 240] {
+                let at = settle(hz);
+                let frame = Duration::from_nanos(1_000_000_000 / hz);
+                assert!(
+                    at >= rested && at < rested + frame,
+                    "{curve:?} at {hz} Hz: settled at {at:?}, at rest from {rested:?}"
+                );
             }
         }
     }

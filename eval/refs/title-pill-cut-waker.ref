@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "title-pill-cut-waker"
 verdict good
-note "eval-false-alarms: the sandbox places popup#big as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -160, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 41a3816e563e3e9f
-seal 3b35c87e79f6edeb
+seal 7afbcba33b43956f
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:5:5|[Mock | DP-1]#0" "popup#big"
@@ -116,120 +116,120 @@ k47
 k48
 k49
 k50
-k51
-k52
 n1 w=388
-k53
+k51
 n1 w=358
-k54
+k52
 n1 w=317 v=0,0,317.328125,40
 n2 x=287 v=287.328125,10,30,20
 n3 w=287 v=0,13.328125,287.328125,14.671875 txt=I ink=0.671875,15.328125,286.671875,12.671875 fit=287
-k55
+k53
 n1 w=272 v=d
 n2 x=242 v=d
 n3 w=242 v=0,13.328125,242,14.671875 ink=0.671875,15.328125,241.328125,12.671875 fit=242
-k56
+k54
 n1 w=228
 n2 x=198
 n3 w=198 v=0,13.328125,198,14.671875 ink=0.671875,15.328125,197.328125,12.671875 fit=198
-k57
+k55
 n1 w=187 v=0,0,187.328125,40
 n2 x=157 v=157.328125,10,30,20
 n3 w=157 v=0,13.328125,157.328125,14.671875 ink=0.671875,15.328125,156.671875,10.671875 fit=157
-k58
+k56
 n1 w=151 v=0,0,151.328125,40
 n2 x=121 v=121.328125,10,30,20
 n3 w=121 v=0,13.328125,121.328125,14.671875 ink=0.671875,15.328125,120.671875,10.671875 fit=121
-k59
+k57
 n1 w=122 v=d
 n2 x=92 v=d
 n3 w=92 v=0,13.328125,92,14.671875 ink=0.671875,15.328125,91.328125,10.671875 fit=92
-k60
+k58
 n1 w=100
 n2 x=70
 n3 w=70 v=0,13.328125,70,14.671875 ink=0.671875,15.328125,65.328125,10.671875 fit=70
-k61
+k59
 n1 w=84
 n2 x=54
 n3 w=54 v=0,13.328125,54,14.671875 ink=0.671875,15.328125,53.328125,10.671875 fit=54
-k62
+k60
 n1 w=73 v=0,0,73.328125,40
 n2 x=43 v=43.328125,10,30,20
 n3 w=43 v=0,13.328125,43.328125,14.671875 ink=0.671875,15.328125,42.671875,10.671875 fit=43
-k63
+k61
 n1 w=67 v=0,0,67.328125,40
 n2 x=37 v=37.328125,10,30,20
 n3 w=37 v=0,13.328125,37.328125,14.671875 ink=0.671875,15.328125,36.671875,10.671875 fit=37
-k64
+k62
 n1 w=64 v=d
 n2 x=34 v=d
 n3 w=34 v=0,13.328125,34,14.671875 ink=0.671875,15.328125,33.328125,10.671875 fit=34
-k65
+k63
 n3 txt=S ink=0.671875,15.328125,26,10
-k66
+k64
 n1 w=66
 n2 x=36
 n3 w=36 v=0,13.328125,36,14.671875 txt=I fit=36
-k67
+k65
 n1 w=70
 n2 x=40
 n3 w=40 v=0,13.328125,40,14.671875 ink=0.671875,15.328125,33.328125,10.671875 fit=40
-k68
+k66
 n1 w=73 v=0,0,73.328125,40
 n2 x=43 v=43.328125,10,30,20
 n3 w=43 v=0,13.328125,43.328125,14.671875 ink=0.671875,15.328125,36.671875,10.671875 fit=43
-k69
+k67
 n1 w=77 v=0,0,77.328125,40
 n2 x=47 v=47.328125,10,30,20
 n3 w=47 v=0,13.328125,47.328125,14.671875 fit=47
-k70
+k68
 n1 w=81 v=0,0,81.328125,40
 n2 x=51 v=51.328125,10,30,20
 n3 w=51 v=0,13.328125,51.328125,14.671875 ink=0.671875,15.328125,44,10.671875 fit=51
-k71
+k69
 n1 w=84 v=d
 n2 x=54 v=d
 n3 w=54 v=0,13.328125,54,14.671875 fit=54
-k72
+k70
 n1 w=86
 n2 x=56
 n3 w=56 v=0,13.328125,56,14.671875 ink=0.671875,15.328125,50.671875,10.671875 fit=56
-k73
+k71
 n1 w=88
 n2 x=58
 n3 w=58 v=0,13.328125,58,14.671875 fit=58
-k74
+k72
 n1 w=90
 n2 x=60
 n3 w=60 v=0,13.328125,60,14.671875 ink=0.671875,15.328125,54,10.671875 fit=60
-k75
+k73
 n1 w=91 v=0,0,91.328125,40
 n2 x=61 v=61.328125,10,30,20
 n3 w=61 v=0,13.328125,61.328125,14.671875 fit=61
-k76
+k74
 n1 w=92 v=d
 n2 x=62 v=d
 n3 w=62 v=0,13.328125,62,14.671875 fit=62
-k77
+k75
 n3 txt=S
+k76
+k77
 k78
 k79
 k80
-k81
-k82
 n1 w=91 v=0,0,91.328125,40
 n2 x=61 v=61.328125,10,30,20
 n3 w=61 v=0,13.328125,61.328125,14.671875 txt=I fit=61
-k83
+k81
 n3 txt=S
-k84
-k85
+k82
+k83
 n1 w=90 v=d
 n2 x=60 v=d
 n3 w=60 v=0,13.328125,60,14.671875 txt=I fit=60
-k86
+k84
 n3 txt=S
+k85
+k86
 k87
 k88
 k89
@@ -242,7 +242,3 @@ k95
 k96
 k97
 k98
-k99
-k100
-k101
-k102

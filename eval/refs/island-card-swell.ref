@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "island-card-swell"
 verdict good
-note "integration-r4 (eval-fa on eval-r4): popup#big is now shifted onto the screen by popup_shift (origin x -280 to 0); node rows, including the clipped day boxes on k1-k4, are unchanged"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the hid,surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "d0071862+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 616a2f7b6fa02cf2
-seal e2001db3713315cc
+seal 426e54384e19d0f7
 S1 0 - "bar Top"
 S2 0 - "popup#big"
 N0 "big|shell.strand:8:5|[Mock | DP-1]#0" "popup#big"
@@ -504,8 +504,6 @@ k33
 k34
 k35
 k36
-k37
-k38
 n1 x=69 w=842 h=410
 n5 -
 n6 -
@@ -540,38 +538,37 @@ n34 -
 n35 -
 n36 -
 n37 -
-k39
+k37
 n1 x=107 w=766 h=342
-k40
+k38
 n1 x=148 w=684 h=269
-k41
+k39
 n1 x=183 w=614 h=205
-k42
+k40
 n1 x=212 w=556 h=154
-k43
+k41
 n1 x=233 w=514 h=116
-k44
+k42
 n1 x=249 w=482 h=88
-k45
+k43
 n1 x=260 w=460 h=69
-k46
+k44
 n1 x=267 w=446 h=55
-k47
+k45
 n1 x=272 w=436 h=47
-k48
+k46
 n1 x=275 w=430 h=41
-k49
+k47
 n1 x=277 w=426 h=37
-k50
+k48
 n1 x=278 w=424 h=35
-k51
+k49
 n1 x=279 w=422 h=34
-k52
+k50
 n1 h=33
-k53
+k51
 n1 x=280 w=420 h=32
+k52
+k53
 k54
 k55
-k56
-k57
-k58

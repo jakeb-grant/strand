@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "panel-odd-centre-1_25"
 verdict good
-note "new scenario: panel centred across at 90 (200 - 110) and 125 (200 - 75), popup at 70 and 105; each card shrinks about its centre held in the 221 px surface at x 35 (edge_shift floor(221/2) - floor(150/2)), the marks still through the re-centring, the widen glides from the old place; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 31 -> 27 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 8c8612390c7ee097
-seal ccbaeef8e21fa516
+seal 62649928dd08fe97
 S1 0 - "panel Note"
 S2 0 - "bar Top"
 S3 1 - "popup#pop"
@@ -96,8 +96,6 @@ k11
 k12
 k13
 k14
-k15
-k16
 s1 z=150,60 o=125,30
 s3 z=150,40 o=105,36
 n1 x=0 v=0,0,150.40625,60
@@ -107,7 +105,7 @@ n6 x=0 v=0,0,150.40625,60
 n8 x=0 v=0,0,150.40625,40
 n9 x=6 v=6.40625,6.40625,40,9.59375
 n10 x=0 v=0,0,150.40625,40
-k17
+k15
 s1 z=221,60 o=90,30
 s3 z=221,40 o=70,36
 n1 x=26 w=168 v=26.40625,0,168,60
@@ -117,41 +115,39 @@ n6 w=221 v=0,0,220.796875,60
 n8 x=26 w=168 v=26.40625,0,168,40
 n9 x=32 v=32,6.40625,40,9.59375
 n10 w=221 v=0,0,220.796875,40
-k18
+k16
 n1 x=13 w=195 v=12.796875,0,195.203125,60
 n3 x=21 v=20.796875,8,40,10.40625
 n5 x=21 v=20.796875,22.40625,44,14.40625 ink=20.796875,24.796875,43.203125,10.40625
 n8 x=13 w=195 v=12.796875,0,195.203125,40
 n9 x=19 v=19.203125,6.40625,40,9.59375
-k19
+k17
 n1 x=4 w=213 v=4,0,212.796875,60
 n3 x=12 v=12,8,40,10.40625
 n5 x=12 v=12,22.40625,44,14.40625 ink=12,24.796875,43.203125,10.40625
 n8 x=4 w=213 v=4,0,212.796875,40
 n9 x=10 v=10.40625,6.40625,40,9.59375
-k20
+k18
 n1 x=0 w=221 v=0,0,220.796875,60
 n3 x=8 v=8,8,40,10.40625
 n5 x=8 v=8,22.40625,44,14.40625 ink=8,24.796875,43.203125,10.40625
 n8 x=0 w=221 v=0,0,220.796875,40
 n9 x=6 v=6.40625,6.40625,40,9.59375
-k21
+k19
 n1 x=-1 w=223 v=-0.796875,0,223.203125,60
 n3 x=7 v=7.203125,8,40,10.40625
 n5 x=7 v=7.203125,22.40625,44,14.40625 ink=7.203125,24.796875,43.203125,10.40625
 n8 x=-1 w=223 v=-0.796875,0,223.203125,40
 n9 x=5 v=4.796875,6.40625,40,9.59375
-k22
-k23
+k20
+k21
 n1 x=0 w=221 v=0,0,220.796875,60
 n3 x=8 v=8,8,40,10.40625
 n5 x=8 v=8,22.40625,44,14.40625 ink=8,24.796875,43.203125,10.40625
 n8 x=0 w=221 v=0,0,220.796875,40
 n9 x=6 v=6.40625,6.40625,40,9.59375
+k22
+k23
 k24
 k25
 k26
-k27
-k28
-k29
-k30

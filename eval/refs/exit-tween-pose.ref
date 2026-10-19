@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "exit-tween-pose"
 verdict good
-note "new scenario (eval-rules): #fader fades linearly over 190 ms (0.912, 0.825.., 0.035 at k11, 0 at k12, then gone), #sinker sinks 6 px on ease_in while fading out over 150 ms, #popper scales to 0.8 and fades on the spring, #diver drops 24 px unfaded; each is last drawn at its exit pose; #tail glides left once each has gone and #lead never moves; read with explain"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "bc7ffad1+changes"
+rev "40b54cc2+changes"
 approver "claude"
 scenario a60586d3493fb04e
-seal 042758724a0c4378
+seal e334d0b764fd5409
 S1 0 - "bar Top"
 N0 "diver|shell.strand:14:7|[Mock | DP-1]#4" "box#diver"
 N1 "fader|shell.strand:8:7|[Mock | DP-1]#1" "box#fader"
@@ -73,39 +73,39 @@ n1 op=31
 n3 op=2
 n4 y=10
 k11
+n0 -
 n1 op=9
 n3 op=1
+n6 x=112 ord=6
 k12
-n0 -
 n1 op=0 hid=opacity0 bg=-
 n4 y=11
-n6 x=112 ord=6
+n6 x=104
 k13
 n1 -
 n3 x=68 v=69.59375,7.203125,12.796875,9.59375 op=0 ord=4
 n4 x=46 ord=3
-n6 x=98 ord=5
+n6 x=93 ord=5
 k14
-n3 x=60 v=61.59375,7.203125,12.796875,9.59375
+n3 x=60 v=d sc=1,1 hid=opacity0 bg=-
 n4 x=38 y=12
-n6 x=84
+n6 x=82
 k15
-n3 x=49 v=d sc=1,1 hid=opacity0 ord=3 bg=-
-n4 -
-n6 x=71 ord=4
-k16
 n3 -
-n6 x=54 ord=3
+n4 -
+n6 x=64 ord=3
+k16
+n6 x=45
 k17
-n6 x=39
+n6 x=34
 k18
-n6 x=32
-k19
 n6 x=29
+k19
+n6 x=28
 k20
+n6 x=29
 k21
 k22
 n6 x=30
 k23
 k24
-k25

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "toast-stack"
 verdict good
-note "origin 40,30 (320/2 - 240/2, below the bar's 30 px zone): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 2c006773271933ff
-seal 11a4b5deed34b5d0
+seal 7b7ae492c6d323e6
 S1 0 - "panel Toasts"
 S2 0 - "bar Top"
 N0 "header|shell.strand:10:5|#0" "text#header"
@@ -111,8 +111,6 @@ n10 x=8 op=251
 n11 x=18 op=251
 n12 x=38 op=251 ink=39,40,75,13
 k10
-n5 y=78 ink=39,79,52,11
-n7 y=118 ink=39,119,76,11
 n10 op=253
 n11 op=253
 n12 op=253
@@ -122,14 +120,11 @@ n11 op=254
 n12 op=254
 k12
 k13
-n5 y=79 ink=39,80,52,11
-n7 y=119 ink=39,120,76,11
 n10 op=255
 n11 op=255
 n12 op=255
 k14
 k15
-k16
 n1 h=142
 n2 y=100
 n3 h=25 op=218 hid=inert
@@ -138,7 +133,7 @@ n5 y=74 op=218 hid=inert ink=39,75,52,11
 n6 y=111
 n7 y=110 ink=39,111,76,11
 n9 h=142
-k17
+k16
 n1 h=129
 n2 y=87
 n3 h=12 op=157
@@ -147,7 +142,7 @@ n5 y=68 op=157 ink=39,69,52,11
 n6 y=98
 n7 y=97 ink=39,98,76,11
 n9 h=129
-k18
+k17
 n1 h=119
 n2 y=77
 n3 h=4 op=104
@@ -156,7 +151,7 @@ n5 y=63 op=104 ink=39,64,52,11
 n6 y=88
 n7 y=86 ink=39,87,76,11
 n9 h=119
-k19
+k18
 n1 h=111
 n2 y=69 ord=7
 n3 h=0 op=65 bg=-
@@ -165,34 +160,33 @@ n5 -
 n6 y=80 ord=8
 n7 y=79 ord=9 ink=39,80,76,11
 n9 h=111
-k20
+k19
 n3 op=39
-k21
+k20
 n3 op=23
-k22
+k21
 n3 op=14
-k23
+k22
 n3 op=8
-k24
+k23
 n3 op=4
-k25
+k24
 n3 op=2
-k26
+k25
 n3 op=1
+k26
 k27
-k28
 n3 op=0
-k29
-k30
+k28
 n3 hid=opacity0
-k31
+k29
 n2 ord=6
 n3 -
 n6 ord=7
 n7 ord=8
-k32
+k30
 s1 z=240,111
-k33
+k31
 n1 h=93
 n2 y=60 h=25 op=218 hid=inert
 n6 y=67 op=218 hid=inert
@@ -201,7 +195,7 @@ n9 h=93
 n10 h=25 op=218 hid=inert
 n11 y=36 op=218 hid=inert
 n12 y=34 op=218 hid=inert ink=39,35,75,13
-k34
+k32
 n1 h=67
 n2 y=47 h=12 op=157
 n6 y=47 op=157
@@ -210,7 +204,7 @@ n9 h=67
 n10 h=12 op=157
 n11 y=29 op=157
 n12 y=28 op=157 ink=39,29,75,13
-k35
+k33
 n1 h=46
 n2 y=34 h=4 op=104
 n6 y=30 op=104
@@ -219,7 +213,7 @@ n9 h=46
 n10 h=4 op=104
 n11 y=25 op=104
 n12 y=23 op=104 ink=39,24,75,13
-k36
+k34
 n1 h=31
 n2 y=23 h=0 op=65 ord=4 bg=-
 n6 -
@@ -228,45 +222,40 @@ n9 h=31
 n10 h=0 op=65 bg=-
 n11 -
 n12 -
-k37
+k35
 n1 h=43
 n2 op=39
 n9 h=43
 n10 op=39
-k38
+k36
 n2 op=23
 n10 op=23
-k39
+k37
 n2 op=14
 n10 op=14
-k40
+k38
 n2 op=8
 n10 op=8
-k41
+k39
 n2 op=4
 n10 op=4
-k42
-n1 h=31
+k40
 n2 op=2
-n9 h=31
 n10 op=2
-k43
+k41
 n2 op=1
 n10 op=1
-k44
-k45
-n1 h=43
+k42
+k43
 n2 op=0
-n9 h=43
 n10 op=0
-k46
-k47
+k44
 n2 hid=opacity0
 n10 hid=opacity0
-k48
+k45
 n1 h=31
 n2 -
 n9 h=31
 n10 -
-k49
+k46
 s1 z=240,31

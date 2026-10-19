@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldd-bar-crossfade"
 verdict good
-note "set D correct-motion scenario, unedited but its id: the clock and title crossfade in one stack, the pill resizes and the right box follows, a swap back mid-fade reverses; all checks pass; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 72 -> 67 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 2502ba735facaedb
-seal 872f4d4956cdb1d0
+seal 72d5652d6ada8eb2
 S1 0 - "bar Top"
 N0 "bar_row|shell.strand:6:3|[Mock | DP-1]#0" "row#bar_row"
 N1 "left|shell.strand:7:5|[Mock | DP-1]#0" "box#left"
@@ -64,156 +64,151 @@ k13
 n4 op=0
 n6 op=255
 k14
-k15
 n4 hid=opacity0 ink=- fg=- gl=-
-k16
+k15
 n3 ord=5
 n4 -
 n6 ord=4
-k17
+k16
 n3 ord=6
 n4 x=83 y=8 w=33 h=15 op=37 txt=S ord=5 ink=83,9,32,11 fg=cdd6f4ff gl=["12:30"]
 n6 op=218 hid=inert
-k18
+k17
 n4 op=98
 n6 op=157
-k19
+k18
 n4 op=151
 n6 op=104
-k20
+k19
 n4 op=190
 n6 op=65
-k21
+k20
 n4 op=216
 n6 op=39
-k22
+k21
 n4 op=232
 n6 op=23
-k23
+k22
 n4 op=241
 n6 op=14
-k24
+k23
 n4 op=247
 n6 op=8
-k25
+k24
 n4 op=251
 n6 op=4
-k26
+k25
 n4 op=253
 n6 op=2
-k27
+k26
 n4 op=254
 n6 op=1
+k27
 k28
-k29
 n4 op=255
 n6 op=0
-k30
-k31
+k29
 n6 hid=opacity0 ink=- fg=- gl=-
-k32
+k30
 n2 w=49
 n3 x=113 ord=5
 n4 x=78 ord=4 ink=78,9,32,11
 n6 -
-k33
+k31
 n4 x=71 ink=71,9,32,11
-k34
+k32
 n4 x=66 ink=66,9,32,11
+k33
+n4 x=64 ink=64,9,32,11
+k34
+n4 x=63 ink=63,9,32,11
 k35
 n4 x=64 ink=64,9,32,11
 k36
-n4 x=63 ink=63,9,32,11
 k37
-n4 x=64 ink=64,9,32,11
 k38
 k39
-k40
-k41
-k42
 n2 w=87
 n3 x=151 ord=6
 n4 x=69 op=218 hid=inert ink=69,9,32,11
 n6 x=64 y=8 w=71 h=15 op=37 txt=S ord=5 ink=65,9,69,13 fg=cdd6f4ff gl=["Now\u0020playing"]
-k43
+k40
 n4 x=76 op=157 ink=76,9,32,11
 n6 op=98
-k44
+k41
 n4 x=81 op=104 ink=81,9,32,11
 n6 op=151
-k45
+k42
 n4 x=83 op=65 ink=83,9,32,11
 n6 op=190
-k46
+k43
 n4 x=84 op=39 ink=84,9,32,11
 n6 op=216
-k47
+k44
 n3 ord=7
 n4 x=83 op=23 ink=83,9,32,11
 n6 op=195 hid=inert
 n7 x=83 y=8 w=33 h=15 op=37 txt=S ord=6 ink=83,9,32,11 fg=cdd6f4ff gl=["12:30"]
-k48
+k45
 n4 op=14
 n6 op=143
 n7 op=98
-k49
+k46
 n4 op=8
 n6 op=96
 n7 op=151
-k50
+k47
 n4 op=4
 n6 op=61
 n7 op=190
-k51
+k48
 n4 op=2
 n6 op=37
 n7 op=216
-k52
+k49
 n4 op=1
 n6 op=22
 n7 op=232
-k53
+k50
 n6 op=13
 n7 op=241
-k54
+k51
 n4 op=0
 n6 op=7
 n7 op=247
-k55
+k52
+n4 hid=opacity0 ink=- fg=- gl=-
 n6 op=4
 n7 op=251
-k56
-n4 hid=opacity0 ink=- fg=- gl=-
-n6 op=2
-n7 op=253
-k57
+k53
 n3 ord=6
 n4 -
-n6 op=1 ord=4
-n7 op=254 ord=5
-k58
-k59
+n6 op=2 ord=4
+n7 op=253 ord=5
+k54
+n6 op=1
+n7 op=254
+k55
+k56
 n6 op=0
 n7 op=255
-k60
-k61
+k57
 n6 hid=opacity0 ink=- fg=- gl=-
-k62
+k58
 n2 w=49
 n3 x=113 ord=5
 n6 -
 n7 x=78 ord=4 ink=78,9,32,11
-k63
+k59
 n7 x=71 ink=71,9,32,11
-k64
+k60
 n7 x=66 ink=66,9,32,11
-k65
+k61
 n7 x=64 ink=64,9,32,11
-k66
+k62
 n7 x=63 ink=63,9,32,11
-k67
+k63
 n7 x=64 ink=64,9,32,11
-k68
-k69
-k70
-k71
+k64
+k65
+k66

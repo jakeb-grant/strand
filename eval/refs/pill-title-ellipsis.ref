@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "pill-title-ellipsis"
 verdict good
-note "new scenario: the pill's title is cut with an ellipsis to the room left in the fixed-width row, its ink inside its box, cutting more as the neighbour grows and less as it shrinks back; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "24e5ed52"
+rev "40b54cc2+changes"
 approver "claude"
 scenario 6cff2c39d7edfa8d
-seal 5cb2c9e350ca1ccd
+seal d69911dee492c29f
 S1 0 - "bar Top"
 N0 "dot|shell.strand:6:5|[Mock | DP-1]#0" "box#dot"
 N1 "grower|shell.strand:11:5|[Mock | DP-1]#1" "box#grower"
@@ -60,13 +60,11 @@ k10
 k11
 k12
 k13
-k14
-k15
 n1 x=92
 n3 w=34 ink=47,7,33,10 fit=- gl=["Notes"]
 n4 w=62
 n6 x=188
-k16
+k14
 n1 x=186
 n3 w=128 ink=47,6,109,11 fit=128 gl=["Firefox\u0020—\u0020Strand\u0020design\u0020review\u0020notes,\u0020second\u0020draft"]
 n4 w=156

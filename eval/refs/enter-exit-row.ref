@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "enter-exit-row"
 verdict good
-note "baseline re-recorded at a38d1bc6 with each node's paint (fills, borders, shadows, text colours) and glyph sources and each surface's crossfade weight (eval-coverage format change): tick for tick the same geometry as the references of 418231e6 apart from those; its checks pass; not reviewed by the owner"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "a38d1bc6"
+rev "40b54cc2+changes"
 approver "claude"
 scenario d99ee5f4923c6bfa
-seal ef631ee36c0a313d
+seal 0e62aa614c3aa68f
 S1 0 - "bar Top"
 N0 "leave|shell.strand:8:14|[Mock | DP-1]#1" "box#leave"
 N1 "left|shell.strand:5:5|[Mock | DP-1]#0" "box#left"
@@ -78,97 +78,92 @@ n0 op=0
 n5 op=255
 n6 op=255
 k14
-k15
 n0 hid=opacity0 bg=-
-k16
+k15
 n0 -
 n2 x=96 ord=5
-k17
+k16
 n2 x=88
-k18
+k17
 n2 x=82
+k18
+n2 x=80
 k19
-n2 x=80
-k20
 n2 x=79
+k20
 k21
-k22
 n2 x=80
+k22
 k23
 k24
 k25
-k26
 n0 x=80 y=7 w=16 h=16 ord=5 bg=00ffffff
 n2 x=86 ord=6
 n5 op=218 hid=inert
 n6 x=56 op=218 hid=inert
-k27
+k26
 n2 x=94
 n5 op=157
 n6 x=54 op=157
-k28
+k27
 n2 x=100
 n5 op=104
 n6 x=53 op=104
-k29
+k28
 n2 x=102
 n5 op=65
 n6 x=52 op=65
-k30
+k29
 n2 x=103
 n5 op=39
 n6 op=39
-k31
+k30
 n5 op=23
 n6 op=23
-k32
+k31
 n2 x=102
 n5 op=14
 n6 op=14
-k33
+k32
 n5 op=8
 n6 op=8
-k34
+k33
 n5 op=4
 n6 op=4
-k35
+k34
 n5 op=2
 n6 op=2
-k36
+k35
 n5 op=1
 n6 op=1
+k36
 k37
-k38
 n5 op=0
 n6 op=0
-k39
-k40
+k38
 n5 hid=opacity0 bg=-
 n6 hid=opacity0 bg=-
-k41
+k39
 n0 x=69 ord=3
 n2 x=91 ord=4
 n5 -
 n6 -
-k42
+k40
 n0 x=52
 n2 x=74
-k43
+k41
 n0 x=41
 n2 x=63
-k44
+k42
 n0 x=36
 n2 x=58
-k45
+k43
 n0 x=35
 n2 x=57
+k44
+k45
 k46
-k47
-k48
 n0 x=36
 n2 x=58
-k49
-k50
-k51
-k52
-k53
+k47
+k48

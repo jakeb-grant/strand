@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "flip-nested"
 verdict good
-note "origin 22,0 (320/2 - 276/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario 27f77af5d98a5cee
-seal e15d39cf3fb45b64
+seal 249607eacb2fe58c
 S1 0 - "panel Tools"
 N0 "b1|shell.strand:10:9|#0" "box#b1"
 N1 "b2|shell.strand:11:9|#1" "box#b2"
@@ -77,7 +77,6 @@ k7
 k8
 k9
 k10
-k11
 n0 x=126 y=50
 n1 y=50
 n2 x=176 y=50
@@ -86,7 +85,7 @@ n4 h=83
 n6 h=67
 n7 x=126 y=45 w=50
 n8 h=83
-k12
+k11
 n0 x=129 y=42
 n1 y=42
 n2 x=173 y=42
@@ -95,7 +94,7 @@ n4 h=75
 n6 h=59
 n7 x=129 y=37
 n8 h=75
-k13
+k12
 n0 x=132 y=37
 n1 y=37
 n2 x=170 y=37
@@ -104,7 +103,7 @@ n4 h=70
 n6 h=54
 n7 x=132 y=32
 n8 h=70
-k14
+k13
 n0 x=133 y=35
 n1 y=35
 n2 x=169 y=35
@@ -113,7 +112,7 @@ n4 h=68
 n6 h=52
 n7 x=133 y=30
 n8 h=68
-k15
+k14
 n0 y=34
 n1 y=34
 n2 y=34
@@ -122,7 +121,7 @@ n4 h=67
 n6 h=51
 n7 y=29
 n8 h=67
-k16
+k15
 n0 y=35
 n1 y=35
 n2 y=35
@@ -131,9 +130,8 @@ n4 h=68
 n6 h=52
 n7 y=30
 n8 h=68
+k16
 k17
 k18
 k19
-k20
-k21
 s1 z=276,68

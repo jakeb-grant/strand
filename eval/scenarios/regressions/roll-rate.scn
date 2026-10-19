@@ -1,0 +1,43 @@
+id     = "roll-rate"
+about  = """A finding of round 4 (docs/decisions.md roll-rate): motion follows time,
+not the frame rate (design.md "Testing": the injectable 60 Hz and 144 Hz frame
+clock). A `roll: true` number on the default spring rolled for 233 ms at 60 Hz
+and 174 ms at 144 Hz, while a 300 ms tween rolled 300 ms at both: a spring's
+end was read off one frame's position and velocity, and the underdamped
+`$motion.spatial` passes near its target slowly at each turning point, a window
+that 144 Hz frames landed in and 60 Hz ones missed. A spring now comes to rest
+when its amplitude (position and velocity together) is within its tolerance,
+a moment of its curve alone. The same roll, and a tween beside it, run at both
+rates, and each rest is held to one wall-clock bound at both (180 ms for the
+spring, 320 ms for the tween): 11 ticks at 60 Hz and 26 at 144 Hz, 20 and
+47 (`settle`; eval/mutants/roll-rate.patch reverts the fix)."""
+screen = { width = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state n = "41"
+state m = "41"
+bar Top {
+  height: 30
+  row { height: 30; gap: 12; align: center; pad: 0, 8
+    text n { id: sprung; color: #ffffff; roll: true }
+    text m { id: timed; color: #ffffff; roll: true ~ 300ms }
+  }
+}
+
+=== steps
+rest
+mark spring-60
+set n "42"
+rest max 11
+mark tween-60
+set m "42"
+rest max 20
+hz 144
+rest
+mark spring-144
+set n "43"
+rest max 26
+mark tween-144
+set m "43"
+rest max 47

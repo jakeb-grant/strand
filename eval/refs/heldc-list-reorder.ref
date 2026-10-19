@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-list-reorder"
 verdict good
-note "origin 70,0 (300/2 - 160/2): the top-anchored panel is placed as the compositor centres it (wlroots area/2 - size/2), where the sandbox put every layer surface at 0,0 before; read with explain: only the surface origin differs, every node row tick for tick as approved (eval-coverage-2 placement)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario a1aff03a2cca3113
-seal 9c6109e9b4a7cad2
+seal 51b23ca17d859303
 S1 0 - "panel Stack"
 N0 "list|shell.strand:4:3|#0" "col#list"
 N1 "|shell.strand:2:1|#0" "panel@shell.strand:2"
@@ -104,16 +104,10 @@ n6 y=64
 n9 y=12
 k9
 k10
-n10 y=61 ink=28,65,8,8
-n12 y=87 ink=28,91,7,8
 n13 y=10 ink=28,11,7,11
 k11
-n12 y=88 ink=28,92,7,8
 k12
 k13
-k14
-n10 y=62 ink=28,66,8,8
-k15
 n2 y=44 ord=2
 n4 y=77 ord=8
 n5 y=26 ord=11
@@ -123,7 +117,7 @@ n9 y=32 ord=12
 n10 y=48 ord=4 ink=28,52,8,8
 n12 y=81 ord=10 ink=28,85,7,8
 n13 y=30 ord=13 ink=28,31,7,11
-k16
+k14
 n2 y=25
 n4 y=67
 n5 y=56
@@ -133,7 +127,7 @@ n9 y=62
 n10 y=28 ink=28,32,8,8
 n12 y=71 ink=28,75,7,8
 n13 y=59 ink=28,60,7,11
-k17
+k15
 n2 y=12
 n4 y=61
 n5 y=75
@@ -143,7 +137,7 @@ n9 y=81
 n10 y=15 ink=28,19,8,8
 n12 y=64 ink=28,68,7,8
 n13 y=79 ink=28,80,7,11
-k18
+k16
 n2 y=6
 n4 y=58
 n5 y=84
@@ -153,7 +147,7 @@ n9 y=90
 n10 y=10 ink=28,14,8,8
 n12 y=62 ink=28,66,7,8
 n13 y=87 ink=28,88,7,11
-k19
+k17
 n2 y=5
 n4 y=57
 n5 y=86
@@ -163,7 +157,7 @@ n9 y=92
 n10 y=8 ink=28,12,8,8
 n12 y=61 ink=28,65,7,8
 n13 y=90 ink=28,91,7,11
-k20
+k18
 n2 y=18 ord=8
 n4 y=64 ord=11
 n5 y=66 ord=2
@@ -173,7 +167,7 @@ n9 y=72 ord=3
 n10 y=22 ord=10 ink=28,26,8,8
 n12 y=68 ord=13 ink=28,72,7,8
 n13 y=69 ord=4 ink=28,70,7,11
-k21
+k19
 n2 y=39
 n4 y=74
 n5 y=35
@@ -183,7 +177,7 @@ n9 y=41
 n10 y=42 ink=28,46,8,8
 n12 y=78 ink=28,82,7,8
 n13 y=39 ink=28,40,7,11
-k22
+k20
 n2 y=52
 n4 y=81
 n5 y=15
@@ -193,7 +187,7 @@ n9 y=21
 n10 y=56 ink=28,60,8,8
 n12 y=85 ink=28,89,7,8
 n13 y=18 ink=28,19,7,11
-k23
+k21
 n2 y=58
 n4 y=84
 n5 y=6
@@ -203,7 +197,7 @@ n9 y=12
 n10 y=61 ink=28,65,8,8
 n12 y=87 ink=28,91,7,8
 n13 y=10 ink=28,11,7,11
-k24
+k22
 n2 y=59
 n4 y=85
 n5 y=4
@@ -213,28 +207,22 @@ n9 y=10
 n10 y=63 ink=28,67,8,8
 n12 y=88 ink=28,92,7,8
 n13 y=7 ink=28,8,7,11
-k25
+k23
 n13 y=8 ink=28,9,7,11
-k26
+k24
 n4 y=84
 n5 y=5
 n8 y=90
 n9 y=11
 n10 y=62 ink=28,66,8,8
 n13 y=9 ink=28,10,7,11
-k27
+k25
 n2 y=58
 n5 y=6
 n6 y=64
 n9 y=12
+k26
+k27
+n13 y=10 ink=28,11,7,11
 k28
 k29
-n10 y=61 ink=28,65,8,8
-n12 y=87 ink=28,91,7,8
-n13 y=10 ink=28,11,7,11
-k30
-n12 y=88 ink=28,92,7,8
-k31
-k32
-k33
-n10 y=62 ink=28,66,8,8

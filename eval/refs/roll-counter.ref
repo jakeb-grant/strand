@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "roll-counter"
 verdict good
-note "new scenario: each changed digit rolls over the 300 ms tween, old up and out, new in, unchanged digits still; a change one frame into a roll rolls on from the text on screen; glyph sources show which text each digit was drawn from; read with explain (eval-coverage, first recorded at 24e5ed52 with each node's paint and glyph sources)"
+note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
 date 2026-10-18
-rev "24e5ed52"
+rev "40b54cc2+changes"
 approver "claude"
 scenario bc86fcfba4751675
-seal ff56e50a4cf08779
+seal d3d5f0b18d61a87a
 S1 0 - "bar Top"
 N0 "count|shell.strand:8:5|[Mock | DP-1]#0" "text#count"
 N1 "lead|shell.strand:7:5|[Mock | DP-1]#0" "box#lead"
@@ -112,22 +112,22 @@ n5 op=232
 k68
 n5 op=241
 k69
-n5 op=247
+n5 y=5 op=247 ink=54,6,7,11
 k70
 n5 op=251
 k71
-n5 y=5 op=253 ink=54,6,7,11
+n5 op=253
 k72
 n5 op=254
 k73
+n5 fg=e5c07bff gl=["8"]
 k74
 n5 op=255
 k75
 k76
-k77
-n5 fg=e5c07bff gl=["8"]
-k78
 n5 fg=e5c07bff/e5c07bff gl=["8","9"]
+k77
+k78
 k79
 k80
 k81
@@ -135,10 +135,4 @@ k82
 k83
 k84
 k85
-k86
-k87
-k88
-k89
-k90
-k91
 n5 fg=e5c07bff gl=["9"]

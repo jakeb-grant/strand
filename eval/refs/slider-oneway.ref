@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "slider-oneway"
 verdict good
-note "new scenario: a display-only slider ignores both drags (knob and fill at 31.2 / 39.2 throughout), the external set springs them to 0.8 (fill 91.2); parts in pt; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 16 -> 12 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario ef2882e0cd6a49c8
-seal 16cc840651d0fcc6
+seal 3d8c25f4b1e581d1
 S1 0 - "bar Top"
 N0 "knob|shell.strand:5:5|[Mock | DP-1]#0" "slider#knob"
 N1 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
@@ -37,11 +37,4 @@ n0 pt=0,7,120,4/0,7,91.421875,4/83.421875,1,16,16
 k35
 n0 pt=0,7,120,4/0,7,91.21875,4/83.21875,1,16,16
 k36
-n0 pt=0,7,120,4/0,7,91.15625,4/83.15625,1,16,16
-k37
-k38
-n0 pt=0,7,120,4/0,7,91.171875,4/83.171875,1,16,16
-k39
-n0 pt=0,7,120,4/0,7,91.1875,4/83.1875,1,16,16
-k40
 n0 pt=0,7,120,4/0,7,91.203125,4/83.203125,1,16,16

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "panel-odd-centre-1_5"
 verdict good
-note "new scenario: panel centred across at 90 (200 - 110) and 125 (200 - 75), popup at 70 and 105; each card shrinks about its centre held in the 221 px surface at x 35 (edge_shift floor(221/2) - floor(150/2)), the marks still through the re-centring, the widen glides from the old place; read with explain (eval-coverage-2)"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 31 -> 27 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario f0667c1973fb847a
-seal c0cbd434c5d45b41
+seal c00768c481d5b088
 S1 0 - "panel Note"
 S2 0 - "bar Top"
 S3 1 - "popup#pop"
@@ -96,8 +96,6 @@ k11
 k12
 k13
 k14
-k15
-k16
 s1 z=150,60 o=125,30
 s3 z=150,40 o=105,36
 n1 x=0 v=d
@@ -107,7 +105,7 @@ n6 x=0 v=d
 n8 x=0 v=d
 n9 x=6 v=d
 n10 x=0 v=d
-k17
+k15
 s1 z=221,60 o=90,30
 s3 z=221,40 o=70,36
 n1 x=26 w=168
@@ -117,41 +115,39 @@ n6 w=221 v=0,0,221.328125,60
 n8 x=26 w=168
 n9 x=32
 n10 w=221 v=0,0,221.328125,40
-k18
+k16
 n1 x=13 w=195 v=13.328125,0,194.671875,60
 n3 x=21 v=21.328125,8,40,10
 n5 x=21 v=21.328125,22,44,15.328125 ink=21.328125,24,42.671875,10.671875
 n8 x=13 w=195 v=13.328125,0,194.671875,40
 n9 x=19 v=19.328125,6,40,10
-k19
+k17
 n1 x=4 w=213 v=4,0,213.328125,60
 n3 x=12 v=d
 n5 x=12 v=12,22,44,15.328125 ink=12,24,42.671875,10.671875
 n8 x=4 w=213 v=4,0,213.328125,40
 n9 x=10 v=d
-k20
+k18
 n1 x=0 w=221 v=0,0,221.328125,60
 n3 x=8
 n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
 n8 x=0 w=221 v=0,0,221.328125,40
 n9 x=6
-k21
+k19
 n1 x=-1 w=223 v=-1.328125,0,223.328125,60
 n3 x=7 v=7.328125,8,40,10
 n5 x=7 v=7.328125,22,44,15.328125 ink=7.328125,24,42.671875,10.671875
 n8 x=-1 w=223 v=-1.328125,0,223.328125,40
 n9 x=5 v=5.328125,6,40,10
-k22
-k23
+k20
+k21
 n1 x=0 w=221 v=0,0,221.328125,60
 n3 x=8 v=d
 n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
 n8 x=0 w=221 v=0,0,221.328125,40
 n9 x=6 v=d
+k22
+k23
 k24
 k25
 k26
-k27
-k28
-k29
-k30

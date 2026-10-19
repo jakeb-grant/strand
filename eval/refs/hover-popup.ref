@@ -1,14 +1,14 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "hover-popup"
 verdict good
-note "eval-false-alarms: the sandbox places popup#pop as the compositor does (strand-surface placement::popup_request, popup_shift): centred under its anchor it would start at x -4, past the screen's left edge, and the positioner's slide shifts it onto the screen at x 0, y unchanged; only that origin changed (refdiff: the first o= line of each block), every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
 date 2026-10-18
-rev "0824d452+changes"
+rev "55dc894b+changes"
 approver "claude"
 scenario b9bf9acadaee0e6c
-seal 1dc2427d84ee0439
+seal c9239cf1b354c3a3
 S1 0 - "bar Top"
-S2 21 65 "popup#pop"
+S2 21 63 "popup#pop"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
 N1 "before|shell.strand:4:5|[Mock | DP-1]#0" "box#before"
 N2 "item|shell.strand:5:5|[Mock | DP-1]#1" "box#item"
@@ -57,34 +57,32 @@ k33
 k34
 n5 op=255
 k35
-k36
-k51
+k50
 s2 i=none
 n5 y=-2 op=218 hid=inert
-k52
+k51
 n5 y=-4 op=157
-k53
+k52
 n5 y=-5 op=104
-k54
+k53
 n5 y=-6 op=65
-k55
+k54
 n5 op=39
-k56
+k55
 n5 op=23
-k57
+k56
 n5 op=14
-k58
+k57
 n5 op=8
-k59
+k58
 n5 op=4
-k60
+k59
 n5 op=2
-k61
+k60
 n5 op=1
+k61
 k62
-k63
 n5 op=0
-k64
-k65
+k63
 s2 -
 n5 hid=opacity0 bg=-

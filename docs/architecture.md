@@ -1769,7 +1769,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   it as `v0·t·(1 − t/d)²`, which fades out by the end of the duration);
   `retarget_at` starts at a given time;
   `peek(at)`, `velocity(at)`, `is_settled(at)` read without starting
-  anything, and `probe(at)` reads all three at once (the curve evaluated
+  anything (a spring is settled once each channel's amplitude,
+  `√(x² + (v/ω₀)²)` from its target, is within its tolerance: a damped
+  spring's energy never grows, so it stays settled, and the moment it
+  settles is the curve's, whatever the frame rate; decisions.md
+  roll-rate), and `probe(at)` reads all three at once (the curve evaluated
   once: the theme swap's contrast play-through). (eval-rules-2)
   `view() -> MotionView<N>` is its state as plain data, read without
   sampling: the segment in flight (`start`, `from`, `vel`, `target`,
