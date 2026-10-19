@@ -1,0 +1,88 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "unshaped-enter"
+verdict good
+note "unshaped-enter: the label's text lands at k2 and its enter width springs from the pose's 0 to its 50 px at rest (13, 32, 44, 50 px at k2..k5) as it fades in; the badge is laid at its pose's width 0 on k16, its label not shaped, and springs 13, 31, 44, 49, 50 px from k17 with its label whole inside it; the clock and title never move"
+date 2026-10-19
+rev "646cec9e+changes"
+approver "claude"
+scenario 979008c67da074ee
+seal 1196216b7e93349e
+S1 0 - "bar Top"
+N0 "clock|shell.strand:8:14|[Mock | DP-1]#0" "text#clock"
+N1 "level|shell.strand:19:7|[Mock | DP-1]#0" "text#level"
+N2 "title|shell.strand:7:13|[Mock | DP-1]#0" "text#title"
+N3 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N4 "|shell.strand:6:3|[Mock | DP-1]#0" "split@shell.strand:6"
+N5 "|shell.strand:7:5|[Mock | DP-1]#0" "start@shell.strand:7"
+N6 "|shell.strand:8:5|[Mock | DP-1]#0" "center@shell.strand:8"
+N7 "|shell.strand:9:5|[Mock | DP-1]#0" "end@shell.strand:9"
+N8 "plug|shell.strand:17:9|[Mock | DP-1]#0" "text#plug"
+N9 "badge|shell.strand:11:9|[Mock | DP-1]#0" "box#badge"
+N10 "label|shell.strand:13:11|[Mock | DP-1]#0" "text#label"
+k0 p1
+s1 z=400,30
+n0 x=184 y=8 w=33 h=15 txt=S ord=5 ink=184,9,32,11 fg=cdd6f4ff gl=["09:41"]
+n1 x=365 y=8 w=27 h=15 txt=S ord=7 ink=365,9,26,11 fg=cdd6f4ff gl=["80%"]
+n2 x=8 y=8 w=54 h=15 txt=S ord=3 ink=8,9,53,11 fg=a6adc8ff gl=["notes.md"]
+n3 x=0 y=0 w=400 h=30 bg=181825ff
+n4 x=0 y=0 w=400 h=30 ord=1
+n5 x=8 y=0 w=176 h=30 ord=2
+n6 x=184 y=0 w=33 h=30 ord=4
+n7 x=217 y=0 w=175 h=30 ord=6
+k1
+n1 ord=8
+n8 x=365 y=15 w=0 h=0 op=0 hid=opacity0 txt=E ord=7
+k2
+n8 x=346 y=8 w=13 h=15 op=37 hid=- txt=S ink=346,9,13,13 fg=a6e3a1ff gl=["charging"]
+k3
+n8 x=327 w=32 op=98 ink=327,9,32,13
+k4
+n8 x=315 w=44 op=151 ink=315,9,44,13
+k5
+n8 x=309 w=50 op=190 ink=309,9,50,13
+k6
+n8 x=308 w=51 op=216 ink=308,9,50,13
+k7
+n8 op=232
+k8
+n8 op=241
+k9
+n8 x=309 w=50 op=247 ink=309,9,50,13
+k10
+n8 op=251
+k11
+n8 op=253
+k12
+n8 op=254
+k13
+k14
+n8 op=255
+k15
+k16
+n1 ord=9
+n8 ord=8
+n9 x=309 y=13 w=0 h=4 ord=7
+k17
+n1 ord=10
+n8 ord=9
+n9 x=290 y=6 w=13 h=19 bg=f38ba8ff
+n10 x=296 y=8 w=37 h=15 txt=S ord=8 ink=297,9,35,11 fg=1e1e2eff gl=["Muted"]
+k18
+n9 x=272 w=31
+n10 x=278 ink=279,9,35,11
+k19
+n9 x=259 w=44
+n10 x=265 ink=266,9,35,11
+k20
+n9 x=254 w=49
+n10 x=260 ink=261,9,35,11
+k21
+n9 x=253 w=50
+n10 x=259 w=38 ink=260,9,35,11
+k22
+k23
+k24
+n9 x=254 w=49
+n10 x=260 w=37 ink=261,9,35,11
+k25
+k26

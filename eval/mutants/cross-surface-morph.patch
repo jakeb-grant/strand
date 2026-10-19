@@ -1,11 +1,11 @@
 diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
-index e51bc67e..c6262e07 100644
+index 2731e1a8..fdee2f56 100644
 --- a/crates/strand-render/src/anim/mod.rs
 +++ b/crates/strand-render/src/anim/mod.rs
-@@ -209,14 +209,6 @@ pub(crate) struct Animator {
-     /// and laid out (sizes).
-     enter: HashSet<NodeId>,
-     enter_size: HashSet<NodeId>,
+@@ -213,14 +213,6 @@ pub(crate) struct Animator {
+     /// text ([`Animator::start_sizes`]): laid out at those sizes until
+     /// it is shaped, as their paint is held at the pose.
+     size_held: HashMap<NodeId, [Option<f32>; 2]>,
 -    /// (cross-surface-morph) Surface roots opening: their next painted
 -    /// frame is the first that shows what they hold, and a node with a
 -    /// `morph` name in it comes on screen there as an entering node
@@ -17,7 +17,7 @@ index e51bc67e..c6262e07 100644
      exits: HashMap<NodeId, ExitKind>,
      /// When each exit started (wall clock): an exit no frame samples
      /// (its output asleep) is ended by `Renderer` after a while.
-@@ -639,14 +631,11 @@ impl Animator {
+@@ -643,14 +635,11 @@ impl Animator {
              });
          }
          let frame = self.frame();
@@ -34,7 +34,7 @@ index e51bc67e..c6262e07 100644
              // (shared-morph-on) A preview took its enter pose for a morph
              // the painted frame cannot start: it plays the pose after all.
              self.enter.insert(node.id);
-@@ -657,11 +646,7 @@ impl Animator {
+@@ -661,11 +650,7 @@ impl Animator {
              // values, as [`Animator::paint`] shows an entering node's,
              // never springing from unset under the flight (its `x: 101`
              // from 0, moving where the morph starts: morph-cross-surface).
@@ -47,16 +47,16 @@ index e51bc67e..c6262e07 100644
              self.staggers.forget(node.id);
              if let Some(na) = self.nodes.get_mut(&node.id) {
                  na.touched.clear();
-@@ -958,8 +943,6 @@ impl Animator {
-         self.entered.remove(&id);
+@@ -964,8 +949,6 @@ impl Animator {
          self.enter.remove(&id);
          self.enter_size.remove(&id);
+         self.size_held.remove(&id);
 -        self.opened.remove(&id);
 -        self.morph_took_enter.remove(&id);
          self.text_holds.remove(&id);
          self.line_holds.remove(&id);
          self.exits.remove(&id);
-@@ -988,7 +971,6 @@ impl Animator {
+@@ -994,7 +977,6 @@ impl Animator {
          // A morph a preview saw start whose painted frame did not draw
          // the node: it shows at rest, as an unseen enter pose does.
          self.shared.drop_pending(&mut under);
@@ -64,7 +64,7 @@ index e51bc67e..c6262e07 100644
          // (roll-preview) Rolls and shapes a preview left to the painted
          // frame that it did not draw (a frame drawing them clears its
          // own): remembered when one draws them.
-@@ -1054,26 +1036,6 @@ impl Animator {
+@@ -1060,26 +1042,6 @@ impl Animator {
      /// from its pose, as the first time; its nodes show at rest
      /// otherwise, and nothing left over keeps its root busy. Size springs
      /// belong to layout and stay.

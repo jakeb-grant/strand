@@ -84,3 +84,8 @@ cross-surface-morph.patch regressions/cross-surface-morph.scn expect
 # meter's clip keeps its untransformed place under the morph's scale, so a
 # partial frame loses the fill.
 morph-group-bounds.patch regressions/cross-surface-morph.scn redraw
+# unshaped-enter.patch: unshaped-enter's fix reverted (decisions.md
+# unshaped-enter): an enter pose's size spring starts while its text is not
+# shaped, from 0 to 0, so the label arrives at full width (`vanish` pop-in)
+# and the badge's padding shows for a frame (`flash`).
+unshaped-enter.patch    regressions/unshaped-enter.scn    vanish

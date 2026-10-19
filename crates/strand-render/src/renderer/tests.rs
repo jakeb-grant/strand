@@ -941,6 +941,55 @@ fn a_box_around_a_late_text_shows_it_whole() {
     }
 }
 
+/// (unshaped-enter) An `enter { width: 0 }` on a late text, or on a row
+/// holding one, plays from its pose to the node's width at rest: layout
+/// gives an unshaped text no room (late-text-dip), so the size spring
+/// started on the frame that mounted it ran from 0 to 0, and the text
+/// arrived at full width. It starts with the enter's paint, on the frame
+/// the text is drawn in: the text shows squeezed first and widens to
+/// rest, and the box beside it glides on its level.
+#[test]
+fn a_late_text_plays_its_enter_width() {
+    let num = PropValue::Number;
+    let pose = || PropValue::Pose(vec![(Prop::Width, num(0.0))]);
+    for wrapped in [false, true] {
+        let (d, root, row) = status_row();
+        let (mut r, mut px, k) = late_bar(d, root);
+        let (wrap, txt) = (NodeId::new(5, 0), NodeId::new(6, 0));
+        let mut d = SceneDiff::new();
+        if wrapped {
+            d.create(wrap, NodeKind::Row, Some(row), u32::MAX)
+                .set(wrap, Prop::Enter, pose());
+            late_text(&mut d, txt, wrap, &[]);
+        } else {
+            late_text(&mut d, txt, row, &[(Prop::Enter, pose())]);
+        }
+        let seen = mount_late(&mut r, &mut px, k, d);
+        let rest = bbox_of(&px, [255, 0, 255]).expect("the text at rest");
+        let width = |b: Px4| b.2 - b.0 + 1;
+        let shown: Vec<Px4> = seen.iter().filter_map(|(_, m, _)| *m).collect();
+        let first = *shown.first().expect("the text shows");
+        assert!(
+            2 * width(first) < width(rest),
+            "wrapped {wrapped}: its first frame {first:?} is not squeezed (rest {rest:?}): {seen:?}"
+        );
+        for w in shown.windows(2) {
+            assert!(
+                width(w[1]) + 1 >= width(w[0]),
+                "wrapped {wrapped}: it narrowed on its way: {seen:?}"
+            );
+        }
+        let box_rest = seen.last().and_then(|(b, _, _)| *b).expect("the box");
+        for (k, (b, _, _)) in seen.iter().enumerate() {
+            let b = b.unwrap_or_else(|| panic!("frame {k}: the box left the bar: {seen:?}"));
+            assert!(
+                (b.1, b.3) == (box_rest.1, box_rest.3),
+                "wrapped {wrapped}, frame {k}: the box left its level: {seen:?}"
+            );
+        }
+    }
+}
+
 /// (late-text-morph) A node whose only content is a late text takes no
 /// room until the text lands (late-text-dip), so its first frame lays it
 /// out at 0 × 0 and draws nothing. Mounted with the `morph` name of a box

@@ -17,7 +17,8 @@
 //!   and the next);
 //! - **pop-in**: an element with an `enter` pose, mounted after boot,
 //!   first shows near its pose: the pose's opacity and offset start its
-//!   springs, and its first frame shown has covered at most half the way
+//!   springs, and so do its width and height (its laid box; unshaped-
+//!   enter), and its first frame shown has covered at most half the way
 //!   to rest (a pose skipped shows it at rest at once). It holds each
 //!   time the element comes onto a surface: when it mounts, and when the
 //!   surface it is on is attached anew (a popup opened again). A shared
@@ -433,6 +434,30 @@ fn pop_in<'a>(
                     "its first frame shown is {at:.1} px off on {axis}, {:.0}% of the way from \
                      its pose's {p}",
                     sh * 100.0
+                ));
+            }
+        }
+        // (unshaped-enter) A pose's width or height is where its size
+        // springs from (design.md "Poses": `enter {}` is where a node
+        // animates in from, `enter { width: 0; opacity: 0 }`): its laid
+        // box on its first frame shown has covered at most as much of
+        // the way to its box at rest.
+        for (axis, p, ax) in [("width", pose.w, 2), ("height", pose.h, 3)] {
+            if let Some(p) = p
+                && let Some(rest) = rest
+                && let Some(sh) = share(
+                    f64::from(r.laid[ax]),
+                    f64::from(p),
+                    f64::from(rest.laid[ax]),
+                )
+                && sh > POP_IN_SHARE
+            {
+                wrong.push(format!(
+                    "its first frame shown is laid {:.1} px in {axis}, {:.0}% of the way from \
+                     its pose's {p} to {:.1} at rest",
+                    r.laid[ax],
+                    sh * 100.0,
+                    rest.laid[ax]
                 ));
             }
         }

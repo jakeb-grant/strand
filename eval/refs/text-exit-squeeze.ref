@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "text-exit-squeeze"
 verdict good
-note "bar-blank-on-exit follow-up: adds a content-sized panel on the left edge whose pill leaves on a width-0 pose, the panel keeping its 35 px height (the spec pass holds the exit's layout too); the bar's nodes are identical on every frame k0..58 to the previous reference, only the panel's nodes and the dnd-off step are new"
+note "unshaped-enter: read against the run with the fix reverted (identical to the old reference), 9 ticks change and all are the enter poses now playing: the \"plugged in\" label, not shaped as it mounts, arrived at its full 60 px on k1 and now springs from the pose's width 0 (16, 38, 53, 60, 62, 61, 61 px at k1..k7, the spring's overshoot) as it fades in; the Muted badge's label was laid squeezed with its box (1, 19, 32 px wide and 14 tall at k30..k32, the badge 18 tall) because its width at rest was taken while it was unshaped, and now keeps its 37 px line inside the springing badge, which is 19 tall as at rest (bar-blank-on-exit's rule); nothing else moves"
 date 2026-10-19
-rev "77b4ef5f+changes"
+rev "646cec9e+changes"
 approver "claude"
 scenario 501e141edd717b74
-seal 813de9f84e425420
+seal 10814d76658e1904
 S1 0 - "panel Status"
 S2 0 - "bar Top"
 N0 "clock|shell.strand:9:14|[Mock | DP-1]#0" "text#clock"
@@ -43,21 +43,21 @@ n11 srf=2 x=8 y=0 w=176 h=30 ord=2
 n12 srf=2 x=184 y=0 w=33 h=30 ord=4
 k1 p2
 n1 ord=8
-n13 srf=2 x=299 y=8 w=60 h=15 op=37 txt=S ord=7 ink=299,9,60,13 fg=a6e3a1ff gl=["plugged\u0020in"]
+n13 srf=2 x=343 y=8 w=16 h=15 op=37 txt=S ord=7 ink=343,9,16,13 fg=a6e3a1ff gl=["plugged\u0020in"]
 k2
-n13 op=98
+n13 x=321 w=38 op=98 ink=321,9,38,13
 k3
-n13 op=151
+n13 x=306 w=53 op=151 ink=306,9,53,13
 k4
-n13 op=190
+n13 x=299 w=60 op=190 ink=299,9,60,13
 k5
-n13 op=216
+n13 x=297 w=62 op=216 ink=297,9,60,13
 k6
-n13 op=232
+n13 x=298 w=61 op=232 ink=298,9,60,13
 k7
 n13 op=241
 k8
-n13 op=247
+n13 x=299 w=60 op=247 ink=299,9,60,13
 k9
 n13 op=251
 k10
@@ -100,17 +100,17 @@ n1 ord=7
 n13 -
 k30
 n1 ord=9
-n14 srf=2 x=346 y=6 w=13 h=18 op=37 ord=7 bg=f38ba8ff
-n15 srf=2 x=352 y=8 w=1 h=14 op=37 txt=S ord=8 ink=353,9,35,11 fit=1 fg=1e1e2eff gl=["Muted"]
+n14 srf=2 x=346 y=6 w=13 h=19 op=37 ord=7 bg=f38ba8ff
+n15 srf=2 x=352 y=8 w=37 h=15 op=37 txt=S ord=8 ink=353,9,35,11 fg=1e1e2eff gl=["Muted"]
 k31
 n14 x=328 w=31 op=98
-n15 x=334 w=19 op=98 ink=335,9,35,11 fit=19
+n15 x=334 op=98 ink=335,9,35,11
 k32
 n14 x=315 w=44 op=151
-n15 x=321 w=32 op=151 ink=322,9,35,11 fit=32
+n15 x=321 op=151 ink=322,9,35,11
 k33
-n14 x=310 w=49 h=19 op=190
-n15 x=316 w=37 h=15 op=190 ink=317,9,35,11 fit=-
+n14 x=310 w=49 op=190
+n15 x=316 op=190 ink=317,9,35,11
 k34
 n14 x=309 w=50 op=216
 n15 x=315 w=38 op=216 ink=316,9,35,11

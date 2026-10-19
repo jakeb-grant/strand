@@ -323,6 +323,21 @@ fn other_axis(cx: &Cx) -> Vec<Finding> {
                     if r.text.as_deref().is_some_and(|t| t != "S") {
                         continue;
                     }
+                    // (unshaped-enter) Nor one whose texts under it are
+                    // on their way: a text not shaped yet takes no room
+                    // (late-text-dip), so a box holding it is laid out
+                    // without it on its other axis too (a badge 4 px
+                    // tall, its padding, before its label lands). Read
+                    // as `stagger` reads a wait for text: text held on
+                    // the frame, or a row under it not shaped.
+                    if !tl.frames[j].held_text.is_empty()
+                        || tl.screens[j].iter().any(|(k, q)| {
+                            matches!(q.text.as_deref(), Some("E" | "I"))
+                                && cx.lineage(k).contains(&key.as_str())
+                        })
+                    {
+                        continue;
+                    }
                     frames += 1;
                     let at = f64::from(r.laid[ax]);
                     // (integration-r5) Stretched across its parent, a node

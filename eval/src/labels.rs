@@ -65,22 +65,14 @@ fn num(v: &PropValue) -> Option<f32> {
     }
 }
 
-/// The node's `enter` pose, if it is a pose (not a preset keyword).
+/// The node's `enter` pose, if it is a pose (not a preset keyword):
+/// its opacity, offset and scale, and (unshaped-enter) the width or
+/// height it lays out at, as [`exit_pose`] records an exit's.
 fn enter_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
-    let PropValue::Pose(props) = tree.get(node)?.get(Prop::Enter)? else {
+    let v @ PropValue::Pose(_) = tree.get(node)?.get(Prop::Enter)? else {
         return None;
     };
-    let mut p = Pose::default();
-    for (prop, v) in props {
-        match prop {
-            Prop::Opacity => p.opacity = num(v),
-            Prop::X => p.x = num(v),
-            Prop::Y => p.y = num(v),
-            Prop::Scale => p.scale = num(v),
-            _ => {}
-        }
-    }
-    Some(p)
+    pose_of(v)
 }
 
 /// (eval-rules) The parts of a pose value the checks read: a pose

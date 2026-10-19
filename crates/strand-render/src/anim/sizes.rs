@@ -18,6 +18,7 @@ impl Animator {
         self.nodes
             .get(&node.id)
             .is_some_and(|n| n.size.iter().any(Option::is_some))
+            || self.size_held.contains_key(&node.id)
             || (self.exits.contains_key(&node.id)
                 && exit_pose(node)
                     .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))
@@ -163,7 +164,9 @@ impl Animator {
 
     /// Starts or retargets size springs of nodes under `root`, given
     /// their sizes laid out at rest (`targets`) and in the frame before
-    /// (`old`).
+    /// (`old`). `late` is true for a node with text under it that is not
+    /// shaped yet (`flatten::late_text_under`): an `enter` pose's sizes
+    /// wait on it as its paint does (unshaped-enter).
     pub fn start_sizes(
         &mut self,
         tree: &SceneTree,
@@ -171,6 +174,7 @@ impl Animator {
         targets: &HashMap<NodeId, LogicalRect>,
         old: Option<&HashMap<NodeId, LogicalRect>>,
         partial: bool,
+        late: impl Fn(NodeId) -> bool,
     ) {
         let snapping = self.snapping();
         if snapping && !self.commit && !self.reduced {
@@ -198,6 +202,27 @@ impl Animator {
             .collect();
         let last = self.prev;
         for id in ids {
+            // (unshaped-enter) An unshaped text is laid out as nothing
+            // (late-text-dip): its target here is not its size at rest.
+            // While an enter pose that sets a size is held for the text
+            // (it has not played: `enter` still holds it), so are the
+            // pose's sizes: it is laid out at them (`size_held`), and
+            // they spring from the pose to its size at rest on the pass
+            // its text is shaped for. One whose hold ran out (text that
+            // never came) lets go on the next pass, as its paint did.
+            let sized_pose = tree
+                .get(id)
+                .and_then(|n| Some(pose_sizes(tree, n, n.get(Prop::Enter)?)))
+                .filter(|p| p.iter().any(Option::is_some));
+            if let Some(pose) = sized_pose
+                && self.enter_size.contains(&id)
+                && self.enter_starts(id)
+                && late(id)
+            {
+                self.size_held.insert(id, pose);
+                continue;
+            }
+            self.size_held.remove(&id);
             let entering = self.enter_size.remove(&id);
             let Some(node) = tree.get(id) else {
                 self.nodes.remove(&id);
@@ -334,6 +359,19 @@ impl Animator {
             }
         }
         self.nodes.retain(|_, n| !n.is_empty());
+        // (unshaped-enter) Held at its pose's sizes for its text.
+        for (id, pose) in &self.size_held {
+            if tree.root_of(*id) != Some(root) || !self.enter_starts(*id) {
+                continue;
+            }
+            let o = out.entry(*id).or_default();
+            for (axis, v) in pose.iter().enumerate() {
+                if let Some(v) = *v {
+                    o.size[axis] = Some(v.max(0.0));
+                    o.collapse[axis] = v < COLLAPSED;
+                }
+            }
+        }
         if commit {
             // A line box is kept while its pose's width moves, or its node
             // exits (laid out at its exit pose until it unmounts).
@@ -351,6 +389,10 @@ impl Animator {
         self.nodes
             .iter()
             .any(|(id, n)| n.size.iter().any(Option::is_some) && tree.root_of(*id) == Some(root))
+            // (unshaped-enter) Laid out again each frame while held, so
+            // a hold that ends (its text came, or its wait ran out) lets
+            // go at once.
+            || self.size_held.keys().any(|id| tree.root_of(*id) == Some(root))
     }
 
     /// Nodes with a size spring under `root`.

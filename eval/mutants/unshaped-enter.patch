@@ -1,0 +1,243 @@
+diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
+index 2731e1a8..e51bc67e 100644
+--- a/crates/strand-render/src/anim/mod.rs
++++ b/crates/strand-render/src/anim/mod.rs
+@@ -209,10 +209,6 @@ pub(crate) struct Animator {
+     /// and laid out (sizes).
+     enter: HashSet<NodeId>,
+     enter_size: HashSet<NodeId>,
+-    /// (unshaped-enter) Entering nodes whose pose's sizes wait for their
+-    /// text ([`Animator::start_sizes`]): laid out at those sizes until
+-    /// it is shaped, as their paint is held at the pose.
+-    size_held: HashMap<NodeId, [Option<f32>; 2]>,
+     /// (cross-surface-morph) Surface roots opening: their next painted
+     /// frame is the first that shows what they hold, and a node with a
+     /// `morph` name in it comes on screen there as an entering node
+@@ -876,7 +872,6 @@ impl Animator {
+     pub fn exit(&mut self, id: NodeId, kind: ExitKind) {
+         self.enter.remove(&id);
+         self.enter_size.remove(&id);
+-        self.size_held.remove(&id);
+         self.exits.insert(id, kind);
+         self.exit_started.insert(id, Instant::now());
+         let na = self.nodes.entry(id).or_default();
+@@ -963,7 +958,6 @@ impl Animator {
+         self.entered.remove(&id);
+         self.enter.remove(&id);
+         self.enter_size.remove(&id);
+-        self.size_held.remove(&id);
+         self.opened.remove(&id);
+         self.morph_took_enter.remove(&id);
+         self.text_holds.remove(&id);
+@@ -1102,7 +1096,6 @@ impl Animator {
+         self.nodes.retain(|id, _| keep(*id));
+         self.enter.retain(|id| keep(*id));
+         self.enter_size.retain(|id| keep(*id));
+-        self.size_held.retain(|id, _| keep(*id));
+         self.text_holds.retain(|id, _| keep(*id));
+         self.exits.retain(|id, _| keep(*id));
+         let exits = &self.exits;
+diff --git a/crates/strand-render/src/anim/sizes.rs b/crates/strand-render/src/anim/sizes.rs
+index e99fc878..9cdf9b75 100644
+--- a/crates/strand-render/src/anim/sizes.rs
++++ b/crates/strand-render/src/anim/sizes.rs
+@@ -18,7 +18,6 @@ impl Animator {
+         self.nodes
+             .get(&node.id)
+             .is_some_and(|n| n.size.iter().any(Option::is_some))
+-            || self.size_held.contains_key(&node.id)
+             || (self.exits.contains_key(&node.id)
+                 && exit_pose(node)
+                     .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))
+@@ -164,9 +163,7 @@ impl Animator {
+ 
+     /// Starts or retargets size springs of nodes under `root`, given
+     /// their sizes laid out at rest (`targets`) and in the frame before
+-    /// (`old`). `late` is true for a node with text under it that is not
+-    /// shaped yet (`flatten::late_text_under`): an `enter` pose's sizes
+-    /// wait on it as its paint does (unshaped-enter).
++    /// (`old`).
+     pub fn start_sizes(
+         &mut self,
+         tree: &SceneTree,
+@@ -174,7 +171,6 @@ impl Animator {
+         targets: &HashMap<NodeId, LogicalRect>,
+         old: Option<&HashMap<NodeId, LogicalRect>>,
+         partial: bool,
+-        late: impl Fn(NodeId) -> bool,
+     ) {
+         let snapping = self.snapping();
+         if snapping && !self.commit && !self.reduced {
+@@ -202,27 +198,6 @@ impl Animator {
+             .collect();
+         let last = self.prev;
+         for id in ids {
+-            // (unshaped-enter) An unshaped text is laid out as nothing
+-            // (late-text-dip): its target here is not its size at rest.
+-            // While an enter pose that sets a size is held for the text
+-            // (it has not played: `enter` still holds it), so are the
+-            // pose's sizes: it is laid out at them (`size_held`), and
+-            // they spring from the pose to its size at rest on the pass
+-            // its text is shaped for. One whose hold ran out (text that
+-            // never came) lets go on the next pass, as its paint did.
+-            let sized_pose = tree
+-                .get(id)
+-                .and_then(|n| Some(pose_sizes(tree, n, n.get(Prop::Enter)?)))
+-                .filter(|p| p.iter().any(Option::is_some));
+-            if let Some(pose) = sized_pose
+-                && self.enter_size.contains(&id)
+-                && self.enter_starts(id)
+-                && late(id)
+-            {
+-                self.size_held.insert(id, pose);
+-                continue;
+-            }
+-            self.size_held.remove(&id);
+             let entering = self.enter_size.remove(&id);
+             let Some(node) = tree.get(id) else {
+                 self.nodes.remove(&id);
+@@ -359,19 +334,6 @@ impl Animator {
+             }
+         }
+         self.nodes.retain(|_, n| !n.is_empty());
+-        // (unshaped-enter) Held at its pose's sizes for its text.
+-        for (id, pose) in &self.size_held {
+-            if tree.root_of(*id) != Some(root) || !self.enter_starts(*id) {
+-                continue;
+-            }
+-            let o = out.entry(*id).or_default();
+-            for (axis, v) in pose.iter().enumerate() {
+-                if let Some(v) = *v {
+-                    o.size[axis] = Some(v.max(0.0));
+-                    o.collapse[axis] = v < COLLAPSED;
+-                }
+-            }
+-        }
+         if commit {
+             // A line box is kept while its pose's width moves, or its node
+             // exits (laid out at its exit pose until it unmounts).
+@@ -389,10 +351,6 @@ impl Animator {
+         self.nodes
+             .iter()
+             .any(|(id, n)| n.size.iter().any(Option::is_some) && tree.root_of(*id) == Some(root))
+-            // (unshaped-enter) Laid out again each frame while held, so
+-            // a hold that ends (its text came, or its wait ran out) lets
+-            // go at once.
+-            || self.size_held.keys().any(|id| tree.root_of(*id) == Some(root))
+     }
+ 
+     /// Nodes with a size spring under `root`.
+diff --git a/crates/strand-render/src/flatten/mod.rs b/crates/strand-render/src/flatten/mod.rs
+index 015c30c6..38a9a9d7 100644
+--- a/crates/strand-render/src/flatten/mod.rs
++++ b/crates/strand-render/src/flatten/mod.rs
+@@ -35,7 +35,6 @@ pub(crate) use hash::{Shift, hash_item, hash_item_from};
+ pub use paint::BLUR_TINT;
+ use paint::{cover, kurbo_rect};
+ // `attach:` fillets resolve their target's radius like a fill does.
+-pub(crate) use node::late_text_under;
+ pub(crate) use paint::{corners_of, radii};
+ use text::sane_font;
+ pub use text::{Shaped, TextSpec, natural_texts};
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+index 1068d095..fac0ddf9 100644
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -2178,16 +2178,35 @@ impl<'a> Flattener<'a> {
+         )
+     }
+ 
+-    /// (late-text-dip) [`late_text_under`] for `node` as this frame
+-    /// lays it out.
++    /// (late-text-dip) True if `node` or a node laid out under it is a
++    /// text (or a button's label) with something to show and no layout
++    /// at any scale or width yet: it is drawn as nothing and takes no
++    /// room until its layout arrives. Only a text written as text counts
++    /// (one a token gives is left out: it may resolve to nothing, which
++    /// never gets a layout).
+     fn late_text_under(&self, node: &Node) -> bool {
+-        late_text_under(
+-            self.tree,
+-            &self.boxes.rects,
+-            self.layouts,
+-            self.scale,
+-            node.id,
+-        )
++        let mut work = vec![node.id];
++        while let Some(n) = work.pop() {
++            let Some(at) = self.tree.get(n) else { continue };
++            if n != node.id
++                && (crate::layout::out_of_flow(at.kind) || !self.boxes.rects.contains_key(&n))
++            {
++                continue;
++            }
++            if matches!(at.kind, NodeKind::Text | NodeKind::Button)
++                && matches!(at.get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty())
++                && pick(
++                    self.layouts.get(&n).map_or(&[], Vec::as_slice),
++                    self.scale,
++                    None,
++                )
++                .is_none()
++            {
++                return true;
++            }
++            work.extend(at.children.iter().copied());
++        }
++        false
+     }
+ 
+     /// (owner-testing.md bug 25) The texts under `node`, which is drawn
+@@ -2391,35 +2410,3 @@ pub(crate) fn drawn_span(start: f32, len: f32, lo: f32, hi: f32, flight: f32) ->
+     let b = start + len + snap(hi + flight);
+     (a, (b - a).max(0.0))
+ }
+-
+-/// (late-text-dip) True if `id` or a node laid out under it (in
+-/// `rects`) is a text (or a button's label) with something to show and
+-/// no layout at `scale` or any width yet in `layouts`: it is drawn as
+-/// nothing and takes no room until its layout arrives. Only a text
+-/// written as text counts (one a token gives is left out: it may resolve
+-/// to nothing, which never gets a layout). Flattening holds an `enter`
+-/// pose on it; the layout step holds the pose's size spring
+-/// (unshaped-enter).
+-pub(crate) fn late_text_under(
+-    tree: &crate::tree::SceneTree,
+-    rects: &std::collections::HashMap<strand_scene::NodeId, LogicalRect>,
+-    layouts: &std::collections::HashMap<strand_scene::NodeId, Vec<Shaped>>,
+-    scale: strand_scene::Scale,
+-    id: strand_scene::NodeId,
+-) -> bool {
+-    let mut work = vec![id];
+-    while let Some(n) = work.pop() {
+-        let Some(at) = tree.get(n) else { continue };
+-        if n != id && (crate::layout::out_of_flow(at.kind) || !rects.contains_key(&n)) {
+-            continue;
+-        }
+-        if matches!(at.kind, NodeKind::Text | NodeKind::Button)
+-            && matches!(at.get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty())
+-            && pick(layouts.get(&n).map_or(&[], Vec::as_slice), scale, None).is_none()
+-        {
+-            return true;
+-        }
+-        work.extend(at.children.iter().copied());
+-    }
+-    false
+-}
+diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
+index a50008b1..3ddd90dd 100644
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -335,11 +335,8 @@ impl Renderer {
+                 at_rest.overhang,
+             ));
+             let old_rects = old.as_ref().map(|b| &b.rects);
+-            let late = |n| {
+-                crate::flatten::late_text_under(&self.tree, &at_rest.rects, layouts, info.scale, n)
+-            };
+             self.anim
+-                .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false, late);
++                .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false);
+             sizes = self.anim.size_overrides(&self.tree, root, &rest);
+             if sizes == rest {
+                 at_rest

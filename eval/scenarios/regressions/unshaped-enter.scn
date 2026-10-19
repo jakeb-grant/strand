@@ -1,0 +1,53 @@
+id     = "unshaped-enter"
+about  = """A finding of round 6 (docs/decisions.md unshaped-enter): a text whose layout is
+not shaped when it mounts takes no room until it arrives (late-text-dip), so the
+size spring of its `enter { width: 0 }` (design.md "Poses": where a node
+animates in from) started on that frame from 0 to 0, and the text arrived at
+full width; only its fade played. The pose's sizes now wait for the text as its
+paint does, and spring from the pose to the node's width at rest on the frame
+the text is drawn in. A label, then a badge holding one, grows in at the end of
+a split bar with its text one tick late; the centred clock never moves. `vanish`'s
+`pop-in` holds a pose's width or height as it holds its opacity and offset: the
+first frame shown has covered at most half the way from the pose to rest
+(eval/mutants/unshaped-enter.patch reverts the fix)."""
+screen = { width = 400, height = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state plugged = false
+state muted = false
+
+bar Top {
+  edge: top; height: 30; bg: #181825
+  split { pad: 0, 8
+    start { text "notes.md" { id: title; color: #a6adc8 } }
+    center { text "09:41" { id: clock; color: #cdd6f4 } }
+    end { gap: 6
+      if muted {
+        box { id: badge; pad: 2, 6; radius: 6; bg: #f38ba8; color: #1e1e2e
+          enter { width: 0 }
+          text "Muted" { id: label }
+        }
+      }
+      if plugged {
+        text "charging" { id: plug; color: #a6e3a1; enter { opacity: 0; width: 0 } }
+      }
+      text "80%" { id: level; color: #cdd6f4 }
+    }
+  }
+}
+
+=== steps
+rest
+text late 1 where "charging" via waker
+mark plug
+set plugged true
+rest
+expect still #clock
+expect still #title
+text late 1 where "Muted" via waker
+mark mute
+set muted true
+rest
+expect still #clock
+expect still #title

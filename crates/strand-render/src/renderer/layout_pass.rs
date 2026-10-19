@@ -335,8 +335,11 @@ impl Renderer {
                 at_rest.overhang,
             ));
             let old_rects = old.as_ref().map(|b| &b.rects);
+            let late = |n| {
+                crate::flatten::late_text_under(&self.tree, &at_rest.rects, layouts, info.scale, n)
+            };
             self.anim
-                .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false);
+                .start_sizes(&self.tree, root, &at_rest.rects, old_rects, false, late);
             sizes = self.anim.size_overrides(&self.tree, root, &rest);
             if sizes == rest {
                 at_rest

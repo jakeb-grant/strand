@@ -35,6 +35,7 @@ pub(crate) use hash::{Shift, hash_item, hash_item_from};
 pub use paint::BLUR_TINT;
 use paint::{cover, kurbo_rect};
 // `attach:` fillets resolve their target's radius like a fill does.
+pub(crate) use node::late_text_under;
 pub(crate) use paint::{corners_of, radii};
 use text::sane_font;
 pub use text::{Shaped, TextSpec, natural_texts};

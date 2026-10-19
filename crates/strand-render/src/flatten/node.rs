@@ -2190,35 +2190,16 @@ impl<'a> Flattener<'a> {
         )
     }
 
-    /// (late-text-dip) True if `node` or a node laid out under it is a
-    /// text (or a button's label) with something to show and no layout
-    /// at any scale or width yet: it is drawn as nothing and takes no
-    /// room until its layout arrives. Only a text written as text counts
-    /// (one a token gives is left out: it may resolve to nothing, which
-    /// never gets a layout).
+    /// (late-text-dip) [`late_text_under`] for `node` as this frame
+    /// lays it out.
     fn late_text_under(&self, node: &Node) -> bool {
-        let mut work = vec![node.id];
-        while let Some(n) = work.pop() {
-            let Some(at) = self.tree.get(n) else { continue };
-            if n != node.id
-                && (crate::layout::out_of_flow(at.kind) || !self.boxes.rects.contains_key(&n))
-            {
-                continue;
-            }
-            if matches!(at.kind, NodeKind::Text | NodeKind::Button)
-                && matches!(at.get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty())
-                && pick(
-                    self.layouts.get(&n).map_or(&[], Vec::as_slice),
-                    self.scale,
-                    None,
-                )
-                .is_none()
-            {
-                return true;
-            }
-            work.extend(at.children.iter().copied());
-        }
-        false
+        late_text_under(
+            self.tree,
+            &self.boxes.rects,
+            self.layouts,
+            self.scale,
+            node.id,
+        )
     }
 
     /// (owner-testing.md bug 25) The texts under `node`, which is drawn
@@ -2421,4 +2402,36 @@ pub(crate) fn drawn_span(start: f32, len: f32, lo: f32, hi: f32, flight: f32) ->
     let a = start + snap(lo + flight);
     let b = start + len + snap(hi + flight);
     (a, (b - a).max(0.0))
+}
+
+/// (late-text-dip) True if `id` or a node laid out under it (in
+/// `rects`) is a text (or a button's label) with something to show and
+/// no layout at `scale` or any width yet in `layouts`: it is drawn as
+/// nothing and takes no room until its layout arrives. Only a text
+/// written as text counts (one a token gives is left out: it may resolve
+/// to nothing, which never gets a layout). Flattening holds an `enter`
+/// pose on it; the layout step holds the pose's size spring
+/// (unshaped-enter).
+pub(crate) fn late_text_under(
+    tree: &crate::tree::SceneTree,
+    rects: &std::collections::HashMap<strand_scene::NodeId, LogicalRect>,
+    layouts: &std::collections::HashMap<strand_scene::NodeId, Vec<Shaped>>,
+    scale: strand_scene::Scale,
+    id: strand_scene::NodeId,
+) -> bool {
+    let mut work = vec![id];
+    while let Some(n) = work.pop() {
+        let Some(at) = tree.get(n) else { continue };
+        if n != id && (crate::layout::out_of_flow(at.kind) || !rects.contains_key(&n)) {
+            continue;
+        }
+        if matches!(at.kind, NodeKind::Text | NodeKind::Button)
+            && matches!(at.get(Prop::Text), Some(PropValue::Text(t)) if !t.is_empty())
+            && pick(layouts.get(&n).map_or(&[], Vec::as_slice), scale, None).is_none()
+        {
+            return true;
+        }
+        work.extend(at.children.iter().copied());
+    }
+    false
 }

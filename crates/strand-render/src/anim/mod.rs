@@ -209,6 +209,10 @@ pub(crate) struct Animator {
     /// and laid out (sizes).
     enter: HashSet<NodeId>,
     enter_size: HashSet<NodeId>,
+    /// (unshaped-enter) Entering nodes whose pose's sizes wait for their
+    /// text ([`Animator::start_sizes`]): laid out at those sizes until
+    /// it is shaped, as their paint is held at the pose.
+    size_held: HashMap<NodeId, [Option<f32>; 2]>,
     /// (cross-surface-morph) Surface roots opening: their next painted
     /// frame is the first that shows what they hold, and a node with a
     /// `morph` name in it comes on screen there as an entering node
@@ -872,6 +876,7 @@ impl Animator {
     pub fn exit(&mut self, id: NodeId, kind: ExitKind) {
         self.enter.remove(&id);
         self.enter_size.remove(&id);
+        self.size_held.remove(&id);
         self.exits.insert(id, kind);
         self.exit_started.insert(id, Instant::now());
         let na = self.nodes.entry(id).or_default();
@@ -958,6 +963,7 @@ impl Animator {
         self.entered.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
+        self.size_held.remove(&id);
         self.opened.remove(&id);
         self.morph_took_enter.remove(&id);
         self.text_holds.remove(&id);
@@ -1096,6 +1102,7 @@ impl Animator {
         self.nodes.retain(|id, _| keep(*id));
         self.enter.retain(|id| keep(*id));
         self.enter_size.retain(|id| keep(*id));
+        self.size_held.retain(|id, _| keep(*id));
         self.text_holds.retain(|id, _| keep(*id));
         self.exits.retain(|id, _| keep(*id));
         let exits = &self.exits;
