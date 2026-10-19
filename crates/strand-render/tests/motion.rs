@@ -727,6 +727,82 @@ fn a_snapped_clip_carries_its_rows_so_none_blinks_out() {
     assert_eq!(st.rect(rows[2]).y, 180.0, "the card is centred again");
 }
 
+/// (bar-blank-on-exit) A content-sized panel is measured for the size it
+/// asks for with what an exit squeezes at its layout at rest, as it is
+/// painted: a chip leaving on `exit { width: 0 }` never makes the panel
+/// ask for a taller buffer. Before, that measure wrapped the chip's text
+/// into a column and the panel asked for a buffer that tall (1215 px
+/// here; on an output, all of its height, its row re-centred in it).
+#[test]
+fn a_content_sized_panel_keeps_its_height_while_a_chip_squeezes_out() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("right".into())),
+        ],
+    );
+    let row = b.node(
+        NodeKind::Row,
+        Some(root),
+        vec![
+            (Prop::Gap, num(6.0)),
+            (Prop::Align, PropValue::Keyword("center".into())),
+        ],
+    );
+    let chip = b.node(
+        NodeKind::Box,
+        Some(row),
+        vec![
+            (Prop::Bg, color("#00ff00")),
+            (
+                Prop::Exit,
+                pose(vec![(Prop::Width, num(0.0)), (Prop::Opacity, num(0.0))]),
+            ),
+        ],
+    );
+    b.node(
+        NodeKind::Text,
+        Some(chip),
+        vec![
+            (Prop::Text, text("Do not disturb")),
+            (Prop::Color, color("#000000")),
+        ],
+    );
+    red_box(&mut b, row, vec![]);
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    let tall = h.surface.as_ref().unwrap().1.size.h;
+    assert!((15..40).contains(&tall), "one line tall: {tall}");
+    let mut d = SceneDiff::new();
+    d.remove(chip);
+    h.apply(d);
+    let mut heights = Vec::new();
+    loop {
+        let Some((id, buf, age)) = h.surface.as_mut() else {
+            panic!("closed");
+        };
+        if !h.r.wants_frame(*id) {
+            break;
+        }
+        buf.paint_at(&mut h.r, *id, *age, frame(h.k));
+        *age = 1;
+        h.k += 1;
+        heights.push(buf.size.h);
+        if h.r.has_surface_changes() {
+            h.r.update();
+            h.sync();
+        }
+        assert!(heights.len() < 400, "never settled");
+    }
+    assert!(
+        heights.iter().all(|v| *v <= tall),
+        "asked for no taller buffer: {heights:?} (was {tall})"
+    );
+}
+
 /// A surface whose `open` goes false plays its exit pose first: its spec
 /// stays open until the pose settles. Opening plays `enter`.
 #[test]

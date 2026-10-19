@@ -11,13 +11,17 @@ stays its line's; a squeezed box's children keep their widths at rest and the
 box clips them. A label, then a badge, grows in beside a percentage at the
 end of a split bar and leaves again; the centred clock never moves (`contain`'s `other
 axis`: a pose that sizes the width alone leaves the height at rest;
-eval/mutants/text-exit-squeeze.patch reverts the fix)."""
-screen = { width = 400, scale = 1.0 }
+eval/mutants/text-exit-squeeze.patch reverts the fix). A content-sized panel is
+measured for the size it asks for the same way: its pill leaving on the same
+pose never makes it ask for the output's height, its row re-centred in it
+(`bystander`)."""
+screen = { width = 400, height = 300, scale = 1.0 }
 hz     = 60
 
 === shell.strand
 state plugged = false
 state muted = false
+state dnd = true
 
 bar Top {
   edge: top; height: 30; bg: #181825
@@ -36,6 +40,19 @@ bar Top {
       }
       text "80%" { id: level; color: #cdd6f4 }
     }
+  }
+}
+
+panel Status {
+  anchor: left; margin: 0, 0, 0, 12; open: true
+  row { pad: 8; gap: 8; radius: 10; bg: #1e1e2e; align: center
+    if dnd {
+      box { id: pill; pad: 2, 8; radius: 8; bg: #f9e2af; color: #1e1e2e
+        enter { opacity: 0; width: 0 }
+        text "Do not disturb"
+      }
+    }
+    text "Mic" { id: mic; color: #cdd6f4 }
   }
 }
 
@@ -63,3 +80,7 @@ set muted false
 rest
 expect still #clock
 expect still #title
+mark dnd-off
+intend #pill exits
+set dnd false
+rest

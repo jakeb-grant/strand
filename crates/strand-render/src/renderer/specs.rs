@@ -476,7 +476,14 @@ impl Renderer {
                         width: w,
                         height: h,
                     };
-                    // At rest: exiting nodes take their exit pose's size.
+                    // At rest: exiting nodes take their exit pose's size,
+                    // and one an exit squeezes keeps its layout at rest,
+                    // where it was last laid out (bar-blank-on-exit: as
+                    // the painted pass does, or its text would wrap into
+                    // a column and the surface ask for its height).
+                    if let Some(b) = shown.and_then(|s| s.boxes.as_ref()) {
+                        self.anim.hold_exits(&self.tree, id, &b.rects);
+                    }
                     let rest = self.anim.rest_sizes(&self.tree, id);
                     let mut b = layout(&self.tree, id, root_size, &info, &mut self.scrolls, &rest);
                     self.layout_passes += 1;
