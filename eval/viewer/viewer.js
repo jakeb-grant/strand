@@ -362,15 +362,20 @@
 
   // ---- the stage ------------------------------------------------------------------
 
-  function moving(sc, o) {
-    return o.mot || o.emot || Math.abs(o.vx - o.lx) > 0.01 || Math.abs(o.vy - o.ly) > 0.01 ||
-      Math.abs(o.vw - o.lw) > 0.01 || Math.abs(o.vh - o.lh) > 0.01;
+  // A node moves when a motion drives it or its drawn box is off its laid
+  // one by more than a physical pixel at the surface's `scale`: a drawn
+  // box is snapped to the pixel grid, so at a fractional scale a node at
+  // rest is up to a pixel from its laid box (integration-r6).
+  function moving(sc, o, scale) {
+    var tol = Math.max(0.01, 1 / (scale || 1) + 1e-6);
+    return o.mot || o.emot || Math.abs(o.vx - o.lx) > tol || Math.abs(o.vy - o.ly) > tol ||
+      Math.abs(o.vw - o.lw) > tol || Math.abs(o.vh - o.lh) > tol;
   }
 
-  function colorOf(sc, o) {
+  function colorOf(sc, o, scale) {
     if (sc.failKeys.has(o.key)) return css('--fail');
     if (o.auth) return css('--auth');
-    if ((o.emot & GLIDE) || moving(sc, o)) return css('--derived');
+    if ((o.emot & GLIDE) || moving(sc, o, scale)) return css('--derived');
     return '#9a9aa6';
   }
 
@@ -441,8 +446,8 @@
         x.globalAlpha = alpha;
         ps.rows.forEach(function (r) {
           var o = obj(sc, r);
-          if (!(S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o))) return;
-          x.strokeStyle = colorOf(sc, o);
+          if (!(S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o, ps.scale || 1))) return;
+          x.strokeStyle = colorOf(sc, o, ps.scale || 1);
           x.setLineDash([]);
           x.strokeRect(o.vx * scale * z + 0.5, o.vy * scale * z + 0.5, Math.max(1, o.vw * scale * z - 1), Math.max(1, o.vh * scale * z - 1));
         });
@@ -473,9 +478,9 @@
     scr.rows.forEach(function (r) {
       if (refDiff) return;
       var o = obj(sc, r);
-      var show = S.all || S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o);
+      var show = S.all || S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o, scale);
       if (!show) return;
-      var col = colorOf(sc, o);
+      var col = colorOf(sc, o, scale);
       x.strokeStyle = col;
       x.lineWidth = S.sel.has(o.key) ? 2 : 1;
       if (S.laid) {
