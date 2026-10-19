@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "colour-bouncy"
 verdict good
-note "eval-rules-3 coverage, read: the chip's fill springs blue to yellow on $motion.bouncy and its border grey to green on spring(500, 0.5), each ringing slightly past its end on the straight OKLab way and back, then the reverse; the lead box never moves"
+note "integration-r5, read: border-eps settles the border's colour channels by COLOUR_EPS, so the border on spring(500, 0.5) now rings past green (a2d378 at k9) and back to 98c379 at k16 instead of snapping to it at k8 from 9bc879, and on the way out rings past grey (53546d) and settles at k52 instead of snapping at k32; the fill's values are unchanged, the out segment starts 3 ticks later as the in segment rests later, and the lead box never moves"
 date 2026-10-19
-rev "c554aa84+changes"
+rev "2fc38f23+changes"
 approver "claude"
 scenario ad55bdd27451f186
-seal 6f754a8c8f9f4a5e
+seal 11f38567a8bff90c
 S1 0 - "bar Top"
 N0 "chip|shell.strand:7:5|[Mock | DP-1]#1" "box#chip"
 N1 "lead|shell.strand:6:5|[Mock | DP-1]#0" "box#lead"
@@ -33,71 +33,89 @@ n0 bg=bdb694ff bd=94bd79ff
 k7
 n0 bg=d1bd7cff bd=9bc879ff
 k8
-n0 bg=e2c364ff bd=98c379ff
+n0 bg=e2c364ff bd=a0cf78ff
 k9
-n0 bg=eec74cff
+n0 bg=eec74cff bd=a2d378ff
 k10
 n0 bg=f8ca32ff
 k11
-n0 bg=fecc10ff
+n0 bg=fecc10ff bd=a1d278ff
 k12
-n0 bg=ffcd00ff
+n0 bg=ffcd00ff bd=a0cf78ff
 k13
+n0 bd=9ecc79ff
 k14
-n0 bg=ffce00ff
+n0 bg=ffce00ff bd=9cc979ff
 k15
+n0 bd=9ac679ff
 k16
+n0 bd=98c379ff
 k17
-n0 bg=ffcd00ff
+n0 bg=ffcd00ff bd=97c279ff
 k18
+n0 bd=97c179ff
 k19
+n0 bd=96c079ff
 k20
 k21
-n0 bg=ffcc00ff
+n0 bg=ffcc00ff bd=97c179ff
 k22
 k23
+n0 bd=97c279ff
 k24
+n0 bd=98c279ff
 k25
-n0 bg=f6c939ff bd=94bd79ff
+n0 bd=98c379ff
 k26
-n0 bg=dfc268ff bd=8bae79ff
 k27
-n0 bg=c3b88dff bd=7f9b78ff
 k28
-n0 bg=a5adaaff bd=738876ff
+n0 bg=f6c939ff bd=94bd79ff
 k29
-n0 bg=89a0c1ff bd=687774ff
+n0 bg=dfc268ff bd=8bae79ff
 k30
-n0 bg=7193d4ff bd=5f6971ff
+n0 bg=c3b88dff bd=7f9b78ff
 k31
-n0 bg=5d87e2ff bd=595e6fff
+n0 bg=a5adaaff bd=738876ff
 k32
-n0 bg=4d7dedff bd=5c6370ff
+n0 bg=89a0c1ff bd=687774ff
 k33
-n0 bg=4274f5ff
+n0 bg=7193d4ff bd=5f6971ff
 k34
-n0 bg=396cfbff
+n0 bg=5d87e2ff bd=595e6fff
 k35
-n0 bg=3467feff
+n0 bg=4d7dedff bd=55586dff
 k36
-n0 bg=3164ffff
+n0 bg=4274f5ff bd=53546dff
 k37
-n0 bg=2f62ffff
+n0 bg=396cfbff
 k38
-n0 bg=2e61ffff
+n0 bg=3467feff bd=54556dff
 k39
+n0 bg=3164ffff bd=55586dff
 k40
+n0 bg=2f62ffff bd=575b6eff
 k41
-n0 bg=2f62ffff
+n0 bg=2e61ffff bd=595e6fff
 k42
-n0 bg=3062ffff
+n0 bd=5a606fff
 k43
-n0 bg=3063ffff
+n0 bd=5c6370ff
 k44
-n0 bg=3164ffff
+n0 bg=2f62ffff bd=5d6470ff
 k45
-n0 bg=3265ffff
+n0 bg=3062ffff bd=5d6570ff
 k46
+n0 bg=3063ffff bd=5d6571ff
 k47
+n0 bg=3164ffff
 k48
-n0 bg=3366ffff
+n0 bg=3265ffff bd=5d6570ff
+k49
+k50
+n0 bd=5d6470ff
+k51
+n0 bg=3366ffff bd=5c6470ff
+k52
+n0 bd=5c6370ff
+k53
+k54

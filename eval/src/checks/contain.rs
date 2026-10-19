@@ -16,7 +16,10 @@
 //!   held for a node moved by authored motion on that axis (an offset, a
 //!   pose, a scale or a turn: an `enter: slide(top)` leaves the surface on
 //!   purpose) or held inside a clipping ancestor (`clip: true`, a
-//!   `scroll`, a `list`).
+//!   `scroll`, a `list`). What a size spring's clip hides is not drawn,
+//!   so a node is judged by what of it shows (integration-r5: a label a
+//!   squeezed chip keeps at its rest width runs past the panel's edge
+//!   hidden by the chip).
 //! - **pushed** (eval-rules-3): a node that draws, wholly inside its
 //!   surface and the clip its ancestors set at a segment's start and at
 //!   its rest, and laid at one place at both, is not drawn past them on a
@@ -608,7 +611,15 @@ fn cut(cx: &Cx) -> Vec<Finding> {
                     {
                         continue;
                     }
-                    let b = on_surface(cx, i, r, r.visual);
+                    // What of it shows: a clip an ancestor sets while
+                    // its size springs (design.md "Layout": it clips its
+                    // content while it does), or a squeezed box's
+                    // (bar-blank-on-exit), hides the rest, and what is
+                    // not drawn is not cut by the surface's edge.
+                    let Some(seen) = shown(r) else {
+                        continue;
+                    };
+                    let b = on_surface(cx, i, r, seen.map(|v| v as f32));
                     let (near, far) = (b[axis], b[axis] + b[axis + 2]);
                     // Where it started the segment and where it rests:
                     // a spring's overshoot past both is not the surface's.

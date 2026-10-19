@@ -5342,6 +5342,44 @@ fn contain_cuts_a_glide_past_both_ends_of_a_node_that_does_not_travel() {
     );
 }
 
+/// (integration-r5) The same glide, hidden past the popup's edge by a
+/// clip its ancestors set (a chip squeezed on its width clips the label
+/// it keeps at rest, shrink-keeps-edge's tray), cuts nothing: what is
+/// not drawn is not cut by the surface.
+#[test]
+fn contain_does_not_cut_what_a_clip_hides_past_the_edge() {
+    let sc = scenario("");
+    let mut t = shrinking(|_| 40.0, |_| 40.0);
+    for f in &mut t.frames {
+        for r in &mut f.n {
+            if r.key == "card" {
+                r.laid[3] = 40.0;
+                let dy = if (1..6).contains(&f.k) {
+                    20.0 * (1.0 - f.k as f32 / 6.0)
+                } else {
+                    0.0
+                };
+                r.visual[1] = dy;
+                r.drawn[1] = dy;
+                if dy > 0.0 {
+                    r.mot = Motions::GLIDE.0;
+                    r.emot = Motions::GLIDE.0;
+                    r.clip = Some([0.0, 0.0, 120.0, 40.0]);
+                }
+            }
+        }
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("card") && f.msg.starts_with("cut")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// A col (`col`) holding `a` (at 0, 10 tall), then `n`, entering at
 /// tick 1 from height 0 (a size spring to 10, `first` px at its first
 /// frame), then `b`; the col's gap is 8. `b` is laid `step` px further
