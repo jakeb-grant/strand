@@ -171,6 +171,31 @@ fn rigid_of(tree: &SceneTree, node: NodeId) -> bool {
         || (kind == "text" && !cuts)
 }
 
+/// (eval-rules-4) A `split`'s padding, or a split part's margin, as
+/// written in numbers (`checks::placement`'s `centre`); `None` for any
+/// other kind, or when a token, an expression or a split's border leaves
+/// it unknown here.
+fn inset_of(tree: &SceneTree, node: NodeId) -> Option<[f32; 4]> {
+    let n = tree.get(node)?;
+    let prop = match n.kind.name() {
+        "split" => {
+            if n.get(Prop::Border).is_some() {
+                return None;
+            }
+            Prop::Pad
+        }
+        "start" | "center" | "end" => Prop::Margin,
+        _ => return None,
+    };
+    match n.get(prop) {
+        None => Some([0.0; 4]),
+        Some(v) => {
+            let i = v.insets()?;
+            Some([i.top, i.right, i.bottom, i.left])
+        }
+    }
+}
+
 /// (eval-rules) The axes on which a surface is sized by its content: a
 /// `popup` or `panel` with no `width` (or `size`) is as wide as what it
 /// holds, one with no `height` as tall. A bar is sized by its screen
@@ -304,6 +329,7 @@ impl Labels {
             stagger: stagger_of(tree, node),
             clips: clips_of(tree, node),
             rigid: rigid_of(tree, node),
+            inset: inset_of(tree, node),
         });
         key
     }

@@ -108,6 +108,39 @@ pub struct SurfaceInfo {
     /// panel with no width, or no height): `[w, h]`.
     #[serde(default, skip_serializing_if = "is_fixed")]
     pub content: [bool; 2],
+    /// (eval-rules-4) Its placement as declared (`SurfaceSpec`'s props,
+    /// never where the surface manager put it), from tick `k` on: one
+    /// entry per change, for `checks::placement`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<PlaceRec>,
+}
+
+/// (eval-rules-4) A surface's declared placement from tick `k`: its
+/// layer, a bar's edge, `anchor:`, `margin` (top, right, bottom, left)
+/// and whether it is set, `attach:`, whether a popup is a tooltip, a
+/// popup's parent surface and the key of the element it opens from, and
+/// its declared width and height.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlaceRec {
+    pub k: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<String>,
+    pub anchor: String,
+    pub margin: [f32; 4],
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub margin_set: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attach: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tooltip: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub size: [Option<f32>; 2],
 }
 
 fn is_fixed(c: &[bool; 2]) -> bool {
@@ -150,6 +183,11 @@ pub struct NodeMeta {
     /// (`labels::rigid_of`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rigid: bool,
+    /// (eval-rules-4) For a `split`, what of its box is not its content
+    /// (its padding; top, right, bottom, left); for a split's part, its
+    /// margin. `None` when not known (a token, a border) or another kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset: Option<[f32; 4]>,
 }
 
 /// The parts of an `enter` pose the checks read.
@@ -339,6 +377,68 @@ pub struct Frame {
     /// drag gives each.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drags: BTreeMap<String, f32>,
+    /// (eval-rules-4) Each `image` and `icon` drawn this frame: where
+    /// each of its decodes went (`strand_render::probe::ImageDrawn`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imgs: Vec<ImageRec>,
+    /// (eval-rules-4) Each text drawn cut to its line box from the
+    /// layout shaped for it: its lines and its unbounded layout's stops
+    /// (`strand_render::probe::CutDrawn`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<LinesRec>,
+    /// (eval-rules-4) Per painted surface that blended a crossfade on
+    /// the CPU: its new frame and its snapshot blended again here at the
+    /// frame's weight, against the blend it drew (`checks::redraw`'s
+    /// `blend` arm). Never in the digest, as `redraw`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blend: BTreeMap<u32, BlendRec>,
+}
+
+/// (eval-rules-4) One decode of an image node as drawn, surface logical
+/// px before transforms: the node's box, where the whole pixmap went,
+/// the pixmap's size, the source's size, the fit asked for and the fit
+/// the pixmap was decoded by, and whether it stands in for a decode of
+/// another box size.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImageRec {
+    pub key: String,
+    pub s: u32,
+    pub rect: Rect,
+    pub dest: Rect,
+    pub px: [u32; 2],
+    pub src: [f64; 2],
+    pub fit: String,
+    pub pfit: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stand_in: bool,
+}
+
+/// (eval-rules-4) A text drawn cut to its line box `fit` (the row's).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinesRec {
+    pub key: String,
+    pub s: u32,
+    /// The text (the drawn layout's stops count bytes of it, or of it
+    /// cut and ended with an ellipsis).
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ellipsis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_lines: Option<u32>,
+    /// The drawn layout's cluster stops: byte in `shaped`, x, line.
+    pub stops: Vec<(u32, f32, u32)>,
+    /// The unbounded layout's stops (byte in `text`, x), when one line.
+    pub natural: Vec<(u32, f32)>,
+}
+
+/// (eval-rules-4) A CPU crossfade frame blended again by the check's
+/// own arithmetic: the largest channel difference from the blend drawn,
+/// how many bytes differ by more than one step, and the weight.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BlendRec {
+    pub w: f32,
+    pub worst: u8,
+    pub off: u64,
 }
 
 /// (eval-rules-2) The pointer at a frame.
@@ -825,6 +925,10 @@ impl RunTrace {
             {
                 put(&(&f.period, &f.sp, &f.rolls));
                 put(&(&f.cuts, &f.ptr, &f.drags));
+            }
+            // (eval-rules-4) Images' decodes and cut texts' lines.
+            if !(f.imgs.is_empty() && f.lines.is_empty()) {
+                put(&(&f.imgs, &f.lines));
             }
         }
         put(&self.segments);

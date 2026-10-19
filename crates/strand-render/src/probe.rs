@@ -243,6 +243,55 @@ pub struct NodeTrace {
     /// (eval-rules-2) A slider held in a drag: the value the drag gives
     /// it (`Widgets::drags`), which it draws until the release.
     pub drag: Option<f32>,
+    /// (eval-rules-4) An `image` or `icon`'s decodes as drawn this frame
+    /// (an image swap's old one first): where each pixmap went in its
+    /// box, so a check places the source by `fit:` itself.
+    pub images: Vec<ImageDrawn>,
+    /// (eval-rules-4) A text cut to its box (`fit`), drawn from the
+    /// layout shaped for that line box at this scale: its lines and its
+    /// unbounded layout's cluster stops, so a check sees whether each
+    /// line keeps all that fits.
+    pub cut: Option<CutDrawn>,
+}
+
+/// (eval-rules-4) One decode of an `image` or `icon` as drawn: the facts
+/// of the pixels, never where a fit would put them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageDrawn {
+    /// The box it is drawn into: the node's box, its edges on the
+    /// physical pixels it fills, surface logical pixels, before
+    /// transforms.
+    pub rect: LogicalRect,
+    /// Where the whole decoded pixmap is drawn, surface logical pixels.
+    pub dest: LogicalRect,
+    /// The pixmap's size, pixels.
+    pub pixmap: [u32; 2],
+    /// The source's size as decoded (`Decoded::source`): what the decode
+    /// placed in the pixmap, by `fit`, at the pixmap's size.
+    pub source: [f64; 2],
+    /// `fit:` as the node has it (`contain` unless set), and the fit the
+    /// decode placed the source in its pixmap by.
+    pub fit: &'static str,
+    pub pixmap_fit: &'static str,
+    /// A decode for another box size stands in while its own is made.
+    pub stand_in: bool,
+}
+
+/// (eval-rules-4) A text drawn cut to its line box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutDrawn {
+    /// The text it was asked to show (the drawn layout's stops count
+    /// bytes of it, or of it cut and ended with an ellipsis).
+    pub text: Arc<str>,
+    /// `ellipsis:` (`end`, `start`, `middle`) and `max_lines`, as asked.
+    pub ellipsis: Option<&'static str>,
+    pub max_lines: Option<u32>,
+    /// The drawn layout's cluster stops (byte in `shaped`, x from the
+    /// layout's left edge, line), logical pixels.
+    pub stops: Vec<(u32, f32, u32)>,
+    /// The unbounded layout's cluster stops (byte in `text`, x), when it
+    /// is one line: how wide each prefix of the text is.
+    pub natural: Vec<(u32, f32)>,
 }
 
 /// (eval-rules-2) A rolling text in one frame (`crate::effects::roll`).

@@ -101,8 +101,35 @@ fn shown(r: &Row) -> Option<[f64; 4]> {
     (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
 }
 
+/// (eval-rules-4) What of a text's glyphs shows: its ink as drawn, cut by
+/// its ancestors' clip; `None` when it has no ink, nothing of it shows,
+/// or a scale or turn above it leaves its ink (drawn before transforms)
+/// elsewhere than its box.
+fn shown_ink(r: &Row) -> Option<[f64; 4]> {
+    let mut v = r.ink?.map(f64::from);
+    // Drawn before transforms: moved as its box is to where it shows (a
+    // surface pose's offset, snapping).
+    v[0] += f64::from(r.visual[0] - r.drawn[0]);
+    v[1] += f64::from(r.visual[1] - r.drawn[1]);
+    let [x0, y0, x1, y1] = match r.clip {
+        Some(c) => {
+            let c = c.map(f64::from);
+            [
+                v[0].max(c[0]),
+                v[1].max(c[1]),
+                (v[0] + v[2]).min(c[0] + c[2]),
+                (v[1] + v[3]).min(c[1] + c[3]),
+            ]
+        }
+        None => [v[0], v[1], v[0] + v[2], v[1] + v[3]],
+    };
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
 /// `held`: what a box whose size springs (or that exits to a size) lays
-/// out shows inside its drawn box.
+/// out shows inside its drawn box: its boxes, and (eval-rules-4) a
+/// text's glyphs, which reach past its box when it is narrower than its
+/// text (a growing badge's label): the sizing box clips both.
 fn held(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let trace = cx.trace;
@@ -154,7 +181,22 @@ fn held(cx: &Cx) -> Vec<Finding> {
                 {
                     continue;
                 }
-                let Some(e) = shown(d) else { continue };
+                let Some(mut e) = shown(d) else { continue };
+                // Its glyphs, where no scale above it leaves them (drawn
+                // before transforms) elsewhere than its box.
+                let square = cx.lineage(k2).iter().all(|a| {
+                    rows.get(*a).is_none_or(|r| {
+                        (r.scale[0] - 1.0).abs() < 1e-4 && (r.scale[1] - 1.0).abs() < 1e-4
+                    })
+                });
+                if square && let Some(g) = shown_ink(d) {
+                    let (x0, y0) = (e[0].min(g[0]), e[1].min(g[1]));
+                    let (x1, y1) = (
+                        (e[0] + e[2]).max(g[0] + g[2]),
+                        (e[1] + e[3]).max(g[1] + g[3]),
+                    );
+                    e = [x0, y0, x1 - x0, y1 - y0];
+                }
                 boxes += 1;
                 let over = [
                     b[0] - e[0],

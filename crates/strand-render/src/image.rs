@@ -86,6 +86,16 @@ pub enum Fit {
 }
 
 impl Fit {
+    /// The keyword `fit:` writes it as.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fit::Contain => "contain",
+            Fit::Cover => "cover",
+            Fit::Fill => "fill",
+            Fit::None => "none",
+        }
+    }
+
     pub fn from_name(n: &str) -> Option<Self> {
         Some(match n {
             "contain" => Fit::Contain,

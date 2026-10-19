@@ -5803,3 +5803,498 @@ fn contain_other_axis_follows_a_stretch_its_siblings_make() {
     let r = check(&sc, &t);
     assert!(other(&r), "{}", show(&r, &t));
 }
+
+// (eval-rules-4) Placement, fills, a parent's fold, a crossfade's blend,
+// glyphs a sizing box holds, and a box turned by its own transform.
+
+use strand_eval::trace::{ImageRec, LinesRec, PlaceRec};
+
+fn place(anchor: &str) -> PlaceRec {
+    PlaceRec {
+        anchor: anchor.into(),
+        layer: Some("top".into()),
+        ..PlaceRec::default()
+    }
+}
+
+fn surface(id: u32, kind: &str, root: &str, p: PlaceRec) -> SurfaceInfo {
+    SurfaceInfo {
+        id,
+        label: format!("{kind} {root}"),
+        kind: kind.into(),
+        root: root.into(),
+        places: vec![p],
+        ..SurfaceInfo::default()
+    }
+}
+
+/// A top bar (surface 1) with a button `btn` at x 100..140, and a popup
+/// `pop` (surface 2, 80 × 50) opened from it at `at` on the output.
+fn bar_popup(at: [f32; 2]) -> RunTrace {
+    let mut t = shape(4, |_| {
+        let bar = row("bar", [0.0, 0.0, 400.0, 30.0]).draws();
+        let btn = row("btn", [100.0, 5.0, 40.0, 20.0]).draws();
+        let mut pop = row("pop", [0.0, 0.0, 80.0, 50.0]).draws();
+        pop.surface = 2;
+        vec![bar, btn, pop]
+    });
+    t.nodes.get_mut("btn").unwrap().parent = Some("bar".into());
+    for f in &mut t.frames {
+        f.sizes.insert(1, [400.0, 30.0]);
+        f.sizes.insert(2, [80.0, 50.0]);
+        f.origins.insert(1, [0.0, 0.0]);
+        f.origins.insert(2, at);
+        f.painted = vec![1, 2];
+    }
+    let mut bar = place("center");
+    bar.edge = Some("top".into());
+    let mut pop = place("center");
+    pop.layer = None;
+    pop.parent = Some(1);
+    pop.from = Some("btn".into());
+    t.surfaces = vec![
+        surface(1, "bar", "bar", bar),
+        surface(2, "popup", "pop", pop),
+    ];
+    t.seal();
+    t
+}
+
+/// A bar's popup opens below the whole bar, 6 px from it while `margin`
+/// is unset, centred on its anchor (spec.md 5.1); the submenu-geometry
+/// mutant's shape is a popup placed elsewhere.
+#[test]
+fn placement_holds_a_popup_to_its_anchor() {
+    let sc = scenario("screen = { width = 400, height = 300, scale = 1.0 }");
+    let t = bar_popup([80.0, 36.0]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Placement),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    for (at, axis) in [([80.0, 33.0], "y"), ([60.0, 36.0], "x")] {
+        let t = bar_popup(at);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Placement, "pop", axis),
+            "{at:?}: {}",
+            show(&r, &t)
+        );
+    }
+    // Where the place does not fit on the output, the compositor slides
+    // it: not judged.
+    let sc = scenario("screen = { width = 400, height = 60, scale = 1.0 }");
+    let t = bar_popup([80.0, 10.0]);
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Placement, "pop", "y"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A top bar 30 px thick (surface 1) and a panel `card` (surface 2,
+/// 100 × 60, `anchor: top_right; margin: 8`) at `at` on a 400 px output.
+fn margined(at: [f32; 2], attach: Option<&str>) -> RunTrace {
+    let mut t = shape(4, |_| {
+        let bar = row("bar", [0.0, 0.0, 400.0, 30.0]).draws();
+        let mut card = row("card", [0.0, 0.0, 100.0, 60.0]).draws();
+        card.surface = 2;
+        vec![bar, card]
+    });
+    for f in &mut t.frames {
+        f.sizes.insert(1, [400.0, 30.0]);
+        f.sizes.insert(2, [100.0, 60.0]);
+        f.origins.insert(1, [0.0, 0.0]);
+        f.origins.insert(2, at);
+        f.painted = vec![1, 2];
+    }
+    let mut bar = place("center");
+    bar.edge = Some("top".into());
+    let mut card = place(if attach.is_some() {
+        "bottom_right"
+    } else {
+        "top_right"
+    });
+    card.margin = [8.0; 4];
+    card.margin_set = true;
+    card.attach = attach.map(String::from);
+    t.surfaces = vec![
+        surface(1, "bar", "bar", bar),
+        surface(2, "panel", "card", card),
+    ];
+    t.seal();
+    t
+}
+
+/// A layer surface lies its margin inside what the bars' exclusive zones
+/// leave of the output (layer-shell); `attach:` anchors a panel to its
+/// edge and not the opposite one. The layer-margin-overhang mutant's
+/// shape is a card off its margin.
+#[test]
+fn placement_holds_a_layer_surface_to_its_margin() {
+    let sc = scenario("screen = { width = 400, height = 300, scale = 1.0 }");
+    let t = margined([292.0, 38.0], None);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Placement),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    for (at, axis) in [([292.0, 33.0], "y"), ([297.0, 38.0], "x")] {
+        let t = margined(at, None);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Placement, "card", axis),
+            "{at:?}: {}",
+            show(&r, &t)
+        );
+    }
+    // `anchor: bottom_right; attach: top`: anchored to the top, not the
+    // bottom.
+    let t = margined([292.0, 38.0], Some("top"));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Placement),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = margined([292.0, 232.0], Some("top"));
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Placement, "card", "y"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A split (`pad: 0, 8`) 300 px wide on the bar, its `center` at `x`.
+fn split_at(x: f32) -> RunTrace {
+    let mut t = shape(3, |_| {
+        vec![
+            row("sp", [0.0, 0.0, 300.0, 30.0]),
+            row("lead", [8.0, 5.0, 140.0, 20.0]).draws(),
+            row("mid", [x, 5.0, 40.0, 20.0]).draws(),
+        ]
+    });
+    let sp = t.nodes.get_mut("sp").unwrap();
+    sp.kind = "split".into();
+    sp.inset = Some([0.0, 8.0, 0.0, 8.0]);
+    let mid = t.nodes.get_mut("mid").unwrap();
+    mid.kind = "center".into();
+    mid.parent = Some("sp".into());
+    mid.inset = Some([0.0; 4]);
+    t.nodes.get_mut("lead").unwrap().parent = Some("sp".into());
+    t.seal();
+    t
+}
+
+/// A split's `center` is centred on the split "whatever the other two
+/// hold" (spec.md 6): the split-sides mutant's shape is one pushed off.
+#[test]
+fn placement_centres_a_splits_center() {
+    let sc = scenario("");
+    let t = split_at(130.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Placement),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = split_at(134.0);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Placement, "mid", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A 200 × 200 source in a 100 × 50 box with `fit: contain`, drawn from
+/// a pixmap of `px` decoded by contain, at `dest`.
+fn image_at(px: [u32; 2], dest: [f32; 4]) -> RunTrace {
+    let mut t = shape(2, |_| vec![row("art", [0.0, 0.0, 100.0, 50.0]).draws()]);
+    for f in &mut t.frames {
+        f.imgs.push(ImageRec {
+            key: "art".into(),
+            s: 1,
+            rect: [0.0, 0.0, 100.0, 50.0],
+            dest,
+            px,
+            src: [200.0, 200.0],
+            fit: "contain".into(),
+            pfit: "contain".into(),
+            stand_in: px != [100, 50],
+        });
+    }
+    t.seal();
+    t
+}
+
+/// An image's source shows where its `fit:` puts it, a decode for
+/// another size standing in included (image-standin-offset's shape: the
+/// stand-in stretched to the box).
+#[test]
+fn placement_fits_an_image_and_its_stand_in() {
+    let sc = scenario("");
+    for (px, dest) in [
+        ([100, 50], [0.0, 0.0, 100.0, 50.0]),
+        ([80, 80], [25.0, 0.0, 50.0, 50.0]),
+    ] {
+        let t = image_at(px, dest);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Placement),
+            Status::Pass,
+            "{px:?}: {}",
+            show(&r, &t)
+        );
+    }
+    let t = image_at([80, 80], [0.0, 0.0, 100.0, 50.0]);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Placement)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("art") && f.msg.starts_with("fit")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// "aaa bbb ccc", 10 px a character, in a line box `fit` wide, drawn on
+/// `lines` (each line's first byte), or cut to "aaa …" when `cut`.
+fn cut_text(fit: f32, lines: &[u32], cut: bool) -> RunTrace {
+    let text = "aaa bbb ccc";
+    let mut t = shape(2, |_| {
+        let mut r = row("t", [0.0, 0.0, fit, 20.0]);
+        r.fit = Some(fit);
+        vec![r]
+    });
+    let stops: Vec<(u32, f32, u32)> = if cut {
+        (0..=4)
+            .map(|b| (b, 10.0 * b as f32, 0))
+            .chain([(7, 50.0, 0)])
+            .collect()
+    } else {
+        let mut v = Vec::new();
+        for (n, s) in lines.iter().enumerate() {
+            let e = lines.get(n + 1).copied().unwrap_or(text.len() as u32);
+            for b in *s..=e {
+                if b < e || n + 1 == lines.len() {
+                    v.push((b, 10.0 * (b - s) as f32, n as u32));
+                }
+            }
+        }
+        v
+    };
+    for f in &mut t.frames {
+        f.lines.push(LinesRec {
+            key: "t".into(),
+            s: 1,
+            text: text.into(),
+            ellipsis: cut.then(|| "end".into()),
+            max_lines: cut.then_some(1),
+            stops: stops.clone(),
+            natural: (0..=text.len() as u32)
+                .map(|b| (b, 10.0 * b as f32))
+                .collect(),
+        });
+    }
+    t.seal();
+    t
+}
+
+/// A cut text keeps on each line what fits (text-width-scale's shape: a
+/// line box shaped narrower than it is drawn, so lines break early and
+/// an ellipsis cuts words that fit).
+#[test]
+fn ink_fills_each_line_of_a_cut_text() {
+    let sc = scenario("");
+    let fills = |r: &Report| {
+        r.failures(CheckId::Ink)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("t") && f.msg.starts_with("fills"))
+    };
+    for t in [cut_text(60.0, &[0, 4, 8], false), cut_text(80.0, &[], true)] {
+        let r = check(&sc, &t);
+        assert!(!fills(&r), "{}", show(&r, &t));
+    }
+    for t in [cut_text(100.0, &[0, 4], false), cut_text(100.0, &[], true)] {
+        let r = check(&sc, &t);
+        assert!(fills(&r), "{}", show(&r, &t));
+    }
+}
+
+/// A col holding `a` (exiting to `height: 0`, gone at tick 5) over `b`;
+/// the col's laid height keeps `extra` px more than its rows hold until
+/// `a` unmounts.
+fn unmounting(extra: f32) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let h = (30.0 - 7.5 * k as f32).max(0.0);
+        let mut v = Vec::new();
+        let ah = if k < 5 { h } else { 0.0 };
+        let col_h = ah + 30.0 + if k < 5 { extra } else { 0.0 };
+        v.push(row("col", [0.0, 0.0, 100.0, col_h]));
+        if k < 5 {
+            let mut a = row("a", [0.0, 0.0, 100.0, h]).draws();
+            if k > 0 {
+                a = a.mot(Motions::EXIT);
+            }
+            v.push(a);
+        }
+        v.push(row("b", [0.0, ah, 100.0, 30.0]).draws());
+        v
+    });
+    for k in ["a", "b"] {
+        t.nodes.get_mut(k).unwrap().parent = Some("col".into());
+    }
+    t.nodes.get_mut("a").unwrap().exit = Some(Pose {
+        h: Some(0.0),
+        ..Pose::default()
+    });
+    t.seal();
+    t
+}
+
+/// Unmounting moves nothing, what holds the slot included (fold-last-gap
+/// and toast-stack's shape: a gap kept until the row goes).
+#[test]
+fn fold_holds_the_parent_of_a_row_that_unmounts() {
+    let sc = scenario("");
+    let parent_steps = |r: &Report| {
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("col") && f.msg.starts_with("fold"))
+    };
+    let t = unmounting(0.0);
+    let r = check(&sc, &t);
+    assert!(!parent_steps(&r), "{}", show(&r, &t));
+    let t = unmounting(12.0);
+    let r = check(&sc, &t);
+    assert!(parent_steps(&r), "{}", show(&r, &t));
+    // Its own size springing: the step is its spring's to judge.
+    let mut t = unmounting(12.0);
+    for f in &mut t.frames {
+        f.n[0].mot = Motions::SIZE_SPRING.0;
+    }
+    t.seal();
+    let r = check(&sc, &t);
+    assert!(!parent_steps(&r), "{}", show(&r, &t));
+}
+
+/// A crossfade's blend is the new frame weighted over the snapshot
+/// (crossfade-weights' shape: the weight eased or turned round).
+#[test]
+fn redraw_reblend_weighs_the_new_frame_over_the_old() {
+    use strand_eval::checks::redraw::{BLEND_STEPS, reblend};
+    let (new, old) = ([200u8; 4], [100u8; 4]);
+    let ok = reblend(&new, &old, &[125, 126, 124, 127], 0.25);
+    assert_eq!((ok.off, ok.worst), (0, 2));
+    let turned = reblend(&new, &old, &[175; 4], 0.25);
+    assert_eq!(turned.off, 4);
+    assert!(turned.worst > BLEND_STEPS);
+    let short = reblend(&new, &old[..2], &[125; 4], 0.25);
+    assert_eq!(short.worst, u8::MAX);
+    // A frame's failing blend is a redraw finding on its surface.
+    let mut t = shape(2, |_| vec![row("bar", [0.0, 0.0, 300.0, 30.0]).draws()]);
+    t.frames[1].blend.insert(1, turned);
+    t.frames[2].blend.insert(1, ok);
+    t.seal();
+    let found = strand_eval::checks::redraw::findings(&t);
+    assert_eq!(
+        found
+            .iter()
+            .filter(|f| f.axis.as_deref() == Some("blend"))
+            .count(),
+        1,
+        "{found:?}"
+    );
+}
+
+/// A label wider than the chip whose width springs from 40: its glyphs
+/// past the chip's edge are clipped, or not (clip-sizing's shape on
+/// set F's muted badge).
+fn growing_chip(clipped: bool) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let w = 40.0 + 20.0 * k as f32;
+        let chip = row("chip", [10.0, 0.0, w, 30.0])
+            .draws()
+            .mot(Motions::SIZE_SPRING);
+        let mut text = row("label", [20.0, 5.0, w - 20.0, 20.0]);
+        text.text = Some("S".into());
+        text.ink = Some([20.0, 6.0, 150.0, 16.0]);
+        if clipped {
+            text.clip = Some([10.0, 0.0, w, 30.0]);
+            let c = [20.0, 6.0, (w - 10.0).min(150.0), 16.0];
+            text.ink = Some(c);
+        }
+        vec![chip, text]
+    });
+    t.nodes.get_mut("label").unwrap().parent = Some("chip".into());
+    t.seal();
+    t
+}
+
+/// A box whose size springs clips its text's glyphs too, not only its
+/// boxes.
+#[test]
+fn contain_holds_the_glyphs_a_sizing_box_lays_out() {
+    let sc = scenario("");
+    let held = |r: &Report| {
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("label") && f.msg.starts_with("held"))
+    };
+    let t = growing_chip(true);
+    let r = check(&sc, &t);
+    assert!(!held(&r), "{}", show(&r, &t));
+    let t = growing_chip(false);
+    let r = check(&sc, &t);
+    assert!(held(&r), "{}", show(&r, &t));
+}
+
+/// A card turned by its own `rotate` and back: its visual (bounding)
+/// box grows as it turns, its box before transforms stays.
+fn turning(auth: Axes, slide: f32) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let a = if k == 0 || k == 6 { 0.0 } else { 10.0 };
+        let mut r = row("card", [50.0, 0.0, 100.0, 30.0]).draws().auth(auth);
+        r.rotate = a;
+        if a != 0.0 {
+            r.visual = [45.0, -8.0, 110.0, 46.0];
+            r.drawn[0] += slide;
+        }
+        vec![r]
+    });
+    t.seal();
+    t
+}
+
+/// card-expand-interrupt's false alarm: an authored turn grows the
+/// visual box though nothing moved the card. Unauthored, or with the box
+/// itself moved, it strays.
+#[test]
+fn bystander_judges_an_authored_turn_by_its_box_before_transforms() {
+    let sc = scenario("");
+    let t = turning(Axes::ROTATE, 0.0);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Bystander).is_empty(),
+        "{}",
+        show(&r, &t)
+    );
+    for (auth, slide) in [(Axes::NONE, 0.0), (Axes::ROTATE, 6.0)] {
+        let t = turning(auth, slide);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Bystander, "card", "x"),
+            "{slide}: {}",
+            show(&r, &t)
+        );
+    }
+}

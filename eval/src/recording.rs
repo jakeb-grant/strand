@@ -316,6 +316,7 @@ impl Recording {
                 attached: s.attached,
                 detached: s.detached,
                 content: [false, false],
+                places: Vec::new(),
             })
             .collect();
         for (k, label) in &self.labels {

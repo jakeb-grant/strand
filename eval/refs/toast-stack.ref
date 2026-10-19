@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "toast-stack"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-rules-4: the three exiting toasts fold their gaps as they collapse (stack 93->67->46->31 and stays), where the run of collapsing slots kept two 6 px gaps until unmount and the stack stepped 12 px at k45; read in the diff, the intended fold fix"
+date 2026-10-19
+rev "a7965714+changes"
 approver "claude"
 scenario 2c006773271933ff
-seal 7b7ae492c6d323e6
+seal 6bb55ae2a9475140
 S1 0 - "panel Toasts"
 S2 0 - "bar Top"
 N0 "header|shell.strand:10:5|#0" "text#header"
@@ -210,22 +210,20 @@ n2 y=34 h=4 op=104
 n6 y=30 op=104
 n7 y=29 op=104 ink=39,30,76,11
 n9 h=46
-n10 h=4 op=104
-n11 y=25 op=104
-n12 y=23 op=104 ink=39,24,75,13
+n10 y=25 h=3 op=104
+n11 y=20 op=104
+n12 y=19 op=104 ink=39,20,75,13
 k34
 n1 h=31
 n2 y=23 h=0 op=65 ord=4 bg=-
 n6 -
 n7 -
 n9 h=31
-n10 h=0 op=65 bg=-
+n10 y=17 h=0 op=65 bg=-
 n11 -
 n12 -
 k35
-n1 h=43
 n2 op=39
-n9 h=43
 n10 op=39
 k36
 n2 op=23
@@ -253,9 +251,7 @@ k44
 n2 hid=opacity0
 n10 hid=opacity0
 k45
-n1 h=31
 n2 -
-n9 h=31
 n10 -
 k46
 s1 z=240,31

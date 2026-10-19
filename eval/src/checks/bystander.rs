@@ -4,9 +4,14 @@
 //! axis while it runs, unless authored motion moves it there; its opacity
 //! and scale, when they end where they started, do not stray unless
 //! authored. Bugs 24 and 25: the bars' laid `y` never changed, yet they
-//! fell out of the island and came back.
+//! fell out of the island and came back. (eval-rules-4) A frame under
+//! the node's own authored `scale` or `rotate` is judged by its box
+//! before transforms ([`super::transformed`]): the turn grows its
+//! visual box, and only that change is the transform's.
 
-use super::{Cx, Finding, GEOMETRY, authored, first_per_node, laid, value, way};
+use super::{
+    Cx, Finding, GEOMETRY, authored, drawn, first_per_node, laid, transformed, value, way,
+};
 use crate::scenario::CheckId;
 use crate::steps::Axis;
 
@@ -48,7 +53,8 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     if authored(r, *a) || cx.exempt(CheckId::Bystander, si, key, a.bits()) {
                         continue;
                     }
-                    let (v0, v) = (value(b, *a), value(r, *a));
+                    let val = if transformed(r) { drawn } else { value };
+                    let (v0, v) = (val(b, *a), val(r, *a));
                     if (v - v0).abs() > *give {
                         let what = if matches!(a, Axis::Opacity | Axis::Scale) {
                             format!("its {} strayed while nothing authored moves it", a.name())

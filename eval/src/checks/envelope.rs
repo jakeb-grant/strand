@@ -6,10 +6,16 @@
 //! where it started, where it rests and where each frame laid it out,
 //! `ov = max(3 px, overshoot * (hi - lo))` (3 px: morph.rs's bug-24
 //! test). Keyframes, lean, jelly and time-driven motion are out of it.
+//! (eval-rules-4) A frame under the node's own authored `scale` or
+//! `rotate` is held by its box before transforms, against the way that
+//! box takes ([`super::transformed`]).
 
 use strand_render::probe::Motions;
 
-use super::{Cx, Finding, GEOMETRY, authored, first_per_node, motions, value, way};
+use super::{
+    Cx, Finding, GEOMETRY, authored, drawn, first_per_node, motions, transformed, value, way,
+    way_by,
+};
 use crate::scenario::CheckId;
 
 /// The overshoot every glide may have, logical px.
@@ -37,6 +43,10 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 let (vs, ve) = (value(b, a), value(e, a));
                 let ov = MIN_OVERSHOOT.max(cx.sc.tolerance.overshoot * (w.hi - w.lo));
                 let (lo, hi) = (w.lo - ov, w.hi + ov);
+                // The same way of the box before transforms, for frames
+                // an authored transform turns or scales.
+                let wd = way_by(cx, key, s, seg.e, b, e, a, drawn);
+                let ovd = MIN_OVERSHOOT.max(cx.sc.tolerance.overshoot * (wd.hi - wd.lo));
                 for i in cx.tl.within(Some(s), seg.e) {
                     let Some(r) = cx.tl.row(i, key) else { continue };
                     if !cx.tl.visible(i, r)
@@ -47,7 +57,11 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     {
                         continue;
                     }
-                    let v = value(r, a);
+                    let (v, lo, hi) = if transformed(r) {
+                        (drawn(r, a), wd.lo - ovd, wd.hi + ovd)
+                    } else {
+                        (value(r, a), lo, hi)
+                    };
                     if v < lo || v > hi {
                         out.push(
                             Finding::fail(

@@ -134,6 +134,35 @@ impl Renderer {
         true
     }
 
+    /// (eval-rules-4) [`Renderer::repaint_fresh`] of `surface`'s last
+    /// frame when it was blended over a crossfade snapshot standing
+    /// alone, without that blend: the new frame into `target`, the
+    /// snapshot's pixels and the weight it was blended at, so a check
+    /// blends them again by its own arithmetic. `None`, with `target`
+    /// untouched or not, when the frame was not blended or no frame is
+    /// kept.
+    pub fn repaint_unblended(
+        &self,
+        surface: SurfaceId,
+        target: &mut PaintTarget<'_>,
+    ) -> Option<(&[u8], f32)> {
+        let last = self.probe.last.get(&surface)?;
+        let w = last.fade?;
+        if target.validate().is_err() || target.size != last.size || target.scale != last.scale {
+            return None;
+        }
+        let old = self.fade_snapshot(surface, target.size)?;
+        let mut raster = self.raster.fresh();
+        raster.paint(
+            &last.items,
+            &Damage::full(target.size),
+            &self.atlas,
+            last.scale,
+            target,
+        );
+        Some((old, w))
+    }
+
     /// (eval-sandbox, the `redraw` check's own tests only) A mutant:
     /// from now on each frame's own damage, where it is worked out from
     /// what changed, is shrunk by `px` pixels on every side, so a

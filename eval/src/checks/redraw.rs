@@ -116,6 +116,43 @@ pub fn compare(
     Some(rec)
 }
 
+/// (eval-rules-4) How far `blended`, a crossfade frame as the renderer
+/// blended it (its full repaint), lies from its new frame `new` over
+/// the snapshot `old` at weight `w` blended here: each premultiplied
+/// channel `w·new + (1 − w)·old`, rounded (design.md: a theme swap
+/// crossfades the old frame into the new one; the weight is the new
+/// frame's). Worked out from the pixels and the weight alone, never by
+/// the renderer's blend.
+pub fn reblend(new: &[u8], old: &[u8], blended: &[u8], w: f32) -> crate::trace::BlendRec {
+    let w64 = f64::from(w.clamp(0.0, 1.0));
+    let mut rec = crate::trace::BlendRec {
+        w,
+        worst: 0,
+        off: 0,
+    };
+    if new.len() != old.len() || new.len() != blended.len() {
+        rec.worst = u8::MAX;
+        rec.off = new.len().max(blended.len()) as u64;
+        return rec;
+    }
+    for ((n, o), b) in new.iter().zip(old).zip(blended) {
+        let want = (w64 * f64::from(*n) + (1.0 - w64) * f64::from(*o)).round();
+        let d = (want - f64::from(*b)).abs().min(255.0) as u8;
+        rec.worst = rec.worst.max(d);
+        if d > BLEND_STEPS {
+            rec.off += 1;
+        }
+    }
+    rec
+}
+
+/// (eval-rules-4) The channel steps a crossfade's blend may lie from the
+/// check's own: the weight is carried in 1/256ths and each channel
+/// rounded once, which moves a channel by at most one; two keeps clear
+/// of that, and a blend weighted the wrong way lies about `|2w − 1|`
+/// of the two frames' difference away.
+pub const BLEND_STEPS: u8 = 2;
+
 /// A bounding box grown pixel by pixel.
 #[derive(Clone, Copy, Debug)]
 struct Bounds {
@@ -175,6 +212,51 @@ pub fn findings(trace: &RunTrace) -> Vec<Finding> {
         ));
     }
     let mut first: std::collections::BTreeMap<(u32, bool), usize> = Default::default();
+    // (eval-rules-4) Each CPU crossfade frame's blend against the check's
+    // own: the first failing frame per surface, with the count after.
+    let mut blended: std::collections::BTreeMap<u32, usize> = Default::default();
+    for f in &trace.frames {
+        for (s, b) in &f.blend {
+            if b.off == 0 {
+                continue;
+            }
+            if let Some(i) = blended.get(s) {
+                out[*i].more += 1;
+                continue;
+            }
+            let label = trace.surfaces.iter().find(|x| x.id == *s).map_or_else(
+                || format!("surface {s}"),
+                |x| format!("surface {s} ({})", x.label),
+            );
+            blended.insert(*s, out.len());
+            out.push(
+                Finding::fail(
+                    CheckId::Redraw,
+                    format!(
+                        "blend: {label}: {} channels of its crossfade at weight {:.3} lie more \
+                         than {BLEND_STEPS} steps (worst {}) from its new frame weighted {:.3} \
+                         over its snapshot",
+                        b.off, b.w, b.worst, b.w
+                    ),
+                )
+                .at(f.k)
+                .axis("blend")
+                .got(f64::from(b.worst), [0.0, f64::from(BLEND_STEPS)]),
+            );
+        }
+    }
+    let stats: (u64, u64) = trace.frames.iter().fold((0, 0), |(n, c), f| {
+        (
+            n + f.blend.len() as u64,
+            c + f.blend.values().filter(|b| b.off > 0).count() as u64,
+        )
+    });
+    if std::env::var_os("STRAND_EVAL_RULE_STATS").is_some() {
+        eprintln!(
+            "rule-stats redraw.blend {}: frames={} failing={}",
+            trace.scenario.id, stats.0, stats.1
+        );
+    }
     for f in &trace.frames {
         for (s, r) in &f.redraw {
             let leg = if r.gpu { "GPU" } else { "CPU" };

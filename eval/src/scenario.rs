@@ -48,6 +48,9 @@ pub enum CheckId {
     /// its first frame, and a new node springs only its enter pose; an
     /// interrupted roll rolls on from the text on screen.
     Continuity,
+    /// (eval-rules-4) Each surface's card is where its declared
+    /// placement and the protocols put it; a split's `center` is centred.
+    Placement,
     Twin,
     Determinism,
     Regions,
@@ -68,7 +71,7 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    pub const ALL: [CheckId; 22] = [
+    pub const ALL: [CheckId; 23] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -81,6 +84,7 @@ impl CheckId {
         CheckId::Tiling,
         CheckId::Stagger,
         CheckId::Continuity,
+        CheckId::Placement,
         CheckId::Twin,
         CheckId::Determinism,
         CheckId::Regions,
@@ -100,7 +104,7 @@ impl CheckId {
     /// What a scenario runs without a `checks` line: every CPU check.
     /// `determinism` is the gate's to add (curated scenarios), `regions`
     /// is opt-in and `cpu-gpu` comes with `backend = "both"`.
-    pub const DEFAULT: [CheckId; 17] = [
+    pub const DEFAULT: [CheckId; 18] = [
         CheckId::Settle,
         CheckId::Bystander,
         CheckId::Envelope,
@@ -113,6 +117,7 @@ impl CheckId {
         CheckId::Tiling,
         CheckId::Stagger,
         CheckId::Continuity,
+        CheckId::Placement,
         CheckId::Twin,
         CheckId::Redraw,
         CheckId::Budget,
@@ -134,6 +139,7 @@ impl CheckId {
             CheckId::Tiling => "tiling",
             CheckId::Stagger => "stagger",
             CheckId::Continuity => "continuity",
+            CheckId::Placement => "placement",
             CheckId::Twin => "twin",
             CheckId::Determinism => "determinism",
             CheckId::Regions => "regions",

@@ -394,20 +394,53 @@ impl<'a> Build<'a> {
         // an outer size never goes below zero).
         // (late-text-dip) So does a text not shaped yet whose box is
         // nothing on that axis: it takes no room until it arrives.
+        // (eval-rules-4) A run of slots collapsing side by side gives up
+        // its gaps to the nearest neighbour that is not folding: one that
+        // is folding is (all but) nothing on the axis, and a negative
+        // margin on it would be lost the same way, leaving its gap open
+        // until it unmounts (a toast stack's last two leaving together
+        // snapped 12 px shorter as they went).
         let mut folds = vec![[0.0f32; 2]; count];
         if let Some(axis) = main.filter(|_| gap > 0.0 && count > 1) {
-            for (i, (_, c)) in children.iter().enumerate() {
-                let v = match self.sizes.get(&c.id) {
-                    Some(f) if f.size[axis].is_some() => f.size[axis].filter(|_| f.collapse[axis]),
-                    _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
-                };
-                let Some(v) = v.filter(|v| gap > *v) else {
-                    continue;
-                };
-                if i + 1 < count {
-                    folds[i + 1][0] -= gap - v;
+            let shares: Vec<Option<f32>> = children
+                .iter()
+                .map(|(_, c)| {
+                    let v = match self.sizes.get(&c.id) {
+                        Some(f) if f.size[axis].is_some() => {
+                            f.size[axis].filter(|_| f.collapse[axis])
+                        }
+                        _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
+                    };
+                    v.filter(|v| gap > *v).map(|v| gap - v)
+                })
+                .collect();
+            if shares.iter().all(Option::is_some) {
+                // Every slot folding (a list cleared at once): no
+                // neighbour can give a gap up, so the gaps themselves
+                // fold, to the largest slot left.
+                let left = shares
+                    .iter()
+                    .flatten()
+                    .map(|d| gap - d)
+                    .fold(0.0f32, f32::max);
+                let g = LengthPercentage::length(left.max(0.0));
+                if axis == 0 {
+                    style.gap.width = g;
                 } else {
-                    folds[i - 1][1] -= gap - v;
+                    style.gap.height = g;
+                }
+            } else {
+                for (i, share) in shares.iter().enumerate() {
+                    let Some(d) = *share else {
+                        continue;
+                    };
+                    let after = (i + 1..count).find(|j| shares[*j].is_none());
+                    let before = (0..i).rev().find(|j| shares[*j].is_none());
+                    match (after, before) {
+                        (Some(j), _) => folds[j][0] -= d,
+                        (None, Some(j)) => folds[j][1] -= d,
+                        (None, None) => {}
+                    }
                 }
             }
         }

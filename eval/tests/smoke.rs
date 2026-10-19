@@ -1037,3 +1037,66 @@ fn the_trace_holds_a_theme_swaps_palette_roots() {
         );
     }
 }
+
+const DECLARED: &str = r#"id = "declared"
+screen = { width = 400, height = 300, scale = 1.5 }
+=== shell.strand
+bar Top {
+  height: 30
+  split { pad: 0, 8
+    start { text "A window title long enough to be cut" { id: title; width: 120; ellipsis: end } }
+    center { box { id: mid; width: 40; height: 16; bg: #89b4fa } }
+    end { text "12:00" }
+  }
+}
+panel Card {
+  layer: top; anchor: top_right; margin: 8, 12; keyboard: none
+  open: true
+  box { width: 120; height: 40; bg: #313244 }
+}
+=== steps
+rest
+"#;
+
+/// (eval-rules-4) The trace holds what `placement` and `fills` read: each
+/// surface's placement as declared (a bar's edge, a panel's anchor and
+/// margin), a split's padding and its sections' margins, and a cut
+/// text's stops at the frame's scale; and the checks pass it.
+#[test]
+fn the_trace_holds_declared_placements_insets_and_cut_lines() {
+    let t = go(DECLARED);
+    let bar = t.surfaces.iter().find(|s| s.kind == "bar").unwrap();
+    let p = bar.places.first().unwrap();
+    assert_eq!(p.edge.as_deref(), Some("top"));
+    assert_eq!(p.size[1], Some(30.0));
+    let card = t.surfaces.iter().find(|s| s.kind == "panel").unwrap();
+    let p = card.places.first().unwrap();
+    assert_eq!(p.anchor, "top_right");
+    assert_eq!(p.margin, [8.0, 12.0, 8.0, 12.0]);
+    assert!(p.margin_set);
+    let split = t.nodes.values().find(|m| m.kind == "split").unwrap();
+    assert_eq!(split.inset, Some([0.0, 8.0, 0.0, 8.0]));
+    let title = key(&t, "title");
+    let lines: Vec<_> = t
+        .frames
+        .iter()
+        .flat_map(|f| f.lines.iter())
+        .filter(|l| l.key == title)
+        .collect();
+    assert!(!lines.is_empty());
+    let l = lines[0];
+    assert_eq!(l.ellipsis.as_deref(), Some("end"));
+    assert!(l.natural.len() > 10 && !l.stops.is_empty(), "{l:?}");
+    let r = strand_eval::checks::evaluate(&scenario(DECLARED), &t, None, None, None);
+    for c in [
+        strand_eval::checks::CheckId::Placement,
+        strand_eval::checks::CheckId::Ink,
+    ] {
+        assert_eq!(
+            r.status(c),
+            Some(&strand_eval::checks::Status::Pass),
+            "{c:?}: {:?}",
+            r.lines(&t)
+        );
+    }
+}

@@ -586,6 +586,8 @@ pub fn flatten(
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
         #[cfg(feature = "eval-hooks")]
         trace: extras.trace.then(Vec::new),
+        #[cfg(feature = "eval-hooks")]
+        probe_images: Vec::new(),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -659,6 +661,10 @@ struct Flattener<'a> {
     /// (`crate::probe`).
     #[cfg(feature = "eval-hooks")]
     trace: Option<Vec<crate::probe::NodeTrace>>,
+    /// (eval-rules-4) The decodes the image nodes drew, by node, until
+    /// each node's trace takes its own.
+    #[cfg(feature = "eval-hooks")]
+    probe_images: Vec<(NodeId, crate::probe::ImageDrawn)>,
 }
 
 /// (fillet-clip) A clip group open above the node being flattened.

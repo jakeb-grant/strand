@@ -140,6 +140,40 @@ impl Surfaces {
         })
     }
 
+    /// (eval-rules-4) Surface `id`'s placement as its spec declares it
+    /// (`checks::placement` judges where it lies against it): the
+    /// props, the parent surface a popup opens on and the element it
+    /// opens from, never the config the surface manager made of them.
+    pub fn declared(&self, id: SurfaceId, k: u32) -> Option<(NodeId, crate::trace::PlaceRec)> {
+        let sh = self.get(id)?;
+        let spec = self.specs.get(&sh.node)?;
+        let parent = match &sh.place {
+            Place::Popup { parent, .. } => self
+                .shown
+                .iter()
+                .find(|s| s.node == *parent)
+                .map(|s| s.id.0),
+            Place::Layer(_) => None,
+        };
+        let m = spec.margin;
+        Some((
+            sh.node,
+            crate::trace::PlaceRec {
+                k,
+                layer: spec.layer.map(|l| l.name().to_string()),
+                edge: spec.edge.map(|e| e.name().to_string()),
+                anchor: spec.anchor.name().to_string(),
+                margin: [m.top, m.right, m.bottom, m.left],
+                margin_set: spec.margin_set,
+                attach: spec.attach.map(|e| e.name().to_string()),
+                tooltip: spec.tooltip,
+                parent,
+                from: None,
+                size: [spec.width, spec.height],
+            },
+        ))
+    }
+
     /// The surface `id`.
     pub fn get(&self, id: SurfaceId) -> Option<&Shown> {
         self.shown.iter().find(|s| s.id == id)

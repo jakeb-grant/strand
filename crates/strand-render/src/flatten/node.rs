@@ -429,7 +429,7 @@ impl<'a> Flattener<'a> {
         // (logical), and the layout's shift in the box.
         let mut caret_at: Option<(Arc<TextLayout>, f32)> = None;
         #[cfg(feature = "eval-hooks")]
-        let (mut probe_text, mut probe_fit) = (None, None);
+        let (mut probe_text, mut probe_fit, mut probe_cut) = (None, None, None);
         if is_text
             && let Some((natural, align, colors)) =
                 natural_spec(&text_get, &scope, &font, self.scale)
@@ -481,6 +481,12 @@ impl<'a> Flattener<'a> {
             {
                 probe_text = Some(super::probe::text_drawn(shaped, self.scale, fit));
                 probe_fit = fit;
+                if self.trace.is_some()
+                    && let (Some(w), Some((l, _, _))) = (fit, &placed)
+                {
+                    probe_cut =
+                        super::probe::cut(shaped, self.scale, w, l, &natural.text, &natural.style);
+                }
             }
             self.out.text.push((node.id, natural.clone()));
             if let Some(w) = fit {
@@ -1597,6 +1603,12 @@ impl<'a> Flattener<'a> {
         if let Some(mut t) = probe {
             t.paint = super::probe::paint(&self.out.items[own_start..], s, &self.extras.texts);
             t.drag = self.extras.widgets.drags.get(&node.id).copied();
+            t.cut = probe_cut;
+            let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.probe_images)
+                .into_iter()
+                .partition(|(n, _)| *n == node.id);
+            self.probe_images = rest;
+            t.images = own.into_iter().map(|(_, i)| i).collect();
             let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
             let hidden = inert.then_some(crate::probe::Hidden::Inert);
             self.probe_push(

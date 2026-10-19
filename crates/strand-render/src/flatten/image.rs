@@ -66,6 +66,8 @@ impl Flattener<'_> {
             }
         }
         let failed = matches!(self.extras.images.get(&key), Some(Err(_)));
+        #[cfg(feature = "eval-hooks")]
+        let stand_in = !matches!(self.extras.images.get(&key), Some(Ok(_)));
         let decoded = match self.extras.images.get(&key) {
             Some(Ok(d)) => Some(d.clone()),
             Some(Err(_)) => None,
@@ -115,8 +117,35 @@ impl Flattener<'_> {
             frame.x0 + phys.w as f64,
             frame.y0 + phys.h as f64,
         );
-        let mut draw = |this: &mut Self, d: crate::image::Decoded, sig: &mut DefaultHasher| {
+        let mut draw = |this: &mut Self,
+                        d: crate::image::Decoded,
+                        sig: &mut DefaultHasher,
+                        _stand_in: bool| {
             let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
+            #[cfg(feature = "eval-hooks")]
+            if this.trace.is_some() {
+                let s = this.scale.as_f64();
+                let lg = |x: f64, y: f64, w: f64, h: f64| {
+                    strand_scene::LogicalRect::new(
+                        (x / s) as f32,
+                        (y / s) as f32,
+                        (w / s) as f32,
+                        (h / s) as f32,
+                    )
+                };
+                this.probe_images.push((
+                    node.id,
+                    crate::probe::ImageDrawn {
+                        rect: lg(rect.x0, rect.y0, rect.width(), rect.height()),
+                        dest: lg(dx, dy, dw, dh),
+                        pixmap: [d.pixmap.width() as u32, d.pixmap.height() as u32],
+                        source: [d.source.0, d.source.1],
+                        fit: fit.name(),
+                        pixmap_fit: d.fit.name(),
+                        stand_in: _stand_in,
+                    },
+                ));
+            }
             this.push(
                 Item::Image {
                     pixmap: d.pixmap,
@@ -130,7 +159,7 @@ impl Flattener<'_> {
             );
         };
         if let Some(o) = old {
-            draw(self, o, sig);
+            draw(self, o, sig, false);
         }
         if let Some(d) = decoded {
             let mask = swap.map(|(_, m)| {
@@ -139,7 +168,10 @@ impl Flattener<'_> {
                 let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
                 (self.marker(push), pop)
             });
-            draw(self, d, sig);
+            #[cfg(feature = "eval-hooks")]
+            draw(self, d, sig, stand_in);
+            #[cfg(not(feature = "eval-hooks"))]
+            draw(self, d, sig, false);
             if let Some((i, pop)) = mask {
                 self.out.items[i].bounds = phys;
                 self.marker(pop);

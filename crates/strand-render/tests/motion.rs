@@ -3527,3 +3527,69 @@ fn a_created_node_starts_at_its_values() {
     assert!(st.r.wants_frame(S), "the enter pose plays");
     st.settle(2);
 }
+
+/// (eval-rules-4) Rows leaving together on `exit { height: 0 }` fold
+/// their gaps as they collapse, whether a row stays before them (the
+/// last two of a stack) or none stays (a list cleared at once): the
+/// column holding them never steps when the collapsed rows unmount.
+#[test]
+fn rows_leaving_together_fold_their_gaps_before_they_unmount() {
+    for gone in [vec![1usize, 2], vec![0, 1, 2]] {
+        let mut col = None;
+        let mut rows = Vec::new();
+        let mut st = Stage::new(200, 200, |b, root| {
+            // In a column, sized by what it holds.
+            let outer = b.node(NodeKind::Col, Some(root), vec![]);
+            let c = b.node(NodeKind::Col, Some(outer), vec![(Prop::Gap, num(8.0))]);
+            for _ in 0..3 {
+                rows.push(b.node(
+                    NodeKind::Box,
+                    Some(c),
+                    vec![
+                        (Prop::Height, num(30.0)),
+                        (Prop::Width, num(100.0)),
+                        (Prop::Bg, color("#ff0000")),
+                        (Prop::Exit, pose(vec![(Prop::Height, num(0.0))])),
+                    ],
+                ));
+            }
+            col = Some(c);
+        });
+        let col = col.unwrap();
+        assert_eq!(st.rect(col).h, 3.0 * 30.0 + 2.0 * 8.0);
+        let mut d = SceneDiff::new();
+        for i in &gone {
+            d.push(SceneOp::Remove {
+                id: rows[*i],
+                window: false,
+            });
+        }
+        st.apply(d);
+        // The column's height each frame, and whether the leaving rows
+        // are still mounted.
+        let mut seen = Vec::new();
+        let mut k = 1;
+        while st.r.wants_frame(S) {
+            st.paint(frame(k));
+            let mounted = st.r.boxes(S).unwrap().rects.contains_key(&rows[gone[0]]);
+            seen.push((st.rect(col).h, mounted));
+            k += 1;
+            assert!(k < 400, "never settled");
+        }
+        st.paint(frame(k));
+        seen.push((st.rect(col).h, false));
+        let left = 3 - gone.len();
+        let rest = if left == 0 {
+            0.0
+        } else {
+            left as f32 * 30.0 + (left - 1) as f32 * 8.0
+        };
+        assert_eq!(seen.last().unwrap().0, rest, "{gone:?}: {seen:?}");
+        let at = seen.iter().position(|(_, m)| !m).unwrap();
+        assert!(at > 0, "{gone:?}: {seen:?}");
+        assert!(
+            (seen[at].0 - seen[at - 1].0).abs() <= 0.5,
+            "{gone:?}: unmounting steps the column: {seen:?}"
+        );
+    }
+}

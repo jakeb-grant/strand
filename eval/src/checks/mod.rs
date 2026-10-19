@@ -45,6 +45,7 @@ pub mod determinism;
 pub mod envelope;
 pub mod expect;
 pub mod ink;
+pub mod placement;
 pub mod redraw;
 pub mod reference;
 pub mod regions;
@@ -417,6 +418,32 @@ pub fn value(r: &Row, a: Axis) -> f64 {
     })
 }
 
+/// (eval-rules-4) `r`'s own `scale` or `rotate` is authored and not the
+/// identity this frame: the box it is drawn in is turned or scaled by
+/// it, so its visual box changes as the transform plays though nothing
+/// moved it. Such a frame is judged by its box before transforms
+/// ([`drawn`]): the transform's own way is its spring's, held by
+/// `continuity` and `coherence`'s pivot, and only the box changes it
+/// causes are exempt.
+pub fn transformed(r: &Row) -> bool {
+    Axes(r.auth).intersects(Axes::SCALE | Axes::ROTATE)
+        && ((r.scale[0] - 1.0).abs() > 1e-4
+            || (r.scale[1] - 1.0).abs() > 1e-4
+            || r.rotate.abs() > 1e-3)
+}
+
+/// (eval-rules-4) An axis's value in a row before the node's own and
+/// its ancestors' transforms (opacity and scale: as [`value`]).
+pub fn drawn(r: &Row, a: Axis) -> f64 {
+    f64::from(match a {
+        Axis::X => r.drawn[0],
+        Axis::Y => r.drawn[1],
+        Axis::W => r.drawn[2],
+        Axis::H => r.drawn[3],
+        _ => return value(r, a),
+    })
+}
+
 /// An axis's laid value (opacity and scale: their drawn values).
 pub fn laid(r: &Row, a: Axis) -> f64 {
     f64::from(match a {
@@ -483,7 +510,23 @@ pub const LAYOUT_CAUSES: Motions = Motions(
 /// layout pass a frame threw away (the estimate's, before the shaped
 /// text's in the same frame) never does.
 pub fn way(cx: &Cx, key: &str, s: u32, e_k: u32, b: &Row, e: &Row, a: Axis) -> Way {
-    let (vs, ve) = (value(b, a), value(e, a));
+    way_by(cx, key, s, e_k, b, e, a, value)
+}
+
+/// (eval-rules-4) [`way`] with the start and rest read by `val` (the
+/// visual box, or [`drawn`] for a frame under an authored transform).
+#[allow(clippy::too_many_arguments)]
+pub fn way_by(
+    cx: &Cx,
+    key: &str,
+    s: u32,
+    e_k: u32,
+    b: &Row,
+    e: &Row,
+    a: Axis,
+    val: fn(&Row, Axis) -> f64,
+) -> Way {
+    let (vs, ve) = (val(b, a), val(e, a));
     let carry = ve - laid(e, a);
     let (mut lo, mut hi) = (vs.min(ve), vs.max(ve));
     let (lb, le) = (laid(b, a), laid(e, a));
@@ -892,6 +935,7 @@ pub fn evaluate(
                 }
                 CheckId::Stagger => (stagger::run(&cx), None),
                 CheckId::Continuity => (continuity::run(&cx), None),
+                CheckId::Placement => (placement::run(&cx), None),
                 CheckId::Twin if trace.scenario.reduced_motion => {
                     (Vec::new(), skip("the scenario reduces motion itself"))
                 }

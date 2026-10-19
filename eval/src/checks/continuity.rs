@@ -543,6 +543,39 @@ fn fold(cx: &Cx) -> Vec<Finding> {
             // changed was moved by the change, not by the fold (design.md
             // "Reordering uses FLIP": a sorted list inserting a row and
             // moving another), and its glide is its own.
+            // (eval-rules-4) Unmounting moves nothing, what holds the
+            // slot included: its laid length on the axis steps by no more
+            // than the slot (a content-sized card does not snap shorter
+            // as its last rows unmount), unless its own size springs. On
+            // the frame a node enters from zero the parent is not held:
+            // a content-sized surface may already take its new size and
+            // its root stretch to it (the growth of content-sized
+            // surfaces is the owner's question, decisions.md).
+            let springs = |r: &crate::trace::Row| Motions(r.mot).contains(Motions::SIZE_SPRING);
+            let unmounts = folding.iter().all(|(k, _)| tl.row(b, k).is_none());
+            let grew = f64::from(pb.laid[2 + axis] - pa.laid[2 + axis]);
+            if unmounts && !(springs(pa) || springs(pb) || cx.allowed(CheckId::Continuity, p)) {
+                held += 1;
+                if grew.abs() > bound {
+                    let who = folding[0].0;
+                    let label = cx.trace.nodes.get(who).map_or(who, |m| m.label.as_str());
+                    out.push(
+                        Finding::fail(
+                            CheckId::Continuity,
+                            format!(
+                                "fold: {label} unmounts at size 0 here, taking a slot of at most \
+                                 {slot:.1} px, yet the {} of what holds it steps {grew:.1} px \
+                                 at once: its slot did not fold with it",
+                                ["width", "height"][axis]
+                            ),
+                        )
+                        .at(tl.ks[b])
+                        .node(p)
+                        .axis(["w", "h"][axis])
+                        .got(grew.abs(), [0.0, bound]),
+                    );
+                }
+            }
             let order = |kids: &[(&str, &crate::trace::Row)], k: &str| -> Option<usize> {
                 let at = kids.iter().find(|(q, _)| *q == k)?.1.laid[axis];
                 Some(

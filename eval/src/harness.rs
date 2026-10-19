@@ -588,6 +588,9 @@ struct Harness {
     /// This tick's `redraw` comparisons by surface, with the difference
     /// each found (`None`: none).
     redraws: BTreeMap<u32, Option<RedrawRec>>,
+    /// (eval-rules-4) This tick's crossfade blends redone by the check's
+    /// own arithmetic, by surface.
+    blends: BTreeMap<u32, crate::trace::BlendRec>,
     /// The `redraw` check's GPU device, once a GPU-drawn frame needs it.
     fresh_gpu: Option<Fresh>,
     /// (eval-surface-leg) The surface leg, when it runs.
@@ -780,6 +783,7 @@ impl Harness {
             gpu,
             gpu_attached: HashSet::new(),
             redraws: BTreeMap::new(),
+            blends: BTreeMap::new(),
             fresh_gpu: None,
             leg,
         };
@@ -1127,6 +1131,7 @@ impl Harness {
                         attached: k,
                         detached: None,
                         content,
+                        places: Vec::new(),
                     });
                 }
                 Change::Placed(_) => {}
@@ -1146,6 +1151,38 @@ impl Harness {
                         s.detached = Some(k);
                     }
                 }
+            }
+        }
+        // (eval-rules-4) Each shown surface's declared placement, noted
+        // when it changes (`checks::placement`).
+        let ids: Vec<SurfaceId> = self.surfaces.shown.iter().map(|s| s.id).collect();
+        for id in ids {
+            let Some((node, mut place)) = self.surfaces.declared(id, k) else {
+                continue;
+            };
+            let parent = self
+                .r
+                .tree()
+                .get(node)
+                .filter(|n| n.kind == strand_scene::NodeKind::Popup)
+                .and_then(|n| n.parent);
+            if let Some(p) = parent {
+                place.from = Some(self.labels.key(p, &self.inst, self.r.tree(), &self.sources));
+            }
+            if let Some(info) = self
+                .trace
+                .surfaces
+                .iter_mut()
+                .rev()
+                .find(|s| s.id == id.0 && s.detached.is_none())
+                && info.places.last().is_none_or(|l| {
+                    crate::trace::PlaceRec {
+                        k: l.k,
+                        ..place.clone()
+                    } != *l
+                })
+            {
+                info.places.push(place);
             }
         }
         Ok(())
@@ -2046,6 +2083,15 @@ impl Harness {
             &redrawn,
             redraw::CPU_TOLERANCE,
         );
+        // (eval-rules-4) A crossfade frame: its blend redone here.
+        let mut plain = vec![0u8; sh.pixels.len()];
+        let target = PaintTarget::new(&mut plain, sh.size, sh.size.w * 4, scale, 0)
+            .map_err(|e| Error::Run(format!("surface {}: {e:?}", id.0)))?;
+        let mut target = target.at(t);
+        if let Some((old, w)) = self.r.repaint_unblended(id, &mut target) {
+            self.blends
+                .insert(id.0, redraw::reblend(&plain, old, &fresh, w));
+        }
         self.keep_redraw(id, rec, false, &fresh)
     }
 
@@ -2122,6 +2168,7 @@ impl Harness {
     fn collect(&mut self, k: u32, t: Duration) -> Result<(), Error> {
         let traces = self.r.take_frame_traces();
         let mut redraws = std::mem::take(&mut self.redraws);
+        let mut blends = std::mem::take(&mut self.blends);
         let held = self.r.held_text();
         self.text.seen(&held, k);
         for a in self.host.take_actions() {
@@ -2254,6 +2301,37 @@ impl Harness {
                         was: r.was.as_ref().map(|(a, b, p)| (text(a), text(b), *p)),
                     });
                 }
+                // (eval-rules-4) Its images' decodes and its cut lines.
+                if !n.images.is_empty() || n.cut.is_some() {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    let rect = |r: strand_scene::LogicalRect| [r.x, r.y, r.w, r.h];
+                    for i in &n.images {
+                        frame.imgs.push(crate::trace::ImageRec {
+                            key: key.clone(),
+                            s: *s,
+                            rect: rect(i.rect),
+                            dest: rect(i.dest),
+                            px: i.pixmap,
+                            src: i.source,
+                            fit: i.fit.to_string(),
+                            pfit: i.pixmap_fit.to_string(),
+                            stand_in: i.stand_in,
+                        });
+                    }
+                    if let Some(c) = &n.cut {
+                        frame.lines.push(crate::trace::LinesRec {
+                            key,
+                            s: *s,
+                            text: c.text.to_string(),
+                            ellipsis: c.ellipsis.map(String::from),
+                            max_lines: c.max_lines,
+                            stops: c.stops.clone(),
+                            natural: c.natural.clone(),
+                        });
+                    }
+                }
             }
             frame.regions.insert(*s, regions(&self.r, SurfaceId(*s)));
             if self.opts.images
@@ -2299,6 +2377,8 @@ impl Harness {
             .filter(|(_, c)| *c != 0)
             .collect();
         redraws.retain(|s, _| last.contains_key(s));
+        blends.retain(|s, _| last.contains_key(s));
+        frame.blend = blends;
         self.trace.redraw += redraws.len() as u32;
         frame.redraw = redraws
             .into_iter()

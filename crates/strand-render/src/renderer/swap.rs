@@ -1679,6 +1679,24 @@ impl Renderer {
         }
     }
 
+    /// (eval-rules-4) `surface`'s crossfade snapshot at `size`, taken
+    /// and standing alone (no older fade under it): the pixels a CPU
+    /// frame blends its new frame over, for a check that blends them
+    /// again by its own arithmetic.
+    #[cfg(feature = "eval-hooks")]
+    pub(super) fn fade_snapshot(&self, surface: SurfaceId, size: Size) -> Option<&[u8]> {
+        self.swap
+            .fade
+            .get(&surface)
+            .filter(|s| {
+                s.size == size
+                    && s.old.is_none()
+                    && s.under.is_none()
+                    && s.pixels.len() == s.bytes()
+            })
+            .map(|s| &s.pixels[..])
+    }
+
     /// (M4) `surface`'s crossfade snapshot at `size`, taken (the CPU
     /// raster's bytes, rows `size.w * 4` apart): what a presented
     /// surface's GPU frame blends under its new frame.

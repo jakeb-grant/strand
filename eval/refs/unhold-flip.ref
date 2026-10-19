@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "unhold-flip"
 verdict good
-note "integration-r5, first reference of the trimmed regression, read frame by frame: typing ca, cal, calc folds six rows away while the panel is held at 245 px with its card placed 90 px down; as the hold lets go at k27 the buffer shrinks to 65 px and the compositor re-centres it (origin 198 -> 288), and calculator, which stayed, is drawn at y 317 on screen before and after, the card and prompt at 288 and 297: nothing that stays moves"
+note "eval-rules-4: the four collapsing result rows fold their gaps as they collapse (card 245->65 by k14), where they kept 12 px of gaps until unmount and the card stepped 71->65 late; read in the diff, the intended fold fix"
 date 2026-10-19
-rev "b839d548+changes"
+rev "a7965714+changes"
 approver "claude"
 scenario a60312620c8e1f33
-seal ff89545eaa119897
+seal 3af5a46a3eaadbfb
 S1 0 - "panel Launcher"
 N0 "card|shell.strand:7:3|#0" "col#card"
 N1 "prompt|shell.strand:8:5|#0" "text#prompt"
@@ -113,9 +113,9 @@ n3 y=88
 n4 y=118
 n5 y=148
 n6 y=175 h=0 op=65 ord=13 bg=-
-n7 y=178 h=0 op=65 bg=-
-n8 y=178 h=0 op=65 ord=11 bg=-
-n9 y=178 h=0 op=65 ord=12 bg=-
+n7 y=166 h=0 op=65 bg=-
+n8 y=169 h=0 op=65 ord=11 bg=-
+n9 y=172 h=0 op=65 ord=12 bg=-
 n10 y=94 ink=80,95,56,11
 n11 y=124 ink=80,125,50,11
 n12 y=154 ink=80,158,44,8
@@ -125,134 +125,134 @@ n15 -
 n16 -
 n17 y=59 h=125
 k6
-n0 y=57 h=130
-n1 x=100 y=66 w=17 ink=100,67,16,11 gl=["cal"]
-n2 y=86 h=92
-n3 y=86
-n4 y=116
-n5 y=146 h=20 op=218 hid=inert
-n6 y=166 op=39
-n7 y=169 op=39
-n8 y=169 op=39
+n0 y=63 h=118
+n1 x=100 y=72 w=17 ink=100,73,16,11 gl=["cal"]
+n2 y=92 h=80
+n3 y=92
+n4 y=122
+n5 y=152 h=20 op=218 hid=inert
+n6 y=172 op=39
+n7 y=163 op=39
+n8 y=166 op=39
 n9 y=169 op=39
-n10 y=92 ink=80,93,56,11
-n11 y=122 ink=80,123,50,11
-n12 y=148 op=218 hid=inert ink=80,152,44,8
-n17 y=57 h=130
+n10 y=98 ink=80,99,56,11
+n11 y=128 ink=80,129,50,11
+n12 op=218 hid=inert
+n17 y=63 h=118
 k7
-n0 y=62 h=120
-n1 y=71 ink=100,72,16,11
-n2 y=91 h=82
-n3 y=91
-n4 y=121
-n5 y=151 h=10 op=157
-n6 y=161 op=23
-n7 y=164 op=23
-n8 y=164 op=23
+n0 y=68 h=108
+n1 y=77 ink=100,78,16,11
+n2 y=97 h=70
+n3 y=97
+n4 y=127
+n5 y=157 h=10 op=157
+n6 y=167 op=23
+n7 y=158 op=23
+n8 y=161 op=23
 n9 y=164 op=23
-n10 y=97 ink=80,98,56,11
-n11 y=127 ink=80,128,50,11
+n10 y=103 ink=80,104,56,11
+n11 y=133 ink=80,134,50,11
 n12 op=157
-n17 y=62 h=120
+n17 y=68 h=108
 k8
-n0 y=66 h=113
-n1 y=75 ink=100,76,16,11
-n2 y=95 h=75
-n3 y=95
-n4 y=125
-n5 y=155 h=3 op=104
-n6 y=158 op=14
-n7 y=161 op=14
-n8 y=161 op=14
+n0 y=72 h=101
+n1 y=81 ink=100,82,16,11
+n2 y=101 h=63
+n3 y=101
+n4 y=131
+n5 y=149 h=3 op=104
+n6 y=164 op=14
+n7 y=155 op=14
+n8 y=158 op=14
 n9 y=161 op=14
-n10 y=101 ink=80,102,56,11
-n11 y=131 ink=80,132,50,11
-n12 y=149 op=104 ink=80,153,44,8
-n17 y=66 h=113
+n10 y=107 ink=80,108,56,11
+n11 y=137 ink=80,138,50,11
+n12 y=143 op=104 ink=80,147,44,8
+n17 y=72 h=101
 k9
-n0 y=67 h=110
-n1 y=76 ink=100,77,16,11
-n2 y=96 h=72
-n3 y=96
-n4 y=126
-n5 y=156 h=0 op=65 bg=-
-n6 y=153 op=8 ord=12
-n7 y=156 op=8 ord=9
-n8 y=156 op=8 ord=10
-n9 y=156 op=8 ord=11
-n10 y=102 ink=80,103,56,11
-n11 y=132 ink=80,133,50,11
+n0 y=74 h=95
+n1 y=83 ink=100,84,16,11
+n2 y=103 h=57
+n3 y=103
+n4 y=133
+n5 y=148 h=0 op=65 bg=-
+n6 y=160 op=8 ord=12
+n7 y=151 op=8 ord=9
+n8 y=154 op=8 ord=10
+n9 y=157 op=8 ord=11
+n10 y=109 ink=80,110,56,11
+n11 y=139 ink=80,140,50,11
 n12 -
-n17 y=67 h=110
+n17 y=74 h=95
 k10
-n0 y=71 h=103
-n1 x=96 y=80 w=24 ink=96,81,23,11 gl=["calc"]
-n2 y=100 h=65
-n3 y=100
-n4 y=130 h=20 op=218 hid=inert
-n5 y=153 op=39
-n6 y=150 op=4
-n7 y=153 op=4
-n8 y=153 op=4
-n9 y=153 op=4
-n10 y=106 ink=80,107,56,11
+n0 y=78 h=88
+n1 x=96 y=87 w=24 ink=96,88,23,11 gl=["calc"]
+n2 y=107 h=50
+n3 y=107
+n4 y=137 h=20 op=218 hid=inert
+n5 y=145 op=39
+n6 y=157 op=4
+n7 y=148 op=4
+n8 y=151 op=4
+n9 y=154 op=4
+n10 y=113 ink=80,114,56,11
 n11 op=218 hid=inert
-n17 y=71 h=103
+n17 y=78 h=88
 k11
-n0 y=76 h=93
-n1 y=85 ink=96,86,23,11
-n2 y=105 h=55
-n3 y=105
-n4 y=135 h=10 op=157
-n5 y=148 op=23
-n6 y=145 op=2
-n7 y=148 op=2
-n8 y=148 op=2
-n9 y=148 op=2
-n10 y=111 ink=80,112,56,11
+n0 y=83 h=78
+n1 y=92 ink=96,93,23,11
+n2 y=112 h=40
+n3 y=112
+n4 y=142 h=10 op=157
+n5 y=140 op=23
+n6 y=152 op=2
+n7 y=143 op=2
+n8 y=146 op=2
+n9 y=149 op=2
+n10 y=118 ink=80,119,56,11
 n11 op=157
-n17 y=76 h=93
+n17 y=83 h=78
 k12
-n0 y=79 h=86
-n1 y=88 ink=96,89,23,11
-n2 y=108 h=48
-n3 y=108
-n4 y=138 h=3 op=104
-n5 y=144 op=14
-n6 y=141 op=1
-n7 y=144 op=1
-n8 y=144 op=1
-n9 y=144 op=1
-n10 y=114 ink=80,115,56,11
-n11 op=104
-n17 y=79 h=86
+n0 y=87 h=71
+n1 y=96 ink=96,97,23,11
+n2 y=116 h=33
+n3 y=116
+n4 y=131 h=3 op=104
+n5 y=137 op=14
+n6 y=149 op=1
+n7 y=140 op=1
+n8 y=143 op=1
+n9 y=146 op=1
+n10 y=122 ink=80,123,56,11
+n11 y=125 op=104 ink=80,126,50,11
+n17 y=87 h=71
 k13
-n0 y=80 h=83
-n1 y=89 ink=96,90,23,11
-n2 y=109 h=45
-n3 y=109
-n4 y=139 h=0 op=65 bg=-
-n5 y=139 op=8 ord=7
-n6 y=136 ord=11
-n7 y=139 ord=8
+n0 y=89 h=65
+n1 y=98 ink=96,99,23,11
+n2 y=118 h=27
+n3 y=118
+n4 y=130 h=0 op=65 bg=-
+n5 y=133 op=8 ord=7
+n6 y=145 ord=11
+n7 y=136 ord=8
 n8 y=139 ord=9
-n9 y=139 ord=10
-n10 y=115 ink=80,116,56,11
+n9 y=142 ord=10
+n10 y=124 ink=80,125,56,11
 n11 -
-n17 y=80 h=83
+n17 y=89 h=65
 k14
-n0 y=81
-n1 y=90 ink=96,91,23,11
-n2 y=110
-n3 y=110
-n4 y=140 op=39
-n5 y=140 op=4
-n6 y=137 op=0
-n7 y=140 op=0
+n0 y=90
+n1 y=99 ink=96,100,23,11
+n2 y=119
+n3 y=119
+n4 y=131 op=39
+n5 y=134 op=4
+n6 y=146 op=0
+n7 y=137 op=0
 n8 y=140 op=0
-n9 y=140 op=0
-n10 y=116 ink=80,117,56,11
-n17 y=81
+n9 y=143 op=0
+n10 y=125 ink=80,126,56,11
+n17 y=90
 k15
 n4 op=23
 n5 op=2
@@ -261,56 +261,33 @@ n7 hid=opacity0
 n8 hid=opacity0
 n9 hid=opacity0
 k16
-n0 y=87 h=71
-n1 y=96 ink=96,97,23,11
-n2 y=116 h=33
-n3 y=112
-n4 y=142 op=14
-n5 y=141 op=1
+n4 y=134 op=14
+n5 y=137 op=1
 n6 -
 n7 -
 n8 -
 n9 -
-n10 y=118 ink=80,119,56,11
-n17 y=87 h=71
 k17
-n3 y=114
-n4 y=144 op=8
+n4 y=139 op=8
 n5 y=142
-n10 y=120 ink=80,121,56,11
 k18
-n3 y=115
-n4 y=145 op=4
-n5 y=143 op=0
-n10 y=121 ink=80,122,56,11
+n4 y=142 op=4
+n5 y=145 op=0
 k19
-n3 y=116
-n4 y=146 op=2
-n5 hid=opacity0
-n10 y=122 ink=80,123,56,11
+n4 y=143 op=2
+n5 y=146 hid=opacity0
 k20
-n0 y=90 h=65
-n1 y=99 ink=96,100,23,11
-n2 y=119 h=27
-n3 y=117
-n4 op=1
+n4 y=144 op=1
 n5 -
-n10 y=123 ink=80,124,56,11
-n17 y=90 h=65
 k21
-n3 y=118
-n10 y=124 ink=80,125,56,11
+n4 y=145
 k22
-n3 y=119
-n4 op=0
-n10 y=125 ink=80,126,56,11
+n4 y=146 op=0
 k23
 n4 hid=opacity0
 k24
 n4 -
 k25
-k26
-k27
 s1 z=216,65 o=72,288
 n0 y=0
 n1 y=9 ink=96,10,23,11

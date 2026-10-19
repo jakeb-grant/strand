@@ -145,6 +145,8 @@ impl Seen {
             clip: None,
             roll: None,
             drag: None,
+            images: Vec::new(),
+            cut: None,
         }
     }
 }
@@ -322,4 +324,40 @@ impl Flattener<'_> {
         t.hidden = hidden;
         trace.push(t);
     }
+}
+
+/// (eval-rules-4) What a text cut to line box `w` drew, when it drew the
+/// layout shaped for `w` at this scale (a stand-in for another width or
+/// scale is not one to judge): the facts a check needs to see whether
+/// each line keeps all that fits (`crate::probe::CutDrawn`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn cut(
+    shaped: &[Shaped],
+    scale: Scale,
+    w: f32,
+    drawn: &std::sync::Arc<strand_text::TextLayout>,
+    text: &str,
+    style: &strand_text::TextStyle,
+) -> Option<crate::probe::CutDrawn> {
+    let own = pick(shaped, scale, Some(w))?;
+    if !std::sync::Arc::ptr_eq(&own, drawn) || own.scale != scale {
+        return None;
+    }
+    let natural = pick(shaped, scale, None).filter(|n| n.scale == scale)?;
+    let one_line = natural.carets.iter().all(|c| c.line == 0);
+    Some(crate::probe::CutDrawn {
+        text: std::sync::Arc::from(text),
+        ellipsis: style.ellipsis.map(|e| match e {
+            strand_text::Ellipsis::Start => "start",
+            strand_text::Ellipsis::Middle => "middle",
+            strand_text::Ellipsis::End => "end",
+        }),
+        max_lines: style.max_lines,
+        stops: own.carets.iter().map(|c| (c.byte, c.x, c.line)).collect(),
+        natural: if one_line {
+            natural.carets.iter().map(|c| (c.byte, c.x)).collect()
+        } else {
+            Vec::new()
+        },
+    })
 }
