@@ -1097,7 +1097,7 @@
     var draft = {};
     try { draft = JSON.parse(store.get(key) || '{}') || {}; } catch (e) { draft = {}; }
     var cmd = el('pre', { cls: 'cmd' });
-    var note = el('textarea', { rows: 3, placeholder: 'Why this motion is right (Good) or wrong (Bad): required, kept in this browser until copied' });
+    var note = el('textarea', { rows: 3, placeholder: 'Why this motion is right (Good) or wrong (Bad): required, kept in this browser' });
     note.value = draft.note || '';
     // Who looked: kept per browser, not per run. Empty leaves it to
     // $STRAND_EVAL_APPROVER; `unknown` names nobody, as on the command line.

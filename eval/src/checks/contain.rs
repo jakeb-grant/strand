@@ -209,7 +209,10 @@ fn held(cx: &Cx) -> Vec<Finding> {
 /// squeezed by `exit { width: 0 }` wrapped into a column of letters
 /// hundreds of pixels tall and pushed its whole bar off screen. A frame
 /// whose text is not shaped yet is left out (its layout arrives), and so
-/// is a pose with no rest frame beside it.
+/// is a pose with no rest frame beside it. A node stretched across its
+/// parent takes the parent's size on that axis, its widest sibling's, so
+/// a free size equal to a sibling's on that frame is the stretch's, not
+/// the pose's (integration-r5).
 fn other_axis(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let trace = cx.trace;
@@ -225,6 +228,15 @@ fn other_axis(cx: &Cx) -> Vec<Finding> {
             Some((true, false)) => Some(3usize),
             Some((false, true)) => Some(2usize),
             _ => None,
+        };
+        let siblings: Vec<&str> = match meta.parent.as_deref() {
+            Some(p) => trace
+                .nodes
+                .iter()
+                .filter(|(k, m)| *k != key && m.parent.as_deref() == Some(p))
+                .map(|(k, _)| k.as_str())
+                .collect(),
+            None => Vec::new(),
         };
         for (flag, ax) in [
             (Motions::ENTER, free(meta.enter)),
@@ -271,7 +283,18 @@ fn other_axis(cx: &Cx) -> Vec<Finding> {
                     }
                     frames += 1;
                     let at = f64::from(r.laid[ax]);
-                    if at >= lo && at <= hi {
+                    // (integration-r5) Stretched across its parent, a node
+                    // takes the parent's size there, the size of its
+                    // widest sibling: a toast leaving on `exit { height:
+                    // 0 }` widens with a wider toast arriving beside it
+                    // (design.md "Layout": `align` stretches). So its
+                    // free axis may also be any sibling's laid size then.
+                    let near_sibling = siblings.iter().any(|sk| {
+                        tl.row(j, sk).is_some_and(|q| {
+                            (f64::from(q.laid[ax]) - at).abs() <= cx.tol + 1.0 / 64.0
+                        })
+                    });
+                    if (at >= lo && at <= hi) || near_sibling {
                         continue;
                     }
                     let (set, other) = if ax == 3 {

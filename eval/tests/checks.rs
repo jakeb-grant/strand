@@ -5512,6 +5512,71 @@ fn fold_leaves_a_sibling_that_shows_nothing() {
     }
 }
 
+/// (integration-r5) A col whose change inserts `n` from height 0 under
+/// `a` and moves `c` above `b` (a sorted list): `b` and `c` swap places
+/// in its order, and the moved rows are laid a slot and more from where
+/// they were.
+fn reordering() -> RunTrace {
+    use strand_eval::checks::continuity::spring;
+    let dt = 16_666_667.0 / 1e9;
+    let first = (10.0 + spring(3000.0, 0.75, -10.0, 0.0, dt).0) as f32;
+    let mut t = shape(4, |k| {
+        let col = row("col", [0.0, 0.0, 100.0, 80.0]);
+        let a = row("a", [0.0, 0.0, 100.0, 10.0]).draws();
+        let (b_y, c_y) = if k == 0 { (18.0, 36.0) } else { (41.0, 23.0) };
+        let mut v = vec![
+            col,
+            a,
+            row("b", [0.0, b_y, 100.0, 10.0]).draws(),
+            row("c", [0.0, c_y, 100.0, 10.0]).draws(),
+        ];
+        if k >= 1 {
+            v.push(row("n", [0.0, 18.0, 100.0, first]).draws());
+        }
+        v
+    });
+    for k in ["a", "b", "c", "n"] {
+        t.nodes.get_mut(k).unwrap().parent = Some("col".into());
+    }
+    for f in &mut t.frames {
+        f.wants = vec![1];
+    }
+    t.frames[1].sp.push(SpringRec {
+        key: "n".into(),
+        s: 1,
+        of: "h".into(),
+        v: vec![first],
+        to: vec![10.0],
+        c: CurveRec::Spring { k: 3000.0, z: 0.75 },
+        eps: vec![0.01],
+        rest: Some(vec![0.0]),
+        start: Some(StartRec {
+            last: Some(1_000_000_000),
+            shift: Vec::new(),
+        }),
+        ..SpringRec::default()
+    });
+    t.seal();
+    t
+}
+
+/// (integration-r5) A row entering from zero beside a reorder: the rows
+/// the reorder moved changed places in their col, and their moves are
+/// the reorder's (FLIP's), not a gap opening at once (`fold`).
+#[test]
+fn fold_leaves_siblings_a_reorder_moved() {
+    let sc = scenario("");
+    let t = reordering();
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.msg.starts_with("fold")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// (eval-rules-3) [`fill`] with its own spring's samples naming `curve`
 /// on each frame it moves.
 fn fill_on(way: impl Fn(f64) -> [f64; 4], curve: CurveRec) -> RunTrace {
@@ -5681,4 +5746,60 @@ fn a_glide_carrying_the_whole_parent_is_no_fold_step() {
         "{}",
         show(&r, &t)
     );
+}
+
+/// (integration-r5) A col (`col`) stretching its toasts: `a` leaves on
+/// `exit { height: 0 }` over ticks 1..=5 while `b` arrives `b_w` wide,
+/// so the col, and `a` stretched across it, widen to `b_w`; `a_w` is
+/// the width `a` is laid out at while it leaves.
+fn stretched_exit(b_w: f32, a_w: f32) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let w = if k == 0 { 120.0 } else { b_w };
+        let mut n = vec![row("col", [0.0, 0.0, w, 80.0])];
+        if k < 6 {
+            let h = 30.0 * (1.0 - k as f32 / 5.0);
+            let mut a = row("a", [0.0, 0.0, if k == 0 { 120.0 } else { a_w }, h]).draws();
+            if k > 0 {
+                a = a.mot(Motions::EXIT | Motions::SIZE_SPRING);
+            }
+            n.push(a);
+        }
+        if k > 0 {
+            n.push(row("b", [0.0, 30.0, b_w, 30.0]).draws());
+        }
+        n
+    });
+    for k in ["a", "b"] {
+        t.nodes.get_mut(k).unwrap().parent = Some("col".into());
+    }
+    t.nodes.get_mut("a").unwrap().exit = Some(strand_eval::trace::Pose {
+        opacity: None,
+        x: None,
+        y: None,
+        scale: None,
+        w: None,
+        h: Some(0.0),
+    });
+    t.seal();
+    t
+}
+
+/// (integration-r5) A toast leaving on its height, stretched wider by a
+/// wider toast arriving beside it, keeps its width "at rest": the
+/// stretch is its parent's (`other axis`); widened past every sibling,
+/// it is the pose's.
+#[test]
+fn contain_other_axis_follows_a_stretch_its_siblings_make() {
+    let sc = scenario("");
+    let other = |r: &Report| {
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("a") && f.msg.starts_with("other axis"))
+    };
+    let t = stretched_exit(200.0, 200.0);
+    let r = check(&sc, &t);
+    assert!(!other(&r), "{}", show(&r, &t));
+    let t = stretched_exit(200.0, 320.0);
+    let r = check(&sc, &t);
+    assert!(other(&r), "{}", show(&r, &t));
 }

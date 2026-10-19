@@ -430,8 +430,9 @@ fn springs(cx: &Cx) -> Vec<Finding> {
 /// else in the parent changes at that frame: every other sibling there
 /// at both frames keeps its laid size, and none comes or goes but those
 /// folding. A sibling that shows nothing at both frames (no area, or no
-/// opacity) is not judged: where it is laid opens no gap one sees
-/// (integration-r5).
+/// opacity) is not judged: where it is laid opens no gap one sees; nor is
+/// one whose place among its siblings changed (a reorder moved it, and
+/// FLIP glides it) (integration-r5).
 fn fold(cx: &Cx) -> Vec<Finding> {
     use strand_render::probe::Motions;
     let tl = &cx.tl;
@@ -537,6 +538,19 @@ fn fold(cx: &Cx) -> Vec<Finding> {
             }
             let slot: f64 = folding.iter().map(|(_, s)| 2.0 * s.max(0.0)).sum();
             let bound = slot + cx.tol;
+            // (integration-r5) Where each sibling that stays stands among
+            // the others on the axis: one whose place in that order
+            // changed was moved by the change, not by the fold (design.md
+            // "Reordering uses FLIP": a sorted list inserting a row and
+            // moving another), and its glide is its own.
+            let order = |kids: &[(&str, &crate::trace::Row)], k: &str| -> Option<usize> {
+                let at = kids.iter().find(|(q, _)| *q == k)?.1.laid[axis];
+                Some(
+                    kids.iter()
+                        .filter(|(q, r)| !folds(q) && *q != k && r.laid[axis] < at)
+                        .count(),
+                )
+            };
             for (k, ra) in &ka {
                 if folds(k) || cx.allowed(CheckId::Continuity, k) {
                     continue;
@@ -544,6 +558,9 @@ fn fold(cx: &Cx) -> Vec<Finding> {
                 let Some((_, rb)) = kb.iter().find(|(q, _)| q == k) else {
                     continue;
                 };
+                if order(&ka, k) != order(&kb, k) {
+                    continue;
+                }
                 // (integration-r5) A sibling that shows nothing at both
                 // frames (no area, or no opacity: one leaving itself,
                 // folded to nothing and faded out) opens no gap the eye

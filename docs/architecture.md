@@ -822,9 +822,14 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     border); (eval-rules-2) `FrameTrace::period` (the surface's frame
     period its changes start one of before their first frame) and
     `FrameTrace::springs`, a `SpringTrace` per sample the frame took of a
-    prop's, a laid-out size's or a glide's `Motion` (`SpringOf::{Prop,
-    Size, Glide}`: the node, the sample's time, the value, the target
-    and `Curve` it moves along, `eps`, `rest` when it was at rest before,
+    prop's, a laid-out size's, a glide's or (eval-rules-3) a theme
+    swap's palette root's `Motion` (`SpringOf::{Prop, Size, Glide,
+    Palette}`: the node (for a palette root, the root of the surface it
+    painted, with the root's token path in `token`), the sample's time,
+    the value, the target and `Curve` it moves along, `eps` (one
+    tolerance per channel, border-eps), `rest` when it was at rest before,
+    for a palette root `asked` (the curve the swap's table gives
+    `Prop::Color`, worked out by the plan's own expression: a drift guard),
     `start` (`SpringStart`: its sample before and a FLIP's jump) when a
     change started at it, and on the frame its node enters, `entering`:
     whether its enter pose sets that prop), from `Motion::view` taken

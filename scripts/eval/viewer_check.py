@@ -355,6 +355,14 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
     if len(data["runs"]) == 2:
         exercise_ab(page, chk, data, sc, kind, tag, where, tab)
 
+    # The viewer keeps a verdict's draft in this browser, per run and
+    # scenario, until it is copied (eval/viewer/viewer.js). One page can
+    # show one scenario under two kinds (a mutant's lone scenario is both
+    # its failing and its CHANGED one; an A/B page's is its passing and
+    # its A/B one), and the exercise before left Good with a cleared note:
+    # each exercise starts from no draft.
+    page.evaluate("(k) => { try { window.localStorage.removeItem(k); } catch (e) {} }",
+                  f"strand-eval:verdict:{run_out}/{sc['id']}")
     tab("Approve")
     exercise_approve(page, chk, sc, kind, tag, where, run_out)
 

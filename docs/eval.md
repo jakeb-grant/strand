@@ -640,8 +640,13 @@ says a node moves, not how, so it does not exempt from them; only an
   (`$motion.effects` unless the swap names its own transition, as the
   table it sent defines it); each root's sample records both (`sp`'s
   `ask`), and a swap whose roots spring along another curve fails, once
-  per swap, naming how many roots did. `continuity` holds the roots'
-  samples to their way like any spring's.
+  per swap, naming how many roots did. It is a drift guard, not a
+  reading of the design (integration-r5): `ask` is worked out by the
+  same expression as the plan's own curve, so it fails when the plan
+  takes another curve than the colour's, and a fault in the token
+  table's resolution makes both wrong together; that shows as CHANGED
+  references (`colour-mid-motion`, `theme-swap-own-effects`), not here.
+  `continuity` holds the roots' samples to their way like any spring's.
 - **`contain`.** `cut`: a `popup` or `panel` with no `width`, or no
   `height`, is sized by its content on that axis; it grows to its content
   at once and is held while its content springs smaller (decisions.md
@@ -649,7 +654,10 @@ says a node moves, not how, so it does not exempt from them; only an
   What is past both where it started the segment and where it rests (a
   spring's overshoot) is excused, and so is a node moved by authored
   motion on that axis (offset, pose, scale, turn) or held inside a
-  clipping ancestor (`clip: true`, a `scroll`, a `list`). The allowance is
+  clipping ancestor (`clip: true`, a `scroll`, a `list`). A node is
+  judged by what of it shows, its drawn box cut by the clip its ancestors
+  set (integration-r5: a label a squeezed chip clips is not cut where the
+  chip hides it). The allowance is
   `tol` plus a quantum. The overshoot excused is bounded (eval-rules-3):
   no more than the tolerance's overshoot share of how far the node
   travels (its near edge's, far edge's or size's span from where it
@@ -689,7 +697,9 @@ says a node moves, not how, so it does not exempt from them; only an
   that axis only: on each frame the node plays it, its laid size on the
   other axis lies between its sizes at rest either side of the pose (the
   frame before its exit began, the frame after its enter ended), within
-  `tol` plus a quantum. A frame whose text is not shaped yet is left out,
+  `tol` plus a quantum, or at a sibling's size on that frame (a parent
+  that stretches its children gives them the widest one's, integration-r5).
+  A frame whose text is not shaped yet is left out,
   and so is a pose with no rest frame beside it. `shadow`
   (eval-rules-2): "Shadows enlarge the buffer but not the input region"
   (design.md "Layout"): the buffer keeps an overhang for its shadows'
@@ -779,7 +789,10 @@ says a node moves, not how, so it does not exempt from them; only an
   within the parent (a glide's jump less the parent's move: one that
   carries the whole parent, a centred panel shrinking once a fold
   ends, is not one). Set E's enter-from-zero mutant opened the gap at
-  once and glided the siblings over it.
+  once and glided the siblings over it. A sibling that shows nothing at
+  both frames (no area, or no opacity), and one whose place among its
+  staying siblings changed (a reorder moved it; FLIP glides it), are not
+  judged (integration-r5).
 - **`drag`** (in `coherence`, eval-rules-2). "A dragged slider draws the
   drag until the release", and its drag and its drawing share one span,
   the knob centre running between the knob radii, "so the knob stays
@@ -1167,7 +1180,9 @@ gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
 (`continuity`, decisions.md border-eps) and text-exit-squeeze (`contain`,
 `expect`; decisions.md bar-blank-on-exit) and clip-carries-rows (`vanish`,
 decisions.md clip-blink) and shrink-keeps-edge (`bystander`, `expect`;
-decisions.md bottom-osd-shrink). In a detached worktree of HEAD, each scenario
+decisions.md bottom-osd-shrink), and unhold-flip (the same revert as
+shrink-keeps-edge's, on a held centred launcher letting go: `envelope`,
+`contain`; decisions.md integration-r5): 12 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
@@ -1544,14 +1559,29 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   (eval-false-alarms; bounded in eval-rules-3). What lies past both
   where a box started and where it rests is excused up to the
   tolerance's overshoot share of how far it travels, so a glide that
-  carries a box past both ends by less than that passes `cut`.
+  carries a box past both ends by less than that passes `cut`. The
+  travel counts a laid size that snaps and edges measured in each
+  frame's own buffer, so `osd-edge-margins`' label, cut 11 px at its
+  buffer's edge for five frames by the growth glide, passes by 0.5 px
+  (decisions.md integration-r5); `cut` judges what of a node shows,
+  so what a clip hides past the edge is no cut.
 - **A label nudged on the output by its parent's glide**
-  (eval-rules-3). A content-sized surface anchored to an edge that grows
-  a second time while its first growth's glide still runs, or shrinks,
-  moves the label at its anchored edge on the output for a few frames
-  (decisions.md eval-rules-3); only an `expect still` holds it, since
+  (eval-rules-3, integration-r5). A content-sized surface anchored to an
+  edge that grows a second time while its first growth's glide still
+  runs moves the label at its anchored edge on the output for a few
+  frames (4 px on a bottom OSD); only an `expect still` holds it, since
   the label is laid elsewhere in the resized surface and carried by its
   parent's glide, which `bystander`, `envelope` and `pushed` excuse.
+- **Growth on a content-sized surface waits for the owner**
+  (integration-r5). The growth glide (`glide_origin`) is the
+  content-sized growth rule's, which the owner is deciding: a bottom
+  panel growing glides its card past its bottom on the first frame
+  (`contain` 16 px), and a centred card whose content snaps larger is
+  glided by half the growth from its corner (cut up to 11 px). These
+  stay out of the gate; held-glides' change to the growth glide waits on
+  laptop/fix-r5b. A shrink is fixed (bottom-osd-shrink); at scale 1.5 a
+  held bottom OSD's last row is laid 1 px off on two frames as its row
+  folds (the held root's placement rounding, popup-shrink's rule).
 
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not
