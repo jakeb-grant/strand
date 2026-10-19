@@ -1057,9 +1057,11 @@ theme scenarios, the controls' parts and the two input effects
 (eval-coverage-2), and round 4's integration (integration-r4) it was
 5.09 MB; with eval-rules-3's nine scenarios 5.13 MB, and at round 5's
 integration 5.15 MB. With eval-coverage-3's nine scenarios, the image
-effect and the deeper nested FLIP it is 5.58 MB (5,577,969 bytes, 713
-kB under the tripwire): the 102 scenarios 610 kB, `matrix-60.ref` 2.01
-MB and `matrix-144.ref` 2.96 MB, 486 cells each. Paint
+effect and the deeper nested FLIP it was 5.58 MB; at round 6's
+integration (integration-r6), with round 6's three regressions, it is
+5.60 MB (5,598,391 bytes, 693 kB under the tripwire): the 105
+scenarios 631 kB, `matrix-60.ref` 2.01 MB and `matrix-144.ref` 2.96
+MB, 486 cells each. Paint
 costs little because a field is written only on the ticks it changes.
 Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
 holds the total to 6 MiB (5 MiB until integration-r4, when the
