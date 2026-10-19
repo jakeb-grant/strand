@@ -1,0 +1,66 @@
+id     = "bar-split-title-1_25"
+about  = """A bar `split` at scale 1.25 whose start side holds workspace dots and
+the focused window's title, cut with an ellipsis, and whose end side holds
+a now-playing label held to `max_width: 120` and the battery (design.md
+(a): the title `ellipsis: end`, "centre is truly centred"). The title grows
+past its side's share of what the centred clock leaves, a workspace dot
+enters before it, and a song change makes the now-playing label wider than
+its limit; the screen's scale then turns 1.75 and the title changes again.
+Each side's track is `minmax(0, 1fr)`, so a title wider than its share is
+cut at the share and never pushes the clock, and a text's width limit is
+in logical pixels at every scale, its glyphs shaped for that width (the
+text engine's limit is the logical one times the scale)."""
+screen = { width = 520, height = 200, scale = 1.25 }
+
+=== shell.strand
+state title = "term"
+state song = "Low Tide"
+state ws = 2
+bar Top {
+  height: 30; bg: #1a1b26; color: #c0caf5
+  split { id: sp; pad: 0, 8
+    start { gap: 8; align: center
+      row { id: dots; gap: 4; align: center
+        for n in (ws == 3 ? [1, 2, 3] : [1, 2]) key n {
+          box { size: 8; radius: full; bg: n == 1 ? #7aa2f7 : #565f89
+                enter { width: 0; opacity: 0 } }
+        }
+      }
+      text title { id: ttl; color: #a9b1d6; ellipsis: end }
+    }
+    center { text "Tue 19  12:40" { id: clock } }
+    end { gap: 8; align: center
+      text song { id: now; max_width: 120; ellipsis: end; color: #9ece6a }
+      text "84%" { id: batt }
+    }
+  }
+}
+
+=== steps
+rest
+mark long-title
+set title "Firefox - The animation evaluation sandbox, a page whose title runs long"
+rest
+expect still #clock
+expect still #batt
+mark dot
+set ws 3
+rest
+expect still #clock
+mark song
+set song "Somewhere Between the Harbour Lights and Home"
+rest
+expect still #clock
+expect still #batt
+mark scale
+scale 1.75
+rest
+mark short-title
+set title "vim notes.md"
+rest
+expect still #clock
+mark song-back
+set song "Low Tide"
+rest
+expect still #clock
+expect still #batt

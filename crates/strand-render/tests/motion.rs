@@ -586,6 +586,296 @@ fn enter_and_exit_poses_and_siblings_slide_to_fill_the_gap() {
     assert_eq!(white(&st), Some(0));
 }
 
+/// (eval-coverage-3) Two neighbouring rows leaving at once to `height:
+/// 0` fold both gaps beside them, and their column, sized by what it
+/// holds, keeps that size from the frame their springs settle until they
+/// unmount: before, each zero-height slot dropped the gap it gave up
+/// (taffy drops the margin of an item whose basis is zero when it sizes
+/// a parent to its content), so the column grew back by both gaps for
+/// the frames the rows faded at zero, and shrank by them as they went.
+#[test]
+fn neighbours_collapsing_together_keep_their_gaps_folded_until_they_unmount() {
+    let mut ids = Vec::new();
+    let mut col = None;
+    let mut st = Stage::new(120, 160, |b, root| {
+        // A column of fixed size holding it, so it is sized by what it
+        // holds on its main axis.
+        let holder = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![(Prop::Width, num(100.0)), (Prop::Height, num(140.0))],
+        );
+        let c = b.node(
+            NodeKind::Col,
+            Some(holder),
+            vec![(Prop::Gap, num(6.0)), (Prop::Bg, color("#303030"))],
+        );
+        col = Some(c);
+        for _ in 0..3 {
+            ids.push(b.node(
+                NodeKind::Box,
+                Some(c),
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(20.0)),
+                    (Prop::Bg, color("#ff0000")),
+                    (
+                        Prop::Exit,
+                        pose(vec![(Prop::Opacity, num(0.0)), (Prop::Height, num(0.0))]),
+                    ),
+                ],
+            ));
+        }
+    });
+    let col = col.unwrap();
+    assert_eq!(st.rect(col).h, 72.0);
+    let mut d = SceneDiff::new();
+    d.remove(ids[1]).remove(ids[2]);
+    st.apply(d);
+    let mut hs = Vec::new();
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        hs.push(st.rect(col).h);
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!(st.r.tree().ghost_count(), 0, "unmounted after their exits");
+    assert_eq!(hs.last(), Some(&20.0), "{hs:?}");
+    // Down to the first row alone, and never back up on the way.
+    assert!(
+        hs.windows(2).all(|w| w[1] <= w[0] + 0.01),
+        "the column only shrinks: {hs:?}"
+    );
+}
+
+/// (integration-r6) Rows waiting at zero to unmount take nothing, not
+/// even the hair they are laid at: a column of what stays, centred in a
+/// holder whose free space halves to a half pixel, rests where it ends
+/// while they wait to unmount (the hair, 1/1024 px in each, rounded it a
+/// pixel taller and higher until they went, as unhold-flip's card).
+#[test]
+fn rows_waiting_at_zero_leave_a_centred_column_where_it_is() {
+    let mut ids = Vec::new();
+    let mut col = None;
+    let mut st = Stage::new(120, 160, |b, root| {
+        let holder = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![
+                (Prop::Width, num(100.0)),
+                (Prop::Height, num(141.0)),
+                (Prop::Justify, kw("center")),
+            ],
+        );
+        let c = b.node(NodeKind::Col, Some(holder), vec![(Prop::Gap, num(6.0))]);
+        col = Some(c);
+        for _ in 0..3 {
+            ids.push(b.node(
+                NodeKind::Box,
+                Some(c),
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(20.0)),
+                    (Prop::Bg, color("#ff0000")),
+                    (Prop::Exit, pose(vec![(Prop::Height, num(0.0))])),
+                ],
+            ));
+        }
+    });
+    let col = col.unwrap();
+    let mut d = SceneDiff::new();
+    d.remove(ids[1]).remove(ids[2]);
+    st.apply(d);
+    // The column's place and height each frame, and whether both rows
+    // leaving are laid at nothing (or gone).
+    let mut seen = Vec::new();
+    let mut k = 1;
+    loop {
+        st.paint(frame(k));
+        let rects = &st.r.boxes(S).unwrap().rects;
+        let zero = ids[1..]
+            .iter()
+            .all(|id| rects.get(id).is_none_or(|r| r.h == 0.0));
+        let r = st.rect(col);
+        seen.push((r.y, r.h, zero));
+        k += 1;
+        if !st.r.wants_frame(S) {
+            break;
+        }
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!(st.r.tree().ghost_count(), 0, "unmounted after their exits");
+    let end = *seen.last().unwrap();
+    assert_eq!((end.0, end.1), (60.5f32.round(), 20.0), "{seen:?}");
+    // Once it holds still over two frames with the rows at nothing (their
+    // springs at rest, waiting to unmount), it never moves again.
+    let still = seen
+        .windows(2)
+        .position(|w| w[0].2 && w[1].2 && (w[0].0, w[0].1) == (w[1].0, w[1].1))
+        .unwrap();
+    assert!(
+        seen[still..].iter().all(|s| (s.0, s.1) == (end.0, end.1)),
+        "the column moves as the rows at zero unmount: {seen:?}"
+    );
+}
+
+/// (integration-r6) A column sized by what it holds, with a gap of
+/// `gap`, holding a row per height in `hs` (each leaving on `exit {
+/// height: 0 }`), painted at rest: the stage, the column and its rows.
+fn fold_stage(hs: &[f32], gap: f32) -> (Stage, NodeId, Vec<NodeId>) {
+    let mut col = None;
+    let mut rows = Vec::new();
+    let st = Stage::new(160, 640, |b, root| {
+        let outer = b.node(NodeKind::Col, Some(root), vec![]);
+        let c = b.node(NodeKind::Col, Some(outer), vec![(Prop::Gap, num(gap))]);
+        for h in hs {
+            rows.push(b.node(
+                NodeKind::Box,
+                Some(c),
+                vec![
+                    (Prop::Height, num(*h)),
+                    (Prop::Width, num(100.0)),
+                    (Prop::Bg, color("#ff0000")),
+                    (Prop::Exit, pose(vec![(Prop::Height, num(0.0))])),
+                ],
+            ));
+        }
+        col = Some(c);
+    });
+    (st, col.unwrap(), rows)
+}
+
+fn remove(st: &mut Stage, ids: &[NodeId]) {
+    let mut d = SceneDiff::new();
+    for id in ids {
+        d.push(SceneOp::Remove {
+            id: *id,
+            window: false,
+        });
+    }
+    st.apply(d);
+}
+
+/// (integration-r6) However rows leave, their gaps fold with them, and
+/// a column sized by what it holds only shrinks, frame by frame, to the
+/// rows that stay: rows of different heights leaving together, with a
+/// row staying before them or with none, and a second row leaving once
+/// the first is under half a gap (two toasts timing out apart). A fold that
+/// switched how the gaps were shared as the set of folding rows changed
+/// grew the column back by up to a gap there.
+#[test]
+fn rows_leaving_apart_or_unequal_only_shrink_their_column() {
+    // (heights, rows leaving at once, rows leaving once the first of
+    // those is under a pixel)
+    let cases: [(&[f32], &[usize], &[usize]); 6] = [
+        (&[30.0, 40.0, 20.0], &[1, 2], &[]),
+        (&[40.0, 20.0], &[0, 1], &[]),
+        (&[30.0, 30.0, 30.0], &[1], &[2]),
+        (&[12.0, 30.0, 40.0], &[0], &[1]),
+        (&[40.0, 20.0], &[0], &[1]),
+        (&[40.0, 8.0], &[0], &[1]),
+    ];
+    for (hs, first, then) in cases {
+        let (mut st, col, rows) = fold_stage(hs, 6.0);
+        let ids = |ix: &[usize]| ix.iter().map(|i| rows[*i]).collect::<Vec<_>>();
+        remove(&mut st, &ids(first));
+        let mut seen = vec![st.rect(col).h];
+        let mut pending = !then.is_empty();
+        let mut k = 1u64;
+        // Painted every 2 ms, so a step the fold makes shows apart from
+        // the rows' own motion.
+        while st.r.wants_frame(S) || pending {
+            st.paint(T0 + Duration::from_millis(2 * k));
+            seen.push(st.rect(col).h);
+            let lead =
+                st.r.boxes(S)
+                    .unwrap()
+                    .rects
+                    .get(&rows[first[0]])
+                    .map(|r| r.h);
+            if pending && lead.is_none_or(|h| h < 3.0) {
+                remove(&mut st, &ids(then));
+                pending = false;
+            }
+            k += 1;
+            assert!(k < 3000, "never settled");
+        }
+        let stay: Vec<f32> = (0..hs.len())
+            .filter(|i| !first.contains(i) && !then.contains(i))
+            .map(|i| hs[i])
+            .collect();
+        let rest = stay.iter().sum::<f32>() + 6.0 * stay.len().saturating_sub(1) as f32;
+        assert_eq!(seen.last(), Some(&rest), "{hs:?}: {seen:?}");
+        assert!(
+            seen.windows(2).all(|w| w[1] <= w[0] + 0.01),
+            "{hs:?} {first:?} then {then:?}: the column grows back: {seen:?}"
+        );
+    }
+}
+
+/// (integration-r6) Rows entering an empty column from `enter { height:
+/// 0 }`, of different heights, together or one after another, open
+/// their gaps as they grow: frame by frame the column moves by no more
+/// than the rows' own growth and the gaps it opens (each gap at most what
+/// its row grew), and never steps by a gap at once. A fold that switched
+/// how the gaps were shared as the set of folding rows changed stepped
+/// here by most of two gaps.
+#[test]
+fn rows_entering_from_zero_open_their_gaps_as_they_grow() {
+    // Every millisecond painted: a row coming every `every` paints (0:
+    // all at once).
+    for every in [0u64, 40] {
+        // Tall rows and a wide gap, so a step by a gap stands clear of
+        // the rows' motion in a millisecond and of the rounding of their
+        // and the column's boxes to whole pixels.
+        let (mut st, col, _) = fold_stage(&[], 60.0);
+        let hs = [200.0f32, 100.0, 150.0];
+        let ids: Vec<NodeId> = (0..3).map(|i| NodeId::new(900 + i, 0)).collect();
+        let mut seen: Vec<(f32, f32)> = vec![(st.rect(col).h, 0.0)];
+        let mut k = 1u64;
+        loop {
+            let due: Vec<usize> = (0..3).filter(|i| 1 + every * *i as u64 == k).collect();
+            if !due.is_empty() {
+                let mut d = SceneDiff::new();
+                for i in due {
+                    d.create(ids[i], NodeKind::Box, Some(col), i as u32)
+                        .set(ids[i], Prop::Height, num(hs[i]))
+                        .set(ids[i], Prop::Width, num(100.0))
+                        .set(ids[i], Prop::Bg, color("#ff0000"))
+                        .set(ids[i], Prop::Enter, pose(vec![(Prop::Height, num(0.0))]));
+                }
+                st.apply(d);
+            }
+            st.paint(T0 + Duration::from_millis(k));
+            let rects = &st.r.boxes(S).unwrap().rects;
+            let rows: f32 = ids.iter().filter_map(|id| rects.get(id)).map(|r| r.h).sum();
+            seen.push((st.rect(col).h, rows));
+            k += 1;
+            if k > 120 && !st.r.wants_frame(S) {
+                break;
+            }
+            assert!(k < 6000, "never settled");
+        }
+        let rest = hs.iter().sum::<f32>() + 120.0;
+        assert_eq!(seen.last().map(|s| s.0), Some(rest), "{every}: {seen:?}");
+        // Each box is whole pixels: the column's step is off by at most
+        // 1, the three rows' by at most 3, before the gaps double it; and
+        // the column goes the way its rows go.
+        for w in seen.windows(2) {
+            let (dc, dr) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            assert!(
+                dc.abs() <= 2.0 * (dr.abs() + 3.0) + 1.0,
+                "{every}: the column steps {dc} where its rows moved {dr}: {seen:?}"
+            );
+            assert!(
+                !(dr > 4.0 && dc < -1.0 || dr < -4.0 && dc > 1.0),
+                "{every}: the column steps {dc} against its rows' {dr}: {seen:?}"
+            );
+        }
+    }
+}
+
 /// (bar-blank-on-exit) A pose that squeezes a width leaves the height
 /// at rest: a text leaving with `exit { width: 0 }`, and a box holding a
 /// text, keep the height of their line while they narrow, so the row

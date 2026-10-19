@@ -519,6 +519,74 @@ fn a_springing_image_draws_its_last_decode_scaled() {
     assert!(buf.px(3, 20)[2] > 0xc0);
 }
 
+/// (eval-coverage-3) A rotated, rounded image's corners reach past its
+/// untransformed box. A frame that repaints only a strip there (the box
+/// above it changing colour) draws them as a full repaint does: the
+/// image's clip group is bounded where it draws on the surface, so the
+/// raster no longer skips it in that strip.
+#[test]
+fn a_rotated_image_redraws_its_corners_in_a_strip_beside_it() {
+    let build = |above: &str| {
+        let mut b = Builder::default();
+        let root = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Width, num(120.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::Bg, color("#000000")),
+            ],
+        );
+        let strip = b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+                (Prop::X, num(20.0)),
+                (Prop::Y, num(12.0)),
+                (Prop::Width, num(80.0)),
+                (Prop::Height, num(8.0)),
+                (Prop::Bg, color(above)),
+            ],
+        );
+        b.node(
+            NodeKind::Image,
+            Some(root),
+            vec![
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+                (Prop::X, num(30.0)),
+                (Prop::Y, num(20.0)),
+                (Prop::Width, num(60.0)),
+                (Prop::Height, num(24.0)),
+                (Prop::Radius, num(4.0)),
+                (Prop::Fit, PropValue::Keyword("fill".into())),
+                (Prop::Source, text(&gradient_png())),
+                (Prop::Rotate, PropValue::Angle(12.0)),
+            ],
+        );
+        (b.diff, strip)
+    };
+    let (diff, strip) = build("#202020");
+    let mut r = renderer_with_theme();
+    let mut buf = show(&mut r, diff);
+    // The decode lands: drawn once more, in full.
+    buf.paint(&mut r, SurfaceId(1), 0);
+    let mut d = SceneDiff::new();
+    d.set(strip, Prop::Bg, color("#404040"));
+    assert!(r.apply(d).is_empty());
+    let damage = buf.paint(&mut r, SurfaceId(1), 1);
+    let b = damage.bounds().unwrap();
+    assert!(b.y + b.h as i32 <= 21, "only the strip repaints: {b:?}");
+    let mut fresh = renderer_with_theme();
+    let mut full = show(&mut fresh, build("#404040").0);
+    full.paint(&mut fresh, SurfaceId(1), 0);
+    let differ = (0..60u32)
+        .flat_map(|y| (0..120u32).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf.px(x, y) != full.px(x, y))
+        .count();
+    assert_eq!(differ, 0, "the partial repaint differs from a full one");
+}
+
 /// A name the theme lacks falls back to its symbolic variant, then to
 /// generic names (`window-close-tab` → `window-close` →
 /// `window-close-symbolic`), as GTK does.

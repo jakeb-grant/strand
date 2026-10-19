@@ -395,9 +395,13 @@ impl<'a> Timeline<'a> {
             .get(i)
             .map_or([0.0, 0.0], |f| RunTrace::moved(&self.first, f, row.surface));
         let (x, y) = (x - dx, y - dy);
-        let on = self
+        // (eval-coverage-3) A surface painted in the tick it is detached
+        // (its exit's last frame) has no size of its own at that frame:
+        // it was drawn at the size it was last configured at.
+        let size = self
             .size(i, row.surface)
-            .is_none_or(|[sw, sh]| x < sw && y < sh && x + w > 0.0 && y + h > 0.0);
+            .or_else(|| (0..i).rev().find_map(|j| self.size(j, row.surface)));
+        let on = size.is_none_or(|[sw, sh]| x < sw && y < sh && x + w > 0.0 && y + h > 0.0);
         !hidden && row.op >= 0.02 && w * h >= 1.0 && on
     }
 

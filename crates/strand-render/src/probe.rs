@@ -275,6 +275,9 @@ pub struct ImageDrawn {
     pub pixmap_fit: &'static str,
     /// A decode for another box size stands in while its own is made.
     pub stand_in: bool,
+    /// (eval-coverage-3) A symbolic icon's colour: it is drawn as a mask
+    /// in it.
+    pub tint: Option<Color>,
 }
 
 /// (eval-rules-4) A text drawn cut to its line box.

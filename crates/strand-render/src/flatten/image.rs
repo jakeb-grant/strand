@@ -107,9 +107,16 @@ impl Flattener<'_> {
         if decoded.is_none() && old.is_none() {
             return;
         }
+        // A group's bounds are where it draws on the surface, under the
+        // node's transform like its items' (`Flattener::push`): a window
+        // the raster repaints skips a group whose bounds miss it, and a
+        // tilted image's corners that left its untransformed box were
+        // missing from a partial redraw (eval-coverage-3, the matrix's
+        // image under `lean`).
+        let group_bounds = super::map_rect(self.xform, phys);
         let clip = (!radii_zero(r)).then(|| self.marker(Item::PushClip(box_path.clone())));
         if let Some(i) = clip {
-            self.out.items[i].bounds = phys;
+            self.out.items[i].bounds = group_bounds;
         }
         let rect = kurbo::Rect::new(
             frame.x0,
@@ -143,6 +150,7 @@ impl Flattener<'_> {
                         fit: fit.name(),
                         pixmap_fit: d.fit.name(),
                         stand_in: _stand_in,
+                        tint: d.symbolic.then_some(color),
                     },
                 ));
             }
@@ -173,7 +181,7 @@ impl Flattener<'_> {
             #[cfg(not(feature = "eval-hooks"))]
             draw(self, d, sig, false);
             if let Some((i, pop)) = mask {
-                self.out.items[i].bounds = phys;
+                self.out.items[i].bounds = group_bounds;
                 self.marker(pop);
             }
         }

@@ -1,0 +1,72 @@
+id     = "tile-expand-held-1_75"
+about  = """Quick-settings tiles whose size springs around content that is laid
+at its own size at once (`shrink: 0`), at scale 1.75 and 165 Hz: a brightness tile
+widens from an icon to hold its label and a slider that mounts with it,
+and a notification group's card grows taller as its two older entries
+mount under the newest, then both fold back. Nothing here sets `clip`:
+"a node whose size springs clips its content while it does" (decisions.md
+wave3-pixels p2), so while each box is smaller than what it holds, what
+spills past it is cut at its edge, and nothing is cut at rest
+(`contain`'s `held`). The tile's icon and the newest entry stay where they are."""
+screen = { width = 360, height = 420, scale = 1.75 }
+hz     = 165
+
+=== shell.strand
+state bright = false
+state grouped = true
+state level = 0.6
+panel Settings {
+  anchor: top; margin: 12; open: true
+  col { id: sheet; width: 300; height: 300; pad: 12; gap: 10; align: start; bg: #16181e; radius: 16
+    row { id: tiles; gap: 8; align: center
+      row { id: tile_b; width: bright ? 236 : 40; height: 40; pad: 0, 8; gap: 8; align: center
+            radius: 12; bg: #2a2e38
+        box { id: sun; size: 24; radius: full; bg: #f6c177; shrink: 0 }
+        if bright {
+          text "Brightness" { id: b_label; color: #e0def4; shrink: 0; enter { opacity: 0 } }
+          slider { id: b_slider; width: 90; shrink: 0; value: <-> level; enter { opacity: 0 } }
+        }
+      }
+      box { id: tile_w; size: 40; radius: 12; bg: #31748f }
+    }
+    col { id: group; width: 276; height: grouped ? 52 : 168; pad: 8; gap: 6
+          radius: 12; bg: #232631
+      row { id: newest; height: 36; shrink: 0; pad: 0, 8; align: center; radius: 8; bg: #393552
+        text "Mail: 3 new messages" { color: #e0def4 }
+      }
+      if !grouped {
+        row { id: older1; height: 36; shrink: 0; pad: 0, 8; align: center; radius: 8; bg: #2f2c45
+              enter { opacity: 0 }
+          text "Mail: invoice attached" { color: #e0def4 }
+        }
+        row { id: older2; height: 36; shrink: 0; pad: 0, 8; align: center; radius: 8; bg: #2f2c45
+              enter { opacity: 0 }
+          text "Mail: weekly digest" { color: #e0def4 }
+        }
+        row { id: older3; height: 18; shrink: 0; align: center
+          text "Show all" { color: #908caa }
+        }
+      }
+    }
+    box { id: footer; width: 120; height: 14; radius: 4; bg: #403d52 }
+  }
+}
+
+=== steps
+rest
+mark widen
+set bright true
+rest
+expect still #sun
+mark ungroup
+set grouped false
+rest
+expect still #newest
+mark narrow
+set bright false
+rest
+expect still #sun
+mark regroup
+set grouped true
+rest
+expect still #newest

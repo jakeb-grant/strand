@@ -1,0 +1,65 @@
+id     = "osd-shadow-edges-1_5"
+about  = """Edge-anchored surfaces whose drop shadows are offset, at scale 1.5
+and 144 Hz: a volume OSD anchored to the bottom with a margin (design.md
+(d): `anchor: bottom; margin: 0, 0, 96`, `shadow: $elevation.lg`), its
+shadow cast downward, pops in, its level rolls and its meter springs
+twice, and it hides; a dock anchored to the left edge, its shadow cast to
+the right, widens a running-app dot under its apps. A
+shadow grows a layer surface's buffer past its box by its reach on each
+side, which an offset makes uneven, and each margin moves out by that
+side's own reach so the box keeps its place (strand-surface placement.rs
+`layer_config_with`): the OSD's box stays 64 px above the bottom edge and
+the dock's 12 px from the left, and each shadow at rest is drawn inside
+its buffer (`contain`'s `shadow`)."""
+screen = { width = 420, height = 360, scale = 1.5 }
+hz     = 144
+
+=== shell.strand
+state shown = false
+state level = 0.4
+state running = false
+osd Level {
+  anchor: bottom; margin: 0, 0, 64; open: shown
+  enter { opacity: 0; scale: 0.9 }
+  row { id: pill; width: 220; height: 40; pad: 0, 14; gap: 10; align: center; radius: full
+        bg: #1d2029; shadow: 0 10px 24px #000000c0
+    box { id: vol_icon; size: 16; radius: 4; bg: #9ece6a }
+    meter level { id: vol_meter; grow: 1; height: 6; color: #9ece6a; track: #33384f }
+    text pct(level) { id: vol_text; width: 4ch; align: end; color: #d5d9f0; roll: true }
+  }
+}
+panel Dock {
+  anchor: left; margin: 0, 0, 0, 12; open: true
+  col { id: dock; width: 52; pad: 8; gap: 8; align: center; radius: 14; bg: #20232b
+        shadow: 8px 0 18px #000000b0
+    box { id: app_term; size: 36; radius: 10; bg: #7aa2f7 }
+    box { id: app_web; size: 36; radius: 10; bg: #e0af68 }
+    box { id: dot; height: 4; width: running ? 18 : 4; radius: full; bg: #c0caf5 }
+  }
+}
+
+=== steps
+rest
+mark show
+set shown true
+rest
+expect still #app_term
+mark louder
+set level 0.55
+rest
+expect still #vol_icon
+mark loudest
+set level 0.9
+wait 60
+set level 0.75
+rest
+expect still #vol_icon
+mark running
+set running true
+rest
+expect still #app_term
+expect still #pill
+mark hide
+set shown false
+rest
+expect still #dock

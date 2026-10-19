@@ -1,0 +1,98 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "bar-split-title-1_25"
+verdict good
+note "eval-coverage-3 first reference, read: at 1.25 a long focused title ellipsises inside the start track's share (212 px) and moves right only as a third workspace dot enters; the clock stays centred at 220; the now-playing text grows to its max_width 120 ellipsised beside the battery, which stays; the scale step to 1.75 moves only device rounding"
+date 2026-10-19
+rev "a7965714+changes"
+approver "claude"
+scenario 000dccf3ac026961
+seal 81c613208c70c334
+S1 0 - "bar Top"
+N0 "batt|shell.strand:19:7|[Mock | DP-1]#1" "text#batt"
+N1 "clock|shell.strand:16:14|[Mock | DP-1]#0" "text#clock"
+N2 "dots|shell.strand:8:7|[Mock | DP-1]#0" "row#dots"
+N3 "now|shell.strand:18:7|[Mock | DP-1]#0" "text#now"
+N4 "sp|shell.strand:6:3|[Mock | DP-1]#0" "split#sp"
+N5 "ttl|shell.strand:14:7|[Mock | DP-1]#0" "text#ttl"
+N6 "|shell.strand:10:11|[Mock | DP-1][1]#0" "box@shell.strand:10"
+N7 "|shell.strand:10:11|[Mock | DP-1][2]#1" "box@shell.strand:10"
+N8 "|shell.strand:16:5|[Mock | DP-1]#0" "center@shell.strand:16"
+N9 "|shell.strand:17:5|[Mock | DP-1]#0" "end@shell.strand:17"
+N10 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N11 "|shell.strand:7:5|[Mock | DP-1]#0" "start@shell.strand:7"
+N12 "|shell.strand:10:11|[Mock | DP-1][3]#2" "box@shell.strand:10"
+k0 p1
+s1 z=520,30
+n0 x=485 y=8 w=27 h=15 v=484.796875,8,27.203125,15.203125 txt=S ord=11 ink=484.796875,10.40625,25.59375,10.40625 fg=c0caf5ff gl=["84%"]
+n1 x=220 y=8 w=80 h=15 v=220,8,80,15.203125 txt=S ord=8 ink=220,10.40625,80,10.40625 fg=c0caf5ff gl=["Tue\u002019\u0020\u002012:40"]
+n2 x=8 y=11 w=20 h=8 v=8,11.203125,20,8 ord=3
+n3 x=424 y=8 w=53 h=15 v=424,8,52.796875,15.203125 txt=S ord=10 ink=424.796875,10.40625,51.203125,10.40625 fg=9ece6aff gl=["Low\u0020Tide"]
+n4 x=0 y=0 w=520 h=30 v=0,0,520,30.40625 ord=1
+n5 x=36 y=8 w=26 h=15 v=36,8,26.40625,15.203125 txt=S ord=6 ink=36,11.203125,25.59375,9.59375 fg=a9b1d6ff gl=["term"]
+n6 x=8 y=11 w=8 h=8 v=8,11.203125,8,8 ord=4 bg=7aa2f7ff
+n7 x=20 y=11 w=8 h=8 v=20,11.203125,8,8 ord=5 bg=565f89ff
+n8 x=220 y=0 w=80 h=30 v=220,0,80,30.40625 ord=7
+n9 x=300 y=0 w=212 h=30 v=300,0,212,30.40625 ord=9
+n10 x=0 y=0 w=520 h=30 v=0,0,520,30.40625 bg=1a1b26ff
+n11 x=8 y=0 w=212 h=30 v=8,0,212,30.40625 ord=2
+k1
+n5 w=184 v=36,8,184,15.203125 ink=36.796875,10.40625,144,10.40625 fit=184 gl=["Firefox\u0020-\u0020The\u0020animation\u0020evaluation\u0020sandbox,\u0020a\u0020page\u0020whose\u0020title\u0020runs\u0020long"]
+k2
+n0 ord=12
+n1 ord=9
+n2 w=24 v=8,11.203125,24,8
+n3 ord=11
+n5 x=40 w=180 v=40,8,180,15.203125 ord=7 ink=40.796875,10.40625,144,10.40625 fit=180
+n8 ord=8
+n9 ord=10
+n12 x=30 y=11 w=2 h=8 v=30.40625,11.203125,1.59375,8 op=37 ord=6 bg=565f89ff
+k3
+n2 w=29 v=8,11.203125,28.796875,8
+n5 x=45 w=175 v=44.796875,8,175.203125,15.203125 ink=45.59375,10.40625,144,10.40625 fit=175
+n12 x=32 w=5 v=32,11.203125,4.796875,8 op=98
+k4
+n2 w=31 v=8,11.203125,31.203125,8
+n5 x=47 w=173 v=47.203125,8,172.796875,15.203125 ink=48,10.40625,144,10.40625 fit=173
+n12 w=7 v=32,11.203125,7.203125,8 op=151
+k5
+n2 w=32 v=8,11.203125,32,8
+n5 x=48 w=172 v=48,8,172,15.203125 ink=48.796875,10.40625,144,10.40625 fit=172
+n12 w=8 v=32,11.203125,8,8 op=190
+k6
+n12 op=216
+k7
+n12 op=232
+k8
+n12 op=241
+k9
+n12 op=247
+k10
+n12 op=251
+k11
+n12 op=253
+k12
+n12 op=254
+k13
+k14
+n12 op=255
+k15
+k16
+n3 x=357 w=120 v=356.796875,8,120,15.203125 ink=356.796875,10.40625,80.796875,10.40625 fit=120 gl=["Somewhere\u0020Between\u0020the\u0020Harbour\u0020Lights\u0020and\u0020Home"]
+k17
+n0 v=485.140625,8,26.859375,14.859375 ink=485.140625,10.859375,25.71875,9.71875
+n1 v=220,8,80,14.859375 ink=220,10.859375,79.421875,9.71875
+n2 v=8,10.859375,32,8
+n3 v=357.140625,8,120,14.859375 ink=357.71875,10.28125,80.578125,10.28125
+n4 v=0,0,520,30.28125
+n5 v=48,8,172,14.859375 ink=48.578125,10.28125,144.578125,10.28125
+n6 v=8,10.859375,8,8
+n7 v=20,10.859375,8,8
+n8 v=220,0,80,30.28125
+n9 v=300,0,212,30.28125
+n10 v=0,0,520,30.28125
+n11 v=8,0,212,30.28125
+n12 v=32,10.859375,8,8
+k18
+n5 w=78 v=48,8,78.28125,14.859375 ink=48,10.28125,76.578125,10.28125 fit=- gl=["vim\u0020notes.md"]
+k19
+n3 x=424 w=53 v=424,8,53.140625,14.859375 ink=424.578125,10.28125,51.421875,10.28125 fit=- gl=["Low\u0020Tide"]

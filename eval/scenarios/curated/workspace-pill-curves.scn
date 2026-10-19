@@ -1,0 +1,52 @@
+id     = "workspace-pill-curves"
+about  = """A workspace indicator at 100 Hz whose highlight slides between the
+workspace slots on a cubic bézier that overshoots (`~ bezier(0.05, 0.9,
+0.1, 1.05)`) and widens on a timed `ease(out_back, 300ms)`, its colour
+fading over `~ 200ms`, while the slots' dots stay where they are
+(design.md "Motion and time": named curves and cubic béziers; spec.md 6.6:
+a change takes the transition in effect after it). Focus jumps two slots,
+is retargeted one slot back mid-flight (a timed curve keeps the velocity
+it had: decisions.md first-frame-lead), then moves to a slot whose
+workspace is urgent, which widens the pill."""
+screen = { width = 300, height = 120, scale = 1.0 }
+hz     = 100
+
+=== shell.strand
+state active = 0
+state urgent = false
+bar Top {
+  height: 32; bg: #1a1b26
+  row { height: 32; pad: 0, 12; align: center
+    stack { id: track; width: 160; height: 20
+      box { id: pill; place: absolute; y: 2; height: 16; radius: full
+            x: active * 32 ~ bezier(0.05, 0.9, 0.1, 1.05)
+            width: (urgent && active == 3) ? 40 : 24 ~ ease(out_back, 300ms)
+            bg: (urgent && active == 3) ? #f7768e : #7aa2f7 ~ 200ms }
+      row { id: dots; gap: 24; pad: 0, 8; align: center; height: 20
+        box { id: d0; size: 8; radius: full; bg: #c0caf5 }
+        box { id: d1; size: 8; radius: full; bg: #c0caf5 }
+        box { id: d2; size: 8; radius: full; bg: #c0caf5 }
+        box { id: d3; size: 8; radius: full; bg: #c0caf5 }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark jump
+set active 2
+wait 80
+set active 1
+rest
+expect still #dots
+expect still #d1
+mark urgent
+set urgent true
+set active 3
+rest
+expect still #d3
+mark back
+set active 0
+rest
+expect still #d0

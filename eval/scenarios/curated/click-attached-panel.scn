@@ -1,0 +1,62 @@
+id     = "click-attached-panel"
+about  = """A bar button opens a control panel attached under the bar by a click
+(design.md (a)'s `on click { open = !open }`; "Shape and geometry":
+`attach: top` grows a panel out of the bar's edge with concave fillets):
+the pointer moves onto the button (its `when hover` fill springs), the
+press squeezes it (`when pressed { scale: 0.92 }`, about its centre) and
+the release opens the panel, which enters on the `slide(top)` preset with
+its shadow, cut at the attached edge; a second click closes it. The panel's
+entries wrap their text to two lines (`max_lines: 2`). The handler runs in
+logic, and its diff reaches render a frame after the release."""
+screen = { width = 400, height = 300, scale = 1.0 }
+
+=== shell.strand
+state open = false
+bar Top {
+  height: 30; bg: #1e1e2e
+  row { height: 30; pad: 0, 10; gap: 10; align: center
+    text "Desktop" { id: label; color: #cdd6f4 }
+    box { id: button; width: 56; height: 20; radius: 6; bg: #313244
+          when hover { bg: #45475a }
+          when pressed { scale: 0.92 }
+          on click { open = !open }
+      text "Menu" { id: button_text; color: #cdd6f4 }
+    }
+  }
+}
+panel Control {
+  anchor: top; attach: top; open: open
+  enter: slide(top)
+  col { id: card; width: 240; pad: 12; gap: 8; radius: 14; bg: #313244
+        shadow: 0 6px 18px #000000b0
+    text "Do not disturb is on until tomorrow morning, and three apps are muted." {
+      id: note; color: #cdd6f4; max_lines: 2; ellipsis: end }
+    row { id: toggles; gap: 8
+      box { id: t1; width: 70; height: 28; radius: 8; bg: #89b4fa }
+      box { id: t2; width: 70; height: 28; radius: 8; bg: #45475a }
+    }
+  }
+}
+
+=== steps
+rest
+mark hover
+glide 20,15 -> 100,15 over 100 on #label
+rest
+expect still #label
+mark press
+press left
+rest
+expect still #label
+mark release
+release left
+rest
+expect visible #card
+expect still #label
+mark close
+click 100,15 on #label
+rest
+expect still #label
+mark leave
+leave
+rest

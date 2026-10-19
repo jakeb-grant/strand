@@ -1,0 +1,58 @@
+id     = "notif-groups-reorder"
+about  = """A notification centre whose app groups are keyed and ordered by
+their latest message, at 90 Hz: a new message for the lower app moves its
+group to the top while the entries inside it reorder newest first, and
+later the first group's entries reorder while the groups swap back
+(design.md "Layout, animation and input": reordering uses FLIP, so list
+items glide to their new slots). Three levels move at once: a group glides
+in the column, an entry glides within its group, and what an entry holds
+(its app icon and texts) rides with it, each child's glide measured from
+its parent's, so nothing is carried twice. The header above the groups
+stays still."""
+screen = { width = 360, height = 480, scale = 1.0 }
+hz     = 90
+
+=== shell.strand
+state mail_top = false
+state parcel = false
+state chat_swapped = false
+panel Centre {
+  anchor: top_right; margin: 8; open: true
+  col { id: centre; width: 300; height: 420; pad: 10; gap: 10; align: start; bg: #14161b; radius: 14
+    text "Notifications" { id: header; color: #e6e6e6 }
+    for app in (mail_top ? ["mail", "chat"] : ["chat", "mail"]) key app {
+      col { width: 280; pad: 8; gap: 6; radius: 12; bg: #1f232b
+        row { height: 18; gap: 6; align: center
+          box { size: 12; radius: 3; bg: app == "chat" ? #98c379 : #61afef }
+          text app == "chat" ? "Chat" : "Mail" { color: #abb2bf }
+        }
+        for m in (app == "chat" ? (chat_swapped ? ["c2", "c1"] : ["c1", "c2"]) : (parcel ? ["m3", "m1", "m2"] : ["m1", "m2"])) key m {
+          row { width: 264; height: 34; pad: 0, 8; gap: 8; align: center; radius: 8; bg: #2a2f39
+                enter { opacity: 0 }
+            box { size: 20; radius: 6; bg: app == "chat" ? #98c379 : #61afef }
+            col { gap: 1
+              text m == "c1" ? "Ana: lunch?" : m == "c2" ? "Bo: running late" : m == "m1" ? "Invoice 1042" : m == "m3" ? "Your parcel shipped" : "Weekly digest" { color: #e6e6e6 }
+              text "just now" { color: #7f848e }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark mail-arrives
+set parcel true
+set mail_top true
+rest
+expect still #header
+mark chat-reorders
+set chat_swapped true
+set mail_top false
+rest
+expect still #header
+mark settled
+frames 10
+expect still #centre

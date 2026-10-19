@@ -6298,3 +6298,116 @@ fn bystander_judges_an_authored_turn_by_its_box_before_transforms() {
         );
     }
 }
+
+/// (eval-coverage-3) A content-sized col (`col`) holding `a` (10 tall)
+/// and, last, `n`, leaving on `exit { height: 0 }`: laid at height 0 on
+/// ticks 1 and 2 and unmounted on tick 3. The col is `before` tall on
+/// ticks 1 and 2 and 10 once `n` is gone.
+fn last_slot_leaving(before: f32) -> RunTrace {
+    let mut t = shape(4, |k| {
+        let h = if k == 0 {
+            28.0
+        } else if k <= 2 {
+            before
+        } else {
+            10.0
+        };
+        let mut v = vec![
+            row("col", [0.0, 0.0, 100.0, h]),
+            row("a", [0.0, 0.0, 100.0, 10.0]).draws(),
+        ];
+        if k == 0 {
+            v.push(row("n", [0.0, 18.0, 100.0, 10.0]).draws());
+        } else if k <= 2 {
+            v.push(row("n", [0.0, 10.0, 100.0, 0.0]).draws().mot(Motions::EXIT));
+        }
+        v
+    });
+    for k in ["a", "n"] {
+        t.nodes.get_mut(k).unwrap().parent = Some("col".into());
+    }
+    t.nodes.get_mut("n").unwrap().exit = Some(strand_eval::trace::Pose {
+        opacity: None,
+        x: None,
+        y: None,
+        scale: None,
+        w: None,
+        h: Some(0.0),
+    });
+    t.seal();
+    t
+}
+
+/// (eval-coverage-3) `continuity`'s `fold` on the parent: a last slot
+/// at height 0 takes the gap before it (its neighbour gives it up), so
+/// unmounting it leaves its content-sized parent as it was; a parent
+/// that kept the gap and drops it at the unmount is a finding.
+#[test]
+fn fold_holds_the_parent_of_a_slot_unmounting_at_zero() {
+    let sc = scenario("");
+    let parent = |r: &Report| {
+        r.failures(CheckId::Continuity)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("col") && f.msg.starts_with("fold"))
+    };
+    let t = last_slot_leaving(10.0);
+    let r = check(&sc, &t);
+    assert!(!parent(&r), "{}", show(&r, &t));
+    let t = last_slot_leaving(18.0);
+    let r = check(&sc, &t);
+    assert!(parent(&r), "{}", show(&r, &t));
+}
+
+/// (integration-r6) A 160 × 120 source in a 30 × 12 box written
+/// `fit: <fit>`, drawn on tick 1 from a 16 × 12 decode made for the box
+/// it had before (standing in while its box springs) at `dest`, and from
+/// its own decode at rest on the ticks around it.
+fn image_fit(fit: &str, dest: [f32; 4]) -> RunTrace {
+    let mut t = shape(3, |_| vec![row("im", [0.0, 0.0, 30.0, 12.0]).draws()]);
+    // Its own decode is made at its box's size, the source placed in it
+    // by the fit, and drawn over the box.
+    let own = [0.0, 0.0, 30.0, 12.0];
+    for (k, f) in t.frames.iter_mut().enumerate() {
+        let stand_in = k == 1;
+        f.imgs.push(ImageRec {
+            key: "im".into(),
+            s: 1,
+            rect: [0.0, 0.0, 30.0, 12.0],
+            dest: if stand_in { dest } else { own },
+            px: if stand_in { [16, 12] } else { [30, 12] },
+            src: [160.0, 120.0],
+            fit: fit.into(),
+            pfit: fit.into(),
+            stand_in,
+        });
+    }
+    t.seal();
+    t
+}
+
+/// (integration-r6, eval-coverage-3's cases for the one image rule) A
+/// stand-in decode is placed again by its fit: centred and keeping its
+/// aspect under `cover` and `contain`, stretched to its box under
+/// `fill`; one left at its old place and size, stretched under another
+/// fit, or kept at its aspect under `fill` is a finding.
+#[test]
+fn placement_fits_a_stand_in_by_cover_contain_and_fill() {
+    let sc = scenario("");
+    let fit = |r: &Report| {
+        r.failures(CheckId::Placement)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("im") && f.msg.starts_with("fit"))
+    };
+    for (fit_kw, dest, fails) in [
+        ("cover", [0.0, -5.25, 30.0, 22.5], false),
+        ("contain", [7.0, 0.0, 16.0, 12.0], false),
+        ("fill", [0.0, 0.0, 30.0, 12.0], false),
+        ("contain", [0.0, 0.0, 16.0, 12.0], true),
+        ("cover", [0.0, 0.0, 30.0, 12.0], true),
+        ("fill", [7.0, 0.0, 16.0, 12.0], true),
+    ] {
+        let t = image_fit(fit_kw, dest);
+        let r = check(&sc, &t);
+        assert_eq!(fit(&r), fails, "{fit_kw} {dest:?}: {}", show(&r, &t));
+    }
+}

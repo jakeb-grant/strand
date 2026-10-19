@@ -815,7 +815,19 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `Paint`s, `shadows` as `ShadowDrawn` (its colour and the `extent` it
     may cover, before transforms), `glyphs` as `GlyphsDrawn` (its paint,
     span colours, the `text` its layout was shaped from and the `subset`
-    of glyphs drawn when not all were)); (eval-rules)
+    of glyphs drawn when not all were)); (eval-rules-4,
+    eval-coverage-3) `NodeTrace::images`, an `ImageDrawn` per decode an
+    `image` or `icon` drew this frame, an image swap's old one first (its
+    box, where the whole decoded pixmap is drawn in it, the pixmap's size
+    in device pixels, the source's size as the decode placed it, the
+    `fit:` the node asks for and the fit the pixmap was decoded by, whether
+    a decode for another box size stands in, and a symbolic icon's tint;
+    `Fit::name` gives a fit's keyword), and `NodeTrace::cut`, a
+    `CutDrawn` for a text cut to its line box when it drew the layout
+    shaped for that box at this scale (the text, `ellipsis:` and
+    `max_lines` as asked, the drawn layout's cluster stops with their
+    lines, and the unbounded layout's stops when it is one line);
+    (eval-rules)
     `Motions` also says which of a node's own colours springs
     (`FILL_SPRING`: its `bg`, a meter's `value` or `track`;
     `INK_SPRING`: its text colour or solid `fill`; `LINE_SPRING`: its
@@ -862,7 +874,12 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     over its crossfade snapshot; `fresh_gpu_frame(&self, SurfaceId, id,
     first_upload) -> Option<strand_gpu::Frame>` (with `gpu`): it lowered
     again with a raster and an upload table of their own, every pixmap
-    in its uploads. Both read the renderer only. And
+    in its uploads; (eval-rules-4) `repaint_unblended(&self, SurfaceId,
+    &mut PaintTarget) -> Option<(&[u8], f32)>`: when that frame was
+    blended over a crossfade snapshot standing alone, the frame drawn
+    again in full without the blend, with the snapshot's pixels and the
+    weight it was blended at, for a check that blends them by its own
+    arithmetic. All three read the renderer only. And
     `set_damage_inset(u32)`, a mutant only eval/tests turns on: each
     frame's own damage shrunk by that many pixels on every side;
   - `Router::set_now(Option<Instant>)`: the time the router reads for

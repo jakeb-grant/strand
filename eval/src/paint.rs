@@ -13,7 +13,7 @@
 //! them were (`41[1]`: the second glyph of "41", rolling out).
 
 use serde::{Deserialize, Serialize};
-use strand_render::probe::{GlyphsDrawn, NodePaint};
+use strand_render::probe::{GlyphsDrawn, ImageDrawn, NodePaint};
 use strand_scene::{Color, GradientStop, LogicalRect, Paint};
 
 use crate::trace::q;
@@ -44,6 +44,14 @@ pub struct PaintRec {
     /// stays changes it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pt: Vec<String>,
+    /// (eval-coverage-3) Its images and icons, in paint order: where each
+    /// decoded pixmap is drawn, from its drawn box's top-left
+    /// (`x,y,w,h`, 1/64 px), then `@` the pixmap's size in device pixels
+    /// (the size it was decoded at: a decode of another size stands in
+    /// while its box springs), then `~` the box it is drawn in when that
+    /// is not its own box, and `+` a symbolic icon's colour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub im: Vec<String>,
 }
 
 impl PaintRec {
@@ -54,12 +62,19 @@ impl PaintRec {
             && self.fg.is_empty()
             && self.gl.is_empty()
             && self.pt.is_empty()
+            && self.im.is_empty()
     }
 
     /// The paint a frame's node drew, as text, `drawn` its drawn box on
-    /// a screen of `scale`; `None` when it drew none.
-    pub fn of(p: &NodePaint, drawn: LogicalRect, scale: f64) -> Option<PaintRec> {
-        if p.is_empty() {
+    /// a screen of `scale`, `images` its images' decodes as drawn
+    /// (`probe::NodeTrace::images`); `None` when it drew none.
+    pub fn of(
+        p: &NodePaint,
+        images: &[ImageDrawn],
+        drawn: LogicalRect,
+        scale: f64,
+    ) -> Option<PaintRec> {
+        if p.is_empty() && images.is_empty() {
             return None;
         }
         // Its box as the flattener fills it: each edge on the physical
@@ -84,8 +99,30 @@ impl PaintRec {
                     .join(",")
             })
             .collect();
+        let rel = |b: &LogicalRect| {
+            [q(b.x) - own[0], q(b.y) - own[1], q(b.w), q(b.h)]
+                .map(|v| num(q(v)))
+                .join(",")
+        };
+        let im = images
+            .iter()
+            .map(|i| {
+                let mut s = format!("{}@{},{}", rel(&i.dest), i.pixmap[0], i.pixmap[1]);
+                let r = &i.rect;
+                if [q(r.x), q(r.y), q(r.w), q(r.h)] != own {
+                    s.push('~');
+                    s += &rel(r);
+                }
+                if let Some(c) = i.tint {
+                    s.push('+');
+                    s += &hex(c);
+                }
+                s
+            })
+            .collect();
         Some(PaintRec {
             pt,
+            im,
             bg: p.fills.iter().map(paint).collect(),
             bd: p.borders.iter().map(paint).collect(),
             sh: p
@@ -221,6 +258,77 @@ pub fn part_within(a: &str, b: &str, px: i64) -> bool {
     match (vals(a), vals(b)) {
         (Some(x), Some(y)) => {
             x.len() == y.len() && x.iter().zip(&y).all(|(u, v)| (u - v).abs() <= px)
+        }
+        _ => false,
+    }
+}
+
+/// (eval-coverage-3) An image as [`PaintRec::im`] writes it: where its
+/// pixmap is drawn and the box it is drawn in, both from its node's drawn
+/// box (the box is that box when the text names none), the pixmap's size
+/// and a symbolic icon's colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageRec {
+    pub dest: [f64; 4],
+    pub rect: Option<[f64; 4]>,
+    pub pixmap: (u32, u32),
+    pub tint: Option<[i64; 4]>,
+}
+
+impl ImageRec {
+    pub fn parse(s: &str) -> Option<ImageRec> {
+        let (s, tint) = match s.split_once('+') {
+            Some((a, c)) => (a, Some(rgba(c)?)),
+            None => (s, None),
+        };
+        let (s, rect) = match s.split_once('~') {
+            Some((a, r)) => (a, Some(rect4(r)?)),
+            None => (s, None),
+        };
+        let (d, px) = s.split_once('@')?;
+        let (pw, ph) = px.split_once(',')?;
+        Some(ImageRec {
+            dest: rect4(d)?,
+            rect,
+            pixmap: (pw.parse().ok()?, ph.parse().ok()?),
+            tint,
+        })
+    }
+}
+
+fn rect4(s: &str) -> Option<[f64; 4]> {
+    let v: Vec<f64> = s
+        .split(',')
+        .map(|v| v.parse::<f64>().ok())
+        .collect::<Option<_>>()?;
+    v.try_into().ok()
+}
+
+/// (eval-coverage-3) Two images as text are the same within `px` quanta
+/// (1/64 px) on each place and `tol` colour steps, decoded at one size.
+pub fn image_within(a: &str, b: &str, tol: i64, px: i64) -> bool {
+    if a == b {
+        return true;
+    }
+    let near = |x: &[f64; 4], y: &[f64; 4]| {
+        x.iter()
+            .zip(y)
+            .all(|(u, v)| ((u * 64.0).round() as i64 - (v * 64.0).round() as i64).abs() <= px)
+    };
+    match (ImageRec::parse(a), ImageRec::parse(b)) {
+        (Some(x), Some(y)) => {
+            x.pixmap == y.pixmap
+                && near(&x.dest, &y.dest)
+                && match (&x.rect, &y.rect) {
+                    (None, None) => true,
+                    (Some(r), Some(s)) => near(r, s),
+                    _ => false,
+                }
+                && match (x.tint, y.tint) {
+                    (None, None) => true,
+                    (Some(c), Some(d)) => c.iter().zip(&d).all(|(u, v)| (u - v).abs() <= tol),
+                    _ => false,
+                }
         }
         _ => false,
     }

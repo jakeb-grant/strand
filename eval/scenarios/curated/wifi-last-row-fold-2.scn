@@ -1,0 +1,64 @@
+id     = "wifi-last-row-fold-2"
+about  = """A Wi-Fi menu at scale 2: a popup sized by its content under a bar
+item, listing networks in a column with a gap, each row leaving on
+`exit { height: 0; opacity: 0 }` (design.md (c): "siblings slide up to fill
+the gap"). The last network goes out of range, then a middle one, then
+the one left last, which leaves the connected one alone. A slot
+collapsing to zero takes the gap beside it along; for the last row that is
+the gap before it, which its neighbour above gives up (strand-render
+`Forced::collapse`), so the card shrinks with the row as the spring
+settles and nothing moves when it unmounts. The rows above stay put."""
+screen = { width = 360, height = 400, scale = 2.0 }
+
+=== shell.strand
+state home = true
+state cafe = true
+state guest = true
+bar Top {
+  height: 28; bg: #191724
+  row { height: 28; pad: 0, 10; align: center
+    text "Wi-Fi" { id: wifi; color: #e0def4
+      popup { open: true
+        col { id: nets; width: 200; pad: 8; gap: 6; radius: 10; bg: #26233a
+          row { id: net_top; height: 28; pad: 0, 8; align: center; radius: 6; bg: #393552
+            text "Connected: Office" { color: #e0def4 }
+          }
+          if home {
+            row { id: net_home; height: 28; pad: 0, 8; align: center; radius: 6; bg: #2a273f
+                  exit { height: 0; opacity: 0 }
+              text "Home" { color: #e0def4 }
+            }
+          }
+          if cafe {
+            row { id: net_cafe; height: 28; pad: 0, 8; align: center; radius: 6; bg: #2a273f
+                  exit { height: 0; opacity: 0 }
+              text "Cafe" { color: #e0def4 }
+            }
+          }
+          if guest {
+            row { id: net_guest; height: 28; pad: 0, 8; align: center; radius: 6; bg: #2a273f
+                  exit { height: 0; opacity: 0 }
+              text "Guest" { color: #e0def4 }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark last-leaves
+set guest false
+rest
+expect still #net_top
+expect still #net_cafe
+mark middle-leaves
+set home false
+rest
+expect still #net_top
+mark clear
+set cafe false
+rest
+expect still #net_top

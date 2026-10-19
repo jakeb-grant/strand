@@ -1,0 +1,74 @@
+id     = "media-art-expand"
+about  = """A media card in a top-right panel at scale 1.25 and 120 Hz: its album
+art (a 3:2 image, `fit: cover`) grows from a 40 px thumbnail to a 112 x 72
+banner as the card expands, and shrinks back; a toast below it arrives with
+its app's icon (a 3:4 image, `fit: contain`) scaling in, and the track
+changes while the art is large (design.md "Generative, data-driven and
+media": `image media.art { fit: cover }`; "Layout": an image sized in
+absolute lengths does not shrink). While a box springs its size, the image
+is drawn from a decode at the size before, placed again by its fit
+(image.rs `Decoded::placed_in`): `coherence`'s `fit` holds it centred and
+unstretched on every frame, and the recording holds where each decode was
+drawn (`im`)."""
+screen = { width = 360, height = 400, scale = 1.25 }
+hz     = 120
+
+=== shell.strand
+state expanded = false
+state toast = false
+state track = "Small Hours"
+panel Media {
+  anchor: top_right; margin: 8; open: true
+  col { id: deck; width: 280; height: 300; pad: 10; gap: 10; align: end
+    col { id: card; width: 260; pad: 10; gap: 8; radius: 14; bg: #1c1f26; clip: true
+      row { id: head; gap: 10; align: center
+        image "../../fixtures/images/art.png" { id: art; fit: cover; radius: 6
+          width: expanded ? 112 : 40; height: expanded ? 72 : 40 }
+        col { id: meta; gap: 2; grow: 1
+          text track { id: title; color: #e8e8f0; ellipsis: end }
+          text "Night Ferry" { id: artist; color: #9aa0b4; ellipsis: end }
+        }
+      }
+      if expanded {
+        row { id: controls; height: 24; gap: 12; align: center
+              enter { opacity: 0; height: 0 }
+          box { id: prev; size: 20; radius: full; bg: #3b4252 }
+          box { id: play; size: 24; radius: full; bg: #89b4fa }
+          box { id: next; size: 20; radius: full; bg: #3b4252 }
+        }
+      }
+    }
+    if toast {
+      row { id: toast_row; width: 220; pad: 8; gap: 8; radius: 10; align: center; bg: #262a33
+            enter { opacity: 0; scale: 0.9 }
+        image "../../fixtures/images/app.png" { id: appicon; size: 28; fit: contain
+          enter { scale: 0.6 } }
+        text "Download finished" { id: toast_text; color: #e8e8f0; ellipsis: end }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark expand
+set expanded true
+rest
+expect still #deck
+mark track
+set track "A Much Longer Track Title Than Fits"
+rest
+expect still #art
+mark toast
+set toast true
+rest
+expect still #art
+expect visible #appicon
+mark collapse
+set expanded false
+rest
+expect still #toast_row x
+mark dismiss
+set toast false
+rest
+expect still #card

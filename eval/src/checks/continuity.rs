@@ -41,8 +41,11 @@
 //!   siblings are laid out no further from where the frame before laid
 //!   them than its slot then takes (its size, and a gap folded to at most
 //!   its size), and on the frame after it unmounts no further than its
-//!   last frame's slot. A gap that opens at once and a glide that hides
-//!   the step (set E's enter-from-zero mutant) is not a fold;
+//!   last frame's slot, and their parent, sized by what it holds, changes
+//!   across the frame a slot unmounts by no more than that slot
+//!   (eval-coverage-3: a last row's gap left behind and dropped when it
+//!   unmounts). A gap that opens at once and a glide that hides the step
+//!   (set E's enter-from-zero mutant) is not a fold;
 //! - **roll**: a `roll: true` text a change interrupts rolls on from the
 //!   text on screen, the nearer of the two it was rolling between
 //!   (design.md "Rolling numbers"; `effects/roll.rs`), not from the one
@@ -437,7 +440,7 @@ fn fold(cx: &Cx) -> Vec<Finding> {
     use strand_render::probe::Motions;
     let tl = &cx.tl;
     let mut out = Vec::new();
-    let mut held = 0u64;
+    let (mut held, mut held_parents) = (0u64, 0u64);
     // (timeline frame before, frame after, axis): the nodes folding
     // there, each with its slot's size at the frame it draws in.
     let mut at: std::collections::BTreeMap<(usize, usize, usize), Folding> =
@@ -538,24 +541,29 @@ fn fold(cx: &Cx) -> Vec<Finding> {
             }
             let slot: f64 = folding.iter().map(|(_, s)| 2.0 * s.max(0.0)).sum();
             let bound = slot + cx.tol;
-            // (integration-r5) Where each sibling that stays stands among
-            // the others on the axis: one whose place in that order
-            // changed was moved by the change, not by the fold (design.md
-            // "Reordering uses FLIP": a sorted list inserting a row and
-            // moving another), and its glide is its own.
-            // (eval-rules-4) Unmounting moves nothing, what holds the
-            // slot included: its laid length on the axis steps by no more
-            // than the slot (a content-sized card does not snap shorter
-            // as its last rows unmount), unless its own size springs. On
-            // the frame a node enters from zero the parent is not held:
-            // a content-sized surface may already take its new size and
-            // its root stretch to it (the growth of content-sized
-            // surfaces is the owner's question, decisions.md).
-            let springs = |r: &crate::trace::Row| Motions(r.mot).contains(Motions::SIZE_SPRING);
-            let unmounts = folding.iter().all(|(k, _)| tl.row(b, k).is_none());
-            let grew = f64::from(pb.laid[2 + axis] - pa.laid[2 + axis]);
-            if unmounts && !(springs(pa) || springs(pb) || cx.allowed(CheckId::Continuity, p)) {
-                held += 1;
+            // (eval-coverage-3) The parent itself: a slot that folds with
+            // the gap beside it leaves nothing for its mounting or
+            // unmounting to take, so a parent sized by what it holds is
+            // laid no larger or smaller across that frame than the slot
+            // then takes ("unmounting it moves nothing": the last row of
+            // a content-sized card, whose gap its neighbour above gives
+            // up). One whose own size moves by itself (its size
+            // springs, it exits, keyframes or time drive it) is not
+            // judged; one of fixed size never changes. Only unmounting is
+            // judged: what a parent sized by its content is laid at the
+            // frame a slot mounts from zero is the content-sized growth
+            // rule's (it takes its size at rest at once and its slot
+            // springs into it: docs/decisions.md, a question left to the
+            // owner), not the fold's.
+            let own = Motions::SIZE_SPRING | Motions::EXIT | Motions::KEYFRAMES | Motions::TIME;
+            let went = folding.iter().all(|(k, _)| tl.row(b, k).is_none());
+            if went
+                && !Motions(pa.mot).intersects(own)
+                && !Motions(pb.mot).intersects(own)
+                && !cx.allowed(CheckId::Continuity, p)
+            {
+                held_parents += 1;
+                let grew = f64::from(pb.laid[2 + axis] - pa.laid[2 + axis]);
                 if grew.abs() > bound {
                     let who = folding[0].0;
                     let label = cx.trace.nodes.get(who).map_or(who, |m| m.label.as_str());
@@ -564,9 +572,9 @@ fn fold(cx: &Cx) -> Vec<Finding> {
                             CheckId::Continuity,
                             format!(
                                 "fold: {label} unmounts at size 0 here, taking a slot of at most \
-                                 {slot:.1} px, yet the {} of what holds it steps {grew:.1} px \
-                                 at once: its slot did not fold with it",
-                                ["width", "height"][axis]
+                                 {slot:.1} px, yet its parent is laid {grew:+.1} px {} than \
+                                 the frame before: the gap beside it did not fold with it",
+                                ["wider", "taller"][axis]
                             ),
                         )
                         .at(tl.ks[b])
@@ -576,6 +584,11 @@ fn fold(cx: &Cx) -> Vec<Finding> {
                     );
                 }
             }
+            // (integration-r5) Where each sibling that stays stands among
+            // the others on the axis: one whose place in that order
+            // changed was moved by the change, not by the fold (design.md
+            // "Reordering uses FLIP": a sorted list inserting a row and
+            // moving another), and its glide is its own.
             let order = |kids: &[(&str, &crate::trace::Row)], k: &str| -> Option<usize> {
                 let at = kids.iter().find(|(q, _)| *q == k)?.1.laid[axis];
                 Some(
@@ -668,7 +681,11 @@ fn fold(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
-    super::stats("continuity.fold", cx, &[("siblings", held)]);
+    super::stats(
+        "continuity.fold",
+        cx,
+        &[("siblings", held), ("parents", held_parents)],
+    );
     out
 }
 

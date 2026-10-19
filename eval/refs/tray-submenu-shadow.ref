@@ -1,0 +1,917 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "tray-submenu-shadow"
+verdict good
+note "eval-coverage-3 first reference, read frame by frame: the tray menu (shadow 0 8px 20px) opens under its item at the bar's start, the hover glides across its rows, Send to and Preferences each open a shadowed submenu level with their row and 6 px right of the menu, one fading as the other opens, and both close back to the bar"
+date 2026-10-19
+rev "a7965714+changes"
+approver "claude"
+scenario 8dfd8d12a1d734b5
+seal 3866048d680a91ce
+S1 0 - "bar Top"
+S2 1 115 "popup@shell.strand:9"
+S3 46 80 "popup@shell.strand:20"
+S4 64 98 "popup@shell.strand:32"
+N0 "clock|shell.strand:46:5|[Mock | DP-1]#1" "text#clock"
+N1 "tray_app|shell.strand:8:5|[Mock | DP-1]#1" "box#tray_app"
+N2 "tray_net|shell.strand:7:5|[Mock | DP-1]#0" "box#tray_net"
+N3 "ws|shell.strand:6:5|[Mock | DP-1]#0" "text#ws"
+N4 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N5 "|shell.strand:45:5|[Mock | DP-1]#0" "spacer@shell.strand:45"
+N6 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+N7 "|shell.strand:9:7|[Mock | DP-1]#0" "popup@shell.strand:9"
+N8 "menu_card|shell.strand:11:9|[Mock | DP-1]#0" "col#menu_card"
+N9 "row_open|shell.strand:13:11|[Mock | DP-1]#0" "row#row_open"
+N10 "row_prefs|shell.strand:29:11|[Mock | DP-1]#2" "row#row_prefs"
+N11 "row_send|shell.strand:17:11|[Mock | DP-1]#1" "row#row_send"
+N12 "|shell.strand:15:13|[Mock | DP-1]#0" "text(\"Open window\")"
+N13 "|shell.strand:19:13|[Mock | DP-1]#0" "text(\"Send to\")"
+N14 "|shell.strand:31:13|[Mock | DP-1]#0" "text(\"Preferences\")"
+N15 "|shell.strand:20:13|[Mock | DP-1]#0" "popup@shell.strand:20"
+N16 "send_card|shell.strand:22:15|[Mock | DP-1]#0" "col#send_card"
+N17 "|shell.strand:24:17|[Mock | DP-1]#0" "row@shell.strand:24"
+N18 "|shell.strand:24:62|[Mock | DP-1]#0" "text(\"Phone\")"
+N19 "|shell.strand:25:17|[Mock | DP-1]#1" "row@shell.strand:25"
+N20 "|shell.strand:25:62|[Mock | DP-1]#0" "text(\"Laptop\")"
+N21 "|shell.strand:32:13|[Mock | DP-1]#0" "popup@shell.strand:32"
+N22 "prefs_card|shell.strand:34:15|[Mock | DP-1]#0" "col#prefs_card"
+N23 "|shell.strand:36:17|[Mock | DP-1]#0" "row@shell.strand:36"
+N24 "|shell.strand:36:62|[Mock | DP-1]#0" "text(\"Autostart\")"
+N25 "|shell.strand:37:17|[Mock | DP-1]#1" "row@shell.strand:37"
+N26 "|shell.strand:37:62|[Mock | DP-1]#0" "text(\"Notifications\")"
+N27 "|shell.strand:38:17|[Mock | DP-1]#2" "row@shell.strand:38"
+N28 "|shell.strand:38:62|[Mock | DP-1]#0" "text(\"About\")"
+k0 p1
+s1 z=480,28
+n0 x=439 y=7 w=33 h=15 txt=S ord=6 ink=439,8,32,11 fg=c8ccd8ff gl=["12:40"]
+n1 x=116 y=6 w=16 h=16 ord=4 bg=e5c07bff
+n2 x=92 y=6 w=16 h=16 ord=3 bg=61afefff
+n3 x=8 y=7 w=76 h=15 txt=S ord=2 ink=8,8,76,13 fg=c8ccd8ff gl=["Workspace\u00201"]
+n4 x=0 y=0 w=480 h=28 bg=181a20ff
+n5 x=140 y=14 w=291 h=0 ord=5
+n6 x=0 y=0 w=480 h=28 ord=1
+k1 p2
+s2 z=232,152 o=8,11
+n7 srf=2 x=31 y=17 w=170 h=90 op=0 hid=opacity0
+k2
+n7 y=18 op=26 hid=-
+n8 srf=2 x=31 y=18 w=170 h=90 op=26 ord=1 bg=262a33ff sh=000000b0@0,-5,232,152
+n9 srf=2 x=35 y=22 w=162 h=26 op=26 ord=2
+n10 srf=2 x=35 y=78 w=162 h=26 op=26 ord=6
+n11 srf=2 x=35 y=50 w=162 h=26 op=26 ord=4
+n12 srf=2 x=45 y=28 w=79 h=15 op=26 txt=S ord=3 ink=45,29,79,13 fg=e6e8eeff gl=["Open\u0020window"]
+n13 srf=2 x=45 y=56 w=45 h=15 op=26 txt=S ord=5 ink=45,57,45,11 fg=e6e8eeff gl=["Send\u0020to"]
+n14 srf=2 x=45 y=84 w=71 h=15 op=26 txt=S ord=7 ink=46,85,69,11 fg=e6e8eeff gl=["Preferences"]
+k3
+n7 y=20 op=74
+n8 y=20 op=74 sh=000000b0@0,-3,232,152
+n9 y=24 op=74
+n10 y=80 op=74
+n11 y=52 op=74
+n12 y=29 op=74 ink=45,30,79,13
+n13 y=57 op=74 ink=45,58,45,11
+n14 y=85 op=74 ink=46,86,69,11
+k4
+n7 y=22 op=121
+n8 y=22 op=121 sh=000000b0@0,-1,232,152
+n9 y=26 op=121
+n10 y=82 op=121
+n11 y=54 op=121
+n12 y=31 op=121 ink=45,32,79,13
+n13 y=59 op=121 ink=45,60,45,11
+n14 y=87 op=121 ink=46,88,69,11
+k5
+n7 y=23 op=160
+n8 y=23 op=160 sh=000000b0@0,0,232,152
+n9 y=27 op=160
+n10 y=83 op=160
+n11 y=55 op=160
+n12 y=32 op=160 ink=45,33,79,13
+n13 y=60 op=160 ink=45,61,45,11
+n14 y=88 op=160 ink=46,89,69,11
+k6
+n7 op=190
+n8 op=190
+n9 op=190
+n10 op=190
+n11 op=190
+n12 op=190
+n13 op=190
+n14 op=190
+k7
+n7 op=211
+n8 op=211
+n9 op=211
+n10 op=211
+n11 op=211
+n12 y=33 op=211 ink=45,34,79,13
+n13 y=61 op=211 ink=45,62,45,11
+n14 y=89 op=211 ink=46,90,69,11
+k8
+n7 op=226
+n8 op=226
+n9 op=226
+n10 op=226
+n11 op=226
+n12 op=226
+n13 op=226
+n14 op=226
+k9
+n7 op=236
+n8 op=236
+n9 op=236
+n10 op=236
+n11 op=236
+n12 op=236
+n13 op=236
+n14 op=236
+k10
+n7 op=243
+n8 op=243
+n9 op=243
+n10 op=243
+n11 op=243
+n12 op=243
+n13 op=243
+n14 op=243
+k11
+n7 op=247
+n8 op=247
+n9 op=247
+n10 op=247
+n11 op=247
+n12 op=247
+n13 op=247
+n14 op=247
+k12
+n7 op=250
+n8 op=250
+n9 op=250
+n10 op=250
+n11 op=250
+n12 op=250
+n13 op=250
+n14 op=250
+k13
+n7 op=252
+n8 op=252
+n9 op=252
+n10 op=252
+n11 op=252
+n12 op=252
+n13 op=252
+n14 op=252
+k14
+n7 op=253
+n8 op=253
+n9 op=253
+n10 op=253
+n11 op=253
+n12 op=253
+n13 op=253
+n14 op=253
+k15
+n7 op=254
+n8 op=254
+n9 op=254
+n10 op=254
+n11 op=254
+n12 op=254
+n13 op=254
+n14 op=254
+k16
+k17
+n7 op=255
+n8 op=255
+n9 op=255
+n10 op=255
+n11 op=255
+n12 op=255
+n13 op=255
+n14 op=255
+k18
+k19
+n9 bg=3a3f4b1a
+k20
+n9 bg=3a3f4b4a
+k21
+n9 bg=3a3f4b79
+k22
+n9 bg=3a3f4ba0
+k23
+n9 bg=3a3f4ba4
+n11 bg=3a3f4b1a
+k24
+n9 bg=3a3f4b8a
+n11 bg=3a3f4b4a
+k25
+n9 bg=3a3f4b69
+n11 bg=3a3f4b79
+k26
+n9 bg=3a3f4b4c
+n11 bg=3a3f4ba0
+k27
+n9 bg=3a3f4b35
+n11 bg=3a3f4bbe
+k28
+n9 bg=3a3f4b24
+n11 bg=3a3f4bd3
+k29
+n9 bg=3a3f4b18
+n10 bg=3a3f4b1a
+n11 bg=3a3f4bc9
+k30
+n9 bg=3a3f4b10
+n10 bg=3a3f4b4a
+n11 bg=3a3f4ba3
+k31
+n9 bg=3a3f4b0a
+n10 bg=3a3f4b79
+n11 bg=3a3f4b7a
+k32
+n9 bg=3a3f4b07
+n10 bg=3a3f4ba0
+n11 bg=3a3f4b57
+k33
+n9 bg=3a3f4b04
+n10 bg=3a3f4bbe
+n11 bg=3a3f4b3c
+k34
+n9 bg=3a3f4b03
+n10 bg=3a3f4bd3
+n11 bg=3a3f4b29
+k35
+n9 bg=3a3f4b02
+n10 bg=3a3f4be2
+n11 bg=3a3f4b1b
+k36
+n9 bg=3a3f4b01
+n10 bg=3a3f4bec
+n11 bg=3a3f4b12
+k37
+n10 bg=3a3f4bf3
+n11 bg=3a3f4b0b
+k38
+n9 bg=3a3f4b00
+n10 bg=3a3f4bf7
+n11 bg=3a3f4b07
+k39
+n9 bg=00000000
+n10 bg=3a3f4bfa
+n11 bg=3a3f4b05
+k40
+n9 bg=-
+n10 bg=3a3f4bfc
+n11 bg=3a3f4b03
+k41
+n10 bg=3a3f4bfd
+n11 bg=3a3f4b02
+k42
+n10 bg=3a3f4bfe
+n11 bg=3a3f4b01
+k43
+k44
+n10 bg=3a3f4bff
+n11 bg=3a3f4b00
+k45
+n11 bg=00000000
+k46 p3
+s3 z=190,108 o=186,47
+n15 srf=3 x=19 y=19 w=140 h=58 op=0 hid=opacity0
+k47
+n15 x=20 op=26 hid=-
+n16 srf=3 x=20 y=19 w=140 h=58 op=26 ord=1 bg=2e333dff sh=000000a0@-5,0,190,108
+n17 srf=3 x=24 y=23 w=132 h=24 op=26 ord=2
+n18 srf=3 x=34 y=28 w=38 h=15 op=26 txt=S ord=3 ink=35,29,36,11 fg=e6e8eeff gl=["Phone"]
+n19 srf=3 x=24 y=49 w=132 h=24 op=26 ord=4
+n20 srf=3 x=34 y=54 w=40 h=15 op=26 txt=S ord=5 ink=35,56,39,12 fg=e6e8eeff gl=["Laptop"]
+k48
+n15 x=22 op=74
+n16 x=22 op=74 sh=000000a0@-3,0,190,108
+n17 x=26 op=74
+n18 x=36 op=74 ink=37,29,36,11
+n19 x=26 op=74
+n20 x=36 op=74 ink=37,56,39,12
+k49
+n15 x=24 op=121
+n16 x=24 op=121 sh=000000a0@-1,0,190,108
+n17 x=28 op=121
+n18 x=38 op=121 ink=39,29,36,11
+n19 x=28 op=121
+n20 x=38 op=121 ink=39,56,39,12
+k50
+n15 x=25 op=160
+n16 x=25 op=160 sh=000000a0@0,0,190,108
+n17 x=29 op=160
+n18 x=39 op=160 ink=40,29,36,11
+n19 x=29 op=160
+n20 x=39 op=160 ink=40,56,39,12
+k51
+n15 op=190
+n16 op=190
+n17 op=190
+n18 op=190
+n19 op=190
+n20 op=190
+k52
+n15 op=211
+n16 op=211
+n17 op=211
+n18 op=211
+n19 op=211
+n20 op=211
+k53
+n15 op=226
+n16 op=226
+n17 op=226
+n18 op=226
+n19 op=226
+n20 op=226
+k54
+n15 op=236
+n16 op=236
+n17 op=236
+n18 op=236
+n19 op=236
+n20 op=236
+k55
+n15 op=243
+n16 op=243
+n17 op=243
+n18 op=243
+n19 op=243
+n20 op=243
+k56
+n15 op=247
+n16 op=247
+n17 op=247
+n18 op=247
+n19 op=247
+n20 op=247
+k57
+n15 op=250
+n16 op=250
+n17 op=250
+n18 op=250
+n19 op=250
+n20 op=250
+k58
+n15 op=252
+n16 op=252
+n17 op=252
+n18 op=252
+n19 op=252
+n20 op=252
+k59
+n15 op=253
+n16 op=253
+n17 op=253
+n18 op=253
+n19 op=253
+n20 op=253
+k60
+n15 op=254
+n16 op=254
+n17 op=254
+n18 op=254
+n19 op=254
+n20 op=254
+k61
+k62
+n15 op=255
+n16 op=255
+n17 op=255
+n18 op=255
+n19 op=255
+n20 op=255
+k63
+k64 p3,4
+s4 z=200,134 o=186,75
+n15 x=24 op=229
+n16 x=24 op=229 hid=inert sh=000000a0@-1,0,190,108
+n17 x=28 op=229 hid=inert
+n18 x=38 op=229 hid=inert ink=39,29,36,11
+n19 x=28 op=229 hid=inert
+n20 x=38 op=229 hid=inert ink=39,56,39,12
+n21 srf=4 x=19 y=19 w=150 h=84 op=0 hid=opacity0
+k65
+n15 x=22 op=181
+n16 x=22 op=181 sh=000000a0@-3,0,190,108
+n17 x=26 op=181
+n18 x=36 op=181 ink=37,29,36,11
+n19 x=26 op=181
+n20 x=36 op=181 ink=37,56,39,12
+n21 x=20 op=26 hid=-
+n22 srf=4 x=20 y=19 w=150 h=84 op=26 ord=1 bg=2e333dff sh=000000a0@-5,0,200,134
+n23 srf=4 x=24 y=23 w=142 h=24 op=26 ord=2
+n24 srf=4 x=34 y=28 w=53 h=15 op=26 txt=S ord=3 ink=34,30,53,10 fg=e6e8eeff gl=["Autostart"]
+n25 srf=4 x=24 y=49 w=142 h=24 op=26 ord=4
+n26 srf=4 x=34 y=54 w=71 h=15 op=26 txt=S ord=5 ink=35,55,70,11 fg=e6e8eeff gl=["Notifications"]
+n27 srf=4 x=24 y=75 w=142 h=24 op=26 ord=6
+n28 srf=4 x=34 y=80 w=34 h=15 op=26 txt=S ord=7 ink=34,81,34,11 fg=e6e8eeff gl=["About"]
+k66
+n15 x=20 op=134
+n16 x=20 op=134 sh=000000a0@-5,0,190,108
+n17 x=24 op=134
+n18 x=34 op=134 ink=35,29,36,11
+n19 x=24 op=134
+n20 x=34 op=134 ink=35,56,39,12
+n21 x=22 op=74
+n22 x=22 op=74 sh=000000a0@-3,0,200,134
+n23 x=26 op=74
+n24 x=36 op=74 ink=36,30,53,10
+n25 x=26 op=74
+n26 x=36 op=74 ink=37,55,70,11
+n27 x=26 op=74
+n28 x=36 op=74 ink=36,81,34,11
+k67
+n15 x=19 op=95
+n16 x=19 op=95 sh=000000a0@-6,0,190,108
+n17 x=23 op=95
+n18 x=33 op=95 ink=34,29,36,11
+n19 x=23 op=95
+n20 x=33 op=95 ink=34,56,39,12
+n21 x=24 op=121
+n22 x=24 op=121 sh=000000a0@-1,0,200,134
+n23 x=28 op=121
+n24 x=38 op=121 ink=38,30,53,10
+n25 x=28 op=121
+n26 x=38 op=121 ink=39,55,70,11
+n27 x=28 op=121
+n28 x=38 op=121 ink=38,81,34,11
+k68
+n15 op=65
+n16 op=65
+n17 op=65
+n18 op=65
+n19 op=65
+n20 op=65
+n21 x=25 op=160
+n22 x=25 op=160 sh=000000a0@0,0,200,134
+n23 x=29 op=160
+n24 x=39 op=160 ink=39,30,53,10
+n25 x=29 op=160
+n26 x=39 op=160 ink=40,55,70,11
+n27 x=29 op=160
+n28 x=39 op=160 ink=39,81,34,11
+k69
+n15 op=44
+n16 op=44
+n17 op=44
+n18 op=44
+n19 op=44
+n20 op=44
+n21 op=190
+n22 op=190
+n23 op=190
+n24 op=190
+n25 op=190
+n26 op=190
+n27 op=190
+n28 op=190
+k70
+n15 op=29
+n16 op=29
+n17 op=29
+n18 op=29
+n19 op=29
+n20 op=29
+n21 op=211
+n22 op=211
+n23 op=211
+n24 op=211
+n25 op=211
+n26 op=211
+n27 op=211
+n28 op=211
+k71
+n15 op=19
+n16 op=19
+n17 op=19
+n18 op=19
+n19 op=19
+n20 op=19
+n21 op=226
+n22 op=226
+n23 op=226
+n24 op=226
+n25 op=226
+n26 op=226
+n27 op=226
+n28 op=226
+k72
+n15 op=12
+n16 op=12
+n17 op=12
+n18 op=12
+n19 op=12
+n20 op=12
+n21 op=236
+n22 op=236
+n23 op=236
+n24 op=236
+n25 op=236
+n26 op=236
+n27 op=236
+n28 op=236
+k73
+n15 op=8
+n16 op=8
+n17 op=8
+n18 op=8
+n19 op=8
+n20 op=8
+n21 op=243
+n22 op=243
+n23 op=243
+n24 op=243
+n25 op=243
+n26 op=243
+n27 op=243
+n28 op=243
+k74
+n15 op=5
+n16 op=5
+n17 op=5
+n18 op=5
+n19 op=5
+n20 op=5
+n21 op=247
+n22 op=247
+n23 op=247
+n24 op=247
+n25 op=247
+n26 op=247
+n27 op=247
+n28 op=247
+k75
+n15 op=3
+n16 op=3
+n17 op=3
+n18 op=3
+n19 op=3
+n20 op=3
+n21 op=250
+n22 op=250
+n23 op=250
+n24 op=250
+n25 op=250
+n26 op=250
+n27 op=250
+n28 op=250
+k76
+n15 op=2
+n16 op=2
+n17 op=2
+n18 op=2
+n19 op=2
+n20 op=2
+n21 op=252
+n22 op=252
+n23 op=252
+n24 op=252
+n25 op=252
+n26 op=252
+n27 op=252
+n28 op=252
+k77
+n15 op=1
+n16 op=1
+n17 op=1
+n18 op=1
+n19 op=1
+n20 op=1
+n21 op=253
+n22 op=253
+n23 op=253
+n24 op=253
+n25 op=253
+n26 op=253
+n27 op=253
+n28 op=253
+k78
+n21 op=254
+n22 op=254
+n23 op=254
+n24 op=254
+n25 op=254
+n26 op=254
+n27 op=254
+n28 op=254
+k79
+n15 op=0
+n16 op=0
+n17 op=0
+n18 op=0
+n19 op=0
+n20 op=0
+k80
+s3 -
+n15 hid=opacity0
+n16 -
+n17 -
+n18 -
+n19 -
+n20 -
+n21 op=255
+n22 op=255
+n23 op=255
+n24 op=255
+n25 op=255
+n26 op=255
+n27 op=255
+n28 op=255
+k81 p4
+n15 -
+k82
+n21 x=24 op=229
+n22 x=24 op=229 hid=inert sh=000000a0@-1,0,200,134
+n23 x=28 op=229 hid=inert
+n24 x=38 op=229 hid=inert ink=38,30,53,10
+n25 x=28 op=229 hid=inert
+n26 x=38 op=229 hid=inert ink=39,55,70,11
+n27 x=28 op=229 hid=inert
+n28 x=38 op=229 hid=inert ink=38,81,34,11
+k83
+n21 x=22 op=181
+n22 x=22 op=181 sh=000000a0@-3,0,200,134
+n23 x=26 op=181
+n24 x=36 op=181 ink=36,30,53,10
+n25 x=26 op=181
+n26 x=36 op=181 ink=37,55,70,11
+n27 x=26 op=181
+n28 x=36 op=181 ink=36,81,34,11
+k84
+n21 x=20 op=134
+n22 x=20 op=134 sh=000000a0@-5,0,200,134
+n23 x=24 op=134
+n24 x=34 op=134 ink=34,30,53,10
+n25 x=24 op=134
+n26 x=34 op=134 ink=35,55,70,11
+n27 x=24 op=134
+n28 x=34 op=134 ink=34,81,34,11
+k85
+n21 x=19 op=95
+n22 x=19 op=95 sh=000000a0@-6,0,200,134
+n23 x=23 op=95
+n24 x=33 op=95 ink=33,30,53,10
+n25 x=23 op=95
+n26 x=33 op=95 ink=34,55,70,11
+n27 x=23 op=95
+n28 x=33 op=95 ink=33,81,34,11
+k86
+n21 op=65
+n22 op=65
+n23 op=65
+n24 op=65
+n25 op=65
+n26 op=65
+n27 op=65
+n28 op=65
+k87
+n21 op=44
+n22 op=44
+n23 op=44
+n24 op=44
+n25 op=44
+n26 op=44
+n27 op=44
+n28 op=44
+k88
+n21 op=29
+n22 op=29
+n23 op=29
+n24 op=29
+n25 op=29
+n26 op=29
+n27 op=29
+n28 op=29
+k89
+n21 op=19
+n22 op=19
+n23 op=19
+n24 op=19
+n25 op=19
+n26 op=19
+n27 op=19
+n28 op=19
+k90
+n21 op=12
+n22 op=12
+n23 op=12
+n24 op=12
+n25 op=12
+n26 op=12
+n27 op=12
+n28 op=12
+k91
+n21 op=8
+n22 op=8
+n23 op=8
+n24 op=8
+n25 op=8
+n26 op=8
+n27 op=8
+n28 op=8
+k92
+n21 op=5
+n22 op=5
+n23 op=5
+n24 op=5
+n25 op=5
+n26 op=5
+n27 op=5
+n28 op=5
+k93
+n21 op=3
+n22 op=3
+n23 op=3
+n24 op=3
+n25 op=3
+n26 op=3
+n27 op=3
+n28 op=3
+k94
+n21 op=2
+n22 op=2
+n23 op=2
+n24 op=2
+n25 op=2
+n26 op=2
+n27 op=2
+n28 op=2
+k95
+n21 op=1
+n22 op=1
+n23 op=1
+n24 op=1
+n25 op=1
+n26 op=1
+n27 op=1
+n28 op=1
+k96
+k97
+n21 op=0
+n22 op=0
+n23 op=0
+n24 op=0
+n25 op=0
+n26 op=0
+n27 op=0
+n28 op=0
+k98
+s4 -
+n21 hid=opacity0
+n22 -
+n23 -
+n24 -
+n25 -
+n26 -
+n27 -
+n28 -
+k99 p2
+n7 y=22 op=229
+n8 y=22 op=229 hid=inert sh=000000b0@0,-1,232,152
+n9 y=26 op=229 hid=inert
+n10 y=82 op=229 hid=inert
+n11 y=54 op=229 hid=inert bg=-
+n12 y=31 op=229 hid=inert ink=45,32,79,13
+n13 y=59 op=229 hid=inert ink=45,60,45,11
+n14 y=87 op=229 hid=inert ink=46,88,69,11
+n21 -
+k100
+n7 y=20 op=181
+n8 y=20 op=181 sh=000000b0@0,-3,232,152
+n9 y=24 op=181
+n10 y=80 op=181
+n11 y=52 op=181
+n12 y=30 op=181 ink=45,31,79,13
+n13 y=58 op=181 ink=45,59,45,11
+n14 y=86 op=181 ink=46,87,69,11
+k101
+n7 y=18 op=134
+n8 y=18 op=134 sh=000000b0@0,-5,232,152
+n9 y=22 op=134
+n10 y=78 op=134
+n11 y=50 op=134
+n12 y=28 op=134 ink=45,29,79,13
+n13 y=56 op=134 ink=45,57,45,11
+n14 y=84 op=134 ink=46,85,69,11
+k102
+n7 y=17 op=95
+n8 y=17 op=95 sh=000000b0@0,-6,232,152
+n9 y=21 op=95
+n10 y=77 op=95
+n11 y=49 op=95
+n12 y=27 op=95 ink=45,28,79,13
+n13 y=55 op=95 ink=45,56,45,11
+n14 y=83 op=95 ink=46,84,69,11
+k103
+n7 op=65
+n8 op=65
+n9 op=65
+n10 op=65
+n11 op=65
+n12 op=65
+n13 op=65
+n14 op=65
+k104
+n7 op=44
+n8 op=44
+n9 op=44
+n10 op=44
+n11 op=44
+n12 y=26 op=44 ink=45,27,79,13
+n13 y=54 op=44 ink=45,55,45,11
+n14 y=82 op=44 ink=46,83,69,11
+k105
+n7 op=29
+n8 op=29
+n9 op=29
+n10 op=29
+n11 op=29
+n12 op=29
+n13 op=29
+n14 op=29
+k106
+n7 op=19
+n8 op=19
+n9 op=19
+n10 op=19
+n11 op=19
+n12 op=19
+n13 op=19
+n14 op=19
+k107
+n7 op=12
+n8 op=12
+n9 op=12
+n10 op=12
+n11 op=12
+n12 op=12
+n13 op=12
+n14 op=12
+k108
+n7 op=8
+n8 op=8
+n9 op=8
+n10 op=8
+n11 op=8
+n12 y=27 op=8 ink=45,28,79,13
+n13 y=55 op=8 ink=45,56,45,11
+n14 y=83 op=8 ink=46,84,69,11
+k109
+n7 op=5
+n8 op=5
+n9 op=5
+n10 op=5
+n11 op=5
+n12 op=5
+n13 op=5
+n14 op=5
+k110
+n7 op=3
+n8 op=3
+n9 op=3
+n10 op=3
+n11 op=3
+n12 op=3
+n13 op=3
+n14 op=3
+k111
+n7 op=2
+n8 op=2
+n9 op=2
+n10 op=2
+n11 op=2
+n12 op=2
+n13 op=2
+n14 op=2
+k112
+n7 op=1
+n8 op=1
+n9 op=1
+n10 op=1
+n11 op=1
+n12 op=1
+n13 op=1
+n14 op=1
+k113
+k114
+n7 op=0
+n8 op=0
+n9 op=0
+n10 op=0
+n11 op=0
+n12 op=0
+n13 op=0
+n14 op=0
+k115
+s2 -
+n7 hid=opacity0
+n8 -
+n9 -
+n10 -
+n11 -
+n12 -
+n13 -
+n14 -

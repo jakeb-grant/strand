@@ -368,7 +368,12 @@ fn sources(sc: &Scenario) -> Result<SourceMap, Error> {
 }
 
 /// The directory `sc`'s config is read from: a named config's (the
-/// directory named, or a file's parent), else the scenario file's.
+/// directory named, or a file's parent), else the scenario file's. A
+/// matrix cell's file is named under `eval/matrix/cells/`, which holds
+/// none: its config is the fixture filled in, read against the fixture's
+/// directory, as the shell reads a config against its own
+/// (eval-coverage-3: a relative image path through `cells/..` named no
+/// file).
 fn config_dir(sc: &Scenario) -> std::path::PathBuf {
     let dir = |p: &std::path::Path| {
         p.parent()
@@ -378,7 +383,14 @@ fn config_dir(sc: &Scenario) -> std::path::PathBuf {
     match &sc.config {
         Config::Path(p) if p.is_dir() => p.clone(),
         Config::Path(p) => dir(p),
-        Config::Inline(_) => dir(&sc.file),
+        Config::Inline(_) => {
+            let d = dir(&sc.file);
+            if d == crate::matrix::dir().join("cells") {
+                crate::matrix::dir()
+            } else {
+                d
+            }
+        }
     }
 }
 
@@ -2503,7 +2515,12 @@ impl Harness {
                 ink: n.ink.map(rect),
                 ov: n.overhang,
                 clip: n.clip.map(rect),
-                paint: crate::paint::PaintRec::of(&n.paint, n.drawn, self.surfaces.screen.scale),
+                paint: crate::paint::PaintRec::of(
+                    &n.paint,
+                    &n.images,
+                    n.drawn,
+                    self.surfaces.screen.scale,
+                ),
             });
         }
         out

@@ -50,17 +50,17 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
     // The starting set (plan section 7), `gpu` (the GPU leg, step 10)
     // and eval-coverage's five: flip-nested, popup-content-height,
     // shadow, roll-text and colour-shift; eval-coverage-2's two inputs,
-    // scroll and slider-drag.
+    // scroll and slider-drag; eval-coverage-3's image.
     assert_eq!(
         set.effects.len(),
-        30,
-        "the starting set, gpu, eval-coverage's and eval-coverage-2's"
+        31,
+        "the starting set, gpu, eval-coverage's, eval-coverage-2's and eval-coverage-3's"
     );
     let mut plan = Plan::new(BuildInfo::default());
     plan.singles = true;
     plan.jobs = 4;
     let done = matrix::run(&plan).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(done.len(), 30);
+    assert_eq!(done.len(), 31);
     assert!(done.iter().all(|d| !d.outcome.gates()), "{}", show(&done));
     // The gpu cell ran both legs and compared them (or skipped without a
     // device where none is required).
@@ -143,6 +143,47 @@ fn every_effect_alone_compiles_and_passes_or_is_known() {
         .filter_map(|r| r.paint.as_ref().map(|p| p.pt.clone()))
         .collect();
     assert!(parts.len() > 2, "the knob moved: {parts:?}");
+    // (eval-coverage-3) The image draws, and while its box springs wider
+    // a decode of its old size stands in: its pixmap is drawn at more
+    // than one place and from more than one decode size.
+    let d = done.iter().find(|d| d.cell.name == "image").unwrap();
+    let t = &d.entry.as_ref().unwrap().trace;
+    let drawn: std::collections::BTreeSet<String> = t
+        .frames
+        .iter()
+        .flat_map(|f| &f.n)
+        .filter_map(|r| r.paint.as_ref())
+        .flat_map(|p| p.im.iter().cloned())
+        .collect();
+    let decodes: std::collections::BTreeSet<&str> = drawn
+        .iter()
+        .filter_map(|i| i.split_once('@').map(|(_, s)| s))
+        .collect();
+    assert!(
+        drawn.len() > 2 && decodes.len() > 1,
+        "images drawn: {drawn:?}"
+    );
+    // The nested FLIP's marks ride their boxes' glides: what glides,
+    // itself or carried, lies three levels deep (groups, boxes, marks).
+    let d = done.iter().find(|d| d.cell.name == "flip-nested").unwrap();
+    let t = &d.entry.as_ref().unwrap().trace;
+    let depth = |key: &str| {
+        let mut n = 0;
+        let mut at = t.nodes.get(key).and_then(|m| m.parent.clone());
+        while let Some(p) = at {
+            n += 1;
+            at = t.nodes.get(&p).and_then(|m| m.parent.clone());
+        }
+        n
+    };
+    let gliding: std::collections::BTreeSet<usize> = t
+        .frames
+        .iter()
+        .flat_map(|f| &f.n)
+        .filter(|r| strand_render::probe::Motions(r.emot).contains(M::GLIDE))
+        .map(|r| depth(&r.key))
+        .collect();
+    assert!(gliding.len() >= 3, "glides at depths {gliding:?}");
 }
 
 #[test]
@@ -171,11 +212,11 @@ fn effects_that_set_the_same_prop_do_not_pair() {
     // slot: they cannot pair.
     let c = matrix::cell(&set, &fixture, &["scroll", "slider-drag"], 60);
     assert!(c.na.is_some(), "two fragments in `below`");
-    // 30 alone and 435 pairs.
+    // 31 alone and 465 pairs.
     let names: Vec<&str> = set.effects.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         matrix::cells(&set, &fixture, &names, &[60], false).len(),
-        465
+        496
     );
 }
 

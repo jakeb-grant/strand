@@ -1,0 +1,91 @@
+id     = "tray-submenu-shadow"
+about  = """A tray menu near the bar's start, its card casting a drop shadow
+offset downward, with a submenu (shadowed too) opened beside its second row,
+at 75 Hz (design.md "Input and structure": popups are anchored xdg_popups
+that nest, which is how tray menus work; spec.md 5.1: a popup in a popup
+opens beside its row). A shadow grows a popup's buffer past its box on
+every side it reaches, unevenly when it is offset, so the submenu is placed
+from the menu's box (its window geometry), not from its buffer's corner:
+it opens level with its row whatever the shadows' reach. The pointer
+hovers the rows (`when hover` springs their fill), the submenu closes and
+opens again from the other row, and the menu closes, taking it along."""
+screen = { width = 480, height = 360, scale = 1.0 }
+hz     = 75
+
+=== shell.strand
+state menu = false
+state sub = ""
+bar Top {
+  height: 28; bg: #181a20
+  row { height: 28; pad: 0, 8; gap: 8; align: center
+    text "Workspace 1" { id: ws; color: #c8ccd8 }
+    box { id: tray_net; size: 16; radius: 4; bg: #61afef }
+    box { id: tray_app; size: 16; radius: 4; bg: #e5c07b
+      popup { open: <-> menu
+        enter { opacity: 0; y: -6 }
+        col { id: menu_card; width: 170; pad: 4; gap: 2; radius: 10; bg: #262a33
+              shadow: 0 8px 20px #000000b0
+          row { id: row_open; height: 26; pad: 0, 10; align: center; radius: 6
+                when hover { bg: #3a3f4b }
+            text "Open window" { color: #e6e8ee }
+          }
+          row { id: row_send; height: 26; pad: 0, 10; align: center; radius: 6
+                when hover { bg: #3a3f4b }
+            text "Send to" { color: #e6e8ee }
+            popup { open: sub == "send"
+              enter { opacity: 0; x: -6 }
+              col { id: send_card; width: 140; pad: 4; gap: 2; radius: 10; bg: #2e333d
+                    shadow: 0 6px 16px #000000a0
+                row { height: 24; pad: 0, 10; align: center; text "Phone" { color: #e6e8ee } }
+                row { height: 24; pad: 0, 10; align: center; text "Laptop" { color: #e6e8ee } }
+              }
+            }
+          }
+          row { id: row_prefs; height: 26; pad: 0, 10; align: center; radius: 6
+                when hover { bg: #3a3f4b }
+            text "Preferences" { color: #e6e8ee }
+            popup { open: sub == "prefs"
+              enter { opacity: 0; x: -6 }
+              col { id: prefs_card; width: 150; pad: 4; gap: 2; radius: 10; bg: #2e333d
+                    shadow: 0 6px 16px #000000a0
+                row { height: 24; pad: 0, 10; align: center; text "Autostart" { color: #e6e8ee } }
+                row { height: 24; pad: 0, 10; align: center; text "Notifications" { color: #e6e8ee } }
+                row { height: 24; pad: 0, 10; align: center; text "About" { color: #e6e8ee } }
+              }
+            }
+          }
+        }
+      }
+    }
+    spacer {}
+    text "12:40" { id: clock; color: #c8ccd8 }
+  }
+}
+
+=== steps
+rest
+mark open
+set menu true
+rest
+expect still #tray_app
+mark hover
+glide 60,36 -> 90,90 over 150 on #menu_card
+rest
+mark send
+set sub "send"
+rest
+expect still #menu_card
+expect still #row_open
+mark prefs
+set sub "prefs"
+rest
+expect still #menu_card
+expect still #row_send
+mark close-sub
+set sub ""
+rest
+expect still #menu_card
+mark close
+set menu false
+rest
+expect still #tray_app

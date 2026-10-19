@@ -1,5 +1,5 @@
 //! `coherence`: what one frame draws hangs together, whatever moves it.
-//! Four rules, each read from the drawn and visual boxes the frame
+//! Its rules, each read from the drawn and visual boxes the frame
 //! traced (never from the offsets the renderer reports it used):
 //!
 //! - **inherit**: a node is drawn at its laid offset from its parent.

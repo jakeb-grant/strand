@@ -13,6 +13,10 @@ use super::{
 };
 use crate::tree::Node;
 
+/// (eval-coverage-3) The least size a slot that gives up a gap is laid
+/// at, logical pixels: under any device pixel, so it draws as nothing.
+const HAIR: f32 = 1.0 / 1024.0;
+
 impl<'a> Build<'a> {
     pub(super) fn node(
         &mut self,
@@ -61,7 +65,17 @@ impl<'a> Build<'a> {
         if let Some(d) = dim(get(Prop::MaxHeight).as_deref(), font) {
             style.max_size.height = d.lpa();
         }
-        if let Some(w) = forced.size[0] {
+        // (eval-coverage-3) A slot at zero that gives up the gap beside a
+        // neighbour also collapsing (two adjacent toasts leaving at once)
+        // is laid a hair above zero: taffy sizes a parent to its content
+        // by each item's flex basis plus its share of the margins over
+        // that basis, and drops the margin of an item whose basis is
+        // zero, so once the springs settled at zero the folded gaps came
+        // back for the frames before the slots unmounted, the parent
+        // growing by them and shrinking again as they went.
+        let folded = |axis: usize| fold.is_some_and(|(a, [b, e])| a == axis && b + e < 0.0);
+        let hair = |axis: usize, v: f32| if folded(axis) { v.max(HAIR) } else { v };
+        if let Some(w) = forced.size[0].map(|w| hair(0, w)) {
             style.size.width = length(w);
             style.min_size.width = LengthPercentageAuto::length(0.0);
             style.max_size.width = LengthPercentageAuto::auto();
@@ -71,12 +85,18 @@ impl<'a> Build<'a> {
             // layout (a text its lines) and the squeezed box clips it.
             style.min_size.width = LengthPercentageAuto::length(w.max(0.0));
         }
-        if let Some(h) = forced.size[1] {
+        if let Some(h) = forced.size[1].map(|h| hair(1, h)) {
             style.size.height = length(h);
             style.min_size.height = LengthPercentageAuto::length(0.0);
             style.max_size.height = LengthPercentageAuto::auto();
         }
         let mut margin = insets(get(Prop::Margin).as_deref());
+        // The hair comes out of the folded margin it keeps, so the slot
+        // still takes exactly what its size and fold give it.
+        let fold = fold.map(|(axis, [before, after])| {
+            let lifted = forced.size[axis].map_or(0.0, |v| hair(axis, v) - v);
+            (axis, [before, after - lifted])
+        });
         if let Some((axis, [before, after])) = fold {
             let m = margin.get_or_insert_with(Insets::default);
             if axis == 0 {
@@ -394,53 +414,20 @@ impl<'a> Build<'a> {
         // an outer size never goes below zero).
         // (late-text-dip) So does a text not shaped yet whose box is
         // nothing on that axis: it takes no room until it arrives.
-        // (eval-rules-4) A run of slots collapsing side by side gives up
-        // its gaps to the nearest neighbour that is not folding: one that
-        // is folding is (all but) nothing on the axis, and a negative
-        // margin on it would be lost the same way, leaving its gap open
-        // until it unmounts (a toast stack's last two leaving together
-        // snapped 12 px shorter as they went).
         let mut folds = vec![[0.0f32; 2]; count];
         if let Some(axis) = main.filter(|_| gap > 0.0 && count > 1) {
-            let shares: Vec<Option<f32>> = children
-                .iter()
-                .map(|(_, c)| {
-                    let v = match self.sizes.get(&c.id) {
-                        Some(f) if f.size[axis].is_some() => {
-                            f.size[axis].filter(|_| f.collapse[axis])
-                        }
-                        _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
-                    };
-                    v.filter(|v| gap > *v).map(|v| gap - v)
-                })
-                .collect();
-            if shares.iter().all(Option::is_some) {
-                // Every slot folding (a list cleared at once): no
-                // neighbour can give a gap up, so the gaps themselves
-                // fold, to the largest slot left.
-                let left = shares
-                    .iter()
-                    .flatten()
-                    .map(|d| gap - d)
-                    .fold(0.0f32, f32::max);
-                let g = LengthPercentage::length(left.max(0.0));
-                if axis == 0 {
-                    style.gap.width = g;
+            for (i, (_, c)) in children.iter().enumerate() {
+                let v = match self.sizes.get(&c.id) {
+                    Some(f) if f.size[axis].is_some() => f.size[axis].filter(|_| f.collapse[axis]),
+                    _ => self.unshaped_nothing(c, &child_inh, axis).then_some(0.0),
+                };
+                let Some(v) = v.filter(|v| gap > *v) else {
+                    continue;
+                };
+                if i + 1 < count {
+                    folds[i + 1][0] -= gap - v;
                 } else {
-                    style.gap.height = g;
-                }
-            } else {
-                for (i, share) in shares.iter().enumerate() {
-                    let Some(d) = *share else {
-                        continue;
-                    };
-                    let after = (i + 1..count).find(|j| shares[*j].is_none());
-                    let before = (0..i).rev().find(|j| shares[*j].is_none());
-                    match (after, before) {
-                        (Some(j), _) => folds[j][0] -= d,
-                        (None, Some(j)) => folds[j][1] -= d,
-                        (None, None) => {}
-                    }
+                    folds[i - 1][1] -= gap - v;
                 }
             }
         }

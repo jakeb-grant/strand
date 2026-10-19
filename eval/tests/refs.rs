@@ -132,6 +132,10 @@ fn a_recording_round_trips_through_its_text() {
             r.paint = Some(strand_eval::paint::PaintRec {
                 bg: vec!["ff0000ff".into()],
                 pt: vec!["0,7,120,4".into(), "31.796875,2,14,14".into()],
+                im: vec![
+                    "1,-4.5,28,21@16,12".into(),
+                    "0,0,30,12@30,12~0,0,30,12+ff00ffff".into(),
+                ],
                 ..Default::default()
             });
             r.text = Some("E".into());
@@ -170,6 +174,10 @@ fn a_recording_round_trips_through_its_text() {
         "{text2}"
     );
     assert!(text2.contains("pt=0,7,120,4/31.796875,2,14,14"), "{text2}");
+    assert!(
+        text2.contains("im=1,-4.5,28,21@16,12/0,0,30,12@30,12~0,0,30,12+ff00ffff"),
+        "{text2}"
+    );
     assert!(text2.contains("P=128,0.9,3,-2.5"), "{text2}");
     assert!(text2.contains(" -\n"), "a node or surface leaves: {text2}");
 }
@@ -799,4 +807,31 @@ fn a_part_that_moved_inside_its_box_is_a_change() {
     let d = recording::diff(&a, &with_part("33.796875"), Tol::px(0.5))
         .unwrap_or_else(|| panic!("a knob 2 px over is a change"));
     assert_eq!(d.first.field, "paint.parts", "{}", d.first.line());
+}
+
+/// (eval-coverage-3) An image drawn at another place in its box, or from
+/// a decode of another size, leaves its reference; one within a quantum
+/// of it does not.
+#[test]
+fn an_image_drawn_elsewhere_in_its_box_is_a_change() {
+    let t = run(ROW);
+    let with_image = |im: &str| {
+        let mut t = t.clone();
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                r.paint = Some(strand_eval::paint::PaintRec {
+                    im: vec![im.to_string()],
+                    ..Default::default()
+                });
+            }
+        }
+        Recording::from_trace(&t)
+    };
+    let a = with_image("1,-4.5,28,21@16,12");
+    assert!(recording::diff(&a, &with_image("1.015625,-4.5,28,21@16,12"), Tol::px(0.5)).is_none());
+    for other in ["0,0,30,12@16,12", "1,-4.5,28,21@30,12"] {
+        let d = recording::diff(&a, &with_image(other), Tol::px(0.5))
+            .unwrap_or_else(|| panic!("{other} is a change"));
+        assert_eq!(d.first.field, "paint.images", "{}", d.first.line());
+    }
 }

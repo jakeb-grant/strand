@@ -394,7 +394,13 @@ are where each fill that is not its whole box lies inside it, in order, as
 pixels: a slider's track, value and knob, a meter's value, an `arc`'s
 track and value (stroke outlines it fills), a `segmented`'s chosen cell,
 a shaped box's path. (Strand draws no scrollbar and has no switch.) A control whose parts move (a knob dragged, a
-value springing) is recorded frame by frame where its box stays still. A frame with a theme swap's
+value springing) is recorded frame by frame where its box stays still.
+Its images (`im`, eval-coverage-3) are each image or icon it drew: where
+the whole decoded pixmap lies (`x,y,w,h` from its box's top-left, as the
+parts are), `@` the size it was decoded at in device pixels, `~` the box
+it was drawn in when that is not its own, and `+` a symbolic icon's
+tint. So a decode of another size standing in while its box springs, and
+where it is placed, are recorded frame by frame; its pixels are not. A frame with a theme swap's
 crossfade playing records its weight per surface (`fades`).
 
 Each frame also records the screen's scale it was drawn at, whether
@@ -529,7 +535,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out, its texts' glyphs included (`held`), a pose that sizes one axis leaves the other at rest (`other axis`), a shadow at rest is drawn inside its buffer (`shadow`), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`). See below. |
-| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it, and what holds a slot does not step as it unmounts (`fold`, eval-rules-3 and -4), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
+| `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it, and its parent, sized by its content, does not step as it unmounts (`fold`, eval-rules-3, eval-coverage-3), and an interrupted roll rolls on from the text on screen (`roll`). See below. |
 | `placement` | Each surface's card is where its declared props put it, at every frame painted at a settled size and place: a popup by its anchor (`anchor`), a bar, panel or OSD by its margin in what the bars' exclusive zones leave (`margin`); a split's `center` is centred on its split (`centre`); an image's source shows where its `fit:` puts it in its box (`fit`). eval-rules-4; see below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
@@ -854,14 +860,17 @@ says a node moves, not how, so it does not exempt from them; only an
   once and glided the siblings over it. A sibling that shows nothing at
   both frames (no area, or no opacity), and one whose place among its
   staying siblings changed (a reorder moved it; FLIP glides it), are not
-  judged (integration-r5). On the frame after it unmounts (eval-rules-4),
-  what holds the slot is held too: its laid length on the axis steps by
-  no more than twice the folding slots plus `tol` ("unmounting it moves
-  nothing"; a content-sized card whose last rows left together kept their
-  gaps until they went and snapped 12 px shorter), unless its own size
-  springs. On the frame a node enters from zero the parent is not held: a
-  content-sized surface takes its new size at once (the growth the owner
-  is deciding).
+  judged (integration-r5). Its parent too (eval-coverage-3): a parent
+  sized by what it holds is laid, across the frame a slot unmounts at
+  zero, no larger or smaller than the slots then took plus `tol`, unless
+  its own size moves by itself (it springs, exits, or keyframes or time
+  drive it); unmounting a last row whose gap was never folded dropped
+  that gap at once (`wifi-last-row-fold-2`; two neighbours leaving
+  together did so in `toast-stack` and `unhold-flip` until strand-render
+  laid such slots a hair above zero, decisions.md eval-coverage-3). The
+  frame a slot mounts from zero is not judged on the parent: a
+  content-sized parent takes its size at rest then, which is the
+  growth rule the owner is deciding.
 - **`placement`** (eval-rules-4). The expectation is worked out from the
   declared props (`places`), design.md, spec.md 5.1 and the protocols'
   semantics, never by strand-surface's placement code. The tolerance is
@@ -914,7 +923,7 @@ says a node moves, not how, so it does not exempt from them; only an
 `$STRAND_EVAL_RULE_STATS` set (run.sh passes `STRAND_*` in) makes each
 eval-rules-2, -3 and -4 arm say on stderr how much of a run it held
 (`rule-stats <arm> <scenario>: …`: samples, boxes, shadows, knobs, the
-frames `contain.pushed` held a node on, the siblings `continuity.fold`
+frames `contain.pushed` held a node on, the siblings and parents `continuity.fold`
 held, the colour ways `colour.way` held and bounded by a curve, the
 palette changes `colour.palette` read, the frames each `placement` arm
 judged, the lines `ink.fills` read and the crossfade frames
@@ -961,6 +970,8 @@ Per painted tick:
   are both there, and a text of which only some glyphs were drawn names
   them (`gl=["43","41[1]"]`: "43" whole and the second glyph of "41",
   rolling out), so drawing the wrong digit, or a stale one, changes it;
+  a control's parts (`pt`) and, for an image or icon, where its decode
+  was drawn and at what size (`im`, eval-coverage-3);
 - per surface, the weight of a theme swap's crossfade while one plays
   (`f`).
 
@@ -1019,7 +1030,7 @@ n3 -                                node 3 left the screen
 A node's first line leaves out what is at its default: the first surface,
 `v=d` (a visual box equal to the drawn one), `op=255`, `sc=1,1`, `rot=0`,
 `hid=-` and `txt=-`, and `-` for each paint field it did not draw
-(`bg`, `bd`, `sh`, `fg`, `gl`). Several of one kind are joined with `/`
+(`bg`, `bd`, `sh`, `fg`, `gl`, `pt`, `im`). Several of one kind are joined with `/`
 in paint order; `gl` is a JSON list.
 
 Everything together stays under 6 MiB. With each node's paint and glyph
@@ -1027,9 +1038,11 @@ sources (eval-coverage) it was 4.15 MB, and with the integration's
 scenarios (eval-r3) 4.18 MB. With the scroll, control, placement and
 theme scenarios, the controls' parts and the two input effects
 (eval-coverage-2), and round 4's integration (integration-r4) it was
-5.09 MB; with eval-rules-3's nine scenarios it is 5.13 MB: the 88
-scenarios 489 kB, `matrix-60.ref` 1.88 MB (4.1 kB a cell) and
-`matrix-144.ref` 2.77 MB (6.1 kB a cell), 457 cells each. Paint
+5.09 MB; with eval-rules-3's nine scenarios 5.13 MB, and at round 5's
+integration 5.15 MB. With eval-coverage-3's nine scenarios, the image
+effect and the deeper nested FLIP it is 5.58 MB (5,577,969 bytes, 713
+kB under the tripwire): the 102 scenarios 610 kB, `matrix-60.ref` 2.01
+MB and `matrix-144.ref` 2.96 MB, 486 cells each. Paint
 costs little because a field is written only on the ticks it changes.
 Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
 holds the total to 6 MiB (5 MiB until integration-r4, when the
@@ -1218,11 +1231,16 @@ springs, morphs, reveal, stagger, lean, jelly, keyframes, a drop shadow,
 rolling text, a colour change, late text, screen scales, a list the
 wheel scrolls (`scroll`: two notches in quick steps and one back during
 the spring) and a two-way slider dragged from its knob (`slider-drag`)
-(eval-coverage-2), and the GPU leg (`gpu`). Each one is a set of
+(eval-coverage-2), an image (`image`: a 3:2 PNG under `fit: cover`
+whose box widens, so a decode of its old size stands in while it
+springs; eval-coverage-3), and the GPU leg (`gpu`). `flip-nested` moves
+three levels at once (eval-coverage-3: each moving box holds a mark).
+Each one is a set of
 fragments
 filled into `eval/matrix/fixture.strand.in`, then run with the standard
-steps (on, wide, off). The matrix runs every effect alone and every
-unordered pair at each rate.
+steps (on, wide, off); a relative path in one (the image's) is read
+against `eval/matrix/`, the fixture's directory. The matrix runs every
+effect alone and every unordered pair at each rate.
 
 Two effects that set the same prop of one slot cannot pair, and their cell
 is `n/a: conflict`. Effects carry what their motion moves: `flip-reorder`'s
@@ -1695,6 +1713,19 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   held bottom OSD's last row is laid 1 px off on two frames as its row
   folds (the held root's placement rounding, popup-shrink's rule).
 
+- **An image's pixels are not recorded** (eval-coverage-3). `im` holds
+  where a decode is drawn and at what size, and `fit` judges that
+  placement; what the decode holds is not seen. A PNG reduced by an
+  integer factor before it is resampled rounds each side up apart
+  (`decode_png`'s `div_ceil`), so `art.png` (60 x 40) is reduced to 20 x
+  14 for a 16 x 12 box and its content drawn about 5% taller than its
+  aspect; neither `fit` nor a reference sees it (left open,
+  decisions.md eval-coverage-3).
+- **Edge margins and submenu places have no rule** (eval-coverage-3).
+  A layer surface's margin moved by the wrong overhang, or a submenu
+  placed from its parent's buffer instead of its window geometry, moves
+  a whole surface that nothing inside it judges: only its reference's
+  `o=` sees it (the mutants of decisions.md eval-coverage-3).
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not
   modelled.

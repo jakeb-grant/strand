@@ -1,0 +1,914 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "notif-groups-reorder"
+verdict good
+note "eval-coverage-3 first reference, read frame by frame: at 90 Hz the mail group glides above chat while its parcel entry fades in at its top and its entries reorder, then the chat entries swap while the groups swap back: three levels glide at once, each child's glide measured from its parent's; the header stays"
+date 2026-10-19
+rev "a7965714+changes"
+approver "claude"
+scenario 846671eb3eb9baca
+seal 0849f43f78d49784
+S1 0 - "panel Centre"
+N0 "centre|shell.strand:6:3|#0" "col#centre"
+N1 "header|shell.strand:7:5|#0" "text#header"
+N2 "|shell.strand:10:9|[chat]#0" "row@shell.strand:10"
+N3 "|shell.strand:10:9|[mail]#0" "row@shell.strand:10"
+N4 "|shell.strand:11:11|[chat]#0" "box@shell.strand:11"
+N5 "|shell.strand:11:11|[mail]#0" "box@shell.strand:11"
+N6 "|shell.strand:12:11|[chat]#0" "text(\"Chat\")"
+N7 "|shell.strand:12:11|[mail]#0" "text(\"Mail\")"
+N8 "|shell.strand:15:11|[chat][c1]#1" "row@shell.strand:15"
+N9 "|shell.strand:15:11|[chat][c2]#2" "row@shell.strand:15"
+N10 "|shell.strand:15:11|[mail][m1]#1" "row@shell.strand:15"
+N11 "|shell.strand:15:11|[mail][m2]#2" "row@shell.strand:15"
+N12 "|shell.strand:17:13|[chat][c1]#0" "box@shell.strand:17"
+N13 "|shell.strand:17:13|[chat][c2]#0" "box@shell.strand:17"
+N14 "|shell.strand:17:13|[mail][m1]#0" "box@shell.strand:17"
+N15 "|shell.strand:17:13|[mail][m2]#0" "box@shell.strand:17"
+N16 "|shell.strand:18:13|[chat][c1]#0" "col@shell.strand:18"
+N17 "|shell.strand:18:13|[chat][c2]#0" "col@shell.strand:18"
+N18 "|shell.strand:18:13|[mail][m1]#0" "col@shell.strand:18"
+N19 "|shell.strand:18:13|[mail][m2]#0" "col@shell.strand:18"
+N20 "|shell.strand:19:15|[chat][c1]#0" "text(\"Ana: lunch?\")"
+N21 "|shell.strand:19:15|[chat][c2]#0" "text(\"Bo: running late\")"
+N22 "|shell.strand:19:15|[mail][m1]#0" "text(\"Invoice 1042\")"
+N23 "|shell.strand:19:15|[mail][m2]#0" "text(\"Weekly digest\")"
+N24 "|shell.strand:20:15|[chat][c1]#1" "text(\"just now\")"
+N25 "|shell.strand:20:15|[chat][c2]#1" "text(\"just now\")"
+N26 "|shell.strand:20:15|[mail][m1]#1" "text(\"just now\")"
+N27 "|shell.strand:20:15|[mail][m2]#1" "text(\"just now\")"
+N28 "|shell.strand:4:1|#0" "panel@shell.strand:4"
+N29 "|shell.strand:9:7|[chat]#0" "col@shell.strand:9"
+N30 "|shell.strand:9:7|[mail]#1" "col@shell.strand:9"
+N31 "|shell.strand:15:11|[mail][m3]#1" "row@shell.strand:15"
+N32 "|shell.strand:17:13|[mail][m3]#0" "box@shell.strand:17"
+N33 "|shell.strand:18:13|[mail][m3]#0" "col@shell.strand:18"
+N34 "|shell.strand:19:15|[mail][m3]#0" "text(\"Your parcel shipped\")"
+N35 "|shell.strand:20:15|[mail][m3]#1" "text(\"just now\")"
+k0 p1
+s1 z=300,420 o=52,8
+n0 x=0 y=0 w=300 h=420 ord=1 bg=14161bff
+n1 x=10 y=10 w=71 h=15 txt=S ord=2 ink=11,11,70,11 fg=e6e6e6ff gl=["Notifications"]
+n2 x=18 y=43 w=264 h=18 ord=4
+n3 x=18 y=167 w=264 h=18 ord=18
+n4 x=18 y=46 w=12 h=12 ord=5 bg=98c379ff
+n5 x=18 y=170 w=12 h=12 ord=19 bg=61afefff
+n6 x=36 y=45 w=28 h=15 txt=S ord=6 ink=36,46,28,11 fg=abb2bfff gl=["Chat"]
+n7 x=36 y=169 w=24 h=15 txt=S ord=20 ink=37,170,23,11 fg=abb2bfff gl=["Mail"]
+n8 x=18 y=67 w=264 h=34 ord=7 bg=2a2f39ff
+n9 x=18 y=107 w=264 h=34 ord=12 bg=2a2f39ff
+n10 x=18 y=191 w=264 h=34 ord=21 bg=2a2f39ff
+n11 x=18 y=231 w=264 h=34 ord=26 bg=2a2f39ff
+n12 x=26 y=74 w=20 h=20 ord=8 bg=98c379ff
+n13 x=26 y=114 w=20 h=20 ord=13 bg=98c379ff
+n14 x=26 y=198 w=20 h=20 ord=22 bg=61afefff
+n15 x=26 y=238 w=20 h=20 ord=27 bg=61afefff
+n16 x=54 y=69 w=69 h=31 ord=9
+n17 x=54 y=109 w=92 h=31 ord=14
+n18 x=54 y=193 w=74 h=31 ord=23
+n19 x=54 y=233 w=81 h=31 ord=28
+n20 x=54 y=69 w=69 h=15 txt=S ord=10 ink=54,70,69,11 fg=e6e6e6ff gl=["Ana:\u0020lunch?"]
+n21 x=54 y=109 w=92 h=15 txt=S ord=15 ink=55,110,90,13 fg=e6e6e6ff gl=["Bo:\u0020running\u0020late"]
+n22 x=54 y=193 w=74 h=15 txt=S ord=24 ink=55,194,73,11 fg=e6e6e6ff gl=["Invoice\u00201042"]
+n23 x=54 y=233 w=81 h=15 txt=S ord=29 ink=54,234,81,13 fg=e6e6e6ff gl=["Weekly\u0020digest"]
+n24 x=54 y=85 w=69 h=15 txt=S ord=11 ink=53,86,49,13 fg=7f848eff gl=["just\u0020now"]
+n25 x=54 y=125 w=92 h=15 txt=S ord=16 ink=53,126,49,13 fg=7f848eff gl=["just\u0020now"]
+n26 x=54 y=209 w=74 h=15 txt=S ord=25 ink=53,210,49,13 fg=7f848eff gl=["just\u0020now"]
+n27 x=54 y=249 w=81 h=15 txt=S ord=30 ink=53,250,49,13 fg=7f848eff gl=["just\u0020now"]
+n28 x=0 y=0 w=300 h=420
+n29 x=10 y=35 w=280 h=114 ord=3 bg=1f232bff
+n30 x=10 y=159 w=280 h=114 ord=17 bg=1f232bff
+k1
+n2 y=65 ord=23
+n3 y=150 ord=4
+n4 y=68 ord=24
+n5 y=153 ord=5
+n6 y=67 ord=25 ink=36,68,28,11
+n7 y=152 ord=6 ink=37,153,23,11
+n8 y=89 ord=26
+n9 y=129 ord=31
+n10 y=180 ord=12
+n11 y=220 ord=17
+n12 y=96 ord=27
+n13 y=136 ord=32
+n14 y=187 ord=13
+n15 y=227 ord=18
+n16 y=91 ord=28
+n17 y=131 ord=33
+n18 y=181 ord=14
+n19 y=221 ord=19
+n20 y=91 ord=29 ink=54,92,69,11
+n21 y=131 ord=34 ink=55,132,90,13
+n22 y=181 ord=15 ink=55,182,73,11
+n23 y=221 ord=20 ink=54,222,81,13
+n24 y=107 ord=30 ink=53,108,49,13
+n25 y=147 ord=35 ink=53,148,49,13
+n26 y=197 ord=16 ink=53,198,49,13
+n27 y=237 ord=21 ink=53,238,49,13
+n29 y=57 ord=22
+n30 y=142 h=154 ord=3
+n31 x=18 y=174 w=264 h=34 op=19 ord=7 bg=2a2f39ff
+n32 x=26 y=181 w=20 h=20 op=19 ord=8 bg=61afefff
+n33 x=54 y=176 w=115 h=31 op=19 ord=9
+n34 x=54 y=176 w=115 h=15 op=19 txt=S ord=10 ink=54,177,114,13 fg=e6e6e6ff gl=["Your\u0020parcel\u0020shipped"]
+n35 x=54 y=192 w=115 h=15 op=19 txt=S ord=11 ink=53,193,49,13 fg=7f848eff gl=["just\u0020now"]
+k2
+n2 y=108
+n3 y=118
+n4 y=111
+n5 y=121
+n6 y=109 ink=36,110,28,11
+n7 y=120 ink=37,121,23,11
+n8 y=132
+n9 y=172
+n10 y=158
+n11 y=198
+n12 y=139
+n13 y=179
+n14 y=165
+n15 y=205
+n16 y=133
+n17 y=173
+n18 y=159
+n19 y=199
+n20 y=133 ink=54,134,69,11
+n21 y=173 ink=55,174,90,13
+n22 y=159 ink=55,160,73,11
+n23 y=199 ink=54,200,81,13
+n24 y=149 ink=53,150,49,13
+n25 y=189 ink=53,190,49,13
+n26 y=175 ink=53,176,49,13
+n27 y=215 ink=53,216,49,13
+n29 y=100
+n30 y=110
+n31 y=142 op=57
+n32 y=149 op=57
+n33 y=144 op=57
+n34 y=144 op=57 ink=54,145,114,13
+n35 y=160 op=57 ink=53,161,49,13
+k3
+n2 y=148
+n3 y=88
+n4 y=151
+n5 y=91
+n6 y=149 ink=36,150,28,11
+n7 y=89 ink=37,90,23,11
+n8 y=172
+n9 y=212
+n10 y=137
+n11 y=177
+n12 y=179
+n13 y=219
+n14 y=144
+n15 y=184
+n16 y=173
+n17 y=213
+n18 y=139
+n19 y=179
+n20 y=173 ink=54,174,69,11
+n21 y=213 ink=55,214,90,13
+n22 y=139 ink=55,140,73,11
+n23 y=179 ink=54,180,81,13
+n24 y=189 ink=53,190,49,13
+n25 y=229 ink=53,230,49,13
+n26 y=155 ink=53,156,49,13
+n27 y=195 ink=53,196,49,13
+n29 y=140
+n30 y=80
+n31 y=112 op=98
+n32 y=119 op=98
+n33 y=113 op=98
+n34 y=113 op=98 ink=54,114,114,13
+n35 y=129 op=98 ink=53,130,49,13
+k4
+n2 y=178
+n3 y=65
+n4 y=181
+n5 y=68
+n6 y=180 ink=36,181,28,11
+n7 y=66 ink=37,67,23,11
+n8 y=202
+n9 y=242
+n10 y=122
+n11 y=162
+n12 y=209
+n13 y=249
+n14 y=129
+n15 y=169
+n16 y=204
+n17 y=244
+n18 y=123
+n19 y=163
+n20 y=204 ink=54,205,69,11
+n21 y=244 ink=55,245,90,13
+n22 y=123 ink=55,124,73,11
+n23 y=163 ink=54,164,81,13
+n24 y=220 ink=53,221,49,13
+n25 y=260 ink=53,261,49,13
+n26 y=139 ink=53,140,49,13
+n27 y=179 ink=53,180,49,13
+n29 y=170
+n30 y=57
+n31 y=89 op=135
+n32 y=96 op=135
+n33 y=90 op=135
+n34 y=90 op=135 ink=54,91,114,13
+n35 y=106 op=135 ink=53,107,49,13
+k5
+n2 y=197
+n3 y=51
+n4 y=200
+n5 y=54
+n6 y=199 ink=36,200,28,11
+n7 y=52 ink=37,53,23,11
+n8 y=221
+n9 y=261
+n10 y=112
+n11 y=152
+n12 y=228
+n13 y=268
+n14 y=119
+n15 y=159
+n16 y=223
+n17 y=263
+n18 y=114
+n19 y=154
+n20 y=223 ink=54,224,69,11
+n21 y=263 ink=55,264,90,13
+n22 y=114 ink=55,115,73,11
+n23 y=154 ink=54,155,81,13
+n24 y=239 ink=53,240,49,13
+n25 y=279 ink=53,280,49,13
+n26 y=130 ink=53,131,49,13
+n27 y=170 ink=53,171,49,13
+n29 y=189
+n30 y=43
+n31 y=75 op=166
+n32 y=82 op=166
+n33 y=76 op=166
+n34 y=76 op=166 ink=54,77,114,13
+n35 y=92 op=166 ink=53,93,49,13
+k6
+n2 y=207
+n3 y=43
+n4 y=210
+n5 y=46
+n6 y=208 ink=36,209,28,11
+n7 y=45 ink=37,46,23,11
+n8 y=231
+n9 y=271
+n10 y=107
+n11 y=147
+n12 y=238
+n13 y=278
+n14 y=114
+n15 y=154
+n16 y=232
+n17 y=272
+n18 y=109
+n19 y=149
+n20 y=232 ink=54,233,69,11
+n21 y=272 ink=55,273,90,13
+n22 y=109 ink=55,110,73,11
+n23 y=149 ink=54,150,81,13
+n24 y=248 ink=53,249,49,13
+n25 y=288 ink=53,289,49,13
+n26 y=125 ink=53,126,49,13
+n27 y=165 ink=53,166,49,13
+n29 y=199
+n30 y=35
+n31 y=67 op=190
+n32 y=74 op=190
+n33 y=69 op=190
+n34 y=69 op=190 ink=54,70,114,13
+n35 y=85 op=190 ink=53,86,49,13
+k7
+n2 y=211
+n3 y=40
+n4 y=214
+n5 y=43
+n6 y=212 ink=36,213,28,11
+n7 y=42 ink=37,43,23,11
+n8 y=235
+n9 y=275
+n10 y=105
+n11 y=145
+n12 y=242
+n13 y=282
+n14 y=112
+n15 y=152
+n16 y=236
+n17 y=276
+n18 y=106
+n19 y=146
+n20 y=236 ink=54,237,69,11
+n21 y=276 ink=55,277,90,13
+n22 y=106 ink=55,107,73,11
+n23 y=146 ink=54,147,81,13
+n24 y=252 ink=53,253,49,13
+n25 y=292 ink=53,293,49,13
+n26 y=122 ink=53,123,49,13
+n27 y=162 ink=53,163,49,13
+n29 y=203
+n30 y=32
+n31 y=64 op=208
+n32 y=71 op=208
+n33 y=66 op=208
+n34 y=66 op=208 ink=54,67,114,13
+n35 y=82 op=208 ink=53,83,49,13
+k8
+n2 y=212
+n4 y=215
+n6 y=213 ink=36,214,28,11
+n7 y=41 ink=37,42,23,11
+n8 y=236
+n9 y=276
+n12 y=243
+n13 y=283
+n16 y=237
+n17 y=277
+n20 y=237 ink=54,238,69,11
+n21 y=277 ink=55,278,90,13
+n24 y=253 ink=53,254,49,13
+n25 y=293 ink=53,294,49,13
+n29 y=204
+n31 op=222
+n32 op=222
+n33 y=65 op=222
+n34 y=65 op=222 ink=54,66,114,13
+n35 y=81 op=222 ink=53,82,49,13
+k9
+n2 y=211
+n4 y=214
+n6 y=212 ink=36,213,28,11
+n7 y=42 ink=37,43,23,11
+n8 y=235
+n9 y=275
+n12 y=242
+n13 y=282
+n16 y=236
+n17 y=276
+n18 y=107
+n19 y=147
+n20 y=236 ink=54,237,69,11
+n21 y=276 ink=55,277,90,13
+n22 y=107 ink=55,108,73,11
+n23 y=147 ink=54,148,81,13
+n24 y=252 ink=53,253,49,13
+n25 y=292 ink=53,293,49,13
+n26 y=123 ink=53,124,49,13
+n27 y=163 ink=53,164,49,13
+n29 y=203
+n31 op=232
+n32 op=232
+n33 y=66 op=232
+n34 y=66 op=232 ink=54,67,114,13
+n35 y=82 op=232 ink=53,83,49,13
+k10
+n2 y=210
+n3 y=41
+n4 y=213
+n5 y=44
+n6 y=211 ink=36,212,28,11
+n7 y=43 ink=37,44,23,11
+n8 y=234
+n9 y=274
+n10 y=106
+n11 y=146
+n12 y=241
+n13 y=281
+n14 y=113
+n15 y=153
+n16 y=235
+n17 y=275
+n20 y=235 ink=54,236,69,11
+n21 y=275 ink=55,276,90,13
+n24 y=251 ink=53,252,49,13
+n25 y=291 ink=53,292,49,13
+n29 y=202
+n30 y=33
+n31 y=65 op=239
+n32 y=72 op=239
+n33 y=67 op=239
+n34 y=67 op=239 ink=54,68,114,13
+n35 y=83 op=239 ink=53,84,49,13
+k11
+n2 y=208
+n3 y=42
+n4 y=211
+n5 y=45
+n6 y=210 ink=36,211,28,11
+n8 y=232
+n9 y=272
+n12 y=239
+n13 y=279
+n16 y=234
+n17 y=274
+n18 y=108
+n19 y=148
+n20 y=234 ink=54,235,69,11
+n21 y=274 ink=55,275,90,13
+n22 y=108 ink=55,109,73,11
+n23 y=148 ink=54,149,81,13
+n24 y=250 ink=53,251,49,13
+n25 y=290 ink=53,291,49,13
+n26 y=124 ink=53,125,49,13
+n27 y=164 ink=53,165,49,13
+n29 y=200
+n30 y=34
+n31 y=66 op=244
+n32 y=73 op=244
+n33 op=244
+n34 op=244
+n35 op=244
+k12
+n6 y=209 ink=36,210,28,11
+n7 y=44 ink=37,45,23,11
+n10 y=107
+n11 y=147
+n14 y=114
+n15 y=154
+n16 y=233
+n17 y=273
+n20 y=233 ink=54,234,69,11
+n21 y=273 ink=55,274,90,13
+n24 y=249 ink=53,250,49,13
+n25 y=289 ink=53,290,49,13
+n31 op=247
+n32 op=247
+n33 y=68 op=247
+n34 y=68 op=247 ink=54,69,114,13
+n35 y=84 op=247 ink=53,85,49,13
+k13
+n2 y=207
+n3 y=43
+n4 y=210
+n5 y=46
+n8 y=231
+n9 y=271
+n12 y=238
+n13 y=278
+n29 y=199
+n30 y=35
+n31 y=67 op=250
+n32 y=74 op=250
+n33 op=250
+n34 op=250
+n35 op=250
+k14
+n6 y=208 ink=36,209,28,11
+n7 y=45 ink=37,46,23,11
+n16 y=232
+n17 y=272
+n18 y=109
+n19 y=149
+n20 y=232 ink=54,233,69,11
+n21 y=272 ink=55,273,90,13
+n22 y=109 ink=55,110,73,11
+n23 y=149 ink=54,150,81,13
+n24 y=248 ink=53,249,49,13
+n25 y=288 ink=53,289,49,13
+n26 y=125 ink=53,126,49,13
+n27 y=165 ink=53,166,49,13
+n31 op=251
+n32 op=251
+n33 y=69 op=251
+n34 y=69 op=251 ink=54,70,114,13
+n35 y=85 op=251 ink=53,86,49,13
+k15
+n31 op=253
+n32 op=253
+n33 op=253
+n34 op=253
+n35 op=253
+k16
+k17
+n31 op=254
+n32 op=254
+n33 op=254
+n34 op=254
+n35 op=254
+k18
+k19
+k20
+n6 y=209 ink=36,210,28,11
+n16 y=233
+n17 y=273
+n20 y=233 ink=54,234,69,11
+n21 y=273 ink=55,274,90,13
+n24 y=249 ink=53,250,49,13
+n25 y=289 ink=53,290,49,13
+n31 op=255
+n32 op=255
+n33 op=255
+n34 op=255
+n35 op=255
+k21
+n2 y=185 ord=4
+n3 y=60 ord=18
+n4 y=188 ord=5
+n5 y=63 ord=19
+n6 y=186 ord=6 ink=36,187,28,11
+n7 y=61 ord=20 ink=37,62,23,11
+n8 y=214 ord=12
+n9 y=243 ord=7
+n10 y=124 ord=26
+n11 y=164 ord=31
+n12 y=221 ord=13
+n13 y=250 ord=8
+n14 y=131 ord=27
+n15 y=171 ord=32
+n16 y=216 ord=14
+n17 y=245 ord=9
+n18 y=125 ord=28
+n19 y=165 ord=33
+n20 y=216 ord=15 ink=54,217,69,11
+n21 y=245 ord=10 ink=55,246,90,13
+n22 y=125 ord=29 ink=55,126,73,11
+n23 y=165 ord=34 ink=54,166,81,13
+n24 y=232 ord=16 ink=53,233,49,13
+n25 y=261 ord=11 ink=53,262,49,13
+n26 y=141 ord=30 ink=53,142,49,13
+n27 y=181 ord=35 ink=53,182,49,13
+n29 y=177 ord=3
+n30 y=52 ord=17
+n31 y=84 ord=21
+n32 y=91 ord=22
+n33 y=85 ord=23
+n34 y=85 ord=24 ink=54,86,114,13
+n35 y=101 ord=25 ink=53,102,49,13
+k22
+n2 y=142
+n3 y=92
+n4 y=145
+n5 y=95
+n6 y=144 ink=36,145,28,11
+n7 y=93 ink=37,94,23,11
+n8 y=182
+n9 y=191
+n10 y=156
+n11 y=196
+n12 y=189
+n13 y=198
+n14 y=163
+n15 y=203
+n16 y=184
+n17 y=192
+n18 y=157
+n19 y=197
+n20 y=184 ink=54,185,69,11
+n21 y=192 ink=55,193,90,13
+n22 y=157 ink=55,158,73,11
+n23 y=197 ink=54,198,81,13
+n24 y=200 ink=53,201,49,13
+n25 y=208 ink=53,209,49,13
+n26 y=173 ink=53,174,49,13
+n27 y=213 ink=53,214,49,13
+n29 y=134
+n30 y=84
+n31 y=116
+n32 y=123
+n33 y=117
+n34 y=117 ink=54,118,114,13
+n35 y=133 ink=53,134,49,13
+k23
+n2 y=102
+n3 y=122
+n4 y=105
+n5 y=125
+n6 y=104 ink=36,105,28,11
+n7 y=124 ink=37,125,23,11
+n8 y=152
+n9 y=140
+n10 y=186
+n11 y=226
+n12 y=159
+n13 y=147
+n14 y=193
+n15 y=233
+n16 y=153
+n17 y=142
+n18 y=188
+n19 y=228
+n20 y=153 ink=54,154,69,11
+n21 y=142 ink=55,143,90,13
+n22 y=188 ink=55,189,73,11
+n23 y=228 ink=54,229,81,13
+n24 y=169 ink=53,170,49,13
+n25 y=158 ink=53,159,49,13
+n26 y=204 ink=53,205,49,13
+n27 y=244 ink=53,245,49,13
+n29 y=94
+n30 y=114
+n31 y=146
+n32 y=153
+n33 y=148
+n34 y=148 ink=54,149,114,13
+n35 y=164 ink=53,165,49,13
+k24
+n2 y=72
+n3 y=145
+n4 y=75
+n5 y=148
+n6 y=73 ink=36,74,28,11
+n7 y=147 ink=37,148,23,11
+n8 y=129
+n9 y=103
+n10 y=209
+n11 y=249
+n12 y=136
+n13 y=110
+n14 y=216
+n15 y=256
+n16 y=130
+n17 y=104
+n18 y=211
+n19 y=251
+n20 y=130 ink=54,131,69,11
+n21 y=104 ink=55,105,90,13
+n22 y=211 ink=55,212,73,11
+n23 y=251 ink=54,252,81,13
+n24 y=146 ink=53,147,49,13
+n25 y=120 ink=53,121,49,13
+n26 y=227 ink=53,228,49,13
+n27 y=267 ink=53,268,49,13
+n29 y=64
+n30 y=137
+n31 y=169
+n32 y=176
+n33 y=171
+n34 y=171 ink=54,172,114,13
+n35 y=187 ink=53,188,49,13
+k25
+n2 y=53
+n3 y=159
+n4 y=56
+n5 y=162
+n6 y=54 ink=36,55,28,11
+n7 y=161 ink=37,162,23,11
+n8 y=115
+n9 y=79
+n10 y=223
+n11 y=263
+n12 y=122
+n13 y=86
+n14 y=230
+n15 y=270
+n16 y=116
+n17 y=81
+n18 y=225
+n19 y=265
+n20 y=116 ink=54,117,69,11
+n21 y=81 ink=55,82,90,13
+n22 y=225 ink=55,226,73,11
+n23 y=265 ink=54,266,81,13
+n24 y=132 ink=53,133,49,13
+n25 y=97 ink=53,98,49,13
+n26 y=241 ink=53,242,49,13
+n27 y=281 ink=53,282,49,13
+n29 y=45
+n30 y=151
+n31 y=183
+n32 y=190
+n33 y=185
+n34 y=185 ink=54,186,114,13
+n35 y=201 ink=53,202,49,13
+k26
+n2 y=43
+n3 y=167
+n4 y=46
+n5 y=170
+n6 y=45 ink=36,46,28,11
+n7 y=168 ink=37,169,23,11
+n8 y=107
+n9 y=67
+n10 y=231
+n11 y=271
+n12 y=114
+n13 y=74
+n14 y=238
+n15 y=278
+n16 y=109
+n17 y=69
+n18 y=232
+n19 y=272
+n20 y=109 ink=54,110,69,11
+n21 y=69 ink=55,70,90,13
+n22 y=232 ink=55,233,73,11
+n23 y=272 ink=54,273,81,13
+n24 y=125 ink=53,126,49,13
+n25 y=85 ink=53,86,49,13
+n26 y=248 ink=53,249,49,13
+n27 y=288 ink=53,289,49,13
+n29 y=35
+n30 y=159
+n31 y=191
+n32 y=198
+n33 y=192
+n34 y=192 ink=54,193,114,13
+n35 y=208 ink=53,209,49,13
+k27
+n2 y=39
+n3 y=170
+n4 y=42
+n5 y=173
+n6 y=41 ink=36,42,28,11
+n7 y=171 ink=37,172,23,11
+n8 y=104
+n9 y=62
+n10 y=234
+n11 y=274
+n12 y=111
+n13 y=69
+n14 y=241
+n15 y=281
+n16 y=106
+n17 y=64
+n18 y=235
+n19 y=275
+n20 y=106 ink=54,107,69,11
+n21 y=64 ink=55,65,90,13
+n22 y=235 ink=55,236,73,11
+n23 y=275 ink=54,276,81,13
+n24 y=122 ink=53,123,49,13
+n25 y=80 ink=53,81,49,13
+n26 y=251 ink=53,252,49,13
+n27 y=291 ink=53,292,49,13
+n29 y=31
+n30 y=162
+n31 y=194
+n32 y=201
+n33 y=195
+n34 y=195 ink=54,196,114,13
+n35 y=211 ink=53,212,49,13
+k28
+n2 y=38
+n4 y=41
+n6 y=40 ink=36,41,28,11
+n7 y=172 ink=37,173,23,11
+n9 y=61
+n13 y=68
+n16 y=105
+n17 y=63
+n18 y=236
+n19 y=276
+n20 y=105 ink=54,106,69,11
+n21 y=63 ink=55,64,90,13
+n22 y=236 ink=55,237,73,11
+n23 y=276 ink=54,277,81,13
+n24 y=121 ink=53,122,49,13
+n25 y=79 ink=53,80,49,13
+n26 y=252 ink=53,253,49,13
+n27 y=292 ink=53,293,49,13
+n29 y=30
+n33 y=196
+n34 y=196 ink=54,197,114,13
+n35 y=212 ink=53,213,49,13
+k29
+n2 y=39
+n4 y=42
+n6 y=41 ink=36,42,28,11
+n7 y=171 ink=37,172,23,11
+n9 y=62
+n13 y=69
+n16 y=106
+n17 y=64
+n18 y=235
+n19 y=275
+n20 y=106 ink=54,107,69,11
+n21 y=64 ink=55,65,90,13
+n22 y=235 ink=55,236,73,11
+n23 y=275 ink=54,276,81,13
+n24 y=122 ink=53,123,49,13
+n25 y=80 ink=53,81,49,13
+n26 y=251 ink=53,252,49,13
+n27 y=291 ink=53,292,49,13
+n29 y=31
+n33 y=195
+n34 y=195 ink=54,196,114,13
+n35 y=211 ink=53,212,49,13
+k30
+n2 y=40
+n3 y=169
+n4 y=43
+n5 y=172
+n6 y=42 ink=36,43,28,11
+n7 y=170 ink=37,171,23,11
+n8 y=105
+n9 y=64
+n10 y=233
+n11 y=273
+n12 y=112
+n13 y=71
+n14 y=240
+n15 y=280
+n16 y=107
+n17 y=65
+n18 y=234
+n19 y=274
+n20 y=107 ink=54,108,69,11
+n21 y=65 ink=55,66,90,13
+n22 y=234 ink=55,235,73,11
+n23 y=274 ink=54,275,81,13
+n24 y=123 ink=53,124,49,13
+n25 y=81 ink=53,82,49,13
+n26 y=250 ink=53,251,49,13
+n27 y=290 ink=53,291,49,13
+n29 y=32
+n30 y=161
+n31 y=193
+n32 y=200
+n33 y=194
+n34 y=194 ink=54,195,114,13
+n35 y=210 ink=53,211,49,13
+k31
+n2 y=42
+n3 y=168
+n4 y=45
+n5 y=171
+n6 y=43 ink=36,44,28,11
+n8 y=106
+n9 y=65
+n10 y=232
+n11 y=272
+n12 y=113
+n13 y=72
+n14 y=239
+n15 y=279
+n17 y=67
+n21 y=67 ink=55,68,90,13
+n25 y=83 ink=53,84,49,13
+n29 y=34
+n30 y=160
+n31 y=192
+n32 y=199
+k32
+n6 y=44 ink=36,45,28,11
+n7 y=169 ink=37,170,23,11
+n9 y=66
+n13 y=73
+n16 y=108
+n17 y=68
+n18 y=233
+n19 y=273
+n20 y=108 ink=54,109,69,11
+n21 y=68 ink=55,69,90,13
+n22 y=233 ink=55,234,73,11
+n23 y=273 ink=54,274,81,13
+n24 y=124 ink=53,125,49,13
+n25 y=84 ink=53,85,49,13
+n26 y=249 ink=53,250,49,13
+n27 y=289 ink=53,290,49,13
+n33 y=193
+n34 y=193 ink=54,194,114,13
+n35 y=209 ink=53,210,49,13
+k33
+n2 y=43
+n3 y=167
+n4 y=46
+n5 y=170
+n8 y=107
+n9 y=67
+n10 y=231
+n11 y=271
+n12 y=114
+n13 y=74
+n14 y=238
+n15 y=278
+n29 y=35
+n30 y=159
+n31 y=191
+n32 y=198
+k34
+n6 y=45 ink=36,46,28,11
+n7 y=168 ink=37,169,23,11
+n16 y=109
+n17 y=69
+n18 y=232
+n19 y=272
+n20 y=109 ink=54,110,69,11
+n21 y=69 ink=55,70,90,13
+n22 y=232 ink=55,233,73,11
+n23 y=272 ink=54,273,81,13
+n24 y=125 ink=53,126,49,13
+n25 y=85 ink=53,86,49,13
+n26 y=248 ink=53,249,49,13
+n27 y=288 ink=53,289,49,13
+n33 y=192
+n34 y=192 ink=54,193,114,13
+n35 y=208 ink=53,209,49,13
+k35
+k36
+k37
+k38
+k39
+n7 y=169 ink=37,170,23,11
+n18 y=233
+n19 y=273
+n22 y=233 ink=55,234,73,11
+n23 y=273 ink=54,274,81,13
+n26 y=249 ink=53,250,49,13
+n27 y=289 ink=53,290,49,13
+n33 y=193
+n34 y=193 ink=54,194,114,13
+n35 y=209 ink=53,210,49,13
+k40
