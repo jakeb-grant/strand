@@ -41,6 +41,7 @@ scripts/container/run.sh eval ab-revs HEAD~1                    # A/B: the last 
 scripts/container/run.sh eval local new mine --config /path/to/shell.strand   # a starter for your own config
 scripts/container/run.sh eval local                             # run eval/scenarios/local/ (see Local configs)
 scripts/eval/viewer-check.sh --selftest                         # the viewer in a real browser (on the host)
+scripts/eval/live.sh /path/to/shell.strand                      # the live sandbox, a window on your session (on the host)
 ```
 
 `run.sh eval <command>` is `scripts/eval/eval.sh`. For anything except
@@ -78,6 +79,10 @@ The commands:
 - `local [<scn|dir>...] [--out DIR] [--frames …]` checks the local
   scenarios, `eval/scenarios/local/` by default; `local new <id> --config
   F` writes an explored starter there (see Local configs and fonts).
+- `live <shell.strand|scn> [--screen WxH[@S]] [--hz N] [--fonts
+  bundled|local] [--speed F] [--paused] [--record-to FILE] [--ring N]
+  [--max-frames N]` opens the live sandbox's window (see Live sandbox);
+  `scripts/eval/live.sh` builds it and runs it on the host.
 
 A report lands in `--out`, or in `target/eval/runs/<seconds>-<rev>`, with
 `target/eval/latest` pointing at it.
@@ -174,6 +179,10 @@ advance the clock.
   one axis frame a tick, and lifts them with the last frame (`axis_stop`):
   the offset follows the fingers at once, and a lift while they move
   flings it on. Strand has no overscroll: an offset stops at either end.
+- `leave`: the pointer leaves every surface, as the compositor's
+  `wl_pointer.leave` says when it moves off the shell (a hover popup's
+  grace starts). The live sandbox writes it when the pointer leaves the
+  stage (eval-live).
 - `glide X,Y -> X,Y over MS [on <surface>]` moves the pointer.
 - `drag X,Y -> X,Y over MS [on <surface>]` is the same glide with the
   left button held: pressed at the start, released at the end.
@@ -1328,6 +1337,116 @@ copied, and no other command sees them. It prints what it mounted.
 committed: a finding in an owner's config becomes a committed scenario
 written from scratch, in the smallest shape that shows it.
 
+## Live sandbox
+
+`strand-eval live` is a window for prototyping an animation by hand: it
+runs a config (or a `.scn`) in the driver, on the virtual clock, at the
+speed chosen, and shows its surfaces on a stage as the sandbox lays them
+out (bars and layers on the screen, popups where the placement model
+puts them). What you do in it is a scenario: `w` writes it, and that
+scenario runs to the session's own trace (the same digest) under `check`.
+The window is the eval workspace's own: the shipped binary has none of
+it, and the renderer's hooks stay behind `eval-hooks`.
+
+On your own session, from the checkout:
+
+```text
+scripts/eval/live.sh ~/.config/strand/shell.strand
+```
+
+It builds `strand-eval` in the container (the timing profile) and runs
+the window on the host, in the session the terminal is in. Flags follow
+the file: `--screen 2560x1440@1.5` (the screen the layout sees, default
+1920x1080@1), `--hz 144`, `--fonts local` (the machine's fonts, as in
+Local configs), `--speed 0.25`, `--paused`, `--record-to FILE`, `--ring
+N` (frames kept to step back through, default 240) and `--max-frames N`
+(default 20000).
+
+**The window.** A strip of controls on top, the stage under it:
+
+- the status line: playing or paused, the speed, the tick and its
+  virtual time, the frame shown when stepping back, the refresh rate,
+  scale, motion, the steps so far, the steps still to play, reloads;
+- buttons for each key below, and one per knob;
+- the checks' verdicts (`c` runs them; failures first, `*` when older
+  than the session);
+- the failures at the frame shown, each outlined in red on the stage
+  where its node was drawn, else the last message;
+- the command line (`:`).
+
+The pointer on the stage is the shell's pointer: hovering, clicking and
+scrolling there are steps (`pointer X,Y on <surface>`, `press`,
+`release`, `scroll`), and leaving the stage is `leave`.
+
+**Keys.**
+
+| Key | |
+|---|---|
+| space | play or pause |
+| `.` or Right | one tick forward (paused) |
+| `,` or Left | one frame back through the ring |
+| End, Home | the newest frame, the oldest kept |
+| `[`, `]` | slower, faster: 0.1x, 0.2x, 0.25x, 0.5x, 0.75x, 1x |
+| `1`-`9` | run knob N |
+| `m` | reduced motion on or off (`reduce-motion`) |
+| `s` | the next scale: 1, 1.25, 1.5, 2 (`scale`) |
+| `h` | the next refresh rate: 60, 144, 30 (`hz`) |
+| `l` | the pointer leaves (`leave`) |
+| `c` | run the checks now |
+| `f` | the next frame with a failing finding |
+| `w` | record the scenario |
+| `r` | restart: the config booted again, nothing done |
+| F5 | reload now (edits are seen within a third of a second anyway) |
+| `:` | type a step (any of the step vocabulary), Return runs it |
+| `-`, `=`, `0` | zoom out, in, fit; shift+arrows pan |
+| `q` or Esc | quit |
+
+**Knobs** come from the compiled program, as `new --explore`'s do: a
+toggle per bool state, a cycle per enum state, a hover per popup's
+anchor, the inputs (`click`, `scroll`) of the elements that handle them,
+and an `emit` per service event the config handles (one with arguments
+fills the command line instead).
+
+**Time.** Paused, `.` runs one tick. Playing, the virtual clock runs at
+the speed chosen against the wall clock; the clock is the scenario's, so
+a slowed spring is the same spring frame for frame. Between your steps
+the clock's run is written as `rest` when the last thing done came to
+rest at its last tick, else as `frames N`. A config's boot is run to rest
+at once (its first step is `rest`); a `.scn` plays its own steps.
+
+**Edits.** Saving the config (or one of its imported files) reloads it:
+the steps so far run on the new config at once, up to the last thing
+done, which plays again live, so the change is seen in motion. An edit
+that does not compile is shown and changes nothing. Saving an opened
+`.scn` plays its steps again from the start.
+
+**Recording.** `w` writes the session as a scenario: the header, the
+config inline as `===` sections (as it was when it ran, so later edits
+do not change it), and the steps. By default it lands in
+`eval/scenarios/local/live-<name>.scn` (gitignored; `--record-to`
+names another place). Check it, and approve its reference after reading
+the diff, as for any scenario:
+
+```text
+scripts/container/run.sh eval local eval/scenarios/local/live-shell.scn
+scripts/container/run.sh eval approve target/eval/latest/live-shell --note "why"
+```
+
+A scenario that is to be committed is moved to `eval/scenarios/curated/`
+(or written from scratch from it, for an owner's config) and given an
+`about`.
+
+**Driving it without a window's keyboard.** It reads commands on stdin,
+one per line, and answers each with a line of JSON (`{"ok":true,...}`),
+after a first `{"ready":true,...}`: `status`, `play`, `pause`, `toggle`,
+`speed F`, `slower`, `faster`, `step [N]`, `back [N]`, `head`,
+`finding`, `do STEP`, `knob N`, `knobs`, `motion`, `scale`, `hz`,
+`leave`, `hover X,Y`, `press [BTN]`, `release [BTN]`, `scroll DY`,
+`record [PATH]`, `scenario`, `digest`, `reload`, `restart`, `checks`,
+`zoom F|fit`, `shot PATH [WxH]` (the window's drawing, offscreen) and
+`quit`. eval/tests/live.rs drives it this way on a headless sway of its
+own, with a virtual pointer and keyboard, and reads grim's shots.
+
 ## Limits
 
 - **Placement is strand-surface's, not a compositor's** (eval-false-alarms).
@@ -1432,6 +1551,18 @@ written from scratch, in the smallest shape that shows it.
   channel, and only synthetic traces have shown it failing there. The
   step was measured on the laptop's lavapipe: the first nightly on
   GitHub's runners must show no `redraw` failure on the GPU leg.
+- **The live sandbox runs the CPU leg, live** (eval-live). No surface
+  leg, no GPU, no twin or determinism run: those are `check`'s, on the
+  recording. Surfaces are drawn at buffer scale 1 to the stage whatever
+  the window's scale, keys typed go to the sandbox, never to the shell
+  (no keyboard step), a touchpad on the stage scrolls by wheel notches
+  (`scroll`; type `swipe DY over MS` at `:` or `do` for a touchpad's, which
+  plays tick by tick like a glide, integration-r4), and a recording
+  carries the `.strand` files
+  inline, not other assets (images, icons, fonts it names by path). The
+  ring keeps the last `--ring` frames; a session stops at `--max-frames`
+  painted frames (record and restart). The checks run when paused (or
+  every two seconds while playing), over the whole session so far.
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.

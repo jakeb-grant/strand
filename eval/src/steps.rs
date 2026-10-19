@@ -163,6 +163,8 @@ pub enum StepKind {
         dy: f64,
         ms: u32,
     },
+    /// (eval-live) The pointer leaves every surface.
+    Leave,
     // Perturbations.
     TextHold {
         filter: Option<String>,
@@ -570,6 +572,10 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                     .filter(|&m| m > 0)
                     .ok_or_else(|| format!("`{ms}` is not milliseconds"))?,
             }
+        }
+        "leave" => {
+            only(1)?;
+            StepKind::Leave
         }
         "text" => match arg(1) {
             Some("hold") => {

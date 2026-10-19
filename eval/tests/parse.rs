@@ -246,6 +246,7 @@ click 12,3 right on bar>popup
 scroll -3
 swipe 60 over 80ms
 swipe -4.5 over 200
+leave
 text hold
 text hold where "iiii"
 text release where "iiii" via waker
@@ -359,6 +360,7 @@ drag 10,10 -> 40,10 over 120ms on #card
         StepKind::Scroll { dy: -3.0 },
         StepKind::Swipe { dy: 60.0, ms: 80 },
         StepKind::Swipe { dy: -4.5, ms: 200 },
+        StepKind::Leave,
         StepKind::TextHold { filter: None },
         StepKind::TextHold {
             filter: Some("iiii".into()),
@@ -495,11 +497,13 @@ drag 10,10 -> 40,10 over 120ms on #card
     let time: Vec<bool> = s.steps.iter().map(|s| s.kind.is_time()).collect();
     assert_eq!(time.iter().filter(|t| **t).count(), 9);
     assert!(s.steps[0].kind.opens_segment());
-    assert!(!s.steps[32].kind.opens_segment(), "mark only names it");
+    assert!(!s.steps[33].kind.opens_segment(), "mark only names it");
     assert!(
         s.steps[17].kind.is_time() && s.steps[17].kind.opens_segment(),
         "a swipe"
     );
+    let leave = s.steps.iter().find(|s| s.kind == StepKind::Leave).unwrap();
+    assert!(leave.kind.opens_segment(), "input opens one");
 }
 
 #[test]
@@ -543,6 +547,7 @@ fn mistakes_name_their_line() {
         ("rest max", "`rest [max N]`"),
         ("pointer 3", "not a point"),
         ("press thumb", "not a button"),
+        ("leave #bar", "unexpected `#bar` after `leave`"),
         ("expect sideways #a", "`expect sideways`"),
         ("expect visible #a x", "takes no axis"),
         ("expect still #a from 3", "from +K"),

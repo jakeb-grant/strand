@@ -2048,8 +2048,10 @@ dependencies = [
  "clap",
  "png",
  "raw-window-handle",
+ "rustix",
  "serde",
  "serde_json",
+ "smithay-client-toolkit",
  "strand-compiler",
  "strand-core",
  "strand-fake-wayland",
@@ -2062,6 +2064,8 @@ dependencies = [
  "tempfile",
  "toml",
  "wayland-client",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

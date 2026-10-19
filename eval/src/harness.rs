@@ -74,7 +74,7 @@ use crate::input::{Pointer, to_logic};
 use crate::labels::Labels;
 use crate::scenario::{BackendMode, Config, Fonts, Scenario, Screen, TextMode};
 use crate::select::Selector;
-use crate::steps::{Button, ExpectKind, Intention, Point, Step, StepKind, Via};
+use crate::steps::{Button, ExpectKind, Intention, Point, REST_MAX, Step, StepKind, Via};
 use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
@@ -139,11 +139,190 @@ pub struct RunOutput {
 
 /// Runs `sc`.
 pub fn run(sc: &Scenario, opts: &RunOptions) -> Result<RunOutput, Error> {
-    let mut h = Harness::boot(sc, opts)?;
+    let mut h = Harness::boot(Rc::new(sc.clone()), opts)?;
     for step in &sc.steps {
         h.step(step)?;
     }
     h.finish()
+}
+
+/// (eval-live) A run driven one step, or one tick, at a time: the live
+/// sandbox's (`strand-eval live`, docs/eval.md "Live sandbox"). It is
+/// [`run`]'s driver, the same reactions in the same order: a step
+/// [`begin`](Driver::begin)s as [`run`] begins it, and a time step's
+/// ticks [`advance`](Driver::advance) as [`run`] advances them, so a
+/// session's steps, written out as a scenario, run to the same trace.
+/// Between steps the clock may run with no step driving it (a
+/// [`Span`]), which the session writes as the `rest` or `frames N`
+/// that runs the same ticks.
+pub struct Driver {
+    h: Harness,
+}
+
+impl std::fmt::Debug for Driver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Driver")
+            .field("scenario", &self.h.sc.id)
+            .field("k", &self.h.clock.k())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Driver {
+    /// Boots `sc`'s config (its steps are not run: the caller runs them).
+    pub fn boot(sc: Scenario, opts: &RunOptions) -> Result<Driver, Error> {
+        Ok(Driver {
+            h: Harness::boot(Rc::new(sc), opts)?,
+        })
+    }
+
+    /// Begins `step` at the tick about to run: an instant step is done,
+    /// a time step's ticks are left to [`Driver::advance`].
+    pub fn begin(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
+        self.h.begin(step)
+    }
+
+    /// One tick of `run`; whether it is done.
+    pub fn advance(&mut self, run: &mut TimeRun) -> Result<bool, Error> {
+        self.h.advance(run)
+    }
+
+    /// The clock runs with no step driving it, from the tick about to
+    /// run; `line` is the line its step will be written on.
+    pub fn span_begin(&mut self, line: u32) -> Span {
+        self.h.span_begin(line)
+    }
+
+    /// One tick of `span`; whether its segment has now come to rest
+    /// (where a `rest` begun with it would end).
+    pub fn span_tick(&mut self, span: &mut Span) -> Result<bool, Error> {
+        self.h.span_tick(span)
+    }
+
+    /// `span` ended (`rested`: at the tick its segment came to rest); the
+    /// step that runs its ticks, as it is written.
+    pub fn span_end(&mut self, span: Span, rested: bool) -> Result<String, Error> {
+        self.h.span_end(span, rested)
+    }
+
+    /// The tick about to run, and its time.
+    pub fn k(&self) -> u32 {
+        self.h.clock.k()
+    }
+
+    pub fn now(&self) -> Duration {
+        self.h.clock.now()
+    }
+
+    pub fn hz(&self) -> u32 {
+        self.h.clock.hz()
+    }
+
+    /// The surface the pointer is on (`None`: none, or it left).
+    pub fn pointer_on(&self) -> Option<u32> {
+        self.h.pointer.surface.map(|s| s.0)
+    }
+
+    /// Whether motion is reduced now (render's last `reduced_motion`).
+    pub fn reduced(&self) -> bool {
+        self.h.reduced
+    }
+
+    pub fn scenario(&self) -> &Scenario {
+        &self.h.sc
+    }
+
+    /// The shown surfaces, as the sandbox lays them out: each one's
+    /// buffer, where it lies on the screen and its size.
+    pub fn surfaces(&self) -> &Surfaces {
+        &self.h.surfaces
+    }
+
+    /// The trace so far (the open segment still open, its nodes not yet
+    /// gathered: [`Driver::snapshot`] is the trace a run ending here
+    /// would leave).
+    pub fn trace(&self) -> &RunTrace {
+        &self.h.trace
+    }
+
+    /// What the shell refused or the sandbox could not do, so far.
+    pub fn notes(&self) -> &[String] {
+        &self.h.notes
+    }
+
+    /// Where surface `id` takes input, logical (`None`: everywhere).
+    pub fn input_region(&self, id: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        Painter::input_region(&self.h.r, id)
+    }
+
+    /// A selector naming surface `id` that resolves to it now, as a
+    /// step's `on` resolves: its root's `#id`, else its kind's place
+    /// among the surface roots (`popup[1]`, which an edit of the config
+    /// above it keeps), else where it is written.
+    pub fn surface_selector(&mut self, id: SurfaceId) -> Option<String> {
+        let node = self.h.surfaces.get(id)?.node;
+        let views = self
+            .h
+            .labels
+            .views(&self.h.inst, self.h.r.tree(), &self.h.sources);
+        let roots = self.h.r.tree().roots().to_vec();
+        let view = views.iter().find(|v| v.node == node)?;
+        let mut cands = Vec::new();
+        if let Some(i) = &view.id {
+            cands.push(format!("#{i}"));
+        }
+        let nth = roots
+            .iter()
+            .filter_map(|r| views.iter().find(|v| v.node == *r))
+            .filter(|v| v.kind == view.kind)
+            .position(|v| v.node == node);
+        if let Some(n) = nth {
+            cands.push(format!("{}[{n}]", view.kind.name()));
+        }
+        if let Some((f, l, c)) = &view.origin {
+            cands.push(format!("@{f}:{l}:{c}"));
+            cands.push(format!("@{f}:{l}:{c}[{}]", view.sibling_index));
+        }
+        cands.into_iter().find(|c| {
+            Selector::parse(c)
+                .ok()
+                .and_then(|sel| self.h.surface_for(&Some(sel), 0).ok())
+                == Some(id)
+        })
+    }
+
+    /// The value at `path` as `set` takes it: a bool's `true` or
+    /// `false`, an enum's value name (`None` for anything else).
+    pub fn value_text(&self, path: &str) -> Option<String> {
+        match self.h.value_at(path).ok()? {
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Enum(e, i) => self
+                .h
+                .inst
+                .vm()
+                .prog
+                .types
+                .enum_(e)
+                .variants
+                .get(i as usize)
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    /// The trace a run ending at this tick would leave: the open segment
+    /// closed unsettled, every node seen gathered, sealed.
+    pub fn snapshot(&self) -> RunTrace {
+        let mut t = self.h.trace.clone();
+        if let Some(seg) = self.h.open.and_then(|i| t.segments.get_mut(i)) {
+            seg.e = self.h.last_k.unwrap_or(0);
+            seg.settled = false;
+            seg.hz = self.h.clock.hz();
+        }
+        t.nodes = self.h.labels.metas.clone();
+        t.seal();
+        t
+    }
 }
 
 /// A logic wake later than this counts as nothing to wait for.
@@ -220,7 +399,7 @@ pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
 /// value name. A path that is neither is left out (the starter of
 /// `explore` puts each state back where it started).
 pub fn state_values(sc: &Scenario, paths: &[String]) -> Result<BTreeMap<String, String>, Error> {
-    let h = Harness::boot(sc, &RunOptions::default())?;
+    let h = Harness::boot(Rc::new(sc.clone()), &RunOptions::default())?;
     let types = &h.inst.vm().prog.types;
     let mut out = BTreeMap::new();
     for p in paths {
@@ -333,8 +512,10 @@ fn field_ty(prog: &Program, mut ty: Ty, fields: &[&str]) -> Option<Ty> {
 }
 
 /// The run in progress.
-struct Harness<'s> {
-    sc: &'s Scenario,
+struct Harness {
+    /// (eval-live) Owned, so a live session keeps its driver between
+    /// steps ([`Driver`]).
+    sc: Rc<Scenario>,
     opts: RunOptions,
     rt: Runtime,
     host: Rc<SchemaHost>,
@@ -413,6 +594,65 @@ struct Harness<'s> {
     leg: Option<Leg>,
 }
 
+/// (eval-live) A time step under way: its line, the tick it began at,
+/// the ticks done and what it does.
+#[derive(Clone, Debug)]
+pub struct TimeRun {
+    line: u32,
+    k0: u32,
+    done: u32,
+    plan: Plan,
+}
+
+impl TimeRun {
+    /// The ticks it has run.
+    pub fn done(&self) -> u32 {
+        self.done
+    }
+
+    /// It sends input as it runs (a glide or a drag): cut short, it
+    /// would not be the step a scenario can write.
+    pub fn sends_input(&self) -> bool {
+        matches!(self.plan, Plan::Glide { .. } | Plan::Swipe { .. })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Plan {
+    Ticks(u32),
+    Rest {
+        max: u32,
+    },
+    Glide {
+        from: Point,
+        to: Point,
+        n: u32,
+        surface: SurfaceId,
+        drag: bool,
+    },
+    /// (integration-r4) A swipe: `dy` spread over `n` ticks, one axis
+    /// frame each, the last lifting the fingers.
+    Swipe {
+        dy: f64,
+        n: u32,
+    },
+}
+
+/// (eval-live) The clock running with no step driving it (`Driver::span_tick`).
+#[derive(Clone, Debug)]
+pub struct Span {
+    line: u32,
+    k0: u32,
+    ticks: u32,
+    event: usize,
+}
+
+impl Span {
+    pub fn ticks(&self) -> u32 {
+        self.ticks
+    }
+}
+
 /// Input a time step sends at the start of a tick.
 enum Input {
     Move(SurfaceId, LogicalPoint),
@@ -421,8 +661,8 @@ enum Input {
     Swipe(f64, bool),
 }
 
-impl<'s> Harness<'s> {
-    fn boot(sc: &'s Scenario, opts: &RunOptions) -> Result<Harness<'s>, Error> {
+impl Harness {
+    fn boot(sc: Rc<Scenario>, opts: &RunOptions) -> Result<Harness, Error> {
         let leg = match opts.backend.unwrap_or(sc.backend) {
             BackendMode::Gpu => BackendMode::Gpu,
             BackendMode::Cpu | BackendMode::Both => BackendMode::Cpu,
@@ -430,12 +670,12 @@ impl<'s> Harness<'s> {
         if sc.text == TextMode::Worker {
             return Err(Error::Unsupported("text = \"worker\"".into()));
         }
-        let map = sources(sc)?;
+        let map = sources(&sc)?;
         let services = strand_services_schema::schemas();
         let schema = Schema::builtin_with(&services)
             .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
         let build = Build::compile_with(None, map.clone(), &schema)
-            .map_err(|d| Error::Config(diagnostics(sc, &map, &d)))?;
+            .map_err(|d| Error::Config(diagnostics(&sc, &map, &d)))?;
         let rt = Runtime::new();
         let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
         let reduced = opts.reduced_motion || sc.reduce_motion;
@@ -457,7 +697,7 @@ impl<'s> Harness<'s> {
             reduced_motion: reduced,
             ..Segment::default()
         });
-        let engine = TextEngine::new(fonts(sc)?);
+        let engine = TextEngine::new(fonts(&sc)?);
         let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
         r.set_first_frame_wait(Duration::ZERO);
         r.set_new_text_wait(Duration::ZERO);
@@ -499,12 +739,12 @@ impl<'s> Harness<'s> {
         // Palette files (`import("base16:…")`) are read against the
         // config's directory, as the shell reads them against its own.
         let storage = Storage {
-            config_dir: Some(config_dir(sc)),
+            config_dir: Some(config_dir(&sc)),
             ..Storage::none()
         };
         let inst = Instance::from_build(&rt, &build, host.clone(), storage);
         let mut h = Harness {
-            sc,
+            sc: sc.clone(),
             opts: opts.clone(),
             rt,
             host,
@@ -1103,6 +1343,15 @@ impl<'s> Harness<'s> {
     }
 
     fn step(&mut self, step: &Step) -> Result<(), Error> {
+        if let Some(mut run) = self.begin(step)? {
+            while !self.advance(&mut run)? {}
+        }
+        Ok(())
+    }
+
+    /// A step begun: an instant step done, a time step's plan returned
+    /// for [`Harness::advance`] to run tick by tick.
+    fn begin(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
         // Instant steps act at the tick about to run.
         let t = self.clock.now();
         self.router.set_now(Some(self.instant(t)));
@@ -1156,6 +1405,14 @@ impl<'s> Harness<'s> {
                     .ok_or_else(|| self.err(line, "the pointer is on no surface yet".into()))?;
                 self.send(vec![ev])?;
             }
+            StepKind::Leave => {
+                self.event(step);
+                // The pointer leaves the shell's surfaces (for a window,
+                // the desktop, or no surface at all): nothing when it is
+                // on none already.
+                let ev: Vec<_> = self.pointer.leave().into_iter().collect();
+                self.send(ev)?;
+            }
             StepKind::Scroll { dy } => {
                 self.event(step);
                 let ev = self
@@ -1164,17 +1421,12 @@ impl<'s> Harness<'s> {
                     .ok_or_else(|| self.err(line, "the pointer is on no surface yet".into()))?;
                 self.send(vec![ev])?;
             }
-            StepKind::Swipe { dy, ms } => {
+            StepKind::Swipe { .. } => {
                 self.event(step);
                 if self.pointer.surface.is_none() {
                     return Err(self.err(line, "the pointer is on no surface yet".into()));
                 }
-                // One axis frame a tick, the last one lifting the fingers
-                // as a touchpad's last frame does.
-                let n = self.clock.ticks_for(*ms).max(1);
-                for i in 0..n {
-                    self.tick(vec![Input::Swipe(dy / f64::from(n), i + 1 == n)])?;
-                }
+                return self.start_time(step).map(Some);
             }
             StepKind::TextHold { filter } => {
                 self.event(step);
@@ -1305,71 +1557,185 @@ impl<'s> Harness<'s> {
                     segment,
                 });
             }
-            StepKind::Frames(n) => {
+            StepKind::Frames(_)
+            | StepKind::Wait(_)
+            | StepKind::Rest { .. }
+            | StepKind::Glide { .. }
+            | StepKind::Drag { .. } => {
                 self.event(step);
-                for _ in 0..*n {
-                    self.tick(Vec::new())?;
+                return self.start_time(step).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// (eval-live) A time step's plan, from its tick about to run: the
+    /// ticks it takes (a `wait` in ticks at the rate now), a `rest`'s
+    /// max, a glide's path and surface.
+    fn start_time(&mut self, step: &Step) -> Result<TimeRun, Error> {
+        let plan = match &step.kind {
+            StepKind::Frames(n) => Plan::Ticks(*n),
+            StepKind::Wait(ms_) => Plan::Ticks(self.clock.ticks_for(*ms_)),
+            StepKind::Rest { max } => Plan::Rest { max: *max },
+            StepKind::Glide { from, to, ms, on } | StepKind::Drag { from, to, ms, on } => {
+                Plan::Glide {
+                    from: *from,
+                    to: *to,
+                    n: self.clock.ticks_for(*ms),
+                    surface: self.surface_for(on, step.line)?,
+                    drag: matches!(step.kind, StepKind::Drag { .. }),
                 }
             }
-            StepKind::Wait(ms_) => {
-                self.event(step);
-                for _ in 0..self.clock.ticks_for(*ms_) {
-                    self.tick(Vec::new())?;
+            // One axis frame a tick, the last one lifting the fingers
+            // as a touchpad's last frame does.
+            StepKind::Swipe { dy, ms } => Plan::Swipe {
+                dy: *dy,
+                n: self.clock.ticks_for(*ms).max(1),
+            },
+            _ => return Err(self.err(step.line, "not a time step".into())),
+        };
+        Ok(TimeRun {
+            line: step.line,
+            k0: self.clock.k(),
+            done: 0,
+            plan,
+        })
+    }
+
+    /// (eval-live) One tick of a time step; whether it is done. A
+    /// `rest` ends at the first tick after which the shell is at rest,
+    /// or at its max; a glide sends its pointer's place for the tick
+    /// (a drag presses at its first and releases at its last).
+    fn advance(&mut self, run: &mut TimeRun) -> Result<bool, Error> {
+        match run.plan {
+            Plan::Ticks(n) => {
+                if run.done >= n {
+                    return Ok(true);
                 }
+                self.tick(Vec::new())?;
+                run.done += 1;
+                Ok(run.done >= n)
             }
-            StepKind::Rest { max } => {
-                self.event(step);
-                let k = self.clock.k();
-                let mut ticks = 0;
+            Plan::Rest { max } => {
                 let mut settled = false;
-                while ticks < *max {
+                if run.done < max {
                     self.tick(Vec::new())?;
-                    ticks += 1;
-                    if self.at_rest() {
-                        settled = true;
-                        break;
+                    run.done += 1;
+                    settled = self.at_rest();
+                    if !settled && run.done < max {
+                        return Ok(false);
                     }
                 }
                 self.trace.rests.push(RestRec {
-                    line,
-                    k,
-                    ticks,
-                    max: *max,
+                    line: run.line,
+                    k: run.k0,
+                    ticks: run.done,
+                    max,
                     settled,
                 });
                 self.close(settled)?;
+                Ok(true)
             }
-            StepKind::Glide { from, to, ms, on } | StepKind::Drag { from, to, ms, on } => {
-                self.event(step);
-                let drag = matches!(step.kind, StepKind::Drag { .. });
-                let s = self.surface_for(on, line)?;
-                let n = self.clock.ticks_for(*ms);
-                for i in 0..n {
-                    let f = if n == 1 {
-                        1.0
-                    } else {
-                        f64::from(i) / f64::from(n - 1)
-                    };
-                    let at = Point {
-                        x: from.x + (to.x - from.x) * f,
-                        y: from.y + (to.y - from.y) * f,
-                    };
-                    let mut input = Vec::new();
-                    if i == 0 && (n > 1 || drag) {
-                        input.push(Input::Move(s, lp(*from)));
-                    }
-                    if i == 0 && drag {
-                        input.push(Input::Button(Button::Left, ButtonState::Pressed));
-                    }
-                    input.push(Input::Move(s, lp(at)));
-                    if i + 1 == n && drag {
-                        input.push(Input::Button(Button::Left, ButtonState::Released));
-                    }
-                    self.tick(input)?;
+            Plan::Glide {
+                from,
+                to,
+                n,
+                surface: s,
+                drag,
+            } => {
+                if run.done >= n {
+                    return Ok(true);
                 }
+                let i = run.done;
+                let f = if n == 1 {
+                    1.0
+                } else {
+                    f64::from(i) / f64::from(n - 1)
+                };
+                let at = Point {
+                    x: from.x + (to.x - from.x) * f,
+                    y: from.y + (to.y - from.y) * f,
+                };
+                let mut input = Vec::new();
+                if i == 0 && (n > 1 || drag) {
+                    input.push(Input::Move(s, lp(from)));
+                }
+                if i == 0 && drag {
+                    input.push(Input::Button(Button::Left, ButtonState::Pressed));
+                }
+                input.push(Input::Move(s, lp(at)));
+                if i + 1 == n && drag {
+                    input.push(Input::Button(Button::Left, ButtonState::Released));
+                }
+                self.tick(input)?;
+                run.done += 1;
+                Ok(run.done >= n)
+            }
+            Plan::Swipe { dy, n } => {
+                if run.done >= n {
+                    return Ok(true);
+                }
+                let last = run.done + 1 == n;
+                self.tick(vec![Input::Swipe(dy / f64::from(n), last)])?;
+                run.done += 1;
+                Ok(run.done >= n)
             }
         }
-        Ok(())
+    }
+
+    /// (eval-live) A live span begins: the clock runs with no step
+    /// driving it until the session's next step, and the span is written
+    /// as the time step that runs those ticks (`Span::end`). Its event is
+    /// the one that step's own would be.
+    fn span_begin(&mut self, line: u32) -> Span {
+        self.trace.events.push(EventRec {
+            k: self.clock.k(),
+            line,
+            text: "frames".into(),
+            segment: self.open,
+        });
+        Span {
+            line,
+            k0: self.clock.k(),
+            ticks: 0,
+            event: self.trace.events.len() - 1,
+        }
+    }
+
+    /// (eval-live) One tick of a span; whether the segment it is in has
+    /// now come to rest (the tick a `rest` from its start would end at).
+    fn span_tick(&mut self, span: &mut Span) -> Result<bool, Error> {
+        self.tick(Vec::new())?;
+        span.ticks += 1;
+        Ok(self.open.is_some() && self.at_rest())
+    }
+
+    /// (eval-live) A span ended: as the `rest` it was when its segment
+    /// came to rest at its last tick (`rest max N` past a plain rest's
+    /// max), else `frames N`. The step's text.
+    fn span_end(&mut self, span: Span, rested: bool) -> Result<String, Error> {
+        let text = if rested {
+            let max = span.ticks.max(REST_MAX);
+            self.trace.rests.push(RestRec {
+                line: span.line,
+                k: span.k0,
+                ticks: span.ticks,
+                max,
+                settled: true,
+            });
+            self.close(true)?;
+            if max == REST_MAX {
+                "rest".to_string()
+            } else {
+                format!("rest max {max}")
+            }
+        } else {
+            format!("frames {}", span.ticks)
+        };
+        if let Some(e) = self.trace.events.get_mut(span.event) {
+            e.text = text.clone();
+        }
+        Ok(text)
     }
 
     /// Nothing more will happen without a step: no surface wants a frame,
@@ -2098,7 +2464,7 @@ impl<'s> Harness<'s> {
 /// loop's next turn; layout facts wait for the driver's own points
 /// (`answer`: a held frame's, and the tick's end), as the shell's logic
 /// thread answers between frames; a wake is owed to the next turn.
-impl LoopHost for Harness<'_> {
+impl LoopHost for Harness {
     type Error = Error;
 
     fn parts(&mut self) -> (&mut Renderer, Option<&mut Router>) {
@@ -2135,7 +2501,7 @@ impl LoopHost for Harness<'_> {
     }
 }
 
-impl LoopSync for Harness<'_> {
+impl LoopSync for Harness {
     /// The renderer's surface changes to the surfaces, as the surface
     /// manager takes them (`State::apply_surface_change`): each surface
     /// attached (on the one screen), placed and configured, or detached,

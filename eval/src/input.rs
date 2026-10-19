@@ -52,6 +52,14 @@ impl Pointer {
         out
     }
 
+    /// (eval-live) The event that takes the pointer off the surface it
+    /// is on, as the compositor's `wl_pointer.leave` when it moves onto
+    /// no surface of the shell; `None` when it is on none.
+    pub fn leave(&mut self) -> Option<InputEvent> {
+        let surface = self.surface.take()?;
+        Some(InputEvent::PointerLeave { surface })
+    }
+
     pub fn button(&self, b: Button, state: ButtonState, time: u32) -> Option<InputEvent> {
         Some(InputEvent::PointerButton {
             surface: self.surface?,

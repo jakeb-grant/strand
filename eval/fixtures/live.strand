@@ -1,0 +1,22 @@
+// strand-eval live's tests (eval/tests/live.rs), written for them: a
+// bool that widens a box on a spring (its neighbour follows), an enum
+// that recolours it, a hover popup whose card enters, and a click that
+// flips the bool. Bundled fonts only.
+enum Look { calm, loud }
+state wide = false
+state look = calm
+
+bar Top {
+  height: 40
+  row { id: strip; width: 400; height: 40; gap: 8; align: center; pad: 0, 8
+    box { id: grow; width: wide ? 160 : 60 ~ spring(320, 0.62); height: 24; radius: 4; bg: look == loud ? #ff3030 : #30c060
+      on click { wide = !wide }
+    }
+    box { id: next; width: 40; height: 24; bg: #3060ff }
+    box { id: tip; width: 40; height: 30; bg: #505050
+      popup { id: pop; trigger: hover; delay: 100ms; width: 120; height: 40
+        box { id: card; width: 120; height: 40; bg: #ffcc00; enter { opacity: 0; y: -6 } }
+      }
+    }
+  }
+}

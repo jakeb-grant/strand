@@ -7,7 +7,7 @@
 pub const W: u32 = 5;
 pub const H: u32 = 7;
 
-fn glyph(c: char) -> [u8; 5] {
+pub(crate) fn glyph(c: char) -> [u8; 5] {
     match c.to_ascii_uppercase() {
         ' ' => [0, 0, 0, 0, 0],
         '0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
