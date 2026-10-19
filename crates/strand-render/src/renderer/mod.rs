@@ -237,6 +237,8 @@ struct SurfaceState {
     /// (eval-coverage) The frame its last layout pass laid it out in
     /// (its buffer, less the overhang): a pass in another one was resized.
     laid_frame: Option<strand_scene::LogicalRect>,
+    /// (bottom-osd-shrink) Its buffer's logical size at that pass.
+    laid_size: Option<strand_scene::LogicalSize>,
     /// A text layout for it arrived since its last layout pass.
     text_arrived: bool,
     /// Nodes first laid out since it last painted, while `flip_open`:

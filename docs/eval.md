@@ -1166,7 +1166,8 @@ fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
 gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
 (`continuity`, decisions.md border-eps) and text-exit-squeeze (`contain`,
 `expect`; decisions.md bar-blank-on-exit) and clip-carries-rows (`vanish`,
-decisions.md clip-blink). In a detached worktree of HEAD, each scenario
+decisions.md clip-blink) and shrink-keeps-edge (`bystander`, `expect`;
+decisions.md bottom-osd-shrink). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

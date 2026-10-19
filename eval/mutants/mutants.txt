@@ -48,6 +48,9 @@
 # clip-blink): a clip neither carries its rows nor keeps them shown, so a row
 # first in a list a centred panel snapped smaller glides from above it, cut
 # out for a frame.
+# shrink-keeps-edge.patch: bottom-osd-shrink's fix turned off (decisions.md
+# bottom-osd-shrink): the pass in a shrunken buffer compares boxes in the
+# buffer, so a bottom OSD's last row glides back from under its edge.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
@@ -58,3 +61,4 @@ roll-rate.patch         regressions/roll-rate.scn         settle
 border-fade-snap.patch  regressions/border-fade-snap.scn continuity:#chip continuity:#dot
 text-exit-squeeze.patch regressions/text-exit-squeeze.scn contain:#plug contain:#badge expect
 clip-carries-rows.patch regressions/clip-carries-rows.scn vanish
+shrink-keeps-edge.patch regressions/shrink-keeps-edge.scn bystander expect

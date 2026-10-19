@@ -2491,6 +2491,90 @@ fn a_centred_panel_keeps_its_rows_in_place_as_it_shrinks() {
     );
 }
 
+/// (bottom-osd-shrink) A bottom-anchored content-sized OSD whose upper
+/// row leaves on an exit pose is held at its larger size while it plays,
+/// its last row laid out where the smaller box will be, and shrinks once
+/// it settles: the compositor keeps the buffer's bottom edge, so the row
+/// stays where it is on screen. Before, the pass in the smaller buffer
+/// read the row's move in the buffer (48 px up) as a move, and glided it
+/// back from 48 px below its place, under the OSD's bottom edge.
+#[test]
+fn a_bottom_osd_keeps_its_last_row_in_place_as_it_shrinks() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Osd,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Anchor, PropValue::Keyword("bottom".into())),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Width, num(60.0)), (Prop::Gap, num(8.0))],
+    );
+    let extra = b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#0000ff")),
+            (
+                Prop::Exit,
+                pose(vec![(Prop::Height, num(0.0)), (Prop::Opacity, num(0.0))]),
+            ),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Height, num(20.0)), (Prop::Bg, color("#ff0000"))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    // How far above the buffer's bottom edge, which the compositor
+    // keeps, the red row's top is (its first row over half covered: a
+    // pixel either way while the exit springs it through fractions).
+    let lift = |h: &Host| {
+        let (_, buf, _) = h.surface.as_ref().unwrap();
+        let top = (0..buf.size.h)
+            .find(|y| buf.px(30, *y)[2] > 128)
+            .expect("the row is drawn");
+        buf.size.h as i64 - top as i64
+    };
+    assert_eq!(h.surface.as_ref().unwrap().1.size.h, 68);
+    assert_eq!(lift(&h), 20);
+    let mut d = SceneDiff::new();
+    d.remove(extra);
+    h.apply(d);
+    let (mut seen, mut heights) = (Vec::new(), Vec::new());
+    loop {
+        let Some((id, buf, age)) = h.surface.as_mut() else {
+            panic!("closed");
+        };
+        if !h.r.wants_frame(*id) {
+            break;
+        }
+        buf.paint_at(&mut h.r, *id, *age, frame(h.k));
+        *age = 1;
+        h.k += 1;
+        heights.push(buf.size.h);
+        seen.push(lift(&h));
+        if h.r.has_surface_changes() {
+            h.r.update();
+            h.sync();
+        }
+        assert!(seen.len() < 400, "never settled");
+    }
+    assert_eq!(heights[0], 68, "held at its larger size: {heights:?}");
+    assert_eq!(*heights.last().unwrap(), 20, "then shrinks: {heights:?}");
+    assert!(
+        seen.iter().all(|l| (l - 20).abs() <= 1),
+        "stays on the bottom edge: {seen:?} (buffers {heights:?})"
+    );
+}
+
 /// The same at odd sizes, read as the compositor places the buffer: a
 /// centred layer surface at `output / 2 - width / 2` in whole pixels (on
 /// an output 1920 wide). A 101 px panel shrinking to 40 is laid out 30 px

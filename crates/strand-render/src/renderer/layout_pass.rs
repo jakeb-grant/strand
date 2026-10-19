@@ -256,6 +256,17 @@ impl Renderer {
         }
     }
 
+    /// (bottom-osd-shrink) How a content-sized surface's buffer keeps
+    /// its place when it shrinks ([`super::specs::resize_share`]); `None`
+    /// for any other surface. Its growth is [`Renderer::glide_origin`]'s.
+    fn shrink_share(&self, root: NodeId) -> Option<(f32, f32)> {
+        let spec = self.specs.get(&root)?;
+        if spec.kind == NodeKind::Bar || !self.content_sized.contains_key(&root) {
+            return None;
+        }
+        self.resize_share_of(root)
+    }
+
     /// Lays out surface `id` if anything layout reads changed, or its
     /// size springs moved. Sizes spring from the boxes of the last pass
     /// to the ones laid out at rest; a frame where only size springs
@@ -377,6 +388,7 @@ impl Renderer {
         // pass after a text arrived, in this frame or a later one, while
         // the change's scope is open): their glides add up, and each
         // starts where the box was drawn.
+        let share = self.shrink_share(root);
         if let Some(s) = self.surfaces.get_mut(&id) {
             let flip = std::mem::take(&mut s.flip);
             let all = std::mem::take(&mut s.flip_all);
@@ -385,7 +397,20 @@ impl Renderer {
             // sized surface configured at the size a change asked for.
             // Before its first frame nothing was drawn to glide from.
             let resized = s.painted && s.laid_frame.is_some_and(|f| f != frame);
+            // (bottom-osd-shrink) Where a shrink moved the buffer's near
+            // edge on screen: boxes are compared where they were drawn
+            // on screen, not in the buffer.
+            let shift = match (resized, s.laid_size, share) {
+                (true, Some(was), Some((fx, fy))) => {
+                    let shrink = |from: f32, to: f32, f: f32| {
+                        crate::layout::edge_shift(from, to, f).max(0.0)
+                    };
+                    (shrink(was.w, logical.w, fx), shrink(was.h, logical.h, fy))
+                }
+                _ => (0.0, 0.0),
+            };
             s.laid_frame = Some(frame);
+            s.laid_size = Some(logical);
             let fresh = all || !flip.is_empty();
             if fresh {
                 let open = s.flip_open.get_or_insert_with(Default::default);
@@ -407,6 +432,24 @@ impl Renderer {
                 && let Some((flip, all)) = scope
                 && !self.anim.reduced()
             {
+                let moved;
+                let old_rects = if shift == (0.0, 0.0) {
+                    &old.rects
+                } else {
+                    moved = old
+                        .rects
+                        .iter()
+                        .map(|(k, r)| {
+                            let r = strand_scene::LogicalRect {
+                                x: r.x - shift.0,
+                                y: r.y - shift.1,
+                                ..*r
+                            };
+                            (*k, r)
+                        })
+                        .collect::<HashMap<_, _>>();
+                    &moved
+                };
                 let tables = [&self.tree.tokens];
                 let curve = Curve::of(
                     &TokenScope::new(&tables)
@@ -416,7 +459,7 @@ impl Renderer {
                     &self.tree,
                     &mut self.anim,
                     root,
-                    &old.rects,
+                    old_rects,
                     &boxes.rects,
                     &flip,
                     all,

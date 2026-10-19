@@ -1,0 +1,56 @@
+id     = "shrink-keeps-edge"
+about  = """A finding of round 5 (docs/decisions.md bottom-osd-shrink): a content-sized
+surface held at its larger size while a row leaves is laid out where its
+smaller box will be, and the compositor keeps its anchored edge as it shrinks
+(popup-shrink), so what stays should not move on screen. But the pass in the
+smaller buffer compared boxes in the buffer: a bottom OSD's last row, 48 px
+higher in the smaller buffer and still at its place on screen, glided back
+from 48 px below it, under the OSD's edge. Boxes are now compared where they
+were drawn on screen. An OSD on the bottom edge loses its hint, and a panel on
+the right edge loses a wide chip (`bystander`: the rows that stay are not drawn
+off their level; eval/mutants/shrink-keeps-edge.patch reverts the fix)."""
+screen = { width = 640, height = 480, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state hinted = true
+state wide = true
+
+osd Brightness {
+  anchor: bottom; margin: 0, 0, 64; open: true
+  col { width: 240; pad: 12; gap: 8; radius: 14; bg: #24273a
+    if hinted {
+      text "Fn+F6 to dim" { id: hint; color: #a5adcb; enter { height: 0; opacity: 0 } }
+    }
+    row { id: level; gap: 10; align: center
+      text "Brightness" { color: #cad3f5 }
+      box { width: 120; height: 6; radius: 3; bg: #eed49f }
+    }
+  }
+}
+
+panel Tray {
+  anchor: right; margin: 0, 24, 0, 0; open: true
+  row { pad: 10; gap: 8; radius: 12; bg: #24273a; align: center
+    if wide {
+      box { id: chip; pad: 4, 10; radius: 8; bg: #8aadf4; color: #181926
+        enter { width: 0; opacity: 0 }
+        text "Do not disturb"
+      }
+    }
+    text "12:30" { id: time; color: #cad3f5 }
+  }
+}
+
+=== steps
+rest
+mark hint-leaves
+intend #hint exits
+set hinted false
+rest
+expect still #level
+mark chip-leaves
+intend #chip exits
+set wide false
+rest
+expect still #time
