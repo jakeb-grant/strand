@@ -2903,3 +2903,143 @@ fn a_hidden_node_starts_its_clock_when_it_shows() {
     );
     assert!(buf.pixels == turned(9.0).pixels, "t = 0.25 s: 9°");
 }
+
+/// (damage-fraction) A shape's outline is a curve through its points,
+/// and while it morphs (held-out set F's media card: a round play button
+/// turning into a wider pill) it passes outside its box by a fraction of
+/// a pixel; antialiasing paints the pixel that fraction covers. Every
+/// frame of the morph repainted only where it damaged equals the same
+/// frame drawn in full (design.md: exact damage), filled, with a border
+/// along the outline, clipping a child to it, and shadowed and turned,
+/// at every scale: two
+/// renderers fed the same changes at the same times, one painting each
+/// frame over the last (age 1), the other in full (age 0).
+#[test]
+fn a_morphing_shape_repaints_every_pixel_it_paints() {
+    use std::time::Duration;
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let scene = |shape: &str, w: f32, extra: &[(Prop, PropValue)], child: bool| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = vec![
+            (Prop::X, num(17.0)),
+            (Prop::Y, num(9.0)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(36.0)),
+            (Prop::Place, kw("absolute")),
+            (Prop::Shape, kw(shape)),
+        ];
+        p.extend(extra.iter().cloned());
+        let id = b.node(NodeKind::Box, Some(root), p);
+        if child {
+            b.node(
+                NodeKind::Box,
+                Some(id),
+                vec![
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(60.0)),
+                    (Prop::Bg, color("#f5c2e7")),
+                ],
+            );
+        }
+        (b.diff, id)
+    };
+    type Look = (&'static str, Vec<(Prop, PropValue)>, bool);
+    let looks: [Look; 4] = [
+        ("filled", vec![(Prop::Bg, color("#89b4fa"))], false),
+        (
+            "bordered",
+            vec![
+                (Prop::Bg, color("#89b4fa")),
+                (
+                    Prop::Border,
+                    PropValue::Border(Border {
+                        width: 2.0,
+                        paint: Paint::Solid(hex("#f9e2af")),
+                    }),
+                ),
+            ],
+            false,
+        ),
+        ("clipping", vec![(Prop::Clip, PropValue::Bool(true))], true),
+        (
+            "shadowed and turned",
+            vec![
+                (Prop::Bg, color("#89b4fa")),
+                (
+                    Prop::Shadow,
+                    PropValue::Shadow(vec![Shadow {
+                        x: 0.0,
+                        y: 1.5,
+                        blur: 3.0,
+                        spread: 0.0,
+                        color: hex("#00000099"),
+                    }]),
+                ),
+                (Prop::Rotate, PropValue::Angle(7.0)),
+            ],
+            false,
+        ),
+    ];
+    let morphs = [
+        ("circle", 36.0, "pill", 52.0),
+        ("cookie", 36.0, "burst", 44.0),
+    ];
+    let mut missed = Vec::new();
+    for scale in [120, 150, 180, 240] {
+        let scale = Scale::new(scale).unwrap();
+        let size = scale.physical_size(LogicalSize::new(96.0, 54.0));
+        for (look, extra, child) in &looks {
+            for (from, w0, to, w1) in morphs {
+                let what = format!("{scale:?} {look} {from}->{to}");
+                let mut pair = [0u8, 1].map(|_| {
+                    let mut r = renderer();
+                    assert!(r.apply(scene(from, w0, extra, *child).0).is_empty());
+                    r.attach_surface(BAR, r.tree().roots()[0]);
+                    let mut buf = Buffer::new(size.w, size.h, scale);
+                    buf.paint_at(&mut r, BAR, 0, Duration::from_millis(1000));
+                    (r, buf)
+                });
+                let id = pair[0]
+                    .0
+                    .tree()
+                    .get(pair[0].0.tree().roots()[0])
+                    .unwrap()
+                    .children[0];
+                for (r, _) in pair.iter_mut() {
+                    let mut d = SceneDiff::new();
+                    d.set(id, Prop::Shape, kw(to));
+                    d.set(id, Prop::Width, num(w1));
+                    assert!(r.apply(d).is_empty());
+                }
+                let mut t = 1000;
+                let mut frames = 0;
+                while pair[0].0.wants_frame(BAR) {
+                    t += 16;
+                    frames += 1;
+                    assert!(frames < 200, "{what}: settles");
+                    for (age, (r, buf)) in pair.iter_mut().enumerate() {
+                        buf.paint_at(r, BAR, 1 - age as u8, Duration::from_millis(t));
+                    }
+                    let (a, b) = (&pair[0].1, &pair[1].1);
+                    if a.pixels != b.pixels {
+                        let n = a
+                            .pixels
+                            .chunks_exact(4)
+                            .zip(b.pixels.chunks_exact(4))
+                            .filter(|(x, y)| x != y)
+                            .count();
+                        missed.push(format!("{what} at {} ms: {n} px", t - 1000));
+                        break;
+                    }
+                }
+                assert!(frames > 2, "{what}: it morphs");
+            }
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "partial repaints differ from full ones:\n{}",
+        missed.join("\n")
+    );
+}

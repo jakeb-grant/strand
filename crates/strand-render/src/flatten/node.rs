@@ -25,7 +25,7 @@ use super::widget::{CaretAt, WidgetCtx, caret_x};
 use super::{
     DisplayItem, FillShape, Flattener, Geometry, GlyphCells, HitBox, Inherited, Item, MAX_BLUR,
     NodeRecord, RingCells, RoundBox, TOLERANCE, angle, default_color, default_font, finite,
-    finite_or_zero, length, map_rect, number,
+    finite_or_zero, length, map_rect, number, painted, painted_cover,
 };
 use crate::tree::Node;
 
@@ -37,6 +37,27 @@ impl<'a> Flattener<'a> {
         sig: &mut DefaultHasher,
         ink: &mut Rect,
     ) {
+        // (damage-fraction) Every pixel it paints, as far as the clips
+        // it is drawn under let it.
+        let reach = painted(&item).map(|p| match self.item_clips.last() {
+            Some(c) => p.intersect(*c),
+            None => p,
+        });
+        let bounds = match reach {
+            Some(p) if p.width() > 0.0 && p.height() > 0.0 => bounds.union(painted_cover(p)),
+            _ => bounds,
+        };
+        match &item {
+            Item::PushClip(p) => {
+                let c = p.bounding_box();
+                let c = self.item_clips.last().map_or(c, |o| o.intersect(c));
+                self.item_clips.push(c);
+            }
+            Item::PopClip => {
+                self.item_clips.pop();
+            }
+            _ => {}
+        }
         let bounds = map_rect(self.xform, bounds);
         hash_item(sig, &item);
         *ink = ink.union(bounds);
@@ -1706,7 +1727,11 @@ impl<'a> Flattener<'a> {
             } else {
                 hash_path(&mut ctx, &box_path);
             }
-            child_clip = map_rect(self.xform, phys)
+            // What the clip lets through: its outline, which a shape's
+            // passes outside the box by a fraction of a pixel
+            // (damage-fraction).
+            let through = painted_cover(box_path.bounding_box()).union(phys);
+            child_clip = map_rect(self.xform, through)
                 .intersect(inh.clip)
                 .unwrap_or_default();
             let i = self.marker(Item::PushClip(box_path));

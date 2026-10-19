@@ -70,3 +70,8 @@ shrink-keeps-edge.patch regressions/shrink-keeps-edge.scn bystander expect
 # found by second: a held centred launcher letting go as a query lays its
 # rows out anew (decisions.md integration-r5, held-glides' unhold half).
 unhold-flip.patch       regressions/unhold-flip.scn       envelope contain
+# damage-fraction.patch: damage-fraction's fix reverted (decisions.md
+# damage-fraction): an item's bounds are what its caller passed again, so a
+# morphing shape's outline, passing outside its box by a fraction of a pixel,
+# leaves its antialiased fringe out of the damage.
+damage-fraction.patch   regressions/damage-fraction.scn   redraw

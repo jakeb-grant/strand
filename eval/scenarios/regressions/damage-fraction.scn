@@ -1,0 +1,55 @@
+id     = "damage-fraction"
+about  = """A finding of round 6's held-out set F (docs/decisions.md damage-fraction):
+a round play button turns into a wider pill as playback starts. A shape's
+outline is a curve through its points, and while it morphs it passes outside
+its box by a fraction of a pixel, which antialiasing paints; damage was the
+box's own pixels, so a partial frame kept the old row above and below it where
+a full repaint draws the fringe. Now an item's damage is every pixel its own
+geometry paints, as far as its clips let it, so every partial redraw is its
+frame repainted in full (`redraw`), at 1, 1.5 and 1.25
+(eval/mutants/damage-fraction.patch reverts the fix)."""
+screen = { width = 240, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+
+panel Media {
+  layer: top; anchor: top; margin: 12; keyboard: none
+  open: true
+  row { id: card; pad: 14; gap: 12; radius: 18; bg: #1e1e2e; align: center
+    box { id: art; size: 36; radius: 8; bg: #f5c2e7 }
+    box { id: play; size: 36; bg: #89b4fa; shape: circle
+      when playing { shape: pill; width: 52 }
+    }
+    box { id: ring; size: 30; shape: cookie; border: 2, #f9e2af; clip: true
+      when playing { shape: burst }
+      box { width: 40; height: 14; bg: #a6e3a1 }
+    }
+  }
+}
+
+=== steps
+rest
+mark play
+set playing true
+intend #play changes
+intend #ring changes
+intend #card changes
+rest
+mark pause-1_5
+scale 1.5
+rest
+set playing false
+intend #play changes
+intend #ring changes
+intend #card changes
+rest
+mark play-1_25
+scale 1.25
+rest
+set playing true
+intend #play changes
+intend #ring changes
+intend #card changes
+rest

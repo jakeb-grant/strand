@@ -582,6 +582,7 @@ pub fn flatten(
         fillet: crate::fillet::find(tree, boxes, root),
         open_clips: Vec::new(),
         fillet_fill: None,
+        item_clips: Vec::new(),
         pointer: extras.pointers.get(&root).copied(),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
         #[cfg(feature = "eval-hooks")]
@@ -654,6 +655,10 @@ struct Flattener<'a> {
     /// what each such clip holds the rest of its group around
     /// (`Flattener::hold_to_box`).
     fillet_fill: Option<usize>,
+    /// (damage-fraction) What the clips a node pushed for its own items
+    /// (`Flattener::push`) let through, innermost last: an item drawn
+    /// under one paints no further than it.
+    item_clips: Vec<kurbo::Rect>,
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,
@@ -682,6 +687,51 @@ struct OpenClip {
     /// Its box path, kept once the fillet target's fill has widened the
     /// clip: what the rest of the group is held to.
     held: Option<BezPath>,
+}
+
+/// (damage-fraction) Where `item` paints, from its own geometry
+/// (physical pixels, before the transform it is drawn under), when that
+/// geometry says: a path's curves, a shadow's extent, a pixmap's rect,
+/// a clip's outline. A shape's outline (a Catmull-Rom curve through its
+/// points, a morph between two) passes outside its box by a fraction of
+/// a pixel, and the raster's antialiasing paints the pixel that fraction
+/// covers; damage covers all of what is painted (design.md: exact
+/// damage), so a pushed item's bounds take this in, whatever its caller
+/// passed. Glyphs are bounded by their layout's ink, which their callers
+/// pass.
+fn painted(item: &Item) -> Option<kurbo::Rect> {
+    use kurbo::Shape;
+    let r = match item {
+        Item::Fill { shape, .. } => match shape {
+            FillShape::Rect(r) => *r,
+            FillShape::Path(p) => p.bounding_box(),
+        },
+        Item::Border { path, .. } | Item::PushClip(path) => path.bounding_box(),
+        Item::Shadow { extent, .. } => *extent,
+        Item::Image { rect, .. } | Item::Raster { rect, .. } => *rect,
+        _ => return None,
+    };
+    (r.is_finite() && r.width() > 0.0 && r.height() > 0.0).then_some(r)
+}
+
+/// How far past a pixel's edge geometry may reach and paint nothing
+/// there: vello_cpu rounds a pixel's coverage to 8 bits
+/// (`coverage * 255 + 0.5`, truncated), so a sliver of at most this much
+/// of a pixel gets an alpha of 0. It absorbs the float error of a
+/// curve's extremes (a rounded rect's arcs end a few ulps past its box),
+/// which would otherwise grow a box's damage by a row it does not paint,
+/// differently wherever it lies.
+const UNPAINTED_SLIVER: f64 = 1.0 / 512.0;
+
+/// The pixels geometry inside `r` paints ([`UNPAINTED_SLIVER`]).
+fn painted_cover(r: kurbo::Rect) -> Rect {
+    let e = UNPAINTED_SLIVER;
+    Rect::from_edges(
+        (r.x0 + e).floor() as i64,
+        (r.y0 + e).floor() as i64,
+        (r.x1 - e).ceil() as i64,
+        (r.y1 - e).ceil() as i64,
+    )
 }
 
 /// The pixels `r` covers once drawn under `a`.

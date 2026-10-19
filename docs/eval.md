@@ -1312,7 +1312,8 @@ gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
 decisions.md clip-blink) and shrink-keeps-edge (`bystander`, `expect`;
 decisions.md bottom-osd-shrink), and unhold-flip (the same revert as
 shrink-keeps-edge's, on a held centred launcher letting go: `envelope`,
-`contain`; decisions.md integration-r5): 12 in all. In a detached worktree of HEAD, each scenario
+`contain`; decisions.md integration-r5), and round 6's damage-fraction
+(`redraw`, decisions.md damage-fraction): 13 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
