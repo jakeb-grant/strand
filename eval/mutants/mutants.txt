@@ -44,6 +44,10 @@
 # (decisions.md bar-blank-on-exit): a box an exit pose squeezes keeps no line
 # box and its children no width at rest, so a text wraps letter by letter
 # into a column and a badge grows tall around its wrapped text.
+# clip-carries-rows.patch: clip-blink's fix turned off (decisions.md
+# clip-blink): a clip neither carries its rows nor keeps them shown, so a row
+# first in a list a centred panel snapped smaller glides from above it, cut
+# out for a frame.
 bug23-gpu-regions.patch regressions/bug23-gpu-regions.scn   regions-on-wire
 bug24-flip-open.patch   regressions/bug24-flip-open-min.scn teleport:#bars:x
 bug25-hidden-text.patch regressions/bug25-hidden-text.scn   bystander:#status:h
@@ -53,3 +57,4 @@ gradient-far-hue.patch  regressions/gradient-far-hue.scn  cpu-gpu
 roll-rate.patch         regressions/roll-rate.scn         settle
 border-fade-snap.patch  regressions/border-fade-snap.scn continuity:#chip continuity:#dot
 text-exit-squeeze.patch regressions/text-exit-squeeze.scn contain:#plug contain:#badge expect
+clip-carries-rows.patch regressions/clip-carries-rows.scn vanish

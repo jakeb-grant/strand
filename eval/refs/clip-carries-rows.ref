@@ -1,0 +1,214 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "clip-carries-rows"
+verdict good
+note "clip-blink: initial reference; a centred network picker's clipped list narrows to the saved networks and then one row, each row that stays carried by its list (no glide from above its new top edge) and the one moving up a slot inside the one-row list starting where it shows"
+date 2026-10-19
+rev "27406340+changes"
+approver "claude"
+scenario 4c2c5efe90034fc7
+seal ce433a8955f625b0
+S1 0 - "panel Networks"
+N0 "card|shell.strand:8:3|#0" "col#card"
+N1 "heading|shell.strand:9:5|#0" "text#heading"
+N2 "nets|shell.strand:10:5|#0" "list#nets"
+N3 "|shell.strand:12:9|[cafe-guest]#1" "row@shell.strand:12"
+N4 "|shell.strand:12:9|[home]#0" "row@shell.strand:12"
+N5 "|shell.strand:12:9|[library]#4" "row@shell.strand:12"
+N6 "|shell.strand:12:9|[office]#2" "row@shell.strand:12"
+N7 "|shell.strand:12:9|[printer-5G]#3" "row@shell.strand:12"
+N8 "|shell.strand:15:11|[cafe-guest]#0" "text(\"cafe-guest\")"
+N9 "|shell.strand:15:11|[home]#0" "text(\"home\")"
+N10 "|shell.strand:15:11|[library]#0" "text(\"library\")"
+N11 "|shell.strand:15:11|[office]#0" "text(\"office\")"
+N12 "|shell.strand:15:11|[printer-5G]#0" "text(\"printer-5G\")"
+N13 "|shell.strand:6:1|#0" "panel@shell.strand:6"
+k0 p1
+s1 z=220,219 o=50,131
+n0 x=0 y=0 w=220 h=219 ord=1 bg=232634ff
+n1 x=10 y=10 w=200 h=15 txt=S ord=2 ink=10,11,30,10 fg=c6d0f5ff gl=["Wi-Fi"]
+n2 x=10 y=33 w=200 h=176 ord=3
+n3 x=10 y=69 w=200 h=32 ord=6 bg=303446ff
+n4 x=10 y=33 w=200 h=32 ord=4 bg=303446ff
+n5 x=10 y=177 w=200 h=32 ord=12 bg=303446ff
+n6 x=10 y=105 w=200 h=32 ord=8 bg=303446ff
+n7 x=10 y=141 w=200 h=32 ord=10 bg=303446ff
+n8 x=20 y=78 w=61 h=15 txt=S ord=7 ink=20,79,61,13 fg=e5e9f0ff gl=["cafe-guest"]
+n9 x=20 y=42 w=33 h=15 txt=S ord=5 ink=20,43,32,11 fg=e5e9f0ff gl=["home"]
+n10 x=20 y=186 w=36 h=15 txt=S ord=13 ink=20,187,36,13 fg=e5e9f0ff gl=["library"]
+n11 x=20 y=114 w=31 h=15 txt=S ord=9 ink=20,115,31,11 fg=e5e9f0ff gl=["office"]
+n12 x=20 y=150 w=59 h=15 txt=S ord=11 ink=20,151,58,13 fg=e5e9f0ff gl=["printer-5G"]
+n13 x=0 y=0 w=220 h=219
+k1
+n3 op=218 hid=inert
+n5 op=218 hid=inert
+n7 op=218 hid=inert
+n8 op=218 hid=inert
+n10 op=218 hid=inert
+n12 op=218 hid=inert
+k2
+n3 op=157
+n5 op=157
+n7 op=157
+n8 op=157
+n10 op=157
+n12 op=157
+k3
+n3 op=104
+n5 op=104
+n7 op=104
+n8 op=104
+n10 op=104
+n12 op=104
+k4
+n3 op=65
+n5 op=65
+n7 op=65
+n8 op=65
+n10 op=65
+n12 op=65
+k5
+n3 op=39
+n5 op=39
+n7 op=39
+n8 op=39
+n10 op=39
+n12 op=39
+k6
+n3 op=23
+n5 op=23
+n7 op=23
+n8 op=23
+n10 op=23
+n12 op=23
+k7
+n3 op=14
+n5 op=14
+n7 op=14
+n8 op=14
+n10 op=14
+n12 op=14
+k8
+n3 op=8
+n5 op=8
+n7 op=8
+n8 op=8
+n10 op=8
+n12 op=8
+k9
+n3 op=4
+n5 op=4
+n7 op=4
+n8 op=4
+n10 op=4
+n12 op=4
+k10
+n3 op=2
+n5 op=2
+n7 op=2
+n8 op=2
+n10 op=2
+n12 op=2
+k11
+n3 op=1
+n5 op=1
+n7 op=1
+n8 op=1
+n10 op=1
+n12 op=1
+k12
+k13
+n3 op=0
+n5 op=0
+n7 op=0
+n8 op=0
+n10 op=0
+n12 op=0
+k14
+n3 hid=opacity0 bg=-
+n5 hid=opacity0 ord=10 bg=-
+n6 ord=7
+n7 hid=opacity0 ord=9 bg=-
+n8 -
+n10 -
+n11 ord=8
+n12 -
+k15
+n0 y=54 h=111
+n1 y=64 ink=10,65,30,10
+n2 y=87 h=68
+n3 -
+n4 y=87
+n5 -
+n6 y=123 ord=6
+n7 -
+n9 y=96 ink=20,97,32,11
+n11 y=132 ord=7 ink=20,133,31,11
+n13 y=54 h=111
+k16
+s1 z=220,111 o=50,185
+n0 y=0
+n1 y=10 ink=10,11,30,10
+n2 y=33
+n4 y=33
+n6 y=69
+n9 y=42 ink=20,43,32,11
+n11 y=78 ink=20,79,31,11
+n13 y=0
+k17
+n4 op=218 hid=inert
+n9 op=218 hid=inert
+k18
+n4 op=157
+n9 op=157
+k19
+n4 op=104
+n9 op=104
+k20
+n4 op=65
+n9 op=65
+k21
+n4 op=39
+n9 op=39
+k22
+n4 op=23
+n9 op=23
+k23
+n4 op=14
+n9 op=14
+k24
+n4 op=8
+n9 op=8
+k25
+n4 op=4
+n9 op=4
+k26
+n4 op=2
+n9 op=2
+k27
+n4 op=1
+n9 op=1
+k28
+k29
+n4 op=0
+n9 op=0
+k30
+n4 hid=opacity0 bg=-
+n6 ord=5
+n9 -
+n11 ord=6
+k31
+n0 y=18 h=75
+n1 y=28 ink=10,29,30,10
+n2 y=51 h=32
+n4 -
+n6 y=51 ord=4
+n11 y=60 ord=5 ink=20,61,31,11
+n13 y=18 h=75
+k32
+s1 z=220,75 o=50,203
+n0 y=0
+n1 y=10 ink=10,11,30,10
+n2 y=33
+n6 y=33
+n11 y=42 ink=20,43,31,11
+n13 y=0

@@ -665,6 +665,68 @@ fn a_width_exit_squeezes_its_text_without_rewrapping_it() {
     assert_eq!(st.r.tree().ghost_count(), 0, "unmounted after the exit");
 }
 
+/// (clip-blink) A clip carries what it holds, and shows what it showed.
+/// A card centred in its panel, clipping six 40 px rows, loses its last
+/// three (no exit pose: they leave at once): it snaps 60 px down to its
+/// new, smaller box (nothing moved its parent's children), and its first
+/// row, first in it still, is drawn on every frame. Before, the row
+/// glided from where it was on screen, above the card's new top edge, so
+/// the card's clip hid it for the first frames of its glide. Then the
+/// first two go: the red row moves up two slots inside a card that shrank
+/// to one row. Measured inside the card it would start below it, hidden;
+/// it starts where the card shows it instead.
+#[test]
+fn a_snapped_clip_carries_its_rows_so_none_blinks_out() {
+    let mut rows = Vec::new();
+    let mut st = Stage::new(80, 400, |b, root| {
+        let outer = b.node(
+            NodeKind::Col,
+            Some(root),
+            vec![
+                (Prop::Height, num(400.0)),
+                (Prop::Justify, PropValue::Keyword("center".into())),
+            ],
+        );
+        let card = b.node(
+            NodeKind::Col,
+            Some(outer),
+            vec![
+                (Prop::Width, num(60.0)),
+                (Prop::Clip, PropValue::Bool(true)),
+            ],
+        );
+        for c in [
+            "#00ff00", "#0000ff", "#ff0000", "#0000ff", "#0000ff", "#0000ff",
+        ] {
+            rows.push(b.node(
+                NodeKind::Box,
+                Some(card),
+                vec![(Prop::Height, num(40.0)), (Prop::Bg, color(c))],
+            ));
+        }
+    });
+    assert_eq!(st.rect(rows[0]).y, 80.0);
+    // Whether any pixel of column 30 has channel `ch` (BGRA) lit.
+    let lit = |st: &Stage, ch: usize| (0..400).any(|y| st.buf.px(30, y)[ch] > 200);
+    let mut k = 1;
+    for (gone, (shown, ch)) in [(&rows[3..], (rows[0], 1)), (&rows[..2], (rows[2], 2))] {
+        assert!(lit(&st, ch));
+        let mut d = SceneDiff::new();
+        for r in gone {
+            d.remove(*r);
+        }
+        st.apply(d);
+        let start = k;
+        while st.r.wants_frame(S) {
+            st.paint(frame(k));
+            assert!(lit(&st, ch), "{shown:?} blinked out at frame {k}");
+            k += 1;
+            assert!(k < start + 200, "never settled");
+        }
+    }
+    assert_eq!(st.rect(rows[2]).y, 180.0, "the card is centred again");
+}
+
 /// A surface whose `open` goes false plays its exit pose first: its spec
 /// stays open until the pose settles. Opening plays `enter`.
 #[test]

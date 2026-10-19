@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -575,7 +575,7 @@
+                 }
+             }
+             let mut clip_c = clip;
+-            if clips(tree, anim, cn)
++            if false && clips(tree, anim, cn)
+                 && !unpainted.contains(c)
+                 && let (Some(o), Some(w)) = rects
+             {

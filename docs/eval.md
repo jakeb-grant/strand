@@ -596,7 +596,8 @@ three owner shells run with `eval local`). At round 4's integration
 (integration-r4) the same sweep over every check: of C's 8 and D's 10
 correct scenarios only D's launcher-filter fails (`vanish`, the product's
 blink of a gliding row that starts outside its card's clip, left open in
-eval-coverage-2), and two owner shells pass every check run; the third
+eval-coverage-2; fixed in round 5, decisions.md clip-blink, after which
+C and D pass every check), and two owner shells pass every check run; the third
 no longer loads, since pose-transition made a `~` in a pose a load error
 (its owner takes the `~` out). The eval-rules-3 arms (`vanish`'s
 segment-long blink and its `blank` held to what draws, `contain`'s
@@ -1164,7 +1165,8 @@ fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
 (`settle`, in crates/strand-scene) fixes (decisions.md shadow-redraw,
 gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap
 (`continuity`, decisions.md border-eps) and text-exit-squeeze (`contain`,
-`expect`; decisions.md bar-blank-on-exit). In a detached worktree of HEAD, each scenario
+`expect`; decisions.md bar-blank-on-exit) and clip-carries-rows (`vanish`,
+decisions.md clip-blink). In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

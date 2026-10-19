@@ -519,6 +519,14 @@ impl Renderer {
 /// one never drawn (`unpainted`) has no place it was.
 /// Visited top-down, so a node that moved with its parent adds nothing
 /// to the parent's glide.
+///
+/// (clip-blink) A box that clips what it holds (`clip: true`, a
+/// `scroll`, `list` or `pages`, a box whose size springs or that exits
+/// to a size) carries it, glided or snapped: its content glides only by
+/// how far it moved inside it. And a glide never starts a node where
+/// the boxes that clip it hide what they showed of it (one they shrank
+/// past): its start moves by as little as it takes to show as much of
+/// it, on each axis, as showed before.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn glide_moved(
     tree: &SceneTree,
@@ -531,28 +539,139 @@ pub(super) fn glide_moved(
     unpainted: &HashSet<NodeId>,
     curve: Curve,
 ) {
-    let mut stack = vec![(root, (0.0f32, 0.0f32))];
-    while let Some((n, acc)) = stack.pop() {
+    // Each entry: a node; where its children's glides are measured from
+    // (the glides its ancestors were given here, or, under a clip, the
+    // clip's own move); how far it is drawn off its box on the glide's
+    // first frame; and the boxes its clipping ancestors cut it to, before
+    // and as drawn on that frame.
+    let zero = (0.0f32, 0.0f32);
+    let mut stack = vec![(root, zero, zero, None::<(Span2, Span2)>)];
+    while let Some((n, acc, real, clip)) = stack.pop() {
         let Some(node) = tree.get(n) else { continue };
         let scope = all || parents.contains(&n);
         for c in &node.children {
-            if tree.get(*c).is_none_or(|k| k.kind.is_surface()) {
+            let Some(cn) = tree.get(*c).filter(|k| !k.kind.is_surface()) else {
                 continue;
-            }
-            let mut acc_c = acc;
+            };
+            let (mut acc_c, mut real_c) = (acc, real);
+            let rects = (old.get(c), new.get(c));
             if scope
                 && !unpainted.contains(c)
-                && let (Some(o), Some(w)) = (old.get(c), new.get(c))
+                && let (Some(o), Some(w)) = rects
             {
-                let adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
+                let mut adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
+                if let Some((was, now)) = &clip {
+                    let (old_box, start) = (Span2::of(o), Span2::of(w).shifted(real));
+                    let shift = |i: usize| {
+                        let d = [adj.0, adj.1][i];
+                        keep_shown(old_box.0[i], was.0[i], start.0[i].shifted(d), now.0[i])
+                    };
+                    adj = (adj.0 + shift(0), adj.1 + shift(1));
+                }
                 if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
                     anim.glide(*c, [adj.0, adj.1], curve);
                     acc_c = (acc.0 + adj.0, acc.1 + adj.1);
+                    real_c = (real.0 + adj.0, real.1 + adj.1);
                 }
             }
-            stack.push((*c, acc_c));
+            let mut clip_c = clip;
+            if clips(tree, anim, cn)
+                && !unpainted.contains(c)
+                && let (Some(o), Some(w)) = rects
+            {
+                // What it holds glides from where it was inside it.
+                acc_c = (o.x - w.x, o.y - w.y);
+                let (was, now) = (Span2::of(o), Span2::of(w).shifted(real_c));
+                clip_c = Some(match clip {
+                    Some((a, b)) => (a.cut(was), b.cut(now)),
+                    None => (was, now),
+                });
+            }
+            stack.push((*c, acc_c, real_c, clip_c));
         }
     }
+}
+
+/// A box as its two spans, x then y.
+#[derive(Clone, Copy, Debug)]
+struct Span2([Span; 2]);
+
+/// `[lo, hi)` on one axis.
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    lo: f32,
+    hi: f32,
+}
+
+impl Span {
+    fn len(self) -> f32 {
+        (self.hi - self.lo).max(0.0)
+    }
+    fn shifted(self, d: f32) -> Span {
+        Span {
+            lo: self.lo + d,
+            hi: self.hi + d,
+        }
+    }
+    /// How much of `self` lies in `clip`.
+    fn shown(self, clip: Span) -> f32 {
+        (self.hi.min(clip.hi) - self.lo.max(clip.lo)).max(0.0)
+    }
+}
+
+impl Span2 {
+    fn of(r: &strand_scene::LogicalRect) -> Span2 {
+        Span2([
+            Span {
+                lo: r.x,
+                hi: r.x + r.w,
+            },
+            Span {
+                lo: r.y,
+                hi: r.y + r.h,
+            },
+        ])
+    }
+    fn shifted(self, d: (f32, f32)) -> Span2 {
+        Span2([self.0[0].shifted(d.0), self.0[1].shifted(d.1)])
+    }
+    fn cut(self, o: Span2) -> Span2 {
+        let c = |a: Span, b: Span| Span {
+            lo: a.lo.max(b.lo),
+            hi: a.hi.min(b.hi).max(a.lo.max(b.lo)),
+        };
+        Span2([c(self.0[0], o.0[0]), c(self.0[1], o.0[1])])
+    }
+}
+
+/// (clip-blink) Where a glide starts a node on one axis: at `start`
+/// unless its clip `now` would hide more of it than its clip `was` hid
+/// of its last box `old`; then moved by as little as it takes to show as
+/// much as it showed (no more than fits in the clip). Returns the
+/// shift. A node its clip hid wholly is left where it was.
+fn keep_shown(old: Span, was: Span, start: Span, now: Span) -> f32 {
+    let want = old.shown(was).min(now.len()).min(start.len());
+    if want <= 0.0 || start.shown(now) >= want - 0.5 {
+        return 0.0;
+    }
+    // Showing `want` of it: its low end lies in [now.lo - (len - want),
+    // now.hi - want].
+    let (min, max) = (now.lo - (start.len() - want), now.hi - want);
+    start.lo.clamp(min, max.max(min)) - start.lo
+}
+
+/// (clip-blink) Whether `node` clips what it holds, as flattening does
+/// (`flatten/node.rs`, its children's clip).
+fn clips(tree: &SceneTree, anim: &Animator, node: &crate::tree::Node) -> bool {
+    matches!(
+        node.get(Prop::Clip),
+        Some(strand_scene::PropValue::Bool(true))
+    ) || matches!(
+        node.kind,
+        strand_scene::NodeKind::Scroll
+            | strand_scene::NodeKind::List
+            | strand_scene::NodeKind::Pages
+    ) || anim.sizing(tree, node)
 }
 
 /// The larger of `a` and `b` on each side.

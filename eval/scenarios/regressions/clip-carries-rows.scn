@@ -1,0 +1,45 @@
+id     = "clip-carries-rows"
+about  = """A finding of round 5 (docs/decisions.md clip-blink): a centred, content-sized
+panel's card clips its list. When the list lost rows, the card snapped to its
+new, smaller box at once (the panel is laid out where its smaller box will be),
+while the rows that stayed glided from where they were on screen: the first,
+first in the list still, started above the list's new top edge and was cut out
+for a frame. A clip now carries what it holds: its rows glide by how far they
+moved inside it, and a row a clip would hide at its start (one moving up inside
+a list that shrank past it) starts where the clip shows it. A filter hides the
+networks not saved, and then the first saved one is forgotten, the other moving
+up into a list one row tall (`vanish`: nothing blinks out;
+eval/mutants/clip-carries-rows.patch reverts the fix)."""
+screen = { width = 320, height = 480, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state saved_only = false
+state forgot = false
+let nets = ["home", "cafe-guest", "office", "printer-5G", "library"]
+let shown = nets.filter(n => (!saved_only || n == "home" || n == "office") && !(forgot && n == "home"))
+
+panel Networks {
+  anchor: center; open: true
+  col { id: card; width: 220; pad: 10; gap: 8; radius: 10; bg: #232634; clip: true
+    text "Wi-Fi" { id: heading; color: #c6d0f5 }
+    list { id: nets; gap: 4; max_height: 300
+      for n in shown key n {
+        row { height: 32; pad: 0, 10; radius: 6; align: center; bg: #303446
+          enter { opacity: 0 }
+          exit { opacity: 0 }
+          text n { color: #e5e9f0 }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark saved-only
+set saved_only true
+rest
+mark forget
+set forgot true
+rest
