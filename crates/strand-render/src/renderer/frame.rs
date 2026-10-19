@@ -457,8 +457,9 @@ impl Renderer {
         // A scene flattened by `update` is drawn at rest: not while
         // anything moves, nor while a motion waits to start (an `enter`
         // pose a time-zero preview could not play: a surface just
-        // attached, a node just created).
-        let pending = self.anim.busy(&self.tree, root) || swapping;
+        // attached, a node just created, a surface just opened whose
+        // `morph` names may start: cross-surface-morph).
+        let pending = self.anim.busy(&self.tree, root) || self.anim.opening(root) || swapping;
         // A node reading time repaints every frame of its clock.
         let ticking = self.clocks.running(surface);
         let cached = if s.animating || pending || ticking {
@@ -491,6 +492,7 @@ impl Renderer {
         // scene flattened for this frame or reused: a node at rest on a
         // surface that only reuses scenes is still a morph's start.
         self.anim.shared_painted(root, target.time, &f.morphs);
+        self.anim.surface_shown(root);
         self.paint_times = PaintTimes {
             flatten: flatten_start.elapsed(),
             text_wait: self.estimate_waited.saturating_sub(waited),

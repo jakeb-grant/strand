@@ -209,6 +209,14 @@ pub(crate) struct Animator {
     /// and laid out (sizes).
     enter: HashSet<NodeId>,
     enter_size: HashSet<NodeId>,
+    /// (cross-surface-morph) Surface roots opening: their next painted
+    /// frame is the first that shows what they hold, and a node with a
+    /// `morph` name in it comes on screen there as an entering node
+    /// does, so it starts its shared morph ([`Animator::shared_morph`]).
+    opened: HashSet<NodeId>,
+    /// Nodes a shared morph took out of `enter` in a preview: a painted
+    /// frame that misses the morph gives them their enter pose back.
+    morph_took_enter: HashSet<NodeId>,
     exits: HashMap<NodeId, ExitKind>,
     /// When each exit started (wall clock): an exit no frame samples
     /// (its output asleep) is ended by `Renderer` after a while.
@@ -631,11 +639,14 @@ impl Animator {
             });
         }
         let frame = self.frame();
-        let entering = self.enter.contains(&node.id);
+        // (cross-surface-morph) A node comes on screen when it enters, or
+        // when the surface holding it opens: design.md's media pill grows
+        // into the media panel as the panel opens.
+        let entering = self.enter.contains(&node.id) || self.opened.contains(&root);
         let (v, moving, started) =
             self.shared
                 .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
-        if started == Start::Missed {
+        if started == Start::Missed && self.morph_took_enter.remove(&node.id) {
             // (shared-morph-on) A preview took its enter pose for a morph
             // the painted frame cannot start: it plays the pose after all.
             self.enter.insert(node.id);
@@ -646,7 +657,11 @@ impl Animator {
             // values, as [`Animator::paint`] shows an entering node's,
             // never springing from unset under the flight (its `x: 101`
             // from 0, moving where the morph starts: morph-cross-surface).
-            self.enter.remove(&node.id);
+            if self.enter.remove(&node.id) && !frame.commit {
+                self.morph_took_enter.insert(node.id);
+            } else if frame.commit {
+                self.morph_took_enter.remove(&node.id);
+            }
             self.staggers.forget(node.id);
             if let Some(na) = self.nodes.get_mut(&node.id) {
                 na.touched.clear();
@@ -943,6 +958,8 @@ impl Animator {
         self.entered.remove(&id);
         self.enter.remove(&id);
         self.enter_size.remove(&id);
+        self.opened.remove(&id);
+        self.morph_took_enter.remove(&id);
         self.text_holds.remove(&id);
         self.line_holds.remove(&id);
         self.exits.remove(&id);
@@ -971,6 +988,7 @@ impl Animator {
         // A morph a preview saw start whose painted frame did not draw
         // the node: it shows at rest, as an unseen enter pose does.
         self.shared.drop_pending(&mut under);
+        self.morph_took_enter.retain(|id| !under(*id));
         // (roll-preview) Rolls and shapes a preview left to the painted
         // frame that it did not draw (a frame drawing them clears its
         // own): remembered when one draws them.
@@ -1036,6 +1054,26 @@ impl Animator {
     /// from its pose, as the first time; its nodes show at rest
     /// otherwise, and nothing left over keeps its root busy. Size springs
     /// belong to layout and stay.
+    /// (cross-surface-morph) The surface of `root` opens: its next
+    /// painted frame shows what it holds for the first time.
+    pub(crate) fn surface_opened(&mut self, root: NodeId) {
+        self.opened.insert(root);
+    }
+
+    /// (cross-surface-morph) The surface of `root` opened and has not
+    /// painted since: its first frame flattens what it holds at that
+    /// frame's time (a morph starts there), never reusing a scene a
+    /// time-zero preview flattened.
+    pub(crate) fn opening(&self, root: NodeId) -> bool {
+        self.opened.contains(&root)
+    }
+
+    /// (cross-surface-morph) A frame of the surface of `root` was
+    /// painted: what it holds is on screen.
+    pub(crate) fn surface_shown(&mut self, root: NodeId) {
+        self.opened.remove(&root);
+    }
+
     pub fn surface_closed(&mut self, mut under: impl FnMut(NodeId) -> bool) {
         drop_paint_state(&mut self.nodes, &mut under);
         self.jellies.retain(|id| !under(id));

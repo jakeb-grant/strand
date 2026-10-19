@@ -2638,6 +2638,108 @@ fn a_shared_morph_crosses_surfaces_on_one_output() {
     }
 }
 
+/// (cross-surface-morph) design.md's "the bar's media pill becomes the
+/// media panel", written as a shell writes it: a panel written closed
+/// (`open: false`) holds a node named like the bar's pill, and opens.
+/// Its first frame draws that node over the pill (moved by the two
+/// surfaces' origins), springing to its own box; closed and opened again
+/// it morphs from the pill again, though its own box is the name's
+/// latest (the bar at rest draws no frame meanwhile); with the pill on
+/// another output, or under
+/// `reduced_motion`, it shows in place. Before, only a node created
+/// while its surface was shown morphed, so the panel's node, mounted at
+/// boot, never did.
+#[test]
+fn a_panel_opening_morphs_its_named_node_from_the_pill() {
+    use std::time::Duration;
+    let at = |x: f32, y: f32| strand_scene::LogicalPoint::new(x, y);
+    for (case, output, reduced) in [
+        ("same output", "DP-1", false),
+        ("another output", "DP-2", false),
+        ("reduced motion", "DP-1", true),
+    ] {
+        let mut b = Builder::default();
+        let bar = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let mut p = at_xy(10.0, 20.0, 20.0, 20.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#fab387")),
+            (Prop::Morph, text("m")),
+        ]);
+        b.node(NodeKind::Box, Some(bar), p);
+        let panel = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Bg, color("#1e1e2e")),
+                (Prop::Width, num(100.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::Open, PropValue::Bool(false)),
+            ],
+        );
+        let mut c = at_xy(40.0, 20.0, 40.0, 30.0);
+        c.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#fab387")),
+            (Prop::Morph, text("m")),
+        ]);
+        b.node(NodeKind::Box, Some(panel), c);
+        let mut r = renderer();
+        r.set_reduced_motion(reduced);
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, bar);
+        r.set_surface_origin(S, Some((Some("DP-1".into()), at(0.0, 0.0))));
+        let mut buf = Buffer::new(200, 60, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        let orange = buf.px(20, 30);
+        r.take_surface_changes();
+        let mut t = 1000;
+        for round in ["opening", "opening again"] {
+            let mut d = SceneDiff::new();
+            d.set(panel, Prop::Open, PropValue::Bool(true));
+            assert!(r.apply(d).is_empty());
+            r.take_surface_changes();
+            // The panel lies 30 px below the bar's top.
+            r.attach_surface(S2, panel);
+            r.set_surface_origin(S2, Some((Some(output.into()), at(0.0, 30.0))));
+            let mut buf2 = Buffer::new(100, 60, Scale::ONE);
+            t += 16;
+            buf2.paint_at(&mut r, S2, 0, Duration::from_millis(t));
+            if output == "DP-1" && !reduced {
+                // The pill's box (10..30 × 20..40 on the bar) is 10..30 ×
+                // -10..10 on the panel: its lower half shows.
+                assert_eq!(
+                    buf2.px(20, 5),
+                    orange,
+                    "{case}, {round}: starts at the pill"
+                );
+                assert_ne!(
+                    buf2.px(70, 40),
+                    orange,
+                    "{case}, {round}: not at its box yet"
+                );
+                assert!(r.wants_frame(S2), "{case}, {round}: it springs");
+            } else {
+                assert_ne!(buf2.px(20, 5), orange, "{case}, {round}: in place");
+                assert_eq!(buf2.px(70, 40), orange, "{case}, {round}: at its box");
+            }
+            while r.wants_frame(S2) {
+                t += 16;
+                buf2.paint_at(&mut r, S2, 1, Duration::from_millis(t));
+                assert!(t < 10_000, "{case}, {round}: settles");
+            }
+            assert_eq!(buf2.px(60, 35), orange, "{case}, {round}: at its own box");
+            let mut d = SceneDiff::new();
+            d.set(panel, Prop::Open, PropValue::Bool(false));
+            assert!(r.apply(d).is_empty());
+            r.take_surface_changes();
+            r.detach_surface(S2);
+            // The bar rests: it paints nothing meanwhile.
+            t += 500;
+        }
+    }
+}
+
 /// Creates a `morph: "m"` box `id` under `parent` at `(x, y)`, `w × h`,
 /// with no `enter` pose (it shows at once unless it morphs).
 fn plain_morph_box(d: &mut SceneDiff, id: NodeId, parent: NodeId, rect: (f32, f32, f32, f32)) {

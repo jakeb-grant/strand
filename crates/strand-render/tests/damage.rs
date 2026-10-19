@@ -3043,3 +3043,112 @@ fn a_morphing_shape_repaints_every_pixel_it_paints() {
         missed.join("\n")
     );
 }
+
+/// (cross-surface-morph) A group marker's bounds (a meter's fill cut to
+/// its track, a text cut to its box) lie where its node's transform
+/// draws it, as its items' do: under a `scale` or `rotate` (a shared
+/// morph's flight scales a whole card so), the painter passed over a
+/// meter's fill whose change the damage held, because the clip around
+/// it kept its box's untransformed place. Every partial repaint equals
+/// the full one, at 1 and 1.5.
+#[test]
+fn a_transformed_groups_clip_repaints_where_it_is_drawn() {
+    use std::time::Duration;
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    for scale in [120, 180] {
+        let scale = Scale::new(scale).unwrap();
+        for turn in [
+            (Prop::Scale, num(0.5)),
+            (Prop::Rotate, PropValue::Angle(30.0)),
+        ] {
+            let what = format!("{scale:?} {:?}", turn.0);
+            let mut b = Builder::default();
+            let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+            let card = b.node(
+                NodeKind::Box,
+                Some(root),
+                vec![
+                    (Prop::X, num(20.0)),
+                    (Prop::Y, num(10.0)),
+                    (Prop::Width, num(200.0)),
+                    (Prop::Height, num(110.0)),
+                    (Prop::Place, kw("absolute")),
+                    (Prop::Bg, color("#313244")),
+                    turn.clone(),
+                ],
+            );
+            let meter = b.node(
+                NodeKind::Meter,
+                Some(card),
+                vec![
+                    (Prop::X, num(10.0)),
+                    (Prop::Y, num(90.0)),
+                    (Prop::Width, num(180.0)),
+                    (Prop::Height, num(6.0)),
+                    (Prop::Place, kw("absolute")),
+                    (Prop::Value, num(0.2)),
+                    (Prop::Color, color("#f5c2e7")),
+                ],
+            );
+            let title = b.node(
+                NodeKind::Text,
+                Some(card),
+                vec![
+                    (Prop::X, num(10.0)),
+                    (Prop::Y, num(60.0)),
+                    (Prop::Width, num(70.0)),
+                    (Prop::Place, kw("absolute")),
+                    (Prop::Ellipsis, kw("end")),
+                    (Prop::Font, PropValue::Font(font(13.0))),
+                    (Prop::Color, color("#cdd6f4")),
+                    (Prop::Text, text("Night Drive, a long title")),
+                ],
+            );
+            let size = scale.physical_size(LogicalSize::new(240.0, 130.0));
+            let diff = b.diff;
+            let mut pair = [0u8, 1].map(|_| {
+                let mut r = renderer();
+                assert!(r.apply(diff.clone()).is_empty());
+                r.attach_surface(BAR, r.tree().roots()[0]);
+                let mut buf = Buffer::new(size.w, size.h, scale);
+                buf.paint_at(&mut r, BAR, 0, Duration::from_millis(1000));
+                (r, buf)
+            });
+            let mut t = 1000;
+            for (i, (p, v, id)) in [
+                (Prop::Value, num(0.7), meter),
+                (Prop::Text, text("Morning Light, another long one"), title),
+                (Prop::Value, num(0.1), meter),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (r, _) in pair.iter_mut() {
+                    let mut d = SceneDiff::new();
+                    d.set(id, p, v.clone());
+                    assert!(r.apply(d).is_empty());
+                }
+                let mut frames = 0;
+                loop {
+                    t += 16;
+                    frames += 1;
+                    assert!(frames < 200, "{what} step {i}: settles");
+                    for (age, (r, buf)) in pair.iter_mut().enumerate() {
+                        buf.paint_at(r, BAR, 1 - age as u8, Duration::from_millis(t));
+                    }
+                    let n = pair[0]
+                        .1
+                        .pixels
+                        .chunks_exact(4)
+                        .zip(pair[1].1.pixels.chunks_exact(4))
+                        .filter(|(x, y)| x != y)
+                        .count();
+                    assert_eq!(n, 0, "{what} step {i} at {t} ms: partial differs from full");
+                    if !pair[0].0.wants_frame(BAR) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}

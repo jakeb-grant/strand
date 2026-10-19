@@ -1313,7 +1313,9 @@ decisions.md clip-blink) and shrink-keeps-edge (`bystander`, `expect`;
 decisions.md bottom-osd-shrink), and unhold-flip (the same revert as
 shrink-keeps-edge's, on a held centred launcher letting go: `envelope`,
 `contain`; decisions.md integration-r5), and round 6's damage-fraction
-(`redraw`, decisions.md damage-fraction): 13 in all. In a detached worktree of HEAD, each scenario
+(`redraw`, decisions.md damage-fraction) and, on one regression,
+cross-surface-morph (`expect`) and morph-group-bounds (`redraw`;
+decisions.md cross-surface-morph): 15 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

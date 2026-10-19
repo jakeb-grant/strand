@@ -379,6 +379,10 @@ impl Renderer {
                 if reported == Some(false) && !reduced {
                     if !self.shown(Some(id)) {
                         self.opening.insert(id);
+                        // (cross-surface-morph) What it holds comes on
+                        // screen with its first frame: a `morph` name
+                        // there starts from its partner's box.
+                        self.anim.surface_opened(id);
                     }
                     for n in &self.born {
                         if self.tree.root_of(*n) == Some(id)

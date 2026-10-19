@@ -1,0 +1,70 @@
+id     = "cross-surface-morph"
+about  = """A finding of round 6's held-out set F (docs/decisions.md cross-surface-morph):
+design.md's "the bar's media pill becomes the media panel", written as a shell
+writes it: a bar pill and the card of a panel written `open: shown` share
+`morph: "media"`. Only a node created on a shown surface entered, so the card,
+mounted at boot and shown when its panel opened, never morphed: it popped in at
+its box. Now a surface that opens brings what it holds on screen as an entering
+node does, and its card grows from the pill (`expect moves`, from the first
+frame on: eval/mutants/cross-surface-morph.patch reverts it). Closed and opened
+again with the bar at rest, it grows from the pill again, not from where the
+card itself was last drawn. Its meter and cut title are drawn under the
+morph's scale, where a clip around them kept its untransformed place and a
+partial frame lost the meter's fill (`redraw`:
+eval/mutants/morph-group-bounds.patch reverts that)."""
+screen = { width = 480, height = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state shown = false
+
+bar Top {
+  height: 32; bg: #181825; color: #cdd6f4
+  row { pad: 0, 10; align: center
+    box { grow: 1 }
+    row { id: pill; gap: 6; pad: 2, 10; radius: full; bg: #313244; align: center; morph: "media"
+      box { size: 12; radius: 3; bg: #f5c2e7 }
+      text "Night Drive"
+    }
+    box { grow: 1 }
+  }
+}
+
+panel Media {
+  layer: top; anchor: top; margin: 8, 0, 0, 0; keyboard: none
+  open: shown
+  col { id: card; width: 260; pad: 14; gap: 10; radius: 18; bg: #313244; morph: "media"
+        color: #cdd6f4
+    row { gap: 12; align: center
+      box { size: 48; radius: 10; bg: #f5c2e7 }
+      col { gap: 2; width: 120
+        text "Night Drive, the long version" { id: title; weight: 600; ellipsis: end }
+        text "Synthwave FM" { color: #a6adc8 }
+      }
+    }
+    meter 0.35 { id: progress; height: 4; color: #f5c2e7; track: #ffffff26 }
+  }
+}
+
+=== steps
+rest
+mark open
+set shown true
+intend #card enters
+rest
+expect moves #card from +1
+expect still #pill
+mark close
+set shown false
+intend #card exits
+rest
+mark reopen
+set shown true
+intend #card enters
+rest
+expect moves #card from +1
+expect still #pill
+mark close-again
+set shown false
+intend #card exits
+rest

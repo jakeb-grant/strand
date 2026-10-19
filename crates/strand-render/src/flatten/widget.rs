@@ -167,7 +167,7 @@ impl Flattener<'_> {
                 }
                 let r = kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1);
                 let clip = self.marker(Item::PushClip(w.box_path.clone()));
-                self.out.items[clip].bounds = phys;
+                self.group_bounds(clip, phys);
                 self.push(
                     Item::Fill {
                         shape: FillShape::Path(shape_path(r, w.radii, false)),

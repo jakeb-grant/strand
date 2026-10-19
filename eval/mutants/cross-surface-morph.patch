@@ -1,0 +1,323 @@
+diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
+index e51bc67e..c6262e07 100644
+--- a/crates/strand-render/src/anim/mod.rs
++++ b/crates/strand-render/src/anim/mod.rs
+@@ -209,14 +209,6 @@ pub(crate) struct Animator {
+     /// and laid out (sizes).
+     enter: HashSet<NodeId>,
+     enter_size: HashSet<NodeId>,
+-    /// (cross-surface-morph) Surface roots opening: their next painted
+-    /// frame is the first that shows what they hold, and a node with a
+-    /// `morph` name in it comes on screen there as an entering node
+-    /// does, so it starts its shared morph ([`Animator::shared_morph`]).
+-    opened: HashSet<NodeId>,
+-    /// Nodes a shared morph took out of `enter` in a preview: a painted
+-    /// frame that misses the morph gives them their enter pose back.
+-    morph_took_enter: HashSet<NodeId>,
+     exits: HashMap<NodeId, ExitKind>,
+     /// When each exit started (wall clock): an exit no frame samples
+     /// (its output asleep) is ended by `Renderer` after a while.
+@@ -639,14 +631,11 @@ impl Animator {
+             });
+         }
+         let frame = self.frame();
+-        // (cross-surface-morph) A node comes on screen when it enters, or
+-        // when the surface holding it opens: design.md's media pill grows
+-        // into the media panel as the panel opens.
+-        let entering = self.enter.contains(&node.id) || self.opened.contains(&root);
++        let entering = self.enter.contains(&node.id);
+         let (v, moving, started) =
+             self.shared
+                 .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
+-        if started == Start::Missed && self.morph_took_enter.remove(&node.id) {
++        if started == Start::Missed {
+             // (shared-morph-on) A preview took its enter pose for a morph
+             // the painted frame cannot start: it plays the pose after all.
+             self.enter.insert(node.id);
+@@ -657,11 +646,7 @@ impl Animator {
+             // values, as [`Animator::paint`] shows an entering node's,
+             // never springing from unset under the flight (its `x: 101`
+             // from 0, moving where the morph starts: morph-cross-surface).
+-            if self.enter.remove(&node.id) && !frame.commit {
+-                self.morph_took_enter.insert(node.id);
+-            } else if frame.commit {
+-                self.morph_took_enter.remove(&node.id);
+-            }
++            self.enter.remove(&node.id);
+             self.staggers.forget(node.id);
+             if let Some(na) = self.nodes.get_mut(&node.id) {
+                 na.touched.clear();
+@@ -958,8 +943,6 @@ impl Animator {
+         self.entered.remove(&id);
+         self.enter.remove(&id);
+         self.enter_size.remove(&id);
+-        self.opened.remove(&id);
+-        self.morph_took_enter.remove(&id);
+         self.text_holds.remove(&id);
+         self.line_holds.remove(&id);
+         self.exits.remove(&id);
+@@ -988,7 +971,6 @@ impl Animator {
+         // A morph a preview saw start whose painted frame did not draw
+         // the node: it shows at rest, as an unseen enter pose does.
+         self.shared.drop_pending(&mut under);
+-        self.morph_took_enter.retain(|id| !under(*id));
+         // (roll-preview) Rolls and shapes a preview left to the painted
+         // frame that it did not draw (a frame drawing them clears its
+         // own): remembered when one draws them.
+@@ -1054,26 +1036,6 @@ impl Animator {
+     /// from its pose, as the first time; its nodes show at rest
+     /// otherwise, and nothing left over keeps its root busy. Size springs
+     /// belong to layout and stay.
+-    /// (cross-surface-morph) The surface of `root` opens: its next
+-    /// painted frame shows what it holds for the first time.
+-    pub(crate) fn surface_opened(&mut self, root: NodeId) {
+-        self.opened.insert(root);
+-    }
+-
+-    /// (cross-surface-morph) The surface of `root` opened and has not
+-    /// painted since: its first frame flattens what it holds at that
+-    /// frame's time (a morph starts there), never reusing a scene a
+-    /// time-zero preview flattened.
+-    pub(crate) fn opening(&self, root: NodeId) -> bool {
+-        self.opened.contains(&root)
+-    }
+-
+-    /// (cross-surface-morph) A frame of the surface of `root` was
+-    /// painted: what it holds is on screen.
+-    pub(crate) fn surface_shown(&mut self, root: NodeId) {
+-        self.opened.remove(&root);
+-    }
+-
+     pub fn surface_closed(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+         drop_paint_state(&mut self.nodes, &mut under);
+         self.jellies.retain(|id| !under(id));
+diff --git a/crates/strand-render/src/anim/morph.rs b/crates/strand-render/src/anim/morph.rs
+index 3d8a5012..7d934763 100644
+--- a/crates/strand-render/src/anim/morph.rs
++++ b/crates/strand-render/src/anim/morph.rs
+@@ -109,9 +109,7 @@ impl Seen {
+ /// Where each `morph` name was last drawn, and the morphs in flight.
+ #[derive(Debug, Default)]
+ pub(crate) struct SharedMorphs {
+-    /// Per name, where each surface last drew it (one box per surface
+-    /// root: the last of the name in its paint order).
+-    seen: HashMap<String, Vec<Seen>>,
++    seen: HashMap<String, Seen>,
+     /// The latest painted frame's time per surface root: a box off
+     /// screen for longer than [`STALE`] by its own surface's clock can
+     /// start no morph and is dropped ([`SharedMorphs::prune`]).
+@@ -151,23 +149,12 @@ impl SharedMorphs {
+             started = Start::Missed;
+         }
+         let entering = pending || entering;
+-        // (cross-surface-morph) Where another node of the name is: on
+-        // screen before off it, and the latest drawn of either. The bar's
+-        // pill stays on screen while the panel it grew into closes, so
+-        // the panel opened again grows from the pill, not from where its
+-        // own card was last drawn.
+-        let from = || {
+-            self.seen
+-                .get(key)?
+-                .iter()
+-                .filter(|s| s.id != id && (s.shown || frame.at.saturating_sub(s.at) <= STALE))
+-                .filter_map(|s| Some(((s.shown, s.at), s.rect_on(root, origins)?)))
+-                .max_by_key(|(order, _)| *order)
+-                .map(|(_, r)| r)
+-        };
+         if entering
+             && !frame.snap
+-            && let Some(old) = from()
++            && let Some(seen) = self.seen.get(key)
++            && seen.id != id
++            && (seen.shown || frame.at.saturating_sub(seen.at) <= STALE)
++            && let Some(old) = seen.rect_on(root, origins)
+             && rect.w > 0.0
+             && rect.h > 0.0
+             && old.w > 0.0
+@@ -224,25 +211,23 @@ impl SharedMorphs {
+     pub(crate) fn painted(&mut self, root: NodeId, at: Duration, drawn: &[MorphBox]) {
+         let latest = self.latest.entry(root).or_default();
+         *latest = (*latest).max(at);
+-        for s in self.seen.values_mut().flatten() {
++        for s in self.seen.values_mut() {
+             if s.root == root && s.shown {
+                 s.shown = false;
+                 s.at = s.at.max(at);
+             }
+         }
+         for b in drawn {
+-            let seen = Seen {
+-                id: b.id,
+-                root,
+-                rect: b.rect,
+-                at,
+-                shown: true,
+-            };
+-            let boxes = self.seen.entry(b.key.clone()).or_default();
+-            match boxes.iter_mut().find(|s| s.root == root) {
+-                Some(s) => *s = seen,
+-                None => boxes.push(seen),
+-            }
++            self.seen.insert(
++                b.key.clone(),
++                Seen {
++                    id: b.id,
++                    root,
++                    rect: b.rect,
++                    at,
++                    shown: true,
++                },
++            );
+         }
+         // Computed names (`morph: "note-" + n.id`) come and go: drop the
+         // stale ones whenever the map has doubled since the last prune,
+@@ -255,7 +240,7 @@ impl SharedMorphs {
+     /// The surface of `root` is gone (no surface shows it): its boxes
+     /// left the screen with its last painted frame.
+     pub(crate) fn hidden(&mut self, root: NodeId) {
+-        for s in self.seen.values_mut().flatten() {
++        for s in self.seen.values_mut() {
+             if s.root == root {
+                 s.shown = false;
+             }
+@@ -301,9 +286,7 @@ impl SharedMorphs {
+         self.pending.retain(|id| keep(*id));
+         self.latest.retain(|root, _| keep(*root));
+         let latest = &self.latest;
+-        for boxes in self.seen.values_mut() {
+-            boxes.retain(|s| latest.contains_key(&s.root));
+-        }
++        self.seen.retain(|_, s| latest.contains_key(&s.root));
+         self.prune();
+     }
+ 
+@@ -311,14 +294,11 @@ impl SharedMorphs {
+     /// than [`STALE`] by their surface's latest frame.
+     fn prune(&mut self) {
+         let latest = &self.latest;
+-        for boxes in self.seen.values_mut() {
+-            boxes.retain(|s| {
+-                latest
+-                    .get(&s.root)
+-                    .is_some_and(|t| s.shown || t.saturating_sub(s.at) <= STALE)
+-            });
+-        }
+-        self.seen.retain(|_, boxes| !boxes.is_empty());
++        self.seen.retain(|_, s| {
++            latest
++                .get(&s.root)
++                .is_some_and(|t| s.shown || t.saturating_sub(s.at) <= STALE)
++        });
+         self.kept = self.seen.len();
+     }
+ }
+@@ -402,70 +382,6 @@ mod tests {
+         assert!(starts(&mut m, root, NodeId::new(21, 0), "m", 1032));
+     }
+ 
+-    /// (cross-surface-morph) The pill stays on screen on the bar while
+-    /// the panel its card grew into closes: the card is the name's
+-    /// latest box, but off screen, so the card entering again (the panel
+-    /// opened again) starts from the pill, on screen, and the pill's own
+-    /// surface keeps its box whatever the panel's frames draw.
+-    #[test]
+-    fn a_box_on_screen_is_taken_before_one_that_left() {
+-        let (bar, panel) = (NodeId::new(1, 0), NodeId::new(2, 0));
+-        let (pill, card) = (NodeId::new(10, 0), NodeId::new(20, 0));
+-        // Both surfaces at the output's origin.
+-        let origins: Origins = [bar, panel]
+-            .into_iter()
+-            .map(|r| {
+-                let at = strand_scene::LogicalPoint::new(0.0, 0.0);
+-                (
+-                    r,
+-                    SurfaceOrigin {
+-                        output: "DP-1".into(),
+-                        at,
+-                    },
+-                )
+-            })
+-            .collect();
+-        let starts = |m: &mut SharedMorphs, id: NodeId, ms: u64| {
+-            let r = LogicalRect::new(10.0, 0.0, 10.0, 10.0);
+-            let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
+-            let (_, _, started) = m.morph(id, "m", (panel, &origins), r, true, curve, frame(ms));
+-            started == Start::Now
+-        };
+-        let pill_box = MorphBox {
+-            key: "m".into(),
+-            id: pill,
+-            rect: LogicalRect::new(0.0, 0.0, 10.0, 10.0),
+-        };
+-        let mut m = SharedMorphs::default();
+-        m.painted(
+-            bar,
+-            Duration::from_millis(1000),
+-            std::slice::from_ref(&pill_box),
+-        );
+-        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
+-        m.hidden(panel);
+-        assert_eq!(m.seen.get("m").map_or(0, Vec::len), 2, "a box per surface");
+-        // Long after the card left: the pill, on screen, starts it.
+-        assert!(starts(&mut m, card, 60_000), "from the pill");
+-        // The pill gone too: the latest off screen, within a second.
+-        let mut m = SharedMorphs::default();
+-        m.painted(
+-            bar,
+-            Duration::from_millis(1000),
+-            std::slice::from_ref(&pill_box),
+-        );
+-        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
+-        m.hidden(bar);
+-        m.hidden(panel);
+-        assert!(starts(&mut m, NodeId::new(21, 0), 1500));
+-        assert!(!starts(&mut m, NodeId::new(22, 0), 2100), "stale");
+-        // Its own box is no place to start from.
+-        let mut m = SharedMorphs::default();
+-        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
+-        m.hidden(panel);
+-        assert!(!starts(&mut m, card, 1500), "not from itself");
+-    }
+-
+     /// (shared-morph-on) A box drawn by its surface's latest painted
+     /// frame starts a morph however long ago that frame was; once a
+     /// painted frame no longer draws it, or its surface goes, for a
+diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
+index a7d9aeaf..9eb43283 100644
+--- a/crates/strand-render/src/renderer/frame.rs
++++ b/crates/strand-render/src/renderer/frame.rs
+@@ -457,9 +457,8 @@ impl Renderer {
+         // A scene flattened by `update` is drawn at rest: not while
+         // anything moves, nor while a motion waits to start (an `enter`
+         // pose a time-zero preview could not play: a surface just
+-        // attached, a node just created, a surface just opened whose
+-        // `morph` names may start: cross-surface-morph).
+-        let pending = self.anim.busy(&self.tree, root) || self.anim.opening(root) || swapping;
++        // attached, a node just created).
++        let pending = self.anim.busy(&self.tree, root) || swapping;
+         // A node reading time repaints every frame of its clock.
+         let ticking = self.clocks.running(surface);
+         let cached = if s.animating || pending || ticking {
+@@ -492,7 +491,6 @@ impl Renderer {
+         // scene flattened for this frame or reused: a node at rest on a
+         // surface that only reuses scenes is still a morph's start.
+         self.anim.shared_painted(root, target.time, &f.morphs);
+-        self.anim.surface_shown(root);
+         self.paint_times = PaintTimes {
+             flatten: flatten_start.elapsed(),
+             text_wait: self.estimate_waited.saturating_sub(waited),
+diff --git a/crates/strand-render/src/renderer/specs.rs b/crates/strand-render/src/renderer/specs.rs
+index 8b61850f..9ef12f57 100644
+--- a/crates/strand-render/src/renderer/specs.rs
++++ b/crates/strand-render/src/renderer/specs.rs
+@@ -379,10 +379,6 @@ impl Renderer {
+                 if reported == Some(false) && !reduced {
+                     if !self.shown(Some(id)) {
+                         self.opening.insert(id);
+-                        // (cross-surface-morph) What it holds comes on
+-                        // screen with its first frame: a `morph` name
+-                        // there starts from its partner's box.
+-                        self.anim.surface_opened(id);
+                     }
+                     for n in &self.born {
+                         if self.tree.root_of(*n) == Some(id)

@@ -75,3 +75,12 @@ unhold-flip.patch       regressions/unhold-flip.scn       envelope contain
 # morphing shape's outline, passing outside its box by a fraction of a pixel,
 # leaves its antialiased fringe out of the damage.
 damage-fraction.patch   regressions/damage-fraction.scn   redraw
+# cross-surface-morph.patch: cross-surface-morph's fix reverted (decisions.md
+# cross-surface-morph): a surface that opens brings nothing on screen as
+# entering, and a name keeps one box, so the panel's card shows at its box
+# at both openings.
+cross-surface-morph.patch regressions/cross-surface-morph.scn expect
+# morph-group-bounds.patch: cross-surface-morph's group bounds reverted: a
+# meter's clip keeps its untransformed place under the morph's scale, so a
+# partial frame loses the fill.
+morph-group-bounds.patch regressions/cross-surface-morph.scn redraw

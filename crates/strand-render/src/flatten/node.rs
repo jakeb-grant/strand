@@ -82,6 +82,15 @@ impl<'a> Flattener<'a> {
         self.out.clocks.extend(clock);
     }
 
+    /// (cross-surface-morph) Sets the bounds of the group marker `i` to
+    /// `local`, in the node's own space as its items' are given to
+    /// [`Flattener::push`]: drawn under the node's transform, the group
+    /// lies where `push` puts its items, so the painter does not pass it
+    /// over where the damage holds what it draws.
+    pub(super) fn group_bounds(&mut self, i: usize, local: Rect) {
+        self.out.items[i].bounds = map_rect(self.xform, local);
+    }
+
     /// Pushes a group marker; returns its index so a push marker's bounds
     /// can be set to its group's once known.
     pub(super) fn marker(&mut self, item: Item) -> usize {
@@ -1314,7 +1323,7 @@ impl<'a> Flattener<'a> {
             let clip = (clip_text && !bounds.is_empty())
                 .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
             if let Some(i) = clip {
-                self.out.items[i].bounds = bounds;
+                self.group_bounds(i, bounds);
             }
             if !bounds.is_empty() {
                 // (M4) `roll: true`: changed letters roll

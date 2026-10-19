@@ -1,0 +1,64 @@
+diff --git a/crates/strand-render/src/flatten/image.rs b/crates/strand-render/src/flatten/image.rs
+index 20169526..87898774 100644
+--- a/crates/strand-render/src/flatten/image.rs
++++ b/crates/strand-render/src/flatten/image.rs
+@@ -107,7 +107,7 @@ impl Flattener<'_> {
+         }
+         let clip = (!radii_zero(r)).then(|| self.marker(Item::PushClip(box_path.clone())));
+         if let Some(i) = clip {
+-            self.group_bounds(i, phys);
++            self.out.items[i].bounds = phys;
+         }
+         let rect = kurbo::Rect::new(
+             frame.x0,
+@@ -141,7 +141,7 @@ impl Flattener<'_> {
+             });
+             draw(self, d, sig);
+             if let Some((i, pop)) = mask {
+-                self.group_bounds(i, phys);
++                self.out.items[i].bounds = phys;
+                 self.marker(pop);
+             }
+         }
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+index fac0ddf9..759dfb36 100644
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -82,15 +82,6 @@ impl<'a> Flattener<'a> {
+         self.out.clocks.extend(clock);
+     }
+ 
+-    /// (cross-surface-morph) Sets the bounds of the group marker `i` to
+-    /// `local`, in the node's own space as its items' are given to
+-    /// [`Flattener::push`]: drawn under the node's transform, the group
+-    /// lies where `push` puts its items, so the painter does not pass it
+-    /// over where the damage holds what it draws.
+-    pub(super) fn group_bounds(&mut self, i: usize, local: Rect) {
+-        self.out.items[i].bounds = map_rect(self.xform, local);
+-    }
+-
+     /// Pushes a group marker; returns its index so a push marker's bounds
+     /// can be set to its group's once known.
+     pub(super) fn marker(&mut self, item: Item) -> usize {
+@@ -1317,7 +1308,7 @@ impl<'a> Flattener<'a> {
+             let clip = (clip_text && !bounds.is_empty())
+                 .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
+             if let Some(i) = clip {
+-                self.group_bounds(i, bounds);
++                self.out.items[i].bounds = bounds;
+             }
+             if !bounds.is_empty() {
+                 // (M4) `roll: true`: changed letters roll
+diff --git a/crates/strand-render/src/flatten/widget.rs b/crates/strand-render/src/flatten/widget.rs
+index 2adcfefe..5f71558c 100644
+--- a/crates/strand-render/src/flatten/widget.rs
++++ b/crates/strand-render/src/flatten/widget.rs
+@@ -167,7 +167,7 @@ impl Flattener<'_> {
+                 }
+                 let r = kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1);
+                 let clip = self.marker(Item::PushClip(w.box_path.clone()));
+-                self.group_bounds(clip, phys);
++                self.out.items[clip].bounds = phys;
+                 self.push(
+                     Item::Fill {
+                         shape: FillShape::Path(shape_path(r, w.radii, false)),
