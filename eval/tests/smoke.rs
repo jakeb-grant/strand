@@ -1100,3 +1100,36 @@ fn the_trace_holds_declared_placements_insets_and_cut_lines() {
         );
     }
 }
+
+/// (builtin-shadow) A step the shell refuses says the config's warnings:
+/// set G's g-bar-module-swap wrote `state module = network` beside
+/// `enum Module { network, battery }`, where the bare name reads the
+/// builtin service (spec.md 4.2), and its `set module battery` was
+/// refused far away with "`battery` is not a network" alone.
+#[test]
+fn a_refused_step_says_the_configs_warnings() {
+    let sc = scenario(
+        r##"id = "module-swap"
+screen = { width = 200, scale = 1.0 }
+
+=== bar.strand
+enum Module { network, battery }
+state module = network
+bar Top { height: 20; text module == network ? "wifi" : "bat" }
+
+=== steps
+rest
+set module battery
+rest
+"##,
+    );
+    let e = match run(&sc, &RunOptions::default()) {
+        Ok(_) => panic!("`set module battery` is refused"),
+        Err(e) => e.to_string(),
+    };
+    assert!(e.contains("is not a network"), "{e}");
+    assert!(
+        e.contains("bar.strand:2 (scenario line 6): `network` here reads the builtin service `network`, not the variant `Module.network`"),
+        "{e}"
+    );
+}

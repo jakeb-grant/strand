@@ -1990,6 +1990,73 @@ fn a_config_service_shadows_a_builtin_one() {
     );
 }
 
+/// (builtin-shadow) A bare name that a config enum's variant shares with
+/// a builtin service or value reads the builtin where nothing expects the
+/// enum, as it always has (spec.md 4.2 and 14), and says so: a warning at
+/// the use that names the variant and the enum's declaration. Where the
+/// enum is expected, and in a field read of the service, there is one
+/// reading and nothing to say (design.md's OSD: `kind = brightness`,
+/// `brightness.level`). Set G's g-bar-module-swap loaded without a word
+/// and failed far away at `set module battery`.
+#[test]
+fn a_variant_a_builtin_hides_is_named() {
+    let src = "enum Module { network, battery }\nstate module = network\n\
+               bar B { text module == network ? \"wifi\" : \"bat\" }\n";
+    let (out, map) = compile_files(&[("bar.strand", src.to_string())]);
+    let shown = render(&out.diagnostics, &map, Style::Plain);
+    let codes: Vec<_> = out.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, ["check::shadows_builtin"], "{shown}");
+    let d = &out.diagnostics[0];
+    assert!(!d.is_error(), "{shown}");
+    assert!(
+        d.message
+            .contains("reads the builtin service `network`, not the variant `Module.network`"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("bar.strand:2:"),
+        "the use's location: {shown}"
+    );
+    assert!(
+        shown.contains("`Module` has a variant `network`"),
+        "the enum's location: {shown}"
+    );
+    assert!(
+        d.help
+            .as_deref()
+            .is_some_and(|h| h.contains("`Module.network`")),
+        "{shown}"
+    );
+    // The qualified variant, an expected enum and a field read are quiet.
+    for quiet in [
+        "enum Module { network, battery }\nstate module = Module.network\n\
+         bar B { text module == network ? network.ssid ?? \"\" : \"bat\" }\n",
+        "enum Module { network, battery }\nstate module: Module = network\n\
+         bar B { box { on click { module = battery } } }\n",
+    ] {
+        let (out, map) = compile_files(&[("bar.strand", quiet.to_string())]);
+        assert!(
+            out.diagnostics.is_empty(),
+            "{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+    // A builtin value (the time signal) is named the same way.
+    let (out, map) = compile_files(&[(
+        "bar.strand",
+        "enum Axis { t, u }\nlet a = t\nbar B { text \"x\" }\n".to_string(),
+    )]);
+    let shown = render(&out.diagnostics, &map, Style::Plain);
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.code == "check::shadows_builtin"
+                && d.message
+                    .contains("builtin value `t`, not the variant `Axis.t`")),
+        "{shown}"
+    );
+}
+
 /// (M6) A literal list of whole numbers is `[int]` where it is looped
 /// over, so its items pass to an `int` parameter, as a bar's workspace
 /// buttons pass them to `workspaces.focus` (owner testing Gaps 12).

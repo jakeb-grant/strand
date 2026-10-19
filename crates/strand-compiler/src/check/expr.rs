@@ -379,18 +379,22 @@ impl<'a> Checker<'a> {
         found
     }
 
-    /// The only user enum that has variant `name` (`state kind = volume`).
-    /// Builtin enums' variants need a position that expects them.
-    fn unique_variant(&self, name: &str) -> Result<Option<(crate::ty::EnumId, u32)>, Vec<String>> {
-        let pool: Vec<_> = self
-            .types
+    /// The user enums that have variant `name`.
+    fn user_variants(&self, name: &str) -> Vec<(crate::ty::EnumId, u32)> {
+        self.types
             .enums
             .iter()
             .enumerate()
             .skip(self.schema.types.enums.len())
             .filter(|(_, e)| matches!(e.origin, crate::ty::Origin::User(..)))
             .filter_map(|(i, e)| e.variant(name).map(|v| (crate::ty::EnumId(i as u32), v)))
-            .collect();
+            .collect()
+    }
+
+    /// The only user enum that has variant `name` (`state kind = volume`).
+    /// Builtin enums' variants need a position that expects them.
+    fn unique_variant(&self, name: &str) -> Result<Option<(crate::ty::EnumId, u32)>, Vec<String>> {
+        let pool = self.user_variants(name);
         match pool.as_slice() {
             [] => Ok(None),
             [one] => Ok(Some(*one)),
@@ -497,6 +501,14 @@ impl<'a> Checker<'a> {
             Global::Ambiguous(_) => return hir::Expr::error(span),
             Global::Missing => {}
         }
+        // A builtin is read before the fallback below, so where nothing
+        // expects an enum a bare name a config's variant shares reads the
+        // builtin, as it always has (spec.md 14); say so, since the
+        // author meant the variant. `network.ssid` is the service's
+        // field: a variant has none.
+        if !field_base && expected.is_none_or(|t| t.is_lenient()) {
+            self.variant_hidden_by_builtin(name, span);
+        }
         if let Some(&rec) = self.schema.services.get(name) {
             self.add_ref(span, Target::Service(name.to_string()));
             return mk(ExprKind::Service(name.to_string()), Ty::Record(rec));
@@ -554,6 +566,54 @@ impl<'a> Checker<'a> {
         }
         self.unknown_name(id, expected, field_base);
         hir::Expr::error(span)
+    }
+
+    /// (builtin-shadow) A `check::shadows_builtin` warning where a bare
+    /// `name` reads the builtin service or value `name` although a config
+    /// enum declares a variant `name` (`state module = network` beside
+    /// `enum Module { network, battery }`), naming the enum: the builtin
+    /// keeps the reading it has had (spec.md 4.2 and 14), and the
+    /// silent choice is what the warning makes loud.
+    fn variant_hidden_by_builtin(&mut self, name: &str, span: Span) {
+        let what = if self.schema.services.contains_key(name) {
+            "service"
+        } else if self.schema.values.contains_key(name) {
+            "value"
+        } else {
+            return;
+        };
+        let enums: Vec<_> = self
+            .user_variants(name)
+            .into_iter()
+            .map(|(e, _)| {
+                let def = self.types.enum_(e);
+                (def.name.clone(), def.origin.clone())
+            })
+            .collect();
+        let Some((first, _)) = enums.first() else {
+            return;
+        };
+        let written = enums
+            .iter()
+            .map(|(e, _)| format!("`{e}.{name}`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let d = self.warning(
+            "check::shadows_builtin",
+            format!(
+                "`{name}` here reads the builtin {what} `{name}`, not the variant `{first}.{name}`"
+            ),
+            span,
+            format!("the builtin {what}"),
+        );
+        for (e, origin) in &enums {
+            if let crate::ty::Origin::User(file, decl) = origin {
+                d.add_secondary(*file, *decl, format!("`{e}` has a variant `{name}`"));
+            }
+        }
+        d.help = Some(format!(
+            "write {written} for the variant: a bare `{name}` reads the builtin {what} wherever no enum is expected"
+        ));
     }
 
     fn unknown_name(&mut self, id: &ast::Ident, expected: Option<&Ty>, field_base: bool) {

@@ -402,7 +402,7 @@ pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
     let schema = Schema::builtin_with(&services)
         .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
     let build = Build::compile_with(None, map.clone(), &schema)
-        .map_err(|d| Error::Config(diagnostics(sc, &map, &d)))?;
+        .map_err(|d| Error::Config(diagnostics(sc, &map, &d, true)))?;
     Ok((build.program, map))
 }
 
@@ -428,10 +428,25 @@ pub fn state_values(sc: &Scenario, paths: &[String]) -> Result<BTreeMap<String, 
     Ok(out)
 }
 
-/// The compile errors, one per line, at `file:line`.
-fn diagnostics(sc: &Scenario, map: &SourceMap, diags: &[strand_compiler::Diagnostic]) -> String {
+/// The compile errors (`errors`) or warnings, one per line, at
+/// `file:line`.
+fn diagnostics(
+    sc: &Scenario,
+    map: &SourceMap,
+    diags: &[strand_compiler::Diagnostic],
+    errors: bool,
+) -> String {
     let mut out = Vec::new();
-    for d in diags.iter().filter(|d| d.is_error()) {
+    // Warnings about meaning: the raw-colour lint is about style.
+    let wanted = |d: &&strand_compiler::Diagnostic| {
+        if errors {
+            d.is_error()
+        } else {
+            d.severity == strand_compiler::diagnostic::Severity::Warning
+                && d.code != "check::raw_color"
+        }
+    };
+    for d in diags.iter().filter(wanted) {
         let file = map.get(d.file());
         let name = file.map_or("?", |f| f.name.as_str());
         let line = match (file, d.primary_span()) {
@@ -591,6 +606,11 @@ struct Harness {
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
     notes: Vec<String>,
+    /// The config's load warnings but its style lint, one per line, at
+    /// `file:line`: a step the shell refuses says them, since a warning
+    /// (a bare name reading a builtin where a variant was meant) is often
+    /// why.
+    warnings: String,
     /// The GPU leg's device, once started, and whether surfaces are drawn
     /// by it now (the `backend` header or step).
     gpu: Option<Device>,
@@ -690,7 +710,8 @@ impl Harness {
         let schema = Schema::builtin_with(&services)
             .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
         let build = Build::compile_with(None, map.clone(), &schema)
-            .map_err(|d| Error::Config(diagnostics(&sc, &map, &d)))?;
+            .map_err(|d| Error::Config(diagnostics(&sc, &map, &d, true)))?;
+        let warnings = diagnostics(&sc, &map, &build.warnings, false);
         let rt = Runtime::new();
         let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
         let reduced = opts.reduced_motion || sc.reduce_motion;
@@ -791,6 +812,7 @@ impl Harness {
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
+            warnings,
             on_gpu: gpu.is_some(),
             gpu,
             gpu_attached: HashSet::new(),
@@ -1024,6 +1046,17 @@ impl Harness {
             line,
             msg,
         }
+    }
+
+    /// A step the shell refused, at `line`: its reason, and the config's
+    /// warnings, often the cause (a bare name that reads a builtin where
+    /// a variant was meant).
+    fn refused(&self, line: u32, msg: String) -> Error {
+        if self.warnings.is_empty() {
+            return self.err(line, msg);
+        }
+        let w = self.warnings.replace('\n', "\n  ");
+        self.err(line, format!("{msg}\n  the config's warnings:\n  {w}"))
     }
 
     /// The router's instant for presentation time `t`.
@@ -1408,7 +1441,7 @@ impl Harness {
             self.opens(step.text.clone(), step.line);
         }
         let line = step.line;
-        let refused = |h: &Self, m: String| h.err(line, m);
+        let refused = |h: &Self, m: String| h.refused(line, m);
         match &step.kind {
             StepKind::Set { path, value } => {
                 self.event(step);

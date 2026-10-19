@@ -217,7 +217,14 @@ guide's ladder test use this table as the list of constructs.
   reads (the default palette's `system` fields, the `screens` that
   mount bars, `system.reduced_motion`) still go to the builtin. So a
   config keeps loading when a release adds a builtin service of a name
-  it uses (section 14).
+  it uses (section 14). A config enum's variant does not hide a
+  builtin: where no enum is expected, a bare name that is both a
+  builtin service or value and a variant (`state module = network`
+  beside `enum Module { network, battery }`) reads the builtin, and
+  that use is a warning naming the variant and its enum, which
+  `Module.network` writes. Where the enum is expected (`module =
+  battery`, `kind == volume` with `kind` a `Kind`) the variant is read,
+  and a field read (`network.ssid`) is the service's.
 - **Some builtin names are taken.** Two declarations are load errors
   rather than shadows: a `type` or `enum` named like one of the
   language's own types (`bool`, `int`, `float`, `length`, `percent`,

@@ -159,7 +159,10 @@ advance the clock.
 
 **State and services**
 
-- `set <path> <value>`: a value as `strand set` reads it.
+- `set <path> <value>`: a value as `strand set` reads it. A step the
+  shell refuses fails the run with the config's load warnings (but the raw-colour lint) beside
+  its reason (a bare `network` that reads the builtin service where
+  `Module.network` was meant is one).
 - `toggle <path>`.
 - `emit <service.event> [args…]`.
 - `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
