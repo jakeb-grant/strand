@@ -327,13 +327,23 @@ fn other_axis(cx: &Cx) -> Vec<Finding> {
                     // on their way: a text not shaped yet takes no room
                     // (late-text-dip), so a box holding it is laid out
                     // without it on its other axis too (a badge 4 px
-                    // tall, its padding, before its label lands). Read
-                    // as `stagger` reads a wait for text: text held on
-                    // the frame, or a row under it not shaped.
-                    if !tl.frames[j].held_text.is_empty()
-                        || tl.screens[j].iter().any(|(k, q)| {
-                            matches!(q.text.as_deref(), Some("E" | "I"))
-                                && cx.lineage(k).contains(&key.as_str())
+                    // tall, its padding, before its label lands): a row
+                    // of the frame under it, shown or not, drawing an
+                    // estimate or a stand-in, or a text under it held on
+                    // the frame (one not drawn yet has no row: its node's
+                    // text is the held one). (integration-r6) Only the
+                    // node's own texts: a text held elsewhere on the
+                    // frame leaves its layout alone.
+                    let under = |k: &str| cx.lineage(k).contains(&key.as_str());
+                    let frame = tl.frames[j];
+                    if frame
+                        .n
+                        .iter()
+                        .any(|q| matches!(q.text.as_deref(), Some("E" | "I")) && under(&q.key))
+                        || frame.held_text.iter().any(|h| {
+                            trace.nodes.iter().any(|(k, m)| {
+                                m.text.as_deref() == Some(h.text.as_str()) && under(k)
+                            })
                         })
                     {
                         continue;

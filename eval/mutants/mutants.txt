@@ -89,3 +89,24 @@ morph-group-bounds.patch regressions/cross-surface-morph.scn redraw
 # shaped, from 0 to 0, so the label arrives at full width (`vanish` pop-in)
 # and the badge's padding shows for a frame (`flash`).
 unshaped-enter.patch    regressions/unshaped-enter.scn    vanish
+# eval-coverage-3's coverage mutants (decisions.md eval-coverage-3,
+# integration-r6), each a bug planted where that round's scenarios reach,
+# caught by a rule on the scenario named:
+# standin-stretched.patch: a stand-in decode drawn stretched to its box
+# (`placement` fit).
+# submenu-parent-geometry.patch: a submenu placed from its shadowed
+# parent's buffer, not its window geometry (`placement` anchor).
+# edge-overhang-swapped.patch: an edge surface's margins moved by the
+# opposite side's shadow overhang (`placement` margin).
+# nested-glide-y.patch: nested FLIP drops a container's vertical jump from
+# its children's (`envelope`, `teleport`).
+# last-fold-half.patch: a last row's fold gives up half its gap (`continuity`
+# fold on the parent).
+# text-width-rounded-scale.patch: width-limited text shaped for the rounded
+# scale (`ink` spill and fills at 1.25 and 1.75).
+standin-stretched.patch        curated/media-art-expand.scn      placement:#art
+submenu-parent-geometry.patch  curated/tray-submenu-shadow.scn   placement
+edge-overhang-swapped.patch    curated/osd-shadow-edges-1_5.scn  placement
+nested-glide-y.patch           curated/notif-groups-reorder.scn  envelope teleport
+last-fold-half.patch           curated/wifi-last-row-fold-2.scn  continuity:#nets
+text-width-rounded-scale.patch curated/bar-split-title-1_25.scn  ink:#ttl

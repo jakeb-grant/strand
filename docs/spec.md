@@ -283,7 +283,20 @@ filling the monitor, the keyboard always).
   Its `margin` on the side that faces its anchor is the gap between
   them: 6 px unless it is set, `0` touching, negative overlapping the
   anchor (`margin: -30, 0, 0` on a popup of a 30 px top bar covers the
-  bar). Its other sides are not used.
+  bar). Its other sides are not used. Along its anchor it is centred
+  on the element it is anchored to; a popup in a popup lies level with
+  its row's top instead, on the side its `anchor:` names (`left`,
+  `top_left` or `bottom_left` to the left of its popup, `top` above,
+  `bottom` below, to the right otherwise). Where that place does not
+  fit on the monitor the compositor may slide or flip it.
+- **A bar reserves its edge**: its thickness and its margin on that
+  edge, as layer-shell's exclusive zone. The compositor arranges the
+  surfaces that reserve one first, from the overlay layer down and in
+  the order they were made, each in what the zones before it leave;
+  every `bar`, `panel` and `osd` then lies its margin inside what is
+  left, from each edge it is anchored to (a bar its edge and both ends,
+  a `panel` or `osd` the edges its `anchor:` names, and a panel's
+  `attach:` edge).
 - **`attach: <edge>`** (a `popup` or `panel`) grows the surface out of
   that edge with concave fillets: its painted box's corners on that side
   are square, with a fillet of their radius beside each. The fillets

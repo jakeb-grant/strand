@@ -1,0 +1,14 @@
+diff --git a/crates/strand-render/src/image.rs b/crates/strand-render/src/image.rs
+index 545fa82b..b100a3f8 100644
+--- a/crates/strand-render/src/image.rs
++++ b/crates/strand-render/src/image.rs
+@@ -167,7 +167,8 @@ impl Decoded {
+             return (x, y, w, h);
+         }
+         let (kx, ky) = (dwn / dwo, dhn / dho);
+-        (x + oxn - oxo * kx, y + oyn - oyo * ky, pw * kx, ph * ky)
++        let _ = (oxn, oyn, oxo, oyo, kx, ky, pw, ph);
++        (x, y, w, h)
+     }
+ }
+ 

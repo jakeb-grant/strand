@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
+index a50008b1..d0d24d8f 100644
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -616,7 +616,7 @@ pub(super) fn glide_moved(
+                 }
+                 if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
+                     anim.glide(*c, [adj.0, adj.1], curve);
+-                    acc_c = (acc.0 + adj.0, acc.1 + adj.1);
++                    acc_c = (acc.0 + adj.0, acc.1);
+                     real_c = (real.0 + adj.0, real.1 + adj.1);
+                 }
+             }

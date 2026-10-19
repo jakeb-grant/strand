@@ -6411,3 +6411,69 @@ fn placement_fits_a_stand_in_by_cover_contain_and_fill() {
         assert_eq!(fit(&r), fails, "{fit_kw} {dest:?}: {}", show(&r, &t));
     }
 }
+
+/// (integration-r6) A badge `bd` entering on `enter { width: 0 }` over
+/// ticks 1..=3, at rest 19 tall on tick 4, laid only 4 tall on tick 1
+/// while the text "Muted" is held; the node whose text that is, `lb`,
+/// draws no row until it lands and hangs under `bd` when `own`, else
+/// under another box.
+fn badge_with_held_text(own: bool) -> RunTrace {
+    let mut t = shape(4, |k| {
+        let mut n = vec![row("other", [0.0, 0.0, 40.0, 20.0]).draws()];
+        if k >= 1 {
+            let h = if k == 1 { 4.0 } else { 19.0 };
+            let w = [0.0, 10.0, 30.0, 45.0, 50.0][k as usize];
+            let mut b = row("bd", [100.0, 0.0, w, h]).draws();
+            if k < 4 {
+                b = b.mot(Motions::ENTER | Motions::SIZE_SPRING);
+            }
+            n.push(b);
+        }
+        if k >= 2 {
+            n.push(row("lb", [106.0, 2.0, 37.0, 15.0]).draws());
+        }
+        n
+    });
+    for f in &mut t.frames {
+        if f.k == 1 {
+            f.held_text.push(strand_eval::trace::HeldRec {
+                key: 5,
+                text: "Muted".into(),
+                paints: 1,
+            });
+        }
+    }
+    let lb = t.nodes.get_mut("lb").unwrap();
+    lb.parent = Some(if own { "bd" } else { "other" }.into());
+    lb.text = Some("Muted".into());
+    t.nodes.get_mut("bd").unwrap().enter = Some(Pose {
+        opacity: None,
+        x: None,
+        y: None,
+        scale: None,
+        w: Some(0.0),
+        h: None,
+    });
+    t.seal();
+    t
+}
+
+/// (integration-r6) `other axis` leaves out a frame where a text under
+/// the node is held (it takes no room until it lands), and judges one
+/// where only a text elsewhere is: a held text leaves other layouts
+/// alone.
+#[test]
+fn other_axis_waits_only_for_the_nodes_own_held_text() {
+    let sc = scenario("");
+    let other = |r: &Report| {
+        r.failures(CheckId::Contain)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("bd") && f.msg.starts_with("other axis"))
+    };
+    let t = badge_with_held_text(true);
+    let r = check(&sc, &t);
+    assert!(!other(&r), "{}", show(&r, &t));
+    let t = badge_with_held_text(false);
+    let r = check(&sc, &t);
+    assert!(other(&r), "{}", show(&r, &t));
+}

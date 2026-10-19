@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/layout/style.rs b/crates/strand-render/src/layout/style.rs
+index 082a7a11..deed1435 100644
+--- a/crates/strand-render/src/layout/style.rs
++++ b/crates/strand-render/src/layout/style.rs
+@@ -427,7 +427,7 @@ impl<'a> Build<'a> {
+                 if i + 1 < count {
+                     folds[i + 1][0] -= gap - v;
+                 } else {
+-                    folds[i - 1][1] -= gap - v;
++                    folds[i - 1][1] -= (gap - v) / 2.0;
+                 }
+             }
+         }

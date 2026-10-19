@@ -669,7 +669,19 @@ pass, 16 n/a), held-out sets C to F's correct scenarios (58: only open
 product findings fail, D's launcher-filter and F's toasts at 144 Hz by
 `cut`, the growth the owner is deciding, and F's media card by
 `redraw`, a damage bug) and the owner's `qs` and `launcher` shells
-(decisions.md eval-rules-4). An `intend`
+(decisions.md eval-rules-4). At round 6's integration (integration-r6:
+eval-rules-4, eval-coverage-3's scenarios, image cells and parent
+`fold`, and damage-fraction, cross-surface-morph and unshaped-enter with
+`vanish`'s pop-in sizes and `other axis` on enters) the same sweep: the
+gate's 105 scenarios and the matrix's 992 cells at 60 and 144 Hz (972
+pass, 20 n/a) pass, `placement`'s `fit` judging 193 images in the gate
+and 2470 in the matrix; of sets C to F's 58 correct scenarios only D's
+launcher-filter and F's toasts at 144 Hz fail, by `cut` alone (the
+growth the owner is deciding), F's media card passing now that damage
+covers what a shape paints and F's interrupted card now that an
+authored turn is judged before transforms; the owner's `qs` and
+`launcher` shells pass every check (`island` does not load: its config
+puts `~` in a pose). An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
@@ -1321,7 +1333,15 @@ shrink-keeps-edge's, on a held centred launcher letting go: `envelope`,
 (`redraw`, decisions.md damage-fraction) and, on one regression,
 cross-surface-morph (`expect`) and morph-group-bounds (`redraw`;
 decisions.md cross-surface-morph), and unshaped-enter (`vanish`; decisions.md
-unshaped-enter): 16 in all. In a detached worktree of HEAD, each scenario
+unshaped-enter), and eval-coverage-3's six coverage mutants, a bug
+planted where that round's curated scenarios reach, each caught by a rule
+on its scenario: standin-stretched (`placement` fit, media-art-expand),
+submenu-parent-geometry (`placement` anchor, tray-submenu-shadow),
+edge-overhang-swapped (`placement` margin, osd-shadow-edges-1_5),
+nested-glide-y (`envelope`, `teleport`, notif-groups-reorder),
+last-fold-half (`continuity` fold, wifi-last-row-fold-2) and
+text-width-rounded-scale (`ink`, bar-split-title-1_25; decisions.md
+integration-r6): 22 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
@@ -1723,18 +1743,21 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   folds (the held root's placement rounding, popup-shrink's rule).
 
 - **An image's pixels are not recorded** (eval-coverage-3). `im` holds
-  where a decode is drawn and at what size, and `fit` judges that
+  where a decode is drawn and at what size, and `placement`'s `fit` judges that
   placement; what the decode holds is not seen. A PNG reduced by an
   integer factor before it is resampled rounds each side up apart
   (`decode_png`'s `div_ceil`), so `art.png` (60 x 40) is reduced to 20 x
   14 for a 16 x 12 box and its content drawn about 5% taller than its
   aspect; neither `fit` nor a reference sees it (left open,
   decisions.md eval-coverage-3).
-- **Edge margins and submenu places have no rule** (eval-coverage-3).
-  A layer surface's margin moved by the wrong overhang, or a submenu
-  placed from its parent's buffer instead of its window geometry, moves
-  a whole surface that nothing inside it judges: only its reference's
-  `o=` sees it (the mutants of decisions.md eval-coverage-3).
+- **A morph across surfaces has no rule** (cross-surface-morph,
+  integration-r6). A node with a `morph` name that comes on screen while
+  its partner was just drawn on another surface of the same output should
+  start on the partner's box; `vanish` and `teleport` see nothing wrong
+  when it simply appears at its own box. The regression's `expect` holds
+  it (the cross-surface-morph mutant); a rule needs each node's `morph`
+  name and each surface's origin read from what render was given, and is
+  left for a later round.
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not
   modelled.

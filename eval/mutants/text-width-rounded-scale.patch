@@ -1,0 +1,13 @@
+diff --git a/crates/strand-text/src/engine.rs b/crates/strand-text/src/engine.rs
+index eb566ee8..893df60a 100644
+--- a/crates/strand-text/src/engine.rs
++++ b/crates/strand-text/src/engine.rs
+@@ -202,7 +202,7 @@ impl TextEngine {
+         let max_width = req
+             .max_width
+             .filter(|w| w.is_finite() && *w >= 0.0)
+-            .map(|w| (w * s).min(1e7));
++            .map(|w| (w * s.round()).min(1e7));
+ 
+         let mut end = req.text.len().min(MAX_TEXT_BYTES);
+         while !req.text.is_char_boundary(end) {

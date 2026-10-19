@@ -1,0 +1,14 @@
+diff --git a/crates/strand-surface/src/placement.rs b/crates/strand-surface/src/placement.rs
+index 350171f3..5f2ad20a 100644
+--- a/crates/strand-surface/src/placement.rs
++++ b/crates/strand-surface/src/placement.rs
+@@ -581,7 +581,8 @@ pub fn popup_config(
+     let parent_popup = parent.kind == NodeKind::Popup;
+     // The parent's window geometry: a popup's is its box (inside its
+     // overhang); a layer surface's is its whole buffer.
+-    let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
++    let (gx, gy) = if parent_popup { (0, 0) } else { (0, 0) };
++    let _ = (pl, pt);
+     let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
+     let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
+     // `attach: <edge>` names the popup's side that touches its anchor,

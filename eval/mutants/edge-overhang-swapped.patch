@@ -1,0 +1,16 @@
+diff --git a/crates/strand-surface/src/placement.rs b/crates/strand-surface/src/placement.rs
+index 350171f3..4db82e9f 100644
+--- a/crates/strand-surface/src/placement.rs
++++ b/crates/strand-surface/src/placement.rs
+@@ -391,9 +391,9 @@ pub fn layer_config_with(
+     // The box keeps its place: each margin moves out by the overhang.
+     let margin = [
+         px(m.top) - ot,
+-        px(m.right) - or,
++        px(m.right) - ol,
+         px(m.bottom) - ob,
+-        px(m.left) - ol,
++        px(m.left) - or,
+     ];
+     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
+         let edge = spec.edge.unwrap_or(Edge::Top);
