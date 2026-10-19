@@ -52,8 +52,10 @@ pub const HEADER: &str = "# strand-eval reference recordings (docs/eval.md, \"Re
 /// stopped being compact (docs/eval.md, "Reference recordings";
 /// eval/tests/refs.rs): every file together, a scenario's file, and a
 /// matrix rate's file per cell in it (it grows with the effects, each
-/// recording should not).
-pub const TOTAL_BUDGET: u64 = 5 * 1024 * 1024;
+/// recording should not). The total sits about a round's growth above
+/// what the references take (integration-r4: 5.09 MB, 97% of the 5 MiB it
+/// was, after eval-coverage-2 grew the matrix from 552 to 914 cells).
+pub const TOTAL_BUDGET: u64 = 6 * 1024 * 1024;
 pub const SCENARIO_FILE_BUDGET: u64 = 64 * 1024;
 pub const MATRIX_CELL_BUDGET: u64 = 8 * 1024;
 

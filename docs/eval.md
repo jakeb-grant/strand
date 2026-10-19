@@ -590,7 +590,13 @@ a motion plays, read off the trace with no reference. Each was kept only
 with no false positive over every curated and regression scenario and the
 whole matrix at 60 and 144 Hz (decisions.md eval-rules; the
 eval-rules-2 ones also over held-out sets C and D's correct scenarios and
-three owner shells run with `eval local`). An `intend`
+three owner shells run with `eval local`). At round 4's integration
+(integration-r4) the same sweep over every check: of C's 8 and D's 10
+correct scenarios only D's launcher-filter fails (`vanish`, the product's
+blink of a gliding row that starts outside its card's clip, left open in
+eval-coverage-2), and two owner shells pass every check run; the third
+no longer loads, since pose-transition made a `~` in a pose a load error
+(its owner takes the `~` out). An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
@@ -820,18 +826,19 @@ A node's first line leaves out what is at its default: the first surface,
 (`bg`, `bd`, `sh`, `fg`, `gl`). Several of one kind are joined with `/`
 in paint order; `gl` is a JSON list.
 
-Everything together stays under 5 MiB. With each node's paint and glyph
+Everything together stays under 6 MiB. With each node's paint and glyph
 sources (eval-coverage) it was 4.15 MB, and with the integration's
 scenarios (eval-r3) 4.18 MB. With the scroll, control, placement and
 theme scenarios, the controls' parts and the two input effects
-(eval-coverage-2) it is 5.09 MB: the 68 scenarios 380 kB,
-`matrix-60.ref` 1.90 MB (4.2 kB a cell) and `matrix-144.ref` 2.81 MB
-(6.2 kB a cell), 457 cells each. Paint costs little because a field is
-written only on the ticks it changes. Compressed, as git stores it, that
-is about 530 kB. eval/tests/refs.rs
-holds the total to 5 MiB, a scenario's file to 64 KiB and a matrix file to
-8 KiB a cell. Each is a tripwire for a recording that stopped being
-compact, not a cap on scenarios.
+(eval-coverage-2), and round 4's integration (integration-r4) it is
+5.09 MB: the 79 scenarios 448 kB, `matrix-60.ref` 1.88 MB (4.1 kB a
+cell) and `matrix-144.ref` 2.77 MB (6.1 kB a cell), 457 cells each. Paint
+costs little because a field is written only on the ticks it changes.
+Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
+holds the total to 6 MiB (5 MiB until integration-r4, when the
+references reached 97% of it), a scenario's file to 64 KiB and a matrix
+file to 8 KiB a cell. Each is a tripwire for a recording that stopped
+being compact, not a cap on scenarios.
 
 ### CHANGED
 
