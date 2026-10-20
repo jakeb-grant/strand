@@ -1,0 +1,37 @@
+id     = "l-grid-reopen-plain-box"
+about  = "An app grid whose first child is a plain box with no `enter`, beside tiles that enter 25 ms apart from `enter { opacity: 0; scale: 0.85 }`: the tiles mount on the panel already shown, then the panel is closed and opened again. On the reopened panel's first frame the box comes on screen at rest with it and takes no turn; the tiles take the turns from that frame. From eval-finish's review of blind set L."
+screen = { width = 480, height = 300, scale = 1.0 }
+hz     = 60
+
+=== grid.strand
+state more = false
+state open = true
+
+panel AppGrid {
+  anchor: center; layer: overlay; open: open
+  col { width: 300; pad: 14; radius: 16; bg: #1a1b22e6
+    grid { columns: 4; gap: 10; stagger: 25ms
+      box { size: 48; radius: 10; bg: #333333 }
+      if more {
+        for a in ["Files", "Web", "Mail", "Music", "Photos"] key a {
+          col { height: 48; align: center; justify: center; radius: 10
+            enter { opacity: 0; scale: 0.85 }
+            box { size: 32; radius: 9; bg: #61afef }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark more
+set more true
+rest
+mark close
+set open false
+rest
+mark reopen
+set open true
+rest

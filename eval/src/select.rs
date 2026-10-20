@@ -45,6 +45,9 @@ pub struct NodeView {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub id: Option<String>,
+    /// (eval-finish) The other `id:`s that name it (a component call's
+    /// on its root, through a chain of calls).
+    pub also: Vec<String>,
     /// Source file name, 1-based line and column of the element.
     pub origin: Option<(String, u32, u32)>,
     pub sibling_index: u32,
@@ -124,7 +127,7 @@ impl Selector {
         match self {
             Selector::Id(id) => nodes
                 .iter()
-                .filter(|n| n.id.as_deref() == Some(id))
+                .filter(|n| n.id.as_deref() == Some(id) || n.also.iter().any(|a| a == id))
                 .map(|n| n.node)
                 .collect(),
             Selector::Origin {

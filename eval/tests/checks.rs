@@ -3210,6 +3210,7 @@ fn staggered_slow(start: impl Fn(usize) -> u32, slow: impl Fn(usize) -> u32) -> 
             opacity: Some(0.0),
             ..Pose::default()
         });
+        m.enters = true;
     }
     t.seal();
     t
@@ -3350,6 +3351,77 @@ fn stagger_counts_from_a_surfaces_first_frame() {
     );
 }
 
+/// (eval-finish review) On a surface's first frame what it holds comes
+/// on screen with it, and only the children with an `enter` play one
+/// there: a child without one, drawn at rest, takes no turn (set L's
+/// grid reopened with a plain box first). Mounting into a surface shown
+/// before, every child mounting still counts.
+#[test]
+fn stagger_numbers_only_entering_children_on_a_surfaces_first_frame() {
+    let sc = scenario("");
+    let build = |starts: [u32; 3], new_surface: bool| {
+        let mut t = staggered(|n| starts[n]);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key == "c0" {
+                    *r = r.clone().op(1.0).mot(Motions::NONE);
+                }
+                if new_surface && r.key.starts_with('c') {
+                    r.surface = 2;
+                }
+            }
+            if new_surface && f.k >= 1 {
+                f.painted.push(2);
+                f.sizes.insert(2, BAR);
+                let c = f.cost[&1];
+                f.cost.insert(2, c);
+            }
+        }
+        let m = t.nodes.get_mut("c0").unwrap();
+        m.enter = None;
+        m.enters = false;
+        t.seal();
+        t
+    };
+    // A new surface: c1 and c2 take the first two turns.
+    let t = build([1, 1, 3], true);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Counted after the plain box, they start a turn late.
+    let t = build([1, 3, 5], true);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c1") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+    // Mounting into a surface shown before, the box keeps its turn.
+    let t = build([1, 2, 4], false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build([1, 1, 2], false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c2") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// (eval-finish, blind set L's l-app-grid-stagger) Children waiting for
 /// their turn under `enter { opacity: 0; scale: 0.85 }` are hidden at
 /// opacity 0 and held at the pose's scale, as the trace now reports a
@@ -3448,6 +3520,7 @@ fn staggered_back(back: impl Fn(usize) -> Option<u32>) -> RunTrace {
             opacity: Some(0.0),
             ..Pose::default()
         });
+        m.enters = true;
     }
     t.seal();
     t
@@ -5746,6 +5819,7 @@ fn stagger_leaves_out_children_whose_pose_was_dropped_unseen() {
                 opacity: Some(0.0),
                 ..Pose::default()
             });
+            m.enters = true;
         }
         t.seal();
         t
@@ -6308,24 +6382,39 @@ fn a_palette_root_springs_along_the_curve_its_table_asks() {
 /// (eval-finish) A box whose `bg` springs from `from` toward a target
 /// that itself springs from `t0` to `t1` (a palette root a theme swap
 /// moves: both critically damped, ω 40/s), over ticks `1..` until it
-/// rests at `t1`. `drawn(k, chase)` gives the colour drawn at tick `k`
-/// from the chase's own; each moving frame's spring sample records where
-/// the target is then as `sent(k, target)`.
+/// rests at `t1`. `drawn(k, chase, target)` gives the colour drawn at
+/// tick `k` from the chase's own and the target's (straight-alpha); each
+/// moving frame's spring sample records where the target is then as
+/// `sent(k, target)` (premultiplied OKLab).
 fn chasing(
     from: [f64; 4],
     (t0, t1): ([f64; 4], [f64; 4]),
-    drawn: impl Fn(u32, [f64; 4]) -> [f64; 4],
+    drawn: impl Fn(u32, [f64; 4], [f64; 4]) -> [f64; 4],
+    sent: impl Fn(u32, [f64; 4]) -> [f64; 4],
+) -> RunTrace {
+    use strand_eval::checks::colour::premultiplied;
+    let (q0, q1) = (premultiplied(t0), premultiplied(t1));
+    let target = move |t: f64| -> [f64; 4] {
+        let g = 1.0 - (1.0 + 40.0 * t) * (-40.0 * t).exp();
+        std::array::from_fn(|i| q0[i] + g * (q1[i] - q0[i]))
+    };
+    chasing_along(from, t1, target, drawn, sent)
+}
+
+/// [`chasing`] with the target's way given: `target(t)` in premultiplied
+/// OKLab, `t` s after the change, resting at `rest`.
+fn chasing_along(
+    from: [f64; 4],
+    rest: [f64; 4],
+    target: impl Fn(f64) -> [f64; 4],
+    drawn: impl Fn(u32, [f64; 4], [f64; 4]) -> [f64; 4],
     sent: impl Fn(u32, [f64; 4]) -> [f64; 4],
 ) -> RunTrace {
     use strand_eval::checks::colour::{premultiplied, srgb};
     use strand_eval::trace::{CurveRec, SpringRec};
     const W: f64 = 40.0;
-    const END: u32 = 40;
-    let (p, q0, q1) = (premultiplied(from), premultiplied(t0), premultiplied(t1));
-    let target = |t: f64| -> [f64; 4] {
-        let g = 1.0 - (1.0 + W * t) * (-W * t).exp();
-        std::array::from_fn(|i| q0[i] + g * (q1[i] - q0[i]))
-    };
+    const END: u32 = 70;
+    let p = premultiplied(from);
     let straight = |m: [f64; 4]| -> [f64; 4] {
         if m[3] <= 0.0 {
             return [0.0; 4];
@@ -6348,11 +6437,11 @@ fn chasing(
         }
         at_tick.push((straight(x), target(f64::from(k) / 60.0)));
     }
-    let rest = hex(t1);
+    let rest = hex(rest);
     let mut t = shape(END + 2, |k| {
         let mut b = row("chip", [10.0, 6.0, 40.0, 18.0]);
         let c = match at_tick.get(k as usize) {
-            Some((c, _)) if k > 0 => hex(drawn(k, *c)),
+            Some((c, tt)) if k > 0 => hex(drawn(k, *c, straight(*tt))),
             Some(_) => hex(from),
             None => rest.clone(),
         };
@@ -6398,7 +6487,7 @@ fn colour_follows_a_target_a_theme_swap_moves() {
     use strand_eval::checks::colour::premultiplied;
     let sc = scenario("");
     let ends = (GOLD, YELLOW);
-    let chase = |_: u32, c: [f64; 4]| c;
+    let chase = |_: u32, c: [f64; 4], _: [f64; 4]| c;
     let moving = |_: u32, t: [f64; 4]| t;
     let t = chasing(BLUE, ends, chase, moving);
     let r = check(&sc, &t);
@@ -6451,7 +6540,7 @@ fn colour_follows_a_target_a_theme_swap_moves() {
     );
     // Twin: sRGB's way toward the moving target, through grey, resting
     // when the target does.
-    let srgb_way = |k: u32, _: [f64; 4]| {
+    let srgb_way = |k: u32, _: [f64; 4], _: [f64; 4]| {
         let s = 1.0 - (1.0 - f64::from(k.min(30)) / 30.0).powi(3);
         std::array::from_fn(|i| BLUE[i] + s * (YELLOW[i] - BLUE[i]))
     };
@@ -6477,6 +6566,71 @@ fn colour_follows_a_target_a_theme_swap_moves() {
         "{}",
         show(&r, &t)
     );
+    // (eval-finish review) Twin: the accent recorded swinging from
+    // latte's mauve through green to mocha's, and the fill chasing it
+    // faithfully: a token leaves no straight way of its own, so the fan
+    // does not follow it and the straight way holds the fill (52 steps
+    // off at ω 40). The same targets on their straight way pass.
+    let c = |r: u8, g: u8, b: u8| {
+        [
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+            1.0,
+        ]
+    };
+    let (lm, mm, gr) = (
+        premultiplied(c(0x88, 0x39, 0xef)),
+        premultiplied(c(0xcb, 0xa6, 0xf7)),
+        premultiplied(c(0x40, 0xa0, 0x2b)),
+    );
+    for w in [40.0, 12.0] {
+        let g = move |t: f64| 1.0 - (1.0 + w * t) * (-w * t).exp();
+        let wander = move |t: f64| -> [f64; 4] {
+            let g = g(t);
+            std::array::from_fn(|i| {
+                (1.0 - g) * (1.0 - g) * lm[i] + 2.0 * g * (1.0 - g) * gr[i] + g * g * mm[i]
+            })
+        };
+        let line = move |t: f64| -> [f64; 4] {
+            let g = g(t);
+            std::array::from_fn(|i| lm[i] + g * (mm[i] - lm[i]))
+        };
+        let t = chasing_along(tile, latte.1, line, chase, moving);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Colour),
+            Status::Pass,
+            "ω {w}: {}",
+            show(&r, &t)
+        );
+        let t = chasing_along(tile, latte.1, wander, chase, moving);
+        let r = check(&sc, &t);
+        assert!(
+            r.failures(CheckId::Colour)
+                .iter()
+                .any(|f| f.msg.contains("left its own straight way")
+                    && f.msg
+                        .starts_with("off its way: its bg springing from e1e3e9ff to")),
+            "ω {w}: {}",
+            show(&r, &t)
+        );
+    }
+    // (eval-finish review) Twin: the fill skips its spring and is drawn
+    // at its target from the first frame on: on the fan's ray to the
+    // target, but further along it than its spring reaches by then.
+    let snap = |_: u32, _: [f64; 4], target: [f64; 4]| target;
+    for (a, b) in [(GOLD, YELLOW), ([1.0, 0.0, 0.0, 1.0], YELLOW)] {
+        let t = chasing(BLUE, (a, b), snap, moving);
+        let r = check(&sc, &t);
+        assert!(
+            r.failures(CheckId::Colour).iter().any(|f| f
+                .msg
+                .starts_with("ahead of its spring: its bg springing from 3366ffff")),
+            "{}",
+            show(&r, &t)
+        );
+    }
 }
 
 /// (eval-rules-3) A colour a hair short of its end is on its way: the

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-shadow-edges-1_5"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "eval-coverage-3 first reference, read frame by frame: at 1.5 the bottom-anchored OSD pill (margin 64, shadow 0 10px 24px) slides up, its meter and rolled percentage change twice and it leaves, its box 64 px above the edge throughout; the left dock's shadow (8px 0 18px) falls right of it while its running dot widens; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k1 and k142 the osd's rows hidden at opacity 0 now at scale 0.9, where they read 1; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario df840cdc8ed3066c
-seal f5102091b9a22c19
+seal c283baab48b3b13a
 S1 0 - "panel Dock"
 S2 1 142 "osd Level"
 N0 "app_term|shell.strand:18:5|#0" "box#app_term"

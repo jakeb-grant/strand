@@ -27,6 +27,8 @@ pub struct Labels {
 /// What `Instance` says of a node, and where it is written.
 struct Source {
     id: Option<String>,
+    /// (eval-finish) The other `id:`s that name it.
+    also: Vec<String>,
     origin: Option<(String, u32, u32)>,
     instance_path: String,
     sibling: u32,
@@ -50,6 +52,7 @@ fn source(inst: &Instance, sources: &SourceMap, node: NodeId) -> Option<Source> 
     });
     Some(Source {
         id: ident.id,
+        also: ident.also,
         origin,
         instance_path: ident.instance_path,
         sibling: ident.sibling_index,
@@ -73,6 +76,20 @@ fn enter_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
         return None;
     };
     pose_of(v)
+}
+
+/// (eval-finish) The node has an `enter`: a pose block that sets
+/// something, or one of design.md's presets ("Pose presets": `popin(0.8)
+/// | slide(top) | slidefade | fade`).
+fn enters(tree: &SceneTree, node: NodeId) -> bool {
+    match tree.get(node).and_then(|n| n.get(Prop::Enter)) {
+        Some(PropValue::Pose(props)) => !props.is_empty(),
+        Some(PropValue::Keyword(k)) => k == "fade" || k == "slidefade",
+        Some(PropValue::Call { name, .. }) => {
+            matches!(name.as_str(), "popin" | "slide" | "slidefade")
+        }
+        _ => false,
+    }
 }
 
 /// (eval-rules) The parts of a pose value the checks read: a pose
@@ -397,8 +414,10 @@ impl Labels {
             origin,
             parent: parent_key,
             id,
+            also: src.as_ref().map(|s| s.also.clone()).unwrap_or_default(),
             text,
             enter: enter_pose(tree, node),
+            enters: enters(tree, node),
             morph: morph_of(tree, node),
             ellipsis: ellipsis_of(tree, node),
             exit: exit_pose(tree, node),
@@ -424,7 +443,7 @@ impl Labels {
                     return false;
                 };
                 match sel {
-                    Selector::Id(id) => m.id.as_deref() == Some(id),
+                    Selector::Id(id) => m.named(id),
                     Selector::Text(t) => m.text.as_deref() == Some(t),
                     Selector::Origin {
                         file, line, col, ..
@@ -471,6 +490,7 @@ impl Labels {
                 parent: node.parent,
                 children: node.children.clone(),
                 id: src.as_ref().and_then(|s| s.id.clone()),
+                also: src.as_ref().map(|s| s.also.clone()).unwrap_or_default(),
                 origin: src.as_ref().and_then(|s| s.origin.clone()),
                 sibling_index: src.as_ref().map_or(0, |s| s.sibling),
                 text: text_of(tree, n),

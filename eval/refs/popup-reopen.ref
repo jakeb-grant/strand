@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-reopen"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k1, k29, k30, k58 and k90 the menu's rows hidden at opacity 0 (k30 and k90 carried onto a new surface) now at scale 0.9, where they read 1; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario a54aae74f6fcdafe
-seal de0c7b0bf1dc567e
+seal 30d7a8822136a27d
 S1 0 - "bar Top"
 S2 1 29 "popup#menu"
 S3 30 58 "popup#menu"

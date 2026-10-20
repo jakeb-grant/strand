@@ -1,0 +1,20 @@
+--- a/crates/strand-compiler/src/instantiate/inspect.rs
++++ b/crates/strand-compiler/src/instantiate/inspect.rs
+@@ -417,7 +417,7 @@
+         let mut ids: Vec<String> = Vec::new();
+         let calls = e.state.calls.borrow();
+         let chain = std::iter::once(e.idx)
+-            .chain((e.state.idx != e.idx).then_some(e.state.idx))
++            .chain((false && e.state.idx != e.idx).then_some(e.state.idx))
+             .chain(calls.iter().copied().filter(|c| *c != e.idx));
+         for name in chain.filter_map(named) {
+             if !ids.contains(&name) {
+@@ -426,7 +426,7 @@
+         }
+         let mut ids = ids.into_iter();
+         let id = ids.next();
+-        let also: Vec<String> = ids.collect();
++        let also: Vec<String> = ids.filter(|_| false).collect();
+         let sibling_index = em
+             .children_of(e.parent)
+             .iter()

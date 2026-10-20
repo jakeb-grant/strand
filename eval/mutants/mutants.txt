@@ -5,8 +5,10 @@
 #
 # <patch> <scenario, under eval/scenarios/> <expected failure>...
 #   an expected failure is `check` (its status is FAIL), `check:#id`
-#   (a failing finding of it names the node with that id) or
-#   `check:#id:axis` (on that axis too).
+#   (a failing finding of it names the node with that id),
+#   `check:#id:axis` (on that axis too) or (eval-finish)
+#   `unmatched:SELECTOR`: the run stops because SELECTOR matches no node,
+#   which is how a name the product loses shows (docs/eval.md, Selectors).
 #
 # bug24-flip-open.patch: the reverse of ff92415c's crates/strand-render/src
 # hunks (flip-open; owner-testing.md bug 24), cut against this branch, with
@@ -222,3 +224,20 @@ popup-click-away.patch         regressions/popup-click-away.scn expect
 # inside a morphing ancestor is worked out against its own box and
 # scaled again by the ancestor's flight (decisions.md integration-r8).
 nested-morph.patch             regressions/nested-morph.scn coherence
+# call-id-root.patch: eval-finish's call-site id undone: `Instance::identity`
+# names a node by its own `id:` only, so an `id:` on a component call names
+# nothing (blind set K; decisions.md eval-finish).
+call-id-root.patch             curated/k-media-card.scn unmatched:#play_btn
+# call-id-chain.patch: the review's half of it undone: one id per node, so
+# a root's own `id:` hides its call's and an inner call's `id:` in a chain
+# names nothing (decisions.md eval-finish).
+call-id-chain.patch            regressions/call-id-chain.scn unmatched:#knob_btn
+# hidden-row-look.patch: eval-finish's hidden-row look undone: a node hidden
+# at opacity 0 is traced at scale 1 and turn 0, whatever its own (blind set
+# L; decisions.md eval-finish). Its trace says a staggered child waiting at
+# `enter { opacity: 0; scale: 0.85 }` left its pose at its first frame.
+hidden-row-look.patch          curated/l-app-grid-stagger.scn stagger
+# colour-srgb.patch: colour springs move in premultiplied sRGB, not OKLab
+# (decisions.md 2026-10-04 render, wave3-theme t2): the Wi-Fi tile's fill
+# and the Dark tile's chase of the swapping accent are drawn off their way.
+colour-srgb.patch              curated/k-qs-toggles.scn colour

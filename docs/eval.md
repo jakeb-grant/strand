@@ -236,7 +236,10 @@ advance the clock.
 
 ### Selectors
 
-- `#id` selects the node with that `id:`.
+- `#id` selects the node with that `id:`, or one an `id:` names through
+  a component call: a call's `id:` names its root element, and in a
+  chain of calls each call's does (`Instance::identity`'s `id` and
+  `also`; decisions.md eval-finish).
 - `@file.strand:LINE[:COL][n]` selects the element written there. `[n]`
   picks a copy among siblings.
 - `text("…")` selects a node whose text is exactly that.
@@ -845,7 +848,18 @@ says a node moves, not how, so it does not exempt from them; only an
   each frame is held to the fan from its start to the target's way up
   to that frame, with the same overshoot bound along each ray; a
   colour drawn through a colour neither its start nor any of its
-  targets has still fails. `palette` (eval-rules-3): a theme
+  targets has still fails. The recorded targets are held first to a
+  way of their own (eval-finish review): a token the swap moves goes
+  from where it was to where it rests on one straight way in
+  premultiplied OKLab, as any colour a spring sends does, so targets
+  that leave the straight way from the first to the last by more than
+  3 steps are not followed (the straight way holds the colour, and the
+  finding says how far its target strayed). And along each ray the
+  share is no more than the colour's own spring reaches from rest by
+  the frame's time since the segment's start (`colour::reach`: a
+  spring from rest gives its targets so far exactly the weight its way
+  to a still target has covered), so a colour drawn at its target from
+  the first frame, skipping its spring, fails `ahead of its spring`. `palette` (eval-rules-3): a theme
   swap springs each palette root along the curve its table gives a colour
   (`$motion.effects` unless the swap names its own transition, as the
   table it sent defines it); each root's sample records both (`sp`'s
@@ -993,7 +1007,13 @@ says a node moves, not how, so it does not exempt from them; only an
   never before its surface's previous paint (eval-finish): on a
   surface's first frame (a panel opening with its children, or opened
   again on a new surface) the change starts at that frame, which shows
-  every pose exactly (decisions.md wave3-pixels (p2)). Its
+  every pose exactly (decisions.md wave3-pixels (p2)). On a surface's
+  first frame the batch is only the children with an `enter` (a pose
+  or a preset, `NodeMeta::enters`; eval-finish review): what a surface
+  holds comes on screen with it, where only enter poses play
+  (decisions.md launcher-reopen), so a plain child drawn at rest there
+  takes no turn; mounting into a surface already shown, every child
+  mounting is numbered, as before. Its
   start is the first frame it no longer waits for its turn (`Motions`
   `STAGGER` cleared), or an earlier one that already shows it off its
   enter pose, and must come within a period after it is due: not before
@@ -1384,8 +1404,10 @@ it was 6.16 MB (6,156,883 bytes). At round 8's integration
 five (scaled-gradient-redraw, glow-overhang, insert-above-view,
 popup-click-away and nested-morph, 35 kB), it was 6.22 MB (6,223,318
 bytes); with eval-finish's three (k-media-card, k-qs-toggles and
-l-app-grid-stagger, 18 kB) it is 6,242,526 bytes, 49 kB under the
-tripwire: the 150 scenarios 1.10 MB,
+l-app-grid-stagger, 18 kB) it was 6,242,526 bytes; with the review's two
+(call-id-chain and l-grid-reopen-plain-box, 15 kB) and the re-approvals'
+notes written out again it is 6,260,955 bytes, 30 kB under the
+tripwire: the 155 scenarios 1.14 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
 Paint costs little because a field is written only on the ticks it
 changes. Compressed, as git stores it, that was about 530 kB before
@@ -1451,6 +1473,11 @@ reproduces the recording, and `+changes` marks one that does not. A run
 that matches its reference already
 writes nothing. A changed recording approved under the note its reference
 already has is refused: the note says why this recording is right.
+`--renote` (eval-finish) rewrites the note of the approved recording a run
+matches, with the date, revision and approver, and keeps the recording
+byte for byte; a run that left its reference is refused. It is for an
+approval whose reading was lost or wrong: keep the reading the block had
+and add what was read again.
 
 `--all-changed` approves every run in the report that left its reference
 or has none. On a matrix run that covered a whole rate, it also prunes the
@@ -1704,8 +1731,15 @@ morph-back-after-idle (`coherence` morph arrival; decisions.md
 morph-memory), and integration-r8's scaled-gradient-redraw (`redraw`),
 glow-overhang (`contain` shadow), insert-above-view (`twin`),
 popup-click-away (`expect`) and nested-morph (`coherence` morph arrival;
-all five decisions.md integration-r8): 43 in all. In a detached worktree of HEAD, each scenario
-must pass on HEAD and fail under its patch with at least the checks listed.
+all five decisions.md integration-r8), and eval-finish's four:
+call-id-root (k-media-card) and call-id-chain (the call-id-chain
+regression), each caught where the run stops at the `intend` whose `#id`
+the reverted identity no longer names, hidden-row-look (`stagger`,
+l-app-grid-stagger) and colour-srgb (`colour`, k-qs-toggles: colour
+springs in premultiplied sRGB): 47 in all. In a detached worktree of HEAD, each scenario
+must pass on HEAD and fail under its patch with at least the checks listed,
+or, for an expected failure written `unmatched:SELECTOR`, stop because
+that selector matches no node (how a name the product loses shows).
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
 

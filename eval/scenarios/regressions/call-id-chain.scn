@@ -1,0 +1,65 @@
+id     = "call-id-chain"
+about  = """A finding of eval-finish's review (docs/decisions.md eval-finish): an `id:`
+on a component call names its root element (m6-w2-language), and the root
+shares the call's state, so every `id:` in a chain of calls names it, and a
+root's own `id:` does not hide its call's. The knob is a component whose
+root box has its own `id: knob`, called `Knob playing { id: knob_btn }`; the
+pill is a call `Pill live { id: pill }` that is `PlayButton`'s root, called
+`PlayButton playing { id: play_btn }`. Play widens both. Before the fix
+`#knob_btn` and `#pill` matched no node (`Instance::identity` reported one
+id per node); eval/mutants/call-id-chain.patch reverts it."""
+screen = { width = 400, height = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+
+component Knob(live: bool) {
+  box {
+    id: knob
+    height: 24
+    width: live ? 48 : 24
+    radius: full
+    bg: live ? $accent : $surface.hi
+  }
+}
+
+component Pill(live: bool) {
+  box {
+    height: 36
+    width: live ? 64 : 36
+    radius: full
+    bg: live ? $accent : $surface.hi
+  }
+}
+
+component PlayButton(live: bool) {
+  Pill live { id: pill }
+}
+
+panel Player {
+  anchor: bottom
+  margin: 0, 0, 16
+  layer: overlay
+  col {
+    width: 300
+    pad: $space.3
+    bg: $surface
+    row {
+      justify: space_between
+      align: center
+      Knob playing { id: knob_btn }
+      PlayButton playing { id: play_btn }
+    }
+  }
+}
+
+=== steps
+rest
+mark play
+intend #knob_btn changes
+intend #pill changes
+intend #knob changes
+intend #play_btn changes
+set playing true
+rest

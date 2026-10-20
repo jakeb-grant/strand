@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "notif-centre-zones"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 98 -> 92 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k62 and k91 the osd's rows hidden at opacity 0 now at scale 0.92, where they read 1; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario b4df102d9285d9b5
-seal a674ba58519f1f75
+seal f79749bb162d755c
 S1 0 - "panel Centre"
 S2 0 - "bar Top"
 S3 0 - "bar Side"

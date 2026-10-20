@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "launcher-results-144"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "eval-coverage-4 first reference, read frame by frame: at 144 Hz the launcher pops in from 0.92 with only its search row; typing 'e' brings Files, Firefox, Terminal, Calendar and Settings in staggered 25 ms apart top to bottom (3.6 ticks apart); 'ca' folds four of them to height 0 while Calculator staggers in and Calendar glides up under it; the hover lights each row in turn; clearing folds both, and 'e' typed while they fold brings the five back staggered again, Calendar as a new row beside its folding ghost; the close plays the popin out; the search row never moves; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k1 and k243 the panel's rows hidden at opacity 0 now at popin(0.92)'s scale 0.92, where they read 1; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario d382f523e5ac2525
-seal 7c7fa6a8cfbc89dc
+seal 855e9554fbbd75bd
 S1 1 243 "panel Launcher"
 N0 "|shell.strand:4:1|#0" "panel@shell.strand:4"
 N1 "card|shell.strand:8:5|#0" "col#card"

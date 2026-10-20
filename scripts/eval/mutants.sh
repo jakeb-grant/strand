@@ -56,6 +56,20 @@ ab() {
     echo "  (no A/B page: $2-ab.log)"
 }
 
+# unmatched LOG SPECS...: every SPEC is `unmatched:SELECTOR` and the run
+# stopped because SELECTOR matched no node (the scenario error a lost
+# name gives: docs/eval.md, Selectors).
+unmatched() {
+  local log=$1 spec sel
+  shift
+  [ "$#" -gt 0 ] || return 1
+  for spec in "$@"; do
+    case "$spec" in unmatched:*) ;; *) return 1 ;; esac
+    sel=${spec#unmatched:}
+    grep -qF "\`$sel\` matched no node" "$log" || return 1
+  done
+}
+
 # expected SUMMARY ID SPEC: whether summary.txt shows the failure SPEC.
 expected() {
   local summary=$1 id=$2 spec=$3 check node axis
@@ -122,6 +136,12 @@ while read -r patch scenario specs; do
       ;;
     1) ;;
     *)
+      # shellcheck disable=SC2086 # the specs are words
+      if [ "$rc" = 2 ] && unmatched "$out.log" $specs; then
+        grep -F "matched no node" "$out.log" | head -n 3 | sed 's/^/  /'
+        echo "  caught: $specs"
+        continue
+      fi
       echo "ERROR: $scenario did not run with $patch applied (exit $rc): $out.log"
       sed -n '1,40p' "$out.log"
       failed=1

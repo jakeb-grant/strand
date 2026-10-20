@@ -3408,7 +3408,14 @@ impl Ctx {
                 } else {
                     caller.existing_node_state(call.node)
                 };
-                st.inspect(|st| env.adopt_node(root, st.clone()))
+                st.inspect(|st| {
+                    // (eval-finish) A call handed an outer call's state:
+                    // its `id:` names the same element.
+                    if st.idx != call.node && !st.calls.borrow().contains(&call.node) {
+                        st.calls.borrow_mut().push(call.node);
+                    }
+                    env.adopt_node(root, st.clone())
+                })
             });
             ctx.declare(rt, &comp.body.nodes, &env);
             ctx.mount_nodes(rt, &comp.body.nodes, &env, frag, None);

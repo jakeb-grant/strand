@@ -17,7 +17,9 @@
 //!
 //! The batch is the container's children first drawn at one frame after
 //! boot (with an `enter` pose or not: every child mounting counts in the
-//! numbering), and (eval-coverage-4) those drawn again there after frames
+//! numbering; but (eval-finish) on a surface's first frame, where what it
+//! holds comes on screen with it, only those with an `enter`, the only
+//! ones that play anything there), and (eval-coverage-4) those drawn again there after frames
 //! without them (a result filtered out and typed back mounts anew;
 //! integration-r7: read from what logic declared, a row a `list`'s
 //! window brings back at rest does not), in paint order. Child `n`'s start is due `n` steps after
@@ -158,6 +160,16 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             });
             let lead = previous.map_or(0.0, |p| (first_t.saturating_sub(p) as f64).min(period_ns));
             let t0 = first_t as f64 - lead;
+            // (eval-finish) On a surface's first frame what it holds comes
+            // on screen with it rather than mounting into a surface shown:
+            // what plays there is the `enter` of each node that has one
+            // (decisions.md launcher-reopen; a surface's first opening
+            // shows the rest at rest), so the children taking turns are
+            // those with an `enter`. One without is drawn at rest on that
+            // frame and has no `enter` for the stagger to delay.
+            if previous.is_none() {
+                batch.retain(|k| trace.nodes.get(*k).is_some_and(|m| m.enters));
+            }
             for (n, key) in batch.iter().enumerate() {
                 let Some(pose) = trace.nodes.get(*key).and_then(|m| m.enter) else {
                     continue;

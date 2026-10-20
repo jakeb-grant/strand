@@ -1,0 +1,50 @@
+--- a/crates/strand-scene/src/motion.rs
++++ b/crates/strand-scene/src/motion.rs
+@@ -27,7 +27,7 @@
+ 
+ use std::time::Duration;
+ 
+-use crate::color::{Color, Oklab};
++use crate::color::Color;
+ use crate::protocol::{Easing, Transition};
+ 
+ /// A damped spring: `spring(stiffness, damping)` with unit mass, so the
+@@ -631,29 +631,23 @@
+ /// A colour as springs move it: premultiplied OKLab plus alpha, so a fade
+ /// to transparent keeps its hue (as [`Color::lerp_oklab`]).
+ pub fn color_channels(c: Color) -> [f32; 4] {
+-    let o = c.to_oklab();
+-    let a = o.alpha.clamp(0.0, 1.0);
+-    [
+-        (o.l * a) as f32,
+-        (o.a * a) as f32,
+-        (o.b * a) as f32,
+-        a as f32,
+-    ]
++    let a = c.a.clamp(0.0, 1.0);
++    [c.r * a, c.g * a, c.b * a, a]
+ }
+ 
+ /// The colour of [`color_channels`]; alpha is clamped to `0..=1`
+ /// (a spring overshooting transparent stays transparent).
+ pub fn channels_color(ch: [f32; 4]) -> Color {
+-    let alpha = ch[3].clamp(0.0, 1.0) as f64;
++    let alpha = ch[3].clamp(0.0, 1.0);
+     if alpha <= 1e-6 {
+         return Color::TRANSPARENT;
+     }
+-    Color::from_oklab(Oklab {
+-        l: ch[0] as f64 / alpha,
+-        a: ch[1] as f64 / alpha,
+-        b: ch[2] as f64 / alpha,
+-        alpha,
+-    })
++    Color {
++        r: ch[0] / alpha,
++        g: ch[1] / alpha,
++        b: ch[2] / alpha,
++        a: alpha,
++    }
+ }
+ 
+ #[cfg(test)]

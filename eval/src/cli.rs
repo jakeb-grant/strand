@@ -473,17 +473,25 @@ pub fn verdict(args: &[String]) -> Result<(), Error> {
 /// with the note, today's date, the run's revision and the approver
 /// (`--approver`, else `$STRAND_EVAL_APPROVER`; required). `--all-changed` takes the runs that left
 /// their reference or have none, and prunes the blocks of cells a whole
-/// matrix rate no longer has.
+/// matrix rate no longer has. (eval-finish) `--renote` rewrites the note
+/// of the approved recording each run matches, keeping the recording.
 pub fn approve(args: &[String]) -> Result<(), Error> {
     let a = Args::parse(
         "approve",
         args,
         &["--note", "--refs", "--approver"],
-        &["--all-changed"],
+        &["--all-changed", "--renote"],
     )?;
     if a.words.is_empty() {
         return Err(Error::Usage(
             "usage: strand-eval approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT\n       strand-eval approve --all-changed <run> --note TEXT"
+                .into(),
+        ));
+    }
+    if a.has("--renote") && a.has("--all-changed") {
+        return Err(Error::Usage(
+            "--renote rewrites the notes of runs that match their references, \
+             --all-changed takes those that do not: one or the other"
                 .into(),
         ));
     }
@@ -550,6 +558,7 @@ fn record(
         note,
         approver,
         dir: dir.clone(),
+        renote: a.has("--renote"),
     };
     let done = crate::refs::approve(&dirs, &ask)?;
     let mut wrote = 0;

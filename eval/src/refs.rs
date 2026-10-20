@@ -461,6 +461,12 @@ pub struct Ask {
     pub approver: String,
     /// The reference directory (`eval/refs/` by default).
     pub dir: PathBuf,
+    /// (eval-finish) `approve --renote`: a run that matches its approved
+    /// recording has that block's note rewritten (its date, revision and
+    /// approver with it), the recording kept as it is; a run that left
+    /// it is refused. For an approval whose reading was lost or is
+    /// wrong, written again once the recording is read again.
+    pub renote: bool,
 }
 
 /// Records each run in `dirs` (scenario directories, [`entry_dirs`]) as
@@ -503,6 +509,40 @@ pub fn approve(dirs: &[PathBuf], ask: &Ask) -> Result<Vec<Approved>, Error> {
             Verdict::Good => f.good(&e.id).into_iter().collect(),
             Verdict::Bad => f.bad(&e.id),
         };
+        let rev = format!(
+            "{}{}",
+            e.trace.build.rev,
+            if e.trace.build.dirty { "+changes" } else { "" }
+        );
+        if ask.renote {
+            let kept = match ask.verdict {
+                Verdict::Good => existing.iter().find(|b| same(b)).map(|b| b.body.clone()),
+                Verdict::Bad => None,
+            };
+            let Some(body) = kept else {
+                return Err(Error::Usage(format!(
+                    "{}: --renote rewrites the note of an approved recording the run matches, \
+                     and this run does not match one: approve it as a change",
+                    e.id
+                )));
+            };
+            let meta = Meta {
+                verdict: ask.verdict,
+                note: &ask.note,
+                date: &date,
+                rev: &rev,
+                approver: &ask.approver,
+                scenario: &source_hash(&e.source),
+            };
+            f.put(Block::new(&e.id, &meta, body));
+            dirty.insert(file.clone());
+            out.push(Approved {
+                id: e.id.clone(),
+                file,
+                wrote: true,
+            });
+            continue;
+        }
         if existing.iter().any(|b| same(b)) {
             out.push(Approved {
                 id: e.id.clone(),
@@ -520,11 +560,6 @@ pub fn approve(dirs: &[PathBuf], ask: &Ask) -> Result<Vec<Approved>, Error> {
                 e.id, b.note
             )));
         }
-        let rev = format!(
-            "{}{}",
-            e.trace.build.rev,
-            if e.trace.build.dirty { "+changes" } else { "" }
-        );
         let meta = Meta {
             verdict: ask.verdict,
             note: &ask.note,

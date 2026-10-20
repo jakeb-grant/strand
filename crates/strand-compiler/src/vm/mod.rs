@@ -381,6 +381,7 @@ impl Env {
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),
+            calls: Default::default(),
             scope: owner.owner.get().or_else(|| rt.current_owner()),
             watch: Cell::new(0),
             laid_out: Cell::new(false),

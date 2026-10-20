@@ -49,8 +49,14 @@ pub struct Identity {
     /// The innermost of them: the `for` row's key, or the bar's monitor
     /// for a node directly in a bar; `None` outside any.
     pub key: Option<String>,
-    /// The element's `id:` name.
+    /// The element's `id:` name, else that of the component call whose
+    /// root it is (the outermost of a chain of calls).
     pub id: Option<String>,
+    /// (eval-finish) Every other `id:` that names it: those of the calls
+    /// nested in that one whose root it is too (`Pill live { id: pill }`
+    /// as `PlayButton`'s root, called with `id: play_btn`), or the
+    /// outermost call's when the element has its own; outermost first.
+    pub also: Vec<String>,
     /// Its position among the siblings of its kind under its scene parent
     /// (the surface roots for a surface), in render's order, from 0.
     pub sibling_index: u32,
@@ -405,8 +411,22 @@ impl Instance {
         // (M6) A component's root element shares its call's state, so an
         // `id:` on the call names it (decisions.md m6-w2-language): the
         // element's own `id:` first, then the call's (the outermost call
-        // of a chain of calls, whose state the chain shares).
-        let id = named(e.idx).or_else(|| (e.state.idx != e.idx).then(|| named(e.state.idx))?);
+        // of a chain of calls, whose state the chain shares), then
+        // (eval-finish) those of the calls nested in it the state was
+        // handed down through. Each names it; the first is its `id`.
+        let mut ids: Vec<String> = Vec::new();
+        let calls = e.state.calls.borrow();
+        let chain = std::iter::once(e.idx)
+            .chain((e.state.idx != e.idx).then_some(e.state.idx))
+            .chain(calls.iter().copied().filter(|c| *c != e.idx));
+        for name in chain.filter_map(named) {
+            if !ids.contains(&name) {
+                ids.push(name);
+            }
+        }
+        let mut ids = ids.into_iter();
+        let id = ids.next();
+        let also: Vec<String> = ids.collect();
         let sibling_index = em
             .children_of(e.parent)
             .iter()
@@ -425,6 +445,7 @@ impl Instance {
             instance_path: instances.iter().map(|(_, i)| format!("[{i}]")).collect(),
             key: instances.last().map(|(_, i)| i.to_string()),
             id,
+            also,
             sibling_index,
             scope,
         })

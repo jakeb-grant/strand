@@ -240,9 +240,19 @@ pub struct NodeMeta {
     /// The parent's key.
     pub parent: Option<String>,
     pub id: Option<String>,
+    /// (eval-finish) The other `id:`s that name it: a component call's
+    /// on its root, through a chain of calls (`Instance::identity`'s
+    /// `also`). A `#id` selector matches any of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<String>,
     pub text: Option<String>,
     /// Its `enter` pose when it was first seen.
     pub enter: Option<Pose>,
+    /// (eval-finish) It has an `enter` when first seen, a pose block or
+    /// one of design.md's presets (`popin(0.8) | slide(top) | slidefade
+    /// | fade`), which [`NodeMeta::enter`] may not spell out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enters: bool,
     /// Its shared-element `morph:` name, when written as text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morph: Option<String>,
@@ -281,6 +291,14 @@ pub struct NodeMeta {
     /// a stretched or filling child, a split's part, another kind).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_share: Option<f32>,
+}
+
+impl NodeMeta {
+    /// (eval-finish) `#id` names it: its `id`, or another `id:` that
+    /// names it ([`NodeMeta::also`]).
+    pub fn named(&self, id: &str) -> bool {
+        self.id.as_deref() == Some(id) || self.also.iter().any(|a| a == id)
+    }
 }
 
 /// (eval-rules-6) [`NodeMeta::flow`]'s bits.

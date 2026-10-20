@@ -687,36 +687,50 @@ fn a_shared_components_scope_and_token_origin_name_its_file() {
 /// (decisions.md 2026-10-13 m6-w2-language), so the root's identity
 /// reports it: directly, through a call whose root is another call, and
 /// not for the root's children or a call without one. An element's own
-/// `id:` stays its name.
+/// `id:` stays its `id`, and the call's names it too (`also`); in a chain
+/// of calls each call's `id:` names the root, the outermost first.
 #[test]
 fn identity_reports_a_calls_id_on_its_root() {
     let src = "component Chip(label: text) { box { text label } }\n\
         component Named(label: text) { box { id: inner; text label } }\n\
         component Wrap(label: text) { Chip label }\n\
+        component Held(label: text) { Chip label { id: held } }\n\
         bar B {\n  row {\n    \
         Chip \"a\" { id: chip_a }\n    \
         Chip \"b\"\n    \
         Named \"c\" { id: outer }\n    \
         Wrap \"d\" { id: wrap_d }\n    \
-        Wrap \"e\"\n  }\n}\n";
+        Wrap \"e\"\n    \
+        Held \"f\" { id: held_f }\n    \
+        Held \"g\"\n    \
+        Named \"h\"\n  }\n}\n";
     let shell = boot(&[("t.strand", src)], Storage::none(), &["DP-1"]);
-    let ids: Vec<Option<String>> = shell
+    let ids: Vec<(Option<String>, Vec<String>)> = shell
         .scene
         .of_kind(NodeKind::Box)
         .into_iter()
-        .map(|b| shell.inst.identity(b).unwrap().id)
+        .map(|b| {
+            let i = shell.inst.identity(b).unwrap();
+            (i.id, i.also)
+        })
         .collect();
+    let s = |v: &str| Some(v.to_string());
+    let v = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     assert_eq!(
         ids,
         [
-            Some("chip_a".to_string()),
-            None,
-            Some("inner".to_string()),
-            Some("wrap_d".to_string()),
-            None
+            (s("chip_a"), v(&[])),
+            (None, v(&[])),
+            (s("inner"), v(&["outer"])),
+            (s("wrap_d"), v(&[])),
+            (None, v(&[])),
+            (s("held_f"), v(&["held"])),
+            (s("held"), v(&[])),
+            (s("inner"), v(&[])),
         ]
     );
-    for t in ["a", "d"] {
-        assert_eq!(shell.inst.identity(shell.text(t)).unwrap().id, None, "{t}");
+    for t in ["a", "d", "f"] {
+        let i = shell.inst.identity(shell.text(t)).unwrap();
+        assert_eq!((i.id, i.also), (None, v(&[])), "{t}");
     }
 }

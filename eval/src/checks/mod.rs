@@ -961,7 +961,7 @@ pub fn select_seen(trace: &RunTrace, sel: &Selector) -> Vec<String> {
         .nodes
         .iter()
         .filter(|(_, m)| match sel {
-            Selector::Id(id) => m.id.as_deref() == Some(id),
+            Selector::Id(id) => m.named(id),
             Selector::Text(t) => m.text.as_deref() == Some(t),
             Selector::Origin {
                 file, line, col, ..

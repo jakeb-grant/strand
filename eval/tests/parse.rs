@@ -772,7 +772,8 @@ fn every_committed_scenario_parses() {
 }
 
 /// eval/mutants/mutants.txt names patches and scenarios that exist, and
-/// checks that do.
+/// checks that do (or, eval-finish, a selector the run stops at:
+/// `unmatched:#id`, which the scenario names).
 #[test]
 fn every_mutant_line_names_what_exists() {
     let root = eval_root();
@@ -793,10 +794,18 @@ fn every_mutant_line_names_what_exists() {
         let specs: Vec<&str> = it.collect();
         assert!(!specs.is_empty(), "{line}");
         for spec in specs {
+            if let Some(sel) = spec.strip_prefix("unmatched:") {
+                let text = std::fs::read_to_string(root.join("scenarios").join(scn)).unwrap();
+                assert!(
+                    text.lines().any(|l| l.split_whitespace().any(|w| w == sel)),
+                    "{scn} names no {sel}"
+                );
+                continue;
+            }
             let check = spec.split(':').next().unwrap();
             assert!(CheckId::parse(check).is_some(), "{spec}");
         }
         n += 1;
     }
-    assert_eq!(n, 43);
+    assert_eq!(n, 47);
 }

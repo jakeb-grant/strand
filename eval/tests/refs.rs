@@ -100,6 +100,7 @@ fn ask(dir: &Path, note: &str) -> Ask {
         note: note.into(),
         approver: "tester".into(),
         dir: dir.to_path_buf(),
+        renote: false,
     }
 }
 
@@ -495,6 +496,55 @@ fn a_missing_reference_fails_where_one_is_required() {
         "{summary}"
     );
     assert!(summary.contains("eval approve "), "{summary}");
+}
+
+/// (eval-finish) `approve --renote` rewrites the note of the approved
+/// recording a run matches (an approval's reading written again), and
+/// keeps the recording byte for byte; a run that left its recording is
+/// refused, as is a scenario with none.
+#[test]
+fn approve_renote_rewrites_only_a_matching_blocks_note() {
+    let dir = scratch("renote");
+    let refs_dir = dir.join("refs");
+    let renote = |note: &str| Ask {
+        renote: true,
+        ..ask(&refs_dir, note)
+    };
+    let first = checked_run(ROW, &dir.join("one"), &refs_dir);
+    let e = refs::approve(std::slice::from_ref(&first), &renote("a reading")).unwrap_err();
+    assert!(
+        matches!(e, strand_eval::Error::Usage(ref m) if m.contains("--renote")),
+        "{e}"
+    );
+    refs::approve(std::slice::from_ref(&first), &ask(&refs_dir, "first")).unwrap();
+    let file = refs_dir.join("refs-row.ref");
+    let body = RefFile::load(&file)
+        .unwrap()
+        .unwrap()
+        .good("refs-row")
+        .unwrap()
+        .body
+        .clone();
+    let old = std::fs::read_to_string(&file).unwrap();
+    let again = checked_run(ROW, &dir.join("two"), &refs_dir);
+    let done = refs::approve(std::slice::from_ref(&again), &renote("read again: the row")).unwrap();
+    assert!(done[0].wrote);
+    let f = RefFile::load(&file).unwrap().unwrap();
+    assert_eq!(f.blocks.len(), 1);
+    let b = f.good("refs-row").unwrap();
+    assert_eq!(b.note, "read again: the row");
+    assert_eq!(b.body, body);
+    assert!(refs::lint(&refs_dir).unwrap().is_empty());
+    let new = std::fs::read_to_string(&file).unwrap();
+    assert!(refs::note_rule(Some(&old), &new, "x").is_empty());
+    let wide = ROW.replace("box { id: left; width: 20", "box { id: left; width: 24");
+    let changed = checked_run(&wide, &dir.join("three"), &refs_dir);
+    let e = refs::approve(std::slice::from_ref(&changed), &renote("another")).unwrap_err();
+    assert!(
+        matches!(e, strand_eval::Error::Usage(ref m) if m.contains("does not match")),
+        "{e}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), new);
 }
 
 #[test]

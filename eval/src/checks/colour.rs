@@ -47,7 +47,16 @@
 //! own spring's samples record, `SpringRec::to`, from the segment's start
 //! to the frame), with the same overshoot bound along each ray, and only
 //! when that way ends where the colour comes to rest; a target that does
-//! not move leaves the straight way as it was.
+//! not move leaves the straight way as it was. (eval-finish review) The
+//! targets are held to a way of their own first: a token the swap moves
+//! goes on one straight way in premultiplied OKLab, so targets that leave
+//! the line from the first to the last by more than [`STEPS`] are not
+//! followed and the straight way holds the colour. And along each ray
+//! the share is at most what its own spring reaches from rest by the
+//! frame's time ([`reach`]): a spring from rest has given its targets so
+//! far exactly the weight its way to a still target has covered, so a
+//! colour drawn at its target from the first frame is ahead of its
+//! spring.
 //!
 //! - **palette**: a theme swap springs each palette root along the curve
 //!   a colour takes in the table it sent ("Springs everywhere": colour
@@ -255,6 +264,78 @@ pub fn off_fan(c: [f64; 4], from: [f64; 4], targets: &[[f64; 4]], (lo, hi): (f64
     best
 }
 
+/// (eval-finish) Which way a colour left: off every way, ahead of
+/// where its spring can be by then (the time since the change, s, and
+/// the furthest share of the way its spring reaches by then), or past
+/// its end.
+#[derive(Clone, Copy, Debug)]
+enum Way {
+    Off,
+    Ahead(f64, f64),
+    Past,
+}
+
+/// (eval-finish) How far a point of premultiplied OKLab `p` is from the
+/// line between `a` and `b` (a share `lo..=hi` of the way), each drawn
+/// as the raster draws it, in steps of 1/255.
+pub fn off_line(p: [f64; 4], a: [f64; 4], b: [f64; 4], (lo, hi): (f64, f64)) -> f64 {
+    let e = drawn(p);
+    let at = |s: f64| -> f64 {
+        let q: [f64; 4] = std::array::from_fn(|i| a[i] + s * (b[i] - a[i]));
+        let d = drawn(q);
+        (0..4).map(|i| (d[i] - e[i]).abs()).fold(0.0, f64::max) * 255.0
+    };
+    let mut best = (f64::INFINITY, lo);
+    let n = ((hi - lo) * 100.0).ceil().max(1.0) as i32;
+    for i in 0..=n {
+        let s = lo + (hi - lo) * f64::from(i) / f64::from(n);
+        let d = at(s);
+        if d < best.0 {
+            best = (d, s);
+        }
+    }
+    let centre = best.1;
+    for i in -40..=40 {
+        let s = (centre + f64::from(i) / 4000.0).clamp(lo, hi);
+        best.0 = best.0.min(at(s));
+    }
+    best.0
+}
+
+/// (eval-finish) The furthest share of its way a motion along `c`
+/// reaches from rest within `secs` s of starting toward a still target:
+/// a unit-mass damped oscillator released one way short of it
+/// (`continuity::spring`, written from the oscillator), up to its first
+/// overshoot past the end; a timed curve's easing, sampled.
+pub fn reach(c: crate::trace::CurveRec, secs: f64) -> f64 {
+    use crate::trace::CurveRec;
+    let secs = secs.max(0.0);
+    match c {
+        CurveRec::Instant => 1.0,
+        CurveRec::Spring { k, z } => {
+            let (k, z) = (f64::from(k), f64::from(z));
+            let at = |t: f64| 1.0 - super::continuity::spring(k, z, 1.0, 0.0, t).0;
+            if z >= 1.0 {
+                return at(secs);
+            }
+            // Rising until its first peak, then never further.
+            let wd = k.max(1e-6).sqrt() * (1.0 - z * z).sqrt();
+            at(secs.min(std::f64::consts::PI / wd))
+        }
+        CurveRec::Timed { d, ease } => {
+            let d = (d as f64 / 1e9).max(1e-6);
+            let easing = ease.easing();
+            const N: u32 = 256;
+            (0..=N)
+                .map(|i| {
+                    let u = (secs * f64::from(i) / f64::from(N) / d).min(1.0) as f32;
+                    f64::from(strand_scene::motion::ease(easing, u))
+                })
+                .fold(0.0, f64::max)
+        }
+    }
+}
+
 /// A colour spring's target as its sample records it (`SpringRec::to`:
 /// premultiplied OKLab and alpha last, after a border's width).
 fn target_of(to: &[f32]) -> Option<[f64; 4]> {
@@ -452,47 +533,113 @@ fn transition(
         all.first()
             .is_some_and(|q| (0..4).any(|c| (p[c] - q[c]).abs() > TARGET_EPS))
     });
-    let chases = moving && all.last().is_some_and(|p| steps_to(*p, to) <= STEPS);
-    let mut worst: Option<(f64, u32, &str, bool)> = None;
+    let leads = moving && all.last().is_some_and(|p| steps_to(*p, to) <= STEPS);
+    // (eval-finish) The targets are a token's value as the swap moves it,
+    // which goes from where it was to where it rests on one straight way
+    // in premultiplied OKLab, as any colour a spring sends does (a palette
+    // root's, held by `palette` and `continuity`; a node drawn with the
+    // token is held to it here). Recorded targets that leave that way by
+    // more than the tolerance are not a way the fan may follow: the
+    // straight way holds the colour, and the finding says so.
+    let wander = match (all.first(), all.last()) {
+        (Some(a), Some(b)) if leads => all
+            .iter()
+            .map(|p| off_line(*p, *a, *b, (-0.5, 1.5)))
+            .fold(0.0, f64::max),
+        _ => 0.0,
+    };
+    let chases = leads && wander <= STEPS;
+    // (eval-finish) How far along each ray its own spring can be by a
+    // frame: a spring from rest chasing any target draws `from + s·(P̄ −
+    // from)` with `s` its own way from rest to a still target by then
+    // (the weights it has given its targets so far), so `s` is at most
+    // the furthest that way reaches by the frame's time from the
+    // segment's start (a change starts no earlier than that frame).
+    let curve = way.iter().find_map(|(i, _, _)| {
+        tl.frames[*i]
+            .sp
+            .iter()
+            .find(|r| r.key == key && r.of == prop)
+            .map(|r| r.c)
+    });
+    let t_b = tl.frames[bi].t_ns;
+    let mut worst: Option<(f64, u32, &str, Way)> = None;
     for (i, _, c) in &way {
         let Some(at) = rgba(c) else { continue };
-        let (e, wide) = if chases {
+        let (e, kind) = if chases {
             let t = targets_to(*i);
-            (
-                off_fan(at, from, &t, bound),
-                off_fan(at, from, &t, (-0.5, 1.5)),
-            )
+            let secs = tl.frames[*i].t_ns.saturating_sub(t_b) as f64 / 1e9;
+            let reach = curve.map_or(bound.1, |cv| reach(cv, secs).min(bound.1));
+            let e = off_fan(at, from, &t, (bound.0, reach.max(bound.0)));
+            let kind = if off_fan(at, from, &t, (-0.5, 1.5)) > STEPS {
+                Way::Off
+            } else if off_fan(at, from, &t, bound) <= STEPS {
+                Way::Ahead(secs, reach)
+            } else {
+                Way::Past
+            };
+            (e, kind)
         } else {
-            (off_way_in(at, from, to, bound), off_way(at, from, to))
+            let e = off_way_in(at, from, to, bound);
+            let kind = if off_way(at, from, to) > STEPS {
+                Way::Off
+            } else {
+                Way::Past
+            };
+            (e, kind)
         };
         if e > STEPS && worst.is_none_or(|w| e > w.0) {
-            worst = Some((e, tl.ks[*i], c, wide > STEPS));
+            worst = Some((e, tl.ks[*i], c, kind));
         }
     }
-    let (e, k, c, off) = worst?;
-    let msg = match (off || ov.is_none(), chases) {
-        (true, false) => format!(
+    let (e, k, c, kind) = worst?;
+    let ovp = ov.unwrap_or(0.0) * 100.0;
+    let msg = match (kind, chases) {
+        (Way::Off, false) => format!(
             "off its way: its {name} springing from {cb} to {ce} was drawn {c}, {e:.1} steps \
              of 1/255 from the way between them in premultiplied OKLab"
         ),
-        (false, false) => format!(
+        (Way::Past, false) if ov.is_none() => format!(
+            "off its way: its {name} springing from {cb} to {ce} was drawn {c}, {e:.1} steps \
+             of 1/255 from the way between them in premultiplied OKLab"
+        ),
+        (_, false) => format!(
             "past its end: its {name} springing from {cb} to {ce} was drawn {c}, on the way \
              between them in premultiplied OKLab but {e:.1} steps of 1/255 past where its \
-             spring's overshoot ({:.1}% of the way) takes it",
-            ov.unwrap_or(0.0) * 100.0
+             spring's overshoot ({ovp:.1}% of the way) takes it"
         ),
-        (true, true) => format!(
+        (Way::Off, true) => format!(
             "off its way: its {name} springing from {cb} toward a moving target that rests at \
              {ce} was drawn {c}, {e:.1} steps of 1/255 from every way between where it started \
              and where its target had been, in premultiplied OKLab"
         ),
-        (false, true) => format!(
+        (Way::Past, true) if ov.is_none() => format!(
+            "off its way: its {name} springing from {cb} toward a moving target that rests at \
+             {ce} was drawn {c}, {e:.1} steps of 1/255 from every way between where it started \
+             and where its target had been, in premultiplied OKLab"
+        ),
+        (Way::Past, true) => format!(
             "past its end: its {name} springing from {cb} toward a moving target that rests at \
              {ce} was drawn {c}, between where it started and where its target had been in \
              premultiplied OKLab but {e:.1} steps of 1/255 past where its spring's overshoot \
-             ({:.1}% of the way) takes it",
-            ov.unwrap_or(0.0) * 100.0
+             ({ovp:.1}% of the way) takes it"
         ),
+        (Way::Ahead(secs, reach), _) => format!(
+            "ahead of its spring: its {name} springing from {cb} toward a moving target that \
+             rests at {ce} was drawn {c} {:.1} ms after the change, {e:.1} steps of 1/255 from \
+             every way between where it started and where its target had been that its spring \
+             reaches by then in premultiplied OKLab (at most {:.1}% of the way from rest)",
+            secs * 1e3,
+            reach * 100.0
+        ),
+    };
+    let msg = if wander > STEPS {
+        format!(
+            "{msg}; its target, recorded moving to where it rests, left its own straight way \
+             by {wander:.1} steps, so the straight way holds it"
+        )
+    } else {
+        msg
     };
     Some(
         Finding::fail(CheckId::Colour, msg)

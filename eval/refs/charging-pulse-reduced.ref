@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "charging-pulse-reduced"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "first reference (eval-coverage-5): read: the level breathes 1 to 0.4 and back on a 1.2 s loop, holds at its start (opacity 1) with motion reduced and the bar rests in one tick, breathes again in phase, unplug ends it and the bolt leaves; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k113 the bolt's row hidden at opacity 0 as it leaves now at its pose's scale 0.6, where it read 1; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario 1dd66bb099e65269
-seal a65fdcec2d86c919
+seal 3340aa24be164741
 S1 0 - "bar Top"
 N0 "idle|shell.strand:18:9|[Mock | DP-1]#0" "box#idle"
 N1 "shell|shell.strand:13:5|[Mock | DP-1]#0" "box#shell"

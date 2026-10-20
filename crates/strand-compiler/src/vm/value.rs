@@ -198,6 +198,13 @@ pub struct NodeState {
     /// the order each started holding; the name is the last
     /// ([`NodeState::hold`]).
     pub holders: std::cell::RefCell<Vec<std::rc::Weak<NodeState>>>,
+    /// (eval-finish) The component calls nested in the one at `idx` that
+    /// this state was handed down through as each one's root (`Pill live
+    /// { id: pill }` as `PlayButton`'s root, called `PlayButton playing
+    /// { id: play_btn }`), outermost first: an `id:` on any of them names
+    /// the element at the end of the chain too (decisions.md
+    /// m6-w2-language, eval-finish).
+    pub calls: std::cell::RefCell<Vec<NodeIdx>>,
     /// The core scope its signals belong to (that of the scope owning
     /// the element), for those made on first use.
     pub scope: Option<strand_core::NodeId>,

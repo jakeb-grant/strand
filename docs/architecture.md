@@ -1124,9 +1124,11 @@ refused), and S-inspect reuses it.
 
 **`strand-compiler` `Instance` inspection (new; read-only, never read by
 evaluation).**
-- `identity(node) -> Option<Identity { instance_path, key, id,
+- `identity(node) -> Option<Identity { instance_path, key, id, also,
   sibling_index, scope }>` (`None` for a node the instance does not
-  hold);
+  hold); `id` is the element's own `id:`, else its component call's,
+  and `also` every other `id:` naming it through a chain of calls
+  (eval-finish);
 - `cells_of(node) -> Vec<CellInfo { path, kept, persisted, layer }>`,
   where `layer` is the settings layer or the token overlay a value came
   from (the three kept badges: kept over a changed default, persisted,

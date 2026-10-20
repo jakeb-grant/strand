@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "reopen-enters"
 verdict good
-note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+note "launcher-reopen: new regression; read k1-80: both openings play the same frames, the card springing from its 60x8 enter pose to 320x140 and the chip fading 0 to 1 over k1-15 and again k48-62, the exit fading both k34-46; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k1 and k48 the chip's rows hidden at opacity 0 now at its pose's scale 0.6 and k47 the panel's at its exit's 0.96, where they read 1; the visible k48 panel row now writes sc=1,1 only because the delta encoding follows k47's hidden 0.96, its value unchanged; nothing else differs"
 date 2026-10-20
-rev "84550a8c+changes"
+rev "b1224229+changes"
 approver "claude"
 scenario 724e2118816b0104
-seal 65e3b887bfc8bf89
+seal 8b266f555be1532a
 S1 1 47 "panel Sheet"
 S2 48 - "panel Sheet"
 N0 "card|shell.strand:10:9|#0" "col#card"
