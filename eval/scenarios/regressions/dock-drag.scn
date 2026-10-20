@@ -1,0 +1,54 @@
+id     = "dock-drag"
+about  = """Round 7's dock-drag (docs/decisions.md dock-drag): a dock on a 75 Hz
+output whose pins are reordered by dragging (design.md "Input and
+structure": `drag: pin` on the source, `on drop` on the target), the web
+pin wearing a count badge that overhangs the next pin. Two things were
+wrong. A pin let go and come to rest stayed on record as lifted until it
+was next drawn, and the dock raised only the first lifted pin it found,
+so the next pin dragged was drawn under its neighbour for a frame and
+then over it. And damage never looked at paint order: where two nodes
+that overlap swap places (a pin lifted or let back among its siblings, a
+keyed reorder) the pixels they share change colour though neither node's
+record does, so a partial repaint left a strip of the neighbour over the
+dragged pin (`redraw`; eval/mutants/dock-drag.patch takes order damage
+out, and the badge, raised with its pin, is stale where it overhangs).
+The clock never moves."""
+screen = { width = 420, height = 300, scale = 1.0 }
+hz     = 75
+
+=== shell.strand
+type Pin { app: text; tint: color; count: int }
+state pins: [Pin] key app = [Pin(app: "files", tint: #89b4fa, count: 0), Pin(app: "web", tint: #f38ba8, count: 3), Pin(app: "term", tint: #a6e3a1, count: 0), Pin(app: "music", tint: #f9e2af, count: 0), Pin(app: "mail", tint: #cba6f7, count: 0)]
+bar Dock {
+  edge: bottom; height: 56; bg: #11111b
+  row { height: 56; pad: 0, 12; gap: 12; align: center
+    row { id: pins_row; gap: 8; align: center
+      on drop(p: Pin, at: int) { pins.move(p.app, at) }
+      for p in pins key p.app {
+        box { size: 40; radius: 10; bg: p.tint; drag: p
+          box { size: 12; radius: full; bg: #11111b }
+          if p.count > 0 {
+            box { id: badge; x: 34; y: -4; size: 16; radius: full; bg: #fab387 }
+          }
+        }
+      }
+    }
+    spacer
+    text "12:30" { id: clock; color: #cdd6f4 }
+  }
+}
+
+=== steps
+rest
+mark reorder
+drag 32,28 -> 150,28 over 400
+rest
+expect still #clock
+mark nowhere
+drag 80,28 -> 300,4 over 250
+rest
+expect still #clock
+mark nudge
+drag 80,28 -> 86,30 over 120
+rest
+expect still #clock

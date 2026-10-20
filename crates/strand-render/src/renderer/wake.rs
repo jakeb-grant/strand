@@ -225,7 +225,12 @@ impl Renderer {
                 .get(&id)
                 .is_some_and(|s| self.anim.deferred(&self.tree, s.root));
             if let Some(s) = self.surfaces.get_mut(&id) {
-                if s.valid && s.records == f.records && s.opaque == f.opaque && !deferred {
+                if s.valid
+                    && s.records == f.records
+                    && s.order == f.order
+                    && s.opaque == f.opaque
+                    && !deferred
+                {
                     s.dirty = false;
                 }
                 s.animating = animating;

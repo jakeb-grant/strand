@@ -133,6 +133,8 @@ struct SurfaceState {
     /// has a layout at the new scale; then it is pruned.
     prev_scale: Option<Scale>,
     records: BTreeMap<NodeId, NodeRecord>,
+    /// (dock-drag) The last frame's paint order (`Flattened::order`).
+    order: Vec<NodeId>,
     /// Damage of the most recent frames, newest first.
     history: VecDeque<Damage>,
     /// False until the first paint, and after size or scale changes.

@@ -311,6 +311,11 @@ pub struct Flattened {
     pub items: Vec<DisplayItem>,
     /// Ordered, so damage is added in a deterministic order.
     pub records: BTreeMap<NodeId, NodeRecord>,
+    /// (dock-drag) The recorded nodes in the order they paint: where two
+    /// that overlap swap places (a lifted child raised above its
+    /// siblings, a keyed reorder) the pixels they share change colour
+    /// though neither record does ([`crate::renderer`]'s order damage).
+    pub order: Vec<NodeId>,
     /// Text nodes and the shaping they need at this scale.
     pub text: Vec<(NodeId, TextSpec)>,
     /// Where the surface root paints fully opaque pixels.

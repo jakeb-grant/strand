@@ -147,3 +147,8 @@ pose-margin-unsent.patch            curated/osd-pose-margins.scn        regions-
 # tile the damage's edge cuts: a channel a level off from a full repaint
 # (`redraw`).
 image-redraw.patch      regressions/image-redraw.scn      redraw
+# dock-drag.patch: dock-drag's order damage taken out (decisions.md
+# dock-drag): a pin's badge that overhangs its neighbour goes back under it
+# when the pin let go lands, and the pixels they share are not repainted
+# (`redraw`).
+dock-drag.patch         regressions/dock-drag.scn         redraw

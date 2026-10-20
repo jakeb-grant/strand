@@ -2277,7 +2277,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   its children's, as the mask is drawn across it), so a box or clip that only
   moves, resizes or rounds its corners damages along its edges and
   corners (`RoundBox::changed`), not its whole area and its content's
-  (a card swelling under its content); a gradient is cached
+  (a card swelling under its content), and each frame keeps its nodes'
+  paint order (`Flattened::order`), so where nodes that overlap swap
+  places (a lifted child raised, a keyed reorder) what they share is
+  damaged (`order_damage`, dock-drag); a gradient is cached
   only when a second frame draws the same paint at the same size, so one
   whose paint or size changes every frame is dithered cell by cell,
   uncached. `Renderer::last_paint_times` (`PaintTimes`) says where the

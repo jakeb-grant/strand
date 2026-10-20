@@ -1620,6 +1620,7 @@ impl<'a> Flattener<'a> {
             }
             None => rest,
         };
+        self.out.order.push(node.id);
         self.out.records.insert(
             node.id,
             NodeRecord {
@@ -1809,10 +1810,13 @@ impl<'a> Flattener<'a> {
         };
         let mut children = Rect::default();
         if !(clips && child_clip.is_empty()) {
-            // (M4) A child lifted by a drag paints above its siblings.
-            let lifted = node.children.iter().copied().find(|c| self.anim.lifted(*c));
-            let order = node.children.iter().copied().filter(|c| Some(*c) != lifted);
-            for c in order.chain(lifted) {
+            // (M4) A child lifted by a drag paints above its siblings,
+            // one springing back below the one a drag holds (dock-drag).
+            let mut order = Cow::Borrowed(node.children.as_slice());
+            if order.iter().any(|c| self.anim.lift_rank(*c) > 0) {
+                order.to_mut().sort_by_key(|c| self.anim.lift_rank(*c));
+            }
+            for &c in order.iter() {
                 // A nested surface (a popup) paints on its own surface.
                 if let Some(child) = self
                     .tree

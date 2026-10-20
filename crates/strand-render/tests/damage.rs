@@ -3316,3 +3316,62 @@ fn every_transformed_group_repaints_where_it_is_drawn() {
         }
     }
 }
+
+/// (dock-drag) Two boxes that overlap swap paint order without either
+/// record changing: the red box under the green one is lifted where it
+/// is (a drag's first frame, held still), so it paints above it; then it
+/// is held 1 px right (only its edges move, `NodeRecord::geom`); then
+/// let go, back under the green box once it has sprung home. Each
+/// partial repaint at age 1 equals a full repaint of the same frame: the
+/// pixels the two share are repainted wherever their order changed.
+#[test]
+fn a_change_of_paint_order_repaints_where_the_two_overlap() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let boxed = |b: &mut Builder, x: f32, c: &str| {
+        b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(10.0)),
+                (Prop::Size, num(40.0)),
+                (Prop::Radius, num(8.0)),
+                (Prop::Bg, color(c)),
+            ],
+        )
+    };
+    let red = boxed(&mut b, 10.0, "#ff0000");
+    boxed(&mut b, 30.0, "#00ff00");
+    let (mut r, mut buf) = fresh(b.diff, 120, 60, Scale::ONE);
+    let t0 = std::time::Duration::from_secs(1);
+    buf.paint_at(&mut r, BAR, 0, t0);
+    let green = |p: [u8; 4]| p[1] > 200 && p[2] < 40;
+    assert!(green(buf.px(40, 30)), "green over red where they overlap");
+    let steps: [(&str, Option<f32>); 3] = [
+        ("lifted in place", Some(0.0)),
+        ("held 1 px right", Some(1.0)),
+        ("let go", None),
+    ];
+    let mut k = 1u64;
+    for (what, at) in steps {
+        r.lift(red, at.map(|x| LogicalPoint::new(x, 0.0)));
+        loop {
+            let t = t0 + std::time::Duration::from_micros(16_667 * k);
+            k += 1;
+            buf.paint_at(&mut r, BAR, 1, t);
+            let mut full = Buffer::new(120, 60, Scale::ONE);
+            full.paint_at(&mut r, BAR, 0, t);
+            assert!(
+                buf.pixels == full.pixels,
+                "{what} (frame {k}): the partial repaint differs from a full one"
+            );
+            if !r.wants_frame(BAR) {
+                break;
+            }
+            assert!(k < 200, "never settled");
+        }
+        let red_on_top = !green(buf.px(40, 30));
+        assert_eq!(red_on_top, at.is_some(), "{what}");
+    }
+}

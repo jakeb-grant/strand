@@ -211,6 +211,110 @@ pub(super) fn diff_records(
     }
 }
 
+/// Above this many comparisons (moved nodes times the nodes drawn in
+/// both frames), [`order_damage`] damages each moved node's whole
+/// bounds, where it was and where it is, instead of what it shares with
+/// each node it passed.
+pub(super) const ORDER_PAIRS_COMPARED: usize = 1 << 16;
+
+/// (dock-drag) Damage where nodes drawn in both frames changed paint
+/// order: a lifted child raised above its siblings or let back among
+/// them, a keyed reorder. A pixel two nodes both draw takes the colour
+/// of the later one, so where a pair swapped places the colour can
+/// change though neither node's record did (and a node that only moved
+/// damages no more than its edges, `geometry_damage`). Each pair that
+/// swapped damages what both draw, where they were and where they are.
+///
+/// Every swapped pair holds a node outside a longest run kept in order
+/// (the nodes kept in order never swap among themselves), so only those
+/// moved nodes are compared with the rest.
+pub(super) fn order_damage(
+    (old_order, old): (&[NodeId], &BTreeMap<NodeId, NodeRecord>),
+    (new_order, new): (&[NodeId], &BTreeMap<NodeId, NodeRecord>),
+    d: &mut Damage,
+) {
+    if old_order == new_order {
+        return;
+    }
+    // A node recorded twice paints where its record says, at its last
+    // place.
+    let place = |order: &[NodeId]| {
+        let mut at = std::collections::HashMap::with_capacity(order.len());
+        for (i, id) in order.iter().enumerate() {
+            at.insert(*id, i);
+        }
+        at
+    };
+    let was = place(old_order);
+    let is = place(new_order);
+    // The nodes drawn in both, in their new order, with their old places.
+    let mut both: Vec<(usize, usize, NodeId)> = is
+        .iter()
+        .filter_map(|(id, n)| was.get(id).map(|o| (*n, *o, *id)))
+        .collect();
+    both.sort_unstable();
+    if both.windows(2).all(|w| w[0].1 < w[1].1) {
+        return;
+    }
+    let moved = moved_out_of_order(&both);
+    let whole = moved.len().saturating_mul(both.len()) > ORDER_PAIRS_COMPARED;
+    let bounds = |id: NodeId| {
+        (
+            old.get(&id).map(|r| r.bounds),
+            new.get(&id).map(|r| r.bounds),
+        )
+    };
+    for &m in &moved {
+        let (_, mo, mid) = both[m];
+        let (ma, mb) = bounds(mid);
+        if whole {
+            d.add(ma.unwrap_or_default());
+            d.add(mb.unwrap_or_default());
+            continue;
+        }
+        for (j, &(_, xo, xid)) in both.iter().enumerate() {
+            if j == m || (j < m) == (xo < mo) {
+                continue;
+            }
+            let (xa, xb) = bounds(xid);
+            for (p, q) in [(ma, xa), (mb, xb)] {
+                if let (Some(p), Some(q)) = (p, q)
+                    && let Some(r) = p.intersect(q)
+                    && !r.is_empty()
+                {
+                    d.add(r);
+                }
+            }
+        }
+    }
+}
+
+/// The indices of `both` (sorted by new place) left out of a longest run
+/// whose old places increase.
+fn moved_out_of_order(both: &[(usize, usize, NodeId)]) -> Vec<usize> {
+    // Patience sorting: `tails[l]` ends the best run of length l + 1.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev = vec![usize::MAX; both.len()];
+    for (i, &(_, o, _)) in both.iter().enumerate() {
+        let l = tails.partition_point(|&t| both[t].1 < o);
+        if l > 0 {
+            prev[i] = tails[l - 1];
+        }
+        if l == tails.len() {
+            tails.push(i);
+        } else {
+            tails[l] = i;
+        }
+    }
+    let mut kept = vec![false; both.len()];
+    let mut at = tails.last().copied().unwrap_or(usize::MAX);
+    while at != usize::MAX {
+        kept[at] = true;
+        at = prev[at];
+    }
+    (0..both.len()).filter(|i| !kept[*i]).collect()
+}
+
 /// Where a CPU paint spent its time ([`Renderer::last_paint_times`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaintTimes {
@@ -573,6 +677,7 @@ impl Renderer {
         let mut frame = Damage::new();
         if s.valid && !fade.full() {
             diff_records(&s.records, &f.records, &mut frame);
+            order_damage((&s.order, &s.records), (&f.order, &f.records), &mut frame);
             frame.clip(bounds);
             // (eval-sandbox) The `redraw` check's mutant: damage that
             // misses a band around what changed.
@@ -606,9 +711,14 @@ impl Renderer {
         let stats = (
             frame.area(),
             animating,
-            animating || inspected || !clocked.is_empty() || s.records != f.records,
+            animating
+                || inspected
+                || !clocked.is_empty()
+                || s.records != f.records
+                || s.order != f.order,
         );
         s.records = f.records.clone();
+        s.order.clone_from(&f.order);
         s.hits = f.hits.clone();
         // (eval-sandbox) Every paint, empty damage included.
         #[cfg(feature = "eval-hooks")]

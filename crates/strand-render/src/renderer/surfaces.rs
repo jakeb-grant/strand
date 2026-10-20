@@ -157,6 +157,7 @@ impl Renderer {
                 scale: Scale::ONE,
                 prev_scale: None,
                 records: BTreeMap::new(),
+                order: Vec::new(),
                 history: VecDeque::new(),
                 valid: false,
                 painted: false,

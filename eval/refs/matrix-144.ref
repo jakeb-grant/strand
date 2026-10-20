@@ -11496,12 +11496,12 @@ k113
 k114
 ref "m.enter-fade__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario af3e2bb353bde522
-seal 270acd8e44b6653a
+seal 08317824f304ff10
 S1 0 - "bar Top"
 S2 1 224 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -11807,16 +11807,16 @@ k88
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k89
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k90
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k91
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k92
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -21914,12 +21914,12 @@ k95
 k96
 ref "m.enter-scale__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario be1ad2d7416625f6
-seal a7ef1448665fe40e
+seal 8da055cd9f4cb110
 S1 0 - "bar Top"
 S2 1 215 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -22204,16 +22204,16 @@ k79
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k80
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k81
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k82
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k83
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -32409,12 +32409,12 @@ k113
 k114
 ref "m.enter-slide__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 8b27b9311981cbcd
-seal 7cfd5bd2cc6158df
+seal 9e492c50282d7338
 S1 0 - "bar Top"
 S2 1 224 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -32720,16 +32720,16 @@ k88
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k89
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k90
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k91
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k92
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -42098,12 +42098,12 @@ k103
 k104
 ref "m.exit-fade__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 490727ebc1a63a66
-seal b36c043680f60457
+seal da1663b37c9690cc
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -42349,16 +42349,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -50216,12 +50216,12 @@ k92
 k93
 ref "m.exit-height0__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 614ef958c9b31108
-seal ccf307f364db77e8
+seal 1f08e3e1ddc5d70e
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -50467,16 +50467,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -58128,12 +58128,12 @@ k103
 k104
 ref "m.exit-slide__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 56f38de55e055528
-seal 767793b75535049c
+seal dfab76c70496302f
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -58379,16 +58379,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -66162,12 +66162,12 @@ k71
 k72
 ref "m.flip-nested__jelly.144"
 verdict good
-note "eval-coverage-3: flip-nested's boxes now hold a 2 x 4 mark each (pad 2), a third level riding the glides; every block matches its reference node for node but for the four marks it adds (orders of the nodes both share kept), read cell by cell with a recording comparison"
-date 2026-10-19
-rev "a7965714+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 4a54d9bf64c0ac9f
-seal 5480fa6908a0ebd2
+seal 78459520cca542bd
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -66435,16 +66435,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -74865,12 +74865,12 @@ k71
 k72
 ref "m.flip-reorder__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 91fdf3f3420dd175
-seal df2c28c834f9296f
+seal a3f082fcc657c70f
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
@@ -75172,20 +75172,20 @@ k78
 n16 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n17 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n16 x=36 v=35.65625,9.40625,12.6875,14.1875
-n17 x=36 v=35.65625,9.40625,12.6875,14.1875
-k80
-n16 v=35.765625,9.28125,12.46875,14.421875
-n17 v=35.765625,9.28125,12.46875,14.421875
-k81
 n0 ord=11
 n5 ord=6
 n9 ord=8
 n10 ord=10
 n11 ord=7
 n12 ord=9
-n16 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n17 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n16 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n17 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
+k80
+n16 v=35.765625,9.28125,12.46875,14.421875
+n17 v=35.765625,9.28125,12.46875,14.421875
+k81
+n16 v=35.859375,9.171875,12.265625,14.671875
+n17 v=35.859375,9.171875,12.265625,14.671875
 k82
 n16 v=35.953125,9.046875,12.078125,14.90625
 n17 v=35.953125,9.046875,12.078125,14.90625
@@ -83202,12 +83202,12 @@ k71
 k72
 ref "m.image__jelly.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario bc125f8ba0ab55a2
-seal 1bdc430172d32c72
+seal 19de0467803a378d
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -83453,16 +83453,16 @@ k78
 n12 x=36.046875 v=35.390625,10.421875,17.21875,11.15625
 n13 x=36.046875 v=35.390625,10.421875,17.21875,11.15625
 k79
-n12 x=36 v=35.546875,10.328125,16.921875,11.34375
-n13 x=36 v=35.546875,10.328125,16.921875,11.34375
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.546875,10.328125,16.921875,11.34375 ord=4
+n13 x=36 v=35.546875,10.328125,16.921875,11.34375 ord=5
 k80
 n12 v=35.6875,10.234375,16.625,11.546875
 n13 v=35.6875,10.234375,16.625,11.546875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.8125,10.125,16.359375,11.734375 ord=4
-n13 v=35.8125,10.125,16.359375,11.734375 ord=5
+n12 v=35.8125,10.125,16.359375,11.734375
+n13 v=35.8125,10.125,16.359375,11.734375
 k82
 n12 v=35.953125,10.046875,16.109375,11.921875
 n13 v=35.953125,10.046875,16.109375,11.921875
@@ -87493,12 +87493,12 @@ k121
 k122
 ref "m.jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario e4a6f15d43d6e248
-seal 5ef3725489b461ff
+seal a0883029c7b9c471
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -87744,16 +87744,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -88129,12 +88129,12 @@ k234
 k235
 ref "m.jelly__blur.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 477f3e90cf9a9bee
-seal e06d86c5909fa2d1
+seal 50531a7a4929d21c
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -88380,16 +88380,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -88765,12 +88765,12 @@ k234
 k235
 ref "m.jelly__clip.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario b0b72814b16cba71
-seal efa4020c3f7b1ef9
+seal 8f8a5e28587114ff
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -89016,16 +89016,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -89401,12 +89401,12 @@ k234
 k235
 ref "m.jelly__colour-shift.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 7da35fbdad0d5912
-seal 1160551ab0457bce
+seal 2d1c493a7eb031bc
 S1 0 - "bar Top"
 S2 1 216 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -89652,16 +89652,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -90068,12 +90068,12 @@ k236
 k237
 ref "m.jelly__gpu.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 35d138a3ce0e1091
-seal 984f414f1ce32d21
+seal daeafc90cf930636
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -90319,16 +90319,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -90704,12 +90704,12 @@ k234
 k235
 ref "m.jelly__keyframes.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario bae2898efe32c6d4
-seal 233bdfec5d8cfbee
+seal 92c974866d7ecc38
 S1 0 - "bar Top"
 S2 1 237 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -91066,16 +91066,16 @@ k101
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k102
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k103
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k104
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k105
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -91451,12 +91451,12 @@ k257
 k258
 ref "m.jelly__late-text-1.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 18c592ce45a7eb0b
-seal 4f5250d635438269
+seal 11adc6771fa4ce95
 S1 0 - "bar Top"
 S2 1 215 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -91707,16 +91707,16 @@ k79
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k80
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k81
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k82
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k83
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -92092,12 +92092,12 @@ k235
 k236
 ref "m.jelly__late-text-paint.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 6f7e8296342f6e16
-seal 6061deddd4984c4a
+seal c1e29d0871a52b2e
 S1 0 - "bar Top"
 S2 1 215 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -92348,16 +92348,16 @@ k79
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k80
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k81
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k82
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k83
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -92733,12 +92733,12 @@ k235
 k236
 ref "m.jelly__reduced-motion.144"
 verdict good
-note "eval-false-alarms: the sandbox places the fixture's popup as the compositor does (strand-surface placement::popup_shift): centred under its anchor near the screen's left edge it would start at x -49, and the positioner's constraint shifts it onto the screen at x 0; only the popup's origin changed, every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
-date 2026-10-18
-rev "0824d452+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 8523adb59ee3e294
-seal 6c5d97a0176fc8a9
+seal 15d8dc05b7d5af7d
 S1 0 - "bar Top"
 S2 1 33 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -92859,16 +92859,18 @@ k29
 n12 x=130.5 v=131,9,12,15
 n13 x=130.5 v=131,9,12,15 ink=131,10,11,10
 k30
-n12 x=36 v=d
-n13 x=36 v=d ink=36,10,11,10
+n0 ord=7
+n5 ord=6
+n12 x=36 v=d ord=4
+n13 x=36 v=d ord=5 ink=36,10,11,10
 k32 p2
 n10 w=260
 k33 p1
 s2 -
-n0 x=82
+n0 x=82 ord=5
 n1 ord=8
 n3 ord=6
-n5 x=36 ink=36,10,27,11
+n5 x=36 ord=4 ink=36,10,27,11
 n7 ord=7
 n9 -
 n10 -
@@ -92877,12 +92879,12 @@ n12 -
 n13 -
 ref "m.jelly__roll-text.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario f46627c8aa7e54c4
-seal 1408d83cca2f5ae9
+seal 9ae49e38a3820cce
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -93128,16 +93130,16 @@ k78
 n12 x=36.046875 v=35.4375,9.53125,16.140625,13.9375
 n13 x=36.046875 v=35.4375,9.53125,16.140625,13.9375
 k79
-n12 x=36 v=35.5625,9.40625,15.859375,14.1875
-n13 x=36 v=35.5625,9.40625,15.859375,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.5625,9.40625,15.859375,14.1875 ord=4
+n13 x=36 v=35.5625,9.40625,15.859375,14.1875 ord=5
 k80
 n12 v=35.703125,9.28125,15.59375,14.421875
 n13 v=35.703125,9.28125,15.59375,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.828125,9.171875,15.34375,14.671875 ord=4
-n13 v=35.828125,9.171875,15.34375,14.671875 ord=5
+n12 v=35.828125,9.171875,15.34375,14.671875
+n13 v=35.828125,9.171875,15.34375,14.671875
 k82
 n12 v=35.953125,9.046875,15.09375,14.90625
 n13 v=35.953125,9.046875,15.09375,14.90625
@@ -93499,12 +93501,12 @@ k234
 k235
 ref "m.jelly__scale-1.5.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 9e48f51737421e53
-seal 3f82eb87d0f3ab1e
+seal 551491a9d38c9e06
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -93750,16 +93752,16 @@ k78
 n12 x=36.046875 v=35.546875,9.84375,12.90625,13.625
 n13 x=36.046875 v=35.546875,9.84375,12.90625,13.625
 k79
-n12 x=36 v=35.65625,9.734375,12.6875,13.875
-n13 x=36 v=35.65625,9.734375,12.6875,13.875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.734375,12.6875,13.875 ord=4
+n13 x=36 v=35.65625,9.734375,12.6875,13.875 ord=5
 k80
 n12 v=35.765625,9.609375,12.46875,14.109375
 n13 v=35.765625,9.609375,12.46875,14.109375
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.5,12.265625,14.34375 ord=4
-n13 v=35.859375,9.5,12.265625,14.34375 ord=5
+n12 v=35.859375,9.5,12.265625,14.34375
+n13 v=35.859375,9.5,12.265625,14.34375
 k82
 n12 v=35.953125,9.375,12.078125,14.5625
 n13 v=35.953125,9.375,12.078125,14.5625
@@ -94125,12 +94127,12 @@ k234
 k235
 ref "m.jelly__scale-2.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 0cfa9fb820c45220
-seal 4e4397e043d1aba8
+seal b4e278303bd6877e
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -94376,16 +94378,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -94761,12 +94763,12 @@ k234
 k235
 ref "m.jelly__scroll.144"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 7211413a0eccee71
-seal b0297e6fbf557d5c
+seal 2dd08bafdfe3a362
 S1 0 - "bar Top"
 S2 1 252 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -95029,16 +95031,16 @@ k78
 n17 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n18 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n17 x=36 v=35.65625,9.40625,12.6875,14.1875
-n18 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n17 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n18 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n17 v=35.765625,9.28125,12.46875,14.421875
 n18 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n17 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n18 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n17 v=35.859375,9.171875,12.265625,14.671875
+n18 v=35.859375,9.171875,12.265625,14.671875
 k82
 n17 v=35.953125,9.046875,12.078125,14.90625
 n18 v=35.953125,9.046875,12.078125,14.90625
@@ -95673,12 +95675,12 @@ k272
 k273
 ref "m.jelly__shadow.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 19ad97bc04a7c479
-seal 80a63906ca708586
+seal 0cf426cd540911f0
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -95924,16 +95926,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -96309,12 +96311,12 @@ k234
 k235
 ref "m.jelly__slider-drag.144"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 7800eb6c89f6f685
-seal e6819e03edf263eb
+seal a9543b503d6dc31e
 S1 0 - "bar Top"
 S2 1 260 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -96566,16 +96568,16 @@ k78
 n14 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n15 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n14 x=36 v=35.65625,9.40625,12.6875,14.1875
-n15 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n14 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n15 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n14 v=35.765625,9.28125,12.46875,14.421875
 n15 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n14 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n15 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n14 v=35.859375,9.171875,12.265625,14.671875
+n15 v=35.859375,9.171875,12.265625,14.671875
 k82
 n14 v=35.953125,9.046875,12.078125,14.90625
 n15 v=35.953125,9.046875,12.078125,14.90625
@@ -105752,12 +105754,12 @@ k100
 k101
 ref "m.lean__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 1826b653e121cb86
-seal 4ae718814fc08b72
+seal d1f78297b264d0bd
 S1 0 - "bar Top"
 S2 1 244 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -106092,16 +106094,16 @@ k108
 n12 x=36.046875 v=34.640625,8.703125,14.71875,15.609375
 n13 x=36.046875 v=34.640625,8.703125,14.71875,15.609375
 k109
-n12 x=36 v=34.734375,8.59375,14.546875,15.8125
-n13 x=36 v=34.734375,8.59375,14.546875,15.8125
+n0 ord=7
+n5 ord=6
+n12 x=36 v=34.734375,8.59375,14.546875,15.8125 ord=4
+n13 x=36 v=34.734375,8.59375,14.546875,15.8125 ord=5
 k110
 n12 v=34.8125,8.484375,14.359375,16.03125
 n13 v=34.8125,8.484375,14.359375,16.03125
 k111
-n0 ord=7
-n5 ord=6
-n12 v=34.90625,8.390625,14.1875,16.234375 ord=4
-n13 v=34.90625,8.390625,14.1875,16.234375 ord=5
+n12 v=34.90625,8.390625,14.1875,16.234375
+n13 v=34.90625,8.390625,14.1875,16.234375
 k112
 n12 v=34.984375,8.28125,14.03125,16.4375
 n13 v=34.984375,8.28125,14.03125,16.4375
@@ -110771,12 +110773,12 @@ k99
 k100
 ref "m.popup-content-height__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario a532d1ca82429618
-seal 4a92b0e1045fdd4a
+seal 30b971abb677b5be
 S1 0 - "bar Top"
 S2 1 242 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -111022,16 +111024,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -116831,12 +116833,12 @@ k92
 k93
 ref "m.reveal__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 174b07d818811794
-seal 4f4308ce049f9cf7
+seal 39c64feb5b3c63d3
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -117082,16 +117084,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -129537,12 +129539,12 @@ n6 x=112 v=d
 k95
 ref "m.shared-morph__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 7e2ab780cacf6a7a
-seal 304d73018c589999
+seal 8a41c0e5aa51f9f9
 S1 0 - "bar Top"
 S2 1 226 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -129857,16 +129859,16 @@ k90
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n14 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k91
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
-n14 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n14 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k92
 n13 v=35.765625,9.28125,12.46875,14.421875
 n14 v=35.765625,9.28125,12.46875,14.421875
 k93
-n0 ord=7
-n5 ord=6
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n14 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n13 v=35.859375,9.171875,12.265625,14.671875
+n14 v=35.859375,9.171875,12.265625,14.671875
 k94
 n13 v=35.953125,9.046875,12.078125,14.90625
 n14 v=35.953125,9.046875,12.078125,14.90625
@@ -135356,12 +135358,12 @@ k104
 k105
 ref "m.size-spring__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 29b20906d603e248
-seal 8337e035a542992e
+seal e5735a725fc56a69
 S1 0 - "bar Top"
 S2 1 247 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -135607,16 +135609,16 @@ k78
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n13 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k79
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n13 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k80
 n12 v=35.765625,9.28125,12.46875,14.421875
 n13 v=35.765625,9.28125,12.46875,14.421875
 k81
-n0 ord=7
-n5 ord=6
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n13 v=35.859375,9.171875,12.265625,14.671875
 k82
 n12 v=35.953125,9.046875,12.078125,14.90625
 n13 v=35.953125,9.046875,12.078125,14.90625
@@ -142866,12 +142868,12 @@ k121
 k122
 ref "m.stagger__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 5a1ad62ce4130744
-seal 8a874cf0a234da7a
+seal c3c29b71255b33fe
 S1 0 - "bar Top"
 S2 1 232 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -143195,18 +143197,18 @@ k96
 n12 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 n15 x=36.046875 v=35.546875,9.53125,12.90625,13.9375
 k97
-n12 x=36 v=35.65625,9.40625,12.6875,14.1875
-n15 x=36 v=35.65625,9.40625,12.6875,14.1875
+n0 ord=9
+n5 ord=8
+n12 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=4
+n13 ord=6
+n14 ord=7
+n15 x=36 v=35.65625,9.40625,12.6875,14.1875 ord=5
 k98
 n12 v=35.765625,9.28125,12.46875,14.421875
 n15 v=35.765625,9.28125,12.46875,14.421875
 k99
-n0 ord=9
-n5 ord=8
-n12 v=35.859375,9.171875,12.265625,14.671875 ord=4
-n13 ord=6
-n14 ord=7
-n15 v=35.859375,9.171875,12.265625,14.671875 ord=5
+n12 v=35.859375,9.171875,12.265625,14.671875
+n15 v=35.859375,9.171875,12.265625,14.671875
 k100
 n12 v=35.953125,9.046875,12.078125,14.90625
 n15 v=35.953125,9.046875,12.078125,14.90625
@@ -149512,12 +149514,12 @@ k86
 k87
 ref "m.text-estimate-far__jelly.144"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+date 2026-10-20
+rev "c8b20d06+changes"
 approver "claude"
 scenario 382a985559e51e6d
-seal d14bfe2249ac8765
+seal 0c7e1ea2164398dc
 S1 0 - "bar Top"
 S2 1 222 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -149779,16 +149781,16 @@ k86
 n12 x=36.046875 v=32.234375,9.53125,106.515625,13.9375
 n13 x=36.046875 v=32.234375,9.53125,106.515625,13.9375
 k87
-n12 x=36 v=33.15625,9.40625,104.6875,14.1875
-n13 x=36 v=33.15625,9.40625,104.6875,14.1875
+n0 ord=7
+n5 ord=6
+n12 x=36 v=33.15625,9.40625,104.6875,14.1875 ord=4
+n13 x=36 v=33.15625,9.40625,104.6875,14.1875 ord=5
 k88
 n12 v=34.046875,9.28125,102.921875,14.421875
 n13 v=34.046875,9.28125,102.921875,14.421875
 k89
-n0 ord=7
-n5 ord=6
-n12 v=34.890625,9.171875,101.234375,14.671875 ord=4
-n13 v=34.890625,9.171875,101.234375,14.671875 ord=5
+n12 v=34.890625,9.171875,101.234375,14.671875
+n13 v=34.890625,9.171875,101.234375,14.671875
 k90
 n12 v=35.671875,9.046875,99.65625,14.90625
 n13 v=35.671875,9.046875,99.65625,14.90625

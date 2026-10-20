@@ -138,6 +138,43 @@ impl Desk {
     }
 }
 
+/// (dock-drag) A row lifted just after another was let go and came to
+/// rest paints above its siblings from its first frame, and every
+/// frame's partial repaint equals a full one. The red row's lift stayed
+/// on record after it settled (its entry goes when it is next drawn),
+/// and the parent raised only the first lifted child it found: the green
+/// row was drawn under the blue one for a frame, then raised over it
+/// with no damage where the two overlap.
+#[test]
+fn a_row_lifted_after_another_settled_is_on_top_at_once() {
+    let mut d = Desk::new();
+    d.lift_red(75.0);
+    d.paint(1);
+    d.left(75.0, ButtonState::Released);
+    let k0 = 2 + d.settle(2).len() as u32;
+    assert_eq!(d.red_top(), Some(0));
+    // The green row (y 20..40), pressed at y 30 and dragged 12 px down
+    // over the blue row (y 40..60).
+    d.motion(30.0);
+    d.left(30.0, ButtonState::Pressed);
+    for (k, y) in (k0..).zip([36.0, 42.0, 48.0]) {
+        d.motion(y);
+        assert_eq!(d.router.drag().map(|g| g.source), Some(d.rows[1]));
+        d.paint(k);
+        let mut full = Buffer::new(60, 80, Scale::ONE);
+        full.paint_at(&mut d.r, S, 0, frame(k));
+        assert!(
+            d.buf.pixels == full.pixels,
+            "dragged to {y}: the partial repaint differs from a full one"
+        );
+        let p = d.buf.px(10, 41);
+        assert!(
+            p[1] > 200 && p[0] < 40,
+            "dragged to {y}: green over blue: {p:?}"
+        );
+    }
+}
+
 /// The dragged row is drawn at the pointer, 25 px down from its box,
 /// over the green and blue rows after it (it paints last), while its
 /// box keeps its place in the layout.

@@ -1267,7 +1267,28 @@ impl Animator {
     /// (M4) `id` is lifted or springing back from a lift (it paints
     /// above its siblings).
     pub fn lifted(&self, id: NodeId) -> bool {
-        self.lifted.contains_key(&id)
+        self.lift_rank(id) > 0
+    }
+
+    /// (dock-drag) Where `id` paints among its siblings for a lift in
+    /// this frame: 0 in its place, 1 above them while it springs back, 2
+    /// above those while a drag holds it. A lift let go is back among its
+    /// siblings on the frame its spring lands in its box (the frame
+    /// [`Animator::offset`] samples at rest), not one frame later: no
+    /// frame may follow it. Its entry goes when its node is next drawn,
+    /// so one that settled is no longer counted (a pin lifted just after
+    /// another came to rest is the one on top).
+    pub fn lift_rank(&self, id: NodeId) -> u8 {
+        let springing = |n: &NodeAnim| {
+            n.glide
+                .as_ref()
+                .is_some_and(|g| !self.snapping() && !g.is_settled(self.time))
+        };
+        match self.lifted.get(&id) {
+            Some(Some(_)) => 2,
+            Some(None) if self.nodes.get(&id).is_some_and(springing) => 1,
+            _ => 0,
+        }
     }
 
     /// The glide offset of `id` in this frame (and a lift's).

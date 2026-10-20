@@ -1486,7 +1486,9 @@ edge-overhang-swapped (`placement` margin, osd-shadow-edges-1_5),
 nested-glide-y (`envelope`, `teleport`, notif-groups-reorder),
 last-fold-half (`continuity` fold, wifi-last-row-fold-2) and
 text-width-rounded-scale (`ink`, bar-split-title-1_25; decisions.md
-integration-r6): 22 in all. In a detached worktree of HEAD, each scenario
+integration-r6), and round 7's png-aspect (`placement`), image-redraw
+(`redraw`) and dock-drag (`redraw`; decisions.md of each name): 25 in
+all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
