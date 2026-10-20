@@ -304,7 +304,8 @@ impl Renderer {
             self.resolve_origins();
             // Its morph boxes left the screen with its last frame, where
             // it lay then.
-            self.anim.shared_hidden(root, place);
+            let now = self.now();
+            self.anim.shared_hidden(root, place, now);
         }
         self.forget_fade(surface);
         self.extras.images.forget(surface);

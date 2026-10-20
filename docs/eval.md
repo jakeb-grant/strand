@@ -1635,8 +1635,9 @@ in crates/strand-scene; decisions.md launcher-flip-pass), eval-rules-8's
 three, each a second case of a rule that round added:
 keyframe-ease-linear (`continuity` track), shadow-offset-unscaled
 (`coherence` reach) and signal-runs-reduced (`continuity` still), and
-round 8's shadow-lift-gaps (`contain` shadow; decisions.md shadow-buffer):
-37 in all. In a detached worktree of HEAD, each scenario
+round 8's shadow-lift-gaps (`contain` shadow; decisions.md shadow-buffer)
+and morph-back-after-idle (`coherence` morph arrival; decisions.md
+morph-memory): 38 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

@@ -580,6 +580,8 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
+        let now = self.now();
+        self.anim.date_hidden(now);
         // (eval-rules-3) The palette roots' samples join the frame's.
         #[cfg(feature = "eval-hooks")]
         if fresh {

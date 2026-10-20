@@ -2845,6 +2845,70 @@ fn a_shared_morph_box_counts_for_a_second_once_off_screen() {
     }
 }
 
+/// (morph-memory, decisions.md) A box on screen until its surface goes
+/// starts morphs for a second from when it went, however long ago its
+/// surface last painted: a panel left open, idle (it paints nothing), for
+/// 300 ms or for 2 s, closes as a node of its name mounts on the bar, and
+/// the node starts from the panel's box both times. The box used to be
+/// dated by the panel's last frame, so after 2 s it was stale and the
+/// node showed in place at once.
+#[test]
+fn a_shared_morph_starts_from_a_panel_that_closes_after_a_long_idle() {
+    use std::time::Duration;
+    let at = |x: f32, y: f32| strand_scene::LogicalPoint::new(x, y);
+    for idle in [300u64, 2000] {
+        let mut b = Builder::default();
+        let bar = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let panel = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Bg, color("#1e1e2e")),
+                (Prop::Width, num(100.0)),
+                (Prop::Height, num(60.0)),
+                (Prop::Open, PropValue::Bool(true)),
+            ],
+        );
+        let mut c = at_xy(40.0, 20.0, 40.0, 30.0);
+        c.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Bg, color("#fab387")),
+            (Prop::Morph, text("m")),
+        ]);
+        b.node(NodeKind::Box, Some(panel), c);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.take_surface_changes();
+        r.attach_surface(S, bar);
+        r.attach_surface(S2, panel);
+        // The panel lies 30 px below the bar's top, on the bar's output.
+        r.set_surface_origin(S, Some((Some("DP-1".into()), at(0.0, 0.0))));
+        r.set_surface_origin(S2, Some((Some("DP-1".into()), at(0.0, 30.0))));
+        let mut buf = Buffer::new(200, 60, Scale::ONE);
+        let mut buf2 = Buffer::new(100, 60, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+        buf2.paint_at(&mut r, S2, 0, Duration::from_millis(1000));
+        let orange = buf2.px(60, 35);
+        assert!(!r.wants_frame(S) && !r.wants_frame(S2), "both at rest");
+        // Open and idle for `idle` ms, then closed as the pill mounts.
+        let mut d = SceneDiff::new();
+        d.set(panel, Prop::Open, PropValue::Bool(false));
+        plain_morph_box(&mut d, NodeId::new(400, 0), bar, (10.0, 20.0, 20.0, 20.0));
+        assert!(r.apply(d).is_empty());
+        r.take_surface_changes();
+        r.detach_surface(S2);
+        let t = 1000 + idle + 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        // The card's box (40..80 × 20..50 on the panel) is 40..80 ×
+        // 50..80 on the bar: the pill starts over it, not at its own box
+        // (10..30 × 20..40).
+        assert_eq!(buf.px(56, 56), orange, "idle {idle} ms: starts at the card");
+        assert_ne!(buf.px(14, 24), orange, "idle {idle} ms: not at its box yet");
+        settle(&mut r, &mut buf, t);
+        assert_eq!(buf.px(20, 30), orange, "idle {idle} ms: at its box");
+    }
+}
+
 /// The box of the pixels of `buf` that are not `bg`: `(x0, y0, x1, y1)`,
 /// edges exclusive.
 fn bbox_off(buf: &Buffer, bg: [u8; 4]) -> Option<(u32, u32, u32, u32)> {

@@ -1,0 +1,41 @@
+id     = "morph-back-after-idle"
+about  = """A finding of round 8 (docs/decisions.md morph-memory): render
+remembers where a `morph` name was drawn, and a box on screen is a partner
+however long ago its surface painted it; but a box whose surface went was dated
+by that surface's last frame. A panel left open and idle (it paints nothing)
+for two seconds closed as the bar's tile came back, and the tile, finding the
+card's box over a second old, showed in place at once instead of morphing back
+from the card. The tile grows into the panel's card, the panel stays open for
+2 s, and closes: the tile morphs back from the card (`coherence` morph arrival;
+eval/mutants/morph-back-after-idle.patch reverts the fix)."""
+screen = { width = 400, height = 360, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state big = false
+bar Top {
+  edge: top; height: 40; bg: #181825
+  row { height: 40; pad: 0, 8; gap: 8; align: center
+    if !big { box { id: tile; size: 24; radius: 4; bg: #f5c2e7; morph: "art" } }
+    box { width: 90; height: 12; radius: 6; bg: #45475a }
+  }
+}
+panel Card {
+  anchor: top; margin: 8; keyboard: none; open: big
+  col { width: 220; pad: 12; gap: 8; radius: 16; bg: #313244
+    box { id: card; size: 196; radius: 12; bg: #f5c2e7; morph: "art" }
+  }
+}
+
+=== steps
+rest
+mark expand
+set big true
+intend #card enters
+rest
+mark idle
+wait 2000
+mark collapse
+set big false
+intend #tile enters
+rest

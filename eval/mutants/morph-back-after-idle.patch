@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/anim/morph.rs
++++ b/crates/strand-render/src/anim/morph.rs
+@@ -283,7 +283,7 @@
+     pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>, now: Instant) {
+         for s in self.seen.values_mut().flatten() {
+             if s.root == root {
+-                if s.shown {
++                if false && s.shown {
+                     s.left = Some(now);
+                 }
+                 s.shown = false;

@@ -691,8 +691,18 @@ impl Animator {
         &mut self,
         root: NodeId,
         place: Option<crate::flatten::SurfaceOrigin>,
+        now: Instant,
     ) {
-        self.shared.hidden(root, place);
+        self.shared.hidden(root, place, now);
+    }
+
+    /// (morph-memory) The frame begun is painted at moment `now`: morph
+    /// boxes whose surface went before it are dated on its clock (with
+    /// one, [`morph`]).
+    pub(crate) fn date_hidden(&mut self, now: Instant) {
+        if self.commit && !self.time.is_zero() {
+            self.shared.date_left(self.time, now);
+        }
     }
 
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its

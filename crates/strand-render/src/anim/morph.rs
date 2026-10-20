@@ -10,7 +10,9 @@
 //! that enters while another node of that name is on screen, or left it
 //! within the last second, starts from that box: a box is on screen
 //! from the painted frame that draws it until one of its surface's
-//! painted frames no longer does, or the surface goes. It is drawn
+//! painted frames no longer does, or the surface goes (morph-memory:
+//! then, not at the surface's last frame, however long ago an idle
+//! surface painted it). It is drawn
 //! moved and scaled (about its centre, separately in each axis) so its
 //! box covers the old one, then springs to its own box along the
 //! `morph` entry's `~` (`$motion.spatial` by default). It plays that in
@@ -30,7 +32,7 @@
 //! frames with no clock show it in place at once.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId};
 
@@ -60,6 +62,13 @@ struct Seen {
     /// Drawn by the latest painted frame of its surface: on screen
     /// however long ago that was.
     shown: bool,
+    /// (morph-memory) When its surface went while it was on screen
+    /// ([`SharedMorphs::hidden`]): it left the screen then, not at the
+    /// surface's last frame, which may be long before (an idle panel
+    /// paints nothing). The next painted frame of any surface dates it
+    /// on the frame clock ([`SharedMorphs::date_left`]); until then it
+    /// left just now.
+    left: Option<Instant>,
     /// (integration-r7) Where its surface lay on its output when the
     /// surface went ([`SharedMorphs::hidden`]): a panel that closes is
     /// placed no more, but the box its card left stays where it was on
@@ -167,8 +176,14 @@ impl SharedMorphs {
             self.seen
                 .get(key)?
                 .iter()
-                .filter(|s| s.id != id && (s.shown || frame.at.saturating_sub(s.at) <= STALE))
-                .filter_map(|s| Some(((s.shown, s.at), s.rect_on(root, origins)?)))
+                .filter(|s| {
+                    s.id != id
+                        && (s.shown || s.left.is_some() || frame.at.saturating_sub(s.at) <= STALE)
+                })
+                .filter_map(|s| {
+                    let at = if s.left.is_some() { frame.at } else { s.at };
+                    Some(((s.shown, at), s.rect_on(root, origins)?))
+                })
                 .max_by_key(|(order, _)| *order)
                 .map(|(_, r)| r)
         };
@@ -244,6 +259,7 @@ impl SharedMorphs {
                 rect: b.rect,
                 at,
                 shown: true,
+                left: None,
                 place: None,
             };
             let boxes = self.seen.entry(b.key.clone()).or_default();
@@ -261,15 +277,31 @@ impl SharedMorphs {
     }
 
     /// The surface of `root` is gone (no surface shows it): its boxes
-    /// left the screen with its last painted frame, (integration-r7)
+    /// on screen leave it now (morph-memory: however long ago its last
+    /// frame was painted, they were shown until now), (integration-r7)
     /// where it lay then (`place`, its last origin on its output).
-    pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>) {
+    pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>, now: Instant) {
         for s in self.seen.values_mut().flatten() {
             if s.root == root {
+                if s.shown {
+                    s.left = Some(now);
+                }
                 s.shown = false;
                 if place.is_some() {
                     s.place.clone_from(&place);
                 }
+            }
+        }
+    }
+
+    /// (morph-memory) A frame is painted at `time` on the frame clock at
+    /// moment `now`: the boxes whose surface went at a moment before
+    /// left the screen that long before `time`.
+    pub(crate) fn date_left(&mut self, time: Duration, now: Instant) {
+        for s in self.seen.values_mut().flatten() {
+            if let Some(left) = s.left.take() {
+                s.at =
+                    s.at.max(time.saturating_sub(now.saturating_duration_since(left)));
             }
         }
     }
@@ -327,7 +359,7 @@ impl SharedMorphs {
             boxes.retain(|s| {
                 latest
                     .get(&s.root)
-                    .is_some_and(|t| s.shown || t.saturating_sub(s.at) <= STALE)
+                    .is_some_and(|t| s.shown || s.left.is_some() || t.saturating_sub(s.at) <= STALE)
             });
         }
         self.seen.retain(|_, boxes| !boxes.is_empty());
@@ -455,7 +487,7 @@ mod tests {
             std::slice::from_ref(&pill_box),
         );
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(panel, None);
+        m.hidden(panel, None, Instant::now());
         assert_eq!(m.seen.get("m").map_or(0, Vec::len), 2, "a box per surface");
         // Long after the card left: the pill, on screen, starts it.
         assert!(starts(&mut m, card, 60_000), "from the pill");
@@ -467,14 +499,17 @@ mod tests {
             std::slice::from_ref(&pill_box),
         );
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(bar, None);
-        m.hidden(panel, None);
+        // Both went just before a frame painted at 1016 ms.
+        let now = Instant::now();
+        m.hidden(bar, None, now);
+        m.hidden(panel, None, now);
+        m.date_left(Duration::from_millis(1016), now);
         assert!(starts(&mut m, NodeId::new(21, 0), 1500));
         assert!(!starts(&mut m, NodeId::new(22, 0), 2100), "stale");
         // Its own box is no place to start from.
         let mut m = SharedMorphs::default();
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(panel, None);
+        m.hidden(panel, None, Instant::now());
         assert!(!starts(&mut m, card, 1500), "not from itself");
     }
 
@@ -507,7 +542,7 @@ mod tests {
         );
         m.painted(bar, Duration::from_millis(416), &[]);
         m.painted(panel, Duration::from_millis(1184), &[shown("m", card)]);
-        m.hidden(panel, Some(at(10.0, 40.0)));
+        m.hidden(panel, Some(at(10.0, 40.0)), Instant::now());
         // The card's 10 x 10 box at 10,40 on the output, centre 15,45;
         // the pill's box centre 55,9: it starts 40 px left and 36 down.
         let v = from(&mut m).expect("starts from the card");
@@ -521,7 +556,7 @@ mod tests {
         );
         m.painted(bar, Duration::from_millis(416), &[]);
         m.painted(panel, Duration::from_millis(1184), &[shown("m", card)]);
-        m.hidden(panel, None);
+        m.hidden(panel, None, Instant::now());
         // Unplaced, the card's box maps nowhere: the pill's old box at
         // 0,0 (centre 5,5, 50 px left and 4 up) is all there is.
         let v = from(&mut m).expect("starts from the old pill");
@@ -531,7 +566,8 @@ mod tests {
     /// (shared-morph-on) A box drawn by its surface's latest painted
     /// frame starts a morph however long ago that frame was; once a
     /// painted frame no longer draws it, or its surface goes, for a
-    /// second only.
+    /// second only: (morph-memory) a second from when the surface went,
+    /// dated by the next painted frame, not from its own last frame.
     #[test]
     fn a_box_on_screen_starts_a_morph_until_it_left_a_second_ago() {
         let (root, pill) = (NodeId::new(1, 0), NodeId::new(2, 0));
@@ -553,14 +589,34 @@ mod tests {
         m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
         m.painted(NodeId::new(9, 0), Duration::from_millis(61_000), &[]);
         assert!(starts(&mut m, root, NodeId::new(3, 0), "m", 61_900));
-        // Its surface gone: off screen since its last frame.
+        // Its surface gone, idle since 1 s, just before a frame painted
+        // at 61 s: off screen from then, not from its last frame.
+        let gone = Instant::now();
         let mut m = SharedMorphs::default();
         m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
-        m.hidden(root, None);
-        assert!(starts(&mut m, root, NodeId::new(3, 0), "m", 1900));
+        m.hidden(root, None, gone);
+        assert!(
+            starts(&mut m, root, NodeId::new(3, 0), "m", 1900),
+            "just went"
+        );
         let mut m = SharedMorphs::default();
         m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
-        m.hidden(root, None);
-        assert!(!starts(&mut m, root, NodeId::new(3, 0), "m", 2100));
+        m.hidden(root, None, gone);
+        m.date_left(Duration::from_millis(61_000), gone);
+        assert!(starts(&mut m, root, NodeId::new(3, 0), "m", 61_900));
+        let mut m = SharedMorphs::default();
+        m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
+        m.hidden(root, None, gone);
+        m.date_left(Duration::from_millis(61_000), gone);
+        assert!(!starts(&mut m, root, NodeId::new(3, 0), "m", 62_100));
+        // Gone 1.1 s before that frame was painted: stale at it.
+        let mut m = SharedMorphs::default();
+        m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
+        m.hidden(root, None, gone);
+        m.date_left(
+            Duration::from_millis(61_000),
+            gone + Duration::from_millis(1100),
+        );
+        assert!(!starts(&mut m, root, NodeId::new(3, 0), "m", 61_000));
     }
 }

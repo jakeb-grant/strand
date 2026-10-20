@@ -195,3 +195,7 @@ frame-lead.patch               regressions/flip-undrawn-pass.scn continuity:#cou
 # following the shadows' reach at rest while a lifted shadow springs back
 # (decisions.md shadow-buffer).
 shadow-lift-gaps.patch         regressions/shadow-lift-gaps.scn  contain
+# morph-back-after-idle.patch: morph-memory's dating taken out, a box
+# whose surface went keeping the surface's last frame as when it left the
+# screen (decisions.md morph-memory).
+morph-back-after-idle.patch    regressions/morph-back-after-idle.scn coherence:#tile
