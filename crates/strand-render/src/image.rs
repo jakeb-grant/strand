@@ -1510,9 +1510,11 @@ impl ImageStore {
     }
 
     /// (stand-in-fit) The decode that holds all of `key`'s source at about
-    /// the scale `key`'s fit draws it (`contain` into a box of the
-    /// source's own shape), to stand in for a `cover` box no decode held
-    /// covers; `None` for the other fits, which show the whole source
+    /// the scale `key`'s fit draws it (`fill` into the source's size at
+    /// that scale, rounded: every pixel the source's, so an opaque source
+    /// stays claimed opaque, and the rounding's stretch, under half a
+    /// pixel a side, is undone where [`Decoded::placed_for`] places it),
+    /// to stand in for a `cover` box no decode held covers; `None` for the other fits, which show the whole source
     /// (any decode of it holds what they show), or when no decode tells
     /// the source's size. Its longer side is at most four times the
     /// box's (a box far from the source's shape crops most of it).
@@ -1533,9 +1535,9 @@ impl ImageStore {
         let side = 4.0 * w.max(h);
         let k = (w / sw).max(h / sh).min(side / sw.max(sh));
         Some(ImageKey {
-            w: (sw * k).ceil().max(1.0) as u32,
-            h: (sh * k).ceil().max(1.0) as u32,
-            fit: Fit::Contain,
+            w: (sw * k).round().max(1.0) as u32,
+            h: (sh * k).round().max(1.0) as u32,
+            fit: Fit::Fill,
             ..key.clone()
         })
     }
