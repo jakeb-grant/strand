@@ -16,6 +16,17 @@
 //!   font's overhang, an icon glyph wider than its advance, an italic):
 //!   ink the shaper put there is the font's, while a layout drawn in the
 //!   wrong place (a wrong origin, an offset applied twice) still spills.
+//!   (launcher-rules) A text without an ellipsis whose line box is
+//!   narrower than one of its words draws that word whole past the box's
+//!   end: a line breaks only between words, and CSS starts an overlong
+//!   line at its start edge and lets it overflow at its end (`overflow:
+//!   visible`). Such a box comes from a full row giving way around the
+//!   text's holder (design.md "Shrinking"; a box's stack cell is
+//!   `minmax(0, 1fr)`, decisions.md wave3-pixels). The end side of a text
+//!   drawn by the layout shaped for its box is given how far its widest
+//!   word, measured on its unbounded layout (`Frame::lines`, as `fills`
+//!   reads it), is wider than that box. Its start side, and a text drawn
+//!   by another layout, are held as before.
 //! - **over-cut**: a text cut with an ellipsis draws no less of itself
 //!   as its box widens: from one frame to the next its line box grows
 //!   and its ink does not narrow (an ellipsis cuts at a word or a glyph,
@@ -61,6 +72,20 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut before: HashMap<(&str, u32), (f64, f64, bool)> = HashMap::new();
     for f in &cx.trace.frames {
         let mut now: HashMap<(&str, u32), (f64, f64, bool)> = HashMap::new();
+        // Per cut text, how far its widest word passes its line box.
+        let words: HashMap<(&str, u32), f64> = f
+            .lines
+            .iter()
+            .filter(|l| l.ellipsis.is_none())
+            .filter_map(|l| {
+                let fit =
+                    f.n.iter()
+                        .find(|r| r.key == l.key && r.surface == l.s)?
+                        .fit?;
+                let widest = widest_word(&l.text, &l.natural)?;
+                Some(((l.key.as_str(), l.s), (widest - f64::from(fit)).max(0.0)))
+            })
+            .collect();
         for r in &f.n {
             let Some(ink) = r.ink else { continue };
             let key = r.key.as_str();
@@ -83,6 +108,11 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 (Some("S"), Some([l, r])) => [f64::from(l), f64::from(r)],
                 _ => [0.0, 0.0],
             };
+            let or = or
+                + match r.text.as_deref() {
+                    Some("S") => words.get(&(key, r.surface)).copied().unwrap_or(0.0),
+                    _ => 0.0,
+                };
             if left < bl - give - ol || right > br + give + or {
                 let past = (bl - ol - left).max(right - br - or);
                 out.push(
@@ -131,6 +161,43 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     }
     out.extend(fills(cx));
     first_per_node(out)
+}
+
+/// (launcher-rules) The width of the widest word of `text` (a run with
+/// no whitespace) on its unbounded layout, from `natural`'s x at each
+/// cluster boundary (one left-to-right line). `None` when that layout is
+/// not one such line.
+fn widest_word(text: &str, natural: &[(u32, f32)]) -> Option<f64> {
+    let nat: Vec<(usize, f64)> = natural
+        .iter()
+        .map(|(b, x)| (*b as usize, f64::from(*x)))
+        .collect();
+    if nat.len() < 2
+        || nat
+            .windows(2)
+            .any(|w| w[1].0 < w[0].0 || w[1].1 < w[0].1 - 0.01)
+    {
+        return None;
+    }
+    let x_at = |b: usize| nat.iter().find(|(nb, _)| *nb >= b).map(|(_, x)| *x);
+    let mut widest: f64 = 0.0;
+    let mut start = None;
+    for (i, ch) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        match (ch.is_whitespace(), start) {
+            (false, None) => start = Some(i),
+            (true, Some(a)) => {
+                if let (Some(xa), Some(xb)) = (x_at(a), x_at(i)) {
+                    widest = widest.max(xb - xa);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    Some(widest)
 }
 
 /// The ellipsis an `ellipsis:` text ends with when cut.

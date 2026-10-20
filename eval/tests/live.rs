@@ -196,10 +196,12 @@ fn a_session_is_the_scenario_it_records() {
 fn a_failing_rule_is_marked_on_its_frame_and_a_broken_edit_keeps_the_session() {
     let dir = scratch("marks");
     let cfg = dir.join("spill.strand");
-    // Text wider than its fixed box: `ink`'s spill rule fails on every
-    // frame, on the text's box.
+    // A cut text in a box narrower than its ellipsis, which is drawn
+    // past the box: `ink`'s spill rule fails on every frame, on the
+    // text's box. (A word wider than its box with no ellipsis overflows
+    // its end as CSS draws it, decisions.md launcher-rules.)
     let good = "bar Top {\n  height: 40\n  row { width: 400; height: 40; align: center; pad: 0, 8\n    \
-                text \"WWWWWWWWWW\" { id: t; width: 20; shrink: 0; color: #000000 }\n  }\n}\n";
+                text \"WWWWWWWWWW\" { id: t; width: 4; shrink: 0; ellipsis: end; color: #000000 }\n  }\n}\n";
     std::fs::write(&cfg, good).unwrap();
     let mut s = Session::open(Options {
         path: cfg.clone(),
@@ -224,7 +226,7 @@ fn a_failing_rule_is_marked_on_its_frame_and_a_broken_edit_keeps_the_session() {
         .find(|m| m.check == "ink")
         .unwrap_or_else(|| panic!("{marks:?}"));
     assert!(m.msg.contains("spill"), "{}", m.msg);
-    assert_eq!(m.rect[2], 20.0, "the text's box: {:?}", m.rect);
+    assert_eq!(m.rect[2], 4.0, "the text's box: {:?}", m.rect);
     assert!(s.next_finding());
     let ks: Vec<u32> = s.ring().iter().map(|f| f.k).collect();
     assert!(

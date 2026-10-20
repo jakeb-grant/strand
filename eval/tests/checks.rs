@@ -6633,6 +6633,65 @@ fn ink_fills_each_line_of_a_cut_text() {
     }
 }
 
+/// (launcher-rules) A text drawn by the layout shaped for its 24 px box,
+/// whose unbounded layout is 10 px a character: its ink from `x` to
+/// `x + w`, and its cut lines' record with `ellipsis`.
+fn narrow_word(text: &str, x: f32, w: f32, ellipsis: bool, own: bool) -> RunTrace {
+    let mut t = shape(2, |_| {
+        let mut r = row("t", [0.0, 0.0, 24.0, 15.0]);
+        r.ink = Some([x, 2.0, w, 11.0]);
+        r.text = Some(if own { "S" } else { "I" }.into());
+        r.fit = Some(24.0);
+        vec![r]
+    });
+    let text = text.to_string();
+    for f in &mut t.frames {
+        f.lines.push(LinesRec {
+            key: "t".into(),
+            s: 1,
+            text: text.clone(),
+            ellipsis: ellipsis.then(|| "end".into()),
+            max_lines: None,
+            stops: Vec::new(),
+            natural: (0..=text.len() as u32)
+                .map(|b| (b, 10.0 * b as f32))
+                .collect(),
+        });
+    }
+    t.seal();
+    t
+}
+
+/// (launcher-rules) A line box narrower than a word draws the word
+/// whole, overflowing its box's end (CSS starts an overlong line at its
+/// start edge): a 50 px word in a 24 px box reaches 26 px past its end
+/// and no spill is found. Its start side, a reach past the word, words
+/// that each fit, an ellipsised text and a text another layout drew are
+/// held as before.
+#[test]
+fn ink_lets_a_word_wider_than_its_line_box_overflow_its_end() {
+    let sc = scenario("");
+    let spills = |t: &RunTrace| {
+        let r = check(&sc, t);
+        r.failures(CheckId::Ink)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("t") && f.msg.starts_with("spill"))
+    };
+    assert!(!spills(&narrow_word("09:41", 0.5, 49.0, false, true)));
+    for t in [
+        // Drawn from 8 px before its box's start.
+        narrow_word("09:41", -8.0, 49.0, false, true),
+        // 12 px further than its word reaches.
+        narrow_word("09:41", 0.5, 62.0, false, true),
+        // Two words of 20 px each: the line breaks between them.
+        narrow_word("ab cd", 0.5, 49.0, false, true),
+        narrow_word("09:41", 0.5, 49.0, true, true),
+        narrow_word("09:41", 0.5, 49.0, false, false),
+    ] {
+        assert!(spills(&t), "{}", show(&check(&sc, &t), &t));
+    }
+}
+
 /// A col holding `a` (exiting to `height: 0`, gone at tick 5) over `b`;
 /// the col's laid height keeps `extra` px more than its rows hold until
 /// `a` unmounts.
