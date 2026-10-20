@@ -685,9 +685,14 @@ impl Animator {
     }
 
     /// (shared-morph-on) No surface shows `root` any more: its morph
-    /// boxes are off screen.
-    pub(crate) fn shared_hidden(&mut self, root: NodeId) {
-        self.shared.hidden(root);
+    /// boxes are off screen, (integration-r7) where it lay as it went
+    /// (`place`).
+    pub(crate) fn shared_hidden(
+        &mut self,
+        root: NodeId,
+        place: Option<crate::flatten::SurfaceOrigin>,
+    ) {
+        self.shared.hidden(root, place);
     }
 
     /// (M4) Leans `node` with the pointer (`pointer`, `None` off its

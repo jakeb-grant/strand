@@ -60,6 +60,12 @@ struct Seen {
     /// Drawn by the latest painted frame of its surface: on screen
     /// however long ago that was.
     shown: bool,
+    /// (integration-r7) Where its surface lay on its output when the
+    /// surface went ([`SharedMorphs::hidden`]): a panel that closes is
+    /// placed no more, but the box its card left stays where it was on
+    /// screen for the second it is remembered, so the bar's pill coming
+    /// back as the panel closes grows from it.
+    place: Option<SurfaceOrigin>,
 }
 
 /// Whether a node's morph starts ([`SharedMorphs::morph`]).
@@ -94,7 +100,8 @@ impl Seen {
         if self.root == root {
             return Some(self.rect);
         }
-        let (from, to) = (origins.get(&self.root)?, origins.get(&root)?);
+        let from = origins.get(&self.root).or(self.place.as_ref())?;
+        let to = origins.get(&root)?;
         (from.output == to.output).then(|| {
             LogicalRect::new(
                 self.rect.x + from.at.x - to.at.x,
@@ -237,6 +244,7 @@ impl SharedMorphs {
                 rect: b.rect,
                 at,
                 shown: true,
+                place: None,
             };
             let boxes = self.seen.entry(b.key.clone()).or_default();
             match boxes.iter_mut().find(|s| s.root == root) {
@@ -253,11 +261,15 @@ impl SharedMorphs {
     }
 
     /// The surface of `root` is gone (no surface shows it): its boxes
-    /// left the screen with its last painted frame.
-    pub(crate) fn hidden(&mut self, root: NodeId) {
+    /// left the screen with its last painted frame, (integration-r7)
+    /// where it lay then (`place`, its last origin on its output).
+    pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>) {
         for s in self.seen.values_mut().flatten() {
             if s.root == root {
                 s.shown = false;
+                if place.is_some() {
+                    s.place.clone_from(&place);
+                }
             }
         }
     }
@@ -443,7 +455,7 @@ mod tests {
             std::slice::from_ref(&pill_box),
         );
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(panel);
+        m.hidden(panel, None);
         assert_eq!(m.seen.get("m").map_or(0, Vec::len), 2, "a box per surface");
         // Long after the card left: the pill, on screen, starts it.
         assert!(starts(&mut m, card, 60_000), "from the pill");
@@ -455,15 +467,65 @@ mod tests {
             std::slice::from_ref(&pill_box),
         );
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(bar);
-        m.hidden(panel);
+        m.hidden(bar, None);
+        m.hidden(panel, None);
         assert!(starts(&mut m, NodeId::new(21, 0), 1500));
         assert!(!starts(&mut m, NodeId::new(22, 0), 2100), "stale");
         // Its own box is no place to start from.
         let mut m = SharedMorphs::default();
         m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
-        m.hidden(panel);
+        m.hidden(panel, None);
         assert!(!starts(&mut m, card, 1500), "not from itself");
+    }
+
+    /// (integration-r7) The panel closes and its surface goes, so render
+    /// places it no more; the bar's pill coming back that frame starts
+    /// from the card's box where the panel lay, the place it had as it
+    /// went, not from the pill's own box of before the panel opened (a
+    /// second ago at most) nor in place. Without that place it has none.
+    #[test]
+    fn a_box_whose_surface_went_starts_from_where_that_surface_lay() {
+        let (bar, panel) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let (card, pill) = (NodeId::new(20, 0), NodeId::new(11, 0));
+        let at = |x: f32, y: f32| SurfaceOrigin {
+            output: "DP-1".into(),
+            at: strand_scene::LogicalPoint::new(x, y),
+        };
+        // Only the bar is placed now.
+        let origins: Origins = [(bar, at(0.0, 0.0))].into_iter().collect();
+        let from = |m: &mut SharedMorphs| {
+            let r = LogicalRect::new(50.0, 4.0, 10.0, 10.0);
+            let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
+            let (v, _, started) = m.morph(pill, "m", (bar, &origins), r, true, curve, frame(1200));
+            (started == Start::Now).then_some(v).flatten()
+        };
+        let mut m = SharedMorphs::default();
+        m.painted(
+            bar,
+            Duration::from_millis(400),
+            &[shown("m", NodeId::new(10, 0))],
+        );
+        m.painted(bar, Duration::from_millis(416), &[]);
+        m.painted(panel, Duration::from_millis(1184), &[shown("m", card)]);
+        m.hidden(panel, Some(at(10.0, 40.0)));
+        // The card's 10 x 10 box at 10,40 on the output, centre 15,45;
+        // the pill's box centre 55,9: it starts 40 px left and 36 down.
+        let v = from(&mut m).expect("starts from the card");
+        // Its first frame is on its way from there (sampled one frame in).
+        assert!(v[0] < -30.0 && v[1] > 27.0, "{v:?}");
+        let mut m = SharedMorphs::default();
+        m.painted(
+            bar,
+            Duration::from_millis(400),
+            &[shown("m", NodeId::new(10, 0))],
+        );
+        m.painted(bar, Duration::from_millis(416), &[]);
+        m.painted(panel, Duration::from_millis(1184), &[shown("m", card)]);
+        m.hidden(panel, None);
+        // Unplaced, the card's box maps nowhere: the pill's old box at
+        // 0,0 (centre 5,5, 50 px left and 4 up) is all there is.
+        let v = from(&mut m).expect("starts from the old pill");
+        assert!(v[0] < -30.0 && v[1] < 0.0, "{v:?}");
     }
 
     /// (shared-morph-on) A box drawn by its surface's latest painted
@@ -494,11 +556,11 @@ mod tests {
         // Its surface gone: off screen since its last frame.
         let mut m = SharedMorphs::default();
         m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
-        m.hidden(root);
+        m.hidden(root, None);
         assert!(starts(&mut m, root, NodeId::new(3, 0), "m", 1900));
         let mut m = SharedMorphs::default();
         m.painted(root, Duration::from_millis(1000), &[shown("m", pill)]);
-        m.hidden(root);
+        m.hidden(root, None);
         assert!(!starts(&mut m, root, NodeId::new(3, 0), "m", 2100));
     }
 }

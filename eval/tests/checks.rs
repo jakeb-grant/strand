@@ -2222,6 +2222,41 @@ fn pivot_turns_a_node_and_its_subtree_about_the_box_centre() {
     assert!(coherence_fails(&r, "c", "pivot"), "{}", show(&r, &t));
 }
 
+/// (integration-r7) A pill (24 tall, centre y 16) drawn 7 times its
+/// height (a morph back from a tall card), with art laid at its centre
+/// but drawn as if `off` px from it before the scale. Snapped 0.3 px
+/// apart before the scale (under half a physical pixel at 1.5, where a
+/// pixel is 0.67 px), the art is drawn 2.1 px off the pill's centre: one
+/// pixel magnified, no pivot fault. Two pixels apart (1.33 px, 9.3
+/// drawn) is.
+fn magnified(off: f32) -> RunTrace {
+    let mut t = shape(2, move |_| {
+        let mut p = row("p", [0.0, 4.0, 100.0, 24.0]);
+        p.scale = [1.0, 7.0];
+        p.visual = [0.0, 16.0 - 84.0, 100.0, 168.0];
+        let mut c = row("c", [4.0, 7.0, 18.0, 18.0]);
+        c.visual = [4.0, 16.0 + 7.0 * off - 63.0, 18.0, 126.0];
+        vec![p, c]
+    });
+    t.scenario.scale = 1.5;
+    for f in &mut t.frames {
+        f.scale = 1.5;
+    }
+    t.seal();
+    with_parents(t, &[("c", "p")])
+}
+
+#[test]
+fn pivot_gives_a_snapped_pixel_as_its_ancestors_magnify_it() {
+    let sc = scenario("screen = { width = 400, height = 300, scale = 1.5 }");
+    let t = magnified(0.3);
+    let r = check(&sc, &t);
+    assert!(!coherence_fails(&r, "c", "pivot"), "{}", show(&r, &t));
+    let t = magnified(1.33);
+    let r = check(&sc, &t);
+    assert!(coherence_fails(&r, "c", "pivot"), "{}", show(&r, &t));
+}
+
 /// `old` named `m` drawn at a 20 px square; `new` of the same name
 /// mounted at a 40 px square 100 px right, its first frame drawn with
 /// the morph's translate and scale taken from the old box's centre (as

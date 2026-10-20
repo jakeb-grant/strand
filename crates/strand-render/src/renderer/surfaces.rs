@@ -295,10 +295,13 @@ impl Renderer {
         if let Some(root) = self.surfaces.remove(&surface).map(|s| s.root)
             && !self.surfaces.values().any(|s| s.root == root)
         {
+            // (integration-r7) Where it lay, for the boxes it leaves.
+            let place = self.extras.origins.get(&root).cloned();
             self.extras.placed.remove(&root);
             self.resolve_origins();
-            // Its morph boxes left the screen with its last frame.
-            self.anim.shared_hidden(root);
+            // Its morph boxes left the screen with its last frame, where
+            // it lay then.
+            self.anim.shared_hidden(root, place);
         }
         self.forget_fade(surface);
         self.extras.images.forget(surface);

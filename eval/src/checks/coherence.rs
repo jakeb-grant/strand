@@ -189,6 +189,9 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 let mut c = centre(&r.drawn);
                 let mut chain = true;
                 let mut posed = transformed(own_scale(r), r);
+                // (integration-r7) How much the ancestors' scales magnify
+                // on each axis what was snapped before them.
+                let mut mag = [1.0f64, 1.0];
                 let mut at = r;
                 while let Some(p) = parent_of(at) {
                     let ps = own_scale(p);
@@ -196,6 +199,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         posed = true;
                         let o = centre(&p.drawn);
                         let (sx, sy) = (f64::from(ps[0]), f64::from(ps[1]));
+                        mag = [mag[0] * sx.abs(), mag[1] * sy.abs()];
                         let th = f64::from(p.rotate).to_radians();
                         let (v0, v1) = ((c[0] - o[0]) * sx, (c[1] - o[1]) * sy);
                         c = [
@@ -230,6 +234,15 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 let v = centre(&r.visual);
                 if posed && chain {
                     for (i, axis) in ["x", "y"].iter().enumerate() {
+                        // (integration-r7) A box is snapped to physical
+                        // pixels where it is drawn, before its ancestors'
+                        // transforms (decisions.md wave3-pixels), so the
+                        // physical pixel of give between its centre and
+                        // its parent's is drawn as large as they magnify
+                        // it: a pill morphing back from a card seven
+                        // times its height draws its art 2 px off the
+                        // pill's centre for a third of a pixel snapped.
+                        let give = cx.tol + mag[i].max(1.0) / scale;
                         if (v[i] - c[i]).abs() > give {
                             out.push(
                                 Finding::fail(
