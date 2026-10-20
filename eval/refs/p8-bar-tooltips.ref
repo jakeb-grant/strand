@@ -1,0 +1,176 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-bar-tooltips"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the delayed tooltip opens on the first icon, its text follows the state, moves to the second icon, a quick pass opens none, leave closes it"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 86796d446a70f31c
+seal 76f9524f506021d2
+S1 0 - "bar Top"
+S2 25 59 "popup tooltip"
+S3 86 103 "popup tooltip"
+N0 "bat|bar.strand:13:5|[Mock | DP-1]#2" "box#bat"
+N1 "net|bar.strand:7:5|[Mock | DP-1]#0" "box#net"
+N2 "vol|bar.strand:10:5|[Mock | DP-1]#1" "box#vol"
+N3 "|bar.strand:3:1|[Mock | DP-1]#0" "bar@bar.strand:3"
+N4 "|bar.strand:5:3|[Mock | DP-1]#0" "row@bar.strand:5"
+N5 "|bar.strand:6:5|[Mock | DP-1]#0" "spacer@bar.strand:6"
+N6 "|net|bar.strand:7:5|[Mock | DP-1]#0>popup|#0" "popup"
+N7 "||net|bar.strand:7:5|[Mock | DP-1]#0>popup|#0>text|#0" "text(\"Connected to home-5g\")"
+N8 "|vol|bar.strand:10:5|[Mock | DP-1]#1>popup|#0" "popup"
+N9 "||vol|bar.strand:10:5|[Mock | DP-1]#1>popup|#0>text|#0" "text(\"Volume 64%\")"
+k0 p1
+s1 z=360,32
+n0 x=328 y=4 w=24 h=24 ord=5 bg=455e914d
+n1 x=264 y=4 w=24 h=24 ord=3 bg=455e914d
+n2 x=296 y=4 w=24 h=24 ord=4 bg=455e914d
+n3 x=0 y=0 w=360 h=32 bg=faf9ffff
+n4 x=0 y=0 w=360 h=32 ord=1
+n5 x=8 y=16 w=248 h=0 ord=2
+k1
+n1 bg=455e9156
+k2
+n1 bg=455e9165
+k3
+n1 bg=455e9172
+k4
+n1 bg=455e917c
+k5
+n1 bg=455e9182
+k6
+n1 bg=455e9186
+k7
+n1 bg=455e9189
+k8
+n1 bg=455e918a
+k9
+n1 bg=455e918b
+k10
+n1 bg=455e918c
+k11
+k25 p2
+s2 z=128,21 o=212,32
+n6 srf=2 x=0 y=0 w=128 h=21 bg=2f3036ff
+n7 srf=2 x=8 y=4 w=112 h=13 txt=S ord=1 ink=8,6,112,11 fg=ffffffff gl=["Connected\u0020to\u0020home-5g"]
+k45
+s2 z=136,21 o=208,32
+n6 w=136
+n7 x=11 w=120 ink=11,6,120,11 gl=["Connected\u0020to\u0020cafe-guest"]
+k46
+n7 x=9 ink=9,6,120,11
+k47
+n7 x=8 ink=8,6,120,11
+k48
+k49
+k50
+k51
+k52
+k59 p1
+s2 -
+n1 bg=455e9183
+n6 -
+n7 -
+k60
+n1 bg=455e9174
+k61
+n1 bg=455e9166
+n2 bg=455e9156
+k62
+n1 bg=455e915d
+n2 bg=455e9165
+k63
+n1 bg=455e9156
+n2 bg=455e9172
+k64
+n1 bg=455e9152
+n2 bg=455e917c
+k65
+n1 bg=455e9150
+n2 bg=455e9182
+k66
+n1 bg=455e914e
+n2 bg=455e9186
+k67
+n2 bg=455e9189
+k68
+n1 bg=455e914d
+n2 bg=455e918a
+k69
+n2 bg=455e918b
+k70
+n2 bg=455e918c
+k71
+k86 p3
+s3 z=78,21 o=269,32
+n8 srf=3 x=0 y=0 w=78 h=21 bg=2f3036ff
+n9 srf=3 x=8 y=4 w=62 h=13 txt=S ord=1 ink=8,6,62,9 fg=ffffffff gl=["Volume\u002064%"]
+k103 p1
+s3 -
+n2 bg=455e9183
+n8 -
+n9 -
+k104
+n0 bg=455e9156
+n2 bg=455e9174
+k105
+n0 bg=455e9165
+n2 bg=455e9166
+k106
+n0 bg=455e9172
+n2 bg=455e915d
+k107
+n0 bg=455e917c
+n2 bg=455e9156
+k108
+n0 bg=455e9179
+n2 bg=455e9152
+k109
+n0 bg=455e916e
+n2 bg=455e9159
+k110
+n0 bg=455e9163
+n2 bg=455e9167
+k111
+n0 bg=455e915b
+n2 bg=455e9173
+k112
+n0 bg=455e9155
+n2 bg=455e917d
+k113
+n0 bg=455e9152
+n2 bg=455e9183
+k114
+n0 bg=455e9150
+n2 bg=455e9187
+k115
+n0 bg=455e914e
+n2 bg=455e9189
+k116
+n2 bg=455e918a
+k117
+n0 bg=455e914d
+n2 bg=455e918b
+k118
+n2 bg=455e918c
+k119
+k124
+n2 bg=455e9183
+k125
+n2 bg=455e9174
+k126
+n2 bg=455e9166
+k127
+n2 bg=455e915d
+k128
+n2 bg=455e9156
+k129
+n2 bg=455e9152
+k130
+n2 bg=455e9150
+k131
+n2 bg=455e914e
+k132
+k133
+n2 bg=455e914d
+k134

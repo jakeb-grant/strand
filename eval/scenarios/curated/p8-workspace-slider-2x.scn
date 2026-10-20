@@ -1,0 +1,57 @@
+id     = "p8-workspace-slider-2x"
+about  = """A workspace strip at scale 2 whose active marker is one absolutely
+placed pill sliding under numbered cells, with a border and a soft shadow:
+the wheel over the bar steps it right three notches in quick succession and
+back two, keybind-style jumps follow, and the marker retargets mid-flight."""
+screen = { width = 300, height = 140, scale = 2.0 }
+hz     = 60
+
+=== bar.strand
+state active_ws = 1
+
+bar Top {
+  edge: top; height: 32; bg: $surface; color: $fg; font: $font.caption
+  row { pad: 0, 8; align: center; height: 32
+    stack { id: strip; width: 140; height: 22
+      on scroll(dy) {
+        if dy > 0 && active_ws < 5 { active_ws += 1 }
+        else if dy < 0 && active_ws > 1 { active_ws -= 1 }
+      }
+      box { id: marker; place: absolute; x: (active_ws - 1) * 28; y: 0; width: 28; height: 22
+            radius: full; bg: $accent.container; border: 1, $accent; shadow: $elevation.md }
+      row { width: 140; height: 22; align: center
+        text "1" { width: 28; align: center; when active_ws == 1 { color: $accent; weight: 700 } }
+        text "2" { width: 28; align: center; when active_ws == 2 { color: $accent; weight: 700 } }
+        text "3" { width: 28; align: center; when active_ws == 3 { color: $accent; weight: 700 } }
+        text "4" { width: 28; align: center; when active_ws == 4 { color: $accent; weight: 700 } }
+        text "5" { width: 28; align: center; when active_ws == 5 { color: $accent; weight: 700 } }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark wheel
+intend #marker moves
+pointer 60,16 on bar
+scroll 1
+frames 3
+scroll 1
+frames 3
+scroll 1
+frames 12
+scroll -1
+frames 2
+scroll -1
+rest
+shot wheel
+mark keybinds
+intend #marker moves
+set active_ws 5
+frames 8
+set active_ws 1
+rest
+mark leave
+leave
+rest

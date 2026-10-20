@@ -1,0 +1,630 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-toggles-theme-swap"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: tiles and knobs spring while catppuccin latte to mocha springs mid-motion and back"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 83630a81bdb10b33
+seal 2185eed76370cfce
+S1 0 - "panel Quick"
+N0 "tiles|quick.strand:21:3|#0" "grid#tiles"
+N1 "|quick.strand:10:3|#0" "row@quick.strand:10"
+N2 "|quick.strand:10:3|#1" "row@quick.strand:10"
+N3 "|quick.strand:10:3|#2" "row@quick.strand:10"
+N4 "|quick.strand:10:3|#3" "row@quick.strand:10"
+N5 "|quick.strand:12:5|#0" "text(\"Wi-Fi\")"
+N6 "|quick.strand:12:5|#0~2" "text(\"Bluetooth\")"
+N7 "|quick.strand:12:5|#0~3" "text(\"Do not disturb\")"
+N8 "|quick.strand:12:5|#0~4" "text(\"Night light\")"
+N9 "|quick.strand:13:5|#0" "box@quick.strand:13"
+N10 "|quick.strand:13:5|#0~2" "box@quick.strand:13"
+N11 "|quick.strand:13:5|#0~3" "box@quick.strand:13"
+N12 "|quick.strand:13:5|#0~4" "box@quick.strand:13"
+N13 "|quick.strand:14:7|#0" "box@quick.strand:14"
+N14 "|quick.strand:14:7|#0~2" "box@quick.strand:14"
+N15 "|quick.strand:14:7|#0~3" "box@quick.strand:14"
+N16 "|quick.strand:14:7|#0~4" "box@quick.strand:14"
+N17 "|quick.strand:19:1|#0" "panel@quick.strand:19"
+k0 p1
+s1 z=397,189 o=3,0
+n0 x=37 y=8 w=352 h=136 ord=1 bg=eff1f5ff sh=0000004d@0,-21,426,210/00000033@33,5,360,144
+n1 x=49 y=20 w=160 h=52 ord=2 bg=8839efff
+n2 x=217 y=20 w=160 h=52 ord=6 bg=e1e3e9ff
+n3 x=49 y=80 w=160 h=52 ord=10 bg=e1e3e9ff
+n4 x=217 y=80 w=160 h=52 ord=14 bg=e1e3e9ff
+n5 x=61 y=39 w=92 h=15 txt=S ord=3 ink=61,40,31,10 fg=eff1f5ff gl=["Wi-Fi"]
+n6 x=229 y=39 w=92 h=15 txt=S ord=7 ink=229,40,60,11 fg=4c4f69ff gl=["Bluetooth"]
+n7 x=61 y=99 w=92 h=15 txt=S ord=11 ink=61,100,89,11 fg=4c4f69ff gl=["Do\u0020not\u0020disturb"]
+n8 x=229 y=99 w=92 h=15 txt=S ord=15 ink=229,100,65,13 fg=4c4f69ff gl=["Night\u0020light"]
+n9 x=161 y=36 w=36 h=20 ord=4 bg=eff1f559
+n10 x=329 y=36 w=36 h=20 ord=8 bg=4c4f6933
+n11 x=161 y=96 w=36 h=20 ord=12 bg=4c4f6933
+n12 x=329 y=96 w=36 h=20 ord=16 bg=4c4f6933
+n13 x=179 y=38 w=16 h=16 ord=5 bg=eff1f5ff
+n14 x=331 y=38 w=16 h=16 ord=9 bg=4c4f69ff
+n15 x=163 y=98 w=16 h=16 ord=13 bg=4c4f69ff
+n16 x=331 y=98 w=16 h=16 ord=17 bg=4c4f69ff
+n17 x=37 y=8 w=352 h=136
+k1
+n1 bg=935af0ff
+n5 fg=d6d8e0ff
+n9 bg=dfe2e854
+n13 x=175 bg=d6d8e0ff
+k2
+n1 bg=a785f1ff
+n5 fg=acafbdff
+n9 bg=c1c4ce4b
+n13 x=169 bg=acafbdff
+k3
+n1 bg=baa6f0ff
+n5 fg=8a8da0ff
+n9 bg=a1a4b343
+n13 x=165 bg=8a8da0ff
+k4
+n1 bg=c8bdefff
+n5 fg=72758bff
+n9 bg=85889b3d
+n13 x=163 bg=72758bff
+k5
+n1 bg=d1ccedff
+n5 fg=63667dff
+n9 bg=70738939
+n13 bg=63667dff
+k6
+n0 bg=cdcfd5ff
+n1 bg=d3d1e7ff
+n2 bg=c2c4cdff
+n3 bg=c2c4cdff
+n4 bg=c2c4cdff
+n5 fg=5a5d76ff
+n6 fg=4f536dff
+n7 fg=4f536dff
+n8 fg=4f536dff
+n9 bg=63667d37
+n10 bg=4f536d33
+n11 bg=4f536d33
+n12 bg=4f536d33
+n13 bg=5a5d76ff
+n14 bg=4f536dff
+n15 bg=4f536dff
+n16 bg=4f536dff
+k7
+n0 bg=9798a3ff
+n1 bg=c8c8d8ff
+n2 bg=8f919cff
+n3 bg=8f919cff
+n4 bg=8f919cff
+n5 fg=52556eff
+n6 fg=393d56ff
+n7 fg=393d56ff
+n8 fg=393d56ff
+n9 bg=575b7335
+n10 bg=393d5633
+n11 bg=393d5633
+n12 bg=393d5633
+n13 bg=52556eff
+n14 bg=393d56ff
+n15 bg=393d56ff
+n16 bg=393d56ff
+k8
+n0 bg=6a6c79ff
+n1 bg=b3b3c2ff
+n2 bg=727482ff
+n3 bg=727482ff
+n4 bg=727482ff
+n5 fg=5e637dff
+n6 fg=d4dbfaff
+n7 fg=d4dbfaff
+n8 fg=d4dbfaff
+n9 bg=61657f34
+n10 bg=d4dbfa33
+n11 bg=d4dbfa33
+n12 bg=d4dbfa33
+n13 bg=5e637dff
+n14 bg=d4dbfaff
+n15 bg=d4dbfaff
+n16 bg=d4dbfaff
+k9
+n0 bg=4c4d5cff
+n1 bg=999aa8ff
+n2 bg=555666ff
+n3 bg=555666ff
+n4 bg=555666ff
+n5 fg=7a7f9aff
+n6 fg=c2c9e7ff
+n7 fg=c2c9e7ff
+n8 fg=c2c9e7ff
+n9 bg=7b809b34
+n10 bg=c2c9e733
+n11 bg=c2c9e733
+n12 bg=c2c9e733
+n13 bg=7a7f9aff
+n14 bg=c2c9e7ff
+n15 bg=c2c9e7ff
+n16 bg=c2c9e7ff
+k10
+n0 bg=393a49ff
+n1 bg=7f808fff
+n2 bg=424354ff
+n3 bg=424354ff
+n4 bg=424354ff
+n5 fg=9096b3ff
+n6 fg=b8c0ddff
+n7 fg=b8c0ddff
+n8 fg=b8c0ddff
+n9 bg=9197b333
+n10 bg=b8c0dd33
+n11 bg=b8c0dd33
+n12 bg=b8c0dd33
+n13 bg=9096b3ff
+n14 bg=b8c0ddff
+n15 bg=b8c0ddff
+n16 bg=b8c0ddff
+k11
+n0 bg=2e2e3eff
+n1 bg=686978ff
+n2 bg=38394aff
+n3 bg=38394aff
+n4 bg=38394aff
+n5 fg=a1a8c5ff
+n6 fg=c0c9e6ff
+n7 fg=c0c9e6ff
+n8 fg=c0c9e6ff
+n9 bg=a1a8c533
+n10 bg=c0c9e633
+n11 bg=c0c9e633
+n12 bg=c0c9e633
+n13 bg=a1a8c5ff
+n14 bg=c0c9e6ff
+n15 bg=c0c9e6ff
+n16 bg=c0c9e6ff
+k12
+n0 bg=272737ff
+n1 bg=555666ff
+n2 bg=323344ff
+n3 bg=323344ff
+n4 bg=323344ff
+n5 fg=adb5d2ff
+n6 fg=c6ceecff
+n7 fg=c6ceecff
+n8 fg=c6ceecff
+n9 bg=aeb5d233
+n10 bg=c6ceec33
+n11 bg=c6ceec33
+n12 bg=c6ceec33
+n13 bg=adb5d2ff
+n14 bg=c6ceecff
+n15 bg=c6ceecff
+n16 bg=c6ceecff
+k13
+n0 bg=232333ff
+n1 bg=474859ff
+n2 bg=2e2f40ff
+n3 bg=2e2f40ff
+n4 bg=2e2f40ff
+n5 fg=b7bfdcff
+n6 fg=c9d2efff
+n7 fg=c9d2efff
+n8 fg=c9d2efff
+n9 bg=b7bfdc33
+n10 bg=c9d2ef33
+n11 bg=c9d2ef33
+n12 bg=c9d2ef33
+n13 bg=b7bfdcff
+n14 bg=c9d2efff
+n15 bg=c9d2efff
+n16 bg=c9d2efff
+k14
+n0 bg=212131ff
+n1 bg=3d3e4fff
+n2 bg=2c2d3eff
+n3 bg=2c2d3eff
+n4 bg=2c2d3eff
+n5 fg=bec6e4ff
+n6 fg=cbd3f1ff
+n7 fg=cbd3f1ff
+n8 fg=cbd3f1ff
+n9 bg=bec6e433
+n10 bg=cbd3f133
+n11 bg=cbd3f133
+n12 bg=cbd3f133
+n13 bg=bec6e4ff
+n14 bg=cbd3f1ff
+n15 bg=cbd3f1ff
+n16 bg=cbd3f1ff
+k15
+n0 bg=202030ff
+n1 bg=373848ff
+n2 bg=2b2c3dff
+n3 bg=2b2c3dff
+n4 bg=2b2c3dff
+n5 fg=c3cbe9ff
+n6 fg=ccd5f3ff
+n7 fg=ccd5f3ff
+n8 fg=ccd5f3ff
+n9 bg=c3cbe933
+n10 bg=ccd5f333
+n11 bg=ccd5f333
+n12 bg=ccd5f333
+n13 bg=c3cbe9ff
+n14 bg=ccd5f3ff
+n15 bg=ccd5f3ff
+n16 bg=ccd5f3ff
+k16
+n0 bg=1f1f2fff
+n1 bg=323344ff
+n2 bg=2b2b3cff
+n3 bg=2b2b3cff
+n4 bg=2b2b3cff
+n5 fg=c6cfedff
+n9 bg=c6cfed33
+n13 bg=c6cfedff
+k17
+n1 bg=2f3041ff
+n2 bg=2a2b3cff
+n3 bg=2a2b3cff
+n4 bg=2a2b3cff
+n5 fg=c9d2efff
+n6 fg=cdd6f4ff
+n7 fg=cdd6f4ff
+n8 fg=cdd6f4ff
+n9 bg=c9d2ef33
+n10 bg=cdd6f433
+n11 bg=cdd6f433
+n12 bg=cdd6f433
+n13 bg=c9d2efff
+n14 bg=cdd6f4ff
+n15 bg=cdd6f4ff
+n16 bg=cdd6f4ff
+k18
+n0 bg=1e1e2eff
+n1 bg=2d2e3fff
+n5 fg=cad3f1ff
+n9 bg=cdd6f433
+n13 bg=cad3f1ff
+k19
+n1 bg=2c2c3eff
+n5 fg=cbd4f2ff
+n13 bg=cbd4f2ff
+k20
+n1 bg=2b2c3dff
+n2 bg=2a2a3cff
+n3 bg=2a2a3cff
+n4 bg=2a2a3cff
+n5 fg=ccd5f3ff
+n13 bg=ccd5f3ff
+k21
+n1 bg=2a2b3cff
+k22
+n5 fg=cdd6f4ff
+n13 bg=cdd6f4ff
+k23
+n1 bg=2a2a3cff
+k24
+n2 bg=3e3a54ff
+n3 bg=3e3a54ff
+n6 fg=aeb6d1ff
+n7 fg=aeb6d1ff
+n10 bg=9da3bd39
+n11 bg=9da3bd39
+n14 x=335 bg=aeb6d1ff
+n15 x=167 bg=aeb6d1ff
+k25
+n2 bg=63577eff
+n3 bg=63577eff
+n6 fg=7d8298ff
+n7 fg=7d8298ff
+n10 bg=62667a42
+n11 bg=62667a42
+n14 x=341 bg=7d8298ff
+n15 x=173 bg=7d8298ff
+k26
+n2 bg=8571a6ff
+n3 bg=8571a6ff
+n6 fg=55586aff
+n7 fg=55586aff
+n10 bg=3f41504a
+n11 bg=3f41504a
+n14 x=345 bg=55586aff
+n15 x=177 bg=55586aff
+k27
+n2 bg=9e84c3ff
+n3 bg=9e84c3ff
+n6 fg=3a3c4bff
+n7 fg=3a3c4bff
+n10 bg=2b2c3950
+n11 bg=2b2c3950
+n14 x=347 bg=3a3c4bff
+n15 x=179 bg=3a3c4bff
+k28
+n2 bg=b091d7ff
+n3 bg=b091d7ff
+n6 fg=292a37ff
+n7 fg=292a37ff
+n10 bg=1f202c53
+n11 bg=1f202c53
+n14 bg=292a37ff
+n15 bg=292a37ff
+k29
+n2 bg=bb9ae4ff
+n3 bg=bb9ae4ff
+n6 fg=1f202bff
+n7 fg=1f202bff
+n10 bg=191a2556
+n11 bg=191a2556
+n14 bg=1f202bff
+n15 bg=1f202bff
+k30
+n2 bg=c29fecff
+n3 bg=c29fecff
+n6 fg=191924ff
+n7 fg=191924ff
+n10 bg=16162057
+n11 bg=16162057
+n14 bg=191924ff
+n15 bg=191924ff
+k31
+n2 bg=c6a2f1ff
+n3 bg=c6a2f1ff
+n6 fg=161620ff
+n7 fg=161620ff
+n10 bg=14141e58
+n11 bg=14141e58
+n14 bg=161620ff
+n15 bg=161620ff
+k32
+n2 bg=c8a4f3ff
+n3 bg=c8a4f3ff
+n6 fg=14141eff
+n7 fg=14141eff
+n10 bg=12131d59
+n11 bg=12131d59
+n14 bg=14141eff
+n15 bg=14141eff
+k33
+n2 bg=c9a5f5ff
+n3 bg=c9a5f5ff
+n6 fg=12131dff
+n7 fg=12131dff
+n10 bg=11111b59
+n11 bg=11111b59
+n14 bg=12131dff
+n15 bg=12131dff
+k34
+n2 bg=caa5f6ff
+n3 bg=caa5f6ff
+n6 fg=12121cff
+n7 fg=12121cff
+n14 bg=12121cff
+n15 bg=12121cff
+k35
+n2 bg=cba6f7ff
+n3 bg=cba6f7ff
+n6 fg=11111cff
+n7 fg=11111cff
+n14 bg=11111cff
+n15 bg=11111cff
+k36
+n6 fg=11111bff
+n7 fg=11111bff
+n14 bg=11111bff
+n15 bg=11111bff
+k37
+n0 bg=373847ff
+n1 bg=414252ff
+n2 bg=c099f7ff
+n3 bg=c099f7ff
+n4 bg=414252ff
+n5 fg=b9c1dfff
+n6 fg=2b2b36ff
+n7 fg=2b2b36ff
+n8 fg=b9c1dfff
+n9 bg=b9c1df33
+n10 bg=2b2b3659
+n11 bg=2b2b3659
+n12 bg=b9c1df33
+n13 bg=b9c1dfff
+n14 bg=2b2b36ff
+n15 bg=2b2b36ff
+n16 bg=b9c1dfff
+k38
+n0 bg=666774ff
+n1 bg=6e707eff
+n2 bg=af81f5ff
+n3 bg=af81f5ff
+n4 bg=6e707eff
+n5 fg=d1d9f7ff
+n6 fg=4a4b54ff
+n7 fg=4a4b54ff
+n8 fg=d1d9f7ff
+n9 bg=d1d9f733
+n10 bg=4a4b5459
+n11 bg=4a4b5459
+n12 bg=d1d9f733
+n13 bg=d1d9f7ff
+n14 bg=4a4b54ff
+n15 bg=4a4b54ff
+n16 bg=d1d9f7ff
+k39
+n0 bg=92949eff
+n1 bg=8a8c98ff
+n2 bg=a16cf4ff
+n3 bg=a16cf4ff
+n4 bg=8a8c98ff
+n5 fg=353952ff
+n6 fg=3d3f45ff
+n7 fg=3d3f45ff
+n8 fg=353952ff
+n9 bg=35395233
+n10 bg=3d3f4559
+n11 bg=3d3f4559
+n12 bg=35395233
+n13 bg=353952ff
+n14 bg=3d3f45ff
+n15 bg=3d3f45ff
+n16 bg=353952ff
+k40
+n0 bg=b4b5beff
+n1 bg=aaacb6ff
+n2 bg=975bf2ff
+n3 bg=975bf2ff
+n4 bg=aaacb6ff
+n5 fg=484c65ff
+n6 fg=33353aff
+n7 fg=33353aff
+n8 fg=484c65ff
+n9 bg=484c6533
+n10 bg=33353a59
+n11 bg=33353a59
+n12 bg=484c6533
+n13 bg=484c65ff
+n14 bg=33353aff
+n15 bg=33353aff
+n16 bg=484c65ff
+k41
+n0 bg=cbccd3ff
+n1 bg=c0c2cbff
+n2 bg=914ff1ff
+n3 bg=914ff1ff
+n4 bg=c0c2cbff
+n5 fg=4f526cff
+n6 fg=cfd1d7ff
+n7 fg=cfd1d7ff
+n8 fg=4f526cff
+n9 bg=4f526c33
+n10 bg=cfd1d759
+n11 bg=cfd1d759
+n12 bg=4f526c33
+n13 bg=4f526cff
+n14 bg=cfd1d7ff
+n15 bg=cfd1d7ff
+n16 bg=4f526cff
+k42
+n0 bg=d9dbe1ff
+n1 bg=ced0d7ff
+n2 bg=8d47f0ff
+n3 bg=8d47f0ff
+n4 bg=ced0d7ff
+n5 fg=535671ff
+n6 fg=d8d9deff
+n7 fg=d8d9deff
+n8 fg=535671ff
+n9 bg=53567133
+n10 bg=d8d9de59
+n11 bg=d8d9de59
+n12 bg=53567133
+n13 bg=535671ff
+n14 bg=d8d9deff
+n15 bg=d8d9deff
+n16 bg=535671ff
+k43
+n0 bg=e2e4e9ff
+n1 bg=d6d8dfff
+n2 bg=8b41f0ff
+n3 bg=8b41f0ff
+n4 bg=d6d8dfff
+n5 fg=525670ff
+n6 fg=e1e3e8ff
+n7 fg=e1e3e8ff
+n8 fg=525670ff
+n9 bg=52567033
+n10 bg=e1e3e859
+n11 bg=e1e3e859
+n12 bg=52567033
+n13 bg=525670ff
+n14 bg=e1e3e8ff
+n15 bg=e1e3e8ff
+n16 bg=525670ff
+k44
+n0 bg=e8eaeeff
+n1 bg=dbdde3ff
+n2 bg=8a3eefff
+n3 bg=8a3eefff
+n4 bg=dbdde3ff
+n5 fg=50536dff
+n6 fg=e7e9edff
+n7 fg=e7e9edff
+n8 fg=50536dff
+n9 bg=50536d33
+n10 bg=e7e9ed59
+n11 bg=e7e9ed59
+n12 bg=50536d33
+n13 bg=50536dff
+n14 bg=e7e9edff
+n15 bg=e7e9edff
+n16 bg=50536dff
+k45
+n0 bg=ebedf1ff
+n1 bg=dddfe6ff
+n2 bg=893cefff
+n3 bg=893cefff
+n4 bg=dddfe6ff
+n5 fg=4e516bff
+n6 fg=ebedf1ff
+n7 fg=ebedf1ff
+n8 fg=4e516bff
+n9 bg=4e516b33
+n10 bg=ebedf159
+n11 bg=ebedf159
+n12 bg=4e516b33
+n13 bg=4e516bff
+n14 bg=ebedf1ff
+n15 bg=ebedf1ff
+n16 bg=4e516bff
+k46
+n0 bg=edeff3ff
+n1 bg=dfe1e7ff
+n2 bg=893befff
+n3 bg=893befff
+n4 bg=dfe1e7ff
+n5 fg=4d506aff
+n6 fg=eceef3ff
+n7 fg=eceef3ff
+n8 fg=4d506aff
+n9 bg=4d506a33
+n10 bg=eceef359
+n11 bg=eceef359
+n12 bg=4d506a33
+n13 bg=4d506aff
+n14 bg=eceef3ff
+n15 bg=eceef3ff
+n16 bg=4d506aff
+k47
+n0 bg=eef0f4ff
+n1 bg=e0e2e8ff
+n2 bg=883aefff
+n3 bg=883aefff
+n4 bg=e0e2e8ff
+n6 fg=eef0f4ff
+n7 fg=eef0f4ff
+n10 bg=eef0f459
+n11 bg=eef0f459
+n14 bg=eef0f4ff
+n15 bg=eef0f4ff
+k48
+n1 bg=e0e2e9ff
+n2 bg=8839efff
+n3 bg=8839efff
+n4 bg=e0e2e9ff
+n5 fg=4c4f69ff
+n8 fg=4c4f69ff
+n9 bg=4c4f6933
+n12 bg=4c4f6933
+n13 bg=4c4f69ff
+n16 bg=4c4f69ff
+k49
+n0 bg=eff1f5ff
+n1 bg=e0e3e9ff
+n4 bg=e0e3e9ff
+n6 fg=eff1f5ff
+n7 fg=eff1f5ff
+n10 bg=eff1f559
+n11 bg=eff1f559
+n14 bg=eff1f5ff
+n15 bg=eff1f5ff
+k50
+n1 bg=e1e3e9ff
+n4 bg=e1e3e9ff
+k51
+k52

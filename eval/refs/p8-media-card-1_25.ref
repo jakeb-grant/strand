@@ -1,0 +1,151 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-media-card-1_25"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the wavy progress meter advances, flattens on pause and starts again from the new track at 1.25"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario a97e22d77ace02ba
+seal 4e93c907f5381d3b
+S1 0 - "panel Player"
+N0 "art|media.strand:5:5|#0" "image#art"
+N1 "card|media.strand:3:3|#0" "row#card"
+N2 "play_btn|media.strand:13:9|#1" "box#play_btn"
+N3 "progress|media.strand:9:7|#0" "meter#progress"
+N4 "track_title|media.strand:7:7|#0" "text#track_title"
+N5 "|media.strand:11:7|#0" "row@media.strand:11"
+N6 "|media.strand:12:9|#0" "box@media.strand:12"
+N7 "|media.strand:14:9|#2" "box@media.strand:14"
+N8 "|media.strand:1:1|#0" "panel@media.strand:1"
+N9 "|media.strand:6:5|#0" "col@media.strand:6"
+N10 "|media.strand:8:7|#1" "text(\"Bon Iver\")"
+k0 p1
+s1 z=366,126 o=27,1
+n0 x=25 y=29 w=64 h=64 v=24.796875,28.796875,64,64 ord=2 im=0,0,64,64@80,80
+n1 x=13 y=11 w=340 h=100 v=12.796875,11.203125,340,100 ord=1 bg=faf9ffff sh=00000040@0,0.40625,365.59375,125.59375
+n2 x=133 y=71 w=28 h=28 v=132.796875,71.203125,28,28 ord=9 bg=455e91ff
+n3 x=101 y=59 w=240 h=8 v=100.796875,59.203125,240,8 ord=6 bg=1a1b2026/455e91ff pt=0,-3,77.59375,14
+n4 x=101 y=23 w=240 h=15 v=100.796875,23.203125,240,15.203125 txt=S ord=4 ink=101.59375,25.59375,57.59375,10.40625 fg=1a1b20ff gl=["Holocene"]
+n5 x=101 y=71 w=240 h=28 v=100.796875,71.203125,240,28 ord=7
+n6 x=101 y=73 w=24 h=24 v=100.796875,72.796875,24,24 ord=8 bg=e6e5ebff
+n7 x=169 y=73 w=24 h=24 v=168.796875,72.796875,24,24 ord=10 bg=e6e5ebff
+n8 x=13 y=11 w=340 h=100 v=12.796875,11.203125,340,100
+n9 x=101 y=23 w=240 h=76 v=100.796875,23.203125,240,76 ord=3
+n10 x=101 y=42 w=240 h=13 v=100.796875,42.40625,240,12.796875 txt=S ord=5 ink=101.59375,44,40.796875,8.796875 fg=1a1b20a6 gl=["Bon\u0020Iver"]
+k19
+n3 pt=0,-3,80.015625,14
+k20
+n3 pt=0,-3,83.546875,14
+k21
+n3 pt=0,-3,85.859375,14
+k22
+n3 pt=0,-3,86.875,14
+k23
+n3 pt=0,-3,87.140625,13.984375
+k24
+n3 pt=0,-3,87.09375,14
+k25
+n3 pt=0,-3,87,14
+k26
+n3 pt=0,-3,86.875,14
+k50
+n3 pt=0,-3,89.296875,14
+k51
+n3 pt=0,-3,92.828125,14
+k52
+n3 pt=0,-3,95.140625,13.984375
+k53
+n3 pt=0,-3,96.15625,14
+k54
+n3 pt=0,-3,96.421875,14
+k55
+n3 pt=0,-3,96.375,14
+k56
+n3 pt=0,-3,96.28125,14
+k57
+n3 pt=0,-3,96.15625,14
+k81
+n2 bg=5a719eff
+n3 pt=0,-2.21875,96.15625,12.4375
+k82
+n2 bg=8090b4ff
+n3 pt=0,-1.078125,96.15625,10.15625
+k83
+n2 bg=a1acc7ff
+n3 pt=0,-0.328125,96.15625,8.65625
+k84
+n2 bg=bac1d4ff
+n3 pt=0,0,96.15625,8
+k85
+n2 bg=cbcfddff
+n3 pt=0,-0.09375,96.15625,8.171875
+k86
+n2 bg=d6d8e3ff
+n3 pt=0,-0.078125,96.15625,8.140625
+k87
+n2 bg=dcdde6ff
+n3 pt=0,0,91.203125,8
+k88
+n2 bg=e0e0e8ff
+k89
+n2 bg=e3e2e9ff
+k90
+n2 bg=e4e3eaff
+k91
+n2 bg=e5e4eaff
+k92
+n2 bg=e6e5ebff
+k93
+n3 pt=0,0,67.46875,8
+n4 ink=100.796875,25.59375,228.796875,12.796875 fit=240 gl=["The\u0020Wolves\u0020(Act\u0020I\u0020and\u0020II)\u0020—\u0020Live\u0020from\u0020the\u0020April\u0020Sessions"]
+k94
+n3 pt=0,0,32.8125,8
+k95
+n3 pt=0,0,10.09375,8
+k96
+n3 pt=0,0,0.03125,8
+k97
+n3 bg=1a1b2026 pt=-
+k98
+k99
+k100
+k101
+k102
+k103
+n2 bg=cdd1deff
+k104
+n2 bg=a5afc9ff
+k105
+n2 bg=8393b6ff
+k106
+n2 bg=6b7fa8ff
+k107
+n2 bg=5c729fff
+k108
+n2 bg=536a99ff
+k109
+n2 bg=4d6596ff
+k110
+n2 bg=496294ff
+k111
+n2 bg=486093ff
+k112
+n2 bg=465f92ff
+k113
+n2 bg=465f91ff
+k114
+n2 bg=455e91ff
+k152
+n3 bg=1a1b2026/455e91ff pt=0,-0.5625,9.203125,8.5625
+k153
+n3 pt=0,-1.359375,10.96875,9.34375
+k154
+n3 pt=0,-1.8125,12.125,9.8125
+k155
+n3 pt=0,-2,12.640625,10
+k156
+n3 pt=0,-2.046875,12.765625,10.046875
+k157
+n3 pt=0,-2.046875,12.75,10.03125
+k158
+n3 pt=0,-2,12.640625,10

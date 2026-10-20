@@ -1,0 +1,40 @@
+id     = "now-playing-time"
+about  = """design.md's "What a rice looks like", its time-driven parts
+(eval-coverage-5): a now-playing pill whose gradient border turns
+(`conic(from: t * 40deg, …)`), whose cover spins (`rotate: t * 20deg`) and
+whose glow breathes (`6 + 4 * wave(2s)`) while music plays; only the pill
+repaints. With the desktop's reduced motion turned on mid-play, every time
+signal stands at t = 0 (time.rs `TimeContext::frozen`) and the panel rests
+where the reduced twin does; the music stopping then changes what is drawn
+with nothing left to move."""
+screen = { width = 320, height = 160, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+panel Media {
+  anchor: top_left; margin: 8; open: true
+  col { pad: 24
+    row { id: pill; height: 36; pad: 4, 12; gap: 8; align: center; radius: full; bg: #1e1e2e
+          border: 1.5, conic(from: playing ? t * 40deg : 0deg, #cba6f7, #89b4fa, #cba6f7)
+      when playing { glow: 6 + 4 * wave(2s), #cba6f7.alpha(0.4) }
+      box { id: cover; width: 26; height: 26; radius: 6; bg: linear(45deg, #f5c2e7, #89dceb)
+            rotate: playing ? t * 20deg : 0deg }
+      text "Teardrop" { id: title; color: #cdd6f4 }
+    }
+  }
+}
+
+=== steps
+rest
+mark play
+intend #pill changes
+intend #cover changes
+set playing true
+wait 800
+mark reduce
+reduce-motion on
+rest
+mark stop
+set playing false
+rest

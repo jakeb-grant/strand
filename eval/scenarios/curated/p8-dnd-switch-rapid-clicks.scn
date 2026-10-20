@@ -1,0 +1,51 @@
+id     = "p8-dnd-switch-rapid-clicks"
+about  = """A do-not-disturb switch on a bar, clicked five times in quick
+succession so its knob and track colour retarget before each spring settles,
+then once more after a pause; hovering tints the switch, and the bell label
+beside it swaps its text with each state."""
+screen = { width = 320, height = 160, scale = 1.0 }
+hz     = 60
+
+=== bar.strand
+state quiet = false
+
+bar Top {
+  edge: top; height: 32; bg: $surface; color: $fg; font: $font.ui
+  row { pad: 0, 8; gap: 8; align: center; height: 32
+    box { id: dnd_switch; width: 40; height: 22; radius: full; pad: 3
+          bg: quiet ? $accent : $fg.alpha(0.2); hit: grow(4)
+      when hover { border: 1, $accent.hover }
+      on click { quiet = !quiet }
+      box { id: knob; size: 16; radius: full; bg: quiet ? $on_accent : $fg; x: quiet ? 18 : 0 }
+    }
+    text quiet ? "Notifications paused" : "Notifications on" { id: dnd_label; color: $fg.muted }
+  }
+}
+
+=== steps
+rest
+mark hover-in
+pointer 28,16 on bar
+rest
+mark rapid
+intend #knob moves
+intend #dnd_switch changes
+click 28,16 on bar
+frames 3
+click 28,16 on bar
+frames 3
+click 28,16 on bar
+frames 4
+click 28,16 on bar
+frames 2
+click 28,16 on bar
+rest
+shot after-rapid
+mark single
+intend #knob moves
+intend #dnd_switch changes
+click 28,16 on bar
+rest
+mark leave
+leave
+rest

@@ -1,0 +1,48 @@
+id     = "voice-letters-noise"
+about  = """Per-letter text motion and noise (eval-coverage-5; design.md
+"Text effects": `letters { y: 2 * wave(1s, phase: index * 0.1) }`, "Time
+signals": `noise(x)`): a voice-input chip in a bar whose "Listening" label
+ripples letter by letter and whose mic dot trembles on `noise(t * 3)`. The
+listening ends and the chip leaves; started again, it ripples from its own
+start (a new chip, a new clock); with the desktop's reduced motion turned on
+the letters and the dot stand at t = 0 (each letter keeps its own `index`,
+decisions.md m4-scene) and the bar rests where the reduced twin does."""
+screen = { width = 300, height = 120, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state listening = false
+bar Top {
+  height: 30; bg: #1e1e2e
+  row { height: 30; pad: 0, 10; gap: 6; align: center
+    if listening {
+      row { id: chip; height: 22; pad: 0, 8; gap: 6; align: center; radius: 11; bg: #313244
+        enter { opacity: 0; scale: 0.9 }
+        box { id: mic; width: 8; height: 8; radius: 4; bg: #f38ba8; x: 1.5 * noise(t * 3) }
+        text "Listening" { id: label; color: #cdd6f4
+          letters { y: 2 * wave(1s, phase: index * 0.1) } }
+      }
+    }
+    spacer {}
+    text "12:30" { id: clock; color: #cdd6f4 }
+  }
+}
+
+=== steps
+rest
+mark listen
+intend #chip enters
+set listening true
+wait 600
+mark stop
+intend #chip exits
+set listening false
+rest
+mark listen-again
+intend #chip enters
+set listening true
+wait 400
+mark reduce
+reduce-motion on
+rest
+expect still #clock

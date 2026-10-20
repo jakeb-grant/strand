@@ -1,0 +1,270 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "charging-pulse-reduced"
+verdict good
+note "first reference (eval-coverage-5): read: the level breathes 1 to 0.4 and back on a 1.2 s loop, holds at its start (opacity 1) with motion reduced and the bar rests in one tick, breathes again in phase, unplug ends it and the bolt leaves"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 1dd66bb099e65269
+seal 657fe7a8befd7550
+S1 0 - "bar Top"
+N0 "idle|shell.strand:18:9|[Mock | DP-1]#0" "box#idle"
+N1 "shell|shell.strand:13:5|[Mock | DP-1]#0" "box#shell"
+N2 "|shell.strand:21:5|[Mock | DP-1]#0" "text(\"62%\")"
+N3 "|shell.strand:5:1|[Mock | DP-1]#0" "bar@shell.strand:5"
+N4 "|shell.strand:7:3|[Mock | DP-1]#0" "row@shell.strand:7"
+N5 "|shell.strand:8:5|[Mock | DP-1]#0" "spacer@shell.strand:8"
+N6 "bolt|shell.strand:10:7|[Mock | DP-1]#0" "box#bolt"
+N7 "level|shell.strand:15:9|[Mock | DP-1]#0" "box#level"
+k0 p1
+s1 z=300,30
+n0 x=233 y=11 w=15 h=7 ord=4 bg=cdd6f4ff
+n1 x=231 y=9 w=26 h=13 ord=3 bd=a6adc8ff
+n2 x=263 y=8 w=27 h=15 txt=S ord=5 ink=263,9,26,11 fg=cdd6f4ff gl=["62%"]
+n3 x=0 y=0 w=300 h=30 bg=1e1e2eff
+n4 x=0 y=0 w=300 h=30 ord=1
+n5 x=10 y=15 w=215 h=0 ord=2
+k1
+n0 -
+n1 ord=4
+n2 ord=6
+n5 w=201
+n6 x=217 y=8 w=8 h=14 v=218.1875,10.078125,5.625,9.859375 op=37 sc=0.704,0.704 ord=3 bg=f9e2afff
+n7 x=233 y=11 w=15 h=7 ord=5 bg=a6e3a1ff
+k2
+n6 v=217.578125,9,6.84375,11.984375 op=98 sc=0.856,0.856
+k3
+n6 v=217.171875,8.3125,7.640625,13.375 op=151 sc=0.956,0.956
+n7 op=254
+k4
+n6 v=d op=190 sc=1,1
+n7 op=253
+k5
+n6 v=216.953125,7.921875,8.09375,14.15625 op=216 sc=1.011,1.011
+n7 op=251
+k6
+n6 v=216.96875,7.9375,8.078125,14.125 op=232 sc=1.009,1.009
+n7 op=249
+k7
+n6 v=216.984375,7.96875,8.03125,14.0625 op=241 sc=1.005,1.005
+n7 op=246
+k8
+n6 v=217,7.984375,8.015625,14.03125 op=247 sc=1.002,1.002
+n7 op=243
+k9
+n6 v=d op=251 sc=1,1
+n7 op=239
+k10
+n6 op=253
+n7 op=235
+k11
+n6 op=254
+n7 op=230
+k12
+n7 op=225
+k13
+n6 op=255
+n7 op=220
+k14
+n7 op=213
+k15
+n7 op=207
+k16
+n7 op=200
+k17
+n7 op=193
+k18
+n7 op=186
+k19
+n7 op=179
+k20
+n7 op=171
+k21
+n7 op=164
+k22
+n7 op=157
+k23
+n7 op=150
+k24
+n7 op=144
+k25
+n7 op=137
+k26
+n7 op=132
+k27
+n7 op=127
+k28
+n7 op=122
+k29
+n7 op=118
+k30
+n7 op=114
+k31
+n7 op=111
+k32
+n7 op=108
+k33
+n7 op=106
+k34
+n7 op=104
+k35
+n7 op=103
+k36
+n7 op=102
+k37
+k38
+k39
+n7 op=103
+k40
+n7 op=104
+k41
+n7 op=106
+k42
+n7 op=108
+k43
+n7 op=111
+k44
+n7 op=114
+k45
+n7 op=118
+k46
+n7 op=122
+k47
+n7 op=127
+k48
+n7 op=132
+k49
+n7 op=137
+k50
+n7 op=144
+k51
+n7 op=150
+k52
+n7 op=157
+k53
+n7 op=164
+k54
+n7 op=171
+k55
+n7 op=178
+k56
+n7 op=255
+k57
+n7 op=193
+k58
+n7 op=200
+k59
+n7 op=207
+k60
+n7 op=213
+k61
+n7 op=220
+k62
+n7 op=225
+k63
+n7 op=230
+k64
+n7 op=235
+k65
+n7 op=239
+k66
+n7 op=243
+k67
+n7 op=246
+k68
+n7 op=249
+k69
+n7 op=251
+k70
+n7 op=253
+k71
+n7 op=254
+k72
+n7 op=255
+k73
+k74
+k75
+n7 op=254
+k76
+n7 op=253
+k77
+n7 op=251
+k78
+n7 op=249
+k79
+n7 op=246
+k80
+n7 op=243
+k81
+n7 op=239
+k82
+n7 op=235
+k83
+n7 op=230
+k84
+n7 op=225
+k85
+n7 op=220
+k86
+n7 op=213
+k87
+n7 op=207
+k88
+n7 op=200
+k89
+n7 op=193
+k90
+n7 op=186
+k91
+n7 op=179
+k92
+n7 op=171
+k93
+n7 op=164
+k94
+n7 op=157
+k95
+n7 op=150
+k96
+n7 op=144
+k97
+n7 op=137
+k98
+n7 op=132
+k99
+n7 op=127
+k100
+n0 x=233 y=11 w=15 h=7 ord=5 bg=cdd6f4ff
+n6 v=217.421875,8.734375,7.171875,12.546875 op=218 sc=0.896,0.896 hid=inert
+n7 -
+k101
+n6 v=218.03125,9.796875,5.953125,10.421875 op=157 sc=0.744,0.744
+k102
+n6 v=218.421875,10.484375,5.15625,9.015625 op=104 sc=0.644,0.644
+k103
+n6 v=218.59375,10.796875,4.796875,8.40625 op=65 sc=0.6,0.6
+k104
+n6 v=218.640625,10.875,4.703125,8.25 op=39 sc=0.589,0.589
+k105
+n6 v=218.640625,10.859375,4.71875,8.265625 op=23 sc=0.591,0.591
+k106
+n6 v=218.625,10.828125,4.765625,8.328125 op=14 sc=0.595,0.595
+k107
+n6 v=218.609375,10.8125,4.78125,8.375 op=8 sc=0.598,0.598
+k108
+n6 v=218.59375,10.796875,4.796875,8.390625 op=4 sc=0.6,0.6
+k109
+n6 v=218.59375,10.796875,4.796875,8.40625 op=2
+k110
+n6 op=1
+k111
+k112
+n6 op=0
+k113
+n6 v=d sc=1,1 hid=opacity0 bg=-
+k114
+n0 ord=4
+n1 ord=3
+n2 ord=5
+n5 w=215
+n6 -

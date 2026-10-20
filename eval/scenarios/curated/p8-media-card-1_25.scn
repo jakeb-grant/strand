@@ -1,0 +1,65 @@
+id     = "p8-media-card-1_25"
+about  = """A media card at scale 1.25 with cover art, an ellipsised title and a
+wavy progress bar: playback advances the progress twice, the player pauses so
+the wave flattens, the next track arrives with a long title and the progress
+springs back to the start, and playback resumes."""
+screen = { width = 420, height = 260, scale = 1.25 }
+hz     = 60
+
+[services]
+"media.playing" = true
+"media.title" = "Holocene"
+"media.artist" = "Bon Iver"
+"media.position" = 0.30
+"media.can_next" = true
+"media.can_previous" = true
+
+=== media.strand
+panel Player {
+  anchor: top; layer: top; keyboard: none; margin: $space.3, 0, 0
+  row { id: card; width: 340; pad: $space.3; gap: $space.3; align: center
+        radius: $radius.lg; bg: $surface; shadow: $elevation.md; color: $fg; font: $font.ui
+    image media.art ?? "audio-x-generic" { id: art; size: 64; radius: $radius.md; fit: cover }
+    col { grow: 1; gap: $space.1
+      text media.title ?? "Nothing playing" { id: track_title; weight: 600; ellipsis: end }
+      text media.artist ?? "" { color: $fg.muted; font: $font.caption; ellipsis: end }
+      meter media.position { id: progress; height: 8; color: $accent; track: $fg.alpha(0.15)
+        wave: media.playing ? 3 : 0 }
+      row { gap: $space.2; align: center
+        box { size: 24; radius: full; bg: $surface.hi; opacity: media.can_previous ? 1 : 0.4 }
+        box { id: play_btn; size: 28; radius: full; bg: media.playing ? $accent : $surface.hi }
+        box { size: 24; radius: full; bg: $surface.hi; opacity: media.can_next ? 1 : 0.4 }
+      }
+    }
+  }
+}
+
+=== steps
+wait 300
+mark advance
+intend #progress changes
+set media.position 0.34
+wait 500
+set media.position 0.38
+wait 500
+mark pause
+intend #progress changes
+intend #play_btn changes
+set media.playing false
+rest
+shot paused
+mark next-track
+intend #progress changes
+intend #track_title changes
+set media.title "The Wolves (Act I and II) — Live from the April Sessions"
+set media.artist "Bon Iver"
+set media.position 0.0
+rest
+shot next
+mark resume
+intend #progress changes
+intend #play_btn changes
+set media.playing true
+wait 800
+set media.position 0.02
+wait 600

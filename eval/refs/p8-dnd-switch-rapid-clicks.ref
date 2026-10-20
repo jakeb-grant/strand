@@ -1,0 +1,191 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-dnd-switch-rapid-clicks"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the switch's knob and track turn round mid-spring at each of five quick clicks, then settle after the pause"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 252201dd61c05fd7
+seal d3fd80b987dd44d5
+S1 0 - "bar Top"
+N0 "dnd_label|bar.strand:12:5|[Mock | DP-1]#0" "text#dnd_label"
+N1 "dnd_switch|bar.strand:6:5|[Mock | DP-1]#0" "box#dnd_switch"
+N2 "knob|bar.strand:10:7|[Mock | DP-1]#0" "box#knob"
+N3 "|bar.strand:3:1|[Mock | DP-1]#0" "bar@bar.strand:3"
+N4 "|bar.strand:5:3|[Mock | DP-1]#0" "row@bar.strand:5"
+k0 p1
+s1 z=320,32
+n0 x=56 y=9 w=89 h=15 txt=S ord=4 ink=57,10,88,11 fg=1a1b20a6 gl=["Notifications\u0020on"]
+n1 x=8 y=5 w=40 h=22 ord=2 bg=1a1b2033
+n2 x=11 y=8 w=16 h=16 ord=3 bg=1a1b20ff
+n3 x=0 y=0 w=320 h=32 bg=faf9ffff
+n4 x=0 y=0 w=320 h=32 ord=1
+k1
+n1 bd=526a9a25
+k2
+n1 bd=526a9a62
+k3
+n1 bd=526a9a97
+k4
+n1 bd=526a9abe
+k5
+n1 bd=526a9ad8
+k6
+n1 bd=526a9ae8
+k7
+n1 bd=526a9af1
+k8
+n1 bd=526a9af7
+k9
+n1 bd=526a9afb
+k10
+n1 bd=526a9afd
+k11
+n1 bd=526a9afe
+k12
+k13
+n1 bd=526a9aff
+k14
+k15
+n0 w=118 ink=57,10,116,13 gl=["Notifications\u0020paused"]
+n1 bg=2d385150
+n2 x=16 bg=35363bff
+k16
+n1 bg=3a4d7382
+n2 x=23 bg=68696dff
+k17
+n1 bg=405582ac
+n2 x=27 bg=99999cff
+k18
+n0 w=89 ink=57,10,88,11 gl=["Notifications\u0020on"]
+n1 bg=405683ae
+n2 x=24 bg=9a9b9eff
+k19
+n1 bg=3d517a91
+n2 x=18 bg=7a7a7eff
+k20
+n1 bg=38496c73
+n2 x=13 bg=595a5eff
+k21
+n0 w=118 ink=57,10,116,13 gl=["Notifications\u0020paused"]
+n1 bg=394b707a
+n2 x=16 bg=606165ff
+k22
+n1 bg=3e527d9b
+n2 x=22 bg=858589ff
+k23
+n1 bg=415886bb
+n2 x=27 bg=ababadff
+k24
+n1 bg=435a8bd4
+n2 x=29 bg=c9c9caff
+k25
+n0 w=89 ink=57,10,88,11 gl=["Notifications\u0020on"]
+n1 bg=425988c7
+n2 x=25 bg=b9b9bbff
+k26
+n1 bg=3e547fa1
+n2 x=18 bg=8c8c8fff
+k27
+n0 w=118 ink=57,10,116,13 gl=["Notifications\u0020paused"]
+n1 bg=3e527d9a
+n2 bg=848588ff
+k28
+n1 bg=405683b0
+n2 x=23 bg=9e9ea1ff
+k29
+n1 bg=425989c9
+n2 x=27 bg=bbbbbdff
+k30
+n1 bg=435b8cdc
+n2 x=29 bg=d3d3d4ff
+k31
+n1 bg=445c8ee9
+n2 bg=e3e4e4ff
+k32
+n1 bg=445d8ff2
+n2 bg=eeeeefff
+k33
+n1 bg=455d90f7
+n2 bg=f5f5f6ff
+k34
+n1 bg=455e90fb
+n2 bg=f9f9faff
+k35
+n1 bg=455e91fc
+n2 bg=fcfcfcff
+k36
+n1 bg=455e91fe
+n2 bg=fdfdfdff
+k37
+n2 bg=fefefeff
+k38
+n1 bg=455e91ff
+k39
+n2 bg=ffffffff
+k40
+n0 w=89 ink=57,10,88,11 gl=["Notifications\u0020on"]
+n1 bg=445c8de2
+n2 x=24 bg=dadadbff
+k41
+n1 bg=405683b0
+n2 x=17 bg=9e9ea1ff
+k42
+n1 bg=3b4e7586
+n2 x=13 bg=6d6e72ff
+k43
+n1 bg=35446567
+n2 x=11 bg=4c4d51ff
+k44
+n1 bg=2e3a5353
+n2 x=10 bg=37383dff
+k45
+n1 bg=28304346
+n2 x=11 bg=2b2c31ff
+k46
+n1 bg=2329373e
+n2 bg=24252aff
+k47
+n1 bg=20232e39
+n2 bg=202126ff
+k48
+n1 bg=1d202837
+n2 bg=1d1e23ff
+k49
+n1 bg=1c1e2535
+n2 bg=1c1d22ff
+k50
+n1 bg=1b1d2334
+n2 bg=1b1c21ff
+k51
+n1 bg=1b1c2134
+k52
+n1 bg=1a1b2033
+n2 bg=1a1b20ff
+k53
+n1 bd=526a9ada
+k54
+n1 bd=526a9a9d
+k55
+n1 bd=526a9a68
+k56
+n1 bd=526a9a41
+k57
+n1 bd=526a9a27
+k58
+n1 bd=526a9a17
+k59
+n1 bd=526a9a0e
+k60
+n1 bd=526a9a08
+k61
+n1 bd=526a9a04
+k62
+n1 bd=526a9a02
+k63
+n1 bd=526a9a01
+k64
+k65
+n1 bd=526a9a00
+k66
+n1 bd=-

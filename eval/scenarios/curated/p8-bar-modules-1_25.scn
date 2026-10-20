@@ -1,0 +1,63 @@
+id     = "p8-bar-modules-1_25"
+about  = """A status bar at scale 1.25 with a truly centred clock: a VPN chip
+grows in at the end, a recording chip joins it, the VPN chip leaves while the
+recording one stays, and a title at the start changes length; the centre stays
+centred throughout and the chips' neighbours glide aside."""
+screen = { width = 480, height = 200, scale = 1.25 }
+hz     = 60
+
+=== bar.strand
+state vpn_on = false
+state rec_on = false
+state window_title = "Terminal"
+
+bar Top {
+  edge: top; height: 30; bg: $surface; font: $font.ui; color: $fg
+  split { pad: 0, $space.3
+    start { gap: $space.2
+      box { size: 10; radius: full; bg: $accent }
+      text window_title { id: title; max_width: 140; ellipsis: end; color: $fg.muted }
+    }
+    center { text "14:05" { id: clockface; weight: 600 } }
+    end { id: modules; gap: $space.2
+      if vpn_on {
+        row { id: vpn; pad: 2, $space.2; radius: full; bg: $accent.container; gap: $space.1; align: center
+          enter { width: 0; opacity: 0 }
+          box { size: 6; radius: full; bg: $accent }
+          text "VPN" { font: $font.caption }
+        }
+      }
+      if rec_on {
+        row { id: rec; pad: 2, $space.2; radius: full; bg: $error.alpha(0.2); gap: $space.1; align: center
+          enter { width: 0; opacity: 0 }
+          box { size: 6; radius: full; bg: $error }
+          text "REC" { font: $font.caption }
+        }
+      }
+      text "82%" { font: $font.caption }
+    }
+  }
+}
+
+=== steps
+rest
+shot base
+mark vpn-in
+intend #vpn enters
+set vpn_on true
+rest
+mark rec-in
+intend #rec enters
+set rec_on true
+rest
+shot both
+mark vpn-out
+intend #vpn exits
+set vpn_on false
+rest
+expect hidden #vpn
+mark title
+intend #title changes
+set window_title "strand — docs/design.md — Text Editor"
+rest
+expect still #clockface

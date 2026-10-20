@@ -1,0 +1,60 @@
+id     = "p8-toggles-theme-swap"
+about  = """A quick-settings grid of four toggles: Wi-Fi turns off so its tile
+and switch knob spring, the desktop switches from light to dark (Catppuccin
+Latte to Mocha) while that toggle is still moving, two toggles flip together,
+and the theme goes back to light."""
+screen = { width = 400, height = 320, scale = 1.0 }
+hz     = 60
+
+=== quick.strand
+state wifi_on = true
+state bt_on = false
+state dnd_on = false
+state night_on = false
+state dark_mode = false
+let scheme: Palette = dark_mode ? import("catppuccin:mocha") : import("catppuccin:latte")
+use palette scheme
+
+component Toggle(label: text, active: bool) {
+  row { width: 160; height: 52; pad: $space.2, $space.3; gap: $space.2; align: center; radius: $radius.lg
+        bg: active ? $accent : $surface.hi; color: active ? $on_accent : $fg
+    text label { grow: 1; weight: 600 }
+    box { width: 36; height: 20; radius: full; bg: active ? $on_accent.alpha(0.35) : $fg.alpha(0.2)
+      box { size: 16; margin: 2; radius: full; bg: active ? $on_accent : $fg; x: active ? 16 : 0 }
+    }
+  }
+}
+
+panel Quick {
+  anchor: top_right; layer: overlay; keyboard: none; margin: $space.2
+  grid { id: tiles; columns: 2; gap: $space.2; pad: $space.3; radius: $radius.xl
+         bg: $surface; shadow: $elevation.lg; font: $font.ui
+    Toggle "Wi-Fi" { active: wifi_on }
+    Toggle "Bluetooth" { active: bt_on }
+    Toggle "Do not disturb" { active: dnd_on }
+    Toggle "Night light" { active: night_on }
+  }
+}
+
+=== steps
+rest
+shot light
+mark wifi-off
+intend #tiles changes
+set wifi_on false
+frames 5
+mark swap-dark
+intend #tiles changes
+set dark_mode true
+rest
+shot dark
+mark two-at-once
+intend #tiles changes
+set bt_on true
+set dnd_on true
+rest
+mark swap-light
+intend #tiles changes
+set dark_mode false
+rest
+shot light-again

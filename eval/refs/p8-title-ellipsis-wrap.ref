@@ -1,0 +1,54 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-title-ellipsis-wrap"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: titles cut at the end and paths in the middle as focus changes; the card's wrapping body grows to three lines and back"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 2dcee18b2222871b
+seal e4e6a34fdc53f0a1
+S1 0 - "panel Card"
+S2 0 - "bar Top"
+N0 "body|shell.strand:21:5|#1" "text#body"
+N1 "card|shell.strand:18:3|#0" "col#card"
+N2 "path_chip|shell.strand:11:5|[Mock | DP-1]#1" "text#path_chip"
+N3 "title|shell.strand:9:5|[Mock | DP-1]#0" "text#title"
+N4 "|shell.strand:10:5|[Mock | DP-1]#0" "spacer@shell.strand:10"
+N5 "|shell.strand:16:1|#0" "panel@shell.strand:16"
+N6 "|shell.strand:20:5|#0" "text(\"Mira\")"
+N7 "|shell.strand:6:1|[Mock | DP-1]#0" "bar@shell.strand:6"
+N8 "|shell.strand:8:3|[Mock | DP-1]#0" "row@shell.strand:8"
+k0 p1,2
+s1 z=300,58 o=50,70
+s2 z=400,30
+n0 x=12 y=31 w=276 h=15 txt=S ord=3 ink=13,32,42,11 fg=1a1b20a6 gl=["Lunch?"]
+n1 x=0 y=0 w=300 h=58 ord=1 bg=e6e5ebff bd=ffffffff
+n2 srf=2 x=382 y=9 w=10 h=13 txt=S ord=4 ink=382,11,10,9 fg=1a1b20a6 gl=["~/"]
+n3 srf=2 x=8 y=8 w=30 h=15 txt=S ord=2 ink=8,9,30,11 fg=1a1b20ff gl=["Files"]
+n4 srf=2 x=46 y=15 w=328 h=0 ord=3
+n5 x=0 y=0 w=300 h=58
+n6 x=12 y=12 w=276 h=15 txt=S ord=2 ink=12,13,27,11 fg=1a1b20ff gl=["Mira"]
+n7 srf=2 x=0 y=0 w=400 h=30 bg=faf9ffff
+n8 srf=2 x=0 y=0 w=400 h=30 ord=1
+k1 p2
+n2 x=272 w=120 ink=272,11,116,11 fit=120 gl=["~/projects/strand/docs/design.md"]
+n3 w=200 ink=8,9,193,13 fit=200 gl=["Firefox\u0020—\u0020Strand\u0020design\u0020doc:\u0020shell\u0020toolkit,\u0020first\u0020principles"]
+n4 x=216 w=48
+k2 p1
+s1 z=300,88
+n0 h=45 ink=12,32,267,43 fit=276 gl=["I\u0020went\u0020through\u0020the\u0020review\u0020comments\u0020and\u0020most\u0020are\u0020small,\u0020but\u0020the\u0020one\u0020about\u0020the\u0020layout\u0020pass\u0020needs\u0020a\u0020proper\u0020answer\u0020before\u0020we\u0020merge,\u0020so\u0020can\u0020we\u0020talk\u0020about\u0020it\u0020after\u0020lunch\u0020tomorrow,\u0020maybe\u0020around\u0020two?"]
+n1 h=88
+n5 h=88
+k3 p2
+n2 ink=272,11,120,11 gl=["~/projects/strand/crates/strand-render/src/renderer/tests.rs"]
+n3 w=179 ink=8,9,178,13 fit=- gl=["Terminal\u0020—\u0020~/projects/strand"]
+n4 x=195 w=69
+k4 p1
+s1 z=300,58
+n0 h=15 ink=13,32,42,11 fit=- gl=["Lunch?"]
+n1 h=58
+n5 h=58
+k5 p2
+n2 x=382 w=10 ink=382,11,10,9 fit=- gl=["~/"]
+n3 w=30 ink=8,9,30,11 gl=["Files"]
+n4 x=46 w=328

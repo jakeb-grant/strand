@@ -1,0 +1,50 @@
+id     = "p8-osd-left-brightness-2x"
+about  = """A vertical brightness OSD on the left edge at scale 2, its fill
+growing up from the bottom of a rounded track: small steps up, one large jump
+down as an ambient sensor would make, and the OSD slides back out to the left
+after a second of quiet. The card has a border and a shadow at 2x."""
+screen = { width = 320, height = 420, scale = 2.0 }
+hz     = 60
+
+[services]
+"brightness.level" = 0.50
+"brightness.available" = true
+
+=== osd.strand
+state bright_shown = false
+on change brightness.level { bright_shown = true }
+on change brightness.level after 1s { bright_shown = false }
+
+osd Brightness {
+  anchor: left; margin: 0, 0, 0, 24; open: bright_shown
+  enter { opacity: 0; x: -40 }
+  col { id: card; width: 56; pad: $space.3; gap: $space.2; align: center
+        radius: $radius.xl; bg: $surface; border: 1, $border; shadow: $elevation.lg
+        color: $fg; font: $font.caption
+    col { id: track; width: 10; height: 180; radius: full; bg: $fg.alpha(0.15); justify: end; clip: true
+      box { id: fill; width: 10; height: brightness.level * 180; radius: full; bg: $accent }
+    }
+    text pct(brightness.level) { roll: true }
+  }
+}
+
+=== steps
+rest
+mark steps-up
+intend #card enters
+intend #fill changes
+set brightness.level 0.55
+frames 6
+set brightness.level 0.60
+frames 6
+set brightness.level 0.65
+rest
+shot up
+mark sensor-drop
+intend #fill changes
+set brightness.level 0.20
+rest
+mark hide
+intend #card exits
+wait 1200
+rest

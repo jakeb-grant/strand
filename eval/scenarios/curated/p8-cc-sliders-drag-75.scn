@@ -1,0 +1,49 @@
+id     = "p8-cc-sliders-drag-75"
+about  = """Quick-settings sliders at 75 Hz: the volume slider is dragged from
+low to high in one sweep, the brightness slider is dragged down and then
+nudged, and a mirror meter under each follows its value; the labels' numbers
+roll and nothing else in the card moves."""
+screen = { width = 360, height = 300, scale = 1.0 }
+hz     = 75
+
+=== quick.strand
+state vol = 0.2
+state bright = 0.8
+
+panel Quick {
+  anchor: top_left; layer: overlay; keyboard: none
+  col { width: 320; pad: 16; gap: 12; bg: $surface; radius: $radius.lg
+        color: $fg; font: $font.ui
+    row { height: 20; gap: 12; align: center
+      slider { id: vol_slider; width: 240; height: 20; value: <-> vol; track: $fg.alpha(0.15) }
+      text pct(vol) { width: 4ch; align: end; roll: true }
+    }
+    row { height: 20; gap: 12; align: center
+      slider { id: bright_slider; width: 240; height: 20; value: <-> bright; track: $fg.alpha(0.15) }
+      text pct(bright) { width: 4ch; align: end; roll: true }
+    }
+    col { id: mirrors; gap: 6
+      meter vol { height: 4; color: $accent; track: $fg.alpha(0.1) }
+      meter bright { height: 4; color: $tertiary; track: $fg.alpha(0.1) }
+    }
+    text "Sliders write as you drag" { id: caption; color: $fg.muted; font: $font.caption }
+  }
+}
+
+=== steps
+rest
+mark volume-sweep
+intend #vol_slider changes
+intend #mirrors changes
+drag 64,26 -> 236,26 over 420 on panel
+rest
+shot volume-high
+mark brightness-down
+intend #bright_slider changes
+intend #mirrors changes
+drag 208,58 -> 70,58 over 260 on panel
+frames 10
+drag 70,58 -> 96,58 over 120 on panel
+rest
+expect still #caption
+shot brightness-low

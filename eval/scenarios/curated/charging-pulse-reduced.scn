@@ -1,0 +1,52 @@
+id     = "charging-pulse-reduced"
+about  = """A bar battery module whose level breathes on a looping keyframes
+play while it charges (eval-coverage-5; `repeat: 0` plays forever). With the
+desktop's reduced motion turned on mid-loop the loop holds still at its start
+(design.md "Runtime changes these need" 7: `reduced_motion` turns off loops;
+keyframes.rs), so the bar comes to rest (`settle`) where the reduced twin
+does (`twin`); turned off, it breathes again, and unplugging ends the play and
+the bolt chip leaves."""
+screen = { width = 300, height = 120, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state charging = false
+
+keyframes breathe { 0%, 100% { opacity: 1 }; 50% { opacity: 0.4 }; duration: 1200ms; repeat: 0; easing: ease_in_out }
+
+bar Top {
+  height: 30; bg: #1e1e2e
+  row { height: 30; pad: 0, 10; gap: 6; align: center
+    spacer {}
+    if charging {
+      box { id: bolt; width: 8; height: 14; radius: 2; bg: #f9e2af
+        enter { opacity: 0; scale: 0.6 } }
+    }
+    box { id: shell; width: 26; height: 13; radius: 3; border: 1, #a6adc8; pad: 2
+      if charging {
+        box { id: level; width: 15; height: 7; radius: 2; bg: #a6e3a1
+          play breathe }
+      } else {
+        box { id: idle; width: 15; height: 7; radius: 2; bg: #cdd6f4 }
+      }
+    }
+    text "62%" { color: #cdd6f4 }
+  }
+}
+
+=== steps
+rest
+mark plug-in
+intend #bolt enters
+set charging true
+wait 900
+mark reduce
+reduce-motion on
+rest
+mark motion-back
+reduce-motion off
+wait 700
+mark unplug
+intend #bolt exits
+set charging false
+rest

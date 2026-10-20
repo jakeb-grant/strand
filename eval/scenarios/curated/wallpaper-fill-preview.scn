@@ -1,0 +1,38 @@
+id     = "wallpaper-fill-preview"
+about  = """A wallpaper picker (eval-coverage-5): the chosen file shows whole in
+a square tile (`fit: contain`, letterboxed top and bottom), and the lock
+screen's preview of the same file is a screen-shaped box that stretches it
+(`fit: fill`, design.md's fit values) and grows when its section opens. While
+the preview's size springs, a decode of another size stands in until it rests
+(decisions.md stand-in-fit), and the sharpest one the file has is the tile's
+contain decode: placed again by the preview's fill, it lands where fill puts
+the source, its letterbox offset scaled by the box's height, not its width
+(the two differ when the box's shape is not the file's: `placement`'s `fit`;
+the recording's `im`). Closing the section shrinks it back."""
+screen = { width = 420, height = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state lock_open = false
+panel Walls {
+  anchor: top_left; margin: 8; open: true
+  row { pad: 10; gap: 10; align: start; bg: #181825; radius: 8
+    image "../../fixtures/images/art.png" { id: whole; width: 160; height: 160; fit: contain; radius: 6 }
+    col { gap: 6
+      text "Lock screen" { color: #cdd6f4 }
+      image "../../fixtures/images/art.png" { id: lock; fit: fill; radius: 4
+        width: lock_open ? 192 : 96; height: lock_open ? 108 : 54 }
+    }
+  }
+}
+
+=== steps
+rest
+mark open-section
+intend #lock changes
+set lock_open true
+rest
+mark close-section
+intend #lock changes
+set lock_open false
+rest

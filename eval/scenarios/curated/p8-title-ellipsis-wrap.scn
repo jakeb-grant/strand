@@ -1,0 +1,63 @@
+id     = "p8-title-ellipsis-wrap"
+about  = """Window titles of changing length: the bar's title is cut at the end
+and the path chip at the middle as focus moves between windows, and a card
+under the bar shows a body that wraps to more lines when a longer message
+replaces it (capped at three lines with an ellipsis), so the card grows and
+shrinks back."""
+screen = { width = 400, height = 300, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state focus_idx = 0
+state long_body = false
+let titles = ["Files", "Firefox — Strand design doc: shell toolkit, first principles", "Terminal — ~/projects/strand"]
+let paths = ["~/", "~/projects/strand/docs/design.md", "~/projects/strand/crates/strand-render/src/renderer/tests.rs"]
+
+bar Top {
+  edge: top; height: 30; bg: $surface; color: $fg; font: $font.ui
+  row { pad: 0, 8; gap: 8; align: center; height: 30
+    text titles[focus_idx] { id: title; max_width: 200; ellipsis: end; weight: 600 }
+    spacer {}
+    text paths[focus_idx] { id: path_chip; max_width: 120; ellipsis: middle; color: $fg.muted
+      font: $font.caption }
+  }
+}
+
+panel Card {
+  anchor: top; layer: top; keyboard: none; margin: 40, 0, 0
+  col { id: card; width: 300; pad: $space.3; gap: $space.1; radius: $radius.lg; bg: $surface.hi
+        border: 1, $border; color: $fg; font: $font.ui
+    text "Mira" { weight: 600 }
+    text long_body ? "I went through the review comments and most are small, but the one about the layout pass needs a proper answer before we merge, so can we talk about it after lunch tomorrow, maybe around two?" : "Lunch?" { id: body; max_lines: 3; ellipsis: end; color: $fg.muted }
+  }
+}
+
+=== steps
+rest
+mark focus-browser
+intend #title changes
+intend #path_chip changes
+set focus_idx 1
+rest
+shot browser
+mark long-message
+intend #card changes
+intend #body changes
+set long_body true
+rest
+shot long
+mark focus-terminal
+intend #title changes
+intend #path_chip changes
+set focus_idx 2
+rest
+mark short-message
+intend #card changes
+intend #body changes
+set long_body false
+rest
+mark focus-files
+intend #title changes
+intend #path_chip changes
+set focus_idx 0
+rest

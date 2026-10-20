@@ -1,0 +1,242 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-workspace-slider-2x"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the absolutely placed marker springs a notch per wheel step and jumps by keybind, its border and shadow with it, at 2x"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 80fe6e60ca52bb0b
+seal cbf17cdf9b0903f9
+S1 0 - "bar Top"
+N0 "marker|bar.strand:11:7|[Mock | DP-1]#0" "box#marker"
+N1 "strip|bar.strand:6:5|[Mock | DP-1]#0" "stack#strip"
+N2 "|bar.strand:13:7|[Mock | DP-1]#0" "row@bar.strand:13"
+N3 "|bar.strand:14:9|[Mock | DP-1]#0" "text(\"1\")"
+N4 "|bar.strand:15:9|[Mock | DP-1]#1" "text(\"2\")"
+N5 "|bar.strand:16:9|[Mock | DP-1]#2" "text(\"3\")"
+N6 "|bar.strand:17:9|[Mock | DP-1]#3" "text(\"4\")"
+N7 "|bar.strand:18:9|[Mock | DP-1]#4" "text(\"5\")"
+N8 "|bar.strand:3:1|[Mock | DP-1]#0" "bar@bar.strand:3"
+N9 "|bar.strand:5:3|[Mock | DP-1]#0" "row@bar.strand:5"
+k0 p1
+s1 z=300,42
+n0 x=8 y=5 w=28 h=22 ord=3 bg=455e9138 bd=455e91ff sh=00000040@-4.5,-5.5,53,47
+n1 x=8 y=5 w=140 h=22 ord=2
+n2 x=8 y=5 w=140 h=22 ord=4
+n3 x=8 y=10 w=28 h=13 txt=S ord=5 ink=19.5,12,5.5,8 fg=455e91ff gl=["1"]
+n4 x=36 y=10 w=28 h=13 txt=S ord=6 ink=47.5,12,5.5,8 fg=1a1b20ff gl=["2"]
+n5 x=64 y=10 w=28 h=13 txt=S ord=7 ink=75,12,6,8.5 fg=1a1b20ff gl=["3"]
+n6 x=92 y=10 w=28 h=13 txt=S ord=8 ink=103,12,6,8 fg=1a1b20ff gl=["4"]
+n7 x=120 y=10 w=28 h=13 txt=S ord=9 ink=131,12,6,8.5 fg=1a1b20ff gl=["5"]
+n8 x=0 y=0 w=300 h=32 bg=faf9ffff
+n9 x=0 y=0 w=300 h=32 ord=1
+k1
+n0 x=15 sh=00000040@2.5,-5.5,53,47
+n3 fg=3f547fff
+n4 ink=47,12,6,8 fg=20242fff
+k2
+n0 x=26 sh=00000040@13.5,-5.5,53,47
+n3 fg=344363ff
+n4 fg=2a3449ff
+k3
+n0 x=33 sh=00000040@20.5,-5.5,53,47
+n3 fg=2b354bff
+n4 fg=334260ff
+k4
+n0 x=43 sh=00000040@30.5,-5.5,53,47
+n3 fg=252b3aff
+n4 ink=47.5,12,5.5,8 fg=334261ff
+n5 fg=20242fff
+k5
+n0 x=55 sh=00000040@42.5,-5.5,53,47
+n3 fg=202530ff
+n4 fg=2d3951ff
+n5 fg=2a3449ff
+k6
+n0 x=62 sh=00000040@49.5,-5.5,53,47
+n3 fg=1e2129ff
+n4 fg=272f41ff
+n5 fg=334260ff
+k7
+n0 x=72 sh=00000040@59.5,-5.5,53,47
+n3 fg=1c1e25ff
+n4 fg=222835ff
+n5 fg=334261ff
+n6 ink=103,12,6.5,8 fg=20242fff
+k8
+n0 x=83 sh=00000040@70.5,-5.5,53,47
+n3 fg=1b1d23ff
+n4 fg=1f232dff
+n5 fg=2d3951ff
+n6 fg=2a3449ff
+k9
+n0 x=90 sh=00000040@77.5,-5.5,53,47
+n3 fg=1b1c22ff
+n4 fg=1d2027ff
+n5 fg=272f41ff
+n6 fg=334260ff
+k10
+n0 x=92 sh=00000040@79.5,-5.5,53,47
+n3 fg=1a1c21ff
+n4 fg=1c1e24ff
+n5 fg=222835ff
+n6 fg=3a4c72ff
+k11
+n0 x=93 sh=00000040@80.5,-5.5,53,47
+n3 fg=1a1b20ff
+n4 fg=1b1d23ff
+n5 fg=1f232dff
+n6 fg=3e537eff
+k12
+n4 fg=1b1c21ff
+n5 fg=1d2027ff
+n6 fg=415786ff
+k13
+n0 x=92 sh=00000040@79.5,-5.5,53,47
+n4 fg=1a1b21ff
+n5 fg=1c1e24ff
+n6 fg=435a8aff
+k14
+n4 fg=1a1b20ff
+n5 fg=1b1d23ff
+n6 fg=445c8dff
+k15
+n5 fg=1b1c21ff
+n6 fg=445d8fff
+k16
+n5 fg=1a1b21ff
+n6 fg=455d90ff
+k17
+n5 fg=1a1b20ff
+n6 fg=455e91ff
+k19
+n0 x=85 sh=00000040@72.5,-5.5,53,47
+n5 fg=20242fff
+n6 ink=103,12,6,8 fg=3f547fff
+k20
+n0 x=74 sh=00000040@61.5,-5.5,53,47
+n5 fg=2a3449ff
+n6 fg=344363ff
+k21
+n0 x=60 sh=00000040@47.5,-5.5,53,47
+n4 ink=47,12,6,8 fg=20242fff
+n5 fg=2d3850ff
+n6 fg=2b354bff
+k22
+n0 x=46 sh=00000040@33.5,-5.5,53,47
+n4 fg=2a3449ff
+n5 fg=293246ff
+n6 fg=252b3aff
+k23
+n0 x=38 sh=00000040@25.5,-5.5,53,47
+n4 fg=334260ff
+n5 fg=242b3aff
+n6 fg=202530ff
+k24
+n0 x=35 sh=00000040@22.5,-5.5,53,47
+n4 fg=3a4c72ff
+n5 fg=212531ff
+n6 fg=1e2129ff
+k25
+n4 fg=3e537eff
+n5 fg=1e212aff
+n6 fg=1c1e25ff
+k26
+n4 fg=415786ff
+n5 fg=1d1f26ff
+n6 fg=1b1d23ff
+k27
+n0 x=36 sh=00000040@23.5,-5.5,53,47
+n4 fg=435a8aff
+n5 fg=1b1d24ff
+n6 fg=1b1c22ff
+k28
+n4 fg=445c8dff
+n5 fg=1b1c22ff
+n6 fg=1a1c21ff
+k29
+n4 fg=445d8fff
+n5 fg=1a1c21ff
+n6 fg=1a1b20ff
+k30
+n4 fg=455d90ff
+n5 fg=1a1b21ff
+k31
+n4 fg=455e91ff
+n5 fg=1a1b20ff
+k32
+n0 x=58 sh=00000040@45.5,-5.5,53,47
+n4 ink=47.5,12,5.5,8 fg=3f547fff
+n7 fg=20242fff
+k33
+n0 x=90 sh=00000040@77.5,-5.5,53,47
+n4 fg=344363ff
+n7 fg=2a3449ff
+k34
+n0 x=111 sh=00000040@98.5,-5.5,53,47
+n4 fg=2b354bff
+n7 fg=334260ff
+k35
+n0 x=120 sh=00000040@107.5,-5.5,53,47
+n4 fg=252b3aff
+n7 fg=3a4c72ff
+k36
+n0 x=122 sh=00000040@109.5,-5.5,53,47
+n4 fg=202530ff
+n7 fg=3e537eff
+k37
+n4 fg=1e2129ff
+n7 fg=415786ff
+k38
+n0 x=121 sh=00000040@108.5,-5.5,53,47
+n4 fg=1c1e25ff
+n7 fg=435a8aff
+k39
+n0 x=120 sh=00000040@107.5,-5.5,53,47
+n4 fg=1b1d23ff
+n7 fg=445c8dff
+k40
+n0 x=91 sh=00000040@78.5,-5.5,53,47
+n3 fg=20242fff
+n4 fg=1b1c22ff
+n7 fg=3e527dff
+k41
+n0 x=48 sh=00000040@35.5,-5.5,53,47
+n3 fg=2a3449ff
+n4 fg=1a1c21ff
+n7 fg=344262ff
+k42
+n0 x=20 sh=00000040@7.5,-5.5,53,47
+n3 fg=334260ff
+n4 fg=1a1b20ff
+n7 fg=2b354aff
+k43
+n0 x=8 sh=00000040@-4.5,-5.5,53,47
+n3 fg=3a4c72ff
+n7 fg=242b3aff
+k44
+n0 x=5 sh=00000040@-7.5,-5.5,53,47
+n3 fg=3e537eff
+n7 fg=202530ff
+k45
+n3 fg=415786ff
+n7 fg=1e2129ff
+k46
+n0 x=7 sh=00000040@-5.5,-5.5,53,47
+n3 fg=435a8aff
+n7 fg=1c1e25ff
+k47
+n0 x=8 sh=00000040@-4.5,-5.5,53,47
+n3 fg=445c8dff
+n7 fg=1b1d23ff
+k48
+n3 fg=445d8fff
+n7 fg=1b1c22ff
+k49
+n3 fg=455d90ff
+n7 fg=1a1c21ff
+k50
+n3 fg=455e91ff
+n7 fg=1a1b20ff
+k51
+k52

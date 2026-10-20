@@ -1,0 +1,65 @@
+id     = "p8-hz-switch-network-sort"
+about  = """A Wi-Fi list re-sorts from signal strength to name and back while
+the output's refresh rate changes under it, as when a laptop moves from its
+60 Hz panel to a 144 Hz monitor and then a 75 Hz one: rows glide to their new
+places across each rate change, and a new network appears mid-glide."""
+screen = { width = 380, height = 460, scale = 1.0 }
+hz     = 60
+
+=== wifi.strand
+type Net { ssid: text; signal: float; secured: bool }
+
+state by_name = false
+state scan_done = false
+state found: [Net] key ssid = [
+  Net(ssid: "Orchard", signal: 0.82, secured: true),
+  Net(ssid: "BT-Hub-7F2A", signal: 0.64, secured: true),
+  Net(ssid: "Library Free", signal: 0.41, secured: false),
+  Net(ssid: "Apartment 3B", signal: 0.93, secured: true),
+  Net(ssid: "Zephyr", signal: 0.22, secured: true),
+  Net(ssid: "Coffee", signal: 0.55, secured: false),
+]
+let nets = found.filter(n => scan_done || n.ssid != "Coffee")
+let ordered = by_name ? nets.sort_by(n => n.ssid) : nets.sort_by(n => 0 - n.signal)
+
+panel Wifi {
+  anchor: top_right; layer: overlay; keyboard: on_demand; margin: $space.2
+  col { id: sheet; width: 320; pad: $space.3; gap: $space.1; radius: $radius.lg
+        bg: $surface; shadow: $elevation.lg; color: $fg; font: $font.ui
+    row { align: center
+      text "Networks" { font: $font.title; grow: 1 }
+      text by_name ? "A–Z" : "Signal" { id: sort_label; color: $fg.muted }
+    }
+    col { id: rows; gap: 2
+      for n in ordered {
+        row { height: 36; pad: 0, $space.2; gap: $space.2; align: center; radius: $radius.sm
+          enter { opacity: 0; x: 24 }
+          when hover { bg: $surface.hi }
+          text n.ssid { grow: 1; ellipsis: end }
+          if n.secured { box { size: 8; radius: 2; bg: $fg.muted } }
+          meter n.signal { width: 56; height: 4; color: $accent; track: $fg.alpha(0.15) }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark sort-by-name
+intend #rows changes
+set by_name true
+frames 6
+hz 144
+frames 40
+mark scan-in
+intend #rows changes
+set scan_done true
+frames 30
+mark sort-by-signal
+intend #rows changes
+set by_name false
+frames 10
+hz 75
+rest
+shot signal-75

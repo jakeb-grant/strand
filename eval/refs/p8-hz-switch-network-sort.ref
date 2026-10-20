@@ -1,0 +1,607 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-hz-switch-network-sort"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: rows glide to the new sort while the rate goes 60, 144, 75 Hz, a new network fades in and its neighbours make room"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 41a2e609dc2da9dc
+seal 4c1e8e25e85ea00e
+S1 0 - "panel Wifi"
+N0 "rows|wifi.strand:24:5|#0" "col#rows"
+N1 "sheet|wifi.strand:18:3|#0" "col#sheet"
+N2 "sort_label|wifi.strand:22:7|#1" "text#sort_label"
+N3 "|wifi.strand:16:1|#0" "panel@wifi.strand:16"
+N4 "|wifi.strand:20:5|#0" "row@wifi.strand:20"
+N5 "|wifi.strand:21:7|#0" "text(\"Networks\")"
+N6 "|wifi.strand:26:9|[Net { ssid: Apartment 3B, signal: 0.93, secured: true }]#0" "row@wifi.strand:26"
+N7 "|wifi.strand:26:9|[Net { ssid: BT-Hub-7F2A, signal: 0.64, secured: true }]#2" "row@wifi.strand:26"
+N8 "|wifi.strand:26:9|[Net { ssid: Library Free, signal: 0.41, secured: false }]#3" "row@wifi.strand:26"
+N9 "|wifi.strand:26:9|[Net { ssid: Orchard, signal: 0.82, secured: true }]#1" "row@wifi.strand:26"
+N10 "|wifi.strand:26:9|[Net { ssid: Zephyr, signal: 0.22, secured: true }]#4" "row@wifi.strand:26"
+N11 "|wifi.strand:29:11|[Net { ssid: Apartment 3B, signal: 0.93, secured: true }]#0" "text(\"Apartment 3B\")"
+N12 "|wifi.strand:29:11|[Net { ssid: BT-Hub-7F2A, signal: 0.64, secured: true }]#0" "text(\"BT-Hub-7F2A\")"
+N13 "|wifi.strand:29:11|[Net { ssid: Library Free, signal: 0.41, secured: false }]#0" "text(\"Library Free\")"
+N14 "|wifi.strand:29:11|[Net { ssid: Orchard, signal: 0.82, secured: true }]#0" "text(\"Orchard\")"
+N15 "|wifi.strand:29:11|[Net { ssid: Zephyr, signal: 0.22, secured: true }]#0" "text(\"Zephyr\")"
+N16 "|wifi.strand:30:26|[Net { ssid: Apartment 3B, signal: 0.93, secured: true }]#0" "box@wifi.strand:30"
+N17 "|wifi.strand:30:26|[Net { ssid: BT-Hub-7F2A, signal: 0.64, secured: true }]#0" "box@wifi.strand:30"
+N18 "|wifi.strand:30:26|[Net { ssid: Orchard, signal: 0.82, secured: true }]#0" "box@wifi.strand:30"
+N19 "|wifi.strand:30:26|[Net { ssid: Zephyr, signal: 0.22, secured: true }]#0" "box@wifi.strand:30"
+N20 "|wifi.strand:31:11|[Net { ssid: Apartment 3B, signal: 0.93, secured: true }]#0" "meter@wifi.strand:31"
+N21 "|wifi.strand:31:11|[Net { ssid: BT-Hub-7F2A, signal: 0.64, secured: true }]#0" "meter@wifi.strand:31"
+N22 "|wifi.strand:31:11|[Net { ssid: Library Free, signal: 0.41, secured: false }]#0" "meter@wifi.strand:31"
+N23 "|wifi.strand:31:11|[Net { ssid: Orchard, signal: 0.82, secured: true }]#0" "meter@wifi.strand:31"
+N24 "|wifi.strand:31:11|[Net { ssid: Zephyr, signal: 0.22, secured: true }]#0" "meter@wifi.strand:31"
+N25 "|wifi.strand:26:9|[Net { ssid: Coffee, signal: 0.55, secured: false }]#2" "row@wifi.strand:26"
+N26 "|wifi.strand:29:11|[Net { ssid: Coffee, signal: 0.55, secured: false }]#0" "text(\"Coffee\")"
+N27 "|wifi.strand:31:11|[Net { ssid: Coffee, signal: 0.55, secured: false }]#0" "meter@wifi.strand:31"
+k0 p1
+s1 z=365,290 o=15,0
+n0 x=49 y=45 w=296 h=188 ord=5
+n1 x=37 y=8 w=320 h=237 ord=1 bg=faf9ffff sh=0000004d@0,-21,394,311/00000033@33,5,328,245
+n2 x=308 y=23 w=37 h=15 txt=S ord=4 ink=308,24,36,13 fg=1a1b20a6 gl=["Signal"]
+n3 x=37 y=8 w=320 h=237
+n4 x=49 y=20 w=296 h=21 ord=2
+n5 x=49 y=20 w=259 h=21 txt=S ord=3 ink=50,22,80,15 fg=1a1b20ff gl=["Networks"]
+n6 x=49 y=45 w=296 h=36 ord=6
+n7 x=49 y=121 w=296 h=36 ord=14
+n8 x=49 y=159 w=296 h=36 ord=18
+n9 x=49 y=83 w=296 h=36 ord=10
+n10 x=49 y=197 w=296 h=36 ord=21
+n11 x=57 y=56 w=200 h=15 txt=S ord=7 ink=57,57,79,13 fg=1a1b20ff gl=["Apartment\u00203B"]
+n12 x=57 y=132 w=200 h=15 txt=S ord=15 ink=58,133,79,11 fg=1a1b20ff gl=["BT-Hub-7F2A"]
+n13 x=57 y=170 w=216 h=15 txt=S ord=19 ink=58,171,69,13 fg=1a1b20ff gl=["Library\u0020Free"]
+n14 x=57 y=94 w=200 h=15 txt=S ord=11 ink=57,95,47,11 fg=1a1b20ff gl=["Orchard"]
+n15 x=57 y=208 w=200 h=15 txt=S ord=22 ink=57,209,41,13 fg=1a1b20ff gl=["Zephyr"]
+n16 x=265 y=59 w=8 h=8 ord=8 bg=1a1b20a6
+n17 x=265 y=135 w=8 h=8 ord=16 bg=1a1b20a6
+n18 x=265 y=97 w=8 h=8 ord=12 bg=1a1b20a6
+n19 x=265 y=211 w=8 h=8 ord=23 bg=1a1b20a6
+n20 x=281 y=61 w=56 h=4 ord=9 bg=1a1b2026/455e91ff pt=0,0,52.078125,4
+n21 x=281 y=137 w=56 h=4 ord=17 bg=1a1b2026/455e91ff pt=0,0,35.84375,4
+n22 x=281 y=175 w=56 h=4 ord=20 bg=1a1b2026/455e91ff pt=0,0,22.953125,4
+n23 x=281 y=99 w=56 h=4 ord=13 bg=1a1b2026/455e91ff pt=0,0,45.921875,4
+n24 x=281 y=213 w=56 h=4 ord=24 bg=1a1b2026/455e91ff pt=0,0,12.3125,4
+k1
+n2 x=321 w=24 ink=321,25,24,9 gl=["A–Z"]
+n5 w=272
+n7 y=111 ord=10
+n8 y=149 ord=14
+n9 y=103 ord=17
+n12 y=122 ord=11 ink=58,123,79,11
+n13 y=160 ord=15 ink=58,161,69,13
+n14 y=113 ord=18 ink=57,114,47,11
+n17 y=125 ord=12
+n18 y=117 ord=19
+n21 y=127 ord=13
+n22 y=165 ord=16
+n23 y=119 ord=20
+k2
+n7 y=97
+n8 y=135
+n9 y=132
+n12 y=107 ink=58,108,79,11
+n13 y=145 ink=58,146,69,13
+n14 y=142 ink=57,143,47,11
+n17 y=111
+n18 y=146
+n21 y=113
+n22 y=151
+n23 y=148
+k3
+n7 y=87
+n8 y=125
+n9 y=151
+n12 y=98 ink=58,99,79,11
+n13 y=136 ink=58,137,69,13
+n14 y=161 ink=57,162,47,11
+n17 y=101
+n18 y=165
+n21 y=103
+n22 y=141
+n23 y=167
+k4
+n7 y=83
+n8 y=121
+n9 y=159
+n12 y=94 ink=58,95,79,11
+n13 y=132 ink=58,133,69,13
+n14 y=169 ink=57,170,47,11
+n17 y=97
+n18 y=173
+n21 y=99
+n22 y=137
+n23 y=175
+k5
+n7 y=82
+n8 y=120
+n9 y=161
+n12 y=92 ink=58,93,79,11
+n13 y=130 ink=58,131,69,13
+n14 y=172 ink=57,173,47,11
+n17 y=96
+n18 y=175
+n21 y=98
+n22 y=136
+n23 y=177
+k6
+n12 y=93 ink=58,94,79,11
+n13 y=131 ink=58,132,69,13
+n14 y=171 ink=57,172,47,11
+k7
+n7 y=83
+n8 y=121
+n9 y=160
+n14 y=170 ink=57,171,47,11
+n17 y=97
+n18 y=174
+n21 y=99
+n22 y=137
+n23 y=176
+k8
+k9
+n9 y=159
+n18 y=173
+n23 y=175
+k10
+k11
+k12
+k13
+n12 y=94 ink=58,95,79,11
+n13 y=132 ink=58,133,69,13
+n14 y=169 ink=57,170,47,11
+k14
+k15
+k16
+k17
+k18
+n14 y=170 ink=57,171,47,11
+k47
+s1 z=365,328
+n0 h=226
+n1 h=275 sh=0000004d@0,-21,394,349/00000033@33,5,328,283
+n3 h=275
+n8 y=123 ord=17
+n9 y=161 ord=20
+n10 y=199 ord=24
+n13 y=134 ord=18 ink=58,135,69,13
+n14 y=172 ord=21 ink=57,173,47,11
+n15 y=210 ord=25 ink=57,211,41,13
+n18 y=175 ord=22
+n19 y=213 ord=26
+n22 y=139 ord=19
+n23 y=177 ord=23
+n24 y=215 ord=27
+n25 x=72 y=121 w=296 h=36 op=8 ord=14
+n26 x=80 y=132 w=216 h=15 op=8 txt=S ord=15 ink=80,133,38,11 fg=1a1b20ff gl=["Coffee"]
+n27 x=304 y=137 w=56 h=4 op=8 ord=16 bg=1a1b2026/455e91ff pt=0,0,30.796875,4
+k48
+n8 y=128
+n9 y=166
+n10 y=204
+n13 y=139 ink=58,140,69,13
+n14 y=177 ink=57,178,47,11
+n15 y=215 ink=57,216,41,13
+n18 y=180
+n19 y=218
+n22 y=144
+n23 y=182
+n24 y=220
+n25 x=68 op=27
+n26 x=76 op=27 ink=76,133,38,11
+n27 x=300 op=27
+k49
+n8 y=135
+n9 y=173
+n10 y=211
+n13 y=145 ink=58,146,69,13
+n14 y=183 ink=57,184,47,11
+n15 y=221 ink=57,222,41,13
+n18 y=187
+n19 y=225
+n22 y=151
+n23 y=189
+n24 y=227
+n25 x=64 op=52
+n26 x=72 op=52 ink=72,133,38,11
+n27 x=296 op=52
+k50
+n8 y=141
+n9 y=179
+n10 y=217
+n13 y=151 ink=58,152,69,13
+n14 y=189 ink=57,190,47,11
+n15 y=227 ink=57,228,41,13
+n18 y=193
+n19 y=231
+n22 y=157
+n23 y=195
+n24 y=233
+n25 x=60 op=78
+n26 x=68 op=78 ink=68,133,38,11
+n27 x=292 op=78
+k51
+n8 y=146
+n9 y=184
+n10 y=222
+n13 y=157 ink=58,158,69,13
+n14 y=195 ink=57,196,47,11
+n15 y=233 ink=57,234,41,13
+n18 y=198
+n19 y=236
+n22 y=162
+n23 y=200
+n24 y=238
+n25 x=57 op=103
+n26 x=65 op=103 ink=65,133,38,11
+n27 x=289 op=103
+k52
+n8 y=151
+n9 y=189
+n10 y=227
+n13 y=161 ink=58,162,69,13
+n14 y=199 ink=57,200,47,11
+n15 y=237 ink=57,238,41,13
+n18 y=203
+n19 y=241
+n22 y=167
+n23 y=205
+n24 y=243
+n25 x=54 op=127
+n26 x=62 op=127 ink=62,133,38,11
+n27 x=286 op=127
+k53
+n8 y=154
+n9 y=192
+n10 y=230
+n13 y=165 ink=58,166,69,13
+n14 y=203 ink=57,204,47,11
+n15 y=241 ink=57,242,41,13
+n18 y=206
+n19 y=244
+n22 y=170
+n23 y=208
+n24 y=246
+n25 x=52 op=148
+n26 x=60 op=148 ink=60,133,38,11
+n27 x=284 op=148
+k54
+n8 y=157
+n9 y=195
+n10 y=233
+n13 y=167 ink=58,168,69,13
+n14 y=205 ink=57,206,47,11
+n15 y=243 ink=57,244,41,13
+n18 y=209
+n19 y=247
+n22 y=173
+n23 y=211
+n24 y=249
+n25 x=50 op=166
+n26 x=58 op=166 ink=58,133,38,11
+n27 x=282 op=166
+k55
+n8 y=158
+n9 y=196
+n10 y=234
+n13 y=169 ink=58,170,69,13
+n14 y=207 ink=57,208,47,11
+n15 y=245 ink=57,246,41,13
+n18 y=210
+n19 y=248
+n22 y=174
+n23 y=212
+n24 y=250
+n25 x=49 op=182
+n26 x=57 op=182 ink=57,133,38,11
+n27 x=281 op=182
+k56
+n8 y=159
+n9 y=197
+n10 y=235
+n13 y=170 ink=58,171,69,13
+n14 y=208 ink=57,209,47,11
+n15 y=246 ink=57,247,41,13
+n18 y=211
+n19 y=249
+n22 y=175
+n23 y=213
+n24 y=251
+n25 op=195
+n26 op=195
+n27 op=195
+k57
+n8 y=160
+n9 y=198
+n10 y=236
+n18 y=212
+n19 y=250
+n22 y=176
+n23 y=214
+n24 y=252
+n25 x=48 op=206
+n26 x=56 op=206 ink=56,133,38,11
+n27 x=280 op=206
+k58
+n13 y=171 ink=58,172,69,13
+n14 y=209 ink=57,210,47,11
+n15 y=247 ink=57,248,41,13
+n25 op=216
+n26 op=216
+n27 op=216
+k59
+n25 op=223
+n26 op=223
+n27 op=223
+k60
+n13 y=170 ink=58,171,69,13
+n14 y=208 ink=57,209,47,11
+n15 y=246 ink=57,247,41,13
+n25 op=229
+n26 op=229
+n27 op=229
+k61
+n25 x=49 op=235
+n26 x=57 op=235 ink=57,133,38,11
+n27 x=281 op=235
+k62
+n25 op=239
+n26 op=239
+n27 op=239
+k63
+n8 y=159
+n9 y=197
+n10 y=235
+n18 y=211
+n19 y=249
+n22 y=175
+n23 y=213
+n24 y=251
+n25 op=242
+n26 op=242
+n27 op=242
+k64
+n25 op=245
+n26 op=245
+n27 op=245
+k65
+n25 op=247
+n26 op=247
+n27 op=247
+k66
+n25 op=249
+n26 op=249
+n27 op=249
+k67
+n25 op=250
+n26 op=250
+n27 op=250
+k68
+n25 op=251
+n26 op=251
+n27 op=251
+k69
+n25 op=252
+n26 op=252
+n27 op=252
+k70
+n25 op=253
+n26 op=253
+n27 op=253
+k71
+k72
+k73
+n25 op=254
+n26 op=254
+n27 op=254
+k74
+k75
+k76
+k77
+n2 x=308 w=37 ink=308,24,36,13 gl=["Signal"]
+n5 w=259
+n7 y=85 ord=14
+n8 y=161 ord=21
+n9 y=190 ord=10
+n12 y=96 ord=15 ink=58,97,79,11
+n13 y=172 ord=22 ink=58,173,69,13
+n14 y=201 ord=11 ink=57,202,47,11
+n17 y=99 ord=16
+n18 y=204 ord=12
+n21 y=101 ord=17
+n22 y=177 ord=23
+n23 y=206 ord=13
+n25 y=123 op=255 ord=18
+n26 y=134 op=255 ord=19 ink=57,135,38,11
+n27 y=139 op=255 ord=20
+k78
+n7 y=90
+n8 y=166
+n9 y=175
+n12 y=101 ink=58,102,79,11
+n13 y=177 ink=58,178,69,13
+n14 y=185 ink=57,186,47,11
+n17 y=104
+n18 y=189
+n21 y=106
+n22 y=182
+n23 y=191
+n25 y=128
+n26 y=139 ink=57,140,38,11
+n27 y=144
+k79
+n7 y=97
+n8 y=173
+n9 y=156
+n12 y=107 ink=58,108,79,11
+n13 y=183 ink=58,184,69,13
+n14 y=166 ink=57,167,47,11
+n17 y=111
+n18 y=170
+n21 y=113
+n22 y=189
+n23 y=172
+n25 y=135
+n26 y=145 ink=57,146,38,11
+n27 y=151
+k80
+n7 y=103
+n8 y=179
+n9 y=137
+n12 y=113 ink=58,114,79,11
+n13 y=189 ink=58,190,69,13
+n14 y=148 ink=57,149,47,11
+n17 y=117
+n18 y=151
+n21 y=119
+n22 y=195
+n23 y=153
+n25 y=141
+n26 y=151 ink=57,152,38,11
+n27 y=157
+k81
+n7 y=108
+n8 y=184
+n9 y=121
+n12 y=119 ink=58,120,79,11
+n13 y=195 ink=58,196,69,13
+n14 y=131 ink=57,132,47,11
+n17 y=122
+n18 y=135
+n21 y=124
+n22 y=200
+n23 y=137
+n25 y=146
+n26 y=157 ink=57,158,38,11
+n27 y=162
+k82
+n7 y=113
+n8 y=189
+n9 y=108
+n12 y=123 ink=58,124,79,11
+n13 y=199 ink=58,200,69,13
+n14 y=118 ink=57,119,47,11
+n17 y=127
+n18 y=122
+n21 y=129
+n22 y=205
+n23 y=124
+n25 y=151
+n26 y=161 ink=57,162,38,11
+n27 y=167
+k83
+n7 y=116
+n8 y=192
+n9 y=97
+n12 y=127 ink=58,128,79,11
+n13 y=203 ink=58,204,69,13
+n14 y=108 ink=57,109,47,11
+n17 y=130
+n18 y=111
+n21 y=132
+n22 y=208
+n23 y=113
+n25 y=154
+n26 y=165 ink=57,166,38,11
+n27 y=170
+k84
+n7 y=119
+n8 y=195
+n9 y=90
+n12 y=129 ink=58,130,79,11
+n13 y=205 ink=58,206,69,13
+n14 y=100 ink=57,101,47,11
+n17 y=133
+n18 y=104
+n21 y=135
+n22 y=211
+n23 y=106
+n25 y=157
+n26 y=167 ink=57,168,38,11
+n27 y=173
+k85
+n7 y=120
+n8 y=196
+n9 y=85
+n12 y=131 ink=58,132,79,11
+n13 y=207 ink=58,208,69,13
+n14 y=96 ink=57,97,47,11
+n17 y=134
+n18 y=99
+n21 y=136
+n22 y=212
+n23 y=101
+n25 y=158
+n26 y=169 ink=57,170,38,11
+n27 y=174
+k86
+n7 y=121
+n8 y=197
+n9 y=82
+n12 y=132 ink=58,133,79,11
+n13 y=208 ink=58,209,69,13
+n14 y=93 ink=57,94,47,11
+n17 y=135
+n18 y=96
+n21 y=137
+n22 y=213
+n23 y=98
+n25 y=159
+n26 y=170 ink=57,171,38,11
+n27 y=175
+k87
+n7 y=122
+n8 y=198
+n9 y=80
+n14 y=91 ink=57,92,47,11
+n17 y=136
+n18 y=94
+n21 y=138
+n22 y=214
+n23 y=96
+n25 y=160
+n27 y=176
+k88
+n12 y=133 ink=58,134,79,11
+n13 y=209 ink=58,210,69,13
+n14 y=90 ink=57,91,47,11
+n26 y=171 ink=57,172,38,11
+k89
+n9 y=81
+n12 y=132 ink=58,133,79,11
+n13 y=208 ink=58,209,69,13
+n14 y=91 ink=57,92,47,11
+n18 y=95
+n23 y=97
+n26 y=170 ink=57,171,38,11
+k90
+n7 y=121
+n8 y=197
+n9 y=82
+n14 y=92 ink=57,93,47,11
+n17 y=135
+n18 y=96
+n21 y=137
+n22 y=213
+n23 y=98
+n25 y=159
+n27 y=175
+k91
+n14 y=93 ink=57,94,47,11
+k92
+n9 y=83
+n18 y=97
+n23 y=99
+k93
+n12 y=131 ink=58,132,79,11
+n13 y=207 ink=58,208,69,13
+n14 y=94 ink=57,95,47,11
+n26 y=169 ink=57,170,38,11
+k94
+n12 y=132 ink=58,133,79,11
+n13 y=208 ink=58,209,69,13
+n26 y=170 ink=57,171,38,11
+k95
+k96
+k97

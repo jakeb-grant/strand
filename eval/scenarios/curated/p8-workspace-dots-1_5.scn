@@ -1,0 +1,61 @@
+id     = "p8-workspace-dots-1_5"
+about  = """Workspace dots on a bar at scale 1.5: the focused dot widens into a
+pill as focus hops 1 → 2 → 3 and back to 1 in quick succession, a fifth
+workspace is created and grows in at the end, it becomes occupied and focused,
+and then it is destroyed and shrinks away while the others close the gap."""
+screen = { width = 360, height = 160, scale = 1.5 }
+hz     = 60
+
+=== bar.strand
+type Ws { id: int; name: text }
+
+state current_ws = 1
+state ws_count = 4
+state fifth_busy = false
+state slots: [Ws] key id = [
+  Ws(id: 1, name: "1"), Ws(id: 2, name: "2"), Ws(id: 3, name: "3"),
+  Ws(id: 4, name: "4"), Ws(id: 5, name: "5"),
+]
+
+bar Top {
+  edge: top; height: 28; bg: $surface; font: $font.ui; color: $fg
+  row { pad: 0, $space.3; gap: $space.3; align: center
+    row { id: dots; gap: 6; align: center
+      for ws in slots.filter(w => w.id <= ws_count) {
+        box { width: 8; height: 8; radius: full; bg: $fg.alpha(0.25); hit: grow(6)
+          enter { width: 0; opacity: 0 }
+          when ws.id == 1 || ws.id == 3 || (ws.id == 5 && fifth_busy) { bg: $fg.muted }
+          when ws.id == current_ws { width: 22; bg: $accent }
+        }
+      }
+    }
+    text join(" ", "workspace", current_ws) { id: label; color: $fg.muted; font: $font.caption }
+  }
+}
+
+=== steps
+rest
+mark hop
+intend #dots changes
+set current_ws 2
+frames 5
+set current_ws 3
+frames 5
+set current_ws 1
+rest
+shot back-to-one
+mark create
+intend #dots changes
+set ws_count 5
+rest
+mark busy-focus
+intend #dots changes
+set fifth_busy true
+set current_ws 5
+rest
+shot fifth
+mark destroy
+intend #dots changes
+set current_ws 3
+set ws_count 4
+rest

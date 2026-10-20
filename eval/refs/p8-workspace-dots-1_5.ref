@@ -1,0 +1,247 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "p8-workspace-dots-1_5"
+verdict good
+note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the focused pill hops between dots as a fifth workspace is created, focused and removed, at 1.5"
+date 2026-10-20
+rev "3e015265"
+approver "claude"
+scenario 63e827421882d64a
+seal b0db6fb6d10f8fb6
+S1 0 - "bar Top"
+N0 "dots|bar.strand:14:5|[Mock | DP-1]#0" "row#dots"
+N1 "label|bar.strand:23:5|[Mock | DP-1]#0" "text#label"
+N2 "|bar.strand:11:1|[Mock | DP-1]#0" "bar@bar.strand:11"
+N3 "|bar.strand:13:3|[Mock | DP-1]#0" "row@bar.strand:13"
+N4 "|bar.strand:16:9|[Mock | DP-1][1]#0" "box@bar.strand:16"
+N5 "|bar.strand:16:9|[Mock | DP-1][2]#1" "box@bar.strand:16"
+N6 "|bar.strand:16:9|[Mock | DP-1][3]#2" "box@bar.strand:16"
+N7 "|bar.strand:16:9|[Mock | DP-1][4]#3" "box@bar.strand:16"
+N8 "|bar.strand:16:9|[Mock | DP-1][5]#4" "box@bar.strand:16"
+k0 p1
+s1 z=360,28
+n0 x=12 y=10 w=64 h=8 ord=2
+n1 x=88 y=8 w=62 h=13 v=88,8,62,13.328125 txt=S ord=7 ink=87.328125,10,62,10.671875 fg=1a1b20a6 gl=["workspace\u00201"]
+n2 x=0 y=0 w=360 h=28 bg=faf9ffff
+n3 x=0 y=0 w=360 h=28 ord=1
+n4 x=12 y=10 w=22 h=8 ord=3 bg=455e91ff
+n5 x=40 y=10 w=8 h=8 ord=4 bg=1a1b2040
+n6 x=54 y=10 w=8 h=8 ord=5 bg=1a1b20a6
+n7 x=68 y=10 w=8 h=8 ord=6 bg=1a1b2040
+k1
+n1 gl=["workspace\u00202"]
+n4 w=18 bg=415785f2
+n5 x=36 w=12 bg=2b354b5b
+k2
+n4 w=13 v=12,10,13.328125,8 bg=384a6edd
+n5 x=31 w=17 v=31.328125,10,16.671875,8 bg=384a6e89
+k3
+n4 w=10 v=d bg=303c57ca
+n5 x=28 w=20 v=d bg=3e547fb1
+k4
+n4 w=8 bg=283144bc
+n5 x=26 w=22 bg=415887ce
+k5
+n4 bg=232937b4
+n5 bg=435b8ce1
+k6
+n1 gl=["workspace\u00203"]
+n4 bg=20232eae
+n5 w=18 bg=425988d2
+n6 x=50 w=12 bg=232835b3
+k7
+n4 bg=1d2028ab
+n5 w=13 v=26,10,13.328125,8 bg=3e527dab
+n6 x=45 w=17 v=45.328125,10,16.671875,8 bg=2f3b54c8
+k8
+n4 bg=1c1e25a8
+n5 w=10 v=d bg=38496d88
+n6 x=42 w=20 v=d bg=37486cdb
+k9
+n4 bg=1b1d23a7
+n5 w=8 bg=313f5c6d
+n6 x=40 w=22 bg=3d517be8
+k10
+n4 bg=1b1c21a7
+n5 bg=2b354b5b
+n6 bg=405684f1
+k11
+n1 gl=["workspace\u00201"]
+n4 w=12 bg=232836b3
+n5 x=30 w=7 v=30,10,7.328125,8 bg=252c3c50
+n6 x=43 w=19 v=43.328125,10,18.671875,8 bg=3e527dea
+k12
+n4 w=17 v=12,10,17.328125,8 bg=2f3b55c8
+n5 x=35 w=8 v=35.328125,10,8,8 bg=21263249
+n6 x=49 w=13 v=49.328125,10,12.671875,8 bg=364668d8
+k13
+n4 w=20 v=d bg=37486cdb
+n5 x=38 v=d bg=1e222b45
+n6 x=52 w=10 v=d bg=2e3a53c7
+k14
+n4 w=22 bg=3d517be8
+n5 x=40 bg=1d1f2643
+n6 x=54 w=8 bg=283042bb
+k15
+n4 bg=405684f1
+n5 bg=1b1d2442
+n6 bg=232835b3
+k16
+n4 bg=425a89f7
+n5 bg=1b1c2241
+n6 bg=1f232dad
+k17
+n4 bg=435b8dfa
+n5 bg=1a1c2140
+n6 bg=1d2028aa
+k18
+n4 bg=445d8ffc
+n5 bg=1a1b2040
+n6 bg=1c1e24a8
+k19
+n4 bg=445d90fd
+n6 bg=1b1d23a7
+k20
+n4 bg=455e90fe
+n6 bg=1b1c21a7
+k21
+n4 bg=455e91ff
+n6 bg=1a1b21a6
+k22
+n6 bg=1a1b20a6
+k23
+n0 w=68
+n1 x=92 v=92,8,62,13.328125 ord=8 ink=91.328125,10,62,10.671875
+n8 x=78 y=10 w=2 h=8 op=37 ord=7 bg=1a1b2040
+k24
+n0 w=74
+n1 x=98 v=98,8,62,13.328125 ink=97.328125,10,62,10.671875
+n8 x=81 w=5 v=81.328125,10,4.671875,8 op=98
+k25
+n0 w=77 v=12,10,77.328125,8
+n1 x=101 v=101.328125,8,62,13.328125 ink=100.671875,10,62,10.671875
+n8 x=82 w=7 v=82,10,7.328125,8 op=151
+k26
+n0 w=78 v=d
+n1 x=102 v=102,8,62,13.328125 ink=101.328125,10,62,10.671875
+n8 w=8 v=d op=190
+k27
+n8 op=216
+k28
+n8 op=232
+k29
+n8 op=241
+k30
+n8 op=247
+k31
+n8 op=251
+k32
+n8 op=253
+k33
+n8 op=254
+k34
+k35
+n8 op=255
+k36
+k37
+n1 gl=["workspace\u00205"]
+n4 w=18 bg=415785f2
+n5 x=36
+n6 x=50
+n7 x=64
+n8 x=78 w=12 bg=2b354b5b
+k38
+n4 w=13 v=12,10,13.328125,8 bg=384a6edd
+n5 x=31 v=31.328125,10,8,8
+n6 x=45 v=45.328125,10,8,8
+n7 x=59 v=59.328125,10,8,8
+n8 x=73 w=17 v=73.328125,10,16.671875,8 bg=384a6e89
+k39
+n4 w=10 v=d bg=303c57ca
+n5 x=28 v=d
+n6 x=42 v=d
+n7 x=56 v=d
+n8 x=70 w=20 v=d bg=3e547fb1
+k40
+n4 w=8 bg=283144bc
+n5 x=26
+n6 x=40
+n7 x=54
+n8 x=68 w=22 bg=415887ce
+k41
+n4 bg=232937b4
+n8 bg=435b8ce1
+k42
+n4 bg=20232eae
+n8 bg=445c8eed
+k43
+n4 bg=1d2028ab
+n8 bg=445d8ff5
+k44
+n4 bg=1c1e25a8
+n8 bg=455d90f9
+k45
+n4 bg=1b1d23a7
+n8 bg=455e90fc
+k46
+n4 bg=1b1c21a7
+n8 bg=455e91fd
+k47
+n4 bg=1a1c21a6
+n8 bg=455e91fe
+k48
+n4 bg=1a1b20a6
+k49
+n8 bg=455e91ff
+k50
+n0 w=76
+n1 x=100 v=100,8,62,13.328125 ink=99.328125,10,62,10.671875 gl=["workspace\u00203"]
+n6 w=12 bg=232835b3
+n7 x=58
+n8 x=72 w=16 op=218 hid=inert
+k51
+n0 w=73 v=12,10,73.328125,8
+n1 x=97 v=97.328125,8,62,13.328125 ink=96.671875,10,62,10.671875
+n6 w=17 v=40,10,17.328125,8 bg=2f3b54c8
+n7 x=63 v=63.328125,10,8,8
+n8 x=77 w=8 v=77.328125,10,8,8 op=157
+k52
+n0 w=67 v=12,10,67.328125,8
+n1 x=91 v=91.328125,8,62,13.328125 ink=90.671875,10,62,10.671875
+n6 w=20 v=d bg=37486cdb
+n7 x=66 v=d
+n8 w=2 v=77.328125,10,2,8 op=104
+k53
+n0 w=64 v=d
+n1 x=88 v=88,8,62,13.328125 ink=87.328125,10,62,10.671875
+n6 w=22 bg=3d517be8
+n7 x=68
+n8 x=76 w=0 v=d op=65 bg=-
+k54
+n6 bg=405684f1
+n8 op=39
+k55
+n6 bg=425a89f7
+n8 op=23
+k56
+n6 bg=435b8dfa
+n8 op=14
+k57
+n6 bg=445d8ffc
+n8 op=8
+k58
+n6 bg=445d90fd
+n8 op=4
+k59
+n6 bg=455e90fe
+n8 op=2
+k60
+n6 bg=455e91ff
+n8 op=1
+k61
+k62
+n8 op=0
+k63
+n8 hid=opacity0
+k64
+n1 ord=7
+n8 -

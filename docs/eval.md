@@ -150,6 +150,10 @@ expect still #after
 A committed scenario is any scenario outside `eval/scenarios/local/`. It
 may name only files inside `eval/` and the bundled fonts. The parser
 refuses anything else, so an owner's config or fonts never reach a gate.
+eval/fixtures/images/ holds the images scenarios draw: `art.png` (60 × 40,
+four coloured quarters and a dot), `app.png` (24 × 32), `ramp.png` (a
+27 × 13 ramp) and `spinner.gif` (four 16 × 16 frames of a quarter ring
+going round, 100 ms each, looping forever; eval-coverage-5).
 
 ### Step vocabulary
 
@@ -1315,11 +1319,14 @@ integration (integration-r6), with round 6's three regressions, it was
 and the slider cells' offset box it was 5.96 MB; at round 7's
 integration (integration-r7), with eval-rules-5's and eval-rules-6's six
 scenarios and the round's two regressions, it was 5.99 MB; after its
-second part (the round's fixes and four more regressions), it is 6.01 MB
-(6,009,510 bytes, 282 kB under the tripwire): the 122 scenarios 888 kB,
-`matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 486 cells each. Paint
-costs little because a field is written only on the ticks it changes.
-Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
+second part (the round's fixes and four more regressions), 6.01 MB. With
+eval-coverage-5's twenty scenarios (147 kB: thirteen promoted from round
+8's practice corpus, seven written for the round's gaps, none over 27 kB)
+it is 6.16 MB (6,156,883 bytes, 135 kB under the tripwire): the 142
+scenarios 1.04 MB, `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB,
+486 cells each. Paint costs little because a field is written only on
+the ticks it changes. Compressed, as git stores it, that was about
+530 kB before eval-coverage-5, whose files add 44 kB gzipped. eval/tests/refs.rs
 holds the total to 6 MiB (5 MiB until integration-r4, when the
 references reached 97% of it), a scenario's file to 64 KiB and a matrix
 file to 8 KiB a cell. Each is a tripwire for a recording that stopped
@@ -2155,7 +2162,11 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   layout was shaped from, not where an ellipsis cut it: the cut width
   (`fit`) and the ink record that. A text's paint is recorded once per
   run of glyphs drawn, so two texts with the same source, colour and
-  glyphs drawn on one node are one entry.
+  glyphs drawn on one node are one entry. A `letters` block's offsets are
+  not recorded either: a text's `ink` is its layout's, so a letter drawn
+  at the wrong offset or phase changes no recording (eval-coverage-5:
+  voice-letters-noise holds the letters to `settle` and `twin` only), and
+  an animated image's frame is seen only by which ticks paint.
 - **`continuity` reads what the motion was asked, not how it moved.**
   The trace records each spring's target, curve and changes as the
   renderer's `Motion` holds them (eval-rules-2), and the check works the

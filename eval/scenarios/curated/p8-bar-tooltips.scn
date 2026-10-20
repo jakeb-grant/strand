@@ -1,0 +1,50 @@
+id     = "p8-bar-tooltips"
+about  = """Tray-style icons on a bar with text tooltips: the pointer rests on
+the first icon until its tooltip appears, the network it names changes so its
+text changes in place, the pointer glides to the next icon so the tooltip
+moves to it, passes quickly over the third without
+waiting, and leaves the bar so the tooltip goes."""
+screen = { width = 360, height = 220, scale = 1.0 }
+hz     = 60
+tooltip_delay = 400
+
+=== bar.strand
+state net_name = "home-5g"
+
+bar Top {
+  edge: top; height: 32; bg: $surface; color: $fg; font: $font.ui
+  row { pad: 0, 8; gap: 8; align: center; height: 32
+    spacer {}
+    box { id: net; size: 24; radius: $radius.sm; bg: $accent.alpha(0.3)
+      tooltip: join(" ", "Connected to", net_name)
+      when hover { bg: $accent.alpha(0.55) } }
+    box { id: vol; size: 24; radius: $radius.sm; bg: $accent.alpha(0.3)
+      tooltip: "Volume 64%"
+      when hover { bg: $accent.alpha(0.55) } }
+    box { id: bat; size: 24; radius: $radius.sm; bg: $accent.alpha(0.3)
+      tooltip: "Battery 82%, 3 h 10 min left"
+      when hover { bg: $accent.alpha(0.55) } }
+  }
+}
+
+=== steps
+rest
+mark rest-on-first
+pointer 268,16 on bar
+wait 700
+rest
+shot first-tip
+mark network-change
+set net_name "cafe-guest"
+rest
+mark to-second
+glide 268,16 -> 300,16 over 150 on bar
+wait 600
+rest
+mark quick-pass
+glide 300,16 -> 340,16 over 80 on bar
+glide 340,16 -> 300,16 over 80 on bar
+wait 200
+mark leave
+leave
+rest

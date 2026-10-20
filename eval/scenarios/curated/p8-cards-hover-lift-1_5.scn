@@ -1,0 +1,60 @@
+id     = "p8-cards-hover-lift-1_5"
+about  = """A dashboard of six bordered, shadowed widget cards at scale 1.5: the
+pointer glides across the top row so each card lifts a few pixels with a
+deeper shadow and an accent border and settles back as it leaves, rests on
+one card, presses it so it dips, and then moves down to the second row."""
+screen = { width = 420, height = 360, scale = 1.5 }
+hz     = 60
+
+=== dash.strand
+type Widget { id: text; title: text; value: text }
+
+state widgets: [Widget] key id = [
+  Widget(id: "cpu", title: "CPU", value: "14%"),
+  Widget(id: "mem", title: "Memory", value: "5.2 GB"),
+  Widget(id: "disk", title: "Disk", value: "61%"),
+  Widget(id: "net", title: "Network", value: "1.2 MB/s"),
+  Widget(id: "temp", title: "Temp", value: "48 °C"),
+  Widget(id: "up", title: "Uptime", value: "3 h 12 min"),
+]
+
+panel Dash {
+  anchor: top_left; layer: top; keyboard: none
+  grid { id: board; columns: 3; gap: 12; pad: 16; width: 380; color: $fg; font: $font.ui
+    for w in widgets {
+      col { height: 72; pad: $space.2; gap: 2; radius: $radius.lg; bg: $surface
+            border: 1, $border; shadow: $elevation.md
+        when hover { y: -3; shadow: $elevation.lg; border: 1, $accent }
+        when pressed { y: -1; scale: 0.98 }
+        text w.title { font: $font.caption; color: $fg.muted }
+        text w.value { font: $font.title; ellipsis: end }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark sweep-top-row
+intend #board changes
+glide 20,50 -> 380,50 over 900 on panel
+rest
+mark rest-on-middle
+intend #board changes
+glide 380,50 -> 190,52 over 250 on panel
+rest
+shot hovered
+mark press
+intend #board changes
+press left
+frames 8
+release left
+rest
+mark down-a-row
+intend #board changes
+glide 190,52 -> 190,134 over 200 on panel
+rest
+mark leave
+intend #board changes
+leave
+rest

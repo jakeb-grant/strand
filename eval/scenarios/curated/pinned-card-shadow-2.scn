@@ -1,0 +1,42 @@
+id     = "pinned-card-shadow-2"
+about  = """A notification card at scale 2 whose drop shadow springs
+(eval-coverage-5): pinned, it lifts 2 px and its shadow deepens from
+`$elevation.md` to `$elevation.lg` (two layers from one); unpinned while that
+spring runs, it turns back from where it is; pinned and unpinned again, it
+settles. A shadow's blur is a length in logical px, so at scale 2 it covers
+twice the buffer pixels (design.md shadows; the recording's `sh` holds each
+layer's extent). The panel's padding holds the deepest shadow, so the buffer
+never needs to grow for it."""
+screen = { width = 360, height = 260, scale = 2.0 }
+hz     = 60
+
+=== shell.strand
+state pinned = false
+panel Notes {
+  anchor: top_right; margin: 8; open: true
+  col { pad: 48
+    row { id: card; width: 200; height: 56; pad: 10; gap: 8; align: center
+          radius: $radius.lg; bg: $surface; border: 1, $border; shadow: $elevation.md
+      when pinned { y: -2; shadow: $elevation.lg; border: 1, $accent }
+      box { id: icon; width: 28; height: 28; radius: full; bg: $accent.container }
+      text "Backup finished" { color: $fg; font: $font.ui }
+    }
+  }
+}
+
+=== steps
+rest
+mark pin
+intend #card changes
+set pinned true
+rest
+mark unpin-mid
+intend #card changes
+set pinned false
+frames 5
+set pinned true
+rest
+mark unpin
+intend #card changes
+set pinned false
+rest

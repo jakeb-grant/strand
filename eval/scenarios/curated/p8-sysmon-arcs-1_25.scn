@@ -1,0 +1,65 @@
+id     = "p8-sysmon-arcs-1_25"
+about  = """A system monitor panel at scale 1.25 with two ring gauges and a
+label column, starting with reduced motion on (the desktop's setting at login):
+readings jump straight to their values; reduced motion is turned off, so the
+next readings sweep the rings round, the panel narrows so a container query
+hides the labels, and widens back."""
+screen = { width = 420, height = 300, scale = 1.25 }
+hz     = 60
+reduce_motion = true
+
+=== monitor.strand
+state cpu_load = 0.18
+state mem_load = 0.46
+state narrow = false
+
+panel Monitor {
+  anchor: top_right; layer: top; keyboard: none; margin: $space.2
+  row { id: panel_row; width: narrow ? 200 : 340; pad: $space.3; gap: $space.3; align: center
+        radius: $radius.lg; bg: $surface; border: 1, $border; shadow: $elevation.md
+        color: $fg; font: $font.ui
+    col { id: cpu_cell; gap: $space.1; align: center
+      arc { id: cpu_ring; size: 44; value: cpu_load; sweep: 270deg; color: $accent; track: $fg.alpha(0.12) }
+      text pct(cpu_load) { font: $font.caption; roll: true }
+    }
+    col { id: mem_cell; gap: $space.1; align: center
+      arc { id: mem_ring; size: 44; value: mem_load; sweep: 270deg; color: $tertiary; track: $fg.alpha(0.12) }
+      text pct(mem_load) { font: $font.caption; roll: true }
+    }
+    col { id: labels; grow: 1; gap: 2
+      when self.width < 120 { opacity: 0 }
+      text "CPU and memory" { weight: 600; ellipsis: end }
+      text "updated every 2 s" { font: $font.caption; color: $fg.muted; ellipsis: end }
+    }
+  }
+}
+
+=== steps
+rest
+mark reduced-readings
+set cpu_load 0.62
+set mem_load 0.48
+rest
+shot reduced
+mark motion-on
+reduce-motion off
+rest
+mark readings
+intend #cpu_ring changes
+intend #mem_ring changes
+set cpu_load 0.35
+set mem_load 0.71
+wait 300
+set cpu_load 0.88
+rest
+shot readings
+mark narrow
+intend #panel_row changes
+intend #labels changes
+set narrow true
+rest
+mark widen
+intend #panel_row changes
+intend #labels changes
+set narrow false
+rest

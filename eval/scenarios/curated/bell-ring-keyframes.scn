@@ -1,0 +1,45 @@
+id     = "bell-ring-keyframes"
+about  = """Keyframes with many stops in a bar (eval-coverage-5; design.md
+"Motion and time": `keyframes` + `play`, spec.md 6.6: `play name` in a
+handler plays it once on the enclosing node): a notification bell rings on
+click, a damped swing over seven stops at uneven offsets, and a run prompt
+shakes "no" on x over five, played again while it still shakes (a new play
+restarts it). Each stop's value is reached at its offset and eased between
+its neighbours, and the boxes beside them stay put (the plays are paint
+only)."""
+screen = { width = 300, height = 120, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+keyframes ring { 0%, 100% { rotate: 0deg }; 10% { rotate: 16deg }; 25% { rotate: -14deg }; 40% { rotate: 10deg }; 55% { rotate: -7deg }; 70% { rotate: 4deg }; 85% { rotate: -2deg }; duration: 900ms }
+keyframes nope { 0%, 100% { x: 0 }; 15% { x: -10 }; 35% { x: 8 }; 55% { x: -6 }; 75% { x: 3 }; duration: 420ms; easing: ease_out }
+
+bar Top {
+  height: 32; bg: #1e1e2e
+  row { height: 32; pad: 0, 10; gap: 8; align: center
+    box { id: prompt; width: 120; height: 22; radius: 6; bg: #313244; border: 1, #f38ba8
+      on click { play nope } }
+    box { id: mid; width: 20; height: 12; bg: #45475a }
+    spacer {}
+    box { id: bell; width: 20; height: 20; radius: 6; bg: #f9e2af
+      on click { play ring } }
+    box { id: tail; width: 20; height: 12; bg: #45475a }
+  }
+}
+
+=== steps
+rest
+mark ring
+intend #bell changes
+click 248,16
+rest
+mark shake
+intend #prompt changes
+click 60,16
+frames 9
+mark shake-again
+intend #prompt changes
+click 60,16
+rest
+expect still #mid
+expect still #tail
