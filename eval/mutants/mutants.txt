@@ -80,10 +80,13 @@ damage-fraction.patch   regressions/damage-fraction.scn   redraw
 # entering, and a name keeps one box, so the panel's card shows at its box
 # at both openings. Since eval-rules-5 a rule holds it too: `coherence`'s
 # morph arrival (the card pops in at its box while the pill shows).
+# Regenerated at integration-r7 against a gone surface's kept place
+# (`Seen::place`), which it keeps: only the one box per name goes.
 cross-surface-morph.patch regressions/cross-surface-morph.scn expect coherence
 # morph-group-bounds.patch: cross-surface-morph's group bounds reverted: a
 # meter's clip keeps its untransformed place under the morph's scale, so a
 # partial frame loses the fill.
+# Regenerated at integration-r7: image.rs's swap draw names its source.
 morph-group-bounds.patch regressions/cross-surface-morph.scn redraw
 # unshaped-enter.patch: unshaped-enter's fix reverted (decisions.md
 # unshaped-enter): an enter pose's size spring starts while its text is not
