@@ -6,6 +6,6 @@
                          // plays only those born with it (below).
 -                        let mut walk: Vec<NodeId> = if self.was_shown.contains(&id) {
 +                        let mut walk: Vec<NodeId> = if false && self.was_shown.contains(&id) {
-                             self.tree.get(id).map(|n| n.children.clone()).unwrap_or_default()
-                         } else {
-                             Vec::new()
+                             self.tree
+                                 .get(id)
+                                 .map(|n| n.children.clone())
