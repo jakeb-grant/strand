@@ -1,11 +1,12 @@
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -575,7 +575,7 @@
-                 }
-             }
+@@ -782,7 +782,8 @@
+             };
+             let (mut acc_c, real_c) = (add(acc, glided), add(real, glided));
              let mut clip_c = clip;
--            if clips(tree, anim, cn)
-+            if false && clips(tree, anim, cn)
+-            if !glided_only
++            if false
++                && !glided_only
+                 && clips(tree, anim, cn)
                  && !unpainted.contains(c)
                  && let (Some(o), Some(w)) = rects
-             {

@@ -1,5 +1,5 @@
 diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
-index f904c793..e6b55c63 100644
+index d38e3e69..d1a4f145 100644
 --- a/crates/strand-render/src/anim/mod.rs
 +++ b/crates/strand-render/src/anim/mod.rs
 @@ -213,14 +213,6 @@ pub(crate) struct Animator {
@@ -285,10 +285,10 @@ index edf055da..86fd3363 100644
      /// places it no more; the bar's pill coming back that frame starts
      /// from the card's box where the panel lay, the place it had as it
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index a7d9aeaf..9eb43283 100644
+index 2384bcab..5dc5949c 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
-@@ -457,9 +457,8 @@ impl Renderer {
+@@ -561,9 +561,8 @@ impl Renderer {
          // A scene flattened by `update` is drawn at rest: not while
          // anything moves, nor while a motion waits to start (an `enter`
          // pose a time-zero preview could not play: a surface just
@@ -300,16 +300,16 @@ index a7d9aeaf..9eb43283 100644
          // A node reading time repaints every frame of its clock.
          let ticking = self.clocks.running(surface);
          let cached = if s.animating || pending || ticking {
-@@ -492,7 +491,6 @@ impl Renderer {
+@@ -596,7 +595,6 @@ impl Renderer {
          // scene flattened for this frame or reused: a node at rest on a
          // surface that only reuses scenes is still a morph's start.
          self.anim.shared_painted(root, target.time, &f.morphs);
 -        self.anim.surface_shown(root);
+         self.was_shown.insert(root);
          self.paint_times = PaintTimes {
              flatten: flatten_start.elapsed(),
-             text_wait: self.estimate_waited.saturating_sub(waited),
 diff --git a/crates/strand-render/src/renderer/specs.rs b/crates/strand-render/src/renderer/specs.rs
-index 8b61850f..9ef12f57 100644
+index 602a6981..26b80217 100644
 --- a/crates/strand-render/src/renderer/specs.rs
 +++ b/crates/strand-render/src/renderer/specs.rs
 @@ -379,10 +379,6 @@ impl Renderer {
@@ -320,6 +320,6 @@ index 8b61850f..9ef12f57 100644
 -                        // screen with its first frame: a `morph` name
 -                        // there starts from its partner's box.
 -                        self.anim.surface_opened(id);
-                     }
-                     for n in &self.born {
-                         if self.tree.root_of(*n) == Some(id)
+                         // (launcher-reopen) Opened again, what it kept
+                         // while closed (a surface's body is mounted when
+                         // it is first shown and frozen while hidden, not

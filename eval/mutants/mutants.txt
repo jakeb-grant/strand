@@ -17,6 +17,12 @@
 # Regenerated in round 5 (bottom-osd-shrink): the open scope's resized pass
 # keeps its buffer's size (`laid_size`) and glide_moved its `unpainted` check
 # in clip-blink's clip rule, so those go with it.
+# Regenerated in round 7 (launcher-flip-pass), reverted in what it does on
+# that round's FLIP in layout_pass.rs alone: a FLIP only on the change's own
+# pass, against the pass before, with no undrawn set, no buffer shift and no
+# glide kept between passes (the fields stay, unused). clip-carries-rows,
+# shrink-keeps-edge, unhold-flip, nested-glide-y and cross-surface-morph were
+# cut again against it, the same reverts.
 # bug25-hidden-text.patch: the reverse of 2fab9622's two hidden_texts calls
 # in node.rs (hidden-text; owner-testing.md bug 25), cut against this branch;
 # the function stays, late-text-dip calls it for a box clipped to nothing.
@@ -82,6 +88,8 @@ damage-fraction.patch   regressions/damage-fraction.scn   redraw
 # morph arrival (the card pops in at its box while the pill shows).
 # Regenerated at integration-r7 against a gone surface's kept place
 # (`Seen::place`), which it keeps: only the one box per name goes.
+# Cut again at integration-r7 part 2 on the tree with launcher-reopen and
+# launcher-flip-pass beside it: the same reverts, at their new lines.
 cross-surface-morph.patch regressions/cross-surface-morph.scn expect coherence
 # morph-group-bounds.patch: cross-surface-morph's group bounds reverted: a
 # meter's clip keeps its untransformed place under the morph's scale, so a

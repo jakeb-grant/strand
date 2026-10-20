@@ -1,11 +1,13 @@
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -433,7 +433,7 @@
+@@ -487,8 +487,8 @@
                  && !self.anim.reduced()
              {
-                 let moved;
--                let old_rects = if shift == (0.0, 0.0) {
-+                let old_rects = if true || shift == (0.0, 0.0) {
-                     &old.rects
-                 } else {
-                     moved = old
+                 let old_rects = match (&base, drawn_shift) {
+-                    (Some(b), Some(d)) => moved_by(&b.0, d),
+-                    _ => moved_by(&old.rects, shift),
++                    (Some(b), Some(d)) => moved_by(&b.0, if true { (0.0, 0.0) } else { d }),
++                    _ => moved_by(&old.rects, if true { (0.0, 0.0) } else { shift }),
+                 };
+                 let tables = [&self.tree.tokens];
+                 let curve = Curve::of(
