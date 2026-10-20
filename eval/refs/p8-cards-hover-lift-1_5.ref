@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-cards-hover-lift-1_5"
 verdict good
-note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: each card lifts 3 px with its shadow deepening md to lg and its border to accent as the pointer sweeps, dips on press, settles on leave, at 1.5"
+note "shadow-buffer (integration-r8): the panel's overhang is held at 380x217 from k132, the tick the pointer leaves, while #temp's lg shadow springs back (it reaches y 210 at k132, past the 188 px the reference cut it at), and released on the frame after the shadows settle (k148, one more painted frame); read: only surface 1's size at k132..k147 and the k148 paint differ, no node moves, and frame k132 shows the shadow fading out uncut"
 date 2026-10-20
-rev "3e015265"
+rev "e7a38957+changes"
 approver "claude"
 scenario 63305ed76d2857a7
-seal 69c786d2a6a782f0
+seal 48ee44aa9d44a570
 S1 0 - "panel Dash"
 N0 "board|dash.strand:14:3|#0" "grid#board"
 N1 "|dash.strand:12:1|#0" "panel@dash.strand:12"
@@ -422,7 +422,6 @@ k130
 k131
 n6 sh=0000004d@81.328125,68.671875,147.328125,145.328125/00000033@114,94.328125,82,80
 k132
-s1 z=380,188
 n6 y=98 v=d bd=5d74a1ff sh=0000004b@84.671875,71.796875,140.671875,138.671875/0000002c@114,95,82,80
 n12 y=106 v=126,106,58,13.328125 ink=126,108,26.671875,10.671875
 n18 y=121 v=126,121.328125,58,20.671875 ink=126,124.671875,45.328125,13.328125
@@ -458,3 +457,5 @@ k145
 k146
 k147
 n6 sh=00000040@105.328125,89.328125,99.328125,97.328125
+k148
+s1 z=380,188

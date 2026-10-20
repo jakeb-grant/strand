@@ -2463,6 +2463,9 @@ impl Harness {
             reduced: self.reduced,
             ..Frame::default()
         };
+        // (integration-r8) The global tokens that read time, by eval's
+        // own walk (`crate::timed`), once a frame.
+        let time_paths = crate::timed::time_paths(&self.r.tree().tokens);
         for (s, f) in &last {
             frame.n.extend(self.rows(*s, &f.nodes));
             // (eval-rules-2) Its springs' samples and its rolls.
@@ -2515,7 +2518,7 @@ impl Harness {
                 // a text drawn whole that could break narrower.
                 self.flow_facts(*s, n, &mut frame);
                 // (eval-rules-8) What drives it by time, and its shadows.
-                self.time_facts(*s, n, &mut frame);
+                self.time_facts(*s, n, &time_paths, &mut frame);
                 // (eval-rules-4) Its images' decodes and its cut lines.
                 if !n.images.is_empty() || n.cut.is_some() {
                     let key = self
@@ -2617,7 +2620,13 @@ impl Harness {
     /// declared it (its `play`'s block and `seq`, a prop that reads time;
     /// the block recorded once by name), and each shadow it drew with
     /// what its props asked of it.
-    fn time_facts(&mut self, s: u32, n: &strand_render::probe::NodeTrace, frame: &mut Frame) {
+    fn time_facts(
+        &mut self,
+        s: u32,
+        n: &strand_render::probe::NodeTrace,
+        time_paths: &HashSet<String>,
+        frame: &mut Frame,
+    ) {
         let tree = self.r.tree();
         let Some(node) = tree.get(n.node) else {
             return;
@@ -2626,12 +2635,10 @@ impl Harness {
             Some(PropValue::Keyframes(k)) => Some(k.clone()),
             _ => None,
         };
-        let timed = |p: &str| tree.tokens.time_reads(p);
-        let t = node.props.iter().any(|e| match (&e.prop, &e.value) {
-            (Prop::Tokens, PropValue::Tokens(table)) => table.reads_time_with(&timed),
-            (Prop::Play, _) => false,
-            (_, v) => v.reads_time_with(&timed),
-        });
+        // (integration-r8) Read by eval's own walk of the declaration,
+        // a timed `tokens` scope of an ancestor included, not by the
+        // product's detection that decides what time drives.
+        let t = crate::timed::reads_time(tree, node, time_paths);
         if play.is_none() && !t && n.paint.shadows.is_empty() {
             return;
         }

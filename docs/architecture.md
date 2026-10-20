@@ -814,7 +814,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     while one plays, and `NodeTrace::paint`, a `NodePaint` read from the
     display items the node added itself (`fills` and `borders` as
     `Paint`s, `shadows` as `ShadowDrawn` (its colour and the `extent` it
-    may cover, before transforms), `glyphs` as `GlyphsDrawn` (its paint,
+    may cover, before transforms; (eval-rules-8) `asked`, the offset,
+    blur and spread its props asked this frame, springs applied, in
+    logical px before the frame's scale, and `frame`, the box it is cast
+    by as drawn), `glyphs` as `GlyphsDrawn` (its paint,
     span colours, the `text` its layout was shaped from and the `subset`
     of glyphs drawn when not all were)); (eval-rules-4,
     eval-coverage-3) `NodeTrace::images`, an `ImageDrawn` per decode an

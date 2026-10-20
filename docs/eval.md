@@ -556,9 +556,12 @@ What `continuity`'s `track` and `still`, `twin`'s `still` and
 - per frame, whether motion was reduced, as render had it (`reduced`);
 - per frame, each node drawn that time drives as declared (`timed`): its
   `play`'s block and logic's `seq`, and whether a prop of it reads time
-  (`t`, `wave(…)`, `noise(…)` or a token that does), read from the
-  scene tree, never from the renderer's motion bits (which mark a
-  playing node `TIME` too);
+  (`t`, `wave(…)`, `noise(…)` or a token that does, or a token read
+  under an ancestor's `tokens` override that reads time), read from the
+  scene tree by eval's own walk of the declared values
+  (`eval/src/timed.rs`, integration-r8), never from the renderer's
+  motion bits (which mark a playing node `TIME` too) or the product's
+  own time detection;
 - per frame, each drop shadow drawn, a box's glow included (`shadows`),
   from strand-render's `eval-hooks`: the box it is cast by, the area it
   may cover, what its props asked (`x`, `y`, `blur`, `spread`, logical
@@ -974,10 +977,17 @@ says a node moves, not how, so it does not exempt from them; only an
   their pages' clip under their page's slide), or one followed by a frame
   in which an ancestor that clips it (`clip: true`, a `scroll`, a `list`,
   or as `held` reads one, a box whose size springs or that exits to a
-  size) has no area, under half a pixel across (practice set 8: a
-  filtered list sized by its exiting rows is 0 tall the frame they reach
-  `height: 0`; a chip exiting to `width: 0` is 0 wide the frame its
-  popped-in check is gone), is not judged.
+  size) has no area, under half a pixel across, is not judged, when
+  that shutting is declared motion (integration-r8): the ancestor's own
+  size spring or exit to a size (practice set 8: a chip exiting to
+  `width: 0` is 0 wide the frame its popped-in check is gone), or, for
+  an ancestor sized by what it holds, the node's own exit reaching its
+  pose's width or height on the axis that shut within the step it just
+  took (practice set 8: a filtered list sized by its exiting rows, 17
+  then 5 px tall, is 0 tall the frame they reach `height: 0`). Rows
+  unmounted half way, 20 px tall after a 10 px step, shut their list by
+  their removal: that pops. A clip that shuts on the last frame a node
+  is drawn in is judged the same way, at the frame it last showed.
 - **`continuity`** (eval-rules-2). "Retargeting mid-flight keeps
   velocity, so interrupted animations never jolt" (design.md), a spring
   is a unit-mass damped oscillator, and a change starts one refresh of

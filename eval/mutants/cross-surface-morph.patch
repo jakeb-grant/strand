@@ -1,5 +1,5 @@
 diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
-index d38e3e69..d1a4f145 100644
+index 5f2b272e..4a5b1b75 100644
 --- a/crates/strand-render/src/anim/mod.rs
 +++ b/crates/strand-render/src/anim/mod.rs
 @@ -213,14 +213,6 @@ pub(crate) struct Animator {
@@ -47,7 +47,7 @@ index d38e3e69..d1a4f145 100644
              self.staggers.forget(node.id);
              if let Some(na) = self.nodes.get_mut(&node.id) {
                  na.touched.clear();
-@@ -969,8 +954,6 @@ impl Animator {
+@@ -979,8 +964,6 @@ impl Animator {
          self.enter.remove(&id);
          self.enter_size.remove(&id);
          self.size_held.remove(&id);
@@ -56,7 +56,7 @@ index d38e3e69..d1a4f145 100644
          self.text_holds.remove(&id);
          self.line_holds.remove(&id);
          self.exits.remove(&id);
-@@ -999,7 +982,6 @@ impl Animator {
+@@ -1009,7 +992,6 @@ impl Animator {
          // A morph a preview saw start whose painted frame did not draw
          // the node: it shows at rest, as an unseen enter pose does.
          self.shared.drop_pending(&mut under);
@@ -64,7 +64,7 @@ index d38e3e69..d1a4f145 100644
          // (roll-preview) Rolls and shapes a preview left to the painted
          // frame that it did not draw (a frame drawing them clears its
          // own): remembered when one draws them.
-@@ -1065,26 +1047,6 @@ impl Animator {
+@@ -1075,26 +1057,6 @@ impl Animator {
      /// from its pose, as the first time; its nodes show at rest
      /// otherwise, and nothing left over keeps its root busy. Size springs
      /// belong to layout and stay.
@@ -92,10 +92,10 @@ index d38e3e69..d1a4f145 100644
          drop_paint_state(&mut self.nodes, &mut under);
          self.jellies.retain(|id| !under(id));
 diff --git a/crates/strand-render/src/anim/morph.rs b/crates/strand-render/src/anim/morph.rs
-index edf055da..86fd3363 100644
+index 2072e493..e7ec9cec 100644
 --- a/crates/strand-render/src/anim/morph.rs
 +++ b/crates/strand-render/src/anim/morph.rs
-@@ -116,9 +116,7 @@ impl Seen {
+@@ -125,9 +125,7 @@ impl Seen {
  /// Where each `morph` name was last drawn, and the morphs in flight.
  #[derive(Debug, Default)]
  pub(crate) struct SharedMorphs {
@@ -106,7 +106,7 @@ index edf055da..86fd3363 100644
      /// The latest painted frame's time per surface root: a box off
      /// screen for longer than [`STALE`] by its own surface's clock can
      /// start no morph and is dropped ([`SharedMorphs::prune`]).
-@@ -158,23 +156,12 @@ impl SharedMorphs {
+@@ -167,29 +165,12 @@ impl SharedMorphs {
              started = Start::Missed;
          }
          let entering = pending || entering;
@@ -119,8 +119,14 @@ index edf055da..86fd3363 100644
 -            self.seen
 -                .get(key)?
 -                .iter()
--                .filter(|s| s.id != id && (s.shown || frame.at.saturating_sub(s.at) <= STALE))
--                .filter_map(|s| Some(((s.shown, s.at), s.rect_on(root, origins)?)))
+-                .filter(|s| {
+-                    s.id != id
+-                        && (s.shown || s.left.is_some() || frame.at.saturating_sub(s.at) <= STALE)
+-                })
+-                .filter_map(|s| {
+-                    let at = if s.left.is_some() { frame.at } else { s.at };
+-                    Some(((s.shown, at), s.rect_on(root, origins)?))
+-                })
 -                .max_by_key(|(order, _)| *order)
 -                .map(|(_, r)| r)
 -        };
@@ -129,12 +135,12 @@ index edf055da..86fd3363 100644
 -            && let Some(old) = from()
 +            && let Some(seen) = self.seen.get(key)
 +            && seen.id != id
-+            && (seen.shown || frame.at.saturating_sub(seen.at) <= STALE)
++            && (seen.shown || seen.left.is_some() || frame.at.saturating_sub(seen.at) <= STALE)
 +            && let Some(old) = seen.rect_on(root, origins)
              && rect.w > 0.0
              && rect.h > 0.0
              && old.w > 0.0
-@@ -231,26 +218,24 @@ impl SharedMorphs {
+@@ -246,27 +227,25 @@ impl SharedMorphs {
      pub(crate) fn painted(&mut self, root: NodeId, at: Duration, drawn: &[MorphBox]) {
          let latest = self.latest.entry(root).or_default();
          *latest = (*latest).max(at);
@@ -152,6 +158,7 @@ index edf055da..86fd3363 100644
 -                rect: b.rect,
 -                at,
 -                shown: true,
+-                left: None,
 -                place: None,
 -            };
 -            let boxes = self.seen.entry(b.key.clone()).or_default();
@@ -167,22 +174,32 @@ index edf055da..86fd3363 100644
 +                    rect: b.rect,
 +                    at,
 +                    shown: true,
++                    left: None,
 +                    place: None,
 +                },
 +            );
          }
          // Computed names (`morph: "note-" + n.id`) come and go: drop the
          // stale ones whenever the map has doubled since the last prune,
-@@ -264,7 +249,7 @@ impl SharedMorphs {
-     /// left the screen with its last painted frame, (integration-r7)
+@@ -281,7 +260,7 @@ impl SharedMorphs {
+     /// frame was painted, they were shown until now), (integration-r7)
      /// where it lay then (`place`, its last origin on its output).
-     pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>) {
+     pub(crate) fn hidden(&mut self, root: NodeId, place: Option<SurfaceOrigin>, now: Instant) {
 -        for s in self.seen.values_mut().flatten() {
 +        for s in self.seen.values_mut() {
              if s.root == root {
-                 s.shown = false;
-                 if place.is_some() {
-@@ -313,9 +298,7 @@ impl SharedMorphs {
+                 if s.shown {
+                     s.left = Some(now);
+@@ -298,7 +277,7 @@ impl SharedMorphs {
+     /// moment `now`: the boxes whose surface went at a moment before
+     /// left the screen that long before `time`.
+     pub(crate) fn date_left(&mut self, time: Duration, now: Instant) {
+-        for s in self.seen.values_mut().flatten() {
++        for s in self.seen.values_mut() {
+             if let Some(left) = s.left.take() {
+                 s.at =
+                     s.at.max(time.saturating_sub(now.saturating_duration_since(left)));
+@@ -345,9 +324,7 @@ impl SharedMorphs {
          self.pending.retain(|id| keep(*id));
          self.latest.retain(|root, _| keep(*root));
          let latest = &self.latest;
@@ -193,7 +210,7 @@ index edf055da..86fd3363 100644
          self.prune();
      }
  
-@@ -323,14 +306,11 @@ impl SharedMorphs {
+@@ -355,14 +332,11 @@ impl SharedMorphs {
      /// than [`STALE`] by their surface's latest frame.
      fn prune(&mut self) {
          let latest = &self.latest;
@@ -201,19 +218,19 @@ index edf055da..86fd3363 100644
 -            boxes.retain(|s| {
 -                latest
 -                    .get(&s.root)
--                    .is_some_and(|t| s.shown || t.saturating_sub(s.at) <= STALE)
+-                    .is_some_and(|t| s.shown || s.left.is_some() || t.saturating_sub(s.at) <= STALE)
 -            });
 -        }
 -        self.seen.retain(|_, boxes| !boxes.is_empty());
 +        self.seen.retain(|_, s| {
 +            latest
 +                .get(&s.root)
-+                .is_some_and(|t| s.shown || t.saturating_sub(s.at) <= STALE)
++                .is_some_and(|t| s.shown || s.left.is_some() || t.saturating_sub(s.at) <= STALE)
 +        });
          self.kept = self.seen.len();
      }
  }
-@@ -414,70 +394,6 @@ mod tests {
+@@ -446,73 +420,6 @@ mod tests {
          assert!(starts(&mut m, root, NodeId::new(21, 0), "m", 1032));
      }
  
@@ -258,7 +275,7 @@ index edf055da..86fd3363 100644
 -            std::slice::from_ref(&pill_box),
 -        );
 -        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
--        m.hidden(panel, None);
+-        m.hidden(panel, None, Instant::now());
 -        assert_eq!(m.seen.get("m").map_or(0, Vec::len), 2, "a box per surface");
 -        // Long after the card left: the pill, on screen, starts it.
 -        assert!(starts(&mut m, card, 60_000), "from the pill");
@@ -270,14 +287,17 @@ index edf055da..86fd3363 100644
 -            std::slice::from_ref(&pill_box),
 -        );
 -        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
--        m.hidden(bar, None);
--        m.hidden(panel, None);
+-        // Both went just before a frame painted at 1016 ms.
+-        let now = Instant::now();
+-        m.hidden(bar, None, now);
+-        m.hidden(panel, None, now);
+-        m.date_left(Duration::from_millis(1016), now);
 -        assert!(starts(&mut m, NodeId::new(21, 0), 1500));
 -        assert!(!starts(&mut m, NodeId::new(22, 0), 2100), "stale");
 -        // Its own box is no place to start from.
 -        let mut m = SharedMorphs::default();
 -        m.painted(panel, Duration::from_millis(1016), &[shown("m", card)]);
--        m.hidden(panel, None);
+-        m.hidden(panel, None, Instant::now());
 -        assert!(!starts(&mut m, card, 1500), "not from itself");
 -    }
 -
@@ -285,7 +305,7 @@ index edf055da..86fd3363 100644
      /// places it no more; the bar's pill coming back that frame starts
      /// from the card's box where the panel lay, the place it had as it
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index 2384bcab..5dc5949c 100644
+index ca049486..c14963d5 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
 @@ -561,9 +561,8 @@ impl Renderer {
@@ -300,7 +320,7 @@ index 2384bcab..5dc5949c 100644
          // A node reading time repaints every frame of its clock.
          let ticking = self.clocks.running(surface);
          let cached = if s.animating || pending || ticking {
-@@ -596,7 +595,6 @@ impl Renderer {
+@@ -598,7 +597,6 @@ impl Renderer {
          // scene flattened for this frame or reused: a node at rest on a
          // surface that only reuses scenes is still a morph's start.
          self.anim.shared_painted(root, target.time, &f.morphs);
@@ -309,10 +329,10 @@ index 2384bcab..5dc5949c 100644
          self.paint_times = PaintTimes {
              flatten: flatten_start.elapsed(),
 diff --git a/crates/strand-render/src/renderer/specs.rs b/crates/strand-render/src/renderer/specs.rs
-index 602a6981..26b80217 100644
+index f23d01fc..9b573e93 100644
 --- a/crates/strand-render/src/renderer/specs.rs
 +++ b/crates/strand-render/src/renderer/specs.rs
-@@ -379,10 +379,6 @@ impl Renderer {
+@@ -438,10 +438,6 @@ impl Renderer {
                  if reported == Some(false) && !reduced {
                      if !self.shown(Some(id)) {
                          self.opening.insert(id);

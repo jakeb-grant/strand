@@ -8575,14 +8575,19 @@ fn colour_holds_the_composite_of_fills_that_come_and_go() {
 /// pose the list is 0 tall: drawn nothing there, they unmount after a
 /// last frame 5 px tall and 40 % opaque. Nothing of them could show the
 /// frame after, so that is no pop-out; the same exit ended while the list
-/// still has room (5 px tall the frame after) pops.
+/// still has room (5 px tall the frame after) pops. (integration-r8) So
+/// does an exit cut short half way, its rows unmounted 20 px tall after a
+/// 10 px step: the list sized by them shuts the frame after because they
+/// were taken out, not because their exit arrived; and so does one whose
+/// list shuts on the last frame it is drawn in (still 20 px tall, cut out
+/// by the list's empty clip), judged where it last showed.
 #[test]
 fn pop_out_passes_a_node_whose_clipping_parent_shuts_the_frame_after() {
     let sc = scenario("");
-    let shut = |after: f32| {
+    let shut_at = |hs: [f32; 4], from: u32, after: f32| {
         let mut t = shape(10, |k| {
-            let h = [40.0, 30.0, 15.0, 5.0][k.min(3) as usize];
-            let list_h = if k <= 3 { h } else { after };
+            let h = hs[k.min(3) as usize];
+            let list_h = if k < from { h } else { after };
             let mut v = vec![row("list", [0.0, 0.0, 200.0, list_h])];
             if k <= 3 {
                 let mut r = row("leave", [0.0, 0.0, 200.0, h]).draws();
@@ -8608,16 +8613,23 @@ fn pop_out_passes_a_node_whose_clipping_parent_shuts_the_frame_after() {
         t.seal();
         t
     };
-    let pops = |t: &RunTrace| {
+    let pops = |t: &RunTrace, k: u32| {
         let r = check(&sc, t);
         r.failures(CheckId::Vanish)
             .iter()
-            .any(|f| f.msg.starts_with("pop-out") && f.k == Some(3))
+            .any(|f| f.msg.starts_with("pop-out") && f.k == Some(k))
     };
+    let shut = |after: f32| shut_at([40.0, 30.0, 15.0, 5.0], 4, after);
     let t = shut(0.0);
-    assert!(!pops(&t), "{}", show(&check(&sc, &t), &t));
+    assert!(!pops(&t, 3), "{}", show(&check(&sc, &t), &t));
     let t = shut(5.0);
-    assert!(pops(&t), "{}", show(&check(&sc, &t), &t));
+    assert!(pops(&t, 3), "{}", show(&check(&sc, &t), &t));
+    // Cut short: 40, 30, 25 then 20 px, gone with 20 px of its exit left.
+    let t = shut_at([40.0, 30.0, 25.0, 20.0], 4, 0.0);
+    assert!(pops(&t, 3), "{}", show(&check(&sc, &t), &t));
+    // The list shut on its last frame: it last showed at k2, 25 px tall.
+    let t = shut_at([40.0, 30.0, 25.0, 20.0], 3, 0.0);
+    assert!(pops(&t, 2), "{}", show(&check(&sc, &t), &t));
 }
 
 /// (eval-rules-7) Practice set 8's OSD opened under reduced motion: drawn

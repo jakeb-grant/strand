@@ -292,6 +292,30 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
             if !Motions(r.mot).contains(Motions::EXIT) {
                 continue;
             }
+            // (eval-rules-7) What does not show on its last frame has
+            // nothing to pop there: cut out by a clip or its surface's
+            // edge (set J's network pages: a page's rows unmount at their
+            // full pose, carried wholly past the pages' clip by their
+            // page's slide, `Timeline::visible`). (integration-r8) Unless
+            // a clip shut on it: then it went from view where it last
+            // showed, the frame before the clip shut, and that frame is
+            // judged as its last.
+            let (i, r) = if tl.visible(i, r) {
+                (i, r)
+            } else {
+                let Some(s) = (0..i)
+                    .rev()
+                    .take_while(|q| tl.row(*q, key).is_some())
+                    .find(|q| tl.visible_key(*q, key))
+                else {
+                    continue;
+                };
+                let Some(rs) = tl.row(s, key) else { continue };
+                if shut(cx, key, s + 1).is_empty() || !Motions(rs.mot).contains(Motions::EXIT) {
+                    continue;
+                }
+                (s, rs)
+            };
             let k = tl.ks[i];
             let Some((_, seg)) = cx
                 .trace
@@ -303,18 +327,14 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
             else {
                 continue;
             };
-            // (eval-rules-7) What does not show on its last frame has
-            // nothing to pop: faded out by an ancestor (its effective
-            // opacity at most a quantum), or cut out by a clip or its
-            // surface's edge (set J's network pages: a page's rows
-            // unmount at their full pose, carried wholly past the pages'
-            // clip by their page's slide, `Timeline::visible`).
+            // Faded out by an ancestor (its effective opacity at most a
+            // quantum), or shut out by a clip as its own motion or its
+            // exit arriving shuts it (`shut_after`).
             if seg.reduced_motion
                 || cx.trace.reduced_throughout()
                 || cx.allowed(CheckId::Vanish, key)
                 || f64::from(r.op) <= POP_OUT_OPACITY
-                || !tl.visible(i, r)
-                || shut_after(cx, key, i + 1)
+                || shut_after(cx, key, &pose, i)
             {
                 continue;
             }
@@ -366,31 +386,68 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
     out
 }
 
-/// (eval-rules-7) Whether an ancestor of `key` that clips its content
-/// shows no area at timeline frame `j` (under half a pixel across): what
-/// lies inside it shows nothing there, wherever its own pose is, so a
-/// node gone from that frame left by its clip, not by a pop. Practice
-/// set 8: a filtered list's rows exit to `height: 0` and the list sized
-/// by them is 0 tall the frame they reach their pose; a chip exiting to
-/// `width: 0` is 0 wide while a child of it with its own exit is gone.
-/// The renderer draws nothing of them there and ends their exits.
-fn shut_after(cx: &Cx, key: &str, j: usize) -> bool {
+/// (eval-rules-7) The ancestors of `key` that clip their content and
+/// show no area at timeline frame `j` (under half a pixel across), each
+/// with the axes it is shut on (`[w, h]`) and whether its own declared
+/// motion sizes it there: what lies inside one shows nothing there,
+/// wherever its own pose is. A clipping ancestor is `clip: true`, a
+/// `scroll` or a `list`, or (contain's `held`) a box whose size springs
+/// or that exits to a size.
+fn shut<'a>(cx: &Cx<'a>, key: &'a str, j: usize) -> Vec<([bool; 2], bool)> {
     let tl = &cx.tl;
-    cx.lineage(key).into_iter().skip(1).any(|a| {
-        let Some(p) = tl.row(j, a) else {
-            return false;
-        };
-        let meta = cx.trace.nodes.get(a);
-        let own = Motions(p.mot);
-        // It clips: `clip: true`, a `scroll` or a `list`, or (contain's
-        // `held`) a box whose size springs or that exits to a size.
-        let clips = meta.is_some_and(|m| m.clips)
-            || own.contains(Motions::SIZE_SPRING)
-            || (own.contains(Motions::EXIT)
-                && meta
-                    .and_then(|m| m.exit)
-                    .is_some_and(|e| e.w.is_some() || e.h.is_some()));
-        clips && (p.visual[2] < 0.5 || p.visual[3] < 0.5)
+    cx.lineage(key)
+        .into_iter()
+        .skip(1)
+        .filter_map(|a| {
+            let p = tl.row(j, a)?;
+            let meta = cx.trace.nodes.get(a);
+            let own = Motions(p.mot);
+            let sized = own.contains(Motions::SIZE_SPRING)
+                || (own.contains(Motions::EXIT)
+                    && meta
+                        .and_then(|m| m.exit)
+                        .is_some_and(|e| e.w.is_some() || e.h.is_some()));
+            let clips = meta.is_some_and(|m| m.clips) || sized;
+            let axes = [p.visual[2] < 0.5, p.visual[3] < 0.5];
+            (clips && (axes[0] || axes[1])).then_some((axes, sized))
+        })
+        .collect()
+}
+
+/// (eval-rules-7, integration-r8) Whether `key`, exiting to `pose` and
+/// last drawn at timeline frame `i`, is gone from frame `i + 1` because
+/// a clip shut on it as declared motion, not because it was taken out
+/// early: a clipping ancestor shows no area there, and either that
+/// ancestor's own motion sizes it there (practice set 8's recording
+/// chip, exiting to `width: 0`, is 0 wide while a child of it with its
+/// own exit is gone), or the ancestor is sized by what it holds and the
+/// node's own exit, on the axis the ancestor shut on, reaches its pose
+/// within the step it just took (practice set 8's launcher: rows exit to
+/// `height: 0` inside a list sized by them, 17 then 5 px tall, and the
+/// list is 0 tall the frame they reach their pose; the renderer draws
+/// nothing of them there and ends their exits). A list that shuts
+/// because its rows were unmounted half way (20 px tall after a 10 px
+/// step) shuts by their removal: that pops.
+fn shut_after(cx: &Cx, key: &str, pose: &crate::trace::Pose, i: usize) -> bool {
+    let tl = &cx.tl;
+    let (Some(r), before) = (
+        tl.row(i, key),
+        i.checked_sub(1).and_then(|b| tl.row(b, key)),
+    ) else {
+        return false;
+    };
+    shut(cx, key, i + 1).into_iter().any(|(axes, sized)| {
+        sized
+            || [(axes[0], pose.w, 2), (axes[1], pose.h, 3)]
+                .into_iter()
+                .any(|(on, p, n)| {
+                    let (true, Some(p), Some(b)) = (on, p, before) else {
+                        return false;
+                    };
+                    let left = (f64::from(r.laid[n]) - f64::from(p)).abs();
+                    let step = (f64::from(b.laid[n]) - f64::from(r.laid[n])).abs();
+                    left <= step + cx.tol
+                })
     })
 }
 

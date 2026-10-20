@@ -42,6 +42,7 @@ pub mod select;
 pub mod steps;
 pub mod surfaces;
 pub mod text;
+pub mod timed;
 pub mod trace;
 pub mod wire;
 
