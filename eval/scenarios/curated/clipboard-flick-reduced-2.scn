@@ -10,8 +10,9 @@ alone). The flicks are short, so the rows in view before a lift stay
 mounted after it, and where the list stops is held to where the fingers
 left it: with motion reduced, nothing moves after the fingers lift
 (`expect still … from +K`, K the flick's ticks, the lift with the last).
-Motion is reduced by a step, not by the header, whose `reduce_motion`
-holds for the whole run. The panel's header never moves (eval-coverage-4:
+Motion is reduced by a step (a header's `reduce_motion` is only where a
+run starts, and the `reduce-motion off` step would lift it as well:
+eval-rules-5 and integration-r7). The panel's header never moves (eval-coverage-4:
 set H's m-h18, a swipe or fling under reduced motion, reached no
 committed scenario or cell)."""
 screen = { width = 300, height = 360, scale = 2.0 }

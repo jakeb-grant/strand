@@ -18,9 +18,9 @@
 //! The batch is the container's children first drawn at one frame after
 //! boot (with an `enter` pose or not: every child mounting counts in the
 //! numbering), and (eval-coverage-4) those drawn again there after frames
-//! without them that play their enter again (a result filtered out and
-//! typed back mounts anew; a row that comes back at rest, as a list's
-//! window brings it, does not), in paint order. Child `n`'s start is due `n` steps after
+//! without them (a result filtered out and typed back mounts anew;
+//! integration-r7: read from what logic declared, a row a `list`'s
+//! window brings back at rest does not), in paint order. Child `n`'s start is due `n` steps after
 //! the batch's change: the tick before the batch's first frame, since
 //! its first frame shows the first child one frame on (a retarget starts
 //! one period before the frame that shows it, strand-scene motion.rs).
@@ -80,24 +80,35 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         let step_ns = f64::from(step).min(MAX_STEP_MS) * 1.0e6;
         // Its children, by the timeline frame each mounted in: first
         // drawn, or (eval-coverage-4) drawn again after frames without it
-        // and playing its enter there (a result filtered out and typed
-        // back), which enters with the children mounting beside it.
+        // (a result filtered out and typed back), which enters with the
+        // children mounting beside it. (integration-r7) Whether a child
+        // drawn again mounted anew is read from what logic declared,
+        // never from the renderer's motion bits: spec.md 6.6 gives a pose
+        // to every `if` branch, `for` copy, list item and page that
+        // mounts, and only a row a `list`'s window mounts shows at rest
+        // (logic's `Create { window: true }`, `RunTrace::windowed`;
+        // decisions.md m4-lists-w1), so such a row is in no batch, the
+        // first time it is drawn or again; a
+        // remount that skips its enter fails its turn instead of leaving
+        // the numbering.
         let mut batches: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
         for (key, m) in &trace.nodes {
             if m.parent.as_deref() != Some(parent.as_str()) {
                 continue;
             }
-            let mut seen = false;
+            let windows = trace.windowed.get(key);
             let mut was = false;
+            let mut gone_at = 0u32;
             for i in 0..tl.ks.len() {
                 let row = tl.row(i, key);
-                if let Some(r) = row
-                    && !was
-                    && (!seen || Motions(r.mot).intersects(Motions::ENTER | Motions::STAGGER))
-                {
+                let by_window =
+                    windows.is_some_and(|w| w.iter().any(|t| *t >= gone_at && *t <= tl.ks[i]));
+                if row.is_some() && !was && !by_window {
                     batches.entry(i).or_default().push(key.as_str());
                 }
-                seen |= row.is_some();
+                if row.is_none() && was {
+                    gone_at = tl.ks[i];
+                }
                 was = row.is_some();
             }
         }

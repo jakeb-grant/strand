@@ -272,7 +272,7 @@ fn the_bug_24_shape_fails_bystander_and_envelope() {
     assert_eq!((y.k, y.more), (Some(1), 3), "{y:?}");
     assert!(
         lines.contains(
-            "bystander [change] box#bars (shell.strand:1:1) k1 y 21.00 not in [8.00, 10.00]"
+            "bystander [change] box#bars (shell.strand:1:1) k1 y 21.00 not in [7.98, 10.02]"
         ),
         "{lines}"
     );
@@ -597,6 +597,44 @@ fn a_bystander_moved_under_reduced_motion_still_fails() {
     assert_eq!(status(&r, CheckId::Teleport), Status::Pass);
     assert!(matches!(status(&r, CheckId::Twin), Status::Skip(_)));
     assert_eq!(status(&r, CheckId::Bystander), Status::Fail);
+}
+
+/// (integration-r7) At scale 1.25 a button whose laid width never
+/// changes is drawn 32 or 33 physical pixels wide as its laid `x` moves
+/// (each edge snapped on its own, decisions.md wave3-pixels), recorded
+/// to 1/64 as 25.594 and 26.406: 0.8125 apart, one pixel (0.8) and the
+/// quantum. Not off its level; 34 pixels (27.2) is.
+#[test]
+fn a_length_one_physical_pixel_off_at_a_fractional_scale_is_no_bystander() {
+    let sc = scenario("screen = { width = 480, height = 30, scale = 1.25 }");
+    let run = |wide: f32| {
+        let mut t = shape(4, move |k| {
+            let w = if k == 2 { wide } else { 25.59375 };
+            let mut b = row("button", [100.0, 4.0, w, 22.0]).draws();
+            b.laid = [100.0, 4.0, 26.0, 22.0];
+            vec![b]
+        });
+        t.scenario.scale = 1.25;
+        for f in &mut t.frames {
+            f.scale = 1.25;
+        }
+        t.seal();
+        t
+    };
+    let t = run(26.40625);
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Bystander, "button", "w"),
+        "{}",
+        show(&r, &t)
+    );
+    let t = run(27.1875);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Bystander, "button", "w"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 // --- teleport
@@ -1038,6 +1076,48 @@ fn a_glide_ending_while_the_slot_before_it_folds_is_no_retarget() {
         show(&r, &t)
     );
     let t = build(false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("b") && f.msg.starts_with("retarget")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (integration-r7) Only a slot that sizes before a node carries it: the
+/// same box gliding the last of its glide behind a sibling that slides
+/// left with it at its own width (the whole row carried by a size spring
+/// in another part of the surface, a sidebar's) moved with its layout,
+/// its glide in flight on that axis: a retarget, as eval-coverage held.
+#[test]
+fn a_glide_behind_a_sibling_that_does_not_size_is_held() {
+    let sc = scenario("");
+    let mut t = shape(8, move |k| {
+        let strip = row("strip", [0.0, 0.0, 300.0, 30.0]);
+        let i = (k as usize).min(5);
+        let ax = [10.0f32, 2.0, -6.0, -14.0, -22.0, -30.0][i];
+        let a = row("a", [ax, 5.0, 40.0, 20.0]).laid_at(ax, 5.0);
+        let lx = ax + 42.0;
+        let gs = [0.0f32, -2.0, -1.5, -1.0, -0.5, 0.0];
+        let g = gs[i];
+        let mut b = row("b", [lx, 5.0, 60.0, 20.0]).at(lx + g, 5.0);
+        if (1..5).contains(&k) {
+            b = b.mot(Motions::GLIDE);
+            b.glide = [g, 0.0];
+        }
+        let hs = [40.0f32, 48.0, 56.0, 64.0, 72.0, 80.0];
+        let mut side = row("side", [0.0, 40.0, 100.0, hs[i]]);
+        if k > 0 {
+            side = side.mot(Motions::SIZE_SPRING).auth(Axes::H);
+        }
+        vec![strip, a, b, side]
+    });
+    for key in ["a", "b"] {
+        t.nodes.get_mut(key).unwrap().parent = Some("strip".into());
+    }
+    t.seal();
     let r = check(&sc, &t);
     assert!(
         r.failures(CheckId::Teleport)
@@ -3222,8 +3302,12 @@ fn staggered_back(back: impl Fn(usize) -> Option<u32>) -> RunTrace {
 
 /// (eval-coverage-4) Children that leave and mount again together play
 /// their enter one step apart again, numbered among the children
-/// mounting beside them: on time they pass, all at once they fail. Drawn
-/// back at rest with no enter, they are no batch.
+/// mounting beside them: on time they pass, all at once they fail.
+/// (integration-r7) Drawn back at rest by a `list`'s window (logic's
+/// `Create { window: true }`), they are no batch; drawn back at rest
+/// with no window, they mounted anew and skipped their enter (read from
+/// what logic declared, not from the renderer's bits): child 1 shows
+/// off its pose before its turn.
 #[test]
 fn stagger_holds_children_mounting_again() {
     let sc = scenario("");
@@ -3243,11 +3327,23 @@ fn stagger_holds_children_mounting_again() {
         .filter_map(|f| f.key.clone())
         .collect();
     assert_eq!(early, ["c1", "c2"], "{}", show(&r, &t));
-    let t = staggered_back(|_| None);
+    let mut t = staggered_back(|_| None);
+    for key in ["c0", "c1", "c2"] {
+        t.windowed.insert(key.into(), vec![10]);
+    }
     let r = check(&sc, &t);
     assert_eq!(
         status(&r, CheckId::Stagger),
         Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = staggered_back(|_| None);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c1")),
         "{}",
         show(&r, &t)
     );
@@ -3583,6 +3679,73 @@ fn regions_on_wire_holds_a_posed_surfaces_margins() {
             "{bad:?}: {found:?}"
         );
     }
+}
+
+/// (integration-r7) A bare commit after a frame a buffer carried is held
+/// to the margins its state asks for at its moment (`WireLog::held`):
+/// the tick's paint gave the surface a shadow's overhang, so its rest
+/// bottom margin went from 40 to 36, posed 23.6 px down to 12. Sending
+/// that passes; sending the rest margins (36, the pose's offset dropped
+/// while it exits) or the stale posed ones of a tick long gone fails.
+/// Only the last commit of a tick is composited.
+#[test]
+fn regions_on_wire_holds_a_bare_commits_margins_to_its_moment() {
+    use strand_eval::wire::HeldMargins;
+    let frame = WireFrame {
+        margin: Some([0.0, 0.0, 16.4, 0.0]),
+        ..card_frame(1, 90, 0)
+    };
+    let commit = |k: u32, m: [i32; 4], bare: bool| WireCommit {
+        margin: Some(m),
+        buffer: if bare { None } else { Some([240, 40]) },
+        by: if bare { None } else { Some(Path::Gpu) },
+        frame: if bare { None } else { Some(1) },
+        damage: if bare { vec![] } else { vec![[0, 0, 240, 40]] },
+        ..card_commit(k, 90)
+    };
+    let log = |bare: [i32; 4], k: u32| {
+        let mut t = wired(
+            vec![frame.clone()],
+            vec![commit(1, [0, 0, 16, 0], false), commit(k, bare, true)],
+        );
+        if let Some(w) = t.wire.as_mut() {
+            w.held = (1..=k)
+                .map(|k| HeldMargins {
+                    k,
+                    surface: 2,
+                    margin: [0.0, 0.0, 12.4, 0.0],
+                })
+                .collect();
+        }
+        t
+    };
+    assert_eq!(regions_on_wire(&log([0, 0, 12, 0], 1)), []);
+    // In the frame's own tick the frame's state is its moment too.
+    assert_eq!(regions_on_wire(&log([0, 0, 16, 0], 1)), []);
+    for (bad, k) in [([0, 0, 36, 0], 1), ([0, 0, 16, 0], 3)] {
+        let found = regions_on_wire(&log(bad, k));
+        assert!(
+            found.iter().any(|f| f.msg.contains("margins")),
+            "{bad:?} at k{k}: {found:?}"
+        );
+    }
+    // A bare commit replaced in its tick by the right one is never
+    // composited (heldd-morph-pill's manager sends several in one tick);
+    // the tick's last one is what shows, right or wrong.
+    let twice = |first: [i32; 4], last: [i32; 4]| {
+        let mut t = log(first, 2);
+        if let Some(w) = t.wire.as_mut() {
+            let again = WireCommit {
+                margin: Some(last),
+                ..w.commits[1].clone()
+            };
+            w.commits.push(again);
+        }
+        t
+    };
+    assert_eq!(regions_on_wire(&twice([0, 0, 36, 0], [0, 0, 12, 0])), []);
+    let found = regions_on_wire(&twice([0, 0, 12, 0], [0, 0, 36, 0]));
+    assert!(found.iter().any(|f| f.msg.contains("margins")), "{found:?}");
 }
 
 #[test]
@@ -7046,6 +7209,9 @@ fn slid_in(poses: &[f32], x0: f32) -> RunTrace {
                 y: 0.0,
             },
         );
+        // (integration-r7) The compositor moves it by the margins sent,
+        // whole px (`Frame::shifts`).
+        f.shifts.insert(1, [poses[f.k as usize].round(), 0.0]);
         if f.k == end {
             for r in &mut f.n {
                 r.mot = 0;
@@ -7068,11 +7234,20 @@ fn a_node_carried_onto_the_screen_by_a_pose_travels_the_poses_way() {
     let eased = [300.0, 300.0, 220.0, 120.0, 40.0, 5.0, 0.0, 0.0, 0.0];
     let t = slid_in(&eased, 250.0);
     let r = check(&sc, &t);
-    assert_eq!(status(&r, CheckId::Teleport), Status::Pass, "{}", show(&r, &t));
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
     let snapped = [300.0, 300.0, 300.0, 260.0, 0.0, 0.0, 0.0];
     let t = slid_in(&snapped, 20.0);
     let r = check(&sc, &t);
-    assert!(fails_on(&r, CheckId::Teleport, "knob", "x"), "{}", show(&r, &t));
+    assert!(
+        fails_on(&r, CheckId::Teleport, "knob", "x"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 /// A page sliding out of its clip carries its rows (their inherited
@@ -7090,7 +7265,11 @@ fn slid_out(jump: f32) -> RunTrace {
             .laid_at(49.0, 0.0)
             .spring(off, 0.0);
         page.clip = Some([49.0, 0.0, 256.0, 30.0]);
-        let x = if k == 1 { 57.0 + off + jump } else { 57.0 + off };
+        let x = if k == 1 {
+            57.0 + off + jump
+        } else {
+            57.0 + off
+        };
         let mut icon = row("icon", [x, 8.0, 14.0, 14.0]).laid_at(57.0, 8.0);
         icon.flight = [off, 0.0];
         icon.inherited = [off, 0.0];
@@ -7113,10 +7292,18 @@ fn a_node_leaving_through_a_clip_travels_its_carriers_way() {
     let sc = scenario("");
     let t = slid_out(0.0);
     let r = check(&sc, &t);
-    assert!(!fails_on(&r, CheckId::Teleport, "icon", "x"), "{}", show(&r, &t));
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "icon", "x"),
+        "{}",
+        show(&r, &t)
+    );
     let t = slid_out(300.0);
     let r = check(&sc, &t);
-    assert!(fails_on(&r, CheckId::Teleport, "icon", "x"), "{}", show(&r, &t));
+    assert!(
+        fails_on(&r, CheckId::Teleport, "icon", "x"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 /// A text in a pill whose width springs from 90 to 150 changes its
@@ -7132,13 +7319,21 @@ fn content_change(same_width: bool) -> RunTrace {
         } else {
             Motions(0)
         };
-        let pill = row("pill", [96.0, 4.0, pill_w, 22.0]).mot(spring).auth(Axes::W);
+        let pill = row("pill", [96.0, 4.0, pill_w, 22.0])
+            .mot(spring)
+            .auth(Axes::W);
         let (text, ink) = match (k, same_width) {
             (0, _) => ("CPU 12%", 48.0),
             (_, false) => ("CPU 12% · RAM 3.1 GB", 120.0f32.min(pill_w)),
             (_, true) => ("RAM 3.1%", 48.0),
         };
-        let w = if k == 0 { 49.6 } else if same_width { pill_w.min(120.0) } else { ink };
+        let w = if k == 0 {
+            49.6
+        } else if same_width {
+            pill_w.min(120.0)
+        } else {
+            ink
+        };
         let mut txt = row("text", [96.0, 10.0, w, 9.0]);
         txt.emot = spring.0;
         txt.ink = Some([96.0, 10.0, ink, 9.0]);
@@ -7161,18 +7356,26 @@ fn a_text_content_change_under_a_size_spring_is_a_step() {
     let sc = scenario("");
     let t = content_change(false);
     let r = check(&sc, &t);
-    assert!(!fails_on(&r, CheckId::Teleport, "text", "w"), "{}", show(&r, &t));
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "text", "w"),
+        "{}",
+        show(&r, &t)
+    );
     let t = content_change(true);
     let r = check(&sc, &t);
-    assert!(fails_on(&r, CheckId::Teleport, "text", "w"), "{}", show(&r, &t));
+    assert!(
+        fails_on(&r, CheckId::Teleport, "text", "w"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 /// (eval-rules-5) A box held at `scale: 0.88` (pressed, at rest) draws
 /// what it holds scaled about its centre, off the places layout gave
-/// them: not a seam. The same edges drawn apart with nothing scaling
-/// them are.
+/// them: not a seam against a neighbour outside it. The same edges drawn
+/// apart with nothing scaling them are.
 #[test]
-fn tiling_leaves_out_what_an_ancestors_scale_draws() {
+fn tiling_compares_no_edge_across_an_ancestors_scale() {
     let sc = scenario("");
     let shape_of = |scaled: bool| {
         let mut t = shape(1, move |_| {
@@ -7192,10 +7395,64 @@ fn tiling_leaves_out_what_an_ancestors_scale_draws() {
     };
     let t = shape_of(true);
     let r = check(&sc, &t);
-    assert_eq!(status(&r, CheckId::Tiling), Status::Pass, "{}", show(&r, &t));
+    assert_eq!(
+        status(&r, CheckId::Tiling),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
     let t = shape_of(false);
     let r = check(&sc, &t);
-    assert_eq!(status(&r, CheckId::Tiling), Status::Fail, "{}", show(&r, &t));
+    assert_eq!(
+        status(&r, CheckId::Tiling),
+        Status::Fail,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (integration-r7) Inside a box held at `scale: 0.88` (centre 243, 16),
+/// an icon (235..251) and a badge laid flush after it (251..255) go
+/// through one map, so they still meet on screen at 243 + 0.88 x 8 =
+/// 250.04: a pressed or hovered box keeps its tiling checked. A badge
+/// whose left edge is drawn where layout put it, unscaled (a seam inside
+/// the box), fails.
+#[test]
+fn tiling_judges_edges_inside_a_scaled_ancestor_in_its_space() {
+    let sc = scenario("");
+    let shape_of = |seam: bool| {
+        let mut t = shape(1, move |_| {
+            let mut button = row("button", [230.0, 3.0, 26.0, 26.0]);
+            button.scale = [0.88, 0.88];
+            button.visual = [231.5625, 4.5625, 22.875, 22.875];
+            let mut icon = row("icon", [235.0, 8.0, 16.0, 16.0]).draws();
+            icon.visual = [235.953, 8.953, 14.078, 14.078];
+            let mut badge = row("badge", [251.0, 8.0, 4.0, 16.0]).draws();
+            let x = if seam { 251.0 } else { 250.031 };
+            badge.visual = [x, 8.953, 253.5 - x, 14.078];
+            vec![button, icon, badge]
+        });
+        for k in ["icon", "badge"] {
+            t.nodes.get_mut(k).unwrap().parent = Some("button".into());
+        }
+        t.seal();
+        t
+    };
+    let t = shape_of(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Tiling),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = shape_of(true);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Tiling, "icon", "x") || fails_on(&r, CheckId::Tiling, "badge", "x"),
+        "{}",
+        show(&r, &t)
+    );
 }
 
 /// A posed surface closing (opacity 0.8 to 0.4 over ticks 1-2), then
@@ -7232,13 +7489,18 @@ fn closing_reopened(reopened: bool) -> RunTrace {
         root: "pop".into(),
         ..Default::default()
     }];
+    // (integration-r7) Logic opened it, and opened it again at tick 3.
+    t.opened
+        .insert("pop".into(), if reopened { vec![0, 3] } else { vec![0] });
     t.seal();
     t
 }
 
 /// (eval-rules-5) A surface opened again while it closed is not closing:
 /// its pose coming back toward rest is its enter's (held-out set G's
-/// control centre, closed and reopened mid-slide).
+/// control centre, closed and reopened mid-slide). (integration-r7) Read
+/// from logic's diff, which created its root again: a renderer that
+/// plays its root's enter without logic reopening it is not excused.
 #[test]
 fn a_surface_opened_again_while_closing_may_pose_back() {
     let sc = scenario("");
@@ -7251,6 +7513,10 @@ fn a_surface_opened_again_while_closing_may_pose_back() {
     let r = check(&sc, &t);
     assert!(!pose_back(&r), "{}", show(&r, &t));
     let t = closing_reopened(false);
+    let r = check(&sc, &t);
+    assert!(pose_back(&r), "{}", show(&r, &t));
+    let mut t = closing_reopened(true);
+    t.opened.insert("pop".into(), vec![0]);
     let r = check(&sc, &t);
     assert!(pose_back(&r), "{}", show(&r, &t));
 }
@@ -7294,7 +7560,12 @@ fn reduced_motion_scrolls_only_with_the_fingers() {
     let follows = |k: u32| 12.0 * k.min(5) as f32;
     let (sc, t) = reduced_swipe(follows);
     let r = check(&sc, &t);
-    assert_eq!(status(&r, CheckId::Teleport), Status::Pass, "{}", show(&r, &t));
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
     let flings = |k: u32| if k >= 5 { 310.0 } else { 12.0 * k as f32 };
     let (sc, t) = reduced_swipe(flings);
     let r = check(&sc, &t);
@@ -7307,16 +7578,28 @@ fn reduced_motion_scrolls_only_with_the_fingers() {
     );
     // The twin: a run with full motion flings; its reduced re-run must
     // not.
-    let (_, mut full) = reduced_swipe(|k| if k >= 5 { 75.0 + 10.0 * (k - 5) as f32 } else { 12.0 * k as f32 });
+    let (_, mut full) = reduced_swipe(|k| {
+        if k >= 5 {
+            75.0 + 10.0 * (k - 5) as f32
+        } else {
+            12.0 * k as f32
+        }
+    });
     full.segments[1].reduced_motion = false;
     full.seal();
     let (_, twin_ok) = reduced_swipe(follows);
     let r = checks::evaluate(&sc, &full, Some(&twin_ok), None, None);
-    assert!(!r.failures(CheckId::Twin).iter().any(|f| f.msg.starts_with("reduced fling")));
+    assert!(
+        !r.failures(CheckId::Twin)
+            .iter()
+            .any(|f| f.msg.starts_with("reduced fling"))
+    );
     let (_, twin_bad) = reduced_swipe(flings);
     let r = checks::evaluate(&sc, &full, Some(&twin_bad), None, None);
     assert!(
-        r.failures(CheckId::Twin).iter().any(|f| f.msg.starts_with("reduced fling")),
+        r.failures(CheckId::Twin)
+            .iter()
+            .any(|f| f.msg.starts_with("reduced fling")),
         "{}",
         show(&r, &full)
     );
@@ -7393,7 +7676,16 @@ fn a_named_node_coming_on_screen_starts_from_its_partners_box() {
     let r = check(&sc, &t);
     assert!(arrival(&r), "{}", show(&r, &t));
     // From the pill's corner, scaled about its centre: off the way.
-    let t = panel_morph(|k| if k == 1 { [79.0 - 78.0, -33.0 - 35.0, 103.0, 19.0] } else { from_pill(k) }, false);
+    let t = panel_morph(
+        |k| {
+            if k == 1 {
+                [79.0 - 78.0, -33.0 - 35.0, 103.0, 19.0]
+            } else {
+                from_pill(k)
+            }
+        },
+        false,
+    );
     let r = check(&sc, &t);
     assert!(arrival(&r), "{}", show(&r, &t));
     // Half way in one tick after it started.
@@ -7405,6 +7697,44 @@ fn a_named_node_coming_on_screen_starts_from_its_partners_box() {
     let r = check(&sc, &t);
     assert!(!arrival(&r), "{}", show(&r, &t));
     let t = panel_morph(from_pill, true);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+}
+
+/// (integration-r7) A named node's own box is where it is laid out at
+/// its first frame, the box a morph springs toward: a card shown alone
+/// at its box, whose layout a later change of the segment moves 20 px
+/// down (a row above it grew), passes; read against its last frame, it
+/// was "20 px off its own box". One shown off its laid box still fails.
+#[test]
+fn a_named_nodes_own_box_is_its_layout_where_it_arrives() {
+    let sc = scenario("");
+    let arrival = |r: &Report| {
+        r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("morph arrival"))
+    };
+    let moved_later = |off: f32| {
+        let mut t = panel_morph(|_| [0.0, 0.0, 260.0, 90.0], true);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key == "card" && f.k == 1 {
+                    r.visual[1] += off;
+                }
+                if r.key == "card" && f.k >= 4 {
+                    r.laid[1] += 20.0;
+                    r.visual[1] += 20.0;
+                    r.drawn[1] += 20.0;
+                }
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = moved_later(0.0);
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
+    let t = moved_later(12.0);
     let r = check(&sc, &t);
     assert!(arrival(&r), "{}", show(&r, &t));
 }
@@ -7447,6 +7777,8 @@ fn posed_close(drawn: &'static [bool]) -> RunTrace {
                 y: 0.0,
             },
         );
+        // (integration-r7) Moved by the margins sent, whole px.
+        f.shifts.insert(1, [x.round(), 0.0]);
     }
     t.nodes.get_mut("dot").unwrap().parent = Some("panel".into());
     t.seal();
@@ -7484,6 +7816,12 @@ fn a_posed_surface_cuts_its_rows_by_its_buffer_and_the_output() {
 /// A text centred in its slot whose content narrows at tick 1: its
 /// start edge moves right by half the step (`by`), its width by the step.
 fn centred_change(by: f32) -> RunTrace {
+    placed_change(by, Some(0.5))
+}
+
+/// [`centred_change`] with the text placed in its pill by `share` of its
+/// width step (`NodeMeta::x_share`).
+fn placed_change(by: f32, share: Option<f32>) -> RunTrace {
     let mut t = shape(3, move |k| {
         // The pill springs narrower from tick 1, its text with it.
         let spring = if k == 1 || k == 2 {
@@ -7492,8 +7830,14 @@ fn centred_change(by: f32) -> RunTrace {
             Motions(0)
         };
         let pill_w = [150.0, 148.0, 146.0, 146.0][k as usize];
-        let pill = row("pill", [96.0, 4.0, pill_w, 22.0]).mot(spring).auth(Axes::W);
-        let (text, w) = if k == 0 { ("CPU 12% · RAM 3.1 GB", 134.0) } else { ("CPU 12%", 50.0) };
+        let pill = row("pill", [96.0, 4.0, pill_w, 22.0])
+            .mot(spring)
+            .auth(Axes::W);
+        let (text, w) = if k == 0 {
+            ("CPU 12% · RAM 3.1 GB", 134.0)
+        } else {
+            ("CPU 12%", 50.0)
+        };
         let x = if k == 0 { 104.0 } else { 104.0 + by };
         // Laid where it was: what moved it is the content alone.
         let mut txt = row("text", [x, 10.0, w, 9.0]).laid_at(104.0, 10.0);
@@ -7506,22 +7850,52 @@ fn centred_change(by: f32) -> RunTrace {
         });
         vec![pill, txt]
     });
-    t.nodes.get_mut("text").unwrap().parent = Some("pill".into());
+    let m = t.nodes.get_mut("text").unwrap();
+    m.parent = Some("pill".into());
+    m.x_share = share;
     t.seal();
     t
 }
 
-/// (eval-rules-5) A content step moves a text's start edge in its slot
-/// by none to all of the step, the other way (start, centre or end
-/// alignment): a centred text that narrows by 84 px moves 42 px right.
-/// Moving left, against its step, it jumps.
+/// (eval-rules-5) A content step moves a text's left edge in its slot
+/// the other way: a centred text that narrows by 84 px moves 42 px
+/// right. Moving left, against its step, it jumps. (integration-r7) By
+/// exactly the share its parent's declared alignment gives: at the start
+/// it does not move, at the end it moves all 84 px; a text at the start
+/// that moves 42 px, or one whose parent fixes no share, jumps.
 #[test]
 fn a_centred_text_moves_with_its_content_step() {
     let sc = scenario("");
     let t = centred_change(42.0);
     let r = check(&sc, &t);
-    assert!(!fails_on(&r, CheckId::Teleport, "text", "x"), "{}", show(&r, &t));
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "text", "x"),
+        "{}",
+        show(&r, &t)
+    );
     let t = centred_change(-42.0);
     let r = check(&sc, &t);
-    assert!(fails_on(&r, CheckId::Teleport, "text", "x"), "{}", show(&r, &t));
+    assert!(
+        fails_on(&r, CheckId::Teleport, "text", "x"),
+        "{}",
+        show(&r, &t)
+    );
+    for (by, share) in [(0.0, Some(0.0)), (84.0, Some(1.0)), (0.0, None)] {
+        let t = placed_change(by, share);
+        let r = check(&sc, &t);
+        assert!(
+            !fails_on(&r, CheckId::Teleport, "text", "x"),
+            "{by} {share:?}: {}",
+            show(&r, &t)
+        );
+    }
+    for (by, share) in [(42.0, Some(0.0)), (42.0, Some(1.0)), (42.0, None)] {
+        let t = placed_change(by, share);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Teleport, "text", "x"),
+            "{by} {share:?}: {}",
+            show(&r, &t)
+        );
+    }
 }

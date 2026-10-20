@@ -604,6 +604,12 @@ struct Harness {
     /// collected, and the frame shows the buffer the paint drew, where
     /// it lay then.
     committed: BTreeMap<u32, Committed>,
+    /// (integration-r7) Nodes logic created as a list window's rows, and
+    /// the tick, until first drawn (`RunTrace::windowed`).
+    window_mounts: HashMap<NodeId, u32>,
+    /// (integration-r7) Surface roots logic created, and the tick, until
+    /// first drawn (`RunTrace::opened`).
+    surface_opens: HashMap<NodeId, u32>,
     /// The last tick run.
     last_k: Option<u32>,
     images: BTreeMap<String, Image>,
@@ -813,6 +819,8 @@ impl Harness {
             driven: false,
             poses: BTreeMap::new(),
             committed: BTreeMap::new(),
+            window_mounts: HashMap::new(),
+            surface_opens: HashMap::new(),
             last_k: None,
             images: BTreeMap::new(),
             notes: Vec::new(),
@@ -1109,6 +1117,47 @@ impl Harness {
     /// sync), then the loop's turn.
     fn apply(&mut self, diff: SceneDiff) -> Result<(), Error> {
         self.driven |= !diff.ops.is_empty();
+        // (integration-r7) The rows a list's window mounts, as logic
+        // declares them, noted by key when first drawn
+        // (`RunTrace::windowed`).
+        let k = self.clock.k();
+        for op in &diff.ops {
+            if let strand_scene::SceneOp::Create {
+                id, window, kind, ..
+            } = op
+            {
+                if *window {
+                    self.window_mounts.insert(*id, k);
+                } else {
+                    self.window_mounts.remove(id);
+                }
+                // (integration-r7) A surface logic opens (or opens
+                // again), noted by key when first drawn
+                // (`RunTrace::opened`).
+                use strand_scene::NodeKind as K;
+                if matches!(kind, K::Bar | K::Panel | K::Osd | K::Popup | K::Lock) {
+                    self.surface_opens.insert(*id, k);
+                } else {
+                    self.surface_opens.remove(id);
+                }
+            }
+            // (integration-r7) A surface opened by its `open:` prop
+            // (spec.md: `open: open` on a panel or popup).
+            if let strand_scene::SceneOp::SetProp {
+                id,
+                prop: Prop::Open,
+                value,
+                ..
+            } = op
+                && self.r.tree().get(*id).is_some_and(|n| n.kind.is_surface())
+            {
+                if matches!(value, PropValue::Bool(true)) {
+                    self.surface_opens.insert(*id, k);
+                } else {
+                    self.surface_opens.remove(id);
+                }
+            }
+        }
         host_loop::apply(self, diff)?;
         self.turn()
     }
@@ -1922,6 +1971,15 @@ impl Harness {
             if let Some(tee) = self.surfaces.tee.as_mut() {
                 leg.surface_changes(tee.drain(..));
             }
+            // (integration-r7) What each layer surface's state asks for
+            // now, for the bare commits the tick's end sends.
+            let layers: Vec<_> = self
+                .surfaces
+                .shown
+                .iter()
+                .filter_map(|s| Some((s.id.0, self.surfaces.layer_config(s.id)?.clone())))
+                .collect();
+            leg.layers(k, layers);
             leg.end_tick(k, t, self.clock.period())?;
         }
         self.last_k = Some(k);
@@ -2370,6 +2428,18 @@ impl Harness {
                 frame.sp.push(rec);
             }
             for n in f.nodes.iter() {
+                if let Some(k0) = self.window_mounts.remove(&n.node) {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    self.trace.windowed.entry(key).or_default().push(k0);
+                }
+                if let Some(k0) = self.surface_opens.remove(&n.node) {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    self.trace.opened.entry(key).or_default().push(k0);
+                }
                 if let Some(v) = n.drag {
                     let key = self
                         .labels

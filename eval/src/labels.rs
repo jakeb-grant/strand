@@ -230,6 +230,48 @@ fn flow_of(tree: &SceneTree, node: NodeId) -> u8 {
     bits
 }
 
+/// (integration-r7) [`crate::trace::NodeMeta::x_share`]: where the
+/// node's parent places it on x, read from the declared props by
+/// spec.md 6.7 and CSS flex, never from the product's layout. A `row`
+/// places its children by `justify:` (`start` when unset); a `col` or
+/// `scroll` by `align:` (stretched when unset, so a child's width is
+/// the column's, not its own); a `stack`, `box` or surface by `align:`
+/// on both axes (a child with no width fills the cell when unset). A
+/// child with a `margin:` or out of the flow, and a split's part (its
+/// `center` centred on the whole split), are left unknown.
+fn x_share_of(tree: &SceneTree, node: NodeId) -> Option<f32> {
+    use crate::trace::Flow;
+    let n = tree.get(node)?;
+    if flow_of(tree, node) & (Flow::ABSOLUTE | Flow::MARGIN) != 0 {
+        return None;
+    }
+    let p = tree.get(n.parent?)?;
+    let word = |prop: Prop| match p.get(prop) {
+        Some(PropValue::Keyword(k)) => Some(Some(k.as_str())),
+        None => Some(None),
+        _ => None,
+    };
+    let at = |k: &str| match k {
+        "start" => Some(0.0),
+        "center" => Some(0.5),
+        "end" => Some(1.0),
+        _ => None,
+    };
+    match p.kind.name() {
+        "row" => at(word(Prop::Justify)?.unwrap_or("start")),
+        "col" | "scroll" => at(word(Prop::Align)?.unwrap_or("stretch")),
+        "stack" | "box" | "popup" | "panel" | "bar" | "osd" | "lock" => {
+            let own = n.get(Prop::Width).is_some() || n.get(Prop::Size).is_some();
+            match word(Prop::Align)? {
+                Some(k) => at(k),
+                None if own => Some(0.0),
+                None => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// (eval-rules) The axes on which a surface is sized by its content: a
 /// `popup` or `panel` with no `width` (or `size`) is as wide as what it
 /// holds, one with no `height` as tall. A bar is sized by its screen
@@ -365,6 +407,7 @@ impl Labels {
             rigid: rigid_of(tree, node),
             inset: inset_of(tree, node),
             flow: flow_of(tree, node),
+            x_share: x_share_of(tree, node),
         });
         key
     }

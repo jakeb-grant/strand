@@ -95,7 +95,10 @@ impl Pointer {
             position: self.at,
             horizontal: AxisDelta::default(),
             vertical: AxisDelta {
-                pixels: dy * strand_render::WHEEL_STEP,
+                // (integration-r7) The pixels a compositor sends with a
+                // detent (libinput's legacy wheel step, decisions.md
+                // wave3-pixels), the eval's own constant.
+                pixels: dy * crate::checks::teleport::NOTCH_PX,
                 value120: (dy * 120.0).round() as i32,
                 stop: false,
             },

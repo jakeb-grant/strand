@@ -43,8 +43,9 @@
 //! travels that motion's way, though it shows on only some of its
 //! frames: one that comes onto the screen as a panel slides in, or
 //! leaves through a clip a page slides out of, is carried, not jumping.
-//! A text whose content changed steps to its new width (and its start
-//! edge with it, by its slot's alignment): that step is no jump. Under
+//! A text whose content changed steps to its new width (and its left
+//! edge with it, by the share its parent's declared alignment gives,
+//! integration-r7): that step is no jump. Under
 //! reduced motion, where every spring snaps, it holds no jump; instead
 //! [`reduced_scrolls`] holds each scroll to its input: no fling at the
 //! lift.
@@ -228,10 +229,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     // frame steps to its new width (layout lengths snap,
                     // design.md "What can't interpolate"): that part of
                     // the change is no jump of a motion.
-                    // Its start edge, placed in its slot by the slot's
-                    // alignment (start, centre or end), moves with that
-                    // step by none to all of it, the other way: a
-                    // centred text that narrows moves right by half.
+                    // (integration-r7) Its left edge moves with that step
+                    // by the share its parent's declared alignment gives
+                    // (`NodeMeta::x_share`: none at the start, half
+                    // centred, all at the end), the other way: a centred
+                    // text that narrows moves right by half, a text at
+                    // the start not at all. Where its parent's props do
+                    // not fix the share, its left edge is given nothing.
                     let d = match a {
                         super::Axis::W => {
                             let step = content_step(cx, i, p, q, r, d);
@@ -241,13 +245,15 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             d - step
                         }
                         super::Axis::X => {
+                            let share = cx.trace.nodes.get(*key).and_then(|m| m.x_share);
                             let dw = value(r, super::Axis::W) - value(q, super::Axis::W);
-                            let step = -content_step(cx, i, p, q, r, dw);
-                            if step * d > 0.0 {
-                                steps += 1;
-                                d - step.signum() * step.abs().min(d.abs())
-                            } else {
-                                d
+                            let step = content_step(cx, i, p, q, r, dw);
+                            match share {
+                                Some(k) if step != 0.0 => {
+                                    steps += 1;
+                                    d + f64::from(k) * step
+                                }
+                                _ => d,
                             }
                         }
                         _ => d,
@@ -350,7 +356,12 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
 /// `a` (x or y) moved its far edge between timeline frames `p` and `i`:
 /// of the siblings that end before `key` starts at both frames, the one
 /// ending nearest it at `i`. `None` when `key` has no parent or no such
-/// sibling shows at both frames on its surface.
+/// sibling shows at both frames on its surface, and (integration-r7)
+/// when no sibling before it sizes on `a` between the two frames (its
+/// laid length changes: a slot folding, growing or springing its size):
+/// only a slot that sizes before it carries it as a parent's move does.
+/// A follower whose siblings before it are all carried too (a size
+/// spring elsewhere moving the whole row) keeps its glide held.
 fn carried_beside(cx: &Cx, p: usize, i: usize, key: &str, a: super::Axis) -> Option<f64> {
     let parent = cx.parent(key)?;
     let (r, q) = (cx.tl.row(i, key)?, cx.tl.row(p, key)?);
@@ -360,6 +371,7 @@ fn carried_beside(cx: &Cx, p: usize, i: usize, key: &str, a: super::Axis) -> Opt
     };
     let end = |s: &Row| laid(s, a) + len(s);
     let mut best: Option<(f64, f64)> = None;
+    let mut sizes = false;
     for (k, s) in &cx.tl.screens[i] {
         if *k == key || cx.parent(k) != Some(parent) || s.surface != r.surface {
             continue;
@@ -370,11 +382,14 @@ fn carried_beside(cx: &Cx, p: usize, i: usize, key: &str, a: super::Axis) -> Opt
         if end(s) > laid(r, a) + cx.tol || end(t) > laid(q, a) + cx.tol {
             continue;
         }
+        // Any change of its laid length (layout snaps lengths to whole
+        // pixels: a fold's last steps are 1 px each).
+        sizes |= (len(s) - len(t)).abs() > crate::trace::QUANTUM / 2.0;
         if best.is_none_or(|(e, _)| end(s) > e) {
             best = Some((end(s), end(s) - end(t)));
         }
     }
-    best.map(|(_, moved)| moved)
+    best.filter(|_| sizes).map(|(_, moved)| moved)
 }
 
 /// (eval-rules-5) How far the motion carrying `key` moved it on `a` over
@@ -426,20 +441,25 @@ fn carried(cx: &Cx, i: usize, r: &Row, a: Axis) -> f64 {
         _ => return 0.0,
     };
     let flight = if n < 2 { f64::from(r.flight[n]) } else { 0.0 };
-    let pose = cx.tl.frames[i].poses.get(&r.surface).map_or(0.0, |p| {
-        let k = f64::from(p.scale);
-        if k.abs() < 1e-6 {
+    let pose = cx.tl.frames[i].posed(r.surface).map_or(0.0, |p| {
+        if p.scale.abs() < 1e-6 {
             return 0.0;
         }
-        // The posed value on its surface, the pose's offset and the
-        // unposed value it was drawn from: what the pose added.
-        let shift = cx.tl.moved(i, r.surface);
-        let (v, off) = match n {
-            0 => (value(r, a) - f64::from(shift[0]), f64::from(p.x)),
-            1 => (value(r, a) - f64::from(shift[1]), f64::from(p.y)),
-            _ => (value(r, a), 0.0),
-        };
-        v - (v - off) / k
+        // The posed value on its surface and the unposed value it was
+        // drawn from (integration-r7: the one model of a pose on screen,
+        // `crate::trace::Posed`): what the pose added. A length is only
+        // scaled.
+        let moved = cx.tl.moved(i, r.surface);
+        match n {
+            0 | 1 => {
+                let v = value(r, a) - f64::from(moved[n]);
+                v - f64::from(p.unshow(n, v as f32))
+            }
+            _ => {
+                let v = value(r, a);
+                v - v / f64::from(p.scale)
+            }
+        }
     });
     flight + pose
 }
@@ -460,7 +480,10 @@ fn content_step(cx: &Cx, i: usize, p: usize, q: &Row, r: &Row, d: f64) -> f64 {
     }
     let natural = |j: usize, row: &Row| -> Option<f64> {
         let f = cx.tl.frames.get(j)?;
-        if let Some(l) = f.lines.iter().find(|l| l.key == row.key && l.s == row.surface)
+        if let Some(l) = f
+            .lines
+            .iter()
+            .find(|l| l.key == row.key && l.s == row.surface)
             && let Some(last) = l.natural.last()
         {
             return Some(f64::from(last.1));
@@ -481,6 +504,14 @@ fn content_step(cx: &Cx, i: usize, p: usize, q: &Row, r: &Row, d: f64) -> f64 {
     step.signum() * step.abs().min(d.abs())
 }
 
+/// (integration-r7) How far one wheel notch scrolls a `scroll` or
+/// `list`, logical px: decisions.md wave3-pixels ("one with detents but
+/// no pixel value scrolls 15 px per detent", libinput's legacy wheel
+/// step). An eval constant with that citation, not the product's
+/// `WHEEL_STEP`, so a change to the notch moves the product, not the
+/// rule's bound.
+pub const NOTCH_PX: f64 = 15.0;
+
 /// (eval-rules-5) Under reduced motion a scroll moves only with its
 /// input. decisions.md m4-lists-w1: touchpad motion moves the offset
 /// with the fingers, "`reduced_motion` lands a step at once and does not
@@ -490,7 +521,7 @@ fn content_step(cx: &Cx, i: usize, p: usize, q: &Row, r: &Row, d: f64) -> f64 {
 /// or swipes a touchpad, no `scroll` or `list` is ever further from
 /// where the segment found it than the input delivered so far has moved
 /// the fingers: each `swipe DY over MS` spread evenly over its ticks,
-/// each `scroll DY` its notches of `WHEEL_STEP` at its tick, the amounts
+/// each `scroll DY` its notches of [`NOTCH_PX`] at its tick, the amounts
 /// read from the scenario's steps, never from the renderer. An offset
 /// may lag (an end stops it, a window waits for its rows), never lead:
 /// a fling, or a spring that overshoots, lands past the fingers. One
@@ -536,7 +567,7 @@ pub fn reduced_scrolls(
                     inputs.push((e.k, n, dy.abs()));
                 }
                 StepKind::Scroll { dy } => {
-                    inputs.push((e.k, 1, (dy * strand_render::WHEEL_STEP).abs()));
+                    inputs.push((e.k, 1, (dy * NOTCH_PX).abs()));
                 }
                 _ => {}
             }

@@ -24,7 +24,11 @@
 //!   carries a frame (or the bare one that sends a frame that drew
 //!   nothing) are the ones its state asks for at rest moved by the
 //!   frame's pose's offset as layer shell reads margins
-//!   (`wire::posed_margins`), within half a pixel:
+//!   (`wire::posed_margins`), within half a pixel; (integration-r7)
+//!   after a bare commit following such a frame (the last of its tick:
+//!   one replaced in the same tick is never composited), the ones its
+//!   state asks for at that commit's tick's end (`WireLog::held`), or the
+//!   frame's own in its tick:
 //!   the offset a compositor pose delegates goes out with its frame's
 //!   commit (design.md "Poses"), on the side the surface is anchored to.
 //! - `late-present`: every frame that drew is committed in the tick it
@@ -170,16 +174,48 @@ pub fn regions_on_wire(trace: &RunTrace) -> Vec<Finding> {
         }
         // (eval-rules-6) Its margins: where its pose's offset puts it.
         // Held on the commit that carries the frame, or the bare one
-        // that sends a frame that drew nothing: a bare commit after a
-        // frame a buffer carried may send a state the paint changed
-        // after it (a new shadow's overhang moves the margins), which
-        // is not that frame's.
-        if (fresh.is_some() || f.commit.is_none())
-            && let (Some(want), Some(got)) = (f.margin, c.margin)
-            && got
+        // that sends a frame that drew nothing, to that frame's state.
+        // (integration-r7) A bare commit after a frame a buffer carried
+        // may send a state the tick's paint changed after it (a new
+        // shadow's overhang moves the margins): it is held to the state
+        // of its moment, its tick's end or start (`WireLog::held`), or,
+        // in the frame's own tick, to the frame's; never left unjudged, so a
+        // manager that sends the rest margins, or stale posed ones, on
+        // such a commit fails.
+        let near = |a: &[i32; 4], w: [f32; 4]| {
+            a.iter()
+                .zip(w)
+                .all(|(g, w)| (f64::from(*g) - f64::from(w)).abs() <= 0.5 + 1e-3)
+        };
+        // The state at its tick's end, and at the end of the tick before
+        // (what it was as its tick began).
+        let held = |k: u32| {
+            log.held
                 .iter()
-                .zip(want)
-                .any(|(g, w)| (f64::from(*g) - f64::from(w)).abs() > 0.5 + 1e-3)
+                .rfind(|h| h.surface == s && h.k <= k)
+                .map(|h| h.margin)
+        };
+        // (integration-r7) A bare commit replaced by a later one of its
+        // surface in the same tick is never shown: the compositor
+        // composites at the refresh, after the tick's last commit.
+        let replaced = || {
+            log.commits[i + 1..]
+                .iter()
+                .any(|d| d.surface == Some(s) && d.k == c.k)
+        };
+        let wants: Vec<[f32; 4]> = if fresh.is_some() || f.commit.is_none() {
+            f.margin.into_iter().collect()
+        } else if replaced() {
+            Vec::new()
+        } else {
+            held(c.k)
+                .into_iter()
+                .chain(c.k.checked_sub(1).and_then(held))
+                .chain(f.margin.filter(|_| f.k == c.k))
+                .collect()
+        };
+        if let (Some(want), Some(got)) = (wants.first().copied(), c.margin)
+            && !wants.iter().any(|w| near(&got, *w))
         {
             fail(
                 "margin",

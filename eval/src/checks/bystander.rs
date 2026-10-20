@@ -8,6 +8,15 @@
 //! the node's own authored `scale` or `rotate` is judged by its box
 //! before transforms ([`super::transformed`]): the turn grows its
 //! visual box, and only that change is the transform's.
+//!
+//! (integration-r7) A position's give is one physical pixel (`tol`) and
+//! the trace's quantum besides. A length laid unchanged is drawn as
+//! `round(x + w) - round(x)` physical pixels (decisions.md wave3-pixels),
+//! so as its laid `x` moves it is drawn one physical pixel wider or
+//! narrower, by design; at a scale whose pixel is no whole number of
+//! quanta (1.25: 0.8 px) the two recorded lengths differ by that pixel
+//! plus up to one quantum ([`crate::trace::QUANTUM`]): 25.594 and 26.406
+//! for 32 and 33 pixels, 0.8125 apart. Two pixels is still off its level.
 
 use super::{
     Cx, Finding, GEOMETRY, authored, drawn, first_per_node, laid, transformed, value, way,
@@ -35,7 +44,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             let mut axes: Vec<(Axis, f64)> = GEOMETRY
                 .into_iter()
                 .filter(|a| way(cx, key, s, seg.e, b, e, *a).bystander)
-                .map(|a| (a, cx.tol))
+                .map(|a| (a, cx.tol + crate::trace::QUANTUM))
                 .collect();
             if (value(b, Axis::Opacity) - value(e, Axis::Opacity)).abs() <= OPACITY_GIVE {
                 axes.push((Axis::Opacity, OPACITY_GIVE));

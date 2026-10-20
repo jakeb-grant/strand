@@ -10,10 +10,23 @@
 //!
 //! On every painted frame, among the nodes shown on one surface that are
 //! drawn where they are laid (no motion of their own or inherited, no
-//! offset, scale or turn, and (eval-rules-5) no ancestor scaled or
-//! turned, at rest or not), every two edges on one axis that lie at the same
-//! logical place in layout are drawn at the same place, within a
+//! offset, scale or turn), every two edges on one axis that lie at the
+//! same logical place in layout are drawn at the same place, within a
 //! quantum.
+//!
+//! (integration-r7) An ancestor's scale draws its whole subtree through
+//! one map, about the ancestor's centre (a box held pressed at
+//! `scale: 0.88` at rest): two edges inside it laid at one place go
+//! through the same map, so they are still drawn at one place, while an
+//! edge outside it laid at the same place is not drawn there, by design.
+//! So edges are compared within the space they are drawn in: grouped by
+//! their nearest scaled ancestor (none for a node no ancestor scales),
+//! never across. eval-rules-5 had left every row under a scaled or
+//! turned ancestor out, which blinded the rule to a seam inside a pressed
+//! or hovered box. A turn maps an axis edge to a slanted one (or, by a
+//! right angle, to the other axis), which this comparison of laid and
+//! drawn places on one axis cannot judge: rows under a turned ancestor
+//! are still left out.
 
 use std::collections::BTreeMap;
 
@@ -56,49 +69,57 @@ fn in_place(r: &Row) -> bool {
         && r.rotate == 0.0
 }
 
-/// (eval-rules-5) No ancestor of `key` is scaled or turned at frame `i`,
-/// moving or at rest: a row's own `scale` and `rotate` are its own, and
-/// a box held pressed at `scale: 0.88` draws everything in it scaled
-/// about its centre, off the places layout gave them, by design.
-fn untransformed_above<'a>(cx: &Cx<'a>, i: usize, key: &'a str) -> bool {
-    cx.lineage(key).iter().skip(1).all(|k| {
-        cx.tl
-            .row(i, k)
-            .is_none_or(|a| a.scale == [1.0, 1.0] && a.rotate == 0.0)
-    })
+/// (integration-r7) The space `key`'s edges are drawn in at frame `i`:
+/// `Some(None)` when no ancestor scales or turns it, `Some(Some(a))` for
+/// its nearest ancestor `a` that scales it (its subtree drawn through
+/// one map about `a`'s centre), `None` when an ancestor turns it (an
+/// axis edge drawn slanted: not judged). A row's own scale and rotate
+/// are its own ([`in_place`]).
+fn space<'a>(cx: &Cx<'a>, i: usize, key: &'a str) -> Option<Option<&'a str>> {
+    let mut nearest = None;
+    for k in cx.lineage(key).into_iter().skip(1) {
+        let Some(a) = cx.tl.row(i, k) else { continue };
+        if a.rotate != 0.0 {
+            return None;
+        }
+        if a.scale != [1.0, 1.0] && nearest.is_none() {
+            nearest = Some(k);
+        }
+    }
+    Some(nearest)
 }
 
 pub fn run(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let mut out = Vec::new();
-    let mut under_transform = 0u64;
+    // (integration-r7) Rows judged inside a scaled ancestor's space, and
+    // rows left out under a turned one.
+    let (mut scaled, mut turned) = (0u64, 0u64);
     for (i, f) in tl.frames.iter().enumerate() {
         if i > 0 && std::ptr::eq(*f, tl.frames[i - 1]) {
             continue;
         }
-        // Per surface and axis: (laid edge, drawn edge, key, which edge).
-        let mut edges: BTreeMap<(u32, usize), Vec<Edge>> = BTreeMap::new();
+        // Per surface, the space drawn in, and axis: (laid edge, drawn
+        // edge, key, which edge).
+        let mut edges: BTreeMap<(u32, Option<&str>, usize), Vec<Edge>> = BTreeMap::new();
         for r in &f.n {
-            if in_place(r) && !untransformed_above(cx, i, &r.key) {
-                under_transform += 1;
-            }
-            if !in_place(r)
-                || !untransformed_above(cx, i, &r.key)
-                || !tl.visible(i, r)
-                || r.visual[2] < 1.0
-                || r.visual[3] < 1.0
-            {
+            if !in_place(r) || !tl.visible(i, r) || r.visual[2] < 1.0 || r.visual[3] < 1.0 {
                 continue;
             }
+            let Some(within) = space(cx, i, &r.key) else {
+                turned += 1;
+                continue;
+            };
+            scaled += u64::from(within.is_some());
             for (axis, (lo, hi)) in [(0usize, ("left", "right")), (1, ("top", "bottom"))] {
-                let e = edges.entry((r.surface, axis)).or_default();
+                let e = edges.entry((r.surface, within, axis)).or_default();
                 let (l, d) = (r.laid[axis], r.visual[axis]);
                 let (lw, dw) = (r.laid[axis + 2], r.visual[axis + 2]);
                 e.push((l, d, r.key.as_str(), lo));
                 e.push((l + lw, d + dw, r.key.as_str(), hi));
             }
         }
-        for ((_, axis), mut list) in edges {
+        for ((_, _, axis), mut list) in edges {
             list.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut start = 0;
             while start < list.len() {
@@ -147,6 +168,10 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
-    super::stats("tiling.ancestor-transform", cx, &[("rows", under_transform)]);
+    super::stats(
+        "tiling.ancestor-transform",
+        cx,
+        &[("scaled", scaled), ("turned-out", turned)],
+    );
     first_per_node(out)
 }

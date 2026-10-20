@@ -100,6 +100,24 @@ pub struct WireLog {
     /// or the next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gave_up: Vec<u32>,
+    /// (integration-r7) The margins each layer surface's state asks for
+    /// at the end of each tick, after the tick's paints changed it (a new
+    /// shadow's overhang): its state at rest then, by the driver, moved
+    /// by the offset of the pose its latest frame commits
+    /// ([`posed_margins`]). A bare commit sends the state of its moment,
+    /// not of the frame before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<HeldMargins>,
+}
+
+/// (integration-r7) [`WireLog::held`]: surface `surface`'s margins (top,
+/// right, bottom, left) as its state asks for them at the end of tick
+/// `k`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HeldMargins {
+    pub k: u32,
+    pub surface: u32,
+    pub margin: [f32; 4],
 }
 
 /// One painted frame of one surface, as the renderer's painter left it.
@@ -437,6 +455,10 @@ pub struct Leg {
     /// The manager's give-ups so far, and the ticks they came in.
     given_up: u64,
     gave_up: Vec<u32>,
+    /// (integration-r7) Each surface's latest frame's pose offset, and
+    /// the margins its state asks for at each tick's end.
+    offsets: HashMap<u32, [f32; 2]>,
+    held: Vec<HeldMargins>,
     vblanks: Vec<VblankRec>,
     notes: Vec<String>,
     /// `late-present`'s own tests: refreshes that never come.
@@ -517,6 +539,8 @@ impl Leg {
             ticks: Vec::new(),
             given_up: 0,
             gave_up: Vec::new(),
+            offsets: HashMap::new(),
+            held: Vec::new(),
             vblanks: Vec::new(),
             notes: Vec::new(),
             lost,
@@ -590,7 +614,30 @@ impl Leg {
             }),
             commit: None,
         });
+        self.offsets.insert(
+            snap.surface,
+            snap.pose.map_or([0.0, 0.0], |p| [p.offset.x, p.offset.y]),
+        );
         self.snaps.push(snap);
+    }
+
+    /// (integration-r7) The state at rest each layer surface asks for at
+    /// the end of tick `k` (the driver's, after the tick's paints changed
+    /// it), noted with the offset of the pose its latest frame commits
+    /// ([`WireLog::held`]).
+    pub fn layers(
+        &mut self,
+        k: u32,
+        layers: impl IntoIterator<Item = (u32, strand_surface::placement::LayerConfig)>,
+    ) {
+        for (surface, c) in layers {
+            let o = self.offsets.get(&surface).copied().unwrap_or([0.0, 0.0]);
+            self.held.push(HeldMargins {
+                k,
+                surface,
+                margin: posed_margins(&c, o),
+            });
+        }
     }
 
     /// The end of tick `k` (shown at `t`, refreshing every `period`): the
@@ -850,6 +897,7 @@ impl Leg {
             vblanks: std::mem::take(&mut self.vblanks),
             notes: std::mem::take(&mut self.notes),
             gave_up: std::mem::take(&mut self.gave_up),
+            held: std::mem::take(&mut self.held),
         };
         let mut next = events.iter();
         let mut owner: HashMap<usize, u32> = HashMap::new();

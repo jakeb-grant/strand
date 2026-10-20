@@ -71,6 +71,21 @@ pub struct RunTrace {
     /// drew, and the checks that read it compare it with the frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire: Option<crate::wire::WireLog>,
+    /// (integration-r7) The ticks at which a `list`'s window mounted each
+    /// row, by key: logic's diff said so (`SceneOp::Create { window:
+    /// true }`), and render plays no `enter` for it (decisions.md
+    /// m4-lists-w1). Read by `stagger` to tell a window's row from a
+    /// child that mounts anew, from what logic declared rather than the
+    /// renderer's motion bits. Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub windowed: BTreeMap<String, Vec<u32>>,
+    /// (integration-r7) The ticks at which logic's diff created each
+    /// surface's root (a `bar`, `panel`, `osd`, `popup` or `lock` node:
+    /// `SceneOp::Create`), by key: when logic opened it, read by
+    /// `vanish`'s pose back to tell a surface opened again while it
+    /// closed from the renderer's motion bits alone. Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opened: BTreeMap<String, Vec<u32>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -192,6 +207,13 @@ pub struct NodeMeta {
     /// it was first seen ([`Flow`] bits).
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub flow: u8,
+    /// (integration-r7) How much of a change in its own width moves its
+    /// left edge the other way, as its parent's declared props place it
+    /// on x (spec.md 6.7): 0 at the start, 0.5 centred, 1 at the end.
+    /// `None` where they do not fix it (a row that spreads its children,
+    /// a stretched or filling child, a split's part, another kind).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_share: Option<f32>,
 }
 
 /// (eval-rules-6) [`NodeMeta::flow`]'s bits.
@@ -699,6 +721,55 @@ pub struct PoseRec {
     pub y: f32,
 }
 
+/// (integration-r7) Where the compositor shows a posed surface at one
+/// frame: the one model of a pose on screen every check reads
+/// ([`Frame::posed`]). A layer surface's pose offset reaches the
+/// compositor only as the margins the surface manager sends
+/// (layer-shell `set_margin`, whole logical px; `Frame::shifts`), so it
+/// is moved by those, not by the offset render asked for; its scale and
+/// opacity are the pose's own, the scale about the surface's top-left
+/// (`PoseRec`). A buffer point `v` shows at `shift + scale * v`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Posed {
+    pub shift: [f32; 2],
+    pub scale: f32,
+    pub opacity: f32,
+}
+
+impl Posed {
+    /// Where buffer coordinate `v` on axis `n` (0 x, 1 y) shows.
+    pub fn show(&self, n: usize, v: f32) -> f32 {
+        self.shift[n] + self.scale * v
+    }
+
+    /// The buffer coordinate on axis `n` that shows at `v`; `v` itself
+    /// when the pose scales to nothing.
+    pub fn unshow(&self, n: usize, v: f32) -> f32 {
+        if self.scale.abs() < 1e-6 {
+            return v;
+        }
+        (v - self.shift[n]) / self.scale
+    }
+
+    /// The pose moves or scales what it shows.
+    pub fn moves(&self) -> bool {
+        self.shift != [0.0, 0.0] || self.scale != 1.0
+    }
+}
+
+impl Frame {
+    /// (integration-r7) How the compositor shows surface `s` at this
+    /// frame, when it applies a pose to it ([`Posed`]); `None` at rest.
+    pub fn posed(&self, s: u32) -> Option<Posed> {
+        let p = self.poses.get(&s)?;
+        Some(Posed {
+            shift: self.shifts.get(&s).copied().unwrap_or([0.0, 0.0]),
+            scale: p.scale,
+            opacity: p.opacity,
+        })
+    }
+}
+
 /// A surface's `Painter` regions after a frame.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Regions {
@@ -772,6 +843,11 @@ pub struct Row {
 pub fn q(v: f32) -> f32 {
     (v * 64.0).round() / 64.0
 }
+
+/// (integration-r7) The trace's quantum, logical px: [`q`] rounds each
+/// value it records to it, so two values recorded apart differ from
+/// what was drawn by up to one quantum between them.
+pub const QUANTUM: f64 = 1.0 / 64.0;
 
 impl Serialize for Row {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -1099,10 +1175,15 @@ impl RunTrace {
                 r[0] += d[0];
                 r[1] += d[1];
             };
+            let posed: BTreeMap<u32, (Posed, bool)> = f
+                .poses
+                .iter()
+                .filter_map(|(s, p)| Some((*s, (f.posed(*s)?, p.x != 0.0 || p.y != 0.0))))
+                .collect();
             for r in &mut f.n {
-                if let Some(p) = f.poses.get(&r.surface) {
+                if let Some((p, offset)) = posed.get(&r.surface).copied() {
                     let k = p.scale;
-                    let [px, py] = f.shifts.get(&r.surface).copied().unwrap_or([0.0, 0.0]);
+                    let [px, py] = p.shift;
                     r.op *= p.opacity;
                     r.visual = [
                         px + k * r.visual[0],
@@ -1125,7 +1206,7 @@ impl RunTrace {
                     if k != 1.0 {
                         auth |= Axes::X | Axes::Y | Axes::W | Axes::H | Axes::SCALE;
                     }
-                    if p.x != 0.0 || p.y != 0.0 || px != 0.0 || py != 0.0 {
+                    if offset || px != 0.0 || py != 0.0 {
                         auth |= Axes::X | Axes::Y;
                     }
                     r.auth |= auth.0;

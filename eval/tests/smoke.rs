@@ -536,6 +536,51 @@ rest
 /// after it moves again (held-out set G's `g-reduced-motion-panel`). A
 /// reduced re-run (the twin, `RunOptions::reduced_motion`) stays reduced
 /// whatever its steps say.
+/// (integration-r7) Where a parent places a child on x, as declared: a
+/// row by `justify:` (start when unset), a column by `align:` (stretched
+/// when unset: unknown), a box by `align:` (a sized child unaligned at
+/// the start); a child with a margin is unknown.
+#[test]
+fn a_childs_x_share_is_its_parents_declared_alignment() {
+    let text = r##"id = "x-share"
+screen = { width = 300 }
+
+=== shell.strand
+bar Top {
+  height: 120
+  row { width: 300; height: 120; gap: 4
+    row { width: 60; height: 20; justify: center
+      text "a" { id: rc }
+    }
+    row { width: 60; height: 20
+      text "b" { id: rs }
+    }
+    col { width: 60; height: 40; align: end
+      text "c" { id: ce }
+    }
+    col { width: 60; height: 40
+      text "d" { id: cs }
+      text "e" { id: cm; margin: 2 }
+    }
+    box { width: 60; height: 20
+      box { id: bx; width: 10; height: 10; bg: #ff0000 }
+    }
+  }
+}
+
+=== steps
+rest
+"##;
+    let t = go(text);
+    let share = |id: &str| t.nodes.get(&key(&t, id)).and_then(|m| m.x_share);
+    assert_eq!(share("rc"), Some(0.5));
+    assert_eq!(share("rs"), Some(0.0));
+    assert_eq!(share("ce"), Some(1.0));
+    assert_eq!(share("cs"), None, "stretched");
+    assert_eq!(share("cm"), None, "a margin");
+    assert_eq!(share("bx"), Some(0.0));
+}
+
 #[test]
 fn a_reduce_motion_off_step_turns_off_the_headers_reduced_motion() {
     let text = r##"id = "reduce-off"

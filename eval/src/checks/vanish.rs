@@ -33,8 +33,9 @@
 //!   and draws nothing);
 //! - **pose back**: with the compositor applying surface poses, a
 //!   surface whose root plays its exit commits, frame after frame until
-//!   it goes or is opened again (eval-rules-5: its root plays its enter
-//!   and no longer its exit), a pose that never comes back toward rest (owner-testing.md
+//!   it goes or is opened again (eval-rules-5; integration-r7: logic's
+//!   diff creates its root again), a pose that never comes back toward
+//!   rest (owner-testing.md
 //!   bug 7: the frame that ended a closing popup's exit committed the
 //!   rest pose, and the compositor faded the whole menu out from full
 //!   opacity).
@@ -591,30 +592,48 @@ pub const POSE_SCALE_GIVE: f64 = 0.005;
 /// `pose back`: from the first frame a surface's root plays its exit to
 /// the last it paints, the pose it commits never comes back toward rest
 /// (a frame with no pose commits rest's), unless (eval-rules-5) it is
-/// opened again first: its root plays its enter and no longer its exit.
+/// opened again first: (integration-r7) logic's diff creates its root
+/// again after the close began (`RunTrace::opened`).
 fn pose_back(cx: &Cx) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut reopened = 0u64;
     for sf in &cx.trace.surfaces {
         let mut closing = false;
+        let mut since = 0u32;
         let mut last: Option<(f64, f64)> = None;
+        let opens = cx.trace.opened.get(&sf.root);
         for f in &cx.trace.frames {
             if !f.painted.contains(&sf.id) {
                 continue;
             }
             let root = f.n.iter().find(|r| r.surface == sf.id && r.key == sf.root);
-            // (eval-rules-5) Opened again while it closed (its exit given
-            // up, its enter playing): it is not closing any more, and its
-            // pose comes back toward rest by design.
-            if root.is_some_and(|r| {
-                let m = Motions(r.mot);
-                m.contains(Motions::ENTER) && !m.contains(Motions::EXIT)
-            }) {
-                reopened += u64::from(closing);
+            // (eval-rules-5) Opened again while it closed: it is not
+            // closing any more, and its pose comes back toward rest by
+            // design. (integration-r7) Read from logic: its diff created
+            // the surface's root again after the close began
+            // (`RunTrace::opened`), never from the renderer's motion bits,
+            // so a renderer that drops a closing surface's exit for no
+            // reason is not excused.
+            // A root logic created again that a new surface took is that
+            // surface's opening, not this one's.
+            let elsewhere = |t: u32| {
+                cx.trace
+                    .surfaces
+                    .iter()
+                    .any(|o| o.id != sf.id && o.root == sf.root && o.attached >= t)
+            };
+            if closing
+                && opens
+                    .is_some_and(|o| o.iter().any(|t| *t > since && *t <= f.k && !elsewhere(*t)))
+            {
+                reopened += 1;
                 closing = false;
                 last = None;
             }
-            closing |= root.is_some_and(|r| Motions(r.mot).contains(Motions::EXIT));
+            if !closing && root.is_some_and(|r| Motions(r.mot).contains(Motions::EXIT)) {
+                closing = true;
+                since = f.k;
+            }
             if !closing {
                 continue;
             }

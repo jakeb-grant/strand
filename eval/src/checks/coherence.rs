@@ -217,10 +217,15 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     // unknown.
                     chain = false;
                 }
-                if let Some(p) = pose(r.surface) {
+                // (integration-r7) Where the compositor shows the pose,
+                // moved by the margins sent (`crate::trace::Posed`), as
+                // `on_screen` placed the row.
+                if let Some(p) = pose(r.surface).and_then(|_| f.posed(r.surface)) {
                     posed |= p.scale != 1.0;
-                    let k = f64::from(p.scale);
-                    c = [f64::from(p.x) + k * c[0], f64::from(p.y) + k * c[1]];
+                    c = [
+                        f64::from(p.show(0, c[0] as f32)),
+                        f64::from(p.show(1, c[1] as f32)),
+                    ];
                 }
                 let v = centre(&r.visual);
                 if posed && chain {
@@ -466,12 +471,30 @@ fn on_output(cx: &Cx, i: usize, r: &Row) -> [f64; 4] {
         .unwrap_or([0.0, 0.0]);
     let x = f64::from(r.visual[0]) - f64::from(moved[0]) + f64::from(o[0]);
     let y = f64::from(r.visual[1]) - f64::from(moved[1]) + f64::from(o[1]);
-    [
-        x,
-        y,
-        x + f64::from(r.visual[2]),
-        y + f64::from(r.visual[3]),
-    ]
+    [x, y, x + f64::from(r.visual[2]), y + f64::from(r.visual[3])]
+}
+
+/// (integration-r7) Where `r` rests, as laid out at timeline frame `i`,
+/// on the output: its laid box plus what is written at rest on it and
+/// its ancestors (`written`, and of `inherited` what is not in flight),
+/// through the pose the compositor shows its surface at (when the rows
+/// are read on screen, `crate::trace::Posed`), plus its surface's
+/// origin. The box a morph that starts at `i` springs toward: the
+/// layout it was given then, not where the segment's last frame shows
+/// it (a later change of layout in the segment is another motion).
+fn rest_on_output(cx: &Cx, i: usize, r: &Row) -> [f64; 4] {
+    let f = cx.tl.frames[i];
+    let moved = cx.tl.moved(i, r.surface);
+    let o = f.origins.get(&r.surface).copied().unwrap_or([0.0, 0.0]);
+    let at = |n: usize| r.laid[n] - moved[n] + r.inherited[n] - r.flight[n] + r.written[n];
+    let (mut x, mut y, mut w, mut h) = (at(0), at(1), r.laid[2], r.laid[3]);
+    if cx.trace.on_screen
+        && let Some(p) = f.posed(r.surface)
+    {
+        (x, y, w, h) = (p.show(0, x), p.show(1, y), p.scale * w, p.scale * h);
+    }
+    let (x, y) = (f64::from(x + o[0]), f64::from(y + o[1]));
+    [x, y, x + f64::from(w), y + f64::from(h)]
 }
 
 /// (eval-rules-5, cross-surface-morph) **morph arrival**: a node with a
@@ -483,7 +506,8 @@ fn on_output(cx: &Cx, i: usize, r: &Row) -> [f64; 4] {
 /// from that node's box (design.md: "the bar's media pill becomes the
 /// media panel"): on its first frame every edge of its box on the output
 /// is one share of the way from the partner's last box to its own box
-/// at rest (its last frame shown in the segment), a share of at most
+/// at rest (integration-r7: as laid out at that first frame,
+/// [`rest_on_output`]), a share of at most
 /// [`START_SHARE`] (as `morph start`), the boxes compared on the output
 /// (each surface's origin plus the box on it), so its scale is the two
 /// boxes' ratio. It then reaches its own box with no step larger than a
@@ -536,17 +560,18 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
             {
                 continue;
             }
-            // Its own box at rest: its last frame shown in the segment
-            // (this one, when the segment rests at once).
+            // Its last frame shown in the segment (this one, when the
+            // segment rests at once): how far its way is followed.
             let end = i..tl.within(Some(k), seg.e).end.max(i + 1);
-            let Some(last) = end
-                .clone()
-                .rev()
-                .find(|j| tl.row(*j, key).is_some_and(|q| q.surface == r.surface && shows(q)))
-            else {
+            let Some(last) = end.clone().rev().find(|j| {
+                tl.row(*j, key)
+                    .is_some_and(|q| q.surface == r.surface && shows(q))
+            }) else {
                 continue;
             };
-            let to = on_output(cx, last, tl.row(last, key).unwrap_or(r));
+            // (integration-r7) Its own box at rest: as laid out at its
+            // first frame, the box the morph springs toward.
+            let to = rest_on_output(cx, i, r);
             let first = on_output(cx, i, r);
             // The partner: shown at i - 1, else the latest shown within
             // the second (ambiguous near the second's end: not judged).
@@ -646,8 +671,7 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                     // Then to its own box with no step larger than a
                     // motion's.
                     let from = on_output(cx, j, others(j)[0]);
-                    let per_tick =
-                        cx.sc.tolerance.teleport_px * 60.0 / f64::from(seg.hz.max(1));
+                    let per_tick = cx.sc.tolerance.teleport_px * 60.0 / f64::from(seg.hz.max(1));
                     let mut prev = (i, first);
                     for n in (i + 1)..=last {
                         let Some(q) = tl.row(n, key).filter(|q| q.surface == r.surface) else {
@@ -659,7 +683,8 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                         let now = on_output(cx, n, q);
                         let ticks = f64::from(tl.ks[n] - tl.ks[prev.0]).max(1.0);
                         let jump = (0..4).find_map(|e| {
-                            let bound = (per_tick * ticks).max(0.75 * (to[e] - from[e]).abs()) + give;
+                            let bound =
+                                (per_tick * ticks).max(0.75 * (to[e] - from[e]).abs()) + give;
                             let d = (now[e] - prev.1[e]).abs();
                             (d > bound).then_some((e, d, bound))
                         });
@@ -689,9 +714,11 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                     // unless something else moves it.
                     let moved = Motions(r.emot).0 & !paint != 0
                         || cx.trace.nodes.get(*key).is_some_and(|m| m.enter.is_some())
-                        || tl.frames[i].poses.get(&r.surface).is_some_and(|p| {
-                            p.x != 0.0 || p.y != 0.0 || p.scale != 1.0
-                        });
+                        || tl.frames[i]
+                            .poses
+                            .get(&r.surface)
+                            .is_some_and(|p| p.x != 0.0 || p.y != 0.0 || p.scale != 1.0)
+                        || tl.frames[i].posed(r.surface).is_some_and(|p| p.moves());
                     if moved && !reduced {
                         unjudged += 1;
                         continue;
@@ -725,7 +752,11 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
     super::stats(
         "coherence.morph-arrival",
         cx,
-        &[("partnered", partnered), ("at-box", alone), ("unjudged", unjudged)],
+        &[
+            ("partnered", partnered),
+            ("at-box", alone),
+            ("unjudged", unjudged),
+        ],
     );
     out
 }

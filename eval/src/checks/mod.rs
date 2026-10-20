@@ -422,17 +422,15 @@ impl<'a> Timeline<'a> {
         // its own width), and one the pose had not yet carried past the
         // buffer's far edge showed no frame at all, though it was on the
         // output.
+        // (integration-r7) The pose as the compositor shows it, moved by
+        // the margins sent (`crate::trace::Posed`), as `on_screen` placed
+        // the row.
         let posed = (!self.first.is_empty())
-            .then(|| self.frames.get(i)?.poses.get(&row.surface))
+            .then(|| self.frames.get(i)?.posed(row.surface))
             .flatten()
             .filter(|p| p.scale.abs() > 1e-6);
         let (bx, by, bw, bh) = match posed {
-            Some(p) => (
-                (x - p.x) / p.scale,
-                (y - p.y) / p.scale,
-                w / p.scale,
-                h / p.scale,
-            ),
+            Some(p) => (p.unshow(0, x), p.unshow(1, y), w / p.scale, h / p.scale),
             None => (x, y, w, h),
         };
         // (eval-coverage-3) A surface painted in the tick it is detached
