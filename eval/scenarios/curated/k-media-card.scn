@@ -1,0 +1,48 @@
+id     = "k-media-card"
+about  = "A media card's play button is a component call named by an `id:` on the call (its root element's): play widens it to a pill, pause narrows it back. From blind set K, where the call's id named nothing."
+screen = { width = 400, height = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+
+component PlayButton(live: bool) {
+  box {
+    height: 36
+    width: live ? 64 : 36
+    radius: full
+    bg: live ? $accent : $surface.hi
+  }
+}
+
+panel Player {
+  anchor: bottom
+  margin: 0, 0, 16
+  layer: overlay
+  col {
+    width: 300
+    pad: $space.3
+    gap: $space.2
+    bg: $surface
+    radius: $radius.xl
+    shadow: $elevation.lg
+    row {
+      justify: space_between
+      align: center
+      text "Night Drive" { font: $font.title; ellipsis: end }
+      PlayButton playing { id: play_btn }
+    }
+  }
+}
+
+=== steps
+rest
+mark play
+intend #play_btn changes
+set playing true
+rest
+shot playing
+mark pause
+intend #play_btn changes
+set playing false
+rest

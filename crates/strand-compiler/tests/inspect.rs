@@ -682,3 +682,41 @@ fn a_shared_components_scope_and_token_origin_name_its_file() {
         "{origins:?}"
     );
 }
+
+/// (eval-finish) An `id:` on a component call is its root element's
+/// (decisions.md 2026-10-13 m6-w2-language), so the root's identity
+/// reports it: directly, through a call whose root is another call, and
+/// not for the root's children or a call without one. An element's own
+/// `id:` stays its name.
+#[test]
+fn identity_reports_a_calls_id_on_its_root() {
+    let src = "component Chip(label: text) { box { text label } }\n\
+        component Named(label: text) { box { id: inner; text label } }\n\
+        component Wrap(label: text) { Chip label }\n\
+        bar B {\n  row {\n    \
+        Chip \"a\" { id: chip_a }\n    \
+        Chip \"b\"\n    \
+        Named \"c\" { id: outer }\n    \
+        Wrap \"d\" { id: wrap_d }\n    \
+        Wrap \"e\"\n  }\n}\n";
+    let shell = boot(&[("t.strand", src)], Storage::none(), &["DP-1"]);
+    let ids: Vec<Option<String>> = shell
+        .scene
+        .of_kind(NodeKind::Box)
+        .into_iter()
+        .map(|b| shell.inst.identity(b).unwrap().id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            Some("chip_a".to_string()),
+            None,
+            Some("inner".to_string()),
+            Some("wrap_d".to_string()),
+            None
+        ]
+    );
+    for t in ["a", "d"] {
+        assert_eq!(shell.inst.identity(shell.text(t)).unwrap().id, None, "{t}");
+    }
+}

@@ -396,11 +396,17 @@ impl Instance {
             }
         }
         let prog = &self.ctx.vm.prog;
-        let id = prog
-            .locals
-            .iter()
-            .find(|l| l.kind == LocalKind::NodeId(e.idx))
-            .map(|l| l.name.clone());
+        let named = |idx| {
+            prog.locals
+                .iter()
+                .find(|l| l.kind == LocalKind::NodeId(idx))
+                .map(|l| l.name.clone())
+        };
+        // (M6) A component's root element shares its call's state, so an
+        // `id:` on the call names it (decisions.md m6-w2-language): the
+        // element's own `id:` first, then the call's (the outermost call
+        // of a chain of calls, whose state the chain shares).
+        let id = named(e.idx).or_else(|| (e.state.idx != e.idx).then(|| named(e.state.idx))?);
         let sibling_index = em
             .children_of(e.parent)
             .iter()

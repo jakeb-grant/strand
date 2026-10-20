@@ -1,0 +1,70 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "k-media-card"
+verdict good
+note "First reference (eval-finish): the play button, named by the id on its component call, springs from 36 to 64 px wide (one px of overshoot) at the row's right edge with its fill springing to the accent, then back on pause; the card around it holds still."
+date 2026-10-20
+rev "7f871ef4+changes"
+approver "claude"
+scenario b42f391e000f6769
+seal 3dd32cd36df31a03
+S1 0 - "panel Player"
+N0 "play_btn|shell.strand:4:3|#0" "box#play_btn"
+N1 "|shell.strand:12:1|#0" "panel@shell.strand:12"
+N2 "|shell.strand:16:3|#0" "col@shell.strand:16"
+N3 "|shell.strand:23:5|#0" "row@shell.strand:23"
+N4 "|shell.strand:26:7|#0" "text(\"Night Drive\")"
+k0 p1
+s1 z=374,105 o=13,95
+n0 x=289 y=41 w=36 h=36 ord=4 bg=e6e5ebff
+n1 x=37 y=29 w=300 h=60
+n2 x=37 y=29 w=300 h=60 ord=1 bg=faf9ffff sh=0000004d@0,0,374,134/00000033@33,26,308,68
+n3 x=49 y=41 w=276 h=36 ord=2
+n4 x=49 y=49 w=97 h=21 txt=S ord=3 ink=50,51,95,18 fg=1a1b20ff gl=["Night\u0020Drive"]
+k1
+n0 x=282 w=43 bg=cdd1deff
+k2
+n0 x=271 w=54 bg=a5afc9ff
+k3
+n0 x=264 w=61 bg=8393b6ff
+k4
+n0 x=261 w=64 bg=6b7fa8ff
+k5
+n0 x=260 w=65 bg=5c729fff
+k6
+n0 bg=536a99ff
+k7
+n0 x=261 w=64 bg=4d6596ff
+k8
+n0 bg=496294ff
+k9
+n0 bg=486093ff
+k10
+n0 bg=465f92ff
+k11
+n0 bg=465f91ff
+k12
+n0 bg=455e91ff
+k13
+n0 x=268 w=57 bg=5a719eff
+k14
+n0 x=279 w=46 bg=8090b4ff
+k15
+n0 x=286 w=39 bg=a1acc7ff
+k16
+n0 x=289 w=36 bg=bac1d4ff
+k17
+n0 x=290 w=35 bg=cbcfddff
+k18
+n0 bg=d6d8e3ff
+k19
+n0 x=289 w=36 bg=dcdde6ff
+k20
+n0 bg=e0e0e8ff
+k21
+n0 bg=e3e2e9ff
+k22
+n0 bg=e4e3eaff
+k23
+n0 bg=e5e4eaff
+k24
+n0 bg=e6e5ebff
