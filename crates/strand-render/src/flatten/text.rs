@@ -385,6 +385,7 @@ pub fn natural_texts(
         clip: Rect::default(),
         offset: (0.0, 0.0),
         flight: (0.0, 0.0),
+        morphs: vello_cpu::kurbo::Affine::IDENTITY,
         inert: false,
         timed: false,
         reach: 0,

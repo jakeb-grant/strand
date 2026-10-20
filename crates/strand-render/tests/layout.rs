@@ -589,6 +589,61 @@ fn a_2000_row_list_lays_out_only_visible_rows() {
     eprintln!("scrolled 2000 rows and painted in {spent:?}");
 }
 
+/// (integration-r8, decisions.md) A row entering with `height: 0` above
+/// a scrolled list's view, in the overscan the list lays out, leaves the
+/// rows in view where they are on every frame and at rest, as it does
+/// with motion reduced: the view follows the row as it is measured (0
+/// on its first frame, where the view had followed it at the estimated
+/// row height) and as it grows.
+#[test]
+fn a_row_entering_above_the_view_keeps_the_rows_in_view() {
+    use std::time::Duration;
+    let (d, root, lst) = long_list(40);
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    let at = |k: u64| t0 + Duration::from_micros(16_667 * k);
+    let mut k = 0;
+    assert!(r.scroll(S, LogicalPoint::new(10.0, 10.0), 40.0).is_some());
+    while r.wants_frame(S) && k < 120 {
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    let kids = r.tree().get(lst).unwrap().children.clone();
+    let watched = kids[6];
+    let before = rect(&r, watched);
+    assert!(before.y > 0.0 && before.y < 400.0, "in view: {before:?}");
+    let mut b = Builder::default();
+    let fresh = NodeId::new(10_000, 0);
+    b.diff
+        .create(fresh, NodeKind::Row, Some(lst), 0)
+        .set(fresh, Prop::Pad, num(4.0))
+        .set(
+            fresh,
+            Prop::Enter,
+            PropValue::Pose(vec![(Prop::Height, num(0.0)), (Prop::Opacity, num(0.0))]),
+        );
+    b.diff
+        .create(NodeId::new(10_001, 0), NodeKind::Box, Some(fresh), 0)
+        .set(NodeId::new(10_001, 0), Prop::Size, num(24.0));
+    assert!(r.apply(b.diff).is_empty());
+    let mut frames = 0;
+    loop {
+        k += 1;
+        frames += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+        let now = rect(&r, watched);
+        assert!(
+            (now.y - before.y).abs() < 0.51,
+            "frame {frames}: the rows in view stay put: {before:?} then {now:?}"
+        );
+        if !r.wants_frame(S) || frames > 120 {
+            break;
+        }
+    }
+    assert!(frames > 3, "the row entered over {frames} frames");
+    approx(rect(&r, fresh), (0.0, -72.0, 200.0, 32.0));
+}
+
 /// A windowed 2,000-row `list` (logic mounted rows 500..532 of
 /// `row_count` 2,000, `row_first` 500): the mounted rows sit at their
 /// global indexes, the rows logic has not mounted take the estimated

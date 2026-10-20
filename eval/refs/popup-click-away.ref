@@ -1,0 +1,248 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "popup-click-away"
+verdict good
+note "first reference (integration-r8, popup click-away): read: a click on the clock opens the calendar popup (fades in from 4 px up), a second click on the clock closes it (its own handler, not reopened), a third opens it, and a click on the bar's right side closes it as a click away; every rule passes"
+date 2026-10-20
+rev "6a99b771+changes"
+approver "claude"
+scenario d16f825c3555857b
+seal 758cb2eb1ab52536
+S1 0 - "bar Top"
+S2 1 30 "popup@bar.strand:8"
+S3 31 60 "popup@bar.strand:8"
+N0 "clock|bar.strand:6:5|[Mock | DP-1]#0" "text#clock"
+N1 "corner|bar.strand:17:5|[Mock | DP-1]#0" "box#corner"
+N2 "|bar.strand:16:5|[Mock | DP-1]#0" "spacer@bar.strand:16"
+N3 "|bar.strand:3:1|[Mock | DP-1]#0" "bar@bar.strand:3"
+N4 "|bar.strand:5:3|[Mock | DP-1]#0" "row@bar.strand:5"
+N5 "cal|bar.strand:9:9|[Mock | DP-1]#0" "col#cal"
+N6 "|bar.strand:8:7|[Mock | DP-1]#0" "popup@bar.strand:8"
+N7 "|bar.strand:11:11|[Mock | DP-1]#0" "text(\"October\")"
+N8 "|bar.strand:12:11|[Mock | DP-1]#1" "text(\"20 Monday\")"
+k0 p1
+s1 z=360,30
+n0 x=8 y=8 w=84 h=15 txt=S ord=2 ink=9,9,82,11 fg=1a1b20ff gl=["Mon\u002020\u0020\u002014:05"]
+n1 x=334 y=6 w=18 h=18 ord=4 bg=455e9166
+n2 x=92 y=15 w=242 h=0 ord=3
+n3 x=0 y=0 w=360 h=30 bg=faf9ffff
+n4 x=0 y=0 w=360 h=30 ord=1
+k1 p2
+s2 z=160,58 o=0,36
+n5 srf=2 x=0 y=-4 w=160 h=56 op=0 hid=opacity0 ord=1
+n6 srf=2 x=0 y=0 w=160 h=56
+k2
+n5 y=-3 op=37 hid=- bg=faf9ffff bd=ffffffff
+n7 srf=2 x=8 y=5 w=144 h=21 op=37 txt=S ord=2 ink=8,7,69,15 fg=1a1b20ff gl=["October"]
+n8 srf=2 x=8 y=30 w=144 h=15 op=37 txt=S ord=3 ink=8,31,65,13 fg=1a1b20ff gl=["20\u0020Monday"]
+k3
+n5 y=-1 op=98
+n7 y=7 op=98 ink=8,9,69,15
+n8 y=32 op=98 ink=8,33,65,13
+k4
+n5 y=0 op=151
+n7 y=8 op=151 ink=8,10,69,15
+n8 y=33 op=151 ink=8,34,65,13
+k5
+n5 op=190
+n7 op=190
+n8 op=190
+k6
+n5 op=216
+n7 op=216
+n8 op=216
+k7
+n5 op=232
+n7 op=232
+n8 op=232
+k8
+n5 op=241
+n7 op=241
+n8 op=241
+k9
+n5 op=247
+n7 op=247
+n8 op=247
+k10
+n5 op=251
+n7 op=251
+n8 op=251
+k11
+n5 op=253
+n7 op=253
+n8 op=253
+k12
+n5 op=254
+n7 op=254
+n8 op=254
+k13
+k14
+n5 op=255
+n7 op=255
+n8 op=255
+k15
+k16
+s2 z=160,56
+k17
+n5 y=-1 op=218 hid=inert
+n7 y=7 op=218 hid=inert ink=8,9,69,15
+n8 y=32 op=218 hid=inert ink=8,33,65,13
+k18
+n5 y=-3 op=157
+n7 y=5 op=157 ink=8,7,69,15
+n8 y=30 op=157 ink=8,31,65,13
+k19
+n5 y=-4 op=104
+n7 y=4 op=104 ink=8,6,69,15
+n8 y=29 op=104 ink=8,30,65,13
+k20
+n5 op=65
+n7 op=65
+n8 op=65
+k21
+n5 op=39
+n7 op=39
+n8 op=39
+k22
+n5 op=23
+n7 op=23
+n8 op=23
+k23
+n5 op=14
+n7 op=14
+n8 op=14
+k24
+n5 op=8
+n7 op=8
+n8 op=8
+k25
+n5 op=4
+n7 op=4
+n8 op=4
+k26
+n5 op=2
+n7 op=2
+n8 op=2
+k27
+n5 op=1
+n7 op=1
+n8 op=1
+k28
+k29
+n5 op=0
+n7 op=0
+n8 op=0
+k30
+s2 -
+n5 hid=opacity0 bg=- bd=-
+n7 -
+n8 -
+k31 p3
+s3 z=160,58 o=0,36
+n5 srf=3
+n6 srf=3
+k32
+n5 y=-3 op=37 hid=- bg=faf9ffff bd=ffffffff
+n7 srf=3 x=8 y=5 w=144 h=21 op=37 txt=S ord=2 ink=8,7,69,15 fg=1a1b20ff gl=["October"]
+n8 srf=3 x=8 y=30 w=144 h=15 op=37 txt=S ord=3 ink=8,31,65,13 fg=1a1b20ff gl=["20\u0020Monday"]
+k33
+n5 y=-1 op=98
+n7 y=7 op=98 ink=8,9,69,15
+n8 y=32 op=98 ink=8,33,65,13
+k34
+n5 y=0 op=151
+n7 y=8 op=151 ink=8,10,69,15
+n8 y=33 op=151 ink=8,34,65,13
+k35
+n5 op=190
+n7 op=190
+n8 op=190
+k36
+n5 op=216
+n7 op=216
+n8 op=216
+k37
+n5 op=232
+n7 op=232
+n8 op=232
+k38
+n5 op=241
+n7 op=241
+n8 op=241
+k39
+n5 op=247
+n7 op=247
+n8 op=247
+k40
+n5 op=251
+n7 op=251
+n8 op=251
+k41
+n5 op=253
+n7 op=253
+n8 op=253
+k42
+n5 op=254
+n7 op=254
+n8 op=254
+k43
+k44
+n5 op=255
+n7 op=255
+n8 op=255
+k45
+k46
+s3 z=160,56
+k47
+n5 y=-1 op=218 hid=inert
+n7 y=7 op=218 hid=inert ink=8,9,69,15
+n8 y=32 op=218 hid=inert ink=8,33,65,13
+k48
+n5 y=-3 op=157
+n7 y=5 op=157 ink=8,7,69,15
+n8 y=30 op=157 ink=8,31,65,13
+k49
+n5 y=-4 op=104
+n7 y=4 op=104 ink=8,6,69,15
+n8 y=29 op=104 ink=8,30,65,13
+k50
+n5 op=65
+n7 op=65
+n8 op=65
+k51
+n5 op=39
+n7 op=39
+n8 op=39
+k52
+n5 op=23
+n7 op=23
+n8 op=23
+k53
+n5 op=14
+n7 op=14
+n8 op=14
+k54
+n5 op=8
+n7 op=8
+n8 op=8
+k55
+n5 op=4
+n7 op=4
+n8 op=4
+k56
+n5 op=2
+n7 op=2
+n8 op=2
+k57
+n5 op=1
+n7 op=1
+n8 op=1
+k58
+k59
+n5 op=0
+n7 op=0
+n8 op=0
+k60
+s3 -
+n5 hid=opacity0 bg=- bd=-
+n7 -
+n8 -

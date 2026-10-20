@@ -29,6 +29,17 @@ pub(super) fn frame_px(f: kurbo::Rect) -> Option<(u32, u32)> {
 /// (cached, or for one too large to cache the part of it in `region`,
 /// the cell being drawn in item coordinates), else vello's own paint.
 /// `smooth` samples the pixmap smoothly (under a scale or rotation).
+///
+/// (integration-r8) Sampled smoothly, a gradient is always drawn from
+/// the part its cell shows, never from the whole cached pixmap: a
+/// bilinear sample of the same pixels placed from another origin lands
+/// a hair apart in vello's f32 arithmetic, and at a near tie a channel
+/// rounds the other way, so a frame drawn from the cache (a partial
+/// repaint, whose earlier frames cached it) differed by a level here
+/// and there from the same frame drawn fresh (held-out set I's album
+/// art, morphing at a scale of 1.02: 2 pixels). The cell's part is the
+/// same in every frame that draws the cell, cached or not. Drawn pixel
+/// for pixel (nearest), the cached pixmap's pixels are the part's.
 pub(super) fn paint_for(
     p: &Paint,
     frame: kurbo::Rect,
@@ -43,11 +54,11 @@ pub(super) fn paint_for(
         return paint_type(p, frame);
     };
     let (fx, fy) = (frame.x0.round(), frame.y0.round());
-    if let Some(pm) = cache.peek(gradient_key(p, w, h)) {
+    if !smooth && let Some(pm) = cache.peek(gradient_key(p, w, h)) {
         return image_paint(pm, fx, fy, smooth);
     }
-    // Too large to cache, or animated (see `PaintCache::gradient`): the
-    // part this cell shows, dithered the same.
+    // Too large to cache, animated (see `PaintCache::gradient`) or drawn
+    // smoothly: the part this cell shows, dithered the same.
     {
         // One pixel of margin for smooth sampling at the part's edge.
         let x0 = ((region.x0 - fx).floor() - 1.0).clamp(0.0, w as f64) as u32;
@@ -135,16 +146,12 @@ pub(crate) fn draw(
     fades: &HashMap<usize, Drawn>,
 ) {
     let touches = |b: &Rect| clip.intersects(*b);
-    // The cell in item coordinates under transform `cur`.
-    let region = |cur: Affine| {
-        let c = kurbo::Rect::new(
-            clip.x as f64,
-            clip.y as f64,
-            clip.x as f64 + clip.w as f64,
-            clip.y as f64 + clip.h as f64,
-        );
-        (cur.inverse() * base).transform_rect_bbox(c)
-    };
+    // The cell in item coordinates under transform `cur`: the whole of
+    // what the context draws, not the damage clipped in it, so a part of
+    // a gradient drawn smoothly is the same part, at the same place, in
+    // a partial repaint and a full one (integration-r8, `paint_for`).
+    let area = kurbo::Rect::new(0.0, 0.0, f64::from(ctx.width()), f64::from(ctx.height()));
+    let region = |cur: Affine| cur.inverse().transform_rect_bbox(area);
     // The transform in force (`scale`, `rotate` groups), and the ones
     // their pops return to.
     let mut cur = base * start;

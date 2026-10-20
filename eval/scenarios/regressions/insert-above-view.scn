@@ -1,0 +1,46 @@
+id     = "insert-above-view"
+about  = """integration-r8's insert above the view: a scrolled list of thirty
+rows, scrolled three notches so its first row is above the view and the
+next one cut,
+gets a new row at its top, entering from `height: 0`. The view followed the new row at the estimated row
+height before it was measured, and kept that when it measured nothing
+on its first frame, so the rows in view ended a row higher than with
+motion reduced, where they stay put (`twin`;
+eval/mutants/insert-above-view.patch takes the view's anchor after the
+rows are measured again)."""
+screen = { width = 300, height = 320, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state newest = 30
+let shown = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31].filter(n => n <= newest).reverse()
+
+panel Log {
+  anchor: top_left; keyboard: none
+  col { width: 260; pad: 10; bg: $surface; color: $fg
+    list { id: log; height: 240
+      for n in shown key n {
+        row { height: 32; pad: 0, 8; align: center
+          enter { height: 0; opacity: 0 }
+          text join(" ", "entry", n)
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark scroll
+intend #log changes
+pointer 120,120 on #log
+scroll 1
+frames 2
+scroll 1
+frames 2
+scroll 1
+rest
+mark insert
+intend #log changes
+set newest 31
+rest

@@ -157,16 +157,18 @@ impl Renderer {
             // (from its layout pass, so it lays out again). A flow node's
             // paint offset never does: the overhang is taken at rest, so
             // an enter or exit animation never resizes the buffer.
+            // (integration-r8) A glow reaches as a shadow does.
             let shadow = match &op {
                 SceneOp::SetProp {
-                    prop: Prop::Shadow, ..
+                    prop: Prop::Shadow | Prop::Glow,
+                    ..
                 } => true,
                 SceneOp::SetProp {
                     id,
                     prop: Prop::X | Prop::Y,
                     ..
                 } => self.tree.get(*id).is_some_and(|n| {
-                    n.get(Prop::Shadow).is_some()
+                    (n.get(Prop::Shadow).is_some() || n.get(Prop::Glow).is_some())
                         && matches!(n.get(Prop::Place), Some(PropValue::Keyword(k)) if k == "absolute")
                 }),
                 _ => false,

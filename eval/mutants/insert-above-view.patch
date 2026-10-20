@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/layout/list.rs b/crates/strand-render/src/layout/list.rs
+index 341dd14..1efd6f4 100644
+--- a/crates/strand-render/src/layout/list.rs
++++ b/crates/strand-render/src/layout/list.rs
+@@ -740,7 +740,7 @@ pub(super) fn place_list(
+     if let Some(r) = &mut st.reveal {
+         r.due = changed;
+     }
+-    st.anchor = anchor.map(|j| (rows[j], p.ys[j] - measured_above));
++    st.anchor = anchor.map(|j| (rows[j], p.ys[j] - 0.0 * measured_above));
+     st.window = windowed.then(|| {
+         let (a, b) = (st.target().min(st.offset), st.target().max(st.offset));
+         ListWindow {

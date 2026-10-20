@@ -1,0 +1,104 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "scaled-gradient-redraw"
+verdict good
+note "first reference (integration-r8, scaled-gradient redraw): read: the bar's 24 px tile morphs into the sheet's 196 px tile, overshooting to a scale of 1.024 at k6 and settling by k15, then morphs back to the bar, overshooting to 0.8 and settling; every rule passes, redraw included"
+date 2026-10-20
+rev "6a99b771+changes"
+approver "claude"
+scenario 5c4afcfeda307738
+seal 252098b65d6d493f
+S1 0 - "bar Top"
+S2 1 17 "panel Sheet"
+N0 "tile|shell.strand:6:15|[Mock | DP-1]#0" "box#tile"
+N1 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N2 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+N3 "|shell.strand:7:5|[Mock | DP-1]#0" "spacer@shell.strand:7"
+N4 "large|shell.strand:14:5|#0" "box#large"
+N5 "|shell.strand:11:1|#0" "panel@shell.strand:11"
+N6 "|shell.strand:13:3|#0" "col@shell.strand:13"
+k0 p1
+s1 z=400,40
+n0 x=8 y=8 w=24 h=24 ord=2 bg=lin45:931fc6ff@0:2853d1ff@1
+n1 x=0 y=0 w=400 h=40 bg=faf9ffff
+n2 x=0 y=0 w=400 h=40 ord=1
+n3 x=40 y=20 w=352 h=0 ord=3
+k1 p1,2
+s2 z=220,220 o=90,48
+n0 -
+n3 x=32 w=384 ord=2
+n4 srf=2 x=-168 y=-126 w=196 h=196 v=-82,-40,24,24 sc=0.122,0.122 ord=2 bg=lin45:931fc6ff@0:2853d1ff@1
+n5 srf=2 x=0 y=0 w=220 h=220
+n6 srf=2 x=0 y=0 w=220 h=220 ord=1 bg=faf9ffff
+k2
+n3 x=20
+n4 x=-121.15625 y=-90.078125 v=-57.375,-26.375,68.765625,68.765625 sc=0.351,0.351
+k3
+n3 x=12
+n4 x=-52.78125 y=-37.65625 v=-22.046875,-7.046875,134.109375,134.109375 sc=0.684,0.684
+k4
+n3 x=8
+n4 x=-7.921875 y=-3.265625 v=1.515625,6.515625,176.96875,176.96875 sc=0.903,0.903
+k5
+n3 x=7
+n4 x=11.9375 y=11.953125 v=12.03125,12.03125,195.9375,195.9375 sc=1,1
+k6
+n4 x=17.015625 y=15.84375 v=14.609375,13.609375,200.78125,200.78125 sc=1.024,1.024
+k7
+n3 x=8
+n4 x=16.171875 y=15.203125 v=14,13,199.984375,199.984375 sc=1.02,1.02
+k8
+n4 x=14.1875 y=13.6875 v=12.953125,12.953125,198.09375,198.09375 sc=1.011,1.011
+k9
+n4 x=12.765625 y=12.578125 v=12.640625,12.640625,196.71875,196.71875 sc=1.004,1.004
+k10
+n4 x=12.078125 y=12.0625 v=11.96875,11.96875,196.0625,196.0625 sc=1,1
+k11 p2
+n4 x=11.859375 y=11.890625 v=12.0625,12.0625,195.875,195.875 sc=0.999,0.999
+k12
+n4 x=11.875 y=11.90625
+k13
+n4 x=11.921875 y=11.9375 v=12.03125,12.03125,195.9375,195.9375 sc=1,1
+k14
+n4 x=11.96875 y=11.984375 v=12.015625,12.015625,195.96875,195.96875
+k15
+n4 x=12 y=12 v=d
+k16
+k17 p1
+s2 -
+n0 x=141.15625 y=110.078125 w=24 h=24 v=77.375,46.375,151.234375,151.234375 sc=6.302,6.302 ord=2 bg=lin45:931fc6ff@0:2853d1ff@1
+n3 x=16 w=352 ord=3
+n4 -
+n5 -
+n6 -
+k18
+n0 x=72.78125 y=57.65625 v=42.046875,27.046875,85.890625,85.890625 sc=3.579,3.579
+n3 x=28
+k19
+n0 x=27.921875 y=23.265625 v=18.484375,13.484375,43.03125,43.03125 sc=1.793,1.793
+n3 x=36
+k20
+n0 x=8.0625 y=8.046875 v=7.96875,7.96875,24.0625,24.0625 sc=1.003,1.003
+n3 x=40
+k21
+n0 x=2.984375 y=4.15625 v=5.390625,6.390625,19.21875,19.21875 sc=0.8,0.8
+n3 x=41
+k22
+n0 x=3.828125 y=4.796875 v=6,7,20.015625,20.015625 sc=0.834,0.834
+k23
+n0 x=5.8125 y=6.3125 v=7.046875,7.046875,21.90625,21.90625 sc=0.913,0.913
+n3 x=40
+k24
+n0 x=7.234375 y=7.421875 v=7.359375,7.359375,23.28125,23.28125 sc=0.97,0.97
+k25
+n0 x=7.921875 y=7.9375 v=8.03125,8.03125,23.9375,23.9375 sc=0.997,0.997
+k26
+n0 x=8.140625 y=8.109375 v=7.9375,7.9375,24.125,24.125 sc=1.005,1.005
+k27
+n0 x=8.125 y=8.09375
+k28
+n0 x=8.078125 y=8.0625 v=7.96875,7.96875,24.0625,24.0625 sc=1.003,1.003
+k29
+n0 x=8.03125 y=8.015625 v=7.984375,7.984375,24.03125,24.03125 sc=1.001,1.001
+k30
+n0 x=8 y=8 v=d sc=1,1
+k31

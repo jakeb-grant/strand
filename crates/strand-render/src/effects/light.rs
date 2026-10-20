@@ -66,6 +66,53 @@ impl Glow {
         }
     }
 
+    /// (integration-r8) The shadow the buffer's overhang keeps room for:
+    /// the glow at the most it reaches. `raw` is the prop as declared and
+    /// `resolved` as layout reads it (time leaves at 0, design.md: a
+    /// time signal reads its value at `t = 0` when no clock is given). A
+    /// radius that reads time is taken at the top of its range (`wave`
+    /// from 0 to 1, `noise` from -1 to 1, with the arithmetic around
+    /// them), so a breathing glow (`glow: 6 + 4 * wave(1.6s), …`) is not
+    /// cut by the buffer at its peak; one whose range has no top (`t`
+    /// itself) is taken as layout reads it. `None` for no glow.
+    pub(crate) fn overhang(
+        raw: Option<&PropValue>,
+        resolved: Option<&PropValue>,
+    ) -> Option<Shadow> {
+        // Visible at all: a clear colour glows nothing (the node's own
+        // colour, when none is given, is taken to show).
+        let opaque = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let colour = match resolved? {
+            PropValue::List(items) => items.get(1).and_then(color).unwrap_or(opaque),
+            _ => opaque,
+        };
+        if !(colour.a > 0.0 && colour.a.is_finite()) {
+            return None;
+        }
+        let now = match resolved? {
+            PropValue::List(items) => items.first().and_then(number),
+            other => number(other),
+        }
+        .unwrap_or(0.0);
+        let peak = raw
+            .and_then(radius_expr)
+            .and_then(range)
+            .map_or(0.0, |(_, hi)| hi);
+        let radius = now.max(peak).min(MAX_GLOW);
+        (radius > 0.0 && radius.is_finite()).then(|| {
+            Glow {
+                radius,
+                color: colour,
+            }
+            .shadow()
+        })
+    }
+
     /// The effects of a content glow's group: every pixel in the colour
     /// (its coverage times the colour's alpha), blurred, its coverage
     /// doubled.
@@ -80,6 +127,57 @@ impl Glow {
             Effect::ColorMatrix(gain),
         ])
     }
+}
+
+/// (integration-r8) The expression a declared `glow:` value's radius is
+/// written as, when it is one: the first number of a template
+/// (`glow: 10 * wave(2s), $accent.alpha(0.4)`), a value that is an
+/// expression alone (`glow: 10 * wave(2s)`), or a list's first item.
+fn radius_expr(v: &PropValue) -> Option<&strand_scene::TokenExpr> {
+    use strand_scene::TokenExpr;
+    match v {
+        PropValue::Token(TokenExpr::Template { numbers, .. }) => numbers.first()?.as_ref(),
+        PropValue::Token(e) => Some(e),
+        PropValue::List(items) => match items.first()? {
+            PropValue::Token(e) => Some(e),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// (integration-r8) The range a number expression can take over time:
+/// `wave(…)` 0 to 1, `noise(…)` -1 to 1, literals as they are, and sums,
+/// differences, products and quotients of those (interval arithmetic).
+/// `None` when it has no bound (`t` grows without one) or is not read
+/// here (a token, a method).
+fn range(e: &strand_scene::TokenExpr) -> Option<(f32, f32)> {
+    use strand_scene::{BinOp, TokenExpr};
+    let r = match e {
+        TokenExpr::Value(v) => {
+            let n = number(v)?;
+            (n, n)
+        }
+        TokenExpr::Wave { .. } => (0.0, 1.0),
+        TokenExpr::Noise(_) => (-1.0, 1.0),
+        TokenExpr::Binary { op, lhs, rhs } => {
+            let ((a, b), (c, d)) = (range(lhs)?, range(rhs)?);
+            let span = |v: [f32; 4]| {
+                let lo = v.iter().copied().fold(f32::INFINITY, f32::min);
+                let hi = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                (lo, hi)
+            };
+            match op {
+                BinOp::Add => (a + c, b + d),
+                BinOp::Sub => (a - d, b - c),
+                BinOp::Mul => span([a * c, a * d, b * c, b * d]),
+                BinOp::Div if c > 0.0 || d < 0.0 => span([a / c, a / d, b / c, b / d]),
+                BinOp::Div | BinOp::Rem => return None,
+            }
+        }
+        _ => return None,
+    };
+    (r.0.is_finite() && r.1.is_finite()).then_some(r)
 }
 
 /// `text_stroke: width, paint`'s group effects: the letters' coverage

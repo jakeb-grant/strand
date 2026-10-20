@@ -2783,7 +2783,9 @@ impl Harness {
     fn rows(&mut self, surface: u32, nodes: &[NodeTrace]) -> Vec<Row> {
         // Per node: effective opacity, authored axes, motions, and the
         // offset in flight it gives its children (its ancestors' and its
-        // own springs and glides, a drag's lift included).
+        // own springs and glides, a drag's lift included, and
+        // (integration-r8) a shared morph's move: it springs to nothing,
+        // so a node inside a morphing card rests where its card does).
         let mut eff: HashMap<NodeId, (f32, Axes, u32, [f32; 2])> = HashMap::new();
         let mut out = Vec::with_capacity(nodes.len());
         for n in nodes {
@@ -2797,8 +2799,8 @@ impl Harness {
             let emot = pmot | n.motions.0;
             let p = &n.parts;
             let carries = [
-                flight[0] + p.spring[0] + p.glide[0],
-                flight[1] + p.spring[1] + p.glide[1],
+                flight[0] + p.spring[0] + p.glide[0] + p.morph[0],
+                flight[1] + p.spring[1] + p.glide[1] + p.morph[1],
             ];
             eff.insert(n.node, (op, auth, emot, carries));
             let key = self

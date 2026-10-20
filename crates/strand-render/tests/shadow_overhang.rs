@@ -229,3 +229,102 @@ fn a_content_sized_panel_keeps_its_shadow_room_until_it_settles() {
     };
     assert!(shrunk > 5, "it sprang back over {shrunk} frames");
 }
+
+/// The bar's overhang with one 60 × 40 box (the bar's height) glowing
+/// `glow`, and then, when `later` is given, once logic set the glow to
+/// it (`~ instant`) and a frame drew it.
+fn glow_overhang(glow: PropValue) -> Insets {
+    glow_overhang_then(glow, None)
+}
+
+fn glow_overhang_then(glow: PropValue, later: Option<PropValue>) -> Insets {
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Height, num(40.0)), (Prop::Bg, color("#202020"))],
+    );
+    let chip = b.node(
+        NodeKind::Box,
+        Some(bar),
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Glow, glow),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.set_surface_bounds(BAR, Some(LogicalSize::new(300.0, 200.0)));
+    r.attach_surface(BAR, bar);
+    let mut buf = Buffer::new(1, 1, Scale::ONE);
+    configure(&mut r, bar, &mut buf);
+    buf.paint_at(&mut r, BAR, 0, frame(0));
+    r.take_surface_changes();
+    if let Some(value) = later {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id: chip,
+            prop: Prop::Glow,
+            value,
+            transition: Transition::Instant,
+        });
+        assert!(r.apply(d).is_empty());
+        configure(&mut r, bar, &mut buf);
+        buf.paint_at(&mut r, BAR, 0, frame(1));
+        r.take_surface_changes();
+    }
+    r.surface_spec(bar).unwrap().overhang
+}
+
+/// (integration-r8, decisions.md) A glow is drawn as a shadow (a box's,
+/// with no offset), so the buffer keeps room for it as for one; a glow
+/// that breathes with time (`glow: 6 + 4 * wave(1.6s), …`, which layout
+/// reads at t = 0, its least) keeps room for its peak, as a steady
+/// `glow: 10` does, so its peak is not cut at the buffer's edge.
+#[test]
+fn a_glow_keeps_room_for_its_peak() {
+    let n = |v: f32| TokenExpr::value(PropValue::Number(v));
+    let bin = |op, lhs, rhs| TokenExpr::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let green = hex("#40a02b73");
+    let breathing = PropValue::Token(TokenExpr::Template {
+        value: Box::new(PropValue::List(vec![num(0.0), PropValue::Color(green)])),
+        colors: vec![None],
+        numbers: vec![Some(bin(
+            BinOp::Add,
+            n(6.0),
+            bin(
+                BinOp::Mul,
+                n(4.0),
+                TokenExpr::Wave {
+                    period: Duration::from_millis(1600),
+                    phase: Box::new(n(0.0)),
+                },
+            ),
+        ))],
+    });
+    let steady = |r: f32| PropValue::List(vec![num(r), PropValue::Color(green)]);
+    let none = glow_overhang(num(0.0));
+    let six = glow_overhang(steady(6.0));
+    let ten = glow_overhang(steady(10.0));
+    let peak = glow_overhang(breathing);
+    assert_eq!(none, Insets::default(), "no glow, no overhang");
+    assert!(
+        six.bottom > 0.0 && ten.bottom > six.bottom,
+        "{six:?} {ten:?}"
+    );
+    assert_eq!(peak, ten, "the breathing glow keeps room for its peak");
+    // A clear glow draws nothing and keeps no room.
+    let clear = glow_overhang(PropValue::List(vec![
+        num(10.0),
+        PropValue::Color(Color::TRANSPARENT),
+    ]));
+    assert_eq!(clear, Insets::default());
+    // Logic lighting the glow later lays the surface out again for it.
+    assert_eq!(glow_overhang_then(num(0.0), Some(steady(10.0))), ten);
+}

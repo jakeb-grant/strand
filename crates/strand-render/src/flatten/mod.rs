@@ -454,6 +454,10 @@ struct Inherited<'a> {
     /// (springs and glides), logical and unrounded: each box adds its
     /// own and rounds its edges from where they fall (`drawn_span`).
     flight: (f32, f32),
+    /// (integration-r8) What the ancestors' shared morphs in flight do
+    /// to where this node is drawn, logical surface pixels: a box drawn
+    /// at `b` rests at `morphs⁻¹(b)` once they settle.
+    morphs: kurbo::Affine,
     /// Inside a subtree playing its exit pose: drawn, never hit.
     inert: bool,
     /// (M4) A `tokens` override in scope reads time: every node under it
@@ -609,6 +613,7 @@ pub fn flatten(
         clip: full,
         offset: (0.0, 0.0),
         flight: (0.0, 0.0),
+        morphs: kurbo::Affine::IDENTITY,
         inert: false,
         timed: false,
         reach: 0,

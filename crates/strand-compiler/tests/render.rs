@@ -646,9 +646,30 @@ fn rice_now_renders_at_fixed_times() {
         })
         .unwrap();
     let surface = SurfaceId(1);
-    let size = Size::new(220, 48);
     r.attach_surface(surface, bar);
-    r.configure_surface(surface, size, Scale::ONE);
+    // (integration-r8) The bar's buffer is its 220 × 48 box and the
+    // overhang its spec asks for, configured as a host does until the
+    // two agree: the glow's reach at its peak (decisions.md
+    // integration-r8).
+    let mut size = Size::new(220, 48);
+    for _ in 0..4 {
+        r.configure_surface(surface, size, Scale::ONE);
+        let mut probe = vec![0u8; (size.w * size.h * 4) as usize];
+        let t = PaintTarget::new(&mut probe, size, size.w * 4, Scale::ONE, 1).unwrap();
+        r.paint(surface, &mut t.at(Duration::from_secs(1)));
+        let o = r.surface_spec(bar).unwrap().overhang;
+        let want = Size::new(
+            (220.0 + o.left + o.right).ceil() as u32,
+            (48.0 + o.top + o.bottom).ceil() as u32,
+        );
+        if want == size {
+            break;
+        }
+        size = want;
+    }
+    assert!(size.h > 48, "the glow is reserved: {size:?}");
+    // The shots are drawn into a buffer of their own, from scratch.
+    r.invalidate(surface);
     let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
     let t0 = Duration::from_secs(1);
     let paint = |r: &mut Renderer, pixels: &mut Vec<u8>, at: Duration| {

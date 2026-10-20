@@ -584,6 +584,24 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
             // first frame, the box the morph springs toward.
             let to = rest_on_output(cx, i, r);
             let first = on_output(cx, i, r);
+            // (integration-r8) Each edge's give: a box is snapped to
+            // physical pixels where it is drawn, before its ancestors'
+            // transforms (decisions.md wave3-pixels; as `pivot` reads
+            // it), so a pixel of give is drawn as large as they magnify
+            // it on that axis: a title morphing out of a card while the
+            // pill holding it is drawn 8.6 times its height.
+            let mut mag = [1.0f64, 1.0];
+            let mut up = cx.trace.nodes.get(*key).and_then(|m| m.parent.clone());
+            while let Some(p) = up {
+                if let Some(q) = tl.row(i, &p).filter(|q| q.surface == r.surface) {
+                    mag = [
+                        mag[0] * f64::from(q.scale[0]).abs().max(1.0),
+                        mag[1] * f64::from(q.scale[1]).abs().max(1.0),
+                    ];
+                }
+                up = cx.trace.nodes.get(&p).and_then(|m| m.parent.clone());
+            }
+            let give_on = |e: usize| cx.tol + mag[e % 2] / scale;
             // The partner: shown at i - 1, else the latest shown within
             // the second (ambiguous near the second's end: not judged).
             let others = |j: usize| -> Vec<&Row> {
@@ -631,6 +649,7 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                         for e in 0..4 {
                             let d = to[e] - from[e];
                             let at = first[e] - from[e];
+                            let give = give_on(e);
                             if d.abs() <= give {
                                 off |= at.abs() > give + d.abs();
                                 continue;
@@ -695,7 +714,7 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                         let ticks = f64::from(tl.ks[n] - tl.ks[prev.0]).max(1.0);
                         let jump = (0..4).find_map(|e| {
                             let bound =
-                                (per_tick * ticks).max(0.75 * (to[e] - from[e]).abs()) + give;
+                                (per_tick * ticks).max(0.75 * (to[e] - from[e]).abs()) + give_on(e);
                             let d = (now[e] - prev.1[e]).abs();
                             (d > bound).then_some((e, d, bound))
                         });

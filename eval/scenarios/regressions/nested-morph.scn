@@ -1,0 +1,55 @@
+id     = "nested-morph"
+about  = """integration-r8's nested morph: a bar's download chip grows into a
+download card on a panel as one shared element (`morph: "dl"`), its
+icon and its file name morphing as shared elements of their own inside
+it, and the card closes back into the chip. A nested morph was worked
+out on its own surface box while its ancestor's flight scaled it again:
+the icon came out of the chip at a twelfth of its way's size and went
+back drawn over 500 px tall (`coherence` morph arrival;
+eval/mutants/nested-morph.patch works the flight out against the box
+its ancestors draw now again, unscaled)."""
+screen = { width = 420, height = 320, scale = 1.0 }
+hz     = 60
+
+=== dl.strand
+state open = false
+
+bar Top {
+  edge: top; height: 32; bg: $surface; color: $fg; font: $font.ui
+  row { pad: 0, 8; align: center; height: 32
+    if !open {
+      row { id: chip; morph: "dl"; height: 24; pad: 0, 8, 0, 4; gap: 6; align: center
+            radius: full; bg: $surface.hi
+        on click { open = true }
+        box { morph: "dl-icon"; size: 16; radius: 4; bg: $accent }
+        text "report.pdf" { morph: "dl-name"; max_width: 110; ellipsis: end }
+      }
+    }
+  }
+}
+
+panel Downloads {
+  anchor: top_left; layer: top; keyboard: on_demand; margin: 4, 0, 0, 8
+  open: <-> open
+  col { id: card; morph: "dl"; width: 260; pad: 12; gap: 10
+        radius: $radius.lg; bg: $surface.hi; color: $fg; font: $font.ui
+    box { id: big_icon; morph: "dl-icon"; size: 96; radius: 16; bg: $accent }
+    text "report.pdf" { id: big_name; morph: "dl-name"; font: $font.title; ellipsis: end }
+    meter 0.6 { height: 4; color: $accent; track: $fg.alpha(0.15) }
+  }
+}
+
+=== steps
+rest
+mark open
+intend #card enters
+intend #big_icon enters
+intend #chip exits
+click 30,16 on bar
+rest
+mark close
+intend #card exits
+intend #chip enters
+set open false
+rest
+expect visible #chip

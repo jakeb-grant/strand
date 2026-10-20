@@ -517,10 +517,24 @@ impl<'a> Build<'a> {
         node: &Node,
         get: &impl Fn(Prop) -> Option<V>,
     ) {
-        if let Some(v) = get(Prop::Shadow)
-            && let PropValue::Shadow(list) = v.as_ref()
-            && !list.is_empty()
-        {
+        let mut list = match get(Prop::Shadow) {
+            Some(v) => match v.as_ref() {
+                PropValue::Shadow(list) => list.clone(),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        // (integration-r8) A glow is light drawn as a shadow (a box's,
+        // with no offset; content's, in a group under it, reaching as
+        // far): the buffer keeps room for it at its peak.
+        let glow = get(Prop::Glow);
+        if let Some(g) = crate::effects::light::Glow::overhang(
+            node.get(Prop::Glow),
+            glow.as_ref().map(AsRef::as_ref),
+        ) {
+            list.push(g);
+        }
+        if !list.is_empty() {
             let placed = keyword(get(Prop::Place).as_ref().map(AsRef::as_ref)) == Some("absolute");
             let off = |p: Prop| {
                 get(p)
@@ -531,7 +545,7 @@ impl<'a> Build<'a> {
             };
             let moves = placed && (get(Prop::X).is_some() || get(Prop::Y).is_some());
             self.shadows
-                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, list.clone()));
+                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, list));
         }
     }
 }

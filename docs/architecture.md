@@ -87,7 +87,9 @@ chains, scrolling, the tree): hover and pressed chains, keyboard focus
 two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
 (`InputEvent::ClickAway`, or a left press on another Strand surface while
 an open `keyboard: exclusive` one has a two-way `open`:
-`InputScene::exclusive_open`). The host passes each logic diff to
+`InputScene::exclusive_open`; or, integration-r8, while an open popup with
+no `trigger: hover` has one, `InputScene::popup_open`, unless the press
+is in that popup or one nested in it, or on its anchor). The host passes each logic diff to
 `Router::observe` before applying it, so logic's own `input` text wins
 over edits in flight, and calls `Router::settle(&mut dyn InputScene)`
 after applying it (a focused `input`'s `nav` list with rows and no

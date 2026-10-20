@@ -163,6 +163,16 @@ pub trait InputScene {
         let _ = root;
         false
     }
+    /// (integration-r8) True if surface node `root` is an open `popup`
+    /// whose `open` is two-way and that the pointer does not open and
+    /// close itself (no `trigger: hover`): a press on another Strand
+    /// surface, which the compositor gives to Strand without ending a
+    /// popup grab (xdg-shell ends one only for another client's
+    /// surface), is a click away from it.
+    fn popup_open(&self, root: NodeId) -> bool {
+        let _ = root;
+        false
+    }
     /// `node`'s `flag` turned on or off (widgets draw hover, press and
     /// focus at once, before logic hears of it).
     fn set_flag(&mut self, node: NodeId, flag: Flag, on: bool) {
@@ -244,6 +254,11 @@ impl InputScene for Renderer {
     fn exclusive_open(&self, root: NodeId) -> bool {
         self.surface_spec(root).is_some_and(|s| {
             s.open && s.open_two_way && s.keyboard == strand_scene::Keyboard::Exclusive
+        })
+    }
+    fn popup_open(&self, root: NodeId) -> bool {
+        self.surface_spec(root).is_some_and(|s| {
+            s.kind == NodeKind::Popup && s.open && s.open_two_way && !s.hover_trigger
         })
     }
     fn set_flag(&mut self, node: NodeId, flag: Flag, on: bool) {
@@ -1298,7 +1313,7 @@ impl Router {
                 self.pointer.insert(surface, *position);
                 let under = chain(scene, *position);
                 if *b == button::LEFT && *state == ButtonState::Pressed {
-                    self.click_away_from_others(surface, root, scene);
+                    self.click_away_from_others(surface, root, &under, scene);
                 }
                 self.button(surface, *b, *state, under, *position, scene);
             }
@@ -1867,13 +1882,43 @@ impl Router {
     /// area of its own output, so a press on Strand's own bar (or a
     /// surface on another output) is caught here. The press itself still
     /// goes to what it landed on.
-    fn click_away_from_others(&mut self, surface: SurfaceId, root: NodeId, scene: &dyn InputScene) {
+    ///
+    /// (integration-r8) Likewise from every other open popup with a
+    /// two-way `open` ([`InputScene::popup_open`]): a popup's grab ends
+    /// only on a press on another client's surface, so a press on the
+    /// bar it hangs from, or on another of Strand's surfaces, reaches
+    /// Strand and is the click away spec.md names. Not from a popup the
+    /// press landed in or under (one nested in it is still its own),
+    /// nor when it landed on the popup's anchor (`under`, the hit chain,
+    /// holds it): what the anchor does with a press (`on click { open =
+    /// !open }`) decides, as it would with the popup closed.
+    fn click_away_from_others(
+        &mut self,
+        surface: SurfaceId,
+        root: NodeId,
+        under: &[NodeId],
+        scene: &dyn InputScene,
+    ) {
+        let tree = scene.tree();
+        let away = |r: NodeId| {
+            if scene.exclusive_open(r) {
+                return true;
+            }
+            if !scene.popup_open(r) {
+                return false;
+            }
+            let Some(t) = tree else { return false };
+            let inside = t.is_ancestor(r, root);
+            let anchor = t.get(r).and_then(|n| n.parent);
+            let on_anchor = anchor.is_some_and(|a| under.contains(&a));
+            !inside && !on_anchor
+        };
         let mut others: Vec<NodeId> = self
             .surfaces
             .iter()
             .filter(|(s, r)| **s != surface && **r != root)
             .map(|(_, r)| *r)
-            .filter(|r| scene.exclusive_open(*r))
+            .filter(|r| away(*r))
             .collect();
         others.sort();
         others.dedup();

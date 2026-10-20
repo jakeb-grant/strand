@@ -610,7 +610,12 @@ impl Animator {
         &mut self,
         node: &Node,
         scope: &TokenScope<'_>,
-        (root, rect): (NodeId, LogicalRect),
+        (root, rect, view, morphs): (
+            NodeId,
+            LogicalRect,
+            vello_cpu::kurbo::Affine,
+            vello_cpu::kurbo::Affine,
+        ),
         origins: &morph::Origins,
         drawn: &mut Vec<MorphBox>,
     ) -> Option<[f32; 4]> {
@@ -636,10 +641,11 @@ impl Animator {
         // frame does not put the name there, and the box it was last
         // seen at still starts morphs as one off screen does.
         if rect.w > 0.0 && rect.h > 0.0 {
+            // (integration-r8) As the ancestors' transforms draw it.
             drawn.push(MorphBox {
                 key: key.clone(),
                 id: node.id,
-                rect,
+                rect: morph::shown(view, rect).unwrap_or(rect),
             });
         }
         let frame = self.frame();
@@ -647,9 +653,15 @@ impl Animator {
         // when the surface holding it opens: design.md's media pill grows
         // into the media panel as the panel opens.
         let entering = self.enter.contains(&node.id) || self.opened.contains(&root);
-        let (v, moving, started) =
-            self.shared
-                .morph(node.id, &key, (root, origins), rect, entering, curve, frame);
+        let (v, moving, started) = self.shared.morph(
+            node.id,
+            &key,
+            (root, origins),
+            (rect, view, morphs),
+            entering,
+            curve,
+            frame,
+        );
         if started == Start::Missed && self.morph_took_enter.remove(&node.id) {
             // (shared-morph-on) A preview took its enter pose for a morph
             // the painted frame cannot start: it plays the pose after all.
@@ -1634,8 +1646,10 @@ impl Animator {
     pub(crate) fn shadows_moving(&self, tree: &SceneTree, root: NodeId) -> bool {
         !self.snapping()
             && self.nodes.iter().any(|(id, n)| {
-                (n.props.iter().any(|(p, _)| *p == Prop::Shadow)
-                    || n.touched.iter().any(|(p, _)| *p == Prop::Shadow))
+                // (integration-r8) A glow is held as a shadow is: the
+                // overhang keeps room for it (`layout`).
+                let reach = |p: Prop| matches!(p, Prop::Shadow | Prop::Glow);
+                (n.props.iter().any(|(p, _)| reach(*p)) || n.touched.iter().any(|(p, _)| reach(*p)))
                     && tree.root_of(*id) == Some(root)
             })
     }

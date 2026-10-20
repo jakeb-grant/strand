@@ -656,6 +656,14 @@ pub(super) fn place_list(
     let bounds = shown_bounds(st, &p, windowed);
     st.shown = st.offset.clamp(bounds.0, bounds.1);
     let shown = st.shown;
+    // The row in view the next pass keeps in place: the first this pass
+    // draws below the view's top.
+    let anchor = (0..rows.len()).find(|j| p.ys[*j] + p.hs[*j] > shown);
+    // (integration-r8) How far the rows above it that this pass measures
+    // move it from where this pass draws it: a row measured off what was
+    // assumed (one entering at `height: 0` where the estimate was a whole
+    // row) moves it, and the view follows in the next pass.
+    let mut measured_above = 0.0f32;
     let view = content.h;
     let margin = layout_margin(view);
     let (lo, hi) = (shown - margin, shown + view + margin);
@@ -709,6 +717,9 @@ pub(super) fn place_list(
         if (h - assumed).abs() > 0.5 {
             changed = true;
         }
+        if anchor.is_some_and(|a| j < a) {
+            measured_above += h - h0;
+        }
         b.read_back(t, at, scrolls, out);
         // A list or scroll inside the row: its own rows in view.
         b.place_lists(texts, scrolls, out);
@@ -729,9 +740,7 @@ pub(super) fn place_list(
     if let Some(r) = &mut st.reveal {
         r.due = changed;
     }
-    st.anchor = (0..rows.len())
-        .find(|j| p.ys[*j] + p.hs[*j] > shown)
-        .map(|j| (rows[j], p.ys[j]));
+    st.anchor = anchor.map(|j| (rows[j], p.ys[j] - measured_above));
     st.window = windowed.then(|| {
         let (a, b) = (st.target().min(st.offset), st.target().max(st.offset));
         ListWindow {

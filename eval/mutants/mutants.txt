@@ -199,3 +199,26 @@ shadow-lift-gaps.patch         regressions/shadow-lift-gaps.scn  contain
 # whose surface went keeping the surface's last frame as when it left the
 # screen (decisions.md morph-memory).
 morph-back-after-idle.patch    regressions/morph-back-after-idle.scn coherence:#tile
+# scaled-gradient-redraw.patch: integration-r8's fix reverted: a gradient
+# sampled smoothly is drawn from the whole cached pixmap again, and a
+# cell's part of it follows the damage, so a partial repaint and a fresh
+# one sample the same pixels from another origin (decisions.md
+# integration-r8).
+scaled-gradient-redraw.patch   regressions/scaled-gradient-redraw.scn redraw
+# glow-overhang.patch: integration-r8's glow overhang dropped: layout
+# keeps room for `shadow:` only, so a glow reaching past the bar's box is
+# cut at the buffer's edge (decisions.md integration-r8).
+glow-overhang.patch            regressions/glow-overhang.scn contain
+# insert-above-view.patch: integration-r8's list anchor taken after the
+# rows are measured again: a row entering at `height: 0` above the view,
+# followed at the estimated row height, leaves the rows in view a row
+# higher at rest than with motion reduced (decisions.md integration-r8).
+insert-above-view.patch        regressions/insert-above-view.scn twin
+# popup-click-away.patch: integration-r8's popup arm of the router's
+# click-away dropped: a press on the shell's own bar leaves an open popup
+# open (decisions.md integration-r8).
+popup-click-away.patch         regressions/popup-click-away.scn expect
+# nested-morph.patch: integration-r8's nested morph undone: a morph
+# inside a morphing ancestor is worked out against its own box and
+# scaled again by the ancestor's flight (decisions.md integration-r8).
+nested-morph.patch             regressions/nested-morph.scn coherence

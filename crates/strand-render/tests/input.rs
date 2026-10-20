@@ -3450,6 +3450,119 @@ fn the_routers_open_popups_follow_logics_diffs() {
     assert_eq!(f.router.next_wake(), None);
 }
 
+/// The islands as menus (no `trigger: hover`): `open` lists the popups
+/// shown with a two-way `open` ([`InputScene::popup_open`]).
+struct Menus {
+    islands: Islands,
+    open: Vec<NodeId>,
+}
+
+impl InputScene for Menus {
+    fn hit(&self, surface: SurfaceId, at: LogicalPoint) -> Vec<NodeId> {
+        self.islands.hit(surface, at)
+    }
+    fn tree(&self) -> Option<&strand_render::SceneTree> {
+        Some(&self.islands.tree)
+    }
+    fn popup_open(&self, root: NodeId) -> bool {
+        self.open.contains(&root)
+    }
+}
+
+/// (integration-r8, decisions.md) A left press on another of Strand's
+/// surfaces is a click away from an open popup with a two-way `open`
+/// (xdg-shell ends a popup grab only for another client's surface, so
+/// the press reaches Strand), and the press still goes where it landed:
+/// on the bar it closes the menu and the submenu in it; in the menu,
+/// only the submenu; on a popup's anchor, not that popup (the anchor's
+/// own handler decides); in a popup or one nested in it, not it; and
+/// never a popup that is not open two-way.
+#[test]
+fn a_press_on_another_strand_surface_closes_an_open_popup() {
+    let press = |surface, x| InputEvent::PointerButton {
+        surface,
+        position: LogicalPoint::new(x, 1.0),
+        button: button::LEFT,
+        state: ButtonState::Pressed,
+        time: 0,
+    };
+    let release = |surface, x| InputEvent::PointerButton {
+        surface,
+        position: LogicalPoint::new(x, 1.0),
+        button: button::LEFT,
+        state: ButtonState::Released,
+        time: 0,
+    };
+    let mut scene = Menus {
+        islands: Islands::new(false, None),
+        open: vec![POP_A, SUB_POP],
+    };
+    let closed = |f: &mut R, surface, x, scene: &mut Menus| {
+        f.input(&press(surface, x), scene);
+        f.input(&release(surface, x), scene);
+        opens(f)
+    };
+    let mut f = R::default();
+    f.attached(S_BAR, BAR_N);
+    f.attached(S_A, POP_A);
+    f.attached(S_SUB, SUB_POP);
+    assert_eq!(closed(&mut f, S_SUB, 5.0, &mut scene), [], "in the submenu");
+    assert_eq!(
+        closed(&mut f, S_A, 10.0, &mut scene),
+        [],
+        "on the submenu's anchor, in the menu"
+    );
+    assert_eq!(
+        closed(&mut f, S_A, 30.0, &mut scene),
+        [(SUB_POP, false)],
+        "elsewhere in the menu"
+    );
+    assert_eq!(
+        closed(&mut f, S_BAR, 5.0, &mut scene),
+        [(SUB_POP, false)],
+        "on the menu's anchor: only the submenu"
+    );
+    let out = {
+        f.input(&press(S_BAR, 50.0), &mut scene);
+        f.input(&release(S_BAR, 50.0), &mut scene);
+        f.drain()
+    };
+    let writes: Vec<NodeId> = out
+        .iter()
+        .filter_map(|i| match i {
+            Intent::Write {
+                node,
+                prop: Prop::Open,
+                value: PropValue::Bool(false),
+            } => Some(*node),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, [POP_A, SUB_POP], "elsewhere on the bar: both");
+    for p in [POP_A, SUB_POP] {
+        assert!(
+            out.contains(&Intent::Event {
+                node: p,
+                event: NodeEvent::Dismiss
+            }),
+            "{p:?} is told `dismiss`: {out:?}"
+        );
+    }
+    assert!(
+        out.contains(&Intent::Event {
+            node: BAR_N,
+            event: NodeEvent::Click
+        }),
+        "the press still reaches the bar: {out:?}"
+    );
+    scene.open.clear();
+    assert_eq!(
+        closed(&mut f, S_BAR, 50.0, &mut scene),
+        [],
+        "not open two-way: left alone"
+    );
+}
+
 /// (Review r2 minor 3) The compositor closing a `trigger: hover`
 /// popup's surface (`popup_done`, told as a click away on it) closes it
 /// in logic too, and it opens again only once the pointer has left its

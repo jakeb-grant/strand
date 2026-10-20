@@ -1,0 +1,22 @@
+diff --git a/crates/strand-render/src/anim/morph.rs b/crates/strand-render/src/anim/morph.rs
+index 2aed798..631372a 100644
+--- a/crates/strand-render/src/anim/morph.rs
++++ b/crates/strand-render/src/anim/morph.rs
+@@ -275,7 +275,7 @@ impl SharedMorphs {
+         if entering
+             && !frame.snap
+             && let Some(old) = from()
+-            && let Some(rect) = rest(view, morphs, rect)
++            && let Some(rect) = rest(Affine::IDENTITY, Affine::IDENTITY * morphs * view.inverse() * view * morphs.inverse(), rect)
+             && rect.w > 0.0
+             && rect.h > 0.0
+             && old.w > 0.0
+@@ -322,7 +322,7 @@ impl SharedMorphs {
+             }
+             return (None, false, started);
+         }
+-        (Some(in_frame(view, morphs, rect, v)), true, started)
++        (Some(in_frame(Affine::IDENTITY, Affine::IDENTITY, rect, v)), true, started)
+     }
+ 
+     /// A frame of the surface of `root` painted at `at` shows `drawn`

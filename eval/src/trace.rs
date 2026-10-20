@@ -900,7 +900,8 @@ pub struct Row {
     pub morph: [f32; 2],
     /// Of `inherited`, the part in flight: the ancestors' springs and
     /// glides, a drag's lift included (what they have written at rest
-    /// left out). The sandbox's sum of their `spring` and `glide`.
+    /// left out). The sandbox's sum of their `spring` and `glide`, and
+    /// (integration-r8) `morph`.
     pub flight: [f32; 2],
     /// A text cut to its box: the line box width it asked to be shaped
     /// for (its unbounded layout is wider than its box).

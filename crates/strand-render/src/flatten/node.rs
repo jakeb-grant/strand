@@ -209,10 +209,14 @@ impl<'a> Flattener<'a> {
                 laid.w.max(0.0),
                 laid.h.max(0.0),
             );
+            // (integration-r8) The ancestors' transforms (a morph in
+            // flight, `scale`, `rotate`), in logical pixels.
+            let s = f64::from(self.scale.as_f32());
+            let view = kurbo::Affine::scale(1.0 / s) * self.xform * kurbo::Affine::scale(s);
             self.anim.shared_morph(
                 node,
                 &scope,
-                (root, at),
+                (root, at, view, inh.morphs),
                 &self.extras.origins,
                 &mut self.out.morphs,
             )
@@ -641,6 +645,27 @@ impl<'a> Flattener<'a> {
                 self.marker(Item::PushTransform(self.xform))
             });
 
+        // (integration-r8) What its shared morph in flight does to its
+        // subtree on the surface: moved by its `[dx, dy]` and scaled about
+        // its box's centre, under the ancestors' transforms (`saved`).
+        let morphs = match shared {
+            Some(m) => {
+                let s = f64::from(self.scale.as_f32());
+                let view = kurbo::Affine::scale(1.0 / s) * saved * kurbo::Affine::scale(s);
+                let c = frame.center().to_vec2() / s;
+                let own = kurbo::Affine::translate(c)
+                    * kurbo::Affine::scale_non_uniform(morph_sx, morph_sy)
+                    * kurbo::Affine::translate(-c)
+                    * kurbo::Affine::translate((f64::from(m[0]), f64::from(m[1])));
+                let d = view.determinant();
+                if d.is_finite() && d.abs() > 1e-12 {
+                    view * own * view.inverse() * inh.morphs
+                } else {
+                    inh.morphs
+                }
+            }
+            None => inh.morphs,
+        };
         let mut sig = DefaultHasher::new();
         (inh.ctx, node.kind, node.epoch).hash(&mut sig);
         hash_f32(&mut sig, opacity);
@@ -1816,6 +1841,7 @@ impl<'a> Flattener<'a> {
             clip: child_clip,
             offset,
             flight,
+            morphs,
             inert,
             timed: timed_scope,
             reach,

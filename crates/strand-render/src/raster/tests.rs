@@ -439,3 +439,122 @@ fn opaque_pixmap_frame_cost() {
         times.len()
     );
 }
+
+/// (integration-r8) A gradient drawn smoothly (held-out set I's album
+/// art, a rounded box morphing at a scale of 1.02 over its panel's
+/// fill) repaints, from a raster whose earlier frames cached its pixmap,
+/// in full and within any damage, as a fresh raster with nothing cached
+/// draws it. Before, the cached frame sampled the whole pixmap and the
+/// fresh one each cell's part of it, the same pixels placed from another
+/// origin, and 2 pixels rounded a level apart.
+#[test]
+fn a_scaled_gradient_repaints_from_its_cache_as_fresh() {
+    use strand_scene::{Color, GradientStop, Paint, PaintTarget, Size};
+    use vello_cpu::kurbo::{self, Shape};
+    let rr = |r: kurbo::Rect, rad: f64| kurbo::RoundedRect::from_rect(r, rad).into_path(0.1);
+    let rgb = |r: f32, g: f32, b: f32| Color { r, g, b, a: 1.0 };
+    let panel = kurbo::Rect::new(73.0, 8.0, 293.0, 277.0);
+    let art = kurbo::Rect::new(89.0, 23.0, 285.0, 219.0);
+    let s = 1.020_362_854_003_906_3;
+    let morph = kurbo::Affine::new([
+        s,
+        0.0,
+        0.0,
+        s,
+        -3.807_853_698_730_468_8,
+        -2.463_905_334_472_656_3,
+    ]);
+    let ramp = Paint::Linear {
+        angle: 45.0,
+        stops: vec![
+            GradientStop {
+                offset: 0.0,
+                color: rgb(0.576_470_6, 0.121_568_63, 0.776_470_6),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: rgb(0.156_862_75, 0.325_490_2, 0.819_607_85),
+            },
+        ],
+    };
+    let items = vec![
+        DisplayItem {
+            item: Item::Fill {
+                shape: crate::flatten::FillShape::Path(rr(panel, 16.0)),
+                paint: Paint::Solid(rgb(0.980_392_16, 0.976_470_6, 1.0)),
+                frame: panel,
+            },
+            bounds: Rect::new(73, 8, 220, 269),
+        },
+        DisplayItem {
+            item: Item::PushTransform(morph),
+            bounds: Rect::new(86, 20, 202, 202),
+        },
+        DisplayItem {
+            item: Item::Fill {
+                shape: crate::flatten::FillShape::Path(rr(art, 12.0)),
+                paint: ramp,
+                frame: art,
+            },
+            bounds: Rect::new(86, 20, 202, 202),
+        },
+        DisplayItem {
+            item: Item::PopTransform,
+            bounds: Rect::new(0, 0, 366, 366),
+        },
+    ];
+    let (w, h) = (366u32, 366u32);
+    let atlas = AtlasMirror::default();
+    let paint = |r: &mut Raster, damage: &Damage| {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let mut t = PaintTarget::new(&mut buf, Size::new(w, h), w * 4, Scale::ONE, 0).unwrap();
+        r.paint(&items, damage, &atlas, Scale::ONE, &mut t);
+        buf
+    };
+    let full = Damage::full(Size::new(w, h));
+    let fresh = paint(&mut Raster::default(), &full);
+    let mut damages = vec![full];
+    let mut d = Damage::new();
+    d.add(Rect::new(86, 20, 204, 204));
+    damages.push(d);
+    // Damage starting at every few pixels across the box, so a part of
+    // the gradient would start elsewhere in each if it followed the
+    // damage instead of the cell.
+    for i in 0..48 {
+        let mut d = Damage::new();
+        d.add(Rect::new(
+            86 + i * 5,
+            20 + i * 4,
+            120 + i as u32,
+            90 + 2 * i as u32,
+        ));
+        damages.push(d);
+    }
+    for damage in &damages {
+        // Two whole frames first: the second admits the gradient's
+        // pixmap to the cache (`PaintCache::gradient_in`).
+        let mut warm = Raster::default();
+        paint(&mut warm, &full);
+        paint(&mut warm, &full);
+        let part = paint(&mut warm, damage);
+        let bad: Vec<(usize, usize)> = (0..(w * h) as usize)
+            .map(|i| (i % w as usize, i / w as usize))
+            .filter(|&(x, y)| {
+                damage
+                    .rects()
+                    .iter()
+                    .any(|r| r.contains(strand_scene::Point::new(x as i32, y as i32)))
+            })
+            .filter(|&(x, y)| {
+                let i = (y * w as usize + x) * 4;
+                part[i..i + 4] != fresh[i..i + 4]
+            })
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "{damage:?}: {} pixels differ: {:?}",
+            bad.len(),
+            &bad[..bad.len().min(6)]
+        );
+    }
+}

@@ -35,12 +35,90 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId};
+use vello_cpu::kurbo::Affine;
 
 use crate::flatten::SurfaceOrigin;
 
 /// Where each surface lies on its output, by its root.
 pub(crate) type Origins = HashMap<NodeId, SurfaceOrigin>;
 use crate::shapes::morph::Frame;
+
+/// (integration-r8) `r` as `view` draws it on the surface (its bounding
+/// box).
+pub(crate) fn shown(view: Affine, r: LogicalRect) -> Option<LogicalRect> {
+    if view == Affine::IDENTITY {
+        return Some(r);
+    }
+    let b = view.transform_rect_bbox(vello_cpu::kurbo::Rect::new(
+        f64::from(r.x),
+        f64::from(r.y),
+        f64::from(r.x + r.w),
+        f64::from(r.y + r.h),
+    ));
+    let v = [b.x0, b.y0, b.width(), b.height()].map(|v| v as f32);
+    v.iter()
+        .all(|v| v.is_finite())
+        .then(|| LogicalRect::new(v[0], v[1], v[2], v[3]))
+}
+
+/// (integration-r8) Where `r` rests on the surface: as `view` (the
+/// ancestors' transforms) draws it, with what the ancestors' morphs in
+/// flight do to it (`morphs`) undone.
+fn rest(view: Affine, morphs: Affine, r: LogicalRect) -> Option<LogicalRect> {
+    let drawn = shown(view, r)?;
+    if morphs == Affine::IDENTITY {
+        return Some(drawn);
+    }
+    let d = morphs.determinant();
+    if !(d.is_finite() && d.abs() > 1e-12) {
+        return Some(drawn);
+    }
+    shown(morphs.inverse(), drawn)
+}
+
+/// (integration-r8) A flight's `[dx, dy, sx, sy]`, which moves and
+/// scales the node's box at rest on the surface ([`rest`]) about its
+/// centre, as the node draws it in its own frame: the box `view` draws
+/// (`r` under its ancestors as they are now) taken onto that one, the
+/// scales as ratios of the two boxes, the move undone by `view`'s linear
+/// part. With nothing above it in flight it is the flight as it is. A
+/// morph nested in another's so goes its own way on the surface, from
+/// the old box to where it rests, whatever its ancestors' flights do.
+fn in_frame(view: Affine, morphs: Affine, r: LogicalRect, v: [f32; 4]) -> [f32; 4] {
+    if view == Affine::IDENTITY && morphs == Affine::IDENTITY {
+        return v;
+    }
+    let (Some(now), Some(at)) = (shown(view, r), rest(view, morphs, r)) else {
+        return v;
+    };
+    if !(now.w > 0.0 && now.h > 0.0) {
+        return v;
+    }
+    // The box the flight draws on the surface.
+    let (cx, cy) = (at.x + at.w / 2.0 + v[0], at.y + at.h / 2.0 + v[1]);
+    let (w, h) = (at.w * v[2], at.h * v[3]);
+    let (dx, dy) = (
+        f64::from(cx - (now.x + now.w / 2.0)),
+        f64::from(cy - (now.y + now.h / 2.0)),
+    );
+    let [a, b, c, d, _, _] = view.as_coeffs();
+    let det = a * d - b * c;
+    let out = if det.is_finite() && det.abs() > 1e-12 {
+        [
+            ((d * dx - c * dy) / det) as f32,
+            ((a * dy - b * dx) / det) as f32,
+            w / now.w,
+            h / now.h,
+        ]
+    } else {
+        v
+    };
+    if out.iter().all(|v| v.is_finite()) {
+        out
+    } else {
+        v
+    }
+}
 
 /// Settling tolerance (pixels and scale).
 const EPS: f32 = 0.01;
@@ -148,14 +226,21 @@ impl SharedMorphs {
     /// sx, sy]`, `None` at its box), whether it is still moving and
     /// whether its morph starts. `entering`: it is about to play its
     /// enter pose. Where it is drawn is remembered once a frame paints it
-    /// ([`SharedMorphs::painted`]).
+    /// ([`SharedMorphs::painted`]). (integration-r8) `view` maps the
+    /// frame `rect` is in (its ancestors' paint offsets) to the surface
+    /// as the ancestors' transforms draw it (a morph of their own in
+    /// flight, a `scale`): the flight is worked out and springs on the
+    /// surface, from the old box to the node's box as `view` draws it,
+    /// and each frame's value is handed back in the node's frame, so a
+    /// morph nested in another's is drawn over the old box as the eye
+    /// saw it and rides its ancestor's flight, never scaled by it twice.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn morph(
         &mut self,
         id: NodeId,
         key: &str,
         (root, origins): (NodeId, &Origins),
-        rect: LogicalRect,
+        (rect, view, morphs): (LogicalRect, Affine, Affine),
         entering: bool,
         curve: Curve,
         frame: Frame,
@@ -190,6 +275,7 @@ impl SharedMorphs {
         if entering
             && !frame.snap
             && let Some(old) = from()
+            && let Some(rect) = rest(view, morphs, rect)
             && rect.w > 0.0
             && rect.h > 0.0
             && old.w > 0.0
@@ -236,7 +322,7 @@ impl SharedMorphs {
             }
             return (None, false, started);
         }
-        (Some(v), true, started)
+        (Some(in_frame(view, morphs, rect, v)), true, started)
     }
 
     /// A frame of the surface of `root` painted at `at` shows `drawn`
@@ -394,8 +480,15 @@ mod tests {
     fn starts(m: &mut SharedMorphs, root: NodeId, id: NodeId, key: &str, ms: u64) -> bool {
         let r = LogicalRect::new(10.0, 0.0, 10.0, 10.0);
         let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
-        let (_, moving, started) =
-            m.morph(id, key, (root, &Origins::new()), r, true, curve, frame(ms));
+        let (_, moving, started) = m.morph(
+            id,
+            key,
+            (root, &Origins::new()),
+            (r, Affine::IDENTITY, Affine::IDENTITY),
+            true,
+            curve,
+            frame(ms),
+        );
         assert_eq!(started == Start::Now, moving);
         started == Start::Now
     }
@@ -472,7 +565,15 @@ mod tests {
         let starts = |m: &mut SharedMorphs, id: NodeId, ms: u64| {
             let r = LogicalRect::new(10.0, 0.0, 10.0, 10.0);
             let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
-            let (_, _, started) = m.morph(id, "m", (panel, &origins), r, true, curve, frame(ms));
+            let (_, _, started) = m.morph(
+                id,
+                "m",
+                (panel, &origins),
+                (r, Affine::IDENTITY, Affine::IDENTITY),
+                true,
+                curve,
+                frame(ms),
+            );
             started == Start::Now
         };
         let pill_box = MorphBox {
@@ -531,7 +632,15 @@ mod tests {
         let from = |m: &mut SharedMorphs| {
             let r = LogicalRect::new(50.0, 4.0, 10.0, 10.0);
             let curve = Curve::Spring(strand_scene::Spring::new(300.0, 1.0).unwrap());
-            let (v, _, started) = m.morph(pill, "m", (bar, &origins), r, true, curve, frame(1200));
+            let (v, _, started) = m.morph(
+                pill,
+                "m",
+                (bar, &origins),
+                (r, Affine::IDENTITY, Affine::IDENTITY),
+                true,
+                curve,
+                frame(1200),
+            );
             (started == Start::Now).then_some(v).flatten()
         };
         let mut m = SharedMorphs::default();

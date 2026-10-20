@@ -1,0 +1,38 @@
+id     = "glow-overhang"
+about  = """integration-r8's glow overhang: a chip in a bar's full-height row
+lights up with a glow that breathes with time (`glow: 5 + 3 * wave(1s)`)
+and later goes dark. design.md draws a glow as a shadow with no offset
+(a box's) or a blurred copy under it (content's), and shadows enlarge the
+buffer; layout reserved room for `shadow:` only, so the glow was cut at
+the buffer's edge (`contain` shadow arm; eval/mutants/glow-overhang.patch
+leaves the glow out of the overhang again). The room is the glow's
+peak, not the value at t = 0 layout reads, so the breathing does not
+resize the buffer on every frame."""
+screen = { width = 320, height = 120, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state lit = false
+
+bar Top {
+  edge: top; height: 32; bg: $surface; color: $fg
+  row { height: 32; pad: 0, 8; align: center
+    spacer {}
+    row { id: chip; height: 32; pad: 0, 10; align: center; radius: 8; bg: $surface.hi
+      when lit { glow: 5 + 3 * wave(1s), $accent.alpha(0.5) }
+      text "chip" { font: $font.ui }
+    }
+  }
+}
+
+=== steps
+rest
+mark light
+intend #chip changes
+set lit true
+wait 1200
+shot lit
+mark dark
+intend #chip changes
+set lit false
+rest

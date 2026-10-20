@@ -1,0 +1,55 @@
+id     = "popup-click-away"
+about  = """integration-r8's popup click-away: a bar clock opens a calendar
+popup on a click and closes it on the next one (its own handler, design's
+Clock), and a click elsewhere on the bar closes it as a click away.
+xdg-shell ends a popup grab only for another client's surface, so a press
+on the shell's own bar reached the bar and the popup stayed open
+(`expect hidden #cal`; eval/mutants/popup-click-away.patch drops the
+popup arm of the router's click-away again). The click on the clock is
+the anchor's own: closing it as a click away too would let the clock's
+handler open it again."""
+screen = { width = 360, height = 260, scale = 1.0 }
+hz     = 60
+
+=== bar.strand
+state cal_open = false
+
+bar Top {
+  edge: top; height: 30; bg: $surface; color: $fg; font: $font.ui
+  row { pad: 0, 8; align: center; height: 30
+    text "Mon 20  14:05" { id: clock
+      on click { cal_open = !cal_open }
+      popup { open: <-> cal_open
+        col { id: cal; width: 160; pad: 8; gap: 4; radius: 8; bg: $surface; border: 1, $border
+          enter { opacity: 0; y: -4 }
+          text "October" { font: $font.title }
+          text "20 Monday"
+        }
+      }
+    }
+    spacer {}
+    box { id: corner; size: 18; radius: 4; bg: $accent.alpha(0.4) }
+  }
+}
+
+=== steps
+rest
+mark open
+intend #cal enters
+click 40,15 on bar
+rest
+expect visible #cal
+mark toggle-closed
+intend #cal exits
+click 40,15 on bar
+rest
+expect hidden #cal
+mark reopen
+intend #cal enters
+click 40,15 on bar
+rest
+mark away
+intend #cal exits
+click 300,15 on bar
+rest
+expect hidden #cal

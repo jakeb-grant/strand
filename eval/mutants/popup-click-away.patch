@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/input.rs b/crates/strand-render/src/input.rs
+index 2a8ea70..9916527 100644
+--- a/crates/strand-render/src/input.rs
++++ b/crates/strand-render/src/input.rs
+@@ -1904,7 +1904,7 @@ impl Router {
+             if scene.exclusive_open(r) {
+                 return true;
+             }
+-            if !scene.popup_open(r) {
++            if true || !scene.popup_open(r) {
+                 return false;
+             }
+             let Some(t) = tree else { return false };

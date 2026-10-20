@@ -1,0 +1,38 @@
+id     = "scaled-gradient-redraw"
+about  = """integration-r8's scaled-gradient redraw: a gradient tile on a bar
+morphs into a large gradient tile on a panel, spring overshooting so the
+large tile is drawn scaled a little past 1 for a few frames. A partial
+repaint drew the tile's gradient from the whole cached pixmap and a fresh
+repaint from each raster cell's part of it: the same pixels placed from
+another origin, sampled bilinearly, a channel a level off at a near tie
+(`redraw`; eval/mutants/scaled-gradient-redraw.patch draws from the
+cache again)."""
+screen = { width = 400, height = 360, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state big = false
+
+bar Top {
+  edge: top; height: 40; bg: $surface
+  row { height: 40; pad: 0, 8; gap: 8; align: center
+    if !big { box { id: tile; size: 24; radius: 4; bg: linear(45deg, $magenta, $blue); morph: "tile" } }
+    spacer
+  }
+}
+
+panel Sheet {
+  anchor: top; margin: 8; keyboard: none; open: big
+  col { width: 220; pad: 12; gap: 8; radius: 16; bg: $surface
+    box { id: large; size: 196; radius: 12; bg: linear(45deg, $magenta, $blue); morph: "tile" }
+  }
+}
+
+=== steps
+rest
+mark grow
+set big true
+rest
+mark shrink
+set big false
+rest

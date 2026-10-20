@@ -8068,6 +8068,54 @@ fn a_named_node_coming_on_screen_starts_from_its_partners_box() {
     assert!(arrival(&r), "{}", show(&r, &t));
 }
 
+/// (integration-r8) A box is snapped to physical pixels where it is
+/// drawn, before its ancestors' transforms, so a named node arriving
+/// inside a sheet its morph draws eight times its height is on its way
+/// within eight pixels on y: 3 px off it passes there, and fails with
+/// nothing magnifying it; 20 px off fails under the sheet too.
+#[test]
+fn a_named_nodes_way_gives_what_its_ancestors_magnify() {
+    let sc = scenario("");
+    let arrival = |r: &Report| {
+        r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("morph arrival"))
+    };
+    let nested = |off: f32, mag: f32| {
+        let mut t = panel_morph(
+            move |k| {
+                let mut b = from_pill(k);
+                if k == 1 {
+                    b[1] += off;
+                }
+                b
+            },
+            false,
+        );
+        for f in &mut t.frames {
+            if f.k >= 1 {
+                let mut s = row("sheet", [0.0, 0.0, 260.0, 90.0]);
+                s.surface = 2;
+                s.scale = if f.k == 1 { [1.0, mag] } else { [1.0, 1.0] };
+                f.n.push(s);
+            }
+        }
+        t.nodes.insert("sheet".into(), meta("sheet", None));
+        t.nodes.get_mut("card").unwrap().parent = Some("sheet".into());
+        t.seal();
+        t
+    };
+    let t = nested(3.0, 8.0);
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
+    let t = nested(3.0, 1.0);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+    let t = nested(20.0, 8.0);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+}
+
 /// (integration-r7 part 2) A named node that comes on screen with no
 /// partner shows at its own box unless something declared moves it: the
 /// renderer's own motion bits (a glide it gave the card) excuse nothing,

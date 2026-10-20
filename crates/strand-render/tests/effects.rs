@@ -603,7 +603,13 @@ fn pair(a: PropValue, b: PropValue) -> PropValue {
 /// glowing text and a grained pill, on a dark bar 360×80 logical pixels.
 fn light(scale: Scale, time: u64, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    // (integration-r8) 80 px tall, as a host configures a bar at its
+    // height: its glows reach no further, so it keeps no overhang.
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Height, num(80.0))],
+    );
     let place = |x: f32, w: f32, h: f32| {
         vec![
             (Prop::X, num(x)),
@@ -1264,7 +1270,13 @@ fn generative(scale: Scale, reduced: bool) -> (Renderer, Buffer) {
     ]);
     nodes.push((NodeKind::Particles, p));
     let mut b = Builder::default();
-    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    // (integration-r8) 64 px tall, as a host configures a bar at its
+    // height: the particles' glow reaches no further.
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Height, num(64.0))],
+    );
     for (kind, mut p) in nodes {
         p.push((Prop::Place, kw("absolute")));
         b.node(kind, Some(root), p);
@@ -2580,6 +2592,132 @@ fn a_shared_morph_starts_from_the_named_box() {
     buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
     assert_eq!(buf.px(150, 30), orange);
     assert_eq!(buf.px(20, 30), bg);
+}
+
+/// A `w × h` box `id` under `parent` at `(x, y)` (absolute), `bg`,
+/// named `name`, created at once.
+fn named_box(
+    d: &mut SceneDiff,
+    (id, parent): (NodeId, NodeId),
+    (x, y, w, h): (f32, f32, f32, f32),
+    bg: &str,
+    name: &str,
+) {
+    d.create(id, NodeKind::Box, Some(parent), 0);
+    for (p, v) in at_xy(x, y, w, h) {
+        set_now(d, id, p, v);
+    }
+    set_now(d, id, Prop::Place, kw("absolute"));
+    set_now(d, id, Prop::Bg, color(bg));
+    d.set(id, Prop::Morph, text(name));
+}
+
+/// (integration-r8, decisions.md) A shared morph nested in another's: a
+/// small card (`morph: "card"`, 40 × 20 at (10, 10)) holding a dot
+/// (`morph: "dot"`, 10 × 10 two pixels in) is replaced by a large card
+/// (160 × 120 at (100, 40)) holding a large dot (60 × 60, 20 px in). On
+/// the first frame the dot is on its own way on the surface, from the
+/// small dot's box (12..22 × 12..22) to its own (120..180 × 60..120),
+/// about a quarter along like the card: centred near (52, 36) and about
+/// 23 px wide, not scaled a second time by the card's flight. It ends
+/// at its own box.
+#[test]
+fn a_morph_nested_in_another_goes_its_own_way() {
+    use std::time::Duration;
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Height, num(200.0))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let (card, dot) = (NodeId::new(500, 0), NodeId::new(501, 0));
+    let mut d = SceneDiff::new();
+    named_box(
+        &mut d,
+        (card, bar),
+        (10.0, 10.0, 40.0, 20.0),
+        "#89b4fa",
+        "card",
+    );
+    named_box(
+        &mut d,
+        (dot, card),
+        (2.0, 2.0, 10.0, 10.0),
+        "#fab387",
+        "dot",
+    );
+    assert!(r.apply(d).is_empty());
+    r.attach_surface(S, bar);
+    let mut buf = Buffer::new(300, 200, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_millis(1000));
+    let (blue, orange) = (buf.px(40, 25), buf.px(17, 17));
+    assert_ne!(blue, orange);
+    let (big, big_dot) = (NodeId::new(502, 0), NodeId::new(503, 0));
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::Remove {
+        id: card,
+        window: false,
+    });
+    named_box(
+        &mut d,
+        (big, bar),
+        (100.0, 40.0, 160.0, 120.0),
+        "#89b4fa",
+        "card",
+    );
+    named_box(
+        &mut d,
+        (big_dot, big),
+        (20.0, 20.0, 60.0, 60.0),
+        "#fab387",
+        "dot",
+    );
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(1016));
+    // The share of its way the card is drawn at (`$motion.spatial`'s
+    // first refresh), from its four edges.
+    let span = |hits: Vec<u32>| {
+        (
+            *hits.first().unwrap() as f32,
+            *hits.last().unwrap() as f32 + 1.0,
+        )
+    };
+    let (cl, cr) = span((0..300).filter(|x| buf.px(*x, 30) == blue).collect());
+    let (ct, cb) = span((0..200).filter(|y| buf.px(70, *y) == blue).collect());
+    let f =
+        ((cl - 10.0) / 90.0 + (cr - 50.0) / 210.0 + (ct - 10.0) / 30.0 + (cb - 30.0) / 130.0) / 4.0;
+    assert!(f > 0.1 && f < 0.5, "the card is on its way: {f}");
+    // The dot as far along its own way, within a few pixels.
+    let lerp = |a: f32, b: f32| a + (b - a) * f;
+    let want = (
+        lerp(12.0, 120.0),
+        lerp(12.0, 60.0),
+        lerp(22.0, 180.0),
+        lerp(22.0, 120.0),
+    );
+    let (cy, cx) = (
+        ((want.1 + want.3) / 2.0) as u32,
+        ((want.0 + want.2) / 2.0) as u32,
+    );
+    let (dl, dr) = span((0..300).filter(|x| buf.px(*x, cy) == orange).collect());
+    let (dt, db) = span((0..200).filter(|y| buf.px(cx, *y) == orange).collect());
+    for (got, want, edge) in [
+        (dl, want.0, "left"),
+        (dt, want.1, "top"),
+        (dr, want.2, "right"),
+        (db, want.3, "bottom"),
+    ] {
+        assert!(
+            (got - want).abs() <= 3.0,
+            "the dot's {edge} edge at {got}, {want} on its way ({f}): {dl} {dt} {dr} {db}"
+        );
+    }
+    settle(&mut r, &mut buf, 1016);
+    let orange_at = |x: u32, y: u32| buf.px(x, y) == orange;
+    assert!(orange_at(150, 90) && orange_at(122, 62) && orange_at(178, 118));
+    assert!(!orange_at(118, 90) && !orange_at(150, 58));
 }
 
 /// design.md: "Shared-element morph across surfaces, so the bar's media
