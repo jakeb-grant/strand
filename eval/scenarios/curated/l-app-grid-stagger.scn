@@ -1,0 +1,36 @@
+id     = "l-app-grid-stagger"
+about  = "An app grid opens on a panel of its own with its tiles entering 25 ms apart from `enter { opacity: 0; scale: 0.85 }`, closes, and is opened and closed again quickly. Each tile waiting for its turn is hidden at opacity 0 and held at scale 0.85, and the turns count from the panel's first frame, which shows every pose exactly. From blind set L."
+screen = { width = 480, height = 300, scale = 1.0 }
+hz     = 60
+
+=== grid.strand
+state grid_on = false
+
+panel AppGrid {
+  anchor: center; layer: overlay; open: grid_on
+  col { width: 300; pad: 14; radius: 16; bg: #1a1b22e6
+    grid { columns: 4; gap: 10; stagger: 25ms
+      for a in ["Files", "Web", "Mail", "Music", "Photos", "Notes", "Maps", "Clock"] key a {
+        col { height: 48; align: center; justify: center; radius: 10
+          enter { opacity: 0; scale: 0.85 }
+          box { size: 32; radius: 9; bg: #61afef }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set grid_on true
+rest
+shot open
+mark close
+set grid_on false
+rest
+mark quick
+set grid_on true
+frames 6
+set grid_on false
+rest

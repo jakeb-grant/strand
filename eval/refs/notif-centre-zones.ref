@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "notif-centre-zones"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 98 -> 92 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario b4df102d9285d9b5
-seal a2563e9f817c5c19
+seal a674ba58519f1f75
 S1 0 - "panel Centre"
 S2 0 - "bar Top"
 S3 0 - "bar Side"
@@ -293,7 +293,7 @@ k61
 s1 z=220,165
 k62 p5
 s5 z=129,34 o=133,246
-n19 srf=5 x=11 y=0 w=107 h=34 op=0 hid=opacity0
+n19 srf=5 x=11 y=0 w=107 h=34 op=0 sc=0.92,0.92 hid=opacity0
 k63
 n19 v=14.171875,1,100.671875,31.984375 op=37 sc=0.941,0.941 hid=-
 n20 srf=5 x=25 y=10 w=79 h=15 v=27.34375,10.421875,74.328125,14.109375 op=37 txt=S ord=2 ink=25,11,79,11 fg=c0caf5ff gl=["do\u0020not\u0020disturb"]
@@ -400,6 +400,6 @@ n20 op=0
 n21 op=0
 k91
 s5 -
-n19 v=d sc=1,1 hid=opacity0
+n19 v=d hid=opacity0
 n20 -
 n21 -

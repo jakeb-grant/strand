@@ -265,6 +265,47 @@ fn an_entering_row_reports_its_pose_then_authored_motion() {
     assert_eq!(last.opacity, 1.0);
 }
 
+/// Three boxes entering under a 25 ms stagger with `enter { opacity: 0;
+/// scale: 0.85 }` (blind set L's app grid, in a bar).
+const STAGGERED: &str = "
+state on = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 4; align: center; stagger: 25ms
+    if on {
+      box { width: 20; height: 10; bg: #0000ff; enter { opacity: 0; scale: 0.85 } }
+      box { width: 20; height: 10; bg: #0000ff; enter { opacity: 0; scale: 0.85 } }
+      box { width: 20; height: 10; bg: #0000ff; enter { opacity: 0; scale: 0.85 } }
+    }
+  }
+}
+";
+
+/// (eval-finish) A child waiting for its stagger turn is held at its
+/// enter pose, hidden at opacity 0: its trace reports the pose's scale,
+/// not 1 (the hidden row's look was written as unscaled, which `stagger`
+/// read as the child leaving its pose on its first frame).
+#[test]
+fn a_hidden_held_child_reports_its_poses_scale() {
+    let mut sh = Shell::boot(STAGGERED, false);
+    sh.paint();
+    sh.set("on", Value::Bool(true));
+    let frames = sh.run();
+    let held: Vec<&NodeTrace> = frames
+        .iter()
+        .flat_map(|f| f.nodes.iter())
+        .filter(|n| n.kind == NodeKind::Box && n.motions.contains(Motions::STAGGER))
+        .collect();
+    assert!(!held.is_empty(), "a child waits for its turn");
+    for n in held {
+        assert_eq!(n.hidden, Some(Hidden::Opacity0), "{n:?}");
+        assert!(
+            (n.scale[0] - 0.85).abs() < 1e-6 && (n.scale[1] - 0.85).abs() < 1e-6,
+            "held at its pose's scale: {n:?}"
+        );
+    }
+}
+
 const LATE: &str = "
 state show = false
 bar Top {

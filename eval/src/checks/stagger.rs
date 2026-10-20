@@ -23,7 +23,10 @@
 //! window brings back at rest does not), in paint order. Child `n`'s start is due `n` steps after
 //! the batch's change: the tick before the batch's first frame, since
 //! its first frame shows the first child one frame on (a retarget starts
-//! one period before the frame that shows it, strand-scene motion.rs).
+//! one period before the frame that shows it, strand-scene motion.rs),
+//! but (eval-finish) never before its surface's previous paint: on a
+//! surface's first frame (a panel opening with the children) the change
+//! starts at that frame, which shows every pose exactly.
 //! It is let go on the first frame at or after that, so its start is
 //! held to lie between the moment due and one period after it: within a
 //! frame; and no frame before the moment due shows it off its pose. A child whose text is still on its way waits for it
@@ -136,7 +139,25 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             };
             batch.sort_by_key(|k| order(k));
             let period_ns = 1.0e9 / f64::from(seg.hz.max(1));
-            let t0 = tl.frames[i0].t_ns as f64 - period_ns;
+            // (eval-finish) The batch's change: a change starts one
+            // refresh before the first frame that shows it, never before
+            // its surface's previous paint, so on a surface's first frame
+            // (a panel opening with its children, a new surface for one
+            // opened again) it starts at that frame and shows the pose
+            // exactly (decisions.md wave3-pixels (p2), "a surface's first
+            // frame"; architecture.md "Motion"; `continuity::start_of`).
+            let first_t = tl.frames[i0].t_ns;
+            let surface = batch.first().and_then(|k| tl.row(i0, k)).map(|r| r.surface);
+            let previous = surface.and_then(|s| {
+                trace
+                    .frames
+                    .iter()
+                    .filter(|f| f.k < k0 && f.painted.contains(&s))
+                    .map(|f| f.t_ns)
+                    .max()
+            });
+            let lead = previous.map_or(0.0, |p| (first_t.saturating_sub(p) as f64).min(period_ns));
+            let t0 = first_t as f64 - lead;
             for (n, key) in batch.iter().enumerate() {
                 let Some(pose) = trace.nodes.get(*key).and_then(|m| m.enter) else {
                     continue;

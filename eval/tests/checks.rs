@@ -3294,6 +3294,122 @@ fn stagger_takes_a_slow_start_from_its_turn_not_its_first_visible_frame() {
     );
 }
 
+/// (eval-finish, blind set L's l-app-grid-stagger) Children entering
+/// with a surface that first paints at tick 1 (a panel opening): with no
+/// paint of it before, their change starts at that frame, which shows
+/// every pose exactly, so their turns count from it (children 30 ms apart
+/// let go at ticks 1, 3 and 5). Counted from the tick before, as on a
+/// surface that painted before, they start a frame early.
+#[test]
+fn stagger_counts_from_a_surfaces_first_frame() {
+    let sc = scenario("");
+    let on_new_surface = |starts: [u32; 3]| {
+        let mut t = staggered(|n| starts[n]);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key.starts_with('c') {
+                    r.surface = 2;
+                }
+            }
+            if f.k >= 1 {
+                f.painted.push(2);
+                f.sizes.insert(2, BAR);
+                let c = f.cost[&1];
+                f.cost.insert(2, c);
+            }
+        }
+        t.seal();
+        t
+    };
+    let t = on_new_surface([1, 3, 5]);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = on_new_surface([1, 2, 4]);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c1") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+    // On a surface that painted before, the same starts are late.
+    let t = staggered(|n| [1, 3, 5][n]);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c1") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-finish, blind set L's l-app-grid-stagger) Children waiting for
+/// their turn under `enter { opacity: 0; scale: 0.85 }` are hidden at
+/// opacity 0 and held at the pose's scale, as the trace now reports a
+/// hidden row's own scale: on time. One whose scale leaves its pose
+/// before its turn, still hidden, starts early.
+#[test]
+fn stagger_holds_a_hidden_child_to_its_poses_scale() {
+    let sc = scenario("");
+    let build = |early: bool| {
+        let mut t = staggered(|n| [1, 2, 4][n]);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                let Some(n) = ["c0", "c1", "c2"].iter().position(|k| *k == r.key) else {
+                    continue;
+                };
+                let s = [1, 2, 4][n];
+                if f.k >= 1 && f.k < s {
+                    r.hidden = Some("opacity0".into());
+                    let at = if early && r.key == "c2" && f.k >= 2 {
+                        0.9
+                    } else {
+                        0.85
+                    };
+                    r.scale = [at, at];
+                } else if f.k >= s {
+                    let p = (((f.k - s + 1) as f32) / 6.0).min(1.0);
+                    let at = 0.85 + 0.15 * p;
+                    r.scale = [at, at];
+                }
+            }
+        }
+        for key in ["c0", "c1", "c2"] {
+            t.nodes.get_mut(key).unwrap().enter = Some(Pose {
+                opacity: Some(0.0),
+                scale: Some(0.85),
+                ..Pose::default()
+            });
+        }
+        t.seal();
+        t
+    };
+    let t = build(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Stagger),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = build(true);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Stagger)
+            .iter()
+            .any(|f| f.key.as_deref() == Some("c2") && f.msg.starts_with("start")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// (eval-coverage-4) The three children of [`staggered`] leave at tick
 /// 8 and mount again at tick 10 (a result filtered out and typed back),
 /// child `n` let go of its turn at `back(n)`, or drawn back at rest with

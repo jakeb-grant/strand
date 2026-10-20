@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-reopen"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario a54aae74f6fcdafe
-seal a839623f7129fd5a
+seal de0c7b0bf1dc567e
 S1 0 - "bar Top"
 S2 1 29 "popup#menu"
 S3 30 58 "popup#menu"
@@ -25,7 +25,7 @@ n1 x=0 y=0 w=300 h=30 txt=S ord=2 ink=0,1,32,11 fg=ffffffff gl=["12:00"]
 n2 x=0 y=0 w=300 h=30 bg=faf9ffff
 k1 p2
 s2 z=120,60 o=0,36
-n3 srf=2 x=0 y=0 w=120 h=60 op=0 hid=opacity0
+n3 srf=2 x=0 y=0 w=120 h=60 op=0 sc=0.9,0.9 hid=opacity0
 k2
 n3 v=4.4375,2.21875,111.125,55.5625 op=37 sc=0.926,0.926 hid=-
 n4 srf=2 x=6 y=6 w=100 h=20 v=10,7.78125,92.609375,18.515625 op=37 ord=2 bg=ff8000ff
@@ -151,7 +151,7 @@ n5 op=0
 n6 op=0
 k29
 s2 -
-n3 v=d sc=1,1 hid=opacity0
+n3 v=d hid=opacity0
 n4 -
 n5 -
 n6 -
@@ -283,7 +283,7 @@ n5 op=0
 n6 op=0
 k58
 s3 -
-n3 v=d sc=1,1 hid=opacity0
+n3 v=d hid=opacity0
 n4 -
 n5 -
 n6 -

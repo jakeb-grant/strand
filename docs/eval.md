@@ -972,7 +972,11 @@ says a node moves, not how, so it does not exempt from them; only an
   `window` set, a declared fact, where eval-coverage-4 read the
   renderer's own `ENTER` bits, so a remount that skipped its enter was
   excused). Child `n` is due `n` steps (at most
-  1 s) after the batch's change, a period before its first frame. Its
+  1 s) after the batch's change, a period before its first frame but
+  never before its surface's previous paint (eval-finish): on a
+  surface's first frame (a panel opening with its children, or opened
+  again on a new surface) the change starts at that frame, which shows
+  every pose exactly (decisions.md wave3-pixels (p2)). Its
   start is the first frame it no longer waits for its turn (`Motions`
   `STAGGER` cleared), or an earlier one that already shows it off its
   enter pose, and must come within a period after it is due: not before
@@ -985,7 +989,11 @@ says a node moves, not how, so it does not exempt from them; only an
   for its text, decisions.md late-text-dip), one whose pose was dropped
   unseen (kept from view by an ancestor the frame before its first, it
   shows at rest and plays no enter, as `vanish` reads it) and reduced
-  motion.
+  motion. A child waiting for its turn is hidden at opacity 0 at its
+  pose, and the trace records a hidden row's own scale and turn (the
+  pose's), so it is read as on its pose until it moves (eval-finish:
+  the row was recorded at scale 1, which read as leaving a scale pose on
+  its first frame).
 - **`pop-out`** (in `vanish`). "A removed subtree plays `exit`, then
   unmounts" (design.md "Poses"). The last frame an exiting node is drawn
   in shows it at its exit pose (its `exit`, else its `enter`): its own

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "media-art-expand"
 verdict good
-note "integration-r7 part 2 stand-in rank: from k62, as the art springs back from 112 x 72, it stands in with the 81 x 54 whole-source decode (the least sharp decode at least as sharp as the box), not the 140 x 90 one minified; placement and redraw pass"
+note "eval-finish hidden-row look: the trace now reports a node hidden at opacity 0 at its own scale and turn (its enter or exit pose's) instead of a hard-coded 1 and 0; read the diff against the reference block: every difference is scale (or rotate) on a row hid=opacity0 at an enter's first frame or an exit's last, now the pose's value (0.6 to 0.96 as each scenario's pose declares), and nothing else changed"
 date 2026-10-20
-rev "ca85e114+changes"
+rev "84550a8c+changes"
 approver "claude"
 scenario 78bf9b67258972a9
-seal cc5c90f0d0cf9aca
+seal fb9ae2a8adac6127
 S1 0 - "panel Media"
 N0 "artist|shell.strand:13:11|#1" "text#artist"
 N1 "art|shell.strand:9:9|#0" "image#art"
@@ -587,7 +587,7 @@ n13 op=0
 n14 op=0
 k110
 n12 -
-n13 v=50.40625,80,220,44 sc=1,1 hid=opacity0 bg=-
+n13 v=50.40625,80,220,44 hid=opacity0 bg=-
 n14 -
 k111
 n13 -

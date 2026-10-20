@@ -5245,12 +5245,12 @@ k48
 k49
 ref "m.enter-fade__enter-scale.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 7e5230e992f2893d
-seal aad4357636c2b211
+seal 27b17cebb062fafc
 S1 0 - "bar Top"
 S2 1 27 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -5401,7 +5401,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d sc=1,1 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k41
 n0 x=95 ord=5
@@ -7855,12 +7855,12 @@ k49
 k50
 ref "m.enter-fade__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 4cc52d080536bfbf
-seal c686bccc2924d47f
+seal 5657fb95d77469e6
 S1 0 - "bar Top"
 S2 1 41 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -8047,7 +8047,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d rot=0 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k55
 n0 x=95 ord=5
@@ -16855,12 +16855,12 @@ k48
 k49
 ref "m.enter-slide__enter-scale.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 646c2e9cec913aa4
-seal 1d2ef12298ba8c7f
+seal 38426772f768cd95
 S1 0 - "bar Top"
 S2 1 27 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -17011,7 +17011,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d sc=1,1 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k41
 n0 x=95 ord=5
@@ -19465,12 +19465,12 @@ k49
 k50
 ref "m.enter-slide__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 25a0d59072b8643e
-seal 5aed9217577aaf0a
+seal 7cc5ccf6e9568c52
 S1 0 - "bar Top"
 S2 1 41 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -19657,7 +19657,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d rot=0 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k55
 n0 x=95 ord=5
@@ -24817,12 +24817,12 @@ k44
 k45
 ref "m.exit-fade__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 62bfc3e522f7bc3b
-seal 39ebab0741bc89b4
+seal dd78babc2fd957cc
 S1 0 - "bar Top"
 S2 1 36 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -24982,7 +24982,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d rot=0 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k50
 n0 x=95 ord=5
@@ -34141,12 +34141,12 @@ k44
 k45
 ref "m.exit-slide__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "eval-finish hidden-row look: a subject hidden at opacity 0 is now recorded at its own scale and turn; read each cell's diff: one row hid=opacity0 per cell (the enter's first frame or the exit's last) now at the enter-scale pose's 0.6, or at lean's 8 degree tilt, where it read 1 and 0; nothing else changed"
+date 2026-10-20
+rev "84550a8c+changes"
 approver "claude"
 scenario 5f151b08299546ff
-seal 6c2a346baf02ab54
+seal 1b12418d4633669d
 S1 0 - "bar Top"
 S2 1 36 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -34306,7 +34306,7 @@ n1 ord=9
 n3 ord=7
 n5 ord=5
 n7 ord=8
-n12 v=d rot=0 hid=opacity0
+n12 v=d hid=opacity0
 n13 -
 k50
 n0 x=95 ord=5

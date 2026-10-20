@@ -604,7 +604,14 @@ impl<'a> Flattener<'a> {
             }
             #[cfg(feature = "eval-hooks")]
             if let Some(t) = probe {
-                let look = (opacity, [1.0, 1.0], 0.0);
+                // (eval-finish) Nothing of it is drawn, but its own scale
+                // and turn are what they are (a staggered child waiting
+                // at `enter { opacity: 0; scale: 0.85 }` is at 0.85), as
+                // the drawn path below reports them.
+                let zoom = number(get(Prop::Scale)).unwrap_or(1.0).clamp(0.0, 1000.0);
+                let turn = angle(get(Prop::Rotate)).unwrap_or(0.0) % 360.0;
+                let scale = [zoom * morph_sx as f32, zoom * morph_sy as f32];
+                let look = (opacity, scale, turn);
                 let hidden = Some(crate::probe::Hidden::Opacity0);
                 self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
             }
