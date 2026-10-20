@@ -326,24 +326,28 @@ impl ThemeHost {
     /// Waits for running quantiser jobs (tests, `strand check`), then
     /// lets the next flush see their results.
     pub fn wait_images(&self, rt: &Runtime, timeout: std::time::Duration) -> bool {
-        let done = self
-            .quantiser
-            .borrow_mut()
-            .as_mut()
-            .is_none_or(|q| q.wait(timeout));
+        let done = self.quantiser.borrow_mut().as_mut().is_none_or(|q| {
+            let done = q.wait(timeout);
+            // Reported here, as the bump below re-evaluates every reader.
+            q.poll();
+            done
+        });
         self.bump(rt);
         done
     }
 
     /// (M5) Whether a wallpaper is still being quantised (a `file` output
     /// writes nothing until it resolves, even while `??` gives the screen
-    /// a fallback). Tracked: the reader runs again when a job ends.
+    /// a fallback). Also while a finished job is not reported yet: a
+    /// lookup that took it does not re-run the token table made from the
+    /// fallback, the report's bump does. Tracked: the reader runs again
+    /// when a job ends.
     pub fn images_pending(&self, rt: &Runtime) -> bool {
         let _ = self.generation.get(rt);
         self.quantiser
             .borrow()
             .as_ref()
-            .is_some_and(Quantiser::busy)
+            .is_some_and(Quantiser::settling)
     }
 
     /// How many images were decoded and quantised.

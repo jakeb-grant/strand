@@ -486,6 +486,30 @@ fn replaced_and_briefly_missing_wallpapers() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A finished job taken by one lookup is still settling until `poll`
+/// reports it: palettes evaluated from an earlier lookup still hold the
+/// fallback until that report makes them run again.
+#[test]
+fn a_result_taken_by_a_lookup_settles_when_polled() {
+    let dir = temp("settling");
+    let wall = dir.join("wall.png");
+    std::fs::write(&wall, png([30, 90, 200], [240, 200, 40], 64, 64)).unwrap();
+    let mut q = Quantiser::new(None).unwrap();
+    assert_eq!(q.lookup(&wall), Lookup::Pending { last: None });
+    assert!(q.settling());
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !matches!(q.lookup(&wall), Lookup::Ready(_)) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!q.busy());
+    assert!(q.settling(), "taken by a lookup, not yet reported");
+    assert!(q.poll());
+    assert!(!q.settling());
+    drop(q);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A lookup set off by something else (a portal change) while the
 /// wallpaper is being copied over in place reads a torn file: its seed
 /// holds through the grace instead of failing, the finished write is

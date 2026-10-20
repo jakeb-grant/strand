@@ -1140,6 +1140,13 @@ impl Quantiser {
         !self.in_flight.is_empty()
     }
 
+    /// Whether a job is still running, or a lookup took finished ones
+    /// that `poll` has not reported yet: whatever was evaluated from an
+    /// earlier lookup may still hold a fallback until that report.
+    pub fn settling(&self) -> bool {
+        self.busy() || self.unreported
+    }
+
     /// Waits up to `timeout` for every job to finish (tests, `strand
     /// check`). Returns whether none is left.
     pub fn wait(&mut self, timeout: Duration) -> bool {
