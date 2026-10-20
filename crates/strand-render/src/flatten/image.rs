@@ -122,7 +122,9 @@ impl Flattener<'_> {
                         sig: &mut DefaultHasher,
                         _stand_in: bool,
                         _file: &str| {
-            let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
+            // Placed by the node's own fit, a stand-in decoded by another
+            // fit included (stand-in-fit).
+            let (dx, dy, dw, dh) = d.placed_for(rect.x0, rect.y0, rect.width(), rect.height(), fit);
             #[cfg(feature = "eval-hooks")]
             if this.trace.is_some() {
                 let s = this.scale.as_f64();

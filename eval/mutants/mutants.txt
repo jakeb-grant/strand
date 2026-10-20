@@ -153,3 +153,9 @@ image-redraw.patch      regressions/image-redraw.scn      redraw
 # when the pin let go lands, and the pixels they share are not repainted
 # (`redraw`).
 dock-drag.patch         regressions/dock-drag.scn         redraw
+# stand-in-fit.patch: stand-in-fit's choice taken out (decisions.md
+# stand-in-fit): a springing box draws the newest decode of its source,
+# and any stand-in defers its own decode, so the strip's crop stands in
+# for the art's wider box and its edge rows are padded out over the box's
+# top and bottom (`placement` cover).
+stand-in-fit.patch      regressions/stand-in-fit.scn      placement

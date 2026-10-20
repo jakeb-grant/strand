@@ -1,0 +1,30 @@
+id     = "stand-in-fit"
+about  = """Round 7's stand-in-fit (docs/decisions.md stand-in-fit): a square
+`fit: cover` art springs to a wide box beside a thin strip of the
+same file, decoded after it. A box springing draws a decode of its
+source at another size until it rests, and that was the newest decode
+of the file, whatever it held: the strip's crop, the file's middle
+rows, placed where `cover` puts the source in the art's box and its
+top and bottom rows padded out over the rest (`placement`'s `cover`;
+eval/mutants/stand-in-fit.patch puts the newest decode back)."""
+screen = { width = 240, height = 120, scale = 1.25 }
+hz     = 60
+
+=== shell.strand
+state wide = false
+panel P {
+  anchor: top_left; margin: 6; open: true
+  row { width: 220; height: 96; pad: 8; gap: 8; align: center; bg: #1c1f26
+    image "../../fixtures/images/art.png" { id: art; fit: cover; width: wide ? 96 : 44; height: wide ? 60 : 44; radius: 6 }
+    image "../../fixtures/images/art.png" { id: strip; fit: cover; width: 72; height: 10; radius: 2 }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+mark narrow
+set wide false
+rest

@@ -58,9 +58,12 @@
 //!   to it), a decode made for another box size standing in while its
 //!   box springs included: the source's place in the drawn pixmap (by
 //!   the fit the pixmap was decoded by, at its own size) scaled to where
-//!   the pixmap is drawn, against the source fitted to the box. `none`
-//!   (its own size, which an SVG or icon takes at the box's scale) is
-//!   not judged.
+//!   the pixmap is drawn, against the source fitted to the box. And
+//!   what the fit shows of the source in the box is the pixmap's own
+//!   pixels (`cover`, stand-in-fit): a stand-in decoded for a box of
+//!   another shape holds another crop, and past it the raster pads its
+//!   edge rows out. `none` (its own size, which an SVG or icon takes at
+//!   the box's scale) is not judged.
 
 use std::collections::BTreeMap;
 
@@ -710,6 +713,63 @@ fn fit(cx: &Cx) -> Vec<Finding> {
             ];
             judged += 1;
             let names = ["x", "y", "w", "h"];
+            // (stand-in-fit) What the fit shows of the source in the box
+            // must be the pixmap's own pixels: where the pixmap holds no
+            // source (a decode for a box of another shape, cropped
+            // otherwise), the raster pads its edge rows out.
+            let edges = |r: [f64; 4]| [r[0], r[1], r[0] + r[2], r[1] + r[3]];
+            let meet = |a: [f64; 4], b: [f64; 4]| {
+                [
+                    a[0].max(b[0]),
+                    a[1].max(b[1]),
+                    a[2].min(b[2]),
+                    a[3].min(b[3]),
+                ]
+            };
+            let need = meet(edges(want), [0.0, 0.0, rw, rh]);
+            let have = meet(edges([dx - rx, dy - ry, dw, dh]), edges(got));
+            let short = [
+                have[0] - need[0],
+                have[1] - need[1],
+                need[2] - have[2],
+                need[3] - have[3],
+            ];
+            let bare = (0..4).find(|a| short[*a] > tol);
+            if need[2] > need[0]
+                && need[3] > need[1]
+                && let Some(a) = bare
+            {
+                let side = ["left", "top", "right", "bottom"][a];
+                out.push(
+                    Finding::fail(
+                        CheckId::Placement,
+                        format!(
+                            "fit: `fit: {}` shows its source over [{:.1}, {:.1}, {:.1}, {:.1}] of \
+                             its box, and the pixmap drawn holds it only over [{:.1}, {:.1}, \
+                             {:.1}, {:.1}]: {:.1} px at its {side} are its edge padded out{}",
+                            im.fit,
+                            need[0],
+                            need[1],
+                            need[2],
+                            need[3],
+                            have[0],
+                            have[1],
+                            have[2],
+                            have[3],
+                            short[a],
+                            if im.stand_in {
+                                " (a decode for another size stands in)"
+                            } else {
+                                ""
+                            }
+                        ),
+                    )
+                    .at(f.k)
+                    .node(&im.key)
+                    .axis("cover")
+                    .got(short[a], [0.0, tol]),
+                );
+            }
             if let Some(a) = (0..4).find(|a| (got[*a] - want[*a]).abs() > tol) {
                 out.push(
                     Finding::fail(

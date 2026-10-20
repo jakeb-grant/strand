@@ -1,8 +1,7 @@
 diff --git a/crates/strand-render/src/image.rs b/crates/strand-render/src/image.rs
-index 545fa82b..b100a3f8 100644
 --- a/crates/strand-render/src/image.rs
 +++ b/crates/strand-render/src/image.rs
-@@ -167,7 +167,8 @@ impl Decoded {
+@@ -174,7 +174,8 @@
              return (x, y, w, h);
          }
          let (kx, ky) = (dwn / dwo, dhn / dho);
@@ -10,5 +9,5 @@ index 545fa82b..b100a3f8 100644
 +        let _ = (oxn, oyn, oxo, oyo, kx, ky, pw, ph);
 +        (x, y, w, h)
      }
- }
  
+     /// (stand-in-fit) Drawn by [`Decoded::placed_for`] into a `w × h` box

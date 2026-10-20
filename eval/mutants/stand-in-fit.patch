@@ -1,0 +1,24 @@
+diff --git a/crates/strand-render/src/image.rs b/crates/strand-render/src/image.rs
+--- a/crates/strand-render/src/image.rs
++++ b/crates/strand-render/src/image.rs
+@@ -1493,7 +1493,8 @@
+             let Some(Ok(d)) = self.entries.get(k).map(|e| &e.result) else {
+                 continue;
+             };
+-            let r = rank(d);
++            // stand-in-fit's mutant: the newest decode, whatever it holds.
++            let r = (0, rank(d).1 * 0.0);
+             if best.is_none_or(|(b, ..)| r < b) {
+                 best = Some((r, k, d));
+             }
+@@ -1504,9 +1505,7 @@
+     /// A stand-in for `key` that holds what its box shows, within
+     /// [`STAND_IN_BARE`].
+     fn stands_in(&self, key: &ImageKey) -> bool {
+-        self.stand_in(key).is_some_and(|(_, d)| {
+-            d.holds(f64::from(key.w), f64::from(key.h), key.fit).1 <= STAND_IN_BARE
+-        })
++        self.stand_in(key).is_some()
+     }
+ 
+     /// (stand-in-fit) The decode that holds all of `key`'s source at about

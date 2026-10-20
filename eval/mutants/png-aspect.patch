@@ -1,8 +1,7 @@
-diff --git b/crates/strand-render/src/image.rs a/crates/strand-render/src/image.rs
-index e9a7bca8..545fa82b 100644
---- b/crates/strand-render/src/image.rs
-+++ a/crates/strand-render/src/image.rs
-@@ -346,24 +346,6 @@ struct Raster {
+diff --git a/crates/strand-render/src/image.rs b/crates/strand-render/src/image.rs
+--- a/crates/strand-render/src/image.rs
++++ b/crates/strand-render/src/image.rs
+@@ -406,24 +406,6 @@
      h: u32,
      /// Premultiplied RGBA8.
      rgba: Vec<u8>,
@@ -27,7 +26,7 @@ index e9a7bca8..545fa82b 100644
  }
  
  /// Loads `key`: finds the file, decodes it and fits it into its drawn
-@@ -416,7 +398,7 @@ pub fn load_with(
+@@ -476,7 +458,7 @@
              let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
              rgba.extend_from_slice(&[pm(px[0]), pm(px[1]), pm(px[2]), px[3]]);
          }
@@ -36,7 +35,7 @@ index e9a7bca8..545fa82b 100644
          return Ok(Decoded {
              pixmap: Arc::new(to_pixmap(&fit_raster(&src, w, h, key.fit))),
              symbolic,
-@@ -446,7 +428,10 @@ pub fn load_with(
+@@ -506,7 +488,10 @@
                  "not a PNG, JPEG, SVG, GIF or WebP".into(),
              ));
          };
@@ -48,7 +47,7 @@ index e9a7bca8..545fa82b 100644
      };
      Ok(Decoded {
          pixmap: Arc::new(to_pixmap(&out)),
-@@ -517,7 +502,7 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
+@@ -577,7 +562,7 @@
          if rgba.len() != n * 4 {
              return Err(ImageError::Decode("short PNG".into()));
          }
@@ -57,7 +56,7 @@ index e9a7bca8..545fa82b 100644
      }
      if pixels > MAX_STREAMED_PIXELS {
          return Err(ImageError::TooLarge);
-@@ -563,13 +548,10 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
+@@ -623,13 +608,10 @@
              rows_in_band = 0;
          }
      }
@@ -71,7 +70,7 @@ index e9a7bca8..545fa82b 100644
      })
  }
  
-@@ -627,16 +609,7 @@ fn decode_jpeg_inner(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster,
+@@ -687,16 +669,7 @@
      if rgba.len() != n * 4 {
          return Err(ImageError::Decode("short JPEG".into()));
      }
@@ -89,7 +88,7 @@ index e9a7bca8..545fa82b 100644
  }
  
  /// Where a `sw × sh` source goes in a `w × h` box: its scaled size and
-@@ -661,9 +634,7 @@ pub(crate) fn placement(sw: f64, sh: f64, w: f64, h: f64, fit: Fit) -> (f64, f64
+@@ -721,9 +694,7 @@
  /// output pixel averages the source area it covers (downscaling) or
  /// interpolates bilinearly (upscaling).
  fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
@@ -100,7 +99,7 @@ index e9a7bca8..545fa82b 100644
      let (ox, oy, dw, dh) = placement(sw, sh, w as f64, h as f64, fit);
      let (kx, ky) = (sw / dw.max(1e-9), sh / dh.max(1e-9));
      let mut out = vec![0u8; (w * h * 4) as usize];
-@@ -697,17 +668,9 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
+@@ -757,17 +728,9 @@
                      at(ix, iy + 1),
                      at(ix + 1, iy + 1),
                  );
@@ -120,7 +119,7 @@ index e9a7bca8..545fa82b 100644
                  }
              } else {
                  // Downscaling: the area average, partial pixels weighted.
-@@ -746,7 +709,7 @@ fn fit_raster(src: &Raster, w: u32, h: u32, fit: Fit) -> Raster {
+@@ -806,7 +769,7 @@
              }
          }
      }
@@ -129,7 +128,7 @@ index e9a7bca8..545fa82b 100644
  }
  
  /// Renders an SVG into a `w × h` box by `fit`.
-@@ -772,7 +735,14 @@ fn render_svg(data: &[u8], w: u32, h: u32, fit: Fit) -> Result<(Raster, (f64, f6
+@@ -832,7 +795,14 @@
          oy as f32,
      );
      resvg::render(&tree, t, &mut pm.as_mut());
@@ -145,7 +144,7 @@ index e9a7bca8..545fa82b 100644
  }
  
  /// (M4) Decodes a PNG or JPEG held in memory (a Lottie's image asset)
-@@ -785,13 +755,7 @@ pub(crate) fn decode_rgba(
+@@ -845,13 +815,7 @@
      want: Option<(u32, u32)>,
      max_pixels: u64,
  ) -> Result<Pixmap, ImageError> {
@@ -160,7 +159,7 @@ index e9a7bca8..545fa82b 100644
      let ask = want.unwrap_or((MAX_SIDE, MAX_SIDE));
      let src = if data.starts_with(b"\x89PNG") {
          decode_png(data, ask, Fit::Fill)?
-@@ -802,15 +766,16 @@ pub(crate) fn decode_rgba(
+@@ -862,15 +826,16 @@
      };
      let (w, h) = match want {
          Some(wh) => wh,
@@ -182,7 +181,7 @@ index e9a7bca8..545fa82b 100644
          src
      } else {
          fit_raster(&src, w, h, Fit::Fill)
-@@ -827,26 +792,16 @@ pub(crate) fn decode_rgba(
+@@ -887,26 +852,16 @@
      Ok(pm)
  }
  
@@ -218,8 +217,8 @@ index e9a7bca8..545fa82b 100644
 +    (side(w), side(h))
  }
  
- /// A vello pixmap of premultiplied RGBA, red and blue swapped.
-@@ -1667,7 +1622,7 @@ mod tests {
+ /// A vello pixmap of premultiplied RGBA, red and blue swapped, claimed
+@@ -1848,7 +1803,7 @@
                  rgba.extend_from_slice(&f(x, y));
              }
          }
@@ -228,7 +227,7 @@ index e9a7bca8..545fa82b 100644
      }
  
      fn base64(bytes: &[u8]) -> String {
-@@ -1934,53 +1889,6 @@ mod tests {
+@@ -2115,53 +2070,6 @@
          assert_eq!((r.w, r.h), (3000, 2000));
      }
  

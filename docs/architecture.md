@@ -2239,8 +2239,12 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   physical size into a 32 MB LRU (`strand_render::image`, freedesktop icon
   theme, PNG/JPEG/SVG; JPEG IDCT-scaled and PNG reduced row by row so a
   decode holds about the drawn size), on a worker with a text worker,
-  inline offline; while a size springs the latest decode draws placed
-  by its fit (`Decoded::placed_in`, `Item::Image::dest`). Gradients draw
+  inline offline; while a size springs a decode of the source at
+  another size or fit stands in, the one that holds what the box's fit
+  shows (`ImageStore::stand_in`, `Decoded::holds`), placed by the
+  node's own fit (`Decoded::placed_for`, `Item::Image::dest`); when none
+  does (a `cover` box changing shape), one decode of the whole source is
+  asked for to stand in for the rest of the spring (stand-in-fit). Gradients draw
   from dithered pixmaps and shadows from cached ones (a 32 MB paint
   cache of entries up to 16 MB, one over 2 MB built only when a second
   frame repaints all of it, so a first frame and partial frames draw it

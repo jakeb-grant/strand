@@ -754,3 +754,96 @@ fn a_reduced_image_keeps_its_aspect() {
     }
     assert!(worst.0 <= 0.5, "drawn off its aspect: {}", worst.1);
 }
+
+/// (stand-in-fit) While its box springs, a `fit: cover` image stands in
+/// with a decode that holds what its box shows, placed by its own fit:
+/// here its own last decode, not a newer thumbnail of the same file
+/// whose wide crop holds only the middle rows (drawn, the raster padded
+/// its edge rows out over the box's top and bottom).
+#[test]
+fn a_springing_cover_image_stands_in_with_a_decode_that_covers_it() {
+    use std::time::Duration;
+    let path = theme_dir().join("bands.png");
+    if !path.exists() {
+        // Red on top, green in the middle, blue below.
+        write_png(&path, 60, 60, |_, y| match y {
+            0..15 => [255, 0, 0, 255],
+            15..45 => [0, 255, 0, 255],
+            _ => [0, 0, 255, 255],
+        });
+    }
+    let source = path.to_string_lossy().into_owned();
+    let mut r = renderer_with_theme();
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(80.0)),
+            (Prop::Bg, color("#000000")),
+        ],
+    );
+    let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(10.0))]);
+    let cover = || PropValue::Keyword("cover".into());
+    let art = b.node(
+        NodeKind::Image,
+        Some(row),
+        vec![
+            (Prop::Source, text(&source)),
+            (Prop::Fit, cover()),
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(40.0)),
+        ],
+    );
+    // Decoded after the art: the newest decode of the file.
+    b.node(
+        NodeKind::Image,
+        Some(row),
+        vec![
+            (Prop::Source, text(&source)),
+            (Prop::Fit, cover()),
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(16.0)),
+        ],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(SurfaceId(1), root);
+    r.configure_surface(SurfaceId(1), Size::new(200, 80), Scale::ONE);
+    let mut buf = Buffer::new(200, 80, Scale::ONE);
+    let mut t = Duration::from_secs(1);
+    buf.paint_at(&mut r, SurfaceId(1), 0, t);
+    let red = |p: [u8; 4]| p[2] > 0xc0 && p[1] < 0x40 && p[0] < 0x40;
+    let blue = |p: [u8; 4]| p[0] > 0xc0 && p[1] < 0x40 && p[2] < 0x40;
+    let a = r.boxes(SurfaceId(1)).unwrap().rects[&art];
+    let (cx, top, bottom) = ((a.x + 20.0) as u32, a.y as u32 + 1, (a.y + 38.0) as u32);
+    assert!(
+        red(buf.px(cx, top)) && blue(buf.px(cx, bottom)),
+        "at rest, box {a:?}: {:?} {:?}",
+        buf.px(cx, top),
+        buf.px(cx, bottom)
+    );
+
+    let mut d = SceneDiff::new();
+    d.set(art, Prop::Width, num(70.0));
+    d.set(art, Prop::Height, num(70.0));
+    assert!(r.apply(d).is_empty());
+    let (mut frames, mut stood_in) = (0, 0);
+    while r.wants_frame(SurfaceId(1)) && frames < 200 {
+        t += Duration::from_millis(5);
+        buf.paint_at(&mut r, SurfaceId(1), 0, t);
+        frames += 1;
+        let a = r.boxes(SurfaceId(1)).unwrap().rects[&art];
+        let (cx, bottom) = ((a.x + a.w / 2.0) as u32, (a.y + a.h) as u32);
+        // The box's top and bottom rows are the file's own: red, blue.
+        let (top, low) = (buf.px(cx, a.y as u32 + 1), buf.px(cx, bottom - 2));
+        assert!(
+            red(top) && blue(low),
+            "frame {frames}, box {a:?}: top {top:?}, bottom {low:?}"
+        );
+        if a.w > 41.0 && a.w < 69.0 {
+            stood_in += 1;
+        }
+    }
+    assert!(stood_in > 3, "it sprang over {stood_in} frames");
+}

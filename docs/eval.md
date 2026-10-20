@@ -1023,7 +1023,11 @@ says a node moves, not how, so it does not exempt from them; only an
   The source placed is the file's own pixels, by the size its header
   gives (a PNG, JPEG or GIF file, read by the sandbox, `filesize.rs`,
   png-aspect), else the size the decode reports, so a decode that
-  reports another aspect for its source is seen.
+  reports another aspect for its source is seen. And what the fit shows
+  of the source in the box (`cover`'s crop) lies within the pixmap
+  where it holds the source, give or take a pixel and `tol` (axis
+  `cover`, stand-in-fit): a decode for a box of another shape holds
+  another crop, and past it the raster pads the pixmap's edge rows out.
   `pose` (eval-rules-6): with `compositor_poses`, a posed surface lies,
   on each frame, its pose's offset from where it lies at rest, within
   half a pixel (margins are whole pixels). The offset is in output
@@ -1487,8 +1491,8 @@ nested-glide-y (`envelope`, `teleport`, notif-groups-reorder),
 last-fold-half (`continuity` fold, wifi-last-row-fold-2) and
 text-width-rounded-scale (`ink`, bar-split-title-1_25; decisions.md
 integration-r6), and round 7's png-aspect (`placement`), image-redraw
-(`redraw`) and dock-drag (`redraw`; decisions.md of each name): 25 in
-all. In a detached worktree of HEAD, each scenario
+(`redraw`), dock-drag (`redraw`) and stand-in-fit (`placement` cover;
+decisions.md of each name): 26 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

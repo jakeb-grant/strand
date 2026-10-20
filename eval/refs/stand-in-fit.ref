@@ -1,0 +1,65 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "stand-in-fit"
+verdict good
+note "stand-in-fit's first reference: the cover art springing square to wide and back beside a strip crop of the same file stands in with one whole-source decode placed by cover, its top and bottom rows the file's own (placement cover passes; the newest-decode stand-in fails it at k1 by 19.2 px)"
+date 2026-10-20
+rev "cefff264+changes"
+approver "claude"
+scenario c4b3efb3cb6f6fd8
+seal 992497c8e7a1e588
+S1 0 - "panel P"
+N0 "art|shell.strand:5:5|#0" "image#art"
+N1 "strip|shell.strand:6:5|#1" "image#strip"
+N2 "|shell.strand:2:1|#0" "panel@shell.strand:2"
+N3 "|shell.strand:4:3|#0" "row@shell.strand:4"
+k0 p1
+s1 z=220,96 o=6,6
+n0 x=8 y=26 w=44 h=44 v=8,26.40625,44,44 ord=2 im=0,0,44,44@55,55
+n1 x=60 y=43 w=72 h=10 v=60,43.203125,72,9.59375 ord=3 im=0,0,72,9.59375@90,12
+n2 x=0 y=0 w=220 h=96
+n3 x=0 y=0 w=220 h=96 ord=1 bg=1c1f26ff
+k1
+n0 y=24 w=58 h=48 v=8,24,58.40625,48 im=-6.796875,0,72,48@90,60
+n1 x=74 v=74.40625,43.203125,72,9.59375
+k2
+n0 y=21 w=77 h=54 v=8,20.796875,76.796875,54.40625 im=-2.40625,0,81.59375,54.40625@90,60
+n1 x=93 v=92.796875,43.203125,72,9.59375
+k3
+n0 y=19 w=90 h=58 v=8,19.203125,90.40625,57.59375 im=0,-1.34375,90.40625,60.265625@90,60
+n1 x=106 v=106.40625,43.203125,72,9.59375
+k4
+n0 y=18 w=96 h=60 v=8,18.40625,96,60 im=0,-2,96,64@90,60
+n1 x=112 v=112,43.203125,72,9.59375
+k5
+n0 w=97 v=8,18.40625,96.796875,60 im=0,-2.265625,96.796875,64.53125@90,60
+n1 x=113 v=112.796875,43.203125,72,9.59375
+k6
+k7
+k8
+n0 w=96 v=8,18.40625,96,60 im=0,-2,96,64@90,60
+n1 x=112 v=112,43.203125,72,9.59375
+k9
+k10
+n0 im=0,0,96,60@120,75
+k11
+n0 y=20 w=82 h=56 v=8,20,82.40625,56 im=-0.796875,0,84,56@90,60
+n1 x=98 v=98.40625,43.203125,72,9.59375
+k12
+n0 y=23 w=63 h=50 v=8,23.203125,63.203125,49.59375 im=-5.59375,0,74.40625,49.59375@90,60
+n1 x=79 v=79.203125,43.203125,72,9.59375
+k13
+n0 y=25 w=50 h=46 v=8,24.796875,50.40625,46.40625 im=-9.59375,0,69.59375,46.40625@90,60
+n1 x=66 v=66.40625,43.203125,72,9.59375
+k14
+n0 y=26 w=44 h=44 v=8,26.40625,44,44 im=0,0,44,44@55,55
+n1 x=60 v=60,43.203125,72,9.59375
+k15
+n0 w=43 v=8,26.40625,43.203125,44 im=-11.40625,0,66,44@90,60
+n1 x=59 v=59.203125,43.203125,72,9.59375
+k16
+k17
+k18
+n0 w=44 v=8,26.40625,44,44 im=0,0,44,44@55,55
+n1 x=60 v=60,43.203125,72,9.59375
+k19
+k20

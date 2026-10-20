@@ -156,20 +156,80 @@ impl Decoded {
     /// fit places the source in a `w × h` box at `(x, y)`: the same rect
     /// when the box is the decode's own size.
     pub fn placed_in(&self, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        self.placed_for(x, y, w, h, self.fit)
+    }
+
+    /// (stand-in-fit) Where the whole pixmap goes so that the source it
+    /// holds (placed in it by its own fit) lands where `fit`, the
+    /// drawing node's, places the source in a `w × h` box at `(x, y)`.
+    pub fn placed_for(&self, x: f64, y: f64, w: f64, h: f64, fit: Fit) -> (f64, f64, f64, f64) {
         let (pw, ph) = (self.pixmap.width() as f64, self.pixmap.height() as f64);
         let (sw, sh) = self.source;
         if !(sw > 0.0 && sh > 0.0 && pw > 0.0 && ph > 0.0) {
             return (x, y, w, h);
         }
         let (oxo, oyo, dwo, dho) = placement(sw, sh, pw, ph, self.fit);
-        let (oxn, oyn, dwn, dhn) = placement(sw, sh, w, h, self.fit);
+        let (oxn, oyn, dwn, dhn) = placement(sw, sh, w, h, fit);
         if !(dwo > 0.0 && dho > 0.0) {
             return (x, y, w, h);
         }
         let (kx, ky) = (dwn / dwo, dhn / dho);
         (x + oxn - oxo * kx, y + oyn - oyo * ky, pw * kx, ph * ky)
     }
+
+    /// (stand-in-fit) Drawn by [`Decoded::placed_for`] into a `w × h` box
+    /// at the origin: the part of the box it has source pixels for (the
+    /// pixmap where it holds the source; edges `[x0, y0, x1, y1]`), and
+    /// how far, at most, what `fit` shows of the source in the box lies
+    /// past it (box pixels). A decode for a box of another shape holds
+    /// another crop of the source (`cover`), and past what it holds the
+    /// raster would pad its edge rows out.
+    pub fn holds(&self, w: f64, h: f64, fit: Fit) -> ([f64; 4], f64) {
+        let (pw, ph) = (self.pixmap.width() as f64, self.pixmap.height() as f64);
+        let (sw, sh) = self.source;
+        let all = [0.0, 0.0, w, h];
+        if !(sw > 0.0 && sh > 0.0 && pw > 0.0 && ph > 0.0 && w > 0.0 && h > 0.0) {
+            return (all, 0.0);
+        }
+        let (dx, dy, dw, dh) = self.placed_for(0.0, 0.0, w, h, fit);
+        let (ox, oy, sdw, sdh) = placement(sw, sh, pw, ph, self.fit);
+        let (kx, ky) = (dw / pw, dh / ph);
+        let edges = |x: f64, y: f64, w: f64, h: f64| [x, y, x + w, y + h];
+        let meet = |a: [f64; 4], b: [f64; 4]| {
+            [
+                a[0].max(b[0]),
+                a[1].max(b[1]),
+                a[2].min(b[2]),
+                a[3].min(b[3]),
+            ]
+        };
+        let held = meet(
+            edges(dx, dy, dw, dh),
+            edges(dx + ox * kx, dy + oy * ky, sdw * kx, sdh * ky),
+        );
+        let (nx, ny, ndw, ndh) = placement(sw, sh, w, h, fit);
+        let need = meet(edges(nx, ny, ndw, ndh), all);
+        if need[2] <= need[0] || need[3] <= need[1] {
+            return (held, 0.0);
+        }
+        let bare = [
+            held[0] - need[0],
+            held[1] - need[1],
+            need[2] - held[2],
+            need[3] - held[3],
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        (held, bare)
+    }
 }
+
+/// (stand-in-fit) How far a stand-in may leave what its box shows bare
+/// and still stand in, buffer pixels: the pixel a box's antialiased edge
+/// already blends. With none holding that much the box's own size is
+/// decoded at once, a size spring or not ([`ImageStore::want`]); the
+/// best is drawn until it arrives (inline: the same frame).
+pub const STAND_IN_BARE: f64 = 1.0;
 
 /// Why an image could not be shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1159,10 +1219,12 @@ struct Entry {
 
 /// One source drawn by one node kind with one fit at one scale: what a
 /// decode at another size of it can stand in for.
-type SourceKey = (String, bool, Fit, u16);
+/// A source as decodes of it stand in for one another: its path or
+/// icon name at a scale, at any size and fit (stand-in-fit).
+type SourceKey = (String, bool, u16);
 
 fn source_key(k: &ImageKey) -> SourceKey {
-    (k.source.clone(), k.icon, k.fit, k.scale)
+    (k.source.clone(), k.icon, k.scale)
 }
 
 /// Decoded images by key, within [`IMAGE_CACHE_BYTES`].
@@ -1176,9 +1238,15 @@ pub struct ImageStore {
     /// The keys each surface's last frame uses: never evicted for
     /// another, and what a decode that arrives repaints.
     frames: HashMap<SurfaceId, HashSet<ImageKey>>,
-    /// Per source, the latest decode at any size: drawn scaled while the
-    /// one at the drawn size is not there yet (a size spring).
-    latest: HashMap<SourceKey, ImageKey>,
+    /// Per source, its decodes held at any size and fit, newest last:
+    /// one is drawn scaled while the one at the drawn size is not there
+    /// yet (a size spring), the one that best holds what the box shows
+    /// ([`ImageStore::stand_in`], stand-in-fit).
+    held: HashMap<SourceKey, Vec<ImageKey>>,
+    /// (stand-in-fit) Whole-source decodes in flight on the worker, asked
+    /// for to stand in while a `cover` box springs ([`ImageStore::want`]):
+    /// wanted though no frame draws them yet.
+    wholes: HashSet<ImageKey>,
     /// Icon decodes in flight when the icon theme changed: their results
     /// are dropped (and asked for again) when they arrive.
     stale: HashSet<ImageKey>,
@@ -1209,7 +1277,8 @@ impl ImageStore {
             bytes: 0,
             tick: 0,
             frames: HashMap::new(),
-            latest: HashMap::new(),
+            held: HashMap::new(),
+            wholes: HashSet::new(),
             stale: HashSet::new(),
             // Inline, the players are those of the frames (`want` drops
             // the others at each change): all live.
@@ -1340,10 +1409,7 @@ impl ImageStore {
             if let Some(e) = self.entries.remove(&k) {
                 self.bytes -= e.bytes;
             }
-            let sk = source_key(&k);
-            if self.latest.get(&sk) == Some(&k) {
-                self.latest.remove(&sk);
-            }
+            self.unhold(&k);
         }
         let flying: Vec<ImageKey> = self.pending.iter().filter(|k| hit(k)).cloned().collect();
         sources.extend(flying.iter().map(|k| k.source.clone()));
@@ -1392,13 +1458,96 @@ impl ImageStore {
         self.entries.get(key).map(|e| &e.result)
     }
 
-    /// The latest decode of `key`'s source at another size, with its key:
-    /// drawn scaled into the box until `key` itself is decoded.
+    /// A decode of `key`'s source at another size or fit, with its key:
+    /// drawn scaled into the box, by the box's own fit, until `key`
+    /// itself is decoded (stand-in-fit). Of those held: one that holds
+    /// what the box shows ([`Decoded::holds`], within [`STAND_IN_BARE`])
+    /// before one that does not, then the sharpest (the most pixmap
+    /// pixels to a source pixel), then the newest; of those that do not
+    /// hold it, the one leaving least bare. The latest alone was a
+    /// thumbnail's crop standing in for a box of another shape, its edge
+    /// rows padded out over what it did not hold.
     pub fn stand_in(&self, key: &ImageKey) -> Option<(&ImageKey, &Decoded)> {
-        let k = self.latest.get(&source_key(key))?;
-        match self.entries.get(k).map(|e| &e.result) {
-            Some(Ok(d)) => Some((k, d)),
-            _ => None,
+        let (w, h) = (f64::from(key.w), f64::from(key.h));
+        // Ordered: smaller is better.
+        let rank = |d: &Decoded| {
+            let bare = d.holds(w, h, key.fit).1;
+            let (sw, sh) = d.source;
+            let (pw, ph) = (f64::from(d.pixmap.width()), f64::from(d.pixmap.height()));
+            let sharp = if sw > 0.0 && sh > 0.0 {
+                placement(sw, sh, pw, ph, d.fit).2 / sw
+            } else {
+                0.0
+            };
+            if bare <= STAND_IN_BARE {
+                (0, -sharp)
+            } else {
+                (1, bare)
+            }
+        };
+        let mut best: Option<((u8, f64), &ImageKey, &Decoded)> = None;
+        for k in self.held.get(&source_key(key))?.iter().rev() {
+            if k == key {
+                continue;
+            }
+            let Some(Ok(d)) = self.entries.get(k).map(|e| &e.result) else {
+                continue;
+            };
+            let r = rank(d);
+            if best.is_none_or(|(b, ..)| r < b) {
+                best = Some((r, k, d));
+            }
+        }
+        best.map(|(_, k, d)| (k, d))
+    }
+
+    /// A stand-in for `key` that holds what its box shows, within
+    /// [`STAND_IN_BARE`].
+    fn stands_in(&self, key: &ImageKey) -> bool {
+        self.stand_in(key).is_some_and(|(_, d)| {
+            d.holds(f64::from(key.w), f64::from(key.h), key.fit).1 <= STAND_IN_BARE
+        })
+    }
+
+    /// (stand-in-fit) The decode that holds all of `key`'s source at about
+    /// the scale `key`'s fit draws it (`contain` into a box of the
+    /// source's own shape), to stand in for a `cover` box no decode held
+    /// covers; `None` for the other fits, which show the whole source
+    /// (any decode of it holds what they show), or when no decode tells
+    /// the source's size. Its longer side is at most four times the
+    /// box's (a box far from the source's shape crops most of it).
+    fn whole_for(&self, key: &ImageKey) -> Option<ImageKey> {
+        if key.fit != Fit::Cover {
+            return None;
+        }
+        let (sw, sh) = self.held.get(&source_key(key))?.iter().find_map(|k| {
+            match self.entries.get(k).map(|e| &e.result) {
+                Some(Ok(d)) => Some(d.source),
+                _ => None,
+            }
+        })?;
+        let (w, h) = (f64::from(key.w), f64::from(key.h));
+        if !(sw > 0.0 && sh > 0.0 && w > 0.0 && h > 0.0) {
+            return None;
+        }
+        let side = 4.0 * w.max(h);
+        let k = (w / sw).max(h / sh).min(side / sw.max(sh));
+        Some(ImageKey {
+            w: (sw * k).ceil().max(1.0) as u32,
+            h: (sh * k).ceil().max(1.0) as u32,
+            fit: Fit::Contain,
+            ..key.clone()
+        })
+    }
+
+    /// `key`'s decode is gone: it no longer stands in.
+    fn unhold(&mut self, key: &ImageKey) {
+        let sk = source_key(key);
+        if let Some(list) = self.held.get_mut(&sk) {
+            list.retain(|k| k != key);
+            if list.is_empty() {
+                self.held.remove(&sk);
+            }
         }
     }
 
@@ -1415,9 +1564,10 @@ impl ImageStore {
     /// Surface `surface`'s frame wants `keys`: they move to the front of
     /// the LRU, and the missing ones are decoded (inline at once, or on
     /// the worker). With `defer` (a size springs on that surface) a key
-    /// with a stand-in is not asked for: the stand-in is drawn scaled
-    /// until the size comes to rest, so a spring does not decode every
-    /// size it passes through. Returns true if anything was decoded
+    /// with a stand-in that holds what its box shows
+    /// ([`STAND_IN_BARE`]) is not asked for: the stand-in is drawn
+    /// scaled until the size comes to rest, so a spring does not decode
+    /// every size it passes through. Returns true if anything was decoded
     /// inline.
     pub fn want(&mut self, surface: SurfaceId, keys: &[ImageKey], defer: bool) -> bool {
         // Published to the worker only when the surface's set changed (an
@@ -1448,9 +1598,18 @@ impl ImageStore {
                     continue;
                 }
             }
-            if self.pending.contains(k) || (defer && self.stand_in(k).is_some()) {
+            if self.pending.contains(k) || (defer && self.stands_in(k)) {
                 continue;
             }
+            // (stand-in-fit) No decode held covers what this springing box
+            // shows: one of the whole source stands in for every size the
+            // spring passes through, so those sizes are still not decoded.
+            let whole = if defer { self.whole_for(k) } else { None };
+            let k = match &whole {
+                Some(w) if self.wholes.iter().any(|p| source_key(p) == source_key(w)) => continue,
+                Some(w) if !self.entries.contains_key(w) => w,
+                _ => k,
+            };
             match &mut self.backend {
                 ImageBackend::Inline(theme) => {
                     let r = load_with(k, theme, &mut self.players);
@@ -1464,6 +1623,10 @@ impl ImageStore {
                         .is_some_and(|tx| tx.send(Job::Image(k.clone())).is_ok());
                     if sent {
                         self.pending.insert(k.clone());
+                        if whole.as_ref() == Some(k) {
+                            self.wholes.insert(k.clone());
+                            self.publish_wanted();
+                        }
                     } else {
                         self.insert(k.clone(), Err(ImageError::Io("no image worker".into())));
                     }
@@ -1534,6 +1697,7 @@ impl ImageStore {
         {
             set.clear();
             set.extend(self.frames.values().flatten().cloned());
+            set.extend(self.wholes.iter().cloned());
         }
     }
 
@@ -1569,6 +1733,7 @@ impl ImageStore {
                 continue;
             }
             self.pending.remove(&k);
+            self.wholes.remove(&k);
             if self.stale.remove(&k) {
                 // Looked up in the old theme: asked for again by the
                 // frame it repaints.
@@ -1593,7 +1758,10 @@ impl ImageStore {
         self.tick += 1;
         self.outdated.remove(&key);
         if let Ok(d) = &result {
-            self.latest.insert(source_key(&key), key.clone());
+            let entries = &self.entries;
+            let list = self.held.entry(source_key(&key)).or_default();
+            list.retain(|k| k != &key && entries.contains_key(k));
+            list.push(key.clone());
             if let Some(tl) = &d.anim
                 && !self.timelines.contains_key(&key.source)
             {
@@ -1648,10 +1816,7 @@ impl ImageStore {
             if let Some(e) = self.entries.remove(&v) {
                 self.bytes -= e.bytes;
             }
-            let sk = source_key(&v);
-            if self.latest.get(&sk) == Some(&v) {
-                self.latest.remove(&sk);
-            }
+            self.unhold(&v);
             if !self.entries.keys().any(|k| k.source == v.source) {
                 self.timelines.remove(&v.source);
             }
@@ -2088,6 +2253,41 @@ mod tests {
             d(Fit::Fill).placed_in(0.0, 0.0, 200.0, 50.0),
             (0.0, 0.0, 200.0, 50.0)
         );
+    }
+
+    /// (stand-in-fit) A decode stands in placed by the drawing node's
+    /// fit, whatever fit it was decoded by, and says how much of what
+    /// that fit shows it leaves bare: a 2:1 source contained in a square
+    /// holds all of it, so it stands in for a 2:1 `cover` box whole; the
+    /// square's `cover` crop holds only the middle half.
+    #[test]
+    fn stand_ins_are_placed_by_the_drawing_fit_and_say_what_they_hold() {
+        let d = |fit| Decoded {
+            pixmap: Arc::new(Pixmap::new(100, 100)),
+            symbolic: false,
+            source: (400.0, 200.0),
+            fit,
+            anim: None,
+        };
+        let contained = d(Fit::Contain);
+        assert_eq!(
+            contained.placed_for(0.0, 0.0, 200.0, 100.0, Fit::Cover),
+            (0.0, -50.0, 200.0, 200.0)
+        );
+        assert_eq!(
+            contained.holds(200.0, 100.0, Fit::Cover),
+            ([0.0, 0.0, 200.0, 100.0], 0.0)
+        );
+        let cropped = d(Fit::Cover);
+        assert_eq!(
+            cropped.holds(200.0, 100.0, Fit::Cover),
+            ([50.0, 0.0, 150.0, 100.0], 50.0)
+        );
+        // Drawn by its own fit in its own box, each holds what it shows;
+        // the crop standing in for a contained box leaves its sides bare.
+        assert_eq!(contained.holds(100.0, 100.0, Fit::Contain).1, 0.0);
+        assert_eq!(cropped.holds(100.0, 100.0, Fit::Cover).1, 0.0);
+        assert_eq!(cropped.holds(100.0, 100.0, Fit::Contain).1, 25.0);
     }
 
     #[test]

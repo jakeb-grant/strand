@@ -6843,6 +6843,38 @@ fn placement_fits_a_stand_in_by_cover_contain_and_fill() {
     }
 }
 
+/// (stand-in-fit) What `fit: cover` shows of the source in its box is
+/// the pixmap's own pixels: a stand-in decoded by `contain` for a box of
+/// another shape holds all of the source and covers the 30 x 12 box; a
+/// thumbnail's crop (`cover` into 16 x 2, a strip of the middle rows),
+/// placed by the box's fit as it should be, holds only the box's middle
+/// 3.75 rows, and the raster pads its edge rows out over the rest.
+#[test]
+fn placement_finds_a_stand_in_that_does_not_cover_its_box() {
+    let sc = scenario("");
+    let cover = |r: &Report| {
+        r.failures(CheckId::Placement)
+            .iter()
+            .filter(|f| f.key.as_deref() == Some("im") && f.msg.starts_with("fit"))
+            .map(|f| f.axis.clone())
+            .collect::<Vec<_>>()
+    };
+    let with = |pfit: &str, px: [u32; 2], dest: [f32; 4]| {
+        let mut t = image_fit("cover", dest);
+        let im = &mut t.frames[1].imgs[0];
+        im.pfit = pfit.into();
+        im.px = px;
+        t.seal();
+        t
+    };
+    let t = with("contain", [16, 12], [0.0, -5.25, 30.0, 22.5]);
+    let r = check(&sc, &t);
+    assert!(cover(&r).is_empty(), "{}", show(&r, &t));
+    let t = with("cover", [16, 2], [0.0, 4.125, 30.0, 3.75]);
+    let r = check(&sc, &t);
+    assert_eq!(cover(&r), [Some("cover".to_string())], "{}", show(&r, &t));
+}
+
 /// (integration-r6) A badge `bd` entering on `enter { width: 0 }` over
 /// ticks 1..=3, at rest 19 tall on tick 4, laid only 4 tall on tick 1
 /// while the text "Muted" is held; the node whose text that is, `lb`,

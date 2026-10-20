@@ -11126,12 +11126,12 @@ k112
 k113
 ref "m.enter-fade__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 0a8bfad52bd8ac22
-seal bd03a8b5745fd39b
+seal 9d935278a46d1d0d
 S1 0 - "bar Top"
 S2 1 60 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -11283,49 +11283,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k35
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k36
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k37
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k38
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k39
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k40
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k41
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k42
 n10 w=262
 k43
@@ -21590,12 +21590,12 @@ k94
 k95
 ref "m.enter-scale__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 0eca55cf91504b87
-seal 23c6ada2d45641ab
+seal 281096fd958973c8
 S1 0 - "bar Top"
 S2 1 51 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -21726,49 +21726,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k26
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k27
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k28
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k29
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k30
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k31
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k32
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k33
 n10 w=262
 k34
@@ -32039,12 +32039,12 @@ k112
 k113
 ref "m.enter-slide__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 144993e4cfb5cbb8
-seal f9d71385807230fd
+seal 1b7c71a012b41d9c
 S1 0 - "bar Top"
 S2 1 60 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -32196,49 +32196,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k35
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k36
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k37
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k38
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k39
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k40
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k41
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k42
 n10 w=262
 k43
@@ -41788,12 +41788,12 @@ k102
 k103
 ref "m.exit-fade__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 24e493418896c1cd
-seal 6af6a6c354569d36
+seal ba0671d36642cab0
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -41885,49 +41885,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -49962,12 +49962,12 @@ k92
 k93
 ref "m.exit-height0__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario e4d86fbebf9a1ee4
-seal 739218dbc80cd03d
+seal 9fca5f0e07b63ef0
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -50059,49 +50059,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -57818,12 +57818,12 @@ k102
 k103
 ref "m.exit-slide__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario a5e3e2d2c6fb96f3
-seal 4d844c45197ae35d
+seal 28bde5e235ecbab9
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -57915,49 +57915,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -65803,12 +65803,12 @@ k70
 k71
 ref "m.flip-nested__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 99139885d9c192ae
-seal 9ecb7ca37c4d7aa5
+seal 59d1559feabc2f98
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65933,7 +65933,7 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 n14 w=202
 n15 x=26
 n16 x=25
@@ -65950,7 +65950,7 @@ n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 n14 w=215
 n15 x=33
 n16 x=28
@@ -65967,7 +65967,7 @@ n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 n14 w=225
 n15 x=38
 n16 x=30
@@ -65984,7 +65984,7 @@ n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 n14 w=234
 n15 x=43
 n16 x=32
@@ -66001,7 +66001,7 @@ n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 n14 w=240
 n15 x=46
 n16 x=34
@@ -66018,7 +66018,7 @@ n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 n14 w=245
 n15 x=48
 n16 x=35
@@ -66033,7 +66033,7 @@ n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 n14 w=248
 n15 x=50
 n16 x=36
@@ -66050,7 +66050,7 @@ n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 n14 w=249
 n15 x=51
 n18 x=7
@@ -74519,12 +74519,12 @@ k70
 k71
 ref "m.flip-reorder__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 6139819a78d0a81a
-seal 2246e15cc021c82c
+seal 9b62adeaa5dc685e
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
@@ -74674,7 +74674,7 @@ n9 x=113
 n11 x=111
 n14 w=214
 n16 w=19
-n17 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n17 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=143
 n5 x=63 ink=63,10,27,11
@@ -74682,7 +74682,7 @@ n9 x=118
 n11 x=116
 n14 w=227
 n16 w=21
-n17 w=21 im=1.171875,-1,18.671875,14@16,12
+n17 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=145
 n5 x=65 ink=65,10,27,11
@@ -74690,7 +74690,7 @@ n9 x=124
 n11 x=122
 n14 w=237
 n16 w=23
-n17 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n17 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=147
 n5 x=67 ink=67,10,27,11
@@ -74698,7 +74698,7 @@ n9 x=129
 n11 x=127
 n14 w=246
 n16 w=25
-n17 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n17 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=149
 n5 x=69 ink=69,10,27,11
@@ -74706,7 +74706,7 @@ n9 x=133
 n11 x=131
 n14 w=252
 n16 w=27
-n17 w=27 im=1.5,-3,24,18@16,12
+n17 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=150
 n5 x=70 ink=70,10,27,11
@@ -74714,7 +74714,7 @@ n9 x=136
 n11 x=134
 n14 w=257
 n16 w=28
-n17 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n17 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=151
 n5 x=71 ink=71,10,27,11
@@ -74722,7 +74722,7 @@ n9 x=138
 n11 x=136
 n14 w=260
 n16 w=29
-n17 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n17 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=152
 n5 x=72 ink=72,10,27,11
@@ -74730,7 +74730,7 @@ n9 x=139
 n11 x=137
 n14 w=261
 n16 w=30
-n17 w=30 im=1.671875,-4,26.671875,20@16,12
+n17 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n9 x=140
 n11 x=138
@@ -82080,12 +82080,12 @@ k70
 k71
 ref "m.image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 7b40fc846a564d63
-seal fdd5129afc455674
+seal f514d2119032816c
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -82177,49 +82177,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -82300,12 +82300,12 @@ k71
 k72
 ref "m.image__blur.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 8fe8ee7e1f840a7b
-seal d38af7b33c6bf9c3
+seal a609a4551d4e150f
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -82397,49 +82397,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -82520,12 +82520,12 @@ k71
 k72
 ref "m.image__clip.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 218f2cf0c5944fcf
-seal e2869db030c7e3b9
+seal af1cf2465dd740c2
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -82617,49 +82617,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -82740,12 +82740,12 @@ k71
 k72
 ref "m.image__colour-shift.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario a454c92ffdd14c97
-seal c85688bc777d4084
+seal c5df97947118eb57
 S1 0 - "bar Top"
 S2 1 52 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -82837,49 +82837,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19 bg=4778f1ff
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21 bg=5a85e4ff
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23 bg=6f92d6ff
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25 bg=839dc6ff
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27 bg=96a6b7ff
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28 bg=a7ada9ff
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29 bg=b6b39aff
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30 bg=c3b88dff
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 n12 bg=cebc80ff
@@ -82982,12 +82982,12 @@ k73
 k74
 ref "m.image__gpu.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 4f6bf5fe64161747
-seal 32d9fe26e2b2fa0e
+seal 79a2806eca506669
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -83079,49 +83079,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -83202,12 +83202,12 @@ k71
 k72
 ref "m.image__jelly.144"
 verdict good
-note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
 date 2026-10-20
-rev "c8b20d06+changes"
+rev "f2c85c35+changes"
 approver "claude"
 scenario bc125f8ba0ab55a2
-seal 19de0467803a378d
+seal c8539aaab9eb1f00
 S1 0 - "bar Top"
 S2 1 214 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -83751,49 +83751,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k189
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k190
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k191
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k192
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k193
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k194
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k195
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k196
 n10 w=262
 k197
@@ -83874,12 +83874,12 @@ k235
 k236
 ref "m.image__keyframes.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 00f65203e6f2c456
-seal a732d374b0788364
+seal a8f35d852b6b3e08
 S1 0 - "bar Top"
 S2 1 73 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -84082,49 +84082,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k48
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k49
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k50
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k51
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k52
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k53
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k54
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k55
 n10 w=262
 k56
@@ -84205,12 +84205,12 @@ k94
 k95
 ref "m.image__late-text-1.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 70ba91b9f45843c9
-seal f6bd974482c459a6
+seal e452e493f982efa2
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -84302,49 +84302,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -84425,12 +84425,12 @@ k71
 k72
 ref "m.image__late-text-paint.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario a35c3d82b4524a7a
-seal 251f1fd8fe3d0cbe
+seal f9c637ae5fd44573
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -84522,49 +84522,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -84645,12 +84645,12 @@ k71
 k72
 ref "m.image__lean.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario b6b62ed58edbc628
-seal b5a5c6b1ec33256b
+seal 598f3e21b848d6ba
 S1 0 - "bar Top"
 S2 1 80 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -84825,49 +84825,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19 v=35.25,8.734375,20.484375,14.53125
-n13 w=19 v=35.25,8.734375,20.484375,14.53125 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 v=35.25,8.734375,20.484375,14.53125 im=0,-0.5,19,13@19,13
 k55
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21 v=35.265625,8.59375,22.46875,14.8125
-n13 w=21 v=35.265625,8.59375,22.46875,14.8125 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 v=35.265625,8.59375,22.46875,14.8125 im=0,-1.1875,21,14.375@19,13
 k56
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23 v=35.28125,8.453125,24.453125,15.078125
-n13 w=23 v=35.28125,8.453125,24.453125,15.078125 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 v=35.28125,8.453125,24.453125,15.078125 im=0,-1.875,23,15.734375@19,13
 k57
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25 v=35.28125,8.3125,26.421875,15.359375
-n13 w=25 v=35.28125,8.3125,26.421875,15.359375 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 v=35.28125,8.3125,26.421875,15.359375 im=0,-2.546875,25,17.109375@19,13
 k58
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27 v=35.296875,8.171875,28.40625,15.640625
-n13 w=27 v=35.296875,8.171875,28.40625,15.640625 im=1.5,-3,24,18@16,12
+n13 w=27 v=35.296875,8.171875,28.40625,15.640625 im=0,-3.234375,27,18.46875@19,13
 k59
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28 v=35.296875,8.109375,29.390625,15.78125
-n13 w=28 v=35.296875,8.109375,29.390625,15.78125 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 v=35.296875,8.109375,29.390625,15.78125 im=0,-3.578125,28,19.15625@19,13
 k60
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29 v=35.3125,8.046875,30.390625,15.921875
-n13 w=29 v=35.3125,8.046875,30.390625,15.921875 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 v=35.3125,8.046875,30.390625,15.921875 im=0,-3.921875,29,19.84375@19,13
 k61
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30 v=35.3125,7.96875,31.375,16.0625
-n13 w=30 v=35.3125,7.96875,31.375,16.0625 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 v=35.3125,7.96875,31.375,16.0625 im=0,-4.265625,30,20.53125@19,13
 k62
 n10 w=262
 k63
@@ -85013,12 +85013,12 @@ n12 -
 n13 -
 ref "m.image__reveal.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 0c89626ae7746281
-seal 56d36e55750b3f18
+seal bb3e3cb2a31a2f12
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -85110,49 +85110,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -85257,12 +85257,12 @@ k93
 k94
 ref "m.image__scale-1.5.144"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
-date 2026-10-19
-rev "a7965714+changes"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 5545bd25fc8d6bac
-seal 26e954c23b5eede4
+seal 76448ceb3af04fab
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -85354,49 +85354,49 @@ n0 x=107 v=107.328125,10,20,12
 n5 x=61 v=61.328125,9.328125,40,14.671875 ink=62,11.328125,26,10.671875
 n10 w=214 v=d
 n12 w=19 v=36,10,19.328125,12
-n13 w=19 v=36,10,19.328125,12 im=1.078125,-0.4375,17.1875,12.890625@24,18
+n13 w=19 v=36,10,19.328125,12 im=0,-0.671875,19.328125,13.328125@29,20
 k25
 n0 x=109 v=109.328125,10,20,12
 n5 x=63 v=63.328125,9.328125,40,14.671875 ink=64,11.328125,26,10.671875
 n10 w=227 v=0,0,227.328125,50
 n12 w=21 v=36,10,21.328125,12
-n13 w=21 v=36,10,21.328125,12 im=1.1875,-1.109375,18.96875,14.21875@24,18
+n13 w=21 v=36,10,21.328125,12 im=0,-1.359375,21.328125,14.71875@29,20
 k26
 n0 x=111 v=111.328125,10,20,12
 n5 x=65 v=65.328125,9.328125,40,14.671875 ink=66,11.328125,26,10.671875
 n10 w=237 v=0,0,237.328125,50
 n12 w=23 v=36,10,23.328125,12
-n13 w=23 v=36,10,23.328125,12 im=1.296875,-1.78125,20.734375,15.5625@24,18
+n13 w=23 v=36,10,23.328125,12 im=0,-2.046875,23.328125,16.09375@29,20
 k27
 n0 x=113 v=113.328125,10,20,12
 n5 x=67 v=67.328125,9.328125,40,14.671875 ink=68,11.328125,26,10.671875
 n10 w=246 v=d
 n12 w=25 v=36,10,25.328125,12
-n13 w=25 v=36,10,25.328125,12 im=1.40625,-2.4375,22.515625,16.890625@24,18
+n13 w=25 v=36,10,25.328125,12 im=0,-2.734375,25.328125,17.46875@29,20
 k28
 n0 x=115 v=115.328125,10,20,12
 n5 x=69 v=69.328125,9.328125,40,14.671875 ink=70,11.328125,26,10.671875
 n10 w=252
 n12 w=27 v=36,10,27.328125,12
-n13 w=27 v=36,10,27.328125,12 im=1.515625,-3.109375,24.296875,18.21875@24,18
+n13 w=27 v=36,10,27.328125,12 im=0,-3.421875,27.328125,18.84375@29,20
 k29
 n0 x=116 v=d
 n5 x=70 v=70,9.328125,40,14.671875 ink=70.671875,11.328125,26,10.671875
 n10 w=257 v=0,0,257.328125,50
 n12 w=28 v=d
-n13 w=28 v=d im=1.5625,-3.328125,24.890625,18.671875@24,18
+n13 w=28 v=d im=0,-3.65625,28,19.3125@29,20
 k30
 n0 x=117 v=117.328125,10,20,12
 n5 x=71 v=71.328125,9.328125,40,14.671875 ink=72,11.328125,26,10.671875
 n10 w=260 v=d
 n12 w=29 v=36,10,29.328125,12
-n13 w=29 v=36,10,29.328125,12 im=1.625,-3.78125,26.078125,19.5625@24,18
+n13 w=29 v=36,10,29.328125,12 im=0,-4.109375,29.328125,20.234375@29,20
 k31
 n0 x=118 v=d
 n5 x=72 v=72,9.328125,40,14.671875 ink=72.671875,11.328125,26,10.671875
 n10 w=261 v=0,0,261.328125,50
 n12 w=30 v=d
-n13 w=30 v=d im=1.671875,-4,26.671875,20@24,18
+n13 w=30 v=d im=0,-4.34375,30,20.6875@29,20
 k32
 n10 w=262 v=d
 k33
@@ -85477,12 +85477,12 @@ k71
 k72
 ref "m.image__scale-2.144"
 verdict good
-note "eval-coverage-3 first references of the image effect (a 3:2 PNG, fit: cover, its box 16 to 30 wide), read: alone and in every pair the 16 x 12 decode (24 x 18 at 1.5, 32 x 24 at 2) stands in centred and keeping its aspect while the box springs, the decode of the new size lands once it rests, and under reduced motion it snaps; no redraw finding once the image's clip group is bounded where it draws (strand-render)"
-date 2026-10-19
-rev "a7965714+changes"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 5c1bfd0dc1a0f00c
-seal 92796e1b791ab433
+seal ba123f020c7f81aa
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -85574,49 +85574,49 @@ n0 x=107
 n5 x=61 ink=61.5,11,26.5,10
 n10 w=214
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@32,24
+n13 w=19 im=0,-0.5,19,13@38,26
 k25
 n0 x=109
 n5 x=63 ink=63.5,11,26.5,10
 n10 w=227
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@32,24
+n13 w=21 im=0,-1.1875,21,14.375@38,26
 k26
 n0 x=111
 n5 x=65 ink=65.5,11,26.5,10
 n10 w=237
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@32,24
+n13 w=23 im=0,-1.875,23,15.734375@38,26
 k27
 n0 x=113
 n5 x=67 ink=67.5,11,26.5,10
 n10 w=246
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@32,24
+n13 w=25 im=0,-2.546875,25,17.109375@38,26
 k28
 n0 x=115
 n5 x=69 ink=69.5,11,26.5,10
 n10 w=252
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@32,24
+n13 w=27 im=0,-3.234375,27,18.46875@38,26
 k29
 n0 x=116
 n5 x=70 ink=70.5,11,26.5,10
 n10 w=257
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@32,24
+n13 w=28 im=0,-3.578125,28,19.15625@38,26
 k30
 n0 x=117
 n5 x=71 ink=71.5,11,26.5,10
 n10 w=260
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@32,24
+n13 w=29 im=0,-3.921875,29,19.84375@38,26
 k31
 n0 x=118
 n5 x=72 ink=72.5,11,26.5,10
 n10 w=261
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@32,24
+n13 w=30 im=0,-4.265625,30,20.53125@38,26
 k32
 n10 w=262
 k33
@@ -85697,12 +85697,12 @@ k71
 k72
 ref "m.image__scroll.144"
 verdict good
-note "integration-r7, two causes: eval-coverage-4's flick (scroll) or x: 12 slider box (slider-drag), already in the reference this block replaces, and png-aspect: against that reference only the image node's paint.images (im) changed, on the ticks its 16 x 12 decode of the 3:2 art.png stands in, now where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14)"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 07e20cbafa6be940
-seal faf433d8d776541b
+seal 8653d9c6d0a8d263
 S1 0 - "bar Top"
 S2 1 88 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -86069,49 +86069,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n15 w=214
 n17 w=19
-n18 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n18 w=19 im=0,-0.5,19,13@19,13
 k63
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n15 w=227
 n17 w=21
-n18 w=21 im=1.171875,-1,18.671875,14@16,12
+n18 w=21 im=0,-1.1875,21,14.375@19,13
 k64
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n15 w=237
 n17 w=23
-n18 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n18 w=23 im=0,-1.875,23,15.734375@19,13
 k65
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n15 w=246
 n17 w=25
-n18 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n18 w=25 im=0,-2.546875,25,17.109375@19,13
 k66
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n15 w=252
 n17 w=27
-n18 w=27 im=1.5,-3,24,18@16,12
+n18 w=27 im=0,-3.234375,27,18.46875@19,13
 k67
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n15 w=257
 n17 w=28
-n18 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n18 w=28 im=0,-3.578125,28,19.15625@19,13
 k68
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n15 w=260
 n17 w=29
-n18 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n18 w=29 im=0,-3.921875,29,19.84375@19,13
 k69
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n15 w=261
 n17 w=30
-n18 w=30 im=1.671875,-4,26.671875,20@16,12
+n18 w=30 im=0,-4.265625,30,20.53125@19,13
 k70
 n15 w=262
 k71
@@ -86197,12 +86197,12 @@ k109
 k110
 ref "m.image__shadow.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario c8edde884f5eede9
-seal 6573b1a4f9abd049
+seal d74c68c336390577
 S1 0 - "bar Top"
 S2 1 50 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -86294,49 +86294,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214
 n12 w=19 sh=000000aa@26,2,39,32
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227
 n12 w=21 sh=000000aa@26,2,41,32
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237
 n12 w=23 sh=000000aa@26,2,43,32
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246
 n12 w=25 sh=000000aa@26,2,45,32
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252
 n12 w=27 sh=000000aa@26,2,47,32
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257
 n12 w=28 sh=000000aa@26,2,48,32
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260
 n12 w=29 sh=000000aa@26,2,49,32
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261
 n12 w=30 sh=000000aa@26,2,50,32
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262
 k33
@@ -86417,12 +86417,12 @@ k71
 k72
 ref "m.image__shared-morph.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 30c307beb829cce6
-seal d5d3653d21f7598b
+seal 118f4f3c28dc5371
 S1 0 - "bar Top"
 S2 1 62 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -86583,49 +86583,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n11 w=214
 n13 w=19
-n14 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n14 w=19 im=0,-0.5,19,13@19,13
 k37
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n11 w=227
 n13 w=21
-n14 w=21 im=1.171875,-1,18.671875,14@16,12
+n14 w=21 im=0,-1.1875,21,14.375@19,13
 k38
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n11 w=237
 n13 w=23
-n14 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n14 w=23 im=0,-1.875,23,15.734375@19,13
 k39
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n11 w=246
 n13 w=25
-n14 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n14 w=25 im=0,-2.546875,25,17.109375@19,13
 k40
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n11 w=252
 n13 w=27
-n14 w=27 im=1.5,-3,24,18@16,12
+n14 w=27 im=0,-3.234375,27,18.46875@19,13
 k41
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n11 w=257
 n13 w=28
-n14 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n14 w=28 im=0,-3.578125,28,19.15625@19,13
 k42
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n11 w=260
 n13 w=29
-n14 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n14 w=29 im=0,-3.921875,29,19.84375@19,13
 k43
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n11 w=261
 n13 w=30
-n14 w=30 im=1.671875,-4,26.671875,20@16,12
+n14 w=30 im=0,-4.265625,30,20.53125@19,13
 k44
 n11 w=262
 k45
@@ -86744,12 +86744,12 @@ n6 x=112 v=d
 k94
 ref "m.image__slider-drag.144"
 verdict good
-note "integration-r7, two causes: eval-coverage-4's flick (scroll) or x: 12 slider box (slider-drag), already in the reference this block replaces, and png-aspect: against that reference only the image node's paint.images (im) changed, on the ticks its 16 x 12 decode of the 3:2 art.png stands in, now where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14)"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 18dda81618677f12
-seal 741a44ea4089e934
+seal c2ee43cc18b1bd60
 S1 0 - "bar Top"
 S2 1 96 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -86939,49 +86939,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n12 w=214
 n14 w=19
-n15 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n15 w=19 im=0,-0.5,19,13@19,13
 k71
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n12 w=227
 n14 w=21
-n15 w=21 im=1.171875,-1,18.671875,14@16,12
+n15 w=21 im=0,-1.1875,21,14.375@19,13
 k72
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n12 w=237
 n14 w=23
-n15 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n15 w=23 im=0,-1.875,23,15.734375@19,13
 k73
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n12 w=246
 n14 w=25
-n15 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n15 w=25 im=0,-2.546875,25,17.109375@19,13
 k74
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n12 w=252
 n14 w=27
-n15 w=27 im=1.5,-3,24,18@16,12
+n15 w=27 im=0,-3.234375,27,18.46875@19,13
 k75
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n12 w=257
 n14 w=28
-n15 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n15 w=28 im=0,-3.578125,28,19.15625@19,13
 k76
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n12 w=260
 n14 w=29
-n15 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n15 w=29 im=0,-3.921875,29,19.84375@19,13
 k77
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n12 w=261
 n14 w=30
-n15 w=30 im=1.671875,-4,26.671875,20@16,12
+n15 w=30 im=0,-4.265625,30,20.53125@19,13
 k78
 n12 w=262
 k79
@@ -87064,12 +87064,12 @@ k117
 k118
 ref "m.image__stagger.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 9652f498918c3ec6
-seal 7de072034f4db598
+seal ae6e9bd18f713221
 S1 0 - "bar Top"
 S2 1 68 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -87241,7 +87241,7 @@ n10 w=214
 n12 w=19
 n13 x=61
 n14 x=75
-n15 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n15 w=19 im=0,-0.5,19,13@19,13
 k43
 n0 x=137
 n5 x=91 ink=91,10,27,11
@@ -87249,7 +87249,7 @@ n10 w=227
 n12 w=21
 n13 x=63
 n14 x=77
-n15 w=21 im=1.171875,-1,18.671875,14@16,12
+n15 w=21 im=0,-1.1875,21,14.375@19,13
 k44
 n0 x=139
 n5 x=93 ink=93,10,27,11
@@ -87257,7 +87257,7 @@ n10 w=237
 n12 w=23
 n13 x=65
 n14 x=79
-n15 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n15 w=23 im=0,-1.875,23,15.734375@19,13
 k45
 n0 x=141
 n5 x=95 ink=95,10,27,11
@@ -87265,7 +87265,7 @@ n10 w=246
 n12 w=25
 n13 x=67
 n14 x=81
-n15 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n15 w=25 im=0,-2.546875,25,17.109375@19,13
 k46
 n0 x=143
 n5 x=97 ink=97,10,27,11
@@ -87273,7 +87273,7 @@ n10 w=252
 n12 w=27
 n13 x=69
 n14 x=83
-n15 w=27 im=1.5,-3,24,18@16,12
+n15 w=27 im=0,-3.234375,27,18.46875@19,13
 k47
 n0 x=144
 n5 x=98 ink=98,10,27,11
@@ -87281,7 +87281,7 @@ n10 w=257
 n12 w=28
 n13 x=70
 n14 x=84
-n15 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n15 w=28 im=0,-3.578125,28,19.15625@19,13
 k48
 n0 x=145
 n5 x=99 ink=99,10,27,11
@@ -87289,7 +87289,7 @@ n10 w=260
 n12 w=29
 n13 x=71
 n14 x=85
-n15 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n15 w=29 im=0,-3.921875,29,19.84375@19,13
 k49
 n0 x=146
 n5 x=100 ink=100,10,27,11
@@ -87297,7 +87297,7 @@ n10 w=261
 n12 w=30
 n13 x=72
 n14 x=86
-n15 w=30 im=1.671875,-4,26.671875,20@16,12
+n15 w=30 im=0,-4.265625,30,20.53125@19,13
 k50
 n10 w=262
 k51
@@ -110515,12 +110515,12 @@ k98
 k99
 ref "m.popup-content-height__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 5971ea82cccebdf2
-seal 61b4084a7e7ef051
+seal 43b338dc330133e0
 S1 0 - "bar Top"
 S2 1 78 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -110614,49 +110614,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=214 h=53
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=227 h=55
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=237 h=57
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=246 h=59
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=252 h=61
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=257 h=63
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=260 h=64
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=261 h=66
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=262 h=68
 k33
@@ -135093,12 +135093,12 @@ k103
 k104
 ref "m.size-spring__image.144"
 verdict good
-note "png-aspect at integration-r7: only the image node's paint.images (im) changed, on the ticks its 16 x 12 device-px decode of the 3:2 art.png stands in while the box springs: the decode now lies where the source's own extent puts it (60 Hz k11: 17.78 x 13.33 from 1.11,-0.67, was 18.67 x 14 from 0.67,-1); each block equals the one png-aspect approved on its own branch"
-date 2026-10-19
-rev "93423f48"
+note "stand-in-fit at integration-r7 part 2: only the image node's paint.images (im) changed, on the ticks a stand-in draws while the box springs: the stand-in is now the held decode that holds what the box's cover fit shows, placed by that fit, not the latest decode padded out past its crop"
+date 2026-10-20
+rev "f2c85c35+changes"
 approver "claude"
 scenario 9b01e46e06facc5e
-seal 8eda86bce8534cac
+seal ff5a219f96f1a4d3
 S1 0 - "bar Top"
 S2 1 83 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -135190,49 +135190,49 @@ n0 x=107
 n5 x=61 ink=61,10,27,11
 n10 w=192
 n12 w=19
-n13 w=19 im=1.0625,-0.328125,16.890625,12.671875@16,12
+n13 w=19 im=0,-0.5,19,13@19,13
 k25
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n10 w=198
 n12 w=21
-n13 w=21 im=1.171875,-1,18.671875,14@16,12
+n13 w=21 im=0,-1.1875,21,14.375@19,13
 k26
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n10 w=204
 n12 w=23
-n13 w=23 im=1.28125,-1.671875,20.4375,15.328125@16,12
+n13 w=23 im=0,-1.875,23,15.734375@19,13
 k27
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=211
 n12 w=25
-n13 w=25 im=1.390625,-2.328125,22.21875,16.671875@16,12
+n13 w=25 im=0,-2.546875,25,17.109375@19,13
 k28
 n0 x=115
 n5 x=69 ink=69,10,27,11
 n10 w=218
 n12 w=27
-n13 w=27 im=1.5,-3,24,18@16,12
+n13 w=27 im=0,-3.234375,27,18.46875@19,13
 k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=224
 n12 w=28
-n13 w=28 im=1.5625,-3.328125,24.890625,18.671875@16,12
+n13 w=28 im=0,-3.578125,28,19.15625@19,13
 k30
 n0 x=117
 n5 x=71 ink=71,10,27,11
 n10 w=230
 n12 w=29
-n13 w=29 im=1.609375,-3.671875,25.78125,19.328125@16,12
+n13 w=29 im=0,-3.921875,29,19.84375@19,13
 k31
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=236
 n12 w=30
-n13 w=30 im=1.671875,-4,26.671875,20@16,12
+n13 w=30 im=0,-4.265625,30,20.53125@19,13
 k32
 n10 w=241
 k33
