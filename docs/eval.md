@@ -789,7 +789,24 @@ sets I and J's 40 correct scenarios 36 pass, j's two `state focused`
 configs do not load, i-media-art-morph-pulse's `rest` cannot be reached
 while its `wave` runs and i-toast-stack-arrive-dismiss's `cut` is the
 growth again; the owner's `qs` passes and `launcher` fails only
-launcher-triage's findings. An `intend`
+launcher-triage's findings. Blind sets K and L (eval-finish), scored
+once and now spent: K's 20 mutants were caught 18 by the rule checks
+and 20 with the references, with false alarms on 2 of its 20 correct
+scenarios; L's 20 mutants 17 by the rules and 19 in all, with a false
+alarm on 1 of its 19 loading correct scenarios (one, a `for` over plain
+data with no `key`, does not load) and one real failure, the
+content-sized growth the owner is deciding (a card's shadow room grows
+its panel and `glide_origin` draws it off and back). The three false
+alarms were the tool's, each fixed at its cause with the scenario that
+exposed it promoted (decisions.md eval-finish): an `id:` on a component
+call named nothing for the `#id` selector, since the inspector's
+identity did not report it on the call's root (k-media-card,
+k-qs-toggles); `colour` held a fill lit with `$accent` in the click
+that swaps the palette to a straight way, where its target springs too
+(k-qs-toggles; see `colour` below); and a stagger child waiting hidden
+at opacity 0 was traced at scale 1, not its pose's, and its turns were
+counted a period early on its panel's first frame (l-app-grid-stagger;
+see `stagger` below). An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
@@ -1365,8 +1382,10 @@ eval-coverage-5's twenty scenarios (147 kB: thirteen promoted from round
 it was 6.16 MB (6,156,883 bytes). At round 8's integration
 (integration-r8), with E3's and P's regressions and the integration's
 five (scaled-gradient-redraw, glow-overhang, insert-above-view,
-popup-click-away and nested-morph, 35 kB), it is 6.22 MB (6,223,318
-bytes, 68 kB under the tripwire): the 150 scenarios 1.10 MB,
+popup-click-away and nested-morph, 35 kB), it was 6.22 MB (6,223,318
+bytes); with eval-finish's three (k-media-card, k-qs-toggles and
+l-app-grid-stagger, 18 kB) it is 6,242,526 bytes, 49 kB under the
+tripwire: the 150 scenarios 1.10 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
 Paint costs little because a field is written only on the ticks it
 changes. Compressed, as git stores it, that was about 530 kB before
@@ -2265,6 +2284,16 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   ring keeps the last `--ring` frames; a session stops at `--max-frames`
   painted frames (record and restart). The checks run when paused (or
   every two seconds while playing), over the whole session so far.
+- **Gaps the blind sets K and L left** (eval-finish, for later; none
+  is fixed). No rule holds a text's alignment inside its box, so a label
+  drawn at the wrong side of its own box passes the rules (L's m-l13).
+  `tiling` misses a 1 px seam from rounding at a fractional scale (L's
+  m-l08). No gate scenario has a shadowed surface under a pose the
+  compositor applies at a scale (L's m-l15). A new shadow layer that
+  starts at its resting strength instead of growing in is caught only by
+  references (K's m-k12). An image sliding off-centre in its box is
+  caught only by references, and the CHANGED summary does not name the
+  image (K's m-k19).
 - **The renderer's other wall-clock reads stay wall-clock**: an exit's
   stall, GPU promotion and device retries, the busy window. Their waits
   are set so they never fire in a run.
