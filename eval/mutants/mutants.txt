@@ -140,12 +140,13 @@ fold-gap-late.patch                 curated/toast-stack.scn             continui
 ellipsis-min-content-natural.patch  curated/wrap-card-row.scn           contain:#words:w
 pose-margin-unsent.patch            curated/osd-pose-margins.scn        regions-on-wire
 #
-# image-redraw.patch: image-redraw's fix reverted (decisions.md
-# image-redraw): decodes and gradient pixmaps claim to be opaque again, so
-# a decode standing in, drawn scaled over its box's fill, is written over
-# the fill in a tile wholly inside the damage and blended over it in a
-# tile the damage's edge cuts: a channel a level off from a full repaint
-# (`redraw`).
+# image-redraw.patch: image-redraw's fix taken out (decisions.md
+# image-redraw, opaque-fast-path): a decode claimed opaque and sampled
+# smoothly is drawn straight over what is under it, not in a layer of its
+# own, so a decode standing in, drawn scaled over its box's fill, is
+# written over the fill in a tile wholly inside the damage and blended
+# over it in a tile the damage's edge cuts: a channel a level off from a
+# full repaint (`redraw`).
 image-redraw.patch      regressions/image-redraw.scn      redraw
 # dock-drag.patch: dock-drag's order damage taken out (decisions.md
 # dock-drag): a pin's badge that overhangs its neighbour goes back under it

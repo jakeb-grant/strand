@@ -950,10 +950,13 @@ pub fn render_gradient_part(
         }
     };
     let table = lut(stops);
-    // Never claimed opaque, though opaque stops make it so: drawn under
-    // a scale or turn it is sampled smoothly, not quite opaque, and a
-    // paint claimed opaque is drawn otherwise where a clip's edge cuts
-    // a tile (image-redraw, `crate::image`'s `to_pixmap`).
+    // Claimed opaque when its stops are (opaque-fast-path): every pixel
+    // then is (their alpha is 255 exactly, which a dither under half a
+    // level rounds back to 255). Drawn pixel for pixel its samples are
+    // its pixels, and one drawn smoothly is isolated in a layer of its
+    // own (`raster::draw`'s `fill_with`), as `crate::image`'s
+    // `to_pixmap` says.
+    let opaque = !stops.is_empty() && stops.iter().all(|s| s.color.clamped().a >= 1.0);
     let mut pm = Pixmap::new(pw as u16, ph as u16);
     let data = pm.data_mut();
     for py in 0..ph {
@@ -977,6 +980,7 @@ pub fn render_gradient_part(
             };
         }
     }
+    pm.set_may_have_transparency(!opaque);
     Some(pm)
 }
 
@@ -1133,6 +1137,25 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// (opaque-fast-path) A gradient's dithered pixmap claims to be opaque
+    /// exactly when its stops are, and then every pixel is: the dither,
+    /// under half a level, rounds an alpha of 255 back to 255.
+    #[test]
+    fn a_gradient_pixmap_claims_opacity_with_opaque_stops() {
+        let pm = render_gradient_part(&ramp("#1e66f5", "#ea76cb"), 97, 61, (0, 0, 97, 61)).unwrap();
+        assert!(!pm.may_have_transparency());
+        assert!(pm.data().iter().all(|p| p.a == 255));
+        let pm =
+            render_gradient_part(&ramp("#1e66f5", "#ea76cb80"), 97, 61, (0, 0, 97, 61)).unwrap();
+        assert!(pm.may_have_transparency());
+        let none = Paint::Linear {
+            angle: 0.0,
+            stops: Vec::new(),
+        };
+        let pm = render_gradient_part(&none, 9, 9, (0, 0, 9, 9)).unwrap();
+        assert!(pm.may_have_transparency(), "no stops: transparent");
     }
 
     /// A slow ramp over 256 px (8 levels) has no 32 px bands: the

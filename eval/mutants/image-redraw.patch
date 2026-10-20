@@ -1,58 +1,17 @@
-diff --git b/crates/strand-render/src/cache.rs a/crates/strand-render/src/cache.rs
-index 29bf6996..09367181 100644
---- b/crates/strand-render/src/cache.rs
-+++ a/crates/strand-render/src/cache.rs
-@@ -950,10 +950,7 @@ pub fn render_gradient_part(
-         }
-     };
-     let table = lut(stops);
--    // Never claimed opaque, though opaque stops make it so: drawn under
--    // a scale or turn it is sampled smoothly, not quite opaque, and a
--    // paint claimed opaque is drawn otherwise where a clip's edge cuts
--    // a tile (image-redraw, `crate::image`'s `to_pixmap`).
-+    let opaque = stops.iter().all(|s| s.color.clamped().a >= 1.0);
-     let mut pm = Pixmap::new(pw as u16, ph as u16);
-     let data = pm.data_mut();
-     for py in 0..ph {
-@@ -977,6 +974,7 @@ pub fn render_gradient_part(
-             };
-         }
+diff --git a/crates/strand-render/src/raster/draw.rs b/crates/strand-render/src/raster/draw.rs
+index eb2d485a..bf810e0d 100644
+--- a/crates/strand-render/src/raster/draw.rs
++++ b/crates/strand-render/src/raster/draw.rs
+@@ -80,9 +80,9 @@ fn fill_with(
+     smooth: bool,
+     fill: impl FnOnce(&mut RenderContext),
+ ) {
+-    let isolate = smooth
+-        && matches!(&paint, PaintType::Image(Image { image: ImageSource::Pixmap(pm), .. })
+-            if !pm.may_have_transparency());
++    // image-redraw's mutant: a smooth sample of a pixmap claimed opaque
++    // is drawn straight over what is under it.
++    let isolate = smooth && false;
+     if isolate {
+         ctx.push_layer(None, None, None, None, None);
      }
-+    pm.set_may_have_transparency(!opaque);
-     Some(pm)
- }
- 
-diff --git b/crates/strand-render/src/image.rs a/crates/strand-render/src/image.rs
-index acf51247..e9a7bca8 100644
---- b/crates/strand-render/src/image.rs
-+++ a/crates/strand-render/src/image.rs
-@@ -850,19 +850,11 @@ fn within(w: f64, h: f64, max_pixels: u64) -> (u32, u32) {
- }
- 
- /// A vello pixmap of premultiplied RGBA, red and blue swapped.
--///
--/// (image-redraw) It never claims to be opaque, though its pixels may
--/// all be: a decode standing in for another size, or drawn under a
--/// scale or turn, is sampled smoothly, and its bilinear samples are not
--/// quite opaque (four f32 weights summing to a hair under 1). vello
--/// writes a paint claimed opaque over what is under it in a tile wholly
--/// inside the clip, and blends it in a tile the clip's edge cuts; a
--/// partial repaint clips to the damage, so those differed from a full
--/// repaint where what is under shows through by that hair, a channel a
--/// level off here and there. Blended in both, they are the same.
- fn to_pixmap(r: &Raster) -> Pixmap {
-     let mut pm = Pixmap::new(r.w as u16, r.h as u16);
-+    let mut opaque = true;
-     for (d, s) in pm.data_mut().iter_mut().zip(r.rgba.chunks_exact(4)) {
-+        opaque &= s[3] == 255;
-         *d = PremulRgba8 {
-             r: s[2],
-             g: s[1],
-@@ -870,6 +862,7 @@ fn to_pixmap(r: &Raster) -> Pixmap {
-             a: s[3],
-         };
-     }
-+    pm.set_may_have_transparency(!opaque);
-     pm
- }
- 

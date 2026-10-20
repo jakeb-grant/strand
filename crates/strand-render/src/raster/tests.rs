@@ -207,3 +207,235 @@ fn a_resampled_image_repaints_in_part_as_in_full() {
         &bad[..bad.len().min(6)]
     );
 }
+
+/// (opaque-fast-path) Pixmaps claimed opaque repaint within any damage
+/// exactly as a full repaint draws them: a decode drawn pixel for pixel
+/// (half a pixel off the grid, which nearest sampling still takes pixel
+/// for pixel) over its box's fill, where vello overwrites the fill in a
+/// tile wholly inside the damage and blends over it in one the damage's
+/// edge cuts; and a gradient of opaque stops turned 20 degrees, sampled
+/// smoothly from its pixmap and drawn in a layer of its own.
+#[test]
+fn opaque_pixmaps_repaint_in_part_as_in_full() {
+    use strand_scene::{Color, GradientStop, Paint};
+    use vello_cpu::kurbo;
+    let mut pm = vello_cpu::Pixmap::new(41, 29);
+    for (i, p) in pm.data_mut().iter_mut().enumerate() {
+        let (x, y) = (i as u32 % 41, i as u32 / 41);
+        *p = vello_cpu::color::PremulRgba8 {
+            r: (x * 6) as u8,
+            g: (200 - y * 5) as u8,
+            b: ((x * y) % 251) as u8,
+            a: 255,
+        };
+    }
+    pm.set_may_have_transparency(false);
+    let pm = std::sync::Arc::new(pm);
+    let white = |r: kurbo::Rect| DisplayItem {
+        item: Item::Fill {
+            shape: crate::flatten::FillShape::Rect(r),
+            paint: Paint::Solid(Color::from_hex("#ffffff").unwrap()),
+            frame: r,
+        },
+        bounds: Rect::new(0, 0, 128, 96),
+    };
+    let boxed = kurbo::Rect::new(7.5, 13.5, 48.5, 42.5);
+    let items = vec![
+        white(kurbo::Rect::new(0.0, 0.0, 128.0, 96.0)),
+        DisplayItem {
+            item: Item::Image {
+                pixmap: pm,
+                rect: boxed,
+                dest: boxed,
+                tint: None,
+            },
+            bounds: Rect::new(7, 13, 42, 30),
+        },
+    ];
+    let bad = partial_against_full(&items, (128, 96), (20, 17), (23, 5));
+    assert!(
+        bad.is_empty(),
+        "the decode: {} pixels differ: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(6)]
+    );
+    let card = kurbo::Rect::new(30.0, 20.0, 100.0, 76.0);
+    let turn = kurbo::Affine::rotate_about(20f64.to_radians(), card.center());
+    let ramp = Paint::Linear {
+        angle: 60.0,
+        stops: vec![
+            GradientStop {
+                offset: 0.0,
+                color: Color::from_hex("#1e66f5").unwrap(),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::from_hex("#ea76cb").unwrap(),
+            },
+        ],
+    };
+    let items = vec![
+        white(kurbo::Rect::new(0.0, 0.0, 128.0, 96.0)),
+        DisplayItem {
+            item: Item::PushTransform(turn),
+            bounds: Rect::new(14, 4, 100, 88),
+        },
+        DisplayItem {
+            item: Item::Fill {
+                shape: crate::flatten::FillShape::Rect(card),
+                paint: ramp,
+                frame: card,
+            },
+            bounds: Rect::new(14, 4, 100, 88),
+        },
+        DisplayItem {
+            item: Item::PopTransform,
+            bounds: Rect::new(14, 4, 100, 88),
+        },
+    ];
+    let bad = partial_against_full(&items, (128, 96), (40, 30), (23, 5));
+    assert!(
+        bad.is_empty(),
+        "the gradient: {} pixels differ: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(6)]
+    );
+}
+
+/// (opaque-fast-path) Not a gate: what claiming a pixmap opaque saves
+/// when it covers a 4K surface, drawn pixel for pixel over the surface's
+/// opaque fill (a lock backdrop, a wallpaper; a gradient's cached
+/// pixmap is drawn by the same paint), and resampled (a stand-in, a
+/// scale). Run with `cargo test --profile timing -p strand-render --lib
+/// opaque_pixmap_frame_cost -- --ignored --nocapture --test-threads 1`.
+#[test]
+#[ignore = "measurement, not a gate"]
+fn opaque_pixmap_frame_cost() {
+    use strand_scene::{Color, Paint, PaintTarget, Size};
+    use vello_cpu::kurbo;
+    let (w, h) = (3840u32, 2160u32);
+    let pixmap = |opaque: bool| {
+        let mut pm = vello_cpu::Pixmap::new(w as u16, h as u16);
+        for (i, p) in pm.data_mut().iter_mut().enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            *p = vello_cpu::color::PremulRgba8 {
+                r: (x / 15) as u8,
+                g: (y / 9) as u8,
+                b: ((x + y) / 24) as u8,
+                a: 255,
+            };
+        }
+        pm.set_may_have_transparency(!opaque);
+        std::sync::Arc::new(pm)
+    };
+    let screen = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+    let items = |pm: std::sync::Arc<vello_cpu::Pixmap>, dest: kurbo::Rect| {
+        vec![
+            DisplayItem {
+                item: Item::Fill {
+                    shape: crate::flatten::FillShape::Rect(screen),
+                    paint: Paint::Solid(Color::from_hex("#1e1e2e").unwrap()),
+                    frame: screen,
+                },
+                bounds: Rect::new(0, 0, w, h),
+            },
+            DisplayItem {
+                item: Item::Image {
+                    pixmap: pm,
+                    rect: screen,
+                    dest,
+                    tint: None,
+                },
+                bounds: Rect::new(0, 0, w, h),
+            },
+        ]
+    };
+    // Rounds of a few frames each, the two claims taken in turn, so load
+    // that comes and goes falls on both; each frame is timed, and the
+    // medians are compared.
+    let rounds: u32 = std::env::var("STRAND_OPAQUE_BENCH_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    let atlas = AtlasMirror::default();
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let full = Damage::full(Size::new(w, h));
+    for (what, dest) in [
+        ("pixel for pixel", screen),
+        (
+            "resampled",
+            kurbo::Rect::new(-0.5, -0.5, w as f64 + 1.5, h as f64 + 1.5),
+        ),
+    ] {
+        let lists = [items(pixmap(true), dest), items(pixmap(false), dest)];
+        let mut raster = Raster::default();
+        let mut times = [Vec::new(), Vec::new()];
+        for round in 0..=rounds {
+            for (i, list) in lists.iter().enumerate() {
+                for _ in 0..4 {
+                    let start = std::time::Instant::now();
+                    let mut t =
+                        PaintTarget::new(&mut buf, Size::new(w, h), w * 4, Scale::ONE, 0).unwrap();
+                    raster.paint(list, &full, &atlas, Scale::ONE, &mut t);
+                    // The first round warms the contexts.
+                    if round > 0 {
+                        times[i].push(start.elapsed().as_secs_f64() * 1e3);
+                    }
+                }
+            }
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        let (a, b) = (median(&mut times[0]), median(&mut times[1]));
+        println!(
+            "opaque_pixmap_frame_cost: 3840x2160 {what}: claimed opaque {a:.2} ms, \
+             maybe transparent {b:.2} ms (medians of {} frames each)",
+            times[0].len()
+        );
+    }
+    // A screen-filling gradient of opaque stops over the fill, drawn from
+    // its dithered pixmap (`render_gradient_part`, the part each cell
+    // shows): as this build claims it.
+    let ramp = Paint::Linear {
+        angle: 135.0,
+        stops: vec![
+            strand_scene::GradientStop {
+                offset: 0.0,
+                color: Color::from_hex("#1e66f5").unwrap(),
+            },
+            strand_scene::GradientStop {
+                offset: 1.0,
+                color: Color::from_hex("#ea76cb").unwrap(),
+            },
+        ],
+    };
+    let mut list = items(pixmap(true), screen);
+    list[1] = DisplayItem {
+        item: Item::Fill {
+            shape: crate::flatten::FillShape::Rect(screen),
+            paint: ramp,
+            frame: screen,
+        },
+        bounds: Rect::new(0, 0, w, h),
+    };
+    let mut raster = Raster::default();
+    let mut times = Vec::new();
+    for round in 0..=rounds {
+        for _ in 0..4 {
+            let start = std::time::Instant::now();
+            let mut t = PaintTarget::new(&mut buf, Size::new(w, h), w * 4, Scale::ONE, 0).unwrap();
+            raster.paint(&list, &full, &atlas, Scale::ONE, &mut t);
+            if round > 0 {
+                times.push(start.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    println!(
+        "opaque_pixmap_frame_cost: 3840x2160 gradient of opaque stops: {:.2} ms (median of {} frames)",
+        times[times.len() / 2],
+        times.len()
+    );
+}

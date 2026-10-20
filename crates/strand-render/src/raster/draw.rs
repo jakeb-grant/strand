@@ -64,6 +64,37 @@ pub(super) fn paint_for(
     paint_type(p, frame)
 }
 
+/// (opaque-fast-path) Sets `paint` (under `t`) and fills with `fill`. A
+/// pixmap claimed opaque sampled smoothly (`smooth`: resized, scaled or
+/// turned) is drawn into a layer of its own: its bilinear samples are a
+/// hair short of opaque, and vello writes a paint claimed opaque over
+/// what is under it in a tile wholly inside the clip but blends it in a
+/// tile the clip's edge cuts, so a partial repaint would differ from a
+/// full one (image-redraw). Into an empty layer both give the sample
+/// itself, and the layer is blended over what is under it the same way
+/// in every tile. Drawn pixel for pixel, nearest sampling gives the
+/// pixels themselves, and the claim is exact.
+fn fill_with(
+    ctx: &mut RenderContext,
+    (paint, t): (PaintType, Affine),
+    smooth: bool,
+    fill: impl FnOnce(&mut RenderContext),
+) {
+    let isolate = smooth
+        && matches!(&paint, PaintType::Image(Image { image: ImageSource::Pixmap(pm), .. })
+            if !pm.may_have_transparency());
+    if isolate {
+        ctx.push_layer(None, None, None, None, None);
+    }
+    ctx.set_paint(paint);
+    ctx.set_paint_transform(t);
+    fill(ctx);
+    ctx.reset_paint_transform();
+    if isolate {
+        ctx.pop_layer();
+    }
+}
+
 /// Index just past the pop matching the push at `i`.
 pub(crate) fn skip_group(items: &[DisplayItem], i: usize) -> usize {
     let mut depth = 0usize;
@@ -237,23 +268,21 @@ pub(crate) fn draw(
                 paint,
                 frame,
             } => {
-                let (p, t) = paint_for(paint, *frame, cache, region(cur), cur != base);
-                ctx.set_paint(p);
-                ctx.set_paint_transform(t);
-                match shape {
+                let smooth = cur != base;
+                let p = paint_for(paint, *frame, cache, region(cur), smooth);
+                fill_with(ctx, p, smooth, |ctx| match shape {
                     FillShape::Rect(r) => ctx.fill_rect(r),
                     FillShape::Path(p) => ctx.fill_path(p),
-                }
-                ctx.reset_paint_transform();
+                });
             }
             Item::Border { path, paint, frame } => {
-                let (p, t) = paint_for(paint, *frame, cache, region(cur), cur != base);
-                ctx.set_paint(p);
-                ctx.set_paint_transform(t);
-                ctx.set_fill_rule(Fill::EvenOdd);
-                ctx.fill_path(path);
-                ctx.set_fill_rule(Fill::NonZero);
-                ctx.reset_paint_transform();
+                let smooth = cur != base;
+                let p = paint_for(paint, *frame, cache, region(cur), smooth);
+                fill_with(ctx, p, smooth, |ctx| {
+                    ctx.set_fill_rule(Fill::EvenOdd);
+                    ctx.fill_path(path);
+                    ctx.set_fill_rule(Fill::NonZero);
+                });
             }
             Item::Raster { pixmap, rect, .. } => {
                 let (p, t) = image_paint(pixmap, rect.x0, rect.y0, cur != base);
@@ -290,10 +319,7 @@ pub(crate) fn draw(
                         mode: TintMode::AlphaMask,
                     }));
                 }
-                ctx.set_paint(p);
-                ctx.set_paint_transform(t);
-                ctx.fill_rect(rect);
-                ctx.reset_paint_transform();
+                fill_with(ctx, (p, t), smooth, |ctx| ctx.fill_rect(rect));
                 ctx.reset_tint();
             }
             Item::Glyphs {
@@ -380,11 +406,9 @@ pub(crate) fn draw(
                         None,
                         None,
                     );
-                    let (p, t) = paint_for(&f.paint, f.frame, cache, region(cur), cur != base);
-                    ctx.set_paint(p);
-                    ctx.set_paint_transform(t);
-                    ctx.fill_rect(&f.area);
-                    ctx.reset_paint_transform();
+                    let smooth = cur != base;
+                    let p = paint_for(&f.paint, f.frame, cache, region(cur), smooth);
+                    fill_with(ctx, p, smooth, |ctx| ctx.fill_rect(&f.area));
                     ctx.pop_layer();
                     ctx.pop_layer();
                 }

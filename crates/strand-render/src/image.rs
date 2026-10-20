@@ -849,20 +849,28 @@ fn within(w: f64, h: f64, max_pixels: u64) -> (u32, u32) {
     (a.max(1.0) as u32, b.max(1.0) as u32)
 }
 
-/// A vello pixmap of premultiplied RGBA, red and blue swapped.
+/// A vello pixmap of premultiplied RGBA, red and blue swapped, claimed
+/// opaque when every pixel is.
 ///
-/// (image-redraw) It never claims to be opaque, though its pixels may
-/// all be: a decode standing in for another size, or drawn under a
-/// scale or turn, is sampled smoothly, and its bilinear samples are not
-/// quite opaque (four f32 weights summing to a hair under 1). vello
-/// writes a paint claimed opaque over what is under it in a tile wholly
-/// inside the clip, and blends it in a tile the clip's edge cuts; a
-/// partial repaint clips to the damage, so those differed from a full
-/// repaint where what is under shows through by that hair, a channel a
-/// level off here and there. Blended in both, they are the same.
+/// (opaque-fast-path) The claim lets vello overwrite what is under the
+/// image and cull what an opaque image hides, about a ninth of a 4K
+/// frame's raster time. It is exact only where the samples are the
+/// pixels themselves: drawn pixel for pixel (nearest sampling, so a
+/// sample is a pixel, however the pixmap is placed). A decode standing
+/// in for another size, or drawn under a scale or turn, is sampled
+/// smoothly, and its bilinear samples are not quite opaque (four f32
+/// weights summing to a hair under 1): vello writes a paint claimed
+/// opaque over what is under it in a tile wholly inside the clip and
+/// blends it in a tile the clip's edge cuts, so a partial repaint,
+/// clipped to the damage, differed from a full one by a level here and
+/// there (image-redraw). `raster::draw` draws such a sample into a layer
+/// of its own, where overwriting and blending over nothing agree, and
+/// blends the layer over what is under it alike in every tile.
 fn to_pixmap(r: &Raster) -> Pixmap {
     let mut pm = Pixmap::new(r.w as u16, r.h as u16);
+    let mut opaque = true;
     for (d, s) in pm.data_mut().iter_mut().zip(r.rgba.chunks_exact(4)) {
+        opaque &= s[3] == 255;
         *d = PremulRgba8 {
             r: s[2],
             g: s[1],
@@ -870,6 +878,7 @@ fn to_pixmap(r: &Raster) -> Pixmap {
             a: s[3],
         };
     }
+    pm.set_may_have_transparency(!opaque);
     pm
 }
 
@@ -2009,6 +2018,45 @@ mod tests {
         let r = decode_png(&png_bytes, (1, 1), Fit::Contain).unwrap();
         assert_eq!((r.w, r.h), (1, 1));
         assert_eq!(r.rgba, [200, 120, 40, 255]);
+    }
+
+    /// (opaque-fast-path) A decode claims to be opaque exactly when every
+    /// pixel it holds is (vello then overwrites and culls under it): with
+    /// one translucent pixel it does not.
+    #[test]
+    fn a_decode_claims_opacity_only_when_every_pixel_is() {
+        let png_of = |w: u32, h: u32, alpha_at: Option<(u32, u32)>| {
+            let mut bytes = Vec::new();
+            {
+                let mut e = png::Encoder::new(&mut bytes, w, h);
+                e.set_color(png::ColorType::Rgba);
+                e.set_depth(png::BitDepth::Eight);
+                let mut data = Vec::new();
+                for y in 0..h {
+                    for x in 0..w {
+                        let a = if alpha_at == Some((x, y)) { 254 } else { 255 };
+                        data.extend([40 + x as u8, 90 + y as u8, 160, a]);
+                    }
+                }
+                e.write_header().unwrap().write_image_data(&data).unwrap();
+            }
+            bytes
+        };
+        let claims = |bytes: &[u8], want, fit| {
+            !to_pixmap(&decode_png(bytes, want, fit).unwrap()).may_have_transparency()
+        };
+        assert!(
+            claims(&png_of(8, 6, None), (8, 6), Fit::Fill),
+            "opaque, own size"
+        );
+        assert!(
+            claims(&png_of(8, 6, None), (16, 12), Fit::Cover),
+            "opaque, scaled"
+        );
+        assert!(
+            !claims(&png_of(8, 6, Some((3, 2))), (8, 6), Fit::Fill),
+            "one translucent pixel"
+        );
     }
 
     /// A decode standing in for another box size is placed by its fit,
