@@ -224,7 +224,14 @@ guide's ladder test use this table as the list of constructs.
   that use is a warning naming the variant and its enum, which
   `Module.network` writes. Where the enum is expected (`module =
   battery`, `kind == volume` with `kind` a `Kind`) the variant is read,
-  and a field read (`network.ssid`) is the service's.
+  and a field read (`network.ssid`) is the service's. A file's `state` or
+  `let` named like a node boolean (`hover`, `pressed`, `focused`,
+  `selected`, section 6.3) is a warning too: inside an element the bare
+  name is that element's boolean and outside one it names none, so it
+  never reads the declaration, and each bare use where the file declares
+  it warns that it read the node's (decisions.md
+  builtin-name-diagnostics). A parameter, `for` binding or handler `let`
+  of such a name is read before the node's and is not hidden.
 - **Some builtin names are taken.** Two declarations are load errors
   rather than shadows: a `type` or `enum` named like one of the
   language's own types (`bool`, `int`, `float`, `length`, `percent`,

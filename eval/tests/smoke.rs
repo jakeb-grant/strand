@@ -1243,6 +1243,38 @@ rest
     );
 }
 
+/// (builtin-name-diagnostics) A config that does not load says its
+/// warnings after its errors: set J's workspace dots declared `state
+/// focused`, which every element's own `focused` hides, and saw only the
+/// type errors at its uses.
+#[test]
+fn a_config_that_does_not_load_says_its_warnings() {
+    let sc = scenario(
+        r##"id = "dots"
+screen = { width = 200, scale = 1.0 }
+
+=== bar.strand
+state focused = 1
+bar Top { height: 20
+  row { for d in [1, 2] key d { box { size: 8; when d == focused { width: 24 } } } }
+}
+
+=== steps
+rest
+"##,
+    );
+    let e = match run(&sc, &RunOptions::default()) {
+        Ok(_) => panic!("the config does not load"),
+        Err(e) => e.to_string(),
+    };
+    assert!(e.contains("cannot compare"), "{e}");
+    assert!(
+        e.contains("the config's warnings:")
+            && e.contains("bar.strand:1 (scenario line 5): this `state` is hidden by the node boolean `focused`"),
+        "{e}"
+    );
+}
+
 /// (integration-r7) Each decode drawn names the file it was made from:
 /// an image swap under `transition:` draws the old file's decode under
 /// the new one, and `placement`'s `fit` placed both by the node's new

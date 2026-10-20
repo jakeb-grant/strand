@@ -168,11 +168,13 @@ impl<'a> Checker<'a> {
                 };
                 let pending = self.pending(LazyAst::State(s, reset));
                 self.shadows_builtin(&s.name, "`state`");
+                self.hidden_by_node_bool(&s.name, "`state`");
                 self.declare_file(&s.name, kind, s.export.is_some(), pending);
             }
             ItemKind::Let(l) => {
                 let pending = self.pending(LazyAst::Let(l, reset));
                 self.shadows_builtin(&l.name, "`let`");
+                self.hidden_by_node_bool(&l.name, "`let`");
                 self.declare_file(&l.name, DefKind::Let, l.export.is_some(), pending);
             }
             ItemKind::Enum(e) => {
@@ -344,6 +346,36 @@ impl<'a> Checker<'a> {
         )
         .help = Some(format!(
             "rename the {what}: in its scope `{n}` no longer reads the builtin {hidden}"
+        ));
+    }
+
+    /// (builtin-name-diagnostics) A file's `state` or `let` named like a
+    /// node boolean (`hover`, `pressed`, `focused`, `selected`). A bare
+    /// name inside an element is the enclosing node's boolean, read
+    /// before any file-level name (spec.md 6.3), and outside one it
+    /// names no node, so the declaration is never read by its bare name
+    /// and its uses fail far from it ("cannot compare `int` with
+    /// `bool`", "cannot assign `focused`: props are bindings"). A
+    /// warning at the declaration, so a config that loads today loads
+    /// still (spec.md 14), as a `state` hiding a builtin service warns;
+    /// each use says which it read (`Checker::node_bool_hides`).
+    /// Locals (parameters, `for` bindings, handler `let`s) are read
+    /// before the node's names and so are never hidden.
+    pub(super) fn hidden_by_node_bool(&mut self, name: &ast::Ident, what: &str) {
+        let n = name.name.as_str();
+        if !super::NODE_BOOLS.contains(&n) {
+            return;
+        }
+        self.warning(
+            "check::shadows_builtin",
+            format!("this {what} is hidden by the node boolean `{n}`"),
+            name.span,
+            format!("a bare `{n}` never reads this {what}"),
+        )
+        .help = Some(format!(
+            "rename the {what} (`{n}_one`, say): inside an element a bare `{n}` is that element's own \
+             boolean (`hover`, `pressed`, `focused` and `selected` are every element's), and \
+             outside one it names no element"
         ));
     }
 

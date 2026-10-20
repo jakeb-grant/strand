@@ -491,6 +491,9 @@ impl<'a> Checker<'a> {
             return mk(ExprKind::Variant(e, v), Ty::Enum(e));
         }
         if NODE_BOOLS.contains(&name) || name == "self" {
+            if let Some(&d) = self.file_scopes[self.module].get(name) {
+                self.node_bool_hides(name, d, span);
+            }
             return self.node_expr(name, span);
         }
         if let Some(&d) = self.file_scopes[self.module].get(name) {
@@ -613,6 +616,37 @@ impl<'a> Checker<'a> {
         }
         d.help = Some(format!(
             "write {written} for the variant: a bare `{name}` reads the builtin {what} wherever no enum is expected"
+        ));
+    }
+
+    /// (builtin-name-diagnostics) A `check::shadows_builtin` warning at a
+    /// bare node boolean `name` read where the file declares a `state` or
+    /// `let` of that name (`d`): the use reads the node's, not the
+    /// declaration, which its error (a type mismatch, a write to a
+    /// binding) does not say. The declaration has its own warning
+    /// (`Checker::hidden_by_node_bool`).
+    fn node_bool_hides(&mut self, name: &str, d: DefId, span: Span) {
+        let def = &self.defs[d.0 as usize];
+        let what = match def.kind {
+            DefKind::State | DefKind::Settings => "state",
+            DefKind::Let => "let",
+            _ => return,
+        };
+        let (file, decl) = (def.file, def.span);
+        let place = if self.nodes.is_empty() {
+            "a node boolean (no element is here)"
+        } else {
+            "the enclosing element's own boolean"
+        };
+        self.warning(
+            "check::shadows_builtin",
+            format!("`{name}` here is {place}, not the `{what} {name}`"),
+            span,
+            "the node boolean",
+        )
+        .add_secondary(file, decl, format!("the `{what}` it does not read"))
+        .help = Some(format!(
+            "rename the `{what} {name}` and read it by its new name"
         ));
     }
 

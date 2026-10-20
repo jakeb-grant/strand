@@ -401,8 +401,8 @@ pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
     let services = strand_services_schema::schemas();
     let schema = Schema::builtin_with(&services)
         .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
-    let build = Build::compile_with(None, map.clone(), &schema)
-        .map_err(|d| Error::Config(diagnostics(sc, &map, &d, true)))?;
+    let build =
+        Build::compile_with(None, map.clone(), &schema).map_err(|d| load_failed(sc, &map, &d))?;
     Ok((build.program, map))
 }
 
@@ -426,6 +426,20 @@ pub fn state_values(sc: &Scenario, paths: &[String]) -> Result<BTreeMap<String, 
         out.insert(p.clone(), text);
     }
     Ok(out)
+}
+
+/// A config that does not load: its errors, then (builtin-name-diagnostics)
+/// its warnings about meaning, often the cause and far from the errors (a
+/// `state` a node boolean hides warns where it is declared, and its uses
+/// fail as type errors), as a refused step says them.
+fn load_failed(sc: &Scenario, map: &SourceMap, d: &[strand_compiler::Diagnostic]) -> Error {
+    let errors = diagnostics(sc, map, d, true);
+    let warnings = diagnostics(sc, map, d, false);
+    if warnings.is_empty() {
+        return Error::Config(errors);
+    }
+    let w = warnings.replace('\n', "\n  ");
+    Error::Config(format!("{errors}\n  the config's warnings:\n  {w}"))
 }
 
 /// The compile errors (`errors`) or warnings, one per line, at
@@ -720,7 +734,7 @@ impl Harness {
         let schema = Schema::builtin_with(&services)
             .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
         let build = Build::compile_with(None, map.clone(), &schema)
-            .map_err(|d| Error::Config(diagnostics(&sc, &map, &d, true)))?;
+            .map_err(|d| load_failed(&sc, &map, &d))?;
         let warnings = diagnostics(&sc, &map, &build.warnings, false);
         let rt = Runtime::new();
         let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));

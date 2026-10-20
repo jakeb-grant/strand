@@ -2057,6 +2057,91 @@ fn a_variant_a_builtin_hides_is_named() {
     );
 }
 
+/// (builtin-name-diagnostics) A file's `state` named like a node boolean
+/// is hidden by it: inside an element a bare `focused` is the element's
+/// own (spec.md 6.3). Held-out set J's workspace dots wrote `state
+/// focused = 1`, `when d == focused` and `on click { focused = d }`, and
+/// saw only "cannot compare `float` with `bool`" and "cannot assign
+/// `focused`: props are bindings". The declaration now warns, naming
+/// what hides it and to rename it, and each use says it read the node's
+/// boolean; the errors stay (the meaning is frozen, spec.md 14), and a
+/// local of the name (read before the node's) and a `state` named
+/// otherwise are quiet.
+#[test]
+fn a_state_named_like_a_node_boolean_is_named_where_it_is_declared() {
+    let src = "state focused = 1\n\
+               bar B { row { for d in [1, 2] key d { box {\n\
+               when d == focused { width: 24 }\n\
+               on click { focused = d } } } } }\n";
+    let (out, map) = compile_files(&[("bar.strand", src.to_string())]);
+    let shown = render(&out.diagnostics, &map, Style::Plain);
+    assert!(out.errors() > 0, "the uses still fail: {shown}");
+    let decl = out
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message
+                .contains("is hidden by the node boolean `focused`")
+        })
+        .unwrap_or_else(|| panic!("a warning at the declaration: {shown}"));
+    assert!(
+        !decl.is_error() && decl.code == "check::shadows_builtin",
+        "{shown}"
+    );
+    assert!(
+        shown.contains("bar.strand:1:7"),
+        "at the declaration: {shown}"
+    );
+    assert!(
+        decl.help
+            .as_deref()
+            .is_some_and(|h| h.contains("rename the `state`")),
+        "{shown}"
+    );
+    let uses = out
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            !d.is_error()
+                && d.message
+                    .contains("`focused` here is the enclosing element's own boolean, not the `state focused`")
+        })
+        .count();
+    assert_eq!(uses, 2, "each use: {shown}");
+    assert!(shown.contains("the `state` it does not read"), "{shown}");
+    // `let` too; a `for` binding and a parameter are read before the
+    // node's names, and a `state` named otherwise is the plain case.
+    for (src, warns) in [
+        ("let hover = 2\nbar B { text \"x\" }\n", true),
+        (
+            "bar B { row { for selected in [1, 2] key selected { text \"{selected}\" } } }\n",
+            false,
+        ),
+        (
+            "component Tab(selected: bool) { box { opacity: selected ? 1 : 0.5 } }\n\
+             bar B { Tab true }\n",
+            false,
+        ),
+        (
+            "state focused_ws = 1\nbar B { row { for d in [1, 2] key d { box {\n\
+             when d == focused_ws { width: 24 }\non click { focused_ws = d } } } } }\n",
+            false,
+        ),
+    ] {
+        let (out, map) = compile_files(&[("bar.strand", src.to_string())]);
+        let shown = render(&out.diagnostics, &map, Style::Plain);
+        assert_eq!(out.errors(), 0, "{src}: {shown}");
+        let warned = out
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("hidden by the node boolean"));
+        assert_eq!(warned, warns, "{src}: {shown}");
+        if !warns {
+            assert!(out.diagnostics.is_empty(), "{src}: {shown}");
+        }
+    }
+}
+
 /// (M6) A literal list of whole numbers is `[int]` where it is looped
 /// over, so its items pass to an `int` parameter, as a bar's workspace
 /// buttons pass them to `workspaces.focus` (owner testing Gaps 12).
