@@ -23,10 +23,11 @@
 //! cleared, which hides the shaders with both panels left open: settled,
 //! `Glow` goes back to the CPU (its swapchain released, the surface taken
 //! back) at its one wake, and the device stays up: the thread keeps
-//! running and the process takes no wakeups. PSS after every later cycle
-//! is within 4 MiB of the PSS after the first (no growth); the hardware
-//! leg runs three cycles, and that is its leak tripwire (decisions.md
-//! m5-open-budgets).
+//! running and the process takes no wakeups. The memory strand holds
+//! (its PSS less what it shares of mapped files, [`held_kb`]) after
+//! every later cycle is within 4 MiB of that after the first (no
+//! growth); the hardware leg runs three cycles, and that is its leak
+//! tripwire (decisions.md m5-open-budgets, pss-flake).
 //!
 //! Lavapipe tier: `STRAND_REQUIRE_GPU=1` (with `STRAND_GPU_SOFTWARE=1`,
 //! which accepts lavapipe) makes a device that does not come up a
@@ -131,8 +132,8 @@ fn bloom_gain(i: &Img) -> i32 {
 const GPU_TOLERANCE: u8 = 6;
 const EDGE_SHARE: f64 = 0.02;
 
-/// A later cycle's PSS after the drop may exceed the first cycle's by
-/// this much: the leak tripwire. What the first cycle leaves (strand's
+/// A later cycle's held memory ([`held_kb`]) after the drop may exceed
+/// the first cycle's by this much: the leak tripwire. What the first cycle leaves (strand's
 /// GPU code paged in, mimalloc's pages, libstdc++, a glibc arena of
 /// Mesa's) is paid once; on ANV later cycles came back within 36-66 kB
 /// of the first, except that the arena's resident part moves by 2-2.7
@@ -315,13 +316,38 @@ fn switches(pid: u32) -> u64 {
         .sum()
 }
 
-fn pss_kb(pid: u32) -> u64 {
+/// A `smaps_rollup` field of `pid`, in kB (0 when missing).
+fn rollup_kb(pid: u32, field: &str) -> u64 {
     std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
         .unwrap_or_default()
         .lines()
-        .find(|l| l.starts_with("Pss:"))
+        .find(|l| l.split_whitespace().next() == Some(field))
         .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
         .unwrap_or(0)
+}
+
+fn pss_kb(pid: u32) -> u64 {
+    rollup_kb(pid, "Pss:")
+}
+
+/// (pss-flake) What `pid` holds: its anonymous memory (heap, the
+/// device's and the driver's allocations, a file page it wrote) and its
+/// shared memory (wl_shm and memfd buffers), each proportional as PSS
+/// is, and of those what is swapped out (`SwapPss`: a page swapped out
+/// under load in one cycle and back in by the next is not growth), but
+/// not its share of mapped files' pages (strand's code, Mesa,
+/// libLLVM). A file page is divided among every process mapping it,
+/// whoever they are: on a loaded machine the other test processes
+/// running strand or lavapipe start and end beside this one, and
+/// strand's share of libLLVM's tens of MB moved by 27 MB between two
+/// cycles with nothing of its own changed. A leak is memory strand
+/// holds (a device, a swapchain's buffers, an arena), never a file's
+/// page, so the tripwire reads this.
+fn held_kb(pid: u32) -> u64 {
+    ["Pss_Anon:", "Pss_Shmem:", "SwapPss:"]
+        .iter()
+        .map(|f| rollup_kb(pid, f))
+        .sum()
 }
 
 /// PSS in kB per mapping name (`[heap]`, a library, `[anon]`).
@@ -612,6 +638,7 @@ fn a_settled_surface_goes_back_and_the_device_stays_warm() {
     let baseline_maps = pss_by_mapping(pid);
     eprintln!("warm, before any promotion: PSS {baseline} kB");
     let mut pss = Vec::new();
+    let mut helds = Vec::new();
     let mut maps = Vec::new();
     let cycles: u32 = std::env::var("STRAND_GPU_IDLE_CYCLES")
         .ok()
@@ -801,7 +828,12 @@ fn a_settled_surface_goes_back_and_the_device_stays_warm() {
             "cycle {cycle}: both strips drawn by the CPU again"
         );
         let kb = pss_kb(pid);
-        eprintln!("cycle {cycle}: PSS {kb} kB, threads {:?}", threads(pid));
+        let held = held_kb(pid);
+        eprintln!(
+            "cycle {cycle}: PSS {kb} kB (held {held} kB, mapped files {} kB), threads {:?}",
+            rollup_kb(pid, "Pss_File:"),
+            threads(pid)
+        );
         // Every check since the demotion passes for a strand that died
         // during it (no threads, no switches, two blank strips, PSS 0):
         // it must still run and answer.
@@ -811,26 +843,32 @@ fn a_settled_surface_goes_back_and_the_device_stays_warm() {
             "cycle {cycle}: strand stopped answering after the demotion\n{}",
             log()
         );
-        assert!(kb > 0, "cycle {cycle}: no PSS read for strand");
+        assert!(kb > 0 && held > 0, "cycle {cycle}: no PSS read for strand");
         pss.push(kb);
+        helds.push(held);
         maps.push(pss_by_mapping(pid));
     }
     // No growth: the first cycle pays the one-time costs, a leak adds
-    // itself every cycle ([`PSS_SLACK_KB`]).
-    let first = pss[0];
-    for (i, &kb) in pss.iter().enumerate().skip(1) {
+    // itself every cycle ([`PSS_SLACK_KB`]), in what strand holds
+    // ([`held_kb`]).
+    let first = helds[0];
+    for (i, &kb) in helds.iter().enumerate().skip(1) {
         let cycle = i + 1;
         eprintln!(
-            "cycle {cycle}: {:+} kB against the first cycle (bound {PSS_SLACK_KB} kB)",
-            kb as i64 - first as i64
+            "cycle {cycle}: held {:+} kB against the first cycle (bound {PSS_SLACK_KB} kB), \
+             PSS {:+} kB",
+            kb as i64 - first as i64,
+            pss[i] as i64 - pss[0] as i64
         );
         assert!(
             kb <= first + PSS_SLACK_KB,
-            "PSS grew from {first} kB after the first cycle to {kb} kB after cycle {cycle}, \
-             more than {PSS_SLACK_KB} kB:\n{}",
+            "the memory strand holds grew from {first} kB after the first cycle to {kb} kB \
+             after cycle {cycle}, more than {PSS_SLACK_KB} kB (PSS by mapping, files \
+             included):\n{}",
             growth(&maps[0], &maps[i])
         );
     }
+    let first = pss[0];
     let text = log();
     assert!(
         !text.contains("GPU: the thread ended"),

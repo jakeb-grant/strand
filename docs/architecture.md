@@ -5205,10 +5205,12 @@ inspector (M5) to say why.
   while it animates, and its screenshot matches a small panel's
   CPU-drawn strip whose still shader reads back; hidden, it is demoted
   once settled and taken back; after each cycle the `strand-gpu` thread
-  still runs, the process takes no wakeups, and PSS after every later
-  cycle is within 4 MiB of PSS after the first (no growth; a glibc arena
-  of Mesa's moves by up to 2.7 MiB between cycles, decisions.md
-  m5-open-budgets).
+  still runs, the process takes no wakeups, and the memory strand holds
+  (PSS of its anonymous, shared-memory and swapped pages, not its share
+  of mapped files, which moves with whatever else maps them) after
+  every later cycle is within 4 MiB of that after the first (no growth;
+  a glibc arena of Mesa's moves by up to 2.7 MiB between cycles,
+  decisions.md m5-open-budgets, pss-flake).
 - Hardware leg (`gpu.sh`, advisory): the same tests on
   `/dev/dri/renderD128` over three cycles, whose no-growth check is the
   leak tripwire (a leaked device or swapchain adds itself each cycle;
