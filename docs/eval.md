@@ -1204,9 +1204,10 @@ integration (integration-r6), with round 6's three regressions, it was
 5.60 MB. With eval-coverage-4's five scenarios, the scroll cells' flick
 and the slider cells' offset box it was 5.96 MB; at round 7's
 integration (integration-r7), with eval-rules-5's and eval-rules-6's six
-scenarios and the round's two regressions, it is 5.99 MB (5,988,833
-bytes, 303 kB under the tripwire): the 118 scenarios 852 kB,
-`matrix-60.ref` 2.07 MB and `matrix-144.ref` 3.07 MB, 486 cells each. Paint
+scenarios and the round's two regressions, it was 5.99 MB; after its
+second part (the round's fixes and four more regressions), it is 6.01 MB
+(6,009,510 bytes, 282 kB under the tripwire): the 122 scenarios 888 kB,
+`matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 486 cells each. Paint
 costs little because a field is written only on the ticks it changes.
 Compressed, as git stores it, that is about 530 kB. eval/tests/refs.rs
 holds the total to 6 MiB (5 MiB until integration-r4, when the
