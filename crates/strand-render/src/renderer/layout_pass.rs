@@ -411,6 +411,7 @@ impl Renderer {
             } else {
                 self.held_reach.remove(&root);
             }
+            let grown = self.hold_shadow_reach(root, grown);
             let o = crate::fillet::flush(
                 &self.tree,
                 root,

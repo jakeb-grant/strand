@@ -191,3 +191,7 @@ reopen-enters.patch            regressions/reopen-enters.scn     vanish:#card va
 # changes with no lead (decisions.md launcher-flip-pass).
 flip-undrawn-pass.patch        regressions/flip-undrawn-pass.scn bystander:#count:y
 frame-lead.patch               regressions/flip-undrawn-pass.scn continuity:#count
+# shadow-lift-gaps.patch: shadow-buffer's hold taken out, the overhang
+# following the shadows' reach at rest while a lifted shadow springs back
+# (decisions.md shadow-buffer).
+shadow-lift-gaps.patch         regressions/shadow-lift-gaps.scn  contain

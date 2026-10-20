@@ -186,9 +186,68 @@ impl Renderer {
             self.held.remove(&id);
             self.spec_dirty.insert(id);
         }
+        // (shadow-buffer) Shadows that settled: the overhang shrinks to
+        // their reach at rest, asked for now (a content-sized surface's by
+        // its spec, any other's by its layout pass), so the host has the
+        // new size before the next frame is drawn at it.
+        let settled: Vec<NodeId> = self
+            .shadow_held
+            .iter()
+            .copied()
+            .filter(|id| !self.anim.shadows_moving(&self.tree, *id))
+            .collect();
+        for id in settled {
+            self.shadow_held.remove(&id);
+            if self.content_sized.contains_key(&id) {
+                self.spec_dirty.insert(id);
+                continue;
+            }
+            let shown: Vec<SurfaceId> = self
+                .surfaces
+                .iter()
+                .filter(|(_, s)| s.root == id && s.boxes.is_some())
+                .map(|(sid, _)| *sid)
+                .collect();
+            for sid in shown {
+                if let Some(s) = self.surfaces.get_mut(&sid) {
+                    s.mark_layout();
+                }
+                let layouts = self.shaped();
+                self.lay_out(sid, &layouts);
+            }
+        }
         if !self.spec_dirty.is_empty() {
             self.refresh_specs();
         }
+    }
+
+    /// (shadow-buffer) The overhang surface node `root` asks for, given
+    /// `grown`, the reach of its shadows at rest (design.md: "Shadows
+    /// enlarge the buffer"). A shadow in flight draws between where it
+    /// was and where it rests, so while one springs the overhang is
+    /// never less than the one asked for now: a shadow springing back
+    /// (a hover's lift ending) keeps the room it is drawn in, and the
+    /// surface shrinks once its shadows settle ([`Renderer::release_holds`]).
+    /// Growing, it takes its new reach at once. What an overshoot carries
+    /// past both is clipped, as with a size spring's (owner-testing.md
+    /// bug 9).
+    pub(super) fn hold_shadow_reach(&mut self, root: NodeId, grown: Insets) -> Insets {
+        if !self.anim.shadows_moving(&self.tree, root) {
+            return grown;
+        }
+        let Some(old) = self.specs.get(&root).map(|s| s.overhang) else {
+            return grown;
+        };
+        let held = Insets {
+            top: old.top.max(grown.top),
+            right: old.right.max(grown.right),
+            bottom: old.bottom.max(grown.bottom),
+            left: old.left.max(grown.left),
+        };
+        if held != grown {
+            self.shadow_held.insert(root);
+        }
+        held
     }
 
     /// How long a content-sized surface whose size changed holds its
@@ -555,6 +614,7 @@ impl Renderer {
                 ),
                 _ => (LogicalSize::default(), Insets::default()),
             };
+            let overhang = self.hold_shadow_reach(id, overhang);
             spec.overhang = crate::fillet::flush(
                 &self.tree,
                 id,
@@ -590,6 +650,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id, _| live.contains(id));
         self.held.retain(|id| live.contains(id));
+        self.shadow_held.retain(|id| live.contains(id));
         self.held_reach.retain(|id, _| live.contains(id));
         self.opening.retain(|id| live.contains(id));
         self.closing_content.retain(|id, _| live.contains(id));

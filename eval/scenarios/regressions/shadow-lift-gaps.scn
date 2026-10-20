@@ -1,0 +1,38 @@
+id     = "shadow-lift-gaps"
+about  = """A finding of round 8 (docs/decisions.md shadow-buffer): a surface's
+buffer reserves its shadows' reach, which layout reads at rest, so when a
+hovered card's lifted shadow sprang back the buffer shrank the same tick to the
+resting shadow's reach and cut the shadow still drawn at nearly its lifted
+size: flat at the buffer's edge for a frame as the pointer crossed the gap
+between two cards, and at once on leave. Cards in a bar lift only their shadow
+on hover; the pointer sweeps across them, gaps included, and leaves. The bar
+now keeps the room its shadows are drawn in while they spring and shrinks once
+they settle (`contain` shadow; eval/mutants/shadow-lift-gaps.patch reverts the
+fix)."""
+screen = { width = 400, height = 240, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+bar Top {
+  edge: top; height: 60; bg: #1e1e2e
+  row { height: 60; pad: 0, 12; gap: 16; align: center
+    for c in ["a", "b", "c"] key c {
+      box { width: 80; height: 40; radius: 10; bg: #45475a; shadow: 0 2px 4px #00000066
+        when hover { shadow: 0 12px 28px #000000aa }
+      }
+    }
+  }
+}
+
+=== steps
+pointer 5,30
+rest
+mark across
+glide 5,30 -> 395,30 over 600
+intend bar>row>box[0] changes
+intend bar>row>box[1] changes
+intend bar>row>box[2] changes
+rest
+mark leave
+leave
+rest

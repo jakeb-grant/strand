@@ -407,6 +407,11 @@ pub struct Renderer {
     /// than their content while something on them moved: they shrink
     /// once nothing does (see [`Renderer::release_holds`]).
     held: BTreeSet<NodeId>,
+    /// (shadow-buffer) Surface nodes whose overhang is held past their
+    /// shadows' reach at rest while a shadow on them springs: they
+    /// shrink to it once their shadows settle (see
+    /// [`Renderer::hold_shadow_reach`]).
+    shadow_held: BTreeSet<NodeId>,
     /// See [`EXIT_STALL`].
     exit_stall: Duration,
     /// Content logic removed from a surface playing its closing pose (a
@@ -560,6 +565,7 @@ impl Renderer {
             closed: HashSet::new(),
             was_shown: HashSet::new(),
             held: BTreeSet::new(),
+            shadow_held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
             closing_content: BTreeMap::new(),
             closing_now: BTreeSet::new(),

@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/renderer/specs.rs
++++ b/crates/strand-render/src/renderer/specs.rs
+@@ -232,7 +232,7 @@
+     /// past both is clipped, as with a size spring's (owner-testing.md
+     /// bug 9).
+     pub(super) fn hold_shadow_reach(&mut self, root: NodeId, grown: Insets) -> Insets {
+-        if !self.anim.shadows_moving(&self.tree, root) {
++        if true || !self.anim.shadows_moving(&self.tree, root) {
+             return grown;
+         }
+         let Some(old) = self.specs.get(&root).map(|s| s.overhang) else {

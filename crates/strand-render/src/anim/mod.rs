@@ -1616,6 +1616,20 @@ impl Animator {
             || self.jellies.pending(under)
     }
 
+    /// (shadow-buffer) A shadow under `root` is in flight, or logic set
+    /// one not drawn yet (its spring starts at the next paint, from the
+    /// value it had): what it draws is not its value at rest, the only
+    /// one layout reads for the surface's overhang. Never while motion
+    /// snaps.
+    pub(crate) fn shadows_moving(&self, tree: &SceneTree, root: NodeId) -> bool {
+        !self.snapping()
+            && self.nodes.iter().any(|(id, n)| {
+                (n.props.iter().any(|(p, _)| *p == Prop::Shadow)
+                    || n.touched.iter().any(|(p, _)| *p == Prop::Shadow))
+                    && tree.root_of(*id) == Some(root)
+            })
+    }
+
     pub fn busy(&self, tree: &SceneTree, root: NodeId) -> bool {
         let under = |id: &NodeId| tree.root_of(*id) == Some(root);
         self.nodes.keys().any(under)
