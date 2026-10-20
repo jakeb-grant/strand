@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "stand-in-fit"
 verdict good
-note "stand-in-fit's first reference: the cover art springing square to wide and back beside a strip crop of the same file stands in with one whole-source decode placed by cover, its top and bottom rows the file's own (placement cover passes; the newest-decode stand-in fails it at k1 by 19.2 px)"
+note "integration-r7 part 2 stand-in rank: at k15 the art springing back to square stands in with the 55 x 55 decode (the nearest at least as sharp as its 44 px box) placed by cover, not the 90 x 60 one; placement cover passes"
 date 2026-10-20
-rev "cefff264+changes"
+rev "ca85e114+changes"
 approver "claude"
 scenario c4b3efb3cb6f6fd8
-seal 992497c8e7a1e588
+seal 1e998bb02a4190d6
 S1 0 - "panel P"
 N0 "art|shell.strand:5:5|#0" "image#art"
 N1 "strip|shell.strand:6:5|#1" "image#strip"
@@ -54,7 +54,7 @@ k14
 n0 y=26 w=44 h=44 v=8,26.40625,44,44 im=0,0,44,44@55,55
 n1 x=60 v=60,43.203125,72,9.59375
 k15
-n0 w=43 v=8,26.40625,43.203125,44 im=-11.40625,0,66,44@90,60
+n0 w=43 v=8,26.40625,43.203125,44 im=-0.40625,0,44,44@55,55
 n1 x=59 v=59.203125,43.203125,72,9.59375
 k16
 k17

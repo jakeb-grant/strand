@@ -251,7 +251,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             match share {
                                 Some(k) if step != 0.0 => {
                                     steps += 1;
-                                    d + f64::from(k) * step
+                                    d + f64::from(k) * step + carried_step(cx, key, r.surface, p, i)
                                 }
                                 _ => d,
                             }
@@ -493,15 +493,59 @@ fn content_step(cx: &Cx, i: usize, p: usize, q: &Row, r: &Row, d: f64) -> f64 {
     let (Some(old), Some(new)) = (natural(p, q), natural(i, r)) else {
         return 0.0;
     };
-    let room = cx
-        .parent(&r.key)
-        .and_then(|pk| cx.tl.row(i, pk))
-        .map_or(f64::INFINITY, |pr| value(pr, Axis::W));
-    let step = new.min(room) - old.min(room);
+    // Each no wider than its parent's box at its own frame
+    // (integration-r7 part 2: a parent sized by its content narrows with
+    // the text, so the old width is held to the parent it had then).
+    let room = |j: usize| {
+        cx.parent(&r.key)
+            .and_then(|pk| cx.tl.row(j, pk))
+            .map_or(f64::INFINITY, |pr| value(pr, Axis::W))
+    };
+    let step = new.min(room(i)) - old.min(room(p));
     if step * d <= 0.0 {
         return 0.0;
     }
     step.signum() * step.abs().min(d.abs())
+}
+
+/// (integration-r7 part 2) How far the ancestors a text's content step
+/// resizes move it on x, the other way: each ancestor up from its
+/// parent that is sized by what it holds (no width of its own,
+/// [`crate::trace::Flow::SIZED`] unset) and placed in its own parent by
+/// a declared share ([`crate::trace::NodeMeta::x_share`]) moves its left
+/// edge by that share of the change in its own width between timeline
+/// frames `p` and `i`. A content-sized row centred in a box re-centres
+/// as its text widens, so the text inside it moves by half the row's
+/// change though its own slot is the row's start. The chain stops at the
+/// first ancestor whose width is its own, or whose place the declared
+/// tree does not fix (stretched, spread, out of flow), or that is not
+/// drawn on `surface` at both frames.
+fn carried_step(cx: &Cx, key: &str, surface: u32, p: usize, i: usize) -> f64 {
+    use crate::trace::Flow;
+    let mut out = 0.0;
+    let mut at = cx.trace.nodes.get(key).and_then(|m| m.parent.clone());
+    let mut n = 0;
+    while let Some(k) = at
+        && n < 256
+    {
+        n += 1;
+        let Some(m) = cx.trace.nodes.get(&k) else {
+            break;
+        };
+        if m.flow & Flow::SIZED != 0 {
+            break;
+        }
+        let Some(share) = m.x_share else { break };
+        let (Some(was), Some(now)) = (
+            cx.tl.row(p, &k).filter(|r| r.surface == surface),
+            cx.tl.row(i, &k).filter(|r| r.surface == surface),
+        ) else {
+            break;
+        };
+        out += f64::from(share) * (value(now, Axis::W) - value(was, Axis::W));
+        at = m.parent.clone();
+    }
+    out
 }
 
 /// (integration-r7) How far one wheel notch scrolls a `scroll` or
@@ -526,7 +570,12 @@ pub const NOTCH_PX: f64 = 15.0;
 /// may lag (an end stops it, a window waits for its rows), never lead:
 /// a fling, or a spring that overshoots, lands past the fingers. One
 /// tick's input more is given (a tick counted differently), and the
-/// edge tolerance. `check` names who reports it: `teleport` for the
+/// edge tolerance. (integration-r7 part 2) Another step in the segment
+/// that acts (a click, a key, a `set`, a pointer drag) may move an
+/// offset at once (a row revealed, a list filtered shorter clamping its
+/// offset): the frames it acts on are not judged, and the bound starts
+/// again from where they leave each offset, counting only the input
+/// after it. `check` names who reports it: `teleport` for the
 /// run's own reduced segments, `twin` for its reduced-motion re-run.
 pub fn reduced_scrolls(
     sc: &crate::scenario::Scenario,
@@ -536,7 +585,7 @@ pub fn reduced_scrolls(
 ) -> Vec<Finding> {
     use crate::steps::StepKind;
     let mut out = Vec::new();
-    let (mut judged_segments, mut judged_offsets) = (0u64, 0u64);
+    let (mut judged_segments, mut judged_offsets, mut rebased) = (0u64, 0u64, 0u64);
     for (si, seg) in trace.segments.iter().enumerate() {
         let Some(s) = seg.s else { continue };
         if !seg.reduced_motion || seg.e <= s {
@@ -557,19 +606,38 @@ pub fn reduced_scrolls(
         let period = 1_000_000_000u64 / u64::from(seg.hz.max(1));
         // (first tick, ticks, px) of each input.
         let mut inputs: Vec<(u32, u32, f64)> = Vec::new();
+        // (integration-r7 part 2) The ticks over which another step acts
+        // (first, last): a click, a key or a `set` that reveals a row or
+        // filters the list moves an offset at once by design (m4-lists-w1
+        // `reveal_index`; a list that shrinks clamps its offset to its new
+        // end), so the bound starts again after it.
+        let mut others: Vec<(u32, u32)> = Vec::new();
+        let ticks = |ms: u32| (u64::from(ms) * 1_000_000).div_ceil(period).max(1) as u32;
         for e in &events {
             let Some(step) = sc.steps.iter().find(|st| st.line == e.line) else {
                 continue;
             };
             match &step.kind {
                 StepKind::Swipe { dy, ms } => {
-                    let n = (u64::from(*ms) * 1_000_000).div_ceil(period).max(1) as u32;
-                    inputs.push((e.k, n, dy.abs()));
+                    inputs.push((e.k, ticks(*ms), dy.abs()));
                 }
                 StepKind::Scroll { dy } => {
                     inputs.push((e.k, 1, (dy * NOTCH_PX).abs()));
                 }
-                _ => {}
+                StepKind::Glide { ms, .. } | StepKind::Drag { ms, .. } => {
+                    others.push((e.k, e.k + ticks(*ms)));
+                }
+                StepKind::Mark(_)
+                | StepKind::Shot(_)
+                | StepKind::Log(_)
+                | StepKind::Intend { .. }
+                | StepKind::Expect { .. }
+                | StepKind::Frames(_)
+                | StepKind::Wait(_)
+                | StepKind::Rest { .. }
+                | StepKind::Jitter(_)
+                | StepKind::Hz(_) => {}
+                _ => others.push((e.k, e.k)),
             }
         }
         if inputs.is_empty() {
@@ -596,21 +664,40 @@ pub fn reduced_scrolls(
         }
         let mut told: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         judged_segments += 1;
+        // The tick the bound counts input from (none: the segment's
+        // start, every input in it).
+        let mut base: Option<u32> = None;
+        let mut prev = s;
         for f in trace.frames.iter().filter(|f| f.k > s && f.k <= seg.e) {
+            // Another step acted since the frame before: where this frame
+            // leaves each offset is where the bound starts again.
+            if others.iter().any(|(a, b)| *a <= f.k && *b > prev) {
+                found = f
+                    .offsets
+                    .iter()
+                    .map(|(key, o)| (key.as_str(), f64::from(*o)))
+                    .collect();
+                base = Some(f.k);
+                prev = f.k;
+                rebased += 1;
+                continue;
+            }
+            prev = f.k;
             for (key, o) in &f.offsets {
                 let Some(o0) = found.get(key.as_str()) else {
                     continue;
                 };
                 judged_offsets += 1;
                 let moved = (f64::from(*o) - o0).abs();
-                let may = delivered(f.k);
+                let may = delivered(f.k) - base.map_or(0.0, &delivered);
                 if moved > may + slack && told.insert(key.as_str()) {
                     out.push(
                         Finding::fail(
                             check,
                             format!(
                                 "reduced fling: with motion reduced its offset is {moved:.1} px \
-                                 from where the segment found it, past the {may:.1} px its \
+                                 from where the segment (or the last other step in it) found \
+                                 it, past the {may:.1} px its \
                                  input has moved (reduced motion does not fling, and a step \
                                  lands at once)"
                             ),
@@ -628,7 +715,11 @@ pub fn reduced_scrolls(
     super::stats_of(
         &format!("{}.reduced-scroll", check.name()),
         &trace.scenario.id,
-        &[("segments", judged_segments), ("offsets", judged_offsets)],
+        &[
+            ("segments", judged_segments),
+            ("offsets", judged_offsets),
+            ("rebased", rebased),
+        ],
     );
     out
 }

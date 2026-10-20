@@ -86,6 +86,15 @@ pub struct RunTrace {
     /// closed from the renderer's motion bits alone. Never in the digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub opened: BTreeMap<String, Vec<u32>>,
+    /// (integration-r7 part 2) The ticks at which logic's diff closed
+    /// each surface, by its root's key: removed its root or a node above
+    /// it (`SceneOp::Remove`), or set its `open` false. Read by `vanish`'s
+    /// pose back to tell when a surface starts closing from what the
+    /// scenario did, never from the renderer's motion bits, so a renderer
+    /// that drops a closing surface's exit is still judged. Never in the
+    /// digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub closed: BTreeMap<String, Vec<u32>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

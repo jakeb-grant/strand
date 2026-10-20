@@ -24,11 +24,13 @@
 //!   carries a frame (or the bare one that sends a frame that drew
 //!   nothing) are the ones its state asks for at rest moved by the
 //!   frame's pose's offset as layer shell reads margins
-//!   (`wire::posed_margins`), within half a pixel; (integration-r7)
-//!   after a bare commit following such a frame (the last of its tick:
-//!   one replaced in the same tick is never composited), the ones its
-//!   state asks for at that commit's tick's end (`WireLog::held`), or the
-//!   frame's own in its tick:
+//!   (`wire::posed_margins`), within half a pixel, on the edges layer
+//!   shell reads a margin on (integration-r7 part 2: the anchored ones,
+//!   `wire::read_edges`); (integration-r7) after a bare commit following
+//!   such a frame (every one: the compositor applies a layer surface's
+//!   margins at each commit), the ones its state asks for at that
+//!   commit's tick's end (`WireLog::held`), or the frame's own in its
+//!   tick:
 //!   the offset a compositor pose delegates goes out with its frame's
 //!   commit (design.md "Poses"), on the side the surface is anchored to.
 //! - `late-present`: every frame that drew is committed in the tick it
@@ -181,11 +183,17 @@ pub fn regions_on_wire(trace: &RunTrace) -> Vec<Finding> {
         // of its moment, its tick's end or start (`WireLog::held`), or,
         // in the frame's own tick, to the frame's; never left unjudged, so a
         // manager that sends the rest margins, or stale posed ones, on
-        // such a commit fails.
-        let near = |a: &[i32; 4], w: [f32; 4]| {
-            a.iter()
-                .zip(w)
-                .all(|(g, w)| (f64::from(*g) - f64::from(w)).abs() <= 0.5 + 1e-3)
+        // such a commit fails. (integration-r7 part 2) Every commit is
+        // judged, one a later commit of its tick replaces included: the
+        // compositor applies a layer surface's state at each commit, and
+        // re-arranges the layers and the windows the exclusive zone
+        // leaves room for then, not once a refresh. Only the edges layer
+        // shell reads a margin on are compared (`wire::read_edges`: the
+        // anchored ones); a margin on another edge has no effect.
+        let near = |a: &[i32; 4], (w, edges): ([f32; 4], Option<[bool; 4]>)| {
+            a.iter().zip(w).enumerate().all(|(e, (g, w))| {
+                edges.is_some_and(|ed| !ed[e]) || (f64::from(*g) - f64::from(w)).abs() <= 0.5 + 1e-3
+            })
         };
         // The state at its tick's end, and at the end of the tick before
         // (what it was as its tick began).
@@ -193,36 +201,39 @@ pub fn regions_on_wire(trace: &RunTrace) -> Vec<Finding> {
             log.held
                 .iter()
                 .rfind(|h| h.surface == s && h.k <= k)
-                .map(|h| h.margin)
+                .map(|h| (h.margin, h.edges))
         };
-        // (integration-r7) A bare commit replaced by a later one of its
-        // surface in the same tick is never shown: the compositor
-        // composites at the refresh, after the tick's last commit.
-        let replaced = || {
-            log.commits[i + 1..]
-                .iter()
-                .any(|d| d.surface == Some(s) && d.k == c.k)
-        };
-        let wants: Vec<[f32; 4]> = if fresh.is_some() || f.commit.is_none() {
-            f.margin.into_iter().collect()
-        } else if replaced() {
-            Vec::new()
+        let wants: Vec<([f32; 4], Option<[bool; 4]>)> = if fresh.is_some() || f.commit.is_none() {
+            f.margin.map(|m| (m, f.edges)).into_iter().collect()
         } else {
             held(c.k)
                 .into_iter()
                 .chain(c.k.checked_sub(1).and_then(held))
-                .chain(f.margin.filter(|_| f.k == c.k))
+                .chain(f.margin.filter(|_| f.k == c.k).map(|m| (m, f.edges)))
                 .collect()
         };
         if let (Some(want), Some(got)) = (wants.first().copied(), c.margin)
             && !wants.iter().any(|w| near(&got, *w))
         {
+            let shown: Vec<String> = want
+                .0
+                .iter()
+                .enumerate()
+                .map(|(e, v)| {
+                    if want.1.is_some_and(|ed| !ed[e]) {
+                        "-".to_string()
+                    } else {
+                        format!("{v:.1}")
+                    }
+                })
+                .collect();
             fail(
                 "margin",
                 format!(
                     "after {what} the compositor holds margins {got:?}; its state's at rest moved \
-                     by its pose's offset are [{}] (layer shell: from the edges it is anchored to)",
-                    want.map(|v| format!("{v:.1}")).join(", ")
+                     by its pose's offset are [{}] (layer shell: from the edges it is anchored to; \
+                     `-` an edge it reads none on)",
+                    shown.join(", ")
                 ),
             );
         }

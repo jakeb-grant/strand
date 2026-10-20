@@ -1158,6 +1158,37 @@ impl Harness {
                 }
             }
         }
+        // (integration-r7 part 2) A surface logic closes: its root (or a
+        // node above it) removed, or its `open` set false
+        // (`RunTrace::closed`), noted by key while the tree still holds
+        // it.
+        let mut closes: Vec<NodeId> = Vec::new();
+        for op in &diff.ops {
+            match op {
+                strand_scene::SceneOp::Remove { id, .. } => {
+                    let tree = self.r.tree();
+                    closes.extend(tree.surface_nodes().filter(|s| tree.is_ancestor(*id, *s)));
+                }
+                strand_scene::SceneOp::SetProp {
+                    id,
+                    prop: Prop::Open,
+                    value: PropValue::Bool(false),
+                    ..
+                } if self.r.tree().get(*id).is_some_and(|n| n.kind.is_surface()) => {
+                    closes.push(*id);
+                }
+                _ => {}
+            }
+        }
+        for id in closes {
+            let key = self
+                .labels
+                .key(id, &self.inst, self.r.tree(), &self.sources);
+            let ks = self.trace.closed.entry(key).or_default();
+            if ks.last() != Some(&k) {
+                ks.push(k);
+            }
+        }
         host_loop::apply(self, diff)?;
         self.turn()
     }

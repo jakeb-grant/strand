@@ -195,13 +195,12 @@ fn a_session_is_the_scenario_it_records() {
 #[test]
 fn a_failing_rule_is_marked_on_its_frame_and_a_broken_edit_keeps_the_session() {
     let dir = scratch("marks");
-    let cfg = dir.join("spill.strand");
-    // A cut text in a box narrower than its ellipsis, which is drawn
-    // past the box: `ink`'s spill rule fails on every frame, on the
-    // text's box. (A word wider than its box with no ellipsis overflows
-    // its end as CSS draws it, decisions.md launcher-rules.)
+    let cfg = dir.join("expect.strand");
+    // (integration-r7 part 2) A failure by construction, not a product
+    // fault a fix would take away: the bar's box is shown, and the
+    // session expects it hidden, so `expect` fails on the box's frame.
     let good = "bar Top {\n  height: 40\n  row { width: 400; height: 40; align: center; pad: 0, 8\n    \
-                text \"WWWWWWWWWW\" { id: t; width: 4; shrink: 0; ellipsis: end; color: #000000 }\n  }\n}\n";
+                box { id: t; width: 40; height: 20; bg: #ff0000 }\n  }\n}\n";
     std::fs::write(&cfg, good).unwrap();
     let mut s = Session::open(Options {
         path: cfg.clone(),
@@ -214,19 +213,24 @@ fn a_failing_rule_is_marked_on_its_frame_and_a_broken_edit_keeps_the_session() {
         ..Options::default()
     })
     .unwrap_or_else(|e| panic!("{e}"));
+    s.act("expect hidden #t").unwrap_or_else(|e| panic!("{e}"));
     s.analyse();
-    let ink = s.verdicts().into_iter().find(|(c, _)| c == "ink").unwrap();
+    let expect = s
+        .verdicts()
+        .into_iter()
+        .find(|(c, _)| c == "expect")
+        .unwrap();
     assert!(
-        matches!(ink.1, session::Verdict::Fail(n) if n > 0),
-        "{ink:?}"
+        matches!(expect.1, session::Verdict::Fail(n) if n > 0),
+        "{expect:?}"
     );
     let marks = s.marks();
     let m = marks
         .iter()
-        .find(|m| m.check == "ink")
+        .find(|m| m.check == "expect")
         .unwrap_or_else(|| panic!("{marks:?}"));
-    assert!(m.msg.contains("spill"), "{}", m.msg);
-    assert_eq!(m.rect[2], 4.0, "the text's box: {:?}", m.rect);
+    assert!(m.msg.contains("hidden"), "{}", m.msg);
+    assert_eq!(m.rect[2], 40.0, "the box: {:?}", m.rect);
     assert!(s.next_finding());
     let ks: Vec<u32> = s.ring().iter().map(|f| f.k).collect();
     assert!(

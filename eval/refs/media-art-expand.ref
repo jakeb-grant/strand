@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "media-art-expand"
 verdict good
-note "stand-in-fit: read frame by frame: the cover art springing 40 to 112 x 72 now stands in with one 81 x 54 decode of the whole 3:2 source (contain), placed by cover, not its first 50 x 50 square crop, whose sides were padded out over up to 20 px of the wider box (the dot drawn stretched); the 140 x 90 decode still lands at rest; only paint.images changes"
+note "integration-r7 part 2 stand-in rank: from k62, as the art springs back from 112 x 72, it stands in with the 81 x 54 whole-source decode (the least sharp decode at least as sharp as the box), not the 140 x 90 one minified; placement and redraw pass"
 date 2026-10-20
-rev "cefff264+changes"
+rev "ca85e114+changes"
 approver "claude"
 scenario 78bf9b67258972a9
-seal 04a7993bc415382c
+seal cc5c90f0d0cf9aca
 S1 0 - "panel Media"
 N0 "artist|shell.strand:13:11|#1" "text#artist"
 N1 "art|shell.strand:9:9|#0" "image#art"
@@ -401,7 +401,7 @@ n13 y=89 v=50.40625,88.796875,220,44
 n14 y=103 v=94.40625,103.203125,106.40625,15.203125 ink=95.203125,105.59375,104.796875,10.40625
 k62
 n0 x=73 y=42 w=187 v=72.796875,42.40625,187.203125,14.40625 ink=73.59375,44.796875,64,12.796875
-n1 w=43 h=41 v=20,20,43.203125,40.796875 im=-9,0.734375,61.203125,39.34375@140,90
+n1 w=43 h=41 v=20,20,43.203125,40.796875 im=-9,0,61.203125,40.796875@81,54
 n2 h=63 v=10.40625,10.40625,260,62.40625
 n4 h=41 v=20,20,240,40.796875
 n5 x=73 y=25 w=187 v=72.796875,24.796875,187.203125,32
@@ -429,7 +429,7 @@ n13 y=80 v=50.40625,80,220,44 ord=9
 n14 y=95 v=94.40625,95.203125,106.40625,15.203125 ord=11 ink=95.203125,97.59375,104.796875,10.40625
 k64
 n0 x=69 w=191 v=68.796875,40.796875,191.203125,15.203125 ink=69.59375,43.203125,64,12.796875
-n1 w=39 h=39 v=20,20,39.203125,39.203125 im=-9.796875,0.703125,58.796875,37.796875@140,90
+n1 w=39 h=39 v=20,20,39.203125,39.203125 im=0,0,39.203125,39.203125@50,50
 n2 h=59 v=10.40625,10.40625,260,58.40625
 n4 h=39 v=20,20,240,39.203125
 n5 x=69 w=191 v=68.796875,24,191.203125,32
@@ -440,7 +440,7 @@ n13 y=79 v=50.40625,79.203125,220,44
 n14 y=94 v=94.40625,94.40625,106.40625,14.40625 ink=95.203125,96.796875,104.796875,10.40625
 k65
 n0 x=68 w=192 v=68,40.796875,192,15.203125 ink=68.796875,43.203125,64,12.796875
-n1 w=38 v=20,20,38.40625,39.203125 im=-10.203125,0.703125,58.796875,37.796875@140,90
+n1 w=38 v=20,20,38.40625,39.203125 im=-0.40625,0,39.203125,39.203125@50,50
 n5 x=68 w=192 v=d
 n6 x=68 w=192 v=68,24,192,15.203125 ink=68,26.40625,188,12.796875 fit=192
 n8 op=39
@@ -450,12 +450,12 @@ k67
 n8 op=23
 k68
 n0 x=69 w=191 v=68.796875,40.796875,191.203125,15.203125 ink=69.59375,43.203125,64,12.796875
-n1 w=39 v=20,20,39.203125,39.203125 im=-9.796875,0.703125,58.796875,37.796875@140,90
+n1 w=39 v=20,20,39.203125,39.203125 im=0,0,39.203125,39.203125@50,50
 n5 x=69 w=191 v=68.796875,24,191.203125,32
 n6 x=69 w=191 v=68.796875,24,191.203125,15.203125 ink=68.796875,26.40625,188,12.796875 fit=191
 n8 op=18
 k69
-n1 h=40 v=20,20,39.203125,40 im=-10.40625,0.71875,60,38.578125@140,90
+n1 h=40 v=20,20,39.203125,40 im=-0.40625,0,40,40@50,50
 n2 h=60 v=10.40625,10.40625,260,60
 n4 h=40 v=d
 n8 y=60 v=d op=14

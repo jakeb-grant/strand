@@ -44,6 +44,10 @@ use vello_cpu::color::PremulRgba8;
 /// twice (decisions.md, m5-speed-caches).
 pub const IMAGE_CACHE_BYTES: usize = 32 << 20;
 
+/// (integration-r7 part 2) How many times its box's area the whole-source
+/// stand-in of a `cover` box may be ([`ImageStore::whole_for`]).
+const WHOLE_AREA: f64 = 4.0;
+
 /// Failed loads remembered (so a missing icon is not looked up every
 /// frame); the oldest are forgotten past this.
 const MAX_FAILED: usize = 512;
@@ -1462,11 +1466,17 @@ impl ImageStore {
     /// drawn scaled into the box, by the box's own fit, until `key`
     /// itself is decoded (stand-in-fit). Of those held: one that holds
     /// what the box shows ([`Decoded::holds`], within [`STAND_IN_BARE`])
-    /// before one that does not, then the sharpest (the most pixmap
-    /// pixels to a source pixel), then the newest; of those that do not
+    /// before one that does not; of those that hold it, (integration-r7
+    /// part 2) the least sharp that is at least as sharp as the box
+    /// draws the source (pixmap pixels to a source pixel, against the
+    /// box's), else the sharpest, then the newest; of those that do not
     /// hold it, the one leaving least bare. The latest alone was a
     /// thumbnail's crop standing in for a box of another shape, its edge
-    /// rows padded out over what it did not hold.
+    /// rows padded out over what it did not hold. The sharpest alone was
+    /// a panel's large decode minified many times into a bar's small box
+    /// (design.md's media pill and panel share one file), which the
+    /// raster samples bilinearly with no mipmaps: it shimmers while the
+    /// box springs and snaps when the box's own decode arrives.
     pub fn stand_in(&self, key: &ImageKey) -> Option<(&ImageKey, &Decoded)> {
         let (w, h) = (f64::from(key.w), f64::from(key.h));
         // Ordered: smaller is better.
@@ -1474,15 +1484,20 @@ impl ImageStore {
             let bare = d.holds(w, h, key.fit).1;
             let (sw, sh) = d.source;
             let (pw, ph) = (f64::from(d.pixmap.width()), f64::from(d.pixmap.height()));
-            let sharp = if sw > 0.0 && sh > 0.0 {
-                placement(sw, sh, pw, ph, d.fit).2 / sw
+            let (sharp, need) = if sw > 0.0 && sh > 0.0 {
+                (
+                    placement(sw, sh, pw, ph, d.fit).2 / sw,
+                    placement(sw, sh, w, h, key.fit).2 / sw,
+                )
             } else {
-                0.0
+                (0.0, 0.0)
             };
-            if bare <= STAND_IN_BARE {
-                (0, -sharp)
+            if bare > STAND_IN_BARE {
+                (2, bare)
+            } else if sharp >= need * (1.0 - 1e-9) {
+                (0, sharp)
             } else {
-                (1, bare)
+                (1, -sharp)
             }
         };
         let mut best: Option<((u8, f64), &ImageKey, &Decoded)> = None;
@@ -1517,7 +1532,11 @@ impl ImageStore {
     /// to stand in for a `cover` box no decode held covers; `None` for the other fits, which show the whole source
     /// (any decode of it holds what they show), or when no decode tells
     /// the source's size. Its longer side is at most four times the
-    /// box's (a box far from the source's shape crops most of it).
+    /// box's, and (integration-r7 part 2) its area at most
+    /// [`WHOLE_AREA`] times the box's: a box far from the source's shape
+    /// crops most of it (a 1000 x 50 cover box over a square photo would
+    /// decode 1000 x 1000, twenty times the box), and for the few frames
+    /// of a spring a softer stand-in costs less than a decode that size.
     fn whole_for(&self, key: &ImageKey) -> Option<ImageKey> {
         if key.fit != Fit::Cover {
             return None;
@@ -1533,7 +1552,8 @@ impl ImageStore {
             return None;
         }
         let side = 4.0 * w.max(h);
-        let k = (w / sw).max(h / sh).min(side / sw.max(sh));
+        let area = (WHOLE_AREA * w * h / (sw * sh)).sqrt();
+        let k = (w / sw).max(h / sh).min(side / sw.max(sh)).min(area);
         Some(ImageKey {
             w: (sw * k).round().max(1.0) as u32,
             h: (sh * k).round().max(1.0) as u32,
@@ -2290,6 +2310,56 @@ mod tests {
         assert_eq!(contained.holds(100.0, 100.0, Fit::Contain).1, 0.0);
         assert_eq!(cropped.holds(100.0, 100.0, Fit::Cover).1, 0.0);
         assert_eq!(cropped.holds(100.0, 100.0, Fit::Contain).1, 25.0);
+    }
+
+    /// (integration-r7 part 2) Of the decodes that hold what a box shows,
+    /// the stand-in is the least sharp that is at least as sharp as the
+    /// box: a bar's 40 px box springing beside a panel's 400 px decode of
+    /// the same file stands in with its own 48 px decode, not the panel's
+    /// minified ten times; with none that sharp, the sharpest. And the
+    /// whole-source decode of a long thin `cover` box is at most four
+    /// times the box's area.
+    #[test]
+    fn a_stand_in_is_the_nearest_decode_at_least_as_sharp_as_its_box() {
+        let theme = IconTheme::named("hicolor");
+        let mut store = ImageStore::new(ImageBackend::Inline(theme));
+        let key = |w: u32, h: u32, fit: Fit| ImageKey {
+            source: "/art.png".into(),
+            icon: false,
+            w,
+            h,
+            fit,
+            scale: 1,
+            frame: 0,
+        };
+        let decoded = |w: u32, h: u32, fit: Fit| Decoded {
+            pixmap: Arc::new(Pixmap::new(w as u16, h as u16)),
+            symbolic: false,
+            source: (800.0, 800.0),
+            fit,
+            anim: None,
+        };
+        for (w, fit) in [(32, Fit::Fill), (48, Fit::Fill), (400, Fit::Fill)] {
+            store.insert(key(w, w, fit), Ok(decoded(w, w, fit)));
+        }
+        let px = |k: &ImageKey| store.stand_in(k).map(|(_, d)| d.pixmap.width());
+        assert_eq!(px(&key(40, 40, Fit::Cover)), Some(48), "the nearest above");
+        assert_eq!(px(&key(300, 300, Fit::Cover)), Some(400));
+        assert_eq!(
+            px(&key(600, 600, Fit::Cover)),
+            Some(400),
+            "none above: the sharpest"
+        );
+        let whole = store
+            .whole_for(&key(1000, 50, Fit::Cover))
+            .map(|k| (k.w, k.h));
+        assert_eq!(whole, Some((447, 447)), "4 x 50,000 px, not 1000 x 1000");
+        assert_eq!(
+            store
+                .whole_for(&key(60, 40, Fit::Cover))
+                .map(|k| (k.w, k.h)),
+            Some((60, 60))
+        );
     }
 
     #[test]

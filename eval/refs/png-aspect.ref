@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "png-aspect"
 verdict good
-note "png-aspect first reference: art.png (60 x 40, cover) grows 16 x 12 to 64 x 48 and back, its 16 x 12 decode (20 x 13.33 of source) standing in at the file's 3:2 while the box springs; app.png (24 x 32, contain) 8 x 10 to 48 x 60, its 8 x 10 decode (8 x 10.67) standing in; every rule passes, placement's fit by the files' own sizes included"
-date 2026-10-19
-rev "ff2b9510+changes"
+note "integration-r7 part 2 stand-in rank: at k15 as the boxes spring back small, art.png stands in with its 16 x 12 decode, not the 64 x 48 one, and app.png with its 8 x 10 decode, not 48 x 60: the nearest decodes at least as sharp as the boxes, at the same places"
+date 2026-10-20
+rev "ca85e114+changes"
 approver "claude"
 scenario 578ea7e01f398c43
-seal 5977197350ceb165
+seal 3bd40d2ff5072866
 S1 0 - "panel Art"
 N0 "art|shell.strand:5:5|#0" "image#art"
 N1 "deck|shell.strand:4:3|#0" "row#deck"
@@ -57,12 +57,12 @@ k14
 n0 w=16 h=12 im=0,0,16,12@16,12
 n2 x=32 w=8 h=10 im=0,0,8,10@8,10
 k15
-n0 w=15 h=11 im=0.171875,0,14.671875,11@64,48
-n2 x=31 w=7 h=9 im=-0.09375,0,7.203125,9@48,60
+n0 w=15 h=11 im=0.171875,0,14.671875,11@16,12
+n2 x=31 w=7 h=9 im=-0.09375,0,7.203125,9@8,10
 k16
 k17
-n0 h=12 im=-0.5,0,16,12@64,48
-n2 w=8 im=0.40625,0,7.203125,9@48,60
+n0 h=12 im=-0.5,0,16,12@16,12
+n2 w=8 im=0.40625,0,7.203125,9@8,10
 k18
 n0 w=16 im=0,0,16,12@16,12
 n2 x=32 h=10 im=0,0,8,10@8,10

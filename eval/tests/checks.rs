@@ -2697,6 +2697,8 @@ fn closing_posed(last: Option<f32>) -> RunTrace {
         detached: Some(6),
         ..Default::default()
     }];
+    // (integration-r7 part 2) Logic closed it at tick 1.
+    t.closed.insert("pop".into(), vec![1]);
     t.seal();
     t
 }
@@ -3668,6 +3670,7 @@ fn card_frame(k: u32, w: i32, c: usize) -> WireFrame {
         blur: vec![[0, 0, w, 32]],
         posed: false,
         margin: None,
+        edges: None,
         commit: Some(c),
     }
 }
@@ -3749,6 +3752,7 @@ fn regions_on_wire_holds_a_bare_commits_margins_to_its_moment() {
                     k,
                     surface: 2,
                     margin: [0.0, 0.0, 12.4, 0.0],
+                    edges: None,
                 })
                 .collect();
         }
@@ -3764,9 +3768,10 @@ fn regions_on_wire_holds_a_bare_commits_margins_to_its_moment() {
             "{bad:?} at k{k}: {found:?}"
         );
     }
-    // A bare commit replaced in its tick by the right one is never
-    // composited (heldd-morph-pill's manager sends several in one tick);
-    // the tick's last one is what shows, right or wrong.
+    // (integration-r7 part 2) A bare commit a later one of its tick
+    // replaces is judged too: the compositor applies a layer surface's
+    // margins at each commit (and re-arranges the windows its exclusive
+    // zone leaves room for), not once a refresh.
     let twice = |first: [i32; 4], last: [i32; 4]| {
         let mut t = log(first, 2);
         if let Some(w) = t.wire.as_mut() {
@@ -3778,8 +3783,39 @@ fn regions_on_wire_holds_a_bare_commits_margins_to_its_moment() {
         }
         t
     };
-    assert_eq!(regions_on_wire(&twice([0, 0, 36, 0], [0, 0, 12, 0])), []);
-    let found = regions_on_wire(&twice([0, 0, 12, 0], [0, 0, 36, 0]));
+    assert_eq!(regions_on_wire(&twice([0, 0, 12, 0], [0, 0, 12, 0])), []);
+    for (first, last) in [
+        ([0, 0, 36, 0], [0, 0, 12, 0]),
+        ([0, 0, 12, 0], [0, 0, 36, 0]),
+    ] {
+        let found = regions_on_wire(&twice(first, last));
+        assert!(
+            found.iter().any(|f| f.msg.contains("margins")),
+            "{first:?} then {last:?}: {found:?}"
+        );
+    }
+    // Only the edges layer shell reads a margin on are compared: a bar
+    // anchored top, left and right (heldd-morph-pill's) whose manager
+    // sends its bottom margin moving with a new shadow's overhang, in
+    // several bare commits of one tick, sends nothing the compositor
+    // reads; the same bottom margin on a bottom-anchored card fails.
+    let unanchored = |edges: Option<[bool; 4]>| {
+        let mut t = twice([0, 0, -27, 0], [0, 0, -9, 0]);
+        if let Some(w) = t.wire.as_mut() {
+            for f in &mut w.frames {
+                f.edges = edges;
+            }
+            for h in &mut w.held {
+                h.edges = edges;
+            }
+        }
+        t
+    };
+    assert_eq!(
+        regions_on_wire(&unanchored(Some([true, true, false, true]))),
+        []
+    );
+    let found = regions_on_wire(&unanchored(Some([false, true, true, true])));
     assert!(found.iter().any(|f| f.msg.contains("margins")), "{found:?}");
 }
 
@@ -7688,9 +7724,11 @@ fn closing_reopened(reopened: bool) -> RunTrace {
         root: "pop".into(),
         ..Default::default()
     }];
-    // (integration-r7) Logic opened it, and opened it again at tick 3.
+    // (integration-r7) Logic opened it, closed it at tick 1, and opened
+    // it again at tick 3.
     t.opened
         .insert("pop".into(), if reopened { vec![0, 3] } else { vec![0] });
+    t.closed.insert("pop".into(), vec![1]);
     t.seal();
     t
 }
@@ -7716,6 +7754,74 @@ fn a_surface_opened_again_while_closing_may_pose_back() {
     assert!(pose_back(&r), "{}", show(&r, &t));
     let mut t = closing_reopened(true);
     t.opened.insert("pop".into(), vec![0]);
+    let r = check(&sc, &t);
+    assert!(pose_back(&r), "{}", show(&r, &t));
+}
+
+/// A posed surface (surface 2, root `pop`, `exit { scale: 0.9 }`) that
+/// logic closes at tick 1, its pose's scale at each tick from `scale`,
+/// as the trace records it (to 1/64), and the root's motion bits `bits`.
+fn closing_scaled(scale: [f32; 7], bits: Motions) -> RunTrace {
+    let mut t = shape(6, move |k| {
+        let mut p = row("pop", [0.0, 0.0, 100.0, 40.0]).mot(if k == 0 { Motions(0) } else { bits });
+        p.surface = 2;
+        vec![p]
+    });
+    for f in &mut t.frames {
+        f.painted = vec![2];
+        f.sizes.insert(2, [100.0, 40.0]);
+        f.poses.insert(
+            2,
+            PoseRec {
+                opacity: 1.0,
+                scale: strand_eval::trace::q(scale[f.k as usize]),
+                x: 0.0,
+                y: 0.0,
+            },
+        );
+    }
+    t.surfaces = vec![SurfaceInfo {
+        id: 2,
+        root: "pop".into(),
+        detached: Some(7),
+        ..Default::default()
+    }];
+    t.nodes.get_mut("pop").unwrap().exit = Some(Pose {
+        scale: Some(0.9),
+        ..Pose::default()
+    });
+    t.opened.insert("pop".into(), vec![0]);
+    t.closed.insert("pop".into(), vec![1]);
+    t.seal();
+    t
+}
+
+/// (integration-r7 part 2, decisions.md exit-overshoot) An exit's
+/// spatial spring springs past its pose by `$motion.spatial`'s 2.8%
+/// (design.md) and settles back onto it: a 0.9 scale's 0.8972 is
+/// recorded 57/64 and settles to 58/64, which is no pose back. Coming
+/// back past the exit pose toward rest still is, and so is a renderer
+/// that drops the exit logic asked for (its root shows no exit bit) and
+/// commits rest.
+#[test]
+fn an_exit_that_overshoots_its_pose_and_settles_onto_it_is_no_pose_back() {
+    let sc = scenario("");
+    let pose_back = |r: &Report| {
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pose back"))
+    };
+    let settles = [1.0, 0.96, 0.92, 0.8972, 0.899, 0.9, 0.9];
+    let t = closing_scaled(settles, Motions::EXIT);
+    let r = check(&sc, &t);
+    assert!(!pose_back(&r), "{}", show(&r, &t));
+    let back = [1.0, 0.96, 0.92, 0.8972, 0.94, 0.97, 0.97];
+    let t = closing_scaled(back, Motions::EXIT);
+    let r = check(&sc, &t);
+    assert!(pose_back(&r), "{}", show(&r, &t));
+    // Logic closed it; the renderer played no exit and went back to rest.
+    let dropped = [1.0, 0.96, 0.92, 1.0, 1.0, 1.0, 1.0];
+    let t = closing_scaled(dropped, Motions(0));
     let r = check(&sc, &t);
     assert!(pose_back(&r), "{}", show(&r, &t));
 }
@@ -7801,6 +7907,68 @@ fn reduced_motion_scrolls_only_with_the_fingers() {
             .any(|f| f.msg.starts_with("reduced fling")),
         "{}",
         show(&r, &full)
+    );
+}
+
+/// (integration-r7 part 2) With motion reduced, a list scrolled to 300
+/// takes a wheel notch at tick 1, a `set` at tick 3 that filters it
+/// shorter (its offset clamps to 0 at once, as a reveal or a filter
+/// moves it by design), and a notch at tick 5; its offset at each tick
+/// from `offset`. The bound starts again where the `set` left it.
+fn reduced_filtered(offset: impl Fn(u32) -> f32) -> (Scenario, RunTrace) {
+    let text = "id = \"synth\"\n\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\n\
+                mark find\nscroll 1\nset q x\nscroll 1\nrest\n";
+    let file = eval_root().join("scenarios/regressions/synth.scn");
+    let sc = Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"));
+    let lines: Vec<(u32, String)> = sc
+        .steps
+        .iter()
+        .filter(|s| s.text.starts_with("scroll") || s.text.starts_with("set"))
+        .map(|s| (s.line, s.text.clone()))
+        .collect();
+    let mut t = shape(10, |_| vec![row("list", [0.0, 0.0, 200.0, 100.0])]);
+    t.segments[1].reduced_motion = true;
+    for ((line, text), k) in lines.into_iter().zip([1, 3, 5]) {
+        t.events.push(EventRec {
+            k,
+            line,
+            text,
+            segment: Some(1),
+        });
+    }
+    for f in &mut t.frames {
+        f.offsets.insert("list".into(), offset(f.k));
+    }
+    t.seal();
+    (sc, t)
+}
+
+#[test]
+fn a_reduced_scroll_is_bounded_again_after_another_step() {
+    let fling = |r: &Report| {
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.msg.starts_with("reduced fling"))
+    };
+    let follows = |k: u32| match k {
+        0 => 300.0,
+        1 | 2 => 315.0,
+        3 | 4 => 0.0,
+        _ => 15.0,
+    };
+    let (sc, t) = reduced_filtered(follows);
+    let r = check(&sc, &t);
+    assert!(!fling(&r), "{}", show(&r, &t));
+    // A fling after the filter is still past the fingers.
+    let flings = |k: u32| if k >= 6 { 200.0 } else { follows(k) };
+    let (sc, t) = reduced_filtered(flings);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.msg.starts_with("reduced fling") && f.k == Some(6)),
+        "{}",
+        show(&r, &t)
     );
 }
 
@@ -7898,6 +8066,55 @@ fn a_named_node_coming_on_screen_starts_from_its_partners_box() {
     let t = panel_morph(from_pill, true);
     let r = check(&sc, &t);
     assert!(arrival(&r), "{}", show(&r, &t));
+}
+
+/// (integration-r7 part 2) A named node that comes on screen with no
+/// partner shows at its own box unless something declared moves it: the
+/// renderer's own motion bits (a glide it gave the card) excuse nothing,
+/// so a card flown in from nowhere with a glide fails; an `enter` pose
+/// declared on it, or on an ancestor, excuses its way in.
+#[test]
+fn a_named_node_alone_is_excused_only_by_a_declared_motion() {
+    let sc = scenario("");
+    let arrival = |r: &Report| {
+        r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("morph arrival"))
+    };
+    let glides = |enter: Option<&str>| {
+        let mut t = panel_morph(from_pill, true);
+        for f in &mut t.frames {
+            for r in &mut f.n {
+                if r.key == "card" && f.k <= 6 {
+                    r.mot = Motions::GLIDE.0;
+                    r.emot = Motions::GLIDE.0;
+                }
+            }
+        }
+        if let Some(k) = enter {
+            if !t.nodes.contains_key(k) {
+                t.nodes.insert(k.into(), meta(k, None));
+            }
+            if k != "card" {
+                t.nodes.get_mut("card").unwrap().parent = Some(k.into());
+            }
+            t.nodes.get_mut(k).unwrap().enter = Some(Pose {
+                y: Some(-40.0),
+                ..Pose::default()
+            });
+        }
+        t.seal();
+        t
+    };
+    let t = glides(None);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+    let t = glides(Some("card"));
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
+    let t = glides(Some("sheet"));
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
 }
 
 /// (integration-r7) A named node's own box is where it is laid out at
@@ -8054,6 +8271,84 @@ fn placed_change(by: f32, share: Option<f32>) -> RunTrace {
     m.x_share = share;
     t.seal();
     t
+}
+
+/// (integration-r7 part 2) A text at the start of a content-sized row
+/// (`line`, no width of its own) that its pill centres: the text's
+/// content narrows by 84 px at tick 1 while the pill's width springs 2 px
+/// narrower, so the row re-centres and the text's left edge moves right
+/// by half the row's change (and half the pill's), not by its own slot's
+/// share (none). `dx` is how far its left edge moves at tick 1.
+fn nested_change(dx: f32) -> RunTrace {
+    use strand_eval::trace::Flow;
+    let mut t = shape(3, move |k| {
+        let spring = if k == 1 || k == 2 {
+            Motions::SIZE_SPRING
+        } else {
+            Motions(0)
+        };
+        let pill_w = [150.0, 148.0, 146.0, 146.0][k as usize];
+        let pill = row("pill", [96.0, 4.0, pill_w, 22.0])
+            .mot(spring)
+            .auth(Axes::W);
+        let (text, w) = if k == 0 {
+            ("CPU 12% · RAM 3.1 GB", 134.0)
+        } else {
+            ("CPU 12%", 50.0)
+        };
+        let x = if k == 0 {
+            104.0
+        } else {
+            104.0 + dx - (k as f32 - 1.0)
+        };
+        let mut line = row("line", [x, 4.0, w, 22.0]).laid_at(x, 4.0);
+        line.emot = spring.0;
+        let mut txt = row("text", [x, 10.0, w, 9.0]).laid_at(x, 10.0);
+        txt.emot = spring.0;
+        txt.ink = Some([x, 10.0, w, 9.0]);
+        txt.paint = Some(strand_eval::paint::PaintRec {
+            fg: vec!["1a1b20ff".into()],
+            gl: vec![text.into()],
+            ..Default::default()
+        });
+        vec![pill, line, txt]
+    });
+    let m = t.nodes.get_mut("line").unwrap();
+    m.parent = Some("pill".into());
+    m.x_share = Some(0.5);
+    m.flow &= !Flow::SIZED;
+    let m = t.nodes.get_mut("text").unwrap();
+    m.parent = Some("line".into());
+    m.x_share = Some(0.0);
+    t.nodes.get_mut("pill").unwrap().flow |= Flow::SIZED;
+    t.seal();
+    t
+}
+
+/// (integration-r7 part 2) The share by which a text follows its own
+/// content step combines up its content-sized ancestors, each by its
+/// declared place in its parent and its own change of width: a text at
+/// the start of a row its pill centres moves half the row's change.
+/// Not moving with it, or moving the wrong way, still jumps.
+#[test]
+fn a_text_in_a_centred_content_sized_row_moves_with_half_its_step() {
+    let sc = scenario("");
+    let t = nested_change(41.0);
+    let r = check(&sc, &t);
+    assert!(
+        !fails_on(&r, CheckId::Teleport, "text", "x"),
+        "{}",
+        show(&r, &t)
+    );
+    for dx in [0.0, -41.0] {
+        let t = nested_change(dx);
+        let r = check(&sc, &t);
+        assert!(
+            fails_on(&r, CheckId::Teleport, "text", "x"),
+            "{dx}: {}",
+            show(&r, &t)
+        );
+    }
 }
 
 /// (eval-rules-5) A content step moves a text's left edge in its slot

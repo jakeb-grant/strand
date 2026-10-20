@@ -32,10 +32,12 @@
 //!   a pose's `opacity: 0`, or its last as its exit ends, shows nothing
 //!   and draws nothing);
 //! - **pose back**: with the compositor applying surface poses, a
-//!   surface whose root plays its exit commits, frame after frame until
-//!   it goes or is opened again (eval-rules-5; integration-r7: logic's
-//!   diff creates its root again), a pose that never comes back toward
-//!   rest (owner-testing.md
+//!   surface logic closed (integration-r7 part 2: its diff removed its
+//!   root or set its `open` false) commits, frame after frame until it
+//!   goes or is opened again (eval-rules-5; integration-r7: logic's diff
+//!   creates its root again), a pose that never comes back toward rest
+//!   while short of its exit pose (an overshoot settling onto the pose is
+//!   no pose back; decisions.md exit-overshoot) (owner-testing.md
 //!   bug 7: the frame that ended a closing popup's exit committed the
 //!   rest pose, and the compositor faded the whole menu out from full
 //!   opacity).
@@ -589,31 +591,57 @@ fn still_pose(pose: &crate::trace::Pose, rest: &crate::trace::Row, tol: f64) -> 
 pub const POSE_OPACITY_GIVE: f64 = 0.01;
 pub const POSE_SCALE_GIVE: f64 = 0.005;
 
-/// `pose back`: from the first frame a surface's root plays its exit to
+/// (integration-r7 part 2) How far a recorded pose's scale may come back
+/// per frame in `pose back`: the trace records a pose's scale to
+/// [`crate::trace::QUANTUM`] ([`crate::trace::q`]), so two frames of a
+/// scale that only settles may read a whole quantum apart.
+pub const POSE_BACK_SCALE_GIVE: f64 = if POSE_SCALE_GIVE > crate::trace::QUANTUM {
+    POSE_SCALE_GIVE
+} else {
+    crate::trace::QUANTUM
+};
+
+/// `pose back`: from the first frame a surface paints after logic closed
+/// it (integration-r7 part 2: its diff removed its root, or a node above
+/// it, or set its `open` false, `RunTrace::closed`; never the renderer's
+/// motion bits, so a renderer that drops the exit is still judged) to
 /// the last it paints, the pose it commits never comes back toward rest
-/// (a frame with no pose commits rest's), unless (eval-rules-5) it is
+/// (a frame with no pose commits rest's) while it is short of its exit
+/// pose: an exit's spatial spring that overshoots its pose settles back
+/// onto it (design.md: `$motion.spatial`'s overshoot shows on scale as on
+/// a move; decisions.md exit-overshoot), and only coming back past the
+/// exit pose toward rest is a pose back. Unless (eval-rules-5) it is
 /// opened again first: (integration-r7) logic's diff creates its root
 /// again after the close began (`RunTrace::opened`).
 fn pose_back(cx: &Cx) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut reopened = 0u64;
+    let mut closings = 0u64;
     for sf in &cx.trace.surfaces {
         let mut closing = false;
         let mut since = 0u32;
+        // Logic's closes up to here are spent (by a reopening after them).
+        let mut spent: Option<u32> = None;
         let mut last: Option<(f64, f64)> = None;
         let opens = cx.trace.opened.get(&sf.root);
+        let closes = cx.trace.closed.get(&sf.root);
+        // How far from rest its exit pose is, on each axis it sets (its
+        // root's `exit`, its `enter` mirrored when it has none).
+        let exit = cx.trace.nodes.get(&sf.root).and_then(|m| m.exit.as_ref());
+        let goal = (
+            exit.and_then(|e| e.opacity).map(|o| 1.0 - f64::from(o)),
+            exit.and_then(|e| e.scale)
+                .map(|s| (1.0 - f64::from(s)).abs()),
+        );
         for f in &cx.trace.frames {
             if !f.painted.contains(&sf.id) {
                 continue;
             }
-            let root = f.n.iter().find(|r| r.surface == sf.id && r.key == sf.root);
             // (eval-rules-5) Opened again while it closed: it is not
             // closing any more, and its pose comes back toward rest by
             // design. (integration-r7) Read from logic: its diff created
             // the surface's root again after the close began
-            // (`RunTrace::opened`), never from the renderer's motion bits,
-            // so a renderer that drops a closing surface's exit for no
-            // reason is not excused.
+            // (`RunTrace::opened`).
             // A root logic created again that a new surface took is that
             // surface's opening, not this one's.
             let elsewhere = |t: u32| {
@@ -628,10 +656,19 @@ fn pose_back(cx: &Cx) -> Vec<Finding> {
             {
                 reopened += 1;
                 closing = false;
+                spent = Some(f.k);
                 last = None;
             }
-            if !closing && root.is_some_and(|r| Motions(r.mot).contains(Motions::EXIT)) {
+            // A close before this surface was attached closed an earlier
+            // surface of the root (each opening of a popup is a new one).
+            if !closing
+                && closes.is_some_and(|c| {
+                    c.iter()
+                        .any(|t| *t >= sf.attached && spent.is_none_or(|s| *t > s) && *t <= f.k)
+                })
+            {
                 closing = true;
+                closings += 1;
                 since = f.k;
             }
             if !closing {
@@ -642,14 +679,21 @@ fn pose_back(cx: &Cx) -> Vec<Finding> {
                 1.0 - f64::from(p.map_or(1.0, |p| p.opacity)),
                 (1.0 - f64::from(p.map_or(1.0, |p| p.scale))).abs(),
             );
+            // Back toward rest by more than the give, and short of the
+            // exit pose by more than it.
+            let short =
+                |now: f64, goal: Option<f64>, give: f64| goal.is_none_or(|g| now + give < g);
             if let Some((o, sc)) = last {
-                let what = if away.0 + POSE_OPACITY_GIVE < o {
-                    Some(("opacity", "opacity", 1.0 - o, 1.0 - away.0))
-                } else if away.1 + POSE_SCALE_GIVE < sc {
-                    Some(("scale", "scale's distance from 1", sc, away.1))
-                } else {
-                    None
-                };
+                let what =
+                    if away.0 + POSE_OPACITY_GIVE < o && short(away.0, goal.0, POSE_OPACITY_GIVE) {
+                        Some(("opacity", "opacity", 1.0 - o, 1.0 - away.0))
+                    } else if away.1 + POSE_BACK_SCALE_GIVE < sc
+                        && short(away.1, goal.1, POSE_BACK_SCALE_GIVE)
+                    {
+                        Some(("scale", "scale's distance from 1", sc, away.1))
+                    } else {
+                        None
+                    };
                 if let Some((axis, what, was, got)) = what {
                     let mut b = Finding::fail(
                         CheckId::Vanish,
@@ -677,6 +721,10 @@ fn pose_back(cx: &Cx) -> Vec<Finding> {
             last = Some(away);
         }
     }
-    super::stats("vanish.pose-back", cx, &[("reopened", reopened)]);
+    super::stats(
+        "vanish.pose-back",
+        cx,
+        &[("closings", closings), ("reopened", reopened)],
+    );
     out
 }

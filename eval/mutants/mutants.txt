@@ -175,5 +175,5 @@ reopen-enters.patch            regressions/reopen-enters.scn     vanish:#card va
 # no re-glide on a pass that is no FLIP of its own. frame-lead.patch: its
 # Motion half (crates/strand-scene), a frame sampled again starting its
 # changes with no lead (decisions.md launcher-flip-pass).
-flip-undrawn-pass.patch        regressions/flip-undrawn-pass.scn bystander:#time:y
-frame-lead.patch               regressions/flip-undrawn-pass.scn continuity:#time
+flip-undrawn-pass.patch        regressions/flip-undrawn-pass.scn bystander:#count:y
+frame-lead.patch               regressions/flip-undrawn-pass.scn continuity:#count

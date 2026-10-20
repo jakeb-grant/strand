@@ -527,8 +527,9 @@ fn rest_on_output(cx: &Cx, i: usize, r: &Row) -> [f64; 4] {
 /// motion's (`teleport`'s bound: `teleport_px` a 60 Hz tick, or 0.75 of
 /// that edge's way). With no partner (none shown, or gone over a second
 /// before) or with motion reduced, it shows at its own box at once,
-/// unless something else moves it (an enter pose, a moving ancestor, the
-/// compositor's pose). None of it reads render's morph state: the
+/// unless something declared moves it (its or an ancestor's enter pose,
+/// an ancestor's motion in flight, the compositor's pose; integration-r7
+/// part 2: never the renderer's own motion bits). None of it reads render's morph state: the
 /// partner, its box and the time are the trace's.
 fn morph_arrival(cx: &Cx) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -551,11 +552,6 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
             .rev()
             .find(|(_, s)| s.s.is_some_and(|s| s < k) && k <= s.e)
     };
-    let paint = Motions::OPACITY_SPRING.0
-        | Motions::FILL_SPRING.0
-        | Motions::INK_SPRING.0
-        | Motions::LINE_SPRING.0
-        | Motions::SHARED_MORPH.0;
     for i in 1..tl.ks.len() {
         let k = tl.ks[i];
         let Some((_, seg)) = segment(k) else { continue };
@@ -724,9 +720,32 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
                 _ if ambiguous && !reduced => unjudged += 1,
                 _ => {
                     // No partner, or motion reduced: at its own box,
-                    // unless something else moves it.
-                    let moved = Motions(r.emot).0 & !paint != 0
-                        || cx.trace.nodes.get(*key).is_some_and(|m| m.enter.is_some())
+                    // unless something declared moves it. (integration-r7
+                    // part 2) Read from the declared tree and the trace,
+                    // never the renderer's motion bits: its own `enter`
+                    // pose or an ancestor's, an ancestor's motion in
+                    // flight carrying it (`flight`), or the compositor's
+                    // pose. A renderer that flies a named node in with a
+                    // motion of its own and no partner is judged.
+                    let declared = |start: &str| {
+                        let mut at = Some(start.to_string());
+                        let mut n = 0;
+                        while let Some(k) = at
+                            && n < 256
+                        {
+                            let Some(m) = cx.trace.nodes.get(&k) else {
+                                break;
+                            };
+                            if m.enter.is_some() {
+                                return true;
+                            }
+                            at = m.parent.clone();
+                            n += 1;
+                        }
+                        false
+                    };
+                    let moved = declared(key)
+                        || r.flight.iter().any(|v| f64::from(v.abs()) > cx.tol)
                         || tl.frames[i]
                             .poses
                             .get(&r.surface)

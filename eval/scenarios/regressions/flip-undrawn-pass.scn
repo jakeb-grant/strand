@@ -1,67 +1,64 @@
 id     = "flip-undrawn-pass"
-about  = """A finding of round 7's owner-shell triage (docs/decisions.md launcher-flip-pass):
-a change that resizes a clipped card and mounts a chip in its header is laid
-out more than once before a frame draws it (the change's own pass, a size
-spring's in-flight pass, a pass when the new texts arrive). The change's pass
-lays the header at the card's old width, where the new chip leaves the time
-readout too narrow for its text, which wraps tall; the passes after it were
+about  = """A finding of round 7's owner-shell triage (docs/decisions.md launcher-flip-pass),
+rebuilt from neutral shapes (integration-r7 part 2): a change that widens a
+clipped sheet and mounts a tag in its header row before a short counter is
+laid out more than once before a frame draws it (the change's own pass, a
+size spring's in-flight pass, a pass when the new texts arrive). The change's
+pass lays the header at the sheet's old width, where the new tag leaves the
+counter too narrow for its text, which wraps tall; the passes after it were
 compared with that undrawn layout, or glided nothing, and the frame sampled
-the glide before the last pass added to it. The readout, whose place in the
+the glide before the last pass added to it. The counter, whose place in the
 row does not change on y, was drawn off its level and sprang back. Every pass
 before a frame now compares the boxes the last frame drew and gives each node
 the glide it needs in all, a pass that is no FLIP of its own takes back what
 it glided where a node lies where it was drawn, and a frame's changes start
-together (`bystander`: the readout stays on its level;
+together (`bystander`: the counter stays on its level;
 eval/mutants/flip-undrawn-pass.patch and frame-lead.patch revert the fix)."""
 screen = { width = 1280, height = 720, scale = 1.0 }
 hz     = 60
 
 === shell.strand
-state playing = false
-let w = playing ? 560 : 320
-let h = playing ? 300 : 160
+state wide = false
+let w = wide ? 560 : 320
+let h = wide ? 300 : 160
 
-panel Player {
+panel Tray {
   anchor: top; attach: top; open: true
   stack { width: 800; height: 420; align: start
     row { width: 800; justify: center
-      stack { id: card; clip: true; align: start; bg: #1e2030; radius: 16
-        width: w ~ spring(520, 0.68); height: h ~ spring(900, 0.82)
-        col { width: w ~ spring(520, 0.68); height: h ~ spring(900, 0.82)
-          row { id: head; height: 56; pad: 0, 16; gap: 10; align: center; shrink: 0
-            box { size: 28; radius: 8; bg: #8aadf4 }
-            box { width: 110; height: 20; radius: 6; bg: #363a4f; shrink: 0 }
-            if playing {
-              box { id: live; pad: 2, 8; radius: full; bg: #a6da95
+      stack { id: sheet; clip: true; align: start; bg: #20242c; radius: 10
+        width: w ~ spring(500, 0.7); height: h ~ spring(880, 0.8)
+        col { width: w ~ spring(500, 0.7); height: h ~ spring(880, 0.8)
+          row { id: bar; height: 56; pad: 0, 16; gap: 10; align: center; shrink: 0
+            box { size: 28; radius: 8; bg: #6c8ebf }
+            box { width: 110; height: 20; radius: 6; bg: #3a404c; shrink: 0 }
+            if wide {
+              box { id: tag; pad: 2, 8; radius: full; bg: #8fbf6c
                 enter { opacity: 0; scale: 0.6 }
-                text "Now playing" { color: #181926 }
+                text "Live update" { color: #14161a }
               }
             }
-            box { id: time; pad: 4; radius: 6
-              text "3:07" { weight: 600; color: #cad3f5 }
+            box { id: count; pad: 4; radius: 6
+              text "+128" { weight: 600; color: #d8dee9 }
             }
-            if playing {
-              box { size: 16; radius: full; bg: #ed8796 }
+            if wide {
+              box { size: 16; radius: full; bg: #bf6c6c }
             }
-            row { id: dots; gap: 6; align: center; height: 16; shrink: 0
-              box { size: 6; radius: full; bg: #6e738d }
-              box { size: 6; radius: full; bg: #6e738d }
-              box { size: 6; radius: full; bg: #6e738d }
-            }
+            box { width: 30; height: 10; radius: 3; bg: #4c5466; shrink: 0 }
           }
           stack { grow: 1; align: stretch
-            if playing {
+            if wide {
               col { pad: 8; gap: 4
-                for t in ["Side A", "Second song", "Third song", "The long last one"] key t {
+                for t in ["One", "Two", "Three", "Four and more"] key t {
                   row { gap: 8; height: 32; align: center
-                    box { size: 20; radius: 4; bg: #494d64 }
-                    text t { color: #cad3f5 }
+                    box { size: 20; radius: 4; bg: #4c5466 }
+                    text t { color: #d8dee9 }
                   }
                 }
               }
             } else {
               col { pad: 8
-                box { height: 40; radius: 8; bg: #363a4f }
+                box { height: 40; radius: 8; bg: #3a404c }
               }
             }
           }
@@ -73,6 +70,6 @@ panel Player {
 
 === steps
 rest
-mark play
-set playing true
+mark widen
+set wide true
 rest

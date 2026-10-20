@@ -118,6 +118,10 @@ pub struct HeldMargins {
     pub k: u32,
     pub surface: u32,
     pub margin: [f32; 4],
+    /// (integration-r7 part 2) The edges layer shell reads a margin on
+    /// ([`read_edges`]); `None`: all four.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<[bool; 4]>,
 }
 
 /// One painted frame of one surface, as the renderer's painter left it.
@@ -151,6 +155,10 @@ pub struct WireFrame {
     /// side moved by its pose's offset ([`posed_margins`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin: Option<[f32; 4]>,
+    /// (integration-r7 part 2) The edges (top, right, bottom, left) layer
+    /// shell reads its margins on ([`read_edges`]); `None`: all four.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<[bool; 4]>,
     /// The commit that carried it (an index into `commits`).
     pub commit: Option<usize>,
 }
@@ -612,6 +620,7 @@ impl Leg {
                 let o = snap.pose.map_or([0.0, 0.0], |p| [p.offset.x, p.offset.y]);
                 posed_margins(c, o)
             }),
+            edges: snap.layer.as_ref().map(read_edges),
             commit: None,
         });
         self.offsets.insert(
@@ -636,6 +645,7 @@ impl Leg {
                 k,
                 surface,
                 margin: posed_margins(&c, o),
+                edges: Some(read_edges(&c)),
             });
         }
     }
@@ -1013,6 +1023,17 @@ pub fn posed_margins(c: &strand_surface::placement::LayerConfig, offset: [f32; 2
         _ => (t, b),
     };
     [t, r, b, l]
+}
+
+/// (integration-r7 part 2) The edges (top, right, bottom, left) of a
+/// layer surface of state `c` whose margins layer shell reads: the edges
+/// it is anchored to (wlr-layer-shell `set_margin`: "Setting this value
+/// for edges you are not anchored to has no effect"), both edges of an
+/// axis anchored at both ends. A margin on any other edge moves nothing
+/// and enters no exclusive zone, so it is not compared.
+pub fn read_edges(c: &strand_surface::placement::LayerConfig) -> [bool; 4] {
+    let a = c.anchors;
+    [a.top, a.right, a.bottom, a.left]
 }
 
 /// A region (rectangles added, `true`, or subtracted, in order) as the
