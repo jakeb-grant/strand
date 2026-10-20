@@ -95,6 +95,64 @@ pub struct RunTrace {
     /// digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub closed: BTreeMap<String, Vec<u32>>,
+    /// (eval-rules-8) Each `keyframes` block a node played, by name, as
+    /// logic declared it (`strand_scene::Keyframes`, compiled from the
+    /// config): what `continuity`'s `track` works the track out from.
+    /// Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keyframes: BTreeMap<String, KeyframesRec>,
+}
+
+/// (eval-rules-8) A `keyframes` block as declared: its stops (fractions
+/// of its run, in order) with the values they give the props the checks
+/// read as numbers (`x`, `y`, `rotate` in px or degrees, `opacity`,
+/// `scale`), its run's length and delay (ns), how many runs (`None`:
+/// forever), whether every other run goes backwards, and its easing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KeyframesRec {
+    pub stops: Vec<(f32, BTreeMap<String, f32>)>,
+    /// Props its stops set that are not read as numbers here (a colour, a
+    /// percentage): they are not judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other: Vec<String>,
+    pub d: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub delay: u64,
+    pub repeat: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alternate: bool,
+    pub ease: EaseRec,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// (eval-rules-8) What drives a node by time at one frame, as logic
+/// declared it: its `play` (the block's name and logic's `seq`, bumped
+/// each time it plays again) and whether a prop of it reads time (`t`,
+/// `wave(…)`, `noise(…)`, or a token that does).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimedRec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play: Option<(String, u32)>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub t: bool,
+}
+
+/// (eval-rules-8) One drop shadow drawn (a box's glow included), from
+/// strand-render's `eval-hooks` (`probe::ShadowDrawn`): the node, its
+/// surface, the box it is cast by and the area it may cover (surface
+/// logical px, before transforms), what its props asked (`x`, `y`,
+/// `blur`, `spread`, logical px) and its colour's alpha.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ShadowRec {
+    pub key: String,
+    pub s: u32,
+    pub frame: Rect,
+    pub extent: Rect,
+    pub asked: [f32; 4],
+    pub a: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -473,6 +531,20 @@ pub struct Frame {
     /// (`contain`'s `wrap`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loose: Vec<String>,
+    /// (eval-rules-8) Motion was reduced at this frame, as render had it
+    /// (`system.reduced_motion` carried in logic's diff, or the run's
+    /// own). Never in the digest.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reduced: bool,
+    /// (eval-rules-8) The nodes drawn this frame that time drives as
+    /// declared (a `play`, a prop that reads time), by key. Never in the
+    /// digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timed: BTreeMap<String, TimedRec>,
+    /// (eval-rules-8) Each drop shadow drawn this frame. Never in the
+    /// digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<ShadowRec>,
 }
 
 /// (eval-rules-4) One decode of an image node as drawn, surface logical

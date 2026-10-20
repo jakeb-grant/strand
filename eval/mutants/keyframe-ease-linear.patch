@@ -1,0 +1,13 @@
+diff --git a/crates/strand-render/src/anim/keyframes.rs b/crates/strand-render/src/anim/keyframes.rs
+index bf85c3d4..e6e27d47 100644
+--- a/crates/strand-render/src/anim/keyframes.rs
++++ b/crates/strand-render/src/anim/keyframes.rs
+@@ -267,7 +267,7 @@ pub(super) fn apply(
+         }
+         let span = after.0 - before.0;
+         let u = if span > 0.0 {
+-            ease(k.easing, ((p - before.0) / span).clamp(0.0, 1.0))
++            ease(strand_scene::protocol::Easing::Linear, ((p - before.0) / span).clamp(0.0, 1.0))
+         } else {
+             1.0
+         };

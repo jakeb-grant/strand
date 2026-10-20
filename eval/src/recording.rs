@@ -459,13 +459,129 @@ impl Change {
     }
 }
 
+/// (eval-rules-8) The largest step a run takes that its reference does
+/// not: on one node and field, between two ticks both drew it, how far
+/// the run's value moved less how far the reference's did, in how many
+/// px it shows (see [`visual_size`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    /// The tick it lands at, the node, the field and the two values there.
+    pub at: Change,
+    /// The tick before, which both drew, and the two values there.
+    pub from: u32,
+    pub run_from: String,
+    pub reference_from: String,
+    /// Its visual size, px.
+    pub size: f64,
+}
+
+impl Step {
+    /// `k19..k20 row#subject drawn.x 39 to 36 (reference 36 to 36): a
+    /// 3.00 px step the reference does not take`.
+    pub fn line(&self) -> String {
+        format!(
+            "k{}..k{} {} {} {} to {} (reference {} to {}): a {:.2} px step the reference does \
+             not take",
+            self.from,
+            self.at.k,
+            self.at.label,
+            self.at.field,
+            self.run_from,
+            self.at.run,
+            self.reference_from,
+            self.at.reference,
+            self.size,
+        )
+    }
+}
+
+/// (eval-rules-8) How far, px, the edges of the areas two shadow lists
+/// cover lie apart (`colour@x,y,w,h`, `crate::paint`); 0 when they are
+/// not one list's two states.
+fn shadow_moved(a: &[String], b: &[String]) -> f64 {
+    let area = |s: &str| -> Option<[f64; 4]> {
+        let v: Vec<f64> = s
+            .split_once('@')?
+            .1
+            .split(',')
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        match v.as_slice() {
+            [x, y, w, h] => Some([*x, *y, x + w, y + h]),
+            _ => None,
+        }
+    };
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    a.iter()
+        .zip(b)
+        .filter_map(|(u, v)| Some((area(u)?, area(v)?)))
+        .flat_map(|(u, v)| (0..4).map(move |i| (u[i] - v[i]).abs()))
+        .fold(0.0, f64::max)
+}
+
+fn trim(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".into() } else { s.into() }
+}
+
+/// (eval-rules-8) A node's numeric fields in their own units, with what
+/// one unit of each shows as on screen, px: a length is itself; an
+/// opacity's share (1/255 steps) is that share of the node's larger side
+/// (a box fading out whole shows as much as it moving its size); a
+/// scale's share likewise; a turn (1/100 degree) is the arc its corner
+/// travels, half its diagonal times the angle.
+fn numeric(n: &NodeState) -> [(&'static str, f64, f64); 8] {
+    let side = (n.drawn[2].max(n.drawn[3]) as f64 / PX).max(1.0);
+    let diag = ((n.drawn[2] as f64 / PX).hypot(n.drawn[3] as f64 / PX) / 2.0).max(1.0);
+    [
+        ("drawn.x", n.drawn[0] as f64 / PX, 1.0),
+        ("drawn.y", n.drawn[1] as f64 / PX, 1.0),
+        ("drawn.w", n.drawn[2] as f64 / PX, 1.0),
+        ("drawn.h", n.drawn[3] as f64 / PX, 1.0),
+        ("opacity", n.op as f64 / 255.0, side),
+        ("scale.x", n.scale[0] as f64 / SCALE, side),
+        ("scale.y", n.scale[1] as f64 / SCALE, side),
+        (
+            "rotate",
+            n.rot as f64 / DEG,
+            diag * std::f64::consts::PI / 180.0,
+        ),
+    ]
+}
+
+/// A difference of angles, degrees, taken the short way round: in
+/// `-180..=180`.
+fn turn(d: f64) -> f64 {
+    let r = (d + 180.0).rem_euclid(360.0) - 180.0;
+    if r == -180.0 { 180.0 } else { r }
+}
+
+/// (eval-rules-8) How large a difference of `delta` on `field` of `n`
+/// shows, px ([`numeric`]'s units); `None` for a field that is not a
+/// number.
+pub fn visual_size(n: &NodeState, field: &str, delta: f64) -> Option<f64> {
+    numeric(n)
+        .iter()
+        .find(|(f, ..)| *f == field)
+        .map(|(_, _, per)| delta.abs() * per)
+}
+
 /// Where a run left its reference.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Diff {
     /// The first difference (by tick, then surfaces, then node key).
     pub first: Change,
-    /// The first difference of each node or surface that differs, by
-    /// tick.
+    /// (eval-rules-8) The largest step the run takes that the reference
+    /// does not, when one is past the tolerance: what a reviewer should
+    /// see first (a 3 px snap, where the first difference is a 0.14 px
+    /// drift that leads to it).
+    pub largest: Option<Step>,
+    /// The first difference of each node or surface that differs,
+    /// ranked by the largest difference that node shows (its visual
+    /// size, px; then by tick for those with none).
     pub per_node: Vec<Change>,
     /// Ticks that differ, of how many in either.
     pub ticks: usize,
@@ -788,6 +904,12 @@ pub fn diff(reference: &Recording, run: &Recording, tol: Tol) -> Option<Diff> {
     }
     let (mut i, mut j) = (0, 0);
     let mut of = 0;
+    // (eval-rules-8) Per node and numeric field, the run's and the
+    // reference's values at the last tick both drew it; the largest step
+    // between two such ticks; per node, the largest difference it shows.
+    let mut last: BTreeMap<(String, &'static str), (u32, f64, f64)> = BTreeMap::new();
+    let mut largest: Option<Step> = None;
+    let mut sizes: BTreeMap<String, f64> = BTreeMap::new();
     while i < run.ticks.len() || j < reference.ticks.len() {
         of += 1;
         let ka = run.ticks.get(i).map(|t| t.k);
@@ -867,6 +989,55 @@ pub fn diff(reference: &Recording, run: &Recording, tol: Tol) -> Option<Diff> {
         }
         let keys: BTreeSet<&String> = a.nodes.keys().chain(r.nodes.keys()).collect();
         for key in keys {
+            if let (Some(x), Some(y)) = (a.nodes.get(key), r.nodes.get(key)) {
+                // A shadow's area: how far its edges moved.
+                let worst = sizes.entry(key.clone()).or_insert(0.0);
+                *worst = worst.max(shadow_moved(&x.paint.sh, &y.paint.sh));
+                for ((field, va, per), (_, vr, _)) in numeric(x).into_iter().zip(numeric(y)) {
+                    // A turn is the same a whole turn on: 359° to 0° is a
+                    // step of 1°.
+                    let wrap = |d: f64| if field == "rotate" { turn(d) } else { d };
+                    let size = wrap(va - vr).abs() * per;
+                    let worst = sizes.entry(key.clone()).or_insert(0.0);
+                    *worst = worst.max(size);
+                    let prev = last.insert((key.clone(), field), (k, va, vr));
+                    let Some((k0, pa, pr)) = prev else { continue };
+                    let (da, dr) = (wrap(va - pa), wrap(vr - pr));
+                    let step = wrap(da - dr).abs() * per;
+                    let past = match field {
+                        "opacity" => (da - dr).abs() > tol.op as f64 / 255.0,
+                        "scale.x" | "scale.y" => (da - dr).abs() > tol.scale as f64 / SCALE,
+                        "rotate" => wrap(da - dr).abs() > tol.rot as f64 / DEG,
+                        _ => (da - dr).abs() > tol.px as f64 / PX,
+                    };
+                    if past && largest.as_ref().is_none_or(|l| step > l.size) {
+                        let label = if run.labels.contains_key(key.as_str()) {
+                            run.label(key)
+                        } else {
+                            reference.label(key)
+                        }
+                        .to_string();
+                        let shown = |v: f64| match field {
+                            "opacity" => format!("{}/255", (v * 255.0).round()),
+                            _ => trim(v),
+                        };
+                        largest = Some(Step {
+                            at: Change {
+                                k,
+                                key: Some(key.clone()),
+                                label,
+                                field: field.to_string(),
+                                run: shown(va),
+                                reference: shown(vr),
+                            },
+                            from: k0,
+                            run_from: shown(pa),
+                            reference_from: shown(pr),
+                            size: step,
+                        });
+                    }
+                }
+            }
             let mut d = Vec::new();
             match (a.nodes.get(key), r.nodes.get(key)) {
                 (Some(x), Some(y)) => node_diff(x, y, tol, &mut d),
@@ -890,13 +1061,22 @@ pub fn diff(reference: &Recording, run: &Recording, tol: Tol) -> Option<Diff> {
     }
     let first = changes.first()?.clone();
     let mut seen: BTreeSet<(Option<String>, String)> = BTreeSet::new();
-    let per_node = changes
+    let mut per_node: Vec<Change> = changes
         .iter()
         .filter(|c| seen.insert((c.key.clone(), c.label.clone())))
         .cloned()
         .collect();
+    // (eval-rules-8) Largest first: a node whose difference is a few px
+    // before one whose is a rounding; a surface's, or a node's that is
+    // no number, after, by tick.
+    let size_of = |c: &Change| c.key.as_ref().and_then(|k| sizes.get(k)).copied();
+    per_node.sort_by(|x, y| {
+        let (sx, sy) = (size_of(x).unwrap_or(-1.0), size_of(y).unwrap_or(-1.0));
+        sy.total_cmp(&sx)
+    });
     Some(Diff {
         first,
+        largest,
         per_node,
         ticks: ticks_differing,
         of,

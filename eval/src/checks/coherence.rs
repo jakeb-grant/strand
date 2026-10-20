@@ -271,6 +271,8 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     out.extend(stacking(cx));
     out.extend(drag(cx));
     out.extend(ring(cx));
+    // (eval-rules-8) A shadow covers what its props ask at the scale.
+    out.extend(super::reach::run(cx));
     first_per_node(out)
 }
 

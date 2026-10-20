@@ -388,6 +388,13 @@ pub struct ShadowDrawn {
     /// The area it may cover (its offset, spread box grown by its blur's
     /// reach), surface logical pixels, before transforms.
     pub extent: LogicalRect,
+    /// (eval-rules-8) What its props asked this frame, springs applied:
+    /// its offset, blur and spread (`x`, `y`, `blur`, `spread`), logical
+    /// px, before the frame's scale.
+    pub asked: [f32; 4],
+    /// (eval-rules-8) The box it is cast by, as drawn: surface logical
+    /// px, before transforms.
+    pub frame: LogicalRect,
 }
 
 /// A node's glyphs from one text, drawn in one paint.

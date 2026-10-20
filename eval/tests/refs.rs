@@ -236,6 +236,96 @@ fn a_diff_names_the_first_tick_node_and_field() {
     assert_eq!(d.first.run, "nothing");
 }
 
+/// (eval-rules-8) A run that drifts a fraction of a pixel and then
+/// snaps leads its CHANGED line with the snap, not the drift that came
+/// first, and ranks the nodes by how far they differ.
+#[test]
+fn a_diff_leads_with_its_largest_step() {
+    let t = run(ROW);
+    let rec = Recording::from_trace(&t);
+    let (left, right) = (key(&t, "left"), key(&t, "right"));
+    let mut moved = t.clone();
+    let n = moved.frames.len();
+    let (from, snap) = (moved.frames[n / 4].k, moved.frames[n / 2].k);
+    for f in moved.frames.iter_mut() {
+        for r in f.n.iter_mut() {
+            let mut dx = 0.0;
+            if r.key == right && f.k >= from {
+                dx += 0.5;
+            }
+            if r.key == left && f.k >= from {
+                dx += 0.25;
+            }
+            if r.key == left && f.k >= snap {
+                dx += 3.0;
+            }
+            r.drawn[0] += dx;
+            r.visual[0] += dx;
+        }
+    }
+    let d = recording::diff(&rec, &Recording::from_trace(&moved), Tol::QUANTUM).unwrap();
+    assert_eq!(d.first.k, from, "the drift comes first: {}", d.first.line());
+    let l = d.largest.as_ref().expect("a step past a quantum");
+    assert_eq!(l.at.k, snap, "{}", l.line());
+    assert_eq!(l.at.key.as_deref(), Some(left.as_str()));
+    assert_eq!(l.at.field, "drawn.x");
+    assert!((l.size - 3.0).abs() < 0.05, "{}", l.line());
+    assert!(l.line().contains("a 3.00 px step"), "{}", l.line());
+    // The node that differs most leads the per-node lines.
+    assert_eq!(d.per_node[0].key.as_deref(), Some(left.as_str()));
+    assert_eq!(d.per_node[1].key.as_deref(), Some(right.as_str()));
+    // And the CHANGED finding leads with it.
+    let sc = scenario(ROW);
+    let dir = scratch("largest-step");
+    let mut refs = refs::for_scenario(&sc, &dir, true);
+    let hash = refs::source_hash(&sc.source);
+    refs.good = Some(refs::Block::new(
+        &sc.id,
+        &refs::Meta {
+            verdict: Verdict::Good,
+            note: "test",
+            date: "2026-10-20",
+            rev: "test",
+            approver: "tester",
+            scenario: &hash,
+        },
+        encode(&rec),
+    ));
+    let rep = checks::evaluate(&sc, &moved, None, None, Some(&refs));
+    let line = rep.changed_line().expect("CHANGED");
+    assert!(line.contains("largest step k"), "{line}");
+    assert!(line.contains("box#left drawn.x"), "{line}");
+    assert!(line.contains("; first k"), "{line}");
+}
+
+/// A turn through 360° is a step of what it turned the short way round:
+/// 359.5° to 0.5° is 1°, the same step as 359.75° to 360.75°.
+#[test]
+fn a_turn_through_a_whole_turn_is_no_step() {
+    let t = run(ROW);
+    let left = key(&t, "left");
+    let at = t.frames[t.frames.len() / 2].k;
+    let turned = |before: f32, after: f32| {
+        let mut m = t.clone();
+        for f in m.frames.iter_mut() {
+            for r in f.n.iter_mut() {
+                if r.key == left {
+                    r.rotate = if f.k < at { before } else { after };
+                }
+            }
+        }
+        Recording::from_trace(&m)
+    };
+    let d = recording::diff(&turned(359.5, 0.5), &turned(359.75, 360.75), Tol::QUANTUM)
+        .expect("the run is 0.25° on");
+    assert!(d.largest.is_none(), "{:?}", d.largest.map(|l| l.line()));
+    // One that turns 11° where the reference turns 1° steps 10°.
+    let d = recording::diff(&turned(359.5, 0.5), &turned(359.5, 10.5), Tol::QUANTUM).unwrap();
+    let l = d.largest.expect("a 10° step");
+    assert_eq!(l.at.field, "rotate", "{}", l.line());
+    assert_eq!(l.at.k, at, "{}", l.line());
+}
+
 #[test]
 fn one_quantum_is_the_same_and_two_are_not() {
     let t = run(ROW);

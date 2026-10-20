@@ -1,0 +1,66 @@
+id     = "keyframes-tracks"
+about  = """Keyframe tracks and their reduced-motion stillness (decisions.md
+eval-rules-8). A badge nudges on a three-stop track (x and opacity, a
+delay, two alternating runs on `ease_in_out`) each time it mounts; a
+spinner beside it turns on a loop, a dot breathes on a pulse loop and a bar
+sways on a time signal (`x: 3 * wave(1.3s)`). Once motion is reduced the
+loops and the signal stand still through a wait (design.md: reduced motion
+turns off loops and time signals), and they go on when it is back.
+Every frame of a track is where its stops and easing put it (`continuity`'s
+`track`), and every reduced frame of a loop is the one before it
+(`continuity`'s and `twin`'s `still`)."""
+screen = { width = 320, scale = 1.25 }
+hz     = 60
+
+=== shell.strand
+state alert = false
+state busy = false
+
+keyframes nudge { 0%, 100% { x: 0 }; 20% { x: -6 }; 60% { x: 5; opacity: 0.6 }; duration: 420ms; delay: 80ms; repeat: 2; alternate: true; easing: ease_in_out }
+keyframes spin { 0% { rotate: 0 }; 50% { rotate: 200 }; 100% { rotate: 360 }; duration: 900ms; repeat: 0 }
+keyframes breathe { 0%, 100% { opacity: 1; scale: 1 }; 40% { opacity: 0.4; scale: 0.8 }; duration: 700ms; repeat: 0; easing: bezier(0.3, 0.1, 0.2, 1.0) }
+
+bar Top {
+  height: 30
+  row { id: status; height: 24; gap: 8; align: center; pad: 0, 10
+    box { id: lead; width: 30; height: 12; bg: #45475a }
+    if alert {
+      box { id: badge; width: 18; height: 14; radius: 4; bg: #f38ba8
+        play nudge
+      }
+    }
+    if busy {
+      box { id: spinner; width: 14; height: 14; radius: 3; bg: #89b4fa
+        play spin
+      }
+      box { id: dot; width: 10; height: 10; radius: 5; bg: #a6e3a1
+        play breathe
+      }
+      box { id: sway; width: 16; height: 4; radius: 2; bg: #f9e2af; x: 3 * wave(1.3s) }
+    }
+    box { id: tail; width: 40; height: 12; bg: #585b70 }
+  }
+}
+
+=== steps
+rest
+mark badge
+set alert true
+rest
+mark busy
+set busy true
+wait 1200
+mark reduced
+reduce-motion on
+wait 600
+mark back
+reduce-motion off
+wait 800
+mark idle
+set busy false
+rest
+mark badge-again
+set alert false
+rest
+set alert true
+rest

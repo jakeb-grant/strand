@@ -8653,3 +8653,322 @@ fn a_frame_left_on_screen_for_long_is_no_flash() {
     let t = shown(false);
     assert!(flashes(&t), "{}", show(&check(&sc, &t), &t));
 }
+
+// --- eval-rules-8: keyframe tracks, time held still, shadow reach
+
+/// `keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4 };
+/// duration: 300ms }`, the matrix's.
+fn shake() -> strand_eval::trace::KeyframesRec {
+    let x = |v: f32| BTreeMap::from([("x".to_string(), v)]);
+    strand_eval::trace::KeyframesRec {
+        stops: vec![
+            (0.0, x(0.0)),
+            (0.25, x(-4.0)),
+            (0.75, x(4.0)),
+            (1.0, x(0.0)),
+        ],
+        d: 300_000_000,
+        repeat: Some(1),
+        ..Default::default()
+    }
+}
+
+/// The shake's x at progress `p`, piecewise linear between its stops;
+/// with `span_bug`, each segment's way taken over the stop's whole
+/// fraction (held-out set I's keyframe mutant), which snaps at the stop.
+fn shake_x(p: f64, span_bug: bool) -> f64 {
+    let stops = [(0.0, 0.0), (0.25, -4.0), (0.75, 4.0), (1.0, 0.0)];
+    let i = stops.iter().rposition(|s| s.0 <= p).unwrap_or(0).min(2);
+    let (a, b) = (stops[i], stops[i + 1]);
+    let u = if span_bug {
+        ((p - a.0) / b.0).clamp(0.0, 1.0)
+    } else {
+        (p - a.0) / (b.0 - a.0)
+    };
+    a.1 + (b.1 - a.1) * u
+}
+
+/// Ticks `0..=end` of node `s` laid at x 36, the shake started at tick
+/// 1, `x(p)` drawn at progress `p` (`None`: the play is over).
+fn played(end: u32, x: impl Fn(Option<f64>) -> f64) -> RunTrace {
+    let t0 = 1_000_000_000 + 16_666_667u64;
+    let mut t = shape(end, |k| {
+        let t_ns = 1_000_000_000 + u64::from(k) * 16_666_667;
+        let p = (k >= 1)
+            .then(|| (t_ns - t0) as f64 / 300_000_000.0)
+            .filter(|p| *p < 1.0);
+        let dx = if k >= 1 { x(p) as f32 } else { 0.0 };
+        vec![
+            row("s", [36.0 + dx, 10.0, 20.0, 10.0])
+                .laid_at(36.0, 10.0)
+                .mot(Motions::KEYFRAMES | Motions::TIME),
+        ]
+    });
+    t.keyframes.insert("shake".into(), shake());
+    for f in t.frames.iter_mut().filter(|f| f.k >= 1) {
+        f.timed.insert(
+            "s".into(),
+            strand_eval::trace::TimedRec {
+                play: Some(("shake".into(), 1)),
+                t: false,
+            },
+        );
+    }
+    t.seal();
+    t
+}
+
+#[test]
+fn a_keyframes_track_through_its_stops_passes_continuity() {
+    let t = played(25, |p| p.map_or(0.0, |p| shake_x(p, false)));
+    let r = check(&scenario(""), &t);
+    assert_eq!(
+        status(&r, CheckId::Continuity),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn a_keyframes_track_that_snaps_at_a_stop_fails_continuity() {
+    // Held-out set I's mutant: the segment from 25% to 75% runs over
+    // 0.75 of the run and so arrives short, then snaps 3 px at the stop.
+    let t = played(25, |p| p.map_or(0.0, |p| shake_x(p, true)));
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Continuity, "s", "x"),
+        "{}",
+        show(&r, &t)
+    );
+    assert!(
+        show(&r, &t).contains("track: playing `shake`"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn a_keyframes_track_that_ignores_its_easing_fails_continuity() {
+    // A pulse on `ease_in_out` (a bézier) multiplying the node's own
+    // 0.8: drawn eased, it passes; drawn linearly, it fails.
+    let pulse = strand_eval::trace::KeyframesRec {
+        stops: vec![
+            (0.0, BTreeMap::from([("opacity".to_string(), 1.0)])),
+            (0.5, BTreeMap::from([("opacity".to_string(), 0.45)])),
+            (1.0, BTreeMap::from([("opacity".to_string(), 1.0)])),
+        ],
+        d: 600_000_000,
+        repeat: None,
+        ease: strand_eval::trace::EaseRec::Bezier([0.42, 0.0, 0.58, 1.0]),
+        ..Default::default()
+    };
+    let run = |eased: bool| {
+        let t0 = 1_000_000_000 + 16_666_667u64;
+        let block = pulse.clone();
+        let mut t = shape(40, |k| {
+            let t_ns = 1_000_000_000 + u64::from(k) * 16_666_667;
+            let op = if k >= 1 {
+                let p = ((t_ns - t0) as f64 / 600_000_000.0).fract();
+                let (a, b, u) = if p < 0.5 {
+                    (1.0, 0.45, p / 0.5)
+                } else {
+                    (0.45, 1.0, (p - 0.5) / 0.5)
+                };
+                let u = if eased {
+                    strand_eval::checks::track::bezier([0.42, 0.0, 0.58, 1.0], u)
+                } else {
+                    u
+                };
+                0.8 * (a + (b - a) * u)
+            } else {
+                0.8
+            };
+            vec![
+                row("s", [36.0, 10.0, 20.0, 10.0])
+                    .op(op as f32)
+                    .mot(Motions::KEYFRAMES | Motions::TIME),
+            ]
+        });
+        t.keyframes.insert("pulse".into(), block);
+        for f in t.frames.iter_mut().filter(|f| f.k >= 1) {
+            f.timed.insert(
+                "s".into(),
+                strand_eval::trace::TimedRec {
+                    play: Some(("pulse".into(), 1)),
+                    t: false,
+                },
+            );
+        }
+        t.seal();
+        t
+    };
+    let t = run(true);
+    let r = check(&scenario(""), &t);
+    assert_eq!(
+        status(&r, CheckId::Continuity),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = run(false);
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Continuity, "s", "opacity"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn the_checks_bezier_is_css_cubic_bezier() {
+    use strand_eval::checks::track::bezier;
+    // `ease_in_out`'s middle is its middle; `linear`'s control points
+    // give the identity; the ends are fixed.
+    assert!((bezier([0.42, 0.0, 0.58, 1.0], 0.5) - 0.5).abs() < 1e-6);
+    assert!((bezier([0.25, 0.25, 0.75, 0.75], 0.3) - 0.3).abs() < 1e-6);
+    assert!(bezier([0.42, 0.0, 0.58, 1.0], 0.0).abs() < 1e-6);
+    assert!((bezier([0.42, 0.0, 0.58, 1.0], 1.0) - 1.0).abs() < 1e-6);
+    // CSS `ease-in` (0.42, 0, 1, 1) at a quarter: about 0.0935.
+    assert!((bezier([0.42, 0.0, 1.0, 1.0], 0.25) - 0.0935).abs() < 1e-3);
+}
+
+/// Ticks `0..=end` of a node a time signal drives, its opacity `op(k)`,
+/// motion reduced from tick 5; `driven` ticks carry logic's changes.
+fn reduced_pulse(end: u32, op: impl Fn(u32) -> f32, driven: &[u32]) -> RunTrace {
+    let mut t = shape(end, |k| {
+        vec![row("s", [36.0, 10.0, 20.0, 10.0]).op(op(k)).draws()]
+    });
+    for f in t.frames.iter_mut() {
+        f.reduced = f.k >= 5;
+        f.driven = driven.contains(&f.k) || f.k == 5;
+        f.timed.insert(
+            "s".into(),
+            strand_eval::trace::TimedRec {
+                play: None,
+                t: true,
+            },
+        );
+    }
+    t.seal();
+    t
+}
+
+#[test]
+fn a_time_signal_held_still_under_reduced_motion_passes() {
+    // It breathes until motion is reduced at tick 5, then stands still;
+    // a change logic drives at tick 12 moves it once.
+    let t = reduced_pulse(
+        20,
+        |k| match k {
+            0..5 => 0.6 + 0.04 * k as f32,
+            5..12 => 0.6,
+            _ => 0.9,
+        },
+        &[12],
+    );
+    let r = check(&scenario(""), &t);
+    assert_eq!(
+        status(&r, CheckId::Continuity),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn a_time_signal_that_runs_on_under_reduced_motion_fails() {
+    // Held-out set J's loop mutant: the pulse goes on through a `wait`
+    // with motion reduced.
+    let t = reduced_pulse(20, |k| 0.6 + 0.02 * k as f32, &[]);
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Continuity, "s", "opacity"),
+        "{}",
+        show(&r, &t)
+    );
+    assert!(
+        show(&r, &t).contains("still: with motion reduced"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// One frame's shadow at scale 1.5: its box `[10, 5, 40, 20]` logical,
+/// `0 4px 12px` at alpha 0.4, its extent grown by `reach` device px past
+/// its box moved by `dy` device px.
+fn cast_at_1_5(reach: f64, dy: f64) -> RunTrace {
+    let s = 1.5;
+    let mut t = shape(3, |_| vec![row("s", [10.0, 5.0, 40.0, 20.0]).draws()]);
+    for f in t.frames.iter_mut() {
+        f.scale = s;
+        let (x, y, w, h) = (10.0 * s, 5.0 * s + dy, 40.0 * s, 20.0 * s);
+        let e = [x - reach, y - reach, w + 2.0 * reach, h + 2.0 * reach];
+        f.shadows.push(strand_eval::trace::ShadowRec {
+            key: "s".into(),
+            s: 1,
+            frame: [10.0, 5.0, 40.0, 20.0],
+            extent: e.map(|v| (v / s) as f32),
+            asked: [0.0, 4.0, 12.0, 0.0],
+            a: 0.4,
+        });
+    }
+    t.seal();
+    t
+}
+
+#[test]
+fn a_shadow_scaled_whole_passes_reach() {
+    // σ = 12 × 1.5 / 2 = 9 device px; the renderer reaches 3σ and a
+    // pixel; anything from where alpha 0.4 still shows (about 2.58σ) to
+    // 4σ and two pixels passes.
+    for reach in [28.0, 24.0, 37.0] {
+        let t = cast_at_1_5(reach, 6.0);
+        let r = check(&scenario(""), &t);
+        assert_eq!(
+            status(&r, CheckId::Coherence),
+            Status::Pass,
+            "{}",
+            show(&r, &t)
+        );
+    }
+}
+
+#[test]
+fn a_shadow_whose_blur_ignores_the_scale_fails_reach() {
+    // Held-out set I's mutant: σ taken at scale 1 (6 device px), so it
+    // reaches 19 px where the blur still shows to 23 px.
+    let t = cast_at_1_5(19.0, 6.0);
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Coherence, "s", "shadow"),
+        "{}",
+        show(&r, &t)
+    );
+    assert!(
+        show(&r, &t).contains("the shadow is cut"),
+        "{}",
+        show(&r, &t)
+    );
+    // And a blur scaled twice reaches past what any blur of 12 can.
+    let t = cast_at_1_5(55.0, 6.0);
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Coherence, "s", "shadow"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+#[test]
+fn a_shadow_whose_offset_ignores_the_scale_fails_reach() {
+    // `0 4px` at scale 1.5 moves it 6 device px, not 4.
+    let t = cast_at_1_5(28.0, 4.0);
+    let r = check(&scenario(""), &t);
+    assert!(
+        fails_on(&r, CheckId::Coherence, "s", "shadow"),
+        "{}",
+        show(&r, &t)
+    );
+    assert!(show(&r, &t).contains("centred"), "{}", show(&r, &t));
+}

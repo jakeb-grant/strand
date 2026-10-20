@@ -38,6 +38,9 @@ pub fn run(cx: &Cx, twin: &RunTrace) -> Vec<Finding> {
     // (eval-rules-5) The re-run's own scrolls move only with their input:
     // with motion reduced a lift flings nothing.
     let mut out = super::teleport::reduced_scrolls(cx.sc, twin, cx.tol, CheckId::Twin);
+    // (eval-rules-8) What time drives holds still in the re-run, on every
+    // frame, not only at its rests.
+    out.extend(super::track::still(twin, CheckId::Twin));
     if twin.segments.len() != cx.trace.segments.len() {
         out.push(Finding::fail(
             CheckId::Twin,

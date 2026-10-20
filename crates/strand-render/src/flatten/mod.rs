@@ -595,6 +595,8 @@ pub fn flatten(
         trace: extras.trace.then(Vec::new),
         #[cfg(feature = "eval-hooks")]
         probe_images: Vec::new(),
+        #[cfg(feature = "eval-hooks")]
+        probe_shadows: Vec::new(),
     };
     // Text with no `color` or `font` above it is themed: `$fg` and
     // `$font.ui` when the token table has them (the built-in theme does).
@@ -676,6 +678,11 @@ struct Flattener<'a> {
     /// each node's trace takes its own.
     #[cfg(feature = "eval-hooks")]
     probe_images: Vec<(NodeId, crate::probe::ImageDrawn)>,
+    /// (eval-rules-8) The shadows the nodes drew, by node, in paint
+    /// order: what each one's props asked (`ShadowDrawn::asked`) and the
+    /// box it was cast by, until each node's trace takes its own.
+    #[cfg(feature = "eval-hooks")]
+    probe_shadows: Vec<(NodeId, [f32; 4], LogicalRect)>,
 }
 
 /// (fillet-clip) A clip group open above the node being flattened.

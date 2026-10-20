@@ -148,6 +148,20 @@ fold-gap-late.patch                 curated/toast-stack.scn             continui
 ellipsis-min-content-natural.patch  curated/wrap-card-row.scn           contain:#words:w
 pose-margin-unsent.patch            curated/osd-pose-margins.scn        regions-on-wire
 #
+# (eval-rules-8) Each a second case of a rule this round added, a defect
+# other than the held-out one it was found from:
+# keyframe-ease-linear.patch: a keyframes block's easing ignored, every
+# segment linear (`continuity` track).
+# shadow-offset-unscaled.patch: a shadow's offset drawn in logical px at
+# every scale, so at 1.5 the dock's and the pill's shadows sit a third
+# short of their offset (`coherence` reach).
+# signal-runs-reduced.patch: time signals' clocks not frozen under reduced
+# motion, so a wave-driven bar sways on through a reduced wait
+# (`continuity` still).
+keyframe-ease-linear.patch          curated/keyframes-tracks.scn        continuity:#badge
+shadow-offset-unscaled.patch        curated/osd-shadow-edges-1_5.scn    coherence:#dock
+signal-runs-reduced.patch           curated/keyframes-tracks.scn        continuity:#sway:x
+#
 # image-redraw.patch: image-redraw's fix taken out (decisions.md
 # image-redraw, opaque-fast-path): a decode claimed opaque and sampled
 # smoothly is drawn straight over what is under it, not in a layer of its

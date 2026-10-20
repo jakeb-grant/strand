@@ -192,6 +192,8 @@ pub(super) fn paint(
                     lg(extent.width()),
                     lg(extent.height()),
                 ),
+                asked: [0.0; 4],
+                frame: LogicalRect::default(),
             }),
             Item::Glyphs {
                 layout,

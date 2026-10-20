@@ -91,12 +91,29 @@ pub fn run(cx: &Cx, raw: &RunTrace, r: &Refs) -> (Vec<Finding>, Option<Status>) 
     let Some(d) = recording::diff(&reference, &rec, Tol::QUANTUM) else {
         return (out, None);
     };
-    let mut msg = format!(
-        "{}; {} (reference {})",
-        d.first.line(),
-        d.counts(),
-        good.describe()
-    );
+    // (eval-rules-8) The largest step the run takes that the reference
+    // does not leads, when it is not the first difference itself: a
+    // 3 px snap a reviewer must see, before the 0.14 px drift that
+    // started it.
+    let lead = d
+        .largest
+        .as_ref()
+        .filter(|l| l.at.k != d.first.k || l.at.key != d.first.key || l.at.field != d.first.field);
+    let mut msg = match lead {
+        Some(l) => format!(
+            "largest step {}; first {}; {} (reference {})",
+            l.line(),
+            d.first.line(),
+            d.counts(),
+            good.describe()
+        ),
+        None => format!(
+            "{}; {} (reference {})",
+            d.first.line(),
+            d.counts(),
+            good.describe()
+        ),
+    };
     if good.scenario != refs::source_hash(&cx.sc.source) {
         msg += "; the scenario's text changed since it was approved";
     }
@@ -108,8 +125,14 @@ pub fn run(cx: &Cx, raw: &RunTrace, r: &Refs) -> (Vec<Finding>, Option<Status>) 
         }
         f
     };
-    out.push(finding(&d.first, msg, Sev::Fail));
-    for c in d.per_node.iter().skip(1).take(PER_NODE) {
+    out.push(finding(lead.map_or(&d.first, |l| &l.at), msg, Sev::Fail));
+    // Each other node's first difference, the largest first.
+    for c in d
+        .per_node
+        .iter()
+        .filter(|c| (&c.key, &c.label) != (&d.first.key, &d.first.label))
+        .take(PER_NODE)
+    {
         out.push(finding(c, c.line(), Sev::Info));
     }
     changed(out, bad)

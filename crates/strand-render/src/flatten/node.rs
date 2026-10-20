@@ -758,7 +758,7 @@ impl<'a> Flattener<'a> {
         // Shadows, under the box.
         if has_area && let Some(PropValue::Shadow(list)) = get(Prop::Shadow) {
             for sh in list {
-                self.shadow(sh, frame, &r, &box_path, &mut sig, &mut ink);
+                self.shadow(node.id, sh, frame, &r, &box_path, &mut sig, &mut ink);
             }
         }
         // (M4) `glow:`: a box glows as a shadow under it; text, icons and
@@ -774,7 +774,15 @@ impl<'a> Flattener<'a> {
             && glows_box
             && let Some(g) = glow
         {
-            self.shadow(&g.shadow(), frame, &r, &box_path, &mut sig, &mut ink);
+            self.shadow(
+                node.id,
+                &g.shadow(),
+                frame,
+                &r,
+                &box_path,
+                &mut sig,
+                &mut ink,
+            );
         }
         // (M4) `backdrop:`: what is drawn behind the box, filtered, in its
         // outline under its background (`crate::backdrop`); its damage
@@ -1653,6 +1661,14 @@ impl<'a> Flattener<'a> {
                 .partition(|(n, _)| *n == node.id);
             self.probe_images = rest;
             t.images = own.into_iter().map(|(_, i)| i).collect();
+            let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.probe_shadows)
+                .into_iter()
+                .partition(|(n, ..)| *n == node.id);
+            self.probe_shadows = rest;
+            for (sh, (_, asked, cast)) in t.paint.shadows.iter_mut().zip(own) {
+                sh.asked = asked;
+                sh.frame = cast;
+            }
             let (sx, sy) = (zoom * morph_sx as f32, zoom * morph_sy as f32);
             let hidden = inert.then_some(crate::probe::Hidden::Inert);
             self.probe_push(
@@ -2287,8 +2303,10 @@ impl<'a> Flattener<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn shadow(
         &mut self,
+        node: strand_scene::NodeId,
         sh: &Shadow,
         frame: kurbo::Rect,
         r: &RoundedRectRadii,
@@ -2326,6 +2344,30 @@ impl<'a> Flattener<'a> {
         let extent = rect.inflate(reach, reach);
         let mut clip = extent.to_path(TOLERANCE);
         clip.extend(box_path.iter());
+        // (eval-rules-8) What the props asked of it, logical px, and the
+        // box it is cast by: `coherence`'s `reach` works its extent out
+        // from them at the frame's scale.
+        #[cfg(feature = "eval-hooks")]
+        if self.trace.is_some() {
+            let lg = |v: f64| (v / s) as f32;
+            self.probe_shadows.push((
+                node,
+                [
+                    finite_or_zero(sh.x),
+                    finite_or_zero(sh.y),
+                    finite_or_zero(sh.blur),
+                    finite_or_zero(sh.spread),
+                ],
+                LogicalRect::new(
+                    lg(frame.x0),
+                    lg(frame.y0),
+                    lg(frame.width()),
+                    lg(frame.height()),
+                ),
+            ));
+        }
+        #[cfg(not(feature = "eval-hooks"))]
+        let _ = node;
         self.push(
             Item::Shadow {
                 rect,

@@ -2446,6 +2446,7 @@ impl Harness {
                 .into_iter()
                 .filter(|(s, _)| last.contains_key(s))
                 .collect(),
+            reduced: self.reduced,
             ..Frame::default()
         };
         for (s, f) in &last {
@@ -2499,6 +2500,8 @@ impl Harness {
                 // (eval-rules-6) Its border's ring, a container's gap, and
                 // a text drawn whole that could break narrower.
                 self.flow_facts(*s, n, &mut frame);
+                // (eval-rules-8) What drives it by time, and its shadows.
+                self.time_facts(*s, n, &mut frame);
                 // (eval-rules-4) Its images' decodes and its cut lines.
                 if !n.images.is_empty() || n.cut.is_some() {
                     let key = self
@@ -2596,6 +2599,59 @@ impl Harness {
     /// wants no more frames, a text drawn whole on one line that could
     /// break narrower (its text as it is now, two words or more apart by
     /// spaces, with no `ellipsis:` or `max_lines:` and no line break).
+    /// (eval-rules-8) What time drives `n` by at this frame, as logic
+    /// declared it (its `play`'s block and `seq`, a prop that reads time;
+    /// the block recorded once by name), and each shadow it drew with
+    /// what its props asked of it.
+    fn time_facts(&mut self, s: u32, n: &strand_render::probe::NodeTrace, frame: &mut Frame) {
+        let tree = self.r.tree();
+        let Some(node) = tree.get(n.node) else {
+            return;
+        };
+        let play = match node.get(Prop::Play) {
+            Some(PropValue::Keyframes(k)) => Some(k.clone()),
+            _ => None,
+        };
+        let timed = |p: &str| tree.tokens.time_reads(p);
+        let t = node.props.iter().any(|e| match (&e.prop, &e.value) {
+            (Prop::Tokens, PropValue::Tokens(table)) => table.reads_time_with(&timed),
+            (Prop::Play, _) => false,
+            (_, v) => v.reads_time_with(&timed),
+        });
+        if play.is_none() && !t && n.paint.shadows.is_empty() {
+            return;
+        }
+        let key = self
+            .labels
+            .key(n.node, &self.inst, self.r.tree(), &self.sources);
+        if let Some(k) = &play {
+            self.trace
+                .keyframes
+                .entry(k.name.clone())
+                .or_insert_with(|| keyframes_rec(k));
+        }
+        if play.is_some() || t {
+            frame.timed.insert(
+                key.clone(),
+                crate::trace::TimedRec {
+                    play: play.map(|k| (k.name.clone(), k.seq)),
+                    t,
+                },
+            );
+        }
+        let rect = |r: strand_scene::LogicalRect| [r.x, r.y, r.w, r.h];
+        for sh in &n.paint.shadows {
+            frame.shadows.push(crate::trace::ShadowRec {
+                key: key.clone(),
+                s,
+                frame: rect(sh.frame),
+                extent: rect(sh.extent),
+                asked: sh.asked,
+                a: sh.color.a,
+            });
+        }
+    }
+
     fn flow_facts(&mut self, s: u32, n: &strand_render::probe::NodeTrace, frame: &mut Frame) {
         use strand_scene::{NodeKind, Prop, PropValue};
         let flex = matches!(n.kind, NodeKind::Row | NodeKind::Col | NodeKind::Scroll);
@@ -2966,4 +3022,58 @@ struct Committed {
 /// Logic's wall clock at presentation time `t`.
 fn wall(t: Duration) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(MOCK_TIME) + t
+}
+
+/// (eval-rules-8) A `keyframes` block as the trace records it
+/// ([`crate::trace::KeyframesRec`]): the values its stops give the props
+/// read as numbers (a length in px, an angle in degrees, a plain
+/// number), the others named.
+fn keyframes_rec(k: &strand_scene::Keyframes) -> crate::trace::KeyframesRec {
+    let mut other: Vec<String> = Vec::new();
+    let stops = k
+        .stops
+        .iter()
+        .map(|(at, set)| {
+            let mut vals = BTreeMap::new();
+            for (p, v) in set {
+                let name = p.name().to_string();
+                let read = matches!(
+                    p,
+                    Prop::X | Prop::Y | Prop::Rotate | Prop::Opacity | Prop::Scale
+                );
+                let n = match v {
+                    PropValue::Number(n)
+                    | PropValue::Angle(n)
+                    | PropValue::Length(strand_scene::Length::Px(n)) => Some(*n),
+                    _ => None,
+                };
+                match (read, n) {
+                    (true, Some(n)) if n.is_finite() => {
+                        vals.insert(name, n);
+                    }
+                    _ => {
+                        if !other.contains(&name) {
+                            other.push(name);
+                        }
+                    }
+                }
+            }
+            (*at, vals)
+        })
+        .collect();
+    crate::trace::KeyframesRec {
+        stops,
+        other,
+        d: k.duration.as_nanos() as u64,
+        delay: k.delay.as_nanos() as u64,
+        repeat: k.repeat,
+        alternate: k.alternate,
+        ease: match crate::trace::CurveRec::of(&strand_scene::Curve::Timed {
+            duration: k.duration,
+            easing: k.easing,
+        }) {
+            crate::trace::CurveRec::Timed { ease, .. } => ease,
+            _ => crate::trace::EaseRec::Linear,
+        },
+    }
 }

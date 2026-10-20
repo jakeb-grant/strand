@@ -93,6 +93,10 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     out.extend(rolls(cx));
     out.extend(fold(cx));
     out.extend(fold_gaps(cx));
+    // (eval-rules-8) Keyframe tracks, and what time drives held still
+    // with motion reduced.
+    out.extend(super::track::track(cx));
+    out.extend(super::track::still(cx.trace, CheckId::Continuity));
     first_per_node(out)
 }
 

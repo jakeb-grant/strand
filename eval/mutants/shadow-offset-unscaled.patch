@@ -1,0 +1,14 @@
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -2313,10 +2313,7 @@
+             return;
+         }
+         let spread = finite_or_zero(sh.spread) as f64 * s;
+-        let (dx, dy) = (
+-            finite_or_zero(sh.x) as f64 * s,
+-            finite_or_zero(sh.y) as f64 * s,
+-        );
++        let (dx, dy) = (finite_or_zero(sh.x) as f64, finite_or_zero(sh.y) as f64);
+         let rect = frame
+             .with_origin((frame.x0 + dx, frame.y0 + dy))
+             .inflate(spread, spread);
