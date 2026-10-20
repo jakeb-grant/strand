@@ -1133,3 +1133,51 @@ rest
         "{e}"
     );
 }
+
+/// (integration-r7) Each decode drawn names the file it was made from:
+/// an image swap under `transition:` draws the old file's decode under
+/// the new one, and `placement`'s `fit` placed both by the node's new
+/// `source` (eval-coverage-4's media-pill-art-morph-1_5 failed `fit` on
+/// the old art's 3:2 decode, judged as the new 3:4 file's).
+#[test]
+fn an_image_swap_names_each_decodes_own_file() {
+    const SWAP: &str = r#"
+id = "image-swap-files"
+screen = { width = 200, height = 120, scale = 1.0 }
+
+=== shell.strand
+state track = 0
+panel Art {
+  anchor: top_left; margin: 8; width: 120; height: 100
+  image track == 0 ? "../../fixtures/images/art.png" : "../../fixtures/images/app.png" {
+    id: art; width: 96; height: 80; fit: cover; transition: dissolve }
+}
+
+=== steps
+rest
+set track 1
+rest
+"#;
+    let t = go(SWAP);
+    let art = key(&t, "art");
+    let both = t
+        .frames
+        .iter()
+        .find(|f| f.imgs.iter().filter(|i| i.key == art).count() == 2)
+        .unwrap_or_else(|| panic!("no frame draws the swap's two decodes"));
+    let files: Vec<_> = both
+        .imgs
+        .iter()
+        .filter(|i| i.key == art)
+        .map(|i| i.file)
+        .collect();
+    // art.png is 60 x 40 and app.png 24 x 32: the old one under the new.
+    assert_eq!(files, vec![Some([60, 40]), Some([24, 32])], "{both:?}");
+    let r = strand_eval::checks::evaluate(&scenario(SWAP), &t, None, None, None);
+    assert_eq!(
+        r.status(strand_eval::checks::CheckId::Placement),
+        Some(&strand_eval::checks::Status::Pass),
+        "{:?}",
+        r.lines(&t)
+    );
+}

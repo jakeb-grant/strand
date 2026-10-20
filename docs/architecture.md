@@ -505,7 +505,8 @@ assert on (decisions.md, m4-surface-w1; the crate's own doc comment,
 `src/lib.rs`, lists the globals). For eval's surface leg
 (decisions.md eval-surface-leg) it also logs every commit with the
 state it leaves (`Fake::commits`, `CommitRecord`: buffer, scale,
-viewport, damage, opaque, input and blur regions, alpha, frame
+viewport, damage, opaque, input and blur regions, alpha, (eval-rules-6)
+a layer surface's `margin` after it (top, right, bottom, left), frame
 callbacks, feedback), and with `SurfaceGlobals::vblank` shows commits
 only at a refresh the test sends (`Cmd::Vblank`, at a time on the
 presentation clock it names), when it completes frame callbacks and
@@ -821,7 +822,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     box, where the whole decoded pixmap is drawn in it, the pixmap's size
     in device pixels, the source's size as the decode placed it, the
     `fit:` the node asks for and the fit the pixmap was decoded by, whether
-    a decode for another box size stands in, and a symbolic icon's tint;
+    a decode for another box size stands in, a symbolic icon's tint, and
+    (integration-r7) `file`, the `source` the decode was made from, the
+    node's own or the one an image swap comes from;
     `Fit::name` gives a fit's keyword), and `NodeTrace::cut`, a
     `CutDrawn` for a text cut to its line box when it drew the layout
     shaped for that box at this scale (the text, `ellipsis:` and
@@ -849,7 +852,15 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     logical, when narrower than its surface), `NodeTrace::roll`
     (`RollDrawn`: a rolling text's two texts and progress, and on the
     frame a change interrupted a roll, that roll) and `NodeTrace::drag`
-    (a slider's drag value while a drag holds it);
+    (a slider's drag value while a drag holds it); (eval-rules-6)
+    `NodeTrace::ring`, a `RingDrawn` for a node's `border:` as the
+    flattener drew it (its drawn box in device px on the physical pixels
+    its edges fall on, the even-odd outline it filled as a `kurbo::BezPath`
+    in device px before the node's transforms, the device pixels per
+    logical pixel, the drawn box's logical size, whether it follows a
+    `shape:` outline or squircle corners, and the `border:` width and
+    `radius:` as this frame's props resolve them), and `NodeTrace::gap`, a container's `gap:` as its props give
+    it this frame (logical px, `None` when unset or not a number);
   - `Renderer::set_frame_trace(bool)`, `take_frame_traces() ->
     Vec<FrameTrace>`, `set_text_hold(bool)`,
     `set_text_hold_with(Option<HoldPick>)` (`HoldPick = Box<dyn

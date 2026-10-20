@@ -307,6 +307,10 @@ pub struct ImageDrawn {
     pub pixmap_fit: &'static str,
     /// A decode for another box size stands in while its own is made.
     pub stand_in: bool,
+    /// (integration-r7) The `source` the decode was made from: the
+    /// node's own, or, for the old image an image swap draws under the
+    /// new one (`transition:`), the source it swaps from.
+    pub file: String,
     /// (eval-coverage-3) A symbolic icon's colour: it is drawn as a mask
     /// in it.
     pub tint: Option<Color>,

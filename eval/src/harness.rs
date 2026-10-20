@@ -1043,14 +1043,13 @@ impl Harness {
             .map_err(|e| e.to_string())
     }
 
-    /// (png-aspect) The size the header of `node`'s image file gives
-    /// (its `source`, a path the compiler made absolute or a `file://`
-    /// URL), read once per path.
-    fn file_size(&mut self, node: strand_scene::NodeId) -> Option<[u32; 2]> {
-        let src = match self.r.tree().get(node)?.get(strand_scene::Prop::Source)? {
-            strand_scene::PropValue::Text(t) | strand_scene::PropValue::Keyword(t) => t.clone(),
-            _ => return None,
-        };
+    /// (png-aspect) The size the header of the image file `src` gives
+    /// (a decode's `source`, a path the compiler made absolute or a
+    /// `file://` URL), read once per path. (integration-r7) Each decode
+    /// drawn names its own source: an image swap draws the old file's
+    /// decode under the new one, and the node's `source` is the new
+    /// one's.
+    fn file_size(&mut self, src: &str) -> Option<[u32; 2]> {
         let src = src.trim();
         let path = src.strip_prefix("file://").unwrap_or(src);
         if !path.starts_with('/') {
@@ -2403,8 +2402,8 @@ impl Harness {
                         .labels
                         .key(n.node, &self.inst, self.r.tree(), &self.sources);
                     let rect = |r: strand_scene::LogicalRect| [r.x, r.y, r.w, r.h];
-                    let file = self.file_size(n.node);
                     for i in &n.images {
+                        let file = self.file_size(&i.file);
                         frame.imgs.push(crate::trace::ImageRec {
                             key: key.clone(),
                             s: *s,

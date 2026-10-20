@@ -98,7 +98,7 @@ impl Flattener<'_> {
         let old = swap.as_ref().and_then(|(from, _)| {
             let k = key_of(from.clone());
             let d = match self.extras.images.get(&k) {
-                Some(Ok(d)) => Some(d.clone()),
+                Some(Ok(d)) => Some((d.clone(), from.clone())),
                 _ => None,
             };
             self.out.images.push(k);
@@ -120,7 +120,8 @@ impl Flattener<'_> {
         let mut draw = |this: &mut Self,
                         d: crate::image::Decoded,
                         sig: &mut DefaultHasher,
-                        _stand_in: bool| {
+                        _stand_in: bool,
+                        _file: &str| {
             let (dx, dy, dw, dh) = d.placed_in(rect.x0, rect.y0, rect.width(), rect.height());
             #[cfg(feature = "eval-hooks")]
             if this.trace.is_some() {
@@ -143,6 +144,7 @@ impl Flattener<'_> {
                         fit: fit.name(),
                         pixmap_fit: d.fit.name(),
                         stand_in: _stand_in,
+                        file: _file.to_string(),
                         tint: d.symbolic.then_some(color),
                     },
                 ));
@@ -159,8 +161,8 @@ impl Flattener<'_> {
                 ink,
             );
         };
-        if let Some(o) = old {
-            draw(self, o, sig, false);
+        if let Some((o, from)) = old {
+            draw(self, o, sig, false, &from);
         }
         if let Some(d) = decoded {
             let mask = swap.map(|(_, m)| {
@@ -170,9 +172,9 @@ impl Flattener<'_> {
                 (self.marker(push), pop)
             });
             #[cfg(feature = "eval-hooks")]
-            draw(self, d, sig, stand_in);
+            draw(self, d, sig, stand_in, &source);
             #[cfg(not(feature = "eval-hooks"))]
-            draw(self, d, sig, false);
+            draw(self, d, sig, false, &source);
             if let Some((i, pop)) = mask {
                 self.group_bounds(i, phys);
                 self.marker(pop);
