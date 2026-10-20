@@ -777,7 +777,19 @@ three open findings G's baseline already had fail, by `teleport`,
 gaps 596 in 6, `pose` 87 frames in 1, `wrap` 646 rows and 351 loose
 texts in 26) and the owner's local probes (19 load; the fold gaps
 judged 28, `wrap` 13 rows). No row at rest was full in any of them, so
-`wrap` is proven on its mutants only. An `intend`
+`wrap` is proven on its mutants only. At round 8's integration
+(integration-r8: eval-rules-7, eval-rules-8, eval-coverage-5 and the
+round's fixes) the same sweep: the gate's 150 scenarios and the
+matrix's 992 cells at 60 and 144 Hz (972 pass, 20 n/a, 0 changed)
+pass; of practice-8's 30 scenarios 3 do not run as written (a service
+nothing exports, a pointer on no shown surface) and 25 pass, the other
+two failing on the growth the owner is deciding (dock-magnify-drag's
+`cut`, power-menu-confirm's `fold`, decisions.md integration-r8); of
+sets I and J's 40 correct scenarios 36 pass, j's two `state focused`
+configs do not load, i-media-art-morph-pulse's `rest` cannot be reached
+while its `wave` runs and i-toast-stack-arrive-dismiss's `cut` is the
+growth again; the owner's `qs` passes and `launcher` fails only
+launcher-triage's findings. An `intend`
 says a node moves, not how, so it does not exempt from them; only an
 `[allow]` does.
 
