@@ -128,6 +128,14 @@ while read -r patch scenario specs; do
   rc=$(check "$scn" "$out")
   git -C "$TREE" apply -R "$ROOT/eval/mutants/$patch"
   [ "$rc" = 2 ] || ab "${control_out[$scenario]}" "$out" "$name"
+  # A name the product loses stops the run at the step naming it: the
+  # scenario fails as an error (exit 1, or 2 when nothing ran).
+  # shellcheck disable=SC2086 # the specs are words
+  if [ "$rc" != 0 ] && unmatched "$out.log" $specs; then
+    grep -F "matched no node" "$out.log" | head -n 1 | sed 's/^/  /'
+    echo "  caught: $specs"
+    continue
+  fi
   case "$rc" in
     0)
       echo "SURVIVED: $scenario passes with $patch applied"
@@ -136,12 +144,6 @@ while read -r patch scenario specs; do
       ;;
     1) ;;
     *)
-      # shellcheck disable=SC2086 # the specs are words
-      if [ "$rc" = 2 ] && unmatched "$out.log" $specs; then
-        grep -F "matched no node" "$out.log" | head -n 3 | sed 's/^/  /'
-        echo "  caught: $specs"
-        continue
-      fi
       echo "ERROR: $scenario did not run with $patch applied (exit $rc): $out.log"
       sed -n '1,40p' "$out.log"
       failed=1
