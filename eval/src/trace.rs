@@ -1024,6 +1024,13 @@ impl RunTrace {
             })
     }
 
+    /// (eval-rules-5) Motion was reduced over the whole run: from the
+    /// start (the header's `reduce_motion`, a reduced re-run) and in
+    /// every segment (no `reduce-motion off` step turned it off).
+    pub fn reduced_throughout(&self) -> bool {
+        self.scenario.reduced_motion && self.segments.iter().all(|s| s.reduced_motion)
+    }
+
     /// Where each surface was first placed (its first frame's origin).
     pub fn first_origins(&self) -> BTreeMap<u32, [f32; 2]> {
         let mut first = BTreeMap::new();

@@ -585,11 +585,16 @@ fn a_bystander_moved_under_reduced_motion_still_fails() {
         "{}",
         show(&r, &t)
     );
-    // A run reduced from the start skips teleport and twin outright.
+    // A run reduced from the start skips twin outright; teleport holds
+    // no jump there (eval-rules-5: it runs only to hold a scroll to its
+    // input, `reduced_motion_scrolls_only_with_the_fingers`).
     let mut t = t;
     t.scenario.reduced_motion = true;
+    for s in &mut t.segments {
+        s.reduced_motion = true;
+    }
     let r = check(&sc, &t);
-    assert!(matches!(status(&r, CheckId::Teleport), Status::Skip(_)));
+    assert_eq!(status(&r, CheckId::Teleport), Status::Pass);
     assert!(matches!(status(&r, CheckId::Twin), Status::Skip(_)));
     assert_eq!(status(&r, CheckId::Bystander), Status::Fail);
 }
@@ -3254,6 +3259,9 @@ fn stagger_is_not_held_under_reduced_motion() {
     let sc = scenario("");
     let mut t = staggered(|n| [4, 2, 1][n]);
     t.scenario.reduced_motion = true;
+    for s in &mut t.segments {
+        s.reduced_motion = true;
+    }
     t.seal();
     let r = check(&sc, &t);
     assert!(
@@ -7007,4 +7015,513 @@ mod eval_rules_6 {
             show(&r, &t)
         );
     }
+}
+
+// --- eval-rules-5: false alarms and timing rules
+
+/// A node of a panel the compositor slides in from 300 px off its edge
+/// (`compositor_poses`), shown only once the pose has brought it onto
+/// its surface: its pose `x` at each tick, its box at `x0` on the
+/// surface.
+fn slid_in(poses: &[f32], x0: f32) -> RunTrace {
+    let end = poses.len() as u32 - 1;
+    // The panel opens at tick 1: nothing of it before.
+    let mut t = shape(end, |k| {
+        if k == 0 {
+            return Vec::new();
+        }
+        let r = row("knob", [x0, 5.0, 20.0, 10.0]).mot(Motions::ENTER);
+        vec![r]
+    });
+    for f in &mut t.frames {
+        if f.k == 0 {
+            continue;
+        }
+        f.poses.insert(
+            1,
+            PoseRec {
+                opacity: 1.0,
+                scale: 1.0,
+                x: poses[f.k as usize],
+                y: 0.0,
+            },
+        );
+        if f.k == end {
+            for r in &mut f.n {
+                r.mot = 0;
+                r.emot = 0;
+            }
+        }
+    }
+    t.seal();
+    t
+}
+
+/// (eval-rules-5) A node that comes onto the screen under a pose the
+/// compositor applies travels the pose's way, not the part of it that
+/// shows: shown first 40 px from rest, its next step of 35 px is the
+/// slide's (held-out set G's control centre, its switch's knob). A pose
+/// that snaps the rest of its way in one tick still jumps.
+#[test]
+fn a_node_carried_onto_the_screen_by_a_pose_travels_the_poses_way() {
+    let sc = scenario("");
+    let eased = [300.0, 300.0, 220.0, 120.0, 40.0, 5.0, 0.0, 0.0, 0.0];
+    let t = slid_in(&eased, 250.0);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Teleport), Status::Pass, "{}", show(&r, &t));
+    let snapped = [300.0, 300.0, 300.0, 260.0, 0.0, 0.0, 0.0];
+    let t = slid_in(&snapped, 20.0);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Teleport, "knob", "x"), "{}", show(&r, &t));
+}
+
+/// A page sliding out of its clip carries its rows (their inherited
+/// offset in flight), its ghost gone at tick 6; a row shown only on the
+/// slide's first frame travels the page's way, not its one step (held-out
+/// set G's control centre, a Wi-Fi row's icon). One that jumps further
+/// than its carrier's slide allows (`jump` px right at tick 1) does not.
+fn slid_out(jump: f32) -> RunTrace {
+    let mut t = shape(8, move |k| {
+        if k >= 6 {
+            return Vec::new();
+        }
+        let off = [0.0, -67.0, -164.0, -228.0, -256.0, -263.0][k as usize];
+        let mut page = row("page", [49.0 + off, 0.0, 256.0, 30.0])
+            .laid_at(49.0, 0.0)
+            .spring(off, 0.0);
+        page.clip = Some([49.0, 0.0, 256.0, 30.0]);
+        let x = if k == 1 { 57.0 + off + jump } else { 57.0 + off };
+        let mut icon = row("icon", [x, 8.0, 14.0, 14.0]).laid_at(57.0, 8.0);
+        icon.flight = [off, 0.0];
+        icon.inherited = [off, 0.0];
+        if k > 0 {
+            page = page.mot(Motions::EXIT);
+            page.hidden = Some("inert".into());
+            icon = icon.mot(Motions(0));
+            icon.emot = Motions::EXIT.0;
+            icon.hidden = Some("inert".into());
+        }
+        vec![page, icon]
+    });
+    t.nodes.get_mut("icon").unwrap().parent = Some("page".into());
+    t.seal();
+    t
+}
+
+#[test]
+fn a_node_leaving_through_a_clip_travels_its_carriers_way() {
+    let sc = scenario("");
+    let t = slid_out(0.0);
+    let r = check(&sc, &t);
+    assert!(!fails_on(&r, CheckId::Teleport, "icon", "x"), "{}", show(&r, &t));
+    let t = slid_out(300.0);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Teleport, "icon", "x"), "{}", show(&r, &t));
+}
+
+/// A text in a pill whose width springs from 90 to 150 changes its
+/// content as the spring starts: it steps from its old width to the new
+/// content laid in the room the frame gives it (held-out set G's
+/// fractional pills). `same_width` keeps the new content's width the old
+/// one's: then nothing the content did explains the jump.
+fn content_change(same_width: bool) -> RunTrace {
+    let mut t = shape(6, move |k| {
+        let pill_w = [90.0, 106.0, 128.0, 143.0, 150.0, 150.0, 150.0][k as usize];
+        let spring = if (1..=4).contains(&k) {
+            Motions::SIZE_SPRING
+        } else {
+            Motions(0)
+        };
+        let pill = row("pill", [96.0, 4.0, pill_w, 22.0]).mot(spring).auth(Axes::W);
+        let (text, ink) = match (k, same_width) {
+            (0, _) => ("CPU 12%", 48.0),
+            (_, false) => ("CPU 12% · RAM 3.1 GB", 120.0f32.min(pill_w)),
+            (_, true) => ("RAM 3.1%", 48.0),
+        };
+        let w = if k == 0 { 49.6 } else if same_width { pill_w.min(120.0) } else { ink };
+        let mut txt = row("text", [96.0, 10.0, w, 9.0]);
+        txt.emot = spring.0;
+        txt.ink = Some([96.0, 10.0, ink, 9.0]);
+        txt.paint = Some(strand_eval::paint::PaintRec {
+            fg: vec!["1a1b20ff".into()],
+            gl: vec![text.into()],
+            ..Default::default()
+        });
+        vec![pill, txt]
+    });
+    t.nodes.get_mut("text").unwrap().parent = Some("pill".into());
+    t.seal();
+    t
+}
+
+/// (eval-rules-5) A content change is a step, not a jump of the motion
+/// it happens under; a width the new content does not explain is.
+#[test]
+fn a_text_content_change_under_a_size_spring_is_a_step() {
+    let sc = scenario("");
+    let t = content_change(false);
+    let r = check(&sc, &t);
+    assert!(!fails_on(&r, CheckId::Teleport, "text", "w"), "{}", show(&r, &t));
+    let t = content_change(true);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Teleport, "text", "w"), "{}", show(&r, &t));
+}
+
+/// (eval-rules-5) A box held at `scale: 0.88` (pressed, at rest) draws
+/// what it holds scaled about its centre, off the places layout gave
+/// them: not a seam. The same edges drawn apart with nothing scaling
+/// them are.
+#[test]
+fn tiling_leaves_out_what_an_ancestors_scale_draws() {
+    let sc = scenario("");
+    let shape_of = |scaled: bool| {
+        let mut t = shape(1, move |_| {
+            let mut button = row("button", [230.0, 3.0, 26.0, 26.0]);
+            if scaled {
+                button.scale = [0.88, 0.88];
+                button.visual = [231.5625, 4.5625, 22.875, 22.875];
+            }
+            let mut icon = row("icon", [235.0, 8.0, 16.0, 16.0]).draws();
+            icon.visual = [235.953, 8.953, 14.078, 14.078];
+            let mail = row("mail", [271.0, 8.0, 16.0, 16.0]).draws();
+            vec![button, icon, mail]
+        });
+        t.nodes.get_mut("icon").unwrap().parent = Some("button".into());
+        t.seal();
+        t
+    };
+    let t = shape_of(true);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Tiling), Status::Pass, "{}", show(&r, &t));
+    let t = shape_of(false);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Tiling), Status::Fail, "{}", show(&r, &t));
+}
+
+/// A posed surface closing (opacity 0.8 to 0.4 over ticks 1-2), then
+/// opened again at tick 3 (`reopened`: its root plays its enter and no
+/// longer its exit) or still closing, its pose coming back to 1.
+fn closing_reopened(reopened: bool) -> RunTrace {
+    let mut t = shape(5, move |k| {
+        let m = match k {
+            0 => Motions(0),
+            1 | 2 => Motions::EXIT | Motions::ENTER,
+            _ if reopened => Motions::ENTER,
+            _ => Motions::EXIT,
+        };
+        let mut p = row("pop", [0.0, 0.0, 100.0, 40.0]).mot(m);
+        p.surface = 2;
+        vec![p]
+    });
+    for f in &mut t.frames {
+        f.painted = vec![2];
+        f.sizes.insert(2, [100.0, 40.0]);
+        let op = [1.0, 0.8, 0.4, 0.6, 0.9, 1.0][f.k as usize];
+        f.poses.insert(
+            2,
+            PoseRec {
+                opacity: op,
+                scale: 1.0,
+                x: 0.0,
+                y: 0.0,
+            },
+        );
+    }
+    t.surfaces = vec![SurfaceInfo {
+        id: 2,
+        root: "pop".into(),
+        ..Default::default()
+    }];
+    t.seal();
+    t
+}
+
+/// (eval-rules-5) A surface opened again while it closed is not closing:
+/// its pose coming back toward rest is its enter's (held-out set G's
+/// control centre, closed and reopened mid-slide).
+#[test]
+fn a_surface_opened_again_while_closing_may_pose_back() {
+    let sc = scenario("");
+    let pose_back = |r: &Report| {
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pose back"))
+    };
+    let t = closing_reopened(true);
+    let r = check(&sc, &t);
+    assert!(!pose_back(&r), "{}", show(&r, &t));
+    let t = closing_reopened(false);
+    let r = check(&sc, &t);
+    assert!(pose_back(&r), "{}", show(&r, &t));
+}
+
+/// A list swiped 60 px over 80 ms (five ticks of 12 px from tick 1) with
+/// motion reduced, its offset at each tick from `offset`.
+fn reduced_swipe(offset: impl Fn(u32) -> f32) -> (Scenario, RunTrace) {
+    let text = "id = \"synth\"\n\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nrest\n\
+                mark fling\nswipe 60 over 80ms\nrest\n";
+    let file = eval_root().join("scenarios/regressions/synth.scn");
+    let sc = Scenario::parse(text, &file).unwrap_or_else(|e| panic!("{e}"));
+    let line = sc
+        .steps
+        .iter()
+        .find(|s| s.text.starts_with("swipe"))
+        .map(|s| s.line)
+        .unwrap();
+    let mut t = shape(10, |_| vec![row("list", [0.0, 0.0, 200.0, 100.0])]);
+    t.segments[1].reduced_motion = true;
+    t.events.push(EventRec {
+        k: 1,
+        line,
+        text: "swipe 60 over 80ms".into(),
+        segment: Some(1),
+    });
+    for f in &mut t.frames {
+        f.offsets.insert("list".into(), offset(f.k));
+    }
+    t.seal();
+    (sc, t)
+}
+
+/// (eval-rules-5) With motion reduced a scroll moves with the fingers
+/// and a lift flings nothing (decisions.md m4-lists-w1: "`reduced_motion`
+/// lands a step at once and does not fling"): held by `teleport` in the
+/// run's own reduced segments and by `twin` in its reduced re-run. A
+/// fling that lands at once (held-out set H's m-h18) is past the
+/// fingers.
+#[test]
+fn reduced_motion_scrolls_only_with_the_fingers() {
+    let follows = |k: u32| 12.0 * k.min(5) as f32;
+    let (sc, t) = reduced_swipe(follows);
+    let r = check(&sc, &t);
+    assert_eq!(status(&r, CheckId::Teleport), Status::Pass, "{}", show(&r, &t));
+    let flings = |k: u32| if k >= 5 { 310.0 } else { 12.0 * k as f32 };
+    let (sc, t) = reduced_swipe(flings);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Teleport)
+            .iter()
+            .any(|f| f.msg.starts_with("reduced fling") && f.k == Some(5)),
+        "{}",
+        show(&r, &t)
+    );
+    // The twin: a run with full motion flings; its reduced re-run must
+    // not.
+    let (_, mut full) = reduced_swipe(|k| if k >= 5 { 75.0 + 10.0 * (k - 5) as f32 } else { 12.0 * k as f32 });
+    full.segments[1].reduced_motion = false;
+    full.seal();
+    let (_, twin_ok) = reduced_swipe(follows);
+    let r = checks::evaluate(&sc, &full, Some(&twin_ok), None, None);
+    assert!(!r.failures(CheckId::Twin).iter().any(|f| f.msg.starts_with("reduced fling")));
+    let (_, twin_bad) = reduced_swipe(flings);
+    let r = checks::evaluate(&sc, &full, Some(&twin_bad), None, None);
+    assert!(
+        r.failures(CheckId::Twin).iter().any(|f| f.msg.starts_with("reduced fling")),
+        "{}",
+        show(&r, &full)
+    );
+}
+
+/// A bar's pill (surface 1, at 0,0) and a panel's card (surface 2, at
+/// 110,40) share a `morph` name. The panel opens at tick 1: the card's
+/// box at each tick on its surface from `card`; the pill shows
+/// throughout unless `alone`.
+fn panel_morph(card: impl Fn(u32) -> [f32; 4] + 'static, alone: bool) -> RunTrace {
+    let mut t = shape(8, move |k| {
+        let mut rows = Vec::new();
+        if k == 0 && !alone {
+            rows.push(row("pill", [189.0, 7.0, 103.0, 19.0]).draws());
+        }
+        if k >= 1 {
+            let b = card(k);
+            let mut c = row("card", [0.0, 0.0, 260.0, 90.0]).draws();
+            c.surface = 2;
+            c.visual = b;
+            if b != [0.0, 0.0, 260.0, 90.0] {
+                c = c.mot(Motions::SHARED_MORPH);
+            }
+            rows.push(c);
+        }
+        rows
+    });
+    for f in &mut t.frames {
+        f.sizes.insert(1, [480.0, 32.0]);
+        f.origins.insert(1, [0.0, 0.0]);
+        if f.k >= 1 {
+            f.painted = vec![2];
+            f.sizes.insert(2, [260.0, 90.0]);
+            f.origins.insert(2, [110.0, 40.0]);
+        }
+    }
+    for k in ["pill", "card"] {
+        if let Some(m) = t.nodes.get_mut(k) {
+            m.morph = Some("media".into());
+        }
+    }
+    t.seal();
+    t
+}
+
+/// The card's way from the pill (on the output 189,7 103×19; on its
+/// surface 79,-33) to its own box over six ticks.
+fn from_pill(k: u32) -> [f32; 4] {
+    let p = ((k - 1) as f32 / 5.0).min(1.0);
+    let e = 1.0 - (1.0 - p).powi(3);
+    let a = [79.0, -33.0, 103.0, 19.0];
+    let b = [0.0, 0.0, 260.0, 90.0];
+    [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * e)
+}
+
+/// (eval-rules-5, cross-surface-morph) A node with a `morph` name that
+/// comes on screen while another of its name shows starts from that
+/// box, on the output (each surface's origin plus its box), and grows to
+/// its own; one that pops in at its own box fails, as one that starts
+/// elsewhere. With no partner it shows at its own box.
+#[test]
+fn a_named_node_coming_on_screen_starts_from_its_partners_box() {
+    let sc = scenario("");
+    let arrival = |r: &Report| {
+        r.failures(CheckId::Coherence)
+            .iter()
+            .any(|f| f.msg.starts_with("morph arrival"))
+    };
+    let t = panel_morph(from_pill, false);
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
+    // Popped in at its box (the morph never played).
+    let t = panel_morph(|_| [0.0, 0.0, 260.0, 90.0], false);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+    // From the pill's corner, scaled about its centre: off the way.
+    let t = panel_morph(|k| if k == 1 { [79.0 - 78.0, -33.0 - 35.0, 103.0, 19.0] } else { from_pill(k) }, false);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+    // Half way in one tick after it started.
+    let t = panel_morph(|k| if k == 2 { from_pill(5) } else { from_pill(k) }, false);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+    // Alone: at its box; flying from nowhere fails.
+    let t = panel_morph(|_| [0.0, 0.0, 260.0, 90.0], true);
+    let r = check(&sc, &t);
+    assert!(!arrival(&r), "{}", show(&r, &t));
+    let t = panel_morph(from_pill, true);
+    let r = check(&sc, &t);
+    assert!(arrival(&r), "{}", show(&r, &t));
+}
+
+/// A panel (surface 1, 220×76 at 188,12 on a 420×300 output) closing
+/// under a pose the compositor applies, sliding right toward 200 px as
+/// it fades, a dot 18 px into it drawn at each tick in `drawn`.
+fn posed_close(drawn: &'static [bool]) -> RunTrace {
+    const POSE: [(f32, f32); 8] = [
+        (0.0, 1.0),
+        (199.9, 0.25),
+        (205.6, 0.16),
+        (204.6, 0.09),
+        (202.4, 0.05),
+        (200.8, 0.03),
+        (200.1, 0.015),
+        (199.9, 0.0),
+    ];
+    let mut t = shape(7, move |k| {
+        let mut rows = vec![row("panel", [0.0, 0.0, 220.0, 76.0]).mot(if k > 0 {
+            Motions::EXIT
+        } else {
+            Motions(0)
+        })];
+        if drawn[k as usize] {
+            rows.push(row("dot", [18.0, 40.0, 12.0, 12.0]).draws());
+        }
+        rows
+    });
+    for f in &mut t.frames {
+        let (x, opacity) = POSE[f.k as usize];
+        f.sizes.insert(1, [220.0, 76.0]);
+        f.origins.insert(1, [188.0, 12.0]);
+        f.poses.insert(
+            1,
+            PoseRec {
+                opacity,
+                scale: 1.0,
+                x,
+                y: 0.0,
+            },
+        );
+    }
+    t.nodes.get_mut("dot").unwrap().parent = Some("panel".into());
+    t.seal();
+    t
+}
+
+/// (eval-rules-5) A pose the compositor applies moves the surface, not
+/// what is drawn in it: a row is cut by its buffer unposed, and by the
+/// output posed. A dot near the edge of a panel sliding out past its own
+/// width stays on the output throughout, and fades: no flash. One drawn
+/// on one frame alone still flashes.
+#[test]
+fn a_posed_surface_cuts_its_rows_by_its_buffer_and_the_output() {
+    let sc = scenario("screen = { width = 420, height = 300, scale = 1.0 }");
+    let flash = |r: &Report| {
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("flash") && f.key.as_deref() == Some("dot"))
+    };
+    let t = posed_close(&[true; 8]);
+    let r = check(&sc, &t);
+    assert!(!flash(&r), "{}", show(&r, &t));
+    let t = posed_close(&[true, false, false, false, true, false, false, false]);
+    let r = check(&sc, &t);
+    assert!(flash(&r), "{}", show(&r, &t));
+    // Off the output: a 300 px wide output ends where the posed dot
+    // starts (188 + 200 + 18 > 300); drawn on one frame there, it shows
+    // on none.
+    let sc = scenario("screen = { width = 300, height = 300, scale = 1.0 }");
+    let t = posed_close(&[true, false, false, false, true, false, false, false]);
+    let r = check(&sc, &t);
+    assert!(!flash(&r), "{}", show(&r, &t));
+}
+
+/// A text centred in its slot whose content narrows at tick 1: its
+/// start edge moves right by half the step (`by`), its width by the step.
+fn centred_change(by: f32) -> RunTrace {
+    let mut t = shape(3, move |k| {
+        // The pill springs narrower from tick 1, its text with it.
+        let spring = if k == 1 || k == 2 {
+            Motions::SIZE_SPRING
+        } else {
+            Motions(0)
+        };
+        let pill_w = [150.0, 148.0, 146.0, 146.0][k as usize];
+        let pill = row("pill", [96.0, 4.0, pill_w, 22.0]).mot(spring).auth(Axes::W);
+        let (text, w) = if k == 0 { ("CPU 12% · RAM 3.1 GB", 134.0) } else { ("CPU 12%", 50.0) };
+        let x = if k == 0 { 104.0 } else { 104.0 + by };
+        // Laid where it was: what moved it is the content alone.
+        let mut txt = row("text", [x, 10.0, w, 9.0]).laid_at(104.0, 10.0);
+        txt.emot = spring.0;
+        txt.ink = Some([x, 10.0, w, 9.0]);
+        txt.paint = Some(strand_eval::paint::PaintRec {
+            fg: vec!["1a1b20ff".into()],
+            gl: vec![text.into()],
+            ..Default::default()
+        });
+        vec![pill, txt]
+    });
+    t.nodes.get_mut("text").unwrap().parent = Some("pill".into());
+    t.seal();
+    t
+}
+
+/// (eval-rules-5) A content step moves a text's start edge in its slot
+/// by none to all of the step, the other way (start, centre or end
+/// alignment): a centred text that narrows by 84 px moves 42 px right.
+/// Moving left, against its step, it jumps.
+#[test]
+fn a_centred_text_moves_with_its_content_step() {
+    let sc = scenario("");
+    let t = centred_change(42.0);
+    let r = check(&sc, &t);
+    assert!(!fails_on(&r, CheckId::Teleport, "text", "x"), "{}", show(&r, &t));
+    let t = centred_change(-42.0);
+    let r = check(&sc, &t);
+    assert!(fails_on(&r, CheckId::Teleport, "text", "x"), "{}", show(&r, &t));
 }

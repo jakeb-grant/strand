@@ -33,7 +33,8 @@
 //!   and draws nothing);
 //! - **pose back**: with the compositor applying surface poses, a
 //!   surface whose root plays its exit commits, frame after frame until
-//!   it goes, a pose that never comes back toward rest (owner-testing.md
+//!   it goes or is opened again (eval-rules-5: its root plays its enter
+//!   and no longer its exit), a pose that never comes back toward rest (owner-testing.md
 //!   bug 7: the frame that ended a closing popup's exit committed the
 //!   rest pose, and the compositor faded the whole menu out from full
 //!   opacity).
@@ -290,7 +291,7 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
                 continue;
             };
             if seg.reduced_motion
-                || cx.trace.scenario.reduced_motion
+                || cx.trace.reduced_throughout()
                 || cx.allowed(CheckId::Vanish, key)
                 || f64::from(r.op) <= POP_OUT_OPACITY
             {
@@ -589,9 +590,11 @@ pub const POSE_SCALE_GIVE: f64 = 0.005;
 
 /// `pose back`: from the first frame a surface's root plays its exit to
 /// the last it paints, the pose it commits never comes back toward rest
-/// (a frame with no pose commits rest's).
+/// (a frame with no pose commits rest's), unless (eval-rules-5) it is
+/// opened again first: its root plays its enter and no longer its exit.
 fn pose_back(cx: &Cx) -> Vec<Finding> {
     let mut out = Vec::new();
+    let mut reopened = 0u64;
     for sf in &cx.trace.surfaces {
         let mut closing = false;
         let mut last: Option<(f64, f64)> = None;
@@ -600,6 +603,17 @@ fn pose_back(cx: &Cx) -> Vec<Finding> {
                 continue;
             }
             let root = f.n.iter().find(|r| r.surface == sf.id && r.key == sf.root);
+            // (eval-rules-5) Opened again while it closed (its exit given
+            // up, its enter playing): it is not closing any more, and its
+            // pose comes back toward rest by design.
+            if root.is_some_and(|r| {
+                let m = Motions(r.mot);
+                m.contains(Motions::ENTER) && !m.contains(Motions::EXIT)
+            }) {
+                reopened += u64::from(closing);
+                closing = false;
+                last = None;
+            }
             closing |= root.is_some_and(|r| Motions(r.mot).contains(Motions::EXIT));
             if !closing {
                 continue;
@@ -644,5 +658,6 @@ fn pose_back(cx: &Cx) -> Vec<Finding> {
             last = Some(away);
         }
     }
+    super::stats("vanish.pose-back", cx, &[("reopened", reopened)]);
     out
 }

@@ -1,0 +1,272 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "heldg-posed-panel-pages"
+verdict good
+note "new (eval-rules-5): a compositor-posed panel slides in from 200 px, is closed and reopened mid-slide, pages right then closes; frames read: the switch comes on as the slide carries it, page one's rows leave through the pages clip, the reopened pose returns to rest"
+date 2026-10-19
+rev "bbda3d6c+changes"
+approver "claude"
+scenario 779d594fe8d0bdce
+seal d5e29e256f320942
+S1 1 54 "panel Side"
+N0 "switch|shell.strand:11:7|#0" "box#switch"
+N1 "|shell.strand:10:7|#0" "text(\"One\")"
+N2 "|shell.strand:12:9|#0" "box@shell.strand:12"
+N3 "|shell.strand:15:5|#0" "pages@shell.strand:15"
+N4 "|shell.strand:16:7|#0" "page@shell.strand:16"
+N5 "|shell.strand:17:9|#0" "col@shell.strand:17"
+N6 "|shell.strand:19:13|[a]#0" "row@shell.strand:19"
+N7 "|shell.strand:19:13|[b]#1" "row@shell.strand:19"
+N8 "|shell.strand:20:15|[a]#0" "box@shell.strand:20"
+N9 "|shell.strand:20:15|[b]#0" "box@shell.strand:20"
+N10 "|shell.strand:21:15|[a]#0" "text(\"a\")"
+N11 "|shell.strand:21:15|[b]#0" "text(\"b\")"
+N12 "|shell.strand:5:1|#0" "panel@shell.strand:5"
+N13 "|shell.strand:8:3|#0" "col@shell.strand:8"
+N14 "|shell.strand:9:5|#0" "row@shell.strand:9"
+N15 "|shell.strand:26:7|#0" "page@shell.strand:26"
+N16 "|shell.strand:27:9|#0" "col@shell.strand:27"
+N17 "|shell.strand:29:13|[c]#0" "row@shell.strand:29"
+N18 "|shell.strand:30:15|[c]#0" "box@shell.strand:30"
+N19 "|shell.strand:31:15|[c]#0" "text(\"c\")"
+k1 p1
+s1 z=220,108 o=188,12 P=0,1,200,0
+n0 x=174 y=10 w=36 h=20 ord=4 bg=89b4faff
+n1 x=10 y=13 w=156 h=15 txt=S ord=3 ink=10,14,24,11 fg=cdd6f4ff gl=["One"]
+n2 x=192 y=12 w=16 h=16 ord=5 bg=1e1e2eff
+n3 x=10 y=38 w=200 h=60 ord=6
+n4 x=10 y=38 w=200 h=60 ord=7
+n5 x=10 y=38 w=200 h=60 ord=8
+n6 x=10 y=38 w=200 h=28 ord=9 bg=313244ff
+n7 x=10 y=70 w=200 h=28 ord=12 bg=313244ff
+n8 x=18 y=46 w=12 h=12 ord=10 bg=f5c2e7ff
+n9 x=18 y=78 w=12 h=12 ord=13 bg=f5c2e7ff
+n10 x=38 y=45 w=164 h=15 txt=S ord=11 ink=38,49,8,8 fg=cdd6f4ff gl=["a"]
+n11 x=38 y=77 w=164 h=15 txt=S ord=14 ink=38,78,7,11 fg=cdd6f4ff gl=["b"]
+n12 x=0 y=0 w=220 h=108
+n13 x=0 y=0 w=220 h=108 ord=1 bg=1e1e2eff
+n14 x=10 y=10 w=200 h=20 ord=2
+k2
+s1 P=36,1,147.953125,0
+k3
+s1 P=100,1,71.96875,0
+k4
+s1 P=151,1,22.125,0
+k5
+s1 P=191,1,0.078125,0
+k6
+s1 P=215,1,-5.5625,0
+k7
+s1 P=195,1,47.40625,0
+k8
+s1 P=143,1,125.59375,0
+k9
+s1 P=96,1,177.03125,0
+k10
+s1 P=60,1,199.84375,0
+k11
+s1 P=76,1,153.671875,0
+k12
+s1 P=120,1,76.75,0
+k13
+s1 P=163,1,24.640625,0
+k14
+s1 P=199,1,0.9375,0
+k15
+s1 P=219,1,-5.484375,0
+k16
+s1 P=235,1,-4.796875,0
+k17
+s1 P=243,1,-2.578125,0
+k18
+s1 P=247,1,-0.921875,0
+k19
+s1 P=251,1,-0.109375,0
+k20
+s1 P=251,1,0.140625,0
+k21
+s1 P=255,1,0.140625,0
+k22
+s1 P=255,1,0.078125,0
+k23
+s1 P=255,1,0.03125,0
+k24
+s1 P=255,1,0,0
+k25
+n1 ink=10,15,24,10 gl=["Two"]
+n4 x=-42 hid=inert
+n5 x=-42 hid=inert
+n6 x=-42 hid=inert
+n7 x=-42 hid=inert
+n8 x=-34 hid=inert
+n9 x=-34 hid=inert
+n10 x=-14 hid=inert ink=-14,49,8,8
+n11 x=-14 hid=inert ink=-14,78,7,11
+n15 x=158 y=38 w=200 h=60 ord=15
+n16 x=158 y=38 w=200 h=60 ord=16
+n17 x=158 y=38 w=200 h=28 ord=17 bg=313244ff
+n18 x=166 y=46 w=12 h=12 ord=18 bg=a6e3a1ff
+n19 x=186 y=45 w=164 h=15 txt=S ord=19 ink=186,49,7,8 fg=cdd6f4ff gl=["c"]
+k26
+n4 x=-118
+n5 x=-118
+n6 x=-118
+n7 x=-118
+n8 x=-110
+n9 x=-110
+n10 x=-90 ink=-90,49,8,8
+n11 x=-90 ink=-90,78,7,11
+n15 x=82
+n16 x=82
+n17 x=82
+n18 x=90
+n19 x=110 ink=110,49,7,8
+k27
+n4 x=-168
+n5 x=-168
+n6 x=-168
+n7 x=-168
+n8 x=-160
+n9 x=-160
+n10 x=-140 ink=-140,49,8,8
+n11 x=-140 ink=-140,78,7,11
+n15 x=32
+n16 x=32
+n17 x=32
+n18 x=40
+n19 x=60 ink=60,49,7,8
+k28
+n4 x=-190
+n5 x=-190
+n6 x=-190
+n7 x=-190
+n8 x=-182
+n9 x=-182
+n10 x=-162 ink=-162,49,8,8
+n11 x=-162 ink=-162,78,7,11
+n15 x=10
+n16 x=10
+n17 x=10
+n18 x=18
+n19 x=38 ink=38,49,7,8
+k29
+n4 x=-196
+n5 x=-196
+n6 x=-196
+n7 x=-196
+n8 x=-188
+n9 x=-188
+n10 x=-168 ink=-168,49,8,8
+n11 x=-168 ink=-168,78,7,11
+n15 x=4
+n16 x=4
+n17 x=4
+n18 x=12
+n19 x=32 ink=32,49,7,8
+k30
+n4 x=-195
+n5 x=-195
+n6 x=-195
+n7 x=-195
+n8 x=-187
+n9 x=-187
+n10 x=-167 ink=-167,49,8,8
+n11 x=-167 ink=-167,78,7,11
+n15 x=5
+n16 x=5
+n17 x=5
+n18 x=13
+n19 x=33 ink=33,49,7,8
+k31
+n4 x=-192
+n5 x=-192
+n6 x=-192
+n7 x=-192
+n8 x=-184
+n9 x=-184
+n10 x=-164 ink=-164,49,8,8
+n11 x=-164 ink=-164,78,7,11
+n15 x=8
+n16 x=8
+n17 x=8
+n18 x=16
+n19 x=36 ink=36,49,7,8
+k32
+n4 x=-191
+n5 x=-191
+n6 x=-191
+n7 x=-191
+n8 x=-183
+n9 x=-183
+n10 x=-163 ink=-163,49,8,8
+n11 x=-163 ink=-163,78,7,11
+n15 x=9
+n16 x=9
+n17 x=9
+n18 x=17
+n19 x=37 ink=37,49,7,8
+k33
+n4 x=-190
+n5 x=-190
+n6 x=-190
+n7 x=-190
+n8 x=-182
+n9 x=-182
+n10 x=-162 ink=-162,49,8,8
+n11 x=-162 ink=-162,78,7,11
+n15 x=10
+n16 x=10
+n17 x=10
+n18 x=18
+n19 x=38 ink=38,49,7,8
+k34
+k35
+k36
+k37
+k38
+k39
+n3 h=28
+n4 -
+n5 -
+n6 -
+n7 -
+n8 -
+n9 -
+n10 -
+n11 -
+n12 h=76
+n13 h=76
+n15 h=28 ord=7
+n16 h=28 ord=8
+n17 ord=9
+n18 ord=10
+n19 ord=11
+k40
+s1 z=220,76
+k41
+s1 P=219,1,52.046875,0
+k42
+s1 P=155,1,128.03125,0
+k43
+s1 P=104,1,177.875,0
+k44
+s1 P=64,1,199.921875,0
+k45
+s1 P=40,1,205.5625,0
+k46
+s1 P=24,1,204.640625,0
+k47
+s1 P=12,1,202.4375,0
+k48
+s1 P=8,1,200.84375,0
+k49
+s1 P=4,1,200.078125,0
+k50
+s1 P=4,1,199.859375,0
+k51
+s1 P=0,1,199.859375,0
+k52
+s1 P=0,1,199.921875,0
+k53
+s1 P=0,1,199.96875,0
+k54
+s1 -

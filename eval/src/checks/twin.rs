@@ -18,6 +18,10 @@
 //! `scroll_input`), so that scroll's content rests at another offset by
 //! design. The scroll's own box, and everything else on its surface, is
 //! still compared.
+//!
+//! (eval-rules-5) The re-run's own scrolls are held to their input
+//! ([`super::teleport::reduced_scrolls`]): with motion reduced from the
+//! start, a lift flings nothing, so no offset ever leads the fingers.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,8 +34,10 @@ use crate::trace::RunTrace;
 pub const OPACITY_GIVE: f64 = 1.0 / 255.0;
 
 pub fn run(cx: &Cx, twin: &RunTrace) -> Vec<Finding> {
-    let tw = Timeline::new(twin);
-    let mut out = Vec::new();
+    let tw = Timeline::new(twin).on_output(super::output_of(cx.sc));
+    // (eval-rules-5) The re-run's own scrolls move only with their input:
+    // with motion reduced a lift flings nothing.
+    let mut out = super::teleport::reduced_scrolls(cx.sc, twin, cx.tol, CheckId::Twin);
     if twin.segments.len() != cx.trace.segments.len() {
         out.push(Finding::fail(
             CheckId::Twin,

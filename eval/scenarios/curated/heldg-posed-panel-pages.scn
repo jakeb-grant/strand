@@ -1,0 +1,69 @@
+id     = "heldg-posed-panel-pages"
+about  = """Held-out set G's false alarms, written small (docs/decisions.md
+eval-rules-5): a panel the compositor slides in from 200 px off the right
+edge (`compositor_poses`, `enter { x: 200 }`), closed and opened again
+mid-slide, then paged with a directional `pages` slide, then closed. Its
+switch shows only once the slide has brought it onto the panel's buffer,
+and the first page's rows leave through the `pages` clip after a frame:
+each travels its carrier's way (the pose, the page's slide), not the
+part of it that shows (`teleport`). Opened again mid-close, its pose
+comes back toward rest by design (`vanish` pose back)."""
+screen = { width = 420, height = 300, scale = 1.0 }
+compositor_poses = true
+
+=== shell.strand
+enum Page { one, two }
+state open = false
+state page = one
+
+panel Side {
+  anchor: top_right; margin: 12; keyboard: none; open: open
+  enter { x: 200; opacity: 0 }
+  col { width: 220; pad: 10; gap: 8; radius: 12; clip: true; bg: #1e1e2e
+    row { gap: 8; align: center
+      text page == one ? "One" : "Two" { grow: 1; color: #cdd6f4 }
+      box { id: switch; width: 36; height: 20; radius: full; bg: #89b4fa
+        box { place: absolute; x: 18; y: 2; size: 16; radius: full; bg: #1e1e2e }
+      }
+    }
+    pages current: page {
+      page one {
+        col { gap: 4
+          for n in ["a", "b"] key n {
+            row { height: 28; pad: 0, 8; gap: 8; radius: 6; bg: #313244; align: center
+              box { size: 12; radius: 3; bg: #f5c2e7 }
+              text n { grow: 1; color: #cdd6f4 }
+            }
+          }
+        }
+      }
+      page two {
+        col { gap: 4
+          for n in ["c"] key n {
+            row { height: 28; pad: 0, 8; gap: 8; radius: 6; bg: #313244; align: center
+              box { size: 12; radius: 3; bg: #a6e3a1 }
+              text n { grow: 1; color: #cdd6f4 }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+frames 6
+mark reconsider
+set open false
+frames 4
+set open true
+rest
+mark page-two
+set page two
+rest
+mark close
+set open false
+rest

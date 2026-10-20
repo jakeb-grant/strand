@@ -34,11 +34,16 @@ pub mod continuity;
 /// stderr how much of a run it held (how many samples, boxes or frames
 /// it compared), so a sweep can tell a pass from a rule that saw nothing.
 pub fn stats(arm: &str, cx: &Cx, counts: &[(&str, u64)]) {
+    stats_of(arm, &cx.trace.scenario.id, counts);
+}
+
+/// [`stats`] for a run named `id` (a twin's, read without its `Cx`).
+pub fn stats_of(arm: &str, id: &str, counts: &[(&str, u64)]) {
     if std::env::var_os("STRAND_EVAL_RULE_STATS").is_none() {
         return;
     }
     let c: Vec<String> = counts.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    eprintln!("rule-stats {arm} {}: {}", cx.trace.scenario.id, c.join(" "));
+    eprintln!("rule-stats {arm} {id}: {}", c.join(" "));
 }
 pub mod cpu_gpu;
 pub mod determinism;
@@ -294,6 +299,10 @@ pub struct Timeline<'a> {
     /// Where each surface was first placed, when the rows are moved
     /// with their surface ([`RunTrace::on_screen`]); else empty.
     first: BTreeMap<u32, [f32; 2]>,
+    /// (eval-rules-5) The output's logical size, when known
+    /// ([`Timeline::on_output`]): what a posed surface shows is cut by
+    /// it.
+    output: Option<[f32; 2]>,
 }
 
 impl<'a> Timeline<'a> {
@@ -349,7 +358,16 @@ impl<'a> Timeline<'a> {
             } else {
                 BTreeMap::new()
             },
+            output: None,
         }
+    }
+
+    /// The timeline on an output `size` logical px (the scenario's
+    /// `screen`): a row shows only where its surface, placed and posed,
+    /// is on it.
+    pub fn on_output(mut self, size: [f32; 2]) -> Timeline<'a> {
+        self.output = Some(size);
+        self
     }
 
     /// The frame showing at tick `k` (the last painted at or before it).
@@ -395,14 +413,54 @@ impl<'a> Timeline<'a> {
             .get(i)
             .map_or([0.0, 0.0], |f| RunTrace::moved(&self.first, f, row.surface));
         let (x, y) = (x - dx, y - dy);
+        // (eval-rules-5) A pose the compositor applies moves and scales
+        // the surface, not the row in it: the row is cut by its buffer
+        // where it is drawn in it (the pose taken off), and what the
+        // pose moves off the output does not show. Read on the posed box
+        // against the buffer, a row near the buffer's edge flickered in
+        // and out of view as the pose moved it (a panel sliding out past
+        // its own width), and one the pose had not yet carried past the
+        // buffer's far edge showed no frame at all, though it was on the
+        // output.
+        let posed = (!self.first.is_empty())
+            .then(|| self.frames.get(i)?.poses.get(&row.surface))
+            .flatten()
+            .filter(|p| p.scale.abs() > 1e-6);
+        let (bx, by, bw, bh) = match posed {
+            Some(p) => (
+                (x - p.x) / p.scale,
+                (y - p.y) / p.scale,
+                w / p.scale,
+                h / p.scale,
+            ),
+            None => (x, y, w, h),
+        };
         // (eval-coverage-3) A surface painted in the tick it is detached
         // (its exit's last frame) has no size of its own at that frame:
         // it was drawn at the size it was last configured at.
         let size = self
             .size(i, row.surface)
             .or_else(|| (0..i).rev().find_map(|j| self.size(j, row.surface)));
-        let on = size.is_none_or(|[sw, sh]| x < sw && y < sh && x + w > 0.0 && y + h > 0.0);
-        !hidden && row.op >= 0.02 && w * h >= 1.0 && on
+        let on = size.is_none_or(|[sw, sh]| bx < sw && by < sh && bx + bw > 0.0 && by + bh > 0.0);
+        // On the output: the surface's place there plus the row's posed
+        // box on it.
+        let out = match (posed, self.output, self.first.get(&row.surface)) {
+            (Some(_), Some([ow, oh]), Some(o)) => {
+                let (ax, ay) = (o[0] + row.visual[0], o[1] + row.visual[1]);
+                ax < ow && ay < oh && ax + w > 0.0 && ay + h > 0.0
+            }
+            _ => true,
+        };
+        !hidden && row.op >= 0.02 && w * h >= 1.0 && on && out
+    }
+
+    /// (eval-rules-5) How far `surface` has moved at frame `i` from
+    /// where it was first placed, when the rows are read on screen (else
+    /// nothing): taken off a row's box, it is on its surface.
+    pub fn moved(&self, i: usize, surface: u32) -> [f32; 2] {
+        self.frames
+            .get(i)
+            .map_or([0.0, 0.0], |f| RunTrace::moved(&self.first, f, surface))
     }
 
     pub fn visible_key(&self, i: usize, key: &str) -> bool {
@@ -585,6 +643,13 @@ pub fn motions(r: &Row) -> Motions {
     Motions(r.emot)
 }
 
+/// The scenario's output in logical px.
+pub fn output_of(sc: &Scenario) -> [f32; 2] {
+    let w = sc.screen.width as f32;
+    let h = sc.screen.height as f32;
+    [w, h]
+}
+
 /// What a check reads: the scenario, its trace and the exemptions.
 #[derive(Debug)]
 pub struct Cx<'a> {
@@ -634,7 +699,7 @@ impl<'a> Cx<'a> {
             .iter()
             .filter_map(|(k, m)| Some((k.as_str(), m.parent.as_deref()?)))
             .collect();
-        let tl = Timeline::new(trace);
+        let tl = Timeline::new(trace).on_output(output_of(sc));
         let causes = tl
             .screens
             .iter()
@@ -924,9 +989,9 @@ pub fn evaluate(
                 CheckId::Settle => (settle::run(&cx), None),
                 CheckId::Bystander => (bystander::run(&cx), None),
                 CheckId::Envelope => (envelope::run(&cx), None),
-                CheckId::Teleport if trace.scenario.reduced_motion => {
-                    (Vec::new(), skip("motion is reduced: everything snaps"))
-                }
+                // (eval-rules-5) Run under reduced motion too: its jumps
+                // are not held there (everything snaps), but a scroll
+                // moves only with its input (`teleport::reduced_scrolls`).
                 CheckId::Teleport => (teleport::run(&cx), None),
                 CheckId::Vanish => (vanish::run(&cx), None),
                 CheckId::Coherence => (coherence::run(&cx), None),
@@ -934,7 +999,7 @@ pub fn evaluate(
                 CheckId::Colour => (colour::run(&cx), None),
                 CheckId::Contain => (contain::run(&cx), None),
                 CheckId::Tiling => (tiling::run(&cx), None),
-                CheckId::Stagger if trace.scenario.reduced_motion => {
+                CheckId::Stagger if trace.reduced_throughout() => {
                     (Vec::new(), skip("motion is reduced: children show at once"))
                 }
                 CheckId::Stagger => (stagger::run(&cx), None),

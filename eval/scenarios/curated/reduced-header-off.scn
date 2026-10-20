@@ -1,0 +1,46 @@
+id     = "reduced-header-off"
+about  = """docs/decisions.md eval-rules-5: a scenario whose header reduces
+motion (`reduce_motion = true`) starts reduced and a `reduce-motion off`
+step turns it off (held-out set G's reduced-motion panel had it stay
+reduced). With motion reduced a list swiped by a touchpad follows the
+fingers and its lift flings nothing (decisions.md m4-lists-w1: "`reduced_motion`
+lands a step at once and does not fling"; `teleport`'s reduced arm: never
+past the fingers); with it off again a box glides as its row changes."""
+screen = { width = 300, height = 300, scale = 1.0 }
+reduce_motion = true
+
+=== shell.strand
+state on = false
+let rows = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12"]
+panel Picker {
+  anchor: top_left; open: true
+  col { width: 200; pad: 8; gap: 6; bg: #1e1e2e; color: #cdd6f4
+    row { height: 20; gap: 6; align: center
+      if on { box { id: extra; width: 40; height: 10; bg: #a6e3a1 } }
+      box { id: mover; width: 20; height: 10; bg: #89b4fa }
+    }
+    list { id: picks; height: 100; gap: 4
+      for r in rows key r {
+        row { height: 30; pad: 0, 10; bg: #313244; align: center
+          text r
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+pointer 100,80
+mark fling-reduced
+swipe 60 over 80ms
+rest
+mark change-reduced
+set on true
+rest
+mark motion-on
+reduce-motion off
+rest
+mark change-moving
+set on false
+rest

@@ -10,7 +10,8 @@
 //!
 //! On every painted frame, among the nodes shown on one surface that are
 //! drawn where they are laid (no motion of their own or inherited, no
-//! offset, scale or turn), every two edges on one axis that lie at the same
+//! offset, scale or turn, and (eval-rules-5) no ancestor scaled or
+//! turned, at rest or not), every two edges on one axis that lie at the same
 //! logical place in layout are drawn at the same place, within a
 //! quantum.
 
@@ -55,9 +56,22 @@ fn in_place(r: &Row) -> bool {
         && r.rotate == 0.0
 }
 
+/// (eval-rules-5) No ancestor of `key` is scaled or turned at frame `i`,
+/// moving or at rest: a row's own `scale` and `rotate` are its own, and
+/// a box held pressed at `scale: 0.88` draws everything in it scaled
+/// about its centre, off the places layout gave them, by design.
+fn untransformed_above<'a>(cx: &Cx<'a>, i: usize, key: &'a str) -> bool {
+    cx.lineage(key).iter().skip(1).all(|k| {
+        cx.tl
+            .row(i, k)
+            .is_none_or(|a| a.scale == [1.0, 1.0] && a.rotate == 0.0)
+    })
+}
+
 pub fn run(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let mut out = Vec::new();
+    let mut under_transform = 0u64;
     for (i, f) in tl.frames.iter().enumerate() {
         if i > 0 && std::ptr::eq(*f, tl.frames[i - 1]) {
             continue;
@@ -65,7 +79,15 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         // Per surface and axis: (laid edge, drawn edge, key, which edge).
         let mut edges: BTreeMap<(u32, usize), Vec<Edge>> = BTreeMap::new();
         for r in &f.n {
-            if !in_place(r) || !tl.visible(i, r) || r.visual[2] < 1.0 || r.visual[3] < 1.0 {
+            if in_place(r) && !untransformed_above(cx, i, &r.key) {
+                under_transform += 1;
+            }
+            if !in_place(r)
+                || !untransformed_above(cx, i, &r.key)
+                || !tl.visible(i, r)
+                || r.visual[2] < 1.0
+                || r.visual[3] < 1.0
+            {
                 continue;
             }
             for (axis, (lo, hi)) in [(0usize, ("left", "right")), (1, ("top", "bottom"))] {
@@ -125,5 +147,6 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
+    super::stats("tiling.ancestor-transform", cx, &[("rows", under_transform)]);
     first_per_node(out)
 }

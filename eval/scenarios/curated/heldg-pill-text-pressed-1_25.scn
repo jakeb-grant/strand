@@ -1,0 +1,44 @@
+id     = "heldg-pill-text-pressed-1_25"
+about  = """Held-out set G's false alarms, written small (docs/decisions.md
+eval-rules-5), at scale 1.25: a pill whose width springs from 90 to 150
+while its text changes to a longer one, cut with an ellipsis while the
+pill is narrower (a content change is a step: its width snaps to the new
+text in the room the frame gives it, `teleport`), and back; then a
+button held pressed at `scale: 0.88` beside an icon on the same row: what
+the held button holds is drawn scaled about its centre at rest, off the
+places layout gave it, by design (`tiling`)."""
+screen = { width = 400, height = 160, scale = 1.25 }
+
+=== shell.strand
+state wide = false
+
+bar Top {
+  height: 32
+  row { pad: 0, 8; gap: 8; align: center
+    box { id: button; width: 26; height: 26; radius: 8; align: center
+      when pressed { scale: 0.88 }
+      box { id: glyph; size: 16; radius: 4; bg: #89b4fa }
+    }
+    box { id: neighbour; size: 16; radius: 4; bg: #a6e3a1 }
+    box { width: wide ? 150 : 90; height: 22; radius: full; align: center
+          bg: #313244; border: 1, #585b70
+      text wide ? "CPU 12% · RAM 3.1 GB" : "CPU 12%" { color: #cdd6f4; ellipsis: end }
+    }
+  }
+}
+
+=== steps
+rest
+mark widen
+set wide true
+rest
+mark narrow
+set wide false
+rest
+mark press
+pointer 21,16
+rest
+press left
+rest
+release left
+rest

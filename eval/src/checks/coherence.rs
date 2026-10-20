@@ -19,6 +19,13 @@
 //!   On the first frame it plays, every edge of its box is the same
 //!   share of the way from that old box to its own, a share of at most
 //!   [`START_SHARE`].
+//! - **morph arrival** (eval-rules-5, decisions.md cross-surface-morph):
+//!   a node with a `morph` name that comes on screen while a node of that
+//!   name was drawn the frame before, or within the second a box is
+//!   remembered (anim/morph.rs), starts on that box on the output (its
+//!   surface's origin plus its visual box), at most half its way from it,
+//!   and reaches its own box with no step larger than a spring's; with no
+//!   partner, or under reduced motion, it shows at its own box.
 //! - **stacking**: a node in flight (lifted, gliding, springing or
 //!   morphing) over a sibling never goes below it while their layout
 //!   keeps its order: it keeps its stacking until it lands (a dragged
@@ -242,6 +249,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         }
     }
     out.extend(morph_start(cx));
+    out.extend(morph_arrival(cx));
     out.extend(stacking(cx));
     out.extend(drag(cx));
     out.extend(ring(cx));
@@ -438,6 +446,287 @@ fn morph_start(cx: &Cx) -> Vec<Finding> {
         was.retain(|(_, s), _| !f.painted.contains(s));
         was.extend(now);
     }
+    out
+}
+
+/// How long a name's box is a morph's start after it left the screen
+/// (anim/morph.rs: "or left it within the last second").
+const MORPH_REMEMBERED_NS: u64 = 1_000_000_000;
+
+/// (eval-rules-5) `r`'s visual box at timeline frame `i` on the output:
+/// its surface's origin there plus its box on the surface (the edges
+/// left, top, right, bottom). The origin is the driver's placement, what
+/// render was given (`Frame::origins`), never render's morph state.
+fn on_output(cx: &Cx, i: usize, r: &Row) -> [f64; 4] {
+    let moved = cx.tl.moved(i, r.surface);
+    let o = cx.tl.frames[i]
+        .origins
+        .get(&r.surface)
+        .copied()
+        .unwrap_or([0.0, 0.0]);
+    let x = f64::from(r.visual[0]) - f64::from(moved[0]) + f64::from(o[0]);
+    let y = f64::from(r.visual[1]) - f64::from(moved[1]) + f64::from(o[1]);
+    [
+        x,
+        y,
+        x + f64::from(r.visual[2]),
+        y + f64::from(r.visual[3]),
+    ]
+}
+
+/// (eval-rules-5, cross-surface-morph) **morph arrival**: a node with a
+/// `morph` name (as written, `NodeMeta::morph`) that comes on screen at
+/// timeline frame `i` (its row there, on a surface it had no row on at
+/// `i - 1`: created, its surface opened, a new surface) while another
+/// node of that name showed at `i - 1` on a surface of the output (the
+/// sandbox has one), or showed until less than a second before, starts
+/// from that node's box (design.md: "the bar's media pill becomes the
+/// media panel"): on its first frame every edge of its box on the output
+/// is one share of the way from the partner's last box to its own box
+/// at rest (its last frame shown in the segment), a share of at most
+/// [`START_SHARE`] (as `morph start`), the boxes compared on the output
+/// (each surface's origin plus the box on it), so its scale is the two
+/// boxes' ratio. It then reaches its own box with no step larger than a
+/// motion's (`teleport`'s bound: `teleport_px` a 60 Hz tick, or 0.75 of
+/// that edge's way). With no partner (none shown, or gone over a second
+/// before) or with motion reduced, it shows at its own box at once,
+/// unless something else moves it (an enter pose, a moving ancestor, the
+/// compositor's pose). None of it reads render's morph state: the
+/// partner, its box and the time are the trace's.
+fn morph_arrival(cx: &Cx) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let named: BTreeMap<&str, &str> = cx
+        .trace
+        .nodes
+        .iter()
+        .filter_map(|(k, m)| Some((k.as_str(), m.morph.as_deref()?)))
+        .collect();
+    if named.is_empty() {
+        return out;
+    }
+    let tl = &cx.tl;
+    let (mut partnered, mut alone, mut unjudged) = (0u64, 0u64, 0u64);
+    let segment = |k: u32| {
+        cx.trace
+            .segments
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| s.s.is_some_and(|s| s < k) && k <= s.e)
+    };
+    let paint = Motions::OPACITY_SPRING.0
+        | Motions::FILL_SPRING.0
+        | Motions::INK_SPRING.0
+        | Motions::LINE_SPRING.0
+        | Motions::SHARED_MORPH.0;
+    for i in 1..tl.ks.len() {
+        let k = tl.ks[i];
+        let Some((_, seg)) = segment(k) else { continue };
+        let t = tl.frames[i].t_ns;
+        let scale = cx.trace.scale_at(tl.frames[i]).max(0.25);
+        let give = cx.tol + 1.0 / scale;
+        for (key, r) in &tl.screens[i] {
+            let Some(name) = named.get(key) else { continue };
+            // Drawn, wherever on its surface: a morph from a box on
+            // another surface starts off its own (the pill above the
+            // panel), where its buffer cuts it.
+            if tl.row(i - 1, key).is_some_and(|q| q.surface == r.surface)
+                || !shows(r)
+                || cx.allowed(CheckId::Coherence, key)
+            {
+                continue;
+            }
+            // Its own box at rest: its last frame shown in the segment
+            // (this one, when the segment rests at once).
+            let end = i..tl.within(Some(k), seg.e).end.max(i + 1);
+            let Some(last) = end
+                .clone()
+                .rev()
+                .find(|j| tl.row(*j, key).is_some_and(|q| q.surface == r.surface && shows(q)))
+            else {
+                continue;
+            };
+            let to = on_output(cx, last, tl.row(last, key).unwrap_or(r));
+            let first = on_output(cx, i, r);
+            // The partner: shown at i - 1, else the latest shown within
+            // the second (ambiguous near the second's end: not judged).
+            let others = |j: usize| -> Vec<&Row> {
+                tl.screens[j]
+                    .iter()
+                    .filter(|(k2, q)| {
+                        *k2 != key && named.get(*k2) == Some(name) && tl.visible(j, q)
+                    })
+                    .map(|(_, q)| *q)
+                    .collect()
+            };
+            let mut partner: Option<(usize, Vec<&Row>)> = None;
+            let mut none = true;
+            let mut j = i - 1;
+            loop {
+                let p = others(j);
+                if !p.is_empty() {
+                    // It stopped showing at the frame after j.
+                    let left = if j + 1 == i { t } else { tl.frames[j + 1].t_ns };
+                    let ago = t.saturating_sub(left);
+                    let period = 1_000_000_000 / u64::from(seg.hz.max(1));
+                    if ago + 2 * period < MORPH_REMEMBERED_NS {
+                        partner = Some((j, p));
+                    } else if ago < MORPH_REMEMBERED_NS + 2 * period {
+                        none = false;
+                    }
+                    break;
+                }
+                if j == 0 || t.saturating_sub(tl.frames[j].t_ns) > 2 * MORPH_REMEMBERED_NS {
+                    break;
+                }
+                j -= 1;
+            }
+            let reduced = seg.reduced_motion;
+            let ambiguous = partner.is_none() && !none;
+            match partner {
+                Some((j, ps)) if !reduced => {
+                    partnered += 1;
+                    // On its way from one of them (the nearest judged).
+                    let mut best: Option<(f64, String)> = None;
+                    for p in ps {
+                        let from = on_output(cx, j, p);
+                        let (mut lo, mut hi) = (-0.05f64, START_SHARE);
+                        let mut off = false;
+                        for e in 0..4 {
+                            let d = to[e] - from[e];
+                            let at = first[e] - from[e];
+                            if d.abs() <= give {
+                                off |= at.abs() > give + d.abs();
+                                continue;
+                            }
+                            let (a, b) = ((at - give) / d, (at + give) / d);
+                            lo = lo.max(a.min(b));
+                            hi = hi.min(a.max(b));
+                        }
+                        if lo <= hi && !off {
+                            best = None;
+                            break;
+                        }
+                        let shares: Vec<String> = (0..4)
+                            .map(|e| {
+                                let d = to[e] - from[e];
+                                if d.abs() <= give {
+                                    format!("{:+.1} px", first[e] - from[e])
+                                } else {
+                                    format!("{:.2}", (first[e] - from[e]) / d)
+                                }
+                            })
+                            .collect();
+                        let worst = (0..4)
+                            .map(|e| (first[e] - from[e]).abs())
+                            .fold(0.0, f64::max);
+                        if best.as_ref().is_none_or(|(w, _)| worst < *w) {
+                            best = Some((
+                                worst,
+                                format!(
+                                    "morph arrival: it came on screen while `{name}` showed \
+                                     on the output, and its first frame is not on its way \
+                                     from that box to its own (left, top, right, bottom at \
+                                     shares {} of that way; at most {START_SHARE}, as one)",
+                                    shares.join(", ")
+                                ),
+                            ));
+                        }
+                    }
+                    if let Some((worst, msg)) = best {
+                        out.push(
+                            Finding::fail(CheckId::Coherence, msg)
+                                .at(k)
+                                .node(key)
+                                .got(worst, [0.0, give])
+                                .in_segment(&seg.name),
+                        );
+                        continue;
+                    }
+                    // Then to its own box with no step larger than a
+                    // motion's.
+                    let from = on_output(cx, j, others(j)[0]);
+                    let per_tick =
+                        cx.sc.tolerance.teleport_px * 60.0 / f64::from(seg.hz.max(1));
+                    let mut prev = (i, first);
+                    for n in (i + 1)..=last {
+                        let Some(q) = tl.row(n, key).filter(|q| q.surface == r.surface) else {
+                            break;
+                        };
+                        if !shows(q) {
+                            break;
+                        }
+                        let now = on_output(cx, n, q);
+                        let ticks = f64::from(tl.ks[n] - tl.ks[prev.0]).max(1.0);
+                        let jump = (0..4).find_map(|e| {
+                            let bound = (per_tick * ticks).max(0.75 * (to[e] - from[e]).abs()) + give;
+                            let d = (now[e] - prev.1[e]).abs();
+                            (d > bound).then_some((e, d, bound))
+                        });
+                        if let Some((e, d, bound)) = jump {
+                            out.push(
+                                Finding::fail(
+                                    CheckId::Coherence,
+                                    format!(
+                                        "morph arrival: on its way from `{name}`'s box its {} \
+                                         edge jumped {d:.1} px in one frame",
+                                        ["left", "top", "right", "bottom"][e]
+                                    ),
+                                )
+                                .at(tl.ks[n])
+                                .node(key)
+                                .got(d, [0.0, bound])
+                                .in_segment(&seg.name),
+                            );
+                            break;
+                        }
+                        prev = (n, now);
+                    }
+                }
+                _ if ambiguous && !reduced => unjudged += 1,
+                _ => {
+                    // No partner, or motion reduced: at its own box,
+                    // unless something else moves it.
+                    let moved = Motions(r.emot).0 & !paint != 0
+                        || cx.trace.nodes.get(*key).is_some_and(|m| m.enter.is_some())
+                        || tl.frames[i].poses.get(&r.surface).is_some_and(|p| {
+                            p.x != 0.0 || p.y != 0.0 || p.scale != 1.0
+                        });
+                    if moved && !reduced {
+                        unjudged += 1;
+                        continue;
+                    }
+                    alone += 1;
+                    let worst = (0..4).map(|e| (first[e] - to[e]).abs()).fold(0.0, f64::max);
+                    if worst > give {
+                        out.push(
+                            Finding::fail(
+                                CheckId::Coherence,
+                                format!(
+                                    "morph arrival: {} it shows at its own box, and its first \
+                                     frame is {worst:.1} px off it",
+                                    if reduced {
+                                        "with motion reduced".to_string()
+                                    } else {
+                                        format!("with no other `{name}` on screen")
+                                    }
+                                ),
+                            )
+                            .at(k)
+                            .node(key)
+                            .got(worst, [0.0, give])
+                            .in_segment(&seg.name),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    super::stats(
+        "coherence.morph-arrival",
+        cx,
+        &[("partnered", partnered), ("at-box", alone), ("unjudged", unjudged)],
+    );
     out
 }
 

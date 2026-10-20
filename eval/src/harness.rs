@@ -573,8 +573,10 @@ struct Harness {
     drop_one: HashMap<SurfaceId, u32>,
     /// Motion is reduced now (render's last `reduced_motion`).
     reduced: bool,
-    /// Motion is reduced whatever the run sets (the twin, or the
-    /// scenario's own `reduce_motion`).
+    /// Motion is reduced whatever the run sets (the twin, a
+    /// `--reduced-motion` run). (eval-rules-5) The scenario's own
+    /// `reduce_motion` is where it starts: a `reduce-motion off` step
+    /// turns it off.
     forced_reduced: bool,
     /// (eval-host-loop) A reaction asked the loop to wake
     /// (`LoopHost::wake`): `host_loop::woke` runs at its next turn.
@@ -804,7 +806,7 @@ impl Harness {
             drop_all: 0,
             drop_one: HashMap::new(),
             reduced: false,
-            forced_reduced: reduced,
+            forced_reduced: opts.reduced_motion,
             wake_owed: false,
             logic_owed: false,
             turning: false,

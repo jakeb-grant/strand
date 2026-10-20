@@ -36,17 +36,30 @@
 //! on w, h, scale or rotate: keyframes or `t` on those axes, a scale
 //! spring): a glide, a drag, an offset or opacity spring, a reveal, a
 //! stagger and a pose of opacity or offset move or fade a box, never size
-//! it. Skipped under reduced motion, where everything snaps.
+//! it.
+//!
+//! (eval-rules-5) A node carried by a motion that is not its own (a pose
+//! the compositor applies to its surface, its parent's slide in flight)
+//! travels that motion's way, though it shows on only some of its
+//! frames: one that comes onto the screen as a panel slides in, or
+//! leaves through a clip a page slides out of, is carried, not jumping.
+//! A text whose content changed steps to its new width (and its start
+//! edge with it, by its slot's alignment): that step is no jump. Under
+//! reduced motion, where every spring snaps, it holds no jump; instead
+//! [`reduced_scrolls`] holds each scroll to its input: no fling at the
+//! lift.
 
 use std::collections::HashMap;
 
-use super::{Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value, way};
+use super::{Axis, Cx, Finding, GEOMETRY, Sev, first_per_node, laid, value, way};
 use crate::scenario::CheckId;
 use crate::trace::Row;
 use strand_render::probe::{Axes, Motions};
 
 pub fn run(cx: &Cx) -> Vec<Finding> {
-    let mut out = Vec::new();
+    let mut out = reduced_scrolls(cx.sc, cx.trace, cx.tol, CheckId::Teleport);
+    // (eval-rules-5) How often a carrier's way or a content step decided.
+    let (mut carried_by, mut steps) = (0u64, 0u64);
     for (si, seg, s) in cx.segments() {
         if seg.reduced_motion {
             continue;
@@ -189,7 +202,20 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                         } else {
                             0.0
                         };
-                        (value(e, a) - value(b, a)).abs().max(hi - lo).max(carried)
+                        // (eval-rules-5) The motion that carries it: a
+                        // node that comes onto the screen under a pose
+                        // the compositor applies (a panel sliding in) or
+                        // leaves through a clip (a page sliding out of
+                        // its `pages`) shows on only some of the frames
+                        // its carrier moves it on, and its way is the
+                        // carrier's, not the part of it that shows.
+                        let carrier =
+                            carrier_travel(cx, key, r.surface, start, span.end, &restarts, a);
+                        let own = (value(e, a) - value(b, a)).abs().max(hi - lo).max(carried);
+                        if carrier > own + cx.tol {
+                            carried_by += 1;
+                        }
+                        own.max(carrier)
                     });
                     let left = match (carried, a) {
                         (true, super::Axis::X) => f64::from(q.glide[0] + q.flight[0]).abs(),
@@ -198,6 +224,34 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     };
                     let bound = (per_tick * ticks).max(0.75 * travel.max(left)) + cx.tol;
                     let d = value(r, a) - value(q, a);
+                    // (eval-rules-5) A text whose content changed at this
+                    // frame steps to its new width (layout lengths snap,
+                    // design.md "What can't interpolate"): that part of
+                    // the change is no jump of a motion.
+                    // Its start edge, placed in its slot by the slot's
+                    // alignment (start, centre or end), moves with that
+                    // step by none to all of it, the other way: a
+                    // centred text that narrows moves right by half.
+                    let d = match a {
+                        super::Axis::W => {
+                            let step = content_step(cx, i, p, q, r, d);
+                            if step != 0.0 {
+                                steps += 1;
+                            }
+                            d - step
+                        }
+                        super::Axis::X => {
+                            let dw = value(r, super::Axis::W) - value(q, super::Axis::W);
+                            let step = -content_step(cx, i, p, q, r, dw);
+                            if step * d > 0.0 {
+                                steps += 1;
+                                d - step.signum() * step.abs().min(d.abs())
+                            } else {
+                                d
+                            }
+                        }
+                        _ => d,
+                    };
                     let k = cx.tl.ks[i];
                     if d.abs() > bound {
                         let f = Finding::fail(
@@ -284,6 +338,11 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
+    super::stats(
+        "teleport.carried",
+        cx,
+        &[("carried", carried_by), ("content-steps", steps)],
+    );
     first_per_node(out)
 }
 
@@ -316,4 +375,229 @@ fn carried_beside(cx: &Cx, p: usize, i: usize, key: &str, a: super::Axis) -> Opt
         }
     }
     best.map(|(_, moved)| moved)
+}
+
+/// (eval-rules-5) How far the motion carrying `key` moved it on `a` over
+/// the frames `[from, to)` (indexes of the timeline), whether it showed
+/// on them or not: what carries it rigidly, its ancestors' offsets in
+/// flight (`Row::flight`: a parent's glide, spring or exit pose) and the
+/// pose the compositor applies to its surface (its offset, and what its
+/// scale does to the node's place), taken where its way starts and ends
+/// as the node's own travel is (its first and last frame there, and the
+/// frame before each later change of the segment, `restarts`), never at
+/// every frame between: a carrier that overshoots or kicks travels no
+/// further for it, so a jump of all of it is still a jump. Only frames
+/// that painted its surface count (its rows are that frame's own).
+fn carrier_travel(
+    cx: &Cx,
+    key: &str,
+    surface: u32,
+    from: usize,
+    to: usize,
+    restarts: &[usize],
+    a: Axis,
+) -> f64 {
+    let at = |i: usize| {
+        let r = cx.tl.row(i, key)?;
+        (r.surface == surface && cx.tl.frames[i].painted.contains(&surface))
+            .then(|| carried(cx, i, r, a))
+    };
+    let present: Vec<usize> = (from..to).filter(|i| at(*i).is_some()).collect();
+    let (Some(first), Some(last)) = (present.first(), present.last()) else {
+        return 0.0;
+    };
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for i in [*first, *last].iter().chain(restarts) {
+        if let Some(c) = at(*i) {
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+    }
+    if hi >= lo { hi - lo } else { 0.0 }
+}
+
+/// What carries `r` rigidly at frame `i` on `a` (see [`carrier_travel`]).
+fn carried(cx: &Cx, i: usize, r: &Row, a: Axis) -> f64 {
+    let n = match a {
+        Axis::X => 0,
+        Axis::Y => 1,
+        Axis::W => 2,
+        Axis::H => 3,
+        _ => return 0.0,
+    };
+    let flight = if n < 2 { f64::from(r.flight[n]) } else { 0.0 };
+    let pose = cx.tl.frames[i].poses.get(&r.surface).map_or(0.0, |p| {
+        let k = f64::from(p.scale);
+        if k.abs() < 1e-6 {
+            return 0.0;
+        }
+        // The posed value on its surface, the pose's offset and the
+        // unposed value it was drawn from: what the pose added.
+        let shift = cx.tl.moved(i, r.surface);
+        let (v, off) = match n {
+            0 => (value(r, a) - f64::from(shift[0]), f64::from(p.x)),
+            1 => (value(r, a) - f64::from(shift[1]), f64::from(p.y)),
+            _ => (value(r, a), 0.0),
+        };
+        v - (v - off) / k
+    });
+    flight + pose
+}
+
+/// (eval-rules-5) Of a text's change in width `d` between frames `p`
+/// (row `q`) and `i` (row `r`), the part its content changing explains:
+/// none unless the text it drew changed (`PaintRec::gl`). Then the step
+/// is from the old content to the new laid in the same room, each at
+/// its unbounded width (its cut line's `natural` stops when it is cut,
+/// else its glyphs' ink) and no wider than its parent's box at `i`; a
+/// part of `d` in the same direction and no larger than it. The rest,
+/// what its room's motion did, is held to the bound as before.
+fn content_step(cx: &Cx, i: usize, p: usize, q: &Row, r: &Row, d: f64) -> f64 {
+    let gl = |row: &Row| row.paint.as_ref().map(|x| x.gl.clone()).unwrap_or_default();
+    let (was, now) = (gl(q), gl(r));
+    if was.is_empty() || now.is_empty() || was == now {
+        return 0.0;
+    }
+    let natural = |j: usize, row: &Row| -> Option<f64> {
+        let f = cx.tl.frames.get(j)?;
+        if let Some(l) = f.lines.iter().find(|l| l.key == row.key && l.s == row.surface)
+            && let Some(last) = l.natural.last()
+        {
+            return Some(f64::from(last.1));
+        }
+        row.ink.map(|ink| f64::from(ink[2]))
+    };
+    let (Some(old), Some(new)) = (natural(p, q), natural(i, r)) else {
+        return 0.0;
+    };
+    let room = cx
+        .parent(&r.key)
+        .and_then(|pk| cx.tl.row(i, pk))
+        .map_or(f64::INFINITY, |pr| value(pr, Axis::W));
+    let step = new.min(room) - old.min(room);
+    if step * d <= 0.0 {
+        return 0.0;
+    }
+    step.signum() * step.abs().min(d.abs())
+}
+
+/// (eval-rules-5) Under reduced motion a scroll moves only with its
+/// input. decisions.md m4-lists-w1: touchpad motion moves the offset
+/// with the fingers, "`reduced_motion` lands a step at once and does not
+/// fling" (design.md "Runtime changes these need" 7: springs snap). So
+/// in a segment whose motion is reduced throughout (no `reduce-motion`
+/// step or `system.reduced_motion` set inside it) and that turns a wheel
+/// or swipes a touchpad, no `scroll` or `list` is ever further from
+/// where the segment found it than the input delivered so far has moved
+/// the fingers: each `swipe DY over MS` spread evenly over its ticks,
+/// each `scroll DY` its notches of `WHEEL_STEP` at its tick, the amounts
+/// read from the scenario's steps, never from the renderer. An offset
+/// may lag (an end stops it, a window waits for its rows), never lead:
+/// a fling, or a spring that overshoots, lands past the fingers. One
+/// tick's input more is given (a tick counted differently), and the
+/// edge tolerance. `check` names who reports it: `teleport` for the
+/// run's own reduced segments, `twin` for its reduced-motion re-run.
+pub fn reduced_scrolls(
+    sc: &crate::scenario::Scenario,
+    trace: &crate::trace::RunTrace,
+    tol: f64,
+    check: CheckId,
+) -> Vec<Finding> {
+    use crate::steps::StepKind;
+    let mut out = Vec::new();
+    let (mut judged_segments, mut judged_offsets) = (0u64, 0u64);
+    for (si, seg) in trace.segments.iter().enumerate() {
+        let Some(s) = seg.s else { continue };
+        if !seg.reduced_motion || seg.e <= s {
+            continue;
+        }
+        let events: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| e.segment == Some(si))
+            .collect();
+        // Reduced only from part of the way: a motion in flight when it
+        // turned on snaps to where it was going.
+        if events.iter().any(|e| {
+            e.text.starts_with("reduce-motion") || e.text.contains("system.reduced_motion")
+        }) {
+            continue;
+        }
+        let period = 1_000_000_000u64 / u64::from(seg.hz.max(1));
+        // (first tick, ticks, px) of each input.
+        let mut inputs: Vec<(u32, u32, f64)> = Vec::new();
+        for e in &events {
+            let Some(step) = sc.steps.iter().find(|st| st.line == e.line) else {
+                continue;
+            };
+            match &step.kind {
+                StepKind::Swipe { dy, ms } => {
+                    let n = (u64::from(*ms) * 1_000_000).div_ceil(period).max(1) as u32;
+                    inputs.push((e.k, n, dy.abs()));
+                }
+                StepKind::Scroll { dy } => {
+                    inputs.push((e.k, 1, (dy * strand_render::WHEEL_STEP).abs()));
+                }
+                _ => {}
+            }
+        }
+        if inputs.is_empty() {
+            continue;
+        }
+        let slack = tol
+            + inputs
+                .iter()
+                .map(|(_, n, px)| px / f64::from(*n))
+                .fold(0.0, f64::max);
+        let delivered = |k: u32| -> f64 {
+            inputs
+                .iter()
+                .filter(|(k0, _, _)| *k0 <= k)
+                .map(|(k0, n, px)| px * f64::from((k - k0 + 1).min(*n)) / f64::from(*n))
+                .sum()
+        };
+        // Where the segment found each scroll: its offset at or before `s`.
+        let mut found: std::collections::BTreeMap<&str, f64> = std::collections::BTreeMap::new();
+        for f in trace.frames.iter().filter(|f| f.k <= s) {
+            for (key, o) in &f.offsets {
+                found.insert(key.as_str(), f64::from(*o));
+            }
+        }
+        let mut told: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        judged_segments += 1;
+        for f in trace.frames.iter().filter(|f| f.k > s && f.k <= seg.e) {
+            for (key, o) in &f.offsets {
+                let Some(o0) = found.get(key.as_str()) else {
+                    continue;
+                };
+                judged_offsets += 1;
+                let moved = (f64::from(*o) - o0).abs();
+                let may = delivered(f.k);
+                if moved > may + slack && told.insert(key.as_str()) {
+                    out.push(
+                        Finding::fail(
+                            check,
+                            format!(
+                                "reduced fling: with motion reduced its offset is {moved:.1} px \
+                                 from where the segment found it, past the {may:.1} px its \
+                                 input has moved (reduced motion does not fling, and a step \
+                                 lands at once)"
+                            ),
+                        )
+                        .at(f.k)
+                        .node(key)
+                        .axis("y")
+                        .got(moved, [0.0, may + slack])
+                        .in_segment(&seg.name),
+                    );
+                }
+            }
+        }
+    }
+    super::stats_of(
+        &format!("{}.reduced-scroll", check.name()),
+        &trace.scenario.id,
+        &[("segments", judged_segments), ("offsets", judged_offsets)],
+    );
+    out
 }

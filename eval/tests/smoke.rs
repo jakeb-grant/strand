@@ -531,6 +531,70 @@ rest
     }
 }
 
+/// (eval-rules-5) A header's `reduce_motion = true` is where motion
+/// starts: a `reduce-motion off` step turns it off, and what changes
+/// after it moves again (held-out set G's `g-reduced-motion-panel`). A
+/// reduced re-run (the twin, `RunOptions::reduced_motion`) stays reduced
+/// whatever its steps say.
+#[test]
+fn a_reduce_motion_off_step_turns_off_the_headers_reduced_motion() {
+    let text = r##"id = "reduce-off"
+screen = { width = 300 }
+reduce_motion = true
+
+=== shell.strand
+state on = false
+bar Top {
+  height: 30
+  row { width: 300; height: 30; gap: 6; align: center
+    if on { box { id: a; width: 40; height: 10; bg: #00ff00 } }
+    box { id: b; width: 20; height: 10; bg: #0000ff }
+  }
+}
+
+=== steps
+rest
+mark reduced
+set on true
+rest
+mark back-on
+reduce-motion off
+rest
+mark moving
+set on false
+rest
+"##;
+    let glides_in = |t: &RunTrace, seg: &str| {
+        let b = key(t, "b");
+        let s = t.segments.iter().find(|s| s.name == seg).unwrap();
+        t.frames
+            .iter()
+            .filter(|f| s.s.is_some_and(|k| f.k > k) && f.k <= s.e)
+            .filter_map(|f| row(f, &b))
+            .any(|r| Motions(r.mot).contains(Motions::GLIDE))
+    };
+    let t = go(text);
+    assert!(!glides_in(&t, "reduced"), "b snaps while motion is reduced");
+    assert!(glides_in(&t, "moving"), "b glides once motion is back on");
+    let seg = |t: &RunTrace, name: &str| t.segments.iter().find(|s| s.name == name).cloned();
+    assert!(seg(&t, "reduced").unwrap().reduced_motion);
+    assert!(!seg(&t, "moving").unwrap().reduced_motion);
+    assert!(t.scenario.reduced_motion, "reduced from the start");
+    assert!(!t.reduced_throughout());
+    let sc = scenario(text);
+    let twin = run(
+        &sc,
+        &RunOptions {
+            reduced_motion: true,
+            ..RunOptions::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .trace;
+    assert!(!glides_in(&twin, "moving"), "the twin stays reduced");
+    assert!(twin.reduced_throughout());
+}
+
 /// A parent's authored size is not its children's: a card whose width
 /// springs is laid out each frame, and its children's drawn boxes are
 /// held to their layouts. Its offset, opacity and transform are theirs.
