@@ -191,6 +191,8 @@ impl Renderer {
                 flip_settled: true,
                 laid_frame: None,
                 laid_size: None,
+                drawn_boxes: None,
+                flip_shifts: None,
                 text_arrived: false,
                 unpainted: HashSet::new(),
                 painted_time: None,

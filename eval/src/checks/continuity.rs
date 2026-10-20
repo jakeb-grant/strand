@@ -336,6 +336,14 @@ fn springs(cx: &Cx) -> Vec<Finding> {
     // snaps drawn.
     let mut stats = [0u64; 8];
     let mut known: HashMap<(&str, &str), Option<Known>> = HashMap::new();
+    // (launcher-flip-pass) Per spring, the time of its last sample seen
+    // and the floor its frame's changes start from: the motion's last
+    // sample before that frame (a start's own `last` at its first sample
+    // there, or the sample seen before). A frame samples a spring again
+    // at the same time when it lays out again before it is drawn (a text
+    // that arrived): a change that starts then is first shown by that
+    // same frame, and leads it by one refresh as the frame's first did.
+    let mut floors: HashMap<(&str, &str), (u64, Option<u64>)> = HashMap::new();
     for f in &cx.trace.frames {
         let sampled: std::collections::HashSet<(&str, &str)> =
             f.sp.iter()
@@ -359,6 +367,17 @@ fn springs(cx: &Cx) -> Vec<Finding> {
                 continue;
             }
             let t = r.at.unwrap_or(f.t_ns);
+            let floor = match floors.get(&id) {
+                Some((at, floor)) if *at == t => *floor,
+                seen => {
+                    let floor = match &r.start {
+                        Some(st) => st.last,
+                        None => seen.map(|(at, _)| *at),
+                    };
+                    floors.insert(id, (t, floor));
+                    floor
+                }
+            };
             if r.enter == Some(false) && r.start.is_some() {
                 stats[5] += 1;
             }
@@ -391,10 +410,11 @@ fn springs(cx: &Cx) -> Vec<Finding> {
             }
             if let Some(st) = &r.start {
                 let period = f.period.get(&r.s).copied().unwrap_or(0);
-                let start = start_of(t, st.last, period);
+                let last = if st.last == Some(t) { floor } else { st.last };
+                let start = start_of(t, last, period);
                 let before = kn.way.clone();
                 kn.way = before.retarget(start, &r.to, r.c, &st.shift);
-                kn.began = Some((f.k, before, t, st.last));
+                kn.began = Some((f.k, before, t, last));
                 stats[2] += 1;
             } else if r
                 .to

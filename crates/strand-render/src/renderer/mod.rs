@@ -241,6 +241,21 @@ struct SurfaceState {
     laid_frame: Option<strand_scene::LogicalRect>,
     /// (bottom-osd-shrink) Its buffer's logical size at that pass.
     laid_size: Option<strand_scene::LogicalSize>,
+    /// (launcher-flip-pass) The boxes the last frame drew, with the
+    /// buffer's logical size they were laid out in: kept by the first
+    /// layout pass after a paint (the boxes it replaced), cleared by each
+    /// paint. What a pass laid out since was never drawn: a FLIP measures
+    /// from these, and its clip rule reads what the clips showed in them.
+    drawn_boxes: Option<(
+        HashMap<NodeId, strand_scene::LogicalRect>,
+        Option<strand_scene::LogicalSize>,
+    )>,
+    /// (launcher-flip-pass) Per node, the shift the FLIP passes laid out
+    /// since the last frame gave it, and the axes they glided it on:
+    /// `Some` once one ran. A later pass before the next frame glides on
+    /// from that pass's boxes, which are drawn off by these. Cleared by
+    /// each paint.
+    flip_shifts: Option<HashMap<NodeId, layout_pass::Glided>>,
     /// A text layout for it arrived since its last layout pass.
     text_arrived: bool,
     /// Nodes first laid out since it last painted, while `flip_open`:

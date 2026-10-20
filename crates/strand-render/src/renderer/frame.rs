@@ -755,6 +755,9 @@ impl Renderer {
             }
         }
         total.clip(bounds);
+        // (launcher-flip-pass) What this frame laid out is drawn now.
+        s.drawn_boxes = None;
+        s.flip_shifts = None;
         // What this frame laid out is what the surface shows now, but
         // for what it drew nothing of (late-text-dip): a text still on
         // its way, and a box laid out empty because such a text is under

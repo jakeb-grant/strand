@@ -921,7 +921,9 @@ says a node moves, not how, so it does not exempt from them; only an
   velocity, so interrupted animations never jolt" (design.md), a spring
   is a unit-mass damped oscillator, and a change starts one refresh of
   its surface before its first frame (at most 16.7 ms, never before the
-  motion's sample before), from where its way is then and with its
+  motion's sample before; one that starts at a time the spring was
+  sampled at already starts with that frame's first changes, from the
+  sample before it, decisions.md launcher-flip-pass), from where its way is then and with its
   velocity, a timed curve carrying that velocity as `v0·t·(1 − t/d)²`
   (architecture.md "Motion"; decisions.md first-frame-lead). From each
   spring's samples (`sp`) alone the check works its way out, with an
@@ -1492,7 +1494,12 @@ last-fold-half (`continuity` fold, wifi-last-row-fold-2) and
 text-width-rounded-scale (`ink`, bar-split-title-1_25; decisions.md
 integration-r6), and round 7's png-aspect (`placement`), image-redraw
 (`redraw`), dock-drag (`redraw`) and stand-in-fit (`placement` cover;
-decisions.md of each name): 26 in all. In a detached worktree of HEAD, each scenario
+decisions.md of each name), eval-rules-6's four (ring-corners-swapped,
+fold-gap-late, ellipsis-min-content-natural and pose-margin-unsent, each a
+second case of a rule that round added) and, on one regression of round
+7's owner-shell triage, flip-undrawn-pass (`bystander`) and frame-lead
+(`continuity`, in crates/strand-scene; decisions.md launcher-flip-pass):
+32 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

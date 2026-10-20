@@ -1795,7 +1795,10 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `retarget(target, curve)` and `shift(delta, curve)`
   (a FLIP jump) take effect at the next `sample(at)`, which starts them
   at `at` less one frame (at most `START_LEAD`, never before the previous
-  sample: `sampled_at(prev)` seeds it) from wherever the value is there;
+  sample: `sampled_at(prev)` seeds it; at a time sampled already, a frame
+  laid out again before it is drawn, from the sample before that one, so
+  one frame's changes start together, decisions.md launcher-flip-pass)
+  from wherever the value is there;
   `sample_frame(at, period)` is the renderer's form, the frame being one
   refresh `period` of the surface drawing it (its estimated frame
   period, so a 144 Hz surface's first frame shows one 144 Hz frame of

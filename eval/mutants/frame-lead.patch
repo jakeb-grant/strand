@@ -1,0 +1,11 @@
+--- a/crates/strand-scene/src/motion.rs
++++ b/crates/strand-scene/src/motion.rs
+@@ -506,7 +506,7 @@
+         };
+         // (launcher-flip-pass) Sampled at `at` already, it measures the
+         // lead from the sample before, as that first sample did.
+-        let prior = if self.last == Some(at) {
++        let prior = if false && self.last == Some(at) {
+             self.before
+         } else {
+             self.last

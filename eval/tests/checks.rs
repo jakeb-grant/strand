@@ -4818,6 +4818,79 @@ fn continuity_fails_with(t: &RunTrace, word: &str) -> bool {
         .any(|f| f.key.as_deref() == Some("pill") && f.msg.starts_with(word))
 }
 
+/// (launcher-flip-pass) A FLIP glide shifted 31 px before a frame's
+/// first sample, then -31 px by a pass laid out after it (a text that
+/// arrived) and sampled again at the same time: the frame's changes
+/// start together, one refresh before it, so the glide rests at 0.
+/// `lead_again` is how far before the frame the second sample starts
+/// what it resolves (none: the change started at the frame itself).
+fn glide_sampled_twice(lead_again: Duration) -> RunTrace {
+    let period = Duration::from_nanos(16_666_667);
+    let curve = Curve::Spring(Spring::new(3000.0, 0.75).unwrap());
+    let mut m = Motion::rest([0.0, 0.0], 0.05).sampled_at(Some(tick(0)));
+    let rec = |pre: &MotionView<2>, v: [f32; 2]| {
+        let (to, c) = match pre.pending {
+            Some((t, c, _)) => (t, c),
+            None => (pre.target, pre.curve),
+        };
+        SpringRec {
+            key: "pill".into(),
+            s: 1,
+            of: "glide".into(),
+            v: v.to_vec(),
+            to: to.to_vec(),
+            c: CurveRec::of(&c),
+            eps: pre.eps.to_vec(),
+            rest: (pre.curve == Curve::Instant).then(|| pre.target.to_vec()),
+            start: pre.pending.map(|(_, _, shift)| StartRec {
+                last: pre.last.map(|l| l.as_nanos() as u64),
+                shift: shift.to_vec(),
+            }),
+            ..SpringRec::default()
+        }
+    };
+    let mut frames: Vec<Vec<SpringRec>> = vec![Vec::new()];
+    m.shift([0.0, 31.0], curve);
+    let pre = m.view();
+    let first = rec(&pre, m.sample_frame(tick(1), period));
+    m.shift([0.0, -31.0], curve);
+    let pre = m.view();
+    let second = rec(&pre, m.sample_frame(tick(1), lead_again));
+    frames.push(vec![first, second]);
+    for k in 2..40 {
+        let pre = m.view();
+        frames.push(vec![rec(&pre, m.sample_frame(tick(k), period))]);
+    }
+    let mut t = shape(39, |_| vec![row("pill", [10.0, 8.0, 40.0, 12.0])]);
+    for (f, recs) in t.frames.iter_mut().zip(frames) {
+        f.period.insert(1, period.as_nanos() as u64);
+        f.sp = recs;
+    }
+    t.seal();
+    t
+}
+
+#[test]
+fn continuity_starts_a_frames_second_sample_with_its_first() {
+    let sc = scenario("");
+    // As the renderer samples it: the two shifts start together.
+    let t = glide_sampled_twice(Duration::from_nanos(16_666_667));
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Continuity),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // The second started at the frame: the glide springs past where it
+    // rested and back, which the way of a change started one refresh
+    // before does not draw.
+    let t = glide_sampled_twice(Duration::ZERO);
+    assert!(continuity_fails_with(&t, ""), "{}", {
+        show(&check(&sc, &t), &t)
+    });
+}
+
 /// The way a renderer samples, retargeted mid-flight and settled, is
 /// the way the check works out, at 60 and 144 Hz.
 #[test]

@@ -3883,3 +3883,165 @@ fn rows_leaving_together_fold_their_gaps_before_they_unmount() {
         );
     }
 }
+
+/// Where the reddest pixels of `buf` are: the top row and left column
+/// with a pixel whose red is over 200 and green and blue under 80.
+fn red_corner(buf: &Buffer) -> Option<(u32, u32)> {
+    let red = |x: u32, y: u32| {
+        let p = buf.px(x, y);
+        p[2] > 200 && p[1] < 80 && p[0] < 80
+    };
+    let top = (0..buf.size.h).find(|y| (0..buf.size.w).any(|x| red(x, *y)))?;
+    let left = (0..buf.size.w).find(|x| (0..buf.size.h).any(|y| red(*x, y)))?;
+    Some((left, top))
+}
+
+/// (launcher-flip-pass) A change that widens a clipped card on its own
+/// springs and mounts a chip in its header is laid out for the change
+/// with the card still at its old width, where the chip leaves the red
+/// readout too narrow for its text; the host's update and the frame lay
+/// it out again (the card's first frame of growth) before anything is
+/// drawn. The readout's place in the row on y never changes, and on no
+/// frame is it drawn off it. Before, the later passes glided nothing, or
+/// started what they added a frame late: the glide measured from the
+/// squeezed box drew the readout up to 6 px above its level, springing
+/// back.
+#[test]
+fn a_box_squeezed_in_a_pass_no_frame_drew_stays_on_its_level() {
+    let (mut card, mut col, mut head, mut time) = (None, None, None, None);
+    let mut st = Stage::new(700, 260, |b, root| {
+        b.diff.set(root, Prop::Align, kw("start"));
+        let row = b.node(
+            NodeKind::Row,
+            Some(root),
+            vec![(Prop::Width, num(700.0)), (Prop::Justify, kw("center"))],
+        );
+        let c = b.node(
+            NodeKind::Stack,
+            Some(row),
+            vec![
+                (Prop::Clip, PropValue::Bool(true)),
+                (Prop::Align, kw("start")),
+                (Prop::Width, num(320.0)),
+                (Prop::Height, num(160.0)),
+                (Prop::Bg, color("#24273a")),
+            ],
+        );
+        card = Some(c);
+        let k = b.node(
+            NodeKind::Col,
+            Some(c),
+            vec![(Prop::Width, num(320.0)), (Prop::Height, num(160.0))],
+        );
+        col = Some(k);
+        let hd = b.node(
+            NodeKind::Row,
+            Some(k),
+            vec![
+                (Prop::Height, num(56.0)),
+                (Prop::Pad, PropValue::List(vec![num(0.0), num(16.0)])),
+                (Prop::Gap, num(10.0)),
+                (Prop::Align, kw("center")),
+                (Prop::Shrink, num(0.0)),
+            ],
+        );
+        head = Some(hd);
+        b.node(
+            NodeKind::Box,
+            Some(hd),
+            vec![(Prop::Size, num(28.0)), (Prop::Bg, color("#8aadf4"))],
+        );
+        b.node(
+            NodeKind::Box,
+            Some(hd),
+            vec![
+                (Prop::Width, num(110.0)),
+                (Prop::Height, num(20.0)),
+                (Prop::Shrink, num(0.0)),
+                (Prop::Bg, color("#363a4f")),
+            ],
+        );
+        let tm = b.node(
+            NodeKind::Box,
+            Some(hd),
+            vec![(Prop::Pad, num(4.0)), (Prop::Bg, color("#ff0000"))],
+        );
+        time = Some(tm);
+        b.node(
+            NodeKind::Text,
+            Some(tm),
+            vec![(Prop::Text, text("3:07")), (Prop::Color, color("#ff0000"))],
+        );
+        let dots = b.node(
+            NodeKind::Row,
+            Some(hd),
+            vec![
+                (Prop::Gap, num(6.0)),
+                (Prop::Height, num(16.0)),
+                (Prop::Align, kw("center")),
+                (Prop::Shrink, num(0.0)),
+            ],
+        );
+        for _ in 0..3 {
+            b.node(
+                NodeKind::Box,
+                Some(dots),
+                vec![(Prop::Size, num(6.0)), (Prop::Bg, color("#6e738d"))],
+            );
+        }
+    });
+    let (card, col, head, time) = (card.unwrap(), col.unwrap(), head.unwrap(), time.unwrap());
+    let level = red_corner(&st.buf).expect("the readout is drawn").1;
+    let rest = st.rect(time);
+    let chip = NodeId::new(90, 0);
+    let label = NodeId::new(91, 0);
+    let mut d = SceneDiff::new();
+    d.create(chip, NodeKind::Box, Some(head), 2)
+        .set(chip, Prop::Pad, PropValue::List(vec![num(2.0), num(8.0)]))
+        .set(chip, Prop::Bg, color("#a6da95"))
+        .set(
+            chip,
+            Prop::Enter,
+            pose(vec![(Prop::Opacity, num(0.0)), (Prop::Scale, num(0.6))]),
+        )
+        .create(label, NodeKind::Text, Some(chip), 0)
+        .set(label, Prop::Text, text("Now playing"))
+        .set(label, Prop::Color, color("#181926"));
+    // `width: w ~ spring(520, 0.68); height: h ~ spring(900, 0.82)`.
+    for n in [card, col] {
+        for (prop, v, stiffness, damping) in [
+            (Prop::Width, 560.0, 520.0, 0.68),
+            (Prop::Height, 240.0, 900.0, 0.82),
+        ] {
+            d.push(SceneOp::SetProp {
+                id: n,
+                prop,
+                value: num(v),
+                transition: Transition::Spring { stiffness, damping },
+            });
+        }
+    }
+    st.apply(d);
+    // As the host loop turns: the layouts its text worker delivers wake
+    // it, and it updates (`host_loop::woke`).
+    let turn = |st: &mut Stage| st.r.update();
+    turn(&mut st);
+    let mut seen = Vec::new();
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        turn(&mut st);
+        k += 1;
+        assert!(k < 400, "never settled");
+        seen.push((red_corner(&st.buf).map(|c| c.1), st.rect(time).y));
+    }
+    assert!(
+        seen.iter().all(|(_, y)| (y - rest.y).abs() < 0.5),
+        "laid out on its level on every frame drawn: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .all(|(top, ..)| top.is_some_and(|t| t.abs_diff(level) <= 1)),
+        "drawn on its level ({level}) on every frame: {seen:?}"
+    );
+}

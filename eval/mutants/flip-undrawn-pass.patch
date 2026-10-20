@@ -1,0 +1,38 @@
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -326,7 +326,7 @@
+             let moving = self.anim.sizes_moving(&self.tree, root);
+             if let Some(s) = self.surfaces.get_mut(&id) {
+                 if let Some(old) = &old
+-                    && let Some(shifts) = s.flip_shifts.as_mut()
++                    && let Some(shifts) = s.flip_shifts.as_mut().filter(|_| false)
+                     && let Some((flip, all)) = &s.flip_open
+                     && !reduced
+                 {
+@@ -474,7 +474,7 @@
+             let scope = s
+                 .flip_open
+                 .clone()
+-                .filter(|_| fresh || text || resized || chained);
++                .filter(|_| fresh || text || resized || (false && chained));
+             if let (Some(old), Some(_)) = (&old, &s.flip_open) {
+                 s.unpainted.extend(
+                     boxes
+@@ -489,7 +489,7 @@
+                 && !self.anim.reduced()
+             {
+                 let old_rects = match (&base, drawn_shift) {
+-                    (Some(b), Some(d)) => moved_by(&b.0, d),
++                    (Some(b), Some(d)) if false => moved_by(&b.0, d),
+                     _ => moved_by(&old.rects, shift),
+                 };
+                 let tables = [&self.tree.tokens];
+@@ -742,7 +742,7 @@
+             let rects = (old.get(c), new.get(c));
+             let had = shifts.get(c).copied();
+             // What the passes before this one since the frame gave it.
+-            let given = had.map_or(zero, |g| g.by);
++            let given = had.filter(|_| false).map_or(zero, |g| g.by);
+             let mut total = given;
+             if !unpainted.contains(c)
+                 && let (Some(o), Some(w)) = rects

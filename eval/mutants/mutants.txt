@@ -159,3 +159,10 @@ dock-drag.patch         regressions/dock-drag.scn         redraw
 # for the art's wider box and its edge rows are padded out over the box's
 # top and bottom (`placement` cover).
 stand-in-fit.patch      regressions/stand-in-fit.scn      placement
+# flip-undrawn-pass.patch: launcher-flip-pass's layout half reverted: each
+# pass compares the pass before, with no glides kept until the frame and
+# no re-glide on a pass that is no FLIP of its own. frame-lead.patch: its
+# Motion half (crates/strand-scene), a frame sampled again starting its
+# changes with no lead (decisions.md launcher-flip-pass).
+flip-undrawn-pass.patch        regressions/flip-undrawn-pass.scn bystander:#time:y
+frame-lead.patch               regressions/flip-undrawn-pass.scn continuity:#time

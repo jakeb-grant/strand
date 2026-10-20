@@ -374,6 +374,11 @@ pub struct Motion<const N: usize> {
     /// Settling tolerance per channel, in its own units.
     eps: [f32; N],
     last: Option<Duration>,
+    /// (launcher-flip-pass) The sample before `last`'s time: a frame
+    /// sampled again at the same time (a flatten after a text arrived)
+    /// starts what it resolves where that frame's first sample would
+    /// have, so one frame's changes start together.
+    before: Option<Duration>,
 }
 
 /// What a [`Motion`] holds, read without changing it ([`Motion::view`]):
@@ -427,6 +432,7 @@ impl<const N: usize> Motion<N> {
             pending: None,
             eps: eps.map(|e| if e.is_finite() && e > 0.0 { e } else { 1e-3 }),
             last: None,
+            before: None,
         }
     }
 
@@ -482,6 +488,7 @@ impl<const N: usize> Motion<N> {
     pub fn snap(&mut self, value: [f32; N]) {
         *self = Motion {
             last: self.last,
+            before: self.before,
             ..Motion::rest_each(value, self.eps)
         };
     }
@@ -497,8 +504,15 @@ impl<const N: usize> Motion<N> {
         let Some(p) = self.pending.take() else {
             return;
         };
+        // (launcher-flip-pass) Sampled at `at` already, it measures the
+        // lead from the sample before, as that first sample did.
+        let prior = if self.last == Some(at) {
+            self.before
+        } else {
+            self.last
+        };
         let start = start.unwrap_or_else(|| {
-            let lead = match self.last {
+            let lead = match prior {
                 Some(last) => at.saturating_sub(last).min(lead.min(START_LEAD)),
                 None => Duration::ZERO,
             };
@@ -535,7 +549,10 @@ impl<const N: usize> Motion<N> {
     /// progress, however long the surface sat idle before.
     pub fn sample_frame(&mut self, at: Duration, period: Duration) -> [f32; N] {
         self.resolve(at, None, period);
-        self.last = Some(self.last.map_or(at, |l| l.max(at)));
+        if self.last.is_none_or(|l| l < at) {
+            self.before = self.last;
+            self.last = Some(at);
+        }
         if self.seg.settled(at, &self.eps) {
             self.seg.from = self.seg.target;
             self.seg.vel = [0.0; N];
@@ -907,6 +924,35 @@ mod tests {
         fresh.retarget_at([10.0], Curve::Spring(EFFECTS), t1 - START_LEAD);
         assert_eq!(first, fresh.sample(t1)[0]);
         assert!(first > 0.0);
+    }
+
+    #[test]
+    fn a_frame_sampled_twice_starts_its_changes_together() {
+        // (launcher-flip-pass) A FLIP shift, the frame's first sample,
+        // then a second shift that undoes it and the same frame sampled
+        // again: the two start as one, at the frame's lead, so the value
+        // stays put rather than springing past where it was.
+        let t0 = Duration::from_secs(1);
+        let t1 = t0 + START_LEAD;
+        let mut m = Motion::<1>::rest([0.0], 0.01).sampled_at(Some(t0));
+        m.shift([31.0], Curve::Spring(EFFECTS));
+        assert!(m.sample(t1)[0] > 0.0);
+        m.shift([-31.0], Curve::Spring(EFFECTS));
+        assert_eq!(m.sample(t1)[0], 0.0);
+        assert_eq!(m.sample(t1 + START_LEAD)[0], 0.0);
+        // A second shift taken after the frame's first sample moves it
+        // as if both had come before that sample.
+        let mut both = Motion::<1>::rest([0.0], 0.01).sampled_at(Some(t0));
+        both.shift([40.0], Curve::Spring(EFFECTS));
+        both.shift([-10.0], Curve::Spring(EFFECTS));
+        let mut late = Motion::<1>::rest([0.0], 0.01).sampled_at(Some(t0));
+        late.shift([40.0], Curve::Spring(EFFECTS));
+        late.sample(t1);
+        late.shift([-10.0], Curve::Spring(EFFECTS));
+        for k in 0..6 {
+            let at = t1 + START_LEAD * k;
+            assert!((late.sample(at)[0] - both.sample(at)[0]).abs() < 1e-4);
+        }
     }
 
     #[test]

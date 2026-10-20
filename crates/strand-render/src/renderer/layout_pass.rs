@@ -235,6 +235,12 @@ impl Renderer {
     /// grows. Any other root fills its frame: a bar's or a lock's size is
     /// the output's, and a surface configured at another size than it
     /// asked for is drawn at the size it has.
+    /// The curve a FLIP glide plays: the default transition's.
+    fn flip_curve(&self) -> Curve {
+        let tables = [&self.tree.tokens];
+        Curve::of(&TokenScope::new(&tables).transition(&strand_scene::Transition::Default, Prop::X))
+    }
+
     fn root_size(&self, root: NodeId, frame: LogicalRect) -> RootSize {
         let fixed = RootSize::Fixed(frame);
         let (Some(&(cw, ch)), Some(spec)) = (self.content_sized.get(&root), self.specs.get(&root))
@@ -303,14 +309,50 @@ impl Renderer {
             self.anim.hold_exits(&self.tree, root, &old.rects);
         }
         let rest = self.anim.rest_sizes(&self.tree, root);
-        if !full
-            && let Some(old) = &old
-            && let Some(boxes) = self.relayout_sized(root, old, &rest, &info)
-        {
+        let sized_only = match &old {
+            Some(old) if !full => self.relayout_sized(root, old, &rest, &info),
+            _ => None,
+        };
+        if let Some(boxes) = sized_only {
+            // (launcher-flip-pass) After a pass that glided what the
+            // change moved, before a frame drew it: what that pass glided
+            // and now lies where it was drawn did not move, and is drawn
+            // there. What else this pass moves, the sizes in flight move
+            // (a folding slot's siblings, a reordered row beside a box
+            // that grows).
+            let curve = self.flip_curve();
+            let share = self.shrink_share(root);
+            let reduced = self.anim.reduced();
             let moving = self.anim.sizes_moving(&self.tree, root);
             if let Some(s) = self.surfaces.get_mut(&id) {
+                if let Some(old) = &old
+                    && let Some(shifts) = s.flip_shifts.as_mut()
+                    && let Some((flip, all)) = &s.flip_open
+                    && !reduced
+                {
+                    let drawn = match &s.drawn_boxes {
+                        Some((d, size)) => moved_by(d, buffer_shift(*size, logical, share)),
+                        None => moved_by(&old.rects, (0.0, 0.0)),
+                    };
+                    glide_moved(
+                        &self.tree,
+                        &mut self.anim,
+                        root,
+                        Compare {
+                            old: &drawn,
+                            new: &boxes.rects,
+                            glided_only: true,
+                        },
+                        flip,
+                        *all,
+                        &s.unpainted,
+                        shifts,
+                        curve,
+                    );
+                }
                 s.boxes = Some(boxes);
                 s.anim_layout = moving;
+                keep_drawn(s, old, s.laid_size);
             }
             self.place_waiting_popups(root);
             self.report_facts(id);
@@ -400,18 +442,21 @@ impl Renderer {
             // sized surface configured at the size a change asked for.
             // Before its first frame nothing was drawn to glide from.
             let resized = s.painted && s.laid_frame.is_some_and(|f| f != frame);
+            // (launcher-flip-pass) Boxes are compared where they were
+            // drawn: the boxes the last frame drew, which the first pass
+            // since it replaced (`drawn_boxes`), not a later pass's.
+            let base = s.drawn_boxes.take();
+            let chained = s.flip_shifts.is_some();
             // (bottom-osd-shrink) Where a shrink moved the buffer's near
             // edge on screen: boxes are compared where they were drawn
             // on screen, not in the buffer.
-            let shift = match (resized, s.laid_size, share) {
-                (true, Some(was), Some((fx, fy))) => {
-                    let shrink = |from: f32, to: f32, f: f32| {
-                        crate::layout::edge_shift(from, to, f).max(0.0)
-                    };
-                    (shrink(was.w, logical.w, fx), shrink(was.h, logical.h, fy))
-                }
-                _ => (0.0, 0.0),
+            let shift = if resized {
+                buffer_shift(s.laid_size, logical, share)
+            } else {
+                (0.0, 0.0)
             };
+            let drawn_shift = base.as_ref().map(|b| buffer_shift(b.1, logical, share));
+            let laid_size = s.laid_size;
             s.laid_frame = Some(frame);
             s.laid_size = Some(logical);
             let fresh = all || !flip.is_empty();
@@ -421,7 +466,13 @@ impl Renderer {
                 open.1 |= all;
                 s.flip_drawn = false;
             }
-            let scope = s.flip_open.clone().filter(|_| fresh || text || resized);
+            // (launcher-flip-pass) A pass after a FLIP pass, before a
+            // frame drew it, keeps what that pass glided where it was
+            // drawn, whatever laid it out.
+            let scope = s
+                .flip_open
+                .clone()
+                .filter(|_| fresh || text || resized || chained);
             if let (Some(old), Some(_)) = (&old, &s.flip_open) {
                 s.unpainted.extend(
                     boxes
@@ -435,41 +486,34 @@ impl Renderer {
                 && let Some((flip, all)) = scope
                 && !self.anim.reduced()
             {
-                let moved;
-                let old_rects = if shift == (0.0, 0.0) {
-                    &old.rects
-                } else {
-                    moved = old
-                        .rects
-                        .iter()
-                        .map(|(k, r)| {
-                            let r = strand_scene::LogicalRect {
-                                x: r.x - shift.0,
-                                y: r.y - shift.1,
-                                ..*r
-                            };
-                            (*k, r)
-                        })
-                        .collect::<HashMap<_, _>>();
-                    &moved
+                let old_rects = match (&base, drawn_shift) {
+                    (Some(b), Some(d)) => moved_by(&b.0, d),
+                    _ => moved_by(&old.rects, shift),
                 };
                 let tables = [&self.tree.tokens];
                 let curve = Curve::of(
                     &TokenScope::new(&tables)
                         .transition(&strand_scene::Transition::Default, Prop::X),
                 );
+                let shifts = s.flip_shifts.get_or_insert_with(HashMap::new);
                 glide_moved(
                     &self.tree,
                     &mut self.anim,
                     root,
-                    old_rects,
-                    &boxes.rects,
+                    Compare {
+                        old: &old_rects,
+                        new: &boxes.rects,
+                        glided_only: !(fresh || text || resized),
+                    },
                     &flip,
                     all,
                     &s.unpainted,
+                    shifts,
                     curve,
                 );
             }
+            s.drawn_boxes = base;
+            keep_drawn(s, old, laid_size);
         }
         // Springs a clockless preview left to start lay out again on the
         // first frame painted.
@@ -560,6 +604,85 @@ impl Renderer {
     }
 }
 
+/// (launcher-flip-pass) The first pass after a paint replaced `old`,
+/// the boxes that frame drew (laid out in a buffer of `size`): they stay
+/// what a later pass before the next frame compares against.
+fn keep_drawn(
+    s: &mut super::SurfaceState,
+    old: Option<Boxes>,
+    size: Option<strand_scene::LogicalSize>,
+) {
+    if s.painted
+        && s.drawn_boxes.is_none()
+        && let Some(old) = old
+    {
+        s.drawn_boxes = Some((old.rects, size));
+    }
+}
+
+/// `boxes` moved by `-shift` (into a buffer whose near edge moved
+/// `shift` on screen), borrowed when nothing moves.
+fn moved_by(
+    boxes: &HashMap<NodeId, strand_scene::LogicalRect>,
+    shift: (f32, f32),
+) -> std::borrow::Cow<'_, HashMap<NodeId, strand_scene::LogicalRect>> {
+    if shift == (0.0, 0.0) {
+        return std::borrow::Cow::Borrowed(boxes);
+    }
+    std::borrow::Cow::Owned(
+        boxes
+            .iter()
+            .map(|(k, r)| {
+                let r = strand_scene::LogicalRect {
+                    x: r.x - shift.0,
+                    y: r.y - shift.1,
+                    ..*r
+                };
+                (*k, r)
+            })
+            .collect(),
+    )
+}
+
+/// (bottom-osd-shrink) How far a shrink from a buffer of logical size
+/// `was` to one of `now` moved the buffer's near edge on screen (`share`:
+/// the part of a resize each axis's near edge takes); a growth moves
+/// nothing here (`glide_origin` keeps its content in place).
+fn buffer_shift(
+    was: Option<strand_scene::LogicalSize>,
+    now: strand_scene::LogicalSize,
+    share: Option<(f32, f32)>,
+) -> (f32, f32) {
+    match (was, share) {
+        (Some(was), Some((fx, fy))) => {
+            let shrink =
+                |from: f32, to: f32, f: f32| crate::layout::edge_shift(from, to, f).max(0.0);
+            (shrink(was.w, now.w, fx), shrink(was.h, now.h, fy))
+        }
+        _ => (0.0, 0.0),
+    }
+}
+
+/// (launcher-flip-pass) What the FLIP passes since the last frame gave
+/// a node: the shift they added up to, and the axes they glided it on.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Glided {
+    by: (f32, f32),
+    axes: (bool, bool),
+}
+
+/// The boxes a FLIP compares: those the last frame drew (`old`, moved
+/// into this buffer) and this pass's (`new`).
+pub(super) struct Compare<'a> {
+    pub old: &'a HashMap<NodeId, strand_scene::LogicalRect>,
+    pub new: &'a HashMap<NodeId, strand_scene::LogicalRect>,
+    /// (launcher-flip-pass) A pass that is no FLIP of its own, after one
+    /// before the frame: it moves only what that pass glided, on the axes
+    /// it glided it on where it now lies where it was drawn; what else it
+    /// moves, the sizes in flight move.
+    pub glided_only: bool,
+}
+
 /// FLIP: every node whose parent is in `parents` (all with `all`) and
 /// whose box moved starts where it was and glides to its new place;
 /// one never drawn (`unpainted`) has no place it was.
@@ -573,24 +696,39 @@ impl Renderer {
 /// the boxes that clip it hide what they showed of it (one they shrank
 /// past): its start moves by as little as it takes to show as much of
 /// it, on each axis, as showed before.
+///
+/// (launcher-flip-pass) Every pass laid out before a frame draws it
+/// compares the boxes that frame's predecessor drew (`old`), so a node
+/// starts where it was drawn however many passes a change takes (a size
+/// spring's in-flight pass, a pass when a text arrives): each sets the
+/// glide its node needs in all, replacing what the earlier ones gave it
+/// (`shifts`, kept until the frame), and what one never drawn laid out
+/// (a box squeezed, a text wrapped tall) counts for nothing.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn glide_moved(
     tree: &SceneTree,
     anim: &mut Animator,
     root: NodeId,
-    old: &HashMap<NodeId, strand_scene::LogicalRect>,
-    new: &HashMap<NodeId, strand_scene::LogicalRect>,
+    boxes: Compare<'_>,
     parents: &HashSet<NodeId>,
     all: bool,
     unpainted: &HashSet<NodeId>,
+    shifts: &mut HashMap<NodeId, Glided>,
     curve: Curve,
 ) {
+    let Compare {
+        old,
+        new,
+        glided_only,
+    } = boxes;
     // Each entry: a node; where its children's glides are measured from
-    // (the glides its ancestors were given here, or, under a clip, the
+    // (the glides its ancestors are given in all, or, under a clip, the
     // clip's own move); how far it is drawn off its box on the glide's
     // first frame; and the boxes its clipping ancestors cut it to, before
     // and as drawn on that frame.
     let zero = (0.0f32, 0.0f32);
+    let add = |a: (f32, f32), b: (f32, f32)| (a.0 + b.0, a.1 + b.1);
+    let big = |d: (f32, f32)| d.0.abs() > 0.5 || d.1.abs() > 0.5;
     let mut stack = vec![(root, zero, zero, None::<(Span2, Span2)>)];
     while let Some((n, acc, real, clip)) = stack.pop() {
         let Some(node) = tree.get(n) else { continue };
@@ -599,29 +737,53 @@ pub(super) fn glide_moved(
             let Some(cn) = tree.get(*c).filter(|k| !k.kind.is_surface()) else {
                 continue;
             };
-            let (mut acc_c, mut real_c) = (acc, real);
             let rects = (old.get(c), new.get(c));
-            if scope
-                && !unpainted.contains(c)
+            let had = shifts.get(c).copied();
+            // What the passes before this one since the frame gave it.
+            let given = had.map_or(zero, |g| g.by);
+            let mut total = given;
+            if !unpainted.contains(c)
                 && let (Some(o), Some(w)) = rects
             {
-                let mut adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
-                if let Some((was, now)) = &clip {
-                    let (old_box, start) = (Span2::of(o), Span2::of(w).shifted(real));
-                    let shift = |i: usize| {
-                        let d = [adj.0, adj.1][i];
-                        keep_shown(old_box.0[i], was.0[i], start.0[i].shifted(d), now.0[i])
-                    };
-                    adj = (adj.0 + shift(0), adj.1 + shift(1));
-                }
-                if adj.0.abs() > 0.5 || adj.1.abs() > 0.5 {
-                    anim.glide(*c, [adj.0, adj.1], curve);
-                    acc_c = (acc.0 + adj.0, acc.1 + adj.1);
-                    real_c = (real.0 + adj.0, real.1 + adj.1);
+                if glided_only {
+                    // Where it lies where it was drawn, it did not move:
+                    // what those passes glided it by there is taken back.
+                    if let Some(g) = had {
+                        if g.axes.0 && (o.x - w.x).abs() < 0.5 {
+                            total.0 = o.x - w.x - acc.0;
+                        }
+                        if g.axes.1 && (o.y - w.y).abs() < 0.5 {
+                            total.1 = o.y - w.y - acc.1;
+                        }
+                    }
+                } else if scope {
+                    let mut adj = (o.x - w.x - acc.0, o.y - w.y - acc.1);
+                    if let Some((was, now)) = &clip {
+                        let (old_box, start) = (Span2::of(o), Span2::of(w).shifted(real));
+                        let shift = |i: usize| {
+                            let d = [adj.0, adj.1][i];
+                            keep_shown(old_box.0[i], was.0[i], start.0[i].shifted(d), now.0[i])
+                        };
+                        adj = (adj.0 + shift(0), adj.1 + shift(1));
+                    }
+                    total = if big(adj) { adj } else { zero };
                 }
             }
+            let delta = (total.0 - given.0, total.1 - given.1);
+            let glided = if big(delta) {
+                anim.glide(*c, [delta.0, delta.1], curve);
+                let g = shifts.entry(*c).or_default();
+                g.by = total;
+                g.axes.0 |= total.0.abs() > 0.5;
+                g.axes.1 |= total.1.abs() > 0.5;
+                total
+            } else {
+                given
+            };
+            let (mut acc_c, real_c) = (add(acc, glided), add(real, glided));
             let mut clip_c = clip;
-            if clips(tree, anim, cn)
+            if !glided_only
+                && clips(tree, anim, cn)
                 && !unpainted.contains(c)
                 && let (Some(o), Some(w)) = rects
             {
