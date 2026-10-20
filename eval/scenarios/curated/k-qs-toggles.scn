@@ -1,0 +1,50 @@
+id     = "k-qs-toggles"
+about  = "Quick-settings tiles named by an `id:` on their component call: Wi-Fi is clicked off, then the Dark tile is clicked, which lights it with `$accent` in the same click that swaps the palette from latte to mocha, so its fill springs toward a target that itself springs. From blind set K."
+screen = { width = 280, height = 100, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state wifi = true
+state dark = false
+let scheme: Palette = dark ? import("catppuccin:mocha") : import("catppuccin:latte")
+use palette scheme
+
+component Tile(label: text, lit: bool) {
+  row {
+    width: 120
+    height: 40
+    pad: 0, $space.2
+    gap: $space.2
+    align: center
+    radius: $radius.lg
+    bg: lit ? $accent : $surface.hi
+    color: lit ? $on_accent : $fg
+    box { size: 16; radius: full; bg: lit ? $on_accent : $fg.muted }
+    text label
+  }
+}
+
+bar Top {
+  height: 48
+  bg: $surface
+  row {
+    height: 48
+    align: center
+    gap: 8
+    pad: 0, 4
+    Tile "Wi-Fi" { id: wifi_tile; lit: wifi; on click { wifi = !wifi } }
+    Tile "Dark" { id: dark_tile; lit: dark; on click { dark = !dark } }
+  }
+}
+
+=== steps
+rest
+mark wifi-off
+intend #wifi_tile changes
+click 64,24
+rest
+mark theme
+intend #dark_tile changes
+click 192,24
+rest
+shot dark

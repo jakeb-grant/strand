@@ -818,7 +818,17 @@ says a node moves, not how, so it does not exempt from them; only an
   outside 0..1; linear and bounce easings none), so a critically damped
   `$motion.effects` colour never passes its end and none passes back
   past where it started. With no sample naming its curve, or an elastic
-  easing, the old -0.5..1.5 holds. `palette` (eval-rules-3): a theme
+  easing, the old -0.5..1.5 holds. A moving target (eval-finish): a
+  colour sent to a token the same change's theme swap re-resolves (a
+  tile lit with `$accent` by the click that swaps the palette) chases
+  a target that springs too, and a spring from rest draws a weighted sum
+  of where it started and where its target has been, so its way bends
+  toward the target's. Where the targets its own spring's samples
+  record (`sp`'s `to`) move over the way and end where the colour rests,
+  each frame is held to the fan from its start to the target's way up
+  to that frame, with the same overshoot bound along each ray; a
+  colour drawn through a colour neither its start nor any of its
+  targets has still fails. `palette` (eval-rules-3): a theme
   swap springs each palette root along the curve its table gives a colour
   (`$motion.effects` unless the swap names its own transition, as the
   table it sent defines it); each root's sample records both (`sp`'s

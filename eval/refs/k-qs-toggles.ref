@@ -1,0 +1,187 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "k-qs-toggles"
+verdict good
+note "First reference (eval-finish): Wi-Fi (named by the id on its call) springs from latte's mauve to its surface.hi when clicked off; the Dark click lights its tile with the accent while the palette swaps to mocha, so its fill leaves e1e3e9 bending toward the deeper latte mauve (b492f4 at k17) and settles on mocha's cba6f7, the Wi-Fi tile and the bar following the swap to mocha's surfaces."
+date 2026-10-20
+rev "32276f8f+changes"
+approver "claude"
+scenario 5a5941a619673404
+seal 1661211bd67b7c23
+S1 0 - "bar Top"
+N0 "dark_tile|shell.strand:7:3|[Mock | DP-1]#1" "row#dark_tile"
+N1 "wifi_tile|shell.strand:7:3|[Mock | DP-1]#0" "row#wifi_tile"
+N2 "|shell.strand:16:5|[Mock | DP-1]#0" "box@shell.strand:16"
+N3 "|shell.strand:16:5|[Mock | DP-1]#0~2" "box@shell.strand:16"
+N4 "|shell.strand:17:5|[Mock | DP-1]#0" "text(\"Wi-Fi\")"
+N5 "|shell.strand:17:5|[Mock | DP-1]#0~2" "text(\"Dark\")"
+N6 "|shell.strand:21:1|[Mock | DP-1]#0" "bar@shell.strand:21"
+N7 "|shell.strand:24:3|[Mock | DP-1]#0" "row@shell.strand:24"
+k0 p1
+s1 z=280,48
+n0 x=132 y=4 w=120 h=40 ord=5 bg=e1e3e9ff
+n1 x=4 y=4 w=120 h=40 ord=2 bg=8839efff
+n2 x=12 y=16 w=16 h=16 ord=3 bg=eff1f5ff
+n3 x=140 y=16 w=16 h=16 ord=6 bg=4c4f69a6
+n4 x=36 y=17 w=31 h=15 txt=S ord=4 ink=36,18,30,10 fg=eff1f5ff gl=["Wi-Fi"]
+n5 x=164 y=17 w=28 h=15 txt=S ord=7 ink=165,18,27,11 fg=4c4f69ff gl=["Dark"]
+n6 x=0 y=0 w=280 h=48 bg=eff1f5ff
+n7 x=0 y=0 w=280 h=48 ord=1
+k1
+n1 bg=935af0ff
+n2 bg=dee0e6f2
+n4 fg=d6d8e0ff
+k2
+n1 bg=a785f1ff
+n2 bg=bdbfcbdd
+n4 fg=acafbdff
+k3
+n1 bg=baa6f0ff
+n2 bg=9b9eafca
+n4 fg=8a8da0ff
+k4
+n1 bg=c8bdefff
+n2 bg=808397bc
+n4 fg=72758bff
+k5
+n1 bg=d1ccedff
+n2 bg=6d7086b4
+n4 fg=63667dff
+k6
+n1 bg=d8d5ecff
+n2 bg=60637bae
+n4 fg=595d75ff
+k7
+n1 bg=dbdbebff
+n2 bg=585b73ab
+n4 fg=545770ff
+k8
+n1 bg=dedfeaff
+n2 bg=53566fa8
+n4 fg=50536dff
+k9
+n1 bg=dfe0eaff
+n2 bg=50536ca7
+n4 fg=4f526bff
+k10
+n1 bg=e0e2e9ff
+n2 bg=4e516ba7
+n4 fg=4d506aff
+k11
+n2 bg=4d506aa6
+k12
+n1 bg=e1e3e9ff
+n4 fg=4c4f69ff
+k13
+n2 bg=4c4f69a6
+k14
+n0 bg=d4cfedff
+n1 bg=c2c4cdff
+n2 bg=4f536da6
+n3 bg=65687eb3
+n4 fg=4f536dff
+n5 fg=5d6078ff
+n6 bg=cdcfd5ff
+k15
+n0 bg=c2b2f0ff
+n1 bg=8f919cff
+n2 bg=393d56a6
+n3 bg=6e7182c8
+n4 fg=393d56ff
+n5 fg=67697cff
+n6 bg=9798a3ff
+k16
+n0 bg=b79cf2ff
+n1 bg=727482ff
+n2 bg=d4dbfaa6
+n3 bg=646673db
+n4 fg=d4dbfaff
+n5 fg=616372ff
+n6 bg=6a6c79ff
+k17
+n0 bg=b492f4ff
+n1 bg=555666ff
+n2 bg=c2c9e7a6
+n3 bg=595b66e8
+n4 fg=c2c9e7ff
+n5 fg=585a66ff
+n6 bg=4c4d5cff
+k18
+n0 bg=b58ff5ff
+n1 bg=424354ff
+n2 bg=b8c0dda6
+n3 bg=4d4f59f1
+n4 fg=b8c0ddff
+n5 fg=4d4f5aff
+n6 bg=393a49ff
+k19
+n0 bg=b892f5ff
+n1 bg=38394aff
+n2 bg=c0c9e6a6
+n3 bg=40414cf7
+n4 fg=c0c9e6ff
+n5 fg=41424dff
+n6 bg=2e2e3eff
+k20
+n0 bg=bd96f6ff
+n1 bg=323344ff
+n2 bg=c6ceeca6
+n3 bg=34353ffa
+n4 fg=c6ceecff
+n5 fg=353540ff
+n6 bg=272737ff
+k21
+n0 bg=c09af6ff
+n1 bg=2e2f40ff
+n2 bg=c9d2efa6
+n3 bg=2a2b35fc
+n4 fg=c9d2efff
+n5 fg=2b2b35ff
+n6 bg=232333ff
+k22
+n0 bg=c39df7ff
+n1 bg=2c2d3eff
+n2 bg=cbd3f1a6
+n3 bg=22232dfd
+n4 fg=cbd3f1ff
+n5 fg=23232dff
+n6 bg=212131ff
+k23
+n0 bg=c6a0f7ff
+n1 bg=2b2c3dff
+n2 bg=ccd5f3a6
+n3 bg=1d1d27fe
+n4 fg=ccd5f3ff
+n5 fg=1d1d27ff
+n6 bg=202030ff
+k24
+n0 bg=c8a2f7ff
+n1 bg=2b2b3cff
+n3 bg=191923ff
+n5 fg=191923ff
+n6 bg=1f1f2fff
+k25
+n0 bg=c9a3f7ff
+n1 bg=2a2b3cff
+n2 bg=cdd6f4a6
+n3 bg=161620ff
+n4 fg=cdd6f4ff
+n5 fg=161620ff
+k26
+n0 bg=caa4f7ff
+n3 bg=14141eff
+n5 fg=14141eff
+n6 bg=1e1e2eff
+k27
+n0 bg=caa5f7ff
+n3 bg=13131dff
+n5 fg=13131dff
+k28
+n1 bg=2a2a3cff
+n3 bg=12121cff
+n5 fg=12121cff
+k29
+n0 bg=cba6f7ff
+k30
+n3 bg=11111bff
+n5 fg=11111bff
+k31

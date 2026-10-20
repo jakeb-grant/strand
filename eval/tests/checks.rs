@@ -6189,6 +6189,180 @@ fn a_palette_root_springs_along_the_curve_its_table_asks() {
     );
 }
 
+/// (eval-finish) A box whose `bg` springs from `from` toward a target
+/// that itself springs from `t0` to `t1` (a palette root a theme swap
+/// moves: both critically damped, ω 40/s), over ticks `1..` until it
+/// rests at `t1`. `drawn(k, chase)` gives the colour drawn at tick `k`
+/// from the chase's own; each moving frame's spring sample records where
+/// the target is then as `sent(k, target)`.
+fn chasing(
+    from: [f64; 4],
+    (t0, t1): ([f64; 4], [f64; 4]),
+    drawn: impl Fn(u32, [f64; 4]) -> [f64; 4],
+    sent: impl Fn(u32, [f64; 4]) -> [f64; 4],
+) -> RunTrace {
+    use strand_eval::checks::colour::{premultiplied, srgb};
+    use strand_eval::trace::{CurveRec, SpringRec};
+    const W: f64 = 40.0;
+    const END: u32 = 40;
+    let (p, q0, q1) = (premultiplied(from), premultiplied(t0), premultiplied(t1));
+    let target = |t: f64| -> [f64; 4] {
+        let g = 1.0 - (1.0 + W * t) * (-W * t).exp();
+        std::array::from_fn(|i| q0[i] + g * (q1[i] - q0[i]))
+    };
+    let straight = |m: [f64; 4]| -> [f64; 4] {
+        if m[3] <= 0.0 {
+            return [0.0; 4];
+        }
+        let [r, g, b] = srgb([m[0] / m[3], m[1] / m[3], m[2] / m[3]]);
+        [r, g, b, m[3]]
+    };
+    // The chase, integrated finely: x'' = ω²(T(t) − x) − 2ω x', from rest.
+    let mut at_tick: Vec<([f64; 4], [f64; 4])> = vec![(from, target(0.0))];
+    let (mut x, mut v) = (p, [0.0; 4]);
+    let dt = 1.0 / 60.0 / 256.0;
+    for k in 1..=END {
+        for n in 0..256 {
+            let t = (f64::from(k - 1) + f64::from(n) / 256.0) / 60.0;
+            let tt = target(t);
+            for i in 0..4 {
+                v[i] += (W * W * (tt[i] - x[i]) - 2.0 * W * v[i]) * dt;
+                x[i] += v[i] * dt;
+            }
+        }
+        at_tick.push((straight(x), target(f64::from(k) / 60.0)));
+    }
+    let rest = hex(t1);
+    let mut t = shape(END + 2, |k| {
+        let mut b = row("chip", [10.0, 6.0, 40.0, 18.0]);
+        let c = match at_tick.get(k as usize) {
+            Some((c, _)) if k > 0 => hex(drawn(k, *c)),
+            Some(_) => hex(from),
+            None => rest.clone(),
+        };
+        let moving = k > 0 && c != rest;
+        b.paint = Some(strand_eval::paint::PaintRec {
+            bg: vec![c],
+            ..Default::default()
+        });
+        vec![if moving {
+            b.mot(Motions::PROP_SPRING | Motions::FILL_SPRING)
+        } else {
+            b
+        }]
+    });
+    for f in &mut t.frames {
+        let Some((_, tt)) = at_tick.get(f.k as usize).filter(|_| f.k > 0) else {
+            continue;
+        };
+        let s = sent(f.k, *tt);
+        f.sp.push(SpringRec {
+            key: "chip".into(),
+            s: 1,
+            of: "bg".into(),
+            v: vec![0.0; 4],
+            to: s.iter().map(|c| *c as f32).collect(),
+            c: CurveRec::Spring { k: 1600.0, z: 1.0 },
+            ..SpringRec::default()
+        });
+    }
+    t.seal();
+    t
+}
+
+/// (eval-finish, blind set K's k-qs-toggles) A colour sent to a token
+/// the same click's theme swap re-resolves chases a moving target, so
+/// its way bends toward where the target has been: held to the fan from
+/// its start to the target's way, it passes. Its twins fail: the same
+/// frames with a target that stays put (the straight way still holds
+/// them), a way through sRGB grey toward the moving target, and a
+/// target whose way does not end where the colour rests.
+#[test]
+fn colour_follows_a_target_a_theme_swap_moves() {
+    use strand_eval::checks::colour::premultiplied;
+    let sc = scenario("");
+    let ends = (GOLD, YELLOW);
+    let chase = |_: u32, c: [f64; 4]| c;
+    let moving = |_: u32, t: [f64; 4]| t;
+    let t = chasing(BLUE, ends, chase, moving);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // The latte-to-mocha swap's own: a light tile lit with an accent
+    // that springs from latte's mauve to mocha's.
+    let latte = (
+        [
+            0x88 as f64 / 255.0,
+            0x39 as f64 / 255.0,
+            0xef as f64 / 255.0,
+            1.0,
+        ],
+        [
+            0xcb as f64 / 255.0,
+            0xa6 as f64 / 255.0,
+            0xf7 as f64 / 255.0,
+            1.0,
+        ],
+    );
+    let tile = [
+        0xe1 as f64 / 255.0,
+        0xe3 as f64 / 255.0,
+        0xe9 as f64 / 255.0,
+        1.0,
+    ];
+    let t = chasing(tile, latte, chase, moving);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Twin: the target recorded still, at where it rests.
+    let still = |_: u32, _: [f64; 4]| premultiplied(YELLOW);
+    let t = chasing(BLUE, ends, chase, still);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Colour).iter().any(|f| f
+            .msg
+            .starts_with("off its way: its bg springing from 3366ffff to")),
+        "{}",
+        show(&r, &t)
+    );
+    // Twin: sRGB's way toward the moving target, through grey, resting
+    // when the target does.
+    let srgb_way = |k: u32, _: [f64; 4]| {
+        let s = 1.0 - (1.0 - f64::from(k.min(30)) / 30.0).powi(3);
+        std::array::from_fn(|i| BLUE[i] + s * (YELLOW[i] - BLUE[i]))
+    };
+    let t = chasing(BLUE, ends, srgb_way, moving);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Colour)
+            .iter()
+            .any(|f| f.msg.contains("toward a moving target")),
+        "{}",
+        show(&r, &t)
+    );
+    // Twin: a target that moves but ends elsewhere than the colour
+    // rests is not one it chased: the straight way holds it.
+    let elsewhere = |_: u32, t: [f64; 4]| {
+        let (g, y) = (premultiplied(GOLD), premultiplied(YELLOW));
+        std::array::from_fn(|i| t[i] + (g[i] - y[i]))
+    };
+    let t = chasing(BLUE, ends, chase, elsewhere);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Colour, "chip", "bg"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// (eval-rules-3) A colour a hair short of its end is on its way: the
 /// matrix's colour-shift at 144 Hz draws `fecc0b` on its way from
 /// `3366ff` to `ffcc00`, where the line's blue falls 11 steps in the

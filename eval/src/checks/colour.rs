@@ -34,6 +34,21 @@
 //! for an elastic easing): a colour on the line but past its end is a
 //! colour neither end has as surely as one off it.
 //!
+//! (eval-finish) A colour whose own spring is sent to a token a theme
+//! swap re-resolves in the same change (a tile lit with `$accent` by the
+//! click that swaps the palette) chases a moving target: design.md
+//! re-evaluates every derived token from the springing roots each frame,
+//! and a spring retargeted keeps its velocity, so its way bends toward
+//! where the target has gone. A spring is a linear filter of its target:
+//! from rest, what it draws is a weighted sum of where it started and
+//! where its target has been, the weights summing to one and none
+//! negative at or above critical damping. So such a colour is held to
+//! the fan from its start to the target's way so far (the targets its
+//! own spring's samples record, `SpringRec::to`, from the segment's start
+//! to the frame), with the same overshoot bound along each ray, and only
+//! when that way ends where the colour comes to rest; a target that does
+//! not move leaves the straight way as it was.
+//!
 //! - **palette**: a theme swap springs each palette root along the curve
 //!   a colour takes in the table it sent ("Springs everywhere": colour
 //!   and opacity use `$motion.effects`, unless the swap names its own
@@ -181,6 +196,87 @@ pub fn off_way_in(c: [f64; 4], from: [f64; 4], to: [f64; 4], (lo, hi): (f64, f64
     best.0
 }
 
+/// (eval-finish) How far `c` (straight-alpha) is from the fan between
+/// `from` and the way its target took, `targets` (premultiplied OKLab
+/// plus alpha, as a colour spring's channels are, in order): the nearest
+/// point `from + s · (P − from)` with `P` on the line through the targets
+/// one after another and `s` within `lo..=hi`, in steps of 1/255 of a
+/// premultiplied sRGB channel as [`off_way`] measures. A spring from rest
+/// chasing a moving target draws such a point (a weighted sum of where it
+/// started and where its target has been); with one target it is
+/// [`off_way_in`]'s line. Infinite with no target.
+pub fn off_fan(c: [f64; 4], from: [f64; 4], targets: &[[f64; 4]], (lo, hi): (f64, f64)) -> f64 {
+    let Some(first) = targets.first() else {
+        return f64::INFINITY;
+    };
+    let p0 = premultiplied(from);
+    let e = [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]];
+    let segs: Vec<([f64; 4], [f64; 4])> = if targets.len() == 1 {
+        vec![(*first, *first)]
+    } else {
+        targets.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let at = |j: usize, u: f64, s: f64| -> f64 {
+        let (a, b) = segs[j];
+        let p: [f64; 4] = std::array::from_fn(|i| a[i] + u * (b[i] - a[i]));
+        let d = drawn(std::array::from_fn(|i| p0[i] + s * (p[i] - p0[i])));
+        (0..4).map(|i| (d[i] - e[i]).abs()).fold(0.0, f64::max) * 255.0
+    };
+    // Coarse (a fiftieth of the way along each ray, an eighth of each
+    // step of the target's way), then fine around the nearest few.
+    const NU: i32 = 8;
+    let ns = ((hi - lo) * 50.0).ceil().max(1.0) as i32;
+    let mut near: Vec<(f64, usize, f64, f64)> = Vec::new();
+    for j in 0..segs.len() {
+        for ui in 0..=NU {
+            let u = f64::from(ui) / f64::from(NU);
+            for si in 0..=ns {
+                let s = lo + (hi - lo) * f64::from(si) / f64::from(ns);
+                let d = at(j, u, s);
+                if near.len() < 4 || d < near[3].0 {
+                    let i = near.partition_point(|n| n.0 <= d);
+                    near.insert(i, (d, j, u, s));
+                    near.truncate(4);
+                }
+            }
+        }
+    }
+    let mut best = f64::INFINITY;
+    for (d, j, u, s) in near {
+        best = best.min(d);
+        for du in -8..=8 {
+            let u = (u + f64::from(du) / 64.0).clamp(0.0, 1.0);
+            for ds in -20..=20 {
+                let s = (s + f64::from(ds) / 1000.0).clamp(lo, hi);
+                best = best.min(at(j, u, s));
+            }
+        }
+    }
+    best
+}
+
+/// A colour spring's target as its sample records it (`SpringRec::to`:
+/// premultiplied OKLab and alpha last, after a border's width).
+fn target_of(to: &[f32]) -> Option<[f64; 4]> {
+    let t = to.get(to.len().checked_sub(4)?..)?;
+    let t: [f64; 4] = std::array::from_fn(|i| f64::from(t[i]));
+    t.iter().all(|v| v.is_finite()).then_some(t)
+}
+
+/// How far a point of premultiplied OKLab, drawn as the raster draws it,
+/// is from `c` (straight-alpha), in steps of 1/255.
+fn steps_to(p: [f64; 4], c: [f64; 4]) -> f64 {
+    let d = drawn(p);
+    let e = [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]];
+    (0..4).map(|i| (d[i] - e[i]).abs()).fold(0.0, f64::max) * 255.0
+}
+
+/// How far, on some premultiplied OKLab channel, a colour spring's
+/// target moves within its way before it counts as moving (about a third
+/// of a step of 1/255 in lightness: below that the straight way is
+/// within the tolerance of the bent one).
+const TARGET_EPS: f64 = 1.0e-3;
+
 /// The spring prop that moves each paint field.
 fn prop_of(name: &str) -> &str {
     match name {
@@ -322,28 +418,81 @@ fn transition(
     let bound = ov.map_or((-0.5, 1.5), |o| (-o, 1.0 + o));
     let [ways, bounded, composites] = counts.get();
     counts.set([ways + 1, bounded + u64::from(ov.is_some()), composites]);
+    // (eval-finish) Where its own spring was sent at each frame from the
+    // segment's start: a target a theme swap re-resolves moves while it
+    // springs. Held to the fan toward the target's way when that way
+    // moves and ends where the colour rests, else to the straight way.
+    let sent: Vec<Option<[f64; 4]>> = (0..=ei)
+        .map(|i| {
+            (i > bi)
+                .then(|| {
+                    tl.frames[i]
+                        .sp
+                        .iter()
+                        .find(|r| r.key == key && r.of == prop)
+                        .and_then(|r| target_of(&r.to))
+                })
+                .flatten()
+        })
+        .collect();
+    let last_on_way = way.last().map_or(ei, |(i, _, _)| *i);
+    let targets_to = |i: usize| -> Vec<[f64; 4]> {
+        let mut t: Vec<[f64; 4]> = Vec::new();
+        for p in sent[..=i].iter().flatten() {
+            if t.last()
+                .is_none_or(|q| (0..4).any(|c| (p[c] - q[c]).abs() > TARGET_EPS / 10.0))
+            {
+                t.push(*p);
+            }
+        }
+        t
+    };
+    let all = targets_to(last_on_way);
+    let moving = all.iter().any(|p| {
+        all.first()
+            .is_some_and(|q| (0..4).any(|c| (p[c] - q[c]).abs() > TARGET_EPS))
+    });
+    let chases = moving && all.last().is_some_and(|p| steps_to(*p, to) <= STEPS);
     let mut worst: Option<(f64, u32, &str, bool)> = None;
     for (i, _, c) in &way {
         let Some(at) = rgba(c) else { continue };
-        let e = off_way_in(at, from, to, bound);
+        let (e, wide) = if chases {
+            let t = targets_to(*i);
+            (
+                off_fan(at, from, &t, bound),
+                off_fan(at, from, &t, (-0.5, 1.5)),
+            )
+        } else {
+            (off_way_in(at, from, to, bound), off_way(at, from, to))
+        };
         if e > STEPS && worst.is_none_or(|w| e > w.0) {
-            let off = off_way(at, from, to) > STEPS;
-            worst = Some((e, tl.ks[*i], c, off));
+            worst = Some((e, tl.ks[*i], c, wide > STEPS));
         }
     }
     let (e, k, c, off) = worst?;
-    let msg = if off || ov.is_none() {
-        format!(
+    let msg = match (off || ov.is_none(), chases) {
+        (true, false) => format!(
             "off its way: its {name} springing from {cb} to {ce} was drawn {c}, {e:.1} steps \
              of 1/255 from the way between them in premultiplied OKLab"
-        )
-    } else {
-        format!(
+        ),
+        (false, false) => format!(
             "past its end: its {name} springing from {cb} to {ce} was drawn {c}, on the way \
              between them in premultiplied OKLab but {e:.1} steps of 1/255 past where its \
              spring's overshoot ({:.1}% of the way) takes it",
             ov.unwrap_or(0.0) * 100.0
-        )
+        ),
+        (true, true) => format!(
+            "off its way: its {name} springing from {cb} toward a moving target that rests at \
+             {ce} was drawn {c}, {e:.1} steps of 1/255 from every way between where it started \
+             and where its target had been, in premultiplied OKLab"
+        ),
+        (false, true) => format!(
+            "past its end: its {name} springing from {cb} toward a moving target that rests at \
+             {ce} was drawn {c}, between where it started and where its target had been in \
+             premultiplied OKLab but {e:.1} steps of 1/255 past where its spring's overshoot \
+             ({:.1}% of the way) takes it",
+            ov.unwrap_or(0.0) * 100.0
+        ),
     };
     Some(
         Finding::fail(CheckId::Colour, msg)
