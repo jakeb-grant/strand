@@ -10,11 +10,12 @@
 //!   scroll's spring, a glide, a drag or an authored offset moved it, left
 //!   view by moving and did not blink (eval-false-alarms);
 //! - **flash**: shown at one frame only, between frames it does not
-//!   show in, with no keyframes or time-driven motion, no scroll moving
-//!   it by itself (a spring or fling that moves more than the viewport
-//!   and a row in one frame carries a row across it between two
-//!   frames), and no step taking it out (none acts between that frame
-//!   and the next);
+//!   show in, gone again within three ticks (eval-rules-7: a frame its
+//!   surface keeps up longer, idle, shows it that long), with no
+//!   keyframes or time-driven motion, no scroll moving it by itself (a
+//!   spring or fling that moves more than the viewport and a row in one
+//!   frame carries a row across it between two frames), and no step
+//!   taking it out (none acts between that frame and the next);
 //! - **pop-in**: an element with an `enter` pose, mounted after boot,
 //!   first shows near its pose: the pose's opacity and offset start its
 //!   springs, and so do its width and height (its laid box; unshaped-
@@ -169,10 +170,16 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 }
             }
             // flash
+            // (eval-rules-7) Gone again within three ticks, as a blink
+            // is back within them: a frame its surface keeps on screen
+            // longer, painting nothing new (practice set 8's OSD opened
+            // under reduced motion, drawn once and left up for a second
+            // until it closed), showed it for that long, not for a frame.
             if i + 1 < vis.len()
                 && !vis[i - 1]
                 && vis[i]
                 && !vis[i + 1]
+                && tl.ks[i + 1] - k <= BLINK_TICKS
                 && !stepped(key, k, tl.ks[i + 1])
                 && !exempt(CheckId::Vanish)
             {
@@ -265,8 +272,11 @@ pub const POP_OUT_SCALE: f64 = 0.005;
 /// unmounts") is, at the last frame it is drawn in, at its pose: its own
 /// opacity, offset, scale and laid size where the pose puts them, or it
 /// shows nothing (its effective opacity at most a quantum: an ancestor
-/// faded it out). An exit cut short pops what is left of the node out in
-/// one frame. Not held under reduced motion, where a pose snaps.
+/// faded it out; eval-rules-7: or it does not show at all, cut out by a
+/// clip or carried off its surface, `Timeline::visible`, or a clipping
+/// ancestor shows no area the frame after). An exit cut short pops what
+/// is left of the node out in one frame. Not held under reduced motion,
+/// where a pose snaps.
 fn pop_out(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let mut out = Vec::new();
@@ -293,10 +303,18 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
             else {
                 continue;
             };
+            // (eval-rules-7) What does not show on its last frame has
+            // nothing to pop: faded out by an ancestor (its effective
+            // opacity at most a quantum), or cut out by a clip or its
+            // surface's edge (set J's network pages: a page's rows
+            // unmount at their full pose, carried wholly past the pages'
+            // clip by their page's slide, `Timeline::visible`).
             if seg.reduced_motion
                 || cx.trace.reduced_throughout()
                 || cx.allowed(CheckId::Vanish, key)
                 || f64::from(r.op) <= POP_OUT_OPACITY
+                || !tl.visible(i, r)
+                || shut_after(cx, key, i + 1)
             {
                 continue;
             }
@@ -346,6 +364,34 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// (eval-rules-7) Whether an ancestor of `key` that clips its content
+/// shows no area at timeline frame `j` (under half a pixel across): what
+/// lies inside it shows nothing there, wherever its own pose is, so a
+/// node gone from that frame left by its clip, not by a pop. Practice
+/// set 8: a filtered list's rows exit to `height: 0` and the list sized
+/// by them is 0 tall the frame they reach their pose; a chip exiting to
+/// `width: 0` is 0 wide while a child of it with its own exit is gone.
+/// The renderer draws nothing of them there and ends their exits.
+fn shut_after(cx: &Cx, key: &str, j: usize) -> bool {
+    let tl = &cx.tl;
+    cx.lineage(key).into_iter().skip(1).any(|a| {
+        let Some(p) = tl.row(j, a) else {
+            return false;
+        };
+        let meta = cx.trace.nodes.get(a);
+        let own = Motions(p.mot);
+        // It clips: `clip: true`, a `scroll` or a `list`, or (contain's
+        // `held`) a box whose size springs or that exits to a size.
+        let clips = meta.is_some_and(|m| m.clips)
+            || own.contains(Motions::SIZE_SPRING)
+            || (own.contains(Motions::EXIT)
+                && meta
+                    .and_then(|m| m.exit)
+                    .is_some_and(|e| e.w.is_some() || e.h.is_some()));
+        clips && (p.visual[2] < 0.5 || p.visual[3] < 0.5)
+    })
 }
 
 /// The segment tick `k` falls in.

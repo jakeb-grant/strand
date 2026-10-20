@@ -399,14 +399,29 @@ impl<'a> Timeline<'a> {
 
     /// Whether `row` shows at frame `i` (docs/eval.md: present, not
     /// hidden, opacity at least 0.02, a visual area of at least one
-    /// pixel, on its surface, not clipped out by an ancestor). An exiting
-    /// ghost (`inert`) shows.
+    /// pixel, what it draws on its surface and not clipped out by an
+    /// ancestor). An exiting ghost (`inert`) shows where it is inside
+    /// its clip.
     pub fn visible(&self, i: usize, row: &Row) -> bool {
         let hidden = matches!(
             row.hidden.as_deref(),
             Some("opacity0" | "scale0" | "clipped")
         );
-        let [x, y, w, h] = row.visual;
+        // (eval-rules-7) What it draws: a text that paints only glyphs
+        // draws its ink, not its line box (set J's clipboard list: a
+        // "now" label's line box ended on the list's clip for one tick of
+        // a wheel's overshoot, while the 1 to 2 px of it inside the clip
+        // on the frames around that tick were its empty bottom, so it
+        // read as gone for a tick and back while no pixel of it showed).
+        let [x, y, w, h] = drawn_extent(row);
+        // (eval-rules-7) Cut out by the clip its ancestors set. The probe
+        // says `clipped` only of a node it hides for no other reason, so
+        // an exiting ghost (`inert`) carried wholly past a clip by its
+        // page's slide read as shown (set J's network pages: rows
+        // unmounting with their page, wholly left of the pages' clip).
+        let inside = row
+            .clip
+            .is_none_or(|[cx, cy, cw, ch]| x < cx + cw && y < cy + ch && x + w > cx && y + h > cy);
         // On its surface, wherever the surface has moved to.
         let [dx, dy] = self
             .frames
@@ -444,12 +459,18 @@ impl<'a> Timeline<'a> {
         // box on it.
         let out = match (posed, self.output, self.first.get(&row.surface)) {
             (Some(_), Some([ow, oh]), Some(o)) => {
-                let (ax, ay) = (o[0] + row.visual[0], o[1] + row.visual[1]);
+                let (ax, ay) = (o[0] + x + dx, o[1] + y + dy);
                 ax < ow && ay < oh && ax + w > 0.0 && ay + h > 0.0
             }
             _ => true,
         };
-        !hidden && row.op >= 0.02 && w * h >= 1.0 && on && out
+        !hidden
+            && row.op >= 0.02
+            && row.visual[2] * row.visual[3] >= 1.0
+            && w * h > 0.0
+            && inside
+            && on
+            && out
     }
 
     /// (eval-rules-5) How far `surface` has moved at frame `i` from
@@ -490,6 +511,28 @@ pub fn transformed(r: &Row) -> bool {
         && ((r.scale[0] - 1.0).abs() > 1e-4
             || (r.scale[1] - 1.0).abs() > 1e-4
             || r.rotate.abs() > 1e-3)
+}
+
+/// (eval-rules-7) Where `r` draws on its surface: its visual box, or,
+/// for a text that paints nothing but its glyphs (no fill, border,
+/// shadow, part or image of its own), the ink of the layout it drew
+/// (`Row::ink`, before transforms, mapped onto its visual box as its
+/// drawn box is). A line box is room for glyphs, not something drawn:
+/// what lies past the ink inside it (the line gap, a descender's room)
+/// shows nothing.
+pub fn drawn_extent(r: &Row) -> crate::trace::Rect {
+    let glyphs_only = r.paint.as_ref().is_none_or(|p| {
+        p.bg.is_empty() && p.bd.is_empty() && p.sh.is_empty() && p.pt.is_empty() && p.im.is_empty()
+    });
+    let [dx, dy, dw, dh] = r.drawn;
+    match r.ink {
+        Some([ix, iy, iw, ih]) if glyphs_only && dw > 0.0 && dh > 0.0 => {
+            let [vx, vy, vw, vh] = r.visual;
+            let (kx, ky) = (vw / dw, vh / dh);
+            [vx + (ix - dx) * kx, vy + (iy - dy) * ky, iw * kx, ih * ky]
+        }
+        _ => r.visual,
+    }
 }
 
 /// (eval-rules-4) An axis's value in a row before the node's own and

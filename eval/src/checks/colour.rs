@@ -195,7 +195,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
     let mut out = palette(cx);
     // (eval-rules-3) Ways held, and of those bounded by their curve's
     // overshoot.
-    let counts = std::cell::Cell::new([0u64; 2]);
+    let counts = std::cell::Cell::new([0u64; 3]);
     for (_, seg, s) in cx.segments() {
         let (Some(bi), Some(ei)) = (tl.at(s), tl.at(seg.e)) else {
             continue;
@@ -206,6 +206,16 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 continue;
             }
             for (name, bit) in FIELDS {
+                // (eval-rules-7) Fills that come and go on the way (a
+                // default fill an authored one takes the place of, a
+                // state layer) are not one fill a slot at a time: what is
+                // drawn is their composite.
+                if name == "bg" && layers_change(cx, key, (bi, ei)) {
+                    if let Some(f) = composite(cx, key, (bi, ei), &counts) {
+                        out.push(f.in_segment(&seg.name));
+                    }
+                    continue;
+                }
                 let (fb, fe) = (field(b, name), field(e, name));
                 for (slot, (cb, ce)) in fb.iter().zip(fe).enumerate() {
                     if cb == ce {
@@ -231,8 +241,16 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             }
         }
     }
-    let [ways, bounded] = counts.get();
-    super::stats("colour.way", cx, &[("ways", ways), ("bounded", bounded)]);
+    let [ways, bounded, composites] = counts.get();
+    super::stats(
+        "colour.way",
+        cx,
+        &[
+            ("ways", ways),
+            ("bounded", bounded),
+            ("composites", composites),
+        ],
+    );
     first_per_node(out)
 }
 
@@ -248,7 +266,7 @@ fn transition(
     (bi, ei): (usize, usize),
     (cb, ce): (&str, &str),
     (from, to): ([f64; 4], [f64; 4]),
-    counts: &std::cell::Cell<[u64; 2]>,
+    counts: &std::cell::Cell<[u64; 3]>,
 ) -> Option<Finding> {
     let tl = &cx.tl;
     // Held only from rest: a colour still springing when the segment
@@ -302,8 +320,8 @@ fn transition(
         })
         .flatten();
     let bound = ov.map_or((-0.5, 1.5), |o| (-o, 1.0 + o));
-    let [ways, bounded] = counts.get();
-    counts.set([ways + 1, bounded + u64::from(ov.is_some())]);
+    let [ways, bounded, composites] = counts.get();
+    counts.set([ways + 1, bounded + u64::from(ov.is_some()), composites]);
     let mut worst: Option<(f64, u32, &str, bool)> = None;
     for (i, _, c) in &way {
         let Some(at) = rgba(c) else { continue };
@@ -334,6 +352,189 @@ fn transition(
             .axis(name)
             .got(e, [0.0, STEPS]),
     )
+}
+
+/// (eval-rules-7) `key`'s fills change in number between the frames
+/// `bi..=ei`: a layer comes or goes on the way.
+fn layers_change(cx: &Cx, key: &str, (bi, ei): (usize, usize)) -> bool {
+    let n = |i: usize| cx.tl.row(i, key).map(|r| field(r, "bg").len());
+    let first = n(bi);
+    (bi..=ei).any(|i| n(i).is_some_and(|m| Some(m) != first))
+}
+
+/// `c` (straight-alpha) over `under` (premultiplied), as the raster
+/// composites a fill: source over, in premultiplied sRGB.
+fn over(under: [f64; 4], c: [f64; 4]) -> [f64; 4] {
+    let a = c[3];
+    [
+        c[0] * a + under[0] * (1.0 - a),
+        c[1] * a + under[1] * (1.0 - a),
+        c[2] * a + under[2] * (1.0 - a),
+        a + under[3] * (1.0 - a),
+    ]
+}
+
+/// (eval-rules-7) What `key`'s fills draw at timeline frame `i`, in
+/// premultiplied sRGB: its own fills in paint order over its ancestors'
+/// (each one's fills whose drawn box holds its centre, outermost first),
+/// over nothing. `None` when it has no row there or a fill is not a solid
+/// colour (a gradient).
+fn composite_at(cx: &Cx, key: &str, i: usize) -> Option<[f64; 4]> {
+    let tl = &cx.tl;
+    let r = tl.row(i, key)?;
+    let [x, y, w, h] = r.drawn;
+    let (mx, my) = (x + w / 2.0, y + h / 2.0);
+    let mut chain = Vec::new();
+    let mut at = cx.parent(key);
+    while let Some(p) = at {
+        if chain.len() > 256 {
+            break;
+        }
+        if let Some(pr) = tl.row(i, p).filter(|pr| pr.surface == r.surface) {
+            let [px, py, pw, ph] = pr.drawn;
+            if mx >= px && mx <= px + pw && my >= py && my <= py + ph {
+                chain.push(pr);
+            }
+        }
+        at = cx.parent(p);
+    }
+    let mut c = [0.0; 4];
+    for row in chain.iter().rev().copied().chain(std::iter::once(r)) {
+        for f in field(row, "bg") {
+            c = over(c, rgba(f)?);
+        }
+    }
+    Some(c)
+}
+
+/// (eval-rules-7) `composite`: where a node's fills come and go while one
+/// of them springs (set J's drawer button: its default fill gave way to
+/// `$accent.container` springing in from clear, with a hover state layer
+/// over it), no one fill's way is what the eye sees; their composite over
+/// what is drawn under the node is. It goes from where the segment found
+/// it to where it rests on every channel without turning back: never
+/// further from its end than the frame before (while short of its end),
+/// and never outside its two ends by more than the spring overshoots, by
+/// [`STEPS`]. A default fill that vanishes at once while its replacement
+/// springs in from clear jumps away from both ends and fails.
+fn composite(
+    cx: &Cx,
+    key: &str,
+    (bi, ei): (usize, usize),
+    counts: &std::cell::Cell<[u64; 3]>,
+) -> Option<Finding> {
+    let tl = &cx.tl;
+    // As a fill's way: from rest, its own fill spring moving it the
+    // whole way, nothing driving it by time, no step retargeting it, its
+    // opacity the same throughout (a fade is `continuity`'s).
+    if tl
+        .row(bi, key)
+        .is_none_or(|r| Motions(r.mot).contains(Motions::FILL_SPRING))
+    {
+        return None;
+    }
+    let (b, e) = (tl.row(bi, key)?, tl.row(ei, key)?);
+    let (lb, le) = (field(b, "bg"), field(e, "bg"));
+    let mut way: Vec<usize> = Vec::new();
+    let mut left = false;
+    for i in bi + 1..=ei {
+        let r = tl.row(i, key)?;
+        let l = field(r, "bg");
+        if !left && l == lb {
+            continue;
+        }
+        left = true;
+        if l == le {
+            break;
+        }
+        way.push(i);
+    }
+    let own = way.iter().all(|i| {
+        tl.row(*i, key).is_some_and(|r| {
+            let m = Motions(r.mot);
+            m.contains(Motions::FILL_SPRING)
+                && !m.intersects(Motions::KEYFRAMES | Motions::TIME)
+                && (r.op - b.op).abs() < 1e-3
+        })
+    });
+    let retargeted = way
+        .iter()
+        .skip(1)
+        .any(|i| tl.frames.get(*i).is_some_and(|f| f.driven));
+    if way.is_empty() || !own || retargeted || (e.op - b.op).abs() >= 1e-3 {
+        return None;
+    }
+    let ov = way
+        .iter()
+        .find_map(|i| {
+            tl.frames[*i]
+                .sp
+                .iter()
+                .find(|r| r.key == key && r.of == "bg")
+                .map(|r| r.c.overshoot())
+        })
+        .flatten()
+        .unwrap_or(0.5);
+    let (c0, c1) = (composite_at(cx, key, bi)?, composite_at(cx, key, ei)?);
+    let [ways, bounded, composites] = counts.get();
+    counts.set([ways, bounded, composites + 1]);
+    let step = STEPS / 255.0;
+    let mut prev = c0;
+    for i in way.iter().copied().chain(std::iter::once(ei)) {
+        let c = composite_at(cx, key, i)?;
+        for ch in 0..4 {
+            let (a, z) = (c0[ch], c1[ch]);
+            let give = step + ov * (z - a).abs();
+            let outside = c[ch] < a.min(z) - give || c[ch] > a.max(z) + give;
+            // Short of its end (on the start's side of it), it never
+            // moves further from it.
+            let short = (z - prev[ch]) * (z - a) > 0.0;
+            let back = short && (z - c[ch]).abs() > (z - prev[ch]).abs() + step;
+            if outside || back {
+                let hex = |c: [f64; 4]| {
+                    let a = c[3];
+                    let st = |v: f64| if a > 0.0 { v / a } else { 0.0 };
+                    format!(
+                        "{:02x}{:02x}{:02x}{:02x}",
+                        (st(c[0]) * 255.0).round() as u8,
+                        (st(c[1]) * 255.0).round() as u8,
+                        (st(c[2]) * 255.0).round() as u8,
+                        (a * 255.0).round() as u8
+                    )
+                };
+                let how = if outside {
+                    "outside both its ends"
+                } else {
+                    "turning back from its end"
+                };
+                return Some(
+                    Finding::fail(
+                        CheckId::Colour,
+                        format!(
+                            "composite: its fills ({} at its start, {} at its end) are drawn \
+                             {} from {} toward {}, {how} (channel {ch} by {:.1} steps of 1/255)",
+                            lb.join("+"),
+                            le.join("+"),
+                            hex(c),
+                            hex(c0),
+                            hex(c1),
+                            if outside {
+                                ((c[ch] - a.min(z)).min(0.0).abs() + (c[ch] - a.max(z)).max(0.0))
+                                    * 255.0
+                            } else {
+                                ((z - c[ch]).abs() - (z - prev[ch]).abs()) * 255.0
+                            }
+                        ),
+                    )
+                    .at(tl.ks[i])
+                    .node(key)
+                    .axis("bg"),
+                );
+            }
+        }
+        prev = c;
+    }
+    None
 }
 
 /// `palette`: each theme-swap root springs along the curve its table

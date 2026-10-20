@@ -502,8 +502,13 @@ impl<'a> Flattener<'a> {
                     w: (h - pad.left.max(0.0) - pad.right.max(0.0)).max(0.0),
                     ..content
                 });
-                let (fit, placed, clip) =
-                    place_text(shaped, self.scale, held.unwrap_or(content), align);
+                let (fit, placed, clip) = place_text(
+                    shaped,
+                    self.scale,
+                    held.unwrap_or(content),
+                    align,
+                    natural.style.ellipsis.is_some(),
+                );
                 clip_text = clip || held.is_some();
                 (fit, placed)
             };
@@ -857,15 +862,8 @@ impl<'a> Flattener<'a> {
         // panels, OSDs and popups stay clear around their content, which
         // carries its own `bg`).
         let default_bg = match node.kind {
-            NodeKind::Bar if root => match scope.lookup("surface") {
-                Some(PropValue::Color(c)) => Some(Paint::Solid(c)),
-                _ => None,
-            },
-            NodeKind::Button | NodeKind::Segmented => {
-                Some(Paint::Solid(match scope.lookup("surface.hi") {
-                    Some(PropValue::Color(c)) => c,
-                    _ => text_color.alpha(0.1),
-                }))
+            NodeKind::Bar | NodeKind::Button | NodeKind::Segmented => {
+                super::default_fill(node.kind, root, &scope, text_color).map(Paint::Solid)
             }
             NodeKind::Meter => {
                 Some(paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(text_color.alpha(0.15))))

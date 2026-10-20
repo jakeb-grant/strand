@@ -1265,6 +1265,56 @@ fn colours_spring_in_oklab() {
     assert!(want[1] as f32 > srgb_green, "OKLab passes through {want:?}");
 }
 
+/// (eval-rules-7) A button's `bg` set by a state springs from the fill it
+/// draws without one (its default, `$surface.hi`, else its label colour
+/// at 10 %) and back to it, not from and to clear: the default fill did
+/// not vanish at once while the new one faded in from nothing (a flash
+/// toward the panel under it), nor snap back at rest after the fill faded
+/// out to the panel. Each channel of a pixel inside it moves steadily from
+/// where it was to where it rests, both ways, and lands on the default.
+#[test]
+fn a_buttons_bg_springs_from_and_to_its_default_fill() {
+    let mut id = None;
+    let mut st = Stage::new(40, 40, |b, root| {
+        id = Some(b.node(
+            NodeKind::Button,
+            Some(root),
+            vec![(Prop::Width, num(30.0)), (Prop::Height, num(30.0))],
+        ))
+    });
+    let id = id.unwrap();
+    let start = st.buf.px(15, 15);
+    for (to, k0) in [(color("#f0c040"), 1), (PropValue::Unset, 200)] {
+        let before = st.buf.px(15, 15);
+        let mut d = SceneDiff::new();
+        d.set(id, Prop::Bg, to.clone());
+        st.apply(d);
+        let mut seen = vec![before];
+        let mut k = k0;
+        while st.r.wants_frame(S) {
+            st.paint(frame(k));
+            seen.push(st.buf.px(15, 15));
+            k += 1;
+            assert!(k < k0 + 190, "never settled");
+        }
+        st.paint(frame(k + 5));
+        seen.push(st.buf.px(15, 15));
+        let end = *seen.last().unwrap();
+        assert!(seen.len() > 4, "it springs over frames: {seen:?}");
+        for c in 0..3 {
+            for w in seen.windows(2) {
+                let (a, b) = (i32::from(w[0][c]), i32::from(w[1][c]));
+                let e = i32::from(end[c]);
+                assert!(
+                    (e - b).abs() <= (e - a).abs() + 2,
+                    "to {to:?}, channel {c} moves away from its end {e}: {a} -> {b} in {seen:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(st.buf.px(15, 15), start, "back at its default fill");
+}
+
 /// (border-eps) A border fading out ends where the eye no longer sees it
 /// move: its colour settles by a colour's tolerance, not its width's
 /// (0.05 px, which snapped the fade off from an alpha of 0x08–0x0e), so

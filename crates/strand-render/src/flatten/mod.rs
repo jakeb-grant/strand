@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use strand_scene::{
-    BlurRegion, Color, Damage, Font, Length, LogicalRect, NodeId, Paint, Prop, PropValue, Rect,
-    Scale, Size, TokenScope, TokenTable,
+    BlurRegion, Color, Damage, Font, Length, LogicalRect, NodeId, NodeKind, Paint, Prop, PropValue,
+    Rect, Scale, Size, TokenScope, TokenTable,
 };
 use strand_text::TextLayout;
 use vello_cpu::kurbo::{self, BezPath, RoundedRectRadii};
@@ -773,8 +773,33 @@ fn inherit<'a>(node: &'a Node, inh: &mut Inherited<'a>) {
     }
 }
 
+/// The fill a node of `kind` draws when it names no `bg`: a bar's
+/// surface (`root`: a bar is a surface's root) is themed `$surface`, a
+/// button and a segmented control `$surface.hi` (the label colour
+/// `text_color` at 10 % without it). (eval-rules-7) It is the value an
+/// unset `bg` springs from and to, as flatten draws it at rest: a button
+/// given `bg:` by a state fades its fill from this, not from clear.
+pub(crate) fn default_fill(
+    kind: NodeKind,
+    root: bool,
+    scope: &TokenScope,
+    text_color: Color,
+) -> Option<Color> {
+    match kind {
+        NodeKind::Bar if root => match scope.lookup("surface") {
+            Some(PropValue::Color(c)) => Some(c),
+            _ => None,
+        },
+        NodeKind::Button | NodeKind::Segmented => Some(match scope.lookup("surface.hi") {
+            Some(PropValue::Color(c)) => c,
+            _ => text_color.alpha(0.1),
+        }),
+        _ => None,
+    }
+}
+
 /// The theme's default text colour in `scope`: `$fg`, else black.
-fn default_color(scope: &TokenScope) -> Color {
+pub(crate) fn default_color(scope: &TokenScope) -> Color {
     match scope.lookup("fg") {
         Some(PropValue::Color(c)) => c,
         _ => Color::BLACK,

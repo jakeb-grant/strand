@@ -8393,3 +8393,263 @@ fn a_centred_text_moves_with_its_content_step() {
         );
     }
 }
+
+// --- (eval-rules-7) false alarms fixed at their cause
+
+/// A text label under a list's clip (`[0, 10, 300, 20]`) whose line box
+/// pokes a pixel into the clip on every frame but tick 2, where it ends
+/// on the clip's edge (`hidden: clipped`); its glyphs are drawn at `ink`
+/// within the line box, and `bg` gives it a fill of its own.
+fn label_at_clip(ink_y: f32, bg: bool) -> RunTrace {
+    shape(6, |k| {
+        let y = if k == 2 { -3.0 } else { -2.0 };
+        let mut r = row("now", [100.0, y, 20.0, 13.0]);
+        r.clip = Some([0.0, 10.0, 300.0, 20.0]);
+        r.ink = Some([100.0, y + 2.0 + ink_y, 20.0, 5.0]);
+        r.text = Some("S".into());
+        r.paint = Some(strand_eval::paint::PaintRec {
+            bg: if bg {
+                vec!["404040ff".into()]
+            } else {
+                Vec::new()
+            },
+            fg: vec!["1a1b20a6".into()],
+            gl: vec!["now".into()],
+            ..Default::default()
+        });
+        if k == 2 {
+            r.hidden = Some("clipped".into());
+        }
+        vec![r]
+    })
+}
+
+/// (eval-rules-7) Set J's clipboard list: a text that paints only its
+/// glyphs shows where its ink is, not its line box. Its line box ending
+/// on the clip for a tick, while its glyphs lie above the clip on every
+/// frame, is no blink; glyphs that reach into the clip around that tick,
+/// or a fill of its own that does, still blink.
+#[test]
+fn a_text_shows_where_its_glyphs_are_not_its_line_box() {
+    let sc = scenario("");
+    // Glyphs 0..5 (the line box from -2): above the clip at 10.
+    let t = label_at_clip(0.0, false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Glyphs reaching the clip (8..13 against a clip from 10): shown at
+    // ticks 1 and 3, gone at 2.
+    let t = label_at_clip(8.0, false);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish: gone for 1") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+    // A fill of its own is drawn over the whole box.
+    let t = label_at_clip(0.0, true);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("vanish: gone for 1") && f.k == Some(2)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-7) Set J's network pages: a row carried out with its page
+/// unmounts at its full pose, but wholly past the clip its ancestors set
+/// (`[20, 0, 280, 30]`): nothing of it shows, so nothing pops. The same
+/// row unmounting inside the clip pops.
+#[test]
+fn pop_out_passes_a_node_that_leaves_cut_out_by_its_clip() {
+    let sc = scenario("");
+    let fade = Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    };
+    let leaving = |clip_x: f32| {
+        exiting(fade, 4, move |k| {
+            let x = 30.0 - 7.0 * k as f32;
+            let mut r = row("leave", [30.0, 6.0, 16.0, 12.0]).at(x, 6.0);
+            r.clip = Some([clip_x, 0.0, 300.0 - clip_x, 30.0]);
+            r.hidden = Some("inert".into());
+            r
+        })
+    };
+    let t = leaving(20.0);
+    let r = check(&sc, &t);
+    assert!(
+        !r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out")),
+        "{}",
+        show(&r, &t)
+    );
+    let t = leaving(0.0);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out") && f.k == Some(4)),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// A button (`btn`) on a strip filled `faf9ff` whose default fill
+/// `e6e5eb` gives way at tick 1 to `$accent.container` (`455e91`)
+/// springing in from clear to alpha `2f` over ticks 1..=10, under a state
+/// layer of the label colour at alpha `state`.
+fn fill_handover(state: u8) -> RunTrace {
+    let mut t = shape(12, |k| {
+        let s = 1.0 - (1.0 - f64::from(k.min(10)) / 10.0).powi(3);
+        let mut strip = row("strip", [0.0, 0.0, 300.0, 30.0]);
+        strip.paint = Some(strand_eval::paint::PaintRec {
+            bg: vec!["faf9ffff".into()],
+            ..Default::default()
+        });
+        let mut b = row("btn", [8.0, 3.0, 60.0, 24.0]);
+        b.paint = Some(strand_eval::paint::PaintRec {
+            bg: if k == 0 {
+                vec!["e6e5ebff".into()]
+            } else {
+                vec![
+                    format!("455e91{:02x}", (47.0 * s).round() as u8),
+                    format!("1a1b20{state:02x}"),
+                ]
+            },
+            ..Default::default()
+        });
+        let b = if (1..10).contains(&k) {
+            b.mot(Motions::FILL_SPRING)
+        } else {
+            b
+        };
+        vec![strip, b]
+    });
+    t.nodes.get_mut("btn").unwrap().parent = Some("strip".into());
+    t.seal();
+    t
+}
+
+/// (eval-rules-7) Set J's drawer button: where a node's fills come and
+/// go, what the eye sees is their composite over what lies under it. A
+/// default fill handed over to an accent container springing in under a
+/// hover's state layer darkens steadily from `e6e5eb`: it passes, where
+/// reading the default fill and the accent as one fill's way failed. The
+/// same handover under no state layer flashes lighter first (the default
+/// fill gone at once, the accent still clear): it turns back from its
+/// end, and fails.
+#[test]
+fn colour_holds_the_composite_of_fills_that_come_and_go() {
+    let sc = scenario("");
+    let t = fill_handover(0x14);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Colour),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = fill_handover(0x00);
+    let r = check(&sc, &t);
+    assert!(
+        r.failures(CheckId::Colour)
+            .iter()
+            .any(|f| f.msg.starts_with("composite") && f.key.as_deref() == Some("btn")),
+        "{}",
+        show(&r, &t)
+    );
+}
+
+/// (eval-rules-7) Practice set 8's launcher: rows exit to `opacity: 0;
+/// height: 0` inside a list sized by them, and the frame they reach their
+/// pose the list is 0 tall: drawn nothing there, they unmount after a
+/// last frame 5 px tall and 40 % opaque. Nothing of them could show the
+/// frame after, so that is no pop-out; the same exit ended while the list
+/// still has room (5 px tall the frame after) pops.
+#[test]
+fn pop_out_passes_a_node_whose_clipping_parent_shuts_the_frame_after() {
+    let sc = scenario("");
+    let shut = |after: f32| {
+        let mut t = shape(10, |k| {
+            let h = [40.0, 30.0, 15.0, 5.0][k.min(3) as usize];
+            let list_h = if k <= 3 { h } else { after };
+            let mut v = vec![row("list", [0.0, 0.0, 200.0, list_h])];
+            if k <= 3 {
+                let mut r = row("leave", [0.0, 0.0, 200.0, h]).draws();
+                r.clip = Some([0.0, 0.0, 200.0, list_h]);
+                let r = if k == 0 {
+                    r
+                } else {
+                    r.op(1.0 - 0.2 * k as f32)
+                        .mot(Motions::OPACITY_SPRING | Motions::EXIT)
+                };
+                v.push(r);
+            }
+            v
+        });
+        t.nodes.get_mut("list").unwrap().clips = true;
+        let leave = t.nodes.get_mut("leave").unwrap();
+        leave.parent = Some("list".into());
+        leave.exit = Some(Pose {
+            opacity: Some(0.0),
+            h: Some(0.0),
+            ..Pose::default()
+        });
+        t.seal();
+        t
+    };
+    let pops = |t: &RunTrace| {
+        let r = check(&sc, t);
+        r.failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("pop-out") && f.k == Some(3))
+    };
+    let t = shut(0.0);
+    assert!(!pops(&t), "{}", show(&check(&sc, &t), &t));
+    let t = shut(5.0);
+    assert!(pops(&t), "{}", show(&check(&sc, &t), &t));
+}
+
+/// (eval-rules-7) Practice set 8's OSD opened under reduced motion: drawn
+/// once, then left on screen unchanged for a second until its surface
+/// goes. The timeline's next frame comes 60 ticks later, and a node shown
+/// for that long did not flash; shown at one tick of three in a row, it
+/// does.
+#[test]
+fn a_frame_left_on_screen_for_long_is_no_flash() {
+    let sc = scenario("");
+    let shown = |idle: bool| {
+        let mut t = shape(70, |k| {
+            let mut v = vec![row("lead", [8.0, 6.0, 16.0, 12.0]).draws()];
+            if k == 5 {
+                v.push(row("osd", [30.0, 6.0, 16.0, 12.0]).draws());
+            }
+            v
+        });
+        if idle {
+            t.frames.retain(|f| !(6..65).contains(&f.k));
+        }
+        t.seal();
+        t
+    };
+    let flashes = |t: &RunTrace| {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .any(|f| f.msg.starts_with("flash"))
+    };
+    let t = shown(true);
+    assert!(!flashes(&t), "{}", show(&check(&sc, &t), &t));
+    let t = shown(false);
+    assert!(flashes(&t), "{}", show(&check(&sc, &t), &t));
+}

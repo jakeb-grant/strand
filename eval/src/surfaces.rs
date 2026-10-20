@@ -538,8 +538,11 @@ impl Surfaces {
     /// cut by, as bits (1 top, 2 right, 4 bottom, 8 left): a side that
     /// lies on or past the output's edge, where the compositor's placement
     /// (`arrange`) put it (past it nothing shows: render keeps an anchored
-    /// side's overhang within its margin, decisions.md m6-w2-surface), and
-    /// an `attach:` side, past which there is no overhang (m4-surface-w1).
+    /// side's overhang within its margin, decisions.md m6-w2-surface), an
+    /// anchored side on or past the edge of the area other surfaces'
+    /// exclusive zones leave it (eval-rules-7: its margin counts from
+    /// there and is never negative), and an `attach:` side, past which
+    /// there is no overhang (m4-surface-w1).
     /// Read from the modelled buffer, not from render's own caps, so a
     /// side render cuts that is not at the edge stays a finding
     /// (integration-r4).
@@ -551,17 +554,53 @@ impl Surfaces {
         let [x, y] = sh.rest;
         let [w, h] = sh.logical;
         let at = |gap: f32| gap <= 0.5;
+        // (eval-rules-7) A layer surface's margin on an edge it is
+        // anchored to counts from the edge of the area the exclusive
+        // zones arranged before it leave (layer shell: "the exclusive
+        // zone includes the margin"; spec.md 5.1), and an anchored side's
+        // margin is never negative (m6-w2-surface), so on such a side
+        // its buffer ends at that area's edge at the furthest: a panel
+        // anchored below a bar's zone has its shadow cut where the zone
+        // begins (set I's media card), as one at the output's edge has.
+        let area = match &sh.place {
+            Place::Layer(c) => {
+                let layers: Vec<(SurfaceId, &LayerConfig)> = self
+                    .shown
+                    .iter()
+                    .filter_map(|s| match &s.place {
+                        Place::Layer(c) => Some((s.id, c)),
+                        Place::Popup { .. } => None,
+                    })
+                    .collect();
+                let a = placement::arranged_area(self.full(), &layers, &id);
+                let edges = c.anchors;
+                Some((a, edges))
+            }
+            Place::Popup { .. } => None,
+        };
+        let zone = |side: u8| {
+            area.is_some_and(|(a, e)| {
+                let (ax, ay) = (a.x as f32, a.y as f32);
+                let (ar, ab) = (ax + a.w as f32, ay + a.h as f32);
+                match side {
+                    1 => e.top && at(y - ay),
+                    2 => e.right && at(ar - (x + w)),
+                    4 => e.bottom && at(ab - (y + h)),
+                    _ => e.left && at(x - ax),
+                }
+            })
+        };
         let mut bits = 0;
-        if at(y) {
+        if at(y) || zone(1) {
             bits |= 1;
         }
-        if at(sw as f32 - (x + w)) {
+        if at(sw as f32 - (x + w)) || zone(2) {
             bits |= 2;
         }
-        if at(shh as f32 - (y + h)) {
+        if at(shh as f32 - (y + h)) || zone(4) {
             bits |= 4;
         }
-        if at(x) {
+        if at(x) || zone(8) {
             bits |= 8;
         }
         let attach = self.specs.get(&sh.node).and_then(|s| s.attach);
@@ -765,15 +804,33 @@ mod tests {
         let mut s = Surfaces::new(s.screen);
         let b = node(1);
         let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
-        s.change(b, SurfaceChange::Created(bar), 0).unwrap();
+        s.change(b, SurfaceChange::Created(bar.clone()), 0).unwrap();
         s.change(p, SurfaceChange::Created(panel(150.0)), 0)
             .unwrap();
         assert_eq!(at(&s), [125.0, 30.0]);
         // (integration-r4) The cut sides are where the buffer meets the
-        // output's edge: the bar's top, left and right, none of the
-        // panel's under the bar's zone.
+        // output's edge: the bar's top, left and right. (eval-rules-7)
+        // And an anchored side where it meets the edge of the area the
+        // zones before it leave: the panel's top, under the bar's zone,
+        // which its margin counts from; none of its other sides.
         let id = |n: NodeId| s.shown.iter().find(|x| x.node == n).unwrap().id;
         assert_eq!(s.cuts(id(b)), 1 | 2 | 8);
-        assert_eq!(s.cuts(id(p)), 0);
+        assert_eq!(s.cuts(id(p)), 1);
+        // A margin keeps it off that edge: nothing cuts it there.
+        let mut s2 = Surfaces::new(s.screen);
+        let spaced = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("top")),
+                (Prop::Width, PropValue::Number(150.0)),
+                (Prop::Height, PropValue::Number(60.0)),
+                (Prop::Margin, PropValue::Number(8.0)),
+            ],
+        );
+        s2.change(b, SurfaceChange::Created(bar), 0).unwrap();
+        s2.change(p, SurfaceChange::Created(spaced), 0).unwrap();
+        assert_eq!(at(&s2), [125.0, 38.0]);
+        let spaced_id = s2.shown.iter().find(|x| x.node == p).unwrap().id;
+        assert_eq!(s2.cuts(spaced_id), 0);
     }
 }

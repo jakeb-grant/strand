@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use strand_scene::motion::START_LEAD;
 use strand_scene::{
-    Color, Curve, LogicalRect, Motion, NodeId, Prop, PropValue, TokenScope, Transition,
+    Color, Curve, LogicalRect, Motion, NodeId, Paint, Prop, PropValue, TokenScope, Transition,
 };
 
 use crate::tree::{Node, SceneTree};
@@ -1454,6 +1454,30 @@ impl Animator {
         // A lone-radius glow springs in the colour flatten draws it in at
         // rest: the node's own (target) colour, else the inherited one.
         let glow_inh = glow_color(props, inh);
+        // (eval-rules-7) An unset `bg` is the fill flatten draws without
+        // one (a button's `$surface.hi`, a bar's `$surface`), so a `bg`
+        // a state sets springs from it and back to it, not from clear: a
+        // button's default fill vanished at once as `$accent.container`
+        // faded in from nothing, and snapped back at rest after the fill
+        // faded out to the bar under it.
+        let text_color = match props
+            .iter()
+            .find(|(q, _)| *q == Prop::Color)
+            .map(|(_, v)| v.as_ref())
+        {
+            Some(PropValue::Color(c) | PropValue::Paint(Paint::Solid(c))) => *c,
+            _ => crate::flatten::default_color(scope),
+        };
+        let unset_bg =
+            crate::flatten::default_fill(node.kind, node.parent.is_none(), scope, text_color)
+                .map(PropValue::Color);
+        let encode = |p: Prop, v: Option<&PropValue>, inh: Color, boxes: Extents| {
+            let v = match v {
+                None | Some(PropValue::Unset) if p == Prop::Bg => unset_bg.as_ref(),
+                v => v,
+            };
+            encode(p, v, inh, boxes)
+        };
         for p in ANIMATED {
             let inh = if p == Prop::Glow { glow_inh } else { inh };
             let own = props.iter().position(|(q, _)| *q == p);

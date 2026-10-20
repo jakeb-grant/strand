@@ -83,7 +83,7 @@ fn text_is_aligned_in_its_box() {
         (TextAlign::Center, (100.0 - w) / 2.0),
         (TextAlign::End, 100.0 - w),
     ] {
-        let (fit, placed, _) = place_text(&shaped, Scale::ONE, rect, align);
+        let (fit, placed, _) = place_text(&shaped, Scale::ONE, rect, align, false);
         let (_, dx, dy) = placed.unwrap();
         assert_eq!(fit, None);
         assert!((dx - want).abs() < 1e-3, "{align:?}: {dx} vs {want}");
@@ -91,10 +91,65 @@ fn text_is_aligned_in_its_box() {
         assert!((dy - want_dy).abs() < 1e-3);
     }
     let narrow = LogicalRect::new(0.0, 0.0, (w / 2.0).round(), l.size.h);
-    let (fit, placed, clip) = place_text(&shaped, Scale::ONE, narrow, TextAlign::End);
+    let (fit, placed, clip) = place_text(&shaped, Scale::ONE, narrow, TextAlign::End, false);
     assert_eq!(fit, Some((w / 2.0).round()));
     assert_eq!(placed.unwrap().1, 0.0, "the stand-in is not aligned");
     assert!(clip, "the unbounded stand-in is clipped to the box");
+}
+
+/// (eval-rules-7) An ellipsised text in a box narrower than the ellipsis
+/// itself draws its lone "…", which is wider than the line box it was
+/// shaped for, clipped to the box (CSS clips an ellipsis with no room for
+/// it); one whose cut fits its box is not clipped, and a wrapped text's
+/// word wider than its box overflows unclipped (decisions.md
+/// launcher-rules).
+#[test]
+fn an_ellipsis_wider_than_its_box_is_clipped_to_it() {
+    use strand_text::{Ellipsis, FontConfig, TextEngine, TextKey, TextRequest, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let mut engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
+    let shape = |engine: &mut TextEngine, text: &str, style: &TextStyle, w: Option<f32>| Shaped {
+        layout: Arc::new(engine.layout(&TextRequest {
+            key: TextKey(1),
+            text: text.into(),
+            style: style.clone(),
+            max_width: w,
+            scale: Scale::ONE,
+        })),
+        max_width: w,
+        part: 0,
+    };
+    let cut = TextStyle {
+        ellipsis: Some(Ellipsis::End),
+        ..TextStyle::default()
+    };
+    let narrow = shape(&mut engine, "Documents", &cut, Some(5.0));
+    assert!(
+        narrow.layout.size.w > 5.0,
+        "the lone ellipsis is wider than its 5 px line box: {}",
+        narrow.layout.size.w
+    );
+    let shaped = vec![shape(&mut engine, "Documents", &cut, None), narrow];
+    let rect = LogicalRect::new(0.0, 0.0, 5.0, 20.0);
+    let (fit, placed, clip) = place_text(&shaped, Scale::ONE, rect, TextAlign::Start, true);
+    assert_eq!(fit, Some(5.0));
+    assert!(placed.is_some());
+    assert!(clip, "the ellipsis is clipped to its box");
+    // Its cut fits a wider box: drawn as shaped, nothing clipped.
+    let wide = shape(&mut engine, "Documents", &cut, Some(40.0));
+    assert!(wide.layout.size.w <= 40.0);
+    let shaped = vec![shape(&mut engine, "Documents", &cut, None), wide];
+    let rect = LogicalRect::new(0.0, 0.0, 40.0, 20.0);
+    let (_, _, clip) = place_text(&shaped, Scale::ONE, rect, TextAlign::Start, true);
+    assert!(!clip, "a cut that fits is not clipped");
+    // A wrapped word wider than its box overflows it.
+    let plain = TextStyle::default();
+    let word = shape(&mut engine, "Documents", &plain, Some(5.0));
+    assert!(word.layout.size.w > 5.0);
+    let shaped = vec![shape(&mut engine, "Documents", &plain, None), word];
+    let rect = LogicalRect::new(0.0, 0.0, 5.0, 20.0);
+    let (_, _, clip) = place_text(&shaped, Scale::ONE, rect, TextAlign::Start, false);
+    assert!(!clip, "a wrapped word is not clipped");
 }
 
 #[test]

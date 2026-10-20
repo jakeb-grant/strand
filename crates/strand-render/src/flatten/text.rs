@@ -77,11 +77,21 @@ pub(crate) type PlacedText = (Arc<TextLayout>, f32, f32);
 /// more than the box, which fits it; else the narrowest wider one, or
 /// the unbounded one, clipped to the box. The unbounded layout never
 /// spills whole past a box it does not fit (owner-testing.md bug 13).
+///
+/// (eval-rules-7) An `ellipsised` text whose box is narrower than the
+/// ellipsis itself draws a layout wider than the line box it was shaped
+/// for (the lone "…" cannot be cut further), clipped to the box: an
+/// ellipsis cuts a text "to fit" (decisions.md 2026-10-05 render), and
+/// CSS clips the ellipsis itself when there is no room for it
+/// (`text-overflow`, which needs `overflow: hidden`). A wrapped text's
+/// word wider than its line box is not clipped: it overflows its end, as
+/// CSS's `overflow: visible` draws it (decisions.md launcher-rules).
 pub(crate) fn place_text(
     shaped: &[Shaped],
     scale: Scale,
     rect: LogicalRect,
     align: TextAlign,
+    ellipsised: bool,
 ) -> (Option<f32>, Option<PlacedText>, bool) {
     let natural = pick(shaped, scale, None);
     let fit = natural
@@ -91,9 +101,13 @@ pub(crate) fn place_text(
     let mut clip = false;
     let chosen = match fit {
         Some(w) => pick(shaped, scale, Some(w))
+            .inspect(|l| clip = ellipsised && l.size.w > w + 0.01)
             .or_else(|| {
                 let (fits, wider) = fitted_stand_in(shaped, scale, w);
-                clip = fits.is_none();
+                clip = fits.is_none()
+                    || fits
+                        .as_ref()
+                        .is_some_and(|l| ellipsised && l.size.w > w + 0.01);
                 fits.or(wider).or_else(|| natural.clone())
             })
             .map(|l| (l, 0.0)),
