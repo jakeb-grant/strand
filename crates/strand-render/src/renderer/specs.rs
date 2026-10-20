@@ -383,6 +383,31 @@ impl Renderer {
                         // screen with its first frame: a `morph` name
                         // there starts from its partner's box.
                         self.anim.surface_opened(id);
+                        // (launcher-reopen) Opened again, what it kept
+                        // while closed (a surface's body is mounted when
+                        // it is first shown and frozen while hidden, not
+                        // unmounted) comes on screen as it first came,
+                        // mounted by the opening diff: each node there
+                        // with an enter pose plays it. Its first opening
+                        // plays only those born with it (below).
+                        let mut walk: Vec<NodeId> = if self.was_shown.contains(&id) {
+                            self.tree
+                                .get(id)
+                                .map(|n| n.children.clone())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        while let Some(n) = walk.pop() {
+                            let Some(c) = self.tree.get(n) else { continue };
+                            if c.kind.is_surface() || !self.tree.contains_live(n) {
+                                continue;
+                            }
+                            if is_pose(c.get(Prop::Enter)) {
+                                self.anim.enter(n);
+                            }
+                            walk.extend(c.children.iter().copied());
+                        }
                     }
                     for n in &self.born {
                         if self.tree.root_of(*n) == Some(id)

@@ -3896,6 +3896,58 @@ fn red_corner(buf: &Buffer) -> Option<(u32, u32)> {
     Some((left, top))
 }
 
+/// (launcher-reopen) A panel's content is kept while it is closed, not
+/// unmounted: opened again, what it holds comes in as it first came,
+/// each node with an `enter` pose playing it. Before, the panel faded
+/// in and its card showed at once at full opacity.
+#[test]
+fn a_panel_opened_again_plays_its_contents_enter_poses() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let card = red_box(
+        &mut b,
+        root,
+        vec![(Prop::Enter, pose(vec![(Prop::Opacity, num(0.0))]))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    let alpha = |h: &Host| {
+        let r = h.r.boxes(h.surface.as_ref().unwrap().0).unwrap().rects[&card];
+        h.px((r.x + 10.0) as u32, (r.y + 10.0) as u32).unwrap()[2]
+    };
+    assert_eq!(alpha(&h), 255);
+    for _ in 0..2 {
+        let mut d = SceneDiff::new();
+        d.set(root, Prop::Open, PropValue::Bool(false));
+        h.apply(d);
+        h.run();
+        assert!(h.surface.is_none(), "closed");
+        let mut d = SceneDiff::new();
+        d.set(root, Prop::Open, PropValue::Bool(true));
+        h.apply(d);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            assert!(h.frame(), "it plays");
+            seen.push(alpha(&h));
+        }
+        assert!(seen[0] < 200, "enters from its pose: {seen:?}");
+        assert!(
+            seen.windows(2).all(|w| w[1] >= w[0]) && seen[3] > seen[0],
+            "fades in frame by frame: {seen:?}"
+        );
+        h.run();
+        assert_eq!(alpha(&h), 255, "at rest");
+    }
+}
+
 /// (launcher-flip-pass) A change that widens a clipped card on its own
 /// springs and mounts a chip in its header is laid out for the change
 /// with the card still at its old width, where the chip leaves the red

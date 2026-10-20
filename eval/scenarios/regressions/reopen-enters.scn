@@ -1,0 +1,49 @@
+id     = "reopen-enters"
+about  = """A finding of round 7's owner-shell triage (docs/decisions.md launcher-reopen):
+a panel's content is frozen while it is hidden, not unmounted (decisions.md
+wave2-vm), so when a sheet that was closed opens again nothing in it is
+created and nothing played its enter pose: the card a sheet holds under
+`if open`, which swelled from its pose the first time the sheet opened,
+showed at its full size at once the second time (`vanish` pop-in). A
+surface opened again now brings what it kept in as it first came: each node
+there with an enter pose plays it. The sheet opens, is closed by a click
+on its backdrop (its exit plays), and opens again; the card and its chip
+enter both times (eval/mutants/reopen-enters.patch reverts the fix)."""
+screen = { width = 800, height = 480, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state open = false
+
+panel Sheet {
+  anchor: top; attach: top; open: <-> open
+  exit { opacity: 0; scale: 0.96; y: -24 }
+  stack { width: 420; height: 320; align: start
+    box { place: absolute; width: 420; height: 320; on click { open = false } }
+    row { width: 420; justify: center
+      if open {
+        col { id: card; clip: true; bg: #303446; radius: 18; pad: 14; gap: 10
+          width: 320 ~ spring(520, 0.7); height: 140 ~ spring(800, 0.85)
+          enter { width: 60; height: 8 }
+          text "Search" { color: #c6d0f5 }
+          box { id: chip; pad: 4, 10; radius: 8; bg: #8caaee
+            enter { opacity: 0; scale: 0.6 }
+            text "apps" { color: #232634 }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark first-open
+set open true
+rest
+mark close
+click 400,300 on panel
+rest
+mark open-again
+set open true
+rest

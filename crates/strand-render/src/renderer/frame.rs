@@ -597,6 +597,7 @@ impl Renderer {
         // surface that only reuses scenes is still a morph's start.
         self.anim.shared_painted(root, target.time, &f.morphs);
         self.anim.surface_shown(root);
+        self.was_shown.insert(root);
         self.paint_times = PaintTimes {
             flatten: flatten_start.elapsed(),
             text_wait: self.estimate_waited.saturating_sub(waited),

@@ -159,6 +159,9 @@ dock-drag.patch         regressions/dock-drag.scn         redraw
 # for the art's wider box and its edge rows are padded out over the box's
 # top and bottom (`placement` cover).
 stand-in-fit.patch      regressions/stand-in-fit.scn      placement
+# reopen-enters.patch: launcher-reopen's replay of a reopened surface's
+# enter poses taken out (decisions.md launcher-reopen).
+reopen-enters.patch            regressions/reopen-enters.scn     vanish:#card vanish:#chip
 # flip-undrawn-pass.patch: launcher-flip-pass's layout half reverted: each
 # pass compares the pass before, with no glides kept until the frame and
 # no re-glide on a pass that is no FLIP of its own. frame-lead.patch: its

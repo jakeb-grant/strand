@@ -400,6 +400,9 @@ pub struct Renderer {
     /// Surfaces whose closing pose finished: their spec reports them
     /// closed until they open again.
     closed: HashSet<NodeId>,
+    /// (launcher-reopen) Surface nodes that painted a frame: opened
+    /// again, what they kept while closed enters again.
+    was_shown: HashSet<NodeId>,
     /// Content-sized surface nodes whose spec was held at a larger size
     /// than their content while something on them moved: they shrink
     /// once nothing does (see [`Renderer::release_holds`]).
@@ -555,6 +558,7 @@ impl Renderer {
             anim: Animator::default(),
             reduced_motion: false,
             closed: HashSet::new(),
+            was_shown: HashSet::new(),
             held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
             closing_content: BTreeMap::new(),

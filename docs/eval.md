@@ -1496,10 +1496,11 @@ integration-r6), and round 7's png-aspect (`placement`), image-redraw
 (`redraw`), dock-drag (`redraw`) and stand-in-fit (`placement` cover;
 decisions.md of each name), eval-rules-6's four (ring-corners-swapped,
 fold-gap-late, ellipsis-min-content-natural and pose-margin-unsent, each a
-second case of a rule that round added) and, on one regression of round
-7's owner-shell triage, flip-undrawn-pass (`bystander`) and frame-lead
-(`continuity`, in crates/strand-scene; decisions.md launcher-flip-pass):
-32 in all. In a detached worktree of HEAD, each scenario
+second case of a rule that round added) and round 7's owner-shell triage:
+reopen-enters (`vanish`; decisions.md launcher-reopen) and, on one
+regression, flip-undrawn-pass (`bystander`) and frame-lead (`continuity`,
+in crates/strand-scene; decisions.md launcher-flip-pass):
+33 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed.
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.

@@ -211,6 +211,7 @@ impl Renderer {
         self.anim.retain(|id| tree.contains(id));
         self.extras.rasters.retain(|id| tree.contains(id));
         self.closed.retain(|id| tree.contains(*id));
+        self.was_shown.retain(|id| tree.contains(*id));
         self.reap_exits();
         // Drop text state of nodes that are gone or no longer show text.
         let tree = &self.tree;

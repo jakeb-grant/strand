@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/renderer/specs.rs
++++ b/crates/strand-render/src/renderer/specs.rs
+@@ -390,7 +390,7 @@
+                         // mounted by the opening diff: each node there
+                         // with an enter pose plays it. Its first opening
+                         // plays only those born with it (below).
+-                        let mut walk: Vec<NodeId> = if self.was_shown.contains(&id) {
++                        let mut walk: Vec<NodeId> = if false && self.was_shown.contains(&id) {
+                             self.tree.get(id).map(|n| n.children.clone()).unwrap_or_default()
+                         } else {
+                             Vec::new()
