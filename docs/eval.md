@@ -17,6 +17,18 @@ ships. The checks catch the breakage they predict; every scenario and
 matrix cell is also held to an approved recording of its run, which
 catches any change at all (see Reference recordings).
 
+What the sandbox guarantees is the trace, the renderer's own record of
+where it drew each Strand node in each frame, and, for a glitch report,
+the replay's fidelity to the live shell (see Replaying a glitch report).
+The checks' rules are frozen: one changes only when it is wrong on
+Strand's own committed gate scenarios, regressions or effect matrix. A
+finding on a real shell (a local scenario) or in a report's replay is a
+hint, which the checks may get wrong there; it is never tuned away per
+shell, and no threshold is loosened and no `known.toml`, `allow` or
+`expect_fail` entry is added for it. Only Strand's own surfaces are
+recorded, never other programs' windows (decisions.md
+owner-2026-10-21).
+
 The sandbox is evaluation tooling, not product. It is a Cargo workspace of
 its own (`eval/Cargo.toml`), outside the root workspace, so `--workspace`
 builds, `affected` and the shipped binary never see it. It reads

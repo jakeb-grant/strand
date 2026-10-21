@@ -112,7 +112,7 @@ A markup-plus-Luau split recreates pleamar's string seam. A restricted language 
 - **Props.** `name: expr`, ended by `;` or a newline. snake\_case everywhere. Shorthands take commas: `margin: 8, 8, 0`.
 - **Conditional style.** `when cond { props }`. `hover`, `pressed`, `focused`, `selected` are booleans of the enclosing node. Another node's: give it `id:` and read `vol.hover`. Later `when` wins.
 - **Structure.** `if`/`else`, `match`, `for x in xs [key e]`. Service items and keyed collections bring their own keys; plain data without a key is a compile error.
-- **Poses.** `enter {}` is where a node animates in from; `exit {}` mirrors it unless given.
+- **Poses.** `enter {}` is where a node animates in from; `exit {}` mirrors it unless given. Opening cascades, closing is one unit: every node that mounts plays its own `enter`, but when a subtree is removed only its root's `exit` plays, carrying everything inside it; a node's own `exit` plays only when it is itself the node removed (decisions.md owner-2026-10-21).
 - **State.** `state x = 0`; add `persist` to keep it across restarts. `state prefs from "prefs.toml" { … }` is a typed, two-way settings file. `let` is derived and read-only. `export` makes a value reachable as `file.name` from the CLI.
 - **Events and time.** `on click`, `on scroll(dy)`, `on show`. `on change x` fires on changes, never at boot or reload; `on change x after 1.2s` debounces. `after T while cond` and `every T while cond` are timers that pause when the condition is false.
 - **Two-way.** `prop: <-> target` binds a widget to `state`, a writable service field or a settings field.
@@ -444,7 +444,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 - **Springs everywhere.** `$motion.spatial` for movement and size, `$motion.effects` for colour and opacity. Override per prop with `~`: `width: 24 ~ $motion.bouncy`, `~ 200ms`, `~ instant`. Retargeting mid-flight keeps velocity, so interrupted animations never jolt.
 - **Paint-only props** (`x`, `y`, `scale`, `rotate`, `opacity`) never relayout.
 - **Size springs** relayout only the subtree under the nearest size-stable ancestor, on the render thread beside the springs. Reordering uses FLIP, so list items glide to their new slots.
-- **Poses.** `enter`/`exit` apply to surfaces, `if` branches, list items and pages. A removed subtree plays `exit`, then unmounts and stops its service subscriptions.
+- **Poses.** `enter`/`exit` apply to surfaces, `if` branches, list items and pages. A removed subtree plays `exit`, then unmounts and stops its service subscriptions. The `exit` that plays is the removed root's: what is inside it rides in that pose, drawn as it was, and the `exit` poses of nodes nested in it do not play (a card's chips leave with the card). A nested node's `exit` plays when it is itself removed, its own `if` turning false or its own copy dropped (spec.md 6.4; decisions.md owner-2026-10-21).
 
 **Input and structure**
 
@@ -827,6 +827,7 @@ When something on screen looks wrong, type one command in a terminal, with a few
 - **The report.** A folder under `~/.local/state/strand/reports/` named by the local date and time, readable only by you. It holds the recording, every service's state at that moment, a picture of each surface as Strand last drew it (Strand's own frames, not a screenshot), a copy of your config's files and the small local files they use, the Strand version, what plain `strand report` prints, and your words. The newest 20 reports are kept; older ones are deleted.
 - **Turning it off.** `strand set system.replay false` (or a toggle bound to `system.replay`). The buffer is emptied at once and stays off across restarts; `strand report` with words then saves everything but the recording.
 - **What the agent does.** `scripts/report-view.sh` replays the report in the evaluation sandbox (`eval/`, [eval.md](eval.md)), on its virtual clock and with your fonts, writes the replay's frames, a text trace by node, position and time, and what its checks found into the report's folder, and opens a page where you can scrub through it frame by frame. The replay says what it could not reproduce: what you typed, services it has no stand-in for, other programs' windows, a second monitor, a reload or a lock in the middle.
+- **What it guarantees, and what is a hint.** Two things are guaranteed: the trace, the renderer's own record of where it drew each of Strand's nodes, frame by frame; and the replay's fidelity to the live shell, which the replay checks and states. Only Strand's own surfaces are recorded and replayed, never other programs' windows. What the sandbox's checks find in a replay is a hint for the agent, not a verdict: the checks are tuned on Strand's own scenarios and may be wrong on a real shell, and they are never changed to suit one shell or one report (decisions.md owner-2026-10-21).
 - **Its cost.** The 256 KB count against the memory budget below, and the idle-wakeup budget is unchanged. Without words, `strand report` prints the diagnostics as before.
 
 **Deliberately not tested in-house**
