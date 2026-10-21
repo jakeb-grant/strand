@@ -164,15 +164,21 @@ pub fn main() -> ExitCode {
     // decoder.
     strand_text::set_idle_hook(cli::trim);
     strand_render::image::set_idle_hook(cli::trim);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "--write-schemas") {
-        return crate::plugin::write_schemas_main(&args[1..]);
-    }
     // (replay-owner) Handed off to `strand-eval`, which is not part of
-    // the shell (`report::replay`).
-    if args.first().is_some_and(|a| a == "replay") {
+    // the shell (`report::replay`), its arguments as they are: a path
+    // need not be UTF-8.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "replay") {
         let rest: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
         return crate::report::replay::main(&rest);
+    }
+    // Every other command reads words: an argument that is not UTF-8 is
+    // read with its bad bytes replaced, never a panic.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.first().is_some_and(|a| a == "--write-schemas") {
+        return crate::plugin::write_schemas_main(&args[1..]);
     }
     if let Some(tool) = args.first().and_then(|a| tool(a)) {
         let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();

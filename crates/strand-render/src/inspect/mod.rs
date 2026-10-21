@@ -49,6 +49,26 @@ pub struct DrawnNode {
     pub rect: LogicalRect,
     /// Its own opacity (not its ancestors').
     pub opacity: f32,
+    /// How far it moves in the surface's next frame period, peeked from
+    /// what is in flight (springs, poses, `play`, glides): the farthest
+    /// of its four edges, logical px. 0 at rest.
+    pub travel: f32,
+    /// How far its own opacity changes over that period. 0 at rest.
+    pub fade: f32,
+}
+
+/// (replay-owner) A surface's last painted frame as it drew its nodes
+/// ([`Renderer::drawn_nodes`]): when it was drawn, the surface's frame
+/// period and the nodes, in paint order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnFrame {
+    /// When the frame was drawn, on the wall clock: its time on the
+    /// presentation clock mapped through the surface's last frame
+    /// (`None`: no frame time was known).
+    pub drawn_at: Option<std::time::Instant>,
+    /// The surface's frame period estimate.
+    pub period: std::time::Duration,
+    pub nodes: Vec<DrawnNode>,
 }
 
 /// What the inspector asked render to draw, and what it drew.

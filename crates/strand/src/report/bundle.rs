@@ -63,9 +63,9 @@ pub(crate) struct MainBundle {
     /// backend and sizes, as `bundle.json`'s `surfaces` lists them.
     pub surfaces: Vec<Json>,
     /// (replay-owner) Each mapped surface's slot and the nodes its last
-    /// frame drew, with their boxes and opacities
-    /// (`Renderer::drawn_nodes`), for `drawn.json`.
-    pub drawn: Vec<(u16, Vec<strand_render::DrawnNode>)>,
+    /// frame drew, with their boxes, opacities and travel, and when that
+    /// frame was drawn (`Renderer::drawn_nodes`), for `drawn.json`.
+    pub drawn: Vec<(u16, strand_render::DrawnFrame)>,
 }
 
 /// Main's part, between frames: no lock surface is in it.
@@ -96,8 +96,8 @@ pub(crate) fn main_bundle(state: &mut State<Host>) -> MainBundle {
             info.namespace.clone()
         };
         let (pixels, repainted) = frame_of(state, e.surface, backend.is_gpu());
-        if let Some(nodes) = state.host_mut().renderer.drawn_nodes(e.surface) {
-            drawn.push((e.slot, nodes));
+        if let Some(frame) = state.host_mut().renderer.drawn_nodes(e.surface) {
+            drawn.push((e.slot, frame));
         }
         let file = format!("frames/{}-{}.png", e.slot, file_stem(&name));
         surfaces.push(json!({

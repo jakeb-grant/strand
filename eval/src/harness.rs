@@ -120,6 +120,12 @@ pub struct RunOptions {
     /// (report) Keep what a replay compares with the live shell
     /// ([`RunOutput::log`]): each press's hit and each cell write.
     pub log: bool,
+    /// (replay-owner review) After every painted frame, hold
+    /// `Renderer::drawn_nodes` (what a glitch report's `drawn.json` is
+    /// taken from) to the frame's own trace, node by node: the same
+    /// nodes in paint order, each at its `visual` box with its own
+    /// opacity. What parts goes to [`ReplayLog::drawn`].
+    pub drawn: bool,
 }
 
 /// (report) A node as a replay compares it with the live shell's
@@ -190,6 +196,12 @@ pub struct ReplayLog {
     /// taken when it was first drawn: what the replay's boxes at the
     /// report are matched to the live shell's by.
     pub refs: BTreeMap<String, NodeRef>,
+    /// (replay-owner review) With `RunOptions::drawn`: each painted
+    /// frame where `Renderer::drawn_nodes` parts from the frame's trace,
+    /// one line per difference. Empty when they agree.
+    pub drawn: Vec<String>,
+    /// How many painted frames were held so.
+    pub drawn_frames: usize,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -2958,9 +2970,54 @@ impl Harness {
         Ok(())
     }
 
+    /// (replay-owner review) `RunOptions::drawn`: what
+    /// `Renderer::drawn_nodes` gives for the surface `f` painted, held
+    /// to `f`'s own rows.
+    fn hold_drawn(&mut self, k: u32, f: &FrameTrace) {
+        let s = f.surface.0;
+        self.log.drawn_frames += 1;
+        let Some(d) = self.r.drawn_nodes(f.surface) else {
+            self.log
+                .drawn
+                .push(format!("k{k} surface {s}: no drawn frame"));
+            return;
+        };
+        if d.nodes.len() != f.nodes.len() {
+            self.log.drawn.push(format!(
+                "k{k} surface {s}: {} nodes drawn, {} traced",
+                d.nodes.len(),
+                f.nodes.len()
+            ));
+        }
+        for (i, n) in f.nodes.iter().enumerate() {
+            match d.nodes.get(i) {
+                Some(x) if x.node != n.node => self.log.drawn.push(format!(
+                    "k{k} surface {s}: node {i} is {:?} drawn, {:?} traced",
+                    x.node, n.node
+                )),
+                Some(x) if x.rect != n.visual || x.opacity != n.opacity => {
+                    self.log.drawn.push(format!(
+                        "k{k} surface {s}: {:?} drawn at {:?} opacity {}, traced at {:?} opacity {}",
+                        n.node, x.rect, x.opacity, n.visual, n.opacity
+                    ));
+                }
+                Some(_) => {}
+                None => self
+                    .log
+                    .drawn
+                    .push(format!("k{k} surface {s}: {:?} traced, not drawn", n.node)),
+            }
+        }
+    }
+
     /// The tick's frame traces, held texts and commands, into the trace.
     fn collect(&mut self, k: u32, t: Duration) -> Result<(), Error> {
         let traces = self.r.take_frame_traces();
+        if self.opts.drawn {
+            for f in &traces {
+                self.hold_drawn(k, f);
+            }
+        }
         let mut redraws = std::mem::take(&mut self.redraws);
         let mut blends = std::mem::take(&mut self.blends);
         let held = self.r.held_text();

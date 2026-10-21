@@ -193,6 +193,18 @@ impl Clocks {
             .map_or(DEFAULT_PERIOD, |f| f.period)
     }
 
+    /// (replay-owner) `time` on `surface`'s presentation clock as the
+    /// wall-clock instant its frame was drawn at, through its last frame
+    /// (drawn at `at` for `last`); `None` before its first frame.
+    pub(crate) fn instant_of(&self, surface: SurfaceId, time: Duration) -> Option<Instant> {
+        let f = self.frames.get(&surface)?;
+        if time >= f.last {
+            f.at.checked_add(time - f.last)
+        } else {
+            f.at.checked_sub(f.last - time)
+        }
+    }
+
     /// True while `surface` drew a clocked node in its last fresh frame.
     pub(crate) fn running(&self, surface: SurfaceId) -> bool {
         self.surfaces.contains_key(&surface)

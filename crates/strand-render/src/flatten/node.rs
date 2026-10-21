@@ -2450,6 +2450,8 @@ impl<'a> Flattener<'a> {
                 (v.height() / s) as f32,
             ),
             opacity,
+            travel: 0.0,
+            fade: 0.0,
         });
     }
 

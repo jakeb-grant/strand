@@ -1,32 +1,35 @@
 id     = "ghost-passengers"
-about  = """A finding of evalfix (docs/decisions.md evalfix): a removed card plays its
-`exit` pose (design.md "Poses": "A removed subtree plays `exit`, then
-unmounts"; spec.md 6.4: "a removed subtree plays its `exit` pose") and the
-nodes inside it ride along: their own `exit` poses are not the subtree's, and
-they stay mounted until the card unmounts. Once the card has faded to nothing
-the renderer draws none of its children, and a clip the card's shrinking
-height cuts out hides its own, so their rows end early, at their own full
-opacity; `vanish`'s pop-out read that as each passenger unmounting short of
-its own pose. Pop-out judges the removed subtree's root; a passenger is held
-to staying drawn while the root still shows."""
-screen = { width = 400, height = 260, scale = 1.0 }
+about  = """A removed row's own `exit` carries what is in it (docs/decisions.md evalfix,
+owner-2026-10-21, replay-owner): a list drops its middle entry, which plays
+its `exit` to `opacity: 0; width: 70` on a linear 200 ms fade while it clips
+what it holds (spec.md 6.4: "a removed subtree plays its `exit` pose";
+design.md "Poses"). Its badge and the clipped strip holding its label ride
+along: their own `exit` poses are not the removed subtree's, and they stay
+mounted until the entry unmounts. As the entry narrows, its clip cuts the
+strip out, and the renderer then visits nothing in it, so the label's rows
+end there at its own full opacity; once the entry has faded to 0 the
+renderer draws none of its children, so the badge's rows end a frame before
+the entry's. Each read as unmounting short of its own pose. Pop-out judges
+the removed entry, and holds each passenger to staying drawn while the
+entry still shows something of it. Written for Strand's own gate, apart
+from any shell's values."""
+screen = { width = 280, height = 200, scale = 1.0 }
 hz     = 60
 
 === shell.strand
-state open = true
+state drop = false
+let items = drop ? ["mail", "call"] : ["mail", "chat", "call"]
 
-bar Top {
-  height: 220; bg: #181825
-  row { pad: 10; align: start
-    if open {
-      col { id: card; clip: true; width: 240; height: 180; bg: #303446
-            opacity: 1 ~ ease(ease_in, 140ms)
-            exit { opacity: 0; height: 30 }
-        col { width: 240; height: 180; shrink: 0; pad: 10; gap: 10
-          box { id: chip; width: 60; height: 20; shrink: 0; bg: #8caaee; exit { opacity: 0; y: -12 } }
-          stack { id: well; clip: true; width: 200; height: 60; shrink: 0; margin: 60, 0, 0
-            box { id: tile; width: 40; height: 40; bg: #a6e3a1; exit { opacity: 0; x: -120 } }
-          }
+panel List {
+  anchor: top_left; open: true
+  col { width: 240; pad: 8; gap: 6; bg: #1b1d2b
+    for it in items key it {
+      row { id: entry; clip: true; height: 36; width: 224; gap: 6; pad: 0, 6; align: center; bg: #33384d
+            opacity: 1 ~ ease(linear, 200ms)
+            exit { opacity: 0; width: 70 }
+        box { id: badge; width: 20; height: 20; shrink: 0; bg: #f5a97f; exit { scale: 0 } }
+        stack { id: strip; clip: true; width: 150; height: 24; shrink: 0; margin: 0, 0, 0, 60
+          box { id: label; width: 120; height: 12; bg: #cad3f5; exit { opacity: 0; x: 30 } }
         }
       }
     }
@@ -35,6 +38,6 @@ bar Top {
 
 === steps
 rest
-mark close
-set open false
+mark drop
+set drop true
 rest

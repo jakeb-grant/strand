@@ -214,7 +214,7 @@
   // ---- scenario list --------------------------------------------------------
 
   function statusOf(id) {
-    var worst = null, order = ['pass', 'run', 'changed', 'xfail', 'fail', 'error'];
+    var worst = null, order = ['pass', 'run', 'hint', 'changed', 'xfail', 'fail', 'error'];
     DATA.runs.forEach(function (run) {
       run.scenarios.forEach(function (s) {
         if (s.id !== id) return;
@@ -831,7 +831,8 @@
           if (f.sev === 'info') return;
           var sheet = (a.sheets || []).filter(function (s) { return s.check === f.check && s.k === f.k && s.key === f.key; })[0];
           // A reference finding reads as CHANGED (its chip's colour), not as a check's failure.
-          var tone = f.sev === 'fail' && f.check !== 'reference' ? 'fail' : 'changed';
+          // (replay-owner) In a replay a finding is a hint, never a failure.
+          var tone = DATA.replay ? 'hint' : f.sev === 'fail' && f.check !== 'reference' ? 'fail' : 'changed';
           var d = el('div', { cls: 'find st-' + tone, onclick: function () { jump(a, f); } }, describe(a, f));
           if (sheet) {
             d.appendChild(document.createTextNode(' '));
@@ -1246,6 +1247,6 @@
   });
 
   // Start on the first scenario that did not pass, else the first.
-  var first = ids.filter(function (id) { return ['fail', 'error', 'xfail', 'changed'].indexOf(statusOf(id)) >= 0; })[0] || ids[0];
+  var first = ids.filter(function (id) { return ['fail', 'error', 'xfail', 'changed', 'hint'].indexOf(statusOf(id)) >= 0; })[0] || ids[0];
   if (first) pick(first); else renderAll();
 })();

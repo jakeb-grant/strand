@@ -163,6 +163,12 @@ fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
     }
 }
 
+/// (replay-owner) The options `replay` takes a value with. `strand
+/// replay` keeps the same list (crates/strand/src/report/replay.rs
+/// `VALUED`) to tell an option's value from the report directory;
+/// eval/tests/replay.rs holds the two to each other.
+pub const REPLAY_VALUED: [&str; 6] = ["--to", "--out", "-o", "--output", "--traced", "--frames"];
+
 /// (report) `strand-eval replay <bundle> [--no-open] [--out DIR]
 /// [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames …]
 /// [--gpu]`: a glitch report's bundle as a local scenario, run with
@@ -179,12 +185,7 @@ fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
 /// session's Wayland display. It fails only when the replay cannot run;
 /// the checks' findings are hints, never a failure.
 pub fn replay(args: &[String]) -> Result<(), Error> {
-    let a = Args::parse(
-        "replay",
-        args,
-        &["--to", "--out", "-o", "--output", "--traced", "--frames"],
-        &["--no-open", "--gpu"],
-    )?;
+    let a = Args::parse("replay", args, &REPLAY_VALUED, &["--no-open", "--gpu"])?;
     let usage = "usage: strand-eval replay <bundle> [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]";
     let [dir] = a.words.as_slice() else {
         return Err(Error::Usage(usage.into()));
@@ -196,6 +197,21 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
             dir.display()
         )));
     }
+    // (replay-owner) Read and checked before anything is written: a
+    // directory that holds some other `bundle.json` keeps its `replay/`.
+    let bundle = crate::replay::Bundle::read(dir).map_err(|e| {
+        Error::Usage(format!(
+            "replay: {} is not a glitch report this strand-eval reads: {e}",
+            dir.display()
+        ))
+    })?;
+    if !bundle.config_dir().is_dir() {
+        return Err(Error::Usage(format!(
+            "replay: {} is not a glitch report (no config/, the copy of the shell's config)",
+            dir.display()
+        )));
+    }
+    drop(bundle);
     let traced = match a.value(&["--traced"]) {
         None => Some(crate::replay::plan::TRACED_S),
         Some("all") => None,

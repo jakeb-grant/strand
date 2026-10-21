@@ -117,12 +117,20 @@ while read -r patch scenario specs; do
     control[$scenario]=$rc
     control_out[$scenario]="$out-head"
     if [ "$rc" != 0 ]; then
-      echo "FAIL: $scenario does not pass on HEAD (exit $rc): $out-head.log"
-      sed -n '1,40p' "$out-head.log"
+      # (replay-owner) Kept, with the binary's hash, for the next
+      # failure to be held to: the next run clears $out-head.
+      kept=$(keep_control "$out-head" "$CARGO_TARGET_DIR/debug/strand-eval")
+      control_out[$scenario]=$kept
+      echo "FAIL: $scenario does not pass on HEAD (exit $rc): kept in $kept"
+      sed -n '1,40p' "$kept/check.log"
       failed=1
       continue
     fi
     echo "  HEAD: pass"
+  elif [ "${control[$scenario]}" != 0 ]; then
+    echo "FAIL: $scenario did not pass on HEAD (above): $name not run"
+    failed=1
+    continue
   fi
   if ! git -C "$TREE" apply --check "$ROOT/eval/mutants/$patch" 2>/dev/null; then
     echo "STALE: $patch no longer applies to HEAD: regenerate it (docs/eval.md, Mutants)"

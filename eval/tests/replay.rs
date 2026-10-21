@@ -1232,7 +1232,44 @@ fn the_checks_findings_are_hints() {
     assert_eq!(
         data["replay"]["hints"],
         json!("hints (the checks may be wrong on a real shell)")
-    ); // The command that runs it ends well all the same.
+    );
+    // (replay-owner review) Nowhere does a finding read as a failure:
+    // the page's statuses are hints (the viewer shows what the data
+    // says, upper-cased), as are summary.md, summary.json, summary.txt
+    // and replay.txt.
+    let sc = &data["runs"][0]["scenarios"][0];
+    assert_eq!(sc["status"], json!("hint"), "{}", sc["status"]);
+    let results = sc["checks"]["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["status"]["status"] == json!("hint")),
+        "a check that found something reads as a hint"
+    );
+    assert!(
+        results.iter().all(|r| !matches!(
+            r["status"]["status"].as_str(),
+            Some("fail" | "changed" | "xpass")
+        )),
+        "{results:#?}"
+    );
+    assert!(!page.contains("FAIL"), "the page says FAIL");
+    for f in ["summary.md", "summary.json", "summary.txt", "replay.txt"] {
+        let t = std::fs::read_to_string(out.join(f)).unwrap();
+        assert!(!t.contains("FAIL"), "{f} says FAIL:\n{t}");
+    }
+    let md = std::fs::read_to_string(out.join("summary.md")).unwrap();
+    assert!(md.contains(" hints: "), "{md}");
+    assert!(
+        md.contains("hints (the checks may be wrong on a real shell)"),
+        "{md}"
+    );
+    let sj: Json =
+        serde_json::from_slice(&std::fs::read(out.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(sj["ok"], json!(true), "the replay ran");
+    assert!(sj["hints"].as_u64().is_some_and(|n| n > 0), "{sj}");
+    assert_eq!(sj["scenarios"][0]["status"], json!("hints"));
+    // The command that runs it ends well all the same.
     let cli = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
         .arg("replay")
         .arg(&dir)
@@ -1352,4 +1389,407 @@ fn the_replay_command_refuses_a_directory_that_is_no_report() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not a glitch report"));
+}
+
+/// (replay-owner review) `drawn.json` for several surfaces: each slot's
+/// root and its nodes.
+fn write_drawn_surfaces(dir: &Path, surfaces: &[(u16, &str, &[replay::drawn::Drawn])]) {
+    let surfaces: Vec<Json> = surfaces
+        .iter()
+        .map(|(slot, root, nodes)| {
+            let nodes: Vec<Json> = nodes
+                .iter()
+                .map(|n| {
+                    json!({
+                        "ref": "0.0",
+                        "origin": format!("{LIVE}/{}", n.origin),
+                        "id": n.id, "key": n.key, "box": n.rect, "opacity": n.opacity,
+                        "travel": n.travel, "fade": n.fade,
+                    })
+                })
+                .collect();
+            json!({"slot": slot, "root": root, "nodes": nodes})
+        })
+        .collect();
+    std::fs::write(
+        dir.join("drawn.json"),
+        serde_json::to_vec_pretty(&json!({"format": 2, "surfaces": surfaces})).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The replay's trace of `r`, read back from its report.
+fn trace_of(r: &replay::Replayed, out: &Path) -> strand_eval::trace::RunTrace {
+    serde_json::from_slice(&std::fs::read(out.join(&r.id).join("trace.json")).unwrap()).unwrap()
+}
+
+/// The fixture with a spinner that turns forever, moving at the report.
+fn spinning() -> Fx {
+    let mut f = Fx::session();
+    // Declared below the bar, so the fixture's origins stay where they
+    // are.
+    f.config.push_str(
+        "keyframes spin { 0% { rotate: 0 }; 100% { rotate: 360 }; duration: 900ms; repeat: 0 }\n",
+    );
+    f.config = f.config.replacen(
+        "    box { id: spot;",
+        "    box { id: spinner; width: 30; height: 10; bg: #89b4fa; play spin }\n    box { id: spot;",
+        1,
+    );
+    f
+}
+
+/// (replay-owner review) The frame the verdict holds is the replay's last
+/// one before the report, never the tick it paints after it, even when
+/// the report falls just past a whole number of periods (the old pick,
+/// any frame up to a period past the report, took the tick after it);
+/// the same frame is the one its pixels are compared with. A node moving
+/// at the report (a looping spinner) is held to two frames of its
+/// travel, its box left out of the pixel comparison, and one further off
+/// is named as moving out of step, not as a drift; a static node's
+/// pixels differing makes the verdict DRIFTED.
+#[test]
+fn the_frame_held_is_the_last_before_the_report() {
+    let mut f = spinning();
+    // The window is the bar's first surface on (1 s) to the report: the
+    // report 2 ms past a whole number of periods.
+    let probe = f.write("tick-probe");
+    let (_, p, _) = plan_of(&probe, &defaults());
+    let whole = (29 * S) / p.period;
+    f.now = S + whole * p.period + 2 * MS;
+    let dir = f.write("tick");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    let len = p.end - p.start;
+    let end_tick = (len + p.period / 2) / p.period;
+    assert!(end_tick * p.period <= len, "the report is past the tick");
+    let (r, out) = replay_of(&dir, &defaults());
+    let trace = trace_of(&r, &out);
+    let mark = trace
+        .events
+        .iter()
+        .find(|e| e.text == "mark report")
+        .unwrap()
+        .k;
+    let sid = trace.surfaces[0].id;
+    // The tick after the report painted the bar (its spinner turned), and
+    // it lies within a period of the report: what the old pick took.
+    let after = trace
+        .frames
+        .iter()
+        .find(|fr| fr.k == mark && fr.painted.contains(&sid))
+        .expect("the tick after the report painted the bar");
+    assert!(after.t_ns <= 1_000_000_000 + len + p.period);
+    let o = origins();
+    let (_, bar) = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| replay::fidelity::same_origin(s, &o.bar))
+        .unwrap();
+    let spinner = bar
+        .iter()
+        .find(|n| n.id.as_deref() == Some("spinner"))
+        .unwrap()
+        .clone();
+    assert!(spinner.travel > 0.1, "{spinner:?}");
+
+    // As drawn before the report: verified, at the tick before it.
+    write_drawn(&dir, bar);
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "VERIFIED", "{}", r.verdict.line());
+    assert_eq!(r.verdict.ticks.len(), 1);
+    assert_eq!(r.verdict.ticks[0].1, mark - 1, "{:?}", r.verdict.ticks);
+    assert!(r.verdict.in_motion >= 1, "{}", r.verdict.line());
+    assert!(
+        r.verdict.line().contains("moving at the report"),
+        "{}",
+        r.verdict.line()
+    );
+
+    // Its pixels: the replay's own image of that frame as the live PNG.
+    let fr = trace
+        .frames
+        .iter()
+        .rev()
+        .find(|fr| fr.k < mark && fr.png.contains_key(&sid))
+        .unwrap();
+    assert_eq!(fr.k, mark - 1);
+    let png = std::fs::read(out.join(&r.id).join(&fr.png[&sid])).unwrap();
+    let (w, h, px) = strand_eval::report::png::decode(&png).unwrap();
+    let with_png = |px: &[u8], drawn: &[replay::drawn::Drawn], tag: &str| {
+        let mut g = spinning();
+        g.now = f.now;
+        g.surfaces[0]["frame"] = json!("frames/1-Top.png");
+        let d = g.write(tag);
+        std::fs::write(
+            d.join("frames/1-Top.png"),
+            strand_eval::report::png::encode(w, h, px).unwrap(),
+        )
+        .unwrap();
+        write_drawn(&d, drawn);
+        replay_of(&d, &defaults()).0
+    };
+    let same = with_png(&px, bar, "tick-png");
+    assert_eq!(same.verdict.word(), "VERIFIED", "{}", same.verdict.line());
+    assert_eq!(same.verdict.pixels_held, 1);
+    assert!(
+        same.verdict
+            .line()
+            .contains("and the pixels of 1 as the live frame's"),
+        "{}",
+        same.verdict.line()
+    );
+    assert!(
+        !r.verdict.line().contains("pixels"),
+        "no PNG, no claim: {}",
+        r.verdict.line()
+    );
+    assert_eq!(same.fidelity.frames[0].k, Some(mark - 1));
+    assert_eq!(same.fidelity.frames[0].over, 0);
+    let paint = |x0: u32, y0: u32| {
+        let mut v = px.clone();
+        for y in y0..y0 + 4 {
+            for x in x0..x0 + 4 {
+                let i = ((y * w + x) * 4) as usize;
+                v[i..i + 4].copy_from_slice(&[255, 0, 255, 255]);
+            }
+        }
+        v
+    };
+    // Over the spinner, which moves: not held pixel for pixel.
+    let [sx, sy, sw, sh] = spinner.rect;
+    let on_spinner = paint((sx + sw / 2.0) as u32 - 2, (sy + sh / 2.0) as u32 - 2);
+    let r2 = with_png(&on_spinner, bar, "tick-spin");
+    assert_eq!(r2.verdict.word(), "VERIFIED", "{}", r2.verdict.line());
+    // Over the lamp, which is still: the pixels differ.
+    let lamp = bar
+        .iter()
+        .find(|n| n.id.as_deref() == Some("lamp"))
+        .unwrap();
+    let on_lamp = paint(lamp.rect[0] as u32 + 10, lamp.rect[1] as u32 + 10);
+    let r3 = with_png(&on_lamp, bar, "tick-lamp");
+    assert_eq!(r3.verdict.word(), "DRIFTED", "{}", r3.verdict.line());
+    assert!(
+        r3.verdict
+            .line()
+            .contains(&format!("pixels differ on @{}", o.bar))
+            && r3.verdict.line().contains("(16 px)"),
+        "{}",
+        r3.verdict.line()
+    );
+    assert!(
+        r3.verdict
+            .lines()
+            .iter()
+            .any(|l| l.contains("16 differ past 6 from the live frame")),
+        "{:#?}",
+        r3.verdict.lines()
+    );
+
+    // The spinner drawn live far from where the replay's turn puts it:
+    // moving out of step, named on its own line, not a drift.
+    let mut off = bar.clone();
+    let s = off
+        .iter_mut()
+        .find(|n| n.id.as_deref() == Some("spinner"))
+        .unwrap();
+    s.rect[0] += 60.0;
+    s.travel = 2.0;
+    write_drawn(&dir, &off);
+    let (r4, _) = replay_of(&dir, &defaults());
+    assert_eq!(r4.verdict.word(), "VERIFIED", "{}", r4.verdict.line());
+    assert_eq!(r4.verdict.moving.len(), 1, "{:#?}", r4.verdict.lines());
+    assert!(
+        r4.verdict
+            .lines()
+            .iter()
+            .any(|l| l.starts_with("moving out of step: ")
+                && l.contains("#spinner")
+                && l.contains("moving at the report")),
+        "{:#?}",
+        r4.verdict.lines()
+    );
+    assert!(
+        r4.verdict.line().contains("1 moving out of step"),
+        "{}",
+        r4.verdict.line()
+    );
+}
+
+/// (replay-owner review) A surface the replay shows at the report that
+/// the live shell did not (a popup its click opened in the replay only)
+/// makes the verdict DRIFTED, named.
+#[test]
+fn a_surface_shown_in_the_replay_only_drifts() {
+    let mut f = Fx::session();
+    f.config = f.config.replacen(
+        "on click { clicks = clicks + 1 } }",
+        "on click { clicks = clicks + 1 }\n      popup { id: tip; open: clicks > 0; width: 60; height: 20; box { width: 20; height: 10; bg: #ffffff } } }",
+        1,
+    );
+    let dir = f.write("onlyreplay");
+    let (r, _) = replay_of(&dir, &defaults());
+    let o = origins();
+    let bar = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| replay::fidelity::same_origin(s, &o.bar))
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(
+        r.verdict.replayed.len(),
+        2,
+        "the bar and the popup: {:?}",
+        r.verdict.replayed
+    );
+    write_drawn(&dir, &bar);
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "DRIFTED", "{}", r.verdict.line());
+    assert_eq!(r.verdict.replay_only_surfaces.len(), 1, "{:?}", r.verdict);
+    assert!(
+        r.verdict
+            .line()
+            .contains("1 surface shown in the replay only"),
+        "{}",
+        r.verdict.line()
+    );
+    assert!(
+        r.verdict.lines()[0].contains("shown in the replay at the report, not live"),
+        "{:#?}",
+        r.verdict.lines()
+    );
+}
+
+/// (replay-owner review) Two popups made in a `for` share their root's
+/// origin and differ by row key: each live one is held to the replay's
+/// with the same key, each replay surface taken once (the old match by
+/// origin alone held both to the first).
+#[test]
+fn surfaces_from_one_place_are_held_each_to_its_own() {
+    let config = |f: &mut Fx| {
+        f.config = f.config.replacen(
+            "    box { id: spot;",
+            "    for n in [1, 2] key n { box { width: 20; height: 20; bg: #445566\n      popup { open: true; width: 40; height: 20; box { width: 10 * n; height: 10; bg: #112233 } } } }\n    box { id: spot;",
+            1,
+        );
+    };
+    let mut f = Fx::session();
+    config(&mut f);
+    let probe = f.write("pops-probe");
+    let (r, _) = replay_of(&probe, &defaults());
+    let o = origins();
+    let pops: Vec<&(String, Vec<replay::drawn::Drawn>)> = r
+        .verdict
+        .replayed
+        .iter()
+        .filter(|(s, _)| !replay::fidelity::same_origin(s, &o.bar))
+        .collect();
+    assert_eq!(pops.len(), 2, "{:?}", r.verdict.replayed);
+    assert_eq!(pops[0].0, pops[1].0, "one place");
+    let (r0, r1) = (&pops[0].1[0], &pops[1].1[0]);
+    assert_ne!(r0.key, r1.key, "{r0:?} {r1:?}");
+    let bar = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| replay::fidelity::same_origin(s, &o.bar))
+        .unwrap()
+        .1
+        .clone();
+    // The live shell had both, listed second first.
+    let mut f = Fx::session();
+    config(&mut f);
+    for (slot, b, root) in [(2u16, bits(20, 1), r1), (3, bits(21, 1), r0)] {
+        f.surface(slot, 0, b, &root.origin, S, 16_666_667);
+        f.surfaces.last_mut().unwrap()["kind"] = json!("popup");
+        f.nodes.insert(
+            format!("{}.{}", b as u32, (b >> 32) as u32),
+            json!({"origin": format!("{LIVE}/{}", root.origin), "id": null, "key": root.key}),
+        );
+    }
+    let dir = f.write("pops");
+    write_drawn_surfaces(
+        &dir,
+        &[
+            (1, "3.1", &bar),
+            (2, "20.1", &pops[1].1),
+            (3, "21.1", &pops[0].1),
+        ],
+    );
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(
+        r.verdict.word(),
+        "VERIFIED",
+        "{}",
+        r.verdict.lines().join("\n")
+    );
+    assert_eq!(r.verdict.surfaces, 3);
+}
+
+/// (replay-owner review) `strand-eval replay` reads the bundle before it
+/// clears `<dir>/replay`: a directory with some other `bundle.json` keeps
+/// its `replay/`.
+#[test]
+fn a_directory_that_is_no_report_keeps_its_replay_folder() {
+    let d = tmp("keep");
+    std::fs::write(d.join("bundle.json"), r#"{"format": 99}"#).unwrap();
+    std::fs::create_dir_all(d.join("replay")).unwrap();
+    std::fs::write(d.join("replay/notes.txt"), "mine").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("replay")
+        .arg(&d)
+        .arg("--no-open")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("is not a glitch report this strand-eval reads"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("replay/notes.txt")).unwrap(),
+        "mine"
+    );
+    // A readable bundle.json but no config/: refused too, kept too.
+    std::fs::write(d.join("bundle.json"), r#"{"format": 1}"#).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("replay")
+        .arg(&d)
+        .arg("--no-open")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no config/"));
+    assert_eq!(
+        std::fs::read_to_string(d.join("replay/notes.txt")).unwrap(),
+        "mine"
+    );
+}
+
+/// (replay-owner review) `strand replay` tells an option's value from
+/// the report directory by the same list `strand-eval replay` parses
+/// with (`cli::REPLAY_VALUED`): each is in strand's `VALUED`.
+#[test]
+fn strand_replay_knows_every_option_that_takes_a_value() {
+    let src = std::fs::read_to_string(
+        strand_eval::scenario::eval_root().join("../crates/strand/src/report/replay.rs"),
+    )
+    .unwrap();
+    let line = src
+        .lines()
+        .find(|l| l.starts_with("const VALUED"))
+        .expect("VALUED in strand's replay.rs");
+    for o in strand_eval::cli::REPLAY_VALUED {
+        assert!(
+            line.contains(&format!("\"{o}\"")),
+            "{o} is not in strand's {line}"
+        );
+    }
+    assert!(
+        line.contains(&format!("; {}]", strand_eval::cli::REPLAY_VALUED.len())),
+        "{line}"
+    );
 }

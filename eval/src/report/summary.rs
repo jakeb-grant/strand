@@ -42,11 +42,19 @@ pub fn markdown(info: &RunInfo, entries: &[Entry]) -> String {
         md.push(String::new());
     }
     let mut failed = Vec::new();
+    // (replay-owner) A replay's findings are hints, not a verdict.
+    let replay = info.replay.is_some();
+    let mut hints = 0;
     for e in entries {
         let st = e.status();
         let frames = e.trace.frames.len();
         let head = match st {
             "error" => format!("- **{}** ERROR: {}", e.id, e.error.as_deref().unwrap_or("")),
+            _ if replay => {
+                let n = e.failing().len();
+                hints += n;
+                format!("- **{}** hints: {n} ({frames} frames)", e.id)
+            }
             _ => format!("- **{}** {} ({frames} frames)", e.id, st.to_uppercase()),
         };
         md.push(head);
@@ -94,9 +102,17 @@ pub fn markdown(info: &RunInfo, entries: &[Entry]) -> String {
         for n in &e.notes {
             md.push(format!("  - note: {n}"));
         }
-        if matches!(st, "fail" | "error" | "changed") {
+        if matches!(st, "fail" | "error" | "changed") && !(replay && st != "error") {
             failed.push(e.id.as_str());
         }
+    }
+    if replay && failed.is_empty() {
+        md.push(String::new());
+        md.push(format!(
+            "{} replay: {hints} hints (the checks may be wrong on a real shell)",
+            entries.len()
+        ));
+        return md.join("\n") + "\n";
     }
     let changed = entries.iter().filter(|e| e.status() == "changed").count();
     if changed > 0 {
@@ -122,6 +138,13 @@ pub fn markdown(info: &RunInfo, entries: &[Entry]) -> String {
 
 /// `summary.json`.
 pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
+    // (replay-owner) A replay's findings are hints: no check reads as
+    // failed, and `ok` says the replay ran.
+    let replay = info.replay.is_some();
+    let word = |s: &Status| match s {
+        Status::Fail | Status::Changed | Status::Xpass(_) if replay => "hint".to_string(),
+        s => status_word(s),
+    };
     let scenarios: Vec<Value> = entries
         .iter()
         .map(|e| {
@@ -129,7 +152,7 @@ pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
                 .report
                 .iter()
                 .flat_map(|r| r.results.iter())
-                .map(|r| (r.check.clone(), Value::String(status_word(&r.status))))
+                .map(|r| (r.check.clone(), Value::String(word(&r.status))))
                 .collect();
             let findings: Vec<Value> = e
                 .failing()
@@ -155,7 +178,10 @@ pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
             json!({
                 "id": e.id,
                 "file": e.file,
-                "status": e.status(),
+                "status": match e.status() {
+                    "fail" | "changed" if replay => "hints",
+                    s => s,
+                },
                 "error": e.error,
                 "frames": e.trace.frames.len(),
                 "digest": e.trace.digest,
@@ -168,14 +194,21 @@ pub fn json(info: &RunInfo, entries: &[Entry]) -> String {
         })
         .collect();
     let build = entries.first().map(|e| &e.trace.build);
-    let v = json!({
+    let mut v = json!({
         "schema": 1,
         "command": info.command,
         "out": info.out.display().to_string(),
         "rev": build.map(|b| b.rev.clone()),
         "dirty": build.map(|b| b.dirty),
-        "ok": entries.iter().all(|e| !matches!(e.status(), "fail" | "error" | "changed")),
+        "ok": entries.iter().all(|e| match e.status() {
+            "error" => false,
+            "fail" | "changed" => replay,
+            _ => true,
+        }),
         "scenarios": scenarios,
     });
+    if replay {
+        v["hints"] = json!(entries.iter().map(|e| e.failing().len()).sum::<usize>());
+    }
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }

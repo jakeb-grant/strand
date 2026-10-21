@@ -54,7 +54,7 @@ pub use input::{
     DragView, Flag, HOVER_GRACE, HiddenRows, HitOnly, InputKind, InputScene, Intent, NodeEvent,
     Router, WHEEL_STEP,
 };
-pub use inspect::{DrawnNode, LayoutInfo};
+pub use inspect::{DrawnFrame, DrawnNode, LayoutInfo};
 pub use layout::{
     Boxes, CH_EM, FLING_DECAY, LAYOUT_OVERSCAN, LIST_ROW_ESTIMATE, ListBox, ListWindow,
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN, edge_shift,

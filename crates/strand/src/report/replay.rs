@@ -54,9 +54,10 @@ pub(crate) fn newest(reports: &Path) -> Option<PathBuf> {
     dirs.pop()
 }
 
-/// The options `strand-eval replay` takes a value with: their value is
-/// never the report directory.
-const VALUED: [&str; 5] = ["--out", "--to", "--output", "--traced", "--frames"];
+/// The options `strand-eval replay` takes a value with (eval/src/cli.rs
+/// `replay`, `-o` the short `--out`): their value is never the report
+/// directory.
+const VALUED: [&str; 6] = ["--out", "-o", "--to", "--output", "--traced", "--frames"];
 
 /// Whether `args` name a report directory (a word that is no option and
 /// no option's value).
@@ -205,6 +206,16 @@ mod tests {
         assert!(names_dir(&os(&["--no-open", "/r/x"])));
         assert!(!names_dir(&os(&["--no-open", "--traced", "5"])));
         assert!(!names_dir(&os(&["--output", "DP-1"])));
+        // `-o` is `--out`: its value is no report.
+        assert!(!names_dir(&os(&["-o", "/tmp/r"])));
+        assert!(!names_dir(&os(&[
+            "--no-open",
+            "-o",
+            "/tmp/r",
+            "--traced",
+            "all"
+        ])));
+        assert!(names_dir(&os(&["-o", "/tmp/r", "/r/x"])));
     }
 
     #[test]

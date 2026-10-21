@@ -478,7 +478,26 @@ fn a_bundle_holds_every_part() {
         .iter()
         .find(|s| s["root"] == bar_root)
         .unwrap_or_else(|| panic!("no bar in {drawn}"));
+    // When its last frame was drawn (on the rings' clock, before the
+    // report) and its frame period; at rest, nothing travels.
+    assert_eq!(drawn["format"], 2, "{drawn}");
+    let now_ns = read_json(&dir.join("bundle.json"))["now_ns"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        bar["drawn_ns"]
+            .as_u64()
+            .is_some_and(|t| t > 0 && t <= now_ns),
+        "{bar}"
+    );
+    assert!(bar["period_ns"].as_u64().is_some_and(|p| p > 0), "{bar}");
     let nodes = bar["nodes"].as_array().unwrap();
+    assert!(
+        nodes
+            .iter()
+            .all(|n| n["travel"] == json!(0.0) && n["fade"] == json!(0.0)),
+        "{bar}"
+    );
     assert!(
         nodes
             .iter()

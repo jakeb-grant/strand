@@ -1,96 +1,85 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "offset-early-callback"
 verdict good
-note "first reference (evalfix review): read k0-32: #card springs 10 -> 163 (k4) on x: 240 ~ spring(700, 0.7); logic's 50 ms timer turns it back mid-flight at k5, where it carries its velocity on to 181 and turns, 166 -> 136 -> ... -> 2 (k15, undershoot 8) and rests at 10 by k22-32; steps at most 48 px, none dropped; #dot carried 6 px inside it on every frame; frames k5 (x 181, the turn) and k15 (x 2) look right"
+note "(replay-owner) rewritten apart from any shell's values, read k0-27: #sheet called back by its 40 ms timer turns at k4 (214) keeping its velocity and springs home by k21"
 date 2026-10-21
-rev "e306c22b+changes"
+rev "b6bf3792+changes"
 approver "claude"
-scenario bd875c8e2ce8059a
-seal 07aa8fcf3d1cd015
-S1 0 - "bar Top"
-N0 "card|shell.strand:7:5|[Mock | DP-1]#0" "col#card"
-N1 "dot|shell.strand:10:7|[Mock | DP-1]#0" "box#dot"
-N2 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
-N3 "|shell.strand:6:3|[Mock | DP-1]#0" "row@shell.strand:6"
+scenario f6a6bac3cd976eda
+seal 4a5a1e211369889c
+S1 0 - "panel Drop"
+N0 "pin|shell.strand:10:7|#0" "box#pin"
+N1 "sheet|shell.strand:7:5|#0" "box#sheet"
+N2 "|shell.strand:4:1|#0" "panel@shell.strand:4"
+N3 "|shell.strand:6:3|#0" "col@shell.strand:6"
 k0 p1
-s1 z=640,60
-n0 x=10 y=10 w=80 h=40 ord=2 bg=303446ff
-n1 x=16 y=16 w=12 h=12 ord=3 bg=8caaeeff
-n2 x=0 y=0 w=640 h=60 bg=181825ff
-n3 x=0 y=0 w=640 h=60 ord=1
+s1 z=200,560
+n0 x=20 y=20 w=10 h=10 ord=3 bg=88c0d0ff
+n1 x=12 y=12 w=120 h=48 ord=2 bg=3b4252ff
+n2 x=0 y=0 w=200 h=560 bg=11111bff
+n3 x=0 y=0 w=200 h=560 ord=1
 k1
-n0 x=29
-n1 x=35
+n0 y=56
+n1 y=48
 k2
-n0 x=71
-n1 x=77
+n0 y=126
+n1 y=118
 k3
-n0 x=119
-n1 x=125
+n0 y=197
+n1 y=189
 k4
-n0 x=163
-n1 x=169
+n0 y=222
+n1 y=214
 k5
-n0 x=181
-n1 x=187
+n0 y=199
+n1 y=191
 k6
-n0 x=166
-n1 x=172
+n0 y=163
+n1 y=155
 k7
-n0 x=136
-n1 x=142
+n0 y=128
+n1 y=120
 k8
-n0 x=101
-n1 x=107
+n0 y=98
+n1 y=90
 k9
-n0 x=70
-n1 x=76
+n0 y=75
+n1 y=67
 k10
-n0 x=44
-n1 x=50
+n0 y=58
+n1 y=50
 k11
-n0 x=26
-n1 x=32
+n0 y=46
+n1 y=38
 k12
-n0 x=13
-n1 x=19
+n0 y=37
+n1 y=29
 k13
-n0 x=6
-n1 x=12
+n0 y=32
+n1 y=24
 k14
-n0 x=3
-n1 x=9
+n0 y=28
+n1 y=20
 k15
-n0 x=2
-n1 x=8
+n0 y=25
+n1 y=17
 k16
-n0 x=3
-n1 x=9
+n0 y=23
+n1 y=15
 k17
-n0 x=4
-n1 x=10
+n0 y=22
+n1 y=14
 k18
-n0 x=6
-n1 x=12
+n0 y=21
+n1 y=13
 k19
-n0 x=7
-n1 x=13
 k20
-n0 x=8
-n1 x=14
 k21
-n0 x=9
-n1 x=15
+n0 y=20
+n1 y=12
 k22
-n0 x=10
-n1 x=16
 k23
 k24
 k25
 k26
 k27
-k28
-k29
-k30
-k31
-k32

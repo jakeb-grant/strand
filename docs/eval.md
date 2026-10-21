@@ -1814,10 +1814,11 @@ and sizing-clip-open (`contain`, reveal-enter: a `clip: true` box whose
 size springs stops clipping) and ghost-children-undrawn (`vanish`,
 ghost-passengers: a removed subtree's children are not drawn while its
 root plays its exit), and the evalfix review's three: offset-retarget-snap
-again (`continuity`, offset-early-callback: called back a third of the way
+again (`continuity`, offset-early-callback: called back before half way
 out, its snap home is less than 0.75 of the excursion `teleport` gives it),
-offset-spring-doubled (`teleport` and `coherence`, offset-out-and-back: an
-offset's spring drawn twice) and exit-dropped (`vanish`, ghost-passengers:
+offset-spring-doubled (`coherence`, offset-out-and-back: an offset's
+spring drawn twice; `teleport` does not catch it there, the doubled
+overshoot widening the segment's travel, decisions.md replay-owner) and exit-dropped (`vanish`, ghost-passengers:
 a removed node with an `exit` gets no ghost): 56 in all. A patch listed
 again against another scenario runs as `<name>-<scenario id>`. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed,
@@ -1825,6 +1826,14 @@ or, for an expected failure written `unmatched:SELECTOR`, stop because
 that selector matches no node (how a name the product loses shows).
 A patch that no longer applies is STALE: regenerate it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
+A scenario that fails on HEAD (its control) is a failure, its mutant
+lines are not run, and its run is kept as
+`target/eval/mutants/<name>-head.failed-<UTC time>/` with its log and
+the sha256 of the strand-eval binary that ran it, which the next run's
+clearing does not touch (replay-owner). The detached worktrees of
+mutants and A/B are always removed by their real, absolute path: git
+matches a relative one as a suffix of every worktree's, so another
+checkout's `target/eval/mutants/tree` could be the one removed.
 
 ## A/B
 
@@ -2346,31 +2355,72 @@ capability, used by any scenario):
 **The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
 first key `verdict`, the first line of `replay.txt`, of what
 `strand-eval replay` prints and of the viewer's header). At the
-report the live shell writes `drawn.json`: for each mapped surface
-(its slot and root's `node_ref`), every node its last frame drew or
-hid, in paint order, named as `nodes.json` names a node (origin,
-`id:`, `for` row key) with its box as drawn (surface logical px,
-through every transform, axis aligned, to 1/64) and its own opacity
-(docs/architecture.md "Glitch reports"). The replay takes its own last
-traced frame of the same surface (by its root's origin) at the report,
-names each row as `nodes.json` does, and pairs the nodes in paint
-order by surface, origin, `id:` and row key:
+report the live shell writes `drawn.json` (format 2): for each mapped
+surface (its slot and root's `node_ref`), when its last frame was
+drawn (`drawn_ns`, on the flight rings' clock) and its frame period
+(`period_ns`), and every node that frame drew or hid, in paint order,
+named as `nodes.json` names a node (origin, `id:`, `for` row key) with
+its box as drawn (surface logical px, through every transform, axis
+aligned, to 1/64), its own opacity, and how far it moves over the next
+frame period: `travel`, the largest move of an edge in px, and `fade`,
+of its opacity (0 at rest; docs/architecture.md "Glitch reports").
+
+The replay holds each live surface to the one replay surface whose
+root is the same node (`nodes.json`'s origin, `id:` and row key: two
+popups from one `for` are told apart by their keys), each replay
+surface taken once. Of that surface it takes the last frame painted
+before the report: the replay's tick nearest `drawn_ns`, never past the
+report's own tick (`mark report`; the tick after it is drawn after the
+live shell's last frame), else the surface's last painted frame before
+the report. It names each row as `nodes.json` does, with its own
+travel and fade (the larger of its move since the frame before and
+over the next tick), and pairs the nodes in paint order by origin,
+`id:` and row key:
 
 - **VERIFIED**: every live node has its replayed one and the other way
   round, each edge within 1 logical px and the opacity within 0.02;
-- **DRIFTED**: anything else, one line per difference: the node
+  a node moving at the report (a spinner, a spring in flight) within
+  that plus two frames of its travel and fade (half a frame for the
+  tick nearest the live frame, half for a motion's start quantised to
+  ticks, one for the live frame's presentation lead), counted as
+  moving at the report; every surface the replay shows at the report
+  is a live one; and the surface's pixels, where the bundle has a PNG
+  of it, within `cpu-gpu`'s tolerance of the replay's image of that
+  frame, outside the boxes (both sides', grown by their bound) of what
+  moves;
+- **DRIFTED**: anything else, one line per difference: a node at rest
   (`@origin[key] #id`) and its surface, the live box and opacity, the
   replay's, and how many px apart its farthest edge is (and how far
   the opacity, past 0.02); a node only the live shell drew, or only
-  the replay; a live surface the replay drew no frame of;
+  the replay; a live surface the replay drew no frame of; a surface
+  shown in the replay only; a surface's pixels that differ (how many
+  and where; the files the bundle copied that differ now are named on
+  that line, since a replay reads them as they are now), or a PNG that
+  could not be compared;
+- a node moving at the report past its bound is listed on its own line
+  as `moving out of step`, which does not make the verdict DRIFTED:
+  its phase on the replay's clock parts from the live shell's (a loop
+  begun before the window) rather than where it is drawn;
 - **NOT CHECKED**: a bundle with no `drawn.json` (a strand from before
   it) or none of its surfaces on the output replayed.
 
 The live side costs nothing per frame: the boxes are flattened again
 on demand, at the report, from the renderer's retained scene at the
-time of its last paint (`Renderer::drawn_nodes`, the same flatten a
-repaint without a commit runs), with no eval hooks in the shipped
-binary.
+time of its last paint and one frame period later for the travel
+(`Renderer::drawn_nodes`, the same flatten a repaint without a commit
+runs; motion is peeked, never advanced), with no eval hooks in the
+shipped binary. That they are the trace's own record is held by
+`eval/tests/drawn.rs`: with `RunOptions::drawn` the harness holds
+`drawn_nodes` to every painted frame's trace node by node (scale 1.25,
+a clipped, turned box, a scrolled list, springs and fades in flight,
+on the CPU and on a GPU-presented surface).
+
+In a replay the checks' findings are hints (owner-2026-10-21):
+`replay.txt`, `summary.md`, `summary.json`, `summary.txt` and the
+viewer's statuses read `hint` where a gate run reads FAIL, CHANGED or
+XPASS. `strand-eval replay` reads `bundle.json` and finds `config/`
+before it clears `<dir>/replay`, so a directory that is no report
+keeps what is in it.
 
 **The comparison with the live shell** (`fidelity.json` and the head
 of `replay.txt`). The replay checks itself against what was recorded

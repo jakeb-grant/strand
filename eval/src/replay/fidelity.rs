@@ -119,8 +119,24 @@ fn premul(p: &[u8]) -> [u8; 4] {
 /// Compares two straight-alpha RGBA buffers in premultiplied alpha:
 /// pixels past `GPU_TOLERANCE` in any channel and their bounding box.
 pub fn diff_pixels(w: u32, a: &[u8], b: &[u8]) -> (u64, Option<[u32; 4]>) {
+    diff_pixels_masked(w, a, b, &[])
+}
+
+/// (replay-owner) [`diff_pixels`] leaving out the pixels inside any of
+/// `mask` (`[x, y, w, h]`, buffer px).
+pub fn diff_pixels_masked(
+    w: u32,
+    a: &[u8],
+    b: &[u8],
+    mask: &[[u32; 4]],
+) -> (u64, Option<[u32; 4]>) {
     let mut over = 0u64;
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    let masked = |x: u32, y: u32| {
+        mask.iter().any(|m| {
+            x >= m[0] && y >= m[1] && x < m[0].saturating_add(m[2]) && y < m[1].saturating_add(m[3])
+        })
+    };
     for (i, (pa, pb)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
         let (pa, pb) = (premul(pa), premul(pb));
         if pa
@@ -128,8 +144,11 @@ pub fn diff_pixels(w: u32, a: &[u8], b: &[u8]) -> (u64, Option<[u32; 4]>) {
             .zip(&pb)
             .any(|(x, y)| x.abs_diff(*y) > GPU_TOLERANCE)
         {
-            over += 1;
             let (x, y) = (i as u32 % w.max(1), i as u32 / w.max(1));
+            if masked(x, y) {
+                continue;
+            }
+            over += 1;
             x0 = x0.min(x);
             y0 = y0.min(y);
             x1 = x1.max(x);
@@ -317,8 +336,12 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         }
     }
 
-    // The frame at the report against each bundle PNG on this output.
+    // The frame at the report against each bundle PNG on this output:
+    // (replay-owner) the replay's frame nearest the time the live one
+    // was drawn, never one after the report, of the surface whose root
+    // is the same node (`drawn::frame_for`, `drawn::match_surfaces`).
     let len = plan.end - plan.start;
+    let matched = super::drawn::match_surfaces(b, plan, run);
     let origin_of_root = |root: &str| -> Option<String> {
         b.nodes
             .get(root)
@@ -360,19 +383,11 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
             bbox: None,
             why: None,
         };
-        let sid = trace
-            .surfaces
-            .iter()
-            .filter(|t| t.detached.is_none())
-            .find(|t| root_origin(trace, &t.root).is_some_and(|o| same_origin(&o, &origin)))
-            .map(|t| t.id);
+        let sid = matched.get(&s.slot).copied().flatten();
         let last = sid.and_then(|id| {
-            trace
-                .frames
-                .iter()
-                .rev()
-                .filter(|fr| fr.t_ns <= (T0.as_nanos() as u64) + len + period)
-                .find_map(|fr| fr.png.get(&id).map(|p| (fr.k, p.clone())))
+            let fr =
+                super::drawn::frame_for(run, plan, id, super::drawn::live_drawn_ns(b, s.slot))?;
+            fr.png.get(&id).map(|p| (fr.k, p.clone()))
         });
         let live = std::fs::read(b.dir.join(png))
             .ok()

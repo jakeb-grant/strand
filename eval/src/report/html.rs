@@ -181,7 +181,17 @@ fn choose(p: &Page, room: usize) -> BTreeMap<(usize, usize), BTreeSet<String>> {
     out
 }
 
-fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool) -> Value {
+/// (replay-owner) A replay's page shows the checks' statuses that would
+/// read as verdicts (`fail`, `changed`, `xpass`) as `hint`: its findings
+/// are hints (docs/eval.md, "Replaying a glitch report").
+fn as_hint(status: &str) -> &str {
+    match status {
+        "fail" | "changed" | "xpass" => "hint",
+        s => s,
+    }
+}
+
+fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool, hints: bool) -> Value {
     let sheets: Vec<Value> = e
         .failing()
         .into_iter()
@@ -191,14 +201,23 @@ fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool) -> Value {
             }))
         })
         .collect();
+    let mut checks = json!(e.report);
+    if hints && let Some(rs) = checks["results"].as_array_mut() {
+        for r in rs {
+            if let Some(st) = r["status"]["status"].as_str() {
+                let h = as_hint(st).to_string();
+                r["status"]["status"] = Value::String(h);
+            }
+        }
+    }
     json!({
         "id": e.id,
         "file": e.file,
-        "status": e.status(),
+        "status": if hints { as_hint(e.status()) } else { e.status() },
         "error": e.error,
         "notes": e.notes,
         "trace": e.trace,
-        "checks": e.report,
+        "checks": checks,
         "refs": e.refs,
         "thinned": thinned,
         "images": images,
@@ -248,7 +267,7 @@ pub fn page(p: &Page) -> Result<String, Error> {
                             }
                         }
                         let thinned = images.len() < offered.len();
-                        entry_json(e, images, thinned)
+                        entry_json(e, images, thinned, p.replay.is_some())
                     })
                     .collect();
                 json!({

@@ -2073,7 +2073,7 @@ Without `save` the answer is as before. With it:
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
 | `services.json` | `{service: {"running": bool, "fields": {field: value}}}` |
 | `cells.json` | `{cell path: value}` |
-| `drawn.json` | (replay-owner) `{"format": 1, "surfaces": [{"slot", "root": node_ref, "nodes": [{"ref": node_ref, "origin", "id", "key", "box": [x, y, w, h], "opacity"}]}]}`: each mapped surface's nodes as its last frame drew or hid them, in paint order, named as `nodes.json` names them, the box in surface logical px through every transform (axis aligned, to 1/64) and the node's own opacity; main takes them with the frames (`Renderer::drawn_nodes`), logic names them; what the replay's verdict holds its own frame to |
+| `drawn.json` | (replay-owner) `{"format": 2, "surfaces": [{"slot", "root": node_ref, "drawn_ns", "period_ns", "nodes": [{"ref": node_ref, "origin", "id", "key", "box": [x, y, w, h], "opacity", "travel", "fade"}]}]}`: each mapped surface's nodes as its last frame drew or hid them, in paint order, named as `nodes.json` names them, the box in surface logical px through every transform (axis aligned, to 1/64) and the node's own opacity, with how far it moves over the next frame period (`travel`: the largest edge move, px; `fade`: of the opacity; to 1/64, 0 at rest); `drawn_ns` is when that frame was drawn on the flight rings' clock (absent when not known) and `period_ns` the surface's frame period; main takes them with the frames (`Renderer::drawn_nodes`), logic names them; what the replay's verdict holds its own frame to |
 | `nodes.json` | `{node_ref: {"origin": "file.strand:LINE:COL", "id", "key"}}`: each node the input ring names (a press's hit, a mapped surface's root) and each mapped surface's root, still mounted, the file under the config directory and the `for` row key (none for a per-screen surface's own screen), what a replay holds its own press's hit to |
 | `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
 | `config/` | the module set's `.strand` files at their paths under the config directory, its `icons/` folder |
@@ -2094,12 +2094,18 @@ scripts/report-view.sh --no-open <dir> in the strand checkout and read
 <dir>/replay/replay.txt.`
 
 (replay-owner) `strand_render::Renderer::drawn_nodes(SurfaceId) ->
-Option<Vec<DrawnNode>>` (`DrawnNode { node, rect: LogicalRect,
-opacity }`), the interface the binary uses for `drawn.json`: the
-surface's scene flattened again at the time of its last paint, as a
-repaint that commits nothing does (`repaint_offscreen`'s flatten), with
-each node drawn or hidden kept with its box through its transforms and
-its own opacity; `None` before a surface's first layout. It runs only
+Option<DrawnFrame>` (`DrawnFrame { drawn_at: Option<Instant>, period:
+Duration, nodes: Vec<DrawnNode> }`, `DrawnNode { node, rect:
+LogicalRect, opacity, travel, fade }`), the interface the binary uses
+for `drawn.json`: the surface's scene flattened again at the time of
+its last paint, as a repaint that commits nothing does
+(`repaint_offscreen`'s flatten), with each node drawn or hidden kept
+with its box through its transforms and its own opacity, and flattened
+once more a frame period later for each node's `travel` and `fade`
+(motion is peeked, never advanced, so the next frame draws as it
+would have); `drawn_at` is the wall time that paint stands for (the
+surface's clock), `period` its frame period; `None` before a surface's
+first layout. It runs only
 when a report asks, on main between frames, so no frame pays for it
 and no eval hook is in the shipped binary.
 

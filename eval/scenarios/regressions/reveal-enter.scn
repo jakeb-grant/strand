@@ -1,30 +1,32 @@
 id     = "reveal-enter"
-about  = """A finding of evalfix (docs/decisions.md evalfix): a row that mounts with a
-growing card plays its enter pose from its first frame, wholly cut out by the
-card's clip, and comes into view only as the card's height spring uncovers it,
-by then most of the way to rest. Its pose played; the moving clip edge is
-what reveals it. `vanish`'s pop-in judged the first frame it showed, a
-frame the clip chose, and called it a pop-in. A node kept from view by its
-ancestors' clip from the frame it mounts until it shows is judged where its
-enter starts. Its title, mounted in view, is judged where it first shows."""
-screen = { width = 400, height = 320, scale = 1.0 }
+about  = """An enter a moving clip uncovers is judged where it starts (docs/decisions.md
+evalfix, replay-owner): a drawer whose width springs open from 50 to 380 px,
+clipping what it holds, mounts two tiles that enter from `opacity: 0; scale:
+0.6`. The near one is in view from its first frame and is judged there. The
+far one plays its pose from the frame it mounts while wholly cut out, and
+comes into view only as the drawer's moving edge reaches it, by then most of
+the way to rest: the moving edge is how it comes into view, as a scroll's
+edge is for a row it carries in. Judged where it first showed, a frame the
+clip chose, it read as a pop-in. Written for Strand's own gate, apart from any
+shell's values."""
+screen = { width = 420, height = 120, scale = 1.0 }
 hz     = 60
 
 === shell.strand
 state open = false
 
-panel Card {
-  anchor: top; open: true
-  col { id: card; clip: true; bg: #303446; width: 300; align: start
-        height: 40 ~ spring(450, 0.8)
-        when open { height: 260 ~ spring(450, 0.8) }
-    col { width: 300; height: 260; shrink: 0; pad: 10; gap: 10
+panel Drawer {
+  anchor: top_left; open: true
+  row { id: drawer; clip: true; height: 44; bg: #2e3440; align: center
+        width: 50 ~ spring(260, 0.95)
+        when open { width: 380 ~ spring(260, 0.95) }
+    row { width: 380; height: 44; shrink: 0; pad: 0, 8; gap: 8; align: center
       if open {
-        row { id: title; height: 20; width: 200; shrink: 0; bg: #c6d0f5; enter { opacity: 0; y: -8 } }
+        box { id: near; width: 30; height: 24; shrink: 0; bg: #a3be8c; enter { opacity: 0; scale: 0.6 } }
       }
-      box { height: 150; shrink: 0 }
+      box { width: 250; height: 24; shrink: 0 }
       if open {
-        row { id: late; height: 30; width: 260; shrink: 0; bg: #8caaee; enter { opacity: 0; y: -8 } }
+        box { id: far; width: 40; height: 24; shrink: 0; bg: #ebcb8b; enter { opacity: 0; scale: 0.6 } }
       }
     }
   }
@@ -32,6 +34,6 @@ panel Card {
 
 === steps
 rest
-mark grow
+mark open
 set open true
 rest

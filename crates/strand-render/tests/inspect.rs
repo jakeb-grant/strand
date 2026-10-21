@@ -589,7 +589,8 @@ fn drawn_nodes_are_the_last_frames_boxes_after_transforms() {
         assert!(r.drawn_nodes(S).is_none(), "before its first layout");
         let mut buf = buffer(scale);
         settle(&mut r, &mut buf, S, T0);
-        let drawn = r.drawn_nodes(S).expect("a painted surface");
+        let frame = r.drawn_nodes(S).expect("a painted surface");
+        let drawn = &frame.nodes;
         assert_eq!(
             drawn.iter().map(|d| d.node).collect::<Vec<_>>(),
             [root, plain, zoomed, gone],
@@ -603,7 +604,9 @@ fn drawn_nodes_are_the_last_frames_boxes_after_transforms() {
         assert_eq!(of(zoomed).rect, LogicalRect::new(10.0, 3.0, 40.0, 20.0));
         assert_eq!(of(zoomed).opacity, 0.5);
         assert_eq!(of(gone).opacity, 0.0);
-        assert_eq!(r.drawn_nodes(S).unwrap(), drawn, "asked again");
+        // Nothing is in flight: nothing travels.
+        assert!(drawn.iter().all(|d| d.travel == 0.0 && d.fade == 0.0));
+        assert_eq!(r.drawn_nodes(S).unwrap(), frame, "asked again");
         assert!(!r.wants_frame(S), "asking wants no frame");
     }
 }

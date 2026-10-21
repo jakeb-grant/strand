@@ -169,33 +169,71 @@ impl Renderer {
 
     /// (replay-owner) Every node `surface`'s last painted frame drew, in
     /// paint order, or hid (at opacity or scale 0, inside a subtree
-    /// playing its exit, cut out by a clip): its box and opacity, for a
-    /// glitch report (docs/architecture.md, "Glitch reports"). Computed
-    /// on demand by flattening the surface again at that frame's time as
-    /// a frame that commits nothing, as
-    /// [`Renderer::repaint_offscreen`] does; no frame pays for it. `None`
-    /// before its first layout.
-    pub fn drawn_nodes(&mut self, surface: SurfaceId) -> Option<Vec<crate::DrawnNode>> {
+    /// playing its exit, cut out by a clip): its box and opacity, and how
+    /// far each moves over the next frame period, with when that frame
+    /// was drawn, for a glitch report (docs/architecture.md, "Glitch
+    /// reports"). Computed on demand by flattening the surface again at
+    /// that frame's time, and once more a period later, as frames that
+    /// commit nothing, as [`Renderer::repaint_offscreen`] does: what is
+    /// in flight is peeked, nothing starts or settles, and no frame pays
+    /// for it. `None` before its first layout.
+    pub fn drawn_nodes(&mut self, surface: SurfaceId) -> Option<crate::DrawnFrame> {
         let s = self.surfaces.get(&surface)?;
         let (root, size, scale) = (s.root, s.size, s.scale);
         if size.is_empty() {
             return None;
         }
         let time = s.painted_time.unwrap_or_default();
+        let period = self.clocks.period(surface);
+        let drawn_at = s
+            .painted_time
+            .filter(|t| !t.is_zero())
+            .and_then(|t| self.clocks.instant_of(surface, t));
         let layouts = self.shaped();
+        self.anim.set_period(period);
+        let at = |r: &mut Renderer, t: Duration| -> Option<Vec<crate::DrawnNode>> {
+            r.anim.begin(t, None, false);
+            let boxes = r.surfaces.get(&surface).and_then(|s| s.boxes.as_ref())?;
+            crate::flatten::flatten_drawn(
+                &r.tree,
+                root,
+                size,
+                scale,
+                &layouts,
+                boxes,
+                &mut r.anim,
+                &r.extras,
+            )
+            .drawn
+        };
+        let mut nodes = at(self, time)?;
+        // A frame at time zero snaps everything: nothing is in flight.
+        if !time.is_zero()
+            && let Some(next) = at(self, time + period)
+        {
+            for n in &mut nodes {
+                let Some(m) = next.iter().find(|m| m.node == n.node) else {
+                    continue;
+                };
+                let (a, b) = (n.rect, m.rect);
+                n.travel = [
+                    (a.x - b.x).abs(),
+                    (a.y - b.y).abs(),
+                    (a.x + a.w - b.x - b.w).abs(),
+                    (a.y + a.h - b.y - b.h).abs(),
+                ]
+                .into_iter()
+                .fold(0.0, f32::max);
+                n.fade = (n.opacity - m.opacity).abs();
+            }
+        }
+        // Left as the frame drawn: a preview after this one reads it.
         self.anim.begin(time, None, false);
-        let boxes = self.surfaces.get(&surface).and_then(|s| s.boxes.as_ref())?;
-        let f = crate::flatten::flatten_drawn(
-            &self.tree,
-            root,
-            size,
-            scale,
-            &layouts,
-            boxes,
-            &mut self.anim,
-            &self.extras,
-        );
-        f.drawn
+        Some(crate::DrawnFrame {
+            drawn_at,
+            period,
+            nodes,
+        })
     }
 
     /// (report) The local files the renderer draws for mounted nodes:

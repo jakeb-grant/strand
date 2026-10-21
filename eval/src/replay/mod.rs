@@ -56,6 +56,24 @@ pub struct Replayed {
 /// may meet one wrongly (decisions.md owner-2026-10-21).
 pub const HINTS: &str = "hints (the checks may be wrong on a real shell)";
 
+/// (replay-owner) A check's line as a replay prints it: a check's
+/// status that would read as a verdict (`FAIL`, `CHANGED`, `XPASS`) is
+/// `hint`, since a replay's findings are hints.
+pub fn hinted(line: &str) -> String {
+    for word in ["FAIL", "CHANGED"] {
+        if let Some(head) = line.strip_suffix(&format!(": {word}")) {
+            return format!("{head}: hint");
+        }
+    }
+    if let Some((head, _)) = line.split_once(": XPASS") {
+        return format!("{head}: hint");
+    }
+    if let Some(rest) = line.strip_prefix("  CHANGED: ") {
+        return format!("  hint: {rest}");
+    }
+    line.to_string()
+}
+
 /// Plans `bundle`'s replay and writes its scenario to `to` (by default
 /// `eval/scenarios/local/report-<bundle name>.scn`).
 pub fn write_scenario(
@@ -167,9 +185,10 @@ pub fn replay(
         crate::refs::for_scenario(&sc, &crate::refs::dir(), false),
     )?;
     let fid = fidelity::compare(&b, &plan, &checked.run);
-    let verdict = drawn::compare(&b, &plan, &checked.run);
+    let mut verdict = drawn::compare(&b, &plan, &checked.run);
     let mut limits = plan.limits.clone();
     let changed = files_changed(&b);
+    verdict.changed_files = changed.clone();
     if !changed.is_empty() {
         let shown: Vec<&str> = changed.iter().take(8).map(String::as_str).collect();
         limits.push(format!(
@@ -192,7 +211,13 @@ pub fn replay(
     for n in &checked.run.notes {
         lines.push(format!("{} note: {n}", sc.id));
     }
-    lines.extend(checked.report.lines(&checked.run.trace));
+    lines.extend(
+        checked
+            .report
+            .lines(&checked.run.trace)
+            .into_iter()
+            .map(|l| hinted(&l)),
+    );
     let ok = checked.report.ok();
     let text = replay_txt(&b, &plan, &fid, &verdict, &limits, &checked, &path);
     let json = fidelity_json(&b, &plan, &fid, &verdict, &limits, &checked);
@@ -639,7 +664,7 @@ fn replay_txt(
                 s,
                 "  {t} {} {}{}: {}",
                 r.check,
-                if f.sev == Sev::Fail { "FAIL" } else { "warn" },
+                if f.sev == Sev::Fail { "hint" } else { "warn" },
                 f.key
                     .as_deref()
                     .map_or_else(String::new, |k| format!(" {}", node_name(&run.trace, k))),

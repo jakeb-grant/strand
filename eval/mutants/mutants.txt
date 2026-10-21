@@ -257,40 +257,43 @@ stagger-turn-skipped.patch     regressions/stagger-preset-turn.scn stagger:#t3
 # offset-retarget-snap.patch: a prop spring retargeted while in flight
 # snaps to its new target instead of springing from where it is with its
 # velocity (design.md "Springs everywhere": "Retargeting mid-flight keeps
-# velocity, so interrupted animations never jolt"): the card logic's timer
+# velocity, so interrupted animations never jolt"): the sheet logic's timer
 # calls back mid-flight lands home in one frame, a jump of its whole
-# excursion past 0.75 of it (`teleport`; decisions.md evalfix).
-offset-retarget-snap.patch     regressions/offset-out-and-back.scn teleport:#card:x
+# excursion past 0.75 of it (`teleport`; decisions.md evalfix, replay-owner).
+offset-retarget-snap.patch     regressions/offset-out-and-back.scn teleport:#sheet:y
 # sizing-clip-open.patch: a `clip: true` box stops clipping while its size
 # springs (against wave3-pixels p2, "a node whose size springs clips its
-# content while it does"), so the row reveal-enter's card is to uncover
-# with its growing height is drawn below the card from its first frame
-# (`contain`; decisions.md evalfix).
-sizing-clip-open.patch         regressions/reveal-enter.scn contain:#late
+# content while it does"), so the tile reveal-enter's drawer is to uncover
+# with its growing width is drawn past the drawer from its first frame
+# (`contain`; decisions.md evalfix, replay-owner).
+sizing-clip-open.patch         regressions/reveal-enter.scn contain:#far
 # ghost-children-undrawn.patch: the flattener visits no child of a removed
-# subtree's ghost, so what rides in a card playing its exit vanishes on the
-# exit's first frame while the card still fades (design.md "Poses": "A
+# subtree's ghost, so what rides in an entry playing its exit vanishes on
+# the exit's first frame while the entry still fades (design.md "Poses": "A
 # removed subtree plays `exit`, then unmounts"; `vanish` pop-out of a
-# passenger; decisions.md evalfix).
-ghost-children-undrawn.patch   regressions/ghost-passengers.scn vanish:#chip
+# passenger; decisions.md evalfix, replay-owner).
+ghost-children-undrawn.patch   regressions/ghost-passengers.scn vanish:#badge
 # offset-retarget-snap.patch again (evalfix review), against a call back
-# 50 ms in, a third of the way out: the card snaps 153 px home, less than
-# 0.75 of the 240 px it was written to travel, so `teleport` gives it a
-# pass, and the way in flight dropped for one at rest is `continuity`'s
-# (decisions.md evalfix review).
-offset-retarget-snap.patch     regressions/offset-early-callback.scn continuity:#card
+# 40 ms in, before it is half way out: the sheet snaps 177 px home at k4,
+# less than 0.75 of the 400 px it was written to travel, so
+# `teleport` gives it a pass, and the way in flight dropped for one at rest
+# is `continuity`'s (decisions.md evalfix review, replay-owner).
+offset-retarget-snap.patch     regressions/offset-early-callback.scn continuity:#sheet
 # offset-spring-doubled.patch: the flattener draws a node's own `x:` and
 # `y:` springs' parts twice, so its drawn box leaves the place its parts
 # put it while they are in flight (design.md "Springs everywhere": a spring
 # moves an offset between where it was and where it is written to go): the
-# card jumps 200 px home at k11. `teleport` reads its way from the probe's
-# parts, so the jump does not widen its own bound (decisions.md evalfix
-# review); `coherence`'s inherit sees the box off its offsets.
-offset-spring-doubled.patch    regressions/offset-out-and-back.scn teleport:#card:x coherence:#card
+# sheet jumps 328 px up at k1 and 352 px down at k9. `coherence`'s inherit
+# sees the box off its offsets. `teleport` does not catch it on this
+# sheet: the doubled overshoot (-316 to 691) is drawn in the same
+# segment and widens its travel past 0.75 of either jump (decisions.md
+# replay-owner; the island-derived card it was first listed against caught
+# it there).
+offset-spring-doubled.patch    regressions/offset-out-and-back.scn coherence:#sheet
 # exit-dropped.patch: a removed node with an `exit` pose gets no ghost, so
-# the card logic removes leaves with everything in it at full opacity on
+# the entry logic removes leaves with everything in it at full opacity on
 # the next frame (design.md "Poses": "A removed subtree plays `exit`, then
 # unmounts"). Pop-out reads the removal from logic's diff, not the
-# renderer's motion bits, and holds the card to its pose (`vanish`;
-# decisions.md evalfix review).
-exit-dropped.patch             regressions/ghost-passengers.scn vanish:#card
+# renderer's motion bits, and holds the entry to its pose (`vanish`;
+# decisions.md evalfix review, replay-owner).
+exit-dropped.patch             regressions/ghost-passengers.scn vanish:#entry

@@ -286,9 +286,13 @@ impl Shell {
     /// (replay-owner) `drawn.json`: each mapped surface's nodes as its
     /// last frame drew them (`MainBundle::drawn`), named as `nodes.json`
     /// names a node (origin, `id:`, `for` row key), with the box each
-    /// was drawn at (surface logical px, after transforms, to 1/64) and
-    /// its own opacity, in paint order. A node with no place in the
-    /// config's source (none the replay can name either) is left out.
+    /// was drawn at (surface logical px, after transforms, to 1/64), its
+    /// own opacity and how far each moves over the next frame period
+    /// (`travel` px, `fade`), in paint order; and per surface when that
+    /// frame was drawn (`drawn_ns`, ns since the rings' epoch, the
+    /// clock of every record) and its frame period (`period_ns`). A
+    /// node with no place in the config's source (none the replay can
+    /// name either) is left out.
     pub(super) fn drawn_table(&self, main: &MainBundle, config_dir: Option<&Path>) -> Json {
         use strand_compiler::instantiate::inspect::node_ref;
         let screens = self.screen_ids();
@@ -296,14 +300,15 @@ impl Shell {
         let surfaces: Vec<Json> = main
             .drawn
             .iter()
-            .map(|(slot, nodes)| {
+            .map(|(slot, frame)| {
                 let root = main
                     .surfaces
                     .iter()
                     .find(|s| s["slot"].as_u64() == Some(u64::from(*slot)))
                     .and_then(|s| s["root"].as_str())
                     .map(str::to_string);
-                let nodes: Vec<Json> = nodes
+                let nodes: Vec<Json> = frame
+                    .nodes
                     .iter()
                     .filter_map(|n| {
                         let (f, _, sp) = self.inst.origin(n.node)?;
@@ -317,13 +322,21 @@ impl Shell {
                             "key": ident.as_ref().and_then(|i| row_key(i, &screens)),
                             "box": [q(r.x), q(r.y), q(r.w), q(r.h)],
                             "opacity": q(n.opacity),
+                            "travel": q(n.travel),
+                            "fade": q(n.fade),
                         }))
                     })
                     .collect();
-                json!({"slot": slot, "root": root, "nodes": nodes})
+                json!({
+                    "slot": slot,
+                    "root": root,
+                    "drawn_ns": frame.drawn_at.map(strand_core::flight::ns_at),
+                    "period_ns": u64::try_from(frame.period.as_nanos()).unwrap_or(u64::MAX),
+                    "nodes": nodes,
+                })
             })
             .collect();
-        json!({"format": 1, "surfaces": surfaces})
+        json!({"format": 2, "surfaces": surfaces})
     }
 }
 

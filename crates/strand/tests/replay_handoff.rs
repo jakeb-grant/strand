@@ -140,3 +140,59 @@ fn with_no_report_it_says_where_it_looked() {
     assert!(err.contains("no glitch report under"), "{err}");
     assert!(!log.exists(), "strand-eval ran with no report");
 }
+
+/// (replay-owner review) A report directory whose name is not UTF-8 is
+/// passed on byte for byte, never a panic.
+#[test]
+fn a_directory_that_is_not_utf8_is_passed_on_as_it_is() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let d = scratch("bytes");
+    let log = d.join("log");
+    let strand = strand_in(&d.join("bin"));
+    stub_in(&d.join("bin"), "sibling", &log);
+    let name = OsStr::from_bytes(b"/r/caf\xe9");
+    let out = Command::new(&strand)
+        .arg("replay")
+        .arg(name)
+        .arg("-o")
+        .arg("/tmp/r")
+        .env("PATH", d.join("path"))
+        .env("XDG_STATE_HOME", d.join("state"))
+        .env_remove("STRAND_STATE_DIR")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    let got = std::fs::read(&log).unwrap();
+    let want = [
+        b"sibling\nreplay\n".as_slice(),
+        b"/r/caf\xe9\n",
+        b"-o\n/tmp/r\n",
+    ]
+    .concat();
+    assert_eq!(got, want);
+}
+
+/// (replay-owner review) `-o` is `--out`: its value is no report, so the
+/// newest report is still put first.
+#[test]
+fn the_short_out_option_keeps_the_newest_report_the_default() {
+    let d = scratch("short-out");
+    let log = d.join("log");
+    let strand = strand_in(&d.join("bin"));
+    stub_in(&d.join("bin"), "sibling", &log);
+    let state = d.join("state");
+    let newest = report(&state, "2026-10-21_08-30-00");
+    let out = run(&strand, &["-o", "/tmp/r"], &d.join("path"), &state);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert_eq!(
+        lines(&log),
+        [
+            "sibling".to_string(),
+            "replay".into(),
+            newest.display().to_string(),
+            "-o".into(),
+            "/tmp/r".into()
+        ]
+    );
+}

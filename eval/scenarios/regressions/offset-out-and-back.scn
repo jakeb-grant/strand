@@ -1,26 +1,28 @@
 id     = "offset-out-and-back"
-about  = """A finding of evalfix (docs/decisions.md evalfix): a card whose `x:` springs
-out and is sent back by logic's own timer within the same segment travels its
-whole excursion, though it starts and rests at the same place. `x:` is a paint
-offset, so no frame lays the card out elsewhere, and `teleport` took the
-segment's travel from its first and last frames alone: a smooth spring's 40 to
-50 px steps read as jumps against a bound of one tick's 32 px. The way of an
-offset springing is every place its declared offset put it while the spring
-was in flight; its dot, carried by it, travels the same way."""
-screen = { width = 640, height = 200, scale = 1.0 }
+about  = """An offset sprung out and called back within one segment travels its whole
+excursion (docs/decisions.md evalfix, replay-owner): a sheet whose `y:` springs
+down 400 px is called back by logic's own `after` timer 120 ms in, most of the
+way down, and springs home. It starts and rests at the same place, and `y:` is
+a paint offset, so no frame lays it out elsewhere; a rule that took a
+segment's travel from its first and last frames alone gave its 60 to 70 px
+steps a bound of one tick's, and called them jumps. design.md "Springs
+everywhere" makes an offset a spring between where it is and where it is
+written to go, so both ends are on its way, and the pin it carries travels
+the same way. Written for Strand's own gate, apart from any shell's values."""
+screen = { width = 240, height = 600, scale = 1.0 }
 hz     = 60
 
 === shell.strand
-state out = false
-on change out after 150ms { if out { out = false } }
+state down = false
+on change down after 120ms { if down { down = false } }
 
-bar Top {
-  height: 60; bg: #181825
-  row { pad: 10
-    col { id: card; width: 80; height: 40; bg: #303446; radius: 8; pad: 6
-          x: 0 ~ spring(700, 0.7)
-          when out { x: 240 ~ spring(700, 0.7) }
-      box { id: dot; width: 12; height: 12; radius: full; bg: #8caaee }
+panel Drop {
+  anchor: top_left; open: true; width: 200; height: 560; bg: #11111b
+  col { pad: 12
+    box { id: sheet; width: 120; height: 48; radius: 12; bg: #3b4252
+          y: 0 ~ spring(900, 1)
+          when down { y: 400 ~ spring(900, 1) }
+      box { id: pin; width: 10; height: 10; radius: full; bg: #88c0d0; margin: 8 }
     }
   }
 }
@@ -28,5 +30,5 @@ bar Top {
 === steps
 rest
 mark out-and-back
-set out true
+set down true
 rest
