@@ -254,3 +254,9 @@ offset-retarget-snap.patch     regressions/offset-out-and-back.scn teleport:#car
 # with its growing height is drawn below the card from its first frame
 # (`contain`; decisions.md evalfix).
 sizing-clip-open.patch         regressions/reveal-enter.scn contain:#late
+# ghost-children-undrawn.patch: the flattener visits no child of a removed
+# subtree's ghost, so what rides in a card playing its exit vanishes on the
+# exit's first frame while the card still fades (design.md "Poses": "A
+# removed subtree plays `exit`, then unmounts"; `vanish` pop-out of a
+# passenger; decisions.md evalfix).
+ghost-children-undrawn.patch   regressions/ghost-passengers.scn vanish:#chip

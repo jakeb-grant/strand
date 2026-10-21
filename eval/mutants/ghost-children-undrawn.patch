@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -1856,7 +1856,7 @@ impl<'a> Flattener<'a> {
+             clips: child_clips,
+         };
+         let mut children = Rect::default();
+-        if !(clips && child_clip.is_empty()) {
++        if !(clips && child_clip.is_empty()) && !self.tree.is_ghost(node.id) {
+             // (M4) A child lifted by a drag paints above its siblings,
+             // one springing back below the one a drag holds (dock-drag).
+             let mut order = Cow::Borrowed(node.children.as_slice());

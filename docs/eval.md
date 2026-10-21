@@ -1055,6 +1055,21 @@ says a node moves, not how, so it does not exempt from them; only an
   unmounted half way, 20 px tall after a 10 px step, shut their list by
   their removal: that pops. A clip that shuts on the last frame a node
   is drawn in is judged the same way, at the frame it last showed.
+  (evalfix) Only a removed subtree's root is held to its exit pose: the
+  subtree plays its root's `exit` and unmounts whole (spec.md 6.4, "a
+  removed subtree plays its `exit` pose"), so the nodes inside it, which
+  the probe marks `EXIT` too, ride along with their own `exit` unplayed.
+  The root is the topmost of the unbroken run of exiting ancestors from
+  the nearest one drawn. A passenger gone with its root is not judged; one
+  gone while its root is still drawn the frame after must have had nothing
+  to show there: the nearest of its ancestors drawn then shows nothing
+  (faded to nothing, the renderer drawing no child of a node at opacity
+  0, or cut out by a clip, whose children it does not visit), a clipping
+  ancestor shows no area, on screen or in its box before transforms (a
+  box clips its children to itself before its turn: matrix
+  exit-height0+lean's tilted row laid 0 tall, its turned bounds 1.7 px),
+  or it showed nothing itself on its last frame.
+  Otherwise it vanished from a subtree still on screen, and pops.
 - **`continuity`** (eval-rules-2). "Retargeting mid-flight keeps
   velocity, so interrupted animations never jolt" (design.md), a spring
   is a unit-mass damped oscillator, and a change starts one refresh of
@@ -1739,7 +1754,9 @@ l-app-grid-stagger) and colour-srgb (`colour`, k-qs-toggles: colour
 springs in premultiplied sRGB), and evalfix's offset-retarget-snap
 (`teleport`, offset-out-and-back: a spring retargeted in flight snaps)
 and sizing-clip-open (`contain`, reveal-enter: a `clip: true` box whose
-size springs stops clipping): 49 in all. In a detached worktree of HEAD, each scenario
+size springs stops clipping) and ghost-children-undrawn (`vanish`,
+ghost-passengers: a removed subtree's children are not drawn while its
+root plays its exit): 50 in all. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed,
 or, for an expected failure written `unmatched:SELECTOR`, stop because
 that selector matches no node (how a name the product loses shows).

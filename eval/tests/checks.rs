@@ -9288,6 +9288,97 @@ fn pop_out_passes_a_node_whose_clipping_parent_shuts_the_frame_after() {
     assert!(pops(&t, 2), "{}", show(&check(&sc, &t), &t));
 }
 
+/// (evalfix) A removed card (`exit { opacity: 0 }`) fades out over ticks
+/// 1 to 6, drawn until tick `gone` (inclusive), its chip riding in it
+/// with an `exit { opacity: 0; y: -12 }` of its own that the subtree
+/// does not play: the chip keeps its own opacity and offset and fades
+/// with the card. The chip is drawn until tick `chip` (inclusive).
+fn ghost(chip: u32, gone: u32) -> RunTrace {
+    let fade = [1.0, 0.86, 0.62, 0.41, 0.26, 0.08, 0.0, 0.0];
+    let mut t = shape(10, |k| {
+        let mut v = vec![row("bar", [0.0, 0.0, 300.0, 30.0])];
+        if k > gone {
+            return v;
+        }
+        let op = fade[(k as usize).min(7)];
+        let exiting = k >= 1;
+        let mut card = row("card", [10.0, 4.0, 200.0, 22.0]).draws().op(op);
+        let mut c = row("chip", [20.0, 8.0, 40.0, 14.0]).draws();
+        c.op = op;
+        if exiting {
+            card = card
+                .mot(Motions::OPACITY_SPRING | Motions::EXIT)
+                .auth(Axes::OPACITY);
+            card.hidden = Some(if op <= 0.0 { "opacity0" } else { "inert" }.into());
+            c = c.mot(Motions::EXIT);
+            c.emot = (Motions::EXIT | Motions::OPACITY_SPRING).0;
+            c.hidden = Some("inert".into());
+        }
+        v.push(card);
+        // The renderer draws no child of a node at opacity 0.
+        if k <= chip && op > 0.0 {
+            v.push(c);
+        }
+        v
+    });
+    t.nodes.get_mut("card").unwrap().parent = Some("bar".into());
+    t.nodes.get_mut("card").unwrap().exit = Some(Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    });
+    let c = t.nodes.get_mut("chip").unwrap();
+    c.parent = Some("card".into());
+    c.exit = Some(Pose {
+        opacity: Some(0.0),
+        y: Some(-12.0),
+        ..Pose::default()
+    });
+    t.seal();
+    t
+}
+
+#[test]
+fn pop_out_judges_a_removed_subtree_at_its_root() {
+    let sc = scenario("");
+    let pops = |t: &RunTrace| -> Vec<(String, Option<u32>, String)> {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .filter(|f| f.msg.starts_with("pop-out"))
+            .map(|f| (f.key.clone().unwrap_or_default(), f.k, f.msg.clone()))
+            .collect()
+    };
+    // The card fades to nothing and unmounts; its chip, not drawn once
+    // the card is at opacity 0, rode along at its own full opacity.
+    let t = ghost(10, 8);
+    assert!(pops(&t).is_empty(), "{}", show(&check(&sc, &t), &t));
+    // The chip gone at tick 2 while the card still shows at 0.41.
+    let t = ghost(2, 8);
+    let p = pops(&t);
+    assert!(
+        p.iter()
+            .any(|(k, at, m)| k == "chip" && *at == Some(2) && m.contains("removed subtree")),
+        "{p:?}"
+    );
+    // Not drawn at all once the card exits: gone at tick 0, its last
+    // frame before the subtree was removed.
+    let t = ghost(0, 8);
+    let p = pops(&t);
+    assert!(
+        p.iter()
+            .any(|(k, at, m)| k == "chip" && *at == Some(0) && m.contains("removed subtree")),
+        "{p:?}"
+    );
+    // The card itself unmounted at tick 3, at 0.41: its root pops out.
+    let t = ghost(10, 3);
+    let p = pops(&t);
+    assert!(
+        p.iter().any(|(k, at, _)| k == "card" && *at == Some(3)),
+        "{p:?}"
+    );
+    assert!(!p.iter().any(|(k, _, _)| k == "chip"), "{p:?}");
+}
+
 /// (eval-rules-7) Practice set 8's OSD opened under reduced motion: drawn
 /// once, then left on screen unchanged for a second until its surface
 /// goes. The timeline's next frame comes 60 ticks later, and a node shown
