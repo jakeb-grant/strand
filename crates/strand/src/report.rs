@@ -181,7 +181,7 @@ pub fn report_cli(args: &[String]) -> Result<String, String> {
         [a] if a == "--json" => true,
         _ => return Err("usage: strand report [--json]".into()),
     };
-    let answer = crate::ipc::ask(&Request::Report)?;
+    let answer = crate::ipc::ask(&Request::Report { save: None })?;
     let report = answer.get("report").cloned().unwrap_or(Json::Null);
     Ok(if json {
         format!("{report}\n")

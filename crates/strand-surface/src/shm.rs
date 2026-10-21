@@ -344,6 +344,19 @@ impl ShmBuffers {
         Ok(Some(acquired))
     }
 
+    /// (report) The frame committed last, copied as RGBA
+    /// ([`strand_scene::FramePixels`]); `None` before the first commit at
+    /// this size (or after the buffers went to the GPU thread).
+    pub fn newest_frame(
+        &mut self,
+        scale: strand_scene::Scale,
+    ) -> Option<strand_scene::FramePixels> {
+        let i = self.slots.newest()?;
+        let (size, stride) = (self.size, self.stride);
+        let px = self.pixels(i)?;
+        strand_scene::FramePixels::from_argb(px, size, stride, scale)
+    }
+
     /// The pixels of buffer `index`.
     pub fn pixels(&mut self, index: usize) -> Option<&mut [u8]> {
         let len = self.buffer_len();

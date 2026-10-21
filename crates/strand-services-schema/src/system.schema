@@ -20,4 +20,9 @@ service system {
   /// `dur(system.uptime)` reads `3 h 12 min`. It changes once a minute,
   /// and only while a visible reader shows it.
   uptime: duration
+  /// The glitch-report recording is on: Strand keeps the last minute or
+  /// so of what drove the shell in memory for `strand report`.
+  /// Writable; false empties it at once, and the choice is kept across
+  /// restarts.
+  replay: bool rw
 }

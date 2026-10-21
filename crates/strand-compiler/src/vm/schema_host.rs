@@ -109,6 +109,9 @@ pub struct SchemaHost {
     /// ([`ServiceHost::read_builtin`]) and come back when the config's
     /// declaration goes.
     shadowed: RefCell<BTreeMap<String, RecordId>>,
+    /// (report) Answers queued for the next fetches of a method
+    /// (`service.method`), oldest first ([`SchemaHost::answer`]).
+    answers: RefCell<HashMap<String, std::collections::VecDeque<Result<Value, String>>>>,
 }
 
 /// Where a shadowed builtin service's cells are kept.
@@ -156,6 +159,7 @@ impl SchemaHost {
             actions: RefCell::default(),
             refs: RefCell::default(),
             shadowed: RefCell::default(),
+            answers: RefCell::default(),
         };
         for (name, &r) in &crate::schema::Schema::builtin().services {
             host.add_service(rt, name, r);
@@ -341,6 +345,32 @@ impl SchemaHost {
     /// (only the mock records them).
     pub fn take_writes(&self) -> Vec<WriteCall> {
         std::mem::take(&mut *self.writes.borrow_mut())
+    }
+
+    /// (report) The next fetch of `method` (`service.method`) is
+    /// answered with `answer` (an error as the call failing), ahead of
+    /// the mock's own; answers queued for one method are given in the
+    /// order queued. The replay's `answer` step (docs/eval.md,
+    /// "Replaying a glitch report").
+    pub fn answer(&self, method: &str, answer: Result<Value, String>) {
+        self.answers
+            .borrow_mut()
+            .entry(method.to_string())
+            .or_default()
+            .push_back(answer);
+    }
+
+    /// (report) Answers queued and not yet given, per method.
+    pub fn answers_left(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = self
+            .answers
+            .borrow()
+            .iter()
+            .filter(|(_, q)| !q.is_empty())
+            .map(|(m, q)| (m.clone(), q.len()))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Hold `service.method` fetches pending until [`SchemaHost::release_fetch`]
@@ -846,7 +876,16 @@ impl ServiceHost for SchemaHost {
 
     fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {
         let name = format!("{service}.{method}");
-        let r = self.call(rt, service, method, &args);
+        let queued = self
+            .answers
+            .borrow_mut()
+            .get_mut(&name)
+            .and_then(std::collections::VecDeque::pop_front);
+        let r = match queued {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(e)) => Err(fail(e)),
+            None => self.call(rt, service, method, &args),
+        };
         let held = self.held.borrow().methods.contains(&name);
         let gate = held.then(|| {
             let done = Rc::new(Cell::new(false));

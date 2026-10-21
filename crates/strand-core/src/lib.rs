@@ -41,6 +41,7 @@ mod async_value;
 mod echo;
 mod error;
 mod events;
+pub mod flight;
 pub mod ipc;
 pub mod keyed;
 mod order;

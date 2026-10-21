@@ -334,7 +334,8 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             let late = r.clone();
             logic::UNMOUNTING.with(|h| {
                 *h.borrow_mut() = Some(Box::new(move || {
-                    let _ = unmount_tx.send(late.call(ipc::Request::Report).is_err());
+                    let _ =
+                        unmount_tx.send(late.call(ipc::Request::Report { save: None }).is_err());
                 }));
             });
             let _ = give.send(r);
@@ -355,7 +356,7 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
             .unwrap()
     };
     for (req, cmd) in [
-        (ipc::Request::Report, "report"),
+        (ipc::Request::Report { save: None }, "report"),
         (ipc::Request::InspectFlash { on: true }, "inspect.flash"),
         (ipc::Request::Watch, "watch"),
     ] {
@@ -426,7 +427,7 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
         "a call during the unmount is refused with IpcClosed"
     );
     // The loop is gone: nothing answers.
-    assert!(requests.call(ipc::Request::Report).is_err());
+    assert!(requests.call(ipc::Request::Report { save: None }).is_err());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -458,7 +459,12 @@ fn a_report_is_mains_snapshot_with_logics_half() {
     let client = std::thread::spawn(move || {
         let mut c =
             std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
-        ipc::request(&mut c, &ipc::Request::Report, Duration::from_secs(10)).unwrap()
+        ipc::request(
+            &mut c,
+            &ipc::Request::Report { save: None },
+            Duration::from_secs(10),
+        )
+        .unwrap()
     });
     // Main: takes the snapshot it is asked for.
     let mut main = calloop::EventLoop::<Vec<ToMain>>::try_new().unwrap();
@@ -1155,7 +1161,12 @@ fn saves_reload_live_with_state_kept() {
     }
     // (S-tools) `report` is served; with no main thread to ask, it says
     // so.
-    let ans = ipc::request(&mut client, &ipc::Request::Report, Duration::from_secs(10)).unwrap();
+    let ans = ipc::request(
+        &mut client,
+        &ipc::Request::Report { save: None },
+        Duration::from_secs(10),
+    )
+    .unwrap();
     assert_eq!(
         ans,
         json!({"ok": false, "error": "no display thread to report on"})

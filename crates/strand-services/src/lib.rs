@@ -84,7 +84,8 @@ pub mod wm;
 
 pub use bus::{Bus, Buses};
 pub use client::{
-    Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, Services, catch_refusals,
+    Change, Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, ServiceSnapshot, Services,
+    Tap, TapEvent, catch_refusals,
 };
 pub use cx::{Cx, Envelope, Msg, Reply, Write};
 pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};

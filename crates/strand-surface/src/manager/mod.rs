@@ -1227,6 +1227,23 @@ impl<H: SurfaceHost + 'static> State<H> {
         Some(info)
     }
 
+    /// (report) `surface`'s newest committed `wl_shm` buffer, copied as
+    /// RGBA: what the compositor shows of it (a glitch report's frame,
+    /// docs/architecture.md "Glitch reports"). `None` for no such
+    /// surface, before its first commit at its size, and while the GPU
+    /// thread presents it (its buffers are the swapchain's).
+    pub fn frame_pixels(&mut self, surface: SurfaceId) -> Option<strand_scene::FramePixels> {
+        let s = self.surfaces.get_mut(&surface)?;
+        let scale = s.scale;
+        s.buffers.newest_frame(scale)
+    }
+
+    /// (report) The refresh period of `surface`'s output, from its
+    /// presentation feedback (the frame clock's); `None` while unknown.
+    pub fn refresh(&self, surface: SurfaceId) -> Option<Duration> {
+        self.clock.refresh(surface)
+    }
+
     /// (M5) The compositor's globals as the registry lists them now:
     /// each interface with its version, sorted, one entry per global (two
     /// outputs are two `wl_output`s). Global names are left out: they

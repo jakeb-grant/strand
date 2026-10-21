@@ -661,6 +661,8 @@ provisional service system {
   kernel: text
   /// Time since boot, to the minute.
   uptime: duration
+  /// The glitch-report recording is on (writable).
+  replay: bool rw
 }
 
 /// Processor load.

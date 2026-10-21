@@ -124,6 +124,70 @@ impl Renderer {
         })
     }
 
+    /// (report) `surface`'s scene drawn whole by the CPU into a fresh
+    /// buffer at its size and scale, at the time of its last painted
+    /// frame, as a frame that commits nothing (no clock, play or glide
+    /// moves): a glitch report's frame of a surface the GPU presents,
+    /// whose pixels are the swapchain's (docs/architecture.md, "Glitch
+    /// reports"). The same full repaint eval's `redraw` compares against.
+    /// `None` before its first layout.
+    pub fn repaint_offscreen(&mut self, surface: SurfaceId) -> Option<strand_scene::FramePixels> {
+        let s = self.surfaces.get(&surface)?;
+        let (root, size, scale) = (s.root, s.size, s.scale);
+        if size.is_empty() {
+            return None;
+        }
+        let time = s.painted_time.unwrap_or_default();
+        let layouts = self.shaped();
+        self.anim.begin(time, None, false);
+        let boxes = self.surfaces.get(&surface).and_then(|s| s.boxes.as_ref())?;
+        let f = crate::flatten::flatten(
+            &self.tree,
+            root,
+            size,
+            scale,
+            &layouts,
+            boxes,
+            &mut self.anim,
+            &self.extras,
+        );
+        let stride = size.w * strand_scene::BYTES_PER_PIXEL;
+        let mut pixels = vec![0u8; stride as usize * size.h as usize];
+        let target = strand_scene::PaintTarget::new(&mut pixels, size, stride, scale, 0).ok()?;
+        let mut target = target.at(time);
+        self.raster.paint_window(
+            &f.items,
+            &Damage::full(size),
+            &self.atlas,
+            scale,
+            &mut target,
+            strand_scene::Rect::from_size(size),
+            (0, 0),
+        );
+        strand_scene::FramePixels::from_argb(&pixels, size, stride, scale)
+    }
+
+    /// (report) The local files the renderer draws for mounted nodes:
+    /// images and icons its surfaces' last frames drew (an icon as the
+    /// theme's file a lookup finds now), and each `svg` and `lottie`
+    /// node's file. A glitch report copies them
+    /// (docs/architecture.md, "Glitch reports"). Sorted, each once.
+    pub fn image_sources(&self) -> Vec<std::path::PathBuf> {
+        use crate::media::Source;
+        let mut out = self.extras.images.drawn_files();
+        for src in self.extras.media.sources.values() {
+            let file = match src {
+                Source::Svg(s) => s.local_file(),
+                Source::Lottie(l) => l.local_file(),
+                _ => None,
+            };
+            out.extend(file);
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// (M5, the inspector) The surfaces that show `node`: those attached at the nearest
     /// surface root at or above it (one per output for a bar on several;
     /// a popup's own surface, not its anchor's, for a node inside a

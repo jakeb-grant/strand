@@ -3995,3 +3995,63 @@ fn a_password_input_asks_for_no_copy() {
         [ClipboardAsk::Paste { surface: s }]
     );
 }
+
+/// (report) The router names the focused `input` and whether it is a
+/// password input, from the tree it is given: a glitch report counts a
+/// text input's keys and keeps no count of a password's.
+#[test]
+fn focused_input_names_a_password() {
+    use strand_render::InputKind;
+    use strand_scene::{NodeKind, SceneDiff};
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(strand_text::TextEngine::new(
+        strand_text::FontConfig::isolated(vec![std::sync::Arc::new(
+            std::fs::read(strand_text::test_font_path()).unwrap(),
+        )]),
+    ))));
+    let id = |i| NodeId::new(i, 0);
+    let mut d = SceneDiff::new();
+    // Two panels: a search field, and a password field; a third holds
+    // no input.
+    for (panel, input, password) in [(id(0), id(1), false), (id(2), id(3), true)] {
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(200.0))
+            .set(panel, Prop::Height, PropValue::Number(40.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .create(input, NodeKind::Input, Some(panel), 0)
+            .set(input, Prop::Focus, PropValue::Bool(true))
+            .set(input, Prop::Text, PropValue::Text(String::new()));
+        if password {
+            d.set(
+                input,
+                Prop::InputType,
+                PropValue::Keyword("password".into()),
+            );
+        }
+    }
+    d.create(id(4), NodeKind::Panel, None, 0)
+        .set(id(4), Prop::Width, PropValue::Number(50.0))
+        .set(id(4), Prop::Height, PropValue::Number(40.0))
+        .create(id(5), NodeKind::Text, Some(id(4)), 0);
+    assert!(r.apply(d).is_empty());
+    let mut f = R::default();
+    for (s, panel) in [(1, id(0)), (2, id(2)), (3, id(4))] {
+        let s = SurfaceId(s);
+        r.attach_surface(s, panel);
+        let mut px = vec![0u8; 200 * 40 * 4];
+        let mut t = PaintTarget::new(&mut px, Size::new(200, 40), 800, Scale::ONE, 0).unwrap();
+        r.paint(s, &mut t);
+        f.attached(s, panel);
+        f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    }
+    let tree = r.tree();
+    assert_eq!(
+        f.router.focused_input(SurfaceId(1), tree),
+        Some(InputKind::Text)
+    );
+    assert_eq!(
+        f.router.focused_input(SurfaceId(2), tree),
+        Some(InputKind::Password)
+    );
+    assert_eq!(f.router.focused_input(SurfaceId(3), tree), None);
+    assert_eq!(f.router.focused_input(SurfaceId(9), tree), None);
+}

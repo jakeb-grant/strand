@@ -120,6 +120,63 @@ pub struct BlurRegion {
     pub radius: f32,
 }
 
+/// (report) A surface's frame as a glitch report keeps it
+/// (docs/architecture.md, "Glitch reports"): the newest committed
+/// buffer, copied, or the scene repainted by the CPU. Premultiplied
+/// RGBA8, rows of `stride` bytes, at `scale`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FramePixels {
+    /// Buffer pixels.
+    pub width: u32,
+    pub height: u32,
+    pub scale: Scale,
+    /// Bytes per row: at least `width × 4`.
+    pub stride: u32,
+    /// Premultiplied RGBA, `stride × height` bytes.
+    pub rgba: Vec<u8>,
+}
+
+impl FramePixels {
+    /// A copy of `pixels`, an ARGB8888 buffer (little-endian: blue,
+    /// green, red, alpha) of `size` with rows of `stride` bytes, as
+    /// tightly packed RGBA. `None` when `pixels` is shorter than the
+    /// size says.
+    pub fn from_argb(pixels: &[u8], size: Size, stride: u32, scale: Scale) -> Option<FramePixels> {
+        let row = size.w as usize * 4;
+        if (stride as usize) < row {
+            return None;
+        }
+        let need = (stride as usize).checked_mul(size.h as usize)?;
+        if pixels.len() < need {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity(row * size.h as usize);
+        for y in 0..size.h as usize {
+            let line = &pixels[y * stride as usize..y * stride as usize + row];
+            for px in line.chunks_exact(4) {
+                rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            }
+        }
+        Some(FramePixels {
+            width: size.w,
+            height: size.h,
+            scale,
+            stride: row as u32,
+            rgba,
+        })
+    }
+
+    /// Pixel `(x, y)` as premultiplied RGBA.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let i = y as usize * self.stride as usize + x as usize * 4;
+        let p = self.rgba.get(i..i + 4)?;
+        Some([p[0], p[1], p[2], p[3]])
+    }
+}
+
 /// (M4) A `drag:` source drawn alone, at rest: the icon that follows the
 /// pointer while the compositor carries a drag out of its surface.
 #[derive(Clone, Debug, PartialEq)]
@@ -229,6 +286,28 @@ pub trait Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (report) A buffer's ARGB8888 bytes become packed RGBA, its row
+    /// padding dropped.
+    #[test]
+    fn frame_pixels_are_rgba_from_argb() {
+        // 2×2, stride 12 (4 bytes of padding a row): blue, green, red,
+        // alpha in memory.
+        let px = [
+            1, 2, 3, 4, 5, 6, 7, 8, 0xEE, 0xEE, 0xEE, 0xEE, //
+            9, 10, 11, 12, 13, 14, 15, 16, 0xEE, 0xEE, 0xEE, 0xEE,
+        ];
+        let f = FramePixels::from_argb(&px, Size::new(2, 2), 12, Scale::ONE).unwrap();
+        assert_eq!((f.width, f.height, f.stride), (2, 2, 8));
+        assert_eq!(
+            f.rgba,
+            vec![3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16]
+        );
+        assert_eq!(f.pixel(1, 1), Some([15, 14, 13, 16]));
+        assert_eq!(f.pixel(2, 0), None);
+        assert!(FramePixels::from_argb(&px[..20], Size::new(2, 2), 12, Scale::ONE).is_none());
+        assert!(FramePixels::from_argb(&px, Size::new(2, 2), 4, Scale::ONE).is_none());
+    }
 
     struct Blank;
 

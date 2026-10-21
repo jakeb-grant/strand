@@ -952,3 +952,44 @@ fn idle_cached_shadows_go_at_the_next_wake_without_one_of_their_own() {
     r.update();
     assert_eq!(r.paint_cache().0, 0, "idle entries freed at the next wake");
 }
+
+/// (report) A glitch report's frame of a surface the GPU presents is its
+/// scene repainted whole by the CPU: the same pixels as the full paint
+/// it last made (and so `paint_corners.png`), as premultiplied RGBA, at
+/// both scales; nothing before the surface's first layout.
+#[test]
+fn repaint_offscreen_equals_a_full_repaint() {
+    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+        let mut r = renderer();
+        let buf = render_with(&mut r, corners_scene(), scale);
+        if scale == Scale::ONE {
+            assert_matches_ref("paint_corners", &buf, TOLERANCE);
+        }
+        let f = r
+            .repaint_offscreen(SurfaceId(1))
+            .expect("a laid-out surface");
+        assert_eq!(
+            (f.width, f.height, f.scale),
+            (buf.size.w, buf.size.h, scale)
+        );
+        let want: Vec<u8> = buf
+            .pixels
+            .chunks_exact(4)
+            .flat_map(|p| [p[2], p[1], p[0], p[3]])
+            .collect();
+        assert!(
+            f.rgba == want,
+            "the offscreen frame differs from the paint at {scale:?}"
+        );
+        // The painted surface is untouched: painting again damages nothing.
+        let mut again = Buffer::new(buf.size.w, buf.size.h, scale);
+        again.pixels.clone_from(&buf.pixels);
+        assert!(again.paint(&mut r, SurfaceId(1), 1).is_empty());
+    }
+    let mut r = renderer();
+    assert!(r.apply(corners_scene()).is_empty());
+    let root = r.tree().roots()[0];
+    r.attach_surface(SurfaceId(2), root);
+    assert_eq!(r.repaint_offscreen(SurfaceId(2)), None, "not laid out yet");
+    assert_eq!(r.repaint_offscreen(SurfaceId(3)), None, "no such surface");
+}

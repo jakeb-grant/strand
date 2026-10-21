@@ -570,3 +570,36 @@ fn dur_has_a_clock_form() {
     assert_eq!(get(&inst, "e"), Value::Null, "null in, null out");
     assert_eq!(get(&inst, "f"), Value::text("0:00"));
 }
+
+/// (report) A value as a glitch report's JSON and back by its type:
+/// records by field name, enums by variant, durations in ms, colours as
+/// `#rrggbbaa`; a text `keep` refuses is its length, read back as that
+/// many placeholder `x`s; a value the type does not hold is refused.
+#[test]
+fn values_round_trip_through_report_json() {
+    use strand_compiler::vm::json::{from_json, to_json, to_json_string};
+    let src = "type Pin { app: text; label: text; at: duration; tint: color }\nstate pins: [Pin] = [Pin(app: \"a\", label: \"secret\", at: 1.5s, tint: #ff000080)]\nbar B { height: 10 }\n";
+    let (_rt, _host, inst) = run(src);
+    let prog = inst.vm().prog.clone();
+    let v = get(&inst, "pins");
+    assert_eq!(
+        to_json_string(&prog.types, &v),
+        r##"[{"app":"a","label":"secret","at":1500,"tint":"#ff000080"}]"##
+    );
+    let mut held = String::new();
+    to_json(&prog.types, &v, &mut held, &mut |t| t != "secret").unwrap();
+    assert_eq!(
+        held,
+        r##"[{"app":"a","label":{"~text":6},"at":1500,"tint":"#ff000080"}]"##
+    );
+    let ty = inst.cell_type("t.pins").unwrap();
+    let j: serde_json::Value = serde_json::from_str(&to_json_string(&prog.types, &v)).unwrap();
+    assert_eq!(from_json(&prog.types, &ty, &j).unwrap(), v);
+    let j: serde_json::Value = serde_json::from_str(&held).unwrap();
+    let back = from_json(&prog.types, &ty, &j).unwrap();
+    let label = back.as_list().unwrap()[0]
+        .field(&prog.types, "label")
+        .cloned();
+    assert_eq!(label, Some(Value::text("xxxxxx")));
+    assert!(from_json(&prog.types, &ty, &serde_json::json!(3)).is_err());
+}

@@ -1795,20 +1795,30 @@ threads** (as `strand_core::ipc`).
   t, x, y, period_ns)` and `merge_text(slot, t, password)` (the
   coalescing rules below, falling back to a push); `name(&str) -> u16`
   (interned once; `NAME_IN_ARENA` when longer than 63 bytes or the
-  table is full); `value(t, |w: &mut ArenaWriter| …) -> ARef` (a value
-  written straight into the arena by a bounded writer, so nothing is
-  allocated; past `VALUE_CAP`, 2,048 bytes, it is dropped and the
-  record is marked truncated); `clear()`; `dump(&self) -> Vec<u8>` (the
-  only allocation, made when a report asks); `read(&[u8]) ->
-  Result<Dump, FlightError>` (a newer version is refused, naming it);
-  `Dump::records()` oldest first with each arena value resolved or
-  marked lost.
+  table is full), `find_name`, `name_at`; `value(|w: &mut ArenaWriter|
+  …) -> ARef` (a value written straight into the arena by a bounded
+  writer, so nothing is allocated; past `VALUE_CAP`, 2,048 bytes, or
+  the arena's size if smaller, it is dropped and the record is marked
+  truncated); `push_named(t, kind, name, inline, flags, value)` (a
+  change record: the name interned, or written at the head of the
+  value ended by a 0 byte when it cannot be); `pause(t, gap_kind,
+  why)` and `resume(t, gap_kind, why)` (a gap's two records, nothing
+  appended between); `newest()`; `clear()`; `dump(&self, now_ns) ->
+  Vec<u8>` (the only allocation, made when a report asks); `read(&[u8])
+  -> Result<Dump, FlightError>` (a newer version is refused, naming
+  it); `Dump::entries()` oldest first with each name and arena value
+  resolved or marked lost. `json_text`, `json_held`, `json_number` and
+  `json_color` write the value encoding below into any `fmt::Write`.
 - **Records** are 24 bytes, little-endian: `t` u64 (ns since the
   epoch), `kind` u8, `flags` u8 (1 truncated, 2 redacted, 4 lost, set
   by the reader, 8 a service's boot value), `slot` u16 (a surface or
   output slot in the input ring, a name index in the changes ring),
   then 12 bytes of payload by kind. An arena reference (`ARef`) is an
-  absolute offset u32 and a length u32; the arena is a byte ring, so a
+  absolute offset u32 and a length u16 at payload bytes 6..12 (a value
+  is at most `VALUE_CAP`, so 16 bits hold it, and the first six bytes
+  stay free for a kind's inline fields); the kinds with one are field,
+  keyed, event, cell, fetch, write and reload, and a key or action
+  record whose name is `NAME_IN_ARENA`. The arena is a byte ring, so a
   value is readable while its offset is within the arena's size of the
   newest byte written, and lost after.
 - **Input kinds.** `0x01` enter (x f32, y f32, surface-local logical
@@ -1877,8 +1887,9 @@ of `demo::host::Host`).
 - **Typed text is never recorded.** A key whose `KeyInput::text` is
   not empty and that carries no ctrl, alt or super is a text key: it is
   counted (`0x0A`), never named. While the focused node of the key's
-  surface is a password input (`Router::focused_input(surface) ==
-  Some(InputKind::Password)`, new) every key is counted as one
+  surface is a password input (`Router::focused_input(surface, tree)
+  == Some(InputKind::Password)`, new; the router holds no tree, so the
+  renderer's is passed) every key is counted as one
   password span with no count. A paste (`InputEvent::Paste`) records
   its character count (none into a password), never its text; a copy
   or cut records nothing. A drop records its kinds, never its payload.
@@ -1904,8 +1915,11 @@ thread's `Live`).
   initial }` (the old value read from the cell before the patch, only
   while a tap is installed), `Change::Keyed { field, diffs:
   &[VecDiff<Data, Data>], removed: &[Data], initial }`, `Change::Event {
-  event, args: &[Data] }`. An echo of a local write is not a patch, so
-  it is never tapped. `Data::write_json(&self, w, &mut dyn
+  event, args: &[Data] }`. The patches a refusal or an unavailable
+  service resets fields with are tapped too; a patch that leaves a
+  field as it was is not. An echo of a local write is not a patch, so
+  it is never tapped. `Services::snapshot(rt)` reads every registered
+  service's fields as `ServiceSnapshot { name, running, fields }`. `Data::write_json(&self, w, &mut dyn
   FnMut(&str) -> bool)` (new) writes a value, the closure deciding per
   text whether it is kept. Config services (`service … from`) run on
   the contract and are tapped like builtins.
@@ -1913,10 +1927,16 @@ thread's `Live`).
   Box<dyn FnMut(CellWrite<'_>)>)` (new): every write to a `state`
   cell, a settings field or a token overlay, by a handler, a two-way
   binding, IPC, a reset or a reload, as `CellWrite { path, old: &Value,
-  new: &Value }`. `Program::is_text_literal(&str) -> bool` (new) holds
-  every text literal of the program. `vm::json::{to_json, from_json}`
-  (new) convert a `Value` by its type, `to_json` taking the same
-  per-text closure.
+  new: &Value }`, told once per tick (the value before the tick and
+  after; a cell written several times in a tick is told once, one left
+  as it was not at all), read from the runtime's list of the cells the
+  tick wrote, so a cell's write path pays nothing; a token overlay is
+  told as `$path` with its text. `Program::is_text_literal(&str) ->
+  bool` (new) holds every text constant of the program, built on its
+  first use rather than at lowering, so a shell with no report pays
+  nothing. `vm::json::{to_json, from_json}` (new) convert a `Value` by
+  its type, `to_json` taking the same per-text closure; `from_json`
+  reads a held-back text as `x` repeated to its length.
 - **Calls and actions** are recorded where the binary already handles
   them: a `fetch` (an `Async` call) when its answer arrives
   (`services/adapter.rs`, `custom.rs`), a declared action when it

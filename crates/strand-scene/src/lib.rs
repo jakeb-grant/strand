@@ -33,7 +33,8 @@ pub use input::{
 };
 pub use motion::{Curve, Motion, MotionView, Spring};
 pub use paint::{
-    BYTES_PER_PIXEL, BlurRegion, DragImage, PaintTarget, Painter, SurfacePose, TargetError,
+    BYTES_PER_PIXEL, BlurRegion, DragImage, FramePixels, PaintTarget, Painter, SurfacePose,
+    TargetError,
 };
 pub use protocol::{
     Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, NodeKind, Paint, Prop,

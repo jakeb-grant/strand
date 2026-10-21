@@ -1450,6 +1450,25 @@ impl ImageStore {
             .collect()
     }
 
+    /// (report) The files the surfaces' last frames draw decodes of: a
+    /// local image's path, an icon's file in the theme (or the config's
+    /// `icons/` folder) as a lookup finds it now. Sorted, each once.
+    pub fn drawn_files(&self) -> Vec<PathBuf> {
+        let theme = match &self.backend {
+            ImageBackend::Inline(t) => t.clone(),
+            ImageBackend::Worker(_) => IconTheme::system(),
+        };
+        let mut out: Vec<PathBuf> = self
+            .frames
+            .values()
+            .flatten()
+            .filter_map(|k| resolve(k, &theme).ok())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn set_backend(&mut self, backend: ImageBackend) {
         self.backend = backend;
         self.pending.clear();

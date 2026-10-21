@@ -88,6 +88,10 @@ pub struct Program {
     /// `shader` node's `Prop::Shader` carries. Set from
     /// [`crate::Compiled::shaders`] by `Build::lowered`.
     pub shaders: crate::check::shaders::Shaders,
+    /// (report) Every text literal of the program's code, collected from
+    /// the chunks' constants on the first [`Program::is_text_literal`]
+    /// (a program never asked holds no copy).
+    pub text_literals: std::sync::OnceLock<std::collections::HashSet<Box<str>>>,
 }
 
 /// A no-code service (design.md: `service ppd from dbus system
@@ -506,6 +510,26 @@ pub struct Timer {
 }
 
 impl Program {
+    /// (report) Whether `text` is written out in the config's files: a
+    /// text constant of any chunk (a literal, a `match` arm's pattern, a
+    /// default). A glitch report keeps a text of the config's own state
+    /// only when it is one (docs/architecture.md, "Glitch reports",
+    /// Redaction).
+    pub fn is_text_literal(&self, text: &str) -> bool {
+        self.text_literals
+            .get_or_init(|| {
+                self.chunks
+                    .iter()
+                    .flat_map(|c| &c.consts)
+                    .filter_map(|k| match k {
+                        Const::Text(t) => Some(Box::from(t.as_str())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .contains(text)
+    }
+
     /// (M6) Whether the config declares a `service` named `name`, which
     /// shadows a builtin one of that name (spec.md 4.2).
     pub fn declares_service(&self, name: &str) -> bool {

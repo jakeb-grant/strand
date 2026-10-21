@@ -344,6 +344,7 @@ followed live, and the machine's host name, kernel and uptime.
 | `hostname` | `text` | The machine's host name. |
 | `kernel` | `text` | The running kernel's release, as `uname -r` gives it: `6.11.2-arch1-1`. |
 | `uptime` | `duration` | Time since boot (suspend included), to the minute: `dur(system.uptime)` reads `3 h 12 min`. It changes once a minute, and only while a visible reader shows it. |
+| `replay` | `bool rw` | The glitch-report recording is on: Strand keeps the last minute or so of what drove the shell in memory for `strand report`. Writable; false empties it at once, and the choice is kept across restarts. |
 
 ## `tray`
 

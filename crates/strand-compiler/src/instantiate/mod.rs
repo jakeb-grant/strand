@@ -31,6 +31,7 @@ mod mount;
 mod outputs;
 mod overlay;
 mod reload;
+mod report;
 pub mod theme;
 
 pub use outputs::{OutputChange, OutputContent};
@@ -56,6 +57,7 @@ pub use lock::{IGNORED_CLOSE, SessionLock};
 pub use mirror::{SceneMirror, show, show_expr};
 pub use mount::{DEFAULT_LIST_WINDOW, MAX_LIST_WINDOW};
 pub use overlay::{TOKENS_FILE, TokenOverlay};
+pub use report::{CellTap, CellWrite};
 
 use crate::hir::{DefId, DefKind};
 use crate::lower::{Node, Program};
@@ -966,6 +968,9 @@ pub struct Instance {
     bridge: RefCell<Vec<Arc<crate::lower::ServiceUses>>>,
     /// (M5) What the inspector keeps across reloads (`inspect.rs`).
     inspect: inspect::Track,
+    /// (report) The cell tap and what it was last told
+    /// ([`Instance::set_cell_tap`]).
+    cell_tap: RefCell<report::TapState>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -1044,6 +1049,7 @@ impl Instance {
             root: None,
             bridge: RefCell::default(),
             inspect: inspect::Track::default(),
+            cell_tap: RefCell::default(),
         };
         inst.boot(true);
         inst
@@ -1600,6 +1606,8 @@ impl Instance {
     }
 
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // (report) The cells this tick wrote, told to the tap.
+        self.tap_cells(&tick.written);
         // The new tree took its holds during the tick.
         self.release_bridge();
         let mut new_tokens = None;

@@ -343,6 +343,14 @@ pub struct SvgSource {
 }
 
 impl SvgSource {
+    /// (report) The local file this node draws, if its source is one
+    /// that exists (`Renderer::image_sources`).
+    pub(crate) fn local_file(&self) -> Option<std::path::PathBuf> {
+        let s = self.inner.lock().ok()?;
+        let p = crate::image::local_path(&s.source);
+        (!s.source.is_empty() && p.is_file()).then_some(p)
+    }
+
     /// (M6) Files changed on disk: true if this node's source is one of
     /// `paths`, which is then read again on its next draw (the old text
     /// drawn until the new one is in).
