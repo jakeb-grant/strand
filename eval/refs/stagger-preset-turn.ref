@@ -1,0 +1,78 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "stagger-preset-turn"
+verdict good
+note "New regression (stagger review). Read with explain: the panel opens with its column; #header is at rest from its first frame k1 and takes no turn; #t1 (pose block) enters from k1, #t2 (fade) is let go at k4 (due 40 ms) and #t3 (popin 0.8) at k6 (due 80 ms), each within a frame of its turn."
+date 2026-10-21
+rev "76c2336e+changes"
+approver "claude"
+scenario 73e3a5535efdfb3b
+seal 437ed9e68515a3d5
+S1 1 - "panel Grid"
+N0 "header|grid.strand:7:7|#0" "box#header"
+N1 "t1|grid.strand:8:7|#1" "box#t1"
+N2 "t2|grid.strand:9:7|#2" "box#t2"
+N3 "t3|grid.strand:10:7|#3" "box#t3"
+N4 "|grid.strand:3:1|#0" "panel@grid.strand:3"
+N5 "|grid.strand:5:3|#0" "col@grid.strand:5"
+k1 p1
+s1 z=300,126 o=90,87
+n0 x=14 y=14 w=200 h=20 ord=2 bg=888888ff
+n1 x=14 y=46 w=40 h=20 op=0 hid=opacity0 ord=3
+n2 x=14 y=66 w=40 h=20 op=0 hid=opacity0 ord=4
+n3 x=14 y=92 w=40 h=20 op=0 sc=0.8,0.8 hid=opacity0 ord=5
+n4 x=0 y=0 w=300 h=126
+n5 x=0 y=0 w=300 h=126 ord=1 bg=1a1b22e6
+k2
+n1 y=44 op=37 hid=- bg=61afefff
+k3
+n1 y=42 op=98
+k4
+n1 y=41 op=151
+n2 op=37 hid=- bg=98c379ff
+k5
+n1 y=40 op=190
+n2 op=98
+k6
+n1 op=216
+n2 op=151
+n3 v=16.953125,93.484375,34.078125,17.046875 op=37 sc=0.852,0.852 hid=- bg=e06c75ff
+k7
+n1 op=232
+n2 op=190
+n3 v=15.4375,92.71875,37.125,18.5625 op=98 sc=0.928,0.928
+k8
+n1 op=241
+n2 op=216
+n3 v=14.4375,92.21875,39.109375,19.5625 op=151 sc=0.978,0.978
+k9
+n1 op=247
+n2 op=232
+n3 v=d op=190 sc=1,1
+k10
+n1 op=251
+n2 op=241
+n3 v=13.890625,91.9375,40.21875,20.109375 op=216 sc=1.006,1.006
+k11
+n1 op=253
+n2 op=247
+n3 v=13.90625,91.953125,40.1875,20.09375 op=232 sc=1.005,1.005
+k12
+n1 op=254
+n2 op=251
+n3 v=13.953125,91.96875,40.09375,20.046875 op=241 sc=1.002,1.002
+k13
+n2 op=253
+n3 v=13.984375,91.984375,40.03125,20.015625 op=247 sc=1.001,1.001
+k14
+n1 op=255
+n2 op=254
+n3 v=d op=251 sc=1,1
+k15
+n3 op=253
+k16
+n2 op=255
+n3 op=254
+k17
+k18
+n3 op=255
+k19

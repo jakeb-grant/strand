@@ -480,21 +480,26 @@ fn pop_in<'a>(
         if Motions(r0.mot).contains(Motions::SHARED_MORPH) {
             return None;
         }
-        // Where it rests: at the segment's rest, else (gone by then, or
-        // not drawn) its last frame in the segment at rest, neither
-        // entering nor leaving; with neither, how far its first frame is
-        // along its pose cannot be told.
+        // Where it rests: at the segment's rest, else (gone by then, not
+        // drawn, or (stagger review) still entering or leaving there, as
+        // a staggered batch a `mark` cuts is) its last frame in the
+        // segment at rest, neither entering nor leaving; with neither,
+        // how far its first frame is along its pose cannot be told.
         let at_rest = |q: &&crate::trace::Row| {
             !Motions(q.mot).intersects(Motions::ENTER | Motions::EXIT)
                 && q.hidden.as_deref() != Some("inert")
         };
-        let rest = tl.at(seg.e).and_then(|e| tl.row(e, key)).or_else(|| {
-            tl.within(Some(tl.ks[shown]), seg.e).rev().find_map(|j| {
-                tl.row(j, key)
-                    .filter(|q| q.surface == surface)
-                    .filter(at_rest)
-            })
-        });
+        let rest = tl
+            .at(seg.e)
+            .and_then(|e| tl.row(e, key))
+            .filter(at_rest)
+            .or_else(|| {
+                tl.within(Some(tl.ks[shown]), seg.e).rev().find_map(|j| {
+                    tl.row(j, key)
+                        .filter(|q| q.surface == surface)
+                        .filter(at_rest)
+                })
+            });
         let entered = Motions(r0.mot).contains(Motions::ENTER);
         // Not drawn until an ancestor drawn transparent came into view:
         // its pose was dropped unseen and it shows at rest by design

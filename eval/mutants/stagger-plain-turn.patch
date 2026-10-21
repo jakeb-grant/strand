@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/anim/mod.rs
++++ b/crates/strand-render/src/anim/mod.rs
+@@ -798,7 +798,7 @@
+             .children
+             .iter()
+             .copied()
+-            .filter(|c| enter.contains(c) && (poses.contains_key(c) || has_enter(tree, *c)));
++            .filter(|c| enter.contains(c) && (poses.contains_key(c) || has_enter(tree, *c) || true));
+         let entering: Vec<NodeId> = entering.collect();
+         self.staggers.plan(entering.into_iter(), step, self.time);
+     }

@@ -70,19 +70,31 @@ fn num(v: &PropValue) -> Option<f32> {
 
 /// The node's `enter` pose, if it is a pose (not a preset keyword):
 /// its opacity, offset and scale, and (unshaped-enter) the width or
-/// height it lays out at, as [`exit_pose`] records an exit's.
-fn enter_pose(tree: &SceneTree, node: NodeId) -> Option<Pose> {
-    let v @ PropValue::Pose(_) = tree.get(node)?.get(Prop::Enter)? else {
+/// height it lays out at, as [`exit_pose`] records an exit's. `enter` is
+/// the node's `enter` read through its tokens (`probe::enter_of`).
+fn enter_pose(enter: Option<&PropValue>) -> Option<Pose> {
+    let v @ PropValue::Pose(_) = enter? else {
         return None;
     };
     pose_of(v)
 }
 
+/// (stagger review) The pose a preset `enter` starts at, as far as
+/// [`pose_of`] knows it (a `slide`'s distance is its box's: none); `None`
+/// for a pose block, which [`enter_pose`] reads.
+fn enter_preset(enter: Option<&PropValue>) -> Option<Pose> {
+    match enter? {
+        PropValue::Pose(_) => None,
+        v => pose_of(v),
+    }
+}
+
 /// (eval-finish) The node has an `enter`: a pose block that sets
 /// something, or one of design.md's presets ("Pose presets": `popin(0.8)
-/// | slide(top) | slidefade | fade`).
-fn enters(tree: &SceneTree, node: NodeId) -> bool {
-    match tree.get(node).and_then(|n| n.get(Prop::Enter)) {
+/// | slide(top) | slidefade | fade`). (stagger review) Read through its
+/// tokens, as render's `has_enter` reads it.
+fn enters(enter: Option<&PropValue>) -> bool {
+    match enter {
         Some(PropValue::Pose(props)) => !props.is_empty(),
         Some(PropValue::Keyword(k)) => k == "fade" || k == "slidefade",
         Some(PropValue::Call { name, .. }) => {
@@ -408,6 +420,7 @@ impl Labels {
             ) => format!("{kind}@{f}:{l}"),
             _ => kind.to_string(),
         };
+        let enter = strand_render::probe::enter_of(tree, node);
         self.metas.entry(key.clone()).or_insert(NodeMeta {
             label,
             kind: kind.to_string(),
@@ -416,8 +429,9 @@ impl Labels {
             id,
             also: src.as_ref().map(|s| s.also.clone()).unwrap_or_default(),
             text,
-            enter: enter_pose(tree, node),
-            enters: enters(tree, node),
+            enter: enter_pose(enter.as_ref()),
+            enters: enters(enter.as_ref()),
+            enter_preset: enter_preset(enter.as_ref()),
             morph: morph_of(tree, node),
             ellipsis: ellipsis_of(tree, node),
             exit: exit_pose(tree, node),

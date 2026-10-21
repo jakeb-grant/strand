@@ -1,0 +1,33 @@
+id     = "stagger-preset-turn"
+about  = """A finding of the stagger review (docs/decisions.md stagger): a child whose
+`enter` is a preset takes a turn and is held to it. A panel opens with its
+staggered column's children created in the same diff: a plain header, then
+three tiles with an `enter` (a pose block, `fade`, `popin(0.8)`), 40 ms
+apart. The header is at rest at once; the tiles start at 0, 40 and 80 ms.
+Before the review the rule numbered the preset tiles but judged only the
+pose block's: eval/mutants/stagger-turn-early.patch (the second tile starts
+with the first) and stagger-turn-skipped.patch (the third skips a turn)
+passed it."""
+screen = { width = 480, height = 300, scale = 1.0 }
+hz     = 60
+
+=== grid.strand
+state open = false
+
+panel Grid {
+  anchor: center; layer: overlay; open: open
+  col { width: 300; pad: 14; gap: 6; bg: #1a1b22e6; stagger: 40ms
+    if open {
+      box { id: header; width: 200; height: 20; bg: #888888 }
+      box { id: t1; width: 40; height: 20; bg: #61afef; enter { opacity: 0; y: 6 } }
+      box { id: t2; width: 40; height: 20; bg: #98c379; enter: fade }
+      box { id: t3; width: 40; height: 20; bg: #e06c75; enter: popin(0.8) }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+set open true
+rest

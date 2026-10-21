@@ -241,3 +241,16 @@ hidden-row-look.patch          curated/l-app-grid-stagger.scn stagger
 # (decisions.md 2026-10-04 render, wave3-theme t2): the Wi-Fi tile's fill
 # and the Dark tile's chase of the swapping accent are drawn off their way.
 colour-srgb.patch              curated/k-qs-toggles.scn colour
+# stagger-plain-turn.patch: the stagger decision's filter undone
+# (decisions.md stagger): `Animator::stagger` numbers every child entering
+# together again, an `enter` or not, so the plain box and row mounted into
+# the shown bar take turns and every child with an `enter` after them
+# starts late, the later batch's box a turn late behind its plain sibling.
+# stagger-turn-early.patch / stagger-turn-skipped.patch: the stagger
+# review's counter-cases: the second child starts with the first, or the
+# third skips a turn. The tiles taking those turns have preset `enter`s
+# (`fade`, `popin(0.8)`), which the rule numbered but did not judge before
+# the review (decisions.md stagger).
+stagger-plain-turn.patch       regressions/stagger-plain-turn.scn stagger:#preset stagger:#latebox
+stagger-turn-early.patch       regressions/stagger-preset-turn.scn stagger:#t2
+stagger-turn-skipped.patch     regressions/stagger-preset-turn.scn stagger:#t3

@@ -82512,12 +82512,12 @@ k118
 k119
 ref "m.stagger__keyframes.60"
 verdict good
-note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier (60 Hz: tag1 k2->k1, tag2 k4->k2; 144 Hz: k5->k1, k9->k5), with the same opacity and offset trajectories. Read again (stagger review): keyframes keeps playing, so unlike the other stagger cells this run has its reference's tick count (57 at 60 Hz, 128 at 144 Hz) and is not shifted; diffed block to block, only the rows of tag1 and tag2 differ, every other node and surface is the same tick for tick"
 date 2026-10-21
-rev "49d44e8b+changes"
+rev "76c2336e+changes"
 approver "claude"
 scenario 109e4d4faba9c133
-seal 98e2d64c6339b5c1
+seal ba879dcbbfc94527
 S1 0 - "bar Top"
 S2 1 33 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"

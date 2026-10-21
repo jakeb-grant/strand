@@ -1,0 +1,9 @@
+--- a/crates/strand-render/src/anim/stagger.rs
++++ b/crates/strand-render/src/anim/stagger.rs
+@@ -43,5 +43,5 @@
+         let step = step.min(MAX_STEP);
+         for (i, c) in children.enumerate() {
+-            let at = now.saturating_add(step.saturating_mul(i as u32));
++            let at = now.saturating_add(step.saturating_mul(i as u32 + u32::from(i >= 2)));
+             self.starts.entry(c).or_insert(at);
+         }

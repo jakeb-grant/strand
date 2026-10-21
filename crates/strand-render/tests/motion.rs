@@ -3043,6 +3043,79 @@ fn a_toast_arriving_before_the_first_frame_enters_too() {
     assert!(!h.r.animating(h.surface.as_ref().unwrap().0));
 }
 
+/// (stagger review) A stagger numbers only the children with an `enter`
+/// on a surface still opening too: a staggered column's first tile is
+/// created with the diff that opens the panel, then a plain box and a
+/// second tile land in a later diff before the panel's first frame (both
+/// enter, the panel still opening, as a toast does). The plain box is
+/// drawn at rest at once and takes no turn, so the second tile starts
+/// one step (100 ms) after the first, not two.
+#[test]
+fn a_plain_child_landing_while_its_surface_opens_takes_no_turn() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Bg, color("#000000")),
+            (Prop::Open, PropValue::Bool(false)),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![
+            (Prop::Width, num(100.0)),
+            (
+                Prop::Stagger,
+                PropValue::Duration(Duration::from_millis(100)),
+            ),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    let fade = pose(vec![(Prop::Opacity, num(0.0))]);
+    let child = |d: &mut SceneDiff, id: NodeId, c: &str, i: u32, enter: bool| {
+        d.create(id, NodeKind::Box, Some(col), i)
+            .set(id, Prop::Height, num(20.0))
+            .set(id, Prop::Bg, color(c));
+        if enter {
+            d.set(id, Prop::Enter, fade.clone());
+        }
+    };
+    let (first, plain, second) = (NodeId::new(50, 0), NodeId::new(51, 0), NodeId::new(52, 0));
+    let mut d = SceneDiff::new();
+    child(&mut d, first, "#ff0000", 0, true);
+    d.set(root, Prop::Open, PropValue::Bool(true));
+    h.apply(d);
+    assert!(h.surface.is_some(), "opened");
+    let mut d = SceneDiff::new();
+    child(&mut d, plain, "#0000ff", 1, false);
+    child(&mut d, second, "#00ff00", 2, true);
+    h.apply(d);
+    let shown = |h: &Host, y: u32| h.px(50, y).is_some_and(|p| p[..3] != [0, 0, 0]);
+    let mut seen = Vec::new();
+    while h.frame() {
+        seen.push((shown(&h, 10), shown(&h, 30), shown(&h, 50)));
+        assert!(seen.len() < 400, "never settled");
+    }
+    assert!(seen[0].1, "the plain box at rest at once: {seen:?}");
+    assert!(seen.iter().all(|s| s.1), "{seen:?}");
+    let start = |i: usize| -> usize {
+        seen.iter()
+            .position(|s| if i == 0 { s.0 } else { s.2 })
+            .unwrap_or(usize::MAX)
+    };
+    // Frames are 16.7 ms apart: the first tile shows within a frame or
+    // two, the second one step later (frame 6 or 7), not two (12 or 13).
+    let (a, c) = (start(0), start(2));
+    assert!(a <= 2, "the first tile starts at once: {seen:?}");
+    assert!(
+        (5..=8).contains(&(c - a)),
+        "the second tile one step after the first ({a}, {c}): {seen:?}"
+    );
+    assert!(seen.last().is_some_and(|s| *s == (true, true, true)));
+}
+
 /// (eval-coverage) A row mounted at the top of a content-sized panel
 /// pushes the rows under it down, and the panel grows to fit: laid out
 /// first in the buffer it had (too small, so its rows squeezed) and again

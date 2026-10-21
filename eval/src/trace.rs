@@ -253,6 +253,12 @@ pub struct NodeMeta {
     /// | fade`), which [`NodeMeta::enter`] may not spell out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub enters: bool,
+    /// (stagger review) When its `enter` is a preset, the pose that
+    /// preset starts at as far as the sandbox knows it (`fade`,
+    /// `slidefade`, `popin(s)`; a `slide`'s distance is its box's, so
+    /// none), which [`NodeMeta::enter`] (pose blocks only) leaves out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter_preset: Option<Pose>,
     /// Its shared-element `morph:` name, when written as text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morph: Option<String>,

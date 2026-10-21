@@ -13,7 +13,13 @@
 //! before it is due). The start is not read off the first frame that
 //! shows it moving: an enter on a curve that starts slowly (`ease(in,
 //! …)`, `in_back`, `emphasized_accelerate`, a `bezier`) stays within a
-//! quantum of its pose for frames after it has begun.
+//! quantum of its pose for frames after it has begun. (stagger review)
+//! A child's pose is its pose block's, or its preset's (`fade`,
+//! `slidefade`, `popin(s)`, `NodeMeta::enter_preset`); a `slide(edge)`,
+//! whose distance is its box's and unknown here, is judged by its
+//! release alone. Both are read through the node's tokens, as render
+//! reads them (`probe::enter_of`); a keyed copy that mounts again keeps
+//! what was read when its key was first seen.
 //!
 //! The batch is the container's children with an `enter` (a pose block
 //! that sets something or a preset, `NodeMeta::enters`) first drawn at
@@ -35,7 +41,7 @@
 //! held to lie between the moment due and one period after it: within a
 //! frame; and no frame before the moment due shows it off its pose. A child whose text is still on its way waits for it
 //! instead (decisions.md late-text-dip) and is not held, nor is one
-//! without a pose to hold at, one whose pose was dropped unseen (kept
+//! whose pose was dropped unseen (kept
 //! from view by an ancestor until its first frame, it shows at rest and
 //! plays no enter, as `vanish` reads it: eval-false-alarms), or a run
 //! under reduced motion (every child shows at once).
@@ -168,9 +174,14 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             // and time").
             batch.retain(|k| trace.nodes.get(*k).is_some_and(|m| m.enters));
             for (n, key) in batch.iter().enumerate() {
-                let Some(pose) = trace.nodes.get(*key).and_then(|m| m.enter) else {
-                    continue;
-                };
+                // (stagger review) Its pose: a pose block's, else a
+                // preset's (`fade`, `slidefade`, `popin(s)`); a `slide`,
+                // whose distance is its box's, has none here and is judged
+                // by its release alone.
+                let pose = trace
+                    .nodes
+                    .get(*key)
+                    .and_then(|m| m.enter.or(m.enter_preset));
                 if cx.allowed(CheckId::Stagger, key) {
                     continue;
                 }
@@ -203,27 +214,32 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                     if released.is_none() && !Motions(r.mot).contains(Motions::STAGGER) {
                         released = Some(i);
                     }
-                    if departed.is_none() {
-                        match off_pose(r, &pose) {
+                    if let Some(pose) = &pose
+                        && departed.is_none()
+                    {
+                        match off_pose(r, pose) {
                             None => break,
                             Some(true) => departed = Some(i),
                             Some(false) => {}
                         }
                     }
-                    if released.is_some() && departed.is_some() {
+                    if released.is_some() && (departed.is_some() || pose.is_none()) {
                         break;
                     }
                 }
-                // One let go that never left its pose within the segment
-                // showed no start to judge.
-                let Some(d) = departed else { continue };
+                // Its start: the frame it was let go of its turn, unless
+                // it was drawn moving before that. One with a pose let go
+                // that never left it within the segment showed no start to
+                // judge; one with none shows its start by its release.
+                let j = match (released, departed) {
+                    (r, Some(d)) => r.map_or(d, |r| r.min(d)),
+                    (Some(r), None) if pose.is_none() => r,
+                    _ => continue,
+                };
                 if waits_for_text {
                     continue;
                 }
                 let due = t0 + n as f64 * step_ns;
-                // Its start: the frame it was let go of its turn, unless
-                // it was drawn moving before that.
-                let j = released.map_or(d, |r| r.min(d));
                 let at = tl.frames[j].t_ns as f64;
                 let late = at - due;
                 if late < -SLACK_NS || late > period_ns + SLACK_NS {
