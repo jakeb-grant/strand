@@ -44,8 +44,10 @@ frames 4
 rest
 "#;
 
-fn scenario() -> Scenario {
-    let dir = std::env::temp_dir().join(format!("strand-drawn-{}", std::process::id()));
+/// Each leg writes its own copy: the tests run in parallel, and one
+/// reading the file while the other rewrites it read a torn header.
+fn scenario(leg: &str) -> Scenario {
+    let dir = std::env::temp_dir().join(format!("strand-drawn-{}-{leg}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("drawn-hold.scn");
     std::fs::write(&p, SCN).unwrap();
@@ -59,7 +61,11 @@ fn held(backend: BackendMode) -> Option<strand_eval::harness::RunOutput> {
         drawn: true,
         ..RunOptions::default()
     };
-    match run(&scenario(), &opts) {
+    let leg = match backend {
+        BackendMode::Gpu => "gpu",
+        _ => "cpu",
+    };
+    match run(&scenario(leg), &opts) {
         Ok(o) => Some(o),
         Err(e @ Error::NoDevice(_)) if !gpu::required() => {
             eprintln!("skipped: {e}");
