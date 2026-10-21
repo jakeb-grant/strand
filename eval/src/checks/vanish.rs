@@ -26,6 +26,10 @@
 //!   morph plays in place of the pose (design.md, "Motion and time";
 //!   anim/morph.rs), so a first frame that morphs is no pop-in: where it
 //!   starts is `coherence`'s morph start (decisions.md shared-morph-on);
+//!   (evalfix) one entering and cut out by its ancestors' clip on every
+//!   frame from the one it mounts on until it shows is judged on the
+//!   frame it mounts, where its enter starts: a clip's moving edge
+//!   uncovers it, and where it first shows is the clip's choice;
 //! - **blank**: a frame that damaged pixels and drew no item while
 //!   something inside its surface's root that draws (eval-rules-3: a
 //!   paint of its own, an image, icon or shader; a bare container shows
@@ -476,10 +480,33 @@ fn pop_in<'a>(
         let shown = (first..tl.ks.len())
             .take_while(|i| tl.row(*i, key).is_none_or(|r| r.surface == surface))
             .find(|i| vis[*i])?;
-        let (r0, r) = (tl.row(first, key)?, tl.row(shown, key)?);
+        let r0 = tl.row(first, key)?;
         if Motions(r0.mot).contains(Motions::SHARED_MORPH) {
             return None;
         }
+        let entered = Motions(r0.mot).contains(Motions::ENTER);
+        // (evalfix) Entering, and cut out by its ancestors' clip on every
+        // frame from the one it mounted on until it shows: its pose played
+        // where no pixel of it showed, and what brings it into view is
+        // the clip's edge moving over it (a card's height spring
+        // uncovering a row), never a frame. Its enter is judged where it
+        // starts, on its first frame; where the clip first lets it show
+        // is the clip's choice, not its pose's.
+        let judged = if entered
+            && (first..shown).all(|j| {
+                tl.row(j, key)
+                    .is_some_and(|q| q.surface == surface && clipped_out(q))
+            }) {
+            first
+        } else {
+            shown
+        };
+        let r = tl.row(judged, key)?;
+        let frame = if judged == shown {
+            "its first frame shown"
+        } else {
+            "its first frame (cut out by its clip until it shows)"
+        };
         // Where it rests: at the segment's rest, else (gone by then, or
         // not drawn) its last frame in the segment at rest, neither
         // entering nor leaving; with neither, how far its first frame is
@@ -495,7 +522,6 @@ fn pop_in<'a>(
                     .filter(at_rest)
             })
         });
-        let entered = Motions(r0.mot).contains(Motions::ENTER);
         // Not drawn until an ancestor drawn transparent came into view:
         // its pose was dropped unseen and it shows at rest by design
         // (decisions.md 2026-10-06 wave3-pixels (p2), "Enter poses of
@@ -526,7 +552,7 @@ fn pop_in<'a>(
             && sh > POP_IN_SHARE
         {
             wrong.push(format!(
-                "its first frame shown is at opacity {:.2}, {:.0}% of the way from its pose's {po}",
+                "{frame} is at opacity {:.2}, {:.0}% of the way from its pose's {po}",
                 r.own_op,
                 sh * 100.0
             ));
@@ -538,7 +564,7 @@ fn pop_in<'a>(
                 && sh > POP_IN_SHARE
             {
                 wrong.push(format!(
-                    "its first frame shown is {at:.1} px off on {axis}, {:.0}% of the way from \
+                    "{frame} is {at:.1} px off on {axis}, {:.0}% of the way from \
                      its pose's {p}",
                     sh * 100.0
                 ));
@@ -560,7 +586,7 @@ fn pop_in<'a>(
                 && sh > POP_IN_SHARE
             {
                 wrong.push(format!(
-                    "its first frame shown is laid {:.1} px in {axis}, {:.0}% of the way from \
+                    "{frame} is laid {:.1} px in {axis}, {:.0}% of the way from \
                      its pose's {p} to {:.1} at rest",
                     r.laid[ax],
                     sh * 100.0,
@@ -570,11 +596,22 @@ fn pop_in<'a>(
         }
         (!wrong.is_empty()).then(|| {
             Finding::fail(CheckId::Vanish, format!("pop-in: {}", wrong.join("; ")))
-                .at(tl.ks[shown])
+                .at(tl.ks[judged])
                 .node(key)
                 .in_segment(&seg.name)
         })
     }
+}
+
+/// (evalfix) True if what `r` draws (`drawn_extent`) lies wholly outside
+/// the clip its ancestors set (`Row::clip`), or the clip has no area: no
+/// pixel of it can show, whatever its own look.
+fn clipped_out(r: &Row) -> bool {
+    let Some([cx, cy, cw, ch]) = r.clip else {
+        return false;
+    };
+    let [x, y, w, h] = super::drawn_extent(r);
+    cw <= 0.0 || ch <= 0.0 || x >= cx + cw || y >= cy + ch || x + w <= cx || y + h <= cy
 }
 
 /// (eval-false-alarms) True if `key`, not shown at timeline frame `i`,

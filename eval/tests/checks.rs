@@ -452,6 +452,104 @@ fn an_enter_pose_skipped_is_a_pop_in() {
     assert_eq!(f.key.as_deref(), Some("pill"));
 }
 
+/// (evalfix) A row with `enter { opacity: 0; y: -8 }` mounts at tick 1
+/// at y 180 in a card that clips it, its enter starting at `start`
+/// opacity and easing to 1 over nine ticks. With `grows`, the card's
+/// height springs from 40 to 260, so the row is cut out by the clip
+/// until the card is 197 tall at tick 6, when its enter is 92% done;
+/// without, the card is 260 tall throughout and the row shows at once.
+fn revealed(grows: bool, start: f32) -> RunTrace {
+    let tall = [
+        40.0, 51.0, 78.0, 110.0, 142.0, 172.0, 197.0, 217.0, 233.0, 245.0, 252.0, 258.0,
+    ];
+    let mut t = shape(14, |k| {
+        let h = if grows {
+            tall.get(k as usize).copied().unwrap_or(260.0)
+        } else {
+            260.0
+        };
+        let card = row("card", [0.0, 0.0, 300.0, h]).draws();
+        let card = if grows && (1..12).contains(&k) {
+            card.mot(Motions::SIZE_SPRING).auth(Axes::H)
+        } else {
+            card
+        };
+        let mut v = vec![card];
+        if k >= 1 {
+            let p = ease(0.0, 1.0, k - 1, 9);
+            let op = start + (1.0 - start) * p;
+            let dy = -8.0 * (1.0 - p);
+            let m = if k < 11 {
+                Motions::ENTER | Motions::PROP_SPRING | Motions::OPACITY_SPRING
+            } else {
+                Motions(0)
+            };
+            let mut late = row("late", [10.0, 180.0, 260.0, 30.0])
+                .laid_at(10.0, 180.0)
+                .at(10.0, 180.0 + dy)
+                .spring(0.0, dy)
+                .op(op)
+                .mot(m)
+                .auth(Axes::Y | Axes::OPACITY)
+                .draws();
+            late.clip = Some([0.0, 0.0, 300.0, h]);
+            if 180.0 + dy >= h {
+                late.hidden = Some("clipped".into());
+            }
+            v.push(late);
+        }
+        v
+    });
+    for f in &mut t.frames {
+        f.sizes.insert(1, [300.0, 300.0]);
+    }
+    t.nodes.get_mut("card").unwrap().clips = true;
+    let late = t.nodes.get_mut("late").unwrap();
+    late.parent = Some("card".into());
+    late.enter = Some(Pose {
+        opacity: Some(0.0),
+        y: Some(-8.0),
+        ..Pose::default()
+    });
+    t.seal();
+    t
+}
+
+#[test]
+fn an_enter_a_moving_clip_uncovers_is_judged_where_it_starts() {
+    let sc = scenario("");
+    // Played from its pose while cut out, uncovered at 92%: no pop-in.
+    let t = revealed(true, 0.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Vanish),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    // Shown at once, already 90% of the way in: a pop-in where it shows.
+    let t = revealed(false, 0.9);
+    let r = check(&sc, &t);
+    let f = r
+        .failures(CheckId::Vanish)
+        .into_iter()
+        .find(|f| f.key.as_deref() == Some("late"))
+        .unwrap_or_else(|| panic!("{}", show(&r, &t)));
+    assert!(f.msg.starts_with("pop-in: its first frame shown"), "{f:?}");
+    assert_eq!(f.k, Some(1));
+    // Cut out, but its enter started 90% of the way in: still a pop-in,
+    // on the frame it mounted.
+    let t = revealed(true, 0.9);
+    let r = check(&sc, &t);
+    let f = r
+        .failures(CheckId::Vanish)
+        .into_iter()
+        .find(|f| f.key.as_deref() == Some("late"))
+        .unwrap_or_else(|| panic!("{}", show(&r, &t)));
+    assert!(f.msg.contains("cut out by its clip"), "{f:?}");
+    assert_eq!(f.k, Some(1));
+}
+
 // --- envelope: a glide's overshoot
 
 fn overshoot(share: f32) -> RunTrace {

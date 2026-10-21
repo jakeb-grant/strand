@@ -1,0 +1,102 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "reveal-enter"
+verdict good
+note "first reference (evalfix): read k0-30: #card's height springs 40 -> 261 (k12) and settles at 260; #title and #late mount at k1 with enter { opacity: 0; y: -8 } and play it from 0.144 at y -5.9; #late is cut out by the card's clip k1-k6 (card 51..197 tall, row at y 200) and uncovered by the card's bottom edge from k7 (217 tall) at opacity 0.947; frames k1 (title faint at the top, nothing below the card) and k7 (row's top 17 px under the card's edge) look right"
+date 2026-10-21
+rev "67c2ff52+changes"
+approver "claude"
+scenario 527c8523d80d2724
+seal 981b0e72a328876d
+S1 0 - "panel Card"
+N0 "card|shell.strand:5:3|#0" "col#card"
+N1 "|shell.strand:12:7|#0" "box@shell.strand:12"
+N2 "|shell.strand:3:1|#0" "panel@shell.strand:3"
+N3 "|shell.strand:8:5|#0" "col@shell.strand:8"
+N4 "late|shell.strand:14:9|#1" "row#late"
+N5 "title|shell.strand:10:9|#0" "row#title"
+k0 p1
+s1 z=300,40 o=50,0
+n0 x=0 y=0 w=300 h=40 ord=1 bg=303446ff
+n1 x=10 y=10 w=280 h=150 ord=3
+n2 x=0 y=0 w=300 h=40
+n3 x=0 y=0 w=300 h=260 ord=2
+k1
+s1 z=300,260
+n0 h=51
+n1 y=18 ord=4
+n2 h=260
+n4 x=10 y=194 w=260 h=30 op=37 hid=clipped ord=5 bg=8caaeeff
+n5 x=10 y=4 w=200 h=20 op=37 ord=3 bg=c6d0f5ff
+k2
+n0 h=78
+n1 y=29
+n4 y=197 op=98
+n5 y=7 op=98
+k3
+n0 h=110
+n1 y=37
+n4 y=199 op=151
+n5 y=9 op=151
+k4
+n0 h=142
+n1 y=40
+n4 y=200 op=190
+n5 y=10 op=190
+k5
+n0 h=172
+n1 y=41
+n4 op=216
+n5 op=216
+k6
+n0 h=197
+n4 op=232
+n5 op=232
+k7
+n0 h=217
+n1 y=40
+n4 op=241 hid=-
+n5 op=241
+k8
+n0 h=233
+n4 op=247
+n5 op=247
+k9
+n0 h=244
+n4 op=251
+n5 op=251
+k10
+n0 h=252
+n4 op=253
+n5 op=253
+k11
+n0 h=257
+n4 op=254
+n5 op=254
+k12
+n0 h=261
+k13
+n0 h=262
+n4 op=255
+n5 op=255
+k14
+n0 h=263
+k15
+k16
+k17
+k18
+n0 h=262
+k19
+k20
+n0 h=261
+k21
+k22
+k23
+n0 h=260
+k24
+k25
+k26
+k27
+k28
+k29
+k30
+k31

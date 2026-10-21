@@ -248,3 +248,9 @@ colour-srgb.patch              curated/k-qs-toggles.scn colour
 # calls back mid-flight lands home in one frame, a jump of its whole
 # excursion past 0.75 of it (`teleport`; decisions.md evalfix).
 offset-retarget-snap.patch     regressions/offset-out-and-back.scn teleport:#card:x
+# sizing-clip-open.patch: a `clip: true` box stops clipping while its size
+# springs (against wave3-pixels p2, "a node whose size springs clips its
+# content while it does"), so the row reveal-enter's card is to uncover
+# with its growing height is drawn below the card from its first frame
+# (`contain`; decisions.md evalfix).
+sizing-clip-open.patch         regressions/reveal-enter.scn contain:#late
