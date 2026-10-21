@@ -1,0 +1,32 @@
+id     = "offset-out-and-back"
+about  = """A finding of evalfix (docs/decisions.md evalfix): a card whose `x:` springs
+out and is sent back by logic's own timer within the same segment travels its
+whole excursion, though it starts and rests at the same place. `x:` is a paint
+offset, so no frame lays the card out elsewhere, and `teleport` took the
+segment's travel from its first and last frames alone: a smooth spring's 40 to
+50 px steps read as jumps against a bound of one tick's 32 px. The way of an
+offset springing is every place its declared offset put it while the spring
+was in flight; its dot, carried by it, travels the same way."""
+screen = { width = 640, height = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state out = false
+on change out after 150ms { if out { out = false } }
+
+bar Top {
+  height: 60; bg: #181825
+  row { pad: 10
+    col { id: card; width: 80; height: 40; bg: #303446; radius: 8; pad: 6
+          x: 0 ~ spring(700, 0.7)
+          when out { x: 240 ~ spring(700, 0.7) }
+      box { id: dot; width: 12; height: 12; radius: full; bg: #8caaee }
+    }
+  }
+}
+
+=== steps
+rest
+mark out-and-back
+set out true
+rest

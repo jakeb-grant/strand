@@ -6,7 +6,11 @@
 //! shows, and (eval-false-alarms) every place it comes back onto its
 //! surface or leaves it again, and where each later change of the
 //! segment found it: an offset sent out and turned back travels its
-//! excursion; and (integration-r4) for a node under a scroll that moved
+//! excursion; and (evalfix) every place its written offsets, its own and
+//! its ancestors', put it while a spring of them is in flight, so an
+//! offset sprung out and called back by logic's own timer travels its
+//! excursion though no frame lays it out elsewhere and no step restarts
+//! it; and (integration-r4) for a node under a scroll that moved
 //! by itself, on y, how far the scroll's offset carried its content,
 //! though a windowed list shows the node only inside its viewport), the
 //! span of its way
@@ -192,6 +196,27 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             }
                             was = now.is_some();
                         }
+                        // (evalfix) Every place its declared offsets put
+                        // it while a spring of them is in flight: an
+                        // offset (`x:`, `y:`, a pose's) springs between
+                        // where it was written to and where it is going,
+                        // and both are on its way, as each laid place is
+                        // on a size spring's. An offset sent out and
+                        // called back by logic's own timer within the
+                        // segment travels its excursion though no frame
+                        // lays it out elsewhere and no step restarts it;
+                        // one that snaps has no spring in flight and
+                        // travels nothing more.
+                        if matches!(a, Axis::X | Axis::Y) {
+                            for j in span.clone() {
+                                if let Some(r) = shown(j)
+                                    && let Some(at) = declared(cx, j, key, r, a)
+                                {
+                                    lo = lo.min(at);
+                                    hi = hi.max(at);
+                                }
+                            }
+                        }
                         // (integration-r4) A row under a scroll that moved
                         // by itself travels as far as the scroll carried
                         // its content, though it shows only while inside
@@ -350,6 +375,29 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         &[("carried", carried_by), ("content-steps", steps)],
     );
     first_per_node(out)
+}
+
+/// (evalfix) Where the written offsets of `key` and its ancestors put
+/// row `r` (at timeline frame `j`) on `a` (x or y) while a spring of them
+/// is in flight: its visual place less the in-flight spring parts of its
+/// own offset and of each ancestor's drawn on its surface at `j`
+/// (`Row::spring`: how far an offset's spring, or a pose's, has it from
+/// what it is written to). `None` with no spring in flight (within a
+/// tolerance): its written place is then where it is drawn, and adds
+/// nothing to its way.
+fn declared<'a>(cx: &Cx<'a>, j: usize, key: &'a str, r: &Row, a: Axis) -> Option<f64> {
+    let n = match a {
+        Axis::X => 0,
+        Axis::Y => 1,
+        _ => return None,
+    };
+    let mut sprung = f64::from(r.spring[n]);
+    for anc in cx.lineage(key).into_iter().skip(1) {
+        if let Some(p) = cx.tl.row(j, anc).filter(|p| p.surface == r.surface) {
+            sprung += f64::from(p.spring[n]);
+        }
+    }
+    (sprung.abs() > cx.tol).then(|| value(r, a) - sprung)
 }
 
 /// (eval-coverage-4) How far the sibling laid just before `key` on axis

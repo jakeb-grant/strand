@@ -241,3 +241,10 @@ hidden-row-look.patch          curated/l-app-grid-stagger.scn stagger
 # (decisions.md 2026-10-04 render, wave3-theme t2): the Wi-Fi tile's fill
 # and the Dark tile's chase of the swapping accent are drawn off their way.
 colour-srgb.patch              curated/k-qs-toggles.scn colour
+# offset-retarget-snap.patch: a prop spring retargeted while in flight
+# snaps to its new target instead of springing from where it is with its
+# velocity (design.md "Springs everywhere": "Retargeting mid-flight keeps
+# velocity, so interrupted animations never jolt"): the card logic's timer
+# calls back mid-flight lands home in one frame, a jump of its whole
+# excursion past 0.75 of it (`teleport`; decisions.md evalfix).
+offset-retarget-snap.patch     regressions/offset-out-and-back.scn teleport:#card:x

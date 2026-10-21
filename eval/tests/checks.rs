@@ -662,6 +662,72 @@ fn a_glide_that_jumps_fails_teleport() {
     assert!(f.msg.contains("jumped 90.0 px"), "{f:?}");
 }
 
+/// (evalfix) A card's `x:` springs out to 240 and logic's own timer
+/// sends it back to 0 within one segment, its child carried along. It
+/// starts and rests at 0 and `x:` lays nothing out, so its way is the
+/// places its written offset put it while the spring was in flight:
+/// steps of up to 48 px are a spring's, not jumps. `snap` cuts the way
+/// out short: from 42 px it lands on 240 in one frame, no spring left,
+/// which is still a jump of 198 px, over 0.75 of the 240 it travels.
+fn offset_out_and_back(snap: bool) -> RunTrace {
+    let out = [
+        0.0, 42.0, 90.0, 134.0, 171.0, 200.0, 220.0, 232.0, 238.0, 240.0,
+    ];
+    let back = [198.0, 150.0, 106.0, 68.0, 38.0, 16.0, 4.0, 0.0];
+    let mut t = shape(22, |k| {
+        let card = row("card", [0.0, 0.0, 80.0, 40.0]).laid_at(0.0, 0.0);
+        let dot = row("dot", [6.0, 6.0, 12.0, 12.0]).laid_at(6.0, 6.0);
+        let (x, spring) = match k as usize {
+            k @ 1..=9 => {
+                let x = if snap && k >= 2 { 240.0 } else { out[k] };
+                (x, x - 240.0)
+            }
+            10 => (240.0, 0.0),
+            k @ 11..=17 => (back[k - 11], back[k - 11]),
+            _ => (0.0, 0.0),
+        };
+        let moving = spring != 0.0 || (snap && k == 2);
+        let (m, a) = if moving {
+            (Motions::PROP_SPRING, Axes::X)
+        } else {
+            (Motions(0), Axes(0))
+        };
+        // Carried: its motion and authored axes are its card's.
+        let mut d = dot.at(6.0 + x, 6.0);
+        d.emot = m.0;
+        d.auth = a.0;
+        vec![card.at(x, 0.0).spring(spring, 0.0).mot(m).auth(a), d]
+    });
+    t.nodes.get_mut("dot").unwrap().parent = Some("card".into());
+    t.seal();
+    t
+}
+
+#[test]
+fn an_offset_sprung_out_and_back_by_logic_travels_its_excursion() {
+    let sc = scenario("");
+    let t = offset_out_and_back(false);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Teleport),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = offset_out_and_back(true);
+    let r = check(&sc, &t);
+    for key in ["card", "dot"] {
+        assert!(
+            fails_on(&r, CheckId::Teleport, key, "x"),
+            "{key}: {}",
+            show(&r, &t)
+        );
+    }
+    let f = &r.failures(CheckId::Teleport)[0];
+    assert_eq!(f.k, Some(2), "{f:?}");
+    assert!(f.msg.contains("jumped 198.0 px"), "{f:?}");
+}
+
 #[test]
 fn a_drag_released_far_from_home_glides_back_without_teleport() {
     // Dragged 90 px away and released: no net travel over the segment,
