@@ -1,0 +1,79 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "ghost-passengers"
+verdict good
+note "first reference (evalfix): read k0-14: #card, removed, plays exit { opacity: 0; height: 30 } with its opacity's ease(ease_in, 140ms): 1 -> 0.976 -> ... -> 0.078 (k8) -> 0 (k9), height 180 -> 141 -> 84 -> 47 -> 30 with a small overshoot to 26 (k5) and back; #chip rides in it at its own opacity 1 and offset 0 (its own exit is not played), drawn to k8; #well is cut out by the card's clip from k2 (card 84 tall, well at y 110), so #tile is drawn at k0-k1 only; frames k1 (all three shown, card fading) and k3 (card 47 tall, chip only) look right"
+date 2026-10-21
+rev "298ea52c+changes"
+approver "claude"
+scenario 7f32d99e2c32b869
+seal cd63aff881f12369
+S1 0 - "bar Top"
+N0 "card|shell.strand:7:7|[Mock | DP-1]#0" "col#card"
+N1 "chip|shell.strand:11:11|[Mock | DP-1]#0" "box#chip"
+N2 "tile|shell.strand:13:13|[Mock | DP-1]#0" "box#tile"
+N3 "well|shell.strand:12:11|[Mock | DP-1]#0" "stack#well"
+N4 "|shell.strand:10:9|[Mock | DP-1]#0" "col@shell.strand:10"
+N5 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N6 "|shell.strand:5:3|[Mock | DP-1]#0" "row@shell.strand:5"
+k0 p1
+s1 z=400,220
+n0 x=10 y=10 w=240 h=180 ord=2 bg=303446ff
+n1 x=20 y=20 w=60 h=20 ord=4 bg=8caaeeff
+n2 x=20 y=110 w=40 h=40 ord=6 bg=a6e3a1ff
+n3 x=20 y=110 w=200 h=60 ord=5
+n4 x=10 y=10 w=240 h=180 ord=3
+n5 x=0 y=0 w=400 h=220 bg=181825ff
+n6 x=0 y=0 w=400 h=220 ord=1
+k1
+n0 h=141 op=249 hid=inert
+n1 op=249 hid=inert
+n2 op=249 hid=inert
+n3 op=249 hid=inert
+n4 op=249 hid=inert
+k2
+n0 h=84 op=233
+n1 op=233
+n2 -
+n3 op=233
+n4 op=233
+k3
+n0 h=47 op=210
+n1 op=210
+n3 op=210
+n4 op=210
+k4
+n0 h=30 op=181
+n1 op=181
+n3 op=181
+n4 op=181
+k5
+n0 h=26 op=147
+n1 op=147
+n3 op=147
+n4 op=147
+k6
+n0 h=27 op=109
+n1 op=109
+n3 op=109
+n4 op=109
+k7
+n0 h=28 op=66
+n1 op=66
+n3 op=66
+n4 op=66
+k8
+n0 h=29 op=20
+n1 op=20
+n3 op=20
+n4 op=20
+k9
+n0 h=30 op=0 hid=opacity0 bg=-
+n1 -
+n3 -
+n4 -
+k10
+k11
+k12
+k13
+k14
+n0 -

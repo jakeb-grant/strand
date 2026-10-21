@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/anim/mod.rs
++++ b/crates/strand-render/src/anim/mod.rs
+@@ -1524,7 +1524,7 @@ impl Animator {
+                     let m = &mut na.props[i].1;
+                     if m.target() != target {
+                         let springs = respring || touch.is_some() || !m.settled(at);
+-                        if !(springs && m.retarget(&target, curve, last)) {
++                        if !(springs && m.settled(at) && m.retarget(&target, curve, last)) {
+                             *m = PropMotion::rest(p, &target, last);
+                         }
+                     }

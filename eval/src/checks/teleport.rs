@@ -6,7 +6,13 @@
 //! shows, and (eval-false-alarms) every place it comes back onto its
 //! surface or leaves it again, and where each later change of the
 //! segment found it: an offset sent out and turned back travels its
-//! excursion; and (integration-r4) for a node under a scroll that moved
+//! excursion; and (evalfix) every place its written offsets, its own and
+//! its ancestors', put it while a spring of them is in flight, and where
+//! each such spring started, both read from the probe's parts and never
+//! from the drawn box, so an offset sprung out and called back by
+//! logic's own timer travels its excursion though no frame lays it out
+//! elsewhere and no step restarts it, while a frame drawn off its parts
+//! does not widen its own bound; and (integration-r4) for a node under a scroll that moved
 //! by itself, on y, how far the scroll's offset carried its content,
 //! though a windowed list shows the node only inside its viewport), the
 //! span of its way
@@ -192,6 +198,45 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                             }
                             was = now.is_some();
                         }
+                        // (evalfix) Every place its written offsets put
+                        // it while a spring of them is in flight: an
+                        // offset (`x:`, `y:`, a pose's) springs between
+                        // where it was when the spring was sent and where
+                        // it is written to go, and both are on its way,
+                        // as each laid place is on a size spring's. An
+                        // offset sent out and called back by logic's own
+                        // timer within the segment travels its excursion
+                        // though no frame lays it out elsewhere and no
+                        // step restarts it; one that snaps has no spring
+                        // in flight and travels nothing more. Both places
+                        // are read from the probe's declared parts, never
+                        // from the drawn box (evalfix review): a frame
+                        // drawn off its parts (a stray displacement, a
+                        // spring drawn twice) cannot widen its own bound.
+                        if let Some(n) = match a {
+                            Axis::X => Some(0),
+                            Axis::Y => Some(1),
+                            _ => None,
+                        } {
+                            for j in span.clone() {
+                                let Some(r) = shown(j) else { continue };
+                                if !sprung(cx, j, key, r, n) {
+                                    continue;
+                                }
+                                let at = written_place(r, n);
+                                lo = lo.min(at);
+                                hi = hi.max(at);
+                                // Where the spring started: the frame
+                                // before it first came into flight.
+                                if let Some(q) = j.checked_sub(1).and_then(shown)
+                                    && !sprung(cx, j - 1, key, q, n)
+                                {
+                                    let at = placed(q, n);
+                                    lo = lo.min(at);
+                                    hi = hi.max(at);
+                                }
+                            }
+                        }
                         // (integration-r4) A row under a scroll that moved
                         // by itself travels as far as the scroll carried
                         // its content, though it shows only while inside
@@ -350,6 +395,55 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         &[("carried", carried_by), ("content-steps", steps)],
     );
     first_per_node(out)
+}
+
+/// (evalfix) Whether a spring is in flight at timeline frame `j` on
+/// axis `n` (0 x, 1 y) on the offset of `key` (row `r`) or of an
+/// ancestor drawn on its surface there (`Row::spring`: how far an
+/// offset's spring, or a pose's, has it from what it is written to),
+/// past a tolerance.
+fn sprung<'a>(cx: &Cx<'a>, j: usize, key: &'a str, r: &Row, n: usize) -> bool {
+    f64::from(r.spring[n].abs()) > cx.tol
+        || cx.lineage(key).into_iter().skip(1).any(|anc| {
+            cx.tl
+                .row(j, anc)
+                .filter(|p| p.surface == r.surface)
+                .is_some_and(|p| f64::from(p.spring[n].abs()) > cx.tol)
+        })
+}
+
+/// What the transforms over `r` (its own and its ancestors' scale and
+/// turn, the compositor's pose) add to its place on axis `n`: its
+/// visual box less its box before them. A translation of the box moves
+/// both alike and is not in it.
+fn transforms(r: &Row, n: usize) -> f64 {
+    f64::from(r.visual[n]) - f64::from(r.drawn[n])
+}
+
+/// (evalfix) Where the written offsets of row `r` and its ancestors put
+/// it on axis `n` (0 x, 1 y): its laid place, plus what its ancestors
+/// have written (`inherited` less its part in flight, `flight`) and its
+/// own written offset, through its transforms. Read from the probe's
+/// declared parts, not from where it was drawn.
+fn written_place(r: &Row, n: usize) -> f64 {
+    f64::from(r.laid[n]) + f64::from(r.inherited[n]) - f64::from(r.flight[n])
+        + f64::from(r.written[n])
+        + transforms(r, n)
+}
+
+/// (evalfix review) Where the probe's declared parts put row `r` on axis
+/// `n` (0 x, 1 y): its laid place, its ancestors' offsets, its own written
+/// offset, its springs', glide's and morph's parts, through its
+/// transforms. On the frame before a spring comes into flight, where that
+/// spring starts from.
+fn placed(r: &Row, n: usize) -> f64 {
+    f64::from(r.laid[n])
+        + f64::from(r.inherited[n])
+        + f64::from(r.written[n])
+        + f64::from(r.spring[n])
+        + f64::from(r.glide[n])
+        + f64::from(r.morph[n])
+        + transforms(r, n)
 }
 
 /// (eval-coverage-4) How far the sibling laid just before `key` on axis

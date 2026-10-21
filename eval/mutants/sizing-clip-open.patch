@@ -1,0 +1,18 @@
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -1754,12 +1754,12 @@ impl<'a> Flattener<'a> {
+         // (a page slides in from outside it), and so
+         // does a node whose size springs (a toast collapsing to `height:
+         // 0`), or that exits to a pose setting its size.
+-        let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
++        let clips = (matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
++            && !self.anim.sizing(self.tree, node))
+             || matches!(
+                 node.kind,
+                 NodeKind::Scroll | NodeKind::List | NodeKind::Pages
+-            )
+-            || self.anim.sizing(self.tree, node);
++            );
+         let mut ctx = DefaultHasher::new();
+         (inh.ctx, node.epoch).hash(&mut ctx);
+         hash_f32(&mut ctx, opacity);

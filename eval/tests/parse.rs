@@ -807,7 +807,7 @@ fn every_mutant_line_names_what_exists() {
         }
         n += 1;
     }
-    assert_eq!(n, 50);
+    assert_eq!(n, 56);
 }
 
 /// (report) The header keys a replay writes: `[seed]` (JSON values),

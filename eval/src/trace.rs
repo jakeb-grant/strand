@@ -95,6 +95,15 @@ pub struct RunTrace {
     /// digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub closed: BTreeMap<String, Vec<u32>>,
+    /// (evalfix) The ticks at which logic's diff removed each node that
+    /// is not a surface's root, by key: the root of a removed subtree
+    /// (`SceneOp::Remove`, not a list window's unmount, which plays no
+    /// exit by design). Read by `vanish`'s pop-out to hold a removed root
+    /// with an `exit` pose to it from what the scenario did, never from
+    /// the renderer's motion bits, so a renderer that drops the exit is
+    /// still judged. Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed: BTreeMap<String, Vec<u32>>,
     /// (eval-rules-8) Each `keyframes` block a node played, by name, as
     /// logic declared it (`strand_scene::Keyframes`, compiled from the
     /// config): what `continuity`'s `track` works the track out from.

@@ -8,7 +8,8 @@
 # worktree is removed at the end. A patch that no longer applies is
 # reported STALE (regenerate it), not as a product failure. Each mutant
 # leaves an A/B page of HEAD against it, every frame scrubbable:
-# target/eval/mutants/<name>-ab/index.html.
+# target/eval/mutants/<name>-ab/index.html (a patch listed again against
+# another scenario: <name>-<scenario id>, and its A/B page beside it).
 #
 # Usage: scripts/eval/mutants.sh [NAME...]   (NAME: a patch without .patch;
 #        default: every line)
@@ -94,6 +95,7 @@ failed=0
 ran=0
 declare -A control
 declare -A control_out
+declare -A seen
 while read -r patch scenario specs; do
   case "$patch" in "" | \#*) continue ;; esac
   name=${patch%.patch}
@@ -103,7 +105,10 @@ while read -r patch scenario specs; do
   ran=$((ran + 1))
   scn="$TREE/eval/scenarios/$scenario"
   id=$(sed -n 's/^id *= *"\(.*\)".*/\1/p' "$scn" | head -n1)
-  out="$BASE/$name"
+  # A patch listed again against another scenario runs apart from its
+  # first line: <name>-<scenario id>.
+  if [ -n "${seen[$name]:-}" ]; then out="$BASE/$name-$id"; else out="$BASE/$name"; fi
+  seen[$name]=1
   rm -rf "$out" "$out-head" "$out-ab"
   echo "=== mutant $name: $scenario ($id)"
   # The control: the scenario passes on HEAD.

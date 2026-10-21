@@ -1,0 +1,40 @@
+id     = "ghost-passengers"
+about  = """A finding of evalfix (docs/decisions.md evalfix): a removed card plays its
+`exit` pose (design.md "Poses": "A removed subtree plays `exit`, then
+unmounts"; spec.md 6.4: "a removed subtree plays its `exit` pose") and the
+nodes inside it ride along: their own `exit` poses are not the subtree's, and
+they stay mounted until the card unmounts. Once the card has faded to nothing
+the renderer draws none of its children, and a clip the card's shrinking
+height cuts out hides its own, so their rows end early, at their own full
+opacity; `vanish`'s pop-out read that as each passenger unmounting short of
+its own pose. Pop-out judges the removed subtree's root; a passenger is held
+to staying drawn while the root still shows."""
+screen = { width = 400, height = 260, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state open = true
+
+bar Top {
+  height: 220; bg: #181825
+  row { pad: 10; align: start
+    if open {
+      col { id: card; clip: true; width: 240; height: 180; bg: #303446
+            opacity: 1 ~ ease(ease_in, 140ms)
+            exit { opacity: 0; height: 30 }
+        col { width: 240; height: 180; shrink: 0; pad: 10; gap: 10
+          box { id: chip; width: 60; height: 20; shrink: 0; bg: #8caaee; exit { opacity: 0; y: -12 } }
+          stack { id: well; clip: true; width: 200; height: 60; shrink: 0; margin: 60, 0, 0
+            box { id: tile; width: 40; height: 40; bg: #a6e3a1; exit { opacity: 0; x: -120 } }
+          }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark close
+set open false
+rest

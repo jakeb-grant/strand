@@ -1591,11 +1591,17 @@ impl Harness {
         // (`RunTrace::closed`), noted by key while the tree still holds
         // it.
         let mut closes: Vec<NodeId> = Vec::new();
+        // (evalfix) The root of a subtree logic removes, not a surface's
+        // and not a list window's unmount (`RunTrace::removed`).
+        let mut removes: Vec<NodeId> = Vec::new();
         for op in &diff.ops {
             match op {
-                strand_scene::SceneOp::Remove { id, .. } => {
+                strand_scene::SceneOp::Remove { id, window } => {
                     let tree = self.r.tree();
                     closes.extend(tree.surface_nodes().filter(|s| tree.is_ancestor(*id, *s)));
+                    if !*window && tree.get(*id).is_some_and(|n| !n.kind.is_surface()) {
+                        removes.push(*id);
+                    }
                 }
                 strand_scene::SceneOp::SetProp {
                     id,
@@ -1613,6 +1619,15 @@ impl Harness {
                 .labels
                 .key(id, &self.inst, self.r.tree(), &self.sources);
             let ks = self.trace.closed.entry(key).or_default();
+            if ks.last() != Some(&k) {
+                ks.push(k);
+            }
+        }
+        for id in removes {
+            let key = self
+                .labels
+                .key(id, &self.inst, self.r.tree(), &self.sources);
+            let ks = self.trace.removed.entry(key).or_default();
             if ks.last() != Some(&k) {
                 ks.push(k);
             }

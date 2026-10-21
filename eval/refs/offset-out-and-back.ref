@@ -1,0 +1,116 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "offset-out-and-back"
+verdict good
+note "first reference (evalfix): read k0-35: #card springs 10 -> 261 (overshoot 11 at k10) on x: 240 ~ spring(700, 0.7), logic's 150 ms timer turns it back at k11 mid-flight, 241 -> 198 -> ... -> -2 (k20) and rests at 10 by k27-35; steps at most 51 px, no frame lays it out elsewhere; #dot carried 6 px inside it on every frame; frames k5 (x 200) and k12 (x 198) look right"
+date 2026-10-21
+rev "49d44e8b+changes"
+approver "claude"
+scenario a6832c6c0a25df30
+seal a9f9a82c7615c103
+S1 0 - "bar Top"
+N0 "card|shell.strand:7:5|[Mock | DP-1]#0" "col#card"
+N1 "dot|shell.strand:10:7|[Mock | DP-1]#0" "box#dot"
+N2 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N3 "|shell.strand:6:3|[Mock | DP-1]#0" "row@shell.strand:6"
+k0 p1
+s1 z=640,60
+n0 x=10 y=10 w=80 h=40 ord=2 bg=303446ff
+n1 x=16 y=16 w=12 h=12 ord=3 bg=8caaeeff
+n2 x=0 y=0 w=640 h=60 bg=181825ff
+n3 x=0 y=0 w=640 h=60 ord=1
+k1
+n0 x=29
+n1 x=35
+k2
+n0 x=71
+n1 x=77
+k3
+n0 x=119
+n1 x=125
+k4
+n0 x=163
+n1 x=169
+k5
+n0 x=200
+n1 x=206
+k6
+n0 x=227
+n1 x=233
+k7
+n0 x=245
+n1 x=251
+k8
+n0 x=255
+n1 x=261
+k9
+n0 x=260
+n1 x=266
+k10
+n0 x=261
+n1 x=267
+k11
+n0 x=241
+n1 x=247
+k12
+n0 x=198
+n1 x=204
+k13
+n0 x=147
+n1 x=153
+k14
+n0 x=100
+n1 x=106
+k15
+n0 x=62
+n1 x=68
+k16
+n0 x=34
+n1 x=40
+k17
+n0 x=16
+n1 x=22
+k18
+n0 x=5
+n1 x=11
+k19
+n0 x=0
+n1 x=6
+k20
+n0 x=-2
+n1 x=4
+k21
+n0 x=-1
+n1 x=5
+k22
+n0 x=1
+n1 x=7
+k23
+n0 x=4
+n1 x=10
+k24
+n0 x=6
+n1 x=12
+k25
+n0 x=8
+n1 x=14
+k26
+n0 x=9
+n1 x=15
+k27
+n0 x=10
+n1 x=16
+k28
+k29
+k30
+n0 x=11
+n1 x=17
+k31
+n0 x=10
+n1 x=16
+k32
+k33
+k34
+k35
+k36
+k37
+k38
