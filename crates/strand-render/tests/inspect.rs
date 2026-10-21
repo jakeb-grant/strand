@@ -547,3 +547,63 @@ fn pick_mode_holds_pointer_input_from_the_handlers() {
     }
     assert_eq!(router.pointer(S), Some(LogicalPoint::new(1.0, 1.0)));
 }
+
+/// (replay-owner) `Renderer::drawn_nodes`: every node the last frame
+/// drew or hid, in paint order, with its box through its transforms
+/// (axis aligned, logical px) and its own opacity, for a glitch report's
+/// `drawn.json`; asked again, the same (it commits nothing).
+#[test]
+fn drawn_nodes_are_the_last_frames_boxes_after_transforms() {
+    for scale in [1, 2] {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let place = |x: f32, extra: Vec<(Prop, PropValue)>| {
+            let mut v = vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(8.0)),
+                (Prop::Width, num(20.0)),
+                (Prop::Height, num(10.0)),
+                (Prop::Bg, color("#89b4fa")),
+            ];
+            v.extend(extra);
+            v
+        };
+        let plain = b.node(NodeKind::Box, Some(root), place(100.0, vec![]));
+        let zoomed = b.node(
+            NodeKind::Box,
+            Some(root),
+            place(
+                20.0,
+                vec![(Prop::Scale, num(2.0)), (Prop::Opacity, num(0.5))],
+            ),
+        );
+        let gone = b.node(
+            NodeKind::Box,
+            Some(root),
+            place(150.0, vec![(Prop::Opacity, num(0.0))]),
+        );
+        let mut r = renderer();
+        r.set_reduced_motion(true);
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, root);
+        assert!(r.drawn_nodes(S).is_none(), "before its first layout");
+        let mut buf = buffer(scale);
+        settle(&mut r, &mut buf, S, T0);
+        let drawn = r.drawn_nodes(S).expect("a painted surface");
+        assert_eq!(
+            drawn.iter().map(|d| d.node).collect::<Vec<_>>(),
+            [root, plain, zoomed, gone],
+            "{drawn:?}"
+        );
+        let of = |n: NodeId| drawn.iter().find(|d| d.node == n).unwrap();
+        assert_eq!(of(root).rect, LogicalRect::new(0.0, 0.0, 200.0, 40.0));
+        assert_eq!(of(plain).rect, LogicalRect::new(100.0, 8.0, 20.0, 10.0));
+        assert_eq!(of(plain).opacity, 1.0);
+        // Twice its size about its centre (30, 13).
+        assert_eq!(of(zoomed).rect, LogicalRect::new(10.0, 3.0, 40.0, 20.0));
+        assert_eq!(of(zoomed).opacity, 0.5);
+        assert_eq!(of(gone).opacity, 0.0);
+        assert_eq!(r.drawn_nodes(S).unwrap(), drawn, "asked again");
+        assert!(!r.wants_frame(S), "asking wants no frame");
+    }
+}

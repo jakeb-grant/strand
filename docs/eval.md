@@ -2259,8 +2259,9 @@ lavapipe).
 work:
 
 1. **Reads** `bundle.json` (its outputs and surfaces among it), both
-   ring dumps (`strand_core::flight`), `services.json`, `cells.json`
-   and `nodes.json`, refusing a newer format by its number.
+   ring dumps (`strand_core::flight`), `services.json`, `cells.json`,
+   `nodes.json` and (replay-owner) `drawn.json`, refusing a newer
+   format by its number.
 2. **Picks the window**: from the newest of the two rings' oldest
    records (a ring that wrapped), the last reload committed and the
    last gap's end (a lock, the recorder off), to the report; bounded by
@@ -2342,6 +2343,35 @@ capability, used by any scenario):
 - `answer <service.method> <JSON>`: the next call of that method is
   answered with it, ahead of the mock's own (`SchemaHost::answer`).
 
+**The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
+first key `verdict`, the first line of `replay.txt`, of what
+`strand-eval replay` prints and of the viewer's header). At the
+report the live shell writes `drawn.json`: for each mapped surface
+(its slot and root's `node_ref`), every node its last frame drew or
+hid, in paint order, named as `nodes.json` names a node (origin,
+`id:`, `for` row key) with its box as drawn (surface logical px,
+through every transform, axis aligned, to 1/64) and its own opacity
+(docs/architecture.md "Glitch reports"). The replay takes its own last
+traced frame of the same surface (by its root's origin) at the report,
+names each row as `nodes.json` does, and pairs the nodes in paint
+order by surface, origin, `id:` and row key:
+
+- **VERIFIED**: every live node has its replayed one and the other way
+  round, each edge within 1 logical px and the opacity within 0.02;
+- **DRIFTED**: anything else, one line per difference: the node
+  (`@origin[key] #id`) and its surface, the live box and opacity, the
+  replay's, and how many px apart its farthest edge is (and how far
+  the opacity, past 0.02); a node only the live shell drew, or only
+  the replay; a live surface the replay drew no frame of;
+- **NOT CHECKED**: a bundle with no `drawn.json` (a strand from before
+  it) or none of its surfaces on the output replayed.
+
+The live side costs nothing per frame: the boxes are flattened again
+on demand, at the report, from the renderer's retained scene at the
+time of its last paint (`Renderer::drawn_nodes`, the same flatten a
+repaint without a commit runs), with no eval hooks in the shipped
+binary.
+
 **The comparison with the live shell** (`fidelity.json` and the head
 of `replay.txt`). The replay checks itself against what was recorded
 and says where it first parts from it:
@@ -2371,7 +2401,8 @@ replayed and the input on them, horizontal scrolls (a scenario scrolls
 vertically only), files listed in the bundle's `missing`, and the
 reload, gap or cap the window starts after.
 
-**`replay.txt`**, what an agent reads first. Its head gives the
+**`replay.txt`**, what an agent reads first. Its first line is the
+verdict, each difference under it; then its head gives the
 words, the window, the output, the traced part and the comparison
 above. Then one line per event in time order, time relative to the
 report: input as its step with the surface's and the hit node's source

@@ -167,6 +167,37 @@ impl Renderer {
         strand_scene::FramePixels::from_argb(&pixels, size, stride, scale)
     }
 
+    /// (replay-owner) Every node `surface`'s last painted frame drew, in
+    /// paint order, or hid (at opacity or scale 0, inside a subtree
+    /// playing its exit, cut out by a clip): its box and opacity, for a
+    /// glitch report (docs/architecture.md, "Glitch reports"). Computed
+    /// on demand by flattening the surface again at that frame's time as
+    /// a frame that commits nothing, as
+    /// [`Renderer::repaint_offscreen`] does; no frame pays for it. `None`
+    /// before its first layout.
+    pub fn drawn_nodes(&mut self, surface: SurfaceId) -> Option<Vec<crate::DrawnNode>> {
+        let s = self.surfaces.get(&surface)?;
+        let (root, size, scale) = (s.root, s.size, s.scale);
+        if size.is_empty() {
+            return None;
+        }
+        let time = s.painted_time.unwrap_or_default();
+        let layouts = self.shaped();
+        self.anim.begin(time, None, false);
+        let boxes = self.surfaces.get(&surface).and_then(|s| s.boxes.as_ref())?;
+        let f = crate::flatten::flatten_drawn(
+            &self.tree,
+            root,
+            size,
+            scale,
+            &layouts,
+            boxes,
+            &mut self.anim,
+            &self.extras,
+        );
+        f.drawn
+    }
+
     /// (report) The local files the renderer draws for mounted nodes:
     /// images and icons its surfaces' last frames drew (an icon as the
     /// theme's file a lookup finds now), and each `svg` and `lottie`

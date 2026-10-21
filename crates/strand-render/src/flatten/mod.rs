@@ -356,6 +356,10 @@ pub struct Flattened {
     /// (M6) The surface root draws something itself (a background, a
     /// border): its whole box takes input.
     pub root_paints: bool,
+    /// (replay-owner) Each node as drawn, for a flatten that asked
+    /// ([`flatten_drawn`]): a glitch report's on-demand record, never a
+    /// frame's (`None` then).
+    pub drawn: Option<Vec<crate::DrawnNode>>,
     /// (eval-sandbox) Each node as drawn, when the frame trace is on
     /// (`crate::probe`).
     #[cfg(feature = "eval-hooks")]
@@ -573,6 +577,39 @@ pub fn flatten(
     anim: &mut Animator,
     extras: &Extras,
 ) -> Flattened {
+    flatten_with(tree, root, size, scale, layouts, boxes, anim, extras, false)
+}
+
+/// (replay-owner) [`flatten`], also recording each node as drawn
+/// ([`Flattened::drawn`]): where the glitch report's live boxes come
+/// from (`Renderer::drawn_nodes`), at the points the eval's frame trace
+/// records its rows, so the two name the same nodes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flatten_drawn(
+    tree: &SceneTree,
+    root: NodeId,
+    size: Size,
+    scale: Scale,
+    layouts: &HashMap<NodeId, Vec<Shaped>>,
+    boxes: &Boxes,
+    anim: &mut Animator,
+    extras: &Extras,
+) -> Flattened {
+    flatten_with(tree, root, size, scale, layouts, boxes, anim, extras, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flatten_with(
+    tree: &SceneTree,
+    root: NodeId,
+    size: Size,
+    scale: Scale,
+    layouts: &HashMap<NodeId, Vec<Shaped>>,
+    boxes: &Boxes,
+    anim: &mut Animator,
+    extras: &Extras,
+    drawn: bool,
+) -> Flattened {
     let mut out = Flattened::default();
     let Some(node) = tree.get(root) else {
         return out;
@@ -595,6 +632,7 @@ pub fn flatten(
         item_clips: Vec::new(),
         pointer: extras.pointers.get(&root).copied(),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
+        drawn: drawn.then(Vec::new),
         #[cfg(feature = "eval-hooks")]
         trace: extras.trace.then(Vec::new),
         #[cfg(feature = "eval-hooks")]
@@ -637,11 +675,13 @@ pub fn flatten(
         .copied()
         .unwrap_or(LogicalRect::new(0.0, 0.0, logical.w, logical.h));
     f.node(node, frame, &inh, true);
+    let drawn = f.drawn.take();
     #[cfg(feature = "eval-hooks")]
     {
         let trace = f.trace.take();
         out.trace = trace.map(Arc::from);
     }
+    out.drawn = drawn;
     out
 }
 
@@ -675,6 +715,8 @@ struct Flattener<'a> {
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
     logical: LogicalRect,
+    /// (replay-owner) The nodes drawn so far, for [`flatten_drawn`].
+    drawn: Option<Vec<crate::DrawnNode>>,
     /// (eval-sandbox) The nodes drawn so far, when the frame trace is on
     /// (`crate::probe`).
     #[cfg(feature = "eval-hooks")]

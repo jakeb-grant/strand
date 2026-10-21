@@ -615,6 +615,7 @@ impl<'a> Flattener<'a> {
                 let hidden = Some(crate::probe::Hidden::Opacity0);
                 self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
             }
+            self.drawn_push(node.id, opacity, frame);
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
         }
@@ -632,6 +633,7 @@ impl<'a> Flattener<'a> {
                 let hidden = Some(crate::probe::Hidden::Scale0);
                 self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
             }
+            self.drawn_push(node.id, opacity, frame);
             self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
             return Rect::default();
         }
@@ -1712,6 +1714,7 @@ impl<'a> Flattener<'a> {
                 inh.clip,
             );
         }
+        self.drawn_push(node.id, opacity, frame);
 
         // Hit shape: the rounded box, grown by `hit: grow(n)`; none with
         // `hit: none`.
@@ -2422,6 +2425,34 @@ impl<'a> Flattener<'a> {
 type SvgParts = Vec<(String, Vec<(Prop, PropValue)>)>;
 
 impl<'a> Flattener<'a> {
+    /// (replay-owner) `node` as drawn, for [`super::flatten_drawn`]: its
+    /// box `frame` (physical px) through the transform it is drawn under,
+    /// axis aligned, in surface logical px, and its own opacity. The
+    /// eval's frame trace takes its `visual` box the same way
+    /// (`probe_push`).
+    pub(super) fn drawn_push(
+        &mut self,
+        node: strand_scene::NodeId,
+        opacity: f32,
+        frame: kurbo::Rect,
+    ) {
+        let Some(drawn) = self.drawn.as_mut() else {
+            return;
+        };
+        let s = self.scale.as_f64();
+        let v = self.xform.transform_rect_bbox(frame);
+        drawn.push(crate::DrawnNode {
+            node,
+            rect: LogicalRect::new(
+                (v.x0 / s) as f32,
+                (v.y0 / s) as f32,
+                (v.width() / s) as f32,
+                (v.height() / s) as f32,
+            ),
+            opacity,
+        });
+    }
+
     /// True if a part of `svg` reads time: the `svg` then has a clock.
     fn svg_parts_read_time(&self, svg: &Node) -> bool {
         svg.children.iter().any(|c| {

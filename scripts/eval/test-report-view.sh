@@ -11,8 +11,10 @@
 #              a directory that is no bundle refused
 #   --e2e      also end to end: `strand run` on a headless sway, a
 #              scripted session (a hover, a click on a button, a service
-#              update), `strand report`, the replay, and fidelity.json
-#              with no divergence from the live shell
+#              update), `strand report`, the replay, fidelity.json
+#              with no divergence from the live shell and the verdict
+#              VERIFIED; the bundle with one drawn box moved 3 px
+#              DRIFTED, naming that node
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -156,6 +158,47 @@ if [ "$e2e" = 1 ]; then
       # The bar's frame was compared, pixel for pixel, not passed over.
       grep -q '"total": [1-9]' "$f" && ok "the final frame was compared with the bundle's PNG" ||
         no "no frame was compared: $(cat "$f")"
+      # (replay-owner) The verdict: the live boxes (drawn.json) where
+      # the replay drew its nodes at the report.
+      head -1 "$bundle/replay/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
+        ok "the replay is VERIFIED against the live shell's drawn boxes" ||
+        no "the replay is not VERIFIED: $(sed -n '1,/^glitch report/p' "$bundle/replay/replay.txt")"
+      # Its bundle with one box moved 3 px: DRIFTED, naming that node.
+      drift=$DIR/drifted/$(basename "$bundle")
+      mkdir -p "$DIR/drifted"
+      cp -R "$bundle" "$drift"
+      rm -rf "$drift/replay"
+      made+=("$(scenario_name "$drift")")
+      moved=$(python3 -I - "$drift/drawn.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+# The first node inside a surface's root (the root's own box is the
+# surface's).
+for s in d["surfaces"]:
+    for n in s["nodes"][1:]:
+        n["box"][0] += 3
+        json.dump(d, open(p, "w"), indent=1)
+        print(n["origin"] + "\t" + ("#" + n["id"] if n.get("id") else ""))
+        sys.exit(0)
+sys.exit(1)
+PY
+      ) || no "drawn.json has no node inside a surface to move"
+      origin=${moved%%$'\t'*}
+      id=${moved#*$'\t'}
+      if bash scripts/report-view.sh --no-open "$drift" >"$DIR/drift-view" 2>&1; then
+        ok "a replay that drifts still runs"
+        head -1 "$drift/replay/replay.txt" | grep -q '^verdict: DRIFTED: ' && ok "the moved box is DRIFTED" ||
+          no "the moved box is not DRIFTED: $(head -3 "$drift/replay/replay.txt")"
+        grep -F "@$origin" "$drift/replay/replay.txt" | grep -F "$id" | grep -q '3.0 px off' &&
+          ok "replay.txt names the moved node ($origin $id) and 3.0 px" ||
+          no "no line names $origin $id 3.0 px off: $(sed -n '1,/^glitch report/p' "$drift/replay/replay.txt")"
+        grep -q '"verdict": "DRIFTED"' "$drift/replay/fidelity.json" && ok "fidelity.json says DRIFTED" ||
+          no "fidelity.json does not say DRIFTED"
+      else
+        cat "$DIR/drift-view"
+        no "the drifted bundle could not be replayed"
+      fi
     else
       cat "$DIR/e2e-view"
       no "the session's bundle could not be replayed"

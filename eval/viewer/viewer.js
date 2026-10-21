@@ -263,6 +263,17 @@
     var a = A();
     if (!a) return;
     var sc = a.trace.scenario, b = a.trace.build;
+    // (replay-owner) A glitch report's replay: its verdict first (the
+    // live boxes held to the replay's), then the fidelity line.
+    var R = DATA.replay;
+    if (R) {
+      var v = el('div', { cls: 'verdict v-' + R.verdict.toLowerCase().replace(/ /g, '-') });
+      v.appendChild(el('strong', { text: R.verdict }));
+      v.appendChild(document.createTextNode(' ' + R.line.replace(/^[A-Z ]+: /, '')));
+      h.appendChild(v);
+      (R.drifted || []).forEach(function (l) { h.appendChild(el('div', { cls: 'drift', text: l })); });
+      h.appendChild(el('div', { cls: 'meta', text: 'fidelity: ' + R.fidelity }));
+    }
     h.appendChild(el('h1', { text: a.id }));
     var bits = [
       AB ? DATA.runs.map(function (r) { return r.label; }).join(' vs ') : b.rev + (b.dirty ? ' (with changes)' : ''),

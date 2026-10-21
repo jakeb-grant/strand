@@ -185,6 +185,11 @@ pub struct ReplayLog {
     /// Each fetch: its tick, method, and whether a queued `answer` gave
     /// it (else the mock's own did).
     pub fetches: Vec<(u32, String, bool)>,
+    /// (replay-owner) Each traced node's key, as a replay names the node
+    /// (`nodes.json`'s and `drawn.json`'s origin, `id:` and row key),
+    /// taken when it was first drawn: what the replay's boxes at the
+    /// report are matched to the live shell's by.
+    pub refs: BTreeMap<String, NodeRef>,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -3407,6 +3412,12 @@ impl Harness {
             let key = self
                 .labels
                 .key(n.node, &self.inst, self.r.tree(), &self.sources);
+            if self.opts.log
+                && !self.log.refs.contains_key(&key)
+                && let Some(r) = self.node_ref(n.node)
+            {
+                self.log.refs.insert(key.clone(), r);
+            }
             let rect = |r: strand_scene::LogicalRect| [q(r.x), q(r.y), q(r.w), q(r.h)];
             let pair = |p: [f32; 2]| [q(p[0]), q(p[1])];
             out.push(Row {

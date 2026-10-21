@@ -89,6 +89,7 @@ fn checked_run(text: &str, out: &Path, refs_dir: &Path) -> PathBuf {
         command: "check".into(),
         out: out.to_path_buf(),
         frames: Frames::None,
+        replay: None,
     };
     report::write_run(&info, &mut entries, &[]).unwrap();
     out.join(&sc.id)

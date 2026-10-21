@@ -20,7 +20,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use data_control::DataControl;
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 use strand_core::flight::{self, Rec, kind};
 use strand_services::testing::PrivateBus;
 use support::keyboard::{self, CONTROL};
@@ -454,11 +454,41 @@ fn a_bundle_holds_every_part() {
         "services.json",
         "cells.json",
         "nodes.json",
+        "drawn.json",
         "config/report.strand",
         "config/icons/mark.svg",
     ] {
         assert!(dir.join(part).is_file(), "{part} in {}", dir.display());
     }
+    // (replay-owner) The boxes each mapped surface's last frame drew,
+    // named as nodes.json names a node: the bar's first box at its
+    // corner, 80 by 40, opaque.
+    let drawn = read_json(&dir.join("drawn.json"));
+    let surfaces_b = read_json(&dir.join("bundle.json"))["surfaces"].clone();
+    let bar_root = surfaces_b
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "bar")
+        .map(|s| s["root"].clone())
+        .unwrap();
+    let bar = drawn["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["root"] == bar_root)
+        .unwrap_or_else(|| panic!("no bar in {drawn}"));
+    let nodes = bar["nodes"].as_array().unwrap();
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n["box"] == json!([0.0, 0.0, 80.0, 40.0])
+                && n["opacity"] == json!(1.0)
+                && n["origin"]
+                    .as_str()
+                    .is_some_and(|o| o.starts_with("report.strand:"))),
+        "{bar}"
+    );
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&dir), 0o700);
     let mut all = Vec::new();

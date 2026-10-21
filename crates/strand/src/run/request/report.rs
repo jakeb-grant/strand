@@ -172,6 +172,7 @@ impl Shell {
         // The renderer's drawn files are resolved on the report thread
         // (`bundle::write`), after these.
         let nodes = self.node_table(&main, config_dir.as_deref());
+        let drawn = self.drawn_table(&main, config_dir.as_deref());
         let now_ns = strand_core::flight::now_ns();
         let wall = chrono::Local::now().to_rfc3339();
         Job {
@@ -181,6 +182,7 @@ impl Shell {
             main,
             changes: rec.dump(),
             nodes,
+            drawn,
             services: Json::Object(services),
             cells: Json::Object(cells),
             config_dir,
@@ -219,24 +221,7 @@ impl Shell {
                 .iter()
                 .filter_map(|s| parse_node_ref(s["root"].as_str()?)),
         );
-        // The screens' ids: a per-screen surface's nodes are mounted
-        // under theirs, which a replay on another output names otherwise.
-        let screens: Vec<String> = {
-            let rt = self.inst.runtime();
-            let host = crate::run::logic::live_host(&self.host, &self.real);
-            let types = &self.inst.vm().prog.types;
-            rt.untrack(|rt| host.read_builtin(rt, "screens", "all"))
-                .ok()
-                .and_then(|v| {
-                    let list = v.as_list()?;
-                    Some(
-                        list.iter()
-                            .filter_map(|s| Some(s.field(types, "id")?.as_text()?.to_string()))
-                            .collect(),
-                    )
-                })
-                .unwrap_or_default()
-        };
+        let screens = self.screen_ids();
         let mut out = Map::new();
         let rec = self.recorder.borrow();
         for id in ids {
@@ -253,13 +238,7 @@ impl Shell {
                     None => continue,
                 },
             };
-            let Some(origin) = (|| {
-                let (f, sp) = place;
-                let file = self.build.sources.get(f)?;
-                let (l, c) = crate::overlay::line_col(&file.text, sp.start);
-                let rel = relative(&file.name, config_dir);
-                Some(format!("{}:{l}:{c}", rel.display()))
-            })() else {
+            let Some(origin) = self.origin_text(place.0, place.1, config_dir) else {
                 continue;
             };
             let id_name = ident.as_ref().and_then(|i| i.id.clone());
@@ -267,6 +246,84 @@ impl Shell {
             out.insert(r, json!({"origin": origin, "id": id_name, "key": key}));
         }
         Json::Object(out)
+    }
+}
+
+impl Shell {
+    /// The screens' ids: a per-screen surface's nodes are mounted under
+    /// theirs, which a replay on another output names otherwise.
+    fn screen_ids(&self) -> Vec<String> {
+        let rt = self.inst.runtime();
+        let host = crate::run::logic::live_host(&self.host, &self.real);
+        let types = &self.inst.vm().prog.types;
+        rt.untrack(|rt| host.read_builtin(rt, "screens", "all"))
+            .ok()
+            .and_then(|v| {
+                let list = v.as_list()?;
+                Some(
+                    list.iter()
+                        .filter_map(|s| Some(s.field(types, "id")?.as_text()?.to_string()))
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// A source place as `file.strand:LINE:COL`, the file under the
+    /// config directory.
+    fn origin_text(
+        &self,
+        file: strand_compiler::FileId,
+        span: strand_compiler::syntax::Span,
+        config_dir: Option<&Path>,
+    ) -> Option<String> {
+        let f = self.build.sources.get(file)?;
+        let (l, c) = crate::overlay::line_col(&f.text, span.start);
+        let rel = relative(&f.name, config_dir);
+        Some(format!("{}:{l}:{c}", rel.display()))
+    }
+
+    /// (replay-owner) `drawn.json`: each mapped surface's nodes as its
+    /// last frame drew them (`MainBundle::drawn`), named as `nodes.json`
+    /// names a node (origin, `id:`, `for` row key), with the box each
+    /// was drawn at (surface logical px, after transforms, to 1/64) and
+    /// its own opacity, in paint order. A node with no place in the
+    /// config's source (none the replay can name either) is left out.
+    pub(super) fn drawn_table(&self, main: &MainBundle, config_dir: Option<&Path>) -> Json {
+        use strand_compiler::instantiate::inspect::node_ref;
+        let screens = self.screen_ids();
+        let q = |v: f32| f64::from((v * 64.0).round() / 64.0);
+        let surfaces: Vec<Json> = main
+            .drawn
+            .iter()
+            .map(|(slot, nodes)| {
+                let root = main
+                    .surfaces
+                    .iter()
+                    .find(|s| s["slot"].as_u64() == Some(u64::from(*slot)))
+                    .and_then(|s| s["root"].as_str())
+                    .map(str::to_string);
+                let nodes: Vec<Json> = nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let (f, _, sp) = self.inst.origin(n.node)?;
+                        let origin = self.origin_text(f, sp, config_dir)?;
+                        let ident = self.inst.identity(n.node);
+                        let r = n.rect;
+                        Some(json!({
+                            "ref": node_ref(n.node),
+                            "origin": origin,
+                            "id": ident.as_ref().and_then(|i| i.id.clone()),
+                            "key": ident.as_ref().and_then(|i| row_key(i, &screens)),
+                            "box": [q(r.x), q(r.y), q(r.w), q(r.h)],
+                            "opacity": q(n.opacity),
+                        }))
+                    })
+                    .collect();
+                json!({"slot": slot, "root": root, "nodes": nodes})
+            })
+            .collect();
+        json!({"format": 1, "surfaces": surfaces})
     }
 }
 

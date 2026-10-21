@@ -46,6 +46,8 @@ pub struct Page<'a> {
     pub runs: Vec<PageRun<'a>>,
     /// The A/B comparison (`ab::compare`), when there are two runs.
     pub ab: Option<Value>,
+    /// (replay-owner) A glitch report's replay ([`RunInfo::replay`]).
+    pub replay: Option<Value>,
     pub budget: usize,
 }
 
@@ -75,6 +77,7 @@ impl<'a> Page<'a> {
                 reference: false,
             }],
             ab: None,
+            replay: info.replay.clone(),
             budget: BUDGET,
         }
     }
@@ -264,6 +267,7 @@ pub fn page(p: &Page) -> Result<String, Error> {
             "axes": AXES,
             "runs": runs,
             "ab": p.ab,
+            "replay": p.replay,
         })
     };
     let bare = serde_json::to_string(&build(&BTreeMap::new()))

@@ -172,7 +172,7 @@ fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
 /// (replay-owner) What `strand replay` hands off to, and what
 /// `scripts/report-view.sh` runs in the container. It writes the replay
 /// into `<bundle>/replay/` (`--out` elsewhere: the container's bundle is
-/// read-only), prints its fidelity in one plain line and the paths of
+/// read-only), prints the verdict in one plain line and the paths of
 /// `replay.txt` and `index.html`, and opens the viewer with `xdg-open`
 /// unless `--no-open`. It runs as a plain process on a desktop: its own
 /// fake compositor and the CPU (`--gpu` adds the GPU leg), never the
@@ -241,7 +241,7 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
         build,
     )?;
     let index = out.join("index.html");
-    println!("fidelity: {}", crate::replay::first_line(&r.fidelity));
+    println!("{}", r.verdict.line());
     println!("replay: {}", out.join("replay.txt").display());
     println!("viewer: {}", index.display());
     if !a.has("--no-open") {
@@ -349,6 +349,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
         command: "run".into(),
         out: out.clone(),
         frames,
+        replay: None,
     };
     report::write_run(&info, &mut entries, &lines)?;
     println!("report: {}/index.html", out.display());
@@ -487,6 +488,7 @@ pub fn check(args: &[String]) -> Result<(), Error> {
         command: if gate { "check --gate" } else { "check" }.into(),
         out: out.clone(),
         frames,
+        replay: None,
     };
     report::write_run(&info, &mut entries, &lines)?;
     println!("report: {}/index.html", out.display());
@@ -838,6 +840,7 @@ pub fn ab(args: &[String]) -> Result<(), Error> {
             },
         ],
         ab: Some(cmp.clone()),
+        replay: None,
         budget: report::html::BUDGET,
     };
     let html = report::html::page(&page)?;

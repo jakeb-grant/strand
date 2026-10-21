@@ -5,6 +5,7 @@
 //! divergences are its output, not a failure.
 
 pub mod bundle;
+pub mod drawn;
 pub mod fidelity;
 pub mod plan;
 
@@ -21,6 +22,7 @@ use crate::scenario::Scenario;
 use crate::trace::RunTrace;
 
 pub use bundle::Bundle;
+pub use drawn::Verdict;
 pub use fidelity::Fidelity;
 pub use plan::{Options, Plan};
 
@@ -35,6 +37,8 @@ pub struct Replayed {
     pub plan: Plan,
     pub scenario: PathBuf,
     pub fidelity: Fidelity,
+    /// (replay-owner) The live boxes held to the replay's.
+    pub verdict: Verdict,
     pub limits: Vec<String>,
     /// `replay.txt`.
     pub text: String,
@@ -156,6 +160,7 @@ pub fn replay(
         crate::refs::for_scenario(&sc, &crate::refs::dir(), false),
     )?;
     let fid = fidelity::compare(&b, &plan, &checked.run);
+    let verdict = drawn::compare(&b, &plan, &checked.run);
     let mut limits = plan.limits.clone();
     let changed = files_changed(&b);
     if !changed.is_empty() {
@@ -182,8 +187,8 @@ pub fn replay(
     }
     lines.extend(checked.report.lines(&checked.run.trace));
     let ok = checked.report.ok();
-    let text = replay_txt(&b, &plan, &fid, &limits, &checked, &path);
-    let json = fid.json(&b, &plan, &limits);
+    let text = replay_txt(&b, &plan, &fid, &verdict, &limits, &checked, &path);
+    let json = fidelity_json(&b, &plan, &fid, &verdict, &limits);
     let mut entries = vec![Entry {
         id: sc.id.clone(),
         file: sc.file.display().to_string(),
@@ -198,19 +203,25 @@ pub fn replay(
         command: "replay".into(),
         out: out.to_path_buf(),
         frames: frames.unwrap_or(Frames::All),
+        replay: Some(serde_json::json!({
+            "verdict": verdict.word(),
+            "line": verdict.line(),
+            "drifted": verdict.lines(),
+            "fidelity": first_line(&fid),
+        })),
     };
-    let mut all = lines.clone();
+    let mut all = vec![format!("verdict: {}", verdict.line())];
+    all.extend(lines.iter().cloned());
     all.push(format!("fidelity: {}", first_line(&fid)));
     report::write_run(&info, &mut entries, &all)?;
     report::write(&out.join("replay.txt"), text.as_bytes())?;
-    let pretty =
-        serde_json::to_vec_pretty(&json).map_err(|e| Error::Run(format!("fidelity.json: {e}")))?;
-    report::write(&out.join("fidelity.json"), &pretty)?;
+    report::write(&out.join("fidelity.json"), &verdict_first(&json)?)?;
     Ok(Replayed {
         id: sc.id.clone(),
         plan,
         scenario: path,
         fidelity: fid,
+        verdict,
         limits,
         text,
         json,
@@ -268,6 +279,42 @@ fn flat_icons(b: &Bundle, dest: &Path) -> Result<Option<PathBuf>, Error> {
         }
     }
     Ok(Some(dest.to_path_buf()))
+}
+
+/// (replay-owner) `fidelity.json`: the comparison with the live shell
+/// (`Fidelity::json`) and the verdict (`verdict`).
+fn fidelity_json(
+    b: &Bundle,
+    plan: &Plan,
+    fid: &Fidelity,
+    verdict: &Verdict,
+    limits: &[String],
+) -> serde_json::Value {
+    let mut json = fid.json(b, plan, limits);
+    if let Some(o) = json.as_object_mut() {
+        o.insert("verdict".into(), verdict.json());
+    }
+    json
+}
+
+/// `json` pretty, its `verdict` first (serde_json sorts the rest).
+fn verdict_first(json: &serde_json::Value) -> Result<Vec<u8>, Error> {
+    let err = |e: serde_json::Error| Error::Run(format!("fidelity.json: {e}"));
+    let mut rest = json.clone();
+    let verdict = rest
+        .as_object_mut()
+        .and_then(|o| o.remove("verdict"))
+        .unwrap_or(serde_json::Value::Null);
+    let v = serde_json::to_string_pretty(&verdict).map_err(err)?;
+    let r = serde_json::to_string_pretty(&rest).map_err(err)?;
+    let body = r.strip_prefix('{').unwrap_or(&r).trim_start_matches('\n');
+    let v = v.replace('\n', "\n  ");
+    let sep = if body.trim_start().starts_with('}') {
+        "\n"
+    } else {
+        ",\n"
+    };
+    Ok(format!("{{\n  \"verdict\": {v}{sep}{body}\n").into_bytes())
 }
 
 /// The comparison with the live shell in one line: no divergence, or
@@ -405,6 +452,7 @@ fn replay_txt(
     b: &Bundle,
     plan: &Plan,
     fid: &Fidelity,
+    verdict: &Verdict,
     limits: &[String],
     checked: &crate::Checked,
     scenario: &Path,
@@ -412,6 +460,12 @@ fn replay_txt(
     let (run, rep) = (&checked.run, &checked.report);
     let mut s = String::new();
     let len = plan.end - plan.start;
+    // (replay-owner) The verdict first: whether the replay drew what the
+    // live shell drew at the report.
+    let _ = writeln!(s, "verdict: {}", verdict.line());
+    for l in verdict.lines() {
+        let _ = writeln!(s, "  {l}");
+    }
     let _ = writeln!(s, "glitch report: {:?}", b.words);
     let _ = writeln!(s, "bundle: {}", b.dir.display());
     let _ = writeln!(s, "scenario: {}", scenario.display());

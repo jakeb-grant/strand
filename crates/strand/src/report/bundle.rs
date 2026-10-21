@@ -62,6 +62,10 @@ pub(crate) struct MainBundle {
     /// Each mapped surface: its slot, namespace, kind, root, output,
     /// backend and sizes, as `bundle.json`'s `surfaces` lists them.
     pub surfaces: Vec<Json>,
+    /// (replay-owner) Each mapped surface's slot and the nodes its last
+    /// frame drew, with their boxes and opacities
+    /// (`Renderer::drawn_nodes`), for `drawn.json`.
+    pub drawn: Vec<(u16, Vec<strand_render::DrawnNode>)>,
 }
 
 /// Main's part, between frames: no lock surface is in it.
@@ -71,6 +75,7 @@ pub(crate) fn main_bundle(state: &mut State<Host>) -> MainBundle {
     let entries = state.host().recorder.surfaces();
     let mut surfaces = Vec::new();
     let mut frames = Vec::new();
+    let mut drawn = Vec::new();
     for e in &entries {
         let Some(info) = infos.iter().find(|i| i.id == e.surface) else {
             continue;
@@ -91,6 +96,9 @@ pub(crate) fn main_bundle(state: &mut State<Host>) -> MainBundle {
             info.namespace.clone()
         };
         let (pixels, repainted) = frame_of(state, e.surface, backend.is_gpu());
+        if let Some(nodes) = state.host_mut().renderer.drawn_nodes(e.surface) {
+            drawn.push((e.slot, nodes));
+        }
         let file = format!("frames/{}-{}.png", e.slot, file_stem(&name));
         surfaces.push(json!({
             "slot": e.slot,
@@ -120,6 +128,7 @@ pub(crate) fn main_bundle(state: &mut State<Host>) -> MainBundle {
         frames,
         images: host.renderer.image_sources(),
         surfaces,
+        drawn,
     }
 }
 
@@ -177,6 +186,9 @@ pub(crate) struct Job {
     /// (report) `nodes.json`: the nodes the input ring names, by
     /// `node_ref` (`Shell::node_table`).
     pub nodes: Json,
+    /// (replay-owner) `drawn.json`: each mapped surface's nodes as its
+    /// last frame drew them (`Shell::drawn_table`).
+    pub drawn: Json,
 }
 
 /// What a finished report answers: `{"bundle", "paste", "report"}` or
@@ -443,6 +455,12 @@ fn fill(job: &Job, dir: &Path) -> io::Result<()> {
         &dir.join("nodes.json"),
         format!("{:#}\n", job.nodes).as_bytes(),
     )?;
+    if !job.drawn.is_null() {
+        private_file(
+            &dir.join("drawn.json"),
+            format!("{:#}\n", job.drawn).as_bytes(),
+        )?;
+    }
     for f in &job.main.frames {
         let name = format!("frames/{}-{}.png", f.slot, file_stem(&f.name));
         private_file(&dir.join(name), &png(&f.pixels)?)?;

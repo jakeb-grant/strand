@@ -294,6 +294,10 @@ pub struct RunInfo {
     /// the viewer copies).
     pub out: PathBuf,
     pub frames: Frames,
+    /// (replay-owner) A glitch report's replay: its verdict, the
+    /// fidelity line and the hints label, shown first in the viewer's
+    /// header (`None`: not a replay).
+    pub replay: Option<serde_json::Value>,
 }
 
 /// Writes every entry, then `summary.txt` (`lines`), `summary.md`,

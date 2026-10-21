@@ -1071,8 +1071,127 @@ fn a_step_on_a_surface_waits_for_the_tick_it_shows() {
     );
 }
 
+/// (replay-owner) `drawn.json` as the live shell writes it, from boxes:
+/// the bar (slot 1, root `3.1`) and its nodes.
+fn write_drawn(dir: &Path, nodes: &[replay::drawn::Drawn]) {
+    let nodes: Vec<Json> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "ref": "0.0",
+                "origin": format!("{LIVE}/{}", n.origin),
+                "id": n.id, "key": n.key, "box": n.rect, "opacity": n.opacity,
+            })
+        })
+        .collect();
+    let drawn = json!({"format": 1, "surfaces": [{"slot": 1, "root": "3.1", "nodes": nodes}]});
+    std::fs::write(
+        dir.join("drawn.json"),
+        serde_json::to_vec_pretty(&drawn).unwrap(),
+    )
+    .unwrap();
+}
+
+/// (replay-owner) The verdict: a bundle with no `drawn.json` is not
+/// checked; one whose live boxes are where the replay drew its nodes is
+/// VERIFIED; one node moved 3 px, or faded, is DRIFTED with that node
+/// and how far; a node only one side drew is named. The verdict is the
+/// first line of `replay.txt`, the first key of `fidelity.json`, and in
+/// the viewer's page.
+#[test]
+fn the_live_boxes_are_held_to_the_replay_node_by_node() {
+    let dir = Fx::session().write("verdict");
+    let (r, out) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "NOT CHECKED", "{}", r.verdict.line());
+    let o = origins();
+    let (_, bar) = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| strand_eval::replay::fidelity::same_origin(s, &o.bar))
+        .expect("the bar was drawn at the report");
+    assert!(bar.iter().any(|n| n.id.as_deref() == Some("button")));
+    // As drawn: verified.
+    write_drawn(&dir, bar);
+    let (r, out2) = replay_of(&dir, &defaults());
+    assert_eq!(
+        r.verdict.word(),
+        "VERIFIED",
+        "{}",
+        r.verdict.lines().join("\n")
+    );
+    assert_eq!(r.verdict.nodes, bar.len());
+    assert!(
+        r.text
+            .starts_with("verdict: VERIFIED: the replay drew all "),
+        "{}",
+        r.text
+    );
+    let raw = std::fs::read_to_string(out2.join("fidelity.json")).unwrap();
+    assert!(raw.starts_with("{\n  \"verdict\": {"), "{raw}");
+    let j: Json = serde_json::from_str(&raw).unwrap();
+    assert_eq!(j["verdict"]["verdict"], json!("VERIFIED"));
+    let page = std::fs::read_to_string(out2.join("index.html")).unwrap();
+    let data = strand_eval::report::html::embedded(&page).unwrap();
+    assert_eq!(data["replay"]["verdict"], json!("VERIFIED"));
+    // The button 3 px to the right live, the lamp faded: drifted.
+    let mut moved = bar.clone();
+    let b = moved
+        .iter_mut()
+        .find(|n| n.id.as_deref() == Some("button"))
+        .unwrap();
+    b.rect[0] += 3.0;
+    let lamp = moved
+        .iter_mut()
+        .find(|n| n.id.as_deref() == Some("lamp"))
+        .unwrap();
+    lamp.opacity = (lamp.opacity - 0.5).max(0.0);
+    write_drawn(&dir, &moved);
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "DRIFTED");
+    let lines = r.verdict.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("@{} #button", o.button)) && l.contains("3.0 px off")),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("#lamp") && l.contains("opacity 0.50 off")),
+        "{lines:#?}"
+    );
+    assert!(r.text.starts_with("verdict: DRIFTED: 2 of "), "{}", r.text);
+    // One node drawn live only, one in the replay only.
+    let mut extra = bar.clone();
+    let gone = extra.remove(
+        extra
+            .iter()
+            .position(|n| n.id.as_deref() == Some("spot"))
+            .unwrap(),
+    );
+    extra.push(replay::drawn::Drawn {
+        origin: "shell.strand:99:1".into(),
+        id: Some("ghost".into()),
+        ..gone.clone()
+    });
+    write_drawn(&dir, &extra);
+    let (r, _) = replay_of(&dir, &defaults());
+    let lines = r.verdict.lines().join("\n");
+    assert!(
+        lines.contains("#ghost (surface @") && lines.contains("not in the replay"),
+        "{lines}"
+    );
+    assert!(
+        lines.contains("#spot (surface @") && lines.contains("not live"),
+        "{lines}"
+    );
+    let _ = out;
+}
+
 /// (replay-owner) `strand-eval replay <bundle>` as `strand replay` runs
-/// it, a plain process: it writes `<bundle>/replay/`, prints its fidelity
+/// it, a plain process: it writes `<bundle>/replay/`, prints the verdict
 /// in one line and the two paths, opens nothing with `--no-open` and the
 /// viewer with `xdg-open` without it (a stub here), and never touches the
 /// session's Wayland display: `WAYLAND_DISPLAY` names a socket this test
@@ -1121,10 +1240,7 @@ fn the_replay_command_runs_as_a_plain_process_beside_a_display() {
     );
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 3, "{stdout}");
-    assert_eq!(
-        lines[0], "fidelity: no divergence from the live shell",
-        "{stdout}"
-    );
+    assert!(lines[0].starts_with("NOT CHECKED: "), "{stdout}");
     let rep = dir.join("replay");
     assert_eq!(
         lines[1],

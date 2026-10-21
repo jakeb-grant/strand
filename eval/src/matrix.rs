@@ -904,6 +904,7 @@ pub fn write(out: &Path, plan: &Plan, done: &mut [Done]) -> Result<(), Error> {
                 command: format!("matrix cell {}", d.cell.dir_name()),
                 out: cell_dir.clone(),
                 frames: Frames::Failing,
+                replay: None,
             };
             let page = report::page_of(&info, std::slice::from_ref(e))?;
             report::write(&cell_dir.join("index.html"), page.as_bytes())?;

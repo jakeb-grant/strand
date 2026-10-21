@@ -38,6 +38,19 @@ pub struct LayoutInfo {
     pub rect: Option<LogicalRect>,
 }
 
+/// (replay-owner) One node of a surface as its last painted frame drew
+/// it ([`Renderer::drawn_nodes`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnNode {
+    pub node: NodeId,
+    /// Its box through every transform above and on it (`scale`,
+    /// `rotate`, a morph's), axis aligned, after paint offsets, springs
+    /// and glides: surface logical pixels.
+    pub rect: LogicalRect,
+    /// Its own opacity (not its ancestors').
+    pub opacity: f32,
+}
+
 /// What the inspector asked render to draw, and what it drew.
 #[derive(Debug, Default)]
 pub(crate) struct Inspect {

@@ -77,6 +77,7 @@ fn info(out: &std::path::Path, frames: Frames) -> RunInfo {
         command: "check".into(),
         out: out.to_path_buf(),
         frames,
+        replay: None,
     }
 }
 
