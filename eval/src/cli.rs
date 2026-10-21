@@ -163,6 +163,61 @@ fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
     }
 }
 
+/// (report) `strand-eval replay <bundle> [--to SCN] [--out DIR]
+/// [--output NAME] [--traced SECONDS|all] [--frames …]`: a glitch
+/// report's bundle as a local scenario, run with every check and held to
+/// what the live shell recorded (docs/eval.md, "Replaying a glitch
+/// report"). It fails only when the replay cannot run.
+pub fn replay(args: &[String]) -> Result<(), Error> {
+    let a = Args::parse(
+        "replay",
+        args,
+        &["--to", "--out", "-o", "--output", "--traced", "--frames"],
+        &[],
+    )?;
+    let usage = "usage: strand-eval replay <bundle> [--to SCN] [--out DIR] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none]";
+    let [dir] = a.words.as_slice() else {
+        return Err(Error::Usage(usage.into()));
+    };
+    let traced = match a.value(&["--traced"]) {
+        None => Some(crate::replay::plan::TRACED_S),
+        Some("all") => None,
+        Some(s) => Some(
+            s.parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .ok_or_else(|| Error::Usage(format!("--traced {s}: seconds above 0, or `all`")))?,
+        ),
+    };
+    let opts = crate::replay::Options {
+        output: a.value(&["--output"]).map(str::to_string),
+        traced,
+    };
+    let build = build_info();
+    let out = out_dir(a.value(&["--out", "-o"]).map(PathBuf::from), &build)?;
+    let frames = match a.value(&["--frames"]) {
+        None => None,
+        Some(_) => Some(frames_opt(&a, 1)?),
+    };
+    let r = crate::replay::replay(
+        Path::new(dir),
+        &opts,
+        a.value(&["--to"]).map(Path::new),
+        &out,
+        frames,
+        build,
+    )?;
+    for l in &r.lines {
+        println!("{l}");
+    }
+    let head: String = r.text.split("\n\nevents").next().unwrap_or("").to_string();
+    println!("{head}");
+    println!("scenario: {}", r.scenario.display());
+    println!("replay: {}/replay.txt", out.display());
+    println!("report: {}/index.html", out.display());
+    Ok(())
+}
+
 /// A scenario that could not run, as a report entry.
 fn error_entry(sc: &Scenario, e: &Error) -> Entry {
     Entry {

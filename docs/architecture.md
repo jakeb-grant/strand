@@ -24,7 +24,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | State writer (`strand-state-write`, one per `FileWriter`: the logic thread's for the portal's last values, the theme VM's for the last palette, each started on first use and idle until a write) | `strand-theme` (`writer.rs`) | Atomic writes of the last palette and the portal's last settings, batched per path | Block logic (a write is queued and returns at once; a failure is a WARN) |
 | Introspection asks (`strand-introspect`, one short-lived thread per uncached ask; in `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`), used by `strand-dev`'s workspace (`strand check` and the loader ask on their own thread and wait) | One D-Bus introspection call, its answer remembered for `TTL`, then `done` | Block the LSP's analysis: it gets the remembered answer, or none, at once |
 | Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace | Anything else: each ends with its one wait |
-| Report writer (`strand-report`, planned: decisions.md report; one per `strand report` with words, ends when its bundle is written) | the binary's `report/bundle.rs` | Writes one glitch report's bundle: the two ring dumps, the JSON parts, the frames encoded as PNG, the config and asset copies (bounded reads), then prunes the reports directory to the newest 20; its outcome goes back to logic through a shared slot and the logic loop's ping (see "Glitch reports") | Touch Wayland, the scene or the rings (it gets copies), or block logic or main |
+| Report writer (`strand-report`, decisions.md report; one per `strand report` with words, ends when its bundle is written) | the binary's `report/bundle.rs` | Writes one glitch report's bundle: the two ring dumps, the JSON parts, the frames encoded as PNG, the config and asset copies (bounded reads), then prunes the reports directory to the newest 20; its outcome goes back to logic through a shared slot and the logic loop's ping (see "Glitch reports") | Touch Wayland, the scene or the rings (it gets copies), or block logic or main |
 
 Two library handles have threads the shell does not start:
 `strand_watch::PortalSettings` (`strand-portal`; the shell follows the
@@ -1755,11 +1755,11 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   moved there from `main.rs` at the wave 1 → 2 boundary); the
   integrator merges them.
 
-## Glitch reports (planned; decisions.md report)
+## Glitch reports (decisions.md report)
 
-design.md "Reporting a glitch" as interfaces. Nothing here is built
-yet; features.md "Glitch reports" lists the boxes and the tests that
-will prove them. No crate gains a dependency on another: the record
+design.md "Reporting a glitch" as interfaces, built; features.md
+"Glitch reports" lists the boxes and the tests that prove them. No
+crate gains a dependency on another: the record
 format lives in `strand-core`, which the binary and `eval/` already
 depend on, and every hook below is a callback the binary installs.
 
@@ -2057,7 +2057,13 @@ scripts/report-view.sh --no-open <dir> in the strand checkout and read
 dumps with `strand_core::flight::read` and values with
 `strand_compiler::vm::json::from_json`, both crates it already depends
 on, and writes a local scenario; `scripts/report-view.sh` runs it in
-the container and copies the result into `<bundle>/replay/`. Nothing
+the container (`run.sh eval replay` mounts the bundle and its `files/`
+tree read-only: `scripts/eval/replay-mounts.sh`) and copies the result
+into `<bundle>/replay/`. The mock host it runs on
+(`SchemaHost::mock_at`) takes the window start's wall time and offset
+for `clock` and local time, and keeps a log of the fetches it made
+(`SchemaHost::take_fetches`: whether a queued `answer` gave each),
+which the replay lists as calls the mock answered. Nothing
 under `crates/` depends on eval, and the shipped binary has none of it.
 
 **Budgets.** The 256 KiB are counted against the PSS budgets, the

@@ -83,6 +83,9 @@ The commands:
   bundled|local] [--speed F] [--paused] [--record-to FILE] [--ring N]
   [--max-frames N]` opens the live sandbox's window (see Live sandbox);
   `scripts/eval/live.sh` builds it and runs it on the host.
+- `replay <bundle> [--to SCN] [--out DIR] [--output NAME] [--traced
+  SECONDS|all] [--frames …]` replays a glitch report (see Replaying a
+  glitch report); `scripts/report-view.sh` runs it.
 
 A report lands in `--out`, or in `target/eval/runs/<seconds>-<rev>`, with
 `target/eval/latest` pointing at it.
@@ -2145,7 +2148,7 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
 
 ## Replaying a glitch report
 
-Planned (decisions.md report; features.md "Glitch reports"). The owner
+Built (decisions.md report; features.md "Glitch reports"). The owner
 types `strand report <words>` on the live shell (design.md "Reporting
 a glitch"); everything after that is an agent's:
 
@@ -2154,11 +2157,13 @@ scripts/report-view.sh [--no-open] [bundle-dir]     # default: the newest report
 ```
 
 It runs `scripts/container/run.sh eval replay <bundle>` (which mounts
-the bundle read-only, and each directory of its `files/` tree at the
-path it was copied from, as `eval local` mounts a local config),
-copies the run into `<bundle>/replay/` (`index.html`, `replay.txt`,
-`fidelity.json`, `summary.txt`, `checks.json`, `trace.json`,
-`scenario.scn`) and opens the viewer in the browser unless
+the bundle read-only, and each directory of its `files/` tree that
+holds a file at the path it was copied from, as `eval local` mounts a
+local config, with the host fonts: `scripts/eval/replay-mounts.sh`
+after `local-mounts.sh`), copies the run into `<bundle>/replay/`
+(`index.html`, `replay.txt`, `fidelity.json`, `summary.txt`, and
+`<id>/` with `checks.json`, `trace.json`, `scenario.scn` and the
+frames) and opens the viewer in the browser unless
 `--no-open` is given. Agents and tests always pass `--no-open`. It
 exits non-zero only when the replay could not run; findings are the
 point, not a failure.
@@ -2167,13 +2172,14 @@ point, not a failure.
 [--traced SECONDS|all] [--frames …]` does the work:
 
 1. **Reads** `bundle.json` (its outputs and surfaces among it), both
-   ring dumps (`strand_core::flight`), `services.json` and
-   `cells.json`, refusing a newer format by its number.
+   ring dumps (`strand_core::flight`), `services.json`, `cells.json`
+   and `nodes.json`, refusing a newer format by its number.
 2. **Picks the window**: from the newest of the two rings' oldest
-   records, the last reload committed and the last gap's end (a lock,
-   the recorder off), to the report. A reload or a lock inside the last
-   minute therefore shortens the replay and is named in its fidelity
-   notes.
+   records (a ring that wrapped), the last reload committed and the
+   last gap's end (a lock, the recorder off), to the report; bounded by
+   none of them, from the shell's first surface mapped, where the
+   sandbox's boot is. A reload or a lock inside the last minute
+   therefore shortens the replay and is named in its fidelity notes.
 3. **Picks one output** (the sandbox has one screen): the one with the
    most input in the window's last 10 s, else the one the newest mapped
    surface is on; `--output` names another. Its logical size, scale
@@ -2187,16 +2193,22 @@ point, not a failure.
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
    wall time, `[seed]` every service field and cell at the start,
-   `icons` the bundle's copy of the config's `icons/` folder and the
-   theme's icons drawn, `backend = "both"` when a surface was on the
-   GPU in the window, `compositor_poses` as the diagnostics say,
-   `warmup` all but the last `--traced` seconds (20 by default), and
-   the steps: the input on its timeline (`wait` between records,
-   quantised to ticks), each service change as a `set` (a keyed list as
-   the whole list after its diffs) or an `emit`, each recorded answer
-   as an `answer` queued before its call, each late frame as a `drop`,
-   `mark`s at the traced part's start, at -5 s, -2 s and at the report,
-   and a `shot report` there.
+   `icons` the bundle's copy of the config's `icons/` folder, or, when
+   the bundle copied theme icons under `files/`, both flattened into
+   `report-<name>.icons/` beside the scenario, `backend = "both"` when
+   a surface was on the GPU in the window, `compositor_poses` as the
+   diagnostics' globals say (`wp_alpha_modifier_v1` and
+   `wp_viewporter`), `warmup` all but the last `--traced` seconds (20
+   by default), and the steps: the input on its timeline (`frames`
+   between records, quantised to ticks; a pointer step only where it
+   moves, a `focus` before keys on another surface), each service
+   change as a `set` (a keyed list as the whole list after its diffs)
+   or an `emit`, each recorded answer as an `answer` queued as the
+   method's answer before it is taken (at the window's start for the
+   first), each late frame as a `drop`, `mark`s at the traced part's
+   start, at -5 s, -2 s and at the report, and a `shot report` there.
+   The services the sandbox keeps itself (`screens`, `clock`,
+   `calendar`, `auth`) are neither seeded nor set.
 6. **Runs it** as `local` does, with every CPU check, then compares
    the replay with the live shell (below) and writes `replay.txt`.
 
@@ -2230,10 +2242,13 @@ capability, used by any scenario):
 of `replay.txt`). The replay checks itself against what was recorded
 and says where it first parts from it:
 
-- each recorded press's `hit` against the node the replay's router
-  hits at the same point (by origin and key);
+- each recorded press's `hit` (by `nodes.json`: its origin and `for`
+  key) against the node the replay's router hits at the same point,
+  press by press;
 - each surface root mapped and unmapped (by its origin) against the
-  replay's, within two frames;
+  replay's, within two frames, in the traced part (a surface the live
+  shell mapped as it started, before any input, is one the sandbox's
+  boot shows on its first frame);
 - each recorded cell write against the replay's own writes (cells are
   never driven, only seeded: the replay's handlers write them);
 - the replay's frame at the report against each bundle PNG of the same

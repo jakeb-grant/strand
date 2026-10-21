@@ -1,0 +1,14 @@
+// (report) The glitch-report replay's fixture shell (eval/tests/replay.rs):
+// a button that counts clicks, a badge that pushes the row along when it
+// has, a lamp a service field lights and a spot that lights on hover.
+export state clicks = 0
+service mood from file "/run/strand-replay-fixture/mood.json" { level: int }
+bar Top {
+  edge: top; height: 40
+  row {
+    box { id: button; width: 80; height: 40; bg: clicks > 0 ? #00ff00 : #0000ff; on click { clicks = clicks + 1 } }
+    if clicks > 0 { box { id: badge; width: 40; height: 40; bg: #ffff00 } }
+    box { id: lamp; width: 80; height: 40; bg: mood.level == 7 ? #ff0000 : #202020 }
+    box { id: spot; width: 80; height: 40; bg: #303030; when hover { bg: #ffffff } }
+  }
+}

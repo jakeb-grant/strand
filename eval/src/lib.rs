@@ -34,6 +34,7 @@ pub mod paint;
 pub mod promote;
 pub mod recording;
 pub mod refs;
+pub mod replay;
 pub mod report;
 pub mod ring;
 pub mod scaffold;
@@ -272,7 +273,7 @@ pub fn check_with(
 
 /// The subcommands `strand-eval` knows, in the order docs/eval.md
 /// describes them.
-pub const COMMANDS: [&str; 14] = [
+pub const COMMANDS: [&str; 15] = [
     "run",
     "check",
     "matrix",
@@ -286,6 +287,7 @@ pub const COMMANDS: [&str; 14] = [
     "new",
     "local",
     "live",
+    "replay",
     "selftest",
 ];
 
@@ -312,6 +314,7 @@ pub fn main_with(args: &[String]) -> Result<(), Error> {
         "new" => cli::new(&args[1..]),
         "local" => cli::local(&args[1..]),
         "live" => live::main(&args[1..]),
+        "replay" => cli::replay(&args[1..]),
         // `selftest` is scripts/eval/ci.sh, run by scripts/eval/eval.sh.
         c if COMMANDS.contains(&c) => Err(Error::Unsupported(format!("strand-eval {c}"))),
         other => Err(Error::Usage(format!(

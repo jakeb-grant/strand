@@ -211,16 +211,17 @@ timing_step "cargo test --profile timing -p strand-compiler --test theme (theme 
   cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
 # The animation evaluation sandbox (eval/, docs/eval.md): its own
-# workspace, so its steps are scripts/eval/ci.sh's 1 to 6 (fmt, clippy,
-# lock and isolation, tests, the scenario gate, the matrix), as GitHub's
-# eval job runs them.
+# workspace, so its steps are scripts/eval/ci.sh's 1 to 7 (fmt, clippy,
+# lock and isolation, tests, the scenario gate, the matrix, a glitch
+# report replayed end to end), as GitHub's eval job runs them.
 job=eval
 step "cargo fmt --check (strand-eval)" 10 bash scripts/eval/ci.sh 1
 step "cargo clippy (eval/, -D warnings)" 60 bash scripts/eval/ci.sh 2
 step "check-lock.sh, check-isolation.sh, their self-tests, test-worktree.sh, test-local-mounts.sh and test-repeat.sh" 10 bash scripts/eval/ci.sh 3
-step "cargo test (eval/)" 60 bash scripts/eval/ci.sh 4
+step "cargo test (eval/) and test-report-view.sh" 60 bash scripts/eval/ci.sh 4
 step "strand-eval refs-check and check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
 step "the effect matrix at 60 and 144 Hz against its references" 30 bash scripts/eval/ci.sh 6
+step "a glitch report replayed end to end (test-report-view.sh --e2e)" 30 bash scripts/eval/ci.sh 7
 
 echo
 # The compile cache's hits and misses (run.sh's sccache), when it ran.

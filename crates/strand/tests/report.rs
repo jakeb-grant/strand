@@ -86,12 +86,16 @@ struct Desk {
     dir: PathBuf,
     display: String,
     log: PathBuf,
+    /// Leave `dir` behind (the replay end to end reads its files).
+    keep: bool,
 }
 
 impl Drop for Desk {
     fn drop(&mut self) {
         self.strand.take();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if !self.keep {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -226,6 +230,7 @@ impl Desk {
             log: dir.join("strand.log"),
             display,
             dir,
+            keep: false,
         };
         let child = Command::new(env!("CARGO_BIN_EXE_strand"))
             .arg("run")
@@ -770,6 +775,54 @@ fn each_frame_png_is_the_frame_shown() {
     // The button is green, as clicked.
     let px = &ours[(20 * w as usize + 40) * 4..][..3];
     assert!(px[1] > 200 && px[0] < 40 && px[2] < 40, "{px:?}");
+}
+
+/// (report) The session `scripts/eval/test-report-view.sh --e2e`
+/// replays: the pointer in, a hover on the second box, a click on the
+/// button, a service update, then the springs at rest and a report. With
+/// `STRAND_REPORT_KEEP=DIR` the run's directory is left behind (the
+/// replay reads its files where the shell read them) and the bundle's
+/// path is written to `DIR/bundle`; without it the bundle is only read
+/// back.
+#[test]
+fn a_scripted_session_is_kept_for_its_replay() {
+    let Some(mut desk) = Desk::start("replay") else {
+        return;
+    };
+    let keep = std::env::var_os("STRAND_REPORT_KEEP").map(PathBuf::from);
+    desk.keep = keep.is_some();
+    desk.pointer.motion(30, 20, 1280, 720);
+    desk.pointer.motion(120, 20, 1280, 720);
+    std::thread::sleep(Duration::from_millis(400));
+    desk.pointer.motion(40, 20, 1280, 720);
+    desk.pointer.click(40, 20, 1280, 720);
+    desk.wait("the click counted", |d| {
+        d.get("report.clicks").as_deref() == Some("1")
+    });
+    std::fs::write(desk.data().join("mood.json"), r#"{"level": 7}"#).unwrap();
+    desk.wait("the service updated", |d| {
+        d.get("report.level").as_deref() == Some("7")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let ans = desk.report("the session to replay");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let dump = std::fs::read(dir.join("input.flight")).unwrap();
+    let kinds: Vec<u8> = flight::read(&dump)
+        .unwrap()
+        .records
+        .iter()
+        .map(|r| r.kind)
+        .collect();
+    for k in [kind::MAPPED, kind::ENTER, kind::BUTTON, kind::HIT] {
+        assert!(kinds.contains(&k), "no record of kind {k:#x}");
+    }
+    let nodes = read_json(&dir.join("nodes.json"));
+    assert!(!nodes.as_object().unwrap().is_empty());
+    if let Some(k) = keep {
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();
+        std::fs::write(k.join("run"), desk.dir.display().to_string()).unwrap();
+    }
 }
 
 /// The words form prints the paste line, which names a whole bundle and
