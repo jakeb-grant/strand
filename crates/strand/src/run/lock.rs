@@ -551,6 +551,12 @@ impl LockScreen {
         self.content.is_some_and(|(s, _)| s == surface)
     }
 
+    /// (report) `surface` shows the lock's content (the config's `lock`
+    /// or the fallback): the glitch report never records it.
+    pub(crate) fn is_lock_surface(&self, surface: SurfaceId) -> bool {
+        self.on_content(surface)
+    }
+
     /// The fallback is painted on `surface`.
     pub(crate) fn shown_on(&self, surface: SurfaceId) -> bool {
         self.fallback.is_some() && self.on_content(surface)

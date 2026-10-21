@@ -1832,9 +1832,12 @@ threads** (as `strand_core::ipc`).
   `t`, password u8), `0x0B` paste (count u32, password u8), `0x0C`
   click-away, `0x0D` drag (phase u8: enter, motion, leave, drop; x, y;
   the kinds offered as a u16 mask; never the payload), `0x20` surface
-  mapped (slot = a new surface slot; root `NodeId` u64, namespace name
-  u16, output slot u8, kind u8: bar, panel, osd, popup), `0x21`
-  configured (width u16, height u16, scale u16 in 120ths), `0x22`
+  mapped (slot = a new surface slot; root `NodeId` u64, output slot u8,
+  255 when it has none yet, kind u8: bar, panel, osd, popup, other; its
+  namespace is in `bundle.json`'s `surfaces` by slot, since a name per
+  surface would crowd the key names out of the input ring's 64), `0x21`
+  configured (the buffer's width u16 and height u16 in physical px,
+  scale u16 in 120ths), `0x22`
   placed (x i32, y i32 on its output), `0x23` unmapped, `0x24` backend
   (gpu u8), `0x25` late (frames missed u16: a presented frame that came
   two or more refresh periods after the one before while the surface
@@ -1849,11 +1852,13 @@ threads** (as `strand_core::ipc`).
   diffs, "r": the items those diffs removed or replaced}`), `0x42`
   event (`service.event`; arena: its arguments), `0x43` cell (name: the
   cell's path as `Instance::cells_of` spells it; arena `[old, new]`),
-  `0x44` fetch (`service.method`; arena: the answer; a call id u32;
-  never the arguments), `0x45` action (the action's name; exit status
-  i32, argument count u8, started u8), `0x46` write (an `rw` service
-  field the config wrote; arena: the value), `0x47` reload (committed,
-  held and reset counts u16 each; arena: the files and their hashes),
+  `0x44` fetch (`service.method`; arena `{"ok": answer}` or `{"err":
+  text}`; a call id u32; never the arguments), `0x45` action (the
+  action's name; exit i32: 0 it succeeded, 1 it failed or never
+  started, 0 on its start record; argument count u8, started u8),
+  `0x46` write (an `rw` service field the config wrote; arena: the
+  value), `0x47` reload (name `reload`; the module files, the cells
+  kept and the cells reset, u16 each; arena `{file: blake3}`),
   `0x48` surface root (name: its origin `file.strand:LINE:COL`; the
   root `NodeId` u64, kind u8), `0x49` root gone (`NodeId`), `0x4E`
   gap begins, `0x4F` gap ends.
@@ -1893,6 +1898,9 @@ of `demo::host::Host`).
   password span with no count. A paste (`InputEvent::Paste`) records
   its character count (none into a password), never its text; a copy
   or cut records nothing. A drop records its kinds, never its payload.
+  A named key's release is recorded only when its press was (the
+  recorder holds the presses it named), so no release names a text
+  key either.
 - **The lock.** On `Host::lock_started` (a lock asked for) the ring
   writes a gap and appends nothing until `lock_changed` reports the
   session unlocked; an event on a lock surface (`lock::LockScreen`
@@ -1907,7 +1915,7 @@ of `demo::host::Host`).
   clock).
 
 **Logic side** (`run/record.rs`, `ChangeRecorder`, owned by the logic
-thread's `Live`).
+thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
 - **Services.** `strand_services::Services::tap(Tap)` (new) installs one
   callback the registry calls on the logic thread for every patch
   `Services::pump` applies: `TapEvent { service: &str, change:
@@ -1922,7 +1930,11 @@ thread's `Live`).
   service's fields as `ServiceSnapshot { name, running, fields }`. `Data::write_json(&self, w, &mut dyn
   FnMut(&str) -> bool)` (new) writes a value, the closure deciding per
   text whether it is kept. Config services (`service … from`) run on
-  the contract and are tapped like builtins.
+  the contract and are tapped like builtins; each is one keyed list of
+  its values by field index (`strand_services::custom`), so the
+  recorder writes each value a patch changes as a field record of its
+  declared name (`mood.level`, its old value the last one recorded),
+  and the snapshot names their fields the same way.
 - **The config's writes.** `strand_compiler::Instance::set_cell_tap(
   Box<dyn FnMut(CellWrite<'_>)>)` (new): every write to a `state`
   cell, a settings field or a token overlay, by a handler, a two-way
@@ -1947,7 +1959,8 @@ thread's `Live`).
   never recorded or snapshotted. Every text of `clipboard` is held back
   (`{"~text": N}`), an image in its history as its size only. A text of
   the config's own (a cell's value, an `rw` write) is kept only when
-  `Program::is_text_literal` holds. Call and action arguments are
+  `Program::is_text_literal` holds; a token overlay (`$accent`), set
+  from the command line rather than typed into the shell, is kept. Call and action arguments are
   never recorded (a count at most), and the answer of a call given a
   text that is not a literal has every text in it held back. Service
   values are kept as reported.
@@ -1967,7 +1980,10 @@ the same with its own. Off drops both rings (their memory is freed,
 so nothing recorded stays in the process) and on allocates them anew,
 empty: the only allocations a ring makes after `new`. Both threads
 allocate theirs as `strand run` starts; a shell kept off frees them as
-soon as the `system` service's boot value says so.
+soon as the `system` service's boot value says so. The logic thread's
+taps are installed while recording is on and removed while it is off,
+so an off shell reads no old value for them. Under `STRAND_MOCK`, the
+mock's `system.replay` starts true.
 
 **Saving a report.** IPC version 1's `report` gains an optional field:
 `{"v": 1, "cmd": "report", "save": {"words": "…"}}`
@@ -1977,10 +1993,13 @@ Without `save` the answer is as before. With it:
    locked"). Otherwise it sends `ToMain::Snapshot { kind:
    SnapshotKind::Bundle, reply }`; main answers between frames, as for
    `Report`, with `Snapshot { reply, data, bundle:
-   Some(Box<MainBundle>) }`: `data` is `report::main_part` plus each
-   mapped surface's slot, namespace, root `NodeId`, output and backend;
-   `MainBundle { ring: Vec<u8> (the dump), frames: Vec<(SurfaceId,
-   FramePixels)>, images: Vec<PathBuf> }`. A frame is the newest
+   Some(Box<MainBundle>) }`: `data` is `report::main_part`;
+   `MainBundle { ring: Option<Vec<u8>> (the dump, `None` while off),
+   frames: Vec<Frame { slot, name, pixels: FramePixels, repainted }>,
+   images: Vec<PathBuf>, surfaces: Vec<Json> }`, `surfaces` being
+   `bundle.json`'s: each mapped surface's slot, namespace, kind, root
+   `NodeId`, output, backend, logical and buffer size, scale, its
+   frame's file and whether it was repainted. A frame is the newest
    committed shm buffer, copied (`strand_surface::State::frame_pixels(
    surface) -> Option<FramePixels>`, new), or, for a surface presented
    by the GPU, its current scene repainted by the CPU into a fresh
@@ -1996,9 +2015,11 @@ Without `save` the answer is as before. With it:
    `Data`, under the redaction rules), `Instance::cells_snapshot() ->
    Vec<(String, Value)>` (new: every live cell by the inspector's path,
    settings fields and overlays included), the module set's files, the
-   files the program reads (`Instance::settings_sources()`, the theme's
-   wallpapers and imports, templates, shaders, the config's `icons/`
-   folder), the strand version and commit (`env!("STRAND_COMMIT")`,
+   files the program reads (the ones the shell watches: its settings
+   files and their overlays, the theme's wallpapers and imports, the
+   local files its `image`s, `svg`s and `lottie`s draw; then the images
+   the renderer holds, and the config's `icons/` folder), the strand
+   version and commit (`env!("STRAND_COMMIT")`,
    set by the binary's `build.rs` from `git rev-parse HEAD`, `unknown`
    outside a checkout, `-dirty` when it was), the wall time and
    `now_ns`, and the words.
@@ -2013,7 +2034,7 @@ Without `save` the answer is as before. With it:
 
 | Path | What |
 | --- | --- |
-| `bundle.json` | `{"format": 1, "words", "wall": RFC 3339 with offset, "now_ns", "epoch_unix_ns", "strand": {"version", "commit"}, "outputs", "surfaces", "replay": bool, "files": {path: blake3}, "missing": [{path, bytes, why}]}` |
+| `bundle.json` | `{"format": 1, "words", "wall": RFC 3339 with offset, "now_ns", "epoch_unix_ns", "strand": {"version", "commit"}, "config_dir", "outputs", "surfaces", "replay": bool, "files": {path: blake3}, "missing": [{path, bytes, why}]}`; `surfaces` as `MainBundle`'s, `config_dir` the directory `config/` mirrors |
 | `words.txt` | the words |
 | `diagnostics.json`, `diagnostics.txt` | what `strand report --json` and `strand report` print (no serials or ids, as `report.rs` holds) |
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
@@ -2041,7 +2062,9 @@ under `crates/` depends on eval, and the shipped binary has none of it.
 **Budgets.** The 256 KiB are counted against the PSS budgets, the
 rings being allocated in every measured run (the default is on); the
 build measures them (features.md "Glitch reports") rather than
-assuming the zeroed pages stay untouched. No thread, timer or wakeup
+assuming the zeroed pages stay untouched: both rings filled, the
+anonymous PSS (`Pss_Anon`, where the heap is) on minus off is at most
+288 KiB (264 to 268 kB measured; benchmarks.md). No thread, timer or wakeup
 exists while no report is being saved, so the idle-wakeup windows in
 `crates/strand/tests/budgets.rs` hold unchanged. The release binary's
 `.text` gates in `budgets.rs` are measured with the code in; a

@@ -56,6 +56,11 @@
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
+//! - `the_replay_rings_cost_at_most_their_size` (report): a bar on the
+//!   same sway, clicked until both rings have wrapped with
+//!   `system.replay` off and then again with it on: anonymous PSS
+//!   (`Pss_Anon`) on minus off is at most 288 KiB (the rings' 256 KiB
+//!   and 32 KiB of slack), and the dumps a report then saves are full.
 //!
 //! The idle window and the minute tick's one burst are timing claims:
 //! run this binary on its own (CI runs it as a step of its own, with
@@ -69,6 +74,7 @@
 
 #[path = "../../strand-services/tests/pipewire/mod.rs"]
 mod pipewire;
+mod support;
 #[allow(dead_code)]
 #[path = "../../strand-services/tests/common/window.rs"]
 mod window;
@@ -2694,4 +2700,173 @@ fn the_binary_holds_no_fault_code() {
             cfg!(feature = "faults")
         );
     }
+}
+
+/// (report) What the replay rings may add to the process's anonymous
+/// PSS (`Pss_Anon`, where the heap and so the rings are): their 256 KiB
+/// and 32 KiB of slack (docs/architecture.md, "Glitch reports"). The
+/// whole PSS is not compared: its shared libraries' share moves by a
+/// few hundred kB as other processes map and unmap them.
+const RINGS_KB: u64 = 288;
+
+/// `pid`'s anonymous PSS in kB.
+fn anon_kb(pid: u32) -> u64 {
+    status_of(pid, "Pss_Anon:").unwrap_or(0)
+}
+
+/// (report) The replay rings, filled, cost at most their size: a bar
+/// clicked until both rings wrap, first with `system.replay` off (the
+/// same input warms every cache), then on; anonymous PSS on minus off.
+#[test]
+fn the_replay_rings_cost_at_most_their_size() {
+    const CLICKS: u32 = 2400;
+    // Three cells a click: a slow (debug) shell's tick takes several
+    // clicks, and one tick's writes of a cell are one record.
+    const BAR: &str = "export state clicks = 0
+state a = 0
+state b = 0
+export let recording = system.replay
+bar Top {
+  edge: top; height: 40
+  row { box { width: 80; height: 40; bg: clicks % 2 == 0 ? #00ff00 : #0000ff
+    on click { clicks = clicks + 1; a = a + 2; b = b + 3 } } }
+}
+";
+    for tool in ["sway", "swaymsg"] {
+        if bounded(Command::new(tool).arg("--version"), tool).is_none() {
+            assert!(
+                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+            );
+            eprintln!("\n*** SKIPPED: {tool} is not installed ***\n");
+            return;
+        }
+    }
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tmp =
+        TmpDir::new(std::env::temp_dir().join(format!("strand-rings-{}", std::process::id())));
+    let dir = tmp.0.join("run");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (_sway, display, _ipc) = sway(&dir, 1);
+    let mut pointer = support::pointer::Pointer::new(&dir.join(&display));
+    let config = tmp.0.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("b.strand"), BAR).unwrap();
+    let socket = dir.join("s.sock");
+    let log = tmp.0.join("strand.log");
+    let strand = Proc(
+        Command::new(env!("CARGO_BIN_EXE_strand"))
+            .arg("run")
+            .arg(&config)
+            .envs(bus.env())
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", &display)
+            .env("HOME", tmp.0.join("home"))
+            .env("XDG_CONFIG_HOME", tmp.0.join("xdg-config"))
+            .env("XDG_CACHE_HOME", tmp.0.join("cache"))
+            .env("XDG_STATE_HOME", tmp.0.join("state"))
+            .env("STRAND_SOCKET", &socket)
+            .env_remove("STRAND_MOCK")
+            .env_remove("SWAYSOCK")
+            .stdin(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = strand.0.id();
+    let log_text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let cli = |args: &[&str]| -> Option<String> {
+        let out = bounded(
+            Command::new(env!("CARGO_BIN_EXE_strand"))
+                .args(args)
+                .env("STRAND_SOCKET", &socket),
+            "strand",
+        )?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let wait = |what: &str, ok: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok() {
+            assert!(Instant::now() < deadline, "{what}\n{}", log_text());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    wait("strand answers", &|| cli(&["get", "b.clicks"]).is_some());
+    // The layout: 2560 + 2560 / 1.25 logical pixels wide.
+    let (lw, lh) = (2560 + 2048, 1440);
+    // Clicks in small batches until `clicks` reaches `upto`: a slow
+    // (debug) shell takes a batch's presses as fewer clicks.
+    let clicks = || -> u32 {
+        cli(&["get", "b.clicks"])
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0)
+    };
+    let round = |pointer: &mut support::pointer::Pointer, upto: u32| {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut sent = 0u32;
+        loop {
+            let got = clicks();
+            if got >= upto {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{got} of {upto} clicks\n{}",
+                log_text()
+            );
+            for _ in 0..(upto - got).min(10) {
+                pointer.click(10 + sent % 60, 20, lw, lh);
+                sent += 1;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    };
+    assert!(cli(&["set", "system.replay", "false"]).is_some());
+    wait("recording off", &|| {
+        cli(&["get", "b.recording"]).as_deref() == Some("false")
+    });
+    // Twice off: the second round's PSS is the steady figure (the
+    // first grows what the input needs, within a few kB of the second).
+    // Twice off: the second round's figure is the steady one.
+    round(&mut pointer, CLICKS);
+    round(&mut pointer, 2 * CLICKS);
+    let off = anon_kb(pid);
+    assert!(cli(&["set", "system.replay", "true"]).is_some());
+    wait("recording on", &|| {
+        cli(&["get", "b.recording"]).as_deref() == Some("true")
+    });
+    round(&mut pointer, 3 * CLICKS);
+    let on = anon_kb(pid);
+    let added = on.saturating_sub(off);
+    eprintln!(
+        "replay rings: anonymous PSS {off} kB off, {on} kB on, {added} kB added (at most {RINGS_KB})"
+    );
+    // Both rings wrapped: a report's dumps are full.
+    let ans = cli(&["report", "--json", "rings"]).expect("a report");
+    let ans: serde_json::Value = serde_json::from_str(&ans).unwrap();
+    let bundle = PathBuf::from(ans["bundle"].as_str().unwrap());
+    for (file, spec) in [
+        ("input.flight", strand_core::flight::INPUT),
+        ("changes.flight", strand_core::flight::CHANGES),
+    ] {
+        let d = strand_core::flight::read(&std::fs::read(bundle.join(file)).unwrap()).unwrap();
+        assert!(
+            d.wrapped && d.records.len() == spec.records,
+            "{file}: {} records, wrapped {}",
+            d.records.len(),
+            d.wrapped
+        );
+    }
+    assert!(
+        added <= RINGS_KB,
+        "the replay rings added {added} kB of anonymous PSS, over {RINGS_KB} kB\n{}",
+        memory_report(pid)
+    );
+    drop(strand);
 }

@@ -46,7 +46,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("compositor-rules", "print blur rules for the compositor"),
     (
         "report",
-        "dump compositor, protocols, scales, memory, GPU and frame stats (--json)",
+        "dump compositor, protocols, scales, memory, GPU and frame stats (--json); with words (strand report the clock jumped), save a glitch report",
     ),
 ];
 

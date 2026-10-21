@@ -348,3 +348,23 @@ indexed by file and a claim or release no longer queues a touch for a
 file the store touched or wrote in the last day: linear. Mount is now
 dominated by reading 2,000 files on the logic thread (about 7 µs each),
 a frame for 2,000 rows; unmount is under a frame.
+
+## Glitch-report rings (report)
+
+`CI_JOB=budgets scripts/container/run.sh ci` (release), 2026-10-20, on
+the report branch's binary (recording on, the default, in every run):
+
+| Measure | Figure |
+| --- | --- |
+| The rings' size (`strand_core::flight`, input 180,224 B + changes 81,920 B) | 262,144 B |
+| `the_replay_rings_cost_at_most_their_size`: anonymous PSS (`Pss_Anon`) on minus off, both rings wrapped by clicks | 264 to 268 kB over five runs (bound 288 KiB) |
+| The same on the whole PSS (not gated: shared libraries' share moves) | 224 to 541 kB |
+| Design bar, two 2560×1440 outputs, warm device (lavapipe) | 200,251 kB (ceiling 247,808) |
+| Design bar, cold | 41,269 kB (ceiling 49,152) |
+| Full shell, launcher, toasts and OSD up, warm | 270,680 kB |
+| Full shell with 161 desktop entries, cold | 96,134 kB (target 77,824 warns; ceiling 106,496) |
+| `.text`, default build (GPU backend) | 26,033,559 B (gate 26,214,400) |
+| `.text`, CPU-only | 22,045,783 B (gate 22,282,240) |
+
+No idle-wakeup window in budgets.rs changed: nothing records on a timer,
+and the `strand-report` thread lives only while a report is written.

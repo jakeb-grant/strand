@@ -829,6 +829,44 @@ impl Strand {
         assert!(self.try_cli(args), "strand {args:?}:\n{}", self.log_text());
     }
 
+    /// (report) `strand <args>`, run to its end: its output.
+    fn cli_out(&self, args: &[&str]) -> std::process::Output {
+        Command::new(&self.bin)
+            .args(args)
+            .env_clear()
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    /// (report) Where `strand report` with words saves.
+    fn reports(&self) -> PathBuf {
+        let state = self
+            .env
+            .iter()
+            .find(|(k, _)| k == "XDG_STATE_HOME")
+            .map(|(_, v)| PathBuf::from(v))
+            .unwrap();
+        state.join("strand/reports")
+    }
+
+    /// (report) `strand report --json <words>`, which must succeed: the
+    /// bundle's directory.
+    fn report(&self, words: &str) -> PathBuf {
+        let mut args = vec!["report", "--json"];
+        args.extend(words.split(' '));
+        let out = self.cli_out(&args);
+        assert!(
+            out.status.success(),
+            "strand {args:?}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            self.log_text()
+        );
+        let ans: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        PathBuf::from(ans["bundle"].as_str().unwrap())
+    }
+
     /// Waits for the log to say `text`.
     fn until_log(&self, text: &str) {
         let deadline = Instant::now() + WAIT;
@@ -2424,4 +2462,128 @@ fn the_binary_under_test_holds_the_fault_points() {
             String::from_utf8_lossy(needle)
         );
     }
+}
+
+// ---- (report) the glitch report and the lock ----------------------------------
+
+/// Every file under `dir`.
+fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            files_under(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+/// The records of `ring` strictly inside its lock gap, and whether the
+/// gap was found closed.
+fn inside_lock_gap(
+    d: &strand_core::flight::Dump,
+    begins: u8,
+    ends: u8,
+) -> (Vec<strand_core::flight::Rec>, bool) {
+    use strand_core::flight::gap;
+    let recs = &d.records;
+    let Some(b) = recs
+        .iter()
+        .position(|r| r.kind == begins && r.u8(0) == gap::LOCK)
+    else {
+        return (Vec::new(), false);
+    };
+    let Some(e) = recs[b..]
+        .iter()
+        .position(|r| r.kind == ends && r.u8(0) == gap::LOCK)
+    else {
+        return (recs[b + 1..].to_vec(), false);
+    };
+    (recs[b + 1..b + e].to_vec(), true)
+}
+
+/// (report) A lock with both passwords typed into it, then unlocked:
+/// each ring holds the lock as one gap with nothing inside it, no lock
+/// surface or root is recorded, and neither password is in any file of
+/// the report saved after (design.md, "Reporting a glitch": "Nothing at
+/// all while the screen is locked, and nothing of the lock itself").
+#[test]
+fn nothing_is_recorded_while_locked() {
+    use strand_core::flight::{self, kind};
+    let test = "report_lock_gap";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    // Recording is on (the default) before the lock.
+    vm.keys.type_text("ab");
+    vm.lock();
+    vm.content();
+    vm.lock_passwords();
+    let dir = vm.strand.report("after the lock");
+    let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    let (inside, closed) = inside_lock_gap(&input, kind::GAP_BEGINS, kind::GAP_ENDS);
+    assert!(closed, "the input ring's lock gap: {:?}", input.records);
+    assert!(inside.is_empty(), "recorded while locked: {inside:?}");
+    assert!(
+        !input.records.iter().any(|r| r.kind == kind::MAPPED),
+        "a lock surface was recorded: {:?}",
+        input.records
+    );
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    let (inside, closed) =
+        inside_lock_gap(&changes, kind::CHANGE_GAP_BEGINS, kind::CHANGE_GAP_ENDS);
+    assert!(closed, "the changes ring's lock gap: {:?}", changes.records);
+    assert!(inside.is_empty(), "recorded while locked: {inside:?}");
+    assert!(
+        !changes.records.iter().any(|r| r.kind == kind::ROOT),
+        "the lock's root was recorded"
+    );
+    let b: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json")).unwrap()).unwrap();
+    assert_eq!(b["surfaces"], serde_json::json!([]), "no lock surface: {b}");
+    let mut all = Vec::new();
+    files_under(&dir, &mut all);
+    for f in &all {
+        let bytes = std::fs::read(f).unwrap();
+        for s in [PASSWORD, WRONG] {
+            let utf16: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            assert!(
+                !bytes.windows(s.len()).any(|w| w == s.as_bytes())
+                    && !bytes.windows(utf16.len()).any(|w| w == utf16),
+                "{s:?} in {}",
+                f.display()
+            );
+        }
+    }
+}
+
+/// (report) `strand report` with words is refused while the session is
+/// locked and saves nothing; bare `strand report` still answers; after
+/// the unlock a report is saved.
+#[test]
+fn a_report_with_words_is_refused_while_locked() {
+    let test = "report_refused";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    vm.lock();
+    vm.content();
+    let out = vm.strand.cli_out(&["report", "the", "lock", "flickered"]);
+    assert!(!out.status.success(), "a report was saved while locked");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the screen is locked"), "{err}");
+    let bare = vm.strand.cli_out(&["report"]);
+    assert!(
+        bare.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bare.stderr)
+    );
+    let reports = vm.strand.reports();
+    let saved = std::fs::read_dir(&reports).map_or(0, |d| d.count());
+    assert_eq!(saved, 0, "nothing under {}", reports.display());
+    vm.lock_passwords();
+    let dir = vm.strand.report("after the unlock");
+    assert!(dir.join("bundle.json").is_file());
 }

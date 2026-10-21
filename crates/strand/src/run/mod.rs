@@ -83,6 +83,7 @@ mod lists;
 pub(crate) mod lock;
 mod logic;
 mod outputs;
+pub(crate) mod record;
 mod request;
 mod shell;
 mod sleep;
@@ -368,6 +369,9 @@ pub enum ToMain {
     /// carry back the last one it acted on, so logic ignores a pick or
     /// an end that a newer `PickMode` overtook (the socket and this channel are separate sources).
     PickMode { on: bool, seq: u64 },
+    /// (report) `system.replay` changed: main drops its input ring
+    /// (`false`) or starts one empty (`true`), as logic does its own.
+    Recording(bool),
 }
 
 /// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
@@ -402,6 +406,11 @@ pub enum SnapshotKind {
     /// `Renderer::node_layout(surface, node)` for each; none when no
     /// surface shows it; S-inspect).
     Layout { node: NodeId },
+    /// (report) `strand report words…`: main's part of a glitch report
+    /// (`report::bundle::main_bundle`): `data` is [`SnapshotKind::Report`]'s,
+    /// [`Snapshot::bundle`] the ring, the frames, the files drawn and the
+    /// surfaces' slots.
+    Bundle,
 }
 
 /// (M5) Which [`ToMain::Snapshot`] an answer is for (logic's numbering).
@@ -414,6 +423,9 @@ pub struct SnapshotId(pub u64);
 pub struct Snapshot {
     pub reply: SnapshotId,
     pub data: Json,
+    /// (report) Main's part of a glitch report, for
+    /// [`SnapshotKind::Bundle`].
+    pub bundle: Option<Box<crate::report::bundle::MainBundle>>,
 }
 
 /// The `screens` service fields for `screens`.
@@ -741,7 +753,31 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                     reply,
                 }) => {
                     let data = crate::report::main_part(state);
-                    let _ = answer.send(ToLogic::Snapshot(Snapshot { reply, data }));
+                    let _ = answer.send(ToLogic::Snapshot(Snapshot {
+                        reply,
+                        data,
+                        bundle: None,
+                    }));
+                }
+                // (report) A glitch report: the diagnostics and main's
+                // part, copied between frames.
+                Event::Msg(ToMain::Snapshot {
+                    kind: SnapshotKind::Bundle,
+                    reply,
+                }) => {
+                    let data = crate::report::main_part(state);
+                    let bundle = crate::report::bundle::main_bundle(state);
+                    let _ = answer.send(ToLogic::Snapshot(Snapshot {
+                        reply,
+                        data,
+                        bundle: Some(Box::new(bundle)),
+                    }));
+                }
+                Event::Msg(ToMain::Recording(on)) => {
+                    state
+                        .host_mut()
+                        .recorder
+                        .set_on(on, strand_core::flight::now_ns());
                 }
                 // (M5, S-inspect) Layouts, the outline, the flash and
                 // pick mode.
@@ -821,6 +857,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         }
         // (m6-owner-fixes, B-d) The batch's events are in.
         mgr.state_mut().host_mut().settle_rebase();
+        // (report) The lock's gap and the refresh periods.
+        record::after_dispatch(mgr.state_mut());
         #[cfg(feature = "gpu")]
         gpu.pump(mgr.state_mut());
         gpu_status.send(&mgr.state().host().renderer, &to_logic);

@@ -42,6 +42,23 @@ pub struct Composite {
     /// (M6) The press of the last action a handler ran with one, and when
     /// ([`Composite::action_press`]).
     action_press: std::cell::Cell<Option<(u32, Instant)>>,
+    /// (report) The glitch report's recorder of async calls and `rw`
+    /// writes ([`Composite::set_tap`]).
+    tap: RefCell<Option<Rc<dyn CallTap>>>,
+}
+
+/// (report) What a recorded `fetch`'s answer is told to.
+pub type FetchDone = Box<dyn FnOnce(&Result<Value, Error>)>;
+
+/// (report) What the composite tells the glitch report's recorder
+/// (`run/record.rs`): every `fetch` (an async call) as it starts, its
+/// answer when it arrives, and every write to an `rw` service field.
+pub trait CallTap {
+    /// `service.method(args)` was asked: what its answer is told to
+    /// (`None`: not recorded).
+    fn fetch(&self, service: &str, method: &str, args: &[Value]) -> Option<FetchDone>;
+    /// The config wrote `value` to `service`'s field at `path`.
+    fn wrote(&self, service: &str, path: &[PathSeg], value: &Value);
 }
 
 /// A hold's service and field.
@@ -77,7 +94,14 @@ impl Composite {
             types,
             holds: RefCell::default(),
             action_press: std::cell::Cell::new(None),
+            tap: RefCell::new(None),
         }
+    }
+
+    /// (report) Tell `tap` of calls and writes from now on (`None`: no
+    /// one).
+    pub fn set_tap(&self, tap: Option<Rc<dyn CallTap>>) {
+        *self.tap.borrow_mut() = tap;
     }
 
     /// (M6) The press of the last action a handler ran with one (an
@@ -285,7 +309,16 @@ impl ServiceHost for Composite {
         path: &[PathSeg],
         value: Value,
     ) -> Result<(), Error> {
-        self.route(service).write(rt, service, path, value)
+        let tap = self.tap.borrow().clone();
+        let Some(tap) = tap else {
+            return self.route(service).write(rt, service, path, value);
+        };
+        let kept = value.clone();
+        let r = self.route(service).write(rt, service, path, value);
+        if r.is_ok() {
+            tap.wrote(service, path, &kept);
+        }
+        r
     }
 
     fn write_item(
@@ -309,7 +342,20 @@ impl ServiceHost for Composite {
     }
 
     fn fetch(&self, rt: &Runtime, service: &str, method: &str, args: Vec<Value>) -> Fetch {
-        self.route(service).fetch(rt, service, method, args)
+        let done = self
+            .tap
+            .borrow()
+            .as_ref()
+            .and_then(|t| t.fetch(service, method, &args));
+        let fut = self.route(service).fetch(rt, service, method, args);
+        match done {
+            None => fut,
+            Some(done) => Box::pin(async move {
+                let r = fut.await;
+                done(&r);
+                r
+            }),
+        }
     }
 
     fn fetch_reads(&self, rt: &Runtime, service: &str, method: &str) -> Result<(), Error> {

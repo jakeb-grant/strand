@@ -492,7 +492,11 @@ fn a_report_is_mains_snapshot_with_logics_half() {
     let mains = json!({"compositor": {"globals": [{"interface": "wl_output", "version": 4}]},
                        "outputs": [], "surfaces": [], "gpu": {"status": "unused"}});
     to_logic
-        .send(ToLogic::Snapshot(Snapshot { reply, data: mains }))
+        .send(ToLogic::Snapshot(Snapshot {
+            reply,
+            data: mains,
+            bundle: None,
+        }))
         .unwrap();
     let ans = client.join().unwrap();
     assert_eq!(ans["ok"], true, "{ans}");
@@ -509,6 +513,7 @@ fn a_report_is_mains_snapshot_with_logics_half() {
         .send(ToLogic::Snapshot(Snapshot {
             reply,
             data: json!({}),
+            bundle: None,
         }))
         .unwrap();
     to_logic.send(ToLogic::Shutdown).unwrap();
@@ -716,6 +721,7 @@ fn the_inspector_belongs_to_its_client() {
         .send(ToLogic::Snapshot(Snapshot {
             reply,
             data: layout.clone(),
+            bundle: None,
         }))
         .unwrap();
     let pane = read(&mut ar);
