@@ -1,16 +1,16 @@
 diff --git a/crates/strand-render/src/flatten/mod.rs b/crates/strand-render/src/flatten/mod.rs
-index 38a9a9d7..18946ac7 100644
+index 05ed27ae..f2faadda 100644
 --- a/crates/strand-render/src/flatten/mod.rs
 +++ b/crates/strand-render/src/flatten/mod.rs
-@@ -582,7 +582,6 @@ pub fn flatten(
+@@ -629,7 +629,6 @@ fn flatten_with(
          fillet: crate::fillet::find(tree, boxes, root),
          open_clips: Vec::new(),
          fillet_fill: None,
 -        item_clips: Vec::new(),
          pointer: extras.pointers.get(&root).copied(),
          logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
-         #[cfg(feature = "eval-hooks")]
-@@ -653,10 +652,6 @@ struct Flattener<'a> {
+         drawn: drawn.then(Vec::new),
+@@ -708,10 +707,6 @@ struct Flattener<'a> {
      /// what each such clip holds the rest of its group around
      /// (`Flattener::hold_to_box`).
      fillet_fill: Option<usize>,
@@ -21,7 +21,7 @@ index 38a9a9d7..18946ac7 100644
      /// (M4) The pointer on the surface, and the surface's logical box.
      pointer: Option<strand_scene::LogicalPoint>,
      logical: LogicalRect,
-@@ -683,51 +678,6 @@ struct OpenClip {
+@@ -749,51 +744,6 @@ struct OpenClip {
      held: Option<BezPath>,
  }
  
@@ -74,7 +74,7 @@ index 38a9a9d7..18946ac7 100644
  fn map_rect(a: kurbo::Affine, r: Rect) -> Rect {
      if a == kurbo::Affine::IDENTITY || r.is_empty() {
 diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
-index 759dfb36..d82adf70 100644
+index ed4ddffb..56407b72 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
 @@ -25,7 +25,7 @@ use super::widget::{CaretAt, WidgetCtx, caret_x};
@@ -114,7 +114,7 @@ index 759dfb36..d82adf70 100644
          let bounds = map_rect(self.xform, bounds);
          hash_item(sig, &item);
          *ink = ink.union(bounds);
-@@ -1715,11 +1694,7 @@ impl<'a> Flattener<'a> {
+@@ -1801,11 +1780,7 @@ impl<'a> Flattener<'a> {
              } else {
                  hash_path(&mut ctx, &box_path);
              }

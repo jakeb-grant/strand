@@ -1,19 +1,19 @@
 diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
-index ab044060..335165a1 100644
+index ed4ddffb..951bdc68 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
-@@ -554,7 +554,6 @@ impl<'a> Flattener<'a> {
-                 let hidden = Some(crate::probe::Hidden::Opacity0);
+@@ -616,7 +616,6 @@ impl<'a> Flattener<'a> {
                  self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
              }
+             self.drawn_push(node.id, opacity, frame);
 -            self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
              return Rect::default();
          }
  
-@@ -571,7 +570,6 @@ impl<'a> Flattener<'a> {
-                 let hidden = Some(crate::probe::Hidden::Scale0);
+@@ -634,7 +633,6 @@ impl<'a> Flattener<'a> {
                  self.probe_push(t, look, frame, self.xform, hidden, inh.clip);
              }
+             self.drawn_push(node.id, opacity, frame);
 -            self.hidden_texts(node, own_font.as_ref(), weight, &tokens);
              return Rect::default();
          }
