@@ -1817,7 +1817,7 @@ threads** (as `strand_core::ipc`).
   absolute offset u32 and a length u16 at payload bytes 6..12 (a value
   is at most `VALUE_CAP`, so 16 bits hold it, and the first six bytes
   stay free for a kind's inline fields); the kinds with one are field,
-  keyed, event, cell, fetch, write and reload, and a key or action
+  keyed, event, cell, fetch, write, reload and request, and a key or action
   record whose name is `NAME_IN_ARENA`. The arena is a byte ring, so a
   value is readable while its offset is within the arena's size of the
   newest byte written, and lost after.
@@ -1827,7 +1827,7 @@ threads** (as `strand_core::ipc`).
   node the press resolved to, `NodeId` as u64), `0x06` axis (dx f32, dy
   f32 in px, source u8, stop u8, discrete i16 in 120ths of a notch),
   `0x07` keyboard enter, `0x08` keyboard leave, `0x09` key (name index
-  u16, modifiers u16: shift, ctrl, alt, super, caps, num; state u8:
+  u16, modifiers u16: shift, ctrl, alt, super; state u8:
   release, press, repeat), `0x0A` text (count u32, last u32 in ms after
   `t`, password u8), `0x0B` paste (count u32, password u8), `0x0C`
   click-away, `0x0D` drag (phase u8: enter, motion, leave, drop; x, y;
@@ -1860,8 +1860,11 @@ threads** (as `strand_core::ipc`).
   value), `0x47` reload (name `reload`; the module files, the cells
   kept and the cells reset, u16 each; arena `{file: blake3}`),
   `0x48` surface root (name: its origin `file.strand:LINE:COL`; the
-  root `NodeId` u64, kind u8), `0x49` root gone (`NodeId`), `0x4E`
-  gap begins, `0x4F` gap ends.
+  root `NodeId` u64, kind u8), `0x49` root gone (`NodeId`), (report
+  review) `0x4A` request (a cell written by `strand set`, `toggle` or
+  `reset`: name the path as asked; verb u8, `flight::request::{SET,
+  TOGGLE, RESET}`; arena: the cell's value after it, held back as a
+  cell's), `0x4E` gap begins, `0x4F` gap ends.
 - **Values** in the arena are compact JSON typed by the schema or the
   program (records as objects, lists as arrays, enums by variant name,
   durations in ms, colours as `#rrggbbaa`). A text the redaction rules
@@ -1888,7 +1891,12 @@ of `demo::host::Host`).
   after routing, so the recorder sees exactly what the router saw.
   Pointer events record their surface-local position; a press is
   followed by its `hit` (the innermost node of `Renderer::hit`'s
-  chain).
+  chain). (report review) The hit also goes to logic as
+  `ToLogic::Hit(NodeId)` (new), sent before the press's events, and
+  `ChangeRecorder` keeps the identity the node has then (its source
+  place and `Instance::identity`) for the newest 256 presses, so
+  `nodes.json` names a node the press removed (a menu row that closes
+  its menu). They are dropped with the ring.
 - **Typed text is never recorded.** A key whose `KeyInput::text` is
   not empty and that carries no ctrl, alt or super is a text key: it is
   counted (`0x0A`), never named. While the focused node of the key's
@@ -1900,7 +1908,10 @@ of `demo::host::Host`).
   or cut records nothing. A drop records its kinds, never its payload.
   A named key's release is recorded only when its press was (the
   recorder holds the presses it named), so no release names a text
-  key either.
+  key either; (report review) the presses held for a surface are
+  forgotten when its keyboard focus leaves and when it unmaps (Wayland
+  sends no release after a leave), and a text key's press forgets any
+  held press of the same key.
 - **The lock.** On `Host::lock_started` (a lock asked for) the ring
   writes a gap and appends nothing until `lock_changed` reports the
   session unlocked; an event on a lock surface (`lock::LockScreen`
@@ -1946,7 +1957,15 @@ thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
   told as `$path` with its text. `Program::is_text_literal(&str) ->
   bool` (new) holds every text constant of the program, built on its
   first use rather than at lowering, so a shell with no report pays
-  nothing. `vm::json::{to_json, from_json}` (new) convert a `Value` by
+  nothing. (report review) Only the cells a tick wrote are read:
+  each cell's core ids are indexed to its registry key as it mounts
+  (`Ctx::cell_ids`), so a tick pays for its writes, not for every
+  live cell. Left out entirely, of the tap and `cells_snapshot` alike
+  (`Ctx::secret_cells`): every cell mounted under a `lock` surface (its
+  own `state` and its components'), and every cell a password input's
+  `text` or `value` is bound to two-way, marked when the input becomes
+  a password one, when it writes, and as a snapshot or a tap is taken.
+  `vm::json::{to_json, from_json}` (new) convert a `Value` by
   its type, `to_json` taking the same per-text closure; `from_json`
   reads a held-back text as `x` repeated to its length.
 - **Calls and actions** are recorded where the binary already handles
@@ -1983,7 +2002,14 @@ allocate theirs as `strand run` starts; a shell kept off frees them as
 soon as the `system` service's boot value says so. The logic thread's
 taps are installed while recording is on and removed while it is off,
 so an off shell reads no old value for them. Under `STRAND_MOCK`, the
-mock's `system.replay` starts true.
+mock's `system.replay` starts true. (report review) A ring made anew
+by on starts with a gap's end (`gap::OFF`), then the outputs, mapped
+surfaces and refresh periods (main) and the surface roots (logic)
+shown then, written again, so a replay's window starts after the
+recorder off and still knows them. Logic records each successful
+`strand set` of a state or settings field or a token overlay, `toggle`
+and `reset` as a request (`ChangeRecorder::request`; a service's write
+is its patch).
 
 **Saving a report.** IPC version 1's `report` gains an optional field:
 `{"v": 1, "cmd": "report", "save": {"words": "…"}}`
@@ -2008,7 +2034,11 @@ Without `save` the answer is as before. With it:
    compares against). `FramePixels { width, height, scale, stride,
    premultiplied RGBA8 }` is `strand-scene`'s (new). `images` are the
    files the renderer holds decodes of for mounted nodes
-   (`Renderer::image_sources()`, new). No lock surface is in it.
+   (`Renderer::image_sources() -> strand_render::image::DrawnSources`,
+   new: the image keys and the icon theme only, cheap on main;
+   (report review) `DrawnSources::files()` resolves them, icon lookups
+   and all, on the `strand-report` thread). No lock surface is in it.
+   The CPU repaint of a GPU surface stays on main, where its scene is.
 2. Logic adds its own part: `report::logic_part` (the diagnostics as
    today), its ring's dump, `Services::snapshot()` (new: each
    registered service's name, whether it runs, and every field's
@@ -2046,8 +2076,15 @@ Without `save` the answer is as before. With it:
 | `files/<absolute path>` | every other file the program or the renderer read, at its own path (settings files, templates, shaders, imported palettes, wallpapers, images, the theme's icons drawn), each at most 2 MiB and at most 16 MiB in all, newest-referenced first; the rest are listed in `missing` |
 | `replay/` | written later by `scripts/report-view.sh` |
 
-Pruning keeps the 20 newest directories holding a `bundle.json` and
-removes only those. The answer's `paste` line names the directory and
+(report review) The bundle is written into
+`reports/.<stamp>-<n>.partial` and renamed to its name once
+`bundle.json` is in it; on any error the partial directory is removed,
+and pruning removes a `.partial` one older than 10 minutes (a crash's).
+A file is copied under `files/` at its path's lexical normal form, so a
+`..` never leads out of it; the config's `icons/` is read as
+strand-icons reads it (the top level, links followed, `png` and
+`svg`). Pruning keeps the 20 newest directories holding a
+`bundle.json` and removes only those. The answer's `paste` line names the directory and
 says what to run: `Strand glitch report "<words>" at <dir>: run
 scripts/report-view.sh --no-open <dir> in the strand checkout and read
 <dir>/replay/replay.txt.`
@@ -2063,7 +2100,17 @@ into `<bundle>/replay/`. The mock host it runs on
 (`SchemaHost::mock_at`) takes the window start's wall time and offset
 for `clock` and local time, and keeps a log of the fetches it made
 (`SchemaHost::take_fetches`: whether a queued `answer` gave each),
-which the replay lists as calls the mock answered. Nothing
+which the replay lists as calls the mock answered. The interfaces
+eval uses for it: `Instance::seed_cell(path, Value)` (a cell set as a
+baseline, no `on change`, refused when its type does not hold the
+value), `Instance::cell_type(path) -> Option<Ty>` (a cell's declared
+type by the inspector's path), `SchemaHost::answer(method,
+Result<Value, String>)` (the next call of `method` answered with it)
+and `SchemaHost::answers_left() -> Vec<(String, usize)>` (answers
+queued and never taken). (report review) A step the sandbox cannot
+take is skipped and kept as a divergence, the window is capped at
+120 s before the report, a request record is replayed as a `set` or
+`toggle`, and a horizontal scroll is named as not replayed. Nothing
 under `crates/` depends on eval, and the shipped binary has none of it.
 
 **Budgets.** The 256 KiB are counted against the PSS budgets, the

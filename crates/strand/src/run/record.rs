@@ -108,6 +108,15 @@ pub(crate) struct SurfaceEntry {
     pub gpu: bool,
 }
 
+/// An output's logical size, scale (120ths) and position, as its
+/// `OUTPUT` record holds them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OutputGeometry {
+    size: (i32, i32),
+    scale: u32,
+    position: (i32, i32),
+}
+
 /// The main thread's recorder: see the module docs.
 #[derive(Debug)]
 pub(crate) struct InputRecorder {
@@ -115,10 +124,13 @@ pub(crate) struct InputRecorder {
     locked: bool,
     picking: bool,
     surfaces: HashMap<SurfaceId, SurfaceSlot>,
-    roots: HashMap<SurfaceId, (NodeId, Option<String>)>,
+    /// Each mapped surface's root, connector, kind and output slot.
+    roots: HashMap<SurfaceId, (NodeId, Option<String>, NodeKind, Option<u16>)>,
     next_surface: u16,
-    /// Output slots by monitor identity.
-    outputs: HashMap<String, (u16, Option<String>)>,
+    /// Output slots by monitor identity, with the connector and the
+    /// geometry last told (logical size, scale in 120ths, position),
+    /// written again when recording starts anew.
+    outputs: HashMap<String, OutputEntry>,
     next_output: u16,
     /// Named keys pressed while recording and not yet released: the
     /// surface slot and the name's hash.
@@ -183,11 +195,47 @@ impl InputRecorder {
         }
         self.ring = ring_if(on, flight::INPUT, flight::ring::INPUT);
         self.held = [(0, 0); HELD_KEYS];
+        if self.ring.is_some() {
+            self.restart(t);
+        }
         if let Some(r) = &mut self.ring {
             if self.locked {
                 r.pause(t, kind::GAP_BEGINS, gap::LOCK);
             } else if self.picking {
                 r.pause(t, kind::GAP_BEGINS, gap::PICK);
+            }
+        }
+    }
+
+    /// (report review) A ring started anew by `system.replay` turned on
+    /// again: the recorder off ends here (a replay's window starts after
+    /// it), and the outputs, the mapped surfaces and their refresh
+    /// periods, which the new ring has no record of, are written again
+    /// as they are now.
+    fn restart(&mut self, t: u64) {
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        r.push(Rec::new(t, kind::GAP_ENDS, 0).u8_at(0, gap::OFF));
+        let mut outs: Vec<(&String, &OutputEntry)> = self.outputs.iter().collect();
+        outs.sort_by_key(|(_, o)| o.0);
+        for (id, (slot, connector, geometry)) in outs {
+            if let Some(g) = geometry {
+                let name = r.name(connector.as_deref().unwrap_or(id));
+                r.push(output_rec(t, *slot, name, *g));
+            }
+        }
+        let mut surfaces: Vec<(&SurfaceId, &SurfaceSlot)> = self.surfaces.iter().collect();
+        surfaces.sort_by_key(|(_, s)| s.slot);
+        for (id, s) in surfaces {
+            if let Some((root, _, k, out)) = self.roots.get(id) {
+                r.push(mapped_rec(t, s.slot, *root, *out, *k));
+            }
+            if let Some(p) = s.period {
+                r.push(
+                    Rec::new(t, kind::REFRESH, s.slot)
+                        .u32_at(0, u32::try_from(p).unwrap_or(u32::MAX)),
+                );
             }
         }
     }
@@ -247,6 +295,16 @@ impl InputRecorder {
 
     fn slot(&self, surface: SurfaceId) -> Option<u16> {
         self.surfaces.get(&surface).map(|s| s.slot)
+    }
+
+    /// The named keys held down on surface `slot` are forgotten (its
+    /// keyboard focus left, or it went).
+    fn forget_held(&mut self, slot: u16) {
+        for e in &mut self.held {
+            if e.0 == slot {
+                *e = (0, 0);
+            }
+        }
     }
 
     /// The input event `event`, as routed: `focused` is what has the
@@ -313,11 +371,10 @@ impl InputRecorder {
                     Some(AxisSource::Continuous) => 3,
                     Some(AxisSource::WheelTilt) => 4,
                 };
-                let discrete = if vertical.value120 != 0 {
-                    vertical.value120
-                } else {
-                    horizontal.value120
-                };
+                // (report review) The vertical axis's notches only: a
+                // horizontal scroll is its `dx`, so a replay never reads
+                // a tilt as a vertical scroll.
+                let discrete = vertical.value120;
                 let discrete = discrete.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
                 r.push(
                     Rec::new(t, kind::AXIS, slot)
@@ -329,7 +386,14 @@ impl InputRecorder {
                 );
             }
             InputEvent::KeyboardEnter { .. } => r.push(Rec::new(t, kind::KEYBOARD_ENTER, slot)),
-            InputEvent::KeyboardLeave { .. } => r.push(Rec::new(t, kind::KEYBOARD_LEAVE, slot)),
+            InputEvent::KeyboardLeave { .. } => {
+                r.push(Rec::new(t, kind::KEYBOARD_LEAVE, slot));
+                // (report review) Wayland sends no release after `leave`:
+                // a named key still down here is forgotten, so a later
+                // press of its letter that types cannot end in a release
+                // that names it.
+                self.forget_held(slot);
+            }
             InputEvent::Key { key, .. } => self.key(t, slot, key, password),
             InputEvent::ClickAway { .. } => r.push(Rec::new(t, kind::CLICK_AWAY, slot)),
             InputEvent::DragEnter { at: p, kinds, .. } => {
@@ -382,6 +446,13 @@ impl InputRecorder {
             self.held[i] = (0, 0);
         } else if types {
             r.merge_text(slot, t, false);
+            // (report review) A key that types now is no named key held:
+            // its release, whenever it comes, is not recorded.
+            for e in &mut self.held {
+                if *e == (slot, h) {
+                    *e = (0, 0);
+                }
+            }
             return;
         } else if !key.repeat {
             self.held[self.held_next] = (slot, h);
@@ -435,25 +506,25 @@ impl InputRecorder {
         let out = output.map(|(id, _)| self.output_slot(id));
         self.roots.insert(
             surface,
-            (root, output.and_then(|(_, c)| c.map(str::to_string))),
+            (
+                root,
+                output.and_then(|(_, c)| c.map(str::to_string)),
+                kind,
+                out,
+            ),
         );
         if let Some(r) = &mut self.ring {
-            r.push(
-                Rec::new(t, kind::MAPPED, slot)
-                    .u64_at(0, node_bits(root))
-                    .u8_at(8, out.map_or(u8::MAX, |o| o as u8))
-                    .u8_at(9, kind_byte(kind)),
-            );
+            r.push(mapped_rec(t, slot, root, out, kind));
         }
     }
 
     fn output_slot(&mut self, id: &str) -> u16 {
-        if let Some((s, _)) = self.outputs.get(id) {
+        if let Some((s, _, _)) = self.outputs.get(id) {
             return *s;
         }
         let s = self.next_output;
         self.next_output = self.next_output.wrapping_add(1);
-        self.outputs.insert(id.to_string(), (s, None));
+        self.outputs.insert(id.to_string(), (s, None, None));
         s
     }
 
@@ -489,6 +560,7 @@ impl InputRecorder {
             return;
         };
         self.roots.remove(&surface);
+        self.forget_held(s.slot);
         if let Some(r) = &mut self.ring {
             r.push(Rec::new(t, kind::UNMAPPED, s.slot));
         }
@@ -507,29 +579,25 @@ impl InputRecorder {
         position: (i32, i32),
     ) {
         let slot = self.output_slot(id);
+        let g = OutputGeometry {
+            size,
+            scale,
+            position,
+        };
         if let Some(e) = self.outputs.get_mut(id) {
             e.1 = connector.map(str::to_string);
+            e.2 = Some(g);
         }
         let Some(r) = &mut self.ring else {
             return;
         };
         let name = r.name(connector.unwrap_or(id));
-        let c16 = |v: i32| u16::try_from(v.max(0)).unwrap_or(u16::MAX);
-        let i16_ = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        r.push(
-            Rec::new(t, kind::OUTPUT, slot)
-                .u16_at(0, name)
-                .u16_at(2, c16(size.0))
-                .u16_at(4, c16(size.1))
-                .u16_at(6, u16::try_from(scale).unwrap_or(u16::MAX))
-                .i16_at(8, i16_(position.0))
-                .i16_at(10, i16_(position.1)),
-        );
+        r.push(output_rec(t, slot, name, g));
     }
 
     /// An output was unplugged.
     pub(crate) fn output_gone(&mut self, t: u64, id: &str) {
-        let Some(slot) = self.outputs.get(id).map(|(s, _)| *s) else {
+        let Some(slot) = self.outputs.get(id).map(|(s, ..)| *s) else {
             return;
         };
         if let Some(r) = &mut self.ring {
@@ -597,7 +665,7 @@ impl InputRecorder {
             .surfaces
             .iter()
             .filter_map(|(id, s)| {
-                let (root, output) = self.roots.get(id)?.clone();
+                let (root, output, ..) = self.roots.get(id)?.clone();
                 Some(SurfaceEntry {
                     surface: *id,
                     slot: s.slot,
@@ -610,6 +678,34 @@ impl InputRecorder {
         out.sort_by_key(|e| e.slot);
         out
     }
+}
+
+/// An `OUTPUT` record of output `slot`, its name at `name`.
+fn output_rec(t: u64, slot: u16, name: u16, g: OutputGeometry) -> Rec {
+    let c16 = |v: i32| u16::try_from(v.max(0)).unwrap_or(u16::MAX);
+    let i16_ = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    Rec::new(t, kind::OUTPUT, slot)
+        .u16_at(0, name)
+        .u16_at(2, c16(g.size.0))
+        .u16_at(4, c16(g.size.1))
+        .u16_at(6, u16::try_from(g.scale).unwrap_or(u16::MAX))
+        .i16_at(8, i16_(g.position.0))
+        .i16_at(10, i16_(g.position.1))
+}
+
+/// A `ROOT` record of surface root `node`, its origin at name `slot`.
+fn root_rec(t: u64, slot: u16, node: NodeId, k: NodeKind) -> Rec {
+    Rec::new(t, kind::ROOT, slot)
+        .u64_at(0, node_bits(node))
+        .u8_at(8, kind_byte(k))
+}
+
+/// A `MAPPED` record of surface `slot` showing `root` on output `out`.
+fn mapped_rec(t: u64, slot: u16, root: NodeId, out: Option<u16>, k: NodeKind) -> Rec {
+    Rec::new(t, kind::MAPPED, slot)
+        .u64_at(0, node_bits(root))
+        .u8_at(8, out.map_or(u8::MAX, |o| o as u8))
+        .u8_at(9, kind_byte(k))
 }
 
 fn kind_bit(k: DropKind) -> u16 {
@@ -644,14 +740,18 @@ pub(crate) struct Call {
     tainted: bool,
 }
 
+/// An output as the input recorder knows it: its slot, connector name
+/// and (report review) geometry, to write again when recording restarts.
+type OutputEntry = (u16, Option<String>, Option<OutputGeometry>);
+
 /// The logic thread's recorder: see the module docs.
 pub(crate) struct ChangeRecorder {
     ring: Option<Ring>,
     /// A lock is asked for or shown: the ring is paused.
     pub(super) locked: bool,
     program: Arc<Program>,
-    /// Surface roots recorded, by node: their name's index.
-    roots: HashMap<NodeId, String>,
+    /// Surface roots recorded, by node: their origin and kind.
+    roots: HashMap<NodeId, (String, NodeKind)>,
     next_call: u32,
     /// The config's declared services (`service mood from file …`): their
     /// fields' names in declaration order, by service. Such a service is
@@ -662,6 +762,22 @@ pub(crate) struct ChangeRecorder {
     /// The last value recorded of each declared field (`mood.level`), as
     /// JSON: the old half of its next `FIELD` record.
     declared_last: HashMap<String, String>,
+    /// (report review) The nodes the newest presses hit, as they were
+    /// when pressed: `nodes.json` names one a press removed (a menu row
+    /// that closes its menu) from here. At most [`HITS_KEPT`].
+    hits: std::collections::VecDeque<(NodeId, HitIdentity)>,
+}
+
+/// (report review) How many pressed nodes' identities are kept.
+pub(crate) const HITS_KEPT: usize = 256;
+
+/// (report review) A pressed node as `nodes.json` names it: its source
+/// place, and its instance identity.
+#[derive(Clone, Debug)]
+pub(crate) struct HitIdentity {
+    pub file: strand_compiler::source::FileId,
+    pub span: strand_compiler::syntax::Span,
+    pub ident: Option<strand_compiler::instantiate::inspect::Identity>,
 }
 
 /// The fields' names of each service `program` declares.
@@ -739,7 +855,30 @@ impl ChangeRecorder {
             program,
             roots: HashMap::new(),
             next_call: 0,
+            hits: std::collections::VecDeque::new(),
         }
+    }
+
+    /// (report review) A press hit `node`, now `who`: kept while
+    /// recording, the oldest let go past [`HITS_KEPT`].
+    pub(crate) fn hit(&mut self, node: NodeId, who: HitIdentity) {
+        if self.ring.is_none() || self.locked {
+            return;
+        }
+        self.hits.retain(|(n, _)| *n != node);
+        if self.hits.len() == HITS_KEPT {
+            self.hits.pop_front();
+        }
+        self.hits.push_back((node, who));
+    }
+
+    /// (report review) The identity `node` had when last pressed.
+    pub(crate) fn hit_identity(&self, node: NodeId) -> Option<&HitIdentity> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|(n, _)| *n == node)
+            .map(|(_, w)| w)
     }
 
     /// The program changed (a reload): its literals and types are the
@@ -766,6 +905,19 @@ impl ChangeRecorder {
         }
         self.ring = ring_if(on, flight::CHANGES, flight::ring::CHANGES);
         self.declared_last.clear();
+        self.hits.clear();
+        // (report review) Started anew: the recorder off ends here, and
+        // the surface roots shown now, which the new ring has no record
+        // of, are written again.
+        if let Some(r) = &mut self.ring {
+            r.push(Rec::new(t, kind::CHANGE_GAP_ENDS, 0).u8_at(0, gap::OFF));
+            let mut roots: Vec<(&NodeId, &(String, NodeKind))> = self.roots.iter().collect();
+            roots.sort_by_key(|(n, _)| node_bits(**n));
+            for (node, (origin, k)) in roots {
+                let slot = r.name(origin);
+                r.push(root_rec(t, slot, *node, *k));
+            }
+        }
         if self.locked
             && let Some(r) = &mut self.ring
         {
@@ -910,6 +1062,28 @@ impl ChangeRecorder {
             let _ = w.write_char(',');
             let _ = strand_compiler::vm::json::to_json(&program.types, new, w, &mut k);
             let _ = w.write_char(']');
+            held
+        });
+    }
+
+    /// (report review) A cell written by `strand set`, `toggle` or
+    /// `reset` (`verb`, [`flight::request`]): what a replay repeats at
+    /// its time. `new` is the cell's value after it, held back as a
+    /// cell's is.
+    pub(crate) fn request(&mut self, t: u64, verb: u8, path: &str, new: &Value) {
+        let program = self.program.clone();
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        let overlay = path.starts_with('$');
+        push_value(r, t, kind::REQUEST, path, &[verb], 0, |w| {
+            let mut held = false;
+            let mut k = |s: &str| {
+                let kept = overlay || program.is_text_literal(s);
+                held |= !kept;
+                kept
+            };
+            let _ = strand_compiler::vm::json::to_json(&program.types, new, w, &mut k);
             held
         });
     }
@@ -1060,7 +1234,7 @@ impl ChangeRecorder {
         if kind == NodeKind::Lock {
             return;
         }
-        self.roots.insert(node, origin.to_string());
+        self.roots.insert(node, (origin.to_string(), kind));
         let Some(r) = &mut self.ring else {
             return;
         };
@@ -1068,16 +1242,12 @@ impl ChangeRecorder {
             return;
         }
         let slot = r.name(origin);
-        r.push(
-            Rec::new(t, kind::ROOT, slot)
-                .u64_at(0, node_bits(node))
-                .u8_at(8, kind_byte(kind)),
-        );
+        r.push(root_rec(t, slot, node, kind));
     }
 
     /// `node` was removed: a root gone if it was one.
     pub(crate) fn removed(&mut self, t: u64, node: NodeId) {
-        let Some(origin) = self.roots.remove(&node) else {
+        let Some((origin, _)) = self.roots.remove(&node) else {
             return;
         };
         let Some(r) = &mut self.ring else {
@@ -1332,6 +1502,49 @@ fn taps(
 }
 
 impl super::shell::Shell {
+    /// (report review) A press hit `node` (main's `ToLogic::Hit`, sent
+    /// before the press's events): its identity is kept for
+    /// `nodes.json`, in case the press removes it.
+    pub(super) fn record_hit(&self, node: NodeId) {
+        let Ok(mut r) = self.recorder.try_borrow_mut() else {
+            return;
+        };
+        if !r.on() {
+            return;
+        }
+        if let Some((file, _, span)) = self.inst.origin(node) {
+            let ident = self.inst.identity(node);
+            r.hit(node, HitIdentity { file, span, ident });
+        }
+    }
+
+    /// (report review) `path` was written by a request (`verb`): its
+    /// value now is recorded for the replay. A service's field is not:
+    /// its patch is recorded as the service's.
+    /// A token overlay's (`$accent`) is the text it was set to, `token`.
+    pub(super) fn record_request(&self, verb: u8, path: &str, token: Option<&str>) {
+        let value = match token {
+            Some(text) => Value::text(text),
+            // A reset names a cell as the inspector does
+            // (`TopBar[DP-1].expanded`), not always an export.
+            None => match self.inst.get(path) {
+                Ok(v) => v,
+                Err(_) => match self
+                    .inst
+                    .cells_snapshot()
+                    .into_iter()
+                    .find(|(p, _)| p == path)
+                {
+                    Some((_, v)) => v,
+                    None => return,
+                },
+            },
+        };
+        if let Ok(mut r) = self.recorder.try_borrow_mut() {
+            r.request(flight::now_ns(), verb, path, &value);
+        }
+    }
+
     /// (report) A surface root a diff creates is recorded with its
     /// origin, one it removes as gone; a `lock` root created, or a
     /// surface opened or closed, checks whether a lock is now asked for
@@ -1742,6 +1955,39 @@ mod tests {
         assert_eq!(ring.name_at(e[3].rec.u16(0)), Some("Return"));
     }
 
+    /// (report review) A named key whose release never came (keyboard
+    /// focus left while it was down, and Wayland sends no release after
+    /// `leave`) does not make a later typed press of its letter recorded
+    /// by its release: after ctrl+a, a leave and an enter, a plain `a`
+    /// typed into the same surface is counted and nothing names it.
+    #[test]
+    fn a_key_left_down_does_not_name_a_later_typed_letter() {
+        let m = Modifiers::default();
+        let ctrl = Modifiers { ctrl: true, ..m };
+        for leave in [true, false] {
+            let mut r = mapped();
+            r.input(1, &key("a", "a", true, ctrl), None, None);
+            if leave {
+                r.input(2, &InputEvent::KeyboardLeave { surface: S }, None, None);
+                r.input(3, &InputEvent::KeyboardEnter { surface: S }, None, None);
+            }
+            r.input(4, &key("a", "a", true, m), Some(InputKind::Text), None);
+            r.input(5, &key("a", "", false, m), Some(InputKind::Text), None);
+            let e = entries(r.ring().unwrap());
+            let after: Vec<&Entry> = e.iter().filter(|e| e.rec.t >= 2).collect();
+            assert!(
+                after.iter().all(|e| e.rec.kind != kind::KEY),
+                "leave {leave}: {after:?}"
+            );
+            assert!(
+                after
+                    .iter()
+                    .any(|e| e.rec.kind == kind::TEXT && e.rec.u32(0) == 1),
+                "leave {leave}: the letter is counted: {after:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_password_span_has_no_count() {
         let mut r = mapped();
@@ -1875,14 +2121,35 @@ mod tests {
             kinds(r.ring().unwrap()),
             [kind::MAPPED, kind::GAP_BEGINS, kind::GAP_ENDS]
         );
-        r.set_on(false, 4);
+        r.output(4, "out-1", Some("DP-1"), (1920, 1080), 120, (0, 0));
+        r.refresh(4, S, Some(Duration::from_nanos(6_944_444)));
+        r.set_on(false, 5);
         assert!(r.ring().is_none() && r.dump().is_none());
-        r.set_on(true, 5);
-        assert!(r.ring().unwrap().is_empty(), "on again: empty");
-        r.input(6, &InputEvent::ClickAway { surface: S }, None, None);
+        r.set_on(true, 6);
+        // (report review) On again: the recorder off ends there, and the
+        // output, the mapped surface and its refresh period are written
+        // again, so a replay's window starts after it with its surfaces.
+        let e = entries(r.ring().unwrap());
         assert_eq!(
-            kinds(r.ring().unwrap()),
-            [kind::CLICK_AWAY],
+            e.iter().map(|e| e.rec.kind).collect::<Vec<_>>(),
+            [kind::GAP_ENDS, kind::OUTPUT, kind::MAPPED, kind::REFRESH],
+            "on again: {e:?}"
+        );
+        assert_eq!(e[0].rec.u8(0), gap::OFF);
+        assert_eq!(
+            (
+                e[1].rec.u16(2),
+                e[1].rec.u16(4),
+                e[2].rec.u64(0),
+                e[2].rec.u8(8)
+            ),
+            (1920, 1080, node_bits(NodeId::new(3, 1)), 0)
+        );
+        assert_eq!(e[3].rec.u32(0), 6_944_444);
+        r.input(7, &InputEvent::ClickAway { surface: S }, None, None);
+        assert_eq!(
+            kinds(r.ring().unwrap()).last(),
+            Some(&kind::CLICK_AWAY),
             "slots are kept"
         );
     }
@@ -1898,6 +2165,26 @@ mod tests {
     fn value_of(e: &Entry) -> serde_json::Value {
         let v = e.value.as_ref().unwrap();
         serde_json::from_slice(v).unwrap()
+    }
+
+    /// (report review) The changes ring turned on again starts with the
+    /// recorder off's end and the surface roots shown, written again.
+    #[test]
+    fn the_changes_ring_on_again_writes_its_roots_again() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        c.root(1, NodeId::new(4, 1), NodeKind::Panel, "shell.strand:3:1");
+        c.set_on(false, 2);
+        assert!(c.ring().is_none());
+        c.set_on(true, 3);
+        let ring = c.ring().unwrap();
+        let e = entries(ring);
+        assert_eq!(
+            e.iter().map(|e| e.rec.kind).collect::<Vec<_>>(),
+            [kind::CHANGE_GAP_ENDS, kind::ROOT]
+        );
+        assert_eq!(e[0].rec.u8(0), gap::OFF);
+        assert_eq!(e[1].rec.u64(0), node_bits(NodeId::new(4, 1)));
+        assert_eq!(ring.name_at(e[1].rec.slot), Some("shell.strand:3:1"));
     }
 
     #[test]
@@ -2073,6 +2360,61 @@ mod tests {
         assert_eq!(
             c.cell_json("$accent", &Value::text("#ff0000")),
             r##""#ff0000""##
+        );
+    }
+
+    /// (report review) `strand set`, `toggle` and `reset`: the verb and
+    /// the value after, held back as a cell's text is; a token overlay's
+    /// text kept.
+    #[test]
+    fn a_request_records_its_verb_and_the_value_after() {
+        let mut c = ChangeRecorder::new(true, program("state q = \"\"\nstate on = false"));
+        c.request(1, flight::request::TOGGLE, "shell.on", &Value::Bool(true));
+        c.request(
+            2,
+            flight::request::SET,
+            "shell.q",
+            &Value::text("hunter2-Z9q"),
+        );
+        c.request(3, flight::request::SET, "$accent", &Value::text("#ff8800"));
+        let e = entries(c.ring().unwrap());
+        assert!(e.iter().all(|e| e.rec.kind == kind::REQUEST));
+        assert_eq!(e[0].rec.u8(0), flight::request::TOGGLE);
+        assert_eq!(e[0].name.as_deref(), Some("shell.on"));
+        assert_eq!(value_of(&e[0]), serde_json::json!(true));
+        assert_eq!(e[1].rec.u8(0), flight::request::SET);
+        assert_eq!(value_of(&e[1]), serde_json::json!({"~text": 11}));
+        assert_ne!(e[1].rec.flags & flags::REDACTED, 0);
+        assert_eq!(value_of(&e[2]), serde_json::json!("#ff8800"));
+        assert!(!contains(&c.dump().unwrap(), b"hunter2"));
+    }
+
+    /// (report review) The identity a press found is kept while
+    /// recording, the newest [`HITS_KEPT`], and dropped with the ring.
+    #[test]
+    fn pressed_identities_are_kept_while_recording() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        let who = || HitIdentity {
+            file: strand_compiler::source::FileId::default(),
+            span: strand_compiler::syntax::Span::default(),
+            ident: None,
+        };
+        for i in 0..=HITS_KEPT as u32 {
+            c.hit(NodeId::new(i, 1), who());
+        }
+        assert!(
+            c.hit_identity(NodeId::new(0, 1)).is_none(),
+            "the oldest went"
+        );
+        assert!(c.hit_identity(NodeId::new(HITS_KEPT as u32, 1)).is_some());
+        c.set_on(false, 5);
+        c.set_on(true, 6);
+        assert!(c.hit_identity(NodeId::new(HITS_KEPT as u32, 1)).is_none());
+        c.lock(7, true);
+        c.hit(NodeId::new(1, 1), who());
+        assert!(
+            c.hit_identity(NodeId::new(1, 1)).is_none(),
+            "nothing while locked"
         );
     }
 

@@ -3,6 +3,8 @@
 
 use serde_json::json;
 
+use strand_core::flight;
+
 use super::{Caller, Shell};
 
 impl Shell {
@@ -13,6 +15,7 @@ impl Shell {
     pub(super) fn reset_request(&mut self, from: Caller, path: &str) {
         let ans = match self.inst.reset(path) {
             Ok(()) => {
+                self.record_request(flight::request::RESET, path, None);
                 self.overlay.forget_cell(path, &self.inst);
                 self.forget_unheard(path);
                 json!({"ok": true})

@@ -23,7 +23,7 @@ pub const MAP_FRAMES: u64 = 2;
 pub struct Divergence {
     /// Since the window's start, ns.
     pub t: u64,
-    /// `press`, `surface`, `cell` or `frame`.
+    /// `press`, `step`, `surface`, `cell` or `frame`.
     pub what: &'static str,
     pub text: String,
 }
@@ -72,6 +72,9 @@ pub struct Fidelity {
     pub mock_answered: BTreeMap<String, usize>,
     pub presses: (usize, usize),
     pub writes: (usize, usize),
+    /// (report review) What the comparison could not tell: a live press
+    /// whose hit the bundle cannot name.
+    pub notes: Vec<String>,
 }
 
 /// Whether two origins name the same place (one may be under a folder
@@ -160,15 +163,13 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
             break;
         };
         if let Some(u) = &live.unknown {
-            f.divergences.push(Divergence {
-                t: live.t,
-                what: "press",
-                text: format!(
-                    "press {}: the live hit {u} is not in nodes.json; the replay hit {}",
-                    i + 1,
-                    show(&r.hit)
-                ),
-            });
+            // (report review) A hit the bundle cannot name is no evidence
+            // either way: it is noted, not a divergence.
+            f.notes.push(format!(
+                "press {}: the live hit {u} is not in nodes.json, so it is not compared; the replay hit {}",
+                i + 1,
+                show(&r.hit)
+            ));
             continue;
         }
         if !same_node(&live.hit, &r.hit) {
@@ -194,6 +195,15 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
                 replay.len(),
                 plan.presses.len()
             ),
+        });
+    }
+
+    // (report review) Steps the sandbox could not take.
+    for sk in &run.log.skipped {
+        f.divergences.push(Divergence {
+            t: since_start(sk.t),
+            what: "step",
+            text: format!("the replay could not take line {}: {}", sk.line, sk.msg),
         });
     }
 
@@ -459,7 +469,7 @@ impl Fidelity {
                 "why": d.why,
             })).collect::<Vec<_>>(),
             "limits": limits,
-            "notes": plan.notes,
+            "notes": plan.notes.iter().chain(&self.notes).collect::<Vec<_>>(),
         })
     }
 }

@@ -294,6 +294,9 @@ pub enum ToLogic {
     /// (M5) Pick mode, from main (S-inspect): a click picked a node, or
     /// pick mode ended without logic asking.
     Picked(PickEvent),
+    /// (report review) A press, recorded, hit `node` (sent before the
+    /// press's events): logic keeps its identity for a report.
+    Hit(NodeId),
     /// The run is over (a signal, the compositor gone): unmount, flush
     /// what is kept and end.
     Shutdown,

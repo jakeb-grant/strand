@@ -169,15 +169,8 @@ impl Shell {
             files.push(p.clone());
             files.extend(self.inst.settings_overlay_paths(p));
         }
-        files.extend(main.images.iter().cloned());
-        let in_config = |p: &Path| {
-            config_dir.as_deref().is_some_and(|d| {
-                p.starts_with(d)
-                    && (p.extension().is_some_and(|e| e == "strand")
-                        || p.starts_with(d.join("icons")))
-            })
-        };
-        files.retain(|p| !in_config(p));
+        // The renderer's drawn files are resolved on the report thread
+        // (`bundle::write`), after these.
         let nodes = self.node_table(&main, config_dir.as_deref());
         let now_ns = strand_core::flight::now_ns();
         let wall = chrono::Local::now().to_rfc3339();
@@ -245,20 +238,30 @@ impl Shell {
                 .unwrap_or_default()
         };
         let mut out = Map::new();
+        let rec = self.recorder.borrow();
         for id in ids {
             let r = node_ref(id);
             if out.contains_key(&r) {
                 continue;
             }
-            let Some(origin) = self.inst.origin(id).and_then(|(f, _, sp)| {
+            // Mounted now, else (report review) as a press found it
+            // before the press removed it.
+            let (place, ident) = match self.inst.origin(id) {
+                Some((f, _, sp)) => ((f, sp), self.inst.identity(id)),
+                None => match rec.hit_identity(id) {
+                    Some(h) => ((h.file, h.span), h.ident.clone()),
+                    None => continue,
+                },
+            };
+            let Some(origin) = (|| {
+                let (f, sp) = place;
                 let file = self.build.sources.get(f)?;
                 let (l, c) = crate::overlay::line_col(&file.text, sp.start);
                 let rel = relative(&file.name, config_dir);
                 Some(format!("{}:{l}:{c}", rel.display()))
-            }) else {
+            })() else {
                 continue;
             };
-            let ident = self.inst.identity(id);
             let id_name = ident.as_ref().and_then(|i| i.id.clone());
             let key = ident.as_ref().and_then(|i| row_key(i, &screens));
             out.insert(r, json!({"origin": origin, "id": id_name, "key": key}));

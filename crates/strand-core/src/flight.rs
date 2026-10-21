@@ -88,6 +88,11 @@ pub mod kind {
     pub const RELOAD: u8 = 0x47;
     pub const ROOT: u8 = 0x48;
     pub const ROOT_GONE: u8 = 0x49;
+    /// (report review) A cell written from outside the shell's own input:
+    /// `strand set`, `toggle` or `reset` (a compositor keybinding's,
+    /// typically). Name: the path as asked; payload byte 0 the verb
+    /// ([`super::request`]); arena: the cell's value after it.
+    pub const REQUEST: u8 = 0x4A;
     pub const CHANGE_GAP_BEGINS: u8 = 0x4E;
     pub const CHANGE_GAP_ENDS: u8 = 0x4F;
 
@@ -95,8 +100,19 @@ pub mod kind {
     /// 6..12 ([`super::Rec::value_ref`]). A key or an action record has
     /// one only to hold a name the table could not.
     pub fn has_value(k: u8) -> bool {
-        matches!(k, FIELD | KEYED | EVENT | CELL | FETCH | WRITE | RELOAD)
+        matches!(
+            k,
+            FIELD | KEYED | EVENT | CELL | FETCH | WRITE | RELOAD | REQUEST
+        )
     }
+}
+
+/// (report review) The verb of a [`kind::REQUEST`] record (payload
+/// byte 0).
+pub mod request {
+    pub const SET: u8 = 0;
+    pub const TOGGLE: u8 = 1;
+    pub const RESET: u8 = 2;
 }
 
 /// Why a gap began (payload byte 0 of a gap record).
@@ -115,8 +131,6 @@ pub mod modifiers {
     pub const CTRL: u16 = 2;
     pub const ALT: u16 = 4;
     pub const SUPER: u16 = 8;
-    pub const CAPS: u16 = 16;
-    pub const NUM: u16 = 32;
 }
 
 static EPOCH: OnceLock<(Instant, i64)> = OnceLock::new();

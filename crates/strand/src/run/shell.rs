@@ -317,6 +317,7 @@ impl Shell {
             ToLogic::Snapshot(snap) => self.snapshot_answered(snap),
             // (M5, S-inspect) A pick, or pick mode ended on main's side.
             ToLogic::Picked(event) => self.picked(event),
+            ToLogic::Hit(node) => self.record_hit(node),
             ToLogic::Shutdown => {}
         }
     }

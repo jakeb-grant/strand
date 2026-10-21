@@ -634,6 +634,8 @@ impl Ctx {
             true => format!("{scope_key}#.{}", info.name).into(),
             false => format!("{scope_key}#{owner_key}.{}", info.name).into(),
         };
+        // (report review) A lock's cells are in no glitch report.
+        let secret = self.in_lock_scope(&scope_key);
         // A closed popup's content opening again: its cell, as it was.
         if self.closed.borrow_mut().remove(&key) && self.reopen_cell(rt, s, &key, env, &path) {
             return;
@@ -784,6 +786,9 @@ impl Ctx {
                 (k, list)
             });
             env.bind_def(s.def, Slot::Keyed(k, list));
+            if secret {
+                self.secret_cells.borrow_mut().insert(k.id());
+            }
             self.note_cell(
                 rt,
                 key,
@@ -861,6 +866,9 @@ impl Ctx {
                     let _ = sig.set_reloaded(rt, v.clone());
                 }
                 env.bind_def(s.def, Slot::Signal(sig));
+                if secret {
+                    self.secret_cells.borrow_mut().insert(sig.id());
+                }
                 self.note_cell(
                     rt,
                     key,
@@ -946,6 +954,9 @@ impl Ctx {
         });
         rt.set_name(sig.id(), path.as_str());
         env.bind_def(s.def, Slot::Signal(sig));
+        if secret {
+            self.secret_cells.borrow_mut().insert(sig.id());
+        }
         self.note_cell(
             rt,
             key,
@@ -1274,6 +1285,10 @@ impl Ctx {
                     .set((all.len() * 2).max(super::SETTINGS_PRUNE_MIN));
             }
             all.push(Rc::downgrade(&slot));
+        }
+        if self.in_lock_scope(&env.ident()) {
+            let mut secret = self.secret_cells.borrow_mut();
+            secret.extend(slot.fields.iter().map(|(_, f)| f.id()));
         }
         self.note_cell(
             rt,
@@ -3632,6 +3647,7 @@ impl Ctx {
                 self.sid(s.element.file, s.element.span)
             ));
             self.note_surface(env.ident(), false);
+            self.note_lock_scope(s.kind, env.ident());
             self.mount_block(rt, parent, None, |ctx, rt, frag| {
                 env.set_owner(rt.current_owner());
                 ctx.note_env(&env);
@@ -3650,6 +3666,7 @@ impl Ctx {
         let tag = format!("s{}", self.sid(s.element.file, s.element.span));
         let ident: Rc<str> = format!("{}/{tag}", env.ident()).into();
         self.note_surface(ident.clone(), true);
+        self.note_lock_scope(s.kind, ident.clone());
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;

@@ -630,6 +630,21 @@ fn a_typed_secret_is_in_no_file_of_the_bundle() {
         serde_json::json!({"~text": TYPED.len() + PASTED.len()}),
         "{c}"
     );
+    // (report review) A password's cell is in no file, not even as a
+    // length: neither in cells.json nor in the changes ring.
+    assert!(c.get("report.pw").is_none(), "{c}");
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    for e in changes.entries() {
+        assert_ne!(e.name.as_deref(), Some("report.pw"), "{e:?}");
+    }
+    // The panel it is typed into was opened by `strand set`: a request.
+    assert!(
+        changes
+            .entries()
+            .iter()
+            .any(|e| e.rec.kind == kind::REQUEST && e.name.as_deref() == Some("report.pw_mode")),
+        "no request record"
+    );
 }
 
 /// `system.replay` off drops the recording (a bundle then has none) and
@@ -803,6 +818,15 @@ fn a_scripted_session_is_kept_for_its_replay() {
     desk.wait("the service updated", |d| {
         d.get("report.level").as_deref() == Some("7")
     });
+    // (report review) As a compositor keybinding would: `strand toggle`
+    // opens the password panel, which is then typed into. A replay
+    // repeats the toggle, so the typing has its panel.
+    desk.ok(&["toggle", "report.pw_mode"]);
+    std::thread::sleep(Duration::from_millis(500));
+    desk.keys.type_text(TYPED);
+    desk.wait("typed the password", |d| {
+        d.get("report.pw").as_deref() == Some(TYPED)
+    });
     std::thread::sleep(Duration::from_millis(1500));
     let ans = desk.report("the session to replay");
     let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
@@ -818,6 +842,13 @@ fn a_scripted_session_is_kept_for_its_replay() {
     }
     let nodes = read_json(&dir.join("nodes.json"));
     assert!(!nodes.as_object().unwrap().is_empty());
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    assert!(
+        changes.entries().iter().any(|e| e.rec.kind == kind::REQUEST
+            && e.name.as_deref() == Some("report.pw_mode")
+            && e.rec.u8(0) == flight::request::TOGGLE),
+        "no toggle request"
+    );
     if let Some(k) = keep {
         std::fs::create_dir_all(&k).unwrap();
         std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();

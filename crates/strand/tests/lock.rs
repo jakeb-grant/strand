@@ -2542,6 +2542,29 @@ fn nothing_is_recorded_while_locked() {
     let b: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json")).unwrap()).unwrap();
     assert_eq!(b["surfaces"], serde_json::json!([]), "no lock surface: {b}");
+    // (report review) Nothing of the lock itself: its cell (the field's
+    // `secret`) is in neither cells.json nor the changes ring, not even
+    // as a length.
+    let cells: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("cells.json")).unwrap()).unwrap();
+    assert!(
+        !cells
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|k| k.ends_with(".secret")),
+        "a lock cell in cells.json: {cells}"
+    );
+    assert!(
+        cells.as_object().unwrap().contains_key("lock.locked"),
+        "the config's own cells are kept: {cells}"
+    );
+    for e in changes.entries() {
+        assert!(
+            !e.name.as_deref().is_some_and(|n| n.ends_with(".secret")),
+            "a lock cell recorded: {e:?}"
+        );
+    }
     let mut all = Vec::new();
     files_under(&dir, &mut all);
     for f in &all {

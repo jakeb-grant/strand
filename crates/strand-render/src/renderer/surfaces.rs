@@ -171,20 +171,20 @@ impl Renderer {
     /// images and icons its surfaces' last frames drew (an icon as the
     /// theme's file a lookup finds now), and each `svg` and `lottie`
     /// node's file. A glitch report copies them
-    /// (docs/architecture.md, "Glitch reports"). Sorted, each once.
-    pub fn image_sources(&self) -> Vec<std::path::PathBuf> {
+    /// (docs/architecture.md, "Glitch reports"). (report review) Taken
+    /// cheaply here; [`crate::image::DrawnSources::files`] resolves them,
+    /// sorted and each once, on the thread that writes the report.
+    pub fn image_sources(&self) -> crate::image::DrawnSources {
         use crate::media::Source;
-        let mut out = self.extras.images.drawn_files();
+        let mut out = self.extras.images.drawn();
         for src in self.extras.media.sources.values() {
             let file = match src {
                 Source::Svg(s) => s.local_file(),
                 Source::Lottie(l) => l.local_file(),
                 _ => None,
             };
-            out.extend(file);
+            out.files.extend(file);
         }
-        out.sort();
-        out.dedup();
         out
     }
 

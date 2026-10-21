@@ -166,11 +166,22 @@ pub struct WriteLog {
     pub value: String,
 }
 
+/// (report review) A replay's step the sandbox could not take: its
+/// line, when, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkippedStep {
+    pub line: u32,
+    pub t: Duration,
+    pub msg: String,
+}
+
 /// (report) What a run kept for a replay's comparison.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReplayLog {
     pub presses: Vec<PressLog>,
     pub writes: Vec<WriteLog>,
+    /// (report review) Steps skipped (`RunOptions::log` only).
+    pub skipped: Vec<SkippedStep>,
     /// Each fetch: its tick, method, and whether a queued `answer` gave
     /// it (else the mock's own did).
     pub fetches: Vec<(u32, String, bool)>,
@@ -202,7 +213,17 @@ pub struct RunOutput {
 pub fn run(sc: &Scenario, opts: &RunOptions) -> Result<RunOutput, Error> {
     let mut h = Harness::boot(Rc::new(sc.clone()), opts)?;
     for step in &sc.steps {
-        h.step(step)?;
+        match h.step(step) {
+            // (report review) A replay's step the sandbox cannot take (a
+            // surface it never shows, a node it never mounted: the live
+            // shell parted from it before) is skipped and kept for the
+            // comparison, so a replay always ends with its findings.
+            Err(Error::Scenario { line, msg, .. }) if opts.log => {
+                let t = h.clock.now();
+                h.log.skipped.push(SkippedStep { line, t, msg });
+            }
+            r => r?,
+        }
     }
     h.finish()
 }

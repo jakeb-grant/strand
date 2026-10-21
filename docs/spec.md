@@ -1601,7 +1601,7 @@ people can edit by hand.
     and its frame times (p50/p95/p99 over the frames drawn among its
     last 600 paints, with the drawn and unchanged counts). It carries no
     serials or ids. The `report` request is served over the socket
-    only, not D-Bus. (Planned, decisions.md report.) `strand report
+    only, not D-Bus. (Built, decisions.md report.) `strand report
     words… [--json]`, given words describing a glitch, saves a glitch
     report instead: a directory under `reports` in the state directory
     (the newest 20 are kept) holding those diagnostics, the words, the

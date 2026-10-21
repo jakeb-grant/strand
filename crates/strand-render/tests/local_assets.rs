@@ -230,11 +230,11 @@ fn with_a_worker_the_old_pixels_stay_until_the_new_are_in() {
 fn image_sources_name_the_files_drawn() {
     let f = files("sources");
     let mut r = renderer();
-    assert!(r.image_sources().is_empty());
+    assert!(r.image_sources().files().is_empty());
     let mut buf = scene(&mut r, &f);
     let mut want = vec![f.image.clone(), f.svg.clone(), f.lottie.clone()];
     want.sort();
-    assert_eq!(r.image_sources(), want);
+    assert_eq!(r.image_sources().files(), want);
     buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
-    assert_eq!(r.image_sources(), want, "each once");
+    assert_eq!(r.image_sources().files(), want, "each once");
 }

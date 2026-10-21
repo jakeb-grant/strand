@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
-use strand_core::flight::{Entry, flags, gap, kind, modifiers};
+use strand_core::flight::{Entry, flags, gap, kind, modifiers, request};
 
 use super::bundle::{Bundle, node_ref_at};
 use crate::harness::NodeRef;
@@ -18,6 +18,10 @@ pub const TRACED_S: f64 = 20.0;
 
 /// How long before the report the busiest output is counted over.
 pub const BUSY_NS: u64 = 10_000_000_000;
+/// (report review) The longest window replayed, before the report: the
+/// input ring's motion covers about as much (design.md "Reporting a
+/// glitch": the last minute or so).
+pub const WINDOW_CAP_NS: u64 = 120_000_000_000;
 
 /// Services the sandbox keeps itself: its one screen, the clock and the
 /// calendar it computes from `wall`, and `auth`, which is never recorded.
@@ -85,11 +89,27 @@ struct Timed {
     text: String,
     /// Ticks it runs (a time step), 0 for an instant one.
     ticks: u64,
+    /// (report review) The first tick it may run at: a step on a
+    /// surface comes after the tick the sandbox shows it, which is the
+    /// tick after the step that opened it (the live shell's surface
+    /// maps a roundtrip after the change, often within the same tick).
+    not_before: u64,
 }
 
 /// A step at `t` (since the window's start), running `ticks`.
 fn push(timed: &mut Vec<Timed>, t: u64, text: String, ticks: u64) {
-    timed.push(Timed { t, text, ticks });
+    push_on(timed, t, text, ticks, 0);
+}
+
+/// [`push`] for a step on a surface the sandbox shows from tick
+/// `not_before` on.
+fn push_on(timed: &mut Vec<Timed>, t: u64, text: String, ticks: u64, not_before: u64) {
+    timed.push(Timed {
+        t,
+        text,
+        ticks,
+        not_before,
+    });
 }
 
 /// A bundle's replay, planned.
@@ -150,7 +170,7 @@ fn quoted(text: &str) -> String {
         match c {
             '"' => s.push_str("\\\""),
             '\\' => s.push_str("\\\\"),
-            '\n' => s.push(' '),
+            '\n' => s.push_str("\\n"),
             c => s.push(c),
         }
     }
@@ -165,6 +185,19 @@ fn set_value(v: &Json) -> String {
         Json::String(s) => quoted(s),
         Json::Object(_) | Json::Array(_) => compact(v),
         o => compact(o),
+    }
+}
+
+/// (report review) `v` with each held-back text (`{"~text": N}`) as N
+/// `x`s.
+fn unheld(v: &Json) -> Json {
+    match v {
+        Json::Object(o) if o.len() == 1 && o.get("~text").is_some_and(Json::is_u64) => {
+            Json::String("x".repeat(o["~text"].as_u64().unwrap_or(0) as usize))
+        }
+        Json::Object(o) => Json::Object(o.iter().map(|(k, v)| (k.clone(), unheld(v))).collect()),
+        Json::Array(a) => Json::Array(a.iter().map(unheld).collect()),
+        o => o.clone(),
     }
 }
 
@@ -477,6 +510,18 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     {
         start = first.rec.t.min(end);
     }
+    // (report review) Never longer than WINDOW_CAP_NS: a quiet shell's
+    // rings may not wrap for hours, and every frame before the traced
+    // part is still painted. Rewinding reaches any start inside the
+    // rings.
+    let capped = end.saturating_sub(start) > WINDOW_CAP_NS;
+    if capped {
+        start = end - WINDOW_CAP_NS;
+        start_why = format!(
+            "the replay's cap, {} s before the report",
+            WINDOW_CAP_NS / 1_000_000_000
+        );
+    }
     let in_window = |t: u64| t >= start && t <= end;
     let rel = |t: u64| t.saturating_sub(start);
 
@@ -683,11 +728,15 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut password_spans = 0usize;
     let mut pastes = 0usize;
     let mut click_aways = 0usize;
+    let mut sideways = 0usize;
     let mut drags = 0usize;
     let mut backend_both = b.surfaces.iter().any(|s| s.backend.starts_with("gpu"));
     let mut pointer: Option<(u16, f32, f32)> = None;
     let mut focus: Option<u16> = None;
     let mut last_press: Option<usize> = None;
+    // (report review) Each surface slot's first tick shown in the
+    // sandbox, after its live `MAPPED` in the window.
+    let mut shown_from: HashMap<u16, u64> = HashMap::new();
     let ticks_of = |ms: u64| (ms * u64::from(hz)).div_ceil(1000).max(1);
     let button_name = |b: u16| match b {
         0 => Some("left"),
@@ -703,6 +752,9 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     kind::MAPPED => Some(node_ref_at(e)),
                     _ => slots.surfaces.get(&e.rec.slot).map(|s| s.0.clone()),
                 };
+                if e.rec.kind == kind::MAPPED {
+                    shown_from.insert(e.rec.slot, (rel(t) + period / 2) / period + 1);
+                }
                 if on_output(e.rec.slot)
                     && let Some(o) = root.as_deref().and_then(origin_of_root)
                 {
@@ -727,7 +779,14 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 if let Some(sel) = sel_of(e.rec.slot).filter(|_| on_output(e.rec.slot)) {
                     let missed = u64::from(e.rec.u16(0));
                     let at = rel(t).saturating_sub(missed * period);
-                    push(&mut timed, at, format!("drop {missed} surface={sel}"), 0);
+                    let nb = shown_from.get(&e.rec.slot).copied().unwrap_or(0);
+                    push_on(
+                        &mut timed,
+                        at,
+                        format!("drop {missed} surface={sel}"),
+                        0,
+                        nb,
+                    );
                     events.push(Event {
                         t: rel(t),
                         text: format!("late frame on {sel}: {missed} missed"),
@@ -748,6 +807,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         };
         let at = rel(t);
         let r = &e.rec;
+        let nb = shown_from.get(&r.slot).copied().unwrap_or(0);
         let xy = |r: &strand_core::flight::Rec| (r.f32(0), r.f32(4));
         // The pointer moved to `x, y` on this surface, and keyboard
         // focus on it, each a step only when it changes.
@@ -755,7 +815,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             ($x:expr, $y:expr) => {{
                 let (x, y): (f32, f32) = ($x, $y);
                 if pointer != Some((r.slot, x, y)) {
-                    push(&mut timed, at, format!("pointer {x:.2},{y:.2} on {sel}"), 0);
+                    push_on(
+                        &mut timed,
+                        at,
+                        format!("pointer {x:.2},{y:.2} on {sel}"),
+                        0,
+                        nb,
+                    );
                     pointer = Some((r.slot, x, y));
                 }
             }};
@@ -763,7 +829,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         macro_rules! to_focus {
             () => {{
                 if focus != Some(r.slot) {
-                    push(&mut timed, at, format!("focus {sel}"), 0);
+                    push_on(&mut timed, at, format!("focus {sel}"), 0, nb);
                     focus = Some(r.slot);
                 }
             }};
@@ -829,9 +895,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 let source = r.u8(8);
                 let dy = r.f32(4);
                 let discrete = r.i16(10);
+                // (report review) The format scrolls vertically only.
+                if r.f32(0) != 0.0 {
+                    sideways += 1;
+                }
                 if pointer.map(|p| p.0) != Some(r.slot) {
                     // The pointer's place is the last recorded on it.
-                    push(&mut timed, at, format!("pointer 1,1 on {sel}"), 0);
+                    push_on(&mut timed, at, format!("pointer 1,1 on {sel}"), 0, nb);
                     pointer = Some((r.slot, 1.0, 1.0));
                 }
                 if source == 2 || source == 3 {
@@ -866,7 +936,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 });
             }
             kind::KEYBOARD_ENTER => {
-                push(&mut timed, at, format!("focus {sel}"), 0);
+                push_on(&mut timed, at, format!("focus {sel}"), 0, nb);
                 focus = Some(r.slot);
             }
             kind::KEYBOARD_LEAVE => {
@@ -1074,6 +1144,21 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     });
                 }
             }
+            kind::REQUEST => {
+                // (report review) `strand set`, `toggle` or `reset` from
+                // outside the shell (a keybinding): replayed at its time,
+                // a held-back text as `x`s as long as it was.
+                let step = match (e.rec.u8(0), &v) {
+                    (request::TOGGLE, _) => format!("toggle {name}"),
+                    (_, Some(j)) => format!("set {name} {}", set_value(&unheld(j))),
+                    (_, None) => continue,
+                };
+                push(&mut timed, at, step.clone(), 0);
+                events.push(Event {
+                    t: at,
+                    text: format!("request {step}"),
+                });
+            }
             kind::ACTION => events.push(Event {
                 t: at,
                 text: format!(
@@ -1141,6 +1226,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             "{unknown_surface} input records on surfaces whose root is not known are not replayed"
         ));
     }
+    if sideways > 0 {
+        limits.push(format!(
+            "{sideways} horizontal scrolls are not replayed (a scenario scrolls vertically only)"
+        ));
+    }
     if click_aways > 0 {
         limits.push(format!(
             "{click_aways} clicks outside the shell's surfaces are not replayed"
@@ -1154,7 +1244,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     for (p, bytes, why) in b.missing() {
         limits.push(format!("missing file {p} ({bytes} bytes: {why})"));
     }
-    if start_why != "the shell's start" {
+    if capped {
+        limits.push(format!(
+            "the window starts at {start_why}: what happened earlier is not replayed"
+        ));
+    } else if start_why != "the shell's start" {
         limits.push(format!("the window starts after {start_why}"));
     }
 
@@ -1190,7 +1284,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut steps = Vec::new();
     let mut tick = 0u64;
     for s in timed {
-        let want = (s.t + period / 2) / period;
+        let want = ((s.t + period / 2) / period).max(s.not_before);
         if want > tick {
             steps.push(format!("frames {}", want - tick));
             tick = want;
@@ -1375,6 +1469,12 @@ mod tests {
             "\"{\\\"a\\\":\\\"b c\\\"}\""
         );
         assert_eq!(toml_str("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
+        assert_eq!(
+            unheld(&json!({"a": {"~text": 3}, "b": [{"~text": 1}]})),
+            json!({"a": "xxx", "b": ["x"]})
+        );
+        // A newline is written as the step parser reads it back.
+        assert_eq!(set_value(&json!("a\nb")), "\"a\\nb\"");
         assert_eq!(
             scenario_id("2026-10-20T14-03-07 The Bar"),
             "report-2026-10-20t14-03-07-the-bar"

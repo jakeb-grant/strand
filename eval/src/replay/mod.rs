@@ -394,9 +394,9 @@ fn replay_txt(
     for l in limits {
         let _ = writeln!(s, "  - {l}");
     }
-    if !plan.notes.is_empty() {
+    if !(plan.notes.is_empty() && fid.notes.is_empty()) {
         let _ = writeln!(s, "notes:");
-        for n in &plan.notes {
+        for n in plan.notes.iter().chain(&fid.notes) {
             let _ = writeln!(s, "  - {n}");
         }
     }

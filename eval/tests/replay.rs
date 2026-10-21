@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde_json::{Value as Json, json};
-use strand_core::flight::{self, Rec, Ring, gap, kind};
+use strand_core::flight::{self, Rec, Ring, gap, kind, request};
 use strand_eval::harness::{self, RunOptions};
 use strand_eval::replay::{self, Bundle, Options};
 use strand_eval::scenario::Scenario;
@@ -653,6 +653,12 @@ fn every_limit_is_named() {
         .push(Rec::new(9 * S + 3 * MS, kind::PASTE, 1).u32_at(0, 11));
     f.input.push(Rec::new(9 * S + 4 * MS, kind::CLICK_AWAY, 1));
     f.input.push(Rec::new(9 * S + 5 * MS, kind::DRAG, 1));
+    // (report review) A tilt of the wheel: sideways, no vertical notch.
+    f.input.push(
+        Rec::new(9 * S + 6 * MS, kind::AXIS, 1)
+            .f32_at(0, 15.0)
+            .u8_at(8, 4),
+    );
     f.field(13 * S, "weather.temp", "[1,2]");
     f.output(1, "HDMI-A-1", 1920, 1080, 120, 200 * MS);
     f.missing
@@ -676,6 +682,7 @@ fn every_limit_is_named() {
     has("the window starts after the reload");
     has("clicks outside the shell's surfaces");
     has("drag records");
+    has("1 horizontal scrolls are not replayed");
     let st = steps(&text);
     for want in ["type 5 over 400", "type 8", "paste 11"] {
         assert!(st.contains(&want), "no `{want}` in\n{text}");
@@ -914,4 +921,148 @@ fn the_report_view_fixture_bundles_are_written() {
         f.write_to(&dir);
         Bundle::read(&dir).unwrap();
     }
+}
+
+/// (report review) A quiet shell's rings reach back to its start: the
+/// window is held to the last 120 s, and the limit says so.
+#[test]
+fn the_window_is_capped_before_the_report() {
+    let mut f = Fx::session();
+    // The report an hour after the bar mapped, with a click near it.
+    f.now = 3600 * S;
+    f.press(1, 40.0, 20.0, 3590 * S, Some(bits(7, 1)));
+    f.cell(3590 * S + 100 * MS, "shell.clicks", "[1,2]");
+    let (_, p, text) = plan_of(&f.write("cap"), &defaults());
+    assert_eq!(p.end - p.start, replay::plan::WINDOW_CAP_NS);
+    assert!(p.start_why.contains("cap"), "{}", p.start_why);
+    assert!(
+        p.limits
+            .iter()
+            .any(|l| l.contains("the replay's cap, 120 s before the report")),
+        "{:#?}",
+        p.limits
+    );
+    // The press inside the window is replayed, the hour before is not.
+    assert!(
+        steps(&text)
+            .iter()
+            .filter(|l| l.starts_with("press"))
+            .count()
+            == 1,
+        "{text}"
+    );
+}
+
+/// (report review) A cell written from outside the shell (`strand set`
+/// from a keybinding) is replayed at its time, and its write is then the
+/// live one.
+#[test]
+fn a_request_is_replayed_as_a_set() {
+    let mut f = Fx::session();
+    f.change(20 * S, kind::REQUEST, "shell.clicks", &[request::SET], "5");
+    f.cell(20 * S + 17 * MS, "shell.clicks", "[1,5]");
+    let dir = f.write("request");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    assert!(steps(&text).contains(&"set shell.clicks 5"), "{text}");
+    let (r, _) = replay_of(&dir, &defaults());
+    assert!(
+        r.fidelity.divergences.is_empty(),
+        "{:#?}\n{}",
+        r.fidelity.divergences,
+        r.text
+    );
+    assert_eq!(r.fidelity.writes, (2, 2));
+    // A held-back text is set as `x`s as long as it was.
+    let mut g = Fx::session();
+    g.change(
+        20 * S,
+        kind::REQUEST,
+        "shell.note",
+        &[request::SET],
+        "{\"~text\":3}",
+    );
+    let (_, _, text) = plan_of(&g.write("request-held"), &defaults());
+    assert!(steps(&text).contains(&"set shell.note \"xxx\""), "{text}");
+}
+
+/// (report review) A step the sandbox cannot take (input on a surface it
+/// never shows) is a divergence, and the replay still ends with its
+/// report.
+#[test]
+fn a_step_the_replay_cannot_take_is_a_divergence() {
+    let mut f = Fx::session();
+    // A panel the live shell showed (opened by something the bundle did
+    // not keep), at a place the replay's config has no node.
+    let panel = bits(40, 1);
+    f.node(panel, "shell.strand:99:1", None);
+    f.input.push(
+        Rec::new(20 * S, kind::MAPPED, 2)
+            .u64_at(0, panel)
+            .u8_at(8, 0)
+            .u8_at(9, 1),
+    );
+    f.pointer(2, kind::ENTER, 10.0, 10.0, 21 * S);
+    let (r, out) = replay_of(&f.write("cannot"), &defaults());
+    let step = r
+        .fidelity
+        .divergences
+        .iter()
+        .find(|d| d.what == "step")
+        .unwrap_or_else(|| panic!("no step divergence: {:#?}", r.fidelity.divergences));
+    assert!(step.text.contains("could not take line"), "{}", step.text);
+    assert!(out.join("replay.txt").is_file());
+    assert!(out.join("fidelity.json").is_file());
+}
+
+/// (report review) A press whose hit the bundle cannot name is no
+/// evidence either way: a note, not a divergence.
+#[test]
+fn an_unnamed_hit_is_a_note() {
+    let mut f = Fx::session();
+    f.nodes.remove("7.1");
+    let (r, _) = replay_of(&f.write("unnamed"), &defaults());
+    assert!(
+        !r.fidelity.divergences.iter().any(|d| d.what == "press"),
+        "{:#?}",
+        r.fidelity.divergences
+    );
+    assert!(
+        r.fidelity
+            .notes
+            .iter()
+            .any(|n| n.contains("is not in nodes.json, so it is not compared")),
+        "{:#?}",
+        r.fidelity.notes
+    );
+    assert!(r.text.contains("is not in nodes.json"), "{}", r.text);
+}
+
+/// (report review) A surface opened by a step (a request, here) maps in
+/// the live shell a roundtrip later, often within the same tick; the
+/// sandbox shows it the tick after. A step on it waits for that tick.
+#[test]
+fn a_step_on_a_surface_waits_for_the_tick_it_shows() {
+    let mut f = Fx::session();
+    let panel = bits(40, 1);
+    f.node(panel, "shell.strand:99:1", None);
+    f.change(20 * S, kind::REQUEST, "shell.clicks", &[request::SET], "5");
+    f.input.push(
+        Rec::new(20 * S + 2 * MS, kind::MAPPED, 2)
+            .u64_at(0, panel)
+            .u8_at(8, 0)
+            .u8_at(9, 1),
+    );
+    f.input
+        .push(Rec::new(20 * S + 3 * MS, kind::KEYBOARD_ENTER, 2));
+    let (_, _, text) = plan_of(&f.write("shows"), &defaults());
+    let st = steps(&text);
+    let set = st.iter().position(|l| *l == "set shell.clicks 5").unwrap();
+    let focus = st
+        .iter()
+        .position(|l| l.starts_with("focus @") && l.contains("99:1"))
+        .unwrap_or_else(|| panic!("no focus in\n{text}"));
+    assert!(
+        st[set..focus].iter().any(|l| l.starts_with("frames ")),
+        "the focus runs in the request's tick:\n{text}"
+    );
 }

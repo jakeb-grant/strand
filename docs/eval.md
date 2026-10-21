@@ -2180,6 +2180,14 @@ point, not a failure.
    none of them, from the shell's first surface mapped, where the
    sandbox's boot is. A reload or a lock inside the last minute
    therefore shortens the replay and is named in its fidelity notes.
+   (report review) The window is never longer than 120 s
+   (`plan::WINDOW_CAP_NS`, the input ring's motion window at 60 Hz): a
+   quiet shell's rings may reach back hours, and every warm-up frame is
+   painted. Past it the window starts 120 s before the report, rewound
+   to there, and the limits say so. Turning `system.replay` off and on
+   writes a gap's end (`gap::OFF`) into each new ring, and the outputs,
+   surfaces and surface roots shown then again, so a window starts
+   after the recorder off as it does after a lock.
 3. **Picks one output** (the sandbox has one screen): the one with the
    most input in the window's last 10 s, else the one the newest mapped
    surface is on; `--output` names another. Its logical size, scale
@@ -2203,7 +2211,11 @@ point, not a failure.
    between records, quantised to ticks; a pointer step only where it
    moves, a `focus` before keys on another surface), each service
    change as a `set` (a keyed list as the whole list after its diffs)
-   or an `emit`, each recorded answer as an `answer` queued as the
+   or an `emit`, (report review) each `strand set`, `toggle` or `reset`
+   the shell was sent (a compositor keybinding's, recorded as a request
+   with the value after it) as a `set` or `toggle` at its time, a text
+   held back set as `x`s as long as it was (a step on a surface waits
+   for the tick after its live `MAPPED`, when the sandbox shows it), each recorded answer as an `answer` queued as the
    method's answer before it is taken (at the window's start for the
    first), each late frame as a `drop`, `mark`s at the traced part's
    start, at -5 s, -2 s and at the report, and a `shot report` there.
@@ -2211,6 +2223,10 @@ point, not a failure.
    `calendar`, `auth`) are neither seeded nor set.
 6. **Runs it** as `local` does, with every CPU check, then compares
    the replay with the live shell (below) and writes `replay.txt`.
+   (report review) A step the sandbox cannot take (input on a surface
+   it never shows, a node it never mounted: the live shell parted from
+   it earlier) is skipped and listed as a `step` divergence, so a
+   replay always ends with `replay.txt` and `fidelity.json`.
 
 **What the scenario format gains for it** (each a general sandbox
 capability, used by any scenario):
@@ -2244,7 +2260,9 @@ and says where it first parts from it:
 
 - each recorded press's `hit` (by `nodes.json`: its origin and `for`
   key) against the node the replay's router hits at the same point,
-  press by press;
+  press by press (report review: `nodes.json` names a node a press
+  removed, a menu row that closes its menu, by its identity when
+  pressed; a hit it still cannot name is a note, not a divergence);
 - each surface root mapped and unmapped (by its origin) against the
   replay's, within two frames, in the traced part (a surface the live
   shell mapped as it started, before any input, is one the sandbox's
@@ -2261,8 +2279,9 @@ no stand-in for (a plugin whose schema is not in the bundle), calls
 answered by the mock because no answer was recorded, other programs'
 windows (`thumbnail` nodes draw nothing, and the compositor's blur and
 its own animations are not modelled), outputs other than the one
-replayed and the input on them, files listed in the bundle's
-`missing`, and the reload or gap the window starts after.
+replayed and the input on them, horizontal scrolls (a scenario scrolls
+vertically only), files listed in the bundle's `missing`, and the
+reload, gap or cap the window starts after.
 
 **`replay.txt`**, what an agent reads first. Its head gives the
 words, the window, the output, the traced part and the comparison
@@ -2470,7 +2489,7 @@ gives them, each with its time before the report.
   ring keeps the last `--ring` frames; a session stops at `--max-frames`
   painted frames (record and restart). The checks run when paused (or
   every two seconds while playing), over the whole session so far.
-- **A replay is as faithful as its report** (planned, decisions.md
+- **A replay is as faithful as its report** (built, decisions.md
   report). See "Replaying a glitch report" for what a replay cannot
   reproduce and how it says so.
 - **Gaps the blind sets K and L left** (eval-finish, for later; none

@@ -111,6 +111,34 @@ impl Fit {
     }
 }
 
+/// (report) The sources a renderer's surfaces draw
+/// ([`crate::Renderer::image_sources`]): taken on the drawing thread,
+/// resolved to files anywhere else ([`DrawnSources::files`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DrawnSources {
+    keys: Vec<ImageKey>,
+    theme: IconTheme,
+    /// Local files known already (an `svg`'s, a `lottie`'s).
+    pub(crate) files: Vec<PathBuf>,
+}
+
+impl DrawnSources {
+    /// The files drawn: a local image's path, an icon's file in the
+    /// theme (or the config's `icons/` folder) as a lookup finds it now,
+    /// each local `svg` and `lottie`. Sorted, each once.
+    pub fn files(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .keys
+            .iter()
+            .filter_map(|k| resolve(k, &self.theme).ok())
+            .chain(self.files.iter().cloned())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
 /// One decode: a source at a drawn size.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
@@ -262,7 +290,7 @@ impl std::fmt::Display for ImageError {
 impl std::error::Error for ImageError {}
 
 /// Where icons come from: the theme to look in.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct IconTheme {
     /// A theme by name; `None` is the desktop's
     /// ([`strand_icons::system_theme`], read again after the icon caches
@@ -1450,23 +1478,21 @@ impl ImageStore {
             .collect()
     }
 
-    /// (report) The files the surfaces' last frames draw decodes of: a
-    /// local image's path, an icon's file in the theme (or the config's
-    /// `icons/` folder) as a lookup finds it now. Sorted, each once.
-    pub fn drawn_files(&self) -> Vec<PathBuf> {
+    /// (report) What the surfaces' last frames draw decodes of, to be
+    /// resolved to files by [`DrawnSources::files`]: (report review) the
+    /// keys only, so the icon lookups run on the thread that writes the
+    /// report, not on the one that draws.
+    pub fn drawn(&self) -> DrawnSources {
         let theme = match &self.backend {
             ImageBackend::Inline(t) => t.clone(),
             ImageBackend::Worker(_) => IconTheme::system(),
         };
-        let mut out: Vec<PathBuf> = self
-            .frames
-            .values()
-            .flatten()
-            .filter_map(|k| resolve(k, &theme).ok())
-            .collect();
-        out.sort();
-        out.dedup();
-        out
+        let keys: HashSet<&ImageKey> = self.frames.values().flatten().collect();
+        DrawnSources {
+            keys: keys.into_iter().cloned().collect(),
+            theme,
+            files: Vec::new(),
+        }
     }
 
     pub fn set_backend(&mut self, backend: ImageBackend) {

@@ -17,14 +17,65 @@
 //! told as its path with `$` and the overlay's text.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use strand_core::{Error, NodeId as CoreId};
+use strand_scene::{NodeId, NodeKind, Prop as SceneProp};
 
-use super::Instance;
+use super::inspect::is_password;
 use super::reload::CellRec;
+use super::{Ctx, Instance};
 use crate::hir::DefKind;
+use crate::lower::{PlaceRoot, PlaceSeg, TwoWay};
 use crate::ty::Ty;
+use crate::vm::Env;
 use crate::vm::Value;
+use crate::vm::value::Slot;
+
+/// (report review) The cell a two-way binding writes: a `state`'s
+/// signal or keyed list, or a settings field. `None` for a service's
+/// field.
+fn place_cell(tw: &TwoWay, env: &Rc<Env>) -> Option<CoreId> {
+    let PlaceRoot::Def(d) = tw.place.root else {
+        return None;
+    };
+    if let Some(slot) = env.settings(d) {
+        let Some(PlaceSeg::Field(f)) = tw.place.segs.first() else {
+            return None;
+        };
+        return slot
+            .fields
+            .iter()
+            .find(|(n, _)| n == f)
+            .map(|(_, s)| s.id());
+    }
+    match env.def(d)? {
+        Slot::Signal(s) => Some(s.id()),
+        Slot::Keyed(k, _) => Some(k.id()),
+        _ => None,
+    }
+}
+
+impl Ctx {
+    /// (report review) A surface of `kind` mounted with scope `ident`:
+    /// a lock's is noted, so the cells mounted under it are in no
+    /// report.
+    pub(super) fn note_lock_scope(&self, kind: NodeKind, ident: Rc<str>) {
+        if kind == NodeKind::Lock {
+            self.lock_scopes.borrow_mut().insert(ident);
+        }
+    }
+
+    /// (report review) Whether `scope` is a lock surface's, or under one
+    /// (a per-screen lock's instances are `ident[<screen>]`).
+    pub(super) fn in_lock_scope(&self, scope: &str) -> bool {
+        self.lock_scopes.borrow().iter().any(|l| {
+            scope
+                .strip_prefix(&**l)
+                .is_some_and(|r| r.is_empty() || r.starts_with('/') || r.starts_with('['))
+        })
+    }
+}
 
 /// (report) One write the cell tap is told of.
 #[derive(Debug)]
@@ -53,6 +104,9 @@ impl Instance {
     /// (report) Install `tap` (`None` removes it): from the next tick on
     /// it is told of every write to a cell (see the module docs).
     pub fn set_cell_tap(&self, tap: Option<CellTap>) {
+        if tap.is_some() {
+            self.mark_password_cells(None);
+        }
         let mut st = self.cell_tap.borrow_mut();
         st.last.clear();
         if tap.is_some() {
@@ -68,6 +122,7 @@ impl Instance {
     /// overlay as `$path` with its text. What a glitch report's
     /// `cells.json` holds (the binary applies the redaction rules).
     pub fn cells_snapshot(&self) -> Vec<(String, Value)> {
+        self.mark_password_cells(None);
         let mut out: Vec<(String, Value)> = self
             .cell_values()
             .into_iter()
@@ -80,39 +135,132 @@ impl Instance {
         out
     }
 
-    /// Each live cell: its core id, path and value now.
+    /// Each live cell a report may hold (none of [`Ctx::secret_cells`]):
+    /// its core id, path and value now.
     fn cell_values(&self) -> Vec<(CoreId, String, Value)> {
         let reg = self.ctx.registry.borrow();
         let closed = self.ctx.closed.borrow();
-        let rt = &self.rt;
+        let secret = self.ctx.secret_cells.borrow();
         let mut out = Vec::new();
         for (k, rec) in &reg.cells {
             if closed.contains(k) {
                 continue;
             }
-            match rec {
-                CellRec::Plain { sig, path, .. } => {
-                    if let Ok(v) = sig.get_untracked(rt) {
-                        out.push((sig.id(), path.clone(), v));
-                    }
-                }
-                CellRec::Keyed {
-                    keyed, list, path, ..
-                } => {
-                    if let Ok(v) = list.get_untracked(rt) {
-                        out.push((keyed.id(), path.clone(), v));
-                    }
-                }
-                CellRec::Settings { slot, path, .. } => {
-                    for (name, field) in &slot.fields {
-                        if let Ok(v) = field.get_untracked(rt) {
-                            out.push((field.id(), format!("{path}.{name}"), v));
-                        }
-                    }
+            for id in rec.ids() {
+                if !secret.contains(&id)
+                    && let Some((path, v, _)) = self.cell_value(rec, id)
+                {
+                    out.push((id, path, v));
                 }
             }
         }
         out
+    }
+
+    /// The cell `id` of `rec`: its path, value now and default (`Null`
+    /// for a settings field).
+    fn cell_value(&self, rec: &CellRec, id: CoreId) -> Option<(String, Value, Value)> {
+        let rt = &self.rt;
+        match rec {
+            CellRec::Plain {
+                sig, path, default, ..
+            } if sig.id() == id => {
+                Some((path.clone(), sig.get_untracked(rt).ok()?, default.clone()))
+            }
+            CellRec::Keyed {
+                keyed,
+                list,
+                path,
+                default,
+                ..
+            } if keyed.id() == id => {
+                Some((path.clone(), list.get_untracked(rt).ok()?, default.clone()))
+            }
+            CellRec::Settings { slot, path, .. } => {
+                let (name, field) = slot.fields.iter().find(|(_, f)| f.id() == id)?;
+                Some((
+                    format!("{path}.{name}"),
+                    field.get_untracked(rt).ok()?,
+                    Value::Null,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// (report review) The cells of `written` a report may hold, found
+    /// by [`Ctx::cell_ids`]: their id, path, value now and default. Only
+    /// the cells written are read.
+    fn written_values(&self, written: &[CoreId]) -> Vec<(CoreId, String, Value, Value)> {
+        let ids = self.ctx.cell_ids.borrow();
+        let reg = self.ctx.registry.borrow();
+        let closed = self.ctx.closed.borrow();
+        let secret = self.ctx.secret_cells.borrow();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for id in written {
+            if secret.contains(id) || !seen.insert(*id) {
+                continue;
+            }
+            let Some(k) = ids.get(id) else {
+                continue;
+            };
+            if closed.contains(k) {
+                continue;
+            }
+            if let Some((path, v, d)) = reg.cells.get(k).and_then(|r| self.cell_value(r, *id)) {
+                out.push((*id, path, v, d));
+            }
+        }
+        out
+    }
+
+    /// (report review) Marks the cells password inputs are bound to
+    /// two-way (`text: <-> pw`) as left out of reports: those of `nodes`,
+    /// or of every node.
+    pub(super) fn mark_password_cells(&self, nodes: Option<&[NodeId]>) {
+        let em = self.ctx.em.borrow();
+        let mut found = Vec::new();
+        let mut look = |n: NodeId| {
+            if !is_password(&em, n) {
+                return;
+            }
+            if let Some(e) = em.nodes.get(&n) {
+                for (p, tw, env) in &e.two_way {
+                    if matches!(p, SceneProp::Text | SceneProp::Value)
+                        && let Some(id) = place_cell(tw, env)
+                    {
+                        found.push(id);
+                    }
+                }
+            }
+        };
+        match nodes {
+            Some(ns) => ns.iter().copied().for_each(&mut look),
+            None => em.nodes.keys().copied().for_each(&mut look),
+        }
+        drop(em);
+        if !found.is_empty() {
+            self.ctx.secret_cells.borrow_mut().extend(found);
+        }
+    }
+
+    /// (report review) A widget's write to `node`'s `prop` through `tw`:
+    /// a password input's bound cell is left out of reports before the
+    /// write is told to the tap.
+    pub(super) fn note_secret_write(
+        &self,
+        node: NodeId,
+        prop: SceneProp,
+        tw: &TwoWay,
+        env: &Rc<Env>,
+    ) {
+        if matches!(prop, SceneProp::Text | SceneProp::Value)
+            && is_password(&self.ctx.em.borrow(), node)
+            && let Some(id) = place_cell(tw, env)
+        {
+            self.ctx.secret_cells.borrow_mut().insert(id);
+        }
     }
 
     /// Tells the tap of the cells `written` this tick (`Tick::written`).
@@ -120,21 +268,16 @@ impl Instance {
         if written.is_empty() || self.cell_tap.borrow().tap.is_none() {
             return;
         }
-        let written: HashSet<CoreId> = written.iter().copied().collect();
-        let changed: Vec<(CoreId, String, Value)> = self
-            .cell_values()
-            .into_iter()
-            .filter(|(id, ..)| written.contains(id))
-            .collect();
+        let changed = self.written_values(written);
         let mut st = self.cell_tap.borrow_mut();
         let TapState { tap, last } = &mut *st;
         let Some(tap) = tap.as_mut() else {
             return;
         };
-        for (id, path, new) in changed {
+        for (id, path, new, default) in changed {
             let old = match last.get(&id) {
                 Some((_, v)) => v.clone(),
-                None => self.default_of(&path),
+                None => default,
             };
             if old != new {
                 tap(CellWrite {
@@ -147,8 +290,13 @@ impl Instance {
         }
         // Cells gone with their scopes are forgotten now and then.
         if last.len() > 256 && last.len() > 2 * self.ctx.registry.borrow().cells.len() {
-            let live: HashSet<CoreId> = self.cell_values().into_iter().map(|(id, ..)| id).collect();
-            last.retain(|id, _| live.contains(id));
+            let ids = self.ctx.cell_ids.borrow();
+            let reg = self.ctx.registry.borrow();
+            last.retain(|id, _| {
+                ids.get(id)
+                    .and_then(|k| reg.cells.get(k))
+                    .is_some_and(|r| r.ids().contains(id))
+            });
         }
     }
 
@@ -167,26 +315,6 @@ impl Instance {
                 new: &new,
             });
         }
-    }
-
-    /// The default of the cell at `path`, the value a cell mounted
-    /// during the tick held before its first write.
-    fn default_of(&self, path: &str) -> Value {
-        let reg = self.ctx.registry.borrow();
-        for rec in reg.cells.values() {
-            match rec {
-                CellRec::Plain {
-                    default, path: p, ..
-                }
-                | CellRec::Keyed {
-                    default, path: p, ..
-                } if p == path => {
-                    return default.clone();
-                }
-                _ => {}
-            }
-        }
-        Value::Null
     }
 
     /// (report) The declared type of the cell at `path` (as

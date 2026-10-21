@@ -56,8 +56,9 @@ pub(crate) struct MainBundle {
     /// The input ring's dump (`None`: `system.replay` is off).
     pub ring: Option<Vec<u8>>,
     pub frames: Vec<Frame>,
-    /// The files the renderer draws for mounted nodes.
-    pub images: Vec<PathBuf>,
+    /// The files the renderer draws for mounted nodes, resolved on the
+    /// `strand-report` thread (report review: no icon lookup on main).
+    pub images: strand_render::image::DrawnSources,
     /// Each mapped surface: its slot, namespace, kind, root, output,
     /// backend and sizes, as `bundle.json`'s `surfaces` lists them.
     pub surfaces: Vec<Json>,
@@ -231,18 +232,13 @@ fn private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     f.sync_all()
 }
 
-/// A new directory under `root` named by the local time, `-2`, `-3`
-/// appended while taken.
-fn new_dir(root: &Path) -> io::Result<PathBuf> {
+/// (report review) A new, private directory under `root` that a report
+/// is written into (`.<stamp>.partial`), renamed into place by
+/// [`place`] once whole.
+fn partial_dir(root: &Path, stamp: &str) -> io::Result<PathBuf> {
     private_dir(root)?;
-    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     for n in 1..1000 {
-        let name = if n == 1 {
-            stamp.clone()
-        } else {
-            format!("{stamp}-{n}")
-        };
-        let dir = root.join(name);
+        let dir = root.join(format!(".{stamp}-{n}{PARTIAL}"));
         match DirBuilder::new().mode(0o700).create(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -250,6 +246,60 @@ fn new_dir(root: &Path) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::other("no free report name"))
+}
+
+/// (report review) Renames the whole report `partial` to `root/<stamp>`,
+/// `-2`, `-3` appended while taken. A finished report is never empty, so
+/// a rename onto one fails and the next name is tried.
+fn place(partial: &Path, root: &Path, stamp: &str) -> io::Result<PathBuf> {
+    for n in 1..1000 {
+        let name = if n == 1 {
+            stamp.to_string()
+        } else {
+            format!("{stamp}-{n}")
+        };
+        let dir = root.join(name);
+        if fs::symlink_metadata(&dir).is_ok() {
+            continue;
+        }
+        match fs::rename(partial, &dir) {
+            Ok(()) => return Ok(dir),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other("no free report name"))
+}
+
+/// (report review) The suffix of a report being written.
+const PARTIAL: &str = ".partial";
+
+/// (report review) How old a report being written may be before pruning
+/// takes it for one a crash left.
+const PARTIAL_STALE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// (report review) `p` with its `.` and `..` resolved by name (a `..` at
+/// the root stays there), so a copy at `files/<p>` stays under `files/`.
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::from("/");
+    for c in p.components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+        }
+    }
+    out
 }
 
 /// `pixels` (premultiplied RGBA) as a PNG of straight RGBA.
@@ -307,20 +357,26 @@ fn read_bounded(path: &Path, cap: u64) -> Result<Vec<u8>, (u64, String)> {
     Ok(bytes)
 }
 
-/// Every regular file under `dir`, sorted (links not followed out of it).
-fn files_under(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+/// (report review) The config's `icons/` folder as strand-icons reads
+/// it (`config_files`): its top level only, links followed, the files of
+/// an accepted extension whose name does not start with `.`. Sorted.
+fn config_icons(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(dir) else {
-        return;
+        return Vec::new();
     };
-    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    entries.sort();
-    for p in entries {
-        match fs::symlink_metadata(&p) {
-            Ok(m) if m.is_dir() && depth < 8 => files_under(&p, out, depth + 1),
-            Ok(m) if m.is_file() => out.push(p),
-            _ => {}
-        }
-    }
+    let mut out: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+            !stem.is_empty()
+                && !stem.starts_with('.')
+                && strand_icons::EXTENSIONS.contains(&ext)
+                && fs::metadata(p).is_ok_and(|m| m.is_file())
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 fn blake3_hex(bytes: &[u8]) -> String {
@@ -328,8 +384,33 @@ fn blake3_hex(bytes: &[u8]) -> String {
 }
 
 /// Writes the bundle: see the module docs. Returns the answer.
+/// (report review) It is written into a `.partial` directory, renamed
+/// into place once `bundle.json` is in it; on any error the partial
+/// directory is removed, so nothing of a failed report stays.
 pub(crate) fn write(job: &Job) -> io::Result<Json> {
-    let dir = new_dir(&job.root)?;
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let partial = partial_dir(&job.root, &stamp)?;
+    let dir = match fill(job, &partial).and_then(|()| place(&partial, &job.root, &stamp)) {
+        Ok(d) => d,
+        Err(e) => {
+            if let Err(r) = fs::remove_dir_all(&partial) {
+                log::warn!("report: {} not removed: {r}", partial.display());
+            }
+            return Err(e);
+        }
+    };
+    prune(&job.root, KEEP);
+    let paste = paste_line(&job.words, &dir);
+    Ok(json!({
+        "ok": true,
+        "bundle": dir.display().to_string(),
+        "paste": paste,
+        "report": job.report,
+    }))
+}
+
+/// Writes the bundle's files into `dir`, `bundle.json` last.
+fn fill(job: &Job, dir: &Path) -> io::Result<()> {
     let mut hashes = serde_json::Map::new();
     let mut missing = Vec::new();
     private_file(
@@ -401,22 +482,38 @@ pub(crate) fn write(job: &Job) -> io::Result<Json> {
     };
     // The config's `icons/` folder, under `config/`.
     if let Some(cd) = &job.config_dir {
-        let mut icons = Vec::new();
-        files_under(&cd.join("icons"), &mut icons, 0);
-        for p in icons {
+        for p in config_icons(&cd.join("icons")) {
             if let Ok(rel) = p.strip_prefix(cd) {
                 copy(&p, &dir.join("config").join(rel), &mut total)?;
             }
         }
     }
-    // Every other file, at its own path under `files/`.
+    // Every other file, at its own path under `files/`: the program's,
+    // then (resolved here, off the main thread) the renderer's, but none
+    // the config mirror holds.
+    let in_config = |p: &Path| {
+        job.config_dir.as_deref().is_some_and(|d| {
+            p.starts_with(d)
+                && (p.extension().is_some_and(|e| e == "strand") || p.starts_with(d.join("icons")))
+        })
+    };
+    let files = dir.join("files");
     let mut seen = std::collections::HashSet::new();
-    for p in &job.files {
-        if !p.is_absolute() || !seen.insert(p.clone()) {
+    let drawn = job.main.images.files();
+    for p in job.files.iter().chain(&drawn) {
+        // (report review) By its normal form: a `..` never leads out.
+        let normal = lexical(p);
+        if !p.is_absolute() || in_config(&normal) || !seen.insert(normal.clone()) {
             continue;
         }
-        let rel: PathBuf = p.components().skip(1).collect();
-        copy(p, &dir.join("files").join(rel), &mut total)?;
+        let rel: PathBuf = normal.components().skip(1).collect();
+        let dst = files.join(rel);
+        // Never outside `files/` (a normal form has no `..`); a path of
+        // the root alone is not a file, which `copy` lists as missing.
+        if !dst.starts_with(&files) {
+            continue;
+        }
+        copy(p, &dst, &mut total)?;
     }
     let bundle = json!({
         "format": FORMAT,
@@ -434,29 +531,37 @@ pub(crate) fn write(job: &Job) -> io::Result<Json> {
     });
     // Written last: a directory holding a `bundle.json` is a whole report
     // (pruning counts only those).
-    private_file(&dir.join("bundle.json"), format!("{bundle:#}\n").as_bytes())?;
-    prune(&job.root, KEEP);
-    let paste = paste_line(&job.words, &dir);
-    Ok(json!({
-        "ok": true,
-        "bundle": dir.display().to_string(),
-        "paste": paste,
-        "report": job.report,
-    }))
+    private_file(&dir.join("bundle.json"), format!("{bundle:#}\n").as_bytes())
 }
 
 /// Removes all but the newest `keep` directories under `root` that hold
-/// a `bundle.json` (by its time, then by name); nothing else is touched.
+/// a `bundle.json` (by its time, then by name), and (report review) a
+/// report still being written after [`PARTIAL_STALE`] (one a crash
+/// left); nothing else is touched.
 pub(crate) fn prune(root: &Path, keep: usize) {
     let Ok(rd) = fs::read_dir(root) else {
         return;
     };
+    let now = std::time::SystemTime::now();
     let mut reports: Vec<(std::time::SystemTime, PathBuf)> = rd
         .filter_map(Result::ok)
         .filter_map(|e| {
             let p = e.path();
             let m = fs::symlink_metadata(&p).ok()?;
             if !m.is_dir() {
+                return None;
+            }
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') && name.ends_with(PARTIAL) {
+                let old = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| now.duration_since(t).ok())
+                    .is_some_and(|age| age > PARTIAL_STALE);
+                if old && let Err(e) = fs::remove_dir_all(&p) {
+                    log::warn!("report: {} not removed: {e}", p.display());
+                }
                 return None;
             }
             let b = fs::metadata(p.join("bundle.json")).ok()?;
@@ -543,6 +648,127 @@ mod tests {
         let (bytes, why) = read_bounded(&big, 1024).unwrap_err();
         assert_eq!(bytes, 4096);
         assert!(why.starts_with("over"), "{why}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// (report review) A report that fails partway leaves nothing: its
+    /// partial directory goes, and no report is in its place.
+    #[test]
+    fn a_failed_report_leaves_nothing_behind() {
+        let root = tmp("failed");
+        let mut job = Job {
+            root: root.join("reports"),
+            words: "w".into(),
+            ..Job::default()
+        };
+        // A frame shorter than its size fails after the dumps are written.
+        job.main.frames.push(Frame {
+            slot: 1,
+            name: "bar".into(),
+            pixels: FramePixels {
+                width: 4,
+                height: 4,
+                scale: strand_scene::Scale::ONE,
+                stride: 16,
+                rgba: vec![0; 8],
+            },
+            repainted: false,
+        });
+        assert!(write(&job).is_err());
+        let left: Vec<_> = fs::read_dir(&job.root).unwrap().collect();
+        assert!(left.is_empty(), "{left:?}");
+        // A whole one is placed under its stamp, nothing partial beside it.
+        job.main.frames.clear();
+        let ans = write(&job).unwrap();
+        let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+        assert!(dir.join("bundle.json").is_file());
+        let names: Vec<String> = fs::read_dir(&job.root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(!names[0].starts_with('.'), "{names:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// (report review) A partial report a crash left is pruned once
+    /// stale; a fresh one (being written) is not.
+    #[test]
+    fn pruning_removes_a_stale_partial_report() {
+        let root = tmp("partial");
+        let stale = root.join(".2026-10-20_10-00-00-1.partial");
+        let fresh = root.join(".2026-10-20_10-00-01-1.partial");
+        private_dir(&stale).unwrap();
+        private_dir(&fresh).unwrap();
+        private_file(&stale.join("words.txt"), b"w").unwrap();
+        let old = std::time::SystemTime::now() - 2 * PARTIAL_STALE;
+        File::open(&stale).unwrap().set_modified(old).unwrap();
+        prune(&root, KEEP);
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// (report review) A drawn file's path with `..` is copied by its
+    /// normal form under `files/`, never outside it.
+    #[test]
+    fn a_dotted_path_is_copied_under_files() {
+        let root = tmp("dotted");
+        let src = root.join("src");
+        private_dir(&src).unwrap();
+        fs::write(src.join("x.png"), b"png").unwrap();
+        // As many `..` as reach past the root, then the file.
+        let ups = "../".repeat(src.components().count() + 3);
+        let dotted = PathBuf::from(format!("/{ups}{}", src.join("x.png").display()));
+        let job = Job {
+            root: root.join("reports"),
+            words: "w".into(),
+            files: vec![dotted, src.join("sub/../x.png")],
+            ..Job::default()
+        };
+        let ans = write(&job).unwrap();
+        let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+        let rel: PathBuf = src.join("x.png").components().skip(1).collect();
+        assert_eq!(fs::read(dir.join("files").join(rel)).unwrap(), b"png");
+        // Nothing was written beside the bundle, or above it.
+        let mut top: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        top.sort();
+        assert_eq!(top, ["reports", "src"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// (report review) The config's `icons/` folder as strand-icons reads
+    /// it: its top level, a linked icon followed, nothing else.
+    #[test]
+    fn the_config_icons_are_read_as_the_shell_reads_them() {
+        let root = tmp("icons");
+        let cd = root.join("config");
+        let icons = cd.join("icons");
+        private_dir(&icons.join("sub")).unwrap();
+        fs::write(icons.join("a.svg"), b"<svg/>").unwrap();
+        fs::write(root.join("elsewhere.png"), b"png").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.png"), icons.join("b.png")).unwrap();
+        fs::write(icons.join("sub/c.svg"), b"<svg/>").unwrap();
+        fs::write(icons.join(".hidden.svg"), b"<svg/>").unwrap();
+        fs::write(icons.join("notes.txt"), b"t").unwrap();
+        let job = Job {
+            root: root.join("reports"),
+            words: "w".into(),
+            config_dir: Some(cd.clone()),
+            ..Job::default()
+        };
+        let ans = write(&job).unwrap();
+        let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+        let mut got: Vec<String> = fs::read_dir(dir.join("config/icons"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        got.sort();
+        assert_eq!(got, ["a.svg", "b.png"]);
+        assert_eq!(fs::read(dir.join("config/icons/b.png")).unwrap(), b"png");
         let _ = fs::remove_dir_all(&root);
     }
 

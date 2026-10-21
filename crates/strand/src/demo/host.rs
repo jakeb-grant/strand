@@ -1102,20 +1102,25 @@ impl LoopHost for Host {
             }
             return Ok(());
         };
-        f.routed(event, intents);
         // (report) Recorded as routed, a press with its hit; never on a
-        // lock surface.
+        // lock surface. (report review) The hit goes to logic first, so
+        // it is named before the press's events can remove it.
         let surface = event.surface();
-        if self.recorder.on() && !self.lock.is_lock_surface(surface) {
+        let recording = self.recorder.on() && !self.lock.is_lock_surface(surface);
+        let hit = match event {
+            InputEvent::PointerButton {
+                position,
+                state: strand_scene::ButtonState::Pressed,
+                ..
+            } if recording => self.renderer.hit(surface, *position).first().copied(),
+            _ => None,
+        };
+        if let Some(n) = hit {
+            f.send(ToLogic::Hit(n));
+        }
+        f.routed(event, intents);
+        if recording {
             let focused = f.router.focused_input(surface, self.renderer.tree());
-            let hit = match event {
-                InputEvent::PointerButton {
-                    position,
-                    state: strand_scene::ButtonState::Pressed,
-                    ..
-                } => self.renderer.hit(surface, *position).first().copied(),
-                _ => None,
-            };
             self.recorder
                 .input(strand_core::flight::now_ns(), event, focused, hit);
         }
