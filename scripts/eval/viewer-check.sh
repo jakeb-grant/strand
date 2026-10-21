@@ -10,9 +10,9 @@
 # Usage: scripts/eval/viewer-check.sh [--expect KINDS] PAGE...
 #        PAGE: a report directory (strand-eval check/run/ab, or a matrix
 #        run) or its index.html. Each is mounted read-only.
-#        --expect pass,fail,changed,matrix: each kind must have been
+#        --expect pass,fail,changed,matrix,replay: each kind must have been
 #        exercised (a passing scenario, a failing one, one that left its
-#        approved reference, a matrix grid).
+#        approved reference, a matrix grid, a glitch report's replay).
 #        scripts/eval/viewer-check.sh --selftest builds its own pages
 #        first: the curated and regression scenarios, then the same
 #        under the bug25-hidden-text mutant (a failing and a CHANGED

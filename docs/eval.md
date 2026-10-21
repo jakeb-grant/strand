@@ -1638,7 +1638,12 @@ a verdict and a note are given, and the copied command is checked word
 for word), light and dark, at a desktop's and a phone's width (no page
 scroll sideways). It fails on any console error, uncaught exception,
 failed request or request off the page, and on any mode that does not
-work. Screenshots of each mode land in `target/eval/viewer-shots/`.
+work. (replayfix) On a replay's page (`--expect replay`) it drives the
+time scrubber instead: the slider spans the window in ms, it opens at
+the report, the report and the live events are marked, an idle span
+reads `nothing changed`, the live pointer is named, and the buttons,
+keys and play step through time. Screenshots of each mode land in
+`target/eval/viewer-shots/`.
 
 It runs on the host's Docker, like `run.sh`, in
 `scripts/eval/Dockerfile.viewer`: Playwright's Python image pinned by
@@ -2238,10 +2243,13 @@ icons as the host has them, and never the session's `WAYLAND_DISPLAY`. It
 writes into `<bundle>/replay/` (cleared first, mode 0700), prints the
 verdict in one plain line, then `replay: <bundle>/replay/replay.txt`
 and `viewer: <bundle>/replay/index.html`, and opens the viewer with
-`xdg-open` unless `--no-open`. The local scenario goes to the
-checkout's `eval/scenarios/local/` when `strand-eval` was built in one
-that is still there, else `${XDG_CACHE_HOME:-~/.cache}/strand-eval/
-scenarios/local/`. On the desktop a file the shell read is read where
+`xdg-open` unless `--no-open`. (replayfix) The local scenario goes to
+the `eval/scenarios/local/` of the strand checkout holding the
+directory `strand-eval` is run in (an ancestor with `eval/Cargo.toml`
+naming `strand-eval`), else `${XDG_CACHE_HOME:-~/.cache}/strand-eval/
+scenarios/local/`; where the binary was built does not count, so a
+copied or installed one works anywhere (`scenario::checkout_eval`,
+`scenario::cache_root`). On the desktop a file the shell read is read where
 it is now, not the bundle's copy (the container mounts the copy at its
 path): each copied file that differs from what is at its path now is
 named in the limits. A surface the live shell drew on the GPU is
@@ -2288,13 +2296,20 @@ work:
    surfaces and surface roots shown then again, so a window starts
    after the recorder off as it does after a lock.
 3. **Picks one output** (the sandbox has one screen): the one with the
-   most input in the window's last 10 s, else the one the newest mapped
-   surface is on; `--output` names another. Its logical size, scale
+   most input in the window's last 10 s, else (replayfix) the one with
+   the most input in the whole window, else the one the newest mapped
+   surface is on; `--output` names another. The reason is in the
+   `output:` line. Its logical size, scale
    and refresh are the header's `screen` and `hz`, and (replayfix) its
    connector name, make and model, and the `screens.all` id and
    description `bundle.json` records for it, the `screen`'s identity, so
    per-screen data (`workspaces.slots(screen)`) and the cells kept per
    screen (`Notch[<id>].grown`) name the screen they did live.
+   (replayfix) A bundle from before outputs carried their id has it
+   read back from its cells' names (`plan::recovered_id`: the one
+   `X[<make> | <model> | …]` id for that make and model), with a note;
+   two outputs of one make and model cannot be told apart that way,
+   and their per-screen cells start at their defaults, with a note.
 4. **Rewinds** every service field and cell from its value at the
    report back through the window's records, by their old values, to
    its value at the window's start. A field whose record was truncated
@@ -2310,8 +2325,10 @@ work:
    a surface was on the GPU in the window and `--gpu` is given,
    `compositor_poses` as the
    diagnostics' globals say (`wp_alpha_modifier_v1` and
-   `wp_viewporter`), `warmup` all but the last `--traced` seconds (20
-   by default), and the steps: the input on its timeline (`frames`
+   `wp_viewporter`), `warmup` all but the last `--traced` seconds
+   ((replayfix) 0 by default: the whole window is traced, so its
+   viewer and timeline span it; `--traced 20` keeps only the last
+   20 s), and the steps: the input on its timeline (`frames`
    between records, quantised to ticks; a pointer step only where it
    moves, a `focus` before keys on another surface), each service
    change as a `set` (a keyed list as the whole list after its diffs)
@@ -2319,7 +2336,13 @@ work:
    the shell was sent (a compositor keybinding's, recorded as a request
    with the value after it) as a `set` or `toggle` at its time, a text
    held back set as `x`s as long as it was (a step on a surface waits
-   for the tick after its live `MAPPED`, when the sandbox shows it), each recorded answer as an `answer` queued as the
+   (replayfix) two ticks after its live `MAPPED`, the fidelity's
+   `MAP_FRAMES`, by when the sandbox shows it; a `leave` the
+   compositor sends because a surface mapped under the pointer, an
+   `ENTER` on another replayed surface within 50 ms after it
+   (`plan::HANDOFF_NS`), is not replayed: the sandbox hands the pointer
+   over when it shows that surface, and a `leave` first would cancel
+   the hover that opened it), each recorded answer as an `answer` queued as the
    method's answer before it is taken (at the window's start for the
    first), each late frame as a `drop`, `mark`s at the traced part's
    start, at -5 s, -2 s and at the report, and a `shot report` there.
@@ -2460,12 +2483,34 @@ reload, gap or cap the window starts after.
 **`replay.txt`**, what an agent reads first. Its first line is the
 verdict, each difference under it; then its head gives the
 words, the window, the output, the traced part and the comparison
-above. Then one line per event in time order, time relative to the
-report: input as its step with the surface's and the hit node's source
-location, service changes, cell writes (live and replay), surfaces
-mapped and gone, and for every node whose drawn box or opacity changes,
-one line per run of motion (`k456..k470 @clock.strand:12:5 text x
-1180.0 -> 1176.3 spring`). The checks' findings follow, as `summary.txt`
+above. Then (replayfix) the timeline, under `timeline (seconds before
+the report): …` (`replay::TIMELINE`), one line per event in time
+order, time relative to the report: input as its step with the
+surface's and the hit node's source location (a run of pointer moves
+on one surface with no second's pause as one line: how many, over how
+long, from where to where), service changes, cell writes (live and
+replay), surfaces mapped and gone, the replay's repaints as runs
+(`replay repainted k120..k300: 181 frames over 3.0 s`) and each span
+of a second or more with none as `nothing changed: no repaint for
+12.4 s (to -3.1 s)`, the report, and for every node whose drawn box or
+opacity changes, one line per run of motion (`k456..k470
+@clock.strand:12:5 text x 1180.0 -> 1176.3 spring`).
+
+**The viewer of a replay** (replayfix; `RunInfo.replay.timeline`,
+`replay::timeline_json`). Its scrubber spans the window in real time,
+in ms, not the painted frames: the label reads the time before the
+report, the frame shown (the last painted at or before it, held), and
+`nothing changed: no repaint for 12.4 s` inside a span with none. Under
+it lanes mark the repaints and the idle spans, the untraced part, the
+live pointer's time on a replayed surface, its input, service and cell
+changes, surfaces mapped and gone, late frames, the divergences and the
+hints, and the report, with a legend; it opens at the report. The live
+pointer at the scrubbed time is drawn over the frame (a ring and a
+cross) and named in the label (`pointer 58.3, 344.2 on @…`, or off the
+replayed surfaces). The buttons and keys step from one event to the
+next, play runs in real time from one to the next (a second at most
+per step). A run with no timeline (every other run, an A/B page) keeps
+the frame scrubber. The checks' findings follow, as `summary.txt`
 gives them, each with its time before the report, under (replay-owner)
 the label `hints (the checks may be wrong on a real shell):`.
 

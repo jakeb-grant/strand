@@ -129,22 +129,14 @@ pub fn readable(text: &str, path: &Path) -> Result<(), Error> {
     }
 }
 
-/// (replay-owner) Where a replay's scenario goes: the checkout's
-/// `eval/scenarios/local/` when this `strand-eval` was built in one that
-/// is still there, else `${XDG_CACHE_HOME:-~/.cache}/strand-eval/
-/// scenarios/local/` (a `strand-eval` installed beside `strand`). Both
-/// are local places: a scenario there may name the bundle.
+/// (replay-owner) Where a replay's scenario goes: `scenarios/local/`
+/// under [`crate::scenario::eval_root`], (replayfix) the `eval/` of the
+/// strand checkout holding the current directory, else
+/// `${XDG_CACHE_HOME:-~/.cache}/strand-eval/` (a `strand-eval`
+/// installed beside `strand`, run anywhere), never the tree it was built
+/// in. Both are local places: a scenario there may name the bundle.
 pub fn local_dir() -> PathBuf {
-    let root = crate::scenario::eval_root();
-    if root.join("scenarios").is_dir() {
-        return root.join("scenarios").join("local");
-    }
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    cache.join("strand-eval").join("scenarios").join("local")
+    crate::scenario::eval_root().join("scenarios").join("local")
 }
 
 /// (replay-owner) The files the bundle copied (`files/<path>`) that are
@@ -264,6 +256,13 @@ pub fn replay(
             "drifted": verdict.lines(),
             "fidelity": first_line(&fid),
             "hints": HINTS,
+            "window": format!(
+                "{:.1} s up to the report, from {}; traced: {}",
+                (plan.end - plan.start) as f64 / 1e9,
+                plan.start_why,
+                plan.traced_words()
+            ),
+            "timeline": timeline_json(&plan, &fid),
         })),
     };
     let mut all = vec![
@@ -530,6 +529,156 @@ pub fn motion_runs(trace: &RunTrace, at: impl Fn(u64) -> String) -> Vec<(u64, St
     out
 }
 
+/// (replayfix) The head of `replay.txt`'s timeline.
+pub const TIMELINE: &str = "timeline (seconds before the report): input, changes, surfaces, the replay's repaints and idle spans:";
+
+/// (replayfix) A span this long or longer with no repaint is idle: the
+/// viewer and `replay.txt` say "nothing changed" over it.
+pub const IDLE_NS: u64 = 1_000_000_000;
+
+/// (replayfix) The live pointer's moves as `replay.txt` lists them: one
+/// line per run of moves on one surface (none longer apart than
+/// [`IDLE_NS`]), and one where it leaves the replayed output's
+/// surfaces.
+pub fn pointer_runs(plan: &Plan) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let track = &plan.pointer;
+    while i < track.len() {
+        let p = &track[i];
+        let Some(on) = &p.origin else {
+            out.push((
+                p.t,
+                format!(
+                    "{} input pointer off the replayed surfaces",
+                    before(plan, p.t)
+                ),
+            ));
+            i += 1;
+            continue;
+        };
+        let mut j = i;
+        while j + 1 < track.len()
+            && track[j + 1].origin.as_ref() == Some(on)
+            && track[j + 1].t - track[j].t < IDLE_NS
+        {
+            j += 1;
+        }
+        let q = &track[j];
+        let n = j - i + 1;
+        out.push((
+            p.t,
+            if n == 1 {
+                format!(
+                    "{} input pointer at {:.1},{:.1} on @{on}",
+                    before(plan, p.t),
+                    p.x,
+                    p.y
+                )
+            } else {
+                format!(
+                    "{} input pointer on @{on}: {n} moves over {:.2} s, {:.1},{:.1} -> {:.1},{:.1}",
+                    before(plan, p.t),
+                    (q.t - p.t) as f64 / 1e9,
+                    p.x,
+                    p.y,
+                    q.x,
+                    q.y
+                )
+            },
+        ));
+        i = j + 1;
+    }
+    out
+}
+
+/// (replayfix) The replay's painted frames as `replay.txt` lists them:
+/// one line per run of repaints (none further apart than [`IDLE_NS`]),
+/// and one per span of [`IDLE_NS`] or more with none, the last frame
+/// held: `nothing changed: no repaint for 12.40 s`. Up to the report.
+pub fn repaint_runs(trace: &RunTrace, plan: &Plan) -> Vec<(u64, String)> {
+    let len = plan.end - plan.start;
+    let ts: Vec<(u64, u32)> = trace
+        .frames
+        .iter()
+        .map(|f| (f.t_ns.saturating_sub(T0.as_nanos() as u64), f.k))
+        .filter(|(t, _)| *t <= len)
+        .collect();
+    let mut out = Vec::new();
+    let from = len.saturating_sub(plan.traced_ns);
+    let idle = |out: &mut Vec<(u64, String)>, a: u64, b: u64| {
+        if b.saturating_sub(a) >= IDLE_NS {
+            out.push((
+                a,
+                format!(
+                    "{} nothing changed: no repaint for {:.2} s (to {})",
+                    before(plan, a),
+                    (b - a) as f64 / 1e9,
+                    before(plan, b)
+                ),
+            ));
+        }
+    };
+    match ts.first() {
+        None => {
+            idle(&mut out, from, len);
+            return out;
+        }
+        Some((t0, _)) => idle(&mut out, from, *t0),
+    }
+    let mut i = 0;
+    while i < ts.len() {
+        let mut j = i;
+        while j + 1 < ts.len() && ts[j + 1].0 - ts[j].0 < IDLE_NS {
+            j += 1;
+        }
+        let n = j - i + 1;
+        out.push((
+            ts[i].0,
+            if n == 1 {
+                format!("{} replay repainted k{}", before(plan, ts[i].0), ts[i].1)
+            } else {
+                format!(
+                    "{} replay repainted k{}..k{}: {n} frames over {:.2} s",
+                    before(plan, ts[i].0),
+                    ts[i].1,
+                    ts[j].1,
+                    (ts[j].0 - ts[i].0) as f64 / 1e9
+                )
+            },
+        ));
+        let next = ts.get(j + 1).map_or(len, |x| x.0);
+        idle(&mut out, ts[j].0, next);
+        i = j + 1;
+    }
+    out
+}
+
+/// (replayfix) The viewer's timeline of a replay (`replay.timeline` in
+/// the page's data): the window in seconds before the report, the tick
+/// period, where the trace starts, the live events by kind (`input`,
+/// `change`, `surface`, `late`), the live pointer's place over time and
+/// the divergences.
+pub fn timeline_json(plan: &Plan, fid: &Fidelity) -> serde_json::Value {
+    let len = plan.end - plan.start;
+    let rel = |t: u64| (t as f64 - len as f64) / 1e9;
+    serde_json::json!({
+        "seconds": len as f64 / 1e9,
+        "period_ns": plan.period,
+        "traced_from": rel(len.saturating_sub(plan.traced_ns)),
+        "idle_s": IDLE_NS as f64 / 1e9,
+        "events": plan.events.iter().map(|e| serde_json::json!({
+            "t": rel(e.t), "kind": e.kind, "text": e.text,
+        })).collect::<Vec<_>>(),
+        "pointer": plan.pointer.iter().map(|p| serde_json::json!({
+            "t": rel(p.t), "on": p.origin, "x": p.x, "y": p.y,
+        })).collect::<Vec<_>>(),
+        "divergences": fid.divergences.iter().map(|d| serde_json::json!({
+            "t": rel(d.t), "what": d.what, "text": d.text,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// `replay.txt`.
 fn replay_txt(
     b: &Bundle,
@@ -554,10 +703,10 @@ fn replay_txt(
     let _ = writeln!(s, "scenario: {}", scenario.display());
     let _ = writeln!(
         s,
-        "window: {:.1} s up to the report, from {}; traced: the last {:.1} s",
+        "window: {:.1} s up to the report, from {}; traced: {}",
         len as f64 / 1e9,
         plan.start_why,
-        plan.traced_ns as f64 / 1e9
+        plan.traced_words()
     );
     let o = &plan.output;
     let _ = writeln!(
@@ -656,8 +805,14 @@ fn replay_txt(
             ));
         }
     }
+    // (replayfix) The live pointer's moves, a line per run of them, and
+    // the replay's repaints, a line per run, with each span of no
+    // repaint said as such: the replay paints only on change.
+    events.extend(pointer_runs(plan));
+    events.extend(repaint_runs(&run.trace, plan));
+    events.push((len, format!("{} the report", before(plan, len))));
     events.sort_by_key(|(t, _)| *t);
-    let _ = writeln!(s, "\nevents (seconds before the report):");
+    let _ = writeln!(s, "\n{TIMELINE}");
     for (_, l) in &events {
         let _ = writeln!(s, "  {l}");
     }

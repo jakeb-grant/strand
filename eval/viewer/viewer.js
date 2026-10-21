@@ -11,6 +11,12 @@
   // runs left them), not a second run.
   var REF = AB && !!DATA.runs[1].reference;
   var GLIDE = 1 << MOT.indexOf('GLIDE');
+  // (replayfix) A glitch report's replay: the scrubber spans the window
+  // in real time, seconds before the report, not only its painted
+  // frames (Strand paints on change, so an idle minute is one frame);
+  // the live input, changes and divergences are marks on it, and the
+  // live pointer is drawn over the frame held at the scrubbed time.
+  var TL = DATA.replay && DATA.replay.timeline && !AB ? DATA.replay.timeline : null;
 
   // ---- small helpers ------------------------------------------------------
 
@@ -154,6 +160,64 @@
     return found;
   }
 
+  // ---- a replay's time (replayfix) ------------------------------------------
+
+  // Ms into the window: of tick k, and of a time in seconds before the
+  // report; and back.
+  function tlMs(k) { return k * TL.period_ns / 1e6; }
+  function tlAt(t) { return (t + TL.seconds) * 1000; }
+  function tlLen() { return TL.seconds * 1000; }
+  function tlFmt(ms) {
+    var s = ms / 1000 - TL.seconds;
+    if (Math.abs(s) < 0.005) s = 0;
+    return (s > 0 ? '+' : '') + s.toFixed(2) + ' s';
+  }
+  // The frame shown at `ms`: the last drawn at or before it (-1: none yet).
+  function atMs(sc, ms) {
+    var ks = sc.tl.ks, lo = 0, hi = ks.length;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (tlMs(ks[mid]) <= ms + 1e-6) lo = mid + 1; else hi = mid; }
+    return lo - 1;
+  }
+  // Every time worth stopping at: frames, live events, pointer moves,
+  // divergences, the window's ends.
+  function stopsOf(sc) {
+    if (sc.stops) return sc.stops;
+    var all = [0, tlLen()];
+    sc.tl.ks.forEach(function (k) { all.push(tlMs(k)); });
+    (TL.events || []).forEach(function (e) { all.push(tlAt(e.t)); });
+    (TL.pointer || []).forEach(function (p) { all.push(tlAt(p.t)); });
+    (TL.divergences || []).forEach(function (d) { all.push(tlAt(d.t)); });
+    all = all.filter(function (v) { return v >= 0 && v <= tlLen(); }).sort(function (a, b) { return a - b; });
+    var out = [];
+    all.forEach(function (v) { if (!out.length || v - out[out.length - 1] > 0.5) out.push(v); });
+    sc.stops = out;
+    return out;
+  }
+  // Where the live pointer was at `ms`: {on, x, y}, or null when it was
+  // on none of the replayed output's surfaces.
+  function pointerAt(ms) {
+    var pts = TL.pointer || [], found = null;
+    for (var i = 0; i < pts.length; i++) { if (tlAt(pts[i].t) <= ms + 1e-6) found = pts[i]; else break; }
+    return found && found.on ? found : null;
+  }
+  function sameOrigin(a, b) {
+    return a === b || a.slice(-(b.length + 1)) === '/' + b || b.slice(-(a.length + 1)) === '/' + a;
+  }
+  function rootOrigin(sc, sid) {
+    var s = null;
+    sc.trace.surfaces.forEach(function (x) { if (x.id === sid) s = x; });
+    var m = s ? sc.trace.nodes[s.root] : null;
+    return m && m.origin ? m.origin : null;
+  }
+  // The span with no repaint around `ms`: [from, to] ms (the frame held
+  // and the next, or the window's ends).
+  function quietAround(sc, ms) {
+    var i = atMs(sc, ms), ks = sc.tl.ks;
+    var from = i >= 0 ? tlMs(ks[i]) : tlAt(TL.traced_from);
+    var to = i + 1 < ks.length ? tlMs(ks[i + 1]) : tlLen();
+    return [from, Math.max(from, to)];
+  }
+
   // ---- state --------------------------------------------------------------
 
   var ids = [];
@@ -180,7 +244,9 @@
     sel: new Set(),
     tab: store.get('strand-eval:tab') || 'findings',
     scope: 'segment',
-    failOnly: false
+    failOnly: false,
+    // (replayfix) A replay's scrubbed time, ms into its window.
+    t: 0
   };
 
   function scOf(run, id) {
@@ -252,6 +318,8 @@
       var f0 = a.fails[0];
       if (f0.k !== null && f0.k !== undefined) S.i = Math.max(0, at(a, f0.k));
     }
+    // (replayfix) A replay opens at the report: the moment reported.
+    if (TL && a) { S.t = tlLen(); S.i = Math.max(0, atMs(a, S.t)); }
     renderAll();
   }
 
@@ -274,6 +342,7 @@
       h.appendChild(v);
       (R.drifted || []).forEach(function (l) { h.appendChild(el('div', { cls: 'drift', text: l })); });
       h.appendChild(el('div', { cls: 'meta', text: 'fidelity: ' + R.fidelity }));
+      if (R.window) h.appendChild(el('div', { cls: 'meta', text: 'window: ' + R.window }));
     }
     h.appendChild(el('h1', { text: a.id }));
     var bits = [
@@ -509,6 +578,7 @@
       x.globalAlpha = 1;
       x.setLineDash([]);
     });
+    if (TL) drawPointer(x, sc, sid, scale, z);
     cv.addEventListener('mousemove', function (ev) { hover(ev, sc, i, sid, cv); });
     cv.addEventListener('mouseleave', function () { $('tip').hidden = true; });
     cv.addEventListener('click', function (ev) {
@@ -518,6 +588,23 @@
       draw();
     });
     return cv;
+  }
+
+  // (replayfix) The live pointer at the scrubbed time, when it was on
+  // this surface: a ring with a cross, and its place.
+  function drawPointer(x, sc, sid, scale, z) {
+    var p = pointerAt(S.t), o = rootOrigin(sc, sid);
+    if (!p || !o || !sameOrigin(o, p.on)) return;
+    var px = p.x * scale * z, py = p.y * scale * z;
+    x.save();
+    x.lineWidth = 2;
+    x.strokeStyle = '#000';
+    x.beginPath(); x.arc(px, py, 7, 0, Math.PI * 2); x.stroke();
+    x.strokeStyle = css('--c2');
+    x.lineWidth = 1.5;
+    x.beginPath(); x.arc(px, py, 7, 0, Math.PI * 2); x.stroke();
+    x.beginPath(); x.moveTo(px - 11, py); x.lineTo(px + 11, py); x.moveTo(px, py - 11); x.lineTo(px, py + 11); x.stroke();
+    x.restore();
   }
 
   // A against its reference, which holds boxes and no pixels: each node
@@ -622,6 +709,11 @@
     }
     var info = {};
     sc.trace.surfaces.forEach(function (s) { info[s.id] = s; });
+    if (TL) {
+      var p = pointerAt(S.t), shown = false;
+      if (p) sc.tl.screens[i].forEach(function (v, sid) { var o = rootOrigin(sc, sid); if (o && sameOrigin(o, p.on)) shown = true; });
+      if (p && !shown) box.appendChild(el('div', { cls: 'surface-label warn', text: 'the live pointer is on @' + p.on + ' (' + fmt(p.x, 1) + ', ' + fmt(p.y, 1) + '), a surface the replay does not show here' }));
+    }
     sc.tl.screens[i].forEach(function (v, sid) {
       var s = info[sid];
       box.appendChild(el('div', { cls: 'surface-label', text: (s ? s.label : 'surface ' + sid) + (v.png && !sc.images[v.png] ? ' (wireframe)' : '') }));
@@ -685,6 +777,7 @@
   // ---- scrubber -------------------------------------------------------------------
 
   function renderScrub() {
+    if (TL) { renderTime(); return; }
     var a = A();
     var n = a ? a.tl.ks.length : 0;
     var sl = $('slider');
@@ -710,6 +803,86 @@
     $('frame-label').textContent = 'frame ' + (S.i + 1) + '/' + n + ' · k' + k + ' · ' +
       fmt((f.t_ns - 1e9) / 1e6, 1) + ' ms' + (seg ? ' · ' + seg.name : '') +
       (f.k !== k ? ' · surface detached' : '') + (f.held_text && f.held_text.length ? ' · text held' : '');
+  }
+
+  // (replayfix) A replay's scrubber: the window in real time. Lanes:
+  // repaints and the spans with none (nothing changed, the last frame
+  // held), the live input, the live changes and surfaces, the
+  // divergences; the report at the right end.
+  function renderTime() {
+    var a = A();
+    var len = tlLen();
+    var sl = $('slider');
+    sl.max = String(Math.round(len));
+    sl.step = '1';
+    sl.value = String(Math.round(S.t));
+    sl.setAttribute('aria-label', 'Time before the report');
+    var tr = $('track');
+    tr.textContent = '';
+    tr.className = 'track timeline';
+    if (!a) { $('frame-label').textContent = 'no frames'; return; }
+    function pct(ms) { return (len > 0 ? Math.max(0, Math.min(1, ms / len)) * 100 : 0) + '%'; }
+    function band(cls, from, to, title) {
+      tr.appendChild(el('span', { cls: 'b ' + cls, title: title, style: 'left:' + pct(from) + ';width:calc(' + pct(to) + ' - ' + pct(from) + ')', onclick: function () { setTime(from); } }));
+    }
+    function mark(cls, ms, title) {
+      tr.appendChild(el('span', { cls: 'm ' + cls, title: title, style: 'left:' + pct(ms), onclick: function () { setTime(ms); } }));
+    }
+    var idle = (TL.idle_s || 1) * 1000;
+    var from = tlAt(TL.traced_from);
+    if (from > 0.5) band('untraced', 0, from, 'not traced (--traced): painted in the warm-up, not kept');
+    // Repaints in runs; each span of `idle` or more with none, said so.
+    var ts = a.tl.frames.map(function (f, i) { return tlMs(a.tl.ks[i]); }).filter(function (v) { return v <= len; });
+    var prev = from;
+    for (var i = 0; i < ts.length;) {
+      if (ts[i] - prev >= idle) band('idle', prev, ts[i], tlFmt(prev) + ' to ' + tlFmt(ts[i]) + ': nothing changed, no repaint for ' + ((ts[i] - prev) / 1000).toFixed(2) + ' s');
+      var j = i;
+      while (j + 1 < ts.length && ts[j + 1] - ts[j] < idle) j++;
+      band('rep', ts[i], ts[j], tlFmt(ts[i]) + ': ' + (j - i + 1) + ' repaint' + (j > i ? 's over ' + ((ts[j] - ts[i]) / 1000).toFixed(2) + ' s' : ''));
+      prev = ts[j];
+      i = j + 1;
+    }
+    if (len - prev >= idle) band('idle', prev, len, tlFmt(prev) + ' to the report: nothing changed, no repaint for ' + ((len - prev) / 1000).toFixed(2) + ' s');
+    // The live pointer in runs, by surface.
+    var pts = TL.pointer || [];
+    for (var p = 0; p < pts.length;) {
+      var q = p;
+      if (pts[p].on) {
+        while (q + 1 < pts.length && pts[q + 1].on === pts[p].on && (pts[q + 1].t - pts[q].t) * 1000 < idle) q++;
+        band('ptr', tlAt(pts[p].t), tlAt(pts[q].t), tlFmt(tlAt(pts[p].t)) + ': the live pointer on @' + pts[p].on + ' (' + (q - p + 1) + ' moves)');
+      }
+      p = q + 1;
+    }
+    (TL.events || []).forEach(function (e) {
+      var cls = { input: 'in', change: 'chg', surface: 'map', late: 'late' }[e.kind] || 'chg';
+      mark(cls, tlAt(e.t), tlFmt(tlAt(e.t)) + ': ' + e.text);
+    });
+    (TL.divergences || []).forEach(function (d) { mark('bad', tlAt(d.t), tlFmt(tlAt(d.t)) + ' divergence (' + d.what + '): ' + d.text); });
+    a.failTicks.forEach(function (k) { mark('hint', tlMs(k), 'a hint at k' + k); });
+    mark('report', len, 'the report');
+    mark('cur', S.t, tlFmt(S.t));
+    // The label: the time, the frame held, and what the time is.
+    var i0 = atMs(a, S.t);
+    var bits = [tlFmt(S.t) + (Math.abs(S.t - len) < 0.5 ? ' (the report)' : ' before the report')];
+    if (i0 < 0) bits.push('no frame drawn yet');
+    else {
+      var k = a.tl.ks[i0];
+      bits.push('frame ' + (i0 + 1) + '/' + a.tl.ks.length + ' · k' + k + ' drawn at ' + tlFmt(tlMs(k)));
+      var qa = quietAround(a, S.t);
+      if (S.t - tlMs(k) >= TL.period_ns / 1e6) {
+        var span = (qa[1] - qa[0]) / 1000;
+        bits.push(span * 1000 >= idle ? 'nothing changed: no repaint for ' + span.toFixed(1) + ' s' : 'held, no repaint since');
+      }
+    }
+    var pa = pointerAt(S.t);
+    bits.push(pa ? 'pointer ' + fmt(pa.x, 1) + ', ' + fmt(pa.y, 1) + ' on @' + pa.on : 'pointer off the replayed surfaces');
+    $('frame-label').textContent = bits.join(' · ');
+    var legend = $('track-legend');
+    if (legend && !legend.childNodes.length) {
+      [['rep', 'repaints'], ['idle', 'nothing changed'], ['ptr', 'pointer'], ['in', 'input'], ['chg', 'changes'], ['map', 'surfaces'], ['bad', 'divergences'], ['report', 'the report']].forEach(function (l) {
+        legend.appendChild(el('span', null, el('i', { cls: 'k ' + l[0] }), ' ' + l[1]));
+      });
+    }
   }
 
   function segmentOf(sc, k) {
@@ -1184,7 +1357,29 @@
     var a = A();
     if (!a) return;
     S.i = Math.max(0, Math.min(a.tl.ks.length - 1, i));
+    if (TL && a.tl.ks.length) S.t = Math.min(tlLen(), tlMs(a.tl.ks[S.i]));
     draw();
+  }
+
+  // (replayfix) A replay scrubbed to `ms` into its window: the frame
+  // shown is the last drawn by then.
+  function setTime(ms) {
+    var a = A();
+    if (!a) return;
+    S.t = Math.max(0, Math.min(tlLen(), ms));
+    S.i = Math.max(0, atMs(a, S.t));
+    draw();
+  }
+
+  // (replayfix) On to the `n`th next (or, negative, previous) time
+  // worth stopping at.
+  function stepStop(n) {
+    var a = A();
+    if (!a) return;
+    var st = stopsOf(a), j;
+    if (n > 0) { j = 0; while (j < st.length && st[j] <= S.t + 0.5) j++; j = Math.min(st.length - 1, j + n - 1); }
+    else { j = st.length - 1; while (j >= 0 && st[j] >= S.t - 0.5) j--; j = Math.max(0, j + n + 1); }
+    if (j >= 0 && j < st.length) setTime(st[j]);
   }
 
   function draw() {
@@ -1210,6 +1405,20 @@
     $('play').textContent = on ? 'Pause' : 'Play';
     if (playTimer) { clearTimeout(playTimer); playTimer = null; }
     if (!on) return;
+    // (replayfix) A replay plays its window from stop to stop in real
+    // time, a span with nothing to show at most a second.
+    if (TL) {
+      (function tick() {
+        var a = A();
+        if (!a) { play(false); return; }
+        var st = stopsOf(a), next = null;
+        for (var j = 0; j < st.length; j++) if (st[j] > S.t + 0.5) { next = st[j]; break; }
+        if (next === null) { play(false); return; }
+        var ms = Math.max(4, Math.min(1000, next - S.t) / S.speed);
+        playTimer = setTimeout(function () { setTime(next); tick(); }, ms);
+      })();
+      return;
+    }
     (function step() {
       var a = A();
       if (!a || S.i >= a.tl.ks.length - 1) { play(false); return; }
@@ -1227,11 +1436,17 @@
     resizeTimer = setTimeout(function () { renderStage(); if (S.tab === 'curves' || S.tab === 'cost') renderPanel(); }, 120);
   });
 
-  $('slider').addEventListener('input', function () { setFrame(+$('slider').value); });
-  $('first').addEventListener('click', function () { setFrame(0); });
-  $('last').addEventListener('click', function () { var a = A(); if (a) setFrame(a.tl.ks.length - 1); });
-  $('prev').addEventListener('click', function (e) { setFrame(S.i - (e.shiftKey ? 10 : 1)); });
-  $('next').addEventListener('click', function (e) { setFrame(S.i + (e.shiftKey ? 10 : 1)); });
+  $('slider').addEventListener('input', function () { if (TL) setTime(+$('slider').value); else setFrame(+$('slider').value); });
+  $('first').addEventListener('click', function () { if (TL) setTime(0); else setFrame(0); });
+  $('last').addEventListener('click', function () { var a = A(); if (TL) setTime(tlLen()); else if (a) setFrame(a.tl.ks.length - 1); });
+  $('prev').addEventListener('click', function (e) { if (TL) stepStop(e.shiftKey ? -10 : -1); else setFrame(S.i - (e.shiftKey ? 10 : 1)); });
+  $('next').addEventListener('click', function (e) { if (TL) stepStop(e.shiftKey ? 10 : 1); else setFrame(S.i + (e.shiftKey ? 10 : 1)); });
+  if (TL) {
+    $('prev').title = 'Back to the last frame or event (Left; Shift: ten)';
+    $('next').title = 'On to the next frame or event (Right; Shift: ten)';
+    $('first').title = 'The window\'s start (Home)';
+    $('last').title = 'The report (End)';
+  }
   $('play').addEventListener('click', function () { play(!S.playing); });
   $('speed').addEventListener('change', function () { S.speed = +$('speed').value; });
   document.addEventListener('keydown', function (e) {
@@ -1239,7 +1454,11 @@
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     var a = A();
     if (!a) return;
-    if (e.key === 'ArrowLeft') { setFrame(S.i - (e.shiftKey ? 10 : 1)); e.preventDefault(); }
+    if (TL && e.key === 'ArrowLeft') { stepStop(e.shiftKey ? -10 : -1); e.preventDefault(); }
+    else if (TL && e.key === 'ArrowRight') { stepStop(e.shiftKey ? 10 : 1); e.preventDefault(); }
+    else if (TL && e.key === 'Home') { setTime(0); e.preventDefault(); }
+    else if (TL && e.key === 'End') { setTime(tlLen()); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft') { setFrame(S.i - (e.shiftKey ? 10 : 1)); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { setFrame(S.i + (e.shiftKey ? 10 : 1)); e.preventDefault(); }
     else if (e.key === 'Home') { setFrame(0); e.preventDefault(); }
     else if (e.key === 'End') { setFrame(a.tl.ks.length - 1); e.preventDefault(); }

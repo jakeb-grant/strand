@@ -466,9 +466,51 @@ struct BudgetH {
     layout_passes: Option<u64>,
 }
 
-/// The `eval/` directory (this crate's).
+/// The `eval/` directory strand-eval works in: (replayfix) that of the
+/// strand checkout holding the current directory, else
+/// `${XDG_CACHE_HOME:-~/.cache}/strand-eval/` ([`cache_root`]). Never
+/// the tree the binary was built in: an installed `strand-eval` must
+/// not reach into a build tree, which may be gone or someone else's.
+/// Read once per process.
 pub fn eval_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|d| checkout_eval(&d))
+            .unwrap_or_else(|| {
+                cache_root(
+                    std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+                    std::env::var_os("HOME").map(PathBuf::from),
+                )
+            })
+    })
+    .clone()
+}
+
+/// (replayfix) The `eval/` of the strand checkout `dir` is in (`dir` or
+/// one of its parents holds `eval/Cargo.toml` of the `strand-eval`
+/// package), if any.
+pub fn checkout_eval(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().find_map(|d| {
+        let eval = d.join("eval");
+        let manifest = std::fs::read_to_string(eval.join("Cargo.toml")).ok()?;
+        manifest
+            .lines()
+            .any(|l| l.replace(' ', "") == "name=\"strand-eval\"")
+            .then_some(eval)
+    })
+}
+
+/// (replayfix) Where strand-eval keeps its files outside a checkout:
+/// `$XDG_CACHE_HOME/strand-eval` (an absolute one), else
+/// `$HOME/.cache/strand-eval`, else the temporary directory's.
+pub fn cache_root(xdg_cache: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    xdg_cache
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| h.join(".cache")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("strand-eval")
 }
 
 /// `path` with `.` and `..` folded away, lexically.

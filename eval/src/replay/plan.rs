@@ -13,8 +13,9 @@ use strand_core::flight::{Entry, flags, gap, kind, modifiers, request};
 use super::bundle::{Bundle, node_ref_at};
 use crate::harness::NodeRef;
 
-/// The traced part's default length, seconds before the report.
-pub const TRACED_S: f64 = 20.0;
+/// (replayfix) A leave followed this soon by an enter on another surface
+/// is the pointer handed from one surface to the other.
+pub const HANDOFF_NS: u64 = 50_000_000;
 
 /// How long before the report the busiest output is counted over.
 pub const BUSY_NS: u64 = 10_000_000_000;
@@ -32,7 +33,7 @@ pub const SANDBOX_OWNS: [&str; 4] = ["screens", "clock", "calendar", "auth"];
 pub struct Options {
     /// `--output NAME`.
     pub output: Option<String>,
-    /// `--traced SECONDS` (`None`: all of the window).
+    /// `--traced SECONDS` (`None`, the default: all of the window).
     pub traced: Option<f64>,
     /// (replay-owner) `--gpu`: a surface the live shell drew on the GPU
     /// is replayed on both legs (`backend = "both"`). Without it the
@@ -91,7 +92,23 @@ pub struct LiveWrite {
 pub struct Event {
     /// Since the window's start.
     pub t: u64,
+    /// (replayfix) `input`, `change` (a service, a cell, a request, an
+    /// action, a config write), `surface` or `late`: its mark on the
+    /// viewer's timeline.
+    pub kind: &'static str,
     pub text: String,
+}
+
+/// (replayfix) Where the live pointer was from `t` on: on the surface
+/// whose root is at `origin` (under the config directory), at `x, y`
+/// (logical px), or (`origin` `None`) on none of the replayed output's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointerAt {
+    /// Since the window's start.
+    pub t: u64,
+    pub origin: Option<String>,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// A step on the timeline.
@@ -104,7 +121,9 @@ struct Timed {
     /// (report review) The first tick it may run at: a step on a
     /// surface comes after the tick the sandbox shows it, which is the
     /// tick after the step that opened it (the live shell's surface
-    /// maps a roundtrip after the change, often within the same tick).
+    /// maps a roundtrip after the change, often within the same tick);
+    /// (replayfix) two ticks after the live map, the comparison's
+    /// tolerance.
     not_before: u64,
 }
 
@@ -157,6 +176,9 @@ pub struct Plan {
     pub maps: Vec<LiveMap>,
     pub writes: Vec<LiveWrite>,
     pub events: Vec<Event>,
+    /// (replayfix) The live pointer over the window, one entry per
+    /// recorded move, press or leave on the replayed output.
+    pub pointer: Vec<PointerAt>,
 }
 
 /// The live origin of a node's file, under the config directory.
@@ -550,16 +572,30 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let rel = |t: u64| t.saturating_sub(start);
 
     // 3. The output.
-    let mut busy: BTreeMap<String, usize> = BTreeMap::new();
-    for e in &b.inputs {
-        if is_input(e.rec.kind)
-            && e.rec.t + BUSY_NS >= end
-            && in_window(e.rec.t)
-            && let Some(o) = slots.output_of(b, e.rec.slot)
-        {
-            *busy.entry(o).or_default() += 1;
+    // (replayfix) The input on each output since `since`: the last 10 s
+    // first, else the whole window (the owner's report came 20 s after
+    // the hovering it was about, on another output than the newest
+    // surface's).
+    let busy_since = |since: u64| {
+        let mut busy: BTreeMap<String, usize> = BTreeMap::new();
+        for e in &b.inputs {
+            if is_input(e.rec.kind)
+                && e.rec.t >= since
+                && in_window(e.rec.t)
+                && let Some(o) = slots.output_of(b, e.rec.slot)
+            {
+                *busy.entry(o).or_default() += 1;
+            }
         }
-    }
+        busy
+    };
+    let busiest = |busy: &BTreeMap<String, usize>| {
+        busy.iter()
+            .max_by_key(|(n, c)| (**c, std::cmp::Reverse((*n).clone())))
+            .map(|(n, c)| (n.clone(), *c))
+    };
+    let recent = busiest(&busy_since(end.saturating_sub(BUSY_NS)));
+    let anywhere = busiest(&busy_since(start));
     let newest_mapped = b
         .inputs
         .iter()
@@ -569,15 +605,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         .or_else(|| b.surfaces.iter().find_map(|s| s.output.clone()));
     let (name, why) = match &opts.output {
         Some(n) => (n.clone(), "named by --output".to_string()),
-        None => match busy
-            .iter()
-            .max_by_key(|(n, c)| (**c, std::cmp::Reverse((*n).clone())))
-        {
-            Some((n, c)) => (
-                n.clone(),
-                format!("the most input in the last 10 s ({c} records)"),
+        None => match (recent, anywhere) {
+            (Some((n, c)), _) => (n, format!("the most input in the last 10 s ({c} records)")),
+            (None, Some((n, c))) => (
+                n,
+                format!("the most input in the window, none in its last 10 s ({c} records)"),
             ),
-            None => match newest_mapped {
+            (None, None) => match newest_mapped {
                 Some(n) => (n, "the newest mapped surface is on it".to_string()),
                 None => ("DP-1".to_string(), "no output is recorded".to_string()),
             },
@@ -619,11 +653,42 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         });
     let period = 1_000_000_000 / u64::from(hz);
     let text = |k: &str| from_json.and_then(|o| o[k].as_str()).map(str::to_string);
+    let (mut id, mut description) = (text("id"), text("description"));
+    let mut early_notes = Vec::new();
+    if id.is_none()
+        && let (Some(make), Some(model)) = (text("make"), text("model"))
+        && recovered_id(b, &make, &model).is_none()
+        && b.json["outputs"].as_array().is_some_and(|a| {
+            a.iter()
+                .filter(|o| {
+                    o["make"].as_str() == Some(&make) && o["model"].as_str() == Some(&model)
+                })
+                .count()
+                > 1
+        })
+    {
+        early_notes.push(format!(
+            "the screen's id is not known: the bundle is from before its outputs carried their \
+             ids, and another output is a {make} {model} too, so the cells kept per screen \
+             cannot tell which is this one's; they start at their defaults"
+        ));
+    }
+    if id.is_none()
+        && let (Some(make), Some(model)) = (text("make"), text("model"))
+        && let Some((i, d)) = recovered_id(b, &make, &model)
+    {
+        early_notes.push(format!(
+            "the screen's id `{i}` is read from the cells kept per screen: the bundle is from \
+             before its outputs carried their ids"
+        ));
+        id = Some(i);
+        description = description.or(Some(d));
+    }
     let output = OutputPick {
-        id: text("id"),
+        id,
         make: text("make"),
         model: text("model"),
-        description: text("description"),
+        description,
         name: name.clone(),
         width,
         height,
@@ -671,7 +736,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let declared = declared_services(&b.config_dir());
     let services_known = known_services();
     let known = |svc: &str| services_known.contains(svc) || declared.contains(svc);
-    let mut notes = Vec::new();
+    let mut notes = early_notes;
     let mut limits = Vec::new();
     let mut cur: BTreeMap<String, Json> = BTreeMap::new();
     let mut unmocked: BTreeMap<String, usize> = BTreeMap::new();
@@ -757,6 +822,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut presses = Vec::new();
     let mut maps = Vec::new();
     let mut writes = Vec::new();
+    let mut track: Vec<PointerAt> = Vec::new();
     let mut other_output = 0usize;
     let mut unknown_surface = 0usize;
     let mut typed = 0u64;
@@ -779,7 +845,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         2 => Some("middle"),
         _ => None,
     };
-    for e in &b.inputs {
+    for (idx, e) in b.inputs.iter().enumerate() {
         let t = e.rec.t;
         match e.rec.kind {
             kind::MAPPED | kind::UNMAPPED if in_window(t) => {
@@ -788,13 +854,21 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     _ => slots.surfaces.get(&e.rec.slot).map(|s| s.0.clone()),
                 };
                 if e.rec.kind == kind::MAPPED {
-                    shown_from.insert(e.rec.slot, (rel(t) + period / 2) / period + 1);
+                    // (replayfix) Up to the comparison's tolerance after
+                    // the live map: a hover popup the replay opens a tick
+                    // later than the live shell did is still in time for
+                    // the pointer that entered it.
+                    shown_from.insert(
+                        e.rec.slot,
+                        (rel(t) + period / 2) / period + super::fidelity::MAP_FRAMES,
+                    );
                 }
                 if on_output(e.rec.slot)
                     && let Some(o) = root.as_deref().and_then(origin_of_root)
                 {
                     let mapped = e.rec.kind == kind::MAPPED;
                     events.push(Event {
+                        kind: "surface",
                         t: rel(t),
                         text: format!("surface {} @{o}", if mapped { "mapped" } else { "gone" }),
                     });
@@ -823,6 +897,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                         nb,
                     );
                     events.push(Event {
+                        kind: "late",
                         t: rel(t),
                         text: format!("late frame on {sel}: {missed} missed"),
                     });
@@ -832,11 +907,27 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             k if is_input(k) && in_window(t) => {}
             _ => continue,
         }
+        // (replayfix) The pointer's place for the viewer: off the
+        // replayed output's known surfaces when it enters another.
+        let off = |track: &mut Vec<PointerAt>| {
+            if matches!(e.rec.kind, kind::ENTER | kind::MOTION)
+                && track.last().is_some_and(|p| p.origin.is_some())
+            {
+                track.push(PointerAt {
+                    t: rel(t),
+                    origin: None,
+                    x: 0.0,
+                    y: 0.0,
+                });
+            }
+        };
         if !on_output(e.rec.slot) {
+            off(&mut track);
             other_output += 1;
             continue;
         }
         let Some(sel) = sel_of(e.rec.slot) else {
+            off(&mut track);
             unknown_surface += 1;
             continue;
         };
@@ -849,6 +940,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         macro_rules! to_pointer {
             ($x:expr, $y:expr) => {{
                 let (x, y): (f32, f32) = ($x, $y);
+                track.push(PointerAt {
+                    t: at,
+                    origin: Some(sel[1..].to_string()),
+                    x,
+                    y,
+                });
                 if pointer != Some((r.slot, x, y)) {
                     push_on(
                         &mut timed,
@@ -875,8 +972,33 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 to_pointer!(x, y);
             }
             kind::LEAVE => {
-                push(&mut timed, at, "leave".into(), 0);
+                // (replayfix) A leave the compositor sent because a
+                // surface mapped under the pointer (a hover popup over
+                // its own trigger) is followed at once by an enter on
+                // that surface. The replay moves the pointer there when
+                // it shows, which leaves the trigger then, never before:
+                // an early leave cancels the hover that opens the popup.
+                let handed = b.inputs[idx + 1..]
+                    .iter()
+                    .find(|n| is_input(n.rec.kind))
+                    .is_some_and(|n| {
+                        n.rec.kind == kind::ENTER
+                            && n.rec.slot != r.slot
+                            && n.rec.t.saturating_sub(t) <= HANDOFF_NS
+                            && in_window(n.rec.t)
+                            && on_output(n.rec.slot)
+                            && sel_of(n.rec.slot).is_some()
+                    });
+                if !handed {
+                    push(&mut timed, at, "leave".into(), 0);
+                }
                 pointer = None;
+                track.push(PointerAt {
+                    t: at,
+                    origin: None,
+                    x: 0.0,
+                    y: 0.0,
+                });
             }
             kind::BUTTON => {
                 let (x, y) = xy(r);
@@ -893,6 +1015,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     0,
                 );
                 events.push(Event {
+                    kind: "input",
                     t: at,
                     text: format!(
                         "input {} {bn} at {x:.1},{y:.1} on {sel}",
@@ -966,6 +1089,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     );
                 }
                 events.push(Event {
+                    kind: "input",
                     t: at,
                     text: format!("input scroll {dy:.1} px on {sel}"),
                 });
@@ -1000,6 +1124,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 let phase = if r.u8(4) == 0 { "up" } else { "down" };
                 push(&mut timed, at, format!("key {name}{mods} {phase}"), 0);
                 events.push(Event {
+                    kind: "input",
                     t: at,
                     text: format!("input key {name}{mods} {phase} on {sel}"),
                 });
@@ -1026,6 +1151,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 };
                 push(&mut timed, at, text, ticks);
                 events.push(Event {
+                    kind: "input",
                     t: at,
                     text: format!(
                         "input {} on {sel}",
@@ -1044,6 +1170,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 pastes += 1;
                 push(&mut timed, at, format!("paste {n}"), 0);
                 events.push(Event {
+                    kind: "input",
                     t: at,
                     text: format!("input paste of {n} characters on {sel}"),
                 });
@@ -1095,6 +1222,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                         0,
                     );
                     events.push(Event {
+                        kind: "change",
                         t: at,
                         text: format!("service {name} = {}", compact(&pair[1])),
                     });
@@ -1113,6 +1241,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     let whole = Json::Array(list.clone());
                     push(&mut timed, at, format!("set {name} {}", compact(&whole)), 0);
                     events.push(Event {
+                        kind: "change",
                         t: at,
                         text: format!("service {name}: {}", compact(&j["d"])),
                     });
@@ -1128,6 +1257,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     };
                     push(&mut timed, at, format!("emit {name}{tail}"), 0);
                     events.push(Event {
+                        kind: "change",
                         t: at,
                         text: format!("service event {name}{tail}"),
                     });
@@ -1153,6 +1283,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 answered_at.insert(name.clone(), at);
                 push(&mut timed, when, step, 0);
                 events.push(Event {
+                    kind: "change",
                     t: at,
                     text: format!(
                         "service {name} answered{}",
@@ -1169,6 +1300,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     && pair.len() == 2
                 {
                     events.push(Event {
+                        kind: "change",
                         t: at,
                         text: format!("cell {name} = {} (live)", compact(&pair[1])),
                     });
@@ -1190,11 +1322,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 };
                 push(&mut timed, at, step.clone(), 0);
                 events.push(Event {
+                    kind: "change",
                     t: at,
                     text: format!("request {step}"),
                 });
             }
             kind::ACTION => events.push(Event {
+                kind: "change",
                 t: at,
                 text: format!(
                     "action {name} {}",
@@ -1208,6 +1342,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 ),
             }),
             kind::WRITE => events.push(Event {
+                kind: "change",
                 t: at,
                 text: format!(
                     "config wrote {name} = {}",
@@ -1363,7 +1498,56 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         maps,
         writes,
         events,
+        pointer: track,
     })
+}
+
+/// (replayfix) A screen's id for a bundle from before its outputs
+/// carried their ids (format 1 before replayfix): an id is `make |
+/// model | description` (strand-surface's monitor identity), and a cell
+/// kept per screen names it (`Notch[<id>].grown`). The one such id that
+/// starts with this output's make and model, when no other output has
+/// both, and its description.
+pub fn recovered_id(b: &Bundle, make: &str, model: &str) -> Option<(String, String)> {
+    let twins = b.json["outputs"].as_array().map_or(0, |a| {
+        a.iter()
+            .filter(|o| o["make"].as_str() == Some(make) && o["model"].as_str() == Some(model))
+            .count()
+    });
+    if twins > 1 {
+        return None;
+    }
+    let prefix = format!("{make} | {model} | ");
+    let mut found = BTreeSet::new();
+    let names = b
+        .cells
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys().cloned())
+        .chain(
+            b.change_entries
+                .iter()
+                .filter_map(|e| (e.rec.kind == kind::CELL).then(|| e.name.clone()).flatten()),
+        );
+    for n in names {
+        let Some(open) = n.find('[') else {
+            continue;
+        };
+        let Some(close) = n[open..].find("].").map(|c| open + c) else {
+            continue;
+        };
+        let inner = &n[open + 1..close];
+        if inner.starts_with(&prefix) {
+            found.insert(inner.to_string());
+        }
+    }
+    let mut it = found.into_iter();
+    let one = it.next()?;
+    if it.next().is_some() {
+        return None;
+    }
+    let description = one[prefix.len()..].to_string();
+    Some((one, description))
 }
 
 /// The services the sandbox's schema has.
@@ -1393,6 +1577,16 @@ pub fn scenario_id(name: &str) -> String {
 }
 
 impl Plan {
+    /// (replayfix) The traced part in words: `the whole window`, or `the
+    /// last 20.0 s` (`--traced 20`).
+    pub fn traced_words(&self) -> String {
+        if self.traced_ns >= self.end - self.start {
+            "the whole window".into()
+        } else {
+            format!("the last {:.1} s", self.traced_ns as f64 / 1e9)
+        }
+    }
+
     /// The window start's wall time, RFC 3339 at the bundle's offset.
     pub fn wall(&self, b: &Bundle) -> String {
         let unix = b.epoch_unix_ns as i128 + self.start as i128;
@@ -1416,11 +1610,11 @@ impl Plan {
         let mut s = String::new();
         let _ = writeln!(s, "id = {}", toml_str(id));
         let about = format!(
-            "The replay of the glitch report {:?} ({}): {} s up to the report, the last {} s traced; written by `strand-eval replay`.",
+            "The replay of the glitch report {:?} ({}): {} s up to the report, traced: {}; written by `strand-eval replay`.",
             b.words,
             b.dir.display(),
             (self.end - self.start) / 1_000_000_000,
-            self.traced_ns / 1_000_000_000
+            self.traced_words()
         );
         let _ = writeln!(s, "about = {}", toml_str(&about));
         // (replayfix) The screen is the live output: per-screen data

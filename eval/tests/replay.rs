@@ -271,11 +271,21 @@ fn plan_of(dir: &Path, opts: &Options) -> (Bundle, replay::Plan, String) {
     (b, p, text)
 }
 
+/// What `strand-eval replay` is asked for with no options: (replayfix)
+/// the whole window traced.
 fn defaults() -> Options {
     Options {
         output: None,
-        traced: Some(replay::plan::TRACED_S),
+        traced: None,
         gpu: false,
+    }
+}
+
+/// `--traced 20`: the last 20 s traced, the rest a warm-up.
+fn traced_20() -> Options {
+    Options {
+        traced: Some(20.0),
+        ..defaults()
     }
 }
 
@@ -304,7 +314,18 @@ fn a_bundle_converts_to_a_scenario_that_parses() {
     let sc = Scenario::load(&scn).unwrap_or_else(|e| panic!("{e}\n{text}"));
     assert_eq!(sc.hz, 60);
     assert_eq!(p.start, S, "the window starts at the shell's first surface");
-    assert_eq!(sc.warmup, 9_000, "all but the last 20 s are the warm-up");
+    assert_eq!(
+        sc.warmup, 0,
+        "(replayfix) the whole window is traced by default"
+    );
+    let (_, p20, text20) = plan_of(&dir, &traced_20());
+    let sc20 = Scenario::parse(&text20, &scn).unwrap_or_else(|e| panic!("{e}\n{text20}"));
+    assert_eq!(
+        sc20.warmup, 9_000,
+        "--traced 20: all but the last 20 s are the warm-up"
+    );
+    assert_eq!(p20.traced_words(), "the last 20.0 s");
+    assert_eq!(p.traced_words(), "the whole window");
     assert!(sc.wall.is_some());
     assert_eq!(p.output.name, "DP-1");
     assert!(text.contains("config_dir = "), "{text}");
@@ -440,6 +461,21 @@ fn the_busiest_output_is_replayed() {
     )
     .unwrap_err();
     assert!(e.to_string().contains("no such output"), "{e}");
+    // (replayfix) No input in the last 10 s: the output with the most in
+    // the window, not the newest surface's (the owner's report came 20 s
+    // after the hovering it was about, and a popup had since mapped on
+    // another output).
+    let mut g = Fx::session();
+    g.output(1, "HDMI-A-1", 2560, 1440, 180, 200 * MS);
+    g.node(bits(5, 1), &o.bar, None);
+    g.surface(2, 1, bits(5, 1), &o.bar, 20 * S, 6_944_444);
+    let (_, p, _) = plan_of(&g.write("busy-window"), &defaults());
+    assert_eq!(p.output.name, "DP-1", "{}", p.output.why);
+    assert!(
+        p.output.why.starts_with("the most input in the window"),
+        "{}",
+        p.output.why
+    );
 }
 
 #[test]
@@ -708,7 +744,7 @@ fn replay_txt_lists_inputs_changes_and_motion_by_source_location() {
     let o = origins();
     for want in [
         "glitch report: \"the bar dipped\"".to_string(),
-        "window: 29.0 s up to the report, from the shell's start; traced: the last 29.0 s".into(),
+        "window: 29.0 s up to the report, from the shell's start; traced: the whole window".into(),
         "output: DP-1 1280x720 scale 1 at 60 Hz".into(),
         format!(
             "-22.00s input press left at 40.0,20.0 on @{} hit @{} #button",
@@ -746,7 +782,7 @@ fn replay_txt_lists_inputs_changes_and_motion_by_source_location() {
 
 #[test]
 fn a_faithful_replay_reports_no_divergence() {
-    for traced in [Some(replay::plan::TRACED_S), None] {
+    for traced in [Some(20.0), None] {
         let opts = Options {
             output: None,
             traced,
@@ -1213,7 +1249,7 @@ fn the_checks_findings_are_hints() {
     assert!(!r.ok, "the checks found nothing:\n{}", r.text);
     let text = &r.text;
     let v = text.find("verdict: ").unwrap();
-    let ev = text.find("\nevents (seconds before the report):").unwrap();
+    let ev = text.find(&format!("\n{}", replay::TIMELINE)).unwrap();
     let mo = text.find("\nmotion (one line per run").unwrap();
     let h = text
         .find("\nhints (the checks may be wrong on a real shell):")
@@ -1899,4 +1935,250 @@ fn the_replay_screen_is_the_live_output() {
         (sc.identity.make.as_str(), sc.identity.model.as_str()),
         ("Fixture", "Panel")
     );
+}
+
+/// (replayfix) A bundle from before its outputs carried their ids: the
+/// id is read from the cells kept per screen, `make | model |
+/// description`, when one of them names this output's make and model
+/// and no other output has both.
+#[test]
+fn an_old_bundles_screen_id_is_read_from_its_cells() {
+    let mut f = Fx::session();
+    f.cells = json!({"shell.clicks": 1, "Top[Fixture | Panel | Fixture Panel 42].n": 3});
+    let dir = f.write("screen-cells");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    assert_eq!(
+        p.output.id.as_deref(),
+        Some("Fixture | Panel | Fixture Panel 42")
+    );
+    assert_eq!(p.output.description.as_deref(), Some("Fixture Panel 42"));
+    assert!(
+        text.contains("id = \"Fixture | Panel | Fixture Panel 42\""),
+        "{text}"
+    );
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.contains("read from the cells kept per screen")),
+        "{:?}",
+        p.notes
+    );
+    // Two outputs of that make and model: whose the cell is cannot be
+    // told, so none is taken.
+    f.output(1, "DP-2", 1280, 720, 120, 900 * MS);
+    let (_, p, _) = plan_of(&f.write("screen-twins"), &defaults());
+    assert_eq!(p.output.id, None);
+}
+
+/// (replayfix) `replay.txt`'s timeline: the live pointer's moves a line
+/// per run, the replay's repaints a line per run, each span with no
+/// repaint said as such, and the report; the viewer's data has the
+/// same timeline (seconds before the report), the live pointer's place
+/// over time, and the window in words.
+#[test]
+fn the_replay_shows_time_not_only_painted_frames() {
+    let dir = Fx::session().write("timeline");
+    let (r, out) = replay_of(&dir, &defaults());
+    let text = &r.text;
+    let o = origins();
+    let tl = text
+        .split(&format!("\n{}\n", replay::TIMELINE))
+        .nth(1)
+        .unwrap_or_else(|| panic!("no timeline in\n{text}"));
+    let tl = tl.split("\n\n").next().unwrap();
+    for want in [
+        format!("-25.00s input pointer at 40.0,20.0 on @{}", o.bar),
+        format!("-24.00s input pointer at 200.0,20.0 on @{}", o.bar),
+        "replay repainted k".to_string(),
+        "nothing changed: no repaint for ".to_string(),
+        "0.00s the report".to_string(),
+    ] {
+        assert!(tl.contains(&want), "no `{want}` in\n{tl}");
+    }
+    // The 11 s from the service update (-18 s) to the report paint
+    // nothing in the fixture: one idle span says so, to the report.
+    let idle = tl
+        .lines()
+        .filter(|l| l.contains("nothing changed: no repaint for "))
+        .collect::<Vec<_>>();
+    let long = |l: &&str| {
+        l.split("no repaint for ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse::<f64>().ok())
+            .is_some_and(|n| n >= 10.0)
+    };
+    assert!(idle.iter().any(long), "{idle:?}");
+    let page = std::fs::read_to_string(out.join("index.html")).unwrap();
+    let data = strand_eval::report::html::embedded(&page).unwrap();
+    let t = &data["replay"]["timeline"];
+    assert_eq!(t["seconds"], json!(29.0));
+    assert_eq!(t["period_ns"], json!(16_666_666));
+    assert_eq!(t["traced_from"], json!(-29.0));
+    let events = t["events"].as_array().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e["kind"] == json!("input") && e["t"] == json!(-22.0)),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["kind"] == json!("change") && e["text"] == json!("service mood.level = 7")),
+        "{events:?}"
+    );
+    let pointer = t["pointer"].as_array().unwrap();
+    assert_eq!(pointer[0]["t"], json!(-25.0));
+    assert_eq!(pointer[0]["on"], json!(o.bar));
+    assert_eq!(
+        (pointer[1]["x"].clone(), pointer[1]["y"].clone()),
+        (json!(200.0), json!(20.0))
+    );
+    assert!(
+        data["replay"]["window"]
+            .as_str()
+            .is_some_and(|w| w.ends_with("traced: the whole window")),
+        "{}",
+        data["replay"]["window"]
+    );
+    // The viewer scrubs a replay by time: its scrubber, the spans with
+    // no repaint, the live pointer over the frame, the report marked.
+    for want in [
+        "function renderTime()",
+        "nothing changed: no repaint for ",
+        "function drawPointer(",
+        "mark('report', len, 'the report')",
+        "a surface the replay does not show here",
+        "var TL = DATA.replay && DATA.replay.timeline && !AB",
+    ] {
+        assert!(page.contains(want), "the page has no `{want}`");
+    }
+}
+
+/// (replayfix) Outside a strand checkout `strand-eval replay` never
+/// reaches into the tree it was built in: its scenario goes under
+/// `${XDG_CACHE_HOME:-~/.cache}/strand-eval/scenarios/local/`; inside
+/// one, under that checkout's `eval/scenarios/local/` (the checkout
+/// holding the current directory).
+#[test]
+fn the_replay_works_where_it_is_run_not_where_it_was_built() {
+    use strand_eval::scenario::{cache_root, checkout_eval};
+    let root = tmp("outside");
+    let bundle = root.join("reports/2026-10-21_00-00-01");
+    Fx::session().write_to(&bundle);
+    let id = "report-2026-10-21_00-00-01";
+    let here = strand_eval::scenario::eval_root().join("scenarios/local");
+    let run = |cwd: &Path, cache: &Path| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+            .arg("replay")
+            .arg(&bundle)
+            .args(["--no-open", "--out"])
+            .arg(cwd.join("out"))
+            .current_dir(cwd)
+            .env("XDG_CACHE_HOME", cache)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read_to_string(cwd.join("out/replay.txt")).unwrap()
+    };
+    // Outside any checkout.
+    let away = root.join("away");
+    std::fs::create_dir_all(&away).unwrap();
+    assert_eq!(checkout_eval(&away), None);
+    let cache = root.join("cache");
+    let text = run(&away, &cache);
+    let scn = cache.join(format!("strand-eval/scenarios/local/{id}.scn"));
+    assert!(scn.is_file(), "no {}", scn.display());
+    assert!(
+        text.contains(&format!("scenario: {}", scn.display())),
+        "{text}"
+    );
+    assert!(
+        !here.join(format!("{id}.scn")).exists(),
+        "the build tree was written"
+    );
+    // In another checkout (its `eval/Cargo.toml` is strand-eval's), from
+    // a folder inside it.
+    let other = root.join("other");
+    std::fs::create_dir_all(other.join("eval")).unwrap();
+    std::fs::write(
+        other.join("eval/Cargo.toml"),
+        "[package]\nname = \"strand-eval\"\n",
+    )
+    .unwrap();
+    let inside = other.join("deep/er");
+    std::fs::create_dir_all(&inside).unwrap();
+    assert_eq!(checkout_eval(&inside), Some(other.join("eval")));
+    let text = run(&inside, &cache);
+    let scn = other.join(format!("eval/scenarios/local/{id}.scn"));
+    assert!(scn.is_file(), "no {}", scn.display());
+    assert!(
+        text.contains(&format!("scenario: {}", scn.display())),
+        "{text}"
+    );
+    assert!(
+        !here.join(format!("{id}.scn")).exists(),
+        "the build tree was written"
+    );
+    // A folder with some other `eval/` is no checkout.
+    let fake = root.join("fake");
+    std::fs::create_dir_all(fake.join("eval")).unwrap();
+    std::fs::write(
+        fake.join("eval/Cargo.toml"),
+        "[package]\nname = \"other\"\n",
+    )
+    .unwrap();
+    assert_eq!(checkout_eval(&fake), None);
+    // The cache: an absolute $XDG_CACHE_HOME, else ~/.cache.
+    assert_eq!(
+        cache_root(Some("/c".into()), Some("/h".into())),
+        PathBuf::from("/c/strand-eval")
+    );
+    assert_eq!(
+        cache_root(Some("rel".into()), Some("/h".into())),
+        PathBuf::from("/h/.cache/strand-eval")
+    );
+    assert_eq!(
+        cache_root(None, Some("/h".into())),
+        PathBuf::from("/h/.cache/strand-eval")
+    );
+}
+
+/// (replayfix) A leave the compositor sends because a surface mapped
+/// under the pointer is followed at once by an enter on it: the replay
+/// moves the pointer there when it shows (two ticks after the live map
+/// at most), and never leaves the trigger first, which would cancel the
+/// hover that opens the popup. A leave on its own stays.
+#[test]
+fn a_pointer_handed_to_a_surface_that_maps_under_it_is_not_left_first() {
+    let o = origins();
+    let mut f = Fx::session();
+    f.surface(2, 0, bits(13, 1), &o.bar, 9 * S, 16_666_667);
+    f.pointer(1, kind::LEAVE, 0.0, 0.0, 9 * S + 2 * MS);
+    f.pointer(2, kind::ENTER, 30.0, 10.0, 9 * S + 2 * MS);
+    f.pointer(2, kind::LEAVE, 0.0, 0.0, 11 * S);
+    let (_, _, text) = plan_of(&f.write("handoff"), &defaults());
+    let st = steps(&text);
+    assert_eq!(
+        st.iter().filter(|l| **l == "leave").count(),
+        1,
+        "only the lone leave:\n{text}"
+    );
+    let mut tick = 0u64;
+    let mut on = None;
+    for l in &st {
+        if let Some(n) = l.strip_prefix("frames ") {
+            tick += n.parse::<u64>().unwrap();
+        }
+        if l.starts_with("pointer 30.00,10.00 on @") {
+            on = Some(tick);
+        }
+    }
+    // Mapped 8 s into the window: tick 480; the step two ticks on.
+    assert_eq!(on, Some(482), "{text}");
 }

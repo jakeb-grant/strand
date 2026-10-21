@@ -177,3 +177,30 @@ pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hove
 .hints-label { font-size: 12px; opacity: 0.8; margin-right: 6px; align-self: center; }
 /* (replay-owner) A replay's check statuses and findings are hints: neutral. */
 .st-hint { color: var(--skip); }
+/* (replayfix) A replay's scrubber spans its window in real time, in lanes:
+   repaints and the spans with none, the live pointer and input, the live
+   changes and surfaces, the divergences; the report at the right end. */
+.track.timeline { height: 48px; }
+.track .b { position: absolute; height: 10px; min-width: 2px; cursor: pointer; }
+.track .b.rep { top: 0; background: var(--accent); }
+.track .b.idle { top: 0; background: repeating-linear-gradient(135deg, var(--held) 0 4px, transparent 4px 8px); border: 1px dashed var(--line); }
+.track .b.untraced { top: 0; height: 48px; background: var(--hover); opacity: 0.7; }
+.track .b.ptr { top: 12px; background: var(--c2); opacity: 0.55; }
+.track.timeline .m { height: 10px; }
+.track .m.in { top: 12px; background: var(--c2); }
+.track .m.chg { top: 24px; background: var(--c3); }
+.track .m.map { top: 24px; background: var(--c4); width: 3px; }
+.track .m.late { top: 24px; background: var(--changed); }
+.track.timeline .m.bad { top: 36px; height: 10px; background: var(--fail); }
+.track .m.hint { top: 36px; background: var(--skip); }
+.track .m.report { top: 0; height: 48px; width: 3px; background: var(--fail); transform: translateX(-3px); }
+.track.timeline .m.cur { top: 0; height: 48px; background: var(--ink); }
+.track-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.track-legend:empty { display: none; }
+.track-legend .k { display: inline-block; width: 10px; height: 8px; vertical-align: middle; }
+.track-legend .k.rep { background: var(--accent); }
+.track-legend .k.idle { background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 4px); }
+.track-legend .k.ptr, .track-legend .k.in { background: var(--c2); }
+.track-legend .k.chg { background: var(--c3); }
+.track-legend .k.map { background: var(--c4); }
+.track-legend .k.bad, .track-legend .k.report { background: var(--fail); }

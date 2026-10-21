@@ -14,7 +14,10 @@
 #              update), `strand report`, the replay, fidelity.json
 #              with no divergence from the live shell and the verdict
 #              VERIFIED; the bundle with one drawn box moved 3 px
-#              DRIFTED, naming that node
+#              DRIFTED, naming that node; (replayfix) a session that
+#              opens a hover popup over its own trigger and moves on it:
+#              the replay shows the popup when the live shell did and
+#              takes every pointer step on it
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -98,7 +101,7 @@ else
   no "report-view failed on $older"
 fi
 need "the named bundle's replay is written" "$older/replay/replay.txt"
-grep -q "traced: the last 29.0 s" "$older/replay/replay.txt" && ok "flags reach strand-eval replay" ||
+grep -q "traced: the whole window" "$older/replay/replay.txt" && ok "flags reach strand-eval replay" ||
   no "--traced all did not reach the replay: $(head -5 "$older/replay/replay.txt")"
 for _ in $(seq 50); do [ -s "$DIR/opened" ] && break; sleep 0.1; done
 grep -qx "$older/replay/index.html" "$DIR/opened" 2>/dev/null && ok "without --no-open the viewer is opened" ||
@@ -155,7 +158,7 @@ if [ "$e2e" = 1 ]; then
       ok "its bundle replays"
       f=$bundle/replay/fidelity.json
       # Its head, for the log: the window, the output, the comparison.
-      sed -n '1,/^events/p' "$bundle/replay/replay.txt"
+      sed -n '1,/^timeline/p' "$bundle/replay/replay.txt"
       if grep -q '"faithful": true' "$f"; then
         ok "the replay does not diverge from the live shell (hits, surfaces, cell writes, the final frame)"
       else
@@ -218,6 +221,57 @@ PY
   else
     tail -40 "$DIR/e2e.log"
     no "the scripted session on a headless sway was not reported"
+  fi
+
+  # (replayfix) A hover popup opened in the window, over its own
+  # trigger, with state kept per screen: the replay shows it when the
+  # live shell did and takes the pointer steps on it.
+  keep=$DIR/keep-popup
+  if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
+    a_popup_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-popup.log" 2>&1 && [ -f "$keep/bundle" ]; then
+    ok "a session with a hover popup is reported"
+    bundle=$(cat "$keep/bundle")
+    run_dir=$(cat "$keep/run")
+    made+=("$(scenario_name "$bundle")")
+    if bash scripts/report-view.sh --no-open "$bundle" >"$DIR/e2e-popup-view" 2>&1; then
+      ok "its bundle replays"
+      rep=$bundle/replay
+      sed -n '1,/^timeline/p' "$rep/replay.txt"
+      popup=$(grep -n 'popup {' "$bundle/config/peek.strand" | head -1 | cut -d: -f1)
+      col=$(grep 'popup {' "$bundle/config/peek.strand" | head -1 | sed 's/popup {.*//' | wc -c)
+      origin="peek.strand:$popup:$col"
+      grep -q "replay surface mapped @$origin" "$rep/replay.txt" &&
+        ok "the popup ($origin) shows in the replay" ||
+        no "the popup ($origin) never showed in the replay: $(grep -n 'surface' "$rep/replay.txt" | head)"
+      steps=$(grep -c "^pointer .* on @$origin\$" "$rep"/report-*/scenario.scn)
+      [ "$steps" -ge 2 ] && ok "the replay has $steps pointer steps on the popup" ||
+        no "the replay has $steps pointer steps on the popup"
+      if python3 -I - "$rep/fidelity.json" <<'PY'
+import json, sys
+f = json.load(open(sys.argv[1]))
+bad = [d for d in f["divergences"] if d["what"] in ("step", "surface")]
+for d in bad:
+    print("  ", d["t"], d["what"], d["text"])
+sys.exit(1 if bad else 0)
+PY
+      then
+        ok "the popup mapped within two frames of the live one, and every step on it was taken"
+      else
+        no "the popup's replay parts from the live shell (above)"
+      fi
+      grep -q '"faithful": true' "$rep/fidelity.json" && ok "the popup session replays faithfully" ||
+        no "the popup session diverges: $(grep -A3 '"first"' "$rep/fidelity.json")"
+      head -1 "$rep/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
+        ok "the popup session is VERIFIED against the live shell's drawn boxes" ||
+        no "the popup session is not VERIFIED: $(sed -n '1,/^glitch report/p' "$rep/replay.txt")"
+    else
+      cat "$DIR/e2e-popup-view"
+      no "the popup session's bundle could not be replayed"
+    fi
+    rm -rf "$run_dir"
+  else
+    tail -40 "$DIR/e2e-popup.log"
+    no "the hover popup session on a headless sway was not reported"
   fi
 fi
 

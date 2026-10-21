@@ -190,7 +190,10 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
     let [dir] = a.words.as_slice() else {
         return Err(Error::Usage(usage.into()));
     };
-    let dir = Path::new(dir);
+    // (replayfix) Absolute: the scenario names the bundle's `config/`,
+    // and a relative path would be read from the scenario's folder.
+    let abs = std::fs::canonicalize(dir).unwrap_or_else(|_| PathBuf::from(dir));
+    let dir = abs.as_path();
     if !dir.join("bundle.json").is_file() {
         return Err(Error::Usage(format!(
             "replay: {} is not a glitch report (no bundle.json)",
@@ -212,9 +215,10 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
         )));
     }
     drop(bundle);
+    // (replayfix) The whole window by default: the owner's moment may be
+    // anywhere in it.
     let traced = match a.value(&["--traced"]) {
-        None => Some(crate::replay::plan::TRACED_S),
-        Some("all") => None,
+        None | Some("all") => None,
         Some(s) => Some(
             s.parse::<f64>()
                 .ok()

@@ -10,7 +10,7 @@ failed request or failed expectation.
 
 Usage: python3 -I viewer_check.py --shots DIR [--expect KINDS] PAGE...
        PAGE: an index.html (a strand-eval report or a matrix grid).
-       KINDS: comma-separated of pass, fail, changed, matrix: each must be
+       KINDS: comma-separated of pass, fail, changed, matrix, replay: each must be
        exercised by some page, so a run on the wrong reports cannot pass
        by finding nothing to check.
 """
@@ -109,7 +109,8 @@ def label(page):
 
 
 def frame_no(page):
-    m = re.match(r"frame (\d+)/(\d+)", label(page))
+    # A replay's label starts with the time, then the frame.
+    m = re.search(r"frame (\d+)/(\d+)", label(page))
     if not m:
         raise Fail(f"frame label reads {label(page)!r}")
     return int(m.group(1)), int(m.group(2))
@@ -170,6 +171,78 @@ def pick(page, sid):
     settle(page)
 
 
+def slide(page, v):
+    page.locator("#slider").evaluate(
+        "(s, v) => { s.value = String(v); s.dispatchEvent(new Event('input', {bubbles: true})); }", v)
+    settle(page, 40)
+
+
+def seconds(page):
+    """A replay's scrubbed time, seconds before the report, from its label."""
+    m = re.match(r"([+-]?\d+\.\d+) s", label(page))
+    if not m:
+        raise Fail(f"a replay's label reads {label(page)!r}")
+    return float(m.group(1))
+
+
+def exercise_time(page, chk, tl, where, tag, kind):
+    """(replayfix) A replay's scrubber spans its window in real time:
+    the report marked, the spans with no repaint said so, the live input
+    and changes marked, the live pointer named and drawn, buttons, keys
+    and play stepping through time."""
+    length = tl["seconds"]
+    slider = page.locator("#slider")
+    top = int(slider.get_attribute("max") or "0")
+    chk.expect(abs(top - round(length * 1000)) <= 1, where, f"the slider spans {top} ms, the window {length} s")
+    chk.expect("(the report)" in label(page), where, f"a replay does not open at the report: {label(page)!r}")
+    chk.expect(page.locator("#track .m.report").count() == 1, where, "the report is not marked")
+    chk.expect(page.locator("#track-legend span").count() >= 6, where, "the timeline has no legend")
+    if tl.get("events"):
+        marks = page.locator("#track .m.in, #track .m.chg, #track .m.map, #track .m.late").count()
+        chk.expect(marks >= 1, where, "the live events are not marked")
+    slide(page, 0)
+    chk.expect(abs(seconds(page) + length) < 0.01, where, f"the slider's start is not the window's: {label(page)!r}")
+    # A span with no repaint, scrubbed into: said so, the frame held.
+    gap = page.evaluate("""() => {
+      var d = JSON.parse(document.getElementById('run').textContent), t = d.replay.timeline;
+      var sc = d.runs[0].scenarios[0], ms = sc.trace.frames.map(function (f) { return f.k * t.period_ns / 1e6; });
+      ms.push(t.seconds * 1000);
+      for (var i = 0; i + 1 < ms.length; i++) if (ms[i + 1] - ms[i] >= t.idle_s * 1000) return (ms[i] + ms[i + 1]) / 2;
+      return null; }""")
+    if gap is not None:
+        slide(page, round(gap))
+        chk.expect("nothing changed: no repaint for" in label(page), where, f"an idle span reads {label(page)!r}")
+        chk.expect(page.locator("#track .b.idle").count() >= 1, where, "no idle span on the timeline")
+        chk.shot(page, f"{tag}-{kind}-idle")
+    # The live pointer at a time it was on a surface: named, drawn.
+    on = [p for p in tl.get("pointer", []) if p.get("on")]
+    if on:
+        slide(page, round((on[-1]["t"] + length) * 1000) + 1)
+        chk.expect("on @" + on[-1]["on"] in label(page), where, f"the pointer is not named: {label(page)!r}")
+        chk.shot(page, f"{tag}-{kind}-pointer")
+    page.locator("#first").click()
+    chk.expect(abs(seconds(page) + length) < 0.01, where, "|< does not go to the window's start")
+    page.locator("#next").click()
+    chk.expect(seconds(page) > -length, where, "> does not step on in time")
+    page.locator("#last").click()
+    chk.expect("(the report)" in label(page), where, ">| does not go to the report")
+    page.locator("#prev").click()
+    chk.expect(seconds(page) < 0, where, "< does not step back in time")
+    page.keyboard.press("Home")
+    chk.expect(abs(seconds(page) + length) < 0.01, where, "Home does not go to the window's start")
+    page.keyboard.press("ArrowRight")
+    chk.expect(seconds(page) > -length, where, "Right does not step on in time")
+    page.keyboard.press("End")
+    chk.expect("(the report)" in label(page), where, "End does not go to the report")
+    page.keyboard.press("Home")
+    page.locator("#play").click()
+    page.wait_for_timeout(500)
+    if page.locator("#play").inner_text() == "Pause":
+        page.locator("#play").click()
+    chk.expect(seconds(page) > -length, where, "Play does not advance in time")
+    slide(page, top)
+
+
 def exercise_scenario(page, chk, data, sc, kind, tag):
     """Every mode of the viewer on one scenario."""
     where = f"{tag}/{sc['id']}"
@@ -178,9 +251,14 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
     i, n = frame_no(page)
     chk.expect(n >= 1, where, "no frames")
     chk.shot(page, f"{tag}-{kind}-desktop-light", full=True)
+    slider = page.locator("#slider")
+    tl = (data.get("replay") or {}).get("timeline")
+    if tl and len(data["runs"]) == 1:
+        exercise_time(page, chk, tl, where, tag, kind)
+        exercise_rest(page, chk, data, sc, kind, tag, where, i, lambda: slide(page, int(slider.get_attribute("max") or "0")))
+        return
 
     # The scrubber: slider, buttons, keys.
-    slider = page.locator("#slider")
     mid = (n - 1) // 2
     slider.evaluate("(s, v) => { s.value = String(v); s.dispatchEvent(new Event('input', {bubbles: true})); }", mid)
     settle(page, 40)
@@ -213,7 +291,12 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
     # Back to the frame the viewer opened on (a failing finding's).
     slider.evaluate("(s, v) => { s.value = String(v); s.dispatchEvent(new Event('input', {bubbles: true})); }", i - 1)
     settle(page)
+    exercise_rest(page, chk, data, sc, kind, tag, where, i, lambda: slide(page, i - 1))
 
+
+def exercise_rest(page, chk, data, sc, kind, tag, where, i, back):
+    """The filmstrip, overlays and panels, from the frame the viewer
+    opened on (`back` returns to it)."""
     # The filmstrip.
     film = page.locator("#film canvas")
     count = film.count()
@@ -227,7 +310,7 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
         settle(page, 60)
         chk.expect(label(page) != before, where, "clicking a filmstrip frame does not move the scrubber")
         chk.expect(page.locator("#film canvas.cur").count() == 1, where, "the filmstrip marks no current frame")
-        slider.evaluate("(s, v) => { s.value = String(v); s.dispatchEvent(new Event('input', {bubbles: true})); }", i - 1)
+        back()
         settle(page)
 
     # Overlays.
@@ -558,6 +641,10 @@ def check_viewer(browser, url, chk, tag):
                 if same is not None:
                     picked["ab"] = same
                 break
+    # (replayfix) A glitch report's replay: its one scenario, scrubbed by
+    # time.
+    if (data.get("replay") or {}).get("timeline") and a:
+        picked = {"replay": a[0]}
     for kind, s in picked.items():
         current["at"] = f"{tag}/{s['id']}"
         print(f"  {kind}: {s['id']}", flush=True)

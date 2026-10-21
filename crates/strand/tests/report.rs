@@ -927,6 +927,94 @@ fn a_scripted_session_is_kept_for_its_replay() {
     }
 }
 
+/// (replayfix) A bar on the bottom edge whose state is kept per screen
+/// (`Peek[<screen id>].over`), with a `trigger: hover` popup that a
+/// negative margin lowers over its own trigger: the pointer resting on
+/// the trigger is handed to the popup as it maps (a leave and an enter
+/// at once), as the owner's island does with its dashboard.
+const PEEK: &str = "export state seen = 0
+bar Peek {
+  edge: bottom; height: 30
+  state over = false
+  on change inner.hover {
+    over = inner.hover
+    if inner.hover { seen = seen + 1 }
+  }
+  row {
+    box { id: knob; width: 120; height: 30; bg: over ? #ff8800 : #303030
+      popup { id: card; trigger: hover; delay: 120ms; grace: 300ms; width: 200; height: 80; margin: 0, 0, -30
+        box { id: inner; width: 200; height: 80; bg: over ? #4040ff : #202060 }
+      }
+    }
+  }
+}
+";
+
+/// (replayfix) A session that opens a hover popup and moves on it, kept
+/// for its replay (scripts/eval/test-report-view.sh --e2e): the replay
+/// must show the popup when the live shell did and take the pointer
+/// steps on it. With `STRAND_REPORT_KEEP=DIR` the bundle's path is
+/// written to `DIR/bundle` and the run's directory is left behind.
+#[test]
+fn a_popup_session_is_kept_for_its_replay() {
+    let Some(mut desk) = Desk::with("popup", "", &[("peek.strand", PEEK)]) else {
+        return;
+    };
+    let keep = std::env::var_os("STRAND_REPORT_KEEP").map(PathBuf::from);
+    desk.keep = keep.is_some();
+    desk.pointer.motion(640, 600, 1280, 720);
+    std::thread::sleep(Duration::from_millis(300));
+    // Onto the trigger at the bottom left; the popup maps over it.
+    desk.pointer.motion(60, 700, 1280, 720);
+    desk.pointer.motion(62, 704, 1280, 720);
+    desk.wait("the popup opened under the pointer", |d| {
+        d.get("peek.seen").is_some_and(|v| v != "0")
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    for (x, y) in [(80, 690), (120, 675), (160, 660), (170, 655)] {
+        desk.pointer.motion(x, y, 1280, 720);
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    let ans = desk.report("the popup over the bar");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    let e = input.entries();
+    // Two surfaces mapped after the boot, the popup's among them, and the
+    // pointer handed to it: a leave and, at once, an enter elsewhere.
+    let mapped: Vec<u16> = e
+        .iter()
+        .filter(|e| e.rec.kind == kind::MAPPED)
+        .map(|e| e.rec.slot)
+        .collect();
+    assert!(
+        mapped.len() >= 4,
+        "the bar, the panel, the peek bar and the popup: {mapped:?}"
+    );
+    let handed = e.windows(2).any(|w| {
+        w[0].rec.kind == kind::LEAVE
+            && w[1].rec.kind == kind::ENTER
+            && w[0].rec.slot != w[1].rec.slot
+    });
+    assert!(handed, "no leave handed to an enter");
+    let outputs = read_json(&dir.join("bundle.json"))["outputs"].clone();
+    assert!(outputs[0]["id"].is_string(), "{outputs}");
+    let cells = read_json(&dir.join("cells.json"));
+    assert!(
+        cells
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|k| k.starts_with("Peek[") && k.ends_with("].over")),
+        "{cells}"
+    );
+    if let Some(k) = keep {
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();
+        std::fs::write(k.join("run"), desk.dir.display().to_string()).unwrap();
+    }
+}
+
 /// The words form prints the paste line, which names a whole bundle and
 /// what to read in it.
 #[test]
