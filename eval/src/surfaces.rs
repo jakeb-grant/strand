@@ -186,6 +186,14 @@ impl Surfaces {
         ))
     }
 
+    /// (report) How surface `id` takes the keyboard (its spec's
+    /// `keyboard:`; `none` for a surface not shown).
+    pub fn keyboard(&self, id: SurfaceId) -> strand_scene::Keyboard {
+        self.get(id)
+            .and_then(|sh| self.specs.get(&sh.node))
+            .map_or(strand_scene::Keyboard::None, |s| s.keyboard)
+    }
+
     /// The surface `id`.
     pub fn get(&self, id: SurfaceId) -> Option<&Shown> {
         self.shown.iter().find(|s| s.id == id)

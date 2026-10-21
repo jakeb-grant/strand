@@ -765,7 +765,21 @@ impl Instance {
         };
         read(&self.ctx.vm.prog.types, &current, text)
             .map_err(|why| Error::failed(format!("`${path}`: {why}")))?;
-        self.ctx.storage.tokens.set(&self.rt, path, text.trim())
+        let old = self.overlay_text(path);
+        self.ctx.storage.tokens.set(&self.rt, path, text.trim())?;
+        self.tap_overlay(path, old, Some(text.trim()));
+        Ok(())
+    }
+
+    /// (report) The overlay text of the token at `path`, if overlaid.
+    fn overlay_text(&self, path: &str) -> Option<String> {
+        self.ctx
+            .storage
+            .tokens
+            .values()
+            .into_iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, t)| t)
     }
 
     /// `strand clear '$accent'` and the notice's `[clear]`: drop the
@@ -785,7 +799,12 @@ impl Instance {
                 return Err(no_token(&table, path));
             }
         }
-        tokens.clear(&self.rt, path)
+        let old = self.overlay_text(path);
+        let cleared = self.ctx.storage.tokens.clear(&self.rt, path)?;
+        if cleared {
+            self.tap_overlay(path, old, None);
+        }
+        Ok(cleared)
     }
 
     /// The token at `path` (no `$`) as the scene has it, the overlay

@@ -2045,6 +2045,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "blake3",
+ "chrono",
  "clap",
  "kurbo",
  "png",
@@ -2057,6 +2058,7 @@ dependencies = [
  "strand-core",
  "strand-fake-wayland",
  "strand-gpu",
+ "strand-icons",
  "strand-render",
  "strand-scene",
  "strand-services-schema",

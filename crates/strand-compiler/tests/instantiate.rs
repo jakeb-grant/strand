@@ -5677,3 +5677,108 @@ fn same_named_components_keep_their_own_conditional_ids() {
     assert_eq!(at(&shell, indicators[0]), (num(90.0), num(23.0)), "x on 3");
     assert_eq!(at(&shell, indicators[1]), (num(90.0), num(46.0)), "y on 3");
 }
+
+/// (report) The cell tap is told of every write to a cell, by IPC and by
+/// a two-way binding alike, once per tick with the value before the tick
+/// and after (two writes in one tick are one), and not of a write that
+/// changed nothing; the snapshot holds every live cell by its path.
+#[test]
+fn the_cell_tap_sees_every_write() {
+    use std::cell::RefCell;
+    let files = design_shells();
+    let mut shell = boot(&refs(&files), desktop);
+    let told: Rc<RefCell<Vec<(String, Value, Value)>>> = Rc::default();
+    let t = told.clone();
+    shell.inst.set_cell_tap(Some(Box::new(move |w| {
+        t.borrow_mut()
+            .push((w.path.to_string(), w.old.clone(), w.new.clone()));
+    })));
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(
+        told.borrow_mut().drain(..).collect::<Vec<_>>(),
+        [(
+            "launcher.open".to_string(),
+            Value::Bool(false),
+            Value::Bool(true)
+        )]
+    );
+    let input = shell.scene.of_kind(NodeKind::Input)[0];
+    for text in ["f", "fi"] {
+        shell
+            .inst
+            .write(input, Prop::Text, PropValue::Text(text.into()))
+            .unwrap();
+    }
+    shell.flush();
+    assert_eq!(
+        told.borrow_mut().drain(..).collect::<Vec<_>>(),
+        [(
+            "launcher.query".to_string(),
+            Value::text(""),
+            Value::text("fi")
+        )],
+        "two writes in one tick are told once"
+    );
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert!(told.borrow().is_empty(), "nothing changed");
+    let snap = shell.inst.cells_snapshot();
+    let at = |p: &str| snap.iter().find(|(q, _)| q == p).map(|(_, v)| v.clone());
+    assert_eq!(at("launcher.open"), Some(Value::Bool(true)));
+    assert_eq!(at("launcher.query"), Some(Value::text("fi")));
+    // Taken away, nothing more is told.
+    shell.inst.set_cell_tap(None);
+    shell.inst.set("launcher.open", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(told.borrow().is_empty());
+}
+
+/// (report) The program knows the texts its files write out (a text
+/// node's, a placeholder, a comparison's), and no text it builds or is
+/// given; a seeded cell takes its value as a baseline, checked against
+/// its declared type; a queued answer is the next fetch's.
+#[test]
+fn text_literals_are_known_to_the_program() {
+    let files = design_shells();
+    let mut shell = boot(&refs(&files), desktop);
+    let prog = shell.inst.vm().prog.clone();
+    assert!(prog.is_text_literal("No matches"));
+    assert!(prog.is_text_literal("Search apps"));
+    assert!(!prog.is_text_literal("fi"));
+    assert!(!prog.is_text_literal("No matche"));
+    let ty = shell.inst.cell_type("launcher.query").unwrap();
+    assert_eq!(prog.types.show(&ty).to_string(), "text");
+    assert!(shell.inst.cell_type("launcher.nothing").is_none());
+    assert!(
+        shell
+            .inst
+            .seed_cell("launcher.query", Value::Bool(true))
+            .is_err()
+    );
+    shell.inst.set("launcher.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    // The mock would find Firefox and Files; the answer queued is none.
+    shell.host.answer(
+        "apps.search",
+        Ok(Value::Async(Rc::new(
+            strand_compiler::vm::value::AsyncValue::ready(Value::list(Vec::new())),
+        ))),
+    );
+    shell
+        .inst
+        .seed_cell("launcher.query", Value::text("fi"))
+        .unwrap();
+    shell.at(0.1);
+    shell.at(0.2);
+    assert_eq!(
+        shell.inst.value_of("launcher", "query").unwrap(),
+        Value::text("fi")
+    );
+    assert!(
+        shell.scene.find_text("No matches").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    assert!(shell.host.answers_left().is_empty());
+}

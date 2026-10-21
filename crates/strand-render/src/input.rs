@@ -107,6 +107,15 @@ pub enum Intent {
     Clipboard(ClipboardAsk),
 }
 
+/// (report) What kind of `input` has keyboard focus
+/// ([`Router::focused_input`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    Text,
+    /// `type: password`.
+    Password,
+}
+
 /// What routing asks of the scene: the hit chain under a point,
 /// scrolling, and the tree (focus, `nav`, list rows, `open`). The
 /// [`Renderer`] implements it; tests can give just a hit function
@@ -734,6 +743,25 @@ impl Router {
     /// The node with keyboard focus on `surface`.
     pub fn focused(&self, surface: SurfaceId) -> Option<NodeId> {
         self.focus.get(&surface).copied()
+    }
+
+    /// (report) The `input` with keyboard focus on `surface`, if one
+    /// has it, and whether it is a password input (`type: password`), as
+    /// `tree` holds it: a glitch report keeps no count of a password's
+    /// keys (docs/architecture.md, "Glitch reports"). The router holds
+    /// no tree of its own, so the caller passes the renderer's.
+    pub fn focused_input(&self, surface: SurfaceId, tree: &SceneTree) -> Option<InputKind> {
+        let node = tree.get(self.focused(surface)?)?;
+        if node.kind != NodeKind::Input {
+            return None;
+        }
+        let password =
+            matches!(node.get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password");
+        Some(if password {
+            InputKind::Password
+        } else {
+            InputKind::Text
+        })
     }
 
     /// The selected row of `list`.

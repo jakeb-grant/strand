@@ -1777,3 +1777,49 @@ fn a_vblank_fake_shows_commits_at_its_refreshes() {
     assert_eq!((log[b[2]].vblank, log[b[2]].superseded), (Some(3), true));
     assert_eq!((log[b[3]].vblank, log[b[3]].superseded), (Some(3), false));
 }
+
+/// (report) A glitch report's frame of a CPU surface is its newest
+/// committed buffer, copied: the size the compositor holds and the
+/// pixels painted last (the square moved in by the newest frame); the
+/// refresh is the presentation feedback's, unknown without it.
+#[test]
+fn the_newest_committed_frame_is_copied_and_its_refresh_known() {
+    use common::{BLUE, RED};
+    let fake = presenting();
+    let mut mgr = manager(&fake);
+    let id = presented_panel(&fake, &mut mgr);
+    new_content(&mut mgr, id);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id)
+                .is_some_and(|i| i.stats.presented + i.stats.discarded == i.stats.commits)
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surface(id));
+    let info = mgr.state().surface(id).unwrap();
+    let f = mgr.state_mut().frame_pixels(id).expect("a committed frame");
+    assert_eq!(
+        (f.width, f.height),
+        (info.buffer_size.w, info.buffer_size.h)
+    );
+    assert_eq!(f.stride, f.width * 4);
+    assert_eq!(f.rgba.len(), (f.width * f.height * 4) as usize);
+    let rgb = |x, y| {
+        let p = f.pixel(x, y).unwrap();
+        [p[0], p[1], p[2]]
+    };
+    assert_eq!(rgb(0, 0), BLUE, "the background, as RGBA");
+    assert_eq!(rgb(205, 55), RED, "the square the newest frame drew");
+    assert_eq!(
+        mgr.state().refresh(id),
+        Some(Duration::from_nanos(16_666_666))
+    );
+    assert_eq!(mgr.state_mut().frame_pixels(SurfaceId(9_999)), None);
+    // No presentation: the refresh is not known.
+    let bare = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&bare);
+    show_panel(&bare, &mut mgr);
+    let id = mgr.state().surfaces_of(PANEL)[0];
+    assert!(mgr.state_mut().frame_pixels(id).is_some());
+    assert_eq!(mgr.state().refresh(id), None);
+}

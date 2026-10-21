@@ -131,6 +131,7 @@ pub fn logic(
     let services_ping = ping.clone();
     let files_ping = ping.clone();
     let exec_ping = ping.clone();
+    let report_ping = ping.clone();
     let own_writes = live.own_writes;
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
@@ -163,6 +164,9 @@ pub fn logic(
         None => SchemaHost::real(&rt, &host_types),
     });
     if let Some(m) = &mock {
+        // (report) The service's default, which the schema host's
+        // (false) is not: recording is on until turned off.
+        let _ = host.set(&rt, "system.replay", Value::Bool(true));
         crate::mock::desktop(&rt, &host, m);
         crate::services::mock_served(&rt, &host, &host_types, crate::services::served());
     }
@@ -249,7 +253,11 @@ pub fn logic(
     }
     // (M5) What `file` outputs wrote: `$XDG_STATE_HOME/strand/files`.
     let manifest = storage.palette_dir().map(|d| d.with_file_name("files"));
+    let config_dir = storage.config_dir.clone();
     let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
+    // (report) The changes ring, its taps installed: the services', the
+    // cells', and the composite's calls and writes.
+    let recorder = super::record::install(&inst, real.as_ref(), build.program.clone());
     // The first frame waits (at most BOOT_SERVICES_HOLD) for the first
     // reads of the services the config started, so a desktop whose
     // scheme or accent changed while Strand was not running does not show
@@ -292,6 +300,12 @@ pub fn logic(
         reports: Vec::new(),
         next_snapshot: 0,
         inspector: Default::default(),
+        recorder,
+        replay_on: true,
+        config_dir,
+        report_ping,
+        written: Default::default(),
+        saving: Vec::new(),
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -349,6 +363,8 @@ pub fn logic(
             diff.reduced_motion = Some(reduced);
             reduced_sent = reduced;
         }
+        // (report) Surface roots and the lock, from the diff.
+        shell.record_diff(&diff);
         let shaped = structural(&diff);
         if !diff.is_empty() && out.send(diff).is_err() {
             break;
@@ -365,6 +381,9 @@ pub fn logic(
         shell.after_diff();
         // (M6) Declared actions' commands, started off this thread.
         shell.run_execs();
+        // (report) `system.replay`, and glitch reports written.
+        shell.record_replay();
+        shell.reports_written();
         // Output a client's socket cannot take yet waits for its write
         // source to wake the loop (no polling).
         if let Some(s) = shell.server.as_mut() {

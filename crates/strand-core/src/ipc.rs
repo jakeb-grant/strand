@@ -78,8 +78,11 @@ pub enum Request {
     Call { target: String, args: Vec<String> },
     /// (M5) `strand clear <path>`: drop a runtime overlay (`$accent`).
     Clear { path: String },
-    /// (M5) `strand report`.
-    Report,
+    /// (M5) `strand report`; (report) `strand report words…` saves a
+    /// glitch report instead, `save` holding the words
+    /// (`{"save": {"words": "…"}}`; docs/architecture.md, "Glitch
+    /// reports"). Without `save` the answer is as before.
+    Report { save: Option<String> },
     /// (M5 wave 2, S-tools) `strand export`: `kind` is `json`, `base24`
     /// or `template`; a template's text and the name its diagnostics
     /// give it (the CLI's path) travel with it, since the shell may not
@@ -119,7 +122,7 @@ impl Request {
             Request::Toggle { .. } => "toggle",
             Request::Call { .. } => "call",
             Request::Clear { .. } => "clear",
-            Request::Report => "report",
+            Request::Report { .. } => "report",
             Request::Export { .. } => "export",
             Request::InspectPick { .. } => "inspect.pick",
             Request::InspectNode { .. } => "inspect.node",
@@ -232,7 +235,19 @@ pub fn parse_m5(cmd: &str, v: &Json) -> Result<Request, String> {
                     .ok_or("`call`'s `args` are a list of strings")?,
             },
         },
-        "report" => Request::Report,
+        "report" => Request::Report {
+            save: match v.get("save") {
+                None | Some(Json::Null) => None,
+                Some(s) => Some(
+                    s.get("words")
+                        .and_then(Json::as_str)
+                        .map(str::trim)
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_string)
+                        .ok_or("`report`'s `save` needs `words`: what you saw")?,
+                ),
+            },
+        },
         "export" => Request::Export {
             kind: need("kind")?,
             template: text(v, "template"),
@@ -261,7 +276,8 @@ pub fn encode(req: &Request) -> String {
     put("cmd", text(req.cmd()));
     match req {
         Request::Mock(v) => return line(v),
-        Request::Watch | Request::Report => {}
+        Request::Watch | Request::Report { save: None } => {}
+        Request::Report { save: Some(words) } => put("save", json!({"words": words})),
         Request::Reload { hard } => put("hard", Json::Bool(*hard)),
         Request::Reset { path }
         | Request::Get { path }
@@ -657,7 +673,10 @@ mod tests {
             Request::Clear {
                 path: "$accent".into(),
             },
-            Request::Report,
+            Request::Report { save: None },
+            Request::Report {
+                save: Some("the clock jumped when the launcher opened".into()),
+            },
             Request::InspectPick { on: true },
             Request::InspectPick { on: false },
             Request::InspectNode { id: "4v0".into() },
@@ -704,8 +723,38 @@ mod tests {
                 | Request::InspectHighlight { .. }
                 | Request::InspectFlash { .. }
                 | Request::Export { .. }
-                | Request::Report
+                | Request::Report { .. }
         )
+    }
+
+    /// (report) `report` without `save` is the line it always was;
+    /// with it, the words travel as `{"save": {"words": …}}`, and a
+    /// `save` without words is refused.
+    #[test]
+    fn report_saves_a_glitch_report_only_with_words() {
+        assert_eq!(
+            encode(&Request::Report { save: None }),
+            "{\"cmd\":\"report\",\"v\":1}\n"
+        );
+        let line = encode(&Request::Report {
+            save: Some("bar dipped".into()),
+        });
+        assert!(
+            line.contains("\"save\":{\"words\":\"bar dipped\"}"),
+            "{line}"
+        );
+        assert_eq!(
+            parse(&line),
+            Ok(Request::Report {
+                save: Some("bar dipped".into())
+            })
+        );
+        assert_eq!(
+            parse(r#"{"v":1,"cmd":"report"}"#),
+            Ok(Request::Report { save: None })
+        );
+        assert!(parse(r#"{"v":1,"cmd":"report","save":{}}"#).is_err());
+        assert!(parse(r#"{"v":1,"cmd":"report","save":{"words":"  "}}"#).is_err());
     }
 
     /// A line read as a shell that serves every command reads it.
@@ -971,15 +1020,16 @@ mod tests {
         });
         assert!(rx.drain().is_empty(), "nothing sent");
         let tx2 = tx.clone();
-        let from_thread = std::thread::spawn(move || tx2.call(Request::Report).unwrap())
-            .join()
-            .unwrap();
+        let from_thread =
+            std::thread::spawn(move || tx2.call(Request::Report { save: None }).unwrap())
+                .join()
+                .unwrap();
         let mut answer = tx.call(Request::Watch).unwrap();
         assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 2);
         let calls = rx.drain();
         assert_eq!(
             calls.iter().map(|c| c.request.clone()).collect::<Vec<_>>(),
-            vec![Request::Report, Request::Watch]
+            vec![Request::Report { save: None }, Request::Watch]
         );
         let mut calls = calls.into_iter();
         drop(calls.next());
@@ -989,9 +1039,12 @@ mod tests {
         let mut first = from_thread;
         assert!(matches!(poll(&mut first, waker), Poll::Ready(a) if refusal(&a).is_some()));
         // Queued when the loop ends: refused, as is every later call.
-        let mut late = tx.call(Request::Report).unwrap();
+        let mut late = tx.call(Request::Report { save: None }).unwrap();
         drop(rx);
         assert!(matches!(poll(&mut late, waker), Poll::Ready(a) if refusal(&a).is_some()));
-        assert_eq!(tx.call(Request::Report).err(), Some(IpcClosed));
+        assert_eq!(
+            tx.call(Request::Report { save: None }).err(),
+            Some(IpcClosed)
+        );
     }
 }

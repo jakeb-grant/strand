@@ -161,9 +161,20 @@ impl Shell {
     /// and reports the ones that failed.
     pub(super) fn run_execs(&mut self) {
         for req in self.inst.take_execs() {
+            // (report) Its start, never its arguments (their count).
+            let t = strand_core::flight::now_ns();
+            let argc = req.argv.len().saturating_sub(1);
+            self.recorder
+                .borrow_mut()
+                .action(t, &req.action, argc, true, 0);
             self.execs.start(req);
         }
         for e in self.execs.ended() {
+            let t = strand_core::flight::now_ns();
+            let exit = i32::from(e.failed.is_some());
+            self.recorder
+                .borrow_mut()
+                .action(t, &e.action, 0, false, exit);
             if let Some(why) = e.failed {
                 self.exec_notice(&e.action, &why);
             }

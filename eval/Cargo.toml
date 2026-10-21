@@ -37,6 +37,12 @@ strand-gpu = { path = "../crates/strand-gpu" }
 # no package.
 kurbo = "0.13.1"
 strand-services-schema = { path = "../crates/strand-services-schema" }
+# (report) The `icons` header sets the config's icon folder; a replay
+# reads a bundle's rings.
+strand-icons = { path = "../crates/strand-icons" }
+# (report) The `wall` header and a replay's wall times (RFC 3339): the
+# version and features strand-compiler links.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # The surface leg (src/wire.rs): the real surface manager (default
 # features keep `gpu`, its hand-off to the GPU thread) against the fake
 # compositor, in-process (docs/decisions.md eval-surface-leg).

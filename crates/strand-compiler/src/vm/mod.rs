@@ -19,6 +19,7 @@ pub(crate) mod builtins;
 pub mod clock;
 mod exec;
 pub mod host;
+pub mod json;
 mod load;
 pub(crate) use load::DeclareLoad;
 pub mod persist;

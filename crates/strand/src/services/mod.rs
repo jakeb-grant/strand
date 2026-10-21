@@ -31,7 +31,7 @@ use strand_core::Runtime;
 use strand_services::{Builtin, Buses, Services};
 
 pub use adapter::StoreHost;
-pub use composite::Composite;
+pub use composite::{CallTap, Composite, FetchDone};
 pub use custom::CustomHost;
 pub use unserved::UnservedHost;
 

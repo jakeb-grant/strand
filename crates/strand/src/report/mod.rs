@@ -14,6 +14,13 @@
 //! ([`logic_part`]: the PSS and the compositor's name) before it answers
 //! the socket (`run/request/report.rs`). `--json` prints the report as
 //! one line; without it the CLI prints [`text`].
+//!
+//! (report) Given words (`strand report the clock jumped`), it saves a
+//! glitch report instead (design.md, "Reporting a glitch";
+//! [`bundle`]) and prints where it went and the line to paste to a
+//! coding agent.
+
+pub(crate) mod bundle;
 
 use serde_json::{Value as Json, json};
 use strand_scene::{Backend, GpuStatus};
@@ -103,12 +110,12 @@ pub(crate) fn main_part(state: &State<Host>) -> Json {
 }
 
 #[cfg(feature = "gpu")]
-fn backend(r: &strand_render::Renderer, s: strand_scene::SurfaceId) -> Backend {
+pub(crate) fn backend(r: &strand_render::Renderer, s: strand_scene::SurfaceId) -> Backend {
     r.backend(s)
 }
 
 #[cfg(not(feature = "gpu"))]
-fn backend(_: &strand_render::Renderer, _: strand_scene::SurfaceId) -> Backend {
+pub(crate) fn backend(_: &strand_render::Renderer, _: strand_scene::SurfaceId) -> Backend {
     Backend::Cpu
 }
 
@@ -174,14 +181,43 @@ fn pss_kb(rollup: &str) -> Option<u64> {
     })
 }
 
-/// `strand report [--json]`.
+/// `strand report [--json] [words…]`'s arguments: `--json`, and the
+/// words (every other argument, joined by spaces; none for the bare
+/// form). An argument starting with `-` other than `--json` is refused,
+/// so a mistyped flag is not saved as words.
+pub(crate) fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
+    let usage = "usage: strand report [--json] [what you saw…]";
+    let mut json = false;
+    let mut words: Vec<&str> = Vec::new();
+    for a in args {
+        if a == "--json" {
+            json = true;
+        } else if a.starts_with('-') && words.is_empty() {
+            return Err(usage.into());
+        } else {
+            words.push(a.as_str());
+        }
+    }
+    let words = words.join(" ");
+    let words = words.trim();
+    Ok((json, (!words.is_empty()).then(|| words.to_string())))
+}
+
+/// `strand report [--json] [words…]`.
 pub fn report_cli(args: &[String]) -> Result<String, String> {
-    let json = match args {
-        [] => false,
-        [a] if a == "--json" => true,
-        _ => return Err("usage: strand report [--json]".into()),
-    };
-    let answer = crate::ipc::ask(&Request::Report)?;
+    let (json, save) = parse_args(args)?;
+    let saving = save.is_some();
+    let answer = crate::ipc::ask(&Request::Report { save })?;
+    if saving {
+        if json {
+            return Ok(format!("{answer}\n"));
+        }
+        let dir = answer["bundle"].as_str().unwrap_or("?");
+        let paste = answer["paste"].as_str().unwrap_or("");
+        return Ok(format!(
+            "saved a glitch report to {dir}\npaste this to your coding agent:\n\n{paste}\n"
+        ));
+    }
     let report = answer.get("report").cloned().unwrap_or(Json::Null);
     Ok(if json {
         format!("{report}\n")
@@ -286,6 +322,37 @@ pub(crate) fn text(r: &Json) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (report) Words make a glitch report; bare and `--json` alone are
+    /// the diagnostics as before; a stray flag is refused, not saved.
+    #[test]
+    fn the_words_form_parses_and_bare_is_unchanged() {
+        let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&[]), Ok((false, None)));
+        assert_eq!(a(&["--json"]), Ok((true, None)));
+        assert_eq!(
+            a(&["the", "clock", "jumped"]),
+            Ok((false, Some("the clock jumped".into())))
+        );
+        assert_eq!(
+            a(&["the clock jumped when", "the launcher opened"]),
+            Ok((
+                false,
+                Some("the clock jumped when the launcher opened".into())
+            ))
+        );
+        assert_eq!(
+            a(&["--json", "bar", "dipped"]),
+            Ok((true, Some("bar dipped".into())))
+        );
+        assert_eq!(a(&["  "]), Ok((false, None)));
+        assert!(a(&["--jsno"]).is_err());
+        // A word after the first may start with a dash.
+        assert_eq!(
+            a(&["it", "-flickered"]),
+            Ok((false, Some("it -flickered".into())))
+        );
+    }
 
     /// The adapter's name first, then `XDG_CURRENT_DESKTOP`'s first
     /// entry; neither is null.

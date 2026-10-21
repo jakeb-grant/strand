@@ -61,8 +61,8 @@ use strand_render::host_loop::{self, Cause, LoopHost, LoopSync};
 use strand_render::probe::{Axes, FrameTrace, Hidden, NodeTrace, TextDrawn};
 use strand_render::{Renderer, Router, TextBackend};
 use strand_scene::{
-    ButtonState, Damage, LogicalPoint, LogicalSize, NodeId, PaintTarget, Painter, Prop, PropValue,
-    SceneDiff, Size, SurfaceId,
+    ButtonState, Damage, InputEvent, KeyInput, Keyboard, LogicalPoint, LogicalSize, Modifiers,
+    NodeId, PaintTarget, Painter, Prop, PropValue, SceneDiff, Size, SurfaceId,
 };
 use strand_text::{FontConfig, TextEngine};
 
@@ -74,7 +74,9 @@ use crate::input::{Pointer, to_logic};
 use crate::labels::Labels;
 use crate::scenario::{BackendMode, Config, Fonts, Scenario, Screen, TextMode};
 use crate::select::Selector;
-use crate::steps::{Button, ExpectKind, Intention, Point, REST_MAX, Step, StepKind, Via};
+use crate::steps::{
+    Button, ExpectKind, Intention, KeyMods, KeyPhase, Point, REST_MAX, Step, StepKind, Via,
+};
 use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
@@ -115,6 +117,74 @@ pub struct RunOptions {
     /// `late-present`'s own tests only: the fake compositor's refreshes
     /// at these ticks never come (an output that stalls).
     pub lost_vblanks: Vec<u32>,
+    /// (report) Keep what a replay compares with the live shell
+    /// ([`RunOutput::log`]): each press's hit and each cell write.
+    pub log: bool,
+}
+
+/// (report) A node as a replay compares it with the live shell's
+/// (`nodes.json`): where it is written, its `id:` and its `for` row key.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NodeRef {
+    /// `file.strand:LINE:COL`, the file under the config directory.
+    pub origin: String,
+    pub id: Option<String>,
+    pub key: Option<String>,
+}
+
+impl std::fmt::Display for NodeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{}", self.origin)?;
+        if let Some(k) = &self.key {
+            write!(f, "[{k}]")?;
+        }
+        if let Some(i) = &self.id {
+            write!(f, " #{i}")?;
+        }
+        Ok(())
+    }
+}
+
+/// (report) One press of a run: its tick and time, and the innermost
+/// node it hit (`Renderer::hit`'s first), as the shell records a press.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PressLog {
+    pub k: u32,
+    pub t: Duration,
+    pub hit: Option<NodeRef>,
+}
+
+/// (report) One cell write of a run (`Instance::set_cell_tap`): its tick
+/// and time, the cell's path and its new value as compact JSON, a text
+/// that is not a literal of the program held back (`{"~text": N}`), as
+/// the shell records it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WriteLog {
+    pub k: u32,
+    pub t: Duration,
+    pub path: String,
+    pub value: String,
+}
+
+/// (report review) A replay's step the sandbox could not take: its
+/// line, when, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkippedStep {
+    pub line: u32,
+    pub t: Duration,
+    pub msg: String,
+}
+
+/// (report) What a run kept for a replay's comparison.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReplayLog {
+    pub presses: Vec<PressLog>,
+    pub writes: Vec<WriteLog>,
+    /// (report review) Steps skipped (`RunOptions::log` only).
+    pub skipped: Vec<SkippedStep>,
+    /// Each fetch: its tick, method, and whether a queued `answer` gave
+    /// it (else the mock's own did).
+    pub fetches: Vec<(u32, String, bool)>,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -135,13 +205,25 @@ pub struct RunOutput {
     pub images: BTreeMap<String, Image>,
     /// What the shell refused or the sandbox could not do, as it ran.
     pub notes: Vec<String>,
+    /// (report) With `RunOptions::log`: presses and cell writes.
+    pub log: ReplayLog,
 }
 
 /// Runs `sc`.
 pub fn run(sc: &Scenario, opts: &RunOptions) -> Result<RunOutput, Error> {
     let mut h = Harness::boot(Rc::new(sc.clone()), opts)?;
     for step in &sc.steps {
-        h.step(step)?;
+        match h.step(step) {
+            // (report review) A replay's step the sandbox cannot take (a
+            // surface it never shows, a node it never mounted: the live
+            // shell parted from it before) is skipped and kept for the
+            // comparison, so a replay always ends with its findings.
+            Err(Error::Scenario { line, msg, .. }) if opts.log => {
+                let t = h.clock.now();
+                h.log.skipped.push(SkippedStep { line, t, msg });
+            }
+            r => r?,
+        }
     }
     h.finish()
 }
@@ -651,6 +733,22 @@ struct Harness {
     fresh_gpu: Option<Fresh>,
     /// (eval-surface-leg) The surface leg, when it runs.
     leg: Option<Leg>,
+    /// (report) The surface the compositor gave the keyboard, as the
+    /// router was told, and the surfaces that took it, newest last (it
+    /// returns to the one before when a surface goes).
+    kb: Option<SurfaceId>,
+    kb_stack: Vec<SurfaceId>,
+    /// (report) `[seed]` cells not mounted yet, seeded as they mount.
+    seeds: Vec<(String, serde_json::Value)>,
+    /// (report) The wall time `T0` stands for, less `T0` (`wall`).
+    wall0: SystemTime,
+    /// (report) The `warmup` is over (its last tick painted every
+    /// surface).
+    warmed: bool,
+    /// (report) `RunOptions::log`: presses kept here, cell writes by the
+    /// tap, with the tick the instance was stepped at.
+    log: ReplayLog,
+    tapped: Rc<std::cell::RefCell<Vec<(String, String)>>>,
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -672,7 +770,10 @@ impl TimeRun {
     /// It sends input as it runs (a glide or a drag): cut short, it
     /// would not be the step a scenario can write.
     pub fn sends_input(&self) -> bool {
-        matches!(self.plan, Plan::Glide { .. } | Plan::Swipe { .. })
+        matches!(
+            self.plan,
+            Plan::Glide { .. } | Plan::Swipe { .. } | Plan::Type { .. }
+        )
     }
 }
 
@@ -694,6 +795,11 @@ enum Plan {
     Swipe {
         dy: f64,
         n: u32,
+    },
+    /// (report) `type N over MS`: `n` keys spread over `ticks` ticks.
+    Type {
+        n: u32,
+        ticks: u32,
     },
 }
 
@@ -718,6 +824,8 @@ enum Input {
     Button(Button, ButtonState),
     /// A touchpad axis frame: logical px, and whether the fingers lift.
     Swipe(f64, bool),
+    /// (report) Keys typed on the surface with the keyboard.
+    Keys(u32),
 }
 
 impl Harness {
@@ -737,7 +845,21 @@ impl Harness {
             .map_err(|d| load_failed(&sc, &map, &d))?;
         let warnings = diagnostics(&sc, &map, &build.warnings, false);
         let rt = Runtime::new();
-        let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
+        // (report) `wall`: the mock's clock and local time at it.
+        let (wall0, host) = match sc.wall {
+            Some(w) => {
+                let at = UNIX_EPOCH + w.unix;
+                let host = SchemaHost::mock_at(&rt, &build.program.types, at, w.offset);
+                (at.checked_sub(T0).unwrap_or(UNIX_EPOCH), host)
+            }
+            None => (
+                UNIX_EPOCH + Duration::from_secs(MOCK_TIME),
+                SchemaHost::mock(&rt, &build.program.types),
+            ),
+        };
+        let host = Rc::new(host);
+        // (report) `icons`: the config's icon folder, for this run.
+        strand_icons::set_config_icons(sc.icons.clone());
         let reduced = opts.reduced_motion || sc.reduce_motion;
         let mut trace = RunTrace::new(
             ScenarioInfo {
@@ -847,7 +969,29 @@ impl Harness {
             blends: BTreeMap::new(),
             fresh_gpu: None,
             leg,
+            kb: None,
+            kb_stack: Vec::new(),
+            seeds: Vec::new(),
+            wall0,
+            warmed: false,
+            log: ReplayLog::default(),
+            tapped: Rc::default(),
         };
+        if opts.log {
+            let prog = h.inst.vm().prog.clone();
+            let out = h.tapped.clone();
+            h.inst.set_cell_tap(Some(Box::new(
+                move |w: strand_compiler::instantiate::CellWrite<'_>| {
+                    let overlay = w.path.starts_with('$');
+                    let mut s = String::new();
+                    let _ =
+                        strand_compiler::vm::json::to_json(&prog.types, w.new, &mut s, &mut |t| {
+                            overlay || prog.is_text_literal(t)
+                        });
+                    out.borrow_mut().push((w.path.to_string(), s));
+                },
+            )));
+        }
         if h.leg.is_some() {
             h.surfaces.tee = Some(Vec::new());
         }
@@ -856,14 +1000,299 @@ impl Harness {
             h.set_service(path, text)
                 .map_err(|m| Error::Config(format!("[services] `{path}`: {m}")))?;
         }
+        // (report) `[seed]`: services before boot, cells and tokens as
+        // they mount.
+        for (path, json) in &sc.seed {
+            let j: serde_json::Value = serde_json::from_str(json)
+                .map_err(|e| Error::Config(format!("[seed] `{path}`: {e}")))?;
+            h.seed(path, j)
+                .map_err(|m| Error::Config(format!("[seed] `{path}`: {m}")))?;
+        }
         // Reduced motion is `system.reduced_motion`, which logic reads
         // and its diffs carry to render, as in the shell.
         if reduced {
             h.set_reduced_motion(true)?;
         }
-        let (u, _) = h.inst.step(T0, wall(T0));
+        let (u, _) = h.inst.step(T0, h.wall(T0));
         h.update(u)?;
+        if h.seed_cells()? {
+            let u = h.inst.flush();
+            h.update(u)?;
+        }
         Ok(h)
+    }
+
+    /// (report) Node `n` as a replay compares it (`NodeRef`).
+    fn node_ref(&self, n: NodeId) -> Option<NodeRef> {
+        let (file, _, span) = self.inst.origin(n)?;
+        let f = self.sources.get(file)?;
+        let (l, c) = crate::labels::line_col(&f.text, span.start as usize);
+        let ident = self.inst.identity(n);
+        Some(NodeRef {
+            origin: format!("{}:{l}:{c}", f.name),
+            id: ident.as_ref().and_then(|i| i.id.clone()),
+            key: ident.as_ref().and_then(row_key),
+        })
+    }
+
+    /// (report) The cell writes the tap was told of, kept at tick `k`.
+    fn keep_writes(&mut self) {
+        // The mock's log is drained whether kept or not.
+        let fetches = self.host.take_fetches();
+        if !self.opts.log {
+            return;
+        }
+        let k = self.clock.k();
+        let t = self.clock.now();
+        for (path, value) in self.tapped.borrow_mut().drain(..) {
+            self.log.writes.push(WriteLog { k, t, path, value });
+        }
+        for (m, queued) in fetches {
+            self.log.fetches.push((k, m, queued));
+        }
+    }
+
+    /// (report) The wall time at virtual time `t`.
+    fn wall(&self, t: Duration) -> SystemTime {
+        self.wall0 + t
+    }
+
+    /// (report) A `[seed]` entry: a `$token` overlay or a service field
+    /// now (as a boot value), a cell once it is mounted.
+    fn seed(&mut self, path: &str, j: serde_json::Value) -> Result<(), String> {
+        if let Some(token) = path.strip_prefix('$') {
+            let text = match &j {
+                serde_json::Value::String(s) => s.clone(),
+                o => o.to_string(),
+            };
+            return self
+                .inst
+                .set_token_overlay(token, &text)
+                .map_err(|e| e.to_string());
+        }
+        let first = path.split('.').next().unwrap_or(path);
+        if self.is_service(first) {
+            let ty = self.service_path_ty(path)?;
+            let prog = &self.inst.vm().prog;
+            let v = strand_compiler::vm::json::from_json(&prog.types, &ty, &j)?;
+            return self
+                .host
+                .set_initial(&self.rt, path, v)
+                .map_err(|e| e.to_string());
+        }
+        self.seeds.push((path.to_string(), j));
+        Ok(())
+    }
+
+    /// (report) Seeds the `[seed]` cells mounted now (`Instance::seed_cell`:
+    /// readers update, no `on change` fires); whether any was.
+    fn seed_cells(&mut self) -> Result<bool, Error> {
+        if self.seeds.is_empty() {
+            return Ok(false);
+        }
+        let mut any = false;
+        let mut left = Vec::new();
+        for (path, j) in std::mem::take(&mut self.seeds) {
+            let Some(ty) = self.inst.cell_type(&path) else {
+                left.push((path, j));
+                continue;
+            };
+            let prog = &self.inst.vm().prog;
+            let v = strand_compiler::vm::json::from_json(&prog.types, &ty, &j)
+                .map_err(|m| Error::Config(format!("[seed] `{path}`: {m}")))?;
+            self.inst
+                .seed_cell(&path, v)
+                .map_err(|e| Error::Config(format!("[seed] `{path}`: {e}")))?;
+            any = true;
+        }
+        self.seeds = left;
+        Ok(any)
+    }
+
+    /// (report) `name` is a service: the schema's or one the config
+    /// declares.
+    fn is_service(&self, name: &str) -> bool {
+        self.schema.service(name).is_some()
+            || self
+                .inst
+                .vm()
+                .prog
+                .services
+                .values()
+                .any(|s| s.name == name)
+    }
+
+    /// The record of service `svc`: the schema's, else (report) the one a
+    /// service the config declares has.
+    fn service_record(&self, svc: &str) -> Option<strand_compiler::ty::RecordId> {
+        self.schema.service(svc).or_else(|| {
+            self.inst
+                .vm()
+                .prog
+                .services
+                .values()
+                .find(|s| s.name == svc)
+                .map(|s| s.record)
+        })
+    }
+
+    /// The type of the service field at `path` (`service.field[.more]`).
+    fn service_path_ty(&self, path: &str) -> Result<Ty, String> {
+        let parts: Vec<&str> = path.split('.').collect();
+        let [svc, field, rest @ ..] = parts.as_slice() else {
+            return Err("a service field is `service.field`".into());
+        };
+        let prog = &self.inst.vm().prog;
+        let rid = self
+            .service_record(svc)
+            .ok_or_else(|| format!("no service `{svc}`"))?;
+        let ty = prog
+            .types
+            .record(rid)
+            .fields
+            .iter()
+            .find(|f| f.name == *field)
+            .map(|f| f.ty.clone())
+            .ok_or_else(|| format!("`{svc}` has no field `{field}`"))?;
+        field_ty(prog, ty, rest).ok_or_else(|| format!("no field at `{path}`"))
+    }
+
+    /// (report) `answer <method> …`: the method's answer read by its
+    /// return type, queued ahead of the mock's own.
+    fn answer_step(&self, method: &str, answer: &Result<String, String>) -> Result<(), String> {
+        let (svc, name) = method
+            .split_once('.')
+            .ok_or_else(|| format!("`{method}` is not `service.method`"))?;
+        let rid = self
+            .service_record(svc)
+            .ok_or_else(|| format!("no service `{svc}`"))?;
+        let prog = &self.inst.vm().prog;
+        let m = prog
+            .types
+            .record(rid)
+            .methods
+            .iter()
+            .find(|m| m.name == name)
+            .ok_or_else(|| format!("`{svc}` has no method `{name}`"))?;
+        let json = match answer {
+            Err(e) => {
+                self.host.answer(method, Err(e.clone()));
+                return Ok(());
+            }
+            Ok(j) => serde_json::from_str::<serde_json::Value>(j).map_err(|e| e.to_string())?,
+        };
+        let mut why = String::new();
+        for sig in &m.sigs {
+            let ret = match &sig.ret {
+                Ty::Async(inner) => inner.as_ref(),
+                t => t,
+            };
+            match strand_compiler::vm::json::from_json(&prog.types, ret, &json) {
+                Ok(v) => {
+                    self.host.answer(method, Ok(v));
+                    return Ok(());
+                }
+                Err(e) => why = e,
+            }
+        }
+        Err(format!("`{json}` is no answer of `{method}`: {why}"))
+    }
+
+    /// A value for `ty` from a step's text: JSON for a text that starts
+    /// as an object or a list does (report: a record, a list, a held
+    /// text), else as `strand set` reads it, else JSON.
+    fn read_value(&self, ty: &Ty, text: &str) -> Result<Value, String> {
+        let prog = &self.inst.vm().prog;
+        let text = text.trim();
+        let json = || -> Result<Value, String> {
+            let j: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+            strand_compiler::vm::json::from_json(&prog.types, ty, &j)
+        };
+        if text.starts_with(['{', '['])
+            && let Ok(v) = json()
+        {
+            return Ok(v);
+        }
+        if let Some(v) = parse_text(&prog.types, ty, text) {
+            return Ok(v);
+        }
+        json().map_err(|_| format!("`{text}` is not a {}", prog.types.show(ty)))
+    }
+
+    /// (report) The keyboard's events now: a leave and an enter when the
+    /// surface that should have it (the newest shown one that took it)
+    /// is not the one that has it.
+    fn kb_events(&mut self) -> Vec<InputEvent> {
+        let surfaces = &self.surfaces;
+        self.kb_stack.retain(|s| surfaces.get(*s).is_some());
+        let want = self.kb_stack.last().copied();
+        if want == self.kb {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(old) = self.kb.filter(|s| self.surfaces.get(*s).is_some()) {
+            out.push(InputEvent::KeyboardLeave { surface: old });
+        }
+        if let Some(new) = want {
+            out.push(InputEvent::KeyboardEnter { surface: new });
+        }
+        self.kb = want;
+        out
+    }
+
+    /// (report) Surface `s` takes the keyboard.
+    fn kb_take(&mut self, s: SurfaceId) {
+        self.kb_stack.retain(|x| *x != s);
+        self.kb_stack.push(s);
+    }
+
+    /// (report) The keyboard's events now, sent.
+    fn kb_sync(&mut self) -> Result<(), Error> {
+        let ev = self.kb_events();
+        self.send(ev)
+    }
+
+    /// (report) A key on the surface with the keyboard.
+    fn key_event(
+        &self,
+        name: &str,
+        text: &str,
+        m: KeyMods,
+        pressed: bool,
+        t: Duration,
+    ) -> Option<InputEvent> {
+        Some(InputEvent::Key {
+            surface: self.kb?,
+            key: KeyInput {
+                name: name.to_string(),
+                text: text.to_string(),
+                state: if pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                },
+                repeat: false,
+                modifiers: Modifiers {
+                    ctrl: m.ctrl,
+                    alt: m.alt,
+                    shift: m.shift,
+                    logo: m.logo,
+                },
+                time: ms(t),
+                latin: None,
+            },
+        })
+    }
+
+    /// (report) `n` placeholder `x`s typed, each a press and a release.
+    fn typed(&self, n: u32, t: Duration) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        for _ in 0..n {
+            for pressed in [true, false] {
+                out.extend(self.key_event("x", "x", KeyMods::default(), pressed, t));
+            }
+        }
+        out
     }
 
     /// `system.reduced_motion` set, as the portal sets it in the shell.
@@ -919,28 +1348,12 @@ impl Harness {
             .map_err(run)
     }
 
-    /// A service field set from text, read by its schema type.
+    /// A service field set from text, read by its schema type (report:
+    /// or the type a service the config declares gives it; JSON for a
+    /// record or a list).
     fn set_service(&self, path: &str, text: &str) -> Result<(), String> {
-        let parts: Vec<&str> = path.split('.').collect();
-        let [svc, field, rest @ ..] = parts.as_slice() else {
-            return Err("a service field is `service.field`".into());
-        };
-        let prog = &self.inst.vm().prog;
-        let rid = self
-            .schema
-            .service(svc)
-            .ok_or_else(|| format!("no service `{svc}`"))?;
-        let ty = prog
-            .types
-            .record(rid)
-            .fields
-            .iter()
-            .find(|f| f.name == *field)
-            .map(|f| f.ty.clone())
-            .ok_or_else(|| format!("`{svc}` has no field `{field}`"))?;
-        let ty = field_ty(prog, ty, rest).ok_or_else(|| format!("no field at `{path}`"))?;
-        let v = parse_text(&prog.types, &ty, text.trim())
-            .ok_or_else(|| format!("`{text}` is not a {}", prog.types.show(&ty)))?;
+        let ty = self.service_path_ty(path)?;
+        let v = self.read_value(&ty, text)?;
         self.host.set(&self.rt, path, v).map_err(|e| e.to_string())
     }
 
@@ -954,7 +1367,7 @@ impl Harness {
                 .map_err(|e| e.to_string());
         }
         let first = path.split('.').next().unwrap_or(path);
-        if self.schema.service(first).is_some() {
+        if self.is_service(first) {
             return self.set_service(path, text);
         }
         let exported = self.inst.set_text(path, text);
@@ -964,8 +1377,7 @@ impl Harness {
         let fields: Vec<&str> = rest.split('.').skip(1).collect();
         let ty = field_ty(prog, prog.defs[d].ty.clone(), &fields)
             .ok_or_else(|| format!("no field at `{path}`"))?;
-        let v = parse_text(&prog.types, &ty, text.trim())
-            .ok_or_else(|| format!("`{text}` is not a {}", prog.types.show(&ty)))?;
+        let v = self.read_value(&ty, text)?;
         self.inst
             .set_value(&module, &rest, v)
             .map_err(|e| e.to_string())
@@ -1037,8 +1449,7 @@ impl Harness {
             .split_once('.')
             .ok_or_else(|| format!("`{path}` is not `service.event`"))?;
         let rid = self
-            .schema
-            .service(svc)
+            .service_record(svc)
             .ok_or_else(|| format!("no service `{svc}`"))?;
         let prog = &self.inst.vm().prog;
         let ev = prog
@@ -1057,10 +1468,7 @@ impl Harness {
         }
         let mut values = Vec::new();
         for (p, a) in ev.params.iter().zip(args) {
-            values.push(
-                parse_text(&prog.types, &p.ty, a.trim())
-                    .ok_or_else(|| format!("`{a}` is not a {}", prog.types.show(&p.ty)))?,
-            );
+            values.push(self.read_value(&p.ty, a)?);
         }
         self.host
             .emit(&self.rt, path, values)
@@ -1114,11 +1522,17 @@ impl Harness {
     /// unless it is empty, as the shell's logic thread sends only diffs
     /// with something in them.
     fn update(&mut self, u: Update) -> Result<(), Error> {
+        self.keep_writes();
         for e in &u.errors {
             self.notes.push(format!("runtime error: {}", e.message()));
         }
         let mut diff = u.diff;
         self.carry_reduced(&mut diff);
+        // (report) `[seed]` cells this update mounted are seeded before
+        // they are drawn: logic answers at the loop's next turn.
+        if !diff.ops.is_empty() && self.seed_cells()? {
+            self.logic_owed = true;
+        }
         if diff.is_empty() {
             return Ok(());
         }
@@ -1266,6 +1680,11 @@ impl Harness {
                     }
                 }
                 Change::Attached(id, node) => {
+                    // (report) An `exclusive` surface takes the keyboard
+                    // as it maps (sent at the loop's next input or tick).
+                    if self.surfaces.keyboard(id) == Keyboard::Exclusive {
+                        self.kb_take(id);
+                    }
                     let root = self
                         .labels
                         .key(node, &self.inst, self.r.tree(), &self.sources);
@@ -1369,10 +1788,10 @@ impl Harness {
                     "logic's timers never get past {d:?} (a timer of zero?)"
                 )));
             }
-            let (u, _) = self.inst.step(d, wall(d));
+            let (u, _) = self.inst.step(d, self.wall(d));
             self.update(u)?;
         }
-        let (u, _) = self.inst.step(t, wall(t));
+        let (u, _) = self.inst.step(t, self.wall(t));
         self.update(u)
     }
 
@@ -1385,6 +1804,45 @@ impl Harness {
         self.driven |= !events.is_empty();
         let mut idle = Vec::new();
         for e in events {
+            // (report) The compositor's focus: a press on a surface that
+            // takes the keyboard (`on_demand`, `exclusive`) gives it it.
+            if let InputEvent::PointerButton {
+                surface,
+                state: ButtonState::Pressed,
+                ..
+            } = &e
+                && self.surfaces.keyboard(*surface) != Keyboard::None
+                && self.kb != Some(*surface)
+            {
+                self.kb_take(*surface);
+            }
+            // (report) A press and the node it hits, kept for a replay.
+            if self.opts.log
+                && let InputEvent::PointerButton {
+                    surface,
+                    position,
+                    state: ButtonState::Pressed,
+                    ..
+                } = &e
+            {
+                let hit = self.r.hit(*surface, *position).first().copied();
+                let hit = hit.and_then(|n| self.node_ref(n));
+                let k = self.clock.k();
+                self.log.presses.push(PressLog {
+                    k,
+                    t: self.clock.now(),
+                    hit,
+                });
+            }
+            if !matches!(
+                e,
+                InputEvent::KeyboardEnter { .. } | InputEvent::KeyboardLeave { .. }
+            ) {
+                for f in self.kb_events() {
+                    host_loop::input(self, &f, &mut idle)?;
+                    self.turn()?;
+                }
+            }
             host_loop::input(self, &e, &mut idle)?;
             self.turn()?;
         }
@@ -1604,6 +2062,99 @@ impl Harness {
                     .ok_or_else(|| self.err(line, "the pointer is on no surface yet".into()))?;
                 self.send(vec![ev])?;
             }
+            StepKind::Key { name, mods, phase } => {
+                self.event(step);
+                self.kb_sync()?;
+                // A key that types one character types it, unless a
+                // modifier other than shift is held.
+                let text = match (name.chars().count(), mods.ctrl || mods.alt || mods.logo) {
+                    (1, false) if mods.shift => name.to_uppercase(),
+                    (1, false) => name.clone(),
+                    _ => String::new(),
+                };
+                let mut ev = Vec::new();
+                for pressed in [true, false] {
+                    let wanted = match phase {
+                        KeyPhase::Tap => true,
+                        KeyPhase::Down => pressed,
+                        KeyPhase::Up => !pressed,
+                    };
+                    if wanted {
+                        ev.extend(self.key_event(name, &text, *mods, pressed, t));
+                    }
+                }
+                if ev.is_empty() {
+                    return Err(self.err(
+                        line,
+                        "no surface has the keyboard (a `focus` step gives it one)".into(),
+                    ));
+                }
+                self.send(ev)?;
+            }
+            StepKind::Type { n, ms: None } => {
+                self.event(step);
+                self.kb_sync()?;
+                if self.kb.is_none() {
+                    return Err(self.err(
+                        line,
+                        "no surface has the keyboard (a `focus` step gives it one)".into(),
+                    ));
+                }
+                let ev = self.typed(*n, t);
+                self.send(ev)?;
+            }
+            StepKind::Type { ms: Some(_), .. } => {
+                self.event(step);
+                self.kb_sync()?;
+                if self.kb.is_none() {
+                    return Err(self.err(
+                        line,
+                        "no surface has the keyboard (a `focus` step gives it one)".into(),
+                    ));
+                }
+                return self.start_time(step).map(Some);
+            }
+            StepKind::Paste { n } => {
+                self.event(step);
+                self.kb_sync()?;
+                let Some(surface) = self.kb else {
+                    return Err(self.err(
+                        line,
+                        "no surface has the keyboard (a `focus` step gives it one)".into(),
+                    ));
+                };
+                // ctrl+v asks the clipboard; its text reaches only the
+                // input that asked (the router's rule).
+                let ctrl = KeyMods {
+                    ctrl: true,
+                    ..KeyMods::default()
+                };
+                let mut ev: Vec<InputEvent> = [true, false]
+                    .into_iter()
+                    .filter_map(|p| self.key_event("v", "", ctrl, p, t))
+                    .collect();
+                ev.push(InputEvent::Paste {
+                    surface,
+                    text: "x".repeat(*n as usize),
+                });
+                self.send(ev)?;
+            }
+            StepKind::Focus { on } => {
+                self.event(step);
+                let s = self.surface_for(&Some(on.clone()), line)?;
+                self.kb_take(s);
+                self.kb_sync()?;
+            }
+            StepKind::Unfocus => {
+                self.event(step);
+                self.kb_stack.clear();
+                self.kb_sync()?;
+            }
+            StepKind::Answer { method, answer } => {
+                self.event(step);
+                self.answer_step(method, answer)
+                    .map_err(|m| refused(self, m))?;
+            }
             StepKind::Leave => {
                 self.event(step);
                 // The pointer leaves the shell's surfaces (for a window,
@@ -1791,6 +2342,10 @@ impl Harness {
                 dy: *dy,
                 n: self.clock.ticks_for(*ms).max(1),
             },
+            StepKind::Type { n, ms: Some(ms) } => Plan::Type {
+                n: *n,
+                ticks: self.clock.ticks_for(*ms).max(1),
+            },
             _ => return Err(self.err(step.line, "not a time step".into())),
         };
         Ok(TimeRun {
@@ -1869,6 +2424,16 @@ impl Harness {
                 self.tick(input)?;
                 run.done += 1;
                 Ok(run.done >= n)
+            }
+            Plan::Type { n, ticks } => {
+                if run.done >= ticks {
+                    return Ok(true);
+                }
+                let at = |i: u32| u64::from(i) * u64::from(n) / u64::from(ticks);
+                let keys = at(run.done + 1) - at(run.done);
+                self.tick(vec![Input::Keys(keys as u32)])?;
+                run.done += 1;
+                Ok(run.done >= ticks)
             }
             Plan::Swipe { dy, n } => {
                 if run.done >= n {
@@ -1969,12 +2534,15 @@ impl Harness {
         let now = self.instant(t);
         self.router.set_now(Some(now));
         self.r.set_now(Some(now));
+        // (report) The keyboard moved by surfaces mapped or gone.
+        self.kb_sync()?;
         for i in input {
             let ev = match i {
                 Input::Move(s, at) => self.pointer.move_to(s, at, ms(t)),
                 Input::Button(b, state) => {
                     self.pointer.button(b, state, ms(t)).into_iter().collect()
                 }
+                Input::Keys(n) => self.typed(n, t),
                 Input::Swipe(dy, stop) => match self.pointer.swipe(dy, stop, ms(t)) {
                     Some(ev) => vec![ev],
                     None => {
@@ -2118,11 +2686,24 @@ impl Harness {
     /// Paints every surface that wants a frame at `t`, once; surface
     /// changes the paints leave wake the loop (`Host::painted`).
     fn paint(&mut self, t: Duration) -> Result<(), Error> {
+        // (report) The first tick past the `warmup` paints every shown
+        // surface whole: the trace's first frame, which the traced part
+        // is held to as a run is to its boot.
+        let edge = !self.warmed && t >= T0 + Duration::from_millis(self.sc.warmup);
+        if edge {
+            self.warmed = true;
+            if self.sc.warmup > 0 {
+                for s in &self.surfaces.shown {
+                    self.r.invalidate(s.id);
+                }
+            }
+        }
+        let edge = edge && self.sc.warmup > 0;
         let ids: Vec<SurfaceId> = self
             .surfaces
             .shown
             .iter()
-            .filter(|s| s.fresh || self.r.wants_frame(s.id))
+            .filter(|s| edge || s.fresh || self.r.wants_frame(s.id))
             .map(|s| s.id)
             .filter(|id| self.drop_all == 0 && !self.drop_one.contains_key(id))
             .collect();
@@ -2378,6 +2959,11 @@ impl Harness {
         }
         let committed = std::mem::take(&mut self.committed);
         if traces.is_empty() {
+            return Ok(());
+        }
+        // (report) `warmup`: its frames are painted, neither traced nor
+        // checked.
+        if t < T0 + Duration::from_millis(self.sc.warmup) {
             return Ok(());
         }
         let mut cost: BTreeMap<u32, Cost> = BTreeMap::new();
@@ -2885,11 +3471,20 @@ impl Harness {
             dev.finish();
         }
         self.trace.nodes = std::mem::take(&mut self.labels.metas);
+        if self.sc.warmup > 0 {
+            trim_warmup(&mut self.trace);
+        }
+        for (path, _) in &self.seeds {
+            self.notes
+                .push(format!("[seed] `{path}`: no such cell was ever mounted"));
+        }
+        self.keep_writes();
         self.trace.seal();
         Ok(RunOutput {
             trace: self.trace,
             images: self.images,
             notes: self.notes,
+            log: self.log,
         })
     }
 }
@@ -3043,8 +3638,73 @@ struct Committed {
 }
 
 /// Logic's wall clock at presentation time `t`.
-fn wall(t: Duration) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(MOCK_TIME) + t
+/// (report) The `for` row key a node is mounted under: `None` outside
+/// any, and for a node directly in a per-screen surface, whose innermost
+/// qualifier is the screen's id, which differs between the live shell's
+/// output and the sandbox's (the binary's `row_key` in
+/// `run/request/report.rs`, which `nodes.json` is written by).
+fn row_key(i: &strand_compiler::instantiate::inspect::Identity) -> Option<String> {
+    let key = i.key.as_ref()?;
+    (key != SCREEN_ID).then(|| key.clone())
+}
+
+/// (report) The trace of a run with a `warmup` from its first traced
+/// frame `k0` on: the segments that ended in the warm-up fold into boot,
+/// which ends at `k0` (the traced part starts from what the warm-up
+/// left, as a run starts from its boot), one under way at `k0` starts
+/// after it, and what was recorded of ticks before `k0` goes.
+fn trim_warmup(trace: &mut RunTrace) {
+    let Some(k0) = trace.frames.first().map(|f| f.k) else {
+        return;
+    };
+    let mut map: Vec<Option<usize>> = Vec::with_capacity(trace.segments.len());
+    let mut kept: Vec<Segment> = Vec::new();
+    for (i, mut seg) in std::mem::take(&mut trace.segments).into_iter().enumerate() {
+        if i == 0 {
+            seg.s = None;
+            seg.e = seg.e.max(k0);
+            map.push(Some(0));
+            kept.push(seg);
+            continue;
+        }
+        let boot_e = kept[0].e;
+        if seg.e <= boot_e {
+            map.push(Some(0));
+            continue;
+        }
+        if seg.s.is_none_or(|s| s < boot_e) {
+            seg.s = Some(boot_e);
+        }
+        map.push(Some(kept.len()));
+        kept.push(seg);
+    }
+    trace.segments = kept;
+    let remap = |s: &mut Option<usize>| *s = s.and_then(|i| map.get(i).copied().flatten());
+    trace.events.retain(|e| e.k >= k0);
+    trace.events.iter_mut().for_each(|e| remap(&mut e.segment));
+    trace.expects.retain(|e| e.k >= k0);
+    trace.expects.iter_mut().for_each(|e| remap(&mut e.segment));
+    trace.rests.retain(|r| r.k >= k0);
+    trace.commands.retain(|c| c.k >= k0);
+    for m in [&mut trace.windowed, &mut trace.opened, &mut trace.closed] {
+        m.values_mut().for_each(|ks| ks.retain(|k| *k >= k0));
+        m.retain(|_, ks| !ks.is_empty());
+    }
+    trace
+        .surfaces
+        .retain(|s| s.detached.is_none_or(|d| d >= k0));
+    for s in &mut trace.surfaces {
+        s.attached = s.attached.max(k0);
+        // The placement it had at `k0` stands from `k0`.
+        let before = s.places.iter().rposition(|p| p.k < k0);
+        if let Some(i) = before {
+            s.places.drain(..i);
+            s.places[0].k = k0;
+            if s.places.get(1).is_some_and(|p| p.k == k0) {
+                s.places.remove(0);
+            }
+        }
+    }
 }
 
 /// (eval-rules-8) A `keyframes` block as the trace records it

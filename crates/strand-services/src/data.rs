@@ -65,6 +65,59 @@ pub enum Data {
 static NULL: Data = Data::Null;
 
 impl Data {
+    /// (report) Writes the value as compact JSON, as a glitch report's
+    /// ring and snapshot hold values (docs/architecture.md, "Glitch
+    /// reports", Values): records as objects of their fields, lists as
+    /// arrays, enums by variant name, durations in ms, colours as
+    /// `"#rrggbbaa"`, a non-finite number as `null`. `keep` decides for
+    /// each text whether it is written; one it refuses is written
+    /// `{"~text": N}`, N its length in characters.
+    pub fn write_json(
+        &self,
+        w: &mut dyn fmt::Write,
+        keep: &mut dyn FnMut(&str) -> bool,
+    ) -> fmt::Result {
+        use strand_core::flight::{json_color, json_held, json_number, json_text};
+        match self {
+            Data::Null => w.write_str("null"),
+            Data::Bool(b) => w.write_str(if *b { "true" } else { "false" }),
+            Data::Int(i) => write!(w, "{i}"),
+            Data::Float(f) => json_number(w, *f),
+            Data::Text(t) => {
+                if keep(t) {
+                    json_text(w, t)
+                } else {
+                    json_held(w, t)
+                }
+            }
+            Data::Duration(d) => json_number(w, d.as_secs_f64() * 1000.0),
+            Data::Color(c) => json_color(w, [c.r, c.g, c.b, c.a]),
+            Data::List(items) => {
+                w.write_char('[')?;
+                for (i, d) in items.iter().enumerate() {
+                    if i > 0 {
+                        w.write_char(',')?;
+                    }
+                    d.write_json(w, keep)?;
+                }
+                w.write_char(']')
+            }
+            Data::Record { fields, .. } => {
+                w.write_char('{')?;
+                for (i, (name, d)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        w.write_char(',')?;
+                    }
+                    json_text(w, name)?;
+                    w.write_char(':')?;
+                    d.write_json(w, keep)?;
+                }
+                w.write_char('}')
+            }
+            Data::Enum { variant, .. } => json_text(w, variant),
+        }
+    }
+
     /// A short name of the kind of value, for errors.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -399,6 +452,39 @@ impl SchemaType for Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (report) A value as compact JSON, each text kept or held back as
+    /// `keep` decides.
+    #[test]
+    fn write_json_types_values_and_holds_back_texts() {
+        let d = Data::List(vec![
+            Data::Record {
+                ty: "Sink".into(),
+                fields: vec![
+                    ("name".into(), Data::text("Speakers")),
+                    ("volume".into(), Data::Float(0.5)),
+                    ("muted".into(), Data::Bool(false)),
+                    ("port".into(), Data::Null),
+                ],
+            },
+            Data::Enum {
+                ty: "Urgency".into(),
+                variant: "critical".into(),
+            },
+            Data::Duration(Duration::from_millis(1500)),
+            Data::Color(Rgba::rgb(1.0, 0.0, 0.0)),
+            Data::Int(-3),
+            Data::text("secret \"x\""),
+        ]);
+        let mut s = String::new();
+        d.write_json(&mut s, &mut |t| t != "secret \"x\"").unwrap();
+        assert_eq!(
+            s,
+            r##"[{"name":"Speakers","volume":0.5,"muted":false,"port":null},"critical",1500,"#ff0000ff",-3,{"~text":10}]"##
+        );
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v[0]["name"], "Speakers");
+    }
 
     #[test]
     fn primitives_round_trip() {

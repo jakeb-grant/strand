@@ -165,6 +165,38 @@ pub enum StepKind {
     },
     /// (eval-live) The pointer leaves every surface.
     Leave,
+    // (report) The keyboard.
+    /// `key NAME [+ctrl|+shift|+alt|+super…] [down|up]`: a key on the
+    /// focused surface, pressed and released unless `down` or `up`.
+    Key {
+        name: String,
+        mods: KeyMods,
+        phase: KeyPhase,
+    },
+    /// `type N [over MS]`: N placeholder `x`s typed on the focused
+    /// surface, at once or spread over MS (a time step).
+    Type {
+        n: u32,
+        ms: Option<u32>,
+    },
+    /// `paste N`: a paste of N placeholder `x`s (ctrl+v, then the
+    /// clipboard's text, which the router takes only for the input that
+    /// asked).
+    Paste {
+        n: u32,
+    },
+    /// `focus <surface>`: the compositor gives that surface the keyboard.
+    Focus {
+        on: Selector,
+    },
+    /// `unfocus`: no surface of the shell has the keyboard.
+    Unfocus,
+    /// `answer <service.method> <JSON>` (or `error "<text>"`): the next
+    /// call of that method is answered with it, ahead of the mock's own.
+    Answer {
+        method: String,
+        answer: Result<String, String>,
+    },
     // Perturbations.
     TextHold {
         filter: Option<String>,
@@ -223,6 +255,25 @@ pub enum StepKind {
     },
 }
 
+/// (report) The modifiers a `key` step holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyMods {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub logo: bool,
+}
+
+/// (report) What a `key` step does with its key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyPhase {
+    /// Pressed and released.
+    #[default]
+    Tap,
+    Down,
+    Up,
+}
+
 /// `rest` without `max`: ticks before it fails `settle`.
 pub const REST_MAX: u32 = 600;
 
@@ -237,6 +288,7 @@ impl StepKind {
                 | StepKind::Glide { .. }
                 | StepKind::Drag { .. }
                 | StepKind::Swipe { .. }
+                | StepKind::Type { ms: Some(_), .. }
         )
     }
 
@@ -257,6 +309,7 @@ impl StepKind {
                 | StepKind::TextLate { .. }
                 | StepKind::Jitter(_)
                 | StepKind::Drop { .. }
+                | StepKind::Answer { .. }
         )
     }
 }
@@ -576,6 +629,88 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
         "leave" => {
             only(1)?;
             StepKind::Leave
+        }
+        "key" => {
+            let usage = "`key NAME [+ctrl|+shift|+alt|+super…] [down|up]`";
+            let name = need(1, usage)?.to_string();
+            if name.starts_with('+') {
+                return Err(format!("`key` takes {usage}"));
+            }
+            let mut mods = KeyMods::default();
+            let mut phase = KeyPhase::Tap;
+            for (i, x) in w.iter().enumerate().skip(2) {
+                match x.text.as_str() {
+                    "+ctrl" => mods.ctrl = true,
+                    "+shift" => mods.shift = true,
+                    "+alt" => mods.alt = true,
+                    "+super" | "+logo" => mods.logo = true,
+                    "down" if i + 1 == w.len() => phase = KeyPhase::Down,
+                    "up" if i + 1 == w.len() => phase = KeyPhase::Up,
+                    o => return Err(format!("unexpected `{o}`: {usage}")),
+                }
+            }
+            StepKind::Key { name, mods, phase }
+        }
+        "type" => {
+            let usage = "`type N [over MS]`";
+            let n = count(need(1, usage)?, "keys")?;
+            let ms = match (arg(2), arg(3)) {
+                (None, _) => None,
+                (Some("over"), Some(ms)) => {
+                    only(4)?;
+                    Some(
+                        ms.strip_suffix("ms")
+                            .unwrap_or(ms)
+                            .parse::<u32>()
+                            .ok()
+                            .filter(|&m| m > 0)
+                            .ok_or_else(|| format!("`{ms}` is not milliseconds"))?,
+                    )
+                }
+                _ => return Err(format!("`type` takes {usage}")),
+            };
+            StepKind::Type { n, ms }
+        }
+        "paste" => {
+            only(2)?;
+            StepKind::Paste {
+                n: count(need(1, "a number of characters")?, "characters")?,
+            }
+        }
+        "focus" => {
+            only(2)?;
+            StepKind::Focus {
+                on: selector(need(1, "the surface that takes the keyboard")?)?,
+            }
+        }
+        "unfocus" => {
+            only(1)?;
+            StepKind::Unfocus
+        }
+        "answer" => {
+            let usage =
+                "`answer <service.method> <JSON>` or `answer <service.method> error \"<text>\"`";
+            let method = need(1, usage)?.to_string();
+            if !method.contains('.') || method.starts_with('.') || method.ends_with('.') {
+                return Err(format!("`{method}` is not `service.method`: {usage}"));
+            }
+            need(2, usage)?;
+            let answer = if arg(2) == Some("error") && !w[2].quoted {
+                match &w[3..] {
+                    [t] if t.quoted => Err(t.text.clone()),
+                    _ => return Err(format!("`answer … error` takes a quoted text: {usage}")),
+                }
+            } else {
+                let json = rest_of("answer")
+                    .strip_prefix(method.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                serde_json::from_str::<serde_json::Value>(&json)
+                    .map_err(|e| format!("`{json}` is not JSON ({e}): {usage}"))?;
+                Ok(json)
+            };
+            StepKind::Answer { method, answer }
         }
         "text" => match arg(1) {
             Some("hold") => {

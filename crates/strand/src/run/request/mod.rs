@@ -72,7 +72,9 @@ impl Shell {
             } if matches!(from, Caller::Socket(_)) => {
                 self.export_request(from, &kind, template, name)
             }
-            Request::Report if matches!(from, Caller::Socket(_)) => self.report_request(from),
+            Request::Report { save } if matches!(from, Caller::Socket(_)) => {
+                self.report_request(from, save)
+            }
             req => self.not_served(from, req.cmd()),
         }
     }

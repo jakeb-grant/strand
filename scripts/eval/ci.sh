@@ -11,7 +11,8 @@
 #      test-worktree.sh (ab.sh's and mutants.sh's worktree helpers) and
 #      test-local-mounts.sh (what `run.sh eval local` mounts) and
 #      test-repeat.sh (the repeated gate and matrix, on a stand-in build)
-#   4  cargo test of eval/
+#   4  cargo test of eval/, then test-report-view.sh (report-view.sh and
+#      replay-mounts.sh on fixture bundles)
 #   5  strand-eval refs-check (the reference files: seals, notes, and a
 #      recording changed since the merge base with main under its old
 #      note), then check --gate over the curated and regression
@@ -19,6 +20,9 @@
 #   6  the effect matrix, every cell at 60 and 144 Hz, judged against
 #      eval/matrix/known.toml and held to eval/refs/matrix-<hz>.ref (a
 #      cell whose recording changed fails until it is approved)
+#   7  test-report-view.sh --e2e: a session on a headless sway reported
+#      with `strand report`, replayed, and held to the live shell
+#      (docs/eval.md, "Replaying a glitch report")
 #
 # Usage: scripts/eval/ci.sh [STEP...]   (default: all, as affected.sh runs it)
 # Stops at the first failing step and names it.
@@ -30,7 +34,7 @@ cd "$ROOT"
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-target}
 MANIFEST=eval/Cargo.toml
 steps=("$@")
-[ "${#steps[@]}" -gt 0 ] || steps=(1 2 3 4 5 6)
+[ "${#steps[@]}" -gt 0 ] || steps=(1 2 3 4 5 6 7)
 
 run() {
   local n=$1 name=$2
@@ -59,6 +63,11 @@ merge_base() {
   git merge-base HEAD main 2>/dev/null || git merge-base HEAD origin/main 2>/dev/null || true
 }
 
+# strand-eval's tests, then report-view.sh's on fixture bundles.
+tests() {
+  cargo test --locked --manifest-path "$MANIFEST" && bash scripts/eval/test-report-view.sh
+}
+
 # The gate's summary goes to GitHub's step summary from here, not from
 # strand-eval (whose tests and mutant runs would write to it too).
 gate() {
@@ -81,10 +90,11 @@ for n in "${steps[@]}"; do
     1) run 1 "fmt" cargo fmt --manifest-path "$MANIFEST" -p strand-eval --check ;;
     2) run 2 "clippy" cargo clippy --locked --manifest-path "$MANIFEST" --all-targets -- -D warnings ;;
     3) run 3 "lock and isolation" lock_and_isolation ;;
-    4) run 4 "tests" cargo test --locked --manifest-path "$MANIFEST" ;;
+    4) run 4 "tests" tests ;;
     5) run 5 "references and scenario gate" gate ;;
     6) run 6 "the effect matrix against its references" env OUT=target/eval/matrix-ci HZ=60,144 bash scripts/eval/matrix.sh ;;
-    *) echo "scripts/eval/ci.sh: no step $n (1 to 6)" >&2; exit 2 ;;
+    7) run 7 "a glitch report replayed end to end" bash scripts/eval/test-report-view.sh --e2e ;;
+    *) echo "scripts/eval/ci.sh: no step $n (1 to 7)" >&2; exit 2 ;;
   esac
 done
 echo "=== eval: all steps passed (${steps[*]})"

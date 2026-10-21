@@ -809,3 +809,144 @@ fn every_mutant_line_names_what_exists() {
     }
     assert_eq!(n, 50);
 }
+
+/// (report) The header keys a replay writes: `[seed]` (JSON values),
+/// `wall` (RFC 3339 with its offset), `warmup` (ms) and `icons` (a
+/// folder, inside eval/ for a committed scenario); a mistake in each is
+/// an error at its line.
+#[test]
+fn the_replay_headers_parse() {
+    let s = parse(
+        "id = \"t\"\nwall = \"2026-10-20T14:03:07.250+02:00\"\nwarmup = 40000\n\
+         icons = \"../../fixtures/images\"\n\n[seed]\n\"mood.level\" = \"7\"\n\
+         \"shell.q\" = \"{\\\"~text\\\": 3}\"\n\"$accent\" = \"\\\"#ff0000\\\"\"\n\
+         === shell.strand\nbar Top { height: 30 }\n=== steps\nrest\n",
+    );
+    let w = s.wall.unwrap();
+    assert_eq!(w.offset, 7200);
+    assert_eq!(w.unix.as_secs(), 1_792_497_787);
+    assert_eq!(w.unix.subsec_millis(), 250);
+    assert_eq!(s.warmup, 40_000);
+    assert_eq!(s.icons.unwrap(), eval_root().join("fixtures/images"));
+    assert_eq!(
+        s.seed,
+        vec![
+            ("$accent".to_string(), "\"#ff0000\"".to_string()),
+            ("mood.level".to_string(), "7".to_string()),
+            ("shell.q".to_string(), "{\"~text\": 3}".to_string()),
+        ]
+    );
+    // Unset: none of them.
+    let s = parse(MIN);
+    assert!(s.wall.is_none() && s.icons.is_none() && s.seed.is_empty());
+    assert_eq!(s.warmup, 0);
+    let bad = |header: &str, want: &str| {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n{header}\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n"
+        ));
+        assert!(msg.contains(want), "{msg}");
+        assert!(line >= 2, "{line}: {msg}");
+    };
+    bad("wall = \"yesterday\"", "RFC 3339");
+    bad("wall = \"2026-10-20T14:03:07\"", "RFC 3339");
+    bad("[seed]\n\"shell.q\" = \"{not json\"", "is not JSON");
+    bad("icons = \"/usr/share/icons\"", "outside eval/");
+    bad("icons = \"${HOME}/icons\"", "only in eval/scenarios/local/");
+}
+
+/// (report) The keyboard steps and `answer` parse, and their mistakes
+/// name their line.
+#[test]
+fn the_keyboard_steps_parse() {
+    use strand_eval::steps::{KeyMods, KeyPhase};
+    let s = parse(
+        "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\n\
+         key Escape\nkey v +ctrl\nkey Tab +shift +alt +super down\nkey Tab up\n\
+         type 4\ntype 12 over 300ms\npaste 9\nfocus #ask\nunfocus\n\
+         answer apps.search [{\"a\": 1}, 2]\nanswer weather.fetch error \"offline\"\n\
+         set shell.list [1, 2, 3]\n",
+    );
+    let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            StepKind::Key {
+                name: "Escape".into(),
+                mods: KeyMods::default(),
+                phase: KeyPhase::Tap
+            },
+            StepKind::Key {
+                name: "v".into(),
+                mods: KeyMods {
+                    ctrl: true,
+                    ..KeyMods::default()
+                },
+                phase: KeyPhase::Tap
+            },
+            StepKind::Key {
+                name: "Tab".into(),
+                mods: KeyMods {
+                    ctrl: false,
+                    shift: true,
+                    alt: true,
+                    logo: true
+                },
+                phase: KeyPhase::Down
+            },
+            StepKind::Key {
+                name: "Tab".into(),
+                mods: KeyMods::default(),
+                phase: KeyPhase::Up
+            },
+            StepKind::Type { n: 4, ms: None },
+            StepKind::Type {
+                n: 12,
+                ms: Some(300)
+            },
+            StepKind::Paste { n: 9 },
+            StepKind::Focus {
+                on: Selector::Id("ask".into())
+            },
+            StepKind::Unfocus,
+            StepKind::Answer {
+                method: "apps.search".into(),
+                answer: Ok("[{\"a\": 1}, 2]".into())
+            },
+            StepKind::Answer {
+                method: "weather.fetch".into(),
+                answer: Err("offline".into())
+            },
+            StepKind::Set {
+                path: "shell.list".into(),
+                value: "[1, 2, 3]".into()
+            },
+        ]
+    );
+    // `type … over` is a time step; `answer` opens no segment.
+    assert!(kinds[5].is_time() && !kinds[4].is_time());
+    assert!(!kinds[9].opens_segment() && kinds[0].opens_segment());
+    for (step, want) in [
+        ("key", "takes"),
+        ("key +ctrl", "takes"),
+        ("key a down +ctrl", "unexpected `down`"),
+        ("key a sideways", "unexpected `sideways`"),
+        ("type", "takes"),
+        ("type many", "whole number"),
+        ("type 3 over", "takes"),
+        ("type 3 over 0", "milliseconds"),
+        ("paste", "takes"),
+        ("focus", "takes"),
+        ("focus #a #b", "unexpected"),
+        ("unfocus now", "unexpected"),
+        ("answer apps", "service.method"),
+        ("answer apps.search", "takes"),
+        ("answer apps.search {nope", "is not JSON"),
+        ("answer apps.search error offline", "quoted text"),
+    ] {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n{step}\n"
+        ));
+        assert_eq!(line, 6, "{step}: {msg}");
+        assert!(msg.contains(want), "{step}: {msg}");
+    }
+}

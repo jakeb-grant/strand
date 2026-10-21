@@ -39,10 +39,14 @@ pub(crate) fn on_main(state: &mut State<Host>, msg: ToMain, answer: &Sender<ToLo
                 })
                 .collect();
             let data = Json::Array(data);
-            let _ = answer.send(ToLogic::Snapshot(Snapshot { reply, data }));
+            let _ = answer.send(ToLogic::Snapshot(Snapshot {
+                reply,
+                data,
+                bundle: None,
+            }));
             return;
         }
-        ToMain::Snapshot { .. } => return,
+        ToMain::Snapshot { .. } | ToMain::Recording(_) => return,
         ToMain::Highlight(node) => host.renderer.set_highlight(node),
         ToMain::DamageFlash(on) => host.renderer.set_damage_flash(on),
         ToMain::PickMode { on, seq } => {

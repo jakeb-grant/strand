@@ -222,3 +222,19 @@ fn with_a_worker_the_old_pixels_stay_until_the_new_are_in() {
     settle(&mut r, &mut buf, &all(GREEN));
     assert_eq!([at(&buf, 0), at(&buf, 1), at(&buf, 2)], [GREEN; 3]);
 }
+
+/// (report) The files a glitch report copies: each local file an
+/// `image`, `svg` or `lottie` on screen draws, once each, sorted; none
+/// before anything is drawn.
+#[test]
+fn image_sources_name_the_files_drawn() {
+    let f = files("sources");
+    let mut r = renderer();
+    assert!(r.image_sources().files().is_empty());
+    let mut buf = scene(&mut r, &f);
+    let mut want = vec![f.image.clone(), f.svg.clone(), f.lottie.clone()];
+    want.sort();
+    assert_eq!(r.image_sources().files(), want);
+    buf.paint_at(&mut r, S, 1, T0 + Duration::from_millis(16));
+    assert_eq!(r.image_sources().files(), want, "each once");
+}

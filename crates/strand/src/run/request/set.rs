@@ -4,6 +4,8 @@
 
 use serde_json::json;
 
+use strand_core::flight;
+
 use super::{Caller, Shell};
 
 impl Shell {
@@ -16,6 +18,9 @@ impl Shell {
         let rt = self.inst.runtime();
         let token = crate::ipc::token_path(path);
         let exported = token.is_none() && self.inst.get(path).is_ok();
+        // (report review) What a replay repeats: a state or settings
+        // field, or a token overlay (a service's write is its patch).
+        let recorded = token.is_some() || exported;
         let r = if let Some(token) = token {
             self.inst
                 .set_token_overlay(token, value)
@@ -46,6 +51,13 @@ impl Shell {
         };
         let ans = match r {
             Ok(()) => {
+                if recorded {
+                    self.record_request(
+                        flight::request::SET,
+                        path,
+                        token.is_some().then_some(value),
+                    );
+                }
                 if token.is_none() {
                     self.forget_unheard(path);
                 }

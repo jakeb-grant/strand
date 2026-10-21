@@ -52,6 +52,13 @@ pub trait FrameClock {
     fn forget(&mut self, surface: SurfaceId) {
         let _ = surface;
     }
+    /// (report) The refresh period of `surface`'s output as its last
+    /// presentation reported it; `None` while unknown (no feedback yet,
+    /// or the compositor reports 0).
+    fn refresh(&self, surface: SurfaceId) -> Option<Duration> {
+        let _ = surface;
+        None
+    }
 }
 
 /// The prediction shared by the real and the fake clock: the last
@@ -62,6 +69,13 @@ struct Predictor {
 }
 
 impl Predictor {
+    fn refresh(&self, surface: SurfaceId) -> Option<Duration> {
+        self.last
+            .get(&surface)
+            .and_then(|p| p.refresh)
+            .filter(|r| !r.is_zero())
+    }
+
     fn presented(&mut self, surface: SurfaceId, p: Presentation) {
         // Feedback for an older frame can arrive after a newer one when
         // frames were queued; keep the latest.
@@ -152,6 +166,10 @@ impl FrameClock for PresentationClock {
     fn forget(&mut self, surface: SurfaceId) {
         self.predictor.last.remove(&surface);
     }
+
+    fn refresh(&self, surface: SurfaceId) -> Option<Duration> {
+        self.predictor.refresh(surface)
+    }
 }
 
 /// A clock whose time tests set. Clones share the same time, so a test
@@ -239,6 +257,10 @@ impl FrameClock for FakeClock {
 
     fn forget(&mut self, surface: SurfaceId) {
         self.lock().predictor.last.remove(&surface);
+    }
+
+    fn refresh(&self, surface: SurfaceId) -> Option<Duration> {
+        self.lock().predictor.refresh(surface)
     }
 }
 

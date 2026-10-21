@@ -73,6 +73,16 @@ pub(crate) enum CellRec {
 }
 
 impl CellRec {
+    /// (report review) Its core ids: the signal or keyed collection, or
+    /// each settings field.
+    pub(crate) fn ids(&self) -> Vec<strand_core::NodeId> {
+        match self {
+            CellRec::Plain { sig, .. } => vec![sig.id()],
+            CellRec::Keyed { keyed, .. } => vec![keyed.id()],
+            CellRec::Settings { slot, .. } => slot.fields.iter().map(|(_, f)| f.id()).collect(),
+        }
+    }
+
     pub(crate) fn holder(&self) -> Scope {
         match self {
             CellRec::Plain { holder, .. }
@@ -397,6 +407,22 @@ impl Ctx {
     /// Remember a cell under `key`, until its holder goes.
     pub(crate) fn note_cell(self: &Rc<Self>, rt: &Runtime, key: Rc<str>, rec: CellRec) {
         let holder = rec.holder().id();
+        {
+            // (report review) The tap's index, pruned of cells gone when
+            // it has doubled over the live ones.
+            let mut ids = self.cell_ids.borrow_mut();
+            for id in rec.ids() {
+                ids.insert(id, key.clone());
+            }
+            let live = self.registry.borrow().cells.len();
+            if ids.len() > 256 && ids.len() > 4 * live {
+                let reg = self.registry.borrow();
+                ids.retain(|id, k| reg.cells.get(k).is_some_and(|r| r.ids().contains(id)));
+                self.secret_cells
+                    .borrow_mut()
+                    .retain(|id| ids.contains_key(id));
+            }
+        }
         self.registry.borrow_mut().cells.insert(key.clone(), rec);
         let weak = Rc::downgrade(self);
         let _ = rt.with_owner(holder, |rt| {

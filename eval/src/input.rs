@@ -171,6 +171,10 @@ pub fn to_logic(
                 }
                 any = true;
             }
+            // (report) A paste's ask is answered by a `paste` step (the
+            // text reaches only the input that asked); a copy stays the
+            // host's.
+            Intent::Clipboard(strand_scene::ClipboardAsk::Paste { .. }) => {}
             Intent::Clipboard(_) => notes.push("the clipboard is the host's".into()),
         }
     }

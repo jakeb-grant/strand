@@ -136,13 +136,27 @@ pub(super) struct Shell {
     /// (M5, S-tools) Where snapshots are asked for (`strand report`);
     /// `None` without a main thread.
     pub(super) to_main: Option<Sender<ToMain>>,
-    /// (M5, S-tools) `report` requests waiting for main's snapshot.
-    pub(super) reports: Vec<(SnapshotId, super::request::Caller)>,
+    /// (M5, S-tools) `report` requests waiting for main's snapshot;
+    /// (report) with the words of a glitch report to save.
+    pub(super) reports: Vec<(SnapshotId, super::request::Caller, Option<String>)>,
     /// (M5) The next `SnapshotId`.
     pub(super) next_snapshot: u64,
     /// (M5, S-inspect) Pick mode's, the outline's and the flash's
     /// clients, and `inspect.node`s waiting for layouts.
     pub(super) inspector: super::request::Inspector,
+    /// (report) The glitch report's changes ring (`record.rs`), shared
+    /// with the taps it installed.
+    pub(super) recorder: std::rc::Rc<std::cell::RefCell<super::record::ChangeRecorder>>,
+    /// (report) `system.replay` as last read.
+    pub(super) replay_on: bool,
+    /// (report) The config directory (a report copies its files).
+    pub(super) config_dir: Option<PathBuf>,
+    /// (report) Wakes the loop when a report is written.
+    pub(super) report_ping: calloop::ping::Ping,
+    /// (report) The `strand-report` threads' outcomes.
+    pub(super) written: crate::report::bundle::Done,
+    /// (report) Glitch reports being written, with their callers.
+    pub(super) saving: Vec<(SnapshotId, super::request::Caller)>,
 }
 
 /// (M6) Which press a diff's popups were opened by, stamped on it as
@@ -288,6 +302,8 @@ impl Shell {
             ToLogic::GpuStatus(status) => self.gpu_status(status),
             ToLogic::LockState(state) => {
                 self.lock_state(state);
+                // (report) The changes ring pauses while locked.
+                self.record_lock();
                 // (M5, S-inspect) Pick mode ends and the outline hides
                 // while locked; the outline comes back after.
                 self.inspector_lock_changed();
@@ -301,6 +317,7 @@ impl Shell {
             ToLogic::Snapshot(snap) => self.snapshot_answered(snap),
             // (M5, S-inspect) A pick, or pick mode ended on main's side.
             ToLogic::Picked(event) => self.picked(event),
+            ToLogic::Hit(node) => self.record_hit(node),
             ToLogic::Shutdown => {}
         }
     }
@@ -542,6 +559,10 @@ impl Shell {
                 self.overlay.set_running(true);
             }
             self.retell_blur();
+            // (report) The reload, and the new program's literals.
+            if let Some(r) = &report {
+                self.record_reload(r);
+            }
         }
         let commit = began.elapsed();
         let now = Instant::now();

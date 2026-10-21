@@ -57,6 +57,10 @@ pub struct Host {
     /// The session lock's content and its built-in fallback (`strand
     /// run`'s `run/lock.rs`).
     pub(crate) lock: crate::run::lock::LockScreen,
+    /// (report) The glitch report's input ring (`run/record.rs`): on
+    /// for `strand run` ([`Host::forwarding`]) while `system.replay`
+    /// is, off for the demo bar.
+    pub(crate) recorder: crate::run::record::InputRecorder,
     /// Tests: told of every paint and monitor change (`bench.rs`,
     /// `fuzz.rs`).
     #[cfg(test)]
@@ -491,6 +495,7 @@ impl Host {
             gpu_released: Vec::new(),
             feeds: None,
             lock: crate::run::lock::LockScreen::default(),
+            recorder: crate::run::record::InputRecorder::new(false),
             #[cfg(test)]
             probe: None,
         }
@@ -546,6 +551,9 @@ impl Host {
     pub fn forwarding(mut self, tx: Sender<ToLogic>) -> Self {
         self.logic = Some(Forward::new(tx));
         self.renderer.set_query_wait(strand_render::QUERY_WAIT);
+        // (report) `system.replay` is on by default; logic turns it off
+        // (`ToMain::Recording`) when the service's boot value says so.
+        self.recorder.set_on(true, strand_core::flight::now_ns());
         self
     }
 
@@ -574,6 +582,7 @@ impl Host {
             return;
         };
         f.pick_seq = seq;
+        self.recorder.pick(strand_core::flight::now_ns(), on);
         for intent in f.router.set_picking(on, &mut self.renderer) {
             if let Some(msg) = to_logic(intent, None) {
                 f.send(msg);
@@ -616,6 +625,8 @@ impl Host {
     pub(crate) fn lock_started(&mut self) {
         self.end_pick();
         self.renderer.set_highlight(None);
+        // (report) Nothing is recorded until the unlock.
+        self.recorder.lock(strand_core::flight::now_ns(), true);
     }
 
     /// Fed nodes' producers follow the renderer's visible fed nodes.
@@ -663,6 +674,13 @@ impl Host {
     /// presented one's when the GPU thread says it presented it.
     pub(crate) fn painted(&mut self, surface: SurfaceId, damage: &Damage) {
         self.lock.painted(surface, damage);
+        // (report) Late frames and backend switches.
+        if self.recorder.on() {
+            let gpu = crate::report::backend(&self.renderer, surface).is_gpu();
+            let animating = self.renderer.wants_frame(surface);
+            self.recorder
+                .painted(strand_core::flight::now_ns(), surface, gpu, animating);
+        }
         self.note_blur_fallback(surface);
         // (M4) CPU fallbacks for GPU effects, once a run each.
         for text in self.renderer.take_effect_notices() {
@@ -1084,7 +1102,28 @@ impl LoopHost for Host {
             }
             return Ok(());
         };
+        // (report) Recorded as routed, a press with its hit; never on a
+        // lock surface. (report review) The hit goes to logic first, so
+        // it is named before the press's events can remove it.
+        let surface = event.surface();
+        let recording = self.recorder.on() && !self.lock.is_lock_surface(surface);
+        let hit = match event {
+            InputEvent::PointerButton {
+                position,
+                state: strand_scene::ButtonState::Pressed,
+                ..
+            } if recording => self.renderer.hit(surface, *position).first().copied(),
+            _ => None,
+        };
+        if let Some(n) = hit {
+            f.send(ToLogic::Hit(n));
+        }
         f.routed(event, intents);
+        if recording {
+            let focused = f.router.focused_input(surface, self.renderer.tree());
+            self.recorder
+                .input(strand_core::flight::now_ns(), event, focused, hit);
+        }
         // (M5) Pick mode: the inspector has the pointer.
         if f.router.picking() {
             match event {
@@ -1181,6 +1220,18 @@ impl LoopHost for Host {
     }
 }
 
+/// (report) An output added or changed, as the input ring keeps it.
+fn record_output(r: &mut crate::run::record::InputRecorder, m: &Monitor) {
+    r.output(
+        strand_core::flight::now_ns(),
+        m.id.as_str(),
+        m.connector.as_deref(),
+        m.logical_size.unwrap_or((0, 0)),
+        m.scale.numerator(),
+        m.position.unwrap_or((0, 0)),
+    );
+}
+
 impl SurfaceHost for Host {
     fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: Option<&Monitor>) {
         if let Some(m) = monitor {
@@ -1197,6 +1248,20 @@ impl SurfaceHost for Host {
         // (`LoopHost::attaching`: the lock's and the host's bookkeeping).
         let bounds = monitor.and_then(monitor_bounds);
         let Ok(()) = host_loop::attached(self, surface, node, bounds);
+        // (report) A slot for it; a lock surface never has one.
+        let kind = self.renderer.tree().get(node).map(|n| n.kind);
+        if node != strand_surface::LOCK_FALLBACK_NODE
+            && kind != Some(strand_scene::NodeKind::Lock)
+            && !self.lock.is_lock_surface(surface)
+        {
+            self.recorder.mapped(
+                strand_core::flight::now_ns(),
+                surface,
+                node,
+                monitor.map(|m| (m.id.as_str(), m.connector.as_deref())),
+                kind.unwrap_or(strand_scene::NodeKind::Bar),
+            );
+        }
     }
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
@@ -1217,16 +1282,27 @@ impl SurfaceHost for Host {
         // first layout's sizes: a container query answers before the
         // first frame (the renderer holds it for that).
         let Ok(()) = host_loop::configured(self, surface, size, scale);
+        self.recorder.configured(
+            strand_core::flight::now_ns(),
+            surface,
+            size.w,
+            size.h,
+            scale.numerator(),
+        );
     }
 
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
         self.origins.insert(surface, origin);
         self.send_origin(surface);
+        self.recorder
+            .placed(strand_core::flight::now_ns(), surface, origin.0, origin.1);
     }
 
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.lock.detached(surface);
+        self.recorder
+            .unmapped(strand_core::flight::now_ns(), surface);
         // The renderer and routing forget it (`LoopHost::detaching` and
         // `detached`), and (M6) the router ticks: the pointer gone with
         // the surface may start a hover popup's grace.
@@ -1238,6 +1314,7 @@ impl SurfaceHost for Host {
         if let Some(p) = &self.probe {
             p.0.monitor();
         }
+        record_output(&mut self.recorder, monitor);
         if let Some(f) = &mut self.logic {
             f.monitor_added(monitor);
         }
@@ -1248,12 +1325,15 @@ impl SurfaceHost for Host {
         if let Some(p) = &self.probe {
             p.0.monitor();
         }
+        record_output(&mut self.recorder, monitor);
         if let Some(f) = &mut self.logic {
             f.monitor_changed(monitor);
         }
     }
 
     fn monitor_removed(&mut self, monitor: &Monitor) {
+        self.recorder
+            .output_gone(strand_core::flight::now_ns(), monitor.id.as_str());
         if let Some(f) = &mut self.logic {
             f.monitor_removed(monitor);
         }

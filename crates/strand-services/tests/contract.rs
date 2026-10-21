@@ -1852,3 +1852,182 @@ fn an_action_sent_at_once_waits_behind_a_handed_back_one() {
     );
     s.shutdown();
 }
+
+/// (report) What the tap heard, as plain values.
+#[derive(Debug, PartialEq)]
+enum Heard {
+    Field(&'static str, Data, Data, bool),
+    Keyed(&'static str, usize, Vec<Data>, bool),
+    Event(&'static str, Vec<Data>),
+}
+
+fn tap_into(s: &Services) -> Rc<std::cell::RefCell<Vec<(String, Heard)>>> {
+    let heard: Rc<std::cell::RefCell<Vec<(String, Heard)>>> = Rc::default();
+    let h = heard.clone();
+    s.tap(Some(Box::new(move |e: &strand_services::TapEvent<'_>| {
+        use strand_services::Change;
+        let what = match &e.change {
+            Change::Field {
+                field,
+                old,
+                new,
+                initial,
+            } => Heard::Field(field, (*old).clone(), (*new).clone(), *initial),
+            Change::Keyed {
+                field,
+                diffs,
+                removed,
+                initial,
+            } => Heard::Keyed(field, diffs.len(), removed.to_vec(), *initial),
+            Change::Event { event, args } => Heard::Event(event, args.to_vec()),
+        };
+        h.borrow_mut().push((e.service.to_string(), what));
+    })));
+    heard
+}
+
+/// (report) The tap hears every patch the pump applies that changed
+/// something: a plain field with the value it replaced (a boot value
+/// marked initial), a keyed field's diffs with the items they removed
+/// or replaced, and events with their arguments; a report equal to what
+/// the field holds changes nothing and is not told.
+#[test]
+fn the_tap_sees_every_applied_patch_with_its_old_value() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let heard = tap_into(&s);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Update(Box::new(|p| {
+        p.level = 0.25;
+        p.all = vec![ws(1, "a"), ws(2, "b")];
+    })));
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    sc.cmd(Cmd::Update(Box::new(|p| {
+        p.level = 0.5;
+        p.all = vec![ws(2, "B"), ws(3, "c")];
+    })));
+    sc.cmd(Cmd::Update(Box::new(|p| p.level = 0.5)));
+    sc.cmd(Cmd::Emit(ProbeEvent::Pair((7, "x".into()))));
+    until(&rt, &s, "the event", || heard.borrow().len() >= 5);
+    let p = |h: Heard| ("probe".to_string(), h);
+    assert_eq!(
+        *heard.borrow(),
+        [
+            p(Heard::Field(
+                "level",
+                Data::Float(0.0),
+                Data::Float(0.25),
+                true
+            )),
+            p(Heard::Keyed("all", 2, vec![], true)),
+            p(Heard::Field(
+                "level",
+                Data::Float(0.25),
+                Data::Float(0.5),
+                false
+            )),
+            // `a` removed, `b` replaced by `B`, in the order they went.
+            p(Heard::Keyed(
+                "all",
+                3,
+                vec![ws(1, "a").to_data(), ws(2, "b").to_data()],
+                false
+            )),
+            p(Heard::Event("pair", vec![Data::Int(7), Data::text("x")])),
+        ],
+        "the second `level = 0.5` changed nothing"
+    );
+    // The snapshot holds every field by name, keyed lists as their items.
+    let snap = s.snapshot(&rt);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].name, "probe");
+    assert!(snap[0].running);
+    let field = |n: &str| {
+        snap[0]
+            .fields
+            .iter()
+            .find(|(f, _)| *f == n)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(field("level"), Some(Data::Float(0.5)));
+    assert_eq!(
+        field("all"),
+        Some(Data::List(vec![ws(2, "B").to_data(), ws(3, "c").to_data()]))
+    );
+    assert_eq!(field("received"), None, "events are no fields");
+    s.shutdown();
+}
+
+/// (report) The echo of a local write is no patch: the write changed
+/// the field already, its echo changes nothing and is never told; the
+/// write's own answer, when it differs (a clamp), is a change.
+#[test]
+fn an_echo_of_a_local_write_is_not_tapped() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let heard = tap_into(&s);
+    dynamic.write(&rt, 4, &[], Data::Float(2.0)).unwrap();
+    assert_eq!(sc.next(), "write gain 2");
+    until(&rt, &s, "the gain's answer", || {
+        probe.cells().gain.pending_writes(&rt) == 0
+    });
+    assert!(heard.borrow().is_empty(), "{:?}", heard.borrow());
+    dynamic.write(&rt, 0, &[], Data::Float(1.5)).unwrap();
+    assert_eq!(sc.next(), "write level 1.5");
+    until(&rt, &s, "the clamped level", || {
+        probe.cells().level.get_untracked(&rt) == Ok(1.0)
+    });
+    assert_eq!(
+        *heard.borrow(),
+        [(
+            "probe".to_string(),
+            Heard::Field("level", Data::Float(1.5), Data::Float(1.0), false)
+        )]
+    );
+    s.shutdown();
+}
+
+/// (report) Without a tap the pump reads nothing a patch replaces; with
+/// one it reads one value per field patch, and taking it away stops the
+/// reads.
+#[test]
+fn no_tap_costs_no_read() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    for v in [0.1, 0.2] {
+        sc.cmd(Cmd::Update(Box::new(move |p| p.level = v)));
+    }
+    until(&rt, &s, "the level", || {
+        probe.cells().level.get_untracked(&rt) == Ok(0.2)
+    });
+    assert_eq!(s.tap_reads(), 0);
+    let heard = tap_into(&s);
+    sc.cmd(Cmd::Update(Box::new(|p| p.level = 0.3)));
+    until(&rt, &s, "the tapped level", || heard.borrow().len() == 1);
+    assert_eq!(s.tap_reads(), 1);
+    s.tap(None);
+    sc.cmd(Cmd::Update(Box::new(|p| p.level = 0.4)));
+    until(&rt, &s, "the untapped level", || {
+        probe.cells().level.get_untracked(&rt) == Ok(0.4)
+    });
+    assert_eq!(s.tap_reads(), 1);
+    assert_eq!(heard.borrow().len(), 1);
+    s.shutdown();
+}

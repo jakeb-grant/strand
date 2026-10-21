@@ -248,6 +248,22 @@ impl Instance {
             .secrets
             .borrow_mut()
             .see(&self.ctx.em.borrow(), ops);
+        // (report review) An input made a password one: its bound cell
+        // is in no report from now on.
+        let typed: Vec<NodeId> = ops
+            .iter()
+            .filter_map(|op| match op {
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::InputType,
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if !typed.is_empty() {
+            self.mark_password_cells(Some(&typed));
+        }
         cells
     }
 
@@ -351,7 +367,7 @@ fn settings_layer(l: SettingsLayer) -> &'static str {
 }
 
 /// A password input on the scene (`input { type: password }`).
-fn is_password(em: &Emitter, node: NodeId) -> bool {
+pub(super) fn is_password(em: &Emitter, node: NodeId) -> bool {
     em.nodes
         .get(&node)
         .is_some_and(|e| e.kind == NodeKind::Input)

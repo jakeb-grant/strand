@@ -245,3 +245,58 @@ fn a_lock_remounted_open_after_the_unlock_is_not_shown() {
     assert!(s.inst.lock_shown(), "closed and opened: a new request");
     assert!(s.reload(&src("third")), "and a lock edit waits again");
 }
+
+/// (report review) A glitch report leaves out a lock's cells and every
+/// cell a password input is bound to: the snapshot has neither, even
+/// before anything is typed, and the cell tap is told of neither, while
+/// a plain input's cell is told and kept.
+#[test]
+fn a_report_leaves_out_the_locks_cells_and_a_passwords() {
+    use std::cell::RefCell;
+    let src = "export state locked = true\nexport state pw = \"\"\nexport state q = \"\"\n\
+               lock {\n  open: <-> locked\n  state n = 0\n  on click { n += 1 }\n  \
+               on key(k) { auth.submit(k.name) }\n  text join(\"\", \"lock \", n)\n}\n\
+               bar Top {\n  input { type: password; text: <-> pw }\n  input { text: <-> q }\n}\n";
+    let mut s = boot(src);
+    let paths = |s: &Shell| -> Vec<String> {
+        s.inst
+            .cells_snapshot()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    };
+    let before = paths(&s);
+    assert!(before.contains(&"shell.q".to_string()), "{before:?}");
+    assert!(!before.contains(&"shell.pw".to_string()), "{before:?}");
+    assert!(!before.iter().any(|p| p.ends_with(".n")), "{before:?}");
+    let told: Rc<RefCell<Vec<String>>> = Rc::default();
+    let t = told.clone();
+    s.inst.set_cell_tap(Some(Box::new(move |w| {
+        t.borrow_mut().push(w.path.to_string())
+    })));
+    let lock = s.lock();
+    s.click(lock);
+    assert!(s.scene.texts().contains(&"lock 1".to_string()));
+    let inputs = s.scene.of_kind(NodeKind::Input);
+    let password = |n: &NodeId| {
+        s.scene.prop(*n, Prop::InputType) == Some(&PropValue::Keyword("password".into()))
+    };
+    let pw = *inputs.iter().find(|n| password(n)).unwrap();
+    let plain = *inputs.iter().find(|n| !password(n)).unwrap();
+    for text in ["h", "hu", "hun"] {
+        s.inst
+            .write(pw, Prop::Text, PropValue::Text(text.into()))
+            .unwrap();
+        s.flush();
+    }
+    s.inst
+        .write(plain, Prop::Text, PropValue::Text("fi".into()))
+        .unwrap();
+    s.flush();
+    assert_eq!(s.inst.get("shell.pw").unwrap(), Value::text("hun"));
+    assert_eq!(*told.borrow(), ["shell.q"]);
+    let after = paths(&s);
+    assert!(after.contains(&"shell.q".to_string()), "{after:?}");
+    assert!(!after.contains(&"shell.pw".to_string()), "{after:?}");
+    assert!(!after.iter().any(|p| p.ends_with(".n")), "{after:?}");
+}

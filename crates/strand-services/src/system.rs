@@ -24,9 +24,17 @@
 //! thread is woken at most once a minute and never while nobody shows
 //! it. The timer runs on the monotonic clock, which stops in suspend:
 //! after a resume the value may lag by up to a minute.
+//!
+//! (report) `replay` turns the glitch-report recording on and off
+//! (design.md "Reporting a glitch"): on by default, kept in the persist
+//! store (`services:system.replay`, as `notifications.remember` is) and
+//! read as the service starts, before its boot values go out, so a
+//! shell kept off frees its rings with the first report. The binary
+//! acts on it; the service only holds and keeps it.
 
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use strand_watch::{ChangeEvent, Contrast, SystemSetting};
@@ -36,9 +44,74 @@ use crate::{Cx, Msg, Rgba, ServiceError, Store, procfs, service};
 /// The schema the `system` service serves.
 pub const SCHEMA: &str = strand_services_schema::SYSTEM;
 
+/// (report) The persist store path of `replay` (`0` or `1`).
+pub const REPLAY_PATH: &str = "services:system.replay";
+
+/// (report) Where a `system` service keeps `replay`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Config {
+    /// The persist store's directory (`None`: `replay` is not kept and
+    /// starts on).
+    pub state: Option<PathBuf>,
+}
+
+impl Config {
+    /// The persist store's directory from the environment
+    /// (`$XDG_STATE_HOME/strand/persist`).
+    pub fn from_env() -> Config {
+        Config {
+            state: strand_core::PersistStore::from_env()
+                .ok()
+                .map(|s| s.dir().to_path_buf()),
+        }
+    }
+}
+
+static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
+
+/// Use `config` instead of [`Config::from_env`] for services started
+/// from now on (`None`: the environment again).
+pub fn set_config(config: Option<Config>) {
+    *CONFIG.lock().unwrap_or_else(PoisonError::into_inner) = config;
+}
+
+fn config() -> Config {
+    CONFIG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(Config::from_env)
+}
+
+/// `replay` as `dir` keeps it: on unless it was turned off.
+fn load_replay(dir: Option<PathBuf>) -> bool {
+    let Some(dir) = dir else {
+        return true;
+    };
+    match strand_core::PersistStore::read_only(&dir).load(REPLAY_PATH) {
+        Ok(Some(v)) => v.value != b"0",
+        Ok(None) => true,
+        Err(e) => {
+            log::warn!("system: `replay` not read: {e}");
+            true
+        }
+    }
+}
+
+/// Keeps `replay = on` in `dir`.
+fn save_replay(dir: Option<PathBuf>, on: bool) {
+    let Some(dir) = dir else {
+        return;
+    };
+    let flag: &[u8] = if on { b"1" } else { b"0" };
+    if let Err(e) = strand_core::PersistStore::new(dir).save(REPLAY_PATH, b"1", flag) {
+        log::warn!("system: `replay` not kept: {e}");
+    }
+}
+
 /// See the module docs.
 #[service(name = "system")]
-#[derive(Store, Clone, Debug, Default, PartialEq)]
+#[derive(Store, Clone, Debug, PartialEq)]
 pub struct System {
     /// The desktop prefers a dark style.
     pub dark: bool,
@@ -60,6 +133,27 @@ pub struct System {
     /// and only while a visible reader shows it.
     #[store(stream)]
     pub uptime: Duration,
+    /// The glitch-report recording is on: Strand keeps the last minute or
+    /// so of what drove the shell in memory for `strand report`.
+    /// Writable; false empties it at once, and the choice is kept across
+    /// restarts.
+    #[store(rw)]
+    pub replay: bool,
+}
+
+impl Default for System {
+    fn default() -> Self {
+        System {
+            dark: false,
+            accent: None,
+            contrast: 0.0,
+            reduced_motion: false,
+            hostname: String::new(),
+            kernel: String::new(),
+            uptime: Duration::ZERO,
+            replay: true,
+        }
+    }
 }
 
 impl System {
@@ -78,6 +172,11 @@ impl System {
 
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         let (host, kernel) = (hostname(), kernel());
+        let dir = config().state;
+        let read = dir.clone();
+        let replay = tokio::task::spawn_blocking(move || load_replay(read))
+            .await
+            .unwrap_or(true);
         cx.update(|s| {
             if let Some(h) = host {
                 s.hostname = h;
@@ -85,6 +184,7 @@ impl System {
             if let Some(k) = kernel {
                 s.kernel = k;
             }
+            s.replay = replay;
         });
         let conn = match cx.session().await {
             Ok(c) => Some(c),
@@ -144,6 +244,14 @@ impl System {
                 }
                 m = cx.recv() => match m {
                     None => return Ok(()),
+                    Some(Msg::Write(w)) if w.field == "replay" => {
+                        let on: bool = w.value().unwrap_or(cx.state().replay);
+                        let keep = dir.clone();
+                        let _ = tokio::task::spawn_blocking(move || save_replay(keep, on)).await;
+                        if !cx.report(&w, |s| s.replay = on) {
+                            return Ok(());
+                        }
+                    }
                     Some(Msg::Visible(true)) | Some(Msg::Watch { field: "uptime", on: true }) => {
                         // Shown again: the value now, then each minute.
                         if !publish(&mut cx, |shown| uptime.rearm(shown)) {

@@ -31,6 +31,7 @@ mod mount;
 mod outputs;
 mod overlay;
 mod reload;
+mod report;
 pub mod theme;
 
 pub use outputs::{OutputChange, OutputContent};
@@ -56,6 +57,7 @@ pub use lock::{IGNORED_CLOSE, SessionLock};
 pub use mirror::{SceneMirror, show, show_expr};
 pub use mount::{DEFAULT_LIST_WINDOW, MAX_LIST_WINDOW};
 pub use overlay::{TOKENS_FILE, TokenOverlay};
+pub use report::{CellTap, CellWrite};
 
 use crate::hir::{DefId, DefKind};
 use crate::lower::{Node, Program};
@@ -294,6 +296,18 @@ pub(crate) struct Ctx {
     /// ([`Ctx::current_palette`]), which `$palette.<name>` outside
     /// templates reads too.
     pub(crate) palette_memo: Cell<Option<Memo<Rc<strand_theme::Palette>>>>,
+    /// (report review) Each cell's core ids (a settings file's: each
+    /// field's) to its registry key, noted as it mounts, so the cell tap
+    /// reads only the cells a tick wrote. An entry outlives its cell; a
+    /// lookup checks the key still holds that id.
+    pub(crate) cell_ids: RefCell<HashMap<CoreId, Rc<str>>>,
+    /// (report review) Cells a glitch report leaves out entirely: a
+    /// `lock` surface's own (and its components'), and each a password
+    /// input's `text` or `value` is bound to two-way.
+    pub(crate) secret_cells: RefCell<std::collections::HashSet<CoreId>>,
+    /// (report review) The instance-tree scopes of mounted `lock`
+    /// surfaces (a per-screen one's prefix).
+    pub(crate) lock_scopes: RefCell<std::collections::HashSet<Rc<str>>>,
 }
 
 impl Ctx {
@@ -761,6 +775,9 @@ impl Ctx {
             releases: Cell::new(0),
             tokens_memo: Cell::new(None),
             palette_memo: Cell::new(None),
+            cell_ids: RefCell::default(),
+            secret_cells: RefCell::default(),
+            lock_scopes: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -966,6 +983,9 @@ pub struct Instance {
     bridge: RefCell<Vec<Arc<crate::lower::ServiceUses>>>,
     /// (M5) What the inspector keeps across reloads (`inspect.rs`).
     inspect: inspect::Track,
+    /// (report) The cell tap and what it was last told
+    /// ([`Instance::set_cell_tap`]).
+    cell_tap: RefCell<report::TapState>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -1044,6 +1064,7 @@ impl Instance {
             root: None,
             bridge: RefCell::default(),
             inspect: inspect::Track::default(),
+            cell_tap: RefCell::default(),
         };
         inst.boot(true);
         inst
@@ -1216,6 +1237,8 @@ impl Instance {
         );
         *ctx.parked.borrow_mut() = old.parked.borrow().clone();
         *ctx.lock.borrow_mut() = old.lock.borrow().clone();
+        // (report review) Kept cells keep their ids: still left out.
+        *ctx.secret_cells.borrow_mut() = old.secret_cells.take();
         *ctx.pending.borrow_mut() = std::mem::take(&mut *old.pending.borrow_mut());
         *ctx.carry.borrow_mut() = Some(reload::Carry {
             old: std::mem::take(&mut *old.registry.borrow_mut()),
@@ -1600,6 +1623,8 @@ impl Instance {
     }
 
     fn collect(&self, tick: strand_core::Tick) -> Update {
+        // (report) The cells this tick wrote, told to the tap.
+        self.tap_cells(&tick.written);
         // The new tree took its holds during the tick.
         self.release_bridge();
         let mut new_tokens = None;
@@ -1832,6 +1857,7 @@ impl Instance {
             )));
         };
         self.inspect_write(node, prop, &value);
+        self.note_secret_write(node, prop, &tw, &env);
         let vm = self.ctx.vm.clone();
         let v = convert::from_prop(&vm.prog.types, &tw.ty, &value)
             .ok_or_else(|| Error::failed("the written value does not fit the binding"))?;

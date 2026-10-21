@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Timer};
+use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Timer, VecDiff};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Buses;
@@ -235,9 +235,62 @@ impl Drop for Shared {
     }
 }
 
+/// (report) One patch [`Services::pump`] applied, as the tap
+/// ([`Services::tap`]) hears it (docs/architecture.md, "Glitch
+/// reports").
+#[derive(Debug)]
+pub struct TapEvent<'a> {
+    /// The service's instance name (`audio`, a no-code service's `ppd`).
+    pub service: &'a str,
+    pub change: Change<'a>,
+}
+
+/// (report) What a tapped patch changed.
+#[derive(Debug)]
+pub enum Change<'a> {
+    /// A plain field took `new` (it held `old`). `initial`: a boot value.
+    Field {
+        field: &'static str,
+        old: &'a Data,
+        new: &'a Data,
+        initial: bool,
+    },
+    /// A keyed field changed by `diffs`; `removed` holds the items those
+    /// diffs removed or replaced, in the order they went.
+    Keyed {
+        field: &'static str,
+        diffs: &'a [VecDiff<Data, Data>],
+        removed: &'a [Data],
+        initial: bool,
+    },
+    /// An event fired.
+    Event {
+        event: &'static str,
+        args: &'a [Data],
+    },
+}
+
+/// (report) The callback [`Services::tap`] installs.
+pub type Tap = Box<dyn FnMut(&TapEvent<'_>)>;
+
+/// (report) A service's state as a glitch report keeps it
+/// ([`Services::snapshot`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceSnapshot {
+    /// Its instance name.
+    pub name: String,
+    /// A run is up (started, its body not ended).
+    pub running: bool,
+    /// Every field by its schema name, a keyed list as a [`Data::List`]
+    /// of its items.
+    pub fields: Vec<(&'static str, Data)>,
+}
+
 /// What the registry asks of every client.
 trait Member {
     fn name(&self) -> &str;
+    /// (report) Its state now, untracked ([`Services::snapshot`]).
+    fn snapshot(&self, rt: &Runtime) -> ServiceSnapshot;
     fn pump(&self, rt: &Runtime) -> bool;
     /// Running and not ready yet.
     fn waiting(&self) -> bool;
@@ -291,6 +344,29 @@ struct Registry {
     bounced: Bounced,
     /// The next member's key ([`Member::id`]).
     next_id: Cell<u64>,
+    /// (report) Told of every patch applied ([`Services::tap`]).
+    tap: RefCell<Option<Tap>>,
+    /// (report) Reads made for the tap: the values a patch replaced
+    /// (none while no tap is installed).
+    tap_reads: Cell<u64>,
+}
+
+impl Registry {
+    /// (report) Whether a tap is installed: only then are old values
+    /// read before a patch.
+    fn tapped(&self) -> bool {
+        self.tap.borrow().is_some()
+    }
+
+    /// (report) Tells the tap of `change`, if one is installed and not
+    /// already running (a tap never reenters itself).
+    fn tell(&self, service: &str, change: Change<'_>) {
+        if let Ok(mut tap) = self.tap.try_borrow_mut()
+            && let Some(tap) = tap.as_mut()
+        {
+            tap(&TapEvent { service, change });
+        }
+    }
 }
 
 /// A service's run failed (its body returned an error, or panicked), or
@@ -375,6 +451,8 @@ impl Services {
             order: crate::activation::Order::default(),
             bounced: Arc::default(),
             next_id: Cell::new(0),
+            tap: RefCell::new(None),
+            tap_reads: Cell::new(0),
         }))
     }
 
@@ -438,6 +516,33 @@ impl Services {
             .borrow_mut()
             .push(inner.clone() as Rc<dyn Member>);
         Client(inner)
+    }
+
+    /// (report) Install `tap` (`None` removes it): from now on it is
+    /// called on the logic thread for every patch [`Services::pump`]
+    /// applies that changed something ([`TapEvent`]): a plain field's
+    /// old and new value (the old one read from its cell before the
+    /// patch, only while a tap is installed), a keyed field's diffs with
+    /// the items they removed, an event's arguments. The echo of a local
+    /// write changes nothing, so it is never told; nor is a report equal
+    /// to what the field holds.
+    pub fn tap(&self, tap: Option<Tap>) {
+        *self.0.tap.borrow_mut() = tap;
+    }
+
+    /// (report) How many reads the tap cost so far: values read from a
+    /// cell before a patch replaced them. None while no tap is
+    /// installed.
+    pub fn tap_reads(&self) -> u64 {
+        self.0.tap_reads.get()
+    }
+
+    /// (report) Every registered service's state now, untracked, in
+    /// registration order: what a glitch report's `services.json` holds
+    /// (the binary applies the redaction rules).
+    pub fn snapshot(&self, rt: &Runtime) -> Vec<ServiceSnapshot> {
+        let members: Vec<Rc<dyn Member>> = self.0.members.borrow().clone();
+        members.iter().map(|m| m.snapshot(rt)).collect()
     }
 
     /// How many services are registered (tests: a removed no-code
@@ -713,6 +818,43 @@ impl Registry {
     }
 }
 
+/// (report) The items `diffs` remove or replace from `old` (the list
+/// before them), in the order they go: each diff is played on a mirror
+/// of `old`, so an index is the one it names.
+fn removed_by(mut items: Vec<Data>, diffs: &[VecDiff<Data, Data>]) -> Vec<Data> {
+    let mut out = Vec::new();
+    for d in diffs {
+        match d {
+            VecDiff::Reset { items: new } => {
+                out.append(&mut items);
+                items = new.iter().map(|(_, v)| v.clone()).collect();
+            }
+            VecDiff::Insert { index, value, .. } => {
+                let i = (*index).min(items.len());
+                items.insert(i, value.clone());
+            }
+            VecDiff::Update { index, value, .. } => {
+                if let Some(slot) = items.get_mut(*index) {
+                    out.push(std::mem::replace(slot, value.clone()));
+                }
+            }
+            VecDiff::Remove { index, .. } => {
+                if *index < items.len() {
+                    out.push(items.remove(*index));
+                }
+            }
+            VecDiff::Move { from, to, .. } => {
+                if *from < items.len() {
+                    let v = items.remove(*from);
+                    let to = (*to).min(items.len());
+                    items.insert(to, v);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A lock that a panic elsewhere does not poison for us.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -732,15 +874,7 @@ impl<S: Service> ClientInner<S> {
         let Some(event) = action.and_then(|a| S::refused(a, &error.to_string())) else {
             return;
         };
-        match self.cells.apply(rt, &event.into(), How::Report(None)) {
-            Ok(Some(applied)) => {
-                for o in self.observers.borrow().iter() {
-                    o(rt, &applied);
-                }
-            }
-            Ok(None) => {}
-            Err(e) => log::warn!("{}: {e}", self.name),
-        }
+        self.apply_tapped(rt, &event.into(), How::Report(None));
     }
 
     /// (M6, owner-testing gap 20) A write to field `field` could not
@@ -1103,15 +1237,7 @@ impl<S: Service> ClientInner<S> {
         let Some(patch) = S::default().field_patch(i) else {
             return;
         };
-        match self.cells.apply(rt, &patch, How::Report(None)) {
-            Ok(Some(applied)) => {
-                for o in self.observers.borrow().iter() {
-                    o(rt, &applied);
-                }
-            }
-            Ok(None) => {}
-            Err(e) => log::warn!("{}: {e}", self.name),
-        }
+        self.apply_tapped(rt, &patch, How::Report(None));
     }
 
     /// Send a committed write to the run current now (a write the rate
@@ -1184,6 +1310,26 @@ impl<S: Service> Member for ClientInner<S> {
         &self.name
     }
 
+    fn snapshot(&self, rt: &Runtime) -> ServiceSnapshot {
+        let fields = S::FIELDS
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let value = if f.keyed {
+                    self.cells.keyed_items(rt, i).map(Data::List)
+                } else {
+                    rt.untrack(|rt| self.cells.read(rt, i))
+                };
+                (f.name, value.unwrap_or(Data::Null))
+            })
+            .collect();
+        ServiceSnapshot {
+            name: self.name.to_string(),
+            running: self.run.borrow().as_ref().is_some_and(|r| !r.ended),
+            fields,
+        }
+    }
+
     fn pump(&self, rt: &Runtime) -> bool {
         self.pump_envelopes(rt)
     }
@@ -1239,6 +1385,90 @@ impl<S: Service> Member for ClientInner<S> {
 }
 
 impl<S: Service> ClientInner<S> {
+    /// Applies one patch a run sent, telling the observers and, when a
+    /// tap is installed, the tap ([`Services::tap`]): the value it
+    /// replaced is read first, only then.
+    fn apply_tapped(&self, rt: &Runtime, p: &S::Patch, how: How) {
+        let reg = self.reg.upgrade().filter(|r| r.tapped());
+        let target = p.target();
+        // What the patch replaces, read before it lands.
+        let before = match (&reg, target) {
+            (Some(reg), Target::Field(i)) => {
+                reg.tap_reads.set(reg.tap_reads.get() + 1);
+                let keyed = S::FIELDS.get(i).is_some_and(|f| f.keyed);
+                Some(if keyed {
+                    self.cells.keyed_items(rt, i).map(Data::List)
+                } else {
+                    rt.untrack(|rt| self.cells.read(rt, i))
+                })
+            }
+            _ => None,
+        };
+        let applied = match self.cells.apply(rt, p, how) {
+            Ok(applied) => applied,
+            Err(e) => {
+                log::warn!("{}: {e}", self.name);
+                return;
+            }
+        };
+        if let Some(applied) = &applied {
+            for o in self.observers.borrow().iter() {
+                o(rt, applied);
+            }
+        }
+        let Some(reg) = reg else {
+            return;
+        };
+        let initial = how == How::Initial;
+        match (applied, target, before) {
+            (Some(Applied::Keyed { field, diffs, .. }), _, Some(Ok(Data::List(old))))
+                if !diffs.is_empty() =>
+            {
+                let name = S::FIELDS.get(field).map_or("", |f| f.name);
+                let removed = removed_by(old, &diffs);
+                reg.tell(
+                    &self.name,
+                    Change::Keyed {
+                        field: name,
+                        diffs: &diffs,
+                        removed: &removed,
+                        initial,
+                    },
+                );
+            }
+            (Some(Applied::Event { event, args }), _, _) => {
+                let name = S::EVENTS.get(event).map_or("", |e| e.name);
+                reg.tell(
+                    &self.name,
+                    Change::Event {
+                        event: name,
+                        args: &args,
+                    },
+                );
+            }
+            (None, Target::Field(i), Some(Ok(old))) => {
+                let Some(f) = S::FIELDS.get(i).filter(|f| !f.keyed) else {
+                    return;
+                };
+                let Ok(new) = rt.untrack(|rt| self.cells.read(rt, i)) else {
+                    return;
+                };
+                if new != old {
+                    reg.tell(
+                        &self.name,
+                        Change::Field {
+                            field: f.name,
+                            old: &old,
+                            new: &new,
+                            initial,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Applies every envelope the run has sent.
     fn pump_envelopes(&self, rt: &Runtime) -> bool {
         let mut any = false;
@@ -1278,15 +1508,7 @@ impl<S: Service> ClientInner<S> {
                             _ if initial => How::Initial,
                             _ => How::Report(None),
                         };
-                        match self.cells.apply(rt, p, how) {
-                            Ok(Some(applied)) => {
-                                for o in self.observers.borrow().iter() {
-                                    o(rt, &applied);
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => log::warn!("{}: {e}", self.name),
-                        }
+                        self.apply_tapped(rt, p, how);
                     }
                 }
                 Envelope::Notice(m) => {

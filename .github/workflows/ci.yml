@@ -286,17 +286,21 @@ jobs:
 
   # The animation evaluation sandbox (eval/, docs/eval.md): its own Cargo
   # workspace, so none of the jobs above builds it. scripts/eval/ci.sh's
-  # five steps: fmt and clippy of strand-eval, its lock and isolation
+  # steps: fmt and clippy of strand-eval, its lock and isolation
   # checks with their self-tests, its tests (the GPU leg on lavapipe, as
-  # the GPU tier), `strand-eval refs-check` (the reference recordings)
+  # the GPU tier) and test-report-view.sh on fixture bundles,
+  # `strand-eval refs-check` (the reference recordings)
   # and `check --gate` over the curated and regression scenarios, each
   # held to its approved reference; the gate appends its summary to the
-  # job's. The
-  # effect matrix and the mutants run nightly (eval-matrix.yml).
+  # job's; the effect matrix; and (report) a glitch report replayed end
+  # to end (test-report-view.sh --e2e: `strand run` on headless sway, a
+  # scripted session, `strand report`, the replay held to the live
+  # shell), which builds strand's report test too, hence 50 minutes. The
+  # mutants run nightly (eval-matrix.yml).
   eval:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       # Full history: refs-check holds a reference changed since the
       # merge base with main to an updated note (scripts/eval/ci.sh step 5).
