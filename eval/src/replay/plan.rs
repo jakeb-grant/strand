@@ -764,7 +764,19 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // Each field's records in the window that its replay plays forward
     // (those after the one it stopped rewinding at).
     let mut stopped: HashMap<String, u64> = HashMap::new();
-    for e in b.change_entries.iter().rev() {
+    // (replayfix) A record whose value is gone (over the cap, or its
+    // arena overwritten) no longer stops its field: the value after it
+    // is known (the rewind has reached it), so the replay sets that
+    // there (by the record's index) and rewinds on past it. The field's
+    // older records still hold their own old values (a list's diffs are
+    // undone from the list after the lost one, as if it had changed
+    // nothing), so one change over the cap no longer throws away the
+    // field's history before it.
+    let mut bridged: HashMap<usize, Json> = HashMap::new();
+    // Per field: its newest lost record's time, why, its kind, and how
+    // many were lost.
+    let mut lost_of: BTreeMap<String, (u64, &'static str, u8, usize)> = BTreeMap::new();
+    for (i, e) in b.change_entries.iter().enumerate().rev() {
         if !in_window(e.rec.t) || !matches!(e.rec.kind, kind::FIELD | kind::KEYED | kind::CELL) {
             continue;
         }
@@ -778,8 +790,22 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         if e.rec.kind != kind::CELL && (SANDBOX_OWNS.contains(&svc) || !known(svc)) {
             continue;
         }
-        let lost = e.rec.flags & (flags::LOST | flags::TRUNCATED) != 0;
-        let v = (!lost).then(|| value(e)).flatten();
+        if e.rec.flags & (flags::LOST | flags::TRUNCATED) != 0 {
+            if let Some(after) = cur.get(&name) {
+                bridged.insert(i, after.clone());
+            }
+            let what = if e.rec.flags & flags::TRUNCATED != 0 {
+                "was over the value cap"
+            } else {
+                "was lost from the ring's arena"
+            };
+            lost_of
+                .entry(name)
+                .or_insert((e.rec.t, what, e.rec.kind, 0))
+                .3 += 1;
+            continue;
+        }
+        let v = value(e);
         let before = match (e.rec.kind, &v) {
             (kind::FIELD | kind::CELL, Some(Json::Array(pair))) if pair.len() == 2 => {
                 Some(pair[0].clone())
@@ -801,18 +827,36 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 cur.insert(name, old);
             }
             None => {
-                let what = if e.rec.flags & flags::TRUNCATED != 0 {
-                    "was over the value cap"
-                } else {
-                    "was lost from the ring's arena"
-                };
                 notes.push(format!(
-                    "`{name}`: its change at {} {what}; it starts at the oldest value known, the one after it",
+                    "`{name}`: its change at {} could not be undone (it does not fit the value \
+                     after it); it starts at the oldest value known, the one after it",
                     secs(e.rec.t as i128 - end as i128)
                 ));
                 stopped.insert(name, e.rec.t);
             }
         }
+    }
+    for (name, (t, what, k, n)) in &lost_of {
+        let more = if *n > 1 {
+            format!(", and the values of {} older ones are gone too", n - 1)
+        } else {
+            String::new()
+        };
+        let how = match *k {
+            kind::KEYED => {
+                "the replay sets the list after it whole there, and undoes the changes before it \
+                 from that list as if it had changed nothing"
+            }
+            kind::CELL => "the changes before it are undone as recorded",
+            _ => {
+                "the replay sets the value after it there, and undoes the changes before it as \
+                 recorded"
+            }
+        };
+        notes.push(format!(
+            "`{name}`: its change at {} {what}{more}; {how}",
+            secs(*t as i128 - end as i128)
+        ));
     }
     let seeds = cur.clone();
 
@@ -1183,8 +1227,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
 
     // The changes, played forward.
     let mut lists: BTreeMap<String, Vec<Json>> = BTreeMap::new();
+    // (replayfix) Each driven field's value as played so far, for a lost
+    // record's value after it, set only where it changes something.
+    let mut played: HashMap<String, Json> = HashMap::new();
     let mut answered_at: HashMap<String, u64> = HashMap::new();
-    for e in &b.change_entries {
+    for (i, e) in b.change_entries.iter().enumerate() {
         let t = e.rec.t;
         if !in_window(t) {
             continue;
@@ -1209,12 +1256,43 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         if stopped.get(&name).is_some_and(|s| t <= *s) {
             continue;
         }
+        if let Some(after) = bridged.get(&i)
+            && matches!(e.rec.kind, kind::FIELD | kind::KEYED)
+        {
+            let now = played
+                .get(&name)
+                .or_else(|| seeds.get(&name))
+                .cloned()
+                .unwrap_or(Json::Null);
+            if e.rec.kind == kind::KEYED {
+                lists.insert(name.clone(), after.as_array().cloned().unwrap_or_default());
+            }
+            played.insert(name.clone(), after.clone());
+            if now != *after {
+                let shown = if e.rec.kind == kind::KEYED {
+                    compact(after)
+                } else {
+                    set_value(after)
+                };
+                push(&mut timed, at, format!("set {name} {shown}"), 0);
+                events.push(Event {
+                    kind: "change",
+                    t: at,
+                    text: format!(
+                        "service {name} = {} (its change was not recorded: the value after it)",
+                        compact(after)
+                    ),
+                });
+            }
+            continue;
+        }
         let v = value(e);
         match e.rec.kind {
             kind::FIELD => {
                 if let Some(Json::Array(pair)) = &v
                     && pair.len() == 2
                 {
+                    played.insert(name.clone(), pair[1].clone());
                     push(
                         &mut timed,
                         at,
@@ -1239,6 +1317,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     });
                     apply_keyed(list, j["d"].as_array().map_or(&[][..], Vec::as_slice));
                     let whole = Json::Array(list.clone());
+                    played.insert(name.clone(), whole.clone());
                     push(&mut timed, at, format!("set {name} {}", compact(&whole)), 0);
                     events.push(Event {
                         kind: "change",

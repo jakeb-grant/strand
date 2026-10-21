@@ -422,3 +422,131 @@ fn a_run_leaves_the_ci_step_summary_alone() {
     assert!(out.join("summary.md").is_file());
     assert!(!summary.exists(), "strand-eval wrote the step summary");
 }
+
+/// (replayfix) A replay's report is packed (docs/eval.md, "A replay's
+/// report, packed"): its trace's frames each against the one before and
+/// its frames patches of the one before where little changed; read back,
+/// the trace is the same trace and every frame's pixels the same pixels,
+/// and the page holds the packed trace and every stored file.
+#[test]
+fn a_replays_report_is_packed_and_reads_back_whole() {
+    use strand_eval::report::{pack, png};
+    // A fade and a glide: frames that each differ a little from the
+    // one before.
+    let text = ROW.replace("id = \"report-row\"", "id = \"report-packed\"");
+    let e = checked(&text);
+    assert!(e.trace.frames.len() > 5, "{} frames", e.trace.frames.len());
+    let (trace, images) = (e.trace.clone(), e.images.clone());
+    let out = scratch("packed");
+    let mut info = info(&out, Frames::All);
+    info.replay = Some(serde_json::json!({"verdict": "VERIFIED", "line": "VERIFIED: fixture"}));
+    let mut entries = vec![e];
+    report::write_run(&info, &mut entries, &[]).unwrap();
+    let dir = out.join("report-packed");
+
+    // The trace: packed, smaller, the same trace read back.
+    let packed = std::fs::read_to_string(dir.join("trace.json")).unwrap();
+    assert!(packed.contains("\"packed\":"), "{}", &packed[..200]);
+    assert!(
+        packed.len() * 2 < trace.to_json().len(),
+        "packed {} of {}",
+        packed.len(),
+        trace.to_json().len()
+    );
+    assert_eq!(RunTrace::from_json(&packed).unwrap(), trace);
+    assert_eq!(pack::read(&packed).unwrap().0, trace);
+    assert_eq!(
+        RunTrace::from_json(&trace.to_json()).unwrap(),
+        trace,
+        "an unpacked trace reads as before"
+    );
+
+    // The frames: some patches, fewer bytes, every pixel back.
+    let patches: Vec<_> = std::fs::read_dir(dir.join("frames"))
+        .unwrap()
+        .flatten()
+        .filter(|f| f.file_name().to_string_lossy().ends_with(".patch.png"))
+        .collect();
+    assert!(!patches.is_empty(), "no frame was stored as a patch");
+    let stored: u64 = std::fs::read_dir(dir.join("frames"))
+        .unwrap()
+        .flatten()
+        .map(|f| f.metadata().unwrap().len())
+        .sum();
+    let whole: usize = images.values().map(|im| im.png.len()).sum();
+    assert!((stored as usize) < whole, "stored {stored} of {whole}");
+    let back = report::read_entry(&dir).unwrap();
+    assert_eq!(back.trace, trace);
+    assert_eq!(back.images.len(), images.len());
+    for (name, im) in &images {
+        let got = back
+            .images
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} not read back"));
+        assert_eq!(
+            png::decode(&got.png).unwrap(),
+            png::decode(&im.png).unwrap(),
+            "{name}'s pixels"
+        );
+    }
+
+    // An agent's whole frames: `explain --png`.
+    let pngs = out.join("whole");
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("explain")
+        .arg(&dir)
+        .arg("--png")
+        .arg(&pngs)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for f in &trace.frames {
+        for (sid, name) in &f.png {
+            let got = std::fs::read(pngs.join(format!("k{}-s{sid}.png", f.k))).unwrap();
+            assert_eq!(
+                png::decode(&got).unwrap(),
+                png::decode(&images[name].png).unwrap(),
+                "k{} s{sid}",
+                f.k
+            );
+        }
+    }
+
+    // The page: the packed trace, the frame fields the viewer draws,
+    // the patches, every stored file.
+    let page = std::fs::read_to_string(out.join("index.html")).unwrap();
+    let data = html::embedded(&page).unwrap();
+    let sc = &data["runs"][0]["scenarios"][0];
+    assert!(sc["trace"]["packed"].is_object());
+    let (t, _) = pack::unpack_json(&serde_json::to_string(&sc["trace"]).unwrap()).unwrap();
+    let whole: serde_json::Value = serde_json::from_str(&trace.to_json()).unwrap();
+    let frames = t["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), trace.frames.len());
+    for (got, want) in frames.iter().zip(whole["frames"].as_array().unwrap()) {
+        let got = got.as_object().unwrap();
+        for f in pack::VIEW_FIELDS {
+            assert_eq!(got.get(f), want.get(f), "k{} {f}", want["k"]);
+        }
+        assert!(got.keys().all(|k| pack::VIEW_FIELDS.contains(&k.as_str())));
+    }
+    for k in ["nodes", "surfaces", "events", "segments", "cols"] {
+        assert_eq!(t[k], whole[k], "{k}");
+    }
+    let p = pack::read(&packed).unwrap().1;
+    assert_eq!(sc["patches"].as_object().unwrap().len(), p.len());
+    assert_eq!(sc["thinned"], false);
+    let shown = sc["images"].as_object().unwrap();
+    for name in images.keys() {
+        let empty = p.get(name).is_some_and(|q| q.boxes.is_empty());
+        assert!(empty || shown.contains_key(name), "{name} not on the page");
+    }
+    // Smaller than the same page unpacked.
+    let plain = checked(&text);
+    let unpacked = html::page(&html::Page::run(&info, std::slice::from_ref(&plain))).unwrap();
+    assert!(
+        page.len() < unpacked.len(),
+        "packed {} of {}",
+        page.len(),
+        unpacked.len()
+    );
+}

@@ -499,30 +499,133 @@ fn rewinding_reaches_each_value_at_the_start() {
     );
 }
 
+/// (replayfix) A change whose value is gone (over the cap) no longer
+/// stops its field's rewind: the value after it is set there, and the
+/// changes before it, which hold their own old values, still rewind and
+/// replay.
 #[test]
-fn a_lost_value_stops_its_field_and_is_noted() {
+fn a_lost_value_is_set_where_it_was_and_the_history_before_it_kept() {
     let mut f = Fx::session();
+    // 12 s: 1 -> 7 (the session's); 20 s: 7 -> 9, over the cap.
     let big = format!("[7,\"{}\"]", "x".repeat(flight::VALUE_CAP + 10));
     f.field(20 * S, "mood.level", &big);
+    f.services["mood"]["fields"]["level"] = json!(9);
     let (_, p, text) = plan_of(&f.write("lost"), &defaults());
-    assert_eq!(
-        p.seeds["mood.level"],
-        json!(7),
-        "it starts at the oldest value known"
-    );
+    assert_eq!(p.seeds["mood.level"], json!(1), "rewound past it, to 1");
     assert!(
-        p.notes
-            .iter()
-            .any(|n| n.contains("`mood.level`") && n.contains("over the value cap")),
+        p.notes.iter().any(|n| n.contains("`mood.level`")
+            && n.contains("over the value cap")
+            && n.contains("sets the value after it there")),
         "{:?}",
         p.notes
     );
-    assert!(
-        !steps(&text).iter().any(|l| l.starts_with("set mood.level")),
-        "{text}"
-    );
+    let st = steps(&text);
+    let i7 = st.iter().position(|l| *l == "set mood.level 7");
+    let i9 = st.iter().position(|l| *l == "set mood.level 9");
+    assert!(i7.is_some() && i9.is_some() && i7 < i9, "{text}");
     // The cell rewinds as before.
     assert_eq!(p.seeds["shell.clicks"], json!(0));
+
+    // Its value after it already played: nothing is set there.
+    let mut f = Fx::session();
+    f.field(20 * S, "mood.level", &big);
+    let (_, p, text) = plan_of(&f.write("lost-same"), &defaults());
+    assert_eq!(p.seeds["mood.level"], json!(1));
+    assert_eq!(
+        steps(&text)
+            .iter()
+            .filter(|l| l.starts_with("set mood.level"))
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
+/// (replayfix) A keyed list with a change over the cap in the middle of
+/// its history: its diffs before it are undone from the list after it,
+/// as if it had changed nothing, so the list is the live one where the
+/// shell was pressed; before, the rewind stopped there, the replay held
+/// the list's later value from the window's start, and the owner's
+/// replay pressed a workspace chip that was not there yet.
+#[test]
+fn a_list_rewound_past_a_lost_change_is_pressed_as_live() {
+    let long = "l".repeat(flight::VALUE_CAP + 10);
+    let mut f = Fx::session();
+    // Live: ["a"] at the start; 10 s, "b" goes first; 20 s, a long
+    // one is added, its record over the cap. Pressed at 9 s on the
+    // first item, "a".
+    f.services["mood"]["fields"]["items"] = json!(["b", "a", long]);
+    f.change(
+        10 * S,
+        kind::KEYED,
+        "mood.items",
+        &[],
+        r#"{"d":[{"insert":[0,"b","b"]}],"r":[]}"#,
+    );
+    f.change(
+        20 * S,
+        kind::KEYED,
+        "mood.items",
+        &[],
+        &format!(r#"{{"d":[{{"insert":[2,"{long}","{long}"]}}],"r":[]}}"#),
+    );
+    f.config = f
+        .config
+        .replacen("{ level: int }", "{ level: int; items: [text] }", 1)
+        .replacen(
+            "    box { id: spot;",
+            "    for it in mood.items key it { box { id: item; width: 40; height: 40; bg: #00ffff } }\n    box { id: spot;",
+            1,
+        );
+    // The item's origin, as the sandbox names it.
+    let item = {
+        let dir = tmp("probe-items");
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("shell.strand"), &f.config).unwrap();
+        let scn = dir.join("scenarios/local/probe.scn");
+        std::fs::create_dir_all(scn.parent().unwrap()).unwrap();
+        std::fs::write(
+            &scn,
+            format!(
+                "id = \"probe\"\nscreen = {{ width = 1280, height = 720, scale = 1.0 }}\nconfig_dir = \"{}\"\n\n[seed]\n\"mood.items\" = \"[\\\"a\\\"]\"\n\n=== steps\nrest\n",
+                config.display()
+            ),
+        )
+        .unwrap();
+        let sc = Scenario::load(&scn).unwrap();
+        let t = harness::run(&sc, &RunOptions::default()).unwrap().trace;
+        t.nodes
+            .values()
+            .find(|m| m.id.as_deref() == Some("item"))
+            .and_then(|m| m.origin.clone())
+            .expect("an item")
+    };
+    f.nodes.insert(
+        "21.1".into(),
+        json!({"origin": format!("{LIVE}/{item}"), "id": "item", "key": "a"}),
+    );
+    // After the click at 8 s: button, badge, lamp, then the items.
+    f.pointer(1, kind::MOTION, 220.0, 20.0, 8_900 * MS);
+    f.press(1, 220.0, 20.0, 9 * S, Some(bits(21, 1)));
+    let dir = f.write("lost-list");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    assert_eq!(p.seeds["mood.items"], json!(["a", long]), "{:?}", p.notes);
+    assert!(
+        p.notes.iter().any(|n| n.contains("`mood.items`")
+            && n.contains("over the value cap")
+            && n.contains("as if it had changed nothing")),
+        "{:?}",
+        p.notes
+    );
+    let (r, _) = replay_of(&dir, &defaults());
+    assert!(
+        !r.fidelity.divergences.iter().any(|d| d.what == "press"),
+        "{:#?}\n{}",
+        r.fidelity.divergences,
+        r.text
+    );
+    assert_eq!(r.fidelity.presses, (2, 2));
 }
 
 #[test]
@@ -572,9 +675,10 @@ fn keyed_updates_replay_by_key() {
             gpu: false,
         },
     );
-    let trace: strand_eval::trace::RunTrace =
-        serde_json::from_slice(&std::fs::read(out.join(&r.id).join("trace.json")).unwrap())
-            .unwrap();
+    let trace: strand_eval::trace::RunTrace = strand_eval::trace::RunTrace::from_json(
+        &std::fs::read_to_string(out.join(&r.id).join("trace.json")).unwrap(),
+    )
+    .unwrap();
     let items: Vec<&String> = trace
         .nodes
         .iter()
@@ -878,9 +982,10 @@ fn the_final_frame_is_compared_with_the_png() {
     // The replay's own frame at the report, as the live one.
     let dir = Fx::session().write("frame0");
     let (r, out) = replay_of(&dir, &defaults());
-    let trace: strand_eval::trace::RunTrace =
-        serde_json::from_slice(&std::fs::read(out.join(&r.id).join("trace.json")).unwrap())
-            .unwrap();
+    let trace: strand_eval::trace::RunTrace = strand_eval::trace::RunTrace::from_json(
+        &std::fs::read_to_string(out.join(&r.id).join("trace.json")).unwrap(),
+    )
+    .unwrap();
     let sid = trace.surfaces[0].id;
     let png_name = trace
         .frames
@@ -888,7 +993,12 @@ fn the_final_frame_is_compared_with_the_png() {
         .rev()
         .find_map(|fr| fr.png.get(&sid).cloned())
         .unwrap();
-    let png = std::fs::read(out.join(&r.id).join(&png_name)).unwrap();
+    // (replayfix) The report is packed: the frame is rebuilt whole.
+    let png = strand_eval::report::read_entry(&out.join(&r.id))
+        .unwrap()
+        .images[&png_name]
+        .png
+        .clone();
     let (w, h, px) = strand_eval::report::png::decode(&png).unwrap();
     assert!(
         r.fidelity.frames.is_empty(),
@@ -1456,7 +1566,10 @@ fn write_drawn_surfaces(dir: &Path, surfaces: &[(u16, &str, &[replay::drawn::Dra
 
 /// The replay's trace of `r`, read back from its report.
 fn trace_of(r: &replay::Replayed, out: &Path) -> strand_eval::trace::RunTrace {
-    serde_json::from_slice(&std::fs::read(out.join(&r.id).join("trace.json")).unwrap()).unwrap()
+    strand_eval::trace::RunTrace::from_json(
+        &std::fs::read_to_string(out.join(&r.id).join("trace.json")).unwrap(),
+    )
+    .unwrap()
 }
 
 /// The fixture with a spinner that turns forever, moving at the report.
@@ -1550,7 +1663,12 @@ fn the_frame_held_is_the_last_before_the_report() {
         .find(|fr| fr.k < mark && fr.png.contains_key(&sid))
         .unwrap();
     assert_eq!(fr.k, mark - 1);
-    let png = std::fs::read(out.join(&r.id).join(&fr.png[&sid])).unwrap();
+    // (replayfix) The report is packed: the frame is rebuilt whole.
+    let png = strand_eval::report::read_entry(&out.join(&r.id))
+        .unwrap()
+        .images[&fr.png[&sid]]
+        .png
+        .clone();
     let (w, h, px) = strand_eval::report::png::decode(&png).unwrap();
     let with_png = |px: &[u8], drawn: &[replay::drawn::Drawn], tag: &str| {
         let mut g = spinning();

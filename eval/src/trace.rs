@@ -1361,7 +1361,12 @@ impl RunTrace {
         serde_json::to_string(self).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
+    /// A trace from its JSON: (replayfix) a packed one (a replay's
+    /// report, `report::pack`) unpacked.
     pub fn from_json(text: &str) -> Result<RunTrace, String> {
+        if text.contains("\"packed\":") {
+            return crate::report::pack::read(text).map(|(t, _)| t);
+        }
         serde_json::from_str(text).map_err(|e| e.to_string())
     }
 }

@@ -127,35 +127,77 @@ fn uri_len(png: usize) -> usize {
     "data:image/png;base64,".len() + png.div_ceil(3) * 4 + 8
 }
 
+/// What embedding a frame's stored file costs: its data URI, (replayfix)
+/// the patch's when packed (an empty patch embeds nothing).
+fn stored_len(e: &Entry, name: &str) -> usize {
+    match &e.packed {
+        Some(p) => p
+            .files
+            .get(name)
+            .filter(|b| !b.is_empty())
+            .map_or(0, |b| uri_len(b.len())),
+        None => e.images.get(name).map_or(0, |im| uri_len(im.png.len())),
+    }
+}
+
 /// The images to embed per `(run, entry)`, within `room` bytes.
+/// (replayfix) A packed entry's frame takes its bases with it, down to
+/// a whole one: a patch alone draws nothing.
 fn choose(p: &Page, room: usize) -> BTreeMap<(usize, usize), BTreeSet<String>> {
-    let mut all: Vec<((usize, usize), String, bool, usize)> = Vec::new();
+    // Every offered frame, by index: where it is, its name, whether it
+    // is a key frame, and the indices it needs (itself first).
+    let mut all: Vec<((usize, usize), String, bool)> = Vec::new();
+    let mut len: Vec<usize> = Vec::new();
+    let mut needs: Vec<Vec<usize>> = Vec::new();
     for (r, run) in p.runs.iter().enumerate() {
         for (i, e) in run.entries.iter().enumerate() {
-            for (name, key) in offered(e, run.frames) {
-                let len = e.images.get(&name).map_or(0, |im| uri_len(im.png.len()));
-                all.push(((r, i), name, key, len));
+            let from = all.len();
+            let offered = offered(e, run.frames);
+            let index: BTreeMap<&str, usize> = offered
+                .iter()
+                .enumerate()
+                .map(|(j, (n, _))| (n.as_str(), from + j))
+                .collect();
+            for (name, key) in &offered {
+                len.push(stored_len(e, name));
+                let chain = match &e.packed {
+                    Some(pk) => pk
+                        .chain(name)
+                        .iter()
+                        .filter_map(|c| index.get(c.as_str()).copied())
+                        .collect(),
+                    None => vec![index[name.as_str()]],
+                };
+                needs.push(chain);
+                all.push(((r, i), name.clone(), *key));
             }
         }
     }
-    let fits = |pick: &dyn Fn(usize, bool) -> bool| -> Option<usize> {
+    let mut mark = vec![false; all.len()];
+    let mut fits = |pick: &dyn Fn(usize, bool) -> bool| -> bool {
+        mark.iter_mut().for_each(|m| *m = false);
         let mut total = 0;
-        for (n, (_, _, key, len)) in all.iter().enumerate() {
+        for (n, (_, _, key)) in all.iter().enumerate() {
             if pick(n, *key) {
-                total += len;
+                for &c in &needs[n] {
+                    if !mark[c] {
+                        mark[c] = true;
+                        total += len[c];
+                    }
+                }
             }
         }
-        (total <= room).then_some(total)
+        total <= room
     };
     // Every image; else every key frame and every n-th other; else every
     // n-th key frame.
     let mut chosen: Option<Box<dyn Fn(usize, bool) -> bool>> = None;
-    if fits(&|_, _| true).is_some() {
+    if fits(&|_, _| true) {
         chosen = Some(Box::new(|_, _| true));
     } else {
         for stride in 2..=64usize {
             let pick = move |n: usize, key: bool| key || n.is_multiple_of(stride);
-            if fits(&pick).is_some() {
+            if fits(&pick) {
                 chosen = Some(Box::new(pick));
                 break;
             }
@@ -163,7 +205,7 @@ fn choose(p: &Page, room: usize) -> BTreeMap<(usize, usize), BTreeSet<String>> {
         if chosen.is_none() {
             for stride in 1..=4096usize {
                 let pick = move |n: usize, key: bool| key && n.is_multiple_of(stride);
-                if fits(&pick).is_some() {
+                if fits(&pick) {
                     chosen = Some(Box::new(pick));
                     break;
                 }
@@ -172,9 +214,11 @@ fn choose(p: &Page, room: usize) -> BTreeMap<(usize, usize), BTreeSet<String>> {
     }
     let mut out: BTreeMap<(usize, usize), BTreeSet<String>> = BTreeMap::new();
     if let Some(pick) = chosen {
-        for (n, (at, name, key, _)) in all.iter().enumerate() {
+        for (n, (at, _, key)) in all.iter().enumerate() {
             if pick(n, *key) {
-                out.entry(*at).or_default().insert(name.clone());
+                for &c in &needs[n] {
+                    out.entry(*at).or_default().insert(all[c].1.clone());
+                }
             }
         }
     }
@@ -191,7 +235,12 @@ fn as_hint(status: &str) -> &str {
     }
 }
 
-fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool, hints: bool) -> Value {
+fn entry_json(
+    e: &Entry,
+    images: Map<String, Value>,
+    thinned: bool,
+    hints: bool,
+) -> Result<Value, Error> {
     let sheets: Vec<Value> = e
         .failing()
         .into_iter()
@@ -210,19 +259,35 @@ fn entry_json(e: &Entry, images: Map<String, Value>, thinned: bool, hints: bool)
             }
         }
     }
-    json!({
+    let mut v = json!({
         "id": e.id,
         "file": e.file,
         "status": if hints { as_hint(e.status()) } else { e.status() },
         "error": e.error,
         "notes": e.notes,
-        "trace": e.trace,
+        "trace": if e.packed.is_some() { Value::Null } else { json!(e.trace) },
         "checks": checks,
         "refs": e.refs,
         "thinned": thinned,
         "images": images,
         "sheets": sheets,
-    })
+    });
+    // (replayfix) A packed entry's page holds its packed trace, of each
+    // frame the fields the viewer draws (`pack::VIEW_FIELDS`; the viewer
+    // unpacks it), and its frames' patches: each frame's image is its
+    // stored file, a patched one drawn over its base.
+    if let Some(p) = &e.packed {
+        let trace: Value = serde_json::from_str(&p.page_trace)
+            .map_err(|x| Error::Run(format!("page: packed trace: {x}")))?;
+        let patches: Map<String, Value> = p
+            .patches
+            .iter()
+            .map(|(n, q)| (n.clone(), q.json()))
+            .collect();
+        v["trace"] = trace;
+        v["patches"] = Value::Object(patches);
+    }
+    Ok(v)
 }
 
 /// JSON text safe inside a `<script>` element.
@@ -241,13 +306,13 @@ fn escape(t: &str) -> String {
 pub fn page(p: &Page) -> Result<String, Error> {
     let shell_len = HTML.len() + CSS.len() + JS.len() + p.title.len();
     // The page without images, to know the room left for them.
-    let build = |chosen: &BTreeMap<(usize, usize), BTreeSet<String>>| -> Value {
+    let build = |chosen: &BTreeMap<(usize, usize), BTreeSet<String>>| -> Result<Value, Error> {
         let runs: Vec<Value> = p
             .runs
             .iter()
             .enumerate()
             .map(|(r, run)| {
-                let scenarios: Vec<Value> = run
+                let scenarios = run
                     .entries
                     .iter()
                     .enumerate()
@@ -255,31 +320,38 @@ pub fn page(p: &Page) -> Result<String, Error> {
                         let offered = offered(e, run.frames);
                         let keep = chosen.get(&(r, i));
                         let mut images = Map::new();
+                        let mut shown = 0;
                         for (name, _) in &offered {
-                            if keep.is_some_and(|k| k.contains(name))
-                                && let Some(im) = e.images.get(name)
-                            {
-                                let b64 = base64::engine::general_purpose::STANDARD.encode(&im.png);
+                            if !keep.is_some_and(|k| k.contains(name)) {
+                                continue;
+                            }
+                            shown += 1;
+                            let bytes = match &e.packed {
+                                Some(pk) => pk.files.get(name).filter(|b| !b.is_empty()),
+                                None => e.images.get(name).map(|im| &im.png),
+                            };
+                            if let Some(bytes) = bytes {
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
                                 images.insert(
                                     name.clone(),
                                     Value::String(format!("data:image/png;base64,{b64}")),
                                 );
                             }
                         }
-                        let thinned = images.len() < offered.len();
+                        let thinned = shown < offered.len();
                         entry_json(e, images, thinned, p.replay.is_some())
                     })
-                    .collect();
-                json!({
+                    .collect::<Result<Vec<Value>, Error>>()?;
+                Ok(json!({
                     "label": run.label,
                     "out": run.out,
                     "reference": run.reference,
                     "frames": match run.frames { Frames::All => "all", Frames::Failing => "failing", Frames::None => "none" },
                     "scenarios": scenarios,
-                })
+                }))
             })
-            .collect();
-        json!({
+            .collect::<Result<Vec<Value>, Error>>()?;
+        Ok(json!({
             "schema": 1,
             "title": p.title,
             "motions": MOTIONS,
@@ -287,14 +359,14 @@ pub fn page(p: &Page) -> Result<String, Error> {
             "runs": runs,
             "ab": p.ab,
             "replay": p.replay,
-        })
+        }))
     };
-    let bare = serde_json::to_string(&build(&BTreeMap::new()))
+    let bare = serde_json::to_string(&build(&BTreeMap::new())?)
         .map_err(|e| Error::Run(format!("page: {e}")))?;
     let room = p.budget.saturating_sub(shell_len + bare.len() + 1024);
     let chosen = choose(p, room);
     let data =
-        serde_json::to_string(&build(&chosen)).map_err(|e| Error::Run(format!("page: {e}")))?;
+        serde_json::to_string(&build(&chosen)?).map_err(|e| Error::Run(format!("page: {e}")))?;
     let page = HTML
         .replace("{{TITLE}}", &escape(&p.title))
         .replace("{{CSS}}", CSS)

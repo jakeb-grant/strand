@@ -560,7 +560,7 @@ pub fn pointer_runs(plan: &Plan) -> Vec<(u64, String)> {
         let mut j = i;
         while j + 1 < track.len()
             && track[j + 1].origin.as_ref() == Some(on)
-            && track[j + 1].t - track[j].t < IDLE_NS
+            && track[j + 1].t.saturating_sub(track[j].t) < IDLE_NS
         {
             j += 1;
         }
@@ -579,7 +579,7 @@ pub fn pointer_runs(plan: &Plan) -> Vec<(u64, String)> {
                 format!(
                     "{} input pointer on @{on}: {n} moves over {:.2} s, {:.1},{:.1} -> {:.1},{:.1}",
                     before(plan, p.t),
-                    (q.t - p.t) as f64 / 1e9,
+                    q.t.saturating_sub(p.t) as f64 / 1e9,
                     p.x,
                     p.y,
                     q.x,

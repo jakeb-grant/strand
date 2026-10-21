@@ -6,12 +6,23 @@ use crate::Error;
 
 /// `rgba` (`width` × `height`, straight alpha) as a PNG file.
 pub fn encode(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Error> {
+    encode_with(width, height, rgba, png::Compression::Fast)
+}
+
+/// (replayfix) [`encode`] at `level`: a packed report's frames
+/// (`super::pack`) are written once and kept, so they take `High`.
+pub fn encode_with(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    level: png::Compression,
+) -> Result<Vec<u8>, Error> {
     let bad = |e: png::EncodingError| Error::Run(format!("png: {e}"));
     let mut out = Vec::new();
     let mut enc = png::Encoder::new(&mut out, width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.set_compression(png::Compression::Fast);
+    enc.set_compression(level);
     let mut w = enc.write_header().map_err(bad)?;
     w.write_image_data(rgba).map_err(bad)?;
     w.finish().map_err(bad)?;

@@ -240,7 +240,39 @@ def exercise_time(page, chk, tl, where, tag, kind):
     if page.locator("#play").inner_text() == "Pause":
         page.locator("#play").click()
     chk.expect(seconds(page) > -length, where, "Play does not advance in time")
+    exercise_packed(page, chk, tl, where, tag, kind)
     slide(page, top)
+
+
+def exercise_packed(page, chk, tl, where, tag, kind):
+    """(replayfix) A replay's page is packed: its trace unpacks (the
+    frames' rows whole, each frame's fields), and every painted frame is
+    drawn from its pixels, a patch over its base, never a wireframe:
+    the first, a middle one, one rebuilt from a long chain, the last."""
+    info = page.evaluate("""() => {
+      var d = JSON.parse(document.getElementById('run').textContent), t = d.replay.timeline;
+      var sc = d.runs[0].scenarios[0], fr = sc.trace.frames, p = sc.patches || {};
+      var depth = function (n) { var k = 0; while (n && p[n] && k < 999) { n = p[n][0]; k++; } return k; };
+      var deepest = 0, at = 0;
+      fr.forEach(function (f, i) { for (var s in f.png) { var k = depth(f.png[s]); if (k > deepest) { deepest = k; at = i; } } });
+      var ms = function (i) { return Math.round(fr[i].k * t.period_ns / 1e6); };
+      return { packed: !!sc.trace.packed, patches: Object.keys(p).length, deepest: deepest,
+               times: fr.length ? [ms(0), ms(fr.length >> 1), ms(at), ms(fr.length - 1)] : [] };
+    }""")
+    if not info["packed"]:
+        return
+    chk.expect(info["patches"] > 0, where, "a packed replay page has no patched frame")
+    for i, v in enumerate(info["times"]):
+        slide(page, v)
+        settle(page, 250)
+        labels = page.locator("#stage .surface-label").all_inner_texts()
+        chk.expect(bool(labels), where, f"no surface drawn at {v} ms")
+        chk.expect(not any("(wireframe)" in l for l in labels), where,
+                   f"a replay's frame at {v} ms is a wireframe: {labels}")
+        rows = page.evaluate("() => document.querySelectorAll('#stage canvas').length")
+        chk.expect(rows >= 1, where, f"no stage canvas at {v} ms")
+        if i == 2:
+            chk.shot(page, f"{tag}-{kind}-patched-{info['deepest']}")
 
 
 def exercise_scenario(page, chk, data, sc, kind, tag):

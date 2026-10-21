@@ -7,6 +7,8 @@
 //! - [`summary`]: the headless summaries Claude reads;
 //! - [`html`]: the viewer page, its trace embedded, images thinned to
 //!   keep it under its size;
+//! - [`pack`]: (replayfix) a replay's report packed, its trace's rows
+//!   and its frames' pixels each kept once;
 //! - [`explain`]: a node's frames as a text table.
 
 use std::collections::BTreeMap;
@@ -20,6 +22,7 @@ use crate::trace::RunTrace;
 pub mod explain;
 pub mod font;
 pub mod html;
+pub mod pack;
 pub mod png;
 pub mod sheet;
 pub mod summary;
@@ -76,6 +79,9 @@ pub struct Entry {
     /// Its contact sheets, by `(result, finding)` index, relative to the
     /// run's directory.
     pub sheets: BTreeMap<(usize, usize), String>,
+    /// (replayfix) Its trace and frames as a packed report holds them
+    /// ([`pack`]), when written packed: the page embeds these.
+    pub packed: Option<pack::Packed>,
 }
 
 impl Entry {
@@ -138,8 +144,34 @@ pub fn write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 /// sheet per failing finding (at most [`SHEETS_PER_CHECK`] per check),
 /// noted in `e.sheets`.
 pub fn write_entry(out: &Path, e: &mut Entry, frames: Frames) -> Result<(), Error> {
+    write_entry_as(out, e, frames, false)
+}
+
+/// [`write_entry`], (replayfix) packed when `packed` ([`pack`]: a
+/// replay's report): the trace's frames each against the one before,
+/// and each frame a patch of the one before where little changed. The
+/// pack is kept in `e.packed` for the page.
+pub fn write_entry_as(
+    out: &Path,
+    e: &mut Entry,
+    frames: Frames,
+    packed: bool,
+) -> Result<(), Error> {
     let dir = out.join(&e.id);
-    write(&dir.join("trace.json"), e.trace.to_json().as_bytes())?;
+    if packed {
+        let keep = e.keeps_frames(frames);
+        let none = BTreeMap::new();
+        let p = pack::pack(&e.trace, if keep { &e.images } else { &none })?;
+        write(&dir.join("trace.json"), p.trace.as_bytes())?;
+        for (name, bytes) in &p.files {
+            if !(p.patches.contains_key(name) && bytes.is_empty()) {
+                write(&dir.join(p.path_of(name)), bytes)?;
+            }
+        }
+        e.packed = Some(p);
+    } else {
+        write(&dir.join("trace.json"), e.trace.to_json().as_bytes())?;
+    }
     if let Some(r) = &e.report {
         let json =
             serde_json::to_string_pretty(r).map_err(|x| Error::Run(format!("checks.json: {x}")))?;
@@ -148,7 +180,7 @@ pub fn write_entry(out: &Path, e: &mut Entry, frames: Frames) -> Result<(), Erro
     if !e.source.is_empty() {
         write(&dir.join("scenario.scn"), e.source.as_bytes())?;
     }
-    if e.keeps_frames(frames) {
+    if !packed && e.keeps_frames(frames) {
         for (name, img) in &e.images {
             write(&dir.join(name), &img.png)?;
         }
@@ -306,8 +338,10 @@ pub struct RunInfo {
 /// (scripts/eval/ci.sh's gate, scripts/eval/matrix.sh), so a test or a
 /// mutant run under CI never writes to it.
 pub fn write_run(info: &RunInfo, entries: &mut [Entry], lines: &[String]) -> Result<(), Error> {
+    // (replayfix) A replay's report is packed: a minute of a real shell
+    // is a thousand frames, each almost the one before.
     for e in entries.iter_mut() {
-        write_entry(&info.out, e, info.frames)?;
+        write_entry_as(&info.out, e, info.frames, info.replay.is_some())?;
     }
     write(
         &info.out.join("summary.txt"),
@@ -339,7 +373,9 @@ pub fn read_entry(dir: &Path) -> Result<Entry, Error> {
             dir.display()
         ))
     })?;
-    let trace = RunTrace::from_json(&text)
+    // (replayfix) Packed or not: a packed report's frames are rebuilt
+    // whole from its patches.
+    let (trace, patches) = pack::read(&text)
         .map_err(|e| Error::Config(format!("{}/trace.json: {e}", dir.display())))?;
     let report = match read("checks.json")? {
         Some(t) => Some(
@@ -348,22 +384,7 @@ pub fn read_entry(dir: &Path) -> Result<Entry, Error> {
         ),
         None => None,
     };
-    let mut images = BTreeMap::new();
-    let names: std::collections::BTreeSet<&String> =
-        trace.frames.iter().flat_map(|f| f.png.values()).collect();
-    for name in names {
-        if let Ok(bytes) = std::fs::read(dir.join(name)) {
-            let (width, height) = png_size(&bytes).unwrap_or((0, 0));
-            images.insert(
-                name.clone(),
-                Image {
-                    width,
-                    height,
-                    png: bytes,
-                },
-            );
-        }
-    }
+    let images = pack::unpack_images(&trace, &patches, |p| std::fs::read(dir.join(p)).ok())?;
     let id = trace.scenario.id.clone();
     Ok(Entry {
         id,
@@ -377,7 +398,7 @@ pub fn read_entry(dir: &Path) -> Result<Entry, Error> {
 }
 
 /// A PNG file's size from its header.
-fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_size(b: &[u8]) -> Option<(u32, u32)> {
     let w = u32::from_be_bytes(b.get(16..20)?.try_into().ok()?);
     let h = u32::from_be_bytes(b.get(20..24)?.try_into().ok()?);
     Some((w, h))

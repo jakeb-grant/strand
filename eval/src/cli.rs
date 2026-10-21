@@ -538,13 +538,22 @@ fn tick_range(s: &str) -> Option<(u32, u32)> {
 }
 
 /// `strand-eval explain <run>/<id> [--node SEL] [--frames a..b] [--check
-/// NAME]`: a node's frames as a text table (by default the nodes of the
-/// failing findings).
+/// NAME] [--png DIR]`: a node's frames as a text table (by default the
+/// nodes of the failing findings); (replayfix) `--png DIR` also writes
+/// each painted frame in `--frames` (every one without it) whole, as
+/// `DIR/k<tick>-s<surface>.png`: a packed report's (a replay's) frames
+/// are patches of the ones before, rebuilt here.
 pub fn explain(args: &[String]) -> Result<(), Error> {
-    let a = Args::parse("explain", args, &["--node", "--frames", "--check"], &[])?;
+    let a = Args::parse(
+        "explain",
+        args,
+        &["--node", "--frames", "--check", "--png"],
+        &[],
+    )?;
     let [dir] = a.words.as_slice() else {
         return Err(Error::Usage(
-            "usage: strand-eval explain <run>/<id> [--node SEL] [--frames a..b] [--check NAME]"
+            "usage: strand-eval explain <run>/<id> [--node SEL] [--frames a..b] [--check NAME] \
+             [--png DIR]"
                 .into(),
         ));
     };
@@ -572,6 +581,22 @@ pub fn explain(args: &[String]) -> Result<(), Error> {
     };
     let text = report::explain::explain(&e.trace, &findings, &ask).map_err(Error::Usage)?;
     print!("{text}");
+    if let Some(to) = a.value(&["--png"]) {
+        let to = Path::new(to);
+        let mut n = 0;
+        for f in &e.trace.frames {
+            if frames.is_some_and(|(lo, hi)| f.k < lo || f.k > hi) {
+                continue;
+            }
+            for (s, name) in &f.png {
+                if let Some(im) = e.images.get(name) {
+                    report::write(&to.join(format!("k{}-s{s}.png", f.k)), &im.png)?;
+                    n += 1;
+                }
+            }
+        }
+        println!("{n} frames written whole to {}", to.display());
+    }
     Ok(())
 }
 

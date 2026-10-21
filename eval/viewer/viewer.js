@@ -1,5 +1,6 @@
 // strand-eval's viewer (docs/eval.md, "The viewer"). Vanilla, no
-// network: everything it shows is in the page's `#run` JSON.
+// network: everything it shows is in the page's `#run` JSON (a
+// replay's packed: its trace's rows and its frames' pixels each once).
 (function () {
   'use strict';
 
@@ -103,8 +104,36 @@
     return { ks: ks, screens: screens, frames: frames };
   }
 
+  // (replayfix) A packed trace (a replay's, docs/eval.md "A replay's
+  // report, packed"): each frame names the fields equal to the frame
+  // before's in `=`, and its rows are runs of the frame before's
+  // (`[i, n]`), one of them with columns changed (`{i, c}`) or whole
+  // rows. Unpacked in place; an unchanged row is the same array.
+  function unpack(t) {
+    if (!t.packed) return;
+    var prev = {}, prevRows = [];
+    t.frames.forEach(function (f) {
+      (f['='] || []).forEach(function (k) { f[k] = prev[k]; });
+      delete f['='];
+      var rows = [];
+      (f.n || []).forEach(function (e) {
+        if (Array.isArray(e) && typeof e[0] === 'string') rows.push(e);
+        else if (Array.isArray(e)) { for (var i = 0; i < e[1]; i++) rows.push(prevRows[e[0] + i]); }
+        else {
+          var r = prevRows[e.i].slice();
+          for (var j = 0; j + 1 < e.c.length; j += 2) r[e.c[j]] = e.c[j + 1];
+          rows.push(r);
+        }
+      });
+      f.n = rows;
+      prev = f; prevRows = rows;
+    });
+    delete t.packed;
+  }
+
   function prep(sc) {
     if (sc.C) return sc;
+    unpack(sc.trace);
     var t = sc.trace;
     var C = {};
     t.cols.forEach(function (c, i) { C[c] = i; });
@@ -422,8 +451,8 @@
 
   // ---- images -------------------------------------------------------------------
 
-  function img(sc, name) {
-    if (!name || !sc.images[name]) return null;
+  // A stored image, decoded (a redraw when it has loaded).
+  function stored(sc, name) {
     var c = sc.imgs[name];
     if (!c) {
       c = new Image();
@@ -432,6 +461,71 @@
       sc.imgs[name] = c;
     }
     return c.complete && c.naturalWidth ? c : null;
+  }
+
+  // (replayfix) A packed report's frame may be a patch of the one
+  // before (`sc.patches[name]`: its base, then the boxes `[x, y, w, h]`
+  // it replaces, stacked top to bottom in its image from the left).
+  function patchOf(sc, name) { return sc.patches ? sc.patches[name] : null; }
+
+  // Whether frame `name` has its pixels on the page: its image, and a
+  // patch's bases down to a whole one.
+  function hasImage(sc, name) {
+    for (var n = 0; n < 4096 && name; n++) {
+      var p = patchOf(sc, name);
+      if (!p) return !!sc.images[name];
+      if (p.length > 1 && !sc.images[name]) return false;
+      name = p[0];
+    }
+    return false;
+  }
+
+  // A patched frame, drawn: its base (rebuilt the same way, or one
+  // rebuilt lately) with each of the patch's boxes replaced, every pixel.
+  // A few are kept, so stepping on rebuilds one patch at a time.
+  function composed(sc, name) {
+    if (!sc.comp) sc.comp = new Map();
+    var hit = sc.comp.get(name);
+    if (hit) { sc.comp.delete(name); sc.comp.set(name, hit); return hit; }
+    var chain = [], at = name, base = null;
+    for (var guard = 0; guard < 4096; guard++) {
+      if (at !== name && sc.comp.has(at)) { base = sc.comp.get(at); break; }
+      var p = patchOf(sc, at);
+      if (!p) { base = stored(sc, at); break; }
+      chain.push(at);
+      at = p[0];
+    }
+    var ready = !!base;
+    var parts = chain.map(function (n) {
+      var p = patchOf(sc, n);
+      var im = p.length > 1 ? stored(sc, n) : null;
+      if (p.length > 1 && !im) ready = false;
+      return { p: p, im: im };
+    });
+    if (!ready) return null;
+    var w = base.naturalWidth || base.width, h = base.naturalHeight || base.height;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var x = c.getContext('2d');
+    x.drawImage(base, 0, 0);
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var q = parts[i].p, sy = 0;
+      for (var j = 1; j < q.length; j++) {
+        var b = q[j];
+        x.clearRect(b[0], b[1], b[2], b[3]);
+        x.drawImage(parts[i].im, 0, sy, b[2], b[3], b[0], b[1], b[2], b[3]);
+        sy += b[3];
+      }
+    }
+    c.naturalWidth = w; c.naturalHeight = h;
+    sc.comp.set(name, c);
+    while (sc.comp.size > 24) sc.comp.delete(sc.comp.keys().next().value);
+    return c;
+  }
+
+  function img(sc, name) {
+    if (!name || !hasImage(sc, name)) return null;
+    return patchOf(sc, name) ? composed(sc, name) : stored(sc, name);
   }
 
   function pixels(image) {
@@ -716,7 +810,7 @@
     }
     sc.tl.screens[i].forEach(function (v, sid) {
       var s = info[sid];
-      box.appendChild(el('div', { cls: 'surface-label', text: (s ? s.label : 'surface ' + sid) + (v.png && !sc.images[v.png] ? ' (wireframe)' : '') }));
+      box.appendChild(el('div', { cls: 'surface-label', text: (s ? s.label : 'surface ' + sid) + (v.png && !hasImage(sc, v.png) ? ' (wireframe)' : '') }));
       box.appendChild(surfaceCanvas(sc, i, sid, other));
     });
     return box;

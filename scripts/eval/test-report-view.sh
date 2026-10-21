@@ -87,6 +87,10 @@ id=report-2026-10-20_14-03-07
 for f in trace.json checks.json scenario.scn; do
   need "<bundle>/replay/<id>/$f is written" "$newest/replay/$id/$f"
 done
+# (replayfix) A replay's report is packed: its trace frame by frame
+# against the one before, its frames patches of the ones before.
+grep -q '"packed":{"format":1' "$newest/replay/$id/trace.json" && ok "the replay's trace.json is packed" ||
+  no "the replay's trace.json is not packed"
 grep -q '"faithful": true' "$newest/replay/fidelity.json" && ok "the fixture replays faithfully" ||
   no "the fixture's replay diverges: $(cat "$newest/replay/fidelity.json")"
 grep -q "input press left at 40.0,20.0" "$newest/replay/replay.txt" && ok "replay.txt lists the press" ||

@@ -69,9 +69,12 @@ The commands:
   an XPASS and on a scenario with no approved reference.
 - `run <scn|dir>... [--out DIR] [--frames …] [--reduced-motion]
   [--backend cpu|gpu]` runs and writes the report without checking.
-- `explain <run>/<id> [--node SEL] [--frames a..b] [--check NAME]` prints
-  a node's frames as a text table. By default it shows the nodes of the
-  failing findings.
+- `explain <run>/<id> [--node SEL] [--frames a..b] [--check NAME]
+  [--png DIR]` prints a node's frames as a text table. By default it
+  shows the nodes of the failing findings. (replayfix) `--png DIR` also
+  writes each painted frame in `--frames` (all without it) whole, as
+  `DIR/k<tick>-s<surface>.png`, a packed report's (a replay's) rebuilt
+  from its patches.
 - `approve <run>/<id>|<matrix>/<cell>@<hz>... --note TEXT` and `approve
   --all-changed <run> --note TEXT` write approved references (see
   Reference recordings).
@@ -1597,7 +1600,10 @@ A report directory holds, per scenario:
 - contact sheets.
 
 Per run, it also holds `summary.md`, `summary.json`, `summary.txt` and
-`index.html`. In CI, `scripts/eval/ci.sh`'s gate and `scripts/eval/matrix.sh`
+`index.html`. (replayfix) A replay's report is packed (see "Replaying a
+glitch report", "A replay's report, packed"); every tool that reads a
+report (`explain`, `verdict`, `approve`, `ab`, `promote`) reads it
+whole. In CI, `scripts/eval/ci.sh`'s gate and `scripts/eval/matrix.sh`
 append their run's `summary.md` to `$GITHUB_STEP_SUMMARY`; `strand-eval` itself
 writes nothing outside `--out`, so its tests and mutant runs never do.
 
@@ -1642,7 +1648,9 @@ work. (replayfix) On a replay's page (`--expect replay`) it drives the
 time scrubber instead: the slider spans the window in ms, it opens at
 the report, the report and the live events are marked, an idle span
 reads `nothing changed`, the live pointer is named, and the buttons,
-keys and play step through time. Screenshots of each mode land in
+keys and play step through time; and the page being packed, its first,
+middle and last painted frames and the one farthest from a whole frame
+are drawn from their pixels, none as a wireframe. Screenshots of each mode land in
 `target/eval/viewer-shots/`.
 
 It runs on the host's Docker, like `run.sh`, in
@@ -1659,7 +1667,8 @@ pages and the matrix grid.
 
 When the images would not fit its size budget, it keeps the frames around
 findings, `shot` steps and segment ends. It draws the rest as wireframes
-from the trace, which is always complete.
+from the trace, which is always complete. (replayfix) A packed page (a
+replay's) keeps a patched frame only with its bases, down to a whole one.
 
 ### Reading a failure
 
@@ -2312,9 +2321,19 @@ work:
    and their per-screen cells start at their defaults, with a note.
 4. **Rewinds** every service field and cell from its value at the
    report back through the window's records, by their old values, to
-   its value at the window's start. A field whose record was truncated
-   or whose arena value was lost stops rewinding there and starts at
-   the oldest value known, with a note.
+   its value at the window's start. (replayfix) A record whose value is
+   gone (over the 2 KB value cap, or its arena overwritten) does not
+   stop its field: the value after it is known there (the rewind has
+   reached it), so the replay sets that value at the record's time
+   (`set`, only where it changes what was played) and rewinds on past
+   it. A field's older records hold their own old values and rewind
+   exactly; a keyed list's older diffs are undone from the list after
+   the lost one as if it had changed nothing, and the whole list is set
+   at its time. A note names each such field, its newest lost record
+   and how many older ones were lost. Only a record that does not fit
+   the value after it (a list diff whose indices are past its end)
+   stops its field, which then starts at the oldest value known, with a
+   note.
 5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
@@ -2513,6 +2532,53 @@ per step). A run with no timeline (every other run, an A/B page) keeps
 the frame scrubber. The checks' findings follow, as `summary.txt`
 gives them, each with its time before the report, under (replay-owner)
 the label `hints (the checks may be wrong on a real shell):`.
+
+**A replay's report, packed** (replayfix; `report::pack`, decisions.md
+replayfix 2026-10-21). A minute of a real shell is a thousand painted
+frames, each repeating almost every node row and almost every pixel of
+the one before: the owner's 80.6 s bundle wrote 273–336 MB per replay
+(index.html 94–110 MB with the whole trace inline and no image that
+fitted its 15 MB budget, so every frame was a wireframe; trace.json
+101–109 MB; 1,089–1,312 whole frame PNGs, 118 MB), and twenty reports
+are kept. A replay's report keeps each thing once:
+
+- **`trace.json`** is the same trace, each frame against the one
+  before: the fields equal to the previous frame's are named in `"="`,
+  and the node rows `n` are `[i, n]` (the previous frame's rows
+  `i..i+n`, unchanged), `{"i": i, "c": [col, value, …]}` (its row `i`
+  with those columns changed) or a whole row (an array whose first item
+  is its key). Values are copied from the trace's own JSON, never
+  recomputed; `RunTrace::from_json` (and `report::pack::read`) unpack
+  it exactly. The top-level `packed` gives the `format` (1) and the
+  patched frames.
+- **The frames**: a surface's new frame is stored as a patch of the
+  frame of that surface stored before it (`frames/<digest>.patch.png`):
+  the boxes whose pixels changed, each a run of 32-px tiles along a
+  32-px band, shrunk to what changed in it, stacked top to bottom from
+  the image's left edge, every byte of them (`packed.patches`: `[base,
+  [x, y, w, h], …]`). It is stored whole (`frames/<digest>.png`) when it
+  is a surface's first or its size changed, when its boxes would cover
+  over 75% of it, and at least every 256 frames. The digest is still
+  the whole frame's pixels'; `report::read_entry` and `explain --png
+  DIR` rebuild every frame whole and exactly.
+- **`index.html`** holds the trace packed, of each frame only what the
+  viewer draws (`pack::VIEW_FIELDS`: `k`, `t_ns`, `painted`, `sizes`,
+  `png`, `n`, `scale`, `held_text`, `cost`; `trace.json` has every
+  field), and every stored frame file as a data URI with the patches
+  (`patches`). The viewer unpacks the trace as it opens the scenario
+  and draws a patched frame onto a canvas from its base (rebuilt the
+  same way, or one of the 24 rebuilt last), each box cleared and drawn
+  from the patch: stepping on rebuilds one patch at a time. The frames
+  stay data URIs (a page opened from `file://` that drew images loaded
+  beside it could not read their pixels back for its difference views).
+
+Measured on the owner's bundle (container, the whole window): 15.5 MB
+(index.html 7.9 MB, trace.json 3.5 MB, 1,312 frame files 3.8 MB, of
+which 6 whole), from 336 MB by the same build unpacked; every frame
+drawn from its pixels; the page shows its first frame 0.7 s after
+loading in headless Chromium, with a 40 MB heap. Every other run's
+report, the references and the digests are as before: the packing is
+only how a replay's report is written.
 
 **Findings are hints** (replay-owner; decisions.md owner-2026-10-21).
 In a replay the checks' findings come after the verdict and the
