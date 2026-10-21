@@ -1,0 +1,31 @@
+id     = "offset-early-callback"
+about  = """A finding of the evalfix review (docs/decisions.md evalfix): a card whose
+`x:` springs out to 240 is called back by logic's own timer 50 ms in, a
+third of the way out. Retargeting mid-flight keeps velocity (design.md
+"Springs everywhere"), so it turns and springs home from where it is. Its
+way is its whole written excursion, so `teleport` gives a snap home of
+less than 0.75 of it a pass; a way in flight dropped for one at rest is
+`continuity`'s to catch, and this is the case it is listed against."""
+screen = { width = 640, height = 200, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state out = false
+on change out after 50ms { if out { out = false } }
+
+bar Top {
+  height: 60; bg: #181825
+  row { pad: 10
+    col { id: card; width: 80; height: 40; bg: #303446; radius: 8; pad: 6
+          x: 0 ~ spring(700, 0.7)
+          when out { x: 240 ~ spring(700, 0.7) }
+      box { id: dot; width: 12; height: 12; radius: full; bg: #8caaee }
+    }
+  }
+}
+
+=== steps
+rest
+mark early-callback
+set out true
+rest

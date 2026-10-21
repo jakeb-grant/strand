@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use strand_eval::checks::{self, CheckId, Report, Sev, Status};
+use strand_eval::checks::{self, CheckId, Finding, Report, Sev, Status};
 use strand_eval::scenario::{Scenario, eval_root};
 use strand_eval::trace::{
     Cost, EventRec, ExpectRec, Frame, IntendRec, NodeMeta, Pose, PoseRec, RestRec, Row, RunTrace,
@@ -452,21 +452,40 @@ fn an_enter_pose_skipped_is_a_pop_in() {
     assert_eq!(f.key.as_deref(), Some("pill"));
 }
 
+/// (evalfix) How the card over [`revealed`]'s row lets it show.
+#[derive(Clone, Copy, PartialEq)]
+enum Reveal {
+    /// Its height springs from 40 to 260 (`SIZE_SPRING`).
+    Grows,
+    /// 260 tall throughout: the row shows at once.
+    Tall,
+    /// (evalfix review) 40 tall, with nothing moving it, until it snaps
+    /// to 260 at tick 6.
+    Snaps,
+    /// (evalfix review) 260 tall, but the row's clip has no area at
+    /// ticks 1 to 5 with nothing moving it (a clip fault), and is right
+    /// from tick 6.
+    Shut,
+}
+
 /// (evalfix) A row with `enter { opacity: 0; y: -8 }` mounts at tick 1
 /// at y 180 in a card that clips it, its enter starting at `start`
-/// opacity and easing to 1 over nine ticks. With `grows`, the card's
+/// opacity and easing to 1 over nine ticks. With `Grows`, the card's
 /// height springs from 40 to 260, so the row is cut out by the clip
 /// until the card is 197 tall at tick 6, when its enter is 92% done;
-/// without, the card is 260 tall throughout and the row shows at once.
-fn revealed(grows: bool, start: f32) -> RunTrace {
+/// with `Tall`, the card is 260 tall throughout and the row shows at
+/// once; with `Snaps` and `Shut` it first shows at tick 6, 91% in, as
+/// a clip with no declared motion lets it.
+fn revealed(how: Reveal, start: f32) -> RunTrace {
     let tall = [
         40.0, 51.0, 78.0, 110.0, 142.0, 172.0, 197.0, 217.0, 233.0, 245.0, 252.0, 258.0,
     ];
+    let grows = how == Reveal::Grows;
     let mut t = shape(14, |k| {
-        let h = if grows {
-            tall.get(k as usize).copied().unwrap_or(260.0)
-        } else {
-            260.0
+        let h = match how {
+            Reveal::Grows => tall.get(k as usize).copied().unwrap_or(260.0),
+            Reveal::Snaps if k < 6 => 40.0,
+            _ => 260.0,
         };
         let card = row("card", [0.0, 0.0, 300.0, h]).draws();
         let card = if grows && (1..12).contains(&k) {
@@ -492,8 +511,12 @@ fn revealed(grows: bool, start: f32) -> RunTrace {
                 .mot(m)
                 .auth(Axes::Y | Axes::OPACITY)
                 .draws();
-            late.clip = Some([0.0, 0.0, 300.0, h]);
-            if 180.0 + dy >= h {
+            late.clip = Some(if how == Reveal::Shut && k < 6 {
+                [0.0, 0.0, 300.0, 0.0]
+            } else {
+                [0.0, 0.0, 300.0, h]
+            });
+            if 180.0 + dy >= h || (how == Reveal::Shut && k < 6) {
                 late.hidden = Some("clipped".into());
             }
             v.push(late);
@@ -515,11 +538,21 @@ fn revealed(grows: bool, start: f32) -> RunTrace {
     t
 }
 
+/// The pop-in finding on `late`, which must be there.
+fn late_pop_in(t: &RunTrace) -> Finding {
+    let r = check(&scenario(""), t);
+    r.failures(CheckId::Vanish)
+        .into_iter()
+        .find(|f| f.key.as_deref() == Some("late"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{}", show(&r, t)))
+}
+
 #[test]
 fn an_enter_a_moving_clip_uncovers_is_judged_where_it_starts() {
     let sc = scenario("");
     // Played from its pose while cut out, uncovered at 92%: no pop-in.
-    let t = revealed(true, 0.0);
+    let t = revealed(Reveal::Grows, 0.0);
     let r = check(&sc, &t);
     assert_eq!(
         status(&r, CheckId::Vanish),
@@ -528,26 +561,31 @@ fn an_enter_a_moving_clip_uncovers_is_judged_where_it_starts() {
         show(&r, &t)
     );
     // Shown at once, already 90% of the way in: a pop-in where it shows.
-    let t = revealed(false, 0.9);
-    let r = check(&sc, &t);
-    let f = r
-        .failures(CheckId::Vanish)
-        .into_iter()
-        .find(|f| f.key.as_deref() == Some("late"))
-        .unwrap_or_else(|| panic!("{}", show(&r, &t)));
+    let f = late_pop_in(&revealed(Reveal::Tall, 0.9));
     assert!(f.msg.starts_with("pop-in: its first frame shown"), "{f:?}");
     assert_eq!(f.k, Some(1));
     // Cut out, but its enter started 90% of the way in: still a pop-in,
     // on the frame it mounted.
-    let t = revealed(true, 0.9);
-    let r = check(&sc, &t);
-    let f = r
-        .failures(CheckId::Vanish)
-        .into_iter()
-        .find(|f| f.key.as_deref() == Some("late"))
-        .unwrap_or_else(|| panic!("{}", show(&r, &t)));
+    let f = late_pop_in(&revealed(Reveal::Grows, 0.9));
     assert!(f.msg.contains("cut out by its clip"), "{f:?}");
     assert_eq!(f.k, Some(1));
+}
+
+/// (evalfix review) A clip that no declared motion moves does not choose
+/// where an enter is judged: a card that snaps open, and a clip with no
+/// area and nothing moving it, each show the row first at tick 6, 91% of
+/// the way in, and that is a pop-in where it shows.
+#[test]
+fn an_enter_a_still_clip_lets_show_is_judged_where_it_shows() {
+    for how in [Reveal::Snaps, Reveal::Shut] {
+        let f = late_pop_in(&revealed(how, 0.0));
+        assert!(
+            f.msg
+                .starts_with("pop-in: its first frame shown is at opacity 0.91"),
+            "{f:?}"
+        );
+        assert_eq!(f.k, Some(6), "{f:?}");
+    }
 }
 
 // --- envelope: a glide's overshoot
@@ -760,42 +798,71 @@ fn a_glide_that_jumps_fails_teleport() {
     assert!(f.msg.contains("jumped 90.0 px"), "{f:?}");
 }
 
+/// (evalfix) How [`offset_out_and_back`] goes wrong, or not.
+#[derive(Clone, Copy, PartialEq)]
+enum OutAndBack {
+    /// Sprung out and back, as the probe reports it.
+    Sprung,
+    /// The way out cut short by a snap.
+    Snap,
+    /// (evalfix review) Drawn 300 px off its parts for one frame while
+    /// its spring is in flight.
+    Stray,
+}
+
 /// (evalfix) A card's `x:` springs out to 240 and logic's own timer
 /// sends it back to 0 within one segment, its child carried along. It
 /// starts and rests at 0 and `x:` lays nothing out, so its way is the
 /// places its written offset put it while the spring was in flight:
-/// steps of up to 48 px are a spring's, not jumps. `snap` cuts the way
-/// out short: from 42 px it lands on 240 in one frame, no spring left,
-/// which is still a jump of 198 px, over 0.75 of the 240 it travels.
-fn offset_out_and_back(snap: bool) -> RunTrace {
+/// steps of up to 48 px are a spring's, not jumps. Its parts are the
+/// probe's: written 240 then 0, the spring's part from it, the dot
+/// inheriting the card's offset with its spring in flight. `Snap` cuts
+/// the way out short: from 42 px it lands on 240 in one frame, no spring
+/// left, which is still a jump of 198 px, over 0.75 of the 240 it
+/// travels. `Stray` draws both 300 px further at tick 5 than their parts
+/// put them, a jump no spring of theirs makes. The bar is 2000 px wide.
+fn offset_out_and_back(how: OutAndBack) -> RunTrace {
     let out = [
         0.0, 42.0, 90.0, 134.0, 171.0, 200.0, 220.0, 232.0, 238.0, 240.0,
     ];
     let back = [198.0, 150.0, 106.0, 68.0, 38.0, 16.0, 4.0, 0.0];
+    let snap = how == OutAndBack::Snap;
     let mut t = shape(22, |k| {
         let card = row("card", [0.0, 0.0, 80.0, 40.0]).laid_at(0.0, 0.0);
         let dot = row("dot", [6.0, 6.0, 12.0, 12.0]).laid_at(6.0, 6.0);
-        let (x, spring) = match k as usize {
-            k @ 1..=9 => {
-                let x = if snap && k >= 2 { 240.0 } else { out[k] };
-                (x, x - 240.0)
-            }
-            10 => (240.0, 0.0),
-            k @ 11..=17 => (back[k - 11], back[k - 11]),
+        let (x, written) = match k as usize {
+            k @ 1..=9 => (if snap && k >= 2 { 240.0 } else { out[k] }, 240.0),
+            10 => (240.0, 240.0),
+            k @ 11..=17 => (back[k - 11], 0.0),
             _ => (0.0, 0.0),
         };
+        let spring = x - written;
         let moving = spring != 0.0 || (snap && k == 2);
         let (m, a) = if moving {
             (Motions::PROP_SPRING, Axes::X)
         } else {
             (Motions(0), Axes(0))
         };
-        // Carried: its motion and authored axes are its card's.
-        let mut d = dot.at(6.0 + x, 6.0);
+        let off = if how == OutAndBack::Stray && k == 5 {
+            300.0
+        } else {
+            0.0
+        };
+        // Carried: its motion and authored axes are its card's, and so
+        // is its offset, the spring's part of it in flight.
+        let mut d = dot.at(6.0 + x + off, 6.0);
         d.emot = m.0;
         d.auth = a.0;
-        vec![card.at(x, 0.0).spring(spring, 0.0).mot(m).auth(a), d]
+        d.inherited = [x, 0.0];
+        d.flight = [spring, 0.0];
+        let mut c = card.at(x + off, 0.0).spring(spring, 0.0).mot(m).auth(a);
+        c.written = [written, 0.0];
+        vec![c, d]
     });
+    // Wide enough to show it wherever it is drawn.
+    for f in &mut t.frames {
+        f.sizes.insert(1, [2000.0, 60.0]);
+    }
     t.nodes.get_mut("dot").unwrap().parent = Some("card".into());
     t.seal();
     t
@@ -804,7 +871,7 @@ fn offset_out_and_back(snap: bool) -> RunTrace {
 #[test]
 fn an_offset_sprung_out_and_back_by_logic_travels_its_excursion() {
     let sc = scenario("");
-    let t = offset_out_and_back(false);
+    let t = offset_out_and_back(OutAndBack::Sprung);
     let r = check(&sc, &t);
     assert_eq!(
         status(&r, CheckId::Teleport),
@@ -812,7 +879,7 @@ fn an_offset_sprung_out_and_back_by_logic_travels_its_excursion() {
         "{}",
         show(&r, &t)
     );
-    let t = offset_out_and_back(true);
+    let t = offset_out_and_back(OutAndBack::Snap);
     let r = check(&sc, &t);
     for key in ["card", "dot"] {
         assert!(
@@ -824,6 +891,71 @@ fn an_offset_sprung_out_and_back_by_logic_travels_its_excursion() {
     let f = &r.failures(CheckId::Teleport)[0];
     assert_eq!(f.k, Some(2), "{f:?}");
     assert!(f.msg.contains("jumped 198.0 px"), "{f:?}");
+}
+
+/// (evalfix review) A frame drawn off its parts while its spring is in
+/// flight does not pay for its own jump: the places its written offsets
+/// put it are read from the probe's parts, not the drawn box, so a stray
+/// 300 px paint jump (329 px in one tick, against 0.75 of the 240 px
+/// excursion) still fails, on the card and on the dot it carries.
+#[test]
+fn a_stray_jump_under_an_offset_spring_is_still_a_jump() {
+    let sc = scenario("");
+    let t = offset_out_and_back(OutAndBack::Stray);
+    let r = check(&sc, &t);
+    for key in ["card", "dot"] {
+        let f = r
+            .failures(CheckId::Teleport)
+            .into_iter()
+            .find(|f| f.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("{key}: {}", show(&r, &t)));
+        assert_eq!(f.k, Some(5), "{f:?}");
+        assert!(f.msg.contains("jumped 329.0 px"), "{f:?}");
+    }
+}
+
+/// (evalfix review) An offset that snaps out to 240 (no transition) and
+/// is then sprung back home by logic's own timer: the spring starts where
+/// the snap left it (its parts' place on the frame before it is in
+/// flight), so its 42 to 48 px steps home are on its way. The snap out,
+/// with no motion, is noted, not failed; the same snap made under motion
+/// still jumps its whole 240 px.
+fn snapped_out_sprung_back(snap_moves: bool) -> RunTrace {
+    let back = [198.0, 150.0, 106.0, 68.0, 38.0, 16.0, 4.0, 0.0];
+    shape(12, |k| {
+        let card = row("card", [0.0, 0.0, 80.0, 40.0]).laid_at(0.0, 0.0);
+        let (x, written) = match k as usize {
+            1 => (240.0, 240.0),
+            k @ 2..=9 => (back[k - 2], 0.0),
+            _ => (0.0, 0.0),
+        };
+        let spring = x - written;
+        let (m, a) = if spring != 0.0 || (snap_moves && k == 1) {
+            (Motions::PROP_SPRING, Axes::X)
+        } else {
+            (Motions(0), Axes(0))
+        };
+        let mut c = card.at(x, 0.0).spring(spring, 0.0).mot(m).auth(a);
+        c.written = [written, 0.0];
+        vec![c]
+    })
+}
+
+#[test]
+fn an_offset_snapped_out_springs_back_from_where_it_was() {
+    let sc = scenario("");
+    let t = snapped_out_sprung_back(false);
+    let r = check(&sc, &t);
+    assert!(r.failures(CheckId::Teleport).is_empty(), "{}", show(&r, &t));
+    let t = snapped_out_sprung_back(true);
+    let r = check(&sc, &t);
+    let f = r
+        .failures(CheckId::Teleport)
+        .into_iter()
+        .find(|f| f.key.as_deref() == Some("card"))
+        .unwrap_or_else(|| panic!("{}", show(&r, &t)));
+    assert_eq!(f.k, Some(1), "{f:?}");
+    assert!(f.msg.contains("jumped 240.0 px"), "{f:?}");
 }
 
 #[test]
@@ -9377,6 +9509,80 @@ fn pop_out_judges_a_removed_subtree_at_its_root() {
         "{p:?}"
     );
     assert!(!p.iter().any(|(k, _, _)| k == "chip"), "{p:?}");
+}
+
+/// (evalfix review) A card with `exit { opacity: 0 }`, its chip inside
+/// it, that logic removes at tick 1 (`RunTrace::removed`) and the
+/// renderer drops whole: no ghost and no `EXIT` bits, both drawn at full
+/// opacity at tick 0 and gone from tick 1. With `removed` false nothing
+/// records the removal (a card unmounted with its parent, whose exit is
+/// not the subtree's).
+fn dropped_exit(removed: bool) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let mut v = vec![row("bar", [0.0, 0.0, 300.0, 30.0])];
+        if k == 0 {
+            v.push(row("card", [10.0, 4.0, 200.0, 22.0]).draws());
+            v.push(row("chip", [20.0, 8.0, 40.0, 14.0]).draws());
+        }
+        v
+    });
+    let card = t.nodes.get_mut("card").unwrap();
+    card.parent = Some("bar".into());
+    card.exit = Some(Pose {
+        opacity: Some(0.0),
+        ..Pose::default()
+    });
+    let chip = t.nodes.get_mut("chip").unwrap();
+    chip.parent = Some("card".into());
+    chip.exit = Some(Pose {
+        opacity: Some(0.0),
+        y: Some(-12.0),
+        ..Pose::default()
+    });
+    if removed {
+        t.removed.insert("card".into(), vec![1]);
+    }
+    t.seal();
+    t
+}
+
+/// (evalfix review) Pop-out reads a removal from what logic did, not
+/// from the renderer's motion bits: a removed root whose exit was
+/// dropped unmounts at opacity 1 and fails on its last frame; the chip
+/// gone with it is not judged. An exit played after the same removal
+/// passes, nothing is held where nothing records a removal, and under
+/// reduced motion a pose snaps.
+#[test]
+fn pop_out_holds_a_removed_root_whose_exit_was_dropped() {
+    let sc = scenario("");
+    let pops = |t: &RunTrace| -> Vec<(String, Option<u32>, String)> {
+        check(&sc, t)
+            .failures(CheckId::Vanish)
+            .iter()
+            .filter(|f| f.msg.starts_with("pop-out"))
+            .map(|f| (f.key.clone().unwrap_or_default(), f.k, f.msg.clone()))
+            .collect()
+    };
+    let t = dropped_exit(true);
+    let p = pops(&t);
+    assert!(
+        p.iter().any(|(k, at, m)| k == "card"
+            && *at == Some(0)
+            && m.contains("its exit not played")
+            && m.contains("opacity 1.000 (its pose's 0)")),
+        "{p:?}"
+    );
+    assert!(!p.iter().any(|(k, _, _)| k == "chip"), "{p:?}");
+    let t = dropped_exit(false);
+    assert!(pops(&t).is_empty(), "{}", show(&check(&sc, &t), &t));
+    let mut t = ghost(10, 8);
+    t.removed.insert("card".into(), vec![1]);
+    t.seal();
+    assert!(pops(&t).is_empty(), "{}", show(&check(&sc, &t), &t));
+    let mut t = dropped_exit(true);
+    t.segments[1].reduced_motion = true;
+    t.seal();
+    assert!(pops(&t).is_empty(), "{}", show(&check(&sc, &t), &t));
 }
 
 /// (eval-rules-7) Practice set 8's OSD opened under reduced motion: drawn

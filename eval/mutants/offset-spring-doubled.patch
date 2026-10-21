@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/flatten/node.rs
++++ b/crates/strand-render/src/flatten/node.rs
+@@ -366,7 +366,7 @@
+             flown(Prop::Y, sprung.1 - written.1),
+         );
+         let (gx, gy) = if lifted { (0.0, 0.0) } else { raw_glide };
+-        let flight = (inh.flight.0 + fx + gx, inh.flight.1 + fy + gy);
++        let flight = (inh.flight.0 + 2.0 * fx + gx, inh.flight.1 + 2.0 * fy + gy);
+         let mut own = (
+             length(get(Prop::X), parent.w).unwrap_or(0.0) - fx + (raw_glide.0 - gx),
+             length(get(Prop::Y), parent.h).unwrap_or(0.0) - fy + (raw_glide.1 - gy),

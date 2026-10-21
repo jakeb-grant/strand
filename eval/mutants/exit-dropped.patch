@@ -1,0 +1,7 @@
+--- a/crates/strand-render/src/renderer/apply.rs
++++ b/crates/strand-render/src/renderer/apply.rs
+@@ -355,3 +355,3 @@
+                     && !reduced
+-                    && (is_pose(exit_pose(node))
++                    && ((is_pose(exit_pose(node)) && false)
+                         || page

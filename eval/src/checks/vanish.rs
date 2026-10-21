@@ -29,7 +29,10 @@
 //!   (evalfix) one entering and cut out by its ancestors' clip on every
 //!   frame from the one it mounts on until it shows is judged on the
 //!   frame it mounts, where its enter starts: a clip's moving edge
-//!   uncovers it, and where it first shows is the clip's choice;
+//!   uncovers it, and where it first shows is the clip's choice, when
+//!   that clip moves by declared motion as it uncovers it (evalfix
+//!   review: a clip that snaps open, or is shut with nothing moving it,
+//!   is judged where the node first shows);
 //! - **blank**: a frame that damaged pixels and drew no item while
 //!   something inside its surface's root that draws (eval-rules-3: a
 //!   paint of its own, an image, icon or shader; a bare container shows
@@ -283,6 +286,9 @@ pub const POP_OUT_SCALE: f64 = 0.005;
 /// where a pose snaps. (evalfix) Only a removed subtree's root is held to
 /// its pose: what rides in it unmounts with it, its own `exit` unplayed,
 /// and is held to staying drawn while the root is ([`passenger`]).
+/// (evalfix review) A root logic removed (`RunTrace::removed`) and not
+/// drawn on the frame after is held to its pose though the renderer
+/// marked nothing `EXIT`: its exit was dropped.
 fn pop_out(cx: &Cx) -> Vec<Finding> {
     let tl = &cx.tl;
     let mut out = Vec::new();
@@ -305,7 +311,18 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
                 out.extend(passenger(cx, key, root, i));
                 continue;
             }
-            if !Motions(r.mot).contains(Motions::EXIT) || ghost_root(cx, key, i).is_some() {
+            // (evalfix review) Logic removed it, the root of a removed
+            // subtree, and it is not drawn on the first frame after
+            // (`RunTrace::removed`: read from what the scenario did, never
+            // the renderer's motion bits): its exit was dropped, and its
+            // last frame is held to its pose as an exit cut short is.
+            let dropped = cx.trace.removed.get(key).is_some_and(|ks| {
+                ks.iter()
+                    .any(|t| tl.ks[i] < *t && *t <= tl.ks[i + 1] && !reduced_at(cx, *t))
+            });
+            if !(Motions(r.mot).contains(Motions::EXIT) || dropped)
+                || ghost_root(cx, key, i).is_some()
+            {
                 continue;
             }
             let Some(pose) = meta.exit else { continue };
@@ -389,7 +406,12 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
                     Finding::fail(
                         CheckId::Vanish,
                         format!(
-                            "pop-out: unmounted after this frame short of its exit pose: {}",
+                            "pop-out: {} after this frame short of its exit pose: {}",
+                            if dropped && !Motions(r.mot).contains(Motions::EXIT) {
+                                "removed by logic and unmounted, its exit not played,"
+                            } else {
+                                "unmounted"
+                            },
                             wrong.join("; ")
                         ),
                     )
@@ -401,6 +423,20 @@ fn pop_out(cx: &Cx) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// (evalfix review) Motion is reduced at tick `k`: its segment's, or its
+/// frame's as render had it (`Frame::reduced`), or the run's throughout.
+fn reduced_at(cx: &Cx, k: u32) -> bool {
+    cx.trace.reduced_throughout()
+        || cx.tl.at(k).is_some_and(|i| cx.tl.frames[i].reduced)
+        || cx
+            .trace
+            .segments
+            .iter()
+            .rev()
+            .find(|s| s.s.is_none_or(|s| s < k) && k <= s.e)
+            .is_some_and(|s| s.reduced_motion)
 }
 
 /// (evalfix) The root of the removed subtree `key` rides in at timeline
@@ -602,11 +638,16 @@ fn pop_in<'a>(
         // the clip's edge moving over it (a card's height spring
         // uncovering a row), never a frame. Its enter is judged where it
         // starts, on its first frame; where the clip first lets it show
-        // is the clip's choice, not its pose's.
+        // is the clip's choice, not its pose's. (evalfix review) Only a
+        // clip that moves by declared motion as it uncovers the node
+        // makes that choice: a clip that snaps open, or one shut with
+        // nothing moving it (a clip fault), shows the node where its
+        // pose then has it, and that frame is judged.
         let judged = if entered
+            && uncovers(cx, key, shown)
             && (first..shown).all(|j| {
                 tl.row(j, key)
-                    .is_some_and(|q| q.surface == surface && clipped_out(q))
+                    .is_some_and(|q| q.surface == surface && cut_out(cx, key, j, q))
             }) {
             first
         } else {
@@ -714,15 +755,69 @@ fn pop_in<'a>(
     }
 }
 
-/// (evalfix) True if what `r` draws (`drawn_extent`) lies wholly outside
-/// the clip its ancestors set (`Row::clip`), or the clip has no area: no
-/// pixel of it can show, whatever its own look.
-fn clipped_out(r: &Row) -> bool {
-    let Some([cx, cy, cw, ch]) = r.clip else {
+/// (evalfix) True if what row `r` of `key` (at timeline frame `j`) draws
+/// (`drawn_extent`) lies wholly outside the clip its ancestors set
+/// (`Row::clip`), or (evalfix review) the clip has no area while a
+/// clipping ancestor moves it by declared motion ([`clip_moves`]: a box
+/// springing its size from nothing): no pixel of it can show, whatever
+/// its own look. A clip with no area and nothing moving it is no
+/// declared reason to be cut out.
+fn cut_out<'a>(cx: &Cx<'a>, key: &'a str, j: usize, r: &Row) -> bool {
+    let Some([x0, y0, cw, ch]) = r.clip else {
         return false;
     };
+    if cw <= 0.0 || ch <= 0.0 {
+        return clip_moves(cx, key, j);
+    }
     let [x, y, w, h] = super::drawn_extent(r);
-    cw <= 0.0 || ch <= 0.0 || x >= cx + cw || y >= cy + ch || x + w <= cx || y + h <= cy
+    x >= x0 + cw || y >= y0 + ch || x + w <= x0 || y + h <= y0
+}
+
+/// (evalfix review) Whether the clip over `key` moves by declared motion
+/// at timeline frame `j`: an ancestor that clips its content (`clip:
+/// true`, a `scroll` or `list`, or a box whose size springs or that exits
+/// to a size, which clips while it does: wave3-pixels p2) springs its
+/// size (`SIZE_SPRING`), plays an exit to a size, or glides, or a scroll
+/// over it moves its content by itself (`Cx::scrolled`).
+fn clip_moves<'a>(cx: &Cx<'a>, key: &'a str, j: usize) -> bool {
+    cx.scrolled(j, key)
+        || cx.lineage(key).into_iter().skip(1).any(|a| {
+            cx.tl.row(j, a).is_some_and(|p| {
+                let own = Motions(p.mot);
+                let meta = cx.trace.nodes.get(a);
+                let sized = own.contains(Motions::SIZE_SPRING)
+                    || (own.contains(Motions::EXIT)
+                        && meta
+                            .and_then(|m| m.exit)
+                            .is_some_and(|e| e.w.is_some() || e.h.is_some()));
+                sized || (meta.is_some_and(|m| m.clips) && own.contains(Motions::GLIDE))
+            })
+        })
+}
+
+/// (evalfix review) Whether a clip moving by declared motion uncovers
+/// `key` at timeline frame `shown`, the first it shows on: the clip moves
+/// ([`clip_moves`]) there or the frame before, and what it lets show
+/// changed between the two (its clip rect, or the content a scroll
+/// carries under it).
+fn uncovers<'a>(cx: &Cx<'a>, key: &'a str, shown: usize) -> bool {
+    let Some(p) = shown.checked_sub(1) else {
+        return false;
+    };
+    let (Some(r), Some(q)) = (cx.tl.row(shown, key), cx.tl.row(p, key)) else {
+        return false;
+    };
+    if !(clip_moves(cx, key, shown) || clip_moves(cx, key, p)) {
+        return false;
+    }
+    let changed = match (r.clip, q.clip) {
+        (Some(a), Some(b)) => a
+            .iter()
+            .zip(b)
+            .any(|(x, y)| (f64::from(*x) - f64::from(y)).abs() > cx.tol),
+        (a, b) => a.is_some() != b.is_some(),
+    };
+    changed || cx.scrolled(shown, key) || cx.scrolled(p, key)
 }
 
 /// (eval-false-alarms) True if `key`, not shown at timeline frame `i`,
