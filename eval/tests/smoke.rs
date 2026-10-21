@@ -1322,3 +1322,237 @@ rest
         r.lines(&t)
     );
 }
+
+/// (report) Whether the last frame draws the node with `id:` `id`.
+fn drawn_last(t: &RunTrace, id: &str) -> bool {
+    let Some((k, _)) = t.nodes.iter().find(|(_, m)| m.id.as_deref() == Some(id)) else {
+        return false;
+    };
+    t.frames.last().is_some_and(|f| row(f, k).is_some())
+}
+
+/// (report) `[seed]` sets its cells and service fields as baselines: the
+/// first frame shows them and no `on change` fires for them; a later
+/// `set` of the same cell does fire.
+#[test]
+fn a_seed_fires_no_on_change() {
+    let text = |extra: &str| {
+        format!(
+            r##"id = "seed"
+screen = {{ width = 300, scale = 1.0 }}
+
+[seed]
+"shell.n" = "5"
+"battery.percent" = "42"
+
+=== shell.strand
+state n = 0
+state fired = 0
+state service_fired = 0
+on change n {{ fired = fired + 1 }}
+on change battery.percent {{ service_fired = service_fired + 1 }}
+bar Top {{
+  height: 30
+  row {{
+    if n == 5 {{ box {{ id: five; width: 10; height: 10; bg: #ff0000 }} }}
+    if battery.percent == 42 {{ box {{ id: pct; width: 10; height: 10; bg: #ffff00 }} }}
+    if fired > 0 {{ box {{ id: nfired; width: 10; height: 10; bg: #00ff00 }} }}
+    if service_fired > 0 {{ box {{ id: sfired; width: 10; height: 10; bg: #0000ff }} }}
+  }}
+}}
+
+=== steps
+rest
+{extra}
+"##
+        )
+    };
+    let t = go(&text(""));
+    let first = &t.frames[0];
+    for id in ["five", "pct"] {
+        let k = key(&t, id);
+        assert!(row(first, &k).is_some(), "#{id} on the first frame");
+    }
+    assert!(!drawn_last(&t, "nfired"), "a seed fired `on change n`");
+    assert!(
+        !drawn_last(&t, "sfired"),
+        "a seed fired `on change battery.percent`"
+    );
+    // A step that sets it afterwards is a change.
+    let t = go(&text("set n 6\nset battery.percent 50\nrest"));
+    assert!(drawn_last(&t, "nfired"));
+    assert!(drawn_last(&t, "sfired"));
+    assert!(!drawn_last(&t, "five"));
+}
+
+/// (report) The keyboard steps type into the input of the surface with
+/// the keyboard: a press on an `on_demand` panel gives it the keyboard
+/// (the compositor's rule), `type` types placeholder `x`s at once or over
+/// time, `paste` pastes them into the input that asked, and `unfocus`
+/// takes the keyboard away until `focus` gives it back.
+#[test]
+fn typed_placeholders_reach_the_focused_input() {
+    let text = |steps: &str| {
+        format!(
+            r##"id = "typed"
+screen = {{ width = 300, scale = 1.0 }}
+
+=== shell.strand
+export state q = ""
+bar Top {{ height: 30 }}
+panel Ask {{
+  anchor: center; keyboard: on_demand
+  col {{ width: 200; pad: 8
+    input {{ id: field; text: <-> q; focus: true }}
+    if q == "xxx" {{ box {{ id: three; width: 10; height: 10; bg: #00ff00 }} }}
+    if q == "xxxxx" {{ box {{ id: five; width: 10; height: 10; bg: #00ff00 }} }}
+    if q == "xxxxxxxxx" {{ box {{ id: nine; width: 10; height: 10; bg: #00ff00 }} }}
+  }}
+}}
+
+=== steps
+rest
+{steps}
+"##
+        )
+    };
+    let t = go(&text("click 20,16 on #field\ntype 3\nrest"));
+    assert!(drawn_last(&t, "three"), "typed into the panel pressed");
+    let t = go(&text(
+        "click 20,16 on #field\ntype 3\ntype 2 over 100\nrest",
+    ));
+    assert!(drawn_last(&t, "five"), "typed over time");
+    let t = go(&text(
+        "click 20,16 on #field\ntype 3\ntype 2 over 100\nunfocus\nfocus #field\npaste 4\nrest",
+    ));
+    assert!(
+        drawn_last(&t, "nine"),
+        "pasted after the keyboard came back"
+    );
+    // No surface has the keyboard before the press: a typed error.
+    let sc = scenario(&text("type 3\nrest"));
+    let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("no surface has the keyboard"), "{e}");
+}
+
+/// (report) A `keyboard: exclusive` panel takes the keyboard as it maps,
+/// with no `focus` step, and gives it back when it closes.
+#[test]
+fn an_exclusive_panel_takes_focus_as_it_maps() {
+    let text = r##"id = "exclusive"
+screen = { width = 300, scale = 1.0 }
+
+=== shell.strand
+export state open = false
+export state q = ""
+bar Top { height: 30 }
+panel Ask {
+  anchor: center; keyboard: exclusive; open: open
+  col { width: 200; pad: 8
+    input { text: <-> q; focus: true }
+  }
+}
+bar Probe {
+  edge: bottom; height: 30
+  row { if q == "xx" { box { id: two; width: 10; height: 10; bg: #00ff00 } } }
+}
+
+=== steps
+rest
+set open true
+rest
+type 2
+rest
+set open false
+rest
+"##;
+    let t = go(text);
+    assert!(drawn_last(&t, "two"), "typed into the panel that mapped");
+    // Closed, it gave the keyboard back to no surface.
+    let sc = scenario(&format!("{text}type 1\n"));
+    let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("no surface has the keyboard"), "{e}");
+}
+
+/// (report) `answer` queues the next call's answer ahead of the mock's:
+/// the mock's apps search finds no app, the answer given finds one.
+#[test]
+fn an_answer_is_given_to_the_next_call() {
+    let text = |answer: &str| {
+        format!(
+            r##"id = "answer"
+screen = {{ width = 300, scale = 1.0 }}
+
+=== shell.strand
+export state query = ""
+let hits = apps.search(query)
+bar Top {{
+  height: 30
+  row {{
+    if query != "" && !hits.pending && hits.len == 0 {{ box {{ id: none; width: 10; height: 10; bg: #ff0000 }} }}
+    if query != "" && !hits.pending && hits.len > 0 {{ box {{ id: some; width: 10; height: 10; bg: #00ff00 }} }}
+  }}
+}}
+
+=== steps
+rest
+{answer}
+set query fi
+rest
+"##
+        )
+    };
+    let t = go(&text(""));
+    assert!(drawn_last(&t, "none") && !drawn_last(&t, "some"));
+    let hit = r#"[{"app": {"id": "firefox", "name": "Firefox", "comment": null, "icon": "firefox", "categories": []}, "score": 1.0, "ranges": []}]"#;
+    let t = go(&text(&format!("answer apps.search {hit}")));
+    assert!(drawn_last(&t, "some") && !drawn_last(&t, "none"));
+    // An answer the method's type does not hold is refused at its line.
+    let sc = scenario(&text("answer apps.search {\"no\": 1}"));
+    let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("is no answer of `apps.search`"), "{e}");
+}
+
+/// (report) `warmup` runs its ticks and paints them, but the trace (and
+/// so every check) starts after it, from the state it left: boot ends at
+/// the first traced frame.
+#[test]
+fn the_warmup_is_run_but_not_traced() {
+    let text = |warmup: u32| {
+        format!(
+            r##"id = "warm"
+screen = {{ width = 300, scale = 1.0 }}
+warmup = {warmup}
+
+=== shell.strand
+export state wide = false
+bar Top {{
+  height: 30
+  row {{ box {{ id: b; width: wide ? 100 : 20; height: 10; bg: #ff0000 }} }}
+}}
+
+=== steps
+rest
+set wide true
+wait 1500
+"##
+        )
+    };
+    let full = go(&text(0));
+    let warm = go(&text(1000));
+    let t0 = 1_000_000_000u64;
+    assert!(full.frames[0].t_ns < t0 + 1_000_000_000);
+    assert!(warm.frames.iter().all(|f| f.t_ns >= t0 + 1_000_000_000));
+    assert!(warm.frames.len() < full.frames.len());
+    // It starts from the width the warm-up reached.
+    let k = key(&warm, "b");
+    let first = row(&warm.frames[0], &k).unwrap();
+    let last = row(full.frames.last().unwrap(), &key(&full, "b")).unwrap();
+    assert_eq!(first.visual, last.visual, "the warm-up's end is the run's");
+    assert_eq!(warm.segments[0].name, "boot");
+    assert_eq!(warm.segments[0].e, warm.frames[0].k);
+    // And it checks clean from there.
+    let sc = scenario(&text(1000));
+    let c = strand_eval::check_scenario(&sc, &RunOptions::default()).unwrap();
+    assert!(c.report.ok(), "{:?}", c.report.lines(&c.run.trace));
+}

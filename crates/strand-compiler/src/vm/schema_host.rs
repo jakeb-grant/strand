@@ -112,6 +112,9 @@ pub struct SchemaHost {
     /// (report) Answers queued for the next fetches of a method
     /// (`service.method`), oldest first ([`SchemaHost::answer`]).
     answers: RefCell<HashMap<String, std::collections::VecDeque<Result<Value, String>>>>,
+    /// (report) The mock's log of fetches: each method called and
+    /// whether a queued answer gave it ([`SchemaHost::take_fetches`]).
+    fetches: RefCell<Vec<(String, bool)>>,
 }
 
 /// Where a shadowed builtin service's cells are kept.
@@ -160,6 +163,7 @@ impl SchemaHost {
             refs: RefCell::default(),
             shadowed: RefCell::default(),
             answers: RefCell::default(),
+            fetches: RefCell::default(),
         };
         for (name, &r) in &crate::schema::Schema::builtin().services {
             host.add_service(rt, name, r);
@@ -169,8 +173,17 @@ impl SchemaHost {
 
     /// The deterministic mock: the clock fixed at [`MOCK_TIME`] in UTC.
     pub fn mock(rt: &Runtime, types: &TypeTable) -> SchemaHost {
-        let utc = FixedOffset::east_opt(0).map_or(Zone::Local, Zone::Fixed);
-        let clock = Clock::new(rt, types, utc, UNIX_EPOCH + Duration::from_secs(MOCK_TIME));
+        SchemaHost::mock_at(rt, types, UNIX_EPOCH + Duration::from_secs(MOCK_TIME), 0)
+    }
+
+    /// (report) The mock with its clock at `now` in a zone `offset`
+    /// seconds east of UTC (an offset no zone has reads as UTC): a
+    /// replay's `wall` (docs/eval.md, "Replaying a glitch report").
+    pub fn mock_at(rt: &Runtime, types: &TypeTable, now: SystemTime, offset: i32) -> SchemaHost {
+        let zone = FixedOffset::east_opt(offset)
+            .or_else(|| FixedOffset::east_opt(0))
+            .map_or(Zone::Local, Zone::Fixed);
+        let clock = Clock::new(rt, types, zone, now);
         let mut host = SchemaHost::new(rt, types, Some(clock));
         host.record_actions = true;
         host
@@ -358,6 +371,13 @@ impl SchemaHost {
             .entry(method.to_string())
             .or_default()
             .push_back(answer);
+    }
+
+    /// (report) The fetches made since the last look, oldest first: each
+    /// method and whether an answer queued by [`SchemaHost::answer`] gave
+    /// it (else the mock's own did). Only the mock keeps them.
+    pub fn take_fetches(&self) -> Vec<(String, bool)> {
+        std::mem::take(&mut *self.fetches.borrow_mut())
     }
 
     /// (report) Answers queued and not yet given, per method.
@@ -881,6 +901,11 @@ impl ServiceHost for SchemaHost {
             .borrow_mut()
             .get_mut(&name)
             .and_then(std::collections::VecDeque::pop_front);
+        if self.record_actions {
+            self.fetches
+                .borrow_mut()
+                .push((name.clone(), queued.is_some()));
+        }
         let r = match queued {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(fail(e)),

@@ -840,6 +840,7 @@ impl Dump {
                         | kind::PASTE
                         | kind::CLICK_AWAY
                         | kind::DRAG
+                        | kind::MAPPED
                         | kind::CONFIGURED
                         | kind::PLACED
                         | kind::UNMAPPED
@@ -853,12 +854,11 @@ impl Dump {
                         | kind::CHANGE_GAP_ENDS
                         | kind::ROOT_GONE
                 );
-                // The name index: the key's at payload 0..2, a mapped
-                // surface's namespace at 8..10, an output's connector at
-                // 0..2; a change's is its slot.
+                // The name index: the key's at payload 0..2, an output's
+                // connector at 0..2; a change's is its slot. (A mapped
+                // surface's namespace is `bundle.json`'s, by slot.)
                 let index = match rec.kind {
                     kind::KEY | kind::OUTPUT => Some(rec.u16(0)),
-                    kind::MAPPED => Some(rec.u16(8)),
                     _ if rec.kind >= kind::FIELD => Some(rec.slot),
                     _ => None,
                 };

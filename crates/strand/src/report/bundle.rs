@@ -173,6 +173,9 @@ pub(crate) struct Job {
     pub now_ns: u64,
     pub epoch_unix_ns: i64,
     pub replay: bool,
+    /// (report) `nodes.json`: the nodes the input ring names, by
+    /// `node_ref` (`Shell::node_table`).
+    pub nodes: Json,
 }
 
 /// What a finished report answers: `{"bundle", "paste", "report"}` or
@@ -354,6 +357,10 @@ pub(crate) fn write(job: &Job) -> io::Result<Json> {
     private_file(
         &dir.join("cells.json"),
         format!("{:#}\n", job.cells).as_bytes(),
+    )?;
+    private_file(
+        &dir.join("nodes.json"),
+        format!("{:#}\n", job.nodes).as_bytes(),
     )?;
     for f in &job.main.frames {
         let name = format!("frames/{}-{}.png", f.slot, file_stem(&f.name));

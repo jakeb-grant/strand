@@ -448,6 +448,7 @@ fn a_bundle_holds_every_part() {
         "changes.flight",
         "services.json",
         "cells.json",
+        "nodes.json",
         "config/report.strand",
         "config/icons/mark.svg",
     ] {
@@ -521,6 +522,16 @@ fn a_bundle_holds_every_part() {
     // A PNG per mapped surface, at its buffer size.
     let surfaces = b["surfaces"].as_array().unwrap();
     assert!(surfaces.len() >= 2, "{b}");
+    // The nodes the input names, each surface's root among them, by
+    // their origin under the config directory.
+    let n = read_json(&dir.join("nodes.json"));
+    for s in surfaces {
+        let root = s["root"].as_str().unwrap();
+        let o = n[root]["origin"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{root} in {n}"));
+        assert!(o.starts_with("report.strand:"), "{o}");
+    }
     for s in surfaces {
         let file = s["frame"]
             .as_str()

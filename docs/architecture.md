@@ -2040,6 +2040,7 @@ Without `save` the answer is as before. With it:
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
 | `services.json` | `{service: {"running": bool, "fields": {field: value}}}` |
 | `cells.json` | `{cell path: value}` |
+| `nodes.json` | `{node_ref: {"origin": "file.strand:LINE:COL", "id", "key"}}`: each node the input ring names (a press's hit, a mapped surface's root) and each mapped surface's root, still mounted, the file under the config directory and the `for` row key (none for a per-screen surface's own screen), what a replay holds its own press's hit to |
 | `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
 | `config/` | the module set's `.strand` files at their paths under the config directory, its `icons/` folder |
 | `files/<absolute path>` | every other file the program or the renderer read, at its own path (settings files, templates, shaders, imported palettes, wallpapers, images, the theme's icons drawn), each at most 2 MiB and at most 16 MiB in all, newest-referenced first; the rest are listed in `missing` |

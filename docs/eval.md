@@ -143,6 +143,10 @@ expect still #after
 | `tooltip_delay` | the renderer's | In ms. |
 | `config`, `config_dir` | none | A config named instead of written in (see Local configs and fonts). |
 | `[services]` | none | `"path" = value` pairs, set before boot. |
+| `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. |
+| `wall` | the mock's own time | (report) The wall time (RFC 3339 with its offset) virtual `T0` stands for; `clock` and local time follow it (`SchemaHost::mock_at`). |
+| `warmup` | 0 | (report) Ms run before the trace starts: painted, neither traced nor checked; the first traced frame repaints every surface. |
+| `icons` | the config's `icons/` | (report) A flat icon folder used in place of it (inside `eval/` for a committed scenario). |
 | `[allow]` | none | `check = [{ node = "<selector>", why = "…" }]`. |
 | `[tolerance]` | `edge_px = 0.5`, `overshoot = 0.35`, `teleport_px = 32` | See Checks. |
 | `[budget]` | none | Per-frame ceilings: `items`, `records`, `damage_px`, `layout_nodes`, `layout_passes`. |
@@ -163,12 +167,19 @@ advance the clock.
 
 **State and services**
 
-- `set <path> <value>`: a value as `strand set` reads it. A step the
+- `set <path> <value>`: a value as `strand set` reads it, or (report) a
+  record, list or optional value written as JSON by its schema type
+  (`vm::json::from_json`; a value starting `{` or `[` is read as JSON
+  first). A step the
   shell refuses fails the run with the config's load warnings (but the raw-colour lint) beside
   its reason (a bare `network` that reads the builtin service where
   `Module.network` was meant is one).
 - `toggle <path>`.
-- `emit <service.event> [args…]`.
+- `emit <service.event> [args…]`: each argument read as `set` reads a
+  value.
+- `answer <service.method> <JSON>` and `answer <service.method> error
+  "<text>"` (report): the next call of that method is answered with it,
+  ahead of the mock's own (`SchemaHost::answer`); answers queue in order.
 - `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
   refuses it as unsupported: the notification daemon is not in the
   sandbox. Set `notifications.*` and `emit` instead.
@@ -194,6 +205,16 @@ advance the clock.
 - `glide X,Y -> X,Y over MS [on <surface>]` moves the pointer.
 - `drag X,Y -> X,Y over MS [on <surface>]` is the same glide with the
   left button held: pressed at the start, released at the end.
+- `key NAME [+ctrl|+shift|+alt|+super…] [down|up]` (report): a key on
+  the surface with the keyboard, a press and a release without
+  `down`/`up`.
+- `type N [over MS]` types N placeholder `x`s (at once, or spread over
+  MS as a time step); `paste N` pastes N `x`s into the input that asks
+  (ctrl+v, then the clipboard's answer).
+- `focus <surface>` and `unfocus` give and take the keyboard. Without
+  them it is the compositor's: a `keyboard: exclusive` surface takes it
+  as it maps, an `on_demand` one on a press in it, and it returns to
+  the surface before when that one goes.
 
 **Perturbations**
 

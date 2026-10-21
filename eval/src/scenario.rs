@@ -327,6 +327,19 @@ pub struct Scenario {
     /// (`surface = true`, or a surface check named in `checks`).
     pub surface: bool,
     pub config: Config,
+    /// (report) `[seed]`: each path (a service field, a cell by the
+    /// inspector's path, a `$token`) and its JSON value, set as a
+    /// baseline: no `on change` fires for it.
+    pub seed: Vec<(String, String)>,
+    /// (report) `wall`: the wall time virtual `T0` stands for (the mock's
+    /// fixed time when unset).
+    pub wall: Option<Wall>,
+    /// (report) `warmup`: ms run before the trace starts; its frames are
+    /// painted but neither traced nor checked.
+    pub warmup: u64,
+    /// (report) `icons`: a flat icon folder used in place of the config's
+    /// `icons/`.
+    pub icons: Option<PathBuf>,
     pub steps: Vec<Step>,
     /// The scenario's text as parsed (a run keeps it beside its trace, so
     /// `promote` can write it out again).
@@ -356,6 +369,34 @@ struct Header {
     reduce_motion: Option<bool>,
     compositor_poses: Option<bool>,
     surface: Option<bool>,
+    seed: Option<BTreeMap<String, String>>,
+    wall: Option<String>,
+    warmup: Option<u64>,
+    icons: Option<String>,
+}
+
+/// (report) A `wall` header: the wall time virtual `T0` stands for and
+/// the offset its local time is at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wall {
+    /// Since the Unix epoch.
+    pub unix: std::time::Duration,
+    /// Seconds east of UTC.
+    pub offset: i32,
+}
+
+impl Wall {
+    /// RFC 3339 with its offset (`2026-10-20T14:03:07.250+02:00`).
+    pub fn parse(s: &str) -> Result<Wall, String> {
+        let t = chrono::DateTime::parse_from_rfc3339(s.trim())
+            .map_err(|e| format!("wall `{s}`: RFC 3339 with its offset ({e})"))?;
+        let secs =
+            u64::try_from(t.timestamp()).map_err(|_| format!("wall `{s}` is before 1970"))?;
+        Ok(Wall {
+            unix: std::time::Duration::new(secs, t.timestamp_subsec_nanos()),
+            offset: t.offset().local_minus_utc(),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -782,6 +823,46 @@ impl Scenario {
                 ));
             }
         };
+        // (report) The replay's header keys.
+        let mut seed = Vec::new();
+        for (path, json) in h.seed.unwrap_or_default() {
+            if let Err(e) = serde_json::from_str::<serde_json::Value>(&json) {
+                return Err(err(
+                    hl("seed"),
+                    format!("[seed] `{path}`: `{json}` is not JSON ({e})"),
+                ));
+            }
+            seed.push((path, json));
+        }
+        let wall = match &h.wall {
+            Some(w) => Some(Wall::parse(w).map_err(|m| err(hl("wall"), m))?),
+            None => None,
+        };
+        let icons = match h.icons {
+            None => None,
+            Some(d) => {
+                let d = match place {
+                    Place::Local => expand(&d).map_err(|m| err(hl("icons"), m))?,
+                    Place::Committed if d.contains("${") => {
+                        return Err(err(
+                            hl("icons"),
+                            format!("icons `{d}`: `${{VAR}}` only in eval/scenarios/local/"),
+                        ));
+                    }
+                    Place::Committed => d,
+                };
+                let p = normal(&base.join(&d));
+                if place == Place::Committed && !inside_eval(&p) {
+                    return Err(err(
+                        hl("icons"),
+                        format!(
+                            "icons `{d}` is outside eval/: a committed scenario names only files inside eval/"
+                        ),
+                    ));
+                }
+                Some(p)
+            }
+        };
         let about = h.about.unwrap_or_default();
         Ok(Scenario {
             id,
@@ -805,6 +886,10 @@ impl Scenario {
             compositor_poses: h.compositor_poses.unwrap_or(false),
             surface,
             config,
+            seed,
+            wall,
+            warmup: h.warmup.unwrap_or(0),
+            icons,
             steps,
             source: text.to_string(),
         })

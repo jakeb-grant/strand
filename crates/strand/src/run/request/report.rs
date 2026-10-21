@@ -178,6 +178,7 @@ impl Shell {
             })
         };
         files.retain(|p| !in_config(p));
+        let nodes = self.node_table(&main, config_dir.as_deref());
         let now_ns = strand_core::flight::now_ns();
         let wall = chrono::Local::now().to_rfc3339();
         Job {
@@ -186,6 +187,7 @@ impl Shell {
             report,
             main,
             changes: rec.dump(),
+            nodes,
             services: Json::Object(services),
             cells: Json::Object(cells),
             config_dir,
@@ -199,6 +201,82 @@ impl Shell {
             replay: self.replay_on,
         }
     }
+}
+
+impl Shell {
+    /// (report) `nodes.json`: each node the input ring names (a press's
+    /// hit, a mapped surface's root) and each mapped surface's root, still
+    /// mounted, by its `node_ref`: its origin (`file.strand:LINE:COL`, the
+    /// file under the config directory), `id:` and `for` row key, what a
+    /// replay compares the node its own press hits with.
+    fn node_table(&self, main: &MainBundle, config_dir: Option<&Path>) -> Json {
+        use strand_compiler::instantiate::inspect::{node_ref, parse_node_ref};
+        use strand_core::flight::{self, kind};
+        let mut ids: Vec<strand_scene::NodeId> = Vec::new();
+        if let Some(dump) = main.ring.as_deref().and_then(|r| flight::read(r).ok()) {
+            for r in &dump.records {
+                if matches!(r.kind, kind::HIT | kind::MAPPED) {
+                    let bits = r.u64(0);
+                    ids.push(strand_scene::NodeId::new(bits as u32, (bits >> 32) as u32));
+                }
+            }
+        }
+        ids.extend(
+            main.surfaces
+                .iter()
+                .filter_map(|s| parse_node_ref(s["root"].as_str()?)),
+        );
+        // The screens' ids: a per-screen surface's nodes are mounted
+        // under theirs, which a replay on another output names otherwise.
+        let screens: Vec<String> = {
+            let rt = self.inst.runtime();
+            let host = crate::run::logic::live_host(&self.host, &self.real);
+            let types = &self.inst.vm().prog.types;
+            rt.untrack(|rt| host.read_builtin(rt, "screens", "all"))
+                .ok()
+                .and_then(|v| {
+                    let list = v.as_list()?;
+                    Some(
+                        list.iter()
+                            .filter_map(|s| Some(s.field(types, "id")?.as_text()?.to_string()))
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default()
+        };
+        let mut out = Map::new();
+        for id in ids {
+            let r = node_ref(id);
+            if out.contains_key(&r) {
+                continue;
+            }
+            let Some(origin) = self.inst.origin(id).and_then(|(f, _, sp)| {
+                let file = self.build.sources.get(f)?;
+                let (l, c) = crate::overlay::line_col(&file.text, sp.start);
+                let rel = relative(&file.name, config_dir);
+                Some(format!("{}:{l}:{c}", rel.display()))
+            }) else {
+                continue;
+            };
+            let ident = self.inst.identity(id);
+            let id_name = ident.as_ref().and_then(|i| i.id.clone());
+            let key = ident.as_ref().and_then(|i| row_key(i, &screens));
+            out.insert(r, json!({"origin": origin, "id": id_name, "key": key}));
+        }
+        Json::Object(out)
+    }
+}
+
+/// (report) The `for` row key a node is mounted under: `None` outside
+/// any, and for a node directly in a per-screen surface, whose innermost
+/// qualifier is its screen's id (one of `screens`), which a replay on
+/// another output names otherwise.
+fn row_key(
+    i: &strand_compiler::instantiate::inspect::Identity,
+    screens: &[String],
+) -> Option<String> {
+    let key = i.key.as_ref()?;
+    (!screens.contains(key)).then(|| key.clone())
 }
 
 /// A module file's path under the config directory, from the name the
