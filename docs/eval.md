@@ -2209,13 +2209,37 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
 
 Built (decisions.md report; features.md "Glitch reports"). The owner
 types `strand report <words>` on the live shell (design.md "Reporting
-a glitch"); everything after that is an agent's:
+a glitch") and may replay it on the desktop; the agent reads the same
+files, or replays it in the container:
 
 ```text
-scripts/report-view.sh [--no-open] [bundle-dir]     # default: the newest report
+strand replay [report-dir] [--no-open] [options]    # the owner; default: the newest report
+scripts/report-view.sh [--no-open] [bundle-dir]     # an agent, in the container
 ```
 
-It runs `scripts/container/run.sh eval replay <bundle>` (which mounts
+(replay-owner) `strand replay` hands off git-style
+(docs/architecture.md "Glitch reports"): it runs `strand-eval replay`
+from beside the `strand` binary, else from `PATH`, with its arguments,
+naming the newest report under `$XDG_STATE_HOME/strand/reports` when
+none is named; without a `strand-eval` it says in plain words that the
+replay needs one installed next to `strand`, and exits non-zero.
+`strand-eval replay` runs natively there, as every run does: its own
+in-process stand-in for the compositor, the CPU renderer, fonts and
+icons as the host has them, and never the session's `WAYLAND_DISPLAY`. It
+writes into `<bundle>/replay/` (cleared first, mode 0700), prints the
+verdict in one plain line, then `replay: <bundle>/replay/replay.txt`
+and `viewer: <bundle>/replay/index.html`, and opens the viewer with
+`xdg-open` unless `--no-open`. The local scenario goes to the
+checkout's `eval/scenarios/local/` when `strand-eval` was built in one
+that is still there, else `${XDG_CACHE_HOME:-~/.cache}/strand-eval/
+scenarios/local/`. On the desktop a file the shell read is read where
+it is now, not the bundle's copy (the container mounts the copy at its
+path): each copied file that differs from what is at its path now is
+named in the limits. A surface the live shell drew on the GPU is
+replayed on the CPU alone unless `--gpu` adds the GPU leg (a limit
+says so).
+
+`scripts/report-view.sh` runs `scripts/container/run.sh eval replay <bundle>` (which mounts
 the bundle read-only, and each directory of its `files/` tree that
 holds a file at the path it was copied from, as `eval local` mounts a
 local config, with the host fonts: `scripts/eval/replay-mounts.sh`
@@ -2225,10 +2249,14 @@ after `local-mounts.sh`), copies the run into `<bundle>/replay/`
 frames) and opens the viewer in the browser unless
 `--no-open` is given. Agents and tests always pass `--no-open`. It
 exits non-zero only when the replay could not run; findings are the
-point, not a failure.
+point, not a failure. It runs the same subcommand as `strand replay`,
+with `--out` into the checkout (the bundle is mounted read-only),
+`--no-open` (it opens the copy itself) and `--gpu` (CI's image has
+lavapipe).
 
-`strand-eval replay <bundle> [--to SCN] [--out DIR] [--output NAME]
-[--traced SECONDS|all] [--frames …]` does the work:
+`strand-eval replay <bundle> [--no-open] [--out DIR] [--to SCN]
+[--output NAME] [--traced SECONDS|all] [--frames …] [--gpu]` does the
+work:
 
 1. **Reads** `bundle.json` (its outputs and surfaces among it), both
    ring dumps (`strand_core::flight`), `services.json`, `cells.json`
@@ -2263,7 +2291,8 @@ point, not a failure.
    `icons` the bundle's copy of the config's `icons/` folder, or, when
    the bundle copied theme icons under `files/`, both flattened into
    `report-<name>.icons/` beside the scenario, `backend = "both"` when
-   a surface was on the GPU in the window, `compositor_poses` as the
+   a surface was on the GPU in the window and `--gpu` is given,
+   `compositor_poses` as the
    diagnostics' globals say (`wp_alpha_modifier_v1` and
    `wp_viewporter`), `warmup` all but the last `--traced` seconds (20
    by default), and the steps: the input on its timeline (`frames`

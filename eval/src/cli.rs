@@ -163,22 +163,39 @@ fn frames_opt(a: &Args, n: usize) -> Result<Frames, Error> {
     }
 }
 
-/// (report) `strand-eval replay <bundle> [--to SCN] [--out DIR]
-/// [--output NAME] [--traced SECONDS|all] [--frames …]`: a glitch
-/// report's bundle as a local scenario, run with every check and held to
-/// what the live shell recorded (docs/eval.md, "Replaying a glitch
-/// report"). It fails only when the replay cannot run.
+/// (report) `strand-eval replay <bundle> [--no-open] [--out DIR]
+/// [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames …]
+/// [--gpu]`: a glitch report's bundle as a local scenario, run with
+/// every check and held to what the live shell recorded (docs/eval.md,
+/// "Replaying a glitch report").
+///
+/// (replay-owner) What `strand replay` hands off to, and what
+/// `scripts/report-view.sh` runs in the container. It writes the replay
+/// into `<bundle>/replay/` (`--out` elsewhere: the container's bundle is
+/// read-only), prints its fidelity in one plain line and the paths of
+/// `replay.txt` and `index.html`, and opens the viewer with `xdg-open`
+/// unless `--no-open`. It runs as a plain process on a desktop: its own
+/// fake compositor and the CPU (`--gpu` adds the GPU leg), never the
+/// session's Wayland display. It fails only when the replay cannot run;
+/// the checks' findings are hints, never a failure.
 pub fn replay(args: &[String]) -> Result<(), Error> {
     let a = Args::parse(
         "replay",
         args,
         &["--to", "--out", "-o", "--output", "--traced", "--frames"],
-        &[],
+        &["--no-open", "--gpu"],
     )?;
-    let usage = "usage: strand-eval replay <bundle> [--to SCN] [--out DIR] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none]";
+    let usage = "usage: strand-eval replay <bundle> [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]";
     let [dir] = a.words.as_slice() else {
         return Err(Error::Usage(usage.into()));
     };
+    let dir = Path::new(dir);
+    if !dir.join("bundle.json").is_file() {
+        return Err(Error::Usage(format!(
+            "replay: {} is not a glitch report (no bundle.json)",
+            dir.display()
+        )));
+    }
     let traced = match a.value(&["--traced"]) {
         None => Some(crate::replay::plan::TRACED_S),
         Some("all") => None,
@@ -192,30 +209,62 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
     let opts = crate::replay::Options {
         output: a.value(&["--output"]).map(str::to_string),
         traced,
+        gpu: a.has("--gpu"),
     };
     let build = build_info();
-    let out = out_dir(a.value(&["--out", "-o"]).map(PathBuf::from), &build)?;
+    let out = match a.value(&["--out", "-o"]) {
+        Some(o) => out_dir(Some(PathBuf::from(o)), &build)?,
+        None => {
+            // A replay of its own, in the report's folder, private as
+            // the report is.
+            let o = dir.join("replay");
+            let _ = std::fs::remove_dir_all(&o);
+            std::fs::create_dir_all(&o).map_err(|e| Error::Io(o.display().to_string(), e))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&o, std::fs::Permissions::from_mode(0o700));
+            }
+            o
+        }
+    };
     let frames = match a.value(&["--frames"]) {
         None => None,
         Some(_) => Some(frames_opt(&a, 1)?),
     };
     let r = crate::replay::replay(
-        Path::new(dir),
+        dir,
         &opts,
         a.value(&["--to"]).map(Path::new),
         &out,
         frames,
         build,
     )?;
-    for l in &r.lines {
-        println!("{l}");
+    let index = out.join("index.html");
+    println!("fidelity: {}", crate::replay::first_line(&r.fidelity));
+    println!("replay: {}", out.join("replay.txt").display());
+    println!("viewer: {}", index.display());
+    if !a.has("--no-open") {
+        open(&index);
     }
-    let head: String = r.text.split("\n\nevents").next().unwrap_or("").to_string();
-    println!("{head}");
-    println!("scenario: {}", r.scenario.display());
-    println!("replay: {}/replay.txt", out.display());
-    println!("report: {}/index.html", out.display());
     Ok(())
+}
+
+/// (replay-owner) Opens `page` in the desktop's browser with `xdg-open`,
+/// left running on its own; says where it is when that cannot start.
+fn open(page: &Path) {
+    let started = Command::new("xdg-open")
+        .arg(page)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if started.is_err() {
+        eprintln!(
+            "strand-eval replay: no xdg-open; open {} in a browser",
+            page.display()
+        );
+    }
 }
 
 /// A scenario that could not run, as a report entry.

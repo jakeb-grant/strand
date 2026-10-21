@@ -275,6 +275,7 @@ fn defaults() -> Options {
     Options {
         output: None,
         traced: Some(replay::plan::TRACED_S),
+        gpu: false,
     }
 }
 
@@ -532,6 +533,7 @@ fn keyed_updates_replay_by_key() {
         &Options {
             output: None,
             traced: None,
+            gpu: false,
         },
     );
     let trace: strand_eval::trace::RunTrace =
@@ -699,6 +701,7 @@ fn replay_txt_lists_inputs_changes_and_motion_by_source_location() {
         &Options {
             output: None,
             traced: None,
+            gpu: false,
         },
     );
     let text = std::fs::read_to_string(out.join("replay.txt")).unwrap();
@@ -747,6 +750,7 @@ fn a_faithful_replay_reports_no_divergence() {
         let opts = Options {
             output: None,
             traced,
+            gpu: false,
         };
         let dir = Fx::session().write("faithful");
         let (r, out) = replay_of(&dir, &opts);
@@ -1065,4 +1069,108 @@ fn a_step_on_a_surface_waits_for_the_tick_it_shows() {
         st[set..focus].iter().any(|l| l.starts_with("frames ")),
         "the focus runs in the request's tick:\n{text}"
     );
+}
+
+/// (replay-owner) `strand-eval replay <bundle>` as `strand replay` runs
+/// it, a plain process: it writes `<bundle>/replay/`, prints its fidelity
+/// in one line and the two paths, opens nothing with `--no-open` and the
+/// viewer with `xdg-open` without it (a stub here), and never touches the
+/// session's Wayland display: `WAYLAND_DISPLAY` names a socket this test
+/// listens on, which no one connects to.
+#[test]
+fn the_replay_command_runs_as_a_plain_process_beside_a_display() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = Fx::session().write("cli");
+    let root = dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let display = root.join("wayland-bogus");
+    let listener = std::os::unix::net::UnixListener::bind(&display).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let opened = root.join("opened");
+    std::fs::write(
+        bin.join("xdg-open"),
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\n", opened.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("xdg-open"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run = |open: bool| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"));
+        cmd.arg("replay").arg(&dir).arg("--to");
+        cmd.arg(root.join("scenarios/local/report-cli.scn"));
+        if !open {
+            cmd.arg("--no-open");
+        }
+        cmd.env("WAYLAND_DISPLAY", &display)
+            .env("XDG_RUNTIME_DIR", &root)
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+    let out = run(false);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(
+        lines[0], "fidelity: no divergence from the live shell",
+        "{stdout}"
+    );
+    let rep = dir.join("replay");
+    assert_eq!(
+        lines[1],
+        format!("replay: {}", rep.join("replay.txt").display())
+    );
+    assert_eq!(
+        lines[2],
+        format!("viewer: {}", rep.join("index.html").display())
+    );
+    for f in ["replay.txt", "index.html", "fidelity.json", "summary.txt"] {
+        assert!(rep.join(f).is_file(), "no {f}");
+    }
+    assert_eq!(
+        std::fs::metadata(&rep).unwrap().permissions().mode() & 0o077,
+        0,
+        "the replay is as private as the report"
+    );
+    assert!(!opened.exists(), "--no-open opened the viewer");
+    // Opened: the stub is given the page.
+    let out = run(true);
+    assert!(out.status.success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !opened.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&opened).unwrap().trim(),
+        rep.join("index.html").display().to_string()
+    );
+    // No client came to the display.
+    match listener.accept() {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("something connected to WAYLAND_DISPLAY: {other:?}"),
+    }
+}
+
+/// (replay-owner) A directory that is no report is refused, plainly.
+#[test]
+fn the_replay_command_refuses_a_directory_that_is_no_report() {
+    let d = tmp("noreport");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("replay")
+        .arg(&d)
+        .arg("--no-open")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not a glitch report"));
 }

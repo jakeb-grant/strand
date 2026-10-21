@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # (report) Replays a glitch report in the evaluation sandbox (design.md,
-# "Reporting a glitch"; docs/eval.md, "Replaying a glitch report"): runs
+# "Reporting a glitch"; docs/eval.md, "Replaying a glitch report"): the
+# agents' container path to what the owner runs as `strand replay`. Runs
 # `strand-eval replay <bundle>` in the container (scripts/container/run.sh
 # mounts the bundle read-only and each directory of its files/ tree at
 # the path it was copied from: scripts/eval/replay-mounts.sh), copies the
@@ -61,7 +62,10 @@ out=$ROOT/target/report-view/$name
 rm -rf "$out"
 mkdir -p "$out"
 echo "report-view: replaying $bundle" >&2
-if ! "${eval_cmd[@]}" replay "$bundle" --out "$out" "${extra[@]}"; then
+# The same subcommand `strand replay` hands off to, into the checkout
+# (the bundle is mounted read-only), on both legs as CI's image can, the
+# viewer opened here rather than in the container.
+if ! "${eval_cmd[@]}" replay "$bundle" --out "$out" --no-open --gpu "${extra[@]}"; then
   echo "report-view: the replay of $bundle could not run" >&2
   exit 1
 fi

@@ -2077,7 +2077,7 @@ Without `save` the answer is as before. With it:
 | `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
 | `config/` | the module set's `.strand` files at their paths under the config directory, its `icons/` folder |
 | `files/<absolute path>` | every other file the program or the renderer read, at its own path (settings files, templates, shaders, imported palettes, wallpapers, images, the theme's icons drawn), each at most 2 MiB and at most 16 MiB in all, newest-referenced first; the rest are listed in `missing` |
-| `replay/` | written later by `scripts/report-view.sh` |
+| `replay/` | written later by `strand replay` (`strand-eval replay`) or `scripts/report-view.sh` |
 
 (report review) The bundle is written into
 `reports/.<stamp>-<n>.partial` and renamed to its name once
@@ -2110,7 +2110,19 @@ value), `Instance::cell_type(path) -> Option<Ty>` (a cell's declared
 type by the inspector's path), `SchemaHost::answer(method,
 Result<Value, String>)` (the next call of `method` answered with it)
 and `SchemaHost::answers_left() -> Vec<(String, usize)>` (answers
-queued and never taken). (report review) A step the sandbox cannot
+queued and never taken. (replay-owner) `strand replay [report-dir]
+…` (the binary's `report/replay.rs`) hands off git-style, as `git`
+runs `git-<name>`: it finds an executable `strand-eval` beside the
+running binary (`current_exe`), else the first on `PATH`, and `exec`s
+`strand-eval replay [<newest report>] <args>` with the huge-page
+setting restored (`strand_services::child::restore_in_child`); without
+one it prints that the replay needs `strand-eval` installed next to
+`strand` and exits 1. The shipped binary links nothing of eval and
+reads nothing of its output; `strand-eval replay` itself runs as a
+plain desktop process on its in-process stand-in for the compositor
+and the CPU, writes
+`<bundle>/replay/` and opens it with `xdg-open` unless `--no-open`.
+(report review) A step the sandbox cannot
 take is skipped and kept as a divergence, the window is capped at
 120 s before the report, a request record is replayed as a `set` or
 `toggle`, and a horizontal scroll is named as not replayed. Nothing

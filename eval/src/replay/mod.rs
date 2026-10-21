@@ -53,13 +53,18 @@ pub fn write_scenario(
     to: Option<&Path>,
 ) -> Result<(Plan, PathBuf), Error> {
     let mut plan = plan::plan(b, opts)?;
+    if plan.backend_both && !opts.gpu {
+        plan.backend_both = false;
+        plan.limits.push(
+            "a surface was on the GPU live: this replay drew on the CPU alone (`--gpu` adds the \
+             GPU leg)"
+                .into(),
+        );
+    }
     let id = plan::scenario_id(&b.name);
     let path = match to {
         Some(p) => p.to_path_buf(),
-        None => crate::scenario::eval_root()
-            .join("scenarios")
-            .join("local")
-            .join(format!("{id}.scn")),
+        None => local_dir().join(format!("{id}.scn")),
     };
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| Error::Io(d.display().to_string(), e))?;
@@ -70,6 +75,59 @@ pub fn write_scenario(
     let text = plan.scenario(b, &id);
     std::fs::write(&path, text).map_err(|e| Error::Io(path.display().to_string(), e))?;
     Ok((plan, path))
+}
+
+/// (replay-owner) Where a replay's scenario goes: the checkout's
+/// `eval/scenarios/local/` when this `strand-eval` was built in one that
+/// is still there, else `${XDG_CACHE_HOME:-~/.cache}/strand-eval/
+/// scenarios/local/` (a `strand-eval` installed beside `strand`). Both
+/// are local places: a scenario there may name the bundle.
+pub fn local_dir() -> PathBuf {
+    let root = crate::scenario::eval_root();
+    if root.join("scenarios").is_dir() {
+        return root.join("scenarios").join("local");
+    }
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    cache.join("strand-eval").join("scenarios").join("local")
+}
+
+/// (replay-owner) The files the bundle copied (`files/<path>`) that are
+/// not, now, what is at their path: a replay reads a file where the live
+/// shell read it, which in the container is the bundle's copy (mounted
+/// there) and on a desktop the file as it is now.
+pub fn files_changed(b: &Bundle) -> Vec<String> {
+    let root = b.dir.join("files");
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let Ok(rel) = p.strip_prefix(&root) else {
+                continue;
+            };
+            let at = Path::new("/").join(rel);
+            let same = match (std::fs::read(&p), std::fs::read(&at)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            };
+            if !same {
+                out.push(at.display().to_string());
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Replays the bundle in `dir`: writes its scenario, runs and checks it,
@@ -99,6 +157,20 @@ pub fn replay(
     )?;
     let fid = fidelity::compare(&b, &plan, &checked.run);
     let mut limits = plan.limits.clone();
+    let changed = files_changed(&b);
+    if !changed.is_empty() {
+        let shown: Vec<&str> = changed.iter().take(8).map(String::as_str).collect();
+        limits.push(format!(
+            "files read as they are now, which differ from the report's copy ({}): {}{}",
+            changed.len(),
+            shown.join(", "),
+            if changed.len() > shown.len() {
+                ", …"
+            } else {
+                ""
+            }
+        ));
+    }
     for (m, n) in &fid.mock_answered {
         limits.push(format!(
             "calls answered by the mock, no answer recorded: `{m}` ({n})"
@@ -110,15 +182,7 @@ pub fn replay(
     }
     lines.extend(checked.report.lines(&checked.run.trace));
     let ok = checked.report.ok();
-    let text = replay_txt(
-        &b,
-        &plan,
-        &fid,
-        &limits,
-        &checked.run,
-        &checked.report,
-        &path,
-    );
+    let text = replay_txt(&b, &plan, &fid, &limits, &checked, &path);
     let json = fid.json(&b, &plan, &limits);
     let mut entries = vec![Entry {
         id: sc.id.clone(),
@@ -206,7 +270,9 @@ fn flat_icons(b: &Bundle, dest: &Path) -> Result<Option<PathBuf>, Error> {
     Ok(Some(dest.to_path_buf()))
 }
 
-fn first_line(f: &Fidelity) -> String {
+/// The comparison with the live shell in one line: no divergence, or
+/// the first.
+pub fn first_line(f: &Fidelity) -> String {
     match f.divergences.first() {
         None => "no divergence from the live shell".into(),
         Some(d) => format!("{} divergences; the first: {}", f.divergences.len(), d.text),
@@ -340,10 +406,10 @@ fn replay_txt(
     plan: &Plan,
     fid: &Fidelity,
     limits: &[String],
-    run: &crate::harness::RunOutput,
-    rep: &crate::checks::Report,
+    checked: &crate::Checked,
     scenario: &Path,
 ) -> String {
+    let (run, rep) = (&checked.run, &checked.report);
     let mut s = String::new();
     let len = plan.end - plan.start;
     let _ = writeln!(s, "glitch report: {:?}", b.words);

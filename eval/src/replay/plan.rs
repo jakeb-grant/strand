@@ -34,6 +34,11 @@ pub struct Options {
     pub output: Option<String>,
     /// `--traced SECONDS` (`None`: all of the window).
     pub traced: Option<f64>,
+    /// (replay-owner) `--gpu`: a surface the live shell drew on the GPU
+    /// is replayed on both legs (`backend = "both"`). Without it the
+    /// replay draws on the CPU alone, as a plain process on a desktop
+    /// does, and says so in its limits.
+    pub gpu: bool,
 }
 
 /// The output replayed.

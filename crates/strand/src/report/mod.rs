@@ -21,6 +21,7 @@
 //! coding agent.
 
 pub(crate) mod bundle;
+pub(crate) mod replay;
 
 use serde_json::{Value as Json, json};
 use strand_scene::{Backend, GpuStatus};

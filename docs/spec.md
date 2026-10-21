@@ -1610,7 +1610,12 @@ people can edit by hand.
     clipboard contents or anything while locked), every service's
     state, each surface's last frame and a copy of the config. It
     prints the directory and a line to give a coding agent, and is
-    refused while the screen is locked.
+    refused while the screen is locked. `strand replay [report-dir]
+    [--no-open]` replays the newest report (or the one named) in the
+    evaluation sandbox and opens its viewer; the sandbox is a separate
+    program, `strand-eval`, run from beside `strand` or from `PATH`,
+    and without it the command says so and fails. (Built, decisions.md
+    replay-owner.)
 - **One shell's variables.** `STRAND_SOCKET` picks the socket a shell
   answers on and the one a command reaches; `STRAND_STATE_DIR` names
   the directory a shell keeps its state in (`persist`, settings and
