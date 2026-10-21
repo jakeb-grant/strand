@@ -2410,7 +2410,17 @@ location, service changes, cell writes (live and replay), surfaces
 mapped and gone, and for every node whose drawn box or opacity changes,
 one line per run of motion (`k456..k470 @clock.strand:12:5 text x
 1180.0 -> 1176.3 spring`). The checks' findings follow, as `summary.txt`
-gives them, each with its time before the report.
+gives them, each with its time before the report, under (replay-owner)
+the label `hints (the checks may be wrong on a real shell):`.
+
+**Findings are hints** (replay-owner; decisions.md owner-2026-10-21).
+In a replay the checks' findings come after the verdict and the
+timeline, under that label in `replay.txt`, as `fidelity.json`'s
+`hints` (`label` and `findings`: check, severity, node, time before
+the report, message) and in the viewer, where the label stands in for
+the run's pass/fail chip. A failing check never makes `strand-eval
+replay`, `strand replay` or `scripts/report-view.sh` exit non-zero;
+only a replay that cannot run does.
 
 ## Limits
 

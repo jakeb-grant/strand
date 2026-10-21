@@ -719,7 +719,7 @@ fn replay_txt_lists_inputs_changes_and_motion_by_source_location() {
         "cell shell.clicks = 1 (live)".into(),
         "cell shell.clicks = 1 (replay)".into(),
         "motion (one line per run".into(),
-        "findings:".into(),
+        "hints (the checks may be wrong on a real shell):".into(),
     ] {
         assert!(text.contains(&want), "no `{want}` in\n{text}");
     }
@@ -1188,6 +1188,69 @@ fn the_live_boxes_are_held_to_the_replay_node_by_node() {
         "{lines}"
     );
     let _ = out;
+}
+
+/// (replay-owner) The checks' findings are hints: listed after the
+/// verdict and the timeline under their label in `replay.txt`, as
+/// `hints` in `fidelity.json` and labelled in the viewer; a replay whose
+/// checks fail still ends well (`strand-eval replay` exits 0).
+#[test]
+fn the_checks_findings_are_hints() {
+    // A finding: the badge the click mounts skips its enter pose (its
+    // opacity snaps), which `vanish` calls a pop-in.
+    let mut f = Fx::session();
+    f.config = f.config.replacen(
+        "id: badge;",
+        "id: badge; enter { opacity: 0 }; opacity: 1 ~ instant;",
+        1,
+    );
+    let dir = f.write("hints");
+    let all = Options {
+        traced: None,
+        ..defaults()
+    };
+    let (r, out) = replay_of(&dir, &all);
+    assert!(!r.ok, "the checks found nothing:\n{}", r.text);
+    let text = &r.text;
+    let v = text.find("verdict: ").unwrap();
+    let ev = text.find("\nevents (seconds before the report):").unwrap();
+    let mo = text.find("\nmotion (one line per run").unwrap();
+    let h = text
+        .find("\nhints (the checks may be wrong on a real shell):")
+        .unwrap();
+    assert!(v == 0 && v < ev && ev < mo && mo < h, "{text}");
+    assert!(!text.contains("\nfindings:"), "{text}");
+    let j: Json =
+        serde_json::from_slice(&std::fs::read(out.join("fidelity.json")).unwrap()).unwrap();
+    assert_eq!(
+        j["hints"]["label"],
+        json!("hints (the checks may be wrong on a real shell)")
+    );
+    assert!(j["hints"]["findings"].is_array());
+    let page = std::fs::read_to_string(out.join("index.html")).unwrap();
+    let data = strand_eval::report::html::embedded(&page).unwrap();
+    assert_eq!(
+        data["replay"]["hints"],
+        json!("hints (the checks may be wrong on a real shell)")
+    ); // The command that runs it ends well all the same.
+    let cli = std::process::Command::new(env!("CARGO_BIN_EXE_strand-eval"))
+        .arg("replay")
+        .arg(&dir)
+        .args(["--no-open", "--traced", "all", "--to"])
+        .arg(
+            dir.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("scenarios/local/report-cli.scn"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
 }
 
 /// (replay-owner) `strand-eval replay <bundle>` as `strand replay` runs

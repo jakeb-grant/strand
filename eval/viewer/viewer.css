@@ -174,3 +174,4 @@ pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hove
 .verdict.v-drifted { border-color: #d0453b; color: #d0453b; }
 .verdict.v-not-checked { border-color: #b8860b; color: #b8860b; }
 .drift { font-family: ui-monospace, monospace; font-size: 12px; margin-left: 12px; }
+.hints-label { font-size: 12px; opacity: 0.8; margin-right: 6px; align-self: center; }

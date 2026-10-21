@@ -264,7 +264,8 @@
     if (!a) return;
     var sc = a.trace.scenario, b = a.trace.build;
     // (replay-owner) A glitch report's replay: its verdict first (the
-    // live boxes held to the replay's), then the fidelity line.
+    // live boxes held to the replay's), then the fidelity line; the
+    // checks' findings below are hints.
     var R = DATA.replay;
     if (R) {
       var v = el('div', { cls: 'verdict v-' + R.verdict.toLowerCase().replace(/ /g, '-') });
@@ -285,7 +286,8 @@
     // Two runs: each side's status, as the list's worst of them would
     // otherwise disagree with A's alone.
     var bs = AB && !REF ? scOf(1, a.id) : null;
-    chips.appendChild(el('span', { cls: 'chip st-' + a.status, text: (bs ? 'A ' : '') + a.status.toUpperCase() }));
+    if (R) chips.appendChild(el('span', { cls: 'hints-label', text: R.hints + ':' }));
+    else chips.appendChild(el('span', { cls: 'chip st-' + a.status, text: (bs ? 'A ' : '') + a.status.toUpperCase() }));
     if (bs) chips.appendChild(el('span', { cls: 'chip st-' + bs.status, text: 'B ' + bs.status.toUpperCase() }));
     if (a.checks) {
       a.checks.results.forEach(function (r) {

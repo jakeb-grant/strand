@@ -46,8 +46,15 @@ pub struct Replayed {
     pub json: serde_json::Value,
     /// The checks' lines, as `check` prints them.
     pub lines: Vec<String>,
+    /// Whether the checks found nothing. (replay-owner) Their findings
+    /// are hints: a replay that ran is never a failure.
     pub ok: bool,
 }
+
+/// (replay-owner) What the checks' findings are called in a replay's
+/// outputs: they are tuned on Strand's own scenarios, and a real shell
+/// may meet one wrongly (decisions.md owner-2026-10-21).
+pub const HINTS: &str = "hints (the checks may be wrong on a real shell)";
 
 /// Plans `bundle`'s replay and writes its scenario to `to` (by default
 /// `eval/scenarios/local/report-<bundle name>.scn`).
@@ -188,7 +195,7 @@ pub fn replay(
     lines.extend(checked.report.lines(&checked.run.trace));
     let ok = checked.report.ok();
     let text = replay_txt(&b, &plan, &fid, &verdict, &limits, &checked, &path);
-    let json = fidelity_json(&b, &plan, &fid, &verdict, &limits);
+    let json = fidelity_json(&b, &plan, &fid, &verdict, &limits, &checked);
     let mut entries = vec![Entry {
         id: sc.id.clone(),
         file: sc.file.display().to_string(),
@@ -208,11 +215,15 @@ pub fn replay(
             "line": verdict.line(),
             "drifted": verdict.lines(),
             "fidelity": first_line(&fid),
+            "hints": HINTS,
         })),
     };
-    let mut all = vec![format!("verdict: {}", verdict.line())];
+    let mut all = vec![
+        format!("verdict: {}", verdict.line()),
+        format!("fidelity: {}", first_line(&fid)),
+        format!("{HINTS}:"),
+    ];
     all.extend(lines.iter().cloned());
-    all.push(format!("fidelity: {}", first_line(&fid)));
     report::write_run(&info, &mut entries, &all)?;
     report::write(&out.join("replay.txt"), text.as_bytes())?;
     report::write(&out.join("fidelity.json"), &verdict_first(&json)?)?;
@@ -282,17 +293,41 @@ fn flat_icons(b: &Bundle, dest: &Path) -> Result<Option<PathBuf>, Error> {
 }
 
 /// (replay-owner) `fidelity.json`: the comparison with the live shell
-/// (`Fidelity::json`) and the verdict (`verdict`).
+/// (`Fidelity::json`), the verdict (`verdict`) and the checks' findings
+/// as hints (`hints`), never a failure.
 fn fidelity_json(
     b: &Bundle,
     plan: &Plan,
     fid: &Fidelity,
     verdict: &Verdict,
     limits: &[String],
+    checked: &crate::Checked,
 ) -> serde_json::Value {
     let mut json = fid.json(b, plan, limits);
+    let trace = &checked.run.trace;
+    let findings: Vec<serde_json::Value> = checked
+        .report
+        .results
+        .iter()
+        .flat_map(|r| r.findings.iter().map(move |f| (r, f)))
+        .filter(|(_, f)| f.sev != Sev::Info)
+        .map(|(r, f)| {
+            serde_json::json!({
+                "check": r.check,
+                "sev": if f.sev == Sev::Fail { "fail" } else { "warn" },
+                "node": f.key.as_deref().map(|k| node_name(trace, k)),
+                "t": f.k.map(|k| (u64::from(k) * plan.period) as f64 / 1e9
+                    - (plan.end - plan.start) as f64 / 1e9),
+                "msg": f.msg,
+            })
+        })
+        .collect();
     if let Some(o) = json.as_object_mut() {
         o.insert("verdict".into(), verdict.json());
+        o.insert(
+            "hints".into(),
+            serde_json::json!({"label": HINTS, "findings": findings}),
+        );
     }
     json
 }
@@ -588,7 +623,7 @@ fn replay_txt(
         let _ = writeln!(s, "  … {} more in trace.json", motion.len() - MOTION_LINES);
     }
 
-    let _ = writeln!(s, "\nfindings:");
+    let _ = writeln!(s, "\n{HINTS}:");
     let mut any = false;
     for r in &rep.results {
         for f in &r.findings {
