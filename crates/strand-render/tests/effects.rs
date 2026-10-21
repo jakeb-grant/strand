@@ -2128,6 +2128,83 @@ fn stagger_delays_each_childs_enter() {
     assert!(!r.wants_frame(S));
 }
 
+/// A row with `stagger: 100ms` on a 160 × 40 bar, painted at 1 s, then
+/// five 20 px boxes created in it at once and painted at 1.016 s: the
+/// first and third plain, the second and fifth with `enter { opacity: 0
+/// }`, the fourth with the `fade` preset.
+fn staggered_mixed() -> (Renderer, Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let mut p = at_xy(10.0, 10.0, 140.0, 20.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Gap, num(6.0)),
+        (
+            Prop::Stagger,
+            PropValue::Duration(std::time::Duration::from_millis(100)),
+        ),
+    ]);
+    let row = b.node(NodeKind::Row, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    let mut d = SceneDiff::new();
+    let fade = PropValue::Pose(vec![(Prop::Opacity, num(0.0))]);
+    let enters = [None, Some(fade.clone()), None, Some(kw("fade")), Some(fade)];
+    for (i, enter) in enters.into_iter().enumerate() {
+        let n = NodeId::new(100 + i as u32, 0);
+        d.create(n, NodeKind::Box, Some(row), i as u32)
+            .set(n, Prop::Size, num(20.0))
+            .set(n, Prop::Bg, color("#a6e3a1"));
+        if let Some(e) = enter {
+            d.set(n, Prop::Enter, e);
+        }
+    }
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, std::time::Duration::from_millis(1016));
+    (r, buf)
+}
+
+/// (stagger) A stagger numbers only the children with an `enter` (a
+/// pose or a preset): mounted into a shown row, the plain first and third
+/// boxes are drawn at rest at once and take no turn, so the second box
+/// enters at once, the fourth (`fade`) one step later and the fifth two
+/// (ref `effects_stagger_plain.png` at 150 ms).
+#[test]
+fn stagger_numbers_only_the_children_with_an_enter() {
+    use std::time::Duration;
+    let (mut r, mut buf) = staggered_mixed();
+    let bg = buf.px(1, 1);
+    let px = |b: &Buffer, i: u32| b.px(20 + 26 * i, 20);
+    let rest = px(&buf, 0);
+    assert_ne!(rest, bg, "a plain child shows at once");
+    assert_eq!(px(&buf, 2), rest, "at rest, not held for a turn");
+    assert_ne!(px(&buf, 1), bg, "the first with an enter starts at once");
+    assert_ne!(px(&buf, 1), rest, "and plays its enter");
+    assert_eq!((px(&buf, 3), px(&buf, 4)), (bg, bg), "the others wait");
+    let mut t = 1016;
+    while t < 1150 {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t.min(1150)));
+    }
+    assert_matches_ref("effects_stagger_plain", &buf, 2);
+    let g = |b: &Buffer, i: u32| px(b, i)[1];
+    assert!(
+        g(&buf, 1) > g(&buf, 3) && g(&buf, 3) > bg[1],
+        "the fade one turn on: {:?}",
+        (0..5).map(|i| g(&buf, i)).collect::<Vec<_>>()
+    );
+    assert_eq!(px(&buf, 4), bg, "the fifth from 200 ms");
+    while r.wants_frame(S) {
+        t += 16;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        assert!(t < 5000, "settles");
+    }
+    assert!((0..5).all(|i| px(&buf, i) == rest), "all shown");
+}
+
 /// A 30 px box with `parallax: 6px` and one with `tilt: 12deg` on a
 /// 160 × 60 bar, painted at 1 s (no `lean` props with `lean: false`).
 fn leaning(lean: bool, reduced: bool) -> (Renderer, Buffer) {

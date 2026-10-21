@@ -620,7 +620,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `colour` | A node's own fill, border or text colour that springs is drawn, frame by frame, on the straight way between where it started and where it rests in premultiplied OKLab, within 3 steps of 1/255 (`off its way`); where its fills come and go (a default fill handed over to a state's), their composite over its ancestors' fills moves steadily from where it was to where it rests (`composite`, eval-rules-7); no further past either end than its spring overshoots (`past its end`, eval-rules-3), and a theme swap springs each palette root along the curve its table asks a colour to take (`palette`, eval-rules-3). See below. |
 | `contain` | A surface sized by its content holds what it lays out, mid-motion too (`cut`), an ellipsised text gives way before it is laid past its surface's edge (`give way`), a box whose size springs or that exits to a size holds what it lays out, its texts' glyphs included (`held`), a pose that sizes one axis leaves the other at rest (`other axis`), a shadow at rest is drawn inside its buffer (`shadow`), a full row has no child left that could still give way (`wrap`, eval-rules-6), and what is inside its surface and its clip where a segment starts and rests, laid at one place at both, is not drawn past them between with nothing moving it (`pushed`, eval-rules-3). See below. |
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
-| `stagger` | Children mounting together under `stagger:` each leave their enter pose within a frame of their turn, one step apart in child order (`start`); a child mounting again after frames without it (a result filtered out and typed back) is numbered with those mounting beside it (eval-coverage-4), unless a list's window mounted it (integration-r7: read from the declared tree's mounts, not the renderer's motion bits). See below. |
+| `stagger` | Children with an `enter` mounting together under `stagger:` (a child without one takes no turn) each leave their enter pose within a frame of their turn, one step apart in child order (`start`); a child mounting again after frames without it (a result filtered out and typed back) is numbered with those mounting beside it (eval-coverage-4), unless a list's window mounted it (integration-r7: read from the declared tree's mounts, not the renderer's motion bits). See below. |
 | `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it, the gap beside it never more than its size on any frame between (eval-rules-6), and its parent, sized by its content, does not step as it unmounts (`fold`, eval-rules-3, eval-coverage-3), an interrupted roll rolls on from the text on screen (`roll`), a `keyframes` play draws its track through its stops at their times and along its easing between them (`track`, eval-rules-8), and with motion reduced what time drives holds still (`still`, eval-rules-8). See below. |
 | `placement` | Each surface's card is where its declared props put it, at every frame painted at a settled size and place: a popup by its anchor (`anchor`), a bar, panel or OSD by its margin in what the bars' exclusive zones leave (`margin`), and a posed one where its pose's offset moves it, by the margins sent (`pose`, eval-rules-6); a split's `center` is centred on its split (`centre`); an image's source shows where its `fit:` puts it in its box (`fit`). eval-rules-4; see below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). The re-run's own scrolls are held to their input as `teleport`'s `reduced fling` holds a reduced segment (eval-rules-5): with motion reduced a lift flings nothing. And on every frame of the re-run, not only at its rests, what time drives holds still (`still`, eval-rules-8; see `continuity`). |
@@ -993,9 +993,13 @@ says a node moves, not how, so it does not exempt from them; only an
   not held (its edges are not axis-aligned). A box in motion is placed
   by its layer's whole pixels and is not held.
 - **`stagger`.** "Delays each child's `enter` this much after the one
-  before" (the schema; design.md `stagger: 30ms`). The children of a
-  container with `stagger:` first drawn at one frame after boot are a
-  batch, numbered in paint order; so are those drawn there again after
+  before" (the schema; design.md "Motion and time"). The children of a
+  container with `stagger:` that have an `enter` (a pose or a preset,
+  `NodeMeta::enters`), first drawn at one frame after boot, are a batch,
+  numbered in paint order; a child with no `enter` plays nothing, is
+  drawn at rest at once and takes no turn, mounting into a surface
+  already shown or coming on screen with its first frame (decisions.md
+  stagger); so are those drawn there again after
   frames without them (a result filtered out and typed back mounts anew;
   eval-coverage-4), unless a list's window mounted them since they were
   last gone (a row a list's window brings back does not play its enter;
@@ -1007,13 +1011,7 @@ says a node moves, not how, so it does not exempt from them; only an
   never before its surface's previous paint (eval-finish): on a
   surface's first frame (a panel opening with its children, or opened
   again on a new surface) the change starts at that frame, which shows
-  every pose exactly (decisions.md wave3-pixels (p2)). On a surface's
-  first frame the batch is only the children with an `enter` (a pose
-  or a preset, `NodeMeta::enters`; eval-finish review): what a surface
-  holds comes on screen with it, where only enter poses play
-  (decisions.md launcher-reopen), so a plain child drawn at rest there
-  takes no turn; mounting into a surface already shown, every child
-  mounting is numbered, as before. Its
+  every pose exactly (decisions.md wave3-pixels (p2)). Its
   start is the first frame it no longer waits for its turn (`Motions`
   `STAGGER` cleared), or an earlier one that already shows it off its
   enter pose, and must come within a period after it is due: not before
@@ -1406,7 +1404,10 @@ popup-click-away and nested-morph, 35 kB), it was 6.22 MB (6,223,318
 bytes); with eval-finish's three (k-media-card, k-qs-toggles and
 l-app-grid-stagger, 18 kB) it was 6,242,526 bytes; with the review's two
 (call-id-chain and l-grid-reopen-plain-box, 15 kB) and the re-approvals'
-notes written out again it is 6,260,955 bytes, 30 kB under the
+notes written out again it was 6,260,955 bytes; with the stagger cells
+re-recorded for a stagger that numbers only children with an `enter`
+(their batch settles a step sooner, so their recordings are shorter, and
+their notes longer) it is 6,265,539 bytes, 26 kB under the
 tripwire: the 155 scenarios 1.14 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
 Paint costs little because a field is written only on the ticks it

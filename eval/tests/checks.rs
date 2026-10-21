@@ -3351,13 +3351,14 @@ fn stagger_counts_from_a_surfaces_first_frame() {
     );
 }
 
-/// (eval-finish review) On a surface's first frame what it holds comes
-/// on screen with it, and only the children with an `enter` play one
-/// there: a child without one, drawn at rest, takes no turn (set L's
-/// grid reopened with a plain box first). Mounting into a surface shown
-/// before, every child mounting still counts.
+/// (stagger) A stagger numbers only the children with an `enter`, on a
+/// surface's first frame (set L's grid reopened with a plain box first)
+/// and mounting into a surface shown before alike: a child without one,
+/// drawn at rest at once, takes no turn, so the first child with an
+/// `enter` takes the first. One leaving its pose a turn late, or before
+/// its turn, still fails.
 #[test]
-fn stagger_numbers_only_entering_children_on_a_surfaces_first_frame() {
+fn stagger_numbers_only_entering_children() {
     let sc = scenario("");
     let build = |starts: [u32; 3], new_surface: bool| {
         let mut t = staggered(|n| starts[n]);
@@ -3383,43 +3384,36 @@ fn stagger_numbers_only_entering_children_on_a_surfaces_first_frame() {
         t.seal();
         t
     };
-    // A new surface: c1 and c2 take the first two turns.
-    let t = build([1, 1, 3], true);
-    let r = check(&sc, &t);
-    assert_eq!(
-        status(&r, CheckId::Stagger),
-        Status::Pass,
-        "{}",
-        show(&r, &t)
-    );
-    // Counted after the plain box, they start a turn late.
-    let t = build([1, 3, 5], true);
-    let r = check(&sc, &t);
-    assert!(
-        r.failures(CheckId::Stagger)
-            .iter()
-            .any(|f| f.key.as_deref() == Some("c1") && f.msg.starts_with("start")),
-        "{}",
-        show(&r, &t)
-    );
-    // Mounting into a surface shown before, the box keeps its turn.
-    let t = build([1, 2, 4], false);
-    let r = check(&sc, &t);
-    assert_eq!(
-        status(&r, CheckId::Stagger),
-        Status::Pass,
-        "{}",
-        show(&r, &t)
-    );
-    let t = build([1, 1, 2], false);
-    let r = check(&sc, &t);
-    assert!(
-        r.failures(CheckId::Stagger)
-            .iter()
-            .any(|f| f.key.as_deref() == Some("c2") && f.msg.starts_with("start")),
-        "{}",
-        show(&r, &t)
-    );
+    let fails = |starts: [u32; 3], new_surface: bool, key: &str| {
+        let t = build(starts, new_surface);
+        let r = check(&sc, &t);
+        assert!(
+            r.failures(CheckId::Stagger)
+                .iter()
+                .any(|f| f.key.as_deref() == Some(key) && f.msg.starts_with("start")),
+            "{starts:?} new surface {new_surface}: {}",
+            show(&r, &t)
+        );
+    };
+    // c1 and c2 take the first two turns: on a new surface counted from
+    // its first frame (ticks 1 and 3), on a shown one from the tick
+    // before the batch (ticks 1 and 2).
+    for (starts, new_surface) in [([1, 1, 3], true), ([1, 1, 2], false)] {
+        let t = build(starts, new_surface);
+        let r = check(&sc, &t);
+        assert_eq!(
+            status(&r, CheckId::Stagger),
+            Status::Pass,
+            "{starts:?} new surface {new_surface}: {}",
+            show(&r, &t)
+        );
+    }
+    // Counted after the plain box, c1 starts a turn late.
+    fails([1, 3, 5], true, "c1");
+    fails([1, 2, 4], false, "c1");
+    // c2 leaving with c1, before its turn, is early.
+    fails([1, 1, 1], true, "c2");
+    fails([1, 1, 1], false, "c2");
 }
 
 /// (eval-finish, blind set L's l-app-grid-stagger) Children waiting for
