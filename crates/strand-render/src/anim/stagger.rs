@@ -4,7 +4,10 @@
 //!
 //! Children that start their `enter` together (created in the same diff,
 //! or shown with their surface) are numbered in child order when the
-//! first of them is drawn. Child `i` holds at its enter pose for `i ·
+//! first of them is drawn, counting only those with an `enter` (a pose
+//! that sets something or a preset; decisions.md stagger): a child with
+//! none plays nothing, is drawn at rest at once and takes no turn. Child
+//! `i` holds at its enter pose for `i ·
 //! stagger`, then plays it as usual. A later batch starts its own count.
 //! A step is capped at [`MAX_STEP`]. `reduced_motion` (and frames with no
 //! clock) show every child at once, as they do every pose.

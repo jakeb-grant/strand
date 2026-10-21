@@ -44,6 +44,7 @@ pub(crate) use motion::Extents;
 use motion::{PropMotion, decode, encode, glow_color};
 pub use pages::PageSwap;
 pub(crate) use pages::slide as page_slide;
+use pose::has_enter;
 pub(crate) use pose::{exit_pose, is_pose, pose_props};
 
 /// Props that spring between values; the others snap.
@@ -772,7 +773,10 @@ impl Animator {
     }
 
     /// (M4) If `node` is about to enter under a parent with `stagger:`,
-    /// numbers it and the siblings entering with it ([`stagger`]).
+    /// numbers it and the siblings entering with it ([`stagger`]): only
+    /// those with an `enter` (a pose that sets something, a preset, or a
+    /// page's slide) take a turn (stagger); a child with none plays
+    /// nothing, is drawn at rest at once and shifts no one's turn.
     /// Called before [`Animator::paint`].
     pub fn stagger(&mut self, tree: &SceneTree, node: &Node, scope: &TokenScope<'_>) {
         if self.snapping() || !self.enter.contains(&node.id) || self.staggers.planned(node.id) {
@@ -789,12 +793,12 @@ impl Animator {
             Some(PropValue::Duration(d)) if !d.is_zero() => *d,
             _ => return,
         };
-        let enter = &self.enter;
+        let (enter, poses) = (&self.enter, &self.poses);
         let entering = parent
             .children
             .iter()
             .copied()
-            .filter(|c| enter.contains(c));
+            .filter(|c| enter.contains(c) && (poses.contains_key(c) || has_enter(tree, *c)));
         let entering: Vec<NodeId> = entering.collect();
         self.staggers.plan(entering.into_iter(), step, self.time);
     }

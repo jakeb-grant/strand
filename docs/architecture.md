@@ -812,6 +812,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     `Hidden`, `TextDrawn`; a text's `fit` and `ink`, and (eval-r3)
     `overhang`, how far the ink of the layout it drew reaches past that
     layout's own box on the left and right), `OffsetParts`, `HeldText`;
+    (stagger) `enter_of(&SceneTree, NodeId) -> Option<PropValue>`, a
+    node's `enter` read through its token scope as `anim::pose::has_enter`
+    reads it, so the sandbox numbers a stagger's children as render does;
     (eval-coverage) `FrameTrace::fade`, a theme swap's crossfade weight
     while one plays, and `NodeTrace::paint`, a `NodePaint` read from the
     display items the node added itself (`fills` and `borders` as

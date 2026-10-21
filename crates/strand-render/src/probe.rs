@@ -44,6 +44,17 @@ use vello_cpu::kurbo;
 
 use crate::PaintTimes;
 
+/// (stagger) Node `id`'s `enter` as render reads it: its value through
+/// its tokens (anim/pose.rs `has_enter`, which decides whether a
+/// staggered container numbers it), so the sandbox reads a pose or preset
+/// given by a token as the product does.
+pub fn enter_of(tree: &crate::SceneTree, id: NodeId) -> Option<strand_scene::PropValue> {
+    let v = tree.get(id)?.get(strand_scene::Prop::Enter)?;
+    let scopes = crate::flatten::scope_tables(tree, id);
+    let scope = strand_scene::TokenScope::new(&scopes);
+    scope.resolve(v).map(std::borrow::Cow::into_owned)
+}
+
 /// One painted frame of one surface.
 #[derive(Clone, Debug)]
 pub struct FrameTrace {

@@ -1,0 +1,250 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "stagger-plain-turn"
+verdict good
+note "New regression (stagger review), restructured so each batch runs to its rest. Read with explain: into the shown bar the plain #plain, #nest and #head are at rest from their first frame and take no turn; the keyed rows and #preset (popin 0.8) start at 0, 40, 80 and 120 ms (#preset let go at k8, due 120 ms); the later batch's #latebox starts at its first frame k22 beside the plain #plainlate, at rest there; #cutbox's enter is cut by a mark on its first frame k36 and plays on (opacity 0.14, 0.39, ...); vanish passes it (the old pop-in rest read k36 as its own rest)."
+date 2026-10-21
+rev "65b4a3dc+changes"
+approver "claude"
+scenario 22639547a36f0e16
+seal d6c819f8c3f99970
+S1 0 - "bar Top"
+N0 "head|shell.strand:7:5|[Mock | DP-1]#0" "box#head"
+N1 "list|shell.strand:6:3|[Mock | DP-1]#0" "row#list"
+N2 "|shell.strand:4:1|[Mock | DP-1]#0" "bar@shell.strand:4"
+N3 "inner|shell.strand:17:9|[Mock | DP-1]#0" "box#inner"
+N4 "nest|shell.strand:16:7|[Mock | DP-1]#3" "row#nest"
+N5 "plain|shell.strand:9:7|[Mock | DP-1]#1" "box#plain"
+N6 "preset|shell.strand:19:7|[Mock | DP-1]#2" "box#preset"
+N7 "|shell.strand:11:9|[Mock | DP-1][one]#0" "row@shell.strand:11"
+N8 "|shell.strand:11:9|[Mock | DP-1][three]#2" "row@shell.strand:11"
+N9 "|shell.strand:11:9|[Mock | DP-1][two]#1" "row@shell.strand:11"
+N10 "|shell.strand:12:11|[Mock | DP-1][one]#0" "box@shell.strand:12"
+N11 "|shell.strand:13:11|[Mock | DP-1][one]#0" "text(\"one\")"
+N12 "|shell.strand:12:11|[Mock | DP-1][two]#0" "box@shell.strand:12"
+N13 "|shell.strand:13:11|[Mock | DP-1][two]#0" "text(\"two\")"
+N14 "|shell.strand:12:11|[Mock | DP-1][three]#0" "box@shell.strand:12"
+N15 "|shell.strand:13:11|[Mock | DP-1][three]#0" "text(\"three\")"
+N16 "latebox|shell.strand:23:7|[Mock | DP-1]#4" "box#latebox"
+N17 "plainlate|shell.strand:22:7|[Mock | DP-1]#3" "box#plainlate"
+N18 "cutbox|shell.strand:26:7|[Mock | DP-1]#5" "box#cutbox"
+k0 p1
+s1 z=400,30
+n0 x=10 y=9 w=20 h=12 ord=2 bg=00ff00ff
+n1 x=0 y=0 w=400 h=30 ord=1
+n2 x=0 y=0 w=400 h=30 bg=faf9ffff
+k1
+n3 x=176 y=11 w=8 h=8 op=37 ord=10 bg=0000ffff
+n4 x=176 y=11 w=8 h=8 ord=9
+n5 x=36 y=10 w=10 h=10 ord=3 bg=888888ff
+n6 x=190 y=10 w=10 h=10 op=0 sc=0.8,0.8 hid=opacity0 ord=11
+n7 x=52 y=12 w=33 h=15 op=37 ord=4
+n8 x=129 y=14 w=41 h=15 op=0 hid=opacity0 ord=8
+n9 x=91 y=14 w=32 h=15 op=0 hid=opacity0 ord=7
+n10 x=52 y=15 w=8 h=8 op=37 ord=5 bg=ff0000ff
+n11 x=63 y=12 w=22 h=15 op=37 txt=S ord=6 ink=63,16,22,8 fg=ffffffff gl=["one"]
+k2
+n3 op=98
+n7 y=10 op=98
+n10 y=13 op=98
+n11 y=10 op=98 ink=63,14,22,8
+k3
+n3 op=151 ord=12
+n4 ord=11
+n6 ord=13
+n7 y=8 op=151
+n8 ord=10
+n9 y=12 op=37 hid=-
+n10 y=12 op=151
+n11 y=8 op=151 ink=63,12,22,8
+n12 x=91 y=15 w=8 h=8 op=37 ord=8 bg=ff0000ff
+n13 x=102 y=12 w=21 h=15 op=37 txt=S ord=9 ink=102,14,20,10 fg=ffffffff gl=["two"]
+k4
+n3 op=190
+n7 op=190
+n9 y=10 op=98
+n10 y=11 op=190
+n11 op=190
+n12 y=13 op=98
+n13 y=10 op=98 ink=102,12,20,10
+k5
+n3 op=216 ord=14
+n4 ord=13
+n6 ord=15
+n7 y=7 op=216
+n8 y=12 op=37 hid=-
+n9 y=8 op=151
+n10 op=216
+n11 y=7 op=216 ink=63,11,22,8
+n12 y=12 op=151
+n13 y=8 op=151 ink=102,10,20,10
+n14 x=129 y=15 w=8 h=8 op=37 ord=11 bg=ff0000ff
+n15 x=140 y=12 w=30 h=15 op=37 txt=S ord=12 ink=140,13,30,11 fg=ffffffff gl=["three"]
+k6
+n3 op=232
+n7 op=232
+n8 y=10 op=98
+n9 op=190
+n10 op=232
+n11 op=232
+n12 y=11 op=190
+n13 op=190
+n14 y=13 op=98
+n15 y=10 op=98 ink=140,11,30,11
+k7
+n3 op=241
+n7 op=241
+n8 y=8 op=151
+n9 y=7 op=216
+n10 op=241
+n11 op=241
+n12 op=216
+n13 y=7 op=216 ink=102,9,20,10
+n14 y=12 op=151
+n15 y=8 op=151 ink=140,9,30,11
+k8
+n3 op=247
+n6 v=190.734375,10.734375,8.515625,8.515625 op=37 sc=0.852,0.852 hid=- bg=ffff00ff
+n7 y=8 op=247
+n8 op=190
+n9 op=232
+n10 op=247
+n11 y=8 op=247 ink=63,12,22,8
+n12 op=232
+n13 op=232
+n14 y=11 op=190
+n15 op=190
+k9
+n3 op=251
+n6 v=190.359375,10.359375,9.28125,9.28125 op=98 sc=0.928,0.928
+n7 op=251
+n8 y=7 op=216
+n9 op=241
+n10 op=251
+n11 op=251
+n12 op=241
+n13 op=241
+n14 op=216
+n15 y=7 op=216 ink=140,8,30,11
+k10
+n3 op=253
+n6 v=190.109375,10.109375,9.78125,9.78125 op=151 sc=0.978,0.978
+n7 op=253
+n8 op=232
+n9 y=8 op=247
+n10 op=253
+n11 op=253
+n12 op=247
+n13 y=8 op=247 ink=102,10,20,10
+n14 op=232
+n15 op=232
+k11
+n3 op=254
+n6 v=d op=190 sc=1,1
+n7 op=254
+n8 op=241
+n9 op=251
+n10 op=254
+n11 op=254
+n12 op=251
+n13 op=251
+n14 op=241
+n15 op=241
+k12
+n6 v=189.96875,9.96875,10.0625,10.0625 op=216 sc=1.006,1.006
+n8 y=8 op=247
+n9 op=253
+n12 op=253
+n13 op=253
+n14 op=247
+n15 y=8 op=247 ink=140,9,30,11
+k13
+n3 op=255
+n6 v=189.984375,9.984375,10.046875,10.046875 op=232 sc=1.005,1.005
+n7 op=255
+n8 op=251
+n9 op=254
+n10 op=255
+n11 op=255
+n12 op=254
+n13 op=254
+n14 op=251
+n15 op=251
+k14
+n6 v=189.984375,9.984375,10.03125,10.03125 op=241 sc=1.002,1.002
+n8 op=253
+n14 op=253
+n15 op=253
+k15
+n6 v=190,10,10.015625,10.015625 op=247 sc=1.001,1.001
+n8 op=254
+n9 op=255
+n12 op=255
+n13 op=255
+n14 op=254
+n15 op=254
+k16
+n6 v=d op=251 sc=1,1
+k17
+n6 op=253
+n8 op=255
+n14 op=255
+n15 op=255
+k18
+n6 op=254
+k19
+k20
+n6 op=255
+k21
+k22
+n16 x=224 y=10 w=10 h=10 op=37 ord=17 bg=ff00ffff
+n17 x=206 y=12 w=6 h=6 ord=16 bg=444444ff
+k23
+n16 x=221 op=98
+k24
+n16 x=219 op=151
+k25
+n16 x=218 op=190
+k26
+n16 op=216
+k27
+n16 op=232
+k28
+n16 op=241
+k29
+n16 op=247
+k30
+n16 op=251
+k31
+n16 op=253
+k32
+n16 op=254
+k33
+k34
+n16 op=255
+k35
+k36
+n18 x=234 y=10 w=10 h=10 op=37 ord=18 bg=00ffffff
+k37
+n18 op=98
+k38
+n18 op=151
+k39
+n18 op=190
+k40
+n18 op=216
+k41
+n18 op=232
+k42
+n18 op=241
+k43
+n18 op=247
+k44
+n18 op=251
+k45
+n18 op=253
+k46
+n18 op=254
+k47
+k48
+n18 op=255
+k49

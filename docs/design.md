@@ -510,6 +510,8 @@ Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compos
 | Jelly and squash while dragging (vector content) | `jelly: 0.4` | Trivial |
 | Pointer parallax and tilt | `parallax: 6px`; `tilt: 8deg` | Parallax trivial; true 3D tilt is GPU |
 
+`stagger` delays each child's `enter` this much after the one before, and it numbers only the children that have an `enter` (a pose block that sets something, or a preset), in child order, among those that start entering together: mounted into a surface already shown, or coming on screen with their surface's first frame. A child with no `enter` plays nothing, so it is drawn at rest at once and takes no turn: under `stagger: 30ms`, a plain header followed by three tiles with `enter: popin(0.8)` shows the header at once and starts the tiles at 0, 30 and 60 ms.
+
 ### Generative, data-driven and media
 
 | Primitive | Syntax | Cost |

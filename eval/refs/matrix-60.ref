@@ -26965,14 +26965,14 @@ k63
 k64
 ref "m.exit-fade__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario e574e88cd38ce441
-seal c18cc44d55a0e21d
+seal 13f8726571582773
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -27011,79 +27011,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n9 -
 n10 -
@@ -27092,63 +27089,63 @@ n12 op=218 hid=inert
 n13 y=13 op=218 hid=inert
 n14 y=13 op=218 hid=inert
 n15 op=218 hid=inert
-k31
+k29
 n12 op=157
 n13 y=15 op=157
 n14 y=15 op=157
 n15 op=157
-k32
+k30
 n12 op=104
 n13 y=16 op=104
 n14 y=16 op=104
 n15 op=104
-k33
+k31
 n12 op=65
 n13 op=65
 n14 op=65
 n15 op=65
-k34
+k32
 n12 op=39
 n13 op=39
 n14 op=39
 n15 op=39
-k35
+k33
 n12 op=23
 n13 op=23
 n14 op=23
 n15 op=23
-k36
+k34
 n12 op=14
 n13 op=14
 n14 op=14
 n15 op=14
-k37
+k35
 n12 op=8
 n13 op=8
 n14 op=8
 n15 op=8
-k38
+k36
 n12 op=4
 n13 op=4
 n14 op=4
 n15 op=4
-k39
+k37
 n12 op=2
 n13 op=2
 n14 op=2
 n15 op=2
-k40
+k38
 n12 op=1
 n13 op=1
 n14 op=1
 n15 op=1
-k41
-k42
+k39
+k40
 n12 op=0
 n13 op=0
 n14 op=0
 n15 op=0
-k43
+k41
 n0 ord=8
 n1 ord=11
 n3 ord=9
@@ -27158,7 +27155,7 @@ n12 hid=opacity0
 n13 hid=opacity0 ord=5 bg=-
 n14 hid=opacity0 ord=6 bg=-
 n15 -
-k44
+k42
 n0 x=116 ord=5
 n1 ord=8
 n3 ord=6
@@ -27167,25 +27164,25 @@ n7 ord=7
 n12 -
 n13 -
 n14 -
-k45
+k43
 n0 x=99
 n5 x=53 ink=53,10,27,11
-k46
+k44
 n0 x=87
 n5 x=41 ink=41,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
+k47
+k48
 k49
-k50
-k51
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k52
-k53
+k50
+k51
 ref "m.exit-fade__text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -31280,14 +31277,14 @@ k58
 k59
 ref "m.exit-height0__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 72cafbb8a4e57fb7
-seal 9e3ad63d2a767790
+seal 8ed9af3079a41005
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -31326,79 +31323,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n9 -
 n10 -
@@ -31407,15 +31401,15 @@ n12 y=10 h=12 hid=inert
 n13 y=13 op=218 hid=inert
 n14 y=13 op=218 hid=inert
 n15 hid=inert
-k31
+k29
 n12 y=13 h=6
 n13 y=15 op=157
 n14 y=15 op=157
-k32
+k30
 n12 y=15 h=2
 n13 y=16 op=104
 n14 y=16 op=104
-k33
+k31
 n0 ord=8
 n1 ord=11
 n3 ord=9
@@ -31425,22 +31419,22 @@ n12 y=16 h=0
 n13 op=65 ord=5
 n14 op=65 ord=6
 n15 -
-k34
+k32
 n13 op=39
 n14 op=39
-k35
+k33
 n13 op=23
 n14 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n0 x=123 ord=7
 n1 ord=10
 n3 ord=8
@@ -31449,27 +31443,27 @@ n7 ord=9
 n12 -
 n13 x=49 op=2 ord=4
 n14 x=63 op=2 ord=5
-k40
+k38
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 op=1
 n14 x=56 op=1
-k41
+k39
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38
 n14 x=52
-k42
+k40
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=0
 n14 x=50 op=0
-k43
+k41
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 hid=opacity0 bg=-
 n14 x=49 hid=opacity0 bg=-
-k44
+k42
 n0 x=102 ord=5
 n1 ord=8
 n3 ord=6
@@ -31477,25 +31471,25 @@ n5 x=56 ord=4 ink=56,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.exit-height0__text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -36289,14 +36283,14 @@ k63
 k64
 ref "m.exit-slide__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario e9850af5415bb0ac
-seal 0941e6c6624febff
+seal 29ecbffdae84a67b
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -36335,79 +36329,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n9 -
 n10 -
@@ -36416,63 +36407,63 @@ n12 x=38 op=218 hid=inert
 n13 y=13 op=218 hid=inert
 n14 y=13 op=218 hid=inert
 n15 x=38 op=218 hid=inert ink=38,10,11,10
-k31
+k29
 n12 x=41 op=157
 n13 y=15 op=157
 n14 y=15 op=157
 n15 x=41 op=157 ink=41,10,11,10
-k32
+k30
 n12 x=43 op=104
 n13 y=16 op=104
 n14 y=16 op=104
 n15 x=43 op=104 ink=43,10,11,10
-k33
+k31
 n12 x=44 op=65
 n13 op=65
 n14 op=65
 n15 x=44 op=65 ink=44,10,11,10
-k34
+k32
 n12 op=39
 n13 op=39
 n14 op=39
 n15 op=39
-k35
+k33
 n12 op=23
 n13 op=23
 n14 op=23
 n15 op=23
-k36
+k34
 n12 op=14
 n13 op=14
 n14 op=14
 n15 op=14
-k37
+k35
 n12 op=8
 n13 op=8
 n14 op=8
 n15 op=8
-k38
+k36
 n12 op=4
 n13 op=4
 n14 op=4
 n15 op=4
-k39
+k37
 n12 op=2
 n13 op=2
 n14 op=2
 n15 op=2
-k40
+k38
 n12 op=1
 n13 op=1
 n14 op=1
 n15 op=1
-k41
-k42
+k39
+k40
 n12 op=0
 n13 op=0
 n14 op=0
 n15 op=0
-k43
+k41
 n0 ord=8
 n1 ord=11
 n3 ord=9
@@ -36482,7 +36473,7 @@ n12 hid=opacity0
 n13 hid=opacity0 ord=5 bg=-
 n14 hid=opacity0 ord=6 bg=-
 n15 -
-k44
+k42
 n0 x=116 ord=5
 n1 ord=8
 n3 ord=6
@@ -36491,25 +36482,25 @@ n7 ord=7
 n12 -
 n13 -
 n14 -
-k45
+k43
 n0 x=99
 n5 x=53 ink=53,10,27,11
-k46
+k44
 n0 x=87
 n5 x=41 ink=41,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
+k47
+k48
 k49
-k50
-k51
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k52
-k53
+k50
+k51
 ref "m.exit-slide__text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -41597,14 +41588,14 @@ k49
 k50
 ref "m.flip-nested__stagger.60"
 verdict good
-note "eval-coverage-3: flip-nested's boxes now hold a 2 x 4 mark each (pad 2), a third level riding the glides; every block matches its reference node for node but for the four marks it adds (orders of the nodes both share kept), read cell by cell with a recording comparison"
-date 2026-10-19
-rev "a7965714+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 4c4d7883c24bc042
-seal 0e6037a227ab6965
+seal 36c97adcd4aa57f8
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -41654,7 +41645,7 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 n16 srf=2 x=6 y=16 w=168 h=12 ord=3
@@ -41671,54 +41662,51 @@ n26 srf=2 x=34 y=16 w=24 h=12 ord=9 bg=404060ff
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
 n16 w=189
 n17 x=19 ord=12
@@ -41731,7 +41719,7 @@ n23 x=34 ord=8
 n24 x=37 ord=6
 n25 x=13 ord=9
 n26 x=27 ord=4
-k19
+k17
 n10 w=231
 n16 w=219
 n17 x=35
@@ -41744,7 +41732,7 @@ n23 x=29
 n24 x=23
 n25 x=24
 n26 x=16
-k20
+k18
 n10 w=251
 n16 w=239
 n17 x=45
@@ -41757,7 +41745,7 @@ n23 x=26
 n24 x=14
 n25 x=31
 n26 x=9
-k21
+k19
 n10 w=260
 n16 w=248
 n17 x=50
@@ -41770,7 +41758,7 @@ n23 x=24
 n24 x=10
 n25 x=34
 n26 x=6
-k22
+k20
 n10 w=262
 n16 w=250
 n17 x=51
@@ -41781,26 +41769,26 @@ n22 x=39
 n24 x=9
 n25 x=35
 n26 x=5
-k23
+k21
 n18 x=36
 n22 x=38
-k24
+k22
 n10 w=261
 n16 w=249
 n20 x=8
 n24 x=10
 n25 x=34
 n26 x=6
-k25
+k23
 n10 w=260
 n16 w=248
 n17 x=50
 n21 x=52
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -41825,54 +41813,54 @@ n23 -
 n24 -
 n25 -
 n26 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -41880,25 +41868,25 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.flip-reorder.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -46883,14 +46871,14 @@ k49
 k50
 ref "m.flip-reorder__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 8e6a590756688de2
-seal 64c30879dc936a87
+seal be726a333335b60a
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -46941,7 +46929,7 @@ n13 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n14 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n15 srf=2 x=0 y=0 w=280 h=60
 n16 x=36 y=9 w=12 h=15 ord=4
-n17 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n17 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n18 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n19 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
@@ -46951,7 +46939,8 @@ n9 x=113
 n10 x=127
 n11 x=111
 n12 x=125
-n17 y=15 op=37 hid=- bg=ffff00ff
+n17 y=13 op=98
+n18 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=157
 n5 x=77 ink=77,10,27,11
@@ -46959,7 +46948,8 @@ n9 x=125
 n10 x=139
 n11 x=123
 n12 x=137
-n17 y=13 op=98
+n17 y=12 op=151
+n18 y=13 op=98
 k4
 n0 x=162
 n5 x=82 ink=82,10,27,11
@@ -46967,8 +46957,8 @@ n9 x=130
 n10 x=144
 n11 x=128
 n12 x=142
-n17 y=12 op=151
-n18 y=15 op=37 hid=- bg=00ffffff
+n17 op=190
+n18 y=12 op=151
 k5
 n0 x=163
 n5 x=83 ink=83,10,27,11
@@ -46976,14 +46966,14 @@ n9 x=131
 n10 x=145
 n11 x=129
 n12 x=143
-n17 op=190
-n18 y=13 op=98
-k6
 n17 op=216
-n18 y=12 op=151
-k7
-n17 op=232
 n18 op=190
+k6
+n17 op=232
+n18 op=216
+k7
+n17 op=241
+n18 op=232
 k8
 n0 x=162
 n5 x=82 ink=82,10,27,11
@@ -46991,69 +46981,64 @@ n9 x=130
 n10 x=144
 n11 x=128
 n12 x=142
-n17 op=241
-n18 op=216
-k9
 n17 op=247
-n18 op=232
-k10
-n17 op=251
 n18 op=241
-k11
-n17 op=253
+k9
+n17 op=251
 n18 op=247
-k12
-n17 op=254
+k10
+n17 op=253
 n18 op=251
-k13
+k11
+n17 op=254
 n18 op=253
-k14
-n17 op=255
+k12
 n18 op=254
-k15
-k16
+k13
+n17 op=255
+k14
 n18 op=255
-k17
-k18 p1,2
+k15
+k16 p1,2
 n9 x=135 ord=12
 n10 x=140 ord=10
 n11 x=133 ord=11
 n12 x=138 ord=9
 n14 w=201
-k19
+k17
 n9 x=143
 n10 x=135
 n11 x=141
 n12 x=133
 n14 w=231
-k20
+k18
 n9 x=148
 n10 x=132
 n11 x=146
 n12 x=130
 n14 w=251
-k21
+k19
 n9 x=150
 n10 x=130
 n11 x=148
 n12 x=128
 n14 w=260
-k22
+k20
 n9 x=151
 n11 x=149
 n14 w=262
-k23
+k21
 n9 x=150
 n11 x=148
-k24
+k22
 n14 w=261
-k25
+k23
 n14 w=260
+k24
+k25 p2
 k26
-k27 p2
-k28
-k29
-k30 p1
+k27
+k28 p1
 s2 -
 n0 x=157 ord=11
 n1 ord=14
@@ -47071,7 +47056,7 @@ n16 -
 n17 x=49 y=13 op=218 hid=inert ord=4
 n18 x=63 y=13 op=218 hid=inert ord=5
 n19 -
-k31
+k29
 n0 x=150
 n5 x=70 ink=70,10,27,11
 n9 x=138
@@ -47080,7 +47065,7 @@ n11 x=136
 n12 x=116
 n17 x=42 y=15 op=157
 n18 x=56 y=15 op=157
-k32
+k30
 n0 x=146
 n5 x=66 ink=66,10,27,11
 n9 x=134
@@ -47089,7 +47074,7 @@ n11 x=132
 n12 x=112
 n17 x=38 y=16 op=104
 n18 x=52 y=16 op=104
-k33
+k31
 n0 x=144
 n5 x=64 ink=64,10,27,11
 n9 x=132
@@ -47098,7 +47083,7 @@ n11 x=130
 n12 x=110
 n17 x=36 op=65
 n18 x=50 op=65
-k34
+k32
 n0 x=143
 n5 x=63 ink=63,10,27,11
 n9 x=131
@@ -47107,7 +47092,7 @@ n11 x=129
 n12 x=109
 n17 x=35 op=39
 n18 x=49 op=39
-k35
+k33
 n0 x=144
 n5 x=64 ink=64,10,27,11
 n9 x=132
@@ -47116,29 +47101,29 @@ n11 x=130
 n12 x=110
 n17 x=36 op=23
 n18 x=50 op=23
-k36
+k34
 n17 op=14
 n18 op=14
-k37
+k35
 n17 op=8
 n18 op=8
-k38
+k36
 n17 op=4
 n18 op=4
-k39
+k37
 n17 op=2
 n18 op=2
-k40
+k38
 n17 op=1
 n18 op=1
-k41
-k42
+k39
+k40
 n17 op=0
 n18 op=0
-k43
+k41
 n17 hid=opacity0 bg=-
 n18 hid=opacity0 bg=-
-k44
+k42
 n0 x=137 ord=9
 n1 ord=12
 n3 ord=10
@@ -47150,45 +47135,45 @@ n11 x=123 ord=7
 n12 x=103 ord=5
 n17 -
 n18 -
-k45
+k43
 n0 x=126
 n5 x=46 ink=46,10,27,11
 n9 x=114
 n10 x=94
 n11 x=112
 n12 x=92
-k46
+k44
 n0 x=119
 n5 x=39 ink=39,10,27,11
 n9 x=107
 n10 x=87
 n11 x=105
 n12 x=85
-k47
+k45
 n0 x=116
 n5 x=36 ink=36,10,27,11
 n9 x=104
 n10 x=84
 n11 x=102
 n12 x=82
-k48
+k46
 n0 x=115
 n5 x=35 ink=35,10,27,11
 n9 x=103
 n10 x=83
 n11 x=101
 n12 x=81
-k49
-k50
+k47
+k48
 n0 x=116
 n5 x=36 ink=36,10,27,11
 n9 x=104
 n10 x=84
 n11 x=102
 n12 x=82
+k49
+k50
 k51
-k52
-k53
 ref "m.flip-reorder__text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -50413,14 +50398,14 @@ k51
 k52
 ref "m.image__stagger.60"
 verdict good
-note "stand-in-fit follow-up at integration-r7 part 2: only paint.images (im) changed, on the ticks the whole-source stand-in draws: it is now a fill decode in the source's own shape, so its size and placement differ by the rounding the old cover decode carried"
-date 2026-10-20
-rev "c0222f5e+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 74c697658a2ca43f
-seal 1d61906f9b942707
+seal 8043f28bf163c6e3
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -50459,60 +50444,57 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=10 w=16 h=12 ord=4
-n13 x=58 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=58 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=72 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=10 w=16 h=12 ord=5 im=0,0,16,12@16,12
 k2 p1
 n0 x=114
 n5 x=68 ink=68,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=126
 n5 x=80 ink=80,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=132
 n5 x=86 ink=86,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=133
 n5 x=87 ink=87,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=132
 n5 x=86 ink=86,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p1,2
+k15
+k16 p1,2
 n0 x=136
 n5 x=90 ink=90,10,27,11
 n10 w=201
@@ -50520,7 +50502,7 @@ n12 w=20
 n13 x=62
 n14 x=76
 n15 w=20 im=0,-0.671875,20,13.328125@20,13
-k19
+k17
 n0 x=141
 n5 x=95 ink=95,10,27,11
 n10 w=231
@@ -50528,7 +50510,7 @@ n12 w=25
 n13 x=67
 n14 x=81
 n15 w=25 im=0,-2.328125,25,16.671875@20,13
-k20
+k18
 n0 x=144
 n5 x=98 ink=98,10,27,11
 n10 w=251
@@ -50536,7 +50518,7 @@ n12 w=28
 n13 x=70
 n14 x=84
 n15 w=28 im=0,-3.328125,28,18.671875@20,13
-k21
+k19
 n0 x=146
 n5 x=100 ink=100,10,27,11
 n10 w=260
@@ -50544,19 +50526,19 @@ n12 w=30
 n13 x=72
 n14 x=86
 n15 w=30 im=0,-4,30,20@20,13
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
-k26
+k24
 n15 im=0,0,30,12@30,12
-k27 p2
-k28
-k29
-k30 p1
+k25 p2
+k26
+k27
+k28 p1
 s2 -
 n0 x=137 ord=7
 n1 ord=10
@@ -50570,54 +50552,54 @@ n12 -
 n13 x=63 y=13 op=218 hid=inert ord=4
 n14 x=77 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=123
 n5 x=77 ink=77,10,27,11
 n13 x=49 y=15 op=157
 n14 x=63 y=15 op=157
-k32
+k30
 n0 x=114
 n5 x=68 ink=68,10,27,11
 n13 x=40 y=16 op=104
 n14 x=54 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n13 op=23
 n14 op=23
-k36
+k34
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=14
 n14 x=50 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -50625,25 +50607,25 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.jelly.60"
 verdict good
 note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
@@ -65572,14 +65554,14 @@ k61
 k62
 ref "m.popup-content-height__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario f5a61c377ff74208
-seal ce885a4a42790d46
+seal 76571e32738e7b49
 S1 0 - "bar Top"
-S2 1 42 "popup#pop"
+S2 1 40 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -65618,83 +65600,82 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=50
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 s2 z=280,80
 n10 w=201 h=52
 n11 h=80
-k19
+k17
 n10 w=231 h=56
-k20
+k18
 n10 w=251 h=60
-k21
+k19
 n10 w=260 h=65
-k22
+k20
 n10 w=262 h=69
-k23
+k21
 n10 h=72
-k24
+k22
 n10 w=261 h=75
-k25
+k23
 n10 w=260 h=77
-k26
+k24
 n10 h=78
-k27
+k25
 n10 h=79
-k28
+k26
 n10 h=80
+k27
+k28
 k29
 k30
 k31
@@ -65706,9 +65687,7 @@ k36
 k37
 k38
 k39
-k40
-k41
-k42 p1
+k40 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -65722,54 +65701,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k43
+k41
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k44
+k42
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k45
+k43
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k46
+k44
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k47
+k45
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k48
+k46
 n13 op=14
 n14 op=14
-k49
+k47
 n13 op=8
 n14 op=8
-k50
+k48
 n13 op=4
 n14 op=4
-k51
+k49
 n13 op=2
 n14 op=2
-k52
+k50
 n13 op=1
 n14 op=1
-k53
-k54
+k51
+k52
 n13 op=0
 n14 op=0
-k55
+k53
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k56
+k54
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -65777,25 +65756,25 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k57
+k55
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k58
+k56
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k59
+k57
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k60
+k58
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k61
-k62
+k59
+k60
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k61
+k62
 k63
-k64
-k65
 ref "m.reduced-motion.60"
 verdict good
 note "eval-false-alarms: the sandbox places the fixture's popup as the compositor does (strand-surface placement::popup_shift): centred under its anchor near the screen's left edge it would start at x -49, and the positioner's constraint shifts it onto the screen at x 0; only the popup's origin changed, every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
@@ -68868,14 +68847,14 @@ k60
 k61
 ref "m.reveal__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 3bebcec3e73f8674
-seal 2c6df42662ea3eb3
+seal bb6e90a63ce7ac1e
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -68914,79 +68893,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n9 -
 n10 -
@@ -68995,34 +68971,34 @@ n12 hid=inert
 n13 y=13 op=218 hid=inert
 n14 y=13 op=218 hid=inert
 n15 hid=inert
-k31
+k29
 n13 y=15 op=157
 n14 y=15 op=157
-k32
+k30
 n13 y=16 op=104
 n14 y=16 op=104
-k33
+k31
 n13 op=65
 n14 op=65
-k34
+k32
 n13 op=39
 n14 op=39
-k35
+k33
 n13 op=23
 n14 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n0 x=123 ord=7
 n1 ord=10
 n3 ord=8
@@ -69032,22 +69008,22 @@ n12 -
 n13 x=49 op=1 ord=4
 n14 x=63 op=1 ord=5
 n15 -
-k41
+k39
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42
 n14 x=56
-k42
+k40
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 op=0
 n14 x=52 op=0
-k43
+k41
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 hid=opacity0 bg=-
 n14 x=50 hid=opacity0 bg=-
-k44
+k42
 n0 x=102 ord=5
 n1 ord=8
 n3 ord=6
@@ -69055,25 +69031,25 @@ n5 x=56 ord=4 ink=56,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.roll-text.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -76559,14 +76535,14 @@ k40
 n6 x=112 v=d
 ref "m.shared-morph__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 0a6e51a9bdb8a620
-seal d78f75940593e841
+seal 8a7f1bc37e35e23b
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -76608,103 +76584,100 @@ n10 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n11 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n12 srf=2 x=0 y=0 w=280 h=60
 n13 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 sc=2.11,0.753 ord=4
-n14 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n14 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n15 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n16 x=98.875 y=27.859375 w=12 h=15 v=92.34375,29.84375,25.3125,11.296875 txt=S ord=5 ink=99,29,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n13 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 sc=1.54,0.88
-n14 y=15 op=37 hid=- bg=ffff00ff
+n14 y=13 op=98
+n15 y=15 op=37 hid=- bg=00ffffff
 n16 x=66.59375 y=18.171875 v=63.765625,18.90625,18.484375,13.203125 ink=67,19,11,10
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
 n13 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 sc=1.166,0.963
-n14 y=13 op=98
+n14 y=12 op=151
+n15 y=13 op=98
 n16 x=45.40625 y=11.828125 v=44,12.28125,13.984375,14.453125 ink=45,13,11,10
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
 n13 x=36.03125 y=9.015625 v=36,9,12,15 sc=1.001,1
-n14 y=12 op=151
-n15 y=15 op=37 hid=- bg=00ffffff
+n14 op=190
+n15 y=12 op=151
 n16 x=36.03125 y=9.015625 v=36,9,12,15 ink=36,10,11,10
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
 n13 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 sc=0.958,1.009
-n14 op=190
-n15 y=13 op=98
+n14 op=216
+n15 op=190
 n16 x=33.640625 y=8.296875 v=34.25,7.9375,11.5,15.140625 ink=34,9,11,10
 k6
 n13 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375 sc=0.965,1.008
-n14 op=216
-n15 y=12 op=151
+n14 op=232
+n15 op=216
 n16 x=34.03125 y=8.40625 v=34.203125,7.9375,11.578125,15.109375
 k7
 n13 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 sc=0.982,1.004
-n14 op=232
-n15 op=190
+n14 op=241
+n15 op=232
 n16 x=34.96875 y=8.6875 v=35.109375,8.96875,11.78125,15.0625 ink=35,10,11,10
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
 n13 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 sc=0.994,1.001
-n14 op=241
-n15 op=216
+n14 op=247
+n15 op=241
 n16 x=35.640625 y=8.890625 v=36.03125,8.984375,11.921875,15.015625 ink=36,10,11,10
 k9
 n13 x=35.96875 y=8.984375 v=36,9,12,15 sc=0.999,1
-n14 op=247
-n15 op=232
+n14 op=251
+n15 op=247
 n16 x=35.96875 y=8.984375 v=36,9,12,15
 k10
 n13 x=36.0625 y=9.015625 v=36,9,12.015625,15 sc=1.001,1
-n14 op=251
-n15 op=241
+n14 op=253
+n15 op=251
 n16 x=36.0625 y=9.015625 v=36,9,12.015625,15
 k11
-n14 op=253
-n15 op=247
+n14 op=254
+n15 op=253
 k12
 n13 x=36.03125 v=36,9,12,15
-n14 op=254
-n15 op=251
+n15 op=254
 n16 x=36.03125 v=36,9,12,15
 k13
 n13 x=36.015625 y=9 sc=1,1
-n15 op=253
+n14 op=255
 n16 x=36.015625 y=9
 k14
 n13 x=36 v=d
-n14 op=255
-n15 op=254
+n15 op=255
 n16 x=36 v=d
 k15
-k16
-n15 op=255
-k17
-k18 p2
+k16 p2
 n11 w=201
-k19
+k17
 n11 w=231
-k20
+k18
 n11 w=251
-k21
+k19
 n11 w=260
-k22
+k20
 n11 w=262
-k23
-k24
+k21
+k22
 n11 w=261
-k25
+k23
 n11 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -76719,66 +76692,66 @@ n13 -
 n14 x=49 y=13 op=218 hid=inert ord=4
 n15 x=63 y=13 op=218 hid=inert ord=5
 n16 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n6 x=81.40625 y=27.828125 v=84.234375,27.09375,23.515625,11.796875 sc=0.784,1.18
 n14 x=42 y=15 op=157
 n15 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n6 x=102.59375 y=34.171875 v=104,33.71875,28.015625,10.546875 sc=0.934,1.055
 n14 x=38 y=16 op=104
 n15 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n6 x=111.96875 y=36.984375 v=112,37,30,10 sc=1,1
 n14 x=36 op=65
 n15 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n6 x=114.359375 y=37.703125 v=113.75,38.0625,30.5,9.859375 sc=1.017,0.986
 n14 x=35 op=39
 n15 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n6 x=113.96875 y=37.59375 v=113.796875,38.0625,30.421875,9.890625 sc=1.014,0.988
 n14 x=36 op=23
 n15 x=50 op=23
-k36
+k34
 n6 x=113.03125 y=37.3125 v=112.890625,37.03125,30.21875,9.9375 sc=1.007,0.994
 n14 op=14
 n15 op=14
-k37
+k35
 n6 x=112.359375 y=37.109375 v=111.96875,37.015625,30.078125,9.984375 sc=1.003,0.998
 n14 op=8
 n15 op=8
-k38
+k36
 n6 x=112.03125 y=37.015625 v=112,37,30,10 sc=1,1
 n14 op=4
 n15 op=4
-k39
+k37
 n6 x=111.9375 y=36.984375 v=112,37,29.984375,10
 n14 op=2
 n15 op=2
-k40
+k38
 n14 op=1
 n15 op=1
-k41
+k39
 n6 x=111.96875 v=112,37,30,10
-k42
+k40
 n6 x=111.984375 y=37
 n14 op=0
 n15 op=0
-k43
+k41
 n6 x=112 v=d
 n14 hid=opacity0 bg=-
 n15 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -76787,25 +76760,25 @@ n6 ord=9
 n8 ord=7
 n14 -
 n15 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.size-spring.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -80397,14 +80370,14 @@ k63
 k64
 ref "m.size-spring__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 548126b48e204d3f
-seal 5a0e9ab5d0e4795b
+seal f2e2240ef0f721cb
 S1 0 - "bar Top"
-S2 1 44 "popup#pop"
+S2 1 42 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -80443,89 +80416,88 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=186
-k19
+k17
 n10 w=200
-k20
+k18
 n10 w=216
-k21
+k19
 n10 w=231
-k22
+k20
 n10 w=243
-k23
+k21
 n10 w=252
-k24
+k22
 n10 w=258
-k25
+k23
 n10 w=262
+k24
+n10 w=263
+k25
+n10 w=264
 k26
 n10 w=263
 k27
-n10 w=264
 k28
-n10 w=263
-k29
-k30
 n10 w=262
-k31
+k29
 n10 w=261
+k30
+k31
+n10 w=260
 k32
 k33
-n10 w=260
 k34
 k35
 k36
@@ -80534,9 +80506,7 @@ k38
 k39
 k40
 k41
-k42
-k43
-k44 p1
+k42 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -80550,54 +80520,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k45
+k43
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k46
+k44
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k47
+k45
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k48
+k46
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k49
+k47
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k50
+k48
 n13 op=14
 n14 op=14
-k51
+k49
 n13 op=8
 n14 op=8
-k52
+k50
 n13 op=4
 n14 op=4
-k53
+k51
 n13 op=2
 n14 op=2
-k54
+k52
 n13 op=1
 n14 op=1
-k55
-k56
+k53
+k54
 n13 op=0
 n14 op=0
-k57
+k55
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k58
+k56
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -80605,25 +80575,25 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k59
+k57
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k60
+k58
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k61
+k59
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k62
+k60
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k63
-k64
+k61
+k62
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k63
+k64
 k65
-k66
-k67
 ref "m.size-spring__text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -81099,14 +81069,14 @@ k49
 k50
 ref "m.stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 2fbcd4c05b260162
-seal 9de277cb1112f67f
+seal 37c2af499dab62ef
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -81145,79 +81115,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -81231,54 +81198,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -81286,35 +81253,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__blur.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 98a9f32856a93e24
-seal 6022743feb6c4b41
+seal 09057a33e402d0a8
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -81353,79 +81320,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -81439,54 +81403,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -81494,35 +81458,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__clip.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 2b4996ffa1921ab3
-seal 432074069dfcfb47
+seal 8ad4d8eccdcff301
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -81561,79 +81525,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -81647,54 +81608,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -81702,35 +81663,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__colour-shift.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 02ef906d9e70c212
-seal 686bf808f44f6f02
+seal 53e9eed8619b6bb7
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -81769,91 +81730,88 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4 bg=3366ffff
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p1,2
+k15
+k16 p1,2
 n10 w=201
 n12 bg=4f7decff
-k19
+k17
 n10 w=231
 n12 bg=7f9bcaff
-k20
+k18
 n10 w=251
 n12 bg=aaafa6ff
-k21
+k19
 n10 w=260
 n12 bg=c9bb85ff
-k22
+k20
 n10 w=262
 n12 bg=dec269ff
-k23
+k21
 n12 bg=ecc652ff
-k24
+k22
 n10 w=261
 n12 bg=f4c93eff
-k25
+k23
 n10 w=260
 n12 bg=f9ca2eff
-k26
+k24
 n12 bg=fbcb22ff
-k27
+k25
 n12 bg=fdcb17ff
-k28
+k26
 n12 bg=fecc0fff
-k29
+k27
 n12 bg=ffcc00ff
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -81867,54 +81825,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -81922,35 +81880,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__gpu.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario cf8873caf3f6490a
-seal 1dc666f8fc53f617
+seal 473823a91a026445
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -81989,79 +81947,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -82075,54 +82030,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -82130,35 +82085,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__jelly.60"
 verdict good
-note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
-date 2026-10-20
-rev "c8b20d06+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario e107c9aa9c7c99b6
-seal a88abb2ba3bdfaa5
+seal 8eb7658d3a00c564
 S1 0 - "bar Top"
-S2 1 98 "popup#pop"
+S2 1 96 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -82197,280 +82152,277 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
+k15
 k17
-k19
 n0 ord=7
 n5 ord=6
 n12 x=44.171875 v=44,9,12,15 ord=8
 n13 ord=4
 n14 ord=5
 n15 x=44.171875 v=44,9,12,15 ord=9 ink=44,10,11,10
-k20
+k18
 n12 x=52.328125 v=51.984375,9.015625,12.03125,14.96875
 n15 x=52.328125 v=51.984375,9.015625,12.03125,14.96875 ink=52,10,11,10
-k21
+k19
 n12 x=60.5 v=60.9375,9.078125,12.125,14.84375
 n15 x=60.5 v=60.9375,9.078125,12.125,14.84375 ink=61,10,11,10
-k22
+k20
 n12 x=68.671875 v=68.859375,9.171875,12.296875,14.640625
 n15 x=68.671875 v=68.859375,9.171875,12.296875,14.640625 ink=69,10,11,10
-k23
+k21
 n12 x=76.828125 v=76.75,9.3125,12.515625,14.390625
 n15 x=76.828125 v=76.75,9.3125,12.515625,14.390625 ink=77,10,11,10
-k24
+k22
 n12 x=85 v=84.625,9.453125,12.765625,14.09375
 n15 x=85 v=84.625,9.453125,12.765625,14.09375 ink=85,10,11,10
-k25
+k23
 n12 x=93.171875 v=92.484375,9.59375,13.03125,13.8125
 n15 x=93.171875 v=92.484375,9.59375,13.03125,13.8125 ink=93,10,11,10
-k26
+k24
 n12 x=101.328125 v=100.359375,9.71875,13.28125,13.546875
 n15 x=101.328125 v=100.359375,9.71875,13.28125,13.546875 ink=101,10,11,10
-k27
+k25
 n12 x=109.5 v=109.25,9.84375,13.515625,13.3125
 n15 x=109.5 v=109.25,9.84375,13.515625,13.3125 ink=110,10,11,10
-k28
+k26
 n12 x=117.671875 v=117.140625,9.9375,13.703125,13.140625
 n15 x=117.671875 v=117.140625,9.9375,13.703125,13.140625 ink=118,10,11,10
-k29
+k27
 n12 x=125.828125 v=125.078125,10,13.84375,13
 n15 x=125.828125 v=125.078125,10,13.84375,13 ink=126,10,11,10
-k30
+k28
 n12 x=108.5 v=107.046875,10.03125,13.921875,12.9375
 n15 x=108.5 v=107.046875,10.03125,13.921875,12.9375 ink=108,10,11,10
-k31
+k29
 n12 x=71.265625 v=69.984375,10.078125,14.015625,12.84375
 n15 x=71.265625 v=69.984375,10.078125,14.015625,12.84375 ink=71,10,11,10
-k32
+k30
 n12 x=46.84375 v=45.859375,10.1875,14.265625,12.609375
 n15 x=46.84375 v=45.859375,10.1875,14.265625,12.609375 ink=47,10,11,10
-k33
+k31
 n12 x=36.03125 v=34.703125,10.328125,14.578125,12.34375
 n15 x=36.03125 v=34.703125,10.328125,14.578125,12.34375 ink=36,10,11,10
-k34
+k32
 n12 x=33.265625 v=31.578125,10.4375,14.828125,12.140625
 n15 x=33.265625 v=31.578125,10.4375,14.828125,12.140625 ink=33,10,11,10
-k35
+k33
 n12 x=33.71875 v=32.53125,10.46875,14.921875,12.0625
 n15 x=33.71875 v=32.53125,10.46875,14.921875,12.0625 ink=34,10,11,10
-k36
+k34
 n12 x=34.8125 v=33.578125,10.4375,14.828125,12.140625
 n15 x=34.8125 v=33.578125,10.4375,14.828125,12.140625 ink=35,10,11,10
-k37
+k35
 n12 x=35.59375 v=34.71875,10.3125,14.5625,12.359375
 n15 x=35.59375 v=34.71875,10.3125,14.5625,12.359375 ink=36,10,11,10
-k38
+k36
 n12 x=35.953125 v=34.921875,10.140625,14.140625,12.71875
 n15 x=35.953125 v=34.921875,10.140625,14.140625,12.71875
-k39
+k37
 n12 x=36.078125 v=35.171875,9.90625,13.640625,13.1875
 n15 x=36.078125 v=35.171875,9.90625,13.640625,13.1875
-k40
+k38
 n12 x=36.0625 v=35.4375,9.640625,13.109375,13.71875
 n15 x=36.0625 v=35.4375,9.640625,13.109375,13.71875
-k41
+k39
 n12 x=36.046875 v=35.703125,9.359375,12.59375,14.28125
 n15 x=36.046875 v=35.703125,9.359375,12.59375,14.28125
-k42
+k40
 n0 ord=9
 n5 ord=8
 n12 x=36 v=35.9375,9.078125,12.125,14.84375 ord=4
 n13 ord=6
 n14 ord=7
 n15 x=36 v=35.9375,9.078125,12.125,14.84375 ord=5
-k43
+k41
 n12 v=36.125,8.84375,11.75,15.328125
 n15 v=36.125,8.84375,11.75,15.328125
-k44
+k42
 n12 v=36.265625,8.65625,11.46875,15.703125
 n15 v=36.265625,8.65625,11.46875,15.703125
-k45
+k43
 n12 v=36.359375,8.515625,11.28125,15.953125
 n15 v=36.359375,8.515625,11.28125,15.953125
-k46
+k44
 n12 v=36.40625,8.453125,11.1875,16.09375
 n15 v=36.40625,8.453125,11.1875,16.09375
-k47
+k45
 n12 v=36.421875,8.4375,11.171875,16.125
 n15 v=36.421875,8.4375,11.171875,16.125
-k48
+k46
 n12 v=36.390625,8.46875,11.203125,16.0625
 n15 v=36.390625,8.46875,11.203125,16.0625
-k49
+k47
 n12 v=36.34375,8.53125,11.296875,15.9375
 n15 v=36.34375,8.53125,11.296875,15.9375
-k50
+k48
 n12 v=36.28125,8.625,11.421875,15.765625
 n15 v=36.28125,8.625,11.421875,15.765625
-k51
+k49
 n12 v=36.21875,8.71875,11.5625,15.5625
 n15 v=36.21875,8.71875,11.5625,15.5625
-k52
+k50
 n12 v=36.140625,8.828125,11.71875,15.359375
 n15 v=36.140625,8.828125,11.71875,15.359375
-k53
+k51
 n12 v=36.0625,8.921875,11.875,15.15625
 n15 v=36.0625,8.921875,11.875,15.15625
-k54
+k52
 n12 v=36,9,12.015625,14.984375
 n15 v=36,9,12.015625,14.984375
-k55
+k53
 n12 v=35.9375,9.078125,12.125,14.859375
 n15 v=35.9375,9.078125,12.125,14.859375
-k56
+k54
 n12 v=35.90625,9.125,12.203125,14.75
 n15 v=35.90625,9.125,12.203125,14.75
-k57
+k55
 n12 v=35.875,9.15625,12.25,14.6875
 n15 v=35.875,9.15625,12.25,14.6875
-k58
+k56
 n12 v=35.859375,9.171875,12.28125,14.65625
 n15 v=35.859375,9.171875,12.28125,14.65625
-k59
+k57
 n12 v=35.859375,9.171875,12.28125,14.671875
 n15 v=35.859375,9.171875,12.28125,14.671875
-k60
+k58
 n12 v=35.875,9.15625,12.25,14.6875
 n15 v=35.875,9.15625,12.25,14.6875
-k61
+k59
 n12 v=35.890625,9.125,12.21875,14.734375
 n15 v=35.890625,9.125,12.21875,14.734375
-k62
+k60
 n12 v=35.921875,9.109375,12.171875,14.796875
 n15 v=35.921875,9.109375,12.171875,14.796875
-k63
+k61
 n12 v=35.9375,9.078125,12.125,14.859375
 n15 v=35.9375,9.078125,12.125,14.859375
-k64
+k62
 n12 v=35.96875,9.046875,12.0625,14.921875
 n15 v=35.96875,9.046875,12.0625,14.921875
-k65
+k63
 n12 v=35.984375,9.015625,12.015625,14.96875
 n15 v=35.984375,9.015625,12.015625,14.96875
-k66
+k64
 n12 v=36.015625,8.984375,11.984375,15.015625
 n15 v=36.015625,8.984375,11.984375,15.015625
-k67
+k65
 n12 v=36.03125,8.96875,11.953125,15.0625
 n15 v=36.03125,8.96875,11.953125,15.0625
-k68
+k66
 n12 v=36.03125,8.953125,11.9375,15.09375
 n15 v=36.03125,8.953125,11.9375,15.09375
-k69
+k67
 n12 v=36.046875,8.953125,11.921875,15.109375
 n15 v=36.046875,8.953125,11.921875,15.109375
+k68
+k69
 k70
-k71
-k72
 n12 v=36.03125,8.953125,11.921875,15.09375
 n15 v=36.03125,8.953125,11.921875,15.09375
-k73
+k71
 n12 v=36.03125,8.96875,11.9375,15.078125
 n15 v=36.03125,8.96875,11.9375,15.078125
-k74
+k72
 n12 v=36.015625,8.96875,11.953125,15.0625
 n15 v=36.015625,8.96875,11.953125,15.0625
-k75
+k73
 n12 v=36.015625,8.984375,11.96875,15.03125
 n15 v=36.015625,8.984375,11.96875,15.03125
-k76
+k74
 n12 v=36,8.984375,11.984375,15.015625
 n15 v=36,8.984375,11.984375,15.015625
-k77
+k75
 n12 v=d
 n15 v=d
-k78
+k76
 n12 v=36,9,12.015625,14.984375
 n15 v=36,9,12.015625,14.984375
-k79
+k77
 n12 v=35.984375,9.015625,12.015625,14.984375
 n15 v=35.984375,9.015625,12.015625,14.984375
-k80
+k78
 n12 v=35.984375,9.015625,12.015625,14.96875
 n15 v=35.984375,9.015625,12.015625,14.96875
-k81
+k79
 n12 v=35.984375,9.015625,12.03125,14.96875
 n15 v=35.984375,9.015625,12.03125,14.96875
+k80
+k81
 k82
-k83
-k84
 n12 v=35.984375,9.015625,12.015625,14.96875
 n15 v=35.984375,9.015625,12.015625,14.96875
-k85
+k83
 n12 v=d
 n15 v=d
-k86 p2
+k84 p2
 n10 w=201
-k87
+k85
 n10 w=231
-k88
+k86
 n10 w=251
-k89
+k87
 n10 w=260
-k90
+k88
 n10 w=262
-k91
-k92
+k89
+k90
 n10 w=261
-k93
+k91
 n10 w=260
+k92
+k93
 k94
 k95
-k96
-k97
-k98 p1
+k96 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -82484,54 +82436,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k99
+k97
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k100
+k98
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k101
+k99
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k102
+k100
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k103
+k101
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k104
+k102
 n13 op=14
 n14 op=14
-k105
+k103
 n13 op=8
 n14 op=8
-k106
+k104
 n13 op=4
 n14 op=4
-k107
+k105
 n13 op=2
 n14 op=2
-k108
+k106
 n13 op=1
 n14 op=1
-k109
-k110
+k107
+k108
 n13 op=0
 n14 op=0
-k111
+k109
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k112
+k110
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -82539,33 +82491,33 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k113
+k111
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k114
+k112
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k115
+k113
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k116
+k114
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k117
-k118
+k115
+k116
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k117
+k118
 k119
-k120
-k121
 ref "m.stagger__keyframes.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier (60 Hz: tag1 k2->k1, tag2 k4->k2; 144 Hz: k5->k1, k9->k5), with the same opacity and offset trajectories. Read again (stagger review): keyframes keeps playing, so unlike the other stagger cells this run has its reference's tick count (57 at 60 Hz, 128 at 144 Hz) and is not shifted; diffed block to block, only the rows of tag1 and tag2 differ, every other node and surface is the same tick for tick"
+date 2026-10-21
+rev "76c2336e+changes"
 approver "claude"
 scenario 109e4d4faba9c133
-seal e514e27dd9602742
+seal ba879dcbbfc94527
 S1 0 - "bar Top"
 S2 1 33 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -82606,83 +82558,82 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
 n12 x=35.109375 v=35,9,12,15
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 n15 x=35.109375 v=35,9,12,15 ink=35,10,11,10
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
 n12 x=34.21875 v=34,9,12,15
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 n15 x=34.21875 v=34,9,12,15 ink=34,10,11,10
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
 n12 x=33.328125 v=33,9,12,15
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 n15 x=33.328125 v=33,9,12,15 ink=33,10,11,10
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
 n12 x=32.4375 v=32,9,12,15
-n13 op=190
-n14 y=13 op=98
+n13 op=216
+n14 op=190
 n15 x=32.4375 v=32,9,12,15 ink=32,10,11,10
 k6
-n13 op=216
-n14 y=12 op=151
+n13 op=232
+n14 op=216
 k7
 n12 x=33.328125 v=33,9,12,15
-n13 op=232
-n14 op=190
+n13 op=241
+n14 op=232
 n15 x=33.328125 v=33,9,12,15 ink=33,10,11,10
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
 n12 x=34.21875 v=34,9,12,15
-n13 op=241
-n14 op=216
+n13 op=247
+n14 op=241
 n15 x=34.21875 v=34,9,12,15 ink=34,10,11,10
 k9
 n12 x=35.109375 v=35,9,12,15
-n13 op=247
-n14 op=232
+n13 op=251
+n14 op=247
 n15 x=35.109375 v=35,9,12,15 ink=35,10,11,10
 k10
 n12 x=36 v=d
-n13 op=251
-n14 op=241
+n13 op=253
+n14 op=251
 n15 x=36 v=d ink=36,10,11,10
 k11
 n12 x=36.890625 v=37,9,12,15
-n13 op=253
-n14 op=247
+n13 op=254
+n14 op=253
 n15 x=36.890625 v=37,9,12,15 ink=37,10,11,10
 k12
 n12 x=37.78125 v=38,9,12,15
-n13 op=254
-n14 op=251
+n14 op=254
 n15 x=37.78125 v=38,9,12,15 ink=38,10,11,10
 k13
 n12 x=38.671875 v=39,9,12,15
-n14 op=253
+n13 op=255
 n15 x=38.671875 v=39,9,12,15 ink=39,10,11,10
 k14
 n12 x=39.5625 v=40,9,12,15
-n13 op=255
-n14 op=254
+n14 op=255
 n15 x=39.5625 v=40,9,12,15 ink=40,10,11,10
 k15
 k16
 n12 x=38.671875 v=39,9,12,15
-n14 op=255
 n15 x=38.671875 v=39,9,12,15 ink=39,10,11,10
 k17
 n12 x=37.78125 v=38,9,12,15
@@ -82803,14 +82754,14 @@ k55
 k56
 ref "m.stagger__late-text-1.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 3ca6e81e3592f211
-seal 8078cf5ae133cdfd
+seal 771c2c4f1657784f
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -82849,83 +82800,78 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=16 w=0 h=0 ord=4
-n13 x=42 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=42 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=56 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=16 w=0 h=0 txt=E ord=5
 k2 p1
 n0 x=107
 n5 x=61 ink=61,10,27,11
 n12 y=9 w=12 h=15
-n13 x=45 y=15 op=37 hid=- bg=ffff00ff
-n14 x=59
+n13 x=45 y=13 op=98
+n14 x=59 y=15 op=37 hid=- bg=00ffffff
 n15 y=9 w=12 h=15 txt=S ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k3
 n0 x=120
 n5 x=74 ink=74,10,27,11
-n13 x=50 y=13 op=98
-n14 x=64
+n13 x=50 y=12 op=151
+n14 x=64 y=13 op=98
 k4
 n0 x=127
 n5 x=81 ink=81,10,27,11
-n13 x=53 y=12 op=151
-n14 x=67 y=15 op=37 hid=- bg=00ffffff
+n13 x=53 op=190
+n14 x=67 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 x=54 op=190
-n14 x=68 y=13 op=98
+n13 x=54 op=216
+n14 x=68 op=190
 k6
-n13 op=216
-n14 y=12 op=151
-k7
 n13 op=232
-n14 op=190
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -82939,54 +82885,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -82994,35 +82940,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__late-text-paint.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 7803f15d995b93ee
-seal 3df5120cdd3f2d60
+seal 80fe5b1909681d39
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -83061,83 +83007,78 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=16 w=0 h=0 ord=4
-n13 x=42 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=42 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=56 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=16 w=0 h=0 txt=E ord=5
 k2 p1
 n0 x=107
 n5 x=61 ink=61,10,27,11
 n12 y=9 w=12 h=15
-n13 x=45 y=15 op=37 hid=- bg=ffff00ff
-n14 x=59
+n13 x=45 y=13 op=98
+n14 x=59 y=15 op=37 hid=- bg=00ffffff
 n15 y=9 w=12 h=15 txt=S ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k3
 n0 x=120
 n5 x=74 ink=74,10,27,11
-n13 x=50 y=13 op=98
-n14 x=64
+n13 x=50 y=12 op=151
+n14 x=64 y=13 op=98
 k4
 n0 x=127
 n5 x=81 ink=81,10,27,11
-n13 x=53 y=12 op=151
-n14 x=67 y=15 op=37 hid=- bg=00ffffff
+n13 x=53 op=190
+n14 x=67 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 x=54 op=190
-n14 x=68 y=13 op=98
+n13 x=54 op=216
+n14 x=68 op=190
 k6
-n13 op=216
-n14 y=12 op=151
-k7
 n13 op=232
-n14 op=190
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -83151,54 +83092,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -83206,35 +83147,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario c3af74672bcfdf16
-seal 0242261458affd86
+seal 8b902cd7d97c4a0c
 S1 0 - "bar Top"
-S2 1 44 "popup#pop"
+S2 1 42 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -83273,115 +83214,112 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
+k13
+n13 op=255
+k14
+n14 op=255
 k15
 k16
-n14 op=255
-k17
-k18
 n12 v=35.734375,8.78125,12.53125,15.421875 rot=-2.08
 n15 v=35.734375,8.78125,12.53125,15.421875
-k19
+k17
 n12 v=35.359375,8.5,13.296875,16.015625 rot=-5.12
 n15 v=35.359375,8.5,13.296875,16.015625
-k20
+k18
 n12 v=35.28125,8.4375,13.4375,16.125 rot=-5.73
 n15 v=35.28125,8.4375,13.4375,16.125
-k21
+k19
 n12 v=35.765625,8.8125,12.46875,15.375 rot=-1.81
 n15 v=35.765625,8.8125,12.46875,15.375
-k22
+k20
 n12 v=35.578125,8.65625,12.859375,15.671875 rot=3.35
 n15 v=35.578125,8.65625,12.859375,15.671875
-k23
+k21
 n12 v=35.171875,8.359375,13.65625,16.28125 rot=6.63
 n15 v=35.171875,8.359375,13.65625,16.28125
-k24
+k22
 n12 v=35.015625,8.234375,13.984375,16.53125 rot=8.05
 n15 v=35.015625,8.234375,13.984375,16.53125
-k25
+k23
 n12 v=34.96875,8.203125,14.0625,16.59375 rot=8.39
 n15 v=34.96875,8.203125,14.0625,16.59375
-k26
+k24
 n12 v=34.984375,8.21875,14.046875,16.578125 rot=8.31
 n15 v=34.984375,8.21875,14.046875,16.578125
-k27
+k25
 n12 v=35,8.21875,14,16.546875 rot=8.16
 n15 v=35,8.21875,14,16.546875
-k28
+k26
 n12 v=35.015625,8.234375,13.984375,16.53125 rot=8.05
 n15 v=35.015625,8.234375,13.984375,16.53125
-k29
+k27
 n12 v=35.015625,8.234375,13.96875,16.53125 rot=8
 n15 v=35.015625,8.234375,13.96875,16.53125
-k32 p2
+k30 p2
 n10 w=201
-k33
+k31
 n10 w=231
-k34
+k32
 n10 w=251
-k35
+k33
 n10 w=260
-k36
+k34
 n10 w=262
-k37
-k38
+k35
+k36
 n10 w=261
-k39
+k37
 n10 w=260
+k38
+k39
 k40
 k41
-k42
-k43
-k44 p1
+k42 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -83395,54 +83333,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k45
+k43
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k46
+k44
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k47
+k45
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k48
+k46
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k49
+k47
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k50
+k48
 n13 op=14
 n14 op=14
-k51
+k49
 n13 op=8
 n14 op=8
-k52
+k50
 n13 op=4
 n14 op=4
-k53
+k51
 n13 op=2
 n14 op=2
-k54
+k52
 n13 op=1
 n14 op=1
-k55
-k56
+k53
+k54
 n13 op=0
 n14 op=0
-k57
+k55
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k58
+k56
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -83450,25 +83388,25 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k59
+k57
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k60
+k58
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k61
+k59
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k62
+k60
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k63
-k64
+k61
+k62
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k63
+k64
 k65
-k66
-k67
 ref "m.stagger__reduced-motion.60"
 verdict good
 note "eval-false-alarms: the sandbox places the fixture's popup as the compositor does (strand-surface placement::popup_shift): centred under its anchor near the screen's left edge it would start at x -49, and the positioner's constraint shifts it onto the screen at x 0; only the popup's origin changed, every node, size, paint and pixel tick for tick as before; read with explain and refdiff"
@@ -83538,14 +83476,14 @@ n14 -
 n15 -
 ref "m.stagger__roll-text.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 8e06db73def617aa
-seal 93571eb29163673e
+seal 190e2fd0213e3a57
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -83584,81 +83522,78 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=15 h=15 ord=4
-n13 x=57 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=57 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=71 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=15 h=15 txt=S ord=5 ink=36,11,14,9 fg=ff00ffff gl=["41"]
 k2 p1
 n0 x=113
 n5 x=67 ink=67,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=126
 n5 x=80 ink=80,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=131
 n5 x=85 ink=85,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=132
 n5 x=86 ink=86,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=131
 n5 x=85 ink=85,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p1,2
+k15
+k16 p1,2
 n10 w=201
 n15 ink=36,10,14,10 fg=ff00ffff/ff00ffff gl=["42","41[1]"]
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
-k26
-k27
+k24
+k25
 n15 fg=ff00ffff gl=["42"]
-k28 p2
-k29
-k30 p1
+k26 p2
+k27
+k28 p1
 s2 -
 n0 x=126 ord=7
 n1 ord=10
@@ -83672,54 +83607,54 @@ n12 -
 n13 x=52 y=13 op=218 hid=inert ord=4
 n14 x=66 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n13 x=44 y=15 op=157
 n14 x=58 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -83727,35 +83662,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__scale-1.5.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 92ac68a09103b9fa
-seal f4c84572dd3865ff
+seal 581fb87dcd20fa46
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -83794,79 +83729,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 v=36,9.328125,12,14.671875 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 v=54,15.328125,8,8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 v=36,9.328125,12,14.671875 txt=S ord=5 ink=36.671875,11.328125,10.671875,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111 v=111.328125,10,20,12
 n5 x=65 v=65.328125,9.328125,40,14.671875 ink=66,11.328125,26,10.671875
-n13 y=15 v=54,15.328125,8,8 op=37 hid=- bg=ffff00ff
+n13 y=13 v=54,13.328125,8,8 op=98
+n14 y=15 v=68,15.328125,8,8 op=37 hid=- bg=00ffffff
 k3
 n0 x=123 v=123.328125,10,20,12
 n5 x=77 v=77.328125,9.328125,40,14.671875 ink=78,11.328125,26,10.671875
-n13 y=13 v=54,13.328125,8,8 op=98
+n13 y=12 v=d op=151
+n14 y=13 v=68,13.328125,8,8 op=98
 k4
 n0 x=128 v=d
 n5 x=82 v=82,9.328125,40,14.671875 ink=82.671875,11.328125,26,10.671875
-n13 y=12 v=d op=151
-n14 y=15 v=68,15.328125,8,8 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 v=d op=151
 k5
 n0 x=129 v=129.328125,10,20,12
 n5 x=83 v=83.328125,9.328125,40,14.671875 ink=84,11.328125,26,10.671875
-n13 op=190
-n14 y=13 v=68,13.328125,8,8 op=98
-k6
 n13 op=216
-n14 y=12 v=d op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128 v=d
 n5 x=82 v=82,9.328125,40,14.671875 ink=82.671875,11.328125,26,10.671875
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201 v=0,0,201.328125,50
-k19
+k17
 n10 w=231 v=0,0,231.328125,50
-k20
+k18
 n10 w=251 v=0,0,251.328125,50
-k21
+k19
 n10 w=260 v=d
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261 v=0,0,261.328125,50
-k25
+k23
 n10 w=260 v=d
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 v=123.328125,10,20,12 ord=7
 n1 ord=10
@@ -83880,54 +83812,54 @@ n12 -
 n13 x=49 y=13 v=49.328125,13.328125,8,8 op=218 hid=inert ord=4
 n14 x=63 y=13 v=63.328125,13.328125,8,8 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116 v=d
 n5 x=70 v=70,9.328125,40,14.671875 ink=70.671875,11.328125,26,10.671875
 n13 x=42 y=15 v=42,15.328125,8,8 op=157
 n14 x=56 y=15 v=56,15.328125,8,8 op=157
-k32
+k30
 n0 x=112
 n5 x=66 v=66,9.328125,40,14.671875 ink=66.671875,11.328125,26,10.671875
 n13 x=38 y=16 v=d op=104
 n14 x=52 y=16 v=d op=104
-k33
+k31
 n0 x=110
 n5 x=64 v=64,9.328125,40,14.671875 ink=64.671875,11.328125,26,10.671875
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109 v=109.328125,10,20,12
 n5 x=63 v=63.328125,9.328125,40,14.671875 ink=64,11.328125,26,10.671875
 n13 x=35 v=35.328125,16,8,8 op=39
 n14 x=49 v=49.328125,16,8,8 op=39
-k35
+k33
 n0 x=110 v=d
 n5 x=64 v=64,9.328125,40,14.671875 ink=64.671875,11.328125,26,10.671875
 n13 x=36 v=d op=23
 n14 x=50 v=d op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 v=103.328125,10,20,12 ord=5
 n1 ord=8
 n3 ord=6
@@ -83935,35 +83867,35 @@ n5 x=57 v=57.328125,9.328125,40,14.671875 ord=4 ink=58,11.328125,26,10.671875
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92 v=d
 n5 x=46 v=46,9.328125,40,14.671875 ink=46.671875,11.328125,26,10.671875
-k46
+k44
 n0 x=85 v=85.328125,10,20,12
 n5 x=39 v=39.328125,9.328125,40,14.671875 ink=40,11.328125,26,10.671875
-k47
+k45
 n0 x=82 v=d
 n5 x=36 v=36,9.328125,40,14.671875 ink=36.671875,11.328125,26,10.671875
-k48
+k46
 n0 x=81 v=81.328125,10,20,12
 n5 x=35 v=35.328125,9.328125,40,14.671875 ink=36,11.328125,26,10.671875
-k49
-k50
+k47
+k48
 n0 x=82 v=d
 n5 x=36 v=36,9.328125,40,14.671875 ink=36.671875,11.328125,26,10.671875
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__scale-2.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario df7ee412e063b972
-seal e06128192828175b
+seal 11641dbfbad457ca
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -84002,79 +83934,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36.5,11,10.5,9.5 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65.5,11,26.5,10
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77.5,11,26.5,10
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82.5,11,26.5,10
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83.5,11,26.5,10
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82.5,11,26.5,10
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -84088,54 +84017,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70.5,11,26.5,10
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66.5,11,26.5,10
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64.5,11,26.5,10
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63.5,11,26.5,10
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64.5,11,26.5,10
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -84143,35 +84072,35 @@ n5 x=57 ord=4 ink=57.5,11,26.5,10
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46.5,11,26.5,10
-k46
+k44
 n0 x=85
 n5 x=39 ink=39.5,11,26.5,10
-k47
+k45
 n0 x=82
 n5 x=36 ink=36.5,11,26.5,10
-k48
+k46
 n0 x=81
 n5 x=35 ink=35.5,11,26.5,10
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36.5,11,26.5,10
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__scroll.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 95d41e9f2df6f785
-seal 5f5e41d7110e0f92
+seal 30e32f1b1a94a163
 S1 0 - "bar Top"
-S2 1 51 "popup#pop"
+S2 1 49 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -84227,220 +84156,217 @@ n14 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n15 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n16 srf=2 x=0 y=0 w=280 h=60
 n17 x=36 y=9 w=12 h=15 ord=4
-n18 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n18 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n19 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n20 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n18 y=15 op=37 hid=- bg=ffff00ff
+n18 y=13 op=98
+n19 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n18 y=13 op=98
+n18 y=12 op=151
+n19 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n18 y=12 op=151
-n19 y=15 op=37 hid=- bg=00ffffff
+n18 op=190
+n19 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n18 op=190
-n19 y=13 op=98
-k6
 n18 op=216
-n19 y=12 op=151
-k7
-n18 op=232
 n19 op=190
+k6
+n18 op=232
+n19 op=216
+k7
+n18 op=241
+n19 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n18 op=241
-n19 op=216
-k9
 n18 op=247
-n19 op=232
-k10
-n18 op=251
 n19 op=241
-k11
-n18 op=253
+k9
+n18 op=251
 n19 op=247
-k12
-n18 op=254
+k10
+n18 op=253
 n19 op=251
-k13
+k11
+n18 op=254
 n19 op=253
-k14
-n18 op=255
+k12
 n19 op=254
+k13
+n18 op=255
+k14
+n19 op=255
 k15
 k16
-n19 op=255
-k17
-k18
 n10 y=28.09375 v=112,28,60,12
 n11 y=42.09375 v=112,42,60,12
 n12 y=56.09375 v=112,56,60,12 hid=clipped
 n13 y=70.09375 v=112,70,60,12
-k19
+k17
 n10 y=22.390625 v=112,22,60,12
 n11 y=36.390625 v=112,36,60,12
 n12 y=50.390625 v=112,50,60,12 hid=-
 n13 y=64.390625 v=112,64,60,12
-k20
+k18
 n10 y=14.75 v=112,15,60,12 hid=clipped
 n11 y=28.75 v=112,29,60,12
 n12 y=42.75 v=112,43,60,12
 n13 y=56.75 v=112,57,60,12 hid=clipped
-k21
+k19
 n10 y=7.40625 v=112,7,60,12
 n11 y=21.40625 v=112,21,60,12
 n12 y=35.40625 v=112,35,60,12
 n13 y=49.40625 v=112,49,60,12 hid=-
 n21 x=112 y=63.40625 w=60 h=12 v=112,63,60,12 ord=18 bg=606060ff
 n22 x=112 y=77.40625 w=60 h=12 v=112,77,60,12 ord=19 bg=606060ff
-k22
+k20
 n10 y=7.140625
 n11 y=21.140625
 n12 y=35.140625
 n13 y=49.140625
 n21 y=63.140625
 n22 y=77.140625
-k23
+k21
 n10 y=11.265625 v=112,11,60,12
 n11 y=25.265625 v=112,25,60,12
 n12 y=39.265625 v=112,39,60,12
 n13 y=53.265625 v=112,53,60,12 hid=clipped
 n21 y=67.265625 v=112,67,60,12
 n22 y=81.265625 v=112,81,60,12
-k24
+k22
 n10 y=14.734375 v=112,15,60,12
 n11 y=28.734375 v=112,29,60,12
 n12 y=42.734375 v=112,43,60,12
 n13 y=56.734375 v=112,57,60,12
 n21 y=70.734375 v=112,71,60,12
 n22 y=84.734375 v=112,85,60,12
-k25
+k23
 n10 y=16.578125 v=112,17,60,12
 n11 y=30.578125 v=112,31,60,12
 n12 y=44.578125 v=112,45,60,12
 n13 y=58.578125 v=112,59,60,12
 n21 y=72.578125 v=112,73,60,12
 n22 y=86.578125 v=112,87,60,12
-k26
+k24
 n10 y=17.234375
 n11 y=31.234375
 n12 y=45.234375
 n13 y=59.234375
 n21 y=73.234375
 n22 y=87.234375
-k27
+k25
 n10 y=17.296875
 n11 y=31.296875
 n12 y=45.296875
 n13 y=59.296875
 n21 y=73.296875
 n22 y=87.296875
-k28
+k26
 n10 y=17 v=d
 n11 y=31 v=d
 n12 y=45 v=d
 n13 y=59 v=d
 n21 y=73 v=d
 n22 y=87 v=d
-k29
+k27
 n10 y=12
 n11 y=26
 n12 y=40
 n13 y=54
 n21 y=68
 n22 y=82
-k30
+k28
 n10 y=7
 n11 y=21
 n12 y=35
 n13 y=49 hid=-
 n21 y=63
 n22 y=77
-k31
+k29
 n10 y=2
 n11 y=16 hid=clipped
 n12 y=30
 n13 y=44
 n21 y=58 hid=clipped
 n22 y=72
-k32
+k30
 n10 y=-7.890625 v=112,-8,60,12
 n11 y=6.109375 v=112,6,60,12
 n12 y=20.125 v=112,20,60,12 hid=clipped
 n13 y=34.125 v=112,34,60,12
 n21 y=48.109375 v=112,48,60,12 hid=-
 n22 y=62.109375 v=112,62,60,12
-k33
+k31
 n10 y=-12.53125 v=112,-13,60,12 hid=-
 n11 y=1.46875 v=112,1,60,12
 n12 y=15.46875 v=112,15,60,12
 n13 y=29.46875 v=112,29,60,12
 n21 y=43.46875 v=112,43,60,12
 n22 y=57.46875 v=112,57,60,12 hid=clipped
-k34
+k32
 n10 y=-16.984375 v=112,-17,60,12
 n11 y=-2.984375 v=112,-3,60,12
 n12 y=11.015625 v=112,11,60,12
 n13 y=25.015625 v=112,25,60,12
 n21 y=39.015625 v=112,39,60,12
 n22 y=53.015625 v=112,53,60,12
-k35
+k33
 n10 y=-21.203125 v=112,-21,60,12
 n11 y=-7.203125 v=112,-7,60,12
 n12 y=6.796875 v=112,7,60,12
 n13 y=20.796875 v=112,21,60,12
 n21 y=34.796875 v=112,35,60,12
 n22 y=48.796875 v=112,49,60,12 hid=-
-k36
+k34
 n10 y=-25.25 v=112,-25,60,12
 n11 y=-11.25 v=112,-11,60,12
 n12 y=2.75 v=112,3,60,12
 n13 y=16.75 v=112,17,60,12 hid=clipped
 n21 y=30.75 v=112,31,60,12
 n22 y=44.75 v=112,45,60,12
-k37
+k35
 n10 y=-29.09375 v=112,-29,60,12
 n11 y=-15.09375 v=112,-15,60,12 hid=-
 n12 y=-1.09375 v=112,-1,60,12
 n13 y=12.90625 v=112,13,60,12
 n21 y=26.90625 v=112,27,60,12
 n22 y=40.90625 v=112,41,60,12
-k38
+k36
 n10 y=-30 v=d
 n11 y=-16 v=d
 n12 y=-2 v=d
 n13 y=12 v=d
 n21 y=26 v=d
 n22 y=40 v=d
-k39 p2
+k37 p2
 n15 w=201
-k40
+k38
 n15 w=231
-k41
+k39
 n15 w=251
-k42
+k40
 n15 w=260
-k43
+k41
 n15 w=262
-k44
-k45
+k42
+k43
 n15 w=261
-k46
+k44
 n15 w=260
+k45
+k46
 k47
 k48
-k49
-k50
-k51 p1
+k49 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -84461,54 +84387,54 @@ n19 x=63 y=13 op=218 hid=inert ord=5
 n20 -
 n21 ord=14
 n22 ord=15
-k52
+k50
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n18 x=42 y=15 op=157
 n19 x=56 y=15 op=157
-k53
+k51
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n18 x=38 y=16 op=104
 n19 x=52 y=16 op=104
-k54
+k52
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n18 x=36 op=65
 n19 x=50 op=65
-k55
+k53
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n18 x=35 op=39
 n19 x=49 op=39
-k56
+k54
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n18 x=36 op=23
 n19 x=50 op=23
-k57
+k55
 n18 op=14
 n19 op=14
-k58
+k56
 n18 op=8
 n19 op=8
-k59
+k57
 n18 op=4
 n19 op=4
-k60
+k58
 n18 op=2
 n19 op=2
-k61
+k59
 n18 op=1
 n19 op=1
-k62
-k63
+k60
+k61
 n18 op=0
 n19 op=0
-k64
+k62
 n18 hid=opacity0 bg=-
 n19 hid=opacity0 bg=-
-k65
+k63
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -84521,35 +84447,35 @@ n18 -
 n19 -
 n21 ord=12
 n22 ord=13
-k66
+k64
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k67
+k65
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k68
+k66
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k69
+k67
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k70
-k71
+k68
+k69
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k70
+k71
 k72
-k73
-k74
 ref "m.stagger__shadow.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario d9a70a3c2f14a39e
-seal 513e371a701e4b6f
+seal b0a3c1494207a086
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -84588,79 +84514,76 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=12 h=15 ord=4 sh=000000aa@26,1,32,35
-n13 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n13 op=190
-n14 y=13 op=98
-k6
 n13 op=216
-n14 y=12 op=151
-k7
-n13 op=232
 n14 op=190
+k6
+n13 op=232
+n14 op=216
+k7
+n13 op=241
+n14 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n13 op=241
-n14 op=216
-k9
 n13 op=247
-n14 op=232
-k10
-n13 op=251
 n14 op=241
-k11
-n13 op=253
+k9
+n13 op=251
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -84674,54 +84597,54 @@ n12 -
 n13 x=49 y=13 op=218 hid=inert ord=4
 n14 x=63 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n13 x=42 y=15 op=157
 n14 x=56 y=15 op=157
-k32
+k30
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n13 x=38 y=16 op=104
 n14 x=52 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=39
 n14 x=49 op=39
-k35
+k33
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=23
 n14 x=50 op=23
-k36
+k34
 n13 op=14
 n14 op=14
-k37
+k35
 n13 op=8
 n14 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -84729,35 +84652,35 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53
 ref "m.stagger__slider-drag.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 51b6377597a9bae9
-seal c7d007346b393543
+seal 4a1ab00c3abdb63a
 S1 0 - "bar Top"
-S2 1 50 "popup#pop"
+S2 1 48 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -84802,118 +84725,115 @@ n11 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n12 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n13 srf=2 x=0 y=0 w=280 h=60
 n14 x=36 y=9 w=12 h=15 ord=4
-n15 x=54 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n15 x=54 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n16 x=68 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n17 x=36 y=9 w=12 h=15 txt=S ord=5 ink=36,10,11,10 fg=ff00ffff gl=["iiii"]
 k2 p1
 n0 x=111
 n5 x=65 ink=65,10,27,11
-n15 y=15 op=37 hid=- bg=ffff00ff
+n15 y=13 op=98
+n16 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=123
 n5 x=77 ink=77,10,27,11
-n15 y=13 op=98
+n15 y=12 op=151
+n16 y=13 op=98
 k4
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n15 y=12 op=151
-n16 y=15 op=37 hid=- bg=00ffffff
+n15 op=190
+n16 y=12 op=151
 k5
 n0 x=129
 n5 x=83 ink=83,10,27,11
-n15 op=190
-n16 y=13 op=98
-k6
 n15 op=216
-n16 y=12 op=151
-k7
-n15 op=232
 n16 op=190
+k6
+n15 op=232
+n16 op=216
+k7
+n15 op=241
+n16 op=232
 k8
 n0 x=128
 n5 x=82 ink=82,10,27,11
-n15 op=241
-n16 op=216
-k9
 n15 op=247
-n16 op=232
-k10
-n15 op=251
 n16 op=241
-k11
-n15 op=253
+k9
+n15 op=251
 n16 op=247
-k12
-n15 op=254
+k10
+n15 op=253
 n16 op=251
-k13
+k11
+n15 op=254
 n16 op=253
-k14
-n15 op=255
+k12
 n16 op=254
+k13
+n15 op=255
+k14
+n16 op=255
 k15
 k16
-n16 op=255
-k17
-k18
 n7 pt=0,7,120,4/0,7,39,4/31,1,16,16
-k19
+k17
 n7 pt=0,7,120,4/0,7,43.078125,4/35.078125,1,16,16
-k20
+k18
 n7 pt=0,7,120,4/0,7,47.171875,4/39.171875,1,16,16
-k21
+k19
 n7 pt=0,7,120,4/0,7,51.25,4/43.25,1,16,16
-k22
+k20
 n7 pt=0,7,120,4/0,7,55.328125,4/47.328125,1,16,16
-k23
+k21
 n7 pt=0,7,120,4/0,7,59.421875,4/51.421875,1,16,16
-k24
+k22
 n7 pt=0,7,120,4/0,7,63.5,4/55.5,1,16,16
-k25
+k23
 n7 pt=0,7,120,4/0,7,67.578125,4/59.578125,1,16,16
-k26
+k24
 n7 pt=0,7,120,4/0,7,71.671875,4/63.671875,1,16,16
-k27
+k25
 n7 pt=0,7,120,4/0,7,75.75,4/67.75,1,16,16
-k28
+k26
 n7 pt=0,7,120,4/0,7,79.828125,4/71.828125,1,16,16
-k29
+k27
 n7 pt=0,7,120,4/0,7,83.921875,4/75.921875,1,16,16
-k30
+k28
 n7 pt=0,7,120,4/0,7,83.328125,4/75.328125,1,16,16
-k31
+k29
 n7 pt=0,7,120,4/0,7,86.34375,4/78.34375,1,16,16
-k32
+k30
 n7 pt=0,7,120,4/0,7,87.8125,4/79.8125,1,16,16
-k33
+k31
 n7 pt=0,7,120,4/0,7,88.265625,4/80.265625,1,16,16
-k34
-k35
+k32
+k33
 n7 pt=0,7,120,4/0,7,88.15625,4/80.15625,1,16,16
-k36
+k34
 n7 pt=0,7,120,4/0,7,88.0625,4/80.0625,1,16,16
-k37
+k35
 n7 pt=0,7,120,4/0,7,88,4/80,1,16,16
-k38 p2
+k36 p2
 n12 w=201
-k39
+k37
 n12 w=231
-k40
+k38
 n12 w=251
-k41
+k39
 n12 w=260
-k42
+k40
 n12 w=262
-k43
-k44
+k41
+k42
 n12 w=261
-k45
+k43
 n12 w=260
+k44
+k45
 k46
 k47
-k48
-k49
-k50 p1
+k48 p1
 s2 -
 n0 x=123 ord=7
 n1 ord=10
@@ -84929,54 +84849,54 @@ n14 -
 n15 x=49 y=13 op=218 hid=inert ord=4
 n16 x=63 y=13 op=218 hid=inert ord=5
 n17 -
-k51
+k49
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n15 x=42 y=15 op=157
 n16 x=56 y=15 op=157
-k52
+k50
 n0 x=112
 n5 x=66 ink=66,10,27,11
 n15 x=38 y=16 op=104
 n16 x=52 y=16 op=104
-k53
+k51
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n15 x=36 op=65
 n16 x=50 op=65
-k54
+k52
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n15 x=35 op=39
 n16 x=49 op=39
-k55
+k53
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n15 x=36 op=23
 n16 x=50 op=23
-k56
+k54
 n15 op=14
 n16 op=14
-k57
+k55
 n15 op=8
 n16 op=8
-k58
+k56
 n15 op=4
 n16 op=4
-k59
+k57
 n15 op=2
 n16 op=2
-k60
+k58
 n15 op=1
 n16 op=1
-k61
-k62
+k59
+k60
 n15 op=0
 n16 op=0
-k63
+k61
 n15 hid=opacity0 bg=-
 n16 hid=opacity0 bg=-
-k64
+k62
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -84986,25 +84906,25 @@ n7 ord=10
 n9 ord=7
 n15 -
 n16 -
-k65
+k63
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k66
+k64
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k67
+k65
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k68
+k66
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k69
-k70
+k67
+k68
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k69
+k70
 k71
-k72
-k73
 ref "m.text-estimate-far.60"
 verdict good
 note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
@@ -88240,14 +88160,14 @@ k57
 k58
 ref "m.text-estimate-far__stagger.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
+date 2026-10-21
+rev "49d44e8b+changes"
 approver "claude"
 scenario 956a53311798dd35
-seal 06fc982bf2b80eda
+seal f4869d79a4d90ce5
 S1 0 - "bar Top"
-S2 1 30 "popup#pop"
+S2 1 28 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
 N1 "anchor|shell.strand:31:7|[Mock | DP-1]#1" "box#anchor"
 N2 "before|shell.strand:18:7|[Mock | DP-1]#0" "box#before"
@@ -88286,85 +88206,82 @@ n9 srf=2 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=2 x=0 y=0 w=180 h=50 ord=1 bg=202030ff
 n11 srf=2 x=0 y=0 w=280 h=60
 n12 x=36 y=9 w=99 h=15 ord=4
-n13 x=141 y=16 w=8 h=8 op=0 hid=opacity0 ord=6
+n13 x=141 y=15 w=8 h=8 op=37 ord=6 bg=ffff00ff
 n14 x=155 y=16 w=8 h=8 op=0 hid=opacity0 ord=7
 n15 x=36 y=9 w=99 h=15 txt=S ord=5 ink=36,11,99,9 fg=ff00ffff gl=["WWWWWWWW"]
 k2 p1
 n0 x=167
 n5 x=121 ink=121,10,27,11
-n13 y=15 op=37 hid=- bg=ffff00ff
+n13 y=13 op=98
+n14 y=15 op=37 hid=- bg=00ffffff
 k3
 n0 x=200
 n5 x=154 ink=154,10,27,11
-n13 y=13 op=98
+n13 y=12 op=151
+n14 y=13 op=98
 k4
 n0 x=215
 n5 x=169 ink=169,10,27,11
-n13 y=12 op=151
-n14 y=15 op=37 hid=- bg=00ffffff
+n13 op=190
+n14 y=12 op=151
 k5
 n0 x=219
 n5 x=173 ink=173,10,27,11
-n13 op=190
-n14 y=13 op=98
+n13 op=216
+n14 op=190
 k6
 n0 x=218
 n5 x=172 ink=172,10,27,11
-n13 op=216
-n14 y=12 op=151
+n13 op=232
+n14 op=216
 k7
 n0 x=217
 n5 x=171 ink=171,10,27,11
-n13 op=232
-n14 op=190
+n13 op=241
+n14 op=232
 k8
 n0 x=216
 n5 x=170 ink=170,10,27,11
-n13 op=241
-n14 op=216
+n13 op=247
+n14 op=241
 k9
 n0 x=215
 n5 x=169 ink=169,10,27,11
-n13 op=247
-n14 op=232
-k10
 n13 op=251
-n14 op=241
-k11
-n13 op=253
 n14 op=247
-k12
-n13 op=254
+k10
+n13 op=253
 n14 op=251
-k13
+k11
+n13 op=254
 n14 op=253
-k14
-n13 op=255
+k12
 n14 op=254
-k15
-k16
+k13
+n13 op=255
+k14
 n14 op=255
-k17
-k18 p2
+k15
+k16 p2
 n10 w=201
-k19
+k17
 n10 w=231
-k20
+k18
 n10 w=251
-k21
+k19
 n10 w=260
-k22
+k20
 n10 w=262
-k23
-k24
+k21
+k22
 n10 w=261
-k25
+k23
 n10 w=260
+k24
+k25
 k26
 k27
-k28
-k29
-k30 p1
+k28 p1
 s2 -
 n0 x=188 ord=7
 n1 ord=10
@@ -88378,58 +88295,58 @@ n12 -
 n13 x=114 y=13 op=218 hid=inert ord=4
 n14 x=128 y=13 op=218 hid=inert ord=5
 n15 -
-k31
+k29
 n0 x=148
 n5 x=102 ink=102,10,27,11
 n13 x=74 y=15 op=157
 n14 x=88 y=15 op=157
-k32
+k30
 n0 x=122
 n5 x=76 ink=76,10,27,11
 n13 x=48 y=16 op=104
 n14 x=62 y=16 op=104
-k33
+k31
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=65
 n14 x=50 op=65
-k34
+k32
 n0 x=107
 n5 x=61 ink=61,10,27,11
 n13 x=33 op=39
 n14 x=47 op=39
-k35
+k33
 n0 x=108
 n5 x=62 ink=62,10,27,11
 n13 x=34 op=23
 n14 x=48 op=23
-k36
+k34
 n0 x=109
 n5 x=63 ink=63,10,27,11
 n13 x=35 op=14
 n14 x=49 op=14
-k37
+k35
 n0 x=110
 n5 x=64 ink=64,10,27,11
 n13 x=36 op=8
 n14 x=50 op=8
-k38
+k36
 n13 op=4
 n14 op=4
-k39
+k37
 n13 op=2
 n14 op=2
-k40
+k38
 n13 op=1
 n14 op=1
-k41
-k42
+k39
+k40
 n13 op=0
 n14 op=0
-k43
+k41
 n13 hid=opacity0 bg=-
 n14 hid=opacity0 bg=-
-k44
+k42
 n0 x=103 ord=5
 n1 ord=8
 n3 ord=6
@@ -88437,22 +88354,22 @@ n5 x=57 ord=4 ink=57,10,27,11
 n7 ord=7
 n13 -
 n14 -
-k45
+k43
 n0 x=92
 n5 x=46 ink=46,10,27,11
-k46
+k44
 n0 x=85
 n5 x=39 ink=39,10,27,11
-k47
+k45
 n0 x=82
 n5 x=36 ink=36,10,27,11
-k48
+k46
 n0 x=81
 n5 x=35 ink=35,10,27,11
-k49
-k50
+k47
+k48
 n0 x=82
 n5 x=36 ink=36,10,27,11
+k49
+k50
 k51
-k52
-k53

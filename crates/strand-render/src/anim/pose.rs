@@ -1,6 +1,6 @@
 //! `enter`/`exit` poses: the props a pose sets, and the sizes it gives.
 
-use strand_scene::{LogicalRect, Prop, PropValue, TokenScope};
+use strand_scene::{LogicalRect, NodeId, Prop, PropValue, TokenScope};
 
 use super::motion::number;
 use crate::tree::{Node, SceneTree};
@@ -56,6 +56,18 @@ pub(crate) fn exit_pose(node: &Node) -> Option<&PropValue> {
 pub(crate) fn is_pose(v: Option<&PropValue>) -> bool {
     !pose_props(v.unwrap_or(&PropValue::Unset), None).is_empty()
         || matches!(v, Some(PropValue::Call { name, .. }) if name == "slide" || name == "slidefade")
+}
+
+/// (stagger) True if node `id` has an `enter` that plays: its own, read
+/// through its tokens, moves something (a pose block that sets a prop, or
+/// a preset). A staggered container numbers only these children.
+pub(crate) fn has_enter(tree: &SceneTree, id: NodeId) -> bool {
+    let Some(v) = tree.get(id).and_then(|n| n.get(Prop::Enter)) else {
+        return false;
+    };
+    let scopes = crate::flatten::scope_tables(tree, id);
+    let scope = TokenScope::new(&scopes);
+    is_pose(scope.resolve(v).as_deref())
 }
 
 /// The `[width, height]` a pose gives `node` (plain lengths only).
