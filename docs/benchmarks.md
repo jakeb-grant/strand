@@ -356,8 +356,8 @@ the report branch's binary (recording on, the default, in every run):
 
 | Measure | Figure |
 | --- | --- |
-| The rings' size (`strand_core::flight`, input 180,224 B + changes 81,920 B) | 262,144 B |
-| `the_replay_rings_cost_at_most_their_size`: anonymous PSS (`Pss_Anon`) on minus off, both rings wrapped by clicks | 264 to 268 kB over five runs (bound 288 KiB) |
+| The rings' size (`strand_core::flight`, input 155,648 B + changes 106,496 B; replayfix 2026-10-21, from 180,224 + 81,920) | 262,144 B |
+| `the_replay_rings_cost_at_most_their_size`: anonymous PSS (`Pss_Anon`) on minus off, both rings wrapped by clicks | 264 to 268 kB over five runs (bound 288 KiB); 260 kB with replayfix's sizes (2026-10-21, one run) |
 | The same on the whole PSS (not gated: shared libraries' share moves) | 224 to 541 kB |
 | Design bar, two 2560×1440 outputs, warm device (lavapipe) | 200,251 kB (ceiling 247,808) |
 | Design bar, cold | 41,269 kB (ceiling 49,152) |

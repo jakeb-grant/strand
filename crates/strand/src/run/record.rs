@@ -775,6 +775,9 @@ pub(crate) struct ChangeRecorder {
     /// when pressed: `nodes.json` names one a press removed (a menu row
     /// that closes its menu) from here. At most [`HITS_KEPT`].
     hits: std::collections::VecDeque<(NodeId, HitIdentity)>,
+    /// (replayfix) The builtin services' fields the program reads: a
+    /// field it never reads is not recorded.
+    reads: ServiceReads,
 }
 
 /// (report review) How many pressed nodes' identities are kept.
@@ -861,6 +864,7 @@ impl ChangeRecorder {
             locked: false,
             declared: declared_of(&program),
             declared_last: HashMap::new(),
+            reads: ServiceReads::of(&program),
             program,
             roots: HashMap::new(),
             next_call: 0,
@@ -894,6 +898,7 @@ impl ChangeRecorder {
     /// new one's.
     pub(crate) fn set_program(&mut self, program: Arc<Program>) {
         self.declared = declared_of(&program);
+        self.reads = ServiceReads::of(&program);
         let declared = &self.declared;
         self.declared_last.retain(|k, _| {
             k.split_once('.')
@@ -992,8 +997,14 @@ impl ChangeRecorder {
                 new,
                 initial,
             } => {
+                if !self.reads.reads(ev.service, field) {
+                    return;
+                }
                 name.push_str(field);
                 let f = if *initial { flags::BOOT } else { 0 };
+                // (replayfix) What changed in it, when that is shorter
+                // than the value before and after it whole.
+                let edits = field_edits(old, new, &keep);
                 push_value(r, t, kind::FIELD, &name, &[], f, |w| {
                     let mut held = false;
                     let mut k = |s: &str| {
@@ -1001,11 +1012,18 @@ impl ChangeRecorder {
                         held |= !kept;
                         kept
                     };
-                    let _ = w.write_char('[');
-                    let _ = old.write_json(w, &mut k);
-                    let _ = w.write_char(',');
-                    let _ = new.write_json(w, &mut k);
-                    let _ = w.write_char(']');
+                    match &edits {
+                        Some(e) => {
+                            let _ = write_edits(w, e, &mut k);
+                        }
+                        None => {
+                            let _ = w.write_char('[');
+                            let _ = old.write_json(w, &mut k);
+                            let _ = w.write_char(',');
+                            let _ = new.write_json(w, &mut k);
+                            let _ = w.write_char(']');
+                        }
+                    }
                     held
                 });
             }
@@ -1015,6 +1033,15 @@ impl ChangeRecorder {
                 removed,
                 initial,
             } => {
+                if !self.reads.reads(ev.service, field) {
+                    return;
+                }
+                // (replayfix) Each item a diff replaced as what changed
+                // in it, when shorter; an item replaced by its equal is
+                // no change, and a patch of nothing else is not recorded.
+                let Some(plan) = keyed_plan(diffs, removed, &keep) else {
+                    return;
+                };
                 name.push_str(field);
                 let f = if *initial { flags::BOOT } else { 0 };
                 push_value(r, t, kind::KEYED, &name, &[], f, |w| {
@@ -1024,7 +1051,10 @@ impl ChangeRecorder {
                         held |= !kept;
                         kept
                     };
-                    let _ = write_diffs(w, diffs, removed, &mut k);
+                    let _ = match &plan {
+                        KeyedPlan::Whole => write_diffs(w, diffs, removed, &mut k),
+                        KeyedPlan::Parts(parts) => write_parts(w, parts, &mut k),
+                    };
                     held
                 });
             }
@@ -1368,6 +1398,332 @@ fn declared_change(
     }
 }
 
+/// (replayfix) What a program reads of each builtin service, from its
+/// chunks' read sets (`Program::reads`): a field read by name
+/// (`workspaces.all`, `windows.focused?.title`), or the service whole
+/// when a method is called on it (`workspaces.slots(screen)` reads
+/// whatever the method reads, so every field of it counts as read).
+#[derive(Debug, Default)]
+pub(crate) struct ServiceReads(HashMap<String, Option<std::collections::HashSet<String>>>);
+
+impl ServiceReads {
+    pub(crate) fn of(program: &Program) -> ServiceReads {
+        let mut m: HashMap<String, Option<std::collections::HashSet<String>>> = HashMap::new();
+        for r in &program.reads {
+            for (svc, field) in &r.services {
+                match field {
+                    None => {
+                        m.insert(svc.clone(), None);
+                    }
+                    Some(f) => {
+                        if let Some(set) = m
+                            .entry(svc.clone())
+                            .or_insert_with(|| Some(Default::default()))
+                        {
+                            set.insert(f.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // `system` is read past the program's chunks too: the theme's
+        // light or dark mode, reduced motion and the contrast are the
+        // renderer's and the palette's, so it is always recorded.
+        m.insert("system".into(), None);
+        ServiceReads(m)
+    }
+
+    /// Whether the program can read `service.field`.
+    pub(crate) fn reads(&self, service: &str, field: &str) -> bool {
+        match self.0.get(service) {
+            Some(None) => true,
+            Some(Some(set)) => set.contains(field),
+            None => false,
+        }
+    }
+}
+
+/// (replayfix) A place in a value: a record's field or a list's index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Seg<'a> {
+    Field(&'a str),
+    Index(usize),
+}
+
+/// (replayfix) One edit of a value: at `path` (empty: the value whole),
+/// `old` became `new`.
+#[derive(Clone, Debug, PartialEq)]
+struct Edit<'a> {
+    path: Vec<Seg<'a>>,
+    old: &'a Data,
+    new: &'a Data,
+}
+
+/// Counts the bytes written to it.
+struct Count(usize);
+
+impl fmt::Write for Count {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
+}
+
+/// The bytes of `d` as JSON, its texts kept or held back by `keep`.
+fn json_len(d: &Data, keep: &dyn Fn(&str) -> bool) -> usize {
+    let mut c = Count(0);
+    let _ = d.write_json(&mut c, &mut |s| keep(s));
+    c.0
+}
+
+/// A field name an edit's path can hold: not empty, no `.` (the path's
+/// separator), not starting with a digit (an index).
+fn plain_field(name: &str) -> bool {
+    !name.is_empty() && !name.contains('.') && !name.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// The bytes of one edit as [`write_edit`] writes it.
+fn edit_len(e: &Edit<'_>, keep: &dyn Fn(&str) -> bool) -> usize {
+    let mut c = Count(0);
+    let _ = write_path(&mut c, &e.path);
+    // `[` path `,` old `,` new `]`
+    c.0 + 3 + json_len(e.old, keep) + json_len(e.new, keep)
+}
+
+/// The edits that take `old` to `new`, pushed to `out`: a record of the
+/// same type and fields field by field, a list of the same length item
+/// by item when that is shorter than the list whole, anything else
+/// whole.
+fn diff<'a>(
+    old: &'a Data,
+    new: &'a Data,
+    path: &mut Vec<Seg<'a>>,
+    out: &mut Vec<Edit<'a>>,
+    keep: &dyn Fn(&str) -> bool,
+) {
+    if old == new {
+        return;
+    }
+    match (old, new) {
+        (Data::Record { ty: a, fields: fa }, Data::Record { ty: b, fields: fb })
+            if a == b
+                && fa.len() == fb.len()
+                && fa
+                    .iter()
+                    .zip(fb)
+                    .all(|((x, _), (y, _))| x == y && plain_field(x)) =>
+        {
+            for ((name, o), (_, n)) in fa.iter().zip(fb) {
+                path.push(Seg::Field(name));
+                diff(o, n, path, out, keep);
+                path.pop();
+            }
+        }
+        (Data::List(a), Data::List(b)) if a.len() == b.len() => {
+            let mut inner = Vec::new();
+            for (i, (o, n)) in a.iter().zip(b).enumerate() {
+                path.push(Seg::Index(i));
+                diff(o, n, path, &mut inner, keep);
+                path.pop();
+            }
+            let whole = Edit {
+                path: path.clone(),
+                old,
+                new,
+            };
+            let parts: usize = inner.iter().map(|e| edit_len(e, keep) + 1).sum();
+            if parts < edit_len(&whole, keep) + 1 {
+                out.extend(inner);
+            } else {
+                out.push(whole);
+            }
+        }
+        _ => out.push(Edit {
+            path: path.clone(),
+            old,
+            new,
+        }),
+    }
+}
+
+/// (replayfix) A field's change as its edits (`{"e": [[path, old,
+/// new], …]}`), when they are shorter than `[old, new]`; `None` when
+/// not.
+fn field_edits<'a>(
+    old: &'a Data,
+    new: &'a Data,
+    keep: &dyn Fn(&str) -> bool,
+) -> Option<Vec<Edit<'a>>> {
+    let mut out = Vec::new();
+    diff(old, new, &mut Vec::new(), &mut out, keep);
+    if out.is_empty() || out.iter().any(|e| e.path.is_empty()) {
+        return None;
+    }
+    let edits: usize = 7 + out.iter().map(|e| edit_len(e, keep) + 1).sum::<usize>();
+    let whole = 3 + json_len(old, keep) + json_len(new, keep);
+    (edits < whole).then_some(out)
+}
+
+/// Writes an edit's path: its segments joined by `.`, an index as its
+/// number (`windows.1.title`), as a JSON string.
+fn write_path(w: &mut dyn fmt::Write, path: &[Seg<'_>]) -> fmt::Result {
+    w.write_char('"')?;
+    for (i, s) in path.iter().enumerate() {
+        if i > 0 {
+            w.write_char('.')?;
+        }
+        match s {
+            // A plain field (`plain_field`) needs no escaping but for
+            // the JSON string's own characters.
+            Seg::Field(f) => {
+                let mut q = String::new();
+                flight::json_text(&mut q, f)?;
+                w.write_str(&q[1..q.len() - 1])?;
+            }
+            Seg::Index(n) => write!(w, "{n}")?,
+        }
+    }
+    w.write_char('"')
+}
+
+/// Writes `edits` as a list of `[path, old, new]`.
+fn write_edit_list(
+    w: &mut dyn fmt::Write,
+    edits: &[Edit<'_>],
+    keep: &mut dyn FnMut(&str) -> bool,
+) -> fmt::Result {
+    w.write_char('[')?;
+    for (i, e) in edits.iter().enumerate() {
+        if i > 0 {
+            w.write_char(',')?;
+        }
+        w.write_char('[')?;
+        write_path(w, &e.path)?;
+        w.write_char(',')?;
+        e.old.write_json(w, keep)?;
+        w.write_char(',')?;
+        e.new.write_json(w, keep)?;
+        w.write_char(']')?;
+    }
+    w.write_char(']')
+}
+
+/// Writes a field's edits: `{"e": [[path, old, new], …]}`.
+fn write_edits(
+    w: &mut dyn fmt::Write,
+    edits: &[Edit<'_>],
+    keep: &mut dyn FnMut(&str) -> bool,
+) -> fmt::Result {
+    w.write_str("{\"e\":")?;
+    write_edit_list(w, edits, keep)?;
+    w.write_char('}')
+}
+
+/// (replayfix) How a keyed patch is written: as it came, or diff by
+/// diff with the items it replaced patched.
+enum KeyedPlan<'a> {
+    Whole,
+    Parts(Vec<Part<'a>>),
+}
+
+/// One diff of a keyed patch as written.
+enum Part<'a> {
+    /// The diff as it came, with the item it removed or replaced (if
+    /// any), which goes into `r`.
+    Diff(&'a strand_core::VecDiff<Data, Data>, Option<&'a Data>),
+    /// An item that changed in place: `{"patch": [index, key, edits]}`.
+    Patch(usize, &'a Data, Vec<Edit<'a>>),
+}
+
+/// The plan of a keyed patch: `None` when nothing in it changes (every
+/// diff an item replaced by its equal). A patch with a reset, or whose
+/// removed items do not pair with its diffs, is written whole.
+fn keyed_plan<'a>(
+    diffs: &'a [strand_core::VecDiff<Data, Data>],
+    removed: &'a [Data],
+    keep: &dyn Fn(&str) -> bool,
+) -> Option<KeyedPlan<'a>> {
+    use strand_core::VecDiff;
+    if diffs.is_empty() || diffs.iter().any(|d| matches!(d, VecDiff::Reset { .. })) {
+        return Some(KeyedPlan::Whole);
+    }
+    let mut parts = Vec::with_capacity(diffs.len());
+    let mut gone = removed.iter();
+    for d in diffs {
+        match d {
+            VecDiff::Update { index, key, value } => {
+                let Some(old) = gone.next() else {
+                    return Some(KeyedPlan::Whole);
+                };
+                if old == value {
+                    continue;
+                }
+                let mut edits = Vec::new();
+                diff(old, value, &mut Vec::new(), &mut edits, keep);
+                let whole_item = edits.iter().any(|e| e.path.is_empty());
+                let patch = 16
+                    + json_len(key, keep)
+                    + edits.iter().map(|e| edit_len(e, keep) + 1).sum::<usize>();
+                let update = 16 + json_len(key, keep) + json_len(value, keep) + json_len(old, keep);
+                if !whole_item && patch < update {
+                    parts.push(Part::Patch(*index, key, edits));
+                } else {
+                    parts.push(Part::Diff(d, Some(old)));
+                }
+            }
+            VecDiff::Remove { .. } => {
+                let Some(old) = gone.next() else {
+                    return Some(KeyedPlan::Whole);
+                };
+                parts.push(Part::Diff(d, Some(old)));
+            }
+            _ => parts.push(Part::Diff(d, None)),
+        }
+    }
+    if gone.next().is_some() {
+        return Some(KeyedPlan::Whole);
+    }
+    (!parts.is_empty()).then_some(KeyedPlan::Parts(parts))
+}
+
+/// Writes a planned keyed patch as `{"d": diffs, "r": removed}`, a
+/// patched item as `{"patch": [index, key, [[path, old, new], …]]}`
+/// with nothing of it in `r`.
+fn write_parts(
+    w: &mut dyn fmt::Write,
+    parts: &[Part<'_>],
+    keep: &mut dyn FnMut(&str) -> bool,
+) -> fmt::Result {
+    w.write_str("{\"d\":[")?;
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            w.write_char(',')?;
+        }
+        match p {
+            Part::Diff(d, _) => write_diff(w, d, keep)?,
+            Part::Patch(index, key, edits) => {
+                write!(w, "{{\"patch\":[{index},")?;
+                key.write_json(w, keep)?;
+                w.write_char(',')?;
+                write_edit_list(w, edits, keep)?;
+                w.write_str("]}")?;
+            }
+        }
+    }
+    w.write_str("],\"r\":[")?;
+    let mut first = true;
+    for p in parts {
+        if let Part::Diff(_, Some(old)) = p {
+            if !first {
+                w.write_char(',')?;
+            }
+            first = false;
+            old.write_json(w, keep)?;
+        }
+    }
+    w.write_str("]}")
+}
+
 /// A keyed patch as `{"d": diffs, "r": removed}`: each diff one of
 /// `{"reset": [[key, value], …]}`, `{"insert": [index, key, value]}`,
 /// `{"update": [index, key, value]}`, `{"remove": [index, key]}` and
@@ -1378,12 +1734,31 @@ fn write_diffs(
     removed: &[Data],
     keep: &mut dyn FnMut(&str) -> bool,
 ) -> fmt::Result {
-    use strand_core::VecDiff;
     w.write_str("{\"d\":[")?;
     for (i, d) in diffs.iter().enumerate() {
         if i > 0 {
             w.write_char(',')?;
         }
+        write_diff(w, d, keep)?;
+    }
+    w.write_str("],\"r\":[")?;
+    for (i, d) in removed.iter().enumerate() {
+        if i > 0 {
+            w.write_char(',')?;
+        }
+        d.write_json(w, keep)?;
+    }
+    w.write_str("]}")
+}
+
+/// One diff of a keyed patch (see [`write_diffs`]).
+fn write_diff(
+    w: &mut dyn fmt::Write,
+    d: &strand_core::VecDiff<Data, Data>,
+    keep: &mut dyn FnMut(&str) -> bool,
+) -> fmt::Result {
+    use strand_core::VecDiff;
+    {
         match d {
             VecDiff::Reset { items } => {
                 w.write_str("{\"reset\":[")?;
@@ -1423,14 +1798,7 @@ fn write_diffs(
             }
         }
     }
-    w.write_str("],\"r\":[")?;
-    for (i, d) in removed.iter().enumerate() {
-        if i > 0 {
-            w.write_char(',')?;
-        }
-        d.write_json(w, keep)?;
-    }
-    w.write_str("]}")
+    Ok(())
 }
 
 /// The composite's calls and writes, told to the recorder.
@@ -2270,7 +2638,7 @@ mod tests {
 
     #[test]
     fn clipboard_texts_are_lengths() {
-        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        let mut c = ChangeRecorder::new(true, program("let x = clipboard.text"));
         let old = Data::Null;
         let new = Data::Record {
             ty: "ClipEntry".into(),
@@ -2284,7 +2652,7 @@ mod tests {
             &TapEvent {
                 service: "clipboard",
                 change: Change::Field {
-                    field: "current",
+                    field: "text",
                     old: &old,
                     new: &new,
                     initial: false,
@@ -2293,7 +2661,7 @@ mod tests {
         );
         let ring = c.ring().unwrap();
         let e = entries(ring);
-        assert_eq!(e[0].name.as_deref(), Some("clipboard.current"));
+        assert_eq!(e[0].name.as_deref(), Some("clipboard.text"));
         assert_eq!(
             value_of(&e[0]),
             serde_json::json!([null, {"text": {"~text": 11}, "width": 64}])
@@ -2507,7 +2875,7 @@ mod tests {
 
     #[test]
     fn keyed_patches_keep_their_diffs_and_removed_items() {
-        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        let mut c = ChangeRecorder::new(true, program("let x = windows.all.len"));
         let diffs = [
             strand_core::VecDiff::Insert {
                 index: 1,
@@ -2539,5 +2907,328 @@ mod tests {
             value_of(&e[0]),
             serde_json::json!({"d": [{"insert": [1, "w2", 2]}, {"remove": [0, "w1"]}], "r": [1]})
         );
+    }
+
+    /// A record of `ty` with `fields`.
+    fn rec(ty: &'static str, fields: Vec<(&'static str, Data)>) -> Data {
+        Data::Record {
+            ty: ty.into(),
+            fields: fields.into_iter().map(|(n, d)| (n.into(), d)).collect(),
+        }
+    }
+
+    /// A workspace of `id` holding windows titled `titles`.
+    fn workspace(id: i64, focused: bool, titles: &[&str]) -> Data {
+        let windows = titles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                rec(
+                    "Window",
+                    vec![
+                        ("id", Data::text(format!("w{id}-{i}").as_str())),
+                        ("title", Data::text(*t)),
+                        ("app_id", Data::text("busy-term")),
+                        (
+                            "app",
+                            rec(
+                                "App",
+                                vec![
+                                    ("id", Data::text("busy-term")),
+                                    ("name", Data::text("Terminal")),
+                                    (
+                                        "categories",
+                                        Data::List(vec![
+                                            Data::text("System"),
+                                            Data::text("TerminalEmulator"),
+                                        ]),
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                )
+            })
+            .collect();
+        rec(
+            "Workspace",
+            vec![
+                ("id", Data::Int(id)),
+                ("name", Data::text(id.to_string().as_str())),
+                ("focused", Data::Bool(focused)),
+                ("windows", Data::List(windows)),
+            ],
+        )
+    }
+
+    fn field_change(
+        c: &mut ChangeRecorder,
+        t: u64,
+        service: &str,
+        field: &'static str,
+        old: &Data,
+        new: &Data,
+    ) {
+        c.service(
+            t,
+            &TapEvent {
+                service,
+                change: Change::Field {
+                    field,
+                    old,
+                    new,
+                    initial: false,
+                },
+            },
+        );
+    }
+
+    fn keyed_change(
+        c: &mut ChangeRecorder,
+        t: u64,
+        service: &str,
+        field: &'static str,
+        diffs: &[strand_core::VecDiff<Data, Data>],
+        removed: &[Data],
+    ) {
+        c.service(
+            t,
+            &TapEvent {
+                service,
+                change: Change::Keyed {
+                    field,
+                    diffs,
+                    removed,
+                    initial: false,
+                },
+            },
+        );
+    }
+
+    /// (replayfix) A field's change is what changed in it (`{"e": [[path,
+    /// old, new]]}`) when that is shorter than the value before and
+    /// after; a number, or a value of another shape, is `[old, new]`.
+    #[test]
+    fn a_field_change_is_its_edits_when_shorter() {
+        let mut c = ChangeRecorder::new(
+            true,
+            program("let a = workspaces.focused\nlet b = cpu.usage"),
+        );
+        let before = workspace(2, true, &["~", "build 1%"]);
+        let after = workspace(2, true, &["~", "build 2%"]);
+        field_change(&mut c, 1, "workspaces", "focused", &before, &after);
+        field_change(
+            &mut c,
+            2,
+            "cpu",
+            "usage",
+            &Data::Float(0.25),
+            &Data::Float(0.5),
+        );
+        // Another workspace: what differs, its windows whole (a list of
+        // another length); then none, `[old, null]`.
+        let other = workspace(3, true, &["notes"]);
+        field_change(&mut c, 3, "workspaces", "focused", &after, &other);
+        field_change(&mut c, 4, "workspaces", "focused", &other, &Data::Null);
+        let e = entries(c.ring().unwrap());
+        assert_eq!(
+            value_of(&e[0]),
+            serde_json::json!({"e": [["windows.1.title", "build 1%", "build 2%"]]})
+        );
+        assert_eq!(value_of(&e[1]), serde_json::json!([0.25, 0.5]));
+        let paths: Vec<String> = value_of(&e[2])["e"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x[0].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(paths, ["id", "name", "windows"]);
+        assert_eq!(value_of(&e[3])[1], serde_json::Value::Null);
+        assert!(e[0].value.as_ref().unwrap().len() < 60);
+    }
+
+    /// (replayfix) A keyed item changed in place is written as its edits
+    /// (`{"patch": [index, key, edits]}`, nothing of it in `r`); an item
+    /// replaced by its equal is no change; a removed item is kept whole.
+    /// A patch that changes nothing is not recorded at all.
+    #[test]
+    fn a_keyed_update_is_patched_and_an_equal_one_dropped() {
+        use strand_core::VecDiff;
+        let mut c = ChangeRecorder::new(true, program("let a = workspaces.all.len"));
+        let (w1, w1b) = (workspace(1, false, &["~"]), workspace(1, true, &["~"]));
+        let w2 = workspace(2, false, &["a", "b"]);
+        let w3 = workspace(3, false, &[]);
+        let diffs = [
+            VecDiff::Update {
+                index: 0,
+                key: Data::Int(1),
+                value: w1b.clone(),
+            },
+            VecDiff::Update {
+                index: 1,
+                key: Data::Int(2),
+                value: w2.clone(),
+            },
+            VecDiff::Remove {
+                index: 2,
+                key: Data::Int(3),
+            },
+        ];
+        keyed_change(
+            &mut c,
+            1,
+            "workspaces",
+            "all",
+            &diffs,
+            &[w1, w2.clone(), w3],
+        );
+        // Only an equal item: nothing changed.
+        let same = [VecDiff::Update {
+            index: 1,
+            key: Data::Int(2),
+            value: w2.clone(),
+        }];
+        keyed_change(
+            &mut c,
+            2,
+            "workspaces",
+            "all",
+            &same,
+            std::slice::from_ref(&w2),
+        );
+        let e = entries(c.ring().unwrap());
+        assert_eq!(e.len(), 1, "the change of nothing is not recorded: {e:?}");
+        assert_eq!(
+            value_of(&e[0]),
+            serde_json::json!({
+                "d": [{"patch": [0, 1, [["focused", false, true]]]}, {"remove": [2, 3]}],
+                "r": [{"id": 3, "name": "3", "focused": false, "windows": []}]
+            })
+        );
+        // A patch with a reset is written as it came.
+        let reset = [VecDiff::Reset {
+            items: vec![(Data::Int(2), w2.clone())],
+        }];
+        keyed_change(&mut c, 3, "workspaces", "all", &reset, &[]);
+        let e = entries(c.ring().unwrap());
+        assert!(value_of(&e[1])["d"][0].get("reset").is_some());
+    }
+
+    /// (replayfix) A field the config never reads is not recorded: not
+    /// by name, nor through a method of its service. A service whose
+    /// method the config calls (`workspaces.slots(screen)`) counts as
+    /// read whole. A service's events are recorded.
+    #[test]
+    fn a_field_the_config_never_reads_is_not_recorded() {
+        use strand_core::VecDiff;
+        let src = "let t = windows.focused?.title ?? \"\"\nbar B {\n  row { for ws in workspaces.slots(screen) { text ws.name } }\n}";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let w = rec(
+            "Window",
+            vec![("id", Data::text("1")), ("title", Data::text("a"))],
+        );
+        let w2 = rec(
+            "Window",
+            vec![("id", Data::text("1")), ("title", Data::text("b"))],
+        );
+        let up = [VecDiff::Update {
+            index: 0,
+            key: Data::text("1"),
+            value: w2.clone(),
+        }];
+        keyed_change(&mut c, 1, "windows", "all", &up, std::slice::from_ref(&w));
+        field_change(&mut c, 2, "windows", "focused", &w, &w2);
+        let ws = workspace(4, false, &[]);
+        let ins = [VecDiff::Insert {
+            index: 0,
+            key: Data::Int(4),
+            value: ws,
+        }];
+        keyed_change(&mut c, 3, "workspaces", "configured", &ins, &[]);
+        field_change(
+            &mut c,
+            4,
+            "cpu",
+            "usage",
+            &Data::Float(0.1),
+            &Data::Float(0.2),
+        );
+        // `system` is read by the theme and the renderer, so it is kept.
+        field_change(
+            &mut c,
+            4,
+            "system",
+            "dark",
+            &Data::Bool(false),
+            &Data::Bool(true),
+        );
+        c.service(
+            5,
+            &TapEvent {
+                service: "notifications",
+                change: Change::Event {
+                    event: "received",
+                    args: &[Data::Int(7)],
+                },
+            },
+        );
+        let names: Vec<String> = entries(c.ring().unwrap())
+            .into_iter()
+            .filter_map(|e| e.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "windows.focused",
+                "workspaces.configured",
+                "system.dark",
+                "notifications.received"
+            ]
+        );
+        // A reload that reads `cpu.usage` records it from then on.
+        c.set_program(program("let u = cpu.usage"));
+        field_change(
+            &mut c,
+            6,
+            "cpu",
+            "usage",
+            &Data::Float(0.2),
+            &Data::Float(0.3),
+        );
+        field_change(&mut c, 7, "windows", "focused", &w2, &w);
+        let e = entries(c.ring().unwrap());
+        assert_eq!(e.last().and_then(|e| e.name.as_deref()), Some("cpu.usage"));
+    }
+
+    /// (replayfix) An edit holds its texts back by the same rules as a
+    /// whole value: clipboard's are lengths.
+    #[test]
+    fn an_edit_holds_texts_back_as_a_value_does() {
+        let mut c = ChangeRecorder::new(true, program("let x = clipboard.text"));
+        let entry = |t: &str| {
+            rec(
+                "ClipEntry",
+                vec![
+                    ("text", Data::text(t)),
+                    ("mime", Data::text("text/plain;charset=utf-8")),
+                    ("width", Data::Int(64)),
+                ],
+            )
+        };
+        field_change(
+            &mut c,
+            1,
+            "clipboard",
+            "text",
+            &entry("abc"),
+            &entry("hunter2-Z9q"),
+        );
+        let e = entries(c.ring().unwrap());
+        assert_eq!(
+            value_of(&e[0]),
+            serde_json::json!({"e": [["text", {"~text": 3}, {"~text": 11}]]})
+        );
+        assert_ne!(e[0].rec.flags & flags::REDACTED, 0);
+        assert!(!contains(&c.dump().unwrap(), b"hunter2"));
     }
 }

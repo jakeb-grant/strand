@@ -69,8 +69,8 @@ fn dump_of(r: &Ring) -> Dump {
 
 #[test]
 fn the_ring_sizes_add_to_256_kib() {
-    assert_eq!(INPUT.bytes(), 180_224);
-    assert_eq!(CHANGES.bytes(), 81_920);
+    assert_eq!(INPUT.bytes(), 155_648);
+    assert_eq!(CHANGES.bytes(), 106_496);
     assert_eq!(INPUT.bytes() + CHANGES.bytes(), 256 * 1024);
 }
 
@@ -196,34 +196,90 @@ fn text_keys_merge_into_one_count() {
     );
 }
 
+/// (replayfix) A ring keeps no change whose value its arena lost: the
+/// record whose value is lapped goes, with every record older than it
+/// (a root before it too), and the dump says the ring evicted them.
 #[test]
-fn a_value_past_the_arena_reads_as_lost() {
+fn a_record_whose_value_the_arena_lapped_is_evicted() {
     let mut r = Ring::new(small(), ring::CHANGES);
-    // 64 bytes of arena: the first value is overwritten by the next ones.
-    for i in 0..4u8 {
+    let value = |r: &mut Ring, t: u64, i: u8| {
         r.push_named(
-            u64::from(i),
+            t,
             kind::FIELD,
             "s.f",
             &[],
             0,
             Some(&mut |w: &mut flight::ArenaWriter<'_>| w.put(&[b'a' + i; 20])),
         );
+    };
+    r.push(Rec::new(0, kind::ROOT, 0));
+    // 64 bytes of arena: the fourth value laps the first.
+    for i in 0..3u8 {
+        value(&mut r, u64::from(i) + 1, i);
     }
+    r.push(Rec::new(10, kind::ROOT, 0));
+    assert_eq!((r.len(), r.evicted()), (5, 0), "nothing lapped yet");
+    value(&mut r, 11, 3);
     let d = dump_of(&r);
-    let e = d.entries();
-    assert_eq!(e.len(), 4);
-    assert_ne!(
-        e[0].rec.flags & flags::LOST,
-        0,
-        "the first value was lapped"
+    assert!(d.wrapped);
+    assert_eq!(
+        d.evicted, 2,
+        "the first value's record and the root before it"
     );
-    assert_eq!(e[0].value, None);
-    for (i, x) in e.iter().enumerate().skip(1) {
-        assert_eq!(x.rec.flags & flags::LOST, 0, "value {i} is still held");
-        assert_eq!(x.value.as_deref(), Some(&[b'a' + i as u8; 20][..]));
-        assert_eq!(x.name.as_deref(), Some("s.f"));
+    let e = d.entries();
+    assert_eq!(
+        e.iter().map(|e| e.rec.t).collect::<Vec<_>>(),
+        [2, 3, 10, 11]
+    );
+    for x in &e {
+        assert_eq!(x.rec.flags & flags::LOST, 0, "{x:?}");
     }
+    assert_eq!(e[0].value.as_deref(), Some(&[b'b'; 20][..]));
+    assert_eq!(e[3].value.as_deref(), Some(&[b'd'; 20][..]));
+    // The input ring's records carry no value: a key name in its arena
+    // lapped evicts nothing, and reads back as lost.
+    let mut i = Ring::new(small(), ring::INPUT);
+    for n in 0..6u16 {
+        let a = i.value(|w| w.put(&[b'k'; 20]));
+        i.push(
+            Rec::new(u64::from(n), kind::KEY, 0)
+                .u16_at(0, NAME_IN_ARENA)
+                .with_value(a),
+        );
+    }
+    let d = dump_of(&i);
+    assert_eq!((d.records.len(), d.evicted), (6, 0));
+    assert_ne!(d.entries()[0].rec.flags & flags::LOST, 0);
+}
+
+/// An older dump (version 1) whose arena lapped a value still reads:
+/// the record is kept, marked lost.
+#[test]
+fn a_version_1_dump_with_a_lost_value_still_reads() {
+    let mut r = Ring::new(small(), ring::CHANGES);
+    // A record pointing at bytes the arena never held, as a version-1
+    // ring left a lapped value.
+    r.push(Rec::new(1, kind::FIELD, 0).with_value(ARef {
+        off: 1_000,
+        len: 5,
+        truncated: false,
+    }));
+    r.push_named(
+        2,
+        kind::FIELD,
+        "s.f",
+        &[],
+        0,
+        Some(&mut |w: &mut flight::ArenaWriter<'_>| w.put(b"[1,2]")),
+    );
+    let mut bytes = r.dump(3);
+    assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), flight::VERSION);
+    bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
+    let e = flight::read(&bytes).unwrap().entries();
+    assert_eq!(e.len(), 2);
+    assert_ne!(e[0].rec.flags & flags::LOST, 0);
+    assert_eq!(e[0].value, None);
+    assert_eq!(e[1].value.as_deref(), Some(&b"[1,2]"[..]));
 }
 
 #[test]
@@ -379,26 +435,42 @@ proptest! {
             }
         }
         let d = flight::read(&r.dump(9)).unwrap();
-        let held = &pushed[pushed.len().saturating_sub(64)..];
+        // (replayfix) The newest records, at most 64: fewer when the
+        // arena lapped the value of an older one, which went with every
+        // record before it.
+        let start = d.evicted as usize;
+        prop_assert!(pushed.len() - start <= 64);
+        let held = &pushed[start..];
         prop_assert_eq!(d.records.len(), held.len());
         prop_assert_eq!(d.now_ns, 9);
+        if start > 0 && pushed.len() - start < 64 {
+            // Evicted for its value: the newest record with a value
+            // before the ones held has it lapped.
+            let lapped = pushed[..start].iter().rev().find(|(_, v)| v.is_some());
+            prop_assert!(lapped.is_some(), "evicted with no value lapped");
+            if let Some((rec, _)) = lapped {
+                let a = rec.value_ref().unwrap();
+                prop_assert!(a.truncated || d.resolve(a).is_none(), "{:?} was still held", rec);
+            }
+        }
         let entries = d.entries();
         for ((rec, v), e) in held.iter().zip(&entries) {
             prop_assert_eq!(e.rec.t, rec.t);
             prop_assert_eq!(e.rec.kind, rec.kind);
             prop_assert_eq!(e.rec.slot, rec.slot);
             prop_assert_eq!(e.rec.payload, rec.payload);
+            prop_assert_eq!(e.rec.flags & flags::LOST, 0, "no value held is lost");
             if let Some((name, bytes)) = v {
-                if e.rec.flags & flags::LOST == 0 {
-                    prop_assert_eq!(e.name.as_deref(), Some(name.as_str()));
+                prop_assert_eq!(e.name.as_deref(), Some(name.as_str()));
+                if e.rec.flags & flags::TRUNCATED == 0 {
                     prop_assert_eq!(e.value.as_deref(), Some(&bytes[..]));
-                } else {
-                    prop_assert_eq!(e.value.as_deref(), None);
                 }
             }
         }
         // The newest value is never lost.
-        if let Some((_, Some((_, bytes)))) = held.last() {
+        if let Some((_, Some((_, bytes)))) = held.last()
+            && entries.last().unwrap().rec.flags & flags::TRUNCATED == 0
+        {
             prop_assert_eq!(entries.last().unwrap().value.as_deref(), Some(&bytes[..]));
         }
     }

@@ -3,7 +3,10 @@
 //! headless sway with a virtual pointer and keyboard, a `from file`
 //! service, a bar with a button and two `keyboard: exclusive` panels (a
 //! text input, a password input); the bundle a report saves is read
-//! back part by part.
+//! back part by part. (replayfix) A busy session (four workspaces of
+//! windows, a clock, an MPRIS player, notifications) runs over sway's
+//! IPC with its own home's desktop entries, kept whole by the changes
+//! ring.
 //!
 //! Skipped, loudly, without sway or grim (CI sets `STRAND_REQUIRE_SWAY`).
 
@@ -11,6 +14,9 @@ mod support;
 
 #[path = "../../strand-services/tests/common/data_control.rs"]
 mod data_control;
+#[allow(dead_code)]
+#[path = "../../strand-services/tests/common/window.rs"]
+mod window;
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -88,6 +94,8 @@ struct Desk {
     log: PathBuf,
     /// Leave `dir` behind (the replay end to end reads its files).
     keep: bool,
+    /// sway's IPC socket.
+    sway_ipc: PathBuf,
 }
 
 impl Drop for Desk {
@@ -138,6 +146,19 @@ impl Desk {
     /// [`Desk::start`] with `extra` appended to the config and `files`
     /// beside it.
     fn with(tag: &str, extra: &str, files: &[(&str, &str)]) -> Option<Desk> {
+        Self::with_ipc(tag, extra, files, false, &[])
+    }
+
+    /// [`Desk::with`]; with `ipc`, strand is given sway's IPC socket
+    /// (`SWAYSOCK`), so its workspaces and windows are sway's; `home`'s
+    /// files are written under its home before it starts.
+    fn with_ipc(
+        tag: &str,
+        extra: &str,
+        files: &[(&str, &str)],
+        ipc: bool,
+        home: &[(String, String)],
+    ) -> Option<Desk> {
         if !tools() {
             return None;
         }
@@ -197,6 +218,20 @@ impl Desk {
             assert!(Instant::now() < deadline, "sway did not start");
             std::thread::sleep(Duration::from_millis(20));
         };
+        let sway_ipc = loop {
+            let found = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|e| e.starts_with("sway-ipc."));
+            if let Some(i) = found
+                && UnixStream::connect(dir.join(&i)).is_ok()
+            {
+                break dir.join(i);
+            }
+            assert!(Instant::now() < deadline, "sway's IPC did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        };
         // The keyboard and pointer join the seat before strand connects.
         let keys = keyboard::Keyboard::new(&dir.join(&display), &dir);
         let pointer = Pointer::new(&dir.join(&display));
@@ -221,6 +256,11 @@ impl Desk {
         for (name, text) in files {
             std::fs::write(config.join(name), text).unwrap();
         }
+        for (path, text) in home {
+            let p = dir.join("home").join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
         let mut desk = Desk {
             strand: None,
             keys,
@@ -231,9 +271,10 @@ impl Desk {
             display,
             dir,
             keep: false,
+            sway_ipc,
         };
-        let child = Command::new(env!("CARGO_BIN_EXE_strand"))
-            .arg("run")
+        let mut run = Command::new(env!("CARGO_BIN_EXE_strand"));
+        run.arg("run")
             .arg(&config)
             .envs(desk.env())
             .env("HOME", desk.dir.join("home"))
@@ -245,9 +286,11 @@ impl Desk {
             .env_remove("STRAND_MOCK")
             .env_remove("SWAYSOCK")
             .stdin(Stdio::null())
-            .stderr(std::fs::File::create(&desk.log).unwrap())
-            .spawn()
-            .unwrap();
+            .stderr(std::fs::File::create(&desk.log).unwrap());
+        if ipc {
+            run.env("SWAYSOCK", &desk.sway_ipc);
+        }
+        let child = run.spawn().unwrap();
         desk.strand = Some(Proc(child));
         desk.wait("strand answers", |d| d.get("report.clicks").is_some());
         desk.wait("the bar and the panel show", |d| {
@@ -1008,6 +1051,306 @@ fn a_popup_session_is_kept_for_its_replay() {
             .any(|k| k.starts_with("Peek[") && k.ends_with("].over")),
         "{cells}"
     );
+    if let Some(k) = keep {
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();
+        std::fs::write(k.join("run"), desk.dir.display().to_string()).unwrap();
+    }
+}
+
+/// (replayfix) A generic busy shell: a bottom bar with a chip per
+/// workspace slot (its name and its windows' icons; a click focuses
+/// it and keeps its id), the focused window's title, a clock, the
+/// playing track and the newest notifications.
+const BUSY: &str = "export state picked = 0
+export let shown = workspaces.all.map(ws => ws.windows.len).sum()
+let recent = notifications.all.take(2)
+bar Busy {
+  edge: bottom; height: 32
+  row {
+    for ws in workspaces.slots(screen) {
+      box { width: 100; height: 32; bg: ws.focused ? #ff8800 : ws.occupied ? #3060c0 : #303030
+        on click {
+          picked = ws.id
+          ws.focus()
+        }
+        row { gap: 2
+          text ws.name { color: #ffffff }
+          for w in ws.windows { image w.icon { size: 14 } }
+        }
+      }
+    }
+    text windows.focused?.title ?? \"\" { color: #ffffff }
+    text clock.format(\"%H:%M\") { color: #ffffff }
+    text media.title ?? \"no media\" { color: #ffffff }
+    col {
+      for n in recent { text n.summary { color: #ffffff } }
+    }
+  }
+}
+";
+
+/// (replayfix) The apps the busy session's windows belong to: desktop
+/// entries with a comment, an icon and categories, so each window
+/// carries its app as a real one does.
+const BUSY_APPS: [(&str, &str, &str, &str); 3] = [
+    (
+        "busy-term",
+        "Terminal",
+        "utilities-terminal",
+        "System;TerminalEmulator;",
+    ),
+    (
+        "busy-editor",
+        "Editor",
+        "accessories-text-editor",
+        "Utility;TextEditor;Development;",
+    ),
+    ("busy-web", "Browser", "web-browser", "Network;WebBrowser;"),
+];
+
+/// (replayfix) The busy session's player: its title changes on `Next`.
+struct BusyPlayer(std::sync::Arc<std::sync::Mutex<u32>>);
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+impl BusyPlayer {
+    async fn next(&self, #[zbus(signal_emitter)] e: zbus::object_server::SignalEmitter<'_>) {
+        *self.0.lock().unwrap() += 1;
+        self.metadata_changed(&e).await.unwrap();
+    }
+    #[zbus(property)]
+    fn playback_status(&self) -> String {
+        "Playing".into()
+    }
+    #[zbus(property)]
+    fn metadata(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
+        let n = *self.0.lock().unwrap();
+        let text = |s: String| {
+            zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap()
+        };
+        std::collections::HashMap::from([
+            ("xesam:title".to_string(), text(format!("Track {n}"))),
+            ("xesam:album".to_string(), text("Busy Album".into())),
+            (
+                "mpris:length".to_string(),
+                zbus::zvariant::OwnedValue::from(200_000_000i64),
+            ),
+        ])
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn position(&self) -> i64 {
+        1_000_000
+    }
+    #[zbus(property)]
+    fn rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn can_go_next(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_control(&self) -> bool {
+        true
+    }
+}
+
+struct BusyRoot;
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+impl BusyRoot {
+    #[zbus(property)]
+    fn identity(&self) -> String {
+        "Busy".into()
+    }
+}
+
+/// (replayfix) The changes ring's arena as a busy session filled it:
+/// printed for the measurement (docs/decisions.md replayfix), and the
+/// bytes per minute.
+fn arena_use(d: &flight::Dump) -> f64 {
+    let written = d.arena_first + d.arena.len() as u64;
+    let first = d.records.first().map_or(d.now_ns, |r| r.t);
+    let span = (d.now_ns.saturating_sub(first)) as f64 / 1e9;
+    let mut by: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    for e in d.entries() {
+        if let Some(a) = e.rec.value_ref() {
+            let n = by.entry(e.name.clone().unwrap_or_default()).or_default();
+            n.0 += 1;
+            n.1 += a.len as usize;
+        }
+    }
+    let mut rows: Vec<_> = by.into_iter().collect();
+    rows.sort_by_key(|(_, (_, b))| std::cmp::Reverse(*b));
+    let per_min = written as f64 / span.max(1e-9) * 60.0;
+    eprintln!(
+        "busy session: {} records, {} names, {written} arena bytes in {span:.1} s: {per_min:.0} B/min; \
+         evicted {}, arena {} of {}",
+        d.records.len(),
+        d.names.len(),
+        d.evicted,
+        d.arena.len(),
+        flight::CHANGES.arena
+    );
+    for (name, (n, b)) in rows.iter().take(12) {
+        eprintln!("  {name:32} {n:4} records {b:7} bytes");
+    }
+    per_min
+}
+
+/// (replayfix) A generic busy shell for its whole window: four sway
+/// workspaces holding six windows of three apps (desktop entries with
+/// icons and categories), a chip clicked every 1.6 s for 40 s, a
+/// terminal's title counting up every 0.4 s, a notification every 10 s
+/// and the track changing every 13 s. The changes ring keeps every
+/// value from the shell's start to the report (none lost from its
+/// arena, none over the value cap, no record evicted), so its replay
+/// can press each chip the live shell pressed (scripts/eval/
+/// test-report-view.sh --e2e). With `STRAND_REPORT_KEEP=DIR` the
+/// bundle's path is written to `DIR/bundle`.
+#[test]
+fn a_busy_session_is_kept_for_its_whole_window() {
+    let entries: Vec<(String, String)> = BUSY_APPS
+        .iter()
+        .map(|(id, name, icon, cats)| {
+            (
+                format!(".local/share/applications/{id}.desktop"),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nComment=The busy session's \
+                     {name}\nIcon={icon}\nExec=true\nCategories={cats}\n"
+                ),
+            )
+        })
+        .collect();
+    let Some(mut desk) = Desk::with_ipc("busy", "", &[("busy.strand", BUSY)], true, &entries)
+    else {
+        return;
+    };
+    let keep = std::env::var_os("STRAND_REPORT_KEEP").map(PathBuf::from);
+    desk.keep = keep.is_some();
+    let swaymsg = |args: &[&str]| {
+        let out = Command::new("swaymsg")
+            .args(args)
+            .env("SWAYSOCK", &desk.sway_ipc)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "swaymsg {args:?}");
+    };
+    let socket = desk.socket();
+    let mut windows = Vec::new();
+    for (ws, wins) in [
+        ("1", &[("busy-term", "~"), ("busy-editor", "notes.txt")][..]),
+        (
+            "2",
+            &[("busy-web", "Start page"), ("busy-term", "build")][..],
+        ),
+        ("3", &[("busy-editor", "todo.md")][..]),
+        ("4", &[("busy-web", "Docs")][..]),
+    ] {
+        swaymsg(&["workspace", "number", ws]);
+        for (app, title) in wins {
+            windows.push(window::TestWindow::open(&socket, app, title));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let tokio = tokio::runtime::Runtime::new().unwrap();
+    let track = std::sync::Arc::new(std::sync::Mutex::new(1u32));
+    let player = tokio.block_on(async {
+        zbus::connection::Builder::address(desk._bus.address.as_str())
+            .unwrap()
+            .name("org.mpris.MediaPlayer2.busy")
+            .unwrap()
+            .serve_at("/org/mpris/MediaPlayer2", BusyPlayer(track.clone()))
+            .unwrap()
+            .serve_at("/org/mpris/MediaPlayer2", BusyRoot)
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
+    });
+    let notify = |i: u32| {
+        let _: zbus::Message = tokio
+            .block_on(player.call_method(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                Some("org.freedesktop.Notifications"),
+                "Notify",
+                &(
+                    "Mail",
+                    0u32,
+                    "mail-unread",
+                    format!("Message {i}"),
+                    "A message from the busy session",
+                    Vec::<&str>::new(),
+                    std::collections::HashMap::<&str, zbus::zvariant::Value<'_>>::new(),
+                    600_000i32,
+                ),
+            ))
+            .unwrap();
+    };
+    desk.wait("the six windows on the chips", |d| {
+        d.get("busy.shown").as_deref() == Some("6")
+    });
+    let (w, h) = (1280, 720);
+    let order = [1usize, 3, 0, 2];
+    for round in 0..25u32 {
+        let chip = order[round as usize % 4];
+        let x = 100 * chip as u32 + 85;
+        desk.pointer.motion(x, h - 10, w, h);
+        desk.pointer.click(x, h - 10, w, h);
+        for step in 0..4u32 {
+            windows[3].set_title(&format!("build {}%", (round * 4 + step) % 101));
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        if round % 6 == 2 {
+            notify(round);
+        }
+        if round % 8 == 5 {
+            let _: zbus::Message = tokio
+                .block_on(player.call_method(
+                    Some("org.mpris.MediaPlayer2.busy"),
+                    "/org/mpris/MediaPlayer2",
+                    Some("org.mpris.MediaPlayer2.Player"),
+                    "Next",
+                    &(),
+                ))
+                .unwrap();
+        }
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    let ans = desk.report("the busy session");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    let per_min = arena_use(&changes);
+    let e = changes.entries();
+    let presses = flight::read(&std::fs::read(dir.join("input.flight")).unwrap())
+        .unwrap()
+        .records
+        .iter()
+        .filter(|r| r.kind == kind::HIT)
+        .count();
+    assert!(presses >= 25, "{presses} presses hit");
+    let ws: Vec<&flight::Entry> = e
+        .iter()
+        .filter(|e| {
+            e.name
+                .as_deref()
+                .is_some_and(|n| n.starts_with("workspaces."))
+        })
+        .collect();
+    assert!(ws.len() >= 25, "{} workspaces changes", ws.len());
+    let lost: Vec<String> = e
+        .iter()
+        .filter(|e| e.rec.flags & (flight::flags::LOST | flight::flags::TRUNCATED) != 0)
+        .map(|e| format!("{:?} {:#x} {:#x}", e.name, e.rec.kind, e.rec.flags))
+        .collect();
+    assert!(lost.is_empty(), "values lost or over the cap: {lost:?}");
+    assert!(
+        !changes.wrapped,
+        "the changes ring evicted {} records ({per_min:.0} B/min)",
+        changes.evicted
+    );
+    drop(windows);
     if let Some(k) = keep {
         std::fs::create_dir_all(&k).unwrap();
         std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();

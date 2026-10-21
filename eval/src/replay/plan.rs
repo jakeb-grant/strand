@@ -275,6 +275,64 @@ pub fn toml_str(s: &str) -> String {
     out
 }
 
+/// (replayfix) The place an edit's path names in `v` (`windows.1.title`:
+/// a record's field by name, a list's item by its index); `None` when
+/// `v` has no such place.
+fn place<'a>(mut v: &'a mut Json, path: &str) -> Option<&'a mut Json> {
+    if path.is_empty() {
+        return Some(v);
+    }
+    for seg in path.split('.') {
+        v = match v {
+            Json::Array(items) => items.get_mut(seg.parse::<usize>().ok()?)?,
+            Json::Object(fields) => fields.get_mut(seg)?,
+            _ => return None,
+        };
+    }
+    Some(v)
+}
+
+/// (replayfix) Applies a change's edits (`[[path, old, new], …]`, the
+/// recorder's `{"e": …}` and a keyed `{"patch": …}`) to `v`: forward,
+/// each place set to its new value; backward, in the reverse order, to
+/// its old one. `None` when a path does not fit `v`.
+pub fn apply_edits(v: &Json, edits: &[Json], forward: bool) -> Option<Json> {
+    let mut out = v.clone();
+    let mut apply = |e: &Json| -> Option<()> {
+        let path = e.get(0)?.as_str()?;
+        let to = e.get(if forward { 2 } else { 1 })?;
+        *place(&mut out, path)? = to.clone();
+        Some(())
+    };
+    if forward {
+        edits.iter().try_for_each(&mut apply)?;
+    } else {
+        edits.iter().rev().try_for_each(&mut apply)?;
+    }
+    Some(out)
+}
+
+/// (replayfix) A field record's value after it: the second of `[old,
+/// new]`, or its edits (`{"e": …}`) applied to `before`, the value
+/// before it.
+pub fn field_after(v: &Json, before: Option<&Json>) -> Option<Json> {
+    match v {
+        Json::Array(pair) if pair.len() == 2 => Some(pair[1].clone()),
+        Json::Object(o) => apply_edits(before?, o.get("e")?.as_array()?, true),
+        _ => None,
+    }
+}
+
+/// (replayfix) A field record's value before it: the first of `[old,
+/// new]`, or its edits undone from `after`, the value after it.
+pub fn field_before(v: &Json, after: Option<&Json>) -> Option<Json> {
+    match v {
+        Json::Array(pair) if pair.len() == 2 => Some(pair[0].clone()),
+        Json::Object(o) => apply_edits(after?, o.get("e")?.as_array()?, false),
+        _ => None,
+    }
+}
+
 /// Plays keyed diffs (`{"d": …}`) forward on `list`.
 pub fn apply_keyed(list: &mut Vec<Json>, d: &[Json]) {
     let idx = |v: &Json| v.as_u64().unwrap_or(0) as usize;
@@ -285,6 +343,14 @@ pub fn apply_keyed(list: &mut Vec<Json>, d: &[Json]) {
         } else if let Some(a) = diff.get("update") {
             if let Some(slot) = list.get_mut(idx(&a[0])) {
                 *slot = a[2].clone();
+            }
+        } else if let Some(a) = diff.get("patch") {
+            // (replayfix) An item changed in place, by its edits.
+            if let Some(slot) = list.get_mut(idx(&a[0]))
+                && let Some(edits) = a[2].as_array()
+                && let Some(v) = apply_edits(slot, edits, true)
+            {
+                *slot = v;
             }
         } else if let Some(a) = diff.get("remove") {
             let i = idx(&a[0]);
@@ -322,6 +388,10 @@ pub fn undo_keyed(list: &[Json], d: &[Json], removed: &[Json]) -> Option<Vec<Jso
             let i = idx(&a[0]);
             let v = removed.pop()?;
             *list.get_mut(i)? = v;
+        } else if let Some(a) = diff.get("patch") {
+            // (replayfix) Its edits undone: nothing of it is in `removed`.
+            let slot = list.get_mut(idx(&a[0]))?;
+            *slot = apply_edits(slot, a[2].as_array()?, false)?;
         } else if let Some(a) = diff.get("remove") {
             let i = idx(&a[0]).min(list.len());
             let v = removed.pop()?;
@@ -810,6 +880,8 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             (kind::FIELD | kind::CELL, Some(Json::Array(pair))) if pair.len() == 2 => {
                 Some(pair[0].clone())
             }
+            // (replayfix) A field's edits, undone from the value after.
+            (kind::FIELD, Some(j)) => field_before(j, cur.get(&name)),
             (kind::KEYED, Some(j)) => {
                 let now = cur
                     .get(&name)
@@ -1289,21 +1361,22 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         let v = value(e);
         match e.rec.kind {
             kind::FIELD => {
-                if let Some(Json::Array(pair)) = &v
-                    && pair.len() == 2
-                {
-                    played.insert(name.clone(), pair[1].clone());
+                // (replayfix) `[old, new]`, or its edits played on the
+                // value before it.
+                let before = played.get(&name).or_else(|| seeds.get(&name));
+                if let Some(after) = v.as_ref().and_then(|j| field_after(j, before)) {
                     push(
                         &mut timed,
                         at,
-                        format!("set {name} {}", set_value(&pair[1])),
+                        format!("set {name} {}", set_value(&after)),
                         0,
                     );
                     events.push(Event {
                         kind: "change",
                         t: at,
-                        text: format!("service {name} = {}", compact(&pair[1])),
+                        text: format!("service {name} = {}", compact(&after)),
                     });
+                    played.insert(name.clone(), after);
                 }
             }
             kind::KEYED => {
@@ -1779,6 +1852,70 @@ mod tests {
         // Removed items that do not fit: none.
         assert_eq!(
             undo_keyed(&[json!("a")], &[json!({"update": [0, "a", "b"]})], &[]),
+            None
+        );
+    }
+
+    /// (replayfix) A field's edits (`{"e": …}`) play forward from the
+    /// value before and undo back from the value after; `[old, new]`,
+    /// the older form, still reads; an edit that does not fit is none.
+    #[test]
+    fn field_edits_play_forward_and_undo_back() {
+        let before = json!({"id": 2, "windows": [{"title": "a"}, {"title": "b 1%"}]});
+        let after = json!({"id": 3, "windows": [{"title": "a"}, {"title": "b 2%"}]});
+        let rec = json!({"e": [["id", 2, 3], ["windows.1.title", "b 1%", "b 2%"]]});
+        assert_eq!(field_after(&rec, Some(&before)), Some(after.clone()));
+        assert_eq!(field_before(&rec, Some(&after)), Some(before.clone()));
+        assert_eq!(field_after(&rec, None), None);
+        // An edit of a place inside a value it replaced: undone in the
+        // reverse order.
+        let rec = json!({"e": [["windows", [], [{"title": "x"}]], ["windows.0.title", "x", "y"]]});
+        let from = json!({"windows": []});
+        let to = field_after(&rec, Some(&from)).unwrap();
+        assert_eq!(to, json!({"windows": [{"title": "y"}]}));
+        assert_eq!(field_before(&rec, Some(&to)), Some(from));
+        // The pair form.
+        let pair = json!([1, 2]);
+        assert_eq!(field_after(&pair, None), Some(json!(2)));
+        assert_eq!(field_before(&pair, None), Some(json!(1)));
+        // A path the value does not have.
+        let rec = json!({"e": [["windows.5.title", "a", "b"]]});
+        assert_eq!(field_after(&rec, Some(&before)), None);
+    }
+
+    /// (replayfix) A keyed patch changes its item in place and undoes
+    /// with nothing taken from the removed items; with a remove beside
+    /// it, the list before comes back whole.
+    #[test]
+    fn keyed_patches_undo_with_the_removed_items_of_the_rest() {
+        let before = vec![
+            json!({"id": 1, "focused": false, "windows": [{"title": "t"}]}),
+            json!({"id": 2, "focused": true, "windows": []}),
+            json!({"id": 3, "focused": false, "windows": []}),
+        ];
+        let diffs = vec![
+            json!({"patch": [0, 1, [["focused", false, true], ["windows.0.title", "t", "u"]]]}),
+            json!({"patch": [1, 2, [["focused", true, false]]]}),
+            json!({"remove": [2, 3]}),
+        ];
+        let mut after = before.clone();
+        apply_keyed(&mut after, &diffs);
+        assert_eq!(
+            after,
+            vec![
+                json!({"id": 1, "focused": true, "windows": [{"title": "u"}]}),
+                json!({"id": 2, "focused": false, "windows": []}),
+            ]
+        );
+        let removed = vec![before[2].clone()];
+        assert_eq!(undo_keyed(&after, &diffs, &removed), Some(before));
+        // A patch whose path the item lacks does not undo.
+        assert_eq!(
+            undo_keyed(
+                &[json!({"id": 1})],
+                &[json!({"patch": [0, 1, [["focused", false, true]]]})],
+                &[]
+            ),
             None
         );
     }

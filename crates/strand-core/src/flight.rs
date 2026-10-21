@@ -8,8 +8,11 @@
 //! allocates again while it records: [`Ring::push`] overwrites the oldest
 //! record when the ring is full, [`Ring::name`] interns into a fixed
 //! table, [`Ring::value`] writes a value straight into the arena through
-//! a bounded [`ArenaWriter`]. The only allocation after `new` is
-//! [`Ring::dump`], made when a report asks.
+//! a bounded [`ArenaWriter`]. (replayfix) A record of a kind with a
+//! value is kept only while the arena holds its value: when the arena
+//! overwrites it, that record and every older one are evicted, so a
+//! ring's window never holds a change whose value is gone. The only
+//! allocation after `new` is [`Ring::dump`], made when a report asks.
 //!
 //! Every record's time is nanoseconds since one process-wide epoch
 //! ([`epoch`]), so the main thread's ring and the logic thread's compare.
@@ -20,8 +23,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// The dump's first eight bytes.
 pub const MAGIC: &[u8; 8] = b"STRNDFLT";
-/// The dump format this build writes and reads.
-pub const VERSION: u16 = 1;
+/// The dump format this build writes; it reads this one and every older
+/// one. (replayfix) Version 2: a change's value may be its edits
+/// (`{"e": …}`) and a keyed change may patch an item (`{"patch": …}`)
+/// (docs/architecture.md, "Glitch reports", Values), and no record is
+/// kept whose value the arena lost. Version 1 dumps read as before.
+pub const VERSION: u16 = 2;
 /// Bytes of one record.
 pub const RECORD_BYTES: usize = 24;
 /// Bytes of one name-table entry: a length byte and up to 63 bytes of
@@ -30,8 +37,10 @@ pub const NAME_BYTES: usize = 64;
 /// Bytes of the dump's header.
 pub const HEADER_BYTES: usize = 64;
 /// The most bytes one value may take in the arena: a longer one is
-/// dropped and its record marked [`flags::TRUNCATED`].
-pub const VALUE_CAP: usize = 2048;
+/// dropped and its record marked [`flags::TRUNCATED`]. (replayfix) 8 KiB,
+/// from 2 KiB: a change is written as its edits, so only a whole list
+/// (a boot value, a reset) comes near it.
+pub const VALUE_CAP: usize = 8192;
 /// A record's `slot` when its name could not be interned (longer than 63
 /// bytes, or the table full): where the kind has an arena value, the name
 /// is written there before it, ended by a 0 byte.
@@ -186,18 +195,21 @@ impl RingSpec {
 }
 
 /// The main thread's ring: input, surfaces, outputs and late frames.
+/// (replayfix) 6,144 records, from 7,168: their 24 KiB went to the
+/// changes ring's arena, which a busy shell filled first.
 pub const INPUT: RingSpec = RingSpec {
-    records: 7_168,
+    records: 6_144,
     names: 64,
     arena: 4_096,
 };
 
 /// The logic thread's ring: service changes, cell writes, calls,
-/// actions, reloads and surface roots.
+/// actions, reloads and surface roots. (replayfix) A 64 KiB arena, from
+/// 40 KiB.
 pub const CHANGES: RingSpec = RingSpec {
     records: 1_024,
     names: 256,
-    arena: 40_960,
+    arena: 65_536,
 };
 
 /// Which ring a dump holds (header byte 10).
@@ -623,6 +635,7 @@ impl Ring {
         write(&mut w);
         let (len, over) = (w.len, w.over);
         self.arena_pos += len as u64;
+        self.evict_lost();
         if over {
             return ARef {
                 off: start as u32,
@@ -634,6 +647,45 @@ impl Ring {
             off: start as u32,
             len: len as u16,
             truncated: false,
+        }
+    }
+
+    /// (replayfix) Evicts every record up to the newest one of a kind
+    /// with a value whose value the arena no longer holds (overwritten
+    /// by the bytes written since): a ring keeps no change it lost the
+    /// value of, and so no record older than one. Values are written in
+    /// record order, so the records with values whose value is gone are
+    /// the oldest ones; the scan stops at the first one still held.
+    fn evict_lost(&mut self) {
+        let size = self.arena.len() as u64;
+        let pos = self.arena_pos;
+        if pos <= size || self.len == 0 {
+            return;
+        }
+        let floor = pos - size;
+        let n = self.records.len();
+        let oldest = (self.head + n - self.len) % n;
+        let mut gone = 0;
+        for i in 0..self.len {
+            let rec = Rec::from_bytes(&self.records[(oldest + i) % n]);
+            if !kind::has_value(rec.kind) {
+                continue;
+            }
+            // The value's absolute offset: the one at or below `pos`
+            // whose low 32 bits it holds.
+            let mut abs = (pos & !0xFFFF_FFFF) | u64::from(rec.u32(6));
+            if abs > pos {
+                abs = abs.saturating_sub(1 << 32);
+            }
+            if abs >= floor {
+                break;
+            }
+            gone = i + 1;
+        }
+        if gone > 0 {
+            self.len -= gone;
+            self.evicted += gone as u64;
+            self.wrapped = true;
         }
     }
 

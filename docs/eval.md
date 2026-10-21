@@ -2321,8 +2321,13 @@ work:
    and their per-screen cells start at their defaults, with a note.
 4. **Rewinds** every service field and cell from its value at the
    report back through the window's records, by their old values, to
-   its value at the window's start. (replayfix) A record whose value is
-   gone (over the 2 KB value cap, or its arena overwritten) does not
+   its value at the window's start. A field's change may be its edits
+   (`{"e": [[path, old, new], …]}`) and a keyed item's a `patch` of
+   them (architecture.md "Glitch reports"): the rewind undoes them
+   from the value after, in the reverse order, and the play forward
+   applies them to the value before (replayfix). (replayfix) A record whose value is
+   gone (over the value cap, or, in a version-1 dump, its arena
+   overwritten; a version-2 ring keeps no such record) does not
    stop its field: the value after it is known there (the rewind has
    reached it), so the replay sets that value at the record's time
    (`set`, only where it changes what was played) and rewinds on past

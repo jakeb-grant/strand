@@ -17,7 +17,10 @@
 #              DRIFTED, naming that node; (replayfix) a session that
 #              opens a hover popup over its own trigger and moves on it:
 #              the replay shows the popup when the live shell did and
-#              takes every pointer step on it
+#              takes every pointer step on it; (replayfix) a busy
+#              session (four workspaces of windows, a clock, a player,
+#              notifications, a title changing) whose every press lands
+#              on the chip it did live, with no value lost
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -276,6 +279,54 @@ PY
   else
     tail -40 "$DIR/e2e-popup.log"
     no "the hover popup session on a headless sway was not reported"
+  fi
+
+  # (replayfix) A busy shell over its whole window: workspaces with
+  # windows that change, a clock, a player and notifications. The
+  # changes ring keeps every value, so each press is replayed on the
+  # chip it hit live, and no value was lost or dropped.
+  keep=$DIR/keep-busy
+  if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
+    a_busy_session_is_kept_for_its_whole_window -- --exact >"$DIR/e2e-busy.log" 2>&1 && [ -f "$keep/bundle" ]; then
+    ok "a busy session is reported"
+    bundle=$(cat "$keep/bundle")
+    run_dir=$(cat "$keep/run")
+    made+=("$(scenario_name "$bundle")")
+    if bash scripts/report-view.sh --no-open "$bundle" >"$DIR/e2e-busy-view" 2>&1; then
+      ok "its bundle replays"
+      rep=$bundle/replay
+      sed -n '1,/^timeline/p' "$rep/replay.txt"
+      if python3 -I - "$rep/fidelity.json" <<'PY'
+import json, sys
+f = json.load(open(sys.argv[1]))
+bad = [d for d in f["divergences"] if d["what"] in ("press", "cell", "step")]
+for d in bad:
+    print("  ", d["t"], d["what"], d["text"])
+p, c = f["presses"], f["cell_writes"]
+print("   presses", p, "cell writes", c)
+sys.exit(1 if bad or p["live"] < 25 or p["live"] != p["replay"] or c["live"] != c["replay"] else 0)
+PY
+      then
+        ok "every press lands on the chip it hit live, and every cell write is the live one"
+      else
+        no "the busy session's presses part from the live shell (above)"
+      fi
+      if grep -q "lost from the ring's arena\|over the value cap" "$rep/replay.txt"; then
+        no "a value was lost: $(grep "lost from the ring's arena\|over the value cap" "$rep/replay.txt" | head -3)"
+      else
+        ok "no value was lost from the ring's arena or dropped over the cap"
+      fi
+      head -1 "$rep/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
+        ok "the busy session is VERIFIED against the live shell's drawn boxes" ||
+        no "the busy session is not VERIFIED: $(sed -n '1,/^glitch report/p' "$rep/replay.txt")"
+    else
+      cat "$DIR/e2e-busy-view"
+      no "the busy session's bundle could not be replayed"
+    fi
+    rm -rf "$run_dir"
+  else
+    tail -40 "$DIR/e2e-busy.log"
+    no "the busy session on a headless sway was not reported"
   fi
 fi
 

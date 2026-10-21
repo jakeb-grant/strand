@@ -1777,17 +1777,23 @@ converted. Both stamp records from one process-wide epoch
 
 | Ring | Records | Names | Arena | Bytes |
 | --- | --- | --- | --- | --- |
-| Input (main) | 7,168 × 24 B | 64 × 64 B | 4,096 B | 180,224 |
-| Changes (logic) | 1,024 × 24 B | 256 × 64 B | 40,960 B | 81,920 |
+| Input (main) | 6,144 × 24 B | 64 × 64 B | 4,096 B | 155,648 |
+| Changes (logic) | 1,024 × 24 B | 256 × 64 B | 65,536 B | 106,496 |
 | **Both** | | | | **262,144** (256 KiB) |
 
 Each is allocated once, zeroed, when `strand run` starts, and
 never grows or allocates again while it records; a record is
 written on a path that already runs (an input event's routing, a
 service's pump, a cell write, a surface callback), so no timer, wakeup
-or flush exists. At the input ring's rate the window is about 120 s of
-pointer motion at 60 Hz and 50 s at 144 Hz, longer when the pointer
-rests.
+or flush exists. At the input ring's rate the window is about 100 s of
+pointer motion at 60 Hz and 42 s at 144 Hz, longer when the pointer
+rests (a real session of the owner's wrote about 690 records a
+minute: nine minutes). (replayfix) The changes ring's arena is what a
+busy shell fills first: 64 KiB hold about 57 s of `report.rs`'s busy
+session (four workspaces of windows, a press on a chip every 1.7 s, a
+title changing every 400 ms, a clock, a player, notifications) at its
+69 KB a minute, and 24 KiB of input records paid for it (decisions.md
+replayfix, 2026-10-21).
 
 **`strand_core::flight` (new): types and codec only, no I/O, no
 threads** (as `strand_core::ipc`).
@@ -1800,9 +1806,9 @@ threads** (as `strand_core::ipc`).
   (interned once; `NAME_IN_ARENA` when longer than 63 bytes or the
   table is full), `find_name`, `name_at`; `value(|w: &mut ArenaWriter|
   …) -> ARef` (a value written straight into the arena by a bounded
-  writer, so nothing is allocated; past `VALUE_CAP`, 2,048 bytes, or
-  the arena's size if smaller, it is dropped and the record is marked
-  truncated); `push_named(t, kind, name, inline, flags, value)` (a
+  writer, so nothing is allocated; past `VALUE_CAP`, 8,192 bytes
+  (replayfix; 2,048 before), or the arena's size if smaller, it is
+  dropped and the record is marked truncated); `push_named(t, kind, name, inline, flags, value)` (a
   change record: the name interned, or written at the head of the
   value ended by a 0 byte when it cannot be); `pause(t, gap_kind,
   why)` and `resume(t, gap_kind, why)` (a gap's two records, nothing
@@ -1823,7 +1829,12 @@ threads** (as `strand_core::ipc`).
   keyed, event, cell, fetch, write, reload and request, and a key or action
   record whose name is `NAME_IN_ARENA`. The arena is a byte ring, so a
   value is readable while its offset is within the arena's size of the
-  newest byte written, and lost after.
+  newest byte written, and lost after. (replayfix) A ring keeps no
+  change record whose value is lost: writing a value evicts, oldest
+  first, every record up to the newest one whose value it lapped
+  (counted in the dump's records evicted), so a dump of version 2 holds
+  a suffix of what was recorded with every value in it. The input ring's
+  arena holds only long key names, whose records stay, marked lost.
 - **Input kinds.** `0x01` enter (x f32, y f32, surface-local logical
   px), `0x02` leave, `0x03` motion (x, y), `0x04` button (x, y, button
   u16 as evdev minus `BTN_MOUSE`, pressed u8), `0x05` hit (the innermost
@@ -1851,8 +1862,16 @@ threads** (as `strand_core::ipc`).
   `0x3F` gap ends. `0x10`–`0x12` are kept for touch, which
   strand-surface does not deliver yet.
 - **Change kinds** (slot = the name's index). `0x40` field (name
-  `service.field`; arena `[old, new]`), `0x41` keyed (arena `{"d":
-  diffs, "r": the items those diffs removed or replaced}`), `0x42`
+  `service.field`; arena `[old, new]`, or (replayfix) `{"e": [[path,
+  old, new], …]}`, what changed in it, when that is shorter: a path
+  names a record's field and a list's item by index, `windows.1.title`,
+  and `""` never appears; a list of another length, and a value of
+  another type or record type, is replaced whole at its path), `0x41`
+  keyed (arena `{"d": diffs, "r": the items those diffs removed or
+  replaced}`; (replayfix) an update whose edits are shorter than its
+  item is `{"patch": [index, key, edits]}` and puts nothing in `r`, an
+  update to an equal item is left out, and a change of only those is
+  not recorded), `0x42`
   event (`service.event`; arena: its arguments), `0x43` cell (name: the
   cell's path as `Instance::cells_of` spells it; arena `[old, new]`),
   `0x44` fetch (`service.method`; arena `{"ok": answer}` or `{"err":
@@ -1885,7 +1904,9 @@ threads** (as `strand_core::ipc`).
   when that is text on the same surface: the count grows and `last`
   moves.
 - **The dump** (`input.flight`, `changes.flight`): a 64-byte header
-  (magic `STRNDFLT`, version u16 = 1, ring u8, flags u8 (1 wrapped, 2
+  (magic `STRNDFLT`, version u16 = 2 (replayfix: values may be edits
+  and patches, and no record's value is lost; version 1 still reads),
+  ring u8, flags u8 (1 wrapped, 2
   paused), record size u16, record count u32, name count u32, arena
   length u32, the arena's first absolute offset u64, the dump's
   `now_ns` u64, `epoch_unix_ns` i64, records evicted u64), then the
@@ -1952,7 +1973,15 @@ thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
   its values by field index (`strand_services::custom`), so the
   recorder writes each value a patch changes as a field record of its
   declared name (`mood.level`, its old value the last one recorded),
-  and the snapshot names their fields the same way.
+  and the snapshot names their fields the same way. (replayfix) A
+  field the program never reads is not recorded: `Program::reads`'s
+  chunks name each `(service, Some(field))` read and `(service, None)`
+  for a service read whole (a method's call, `workspaces.slots(screen)`,
+  or an action), and the recorder keeps a service's field changes only
+  for those (`ServiceReads`, rebuilt on each reload). Events, a config
+  service's values and `system` (the theme's mode, reduced motion and
+  the contrast are read past the chunks) are always recorded; the
+  snapshot keeps every field.
 - **The config's writes.** `strand_compiler::Instance::set_cell_tap(
   Box<dyn FnMut(CellWrite<'_>)>)` (new): every write to a `state`
   cell, a settings field or a token overlay, by a handler, a two-way
