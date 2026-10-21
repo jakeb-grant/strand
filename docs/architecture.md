@@ -24,6 +24,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | State writer (`strand-state-write`, one per `FileWriter`: the logic thread's for the portal's last values, the theme VM's for the last palette, each started on first use and idle until a write) | `strand-theme` (`writer.rs`) | Atomic writes of the last palette and the portal's last settings, batched per path | Block logic (a write is queued and returns at once; a failure is a WARN) |
 | Introspection asks (`strand-introspect`, one short-lived thread per uncached ask; in `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`), used by `strand-dev`'s workspace (`strand check` and the loader ask on their own thread and wait) | One D-Bus introspection call, its answer remembered for `TTL`, then `done` | Block the LSP's analysis: it gets the remembered answer, or none, at once |
 | Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace | Anything else: each ends with its one wait |
+| Report writer (`strand-report`, planned: decisions.md report; one per `strand report` with words, ends when its bundle is written) | the binary's `report/bundle.rs` | Writes one glitch report's bundle: the two ring dumps, the JSON parts, the frames encoded as PNG, the config and asset copies (bounded reads), then prunes the reports directory to the newest 20; its outcome goes back to logic through a shared slot and the logic loop's ping (see "Glitch reports") | Touch Wayland, the scene or the rings (it gets copies), or block logic or main |
 
 Two library handles have threads the shell does not start:
 `strand_watch::PortalSettings` (`strand-portal`; the shell follows the
@@ -1753,6 +1754,278 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `src/entry.rs`'s COMMANDS rows and dispatch arms (the CLI table,
   moved there from `main.rs` at the wave 1 → 2 boundary); the
   integrator merges them.
+
+## Glitch reports (planned; decisions.md report)
+
+design.md "Reporting a glitch" as interfaces. Nothing here is built
+yet; features.md "Glitch reports" lists the boxes and the tests that
+will prove them. No crate gains a dependency on another: the record
+format lives in `strand-core`, which the binary and `eval/` already
+depend on, and every hook below is a callback the binary installs.
+
+**Two rings, one per thread.** The main thread records what reaches it
+(input, surfaces, outputs, frames that came late); the logic thread
+records what reaches it (service changes, the config's state writes,
+calls, actions, reloads, surface roots). Each thread owns its ring
+outright, so nothing is shared or locked and nothing crosses a channel
+until a report asks; the two are merged by time when a report is
+converted. Both stamp records from one process-wide epoch
+(`flight::epoch()`, an `Instant` taken once), so their times compare.
+
+| Ring | Records | Names | Arena | Bytes |
+| --- | --- | --- | --- | --- |
+| Input (main) | 7,168 × 24 B | 64 × 64 B | 4,096 B | 180,224 |
+| Changes (logic) | 1,024 × 24 B | 256 × 64 B | 40,960 B | 81,920 |
+| **Both** | | | | **262,144** (256 KiB) |
+
+Each is allocated once, zeroed, when `strand run` starts, and
+never grows or allocates again while it records; a record is
+written on a path that already runs (an input event's routing, a
+service's pump, a cell write, a surface callback), so no timer, wakeup
+or flush exists. At the input ring's rate the window is about 120 s of
+pointer motion at 60 Hz and 50 s at 144 Hz, longer when the pointer
+rests.
+
+**`strand_core::flight` (new): types and codec only, no I/O, no
+threads** (as `strand_core::ipc`).
+- `epoch() -> Instant`, `now_ns() -> u64` (ns since the epoch);
+  `epoch_unix_ns() -> i64` (the wall time the epoch was taken at).
+- `RingSpec { records, names, arena }` with `INPUT` and `CHANGES` the
+  table's sizes; `Ring::new(RingSpec)`; `push(Rec)`; `merge_motion(slot,
+  t, x, y, period_ns)` and `merge_text(slot, t, password)` (the
+  coalescing rules below, falling back to a push); `name(&str) -> u16`
+  (interned once; `NAME_IN_ARENA` when longer than 63 bytes or the
+  table is full); `value(t, |w: &mut ArenaWriter| …) -> ARef` (a value
+  written straight into the arena by a bounded writer, so nothing is
+  allocated; past `VALUE_CAP`, 2,048 bytes, it is dropped and the
+  record is marked truncated); `clear()`; `dump(&self) -> Vec<u8>` (the
+  only allocation, made when a report asks); `read(&[u8]) ->
+  Result<Dump, FlightError>` (a newer version is refused, naming it);
+  `Dump::records()` oldest first with each arena value resolved or
+  marked lost.
+- **Records** are 24 bytes, little-endian: `t` u64 (ns since the
+  epoch), `kind` u8, `flags` u8 (1 truncated, 2 redacted, 4 lost, set
+  by the reader, 8 a service's boot value), `slot` u16 (a surface or
+  output slot in the input ring, a name index in the changes ring),
+  then 12 bytes of payload by kind. An arena reference (`ARef`) is an
+  absolute offset u32 and a length u32; the arena is a byte ring, so a
+  value is readable while its offset is within the arena's size of the
+  newest byte written, and lost after.
+- **Input kinds.** `0x01` enter (x f32, y f32, surface-local logical
+  px), `0x02` leave, `0x03` motion (x, y), `0x04` button (x, y, button
+  u16 as evdev minus `BTN_MOUSE`, pressed u8), `0x05` hit (the innermost
+  node the press resolved to, `NodeId` as u64), `0x06` axis (dx f32, dy
+  f32 in px, source u8, stop u8, discrete i16 in 120ths of a notch),
+  `0x07` keyboard enter, `0x08` keyboard leave, `0x09` key (name index
+  u16, modifiers u16: shift, ctrl, alt, super, caps, num; state u8:
+  release, press, repeat), `0x0A` text (count u32, last u32 in ms after
+  `t`, password u8), `0x0B` paste (count u32, password u8), `0x0C`
+  click-away, `0x0D` drag (phase u8: enter, motion, leave, drop; x, y;
+  the kinds offered as a u16 mask; never the payload), `0x20` surface
+  mapped (slot = a new surface slot; root `NodeId` u64, namespace name
+  u16, output slot u8, kind u8: bar, panel, osd, popup), `0x21`
+  configured (width u16, height u16, scale u16 in 120ths), `0x22`
+  placed (x i32, y i32 on its output), `0x23` unmapped, `0x24` backend
+  (gpu u8), `0x25` late (frames missed u16: a presented frame that came
+  two or more refresh periods after the one before while the surface
+  was animating), `0x26` refresh (period ns u32, when first known or
+  changed), `0x30` output (slot = an output slot; connector name u16,
+  width u16, height u16, scale u16 in 120ths, x i16, y i16), `0x31`
+  output gone, `0x3E` gap begins (why u8: lock, off, inspector pick),
+  `0x3F` gap ends. `0x10`–`0x12` are kept for touch, which
+  strand-surface does not deliver yet.
+- **Change kinds** (slot = the name's index). `0x40` field (name
+  `service.field`; arena `[old, new]`), `0x41` keyed (arena `{"d":
+  diffs, "r": the items those diffs removed or replaced}`), `0x42`
+  event (`service.event`; arena: its arguments), `0x43` cell (name: the
+  cell's path as `Instance::cells_of` spells it; arena `[old, new]`),
+  `0x44` fetch (`service.method`; arena: the answer; a call id u32;
+  never the arguments), `0x45` action (the action's name; exit status
+  i32, argument count u8, started u8), `0x46` write (an `rw` service
+  field the config wrote; arena: the value), `0x47` reload (committed,
+  held and reset counts u16 each; arena: the files and their hashes),
+  `0x48` surface root (name: its origin `file.strand:LINE:COL`; the
+  root `NodeId` u64, kind u8), `0x49` root gone (`NodeId`), `0x4E`
+  gap begins, `0x4F` gap ends.
+- **Values** in the arena are compact JSON typed by the schema or the
+  program (records as objects, lists as arrays, enums by variant name,
+  durations in ms, colours as `#rrggbbaa`). A text the redaction rules
+  below hold back is written `{"~text": N}`, N its length in
+  characters.
+- **Coalescing.** A motion merges into the newest record when that is
+  a motion of the same surface written less than one refresh period
+  ago (the surface's last `0x26`, else 1/60 s), keeping its time and
+  taking the new position: at most one motion per frame interval per
+  surface, with no frame hook. A text key merges into the newest record
+  when that is text on the same surface: the count grows and `last`
+  moves.
+- **The dump** (`input.flight`, `changes.flight`): a 64-byte header
+  (magic `STRNDFLT`, version u16 = 1, ring u8, flags u8 (1 wrapped, 2
+  paused), record size u16, record count u32, name count u32, arena
+  length u32, the arena's first absolute offset u64, the dump's
+  `now_ns` u64, `epoch_unix_ns` i64, records evicted u64), then the
+  names (64 bytes each: a length byte and UTF-8), the arena bytes, and
+  the records oldest first.
+
+**Main side** (the binary's `run/record.rs`, `InputRecorder`, a field
+of `demo::host::Host`).
+- Input is recorded in `Host::intents` for `Cause::Input(event)`,
+  after routing, so the recorder sees exactly what the router saw.
+  Pointer events record their surface-local position; a press is
+  followed by its `hit` (the innermost node of `Renderer::hit`'s
+  chain).
+- **Typed text is never recorded.** A key whose `KeyInput::text` is
+  not empty and that carries no ctrl, alt or super is a text key: it is
+  counted (`0x0A`), never named. While the focused node of the key's
+  surface is a password input (`Router::focused_input(surface) ==
+  Some(InputKind::Password)`, new) every key is counted as one
+  password span with no count. A paste (`InputEvent::Paste`) records
+  its character count (none into a password), never its text; a copy
+  or cut records nothing. A drop records its kinds, never its payload.
+- **The lock.** On `Host::lock_started` (a lock asked for) the ring
+  writes a gap and appends nothing until `lock_changed` reports the
+  session unlocked; an event on a lock surface (`lock::LockScreen`
+  knows them) is never recorded, whatever the state. While the
+  inspector picks, input is held from handlers and is not recorded
+  either (a gap).
+- Surfaces and outputs are recorded from the `SurfaceHost` callbacks
+  (`surface_attached`, `surface_configured`, `surface_placed`,
+  `surface_detached`, `monitor_added`/`changed`/`removed`), refresh,
+  lateness and backend from `Host::painted`'s presentation facts
+  (`State::refresh(surface) -> Option<Duration>`, new, from the frame
+  clock).
+
+**Logic side** (`run/record.rs`, `ChangeRecorder`, owned by the logic
+thread's `Live`).
+- **Services.** `strand_services::Services::tap(Tap)` (new) installs one
+  callback the registry calls on the logic thread for every patch
+  `Services::pump` applies: `TapEvent { service: &str, change:
+  Change<'_> }`, `Change::Field { field, old: &Data, new: &Data,
+  initial }` (the old value read from the cell before the patch, only
+  while a tap is installed), `Change::Keyed { field, diffs:
+  &[VecDiff<Data, Data>], removed: &[Data], initial }`, `Change::Event {
+  event, args: &[Data] }`. An echo of a local write is not a patch, so
+  it is never tapped. `Data::write_json(&self, w, &mut dyn
+  FnMut(&str) -> bool)` (new) writes a value, the closure deciding per
+  text whether it is kept. Config services (`service … from`) run on
+  the contract and are tapped like builtins.
+- **The config's writes.** `strand_compiler::Instance::set_cell_tap(
+  Box<dyn FnMut(CellWrite<'_>)>)` (new): every write to a `state`
+  cell, a settings field or a token overlay, by a handler, a two-way
+  binding, IPC, a reset or a reload, as `CellWrite { path, old: &Value,
+  new: &Value }`. `Program::is_text_literal(&str) -> bool` (new) holds
+  every text literal of the program. `vm::json::{to_json, from_json}`
+  (new) convert a `Value` by its type, `to_json` taking the same
+  per-text closure.
+- **Calls and actions** are recorded where the binary already handles
+  them: a `fetch` (an `Async` call) when its answer arrives
+  (`services/adapter.rs`, `custom.rs`), a declared action when it
+  starts and exits (`run/exec.rs`), an `rw` write (`composite.rs`).
+  Synchronous calls the mock computes from state (`clock.format`,
+  `workspaces.on`) are not recorded.
+- **Redaction** (the changes ring and the snapshot alike). `auth` is
+  never recorded or snapshotted. Every text of `clipboard` is held back
+  (`{"~text": N}`), an image in its history as its size only. A text of
+  the config's own (a cell's value, an `rw` write) is kept only when
+  `Program::is_text_literal` holds. Call and action arguments are
+  never recorded (a count at most), and the answer of a call given a
+  text that is not a literal has every text in it held back. Service
+  values are kept as reported.
+- Reloads are recorded in `Shell`'s commit (`run/shell.rs`), surface
+  roots from the diff logic sends (a create of a `bar`, `panel`, `osd`,
+  `popup` or `lock` root, its origin from `Instance::identity`; a
+  `lock` root is never recorded). `ToLogic::LockState` and the lock
+  asked for write a gap and pause the ring until the unlock, as on
+  main.
+
+**On and off.** `system.replay: bool rw` (strand-services-schema's
+`system.schema`, new; default true; kept in the state directory as
+`notifications.remember` is). The logic thread already holds a reader
+of `system`; when `replay` changes it clears and pauses (or resumes)
+its ring and sends main `ToMain::Recording(bool)` (new), and main does
+the same with its own. Off drops both rings (their memory is freed,
+so nothing recorded stays in the process) and on allocates them anew,
+empty: the only allocations a ring makes after `new`. Both threads
+allocate theirs as `strand run` starts; a shell kept off frees them as
+soon as the `system` service's boot value says so.
+
+**Saving a report.** IPC version 1's `report` gains an optional field:
+`{"v": 1, "cmd": "report", "save": {"words": "…"}}`
+(`Request::Report { save: Option<String> }` in `strand_core::ipc`).
+Without `save` the answer is as before. With it:
+1. Logic refuses while a lock is asked for or shown ("the screen is
+   locked"). Otherwise it sends `ToMain::Snapshot { kind:
+   SnapshotKind::Bundle, reply }`; main answers between frames, as for
+   `Report`, with `Snapshot { reply, data, bundle:
+   Some(Box<MainBundle>) }`: `data` is `report::main_part` plus each
+   mapped surface's slot, namespace, root `NodeId`, output and backend;
+   `MainBundle { ring: Vec<u8> (the dump), frames: Vec<(SurfaceId,
+   FramePixels)>, images: Vec<PathBuf> }`. A frame is the newest
+   committed shm buffer, copied (`strand_surface::State::frame_pixels(
+   surface) -> Option<FramePixels>`, new), or, for a surface presented
+   by the GPU, its current scene repainted by the CPU into a fresh
+   buffer (`strand_render::Renderer::repaint_offscreen(surface) ->
+   Option<FramePixels>`, new, the same full repaint eval's `redraw`
+   compares against). `FramePixels { width, height, scale, stride,
+   premultiplied RGBA8 }` is `strand-scene`'s (new). `images` are the
+   files the renderer holds decodes of for mounted nodes
+   (`Renderer::image_sources()`, new). No lock surface is in it.
+2. Logic adds its own part: `report::logic_part` (the diagnostics as
+   today), its ring's dump, `Services::snapshot()` (new: each
+   registered service's name, whether it runs, and every field's
+   `Data`, under the redaction rules), `Instance::cells_snapshot() ->
+   Vec<(String, Value)>` (new: every live cell by the inspector's path,
+   settings fields and overlays included), the module set's files, the
+   files the program reads (`Instance::settings_sources()`, the theme's
+   wallpapers and imports, templates, shaders, the config's `icons/`
+   folder), the strand version and commit (`env!("STRAND_COMMIT")`,
+   set by the binary's `build.rs` from `git rev-parse HEAD`, `unknown`
+   outside a checkout, `-dirty` when it was), the wall time and
+   `now_ns`, and the words.
+3. It hands that to a `strand-report` thread (see Threads) and keeps
+   the caller under the snapshot's id. The thread writes the bundle,
+   prunes, and stores its outcome in a shared slot and pings the logic
+   loop, which answers `{"ok": true, "bundle": "<dir>", "paste":
+   "<line>", "report": {…}}`, or the error.
+
+**The bundle**: `strand_core::persist::state_dir()/reports/<YYYY-MM-DD_HH-MM-SS>/`
+(local time; `-2`, `-3` appended when taken), mode 0700, files 0600:
+
+| Path | What |
+| --- | --- |
+| `bundle.json` | `{"format": 1, "words", "wall": RFC 3339 with offset, "now_ns", "epoch_unix_ns", "strand": {"version", "commit"}, "outputs", "surfaces", "replay": bool, "files": {path: blake3}, "missing": [{path, bytes, why}]}` |
+| `words.txt` | the words |
+| `diagnostics.json`, `diagnostics.txt` | what `strand report --json` and `strand report` print (no serials or ids, as `report.rs` holds) |
+| `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
+| `services.json` | `{service: {"running": bool, "fields": {field: value}}}` |
+| `cells.json` | `{cell path: value}` |
+| `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
+| `config/` | the module set's `.strand` files at their paths under the config directory, its `icons/` folder |
+| `files/<absolute path>` | every other file the program or the renderer read, at its own path (settings files, templates, shaders, imported palettes, wallpapers, images, the theme's icons drawn), each at most 2 MiB and at most 16 MiB in all, newest-referenced first; the rest are listed in `missing` |
+| `replay/` | written later by `scripts/report-view.sh` |
+
+Pruning keeps the 20 newest directories holding a `bundle.json` and
+removes only those. The answer's `paste` line names the directory and
+says what to run: `Strand glitch report "<words>" at <dir>: run
+scripts/report-view.sh --no-open <dir> in the strand checkout and read
+<dir>/replay/replay.txt.`
+
+**The replay** is eval's (`eval/src/replay/`, `strand-eval replay
+<bundle>`; docs/eval.md "Replaying a glitch report"). It reads the
+dumps with `strand_core::flight::read` and values with
+`strand_compiler::vm::json::from_json`, both crates it already depends
+on, and writes a local scenario; `scripts/report-view.sh` runs it in
+the container and copies the result into `<bundle>/replay/`. Nothing
+under `crates/` depends on eval, and the shipped binary has none of it.
+
+**Budgets.** The 256 KiB are counted against the PSS budgets, the
+rings being allocated in every measured run (the default is on); the
+build measures them (features.md "Glitch reports") rather than
+assuming the zeroed pages stay untouched. No thread, timer or wakeup
+exists while no report is being saved, so the idle-wakeup windows in
+`crates/strand/tests/budgets.rs` hold unchanged. The release binary's
+`.text` gates in `budgets.rs` are measured with the code in; a
+re-base, if it needs one, is a dated decisions.md entry.
 
 ## Contracts
 

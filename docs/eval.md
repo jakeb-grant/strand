@@ -2122,6 +2122,122 @@ after a first `{"ready":true,...}`: `status`, `play`, `pause`, `toggle`,
 `quit`. eval/tests/live.rs drives it this way on a headless sway of its
 own, with a virtual pointer and keyboard, and reads grim's shots.
 
+## Replaying a glitch report
+
+Planned (decisions.md report; features.md "Glitch reports"). The owner
+types `strand report <words>` on the live shell (design.md "Reporting
+a glitch"); everything after that is an agent's:
+
+```text
+scripts/report-view.sh [--no-open] [bundle-dir]     # default: the newest report
+```
+
+It runs `scripts/container/run.sh eval replay <bundle>` (which mounts
+the bundle read-only, and each directory of its `files/` tree at the
+path it was copied from, as `eval local` mounts a local config),
+copies the run into `<bundle>/replay/` (`index.html`, `replay.txt`,
+`fidelity.json`, `summary.txt`, `checks.json`, `trace.json`,
+`scenario.scn`) and opens the viewer in the browser unless
+`--no-open` is given. Agents and tests always pass `--no-open`. It
+exits non-zero only when the replay could not run; findings are the
+point, not a failure.
+
+`strand-eval replay <bundle> [--to SCN] [--out DIR] [--output NAME]
+[--traced SECONDS|all] [--frames …]` does the work:
+
+1. **Reads** `bundle.json` (its outputs and surfaces among it), both
+   ring dumps (`strand_core::flight`), `services.json` and
+   `cells.json`, refusing a newer format by its number.
+2. **Picks the window**: from the newest of the two rings' oldest
+   records, the last reload committed and the last gap's end (a lock,
+   the recorder off), to the report. A reload or a lock inside the last
+   minute therefore shortens the replay and is named in its fidelity
+   notes.
+3. **Picks one output** (the sandbox has one screen): the one with the
+   most input in the window's last 10 s, else the one the newest mapped
+   surface is on; `--output` names another. Its logical size, scale
+   and refresh are the header's `screen` and `hz`.
+4. **Rewinds** every service field and cell from its value at the
+   report back through the window's records, by their old values, to
+   its value at the window's start. A field whose record was truncated
+   or whose arena value was lost stops rewinding there and starts at
+   the oldest value known, with a note.
+5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
+   name>.scn`, gitignored, so it may name the bundle): `config_dir` is
+   the bundle's `config/`, `fonts = "local"`, `wall` the window start's
+   wall time, `[seed]` every service field and cell at the start,
+   `icons` the bundle's copy of the config's `icons/` folder and the
+   theme's icons drawn, `backend = "both"` when a surface was on the
+   GPU in the window, `compositor_poses` as the diagnostics say,
+   `warmup` all but the last `--traced` seconds (20 by default), and
+   the steps: the input on its timeline (`wait` between records,
+   quantised to ticks), each service change as a `set` (a keyed list as
+   the whole list after its diffs) or an `emit`, each recorded answer
+   as an `answer` queued before its call, each late frame as a `drop`,
+   `mark`s at the traced part's start, at -5 s, -2 s and at the report,
+   and a `shot report` there.
+6. **Runs it** as `local` does, with every CPU check, then compares
+   the replay with the live shell (below) and writes `replay.txt`.
+
+**What the scenario format gains for it** (each a general sandbox
+capability, used by any scenario):
+
+- Header `[seed]`: `"path" = "<JSON>"` for a service field, a cell (by
+  the inspector's path) or a `$token`, set as a baseline: services
+  before boot, cells and tokens as they mount, so no `on change` fires
+  (spec.md 8.4: never at boot).
+- Header `wall`: the wall time (RFC 3339 with its offset) virtual
+  `T0` stands for; `clock` and local time follow it.
+- Header `warmup`: ms run before the trace starts. The warm-up's
+  frames are painted but neither traced nor checked.
+- Header `icons`: a flat icon folder used in place of the config's
+  `icons/` (strand-icons' config folder).
+- `set <path> <JSON>`: a record, list or optional value written as
+  JSON by its schema type (`vm::json::from_json`); scalars still read
+  as `strand set` reads them.
+- `key NAME [+ctrl|+shift|+alt|+super…] [down|up]`: a key on the
+  focused surface (a press and a release without `down`/`up`).
+  `type N [over MS]` types N placeholder `x`s, `paste N` pastes N.
+- `focus <surface>` and `unfocus`. Without them, keyboard focus is the
+  compositor's: a `keyboard: exclusive` surface takes it as it maps, an
+  `on_demand` one on a press in it, and it returns when that surface
+  goes.
+- `answer <service.method> <JSON>`: the next call of that method is
+  answered with it, ahead of the mock's own (`SchemaHost::answer`).
+
+**The comparison with the live shell** (`fidelity.json` and the head
+of `replay.txt`). The replay checks itself against what was recorded
+and says where it first parts from it:
+
+- each recorded press's `hit` against the node the replay's router
+  hits at the same point (by origin and key);
+- each surface root mapped and unmapped (by its origin) against the
+  replay's, within two frames;
+- each recorded cell write against the replay's own writes (cells are
+  never driven, only seeded: the replay's handlers write them);
+- the replay's frame at the report against each bundle PNG of the same
+  surface: the share of pixels past the `cpu-gpu` tolerance and their
+  bounding box.
+
+It also lists what it did not reproduce: typed text (the keys counted,
+typed as `x`; password spans, typed as eight), pastes, services it has
+no stand-in for (a plugin whose schema is not in the bundle), calls
+answered by the mock because no answer was recorded, other programs'
+windows (`thumbnail` nodes draw nothing, and the compositor's blur and
+its own animations are not modelled), outputs other than the one
+replayed and the input on them, files listed in the bundle's
+`missing`, and the reload or gap the window starts after.
+
+**`replay.txt`**, what an agent reads first. Its head gives the
+words, the window, the output, the traced part and the comparison
+above. Then one line per event in time order, time relative to the
+report: input as its step with the surface's and the hit node's source
+location, service changes, cell writes (live and replay), surfaces
+mapped and gone, and for every node whose drawn box or opacity changes,
+one line per run of motion (`k456..k470 @clock.strand:12:5 text x
+1180.0 -> 1176.3 spring`). The checks' findings follow, as `summary.txt`
+gives them, each with its time before the report.
+
 ## Limits
 
 - **Placement is strand-surface's, not a compositor's** (eval-false-alarms).
@@ -2318,6 +2434,9 @@ own, with a virtual pointer and keyboard, and reads grim's shots.
   ring keeps the last `--ring` frames; a session stops at `--max-frames`
   painted frames (record and restart). The checks run when paused (or
   every two seconds while playing), over the whole session so far.
+- **A replay is as faithful as its report** (planned, decisions.md
+  report). See "Replaying a glitch report" for what a replay cannot
+  reproduce and how it says so.
 - **Gaps the blind sets K and L left** (eval-finish, for later; none
   is fixed). No rule holds a text's alignment inside its box, so a label
   drawn at the wrong side of its own box passes the rules (L's m-l13).

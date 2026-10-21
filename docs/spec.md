@@ -1601,7 +1601,16 @@ people can edit by hand.
     and its frame times (p50/p95/p99 over the frames drawn among its
     last 600 paints, with the drawn and unchanged counts). It carries no
     serials or ids. The `report` request is served over the socket
-    only, not D-Bus.
+    only, not D-Bus. (Planned, decisions.md report.) `strand report
+    words… [--json]`, given words describing a glitch, saves a glitch
+    report instead: a directory under `reports` in the state directory
+    (the newest 20 are kept) holding those diagnostics, the words, the
+    last minute or so of input and service changes the shell keeps in
+    memory while `system.replay` is on (the default; never typed text,
+    clipboard contents or anything while locked), every service's
+    state, each surface's last frame and a copy of the config. It
+    prints the directory and a line to give a coding agent, and is
+    refused while the screen is locked.
 - **One shell's variables.** `STRAND_SOCKET` picks the socket a shell
   answers on and the one a command reaches; `STRAND_STATE_DIR` names
   the directory a shell keeps its state in (`persist`, settings and

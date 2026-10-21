@@ -593,6 +593,7 @@ The budgets are targets for Strand's own benchmarks and tests, never limits on a
 | Launcher buffers at 2×, freed on close | — | 14 |
 | Logic, scene IR, services | 7 | 11 |
 | Images, notification history | 1 | 8 |
+| Replay buffer for glitch reports (fixed; `system.replay`, on by default) | 0.25 | 0.25 |
 | Allocator overhead | 1–2 | 2–3 |
 | **Total** | **29–34** | **59–64** |
 | GPU device, kept warm where a render node exists (gpu-first) | +21 to +23 measured on Intel ANV; about +190 on lavapipe; 0 with no render node | +22 to +38 measured on Intel ANV with the launcher drawn on the GPU, kept for the session |
@@ -813,7 +814,18 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 - **Deterministic springs.** Given a timestamp, a spring's position is exact, so animation frames are testable as images.
 - **Animation traces.** Behind a test-only feature, the renderer reports each frame's nodes: where layout put them, where they were drawn, and which motion moved them. The evaluation sandbox checks those traces against invariants any correct animation keeps, so a few-frame glitch like a bar dipping out of its row fails a scenario instead of waiting to be seen.
 - **Machine-readable state.** `strand watch --json` and inspector dumps let tests assert on structure instead of screenshots.
-- **`strand report`.** Dumps compositor, protocols, scale factors, memory and frame statistics. Early users with other GPUs, compositors and monitors become the hardware lab.
+- **`strand report`.** Dumps compositor, protocols, scale factors, memory and frame statistics. Early users with other GPUs, compositors and monitors become the hardware lab. Given a few words, it saves a glitch report instead (below).
+
+**Reporting a glitch**
+
+When something on screen looks wrong, type one command in a terminal, with a few words about what you saw: `strand report the clock jumped when the launcher opened`. That is all you do. Strand saves a report and prints where it went, plus one line to paste to your coding agent. Replaying it, finding the frame that went wrong and fixing it is the agent's job.
+
+- **What Strand keeps.** While it runs, Strand keeps the last minute or so of what drove the shell in memory: pointer moves (one per frame at most), clicks, scrolls, keys, each service's changes (a new window title, the volume, a notification), the results of declared actions and D-Bus calls the config reads, reloads, and surfaces and monitors appearing, changing and going away. Each is stamped with the time. The buffer is a fixed 256 KB and forgets the oldest first, so it never grows. It has no timer and never wakes the shell: each entry is written by work that is already happening. Nothing goes to disk until you report.
+- **What it never keeps.** What you type: a key that types a character is counted, never kept (in a password field it is not even counted), and the replay types placeholder `x`s instead. Pasted text and clipboard contents. A text your config's state holds that is not written out in its files (an input's text, say, or what it passes to a call) is kept only as its length. Nothing at all while the screen is locked, and nothing of the lock itself.
+- **The report.** A folder under `~/.local/state/strand/reports/` named by the local date and time, readable only by you. It holds the recording, every service's state at that moment, a picture of each surface as Strand last drew it (Strand's own frames, not a screenshot), a copy of your config's files and the small local files they use, the Strand version, what plain `strand report` prints, and your words. The newest 20 reports are kept; older ones are deleted.
+- **Turning it off.** `strand set system.replay false` (or a toggle bound to `system.replay`). The buffer is emptied at once and stays off across restarts; `strand report` with words then saves everything but the recording.
+- **What the agent does.** `scripts/report-view.sh` replays the report in the evaluation sandbox (`eval/`, [eval.md](eval.md)), on its virtual clock and with your fonts, writes the replay's frames, a text trace by node, position and time, and what its checks found into the report's folder, and opens a page where you can scrub through it frame by frame. The replay says what it could not reproduce: what you typed, services it has no stand-in for, other programs' windows, a second monitor, a reload or a lock in the middle.
+- **Its cost.** The 256 KB count against the memory budget below, and the idle-wakeup budget is unchanged. Without words, `strand report` prints the diagnostics as before.
 
 **Deliberately not tested in-house**
 
