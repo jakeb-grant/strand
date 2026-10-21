@@ -58,7 +58,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::Error;
 use crate::scenario::Screen;
-use crate::surfaces::{OUTPUT, SCREEN_ID};
+use crate::surfaces::OUTPUT;
 
 /// How long the fake may take to answer one barrier.
 const WAIT: Duration = Duration::from_secs(20);
@@ -468,6 +468,9 @@ pub struct Leg {
     offsets: HashMap<u32, [f32; 2]>,
     held: Vec<HeldMargins>,
     vblanks: Vec<VblankRec>,
+    /// (replayfix) What `screens:` may name the one screen by: its
+    /// `screens.all` id and its connector name.
+    screen_names: [String; 2],
     notes: Vec<String>,
     /// `late-present`'s own tests: refreshes that never come.
     lost: BTreeSet<u32>,
@@ -495,7 +498,11 @@ impl Leg {
     /// Starts the fake compositor (one output of `screen`'s size, with
     /// `wp_presentation`, in vblank mode) and a surface manager on it.
     /// Refreshes at the ticks in `lost` never come.
-    pub fn start(screen: Screen, lost: BTreeSet<u32>) -> Result<Leg, Error> {
+    pub fn start(
+        screen: Screen,
+        who: &crate::scenario::ScreenIdentity,
+        lost: BTreeSet<u32>,
+    ) -> Result<Leg, Error> {
         if screen.scale != 1.0 {
             return Err(Error::Unsupported(format!(
                 "the surface leg at scale {} (the fake compositor's output has scale 1)",
@@ -550,6 +557,7 @@ impl Leg {
             offsets: HashMap::new(),
             held: Vec::new(),
             vblanks: Vec::new(),
+            screen_names: [who.id.clone(), who.name.clone()],
             notes: Vec::new(),
             lost,
         };
@@ -563,11 +571,15 @@ impl Leg {
         // The sandbox's one screen is the fake's one output: a surface
         // asked for on it (by its `screens.all` id) is asked for on the
         // output by its connector name, which the manager matches too.
-        let changes = changes.into_iter().map(|(node, mut change)| {
+        let screen_names = self.screen_names.clone();
+        let changes = changes.into_iter().map(move |(node, mut change)| {
             if let SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } = &mut change
                 && let Screens::Named(names) = &mut spec.screens
             {
-                for n in names.iter_mut().filter(|n| n.as_str() == SCREEN_ID) {
+                for n in names
+                    .iter_mut()
+                    .filter(|n| screen_names.iter().any(|s| s == n.as_str()))
+                {
                     *n = OUTPUT.to_string();
                 }
             }

@@ -179,6 +179,7 @@ impl Shell {
             root,
             words,
             report,
+            screens: self.screens_named(),
             main,
             changes: rec.dump(),
             nodes,
@@ -269,9 +270,33 @@ impl Shell {
             .unwrap_or_default()
     }
 
+    /// (replayfix) Each screen of `screens.all` as `bundle.json`'s
+    /// outputs name it: its connector name, id and description.
+    fn screens_named(&self) -> Vec<(String, String, String)> {
+        let rt = self.inst.runtime();
+        let host = crate::run::logic::live_host(&self.host, &self.real);
+        let types = &self.inst.vm().prog.types;
+        let text = |s: &strand_compiler::vm::Value, f: &str| {
+            Some(s.field(types, f)?.as_text()?.to_string())
+        };
+        rt.untrack(|rt| host.read_builtin(rt, "screens", "all"))
+            .ok()
+            .and_then(|v| {
+                let list = v.as_list()?;
+                Some(
+                    list.iter()
+                        .filter_map(|s| {
+                            Some((text(s, "name")?, text(s, "id")?, text(s, "description")?))
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
     /// A source place as `file.strand:LINE:COL`, the file under the
     /// config directory.
-    fn origin_text(
+    pub(in crate::run) fn origin_text(
         &self,
         file: strand_compiler::FileId,
         span: strand_compiler::syntax::Span,

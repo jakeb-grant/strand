@@ -77,7 +77,7 @@ use crate::select::Selector;
 use crate::steps::{
     Button, ExpectKind, Intention, KeyMods, KeyPhase, Point, REST_MAX, Step, StepKind, Via,
 };
-use crate::surfaces::{Change, SCREEN_ID, Surfaces, to_rgba};
+use crate::surfaces::{Change, Surfaces, to_rgba};
 use crate::text::TextRules;
 use crate::trace::{
     BlurRec, BuildInfo, CommandRec, Cost, EventRec, ExpectRec, Frame, HeldRec, IntendRec, PoseRec,
@@ -926,6 +926,7 @@ impl Harness {
         let leg = if opts.surface.unwrap_or(sc.surface) {
             Some(Leg::start(
                 sc.screen,
+                &sc.identity,
                 opts.lost_vblanks.iter().copied().collect(),
             )?)
         } else {
@@ -1048,7 +1049,9 @@ impl Harness {
         Some(NodeRef {
             origin: format!("{}:{l}:{c}", f.name),
             id: ident.as_ref().and_then(|i| i.id.clone()),
-            key: ident.as_ref().and_then(row_key),
+            key: ident
+                .as_ref()
+                .and_then(|i| row_key(i, &self.sc.identity.id)),
         })
     }
 
@@ -1110,7 +1113,13 @@ impl Harness {
         let mut any = false;
         let mut left = Vec::new();
         for (path, j) in std::mem::take(&mut self.seeds) {
-            let Some(ty) = self.inst.cell_type(&path) else {
+            // (replayfix) A cell the program declares but has not mounted
+            // (a component in a popup not yet open) waits for its mount.
+            let Some(ty) = self
+                .inst
+                .cell_type(&path)
+                .filter(|_| self.inst.cell_mounted(&path))
+            else {
                 left.push((path, j));
                 continue;
             };
@@ -1342,14 +1351,15 @@ impl Harness {
     /// crates/strand/src/run/mod.rs `set_screens` makes it.
     fn set_screens(&mut self) -> Result<(), Error> {
         let s: Screen = self.surfaces.screen;
+        let who = &self.sc.identity;
         let screen = self.host.record(
             "Screen",
             &[
-                ("id", Value::text(SCREEN_ID)),
-                ("name", Value::text(crate::surfaces::OUTPUT)),
-                ("make", Value::text("Mock")),
-                ("model", Value::text("DP-1")),
-                ("description", Value::text("Mock DP-1")),
+                ("id", Value::text(who.id.as_str())),
+                ("name", Value::text(who.name.as_str())),
+                ("make", Value::text(who.make.as_str())),
+                ("model", Value::text(who.model.as_str())),
+                ("description", Value::text(who.description.as_str())),
                 ("scale", Value::float(s.scale)),
                 ("width", Value::float(f64::from(s.width))),
                 ("height", Value::float(f64::from(s.height))),
@@ -3726,9 +3736,9 @@ struct Committed {
 /// qualifier is the screen's id, which differs between the live shell's
 /// output and the sandbox's (the binary's `row_key` in
 /// `run/request/report.rs`, which `nodes.json` is written by).
-fn row_key(i: &strand_compiler::instantiate::inspect::Identity) -> Option<String> {
+fn row_key(i: &strand_compiler::instantiate::inspect::Identity, screen: &str) -> Option<String> {
     let key = i.key.as_ref()?;
-    (key != SCREEN_ID).then(|| key.clone())
+    (key != screen).then(|| key.clone())
 }
 
 /// (report) The trace of a run with a `warmup` from its first traced

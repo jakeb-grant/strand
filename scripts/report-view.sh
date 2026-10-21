@@ -10,10 +10,11 @@
 # the frames) and opens the viewer unless --no-open. Agents and tests
 # always pass --no-open.
 #
-# Usage: scripts/report-view.sh [--no-open] [bundle-dir] [--output NAME]
+# Usage: scripts/report-view.sh [--no-open] [bundle-dir] [--out DIR] [--output NAME]
 #                               [--traced SECONDS|all] [--frames all|failing|none]
 #        (default bundle: the newest under $STRAND_REPORTS, else
-#        ${XDG_STATE_HOME:-~/.local/state}/strand/reports)
+#        ${XDG_STATE_HOME:-~/.local/state}/strand/reports; --out DIR:
+#        the run is copied into DIR, and the bundle is left as it is)
 # Env:   REPORT_VIEW_EVAL  the command that runs strand-eval's commands
 #        (default: scripts/container/run.sh eval; inside the container,
 #        scripts/eval/eval.sh)
@@ -25,12 +26,18 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 open=1
+dest=""
 bundle=""
 extra=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-open) open=0 ;;
-    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
+    --out)
+      [ "$#" -ge 2 ] || { echo "report-view: $1 needs a value" >&2; exit 2; }
+      dest=$2
+      shift
+      ;;
     --output | --traced | --frames)
       [ "$#" -ge 2 ] || { echo "report-view: $1 needs a value" >&2; exit 2; }
       extra+=("$1" "$2")
@@ -70,16 +77,17 @@ if ! "${eval_cmd[@]}" replay "$bundle" --out "$out" --no-open --gpu "${extra[@]}
   exit 1
 fi
 
-rm -rf "$bundle/replay"
-mkdir -p "$bundle/replay"
-cp -R "$out"/. "$bundle/replay/"
-chmod -R go-rwx "$bundle/replay"
-echo "replay: $bundle/replay/replay.txt"
-echo "viewer: $bundle/replay/index.html"
+dest=${dest:-$bundle/replay}
+rm -rf "$dest"
+mkdir -p "$dest"
+cp -R "$out"/. "$dest/"
+chmod -R go-rwx "$dest"
+echo "replay: $dest/replay.txt"
+echo "viewer: $dest/index.html"
 if [ "$open" = 1 ]; then
   if command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "$bundle/replay/index.html" >/dev/null 2>&1 &
+    xdg-open "$dest/index.html" >/dev/null 2>&1 &
   else
-    echo "report-view: no xdg-open; open $bundle/replay/index.html" >&2
+    echo "report-view: no xdg-open; open $dest/index.html" >&2
   fi
 fi

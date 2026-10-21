@@ -45,6 +45,13 @@ pub struct Options {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputPick {
     pub name: String,
+    /// (replayfix) Who it is, as `bundle.json`'s outputs name it: its
+    /// `screens.all` id and description (a bundle before replayfix has
+    /// neither), make and model.
+    pub id: Option<String>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub description: Option<String>,
     pub width: u32,
     pub height: u32,
     pub scale: f64,
@@ -161,6 +168,18 @@ fn rel_origin(origin: &str, config_dir: Option<&Path>) -> String {
         }
     }
     origin.to_string()
+}
+
+/// (replayfix) `origin` under the live config directory, if it is an
+/// origin a step can name (`@file.strand:LINE[:COL]`); `None` for
+/// anything else, which names no surface or node.
+fn origin_name(origin: &str, config_dir: Option<&Path>) -> Option<String> {
+    let o = rel_origin(origin, config_dir);
+    matches!(
+        crate::select::Selector::parse(&format!("@{o}")),
+        Ok(crate::select::Selector::Origin { nth: None, .. })
+    )
+    .then_some(o)
 }
 
 /// Compact JSON of `v`.
@@ -599,7 +618,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             ((1e9 / *p as f64).round() as u32).clamp(1, 1000)
         });
     let period = 1_000_000_000 / u64::from(hz);
+    let text = |k: &str| from_json.and_then(|o| o[k].as_str()).map(str::to_string);
     let output = OutputPick {
+        id: text("id"),
+        make: text("make"),
+        model: text("model"),
+        description: text("description"),
         name: name.clone(),
         width,
         height,
@@ -610,18 +634,24 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
 
     // The surfaces' roots: their origins, from the changes ring's root
     // records and `nodes.json`.
+    // (replayfix) A name that is no origin (the `?` a recorder wrote
+    // for a surface with no place in the config, its own error panel)
+    // names no surface: its root is not known.
     let mut origins: HashMap<String, String> = HashMap::new();
     for e in &b.change_entries {
         if e.rec.kind == kind::ROOT
-            && let Some(o) = &e.name
+            && let Some(o) = e
+                .name
+                .as_deref()
+                .and_then(|o| origin_name(o, live_dir.as_deref()))
         {
-            origins.insert(node_ref_at(e), rel_origin(o, live_dir.as_deref()));
+            origins.insert(node_ref_at(e), o);
         }
     }
     let node_of = |r: &str| -> Option<NodeRef> {
         let n = b.nodes.get(r)?;
         Some(NodeRef {
-            origin: rel_origin(n["origin"].as_str()?, live_dir.as_deref()),
+            origin: origin_name(n["origin"].as_str()?, live_dir.as_deref())?,
             id: n["id"].as_str().map(str::to_string),
             key: n["key"].as_str().map(str::to_string),
         })
@@ -1227,8 +1257,9 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         }
     }
     if unknown_surface > 0 {
-        notes.push(format!(
-            "{unknown_surface} input records on surfaces whose root is not known are not replayed"
+        limits.push(format!(
+            "{unknown_surface} input records on surfaces whose root is not known are not replayed \
+             (a surface Strand makes itself, such as its error panel, has no place in the config)"
         ));
     }
     if sideways > 0 {
@@ -1392,10 +1423,25 @@ impl Plan {
             self.traced_ns / 1_000_000_000
         );
         let _ = writeln!(s, "about = {}", toml_str(&about));
+        // (replayfix) The screen is the live output: per-screen data
+        // (`workspaces.slots(screen)`) and the cells kept per screen
+        // name it.
+        let o = &self.output;
+        let mut who = format!(", name = {}", toml_str(&o.name));
+        for (k, v) in [
+            ("id", &o.id),
+            ("make", &o.make),
+            ("model", &o.model),
+            ("description", &o.description),
+        ] {
+            if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+                let _ = write!(who, ", {k} = {}", toml_str(v));
+            }
+        }
         let _ = writeln!(
             s,
-            "screen = {{ width = {}, height = {}, scale = {} }}",
-            self.output.width, self.output.height, self.output.scale
+            "screen = {{ width = {}, height = {}, scale = {}{who} }}",
+            o.width, o.height, o.scale
         );
         let _ = writeln!(s, "hz = {}", self.output.hz);
         let _ = writeln!(

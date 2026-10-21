@@ -976,6 +976,43 @@ impl ServiceHost for SchemaHost {
                         .collect(),
                 ))
             }
+            // (replayfix) As strand-services' `workspaces.slots`: the
+            // screen's workspaces, then its configured ones not made yet,
+            // the numbered first by number (a name's leading digits, else
+            // a positive id), the rest in their order. The owner's
+            // replay drew no workspace dots without it.
+            ("workspaces", "slots") => {
+                let screen = arg(0)
+                    .field(&self.types, "name")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let on = |list: Value| -> Vec<Value> {
+                    list.as_list()
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|w| w.field(&self.types, "screen") == Some(&screen))
+                        .cloned()
+                        .collect()
+                };
+                let mut all = on(self.read(rt, "workspaces", "all")?);
+                all.extend(on(self.read(rt, "workspaces", "configured")?));
+                let number = |w: &Value| -> Option<u64> {
+                    let name = w.field(&self.types, "name").and_then(Value::as_text);
+                    let digits: String = name
+                        .unwrap_or("")
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    digits.parse().ok().or_else(|| {
+                        w.field(&self.types, "id")
+                            .and_then(Value::as_f64)
+                            .filter(|n| *n >= 1.0 && n.fract() == 0.0)
+                            .map(|n| n as u64)
+                    })
+                };
+                all.sort_by_key(|w| (number(w).is_none(), number(w)));
+                Ok(Value::list(all))
+            }
             ("apps", "search") => {
                 let q: Vec<char> = arg(0).as_text().unwrap_or("").chars().collect();
                 let all = self.read(rt, "apps", "all")?;

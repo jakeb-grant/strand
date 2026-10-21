@@ -408,7 +408,7 @@ fn the_busiest_output_is_replayed() {
         (2560, 1440, 1.5, 144)
     );
     assert!(
-        text.contains("screen = { width = 2560, height = 1440, scale = 1.5 }"),
+        text.contains("screen = { width = 2560, height = 1440, scale = 1.5, name = \"HDMI-A-1\""),
         "{text}"
     );
     assert!(
@@ -1791,5 +1791,112 @@ fn strand_replay_knows_every_option_that_takes_a_value() {
     assert!(
         line.contains(&format!("; {}]", strand_eval::cli::REPLAY_VALUED.len())),
         "{line}"
+    );
+}
+
+/// (replayfix) The owner's first replay: Strand's own error panel had no
+/// place in the config, so its root was recorded named `?` (strand
+/// 113d387) and the scenario said `pointer … on @?`, which it could not
+/// read back. A root named so, or with no name, is a surface not known:
+/// its input is counted in the limits, no step names it, and the
+/// scenario parses.
+#[test]
+fn a_root_with_no_origin_is_an_unknown_surface() {
+    let mut f = Fx::session();
+    // The error panel as 113d387 recorded it, and one with no name.
+    for (slot, root, name) in [
+        (2u16, bits(77, 0), f.changes.name("?")),
+        (3, bits(78, 0), flight::NAME_IN_ARENA),
+    ] {
+        f.changes.push(
+            Rec::new(2 * S, kind::ROOT, name)
+                .u64_at(0, root)
+                .u8_at(8, 1),
+        );
+        f.input.push(
+            Rec::new(2 * S + MS, kind::MAPPED, slot)
+                .u64_at(0, root)
+                .u8_at(8, 0)
+                .u8_at(9, 1),
+        );
+        f.pointer(slot, kind::ENTER, 406.77, 104.9, 3 * S);
+        f.pointer(slot, kind::MOTION, 406.77, 71.95, 3 * S + 20 * MS);
+        f.pointer(slot, kind::LEAVE, 0.0, 0.0, 3 * S + 40 * MS);
+    }
+    let dir = f.write("noorigin");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    assert!(!text.contains("@?"), "{text}");
+    assert!(
+        p.limits
+            .iter()
+            .any(|l| l.starts_with("6 input records on surfaces whose root is not known")),
+        "{:#?}",
+        p.limits
+    );
+    // The scenario `strand-eval replay` writes parses, the bar's steps in it.
+    let to = dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("scenarios/local/report-fixture.scn");
+    let (_, path) = replay::write_scenario(&Bundle::read(&dir).unwrap(), &defaults(), Some(&to))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let sc = Scenario::load(&path).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(sc.id, "report-2026-10-20_14-03-07");
+    let o = origins();
+    assert!(
+        steps(&text).contains(&format!("pointer 40.00,20.00 on @{}", o.bar).as_str()),
+        "{text}"
+    );
+}
+
+/// (replayfix) A scenario the replay cannot read back is never run: the
+/// error names the line and says it is the replay's bug.
+#[test]
+fn a_scenario_the_replay_cannot_read_is_its_own_bug() {
+    let dir = tmp("unreadable").join("scenarios/local");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("report-x.scn");
+    let text = "id = \"report-x\"\nscreen = { width = 640, height = 480, scale = 1 }\n\n=== steps\nrest\npointer 1.00,2.00 on @?\n";
+    let e = replay::readable(text, &path).unwrap_err().to_string();
+    assert!(e.contains("report-x.scn:6:"), "{e}");
+    assert!(e.contains("a bug in `strand-eval replay`"), "{e}");
+    assert!(e.contains("`@?`"), "{e}");
+}
+
+/// (replayfix) The scenario's screen is the live output: its connector
+/// name, make and model, and the `screens.all` id and description
+/// `bundle.json` records for it; a bundle before them names the output
+/// alone.
+#[test]
+fn the_replay_screen_is_the_live_output() {
+    let mut f = Fx::session();
+    let (_, _, text) = plan_of(&f.write("screen-old"), &defaults());
+    assert!(
+        text.contains(
+            "screen = { width = 1280, height = 720, scale = 1, name = \"DP-1\", make = \"Fixture\", model = \"Panel\" }"
+        ),
+        "{text}"
+    );
+    f.outputs[0]["id"] = json!("Fixture | Panel | Fixture Panel 42");
+    f.outputs[0]["description"] = json!("Fixture Panel 42");
+    let dir = f.write("screen");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    let to = dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("scenarios/local/report-fixture.scn");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::write(&to, &text).unwrap();
+    let sc = Scenario::load(&to).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(sc.identity.id, "Fixture | Panel | Fixture Panel 42");
+    assert_eq!(sc.identity.name, "DP-1");
+    assert_eq!(sc.identity.description, "Fixture Panel 42");
+    assert_eq!(
+        (sc.identity.make.as_str(), sc.identity.model.as_str()),
+        ("Fixture", "Panel")
     );
 }

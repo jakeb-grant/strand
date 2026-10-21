@@ -1862,8 +1862,12 @@ threads** (as `strand_core::ipc`).
   `0x46` write (an `rw` service field the config wrote; arena: the
   value), `0x47` reload (name `reload`; the module files, the cells
   kept and the cells reset, u16 each; arena `{file: blake3}`),
-  `0x48` surface root (name: its origin `file.strand:LINE:COL`; the
-  root `NodeId` u64, kind u8), `0x49` root gone (`NodeId`), (report
+  `0x48` surface root (name: its origin `file.strand:LINE:COL`, the
+  file under the config directory as `nodes.json` names it; the
+  root `NodeId` u64, kind u8; (replayfix) a root with no place in the
+  config, Strand's own error panel, or one whose origin the name table
+  cannot hold, has slot `NAME_IN_ARENA` and no arena value, so no name:
+  never a placeholder), `0x49` root gone (`NodeId`), (report
   review) `0x4A` request (a cell written by `strand set`, `toggle` or
   `reset`: name the path as asked; verb u8, `flight::request::{SET,
   TOGGLE, RESET}`; arena: the cell's value after it, held back as a
@@ -2091,7 +2095,8 @@ strand-icons reads it (the top level, links followed, `png` and
 `bundle.json` and removes only those. The answer's `paste` line names the directory and
 says what to run: `Strand glitch report "<words>" at <dir>: run
 scripts/report-view.sh --no-open <dir> in the strand checkout and read
-<dir>/replay/replay.txt.`
+<dir>/replay/replay.txt. To watch it: strand replay <dir>` (replayfix:
+the last sentence for the owner, who runs `strand replay` to watch it).
 
 (replay-owner) `strand_render::Renderer::drawn_nodes(SurfaceId) ->
 Option<DrawnFrame>` (`DrawnFrame { drawn_at: Option<Instant>, period:
@@ -2124,7 +2129,10 @@ which the replay lists as calls the mock answered. The interfaces
 eval uses for it: `Instance::seed_cell(path, Value)` (a cell set as a
 baseline, no `on change`, refused when its type does not hold the
 value), `Instance::cell_type(path) -> Option<Ty>` (a cell's declared
-type by the inspector's path), `SchemaHost::answer(method,
+type by the inspector's path), (replayfix) `Instance::cell_mounted(path)
+-> bool` (a cell is mounted there now: a declared one inside a popup
+not yet open is not, and its seed waits for its mount),
+`SchemaHost::answer(method,
 Result<Value, String>)` (the next call of `method` answered with it)
 and `SchemaHost::answers_left() -> Vec<(String, usize)>` (answers
 queued and never taken. (replay-owner) `strand replay [report-dir]
@@ -4206,7 +4214,8 @@ Public interfaces other crates and later stages build on:
     shadow lets go of the right one. `SchemaHost::declare` of a builtin's
     name moves the builtin's cells aside, and `stop` puts them back.
   - `read(rt, service, field)` and `call(rt, service, method, args)`
-    (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`)
+    (`fn` methods: `clock.format`, `calendar.days`, `workspaces.on`,
+    (replayfix) `workspaces.slots`)
     must read through the graph (a `Signal<Value>` per field) so
     bindings depend on exactly that field.
   - `sources(rt, service, field: Option<&str>) -> Vec<NodeId>`: the

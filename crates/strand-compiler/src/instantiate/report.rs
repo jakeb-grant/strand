@@ -383,35 +383,7 @@ impl Instance {
                 value.show(&prog.types)
             )));
         }
-        let target = {
-            let reg = self.ctx.registry.borrow();
-            let mut found = None;
-            for rec in reg.cells.values() {
-                match rec {
-                    CellRec::Plain { sig, path: p, .. } if p == path => {
-                        found = Some(Seed::Plain(*sig));
-                    }
-                    CellRec::Keyed { keyed, path: p, .. } if p == path => {
-                        found = Some(Seed::Keyed(*keyed));
-                    }
-                    CellRec::Settings { slot, path: p, .. } => {
-                        if let Some(field) = path
-                            .strip_prefix(p.as_str())
-                            .and_then(|r| r.strip_prefix('.'))
-                            && let Some((_, sig)) = slot.fields.iter().find(|(n, _)| n == field)
-                        {
-                            found = Some(Seed::Plain(*sig));
-                        }
-                    }
-                    _ => {}
-                }
-                if found.is_some() {
-                    break;
-                }
-            }
-            found
-        };
-        match target {
+        match self.seed_target(path) {
             Some(Seed::Plain(sig)) => sig.set_reloaded(&self.rt, value).map(|_| ()),
             Some(Seed::Keyed(k)) => {
                 let items = value.as_list().map(<[Value]>::to_vec).unwrap_or_default();
@@ -419,6 +391,42 @@ impl Instance {
             }
             None => Err(Error::failed(format!("no cell `{path}`"))),
         }
+    }
+}
+
+impl Instance {
+    /// (replayfix) Whether a cell is mounted at `path` now, one
+    /// [`Instance::seed_cell`] can set: a cell whose type the program
+    /// knows ([`Instance::cell_type`]) may not be mounted yet (a
+    /// component inside a popup that has not opened).
+    pub fn cell_mounted(&self, path: &str) -> bool {
+        self.seed_target(path).is_some()
+    }
+
+    /// The mounted cell at `path`, as a seed sets it.
+    fn seed_target(&self, path: &str) -> Option<Seed> {
+        let reg = self.ctx.registry.borrow();
+        for rec in reg.cells.values() {
+            match rec {
+                CellRec::Plain { sig, path: p, .. } if p == path => {
+                    return Some(Seed::Plain(*sig));
+                }
+                CellRec::Keyed { keyed, path: p, .. } if p == path => {
+                    return Some(Seed::Keyed(*keyed));
+                }
+                CellRec::Settings { slot, path: p, .. } => {
+                    if let Some(field) = path
+                        .strip_prefix(p.as_str())
+                        .and_then(|r| r.strip_prefix('.'))
+                        && let Some((_, sig)) = slot.fields.iter().find(|(n, _)| n == field)
+                    {
+                        return Some(Seed::Plain(*sig));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 

@@ -144,7 +144,7 @@ expect still #after
 |---|---|---|
 | `id` | required | The scenario's name in reports. |
 | `about` | none | What it holds, in prose. |
-| `screen` | `{ width = 300, height = 1080, scale = 1.0 }` | The screen (scale up to 4). |
+| `screen` | `{ width = 300, height = 1080, scale = 1.0 }` | The screen (scale up to 4). (replayfix) Also who it is in `screens.all`: `name` (`"DP-1"`), `id` (`"Mock \| DP-1"`), `make`, `model`, `description`; a replay names the live output so. |
 | `hz` | 60 | The refresh rate; a `hz` step changes it. |
 | `backend` | `"cpu"` | `"cpu"`, `"gpu"` or `"both"` (see CPU and GPU). |
 | `text` | `"inline"` | `"inline"` only; `"worker"` is refused as unsupported. |
@@ -2223,7 +2223,7 @@ files, or replays it in the container:
 
 ```text
 strand replay [report-dir] [--no-open] [options]    # the owner; default: the newest report
-scripts/report-view.sh [--no-open] [bundle-dir]     # an agent, in the container
+scripts/report-view.sh [--no-open] [bundle-dir] [--out DIR]   # an agent, in the container
 ```
 
 (replay-owner) `strand replay` hands off git-style
@@ -2256,7 +2256,9 @@ after `local-mounts.sh`), copies the run into `<bundle>/replay/`
 (`index.html`, `replay.txt`, `fidelity.json`, `summary.txt`, and
 `<id>/` with `checks.json`, `trace.json`, `scenario.scn` and the
 frames) and opens the viewer in the browser unless
-`--no-open` is given. Agents and tests always pass `--no-open`. It
+`--no-open` is given. Agents and tests always pass `--no-open`;
+(replayfix) `--out DIR` copies the run into DIR instead and leaves the
+bundle as it is (someone else's evidence, read only). It
 exits non-zero only when the replay could not run; findings are the
 point, not a failure. It runs the same subcommand as `strand replay`,
 with `--out` into the checkout (the bundle is mounted read-only),
@@ -2288,7 +2290,11 @@ work:
 3. **Picks one output** (the sandbox has one screen): the one with the
    most input in the window's last 10 s, else the one the newest mapped
    surface is on; `--output` names another. Its logical size, scale
-   and refresh are the header's `screen` and `hz`.
+   and refresh are the header's `screen` and `hz`, and (replayfix) its
+   connector name, make and model, and the `screens.all` id and
+   description `bundle.json` records for it, the `screen`'s identity, so
+   per-screen data (`workspaces.slots(screen)`) and the cells kept per
+   screen (`Notch[<id>].grown`) name the screen they did live.
 4. **Rewinds** every service field and cell from its value at the
    report back through the window's records, by their old values, to
    its value at the window's start. A field whose record was truncated

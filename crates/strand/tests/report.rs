@@ -433,7 +433,8 @@ fn a_bundle_holds_every_part() {
         paste,
         format!(
             "Strand glitch report \"the bar dipped\" at {d}: run scripts/report-view.sh \
-             --no-open {d} in the strand checkout and read {d}/replay/replay.txt.",
+             --no-open {d} in the strand checkout and read {d}/replay/replay.txt. To watch \
+             it: strand replay {d}",
             d = dir.display()
         )
     );
@@ -532,6 +533,12 @@ fn a_bundle_holds_every_part() {
     );
     assert!(b["wall"].as_str().is_some_and(|w| w.contains('T')), "{b}");
     assert_eq!(b["outputs"][0]["name"], "HEADLESS-1");
+    // (replayfix) With its `screens.all` id, which the diagnostics leave out.
+    let id = b["outputs"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{b}"));
+    assert!(id.contains(" | "), "{b}");
+    assert!(b["outputs"][0]["description"].is_string(), "{b}");
     // The config's files byte for byte, and their hashes.
     let config = desk.dir.join("config");
     assert_eq!(
@@ -938,8 +945,62 @@ fn the_paste_line_names_the_bundle() {
         .unwrap();
     assert!(Path::new(dir).join("bundle.json").is_file(), "{line}");
     assert!(
-        line.ends_with(&format!("read {dir}/replay/replay.txt.")),
+        line.ends_with(&format!(
+            "read {dir}/replay/replay.txt. To watch it: strand replay {dir}"
+        )),
         "{line}"
+    );
+}
+
+/// (replayfix) The owner's first replay: Strand's own error panel, a
+/// surface with no place in the config, was recorded as a root named
+/// `?`, which the replay wrote as `on @?`. It is recorded with no name,
+/// and the config's roots by their origin under the config directory
+/// (an absolute path was too long for the name table and lost).
+#[test]
+fn the_error_panel_is_a_root_with_no_name() {
+    let Some(mut desk) = Desk::start("noname") else {
+        return;
+    };
+    let file = desk.dir.join("config/report.strand");
+    let good = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, good.replace("bar Top {", "bar Top {\n  txet \"x\"")).unwrap();
+    // The error panel is a third surface, painted once it stood 250 ms.
+    desk.wait("the error panel", |d| {
+        let mut ids: Vec<String> = d
+            .log_text()
+            .lines()
+            .filter_map(|l| l.strip_prefix("strand: damage surface="))
+            .filter_map(|r| r.split(' ').next().map(str::to_string))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids.len() >= 3
+    });
+    let ans = desk.report("the panel");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    assert!(
+        !changes.names.iter().any(|n| n == "?"),
+        "{:?}",
+        changes.names
+    );
+    let roots: Vec<Option<String>> = changes
+        .entries()
+        .into_iter()
+        .filter(|e| e.rec.kind == kind::ROOT)
+        .map(|e| e.name)
+        .collect();
+    let at = |line: usize| Some(format!("report.strand:{line}:1"));
+    let bar = good.lines().position(|l| l == "bar Top {").unwrap() + 1;
+    assert!(roots.contains(&at(bar)), "the bar by its origin: {roots:?}");
+    assert!(roots.contains(&None), "the error panel, unnamed: {roots:?}");
+    assert!(
+        roots
+            .iter()
+            .flatten()
+            .all(|o| o.starts_with("report.strand:")),
+        "{roots:?}"
     );
 }
 

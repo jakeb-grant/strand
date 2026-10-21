@@ -163,6 +163,10 @@ pub(crate) struct Job {
     pub words: String,
     /// What `strand report --json` prints.
     pub report: Json,
+    /// (replayfix) Each screen of `screens.all`: its connector name, id
+    /// and description, which `bundle.json`'s outputs carry (the
+    /// diagnostics name no ids) so a replay's screen is the live one.
+    pub screens: Vec<(String, String, String)>,
     pub main: MainBundle,
     /// The changes ring's dump (`None`: off).
     pub changes: Option<Vec<u8>>,
@@ -223,7 +227,7 @@ pub(crate) fn paste_line(words: &str, dir: &Path) -> String {
     let d = dir.display();
     format!(
         "Strand glitch report \"{words}\" at {d}: run scripts/report-view.sh --no-open {d} in \
-         the strand checkout and read {d}/replay/replay.txt."
+         the strand checkout and read {d}/replay/replay.txt. To watch it: strand replay {d}"
     )
 }
 
@@ -541,7 +545,7 @@ fn fill(job: &Job, dir: &Path) -> io::Result<()> {
         "epoch_unix_ns": job.epoch_unix_ns,
         "strand": {"version": job.version, "commit": job.commit},
         "config_dir": job.config_dir.as_ref().map(|d| d.display().to_string()),
-        "outputs": job.report["outputs"],
+        "outputs": outputs_with_ids(&job.report["outputs"], &job.screens),
         "surfaces": job.main.surfaces,
         "replay": job.replay,
         "files": hashes,
@@ -550,6 +554,29 @@ fn fill(job: &Job, dir: &Path) -> io::Result<()> {
     // Written last: a directory holding a `bundle.json` is a whole report
     // (pruning counts only those).
     private_file(&dir.join("bundle.json"), format!("{bundle:#}\n").as_bytes())
+}
+
+/// (replayfix) The diagnostics' outputs, each with its screen's `id` and
+/// `description` (`screens.all`'s, matched by connector name).
+fn outputs_with_ids(outputs: &Json, screens: &[(String, String, String)]) -> Json {
+    let Some(list) = outputs.as_array() else {
+        return outputs.clone();
+    };
+    let list = list
+        .iter()
+        .map(|o| {
+            let mut o = o.clone();
+            let screen = o["name"]
+                .as_str()
+                .and_then(|n| screens.iter().find(|s| s.0 == n));
+            if let (Some(m), Some((_, id, description))) = (o.as_object_mut(), screen) {
+                m.insert("id".into(), Json::String(id.clone()));
+                m.insert("description".into(), Json::String(description.clone()));
+            }
+            o
+        })
+        .collect();
+    Json::Array(list)
 }
 
 /// Removes all but the newest `keep` directories under `root` that hold
@@ -797,7 +824,8 @@ mod tests {
             line,
             "Strand glitch report \"bar dipped\" at /s/reports/2026-10-20_10-00-00: run \
              scripts/report-view.sh --no-open /s/reports/2026-10-20_10-00-00 in the strand \
-             checkout and read /s/reports/2026-10-20_10-00-00/replay/replay.txt."
+             checkout and read /s/reports/2026-10-20_10-00-00/replay/replay.txt. To watch it: \
+             strand replay /s/reports/2026-10-20_10-00-00"
         );
     }
 }

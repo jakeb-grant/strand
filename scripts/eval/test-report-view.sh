@@ -104,6 +104,17 @@ for _ in $(seq 50); do [ -s "$DIR/opened" ] && break; sleep 0.1; done
 grep -qx "$older/replay/index.html" "$DIR/opened" 2>/dev/null && ok "without --no-open the viewer is opened" ||
   no "the opener was not run on $older/replay/index.html: $(cat "$DIR/opened" 2>/dev/null)"
 
+# (replayfix) --out: the run goes there, the bundle is left as it is.
+rm -rf "$newest/replay"
+if bash scripts/report-view.sh --no-open "$newest" --out "$DIR/elsewhere" >"$DIR/out4" 2>&1; then
+  ok "report-view runs with --out"
+else
+  cat "$DIR/out4"
+  no "report-view failed with --out"
+fi
+need "--out holds the replay" "$DIR/elsewhere/replay.txt"
+[ ! -e "$newest/replay" ] && ok "--out leaves the bundle as it is" || no "--out wrote into the bundle"
+
 # Not a bundle.
 mkdir -p "$DIR/empty"
 if bash scripts/report-view.sh --no-open "$DIR/empty" >"$DIR/out3" 2>&1; then

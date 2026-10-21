@@ -102,8 +102,31 @@ pub fn write_scenario(
         }
     }
     let text = plan.scenario(b, &id);
-    std::fs::write(&path, text).map_err(|e| Error::Io(path.display().to_string(), e))?;
+    std::fs::write(&path, &text).map_err(|e| Error::Io(path.display().to_string(), e))?;
+    readable(&text, &path)?;
     Ok((plan, path))
+}
+
+/// (replayfix) A replay never runs a scenario it cannot read back: the
+/// file is kept to look at, and the error says the replay wrote it
+/// wrong, naming its line.
+pub fn readable(text: &str, path: &Path) -> Result<(), Error> {
+    match Scenario::parse(text, path) {
+        Ok(_) => Ok(()),
+        Err(Error::Scenario { file, line, msg }) => Err(Error::Scenario {
+            file,
+            line,
+            msg: format!(
+                "the replay wrote a line it cannot read back, a bug in `strand-eval replay` \
+                 (not in the shell or the report): {msg}"
+            ),
+        }),
+        Err(e) => Err(Error::Run(format!(
+            "the replay wrote a scenario it cannot read back ({}), a bug in `strand-eval \
+             replay` (not in the shell or the report): {e}",
+            path.display()
+        ))),
+    }
 }
 
 /// (replay-owner) Where a replay's scenario goes: the checkout's

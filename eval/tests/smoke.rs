@@ -1385,6 +1385,99 @@ rest
     assert!(!drawn_last(&t, "five"));
 }
 
+/// (replayfix) A seeded cell of a component inside a popup not open at
+/// boot (the owner's dashboard calendar) waits for the popup's mount,
+/// rather than stopping the run as a cell that does not exist.
+#[test]
+fn a_seed_waits_for_a_popup_to_mount_its_cell() {
+    let t = go(r##"id = "seed-popup"
+screen = { width = 300, scale = 1.0 }
+
+[seed]
+"Cal.dir" = "1"
+
+=== shell.strand
+export state show = false
+component Cal() {
+  state dir = 0
+  box { width: 40; height: 20; bg: #202020
+    if dir == 1 { box { id: one; width: 10; height: 10; bg: #ff0000 } }
+  }
+}
+bar Top {
+  height: 30
+  box { width: 40; height: 30; bg: #303030
+    popup { open: show; width: 60; height: 30
+      Cal {}
+    }
+  }
+}
+
+=== steps
+rest
+set shell.show true
+rest
+"##);
+    assert!(
+        drawn_last(&t, "one"),
+        "the popup's cell seeded as it mounted"
+    );
+}
+
+/// (replayfix) The header's screen may be the live output (a replay's):
+/// `screens.all` names it so, data per screen (`workspaces.slots`)
+/// finds its workspaces, and a cell kept per screen is seeded under its
+/// id. The owner's replay drew no workspace dot on the bar of `eDP-1`,
+/// the sandbox's screen being `DP-1`.
+#[test]
+fn the_screen_can_be_the_live_output() {
+    let text = |who: &str| {
+        format!(
+            r##"id = "screen-as"
+screen = {{ width = 300, scale = 1.0{who} }}
+
+[seed]
+"Top[LG | X | LG X].n" = "5"
+"workspaces.all" = "[{{\"active\":true,\"focused\":true,\"id\":11,\"name\":\"11\",\"occupied\":false,\"screen\":\"eDP-1\",\"urgent\":false,\"windows\":[]}}]"
+
+=== shell.strand
+bar Top {{
+  state n = 0
+  height: 30
+  row {{
+    if screen.name == "eDP-1" && screen.make == "LG" {{ box {{ id: named; width: 10; height: 10; bg: #ff0000 }} }}
+    if n == 5 {{ box {{ id: kept; width: 10; height: 10; bg: #00ff00 }} }}
+    for ws in workspaces.slots(screen) {{ box {{ id: dot; width: 10; height: 10; bg: #0000ff }} }}
+  }}
+}}
+
+=== steps
+rest
+"##
+        )
+    };
+    let t = go(&text(
+        ", name = \"eDP-1\", id = \"LG | X | LG X\", make = \"LG\", model = \"X\", description = \"LG X\"",
+    ));
+    for id in ["named", "kept", "dot"] {
+        assert!(drawn_last(&t, id), "#{id}");
+    }
+    // The mock's screen by default: none of it.
+    let sc = scenario(&text(""));
+    let out = run(&sc, &RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(sc.identity.id, "Mock | DP-1");
+    for id in ["named", "kept", "dot"] {
+        assert!(!drawn_last(&out.trace, id), "#{id}");
+    }
+    assert!(
+        out.notes
+            .iter()
+            .any(|n| n.contains("`Top[LG | X | LG X].n`: no such cell")),
+        "{:?}",
+        out.notes
+    );
+}
+
 /// (report) The keyboard steps type into the input of the surface with
 /// the keyboard: a press on an `on_demand` panel gives it the keyboard
 /// (the compositor's rule), `type` types placeholder `x`s at once or over

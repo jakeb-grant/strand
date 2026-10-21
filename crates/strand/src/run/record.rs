@@ -693,6 +693,14 @@ fn output_rec(t: u64, slot: u16, name: u16, g: OutputGeometry) -> Rec {
         .i16_at(10, i16_(g.position.1))
 }
 
+/// (replayfix) A root record's name index: its origin's, or
+/// [`NAME_IN_ARENA`] with no arena value, which reads back as no name,
+/// for a root with no origin or one the name table cannot hold (a root
+/// record's payload has no room for an arena reference).
+fn root_name(r: &mut Ring, origin: Option<&str>) -> u16 {
+    origin.map_or(NAME_IN_ARENA, |o| r.name(o))
+}
+
 /// A `ROOT` record of surface root `node`, its origin at name `slot`.
 fn root_rec(t: u64, slot: u16, node: NodeId, k: NodeKind) -> Rec {
     Rec::new(t, kind::ROOT, slot)
@@ -750,8 +758,9 @@ pub(crate) struct ChangeRecorder {
     /// A lock is asked for or shown: the ring is paused.
     pub(super) locked: bool,
     program: Arc<Program>,
-    /// Surface roots recorded, by node: their origin and kind.
-    roots: HashMap<NodeId, (String, NodeKind)>,
+    /// Surface roots recorded, by node: their origin (none for a
+    /// surface Strand makes itself) and kind.
+    roots: HashMap<NodeId, (Option<String>, NodeKind)>,
     next_call: u32,
     /// The config's declared services (`service mood from file …`): their
     /// fields' names in declaration order, by service. Such a service is
@@ -911,10 +920,11 @@ impl ChangeRecorder {
         // of, are written again.
         if let Some(r) = &mut self.ring {
             r.push(Rec::new(t, kind::CHANGE_GAP_ENDS, 0).u8_at(0, gap::OFF));
-            let mut roots: Vec<(&NodeId, &(String, NodeKind))> = self.roots.iter().collect();
+            let mut roots: Vec<(&NodeId, &(Option<String>, NodeKind))> =
+                self.roots.iter().collect();
             roots.sort_by_key(|(n, _)| node_bits(**n));
             for (node, (origin, k)) in roots {
-                let slot = r.name(origin);
+                let slot = root_name(r, origin.as_deref());
                 r.push(root_rec(t, slot, *node, *k));
             }
         }
@@ -1229,19 +1239,21 @@ impl ChangeRecorder {
     }
 
     /// A surface root `node` of `kind` was created; `origin` is
-    /// `file.strand:LINE:COL`. A `lock` root is never recorded.
-    pub(crate) fn root(&mut self, t: u64, node: NodeId, kind: NodeKind, origin: &str) {
+    /// `file.strand:LINE:COL`, `None` for a surface with no place in the
+    /// config (Strand's own error panel), which is recorded with no name.
+    /// A `lock` root is never recorded.
+    pub(crate) fn root(&mut self, t: u64, node: NodeId, kind: NodeKind, origin: Option<&str>) {
         if kind == NodeKind::Lock {
             return;
         }
-        self.roots.insert(node, (origin.to_string(), kind));
+        self.roots.insert(node, (origin.map(str::to_string), kind));
         let Some(r) = &mut self.ring else {
             return;
         };
         if r.paused() {
             return;
         }
-        let slot = r.name(origin);
+        let slot = root_name(r, origin);
         r.push(root_rec(t, slot, node, kind));
     }
 
@@ -1256,7 +1268,7 @@ impl ChangeRecorder {
         if r.paused() {
             return;
         }
-        let slot = r.name(&origin);
+        let slot = root_name(r, origin.as_deref());
         r.push(Rec::new(t, kind::ROOT_GONE, slot).u64_at(0, node_bits(node)));
     }
 
@@ -1561,7 +1573,9 @@ impl super::shell::Shell {
                         continue;
                     }
                     let origin = self.origin_of(*id);
-                    self.recorder.borrow_mut().root(t, *id, *kind, &origin);
+                    self.recorder
+                        .borrow_mut()
+                        .root(t, *id, *kind, origin.as_deref());
                 }
                 SceneOp::Remove { id, .. } => {
                     let mut r = self.recorder.borrow_mut();
@@ -1585,16 +1599,14 @@ impl super::shell::Shell {
         }
     }
 
-    /// `node`'s origin as `file.strand:LINE:COL` (`?` when unknown).
-    fn origin_of(&self, node: NodeId) -> String {
-        self.inst
-            .origin(node)
-            .and_then(|(f, _, sp)| {
-                let file = self.build.sources.get(f)?;
-                let (l, c) = crate::overlay::line_col(&file.text, sp.start);
-                Some(format!("{}:{l}:{c}", file.name))
-            })
-            .unwrap_or_else(|| "?".into())
+    /// `node`'s origin as `file.strand:LINE:COL`, the file under the
+    /// config directory as `nodes.json` names it; `None` for a node with
+    /// no place in the config's source (Strand's own error panel).
+    /// (replayfix) Never a placeholder: a replay reads the name as a
+    /// selector.
+    fn origin_of(&self, node: NodeId) -> Option<String> {
+        let (f, _, sp) = self.inst.origin(node)?;
+        self.origin_text(f, sp, self.config_dir.as_deref())
     }
 
     /// (report) The changes ring pauses while a lock is asked for or
@@ -2172,7 +2184,12 @@ mod tests {
     #[test]
     fn the_changes_ring_on_again_writes_its_roots_again() {
         let mut c = ChangeRecorder::new(true, program("let x = 1"));
-        c.root(1, NodeId::new(4, 1), NodeKind::Panel, "shell.strand:3:1");
+        c.root(
+            1,
+            NodeId::new(4, 1),
+            NodeKind::Panel,
+            Some("shell.strand:3:1"),
+        );
         c.set_on(false, 2);
         assert!(c.ring().is_none());
         c.set_on(true, 3);
@@ -2185,6 +2202,47 @@ mod tests {
         assert_eq!(e[0].rec.u8(0), gap::OFF);
         assert_eq!(e[1].rec.u64(0), node_bits(NodeId::new(4, 1)));
         assert_eq!(ring.name_at(e[1].rec.slot), Some("shell.strand:3:1"));
+    }
+
+    /// (replayfix) A surface root with no place in the config (Strand's
+    /// own error panel) is recorded with no name, never `?`, when it
+    /// comes, goes and is written again; one beside it keeps its origin.
+    #[test]
+    fn a_root_with_no_origin_is_recorded_with_no_name() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        c.root(
+            1,
+            NodeId::new(4, 1),
+            NodeKind::Bar,
+            Some("shell.strand:1:1"),
+        );
+        c.root(2, NodeId::new(77, 0), NodeKind::Panel, None);
+        assert!(c.is_root(NodeId::new(77, 0)));
+        c.set_on(false, 3);
+        c.set_on(true, 4);
+        c.removed(5, NodeId::new(77, 0));
+        let ring = c.ring().unwrap();
+        let e = entries(ring);
+        let roots: Vec<(u64, Option<String>)> = e
+            .iter()
+            .filter(|e| e.rec.kind == kind::ROOT)
+            .map(|e| (e.rec.u64(0), e.name.clone()))
+            .collect();
+        assert_eq!(
+            roots,
+            // Written again in node order.
+            [
+                (node_bits(NodeId::new(77, 0)), None),
+                (
+                    node_bits(NodeId::new(4, 1)),
+                    Some("shell.strand:1:1".into())
+                ),
+            ]
+        );
+        assert_eq!(e.last().map(|e| e.rec.kind), Some(kind::ROOT_GONE));
+        assert_eq!(e.last().map(|e| e.rec.slot), Some(NAME_IN_ARENA));
+        let dump = flight::read(&ring.dump(0)).unwrap();
+        assert_eq!(dump.names, ["shell.strand:1:1"], "no placeholder name");
     }
 
     #[test]

@@ -228,6 +228,33 @@ pub struct Screen {
     pub scale: f64,
 }
 
+/// (replayfix) Who the screen is in `screens.all`: the mock's by
+/// default, the live output's in a replay (header `screen`'s `name`,
+/// `id`, `make`, `model`, `description`), so per-screen data and the
+/// cells kept per screen name the screen they did live.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenIdentity {
+    /// Its `screens.all` id (`make | model | description`).
+    pub id: String,
+    /// Its connector name.
+    pub name: String,
+    pub make: String,
+    pub model: String,
+    pub description: String,
+}
+
+impl Default for ScreenIdentity {
+    fn default() -> Self {
+        ScreenIdentity {
+            id: crate::surfaces::SCREEN_ID.into(),
+            name: crate::surfaces::OUTPUT.into(),
+            make: "Mock".into(),
+            model: "DP-1".into(),
+            description: "Mock DP-1".into(),
+        }
+    }
+}
+
 /// Tolerances (docs/eval.md, "Checks").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tolerance {
@@ -301,6 +328,8 @@ pub struct Scenario {
     pub file: PathBuf,
     pub place: Place,
     pub screen: Screen,
+    /// (replayfix) Who the screen is in `screens.all`.
+    pub identity: ScreenIdentity,
     pub hz: u32,
     pub text: TextMode,
     pub backend: BackendMode,
@@ -405,6 +434,11 @@ struct ScreenH {
     width: Option<u32>,
     height: Option<u32>,
     scale: Option<f64>,
+    name: Option<String>,
+    id: Option<String>,
+    make: Option<String>,
+    model: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -605,21 +639,43 @@ impl Scenario {
                 format!("id `{id}`: lowercase letters, digits, `.`, `_` and `-`"),
             ));
         }
-        let screen = {
+        let (screen, identity) = {
             let s = h.screen.unwrap_or(ScreenH {
                 width: None,
                 height: None,
                 scale: None,
+                name: None,
+                id: None,
+                make: None,
+                model: None,
+                description: None,
             });
             let scale = s.scale.unwrap_or(1.0);
             if !(scale > 0.0 && scale <= 4.0) {
                 return Err(err(hl("screen"), format!("screen scale {scale}: 0 to 4")));
             }
-            Screen {
-                width: s.width.unwrap_or(300).max(1),
-                height: s.height.unwrap_or(1080).max(1),
-                scale,
+            let d = ScreenIdentity::default();
+            let identity = ScreenIdentity {
+                id: s.id.unwrap_or(d.id),
+                name: s.name.unwrap_or(d.name),
+                make: s.make.unwrap_or(d.make),
+                model: s.model.unwrap_or(d.model),
+                description: s.description.unwrap_or(d.description),
+            };
+            if identity.id.is_empty() || identity.name.is_empty() {
+                return Err(err(
+                    hl("screen"),
+                    "a screen's `id` and `name` are not empty".into(),
+                ));
             }
+            (
+                Screen {
+                    width: s.width.unwrap_or(300).max(1),
+                    height: s.height.unwrap_or(1080).max(1),
+                    scale,
+                },
+                identity,
+            )
         };
         let hz = h.hz.unwrap_or(60);
         if hz == 0 || hz > 1000 {
@@ -870,6 +926,7 @@ impl Scenario {
             file: file.to_path_buf(),
             place,
             screen,
+            identity,
             hz,
             text: text_mode,
             backend,
