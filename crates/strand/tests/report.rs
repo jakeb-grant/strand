@@ -648,7 +648,7 @@ fn a_typed_secret_is_in_no_file_of_the_bundle() {
 }
 
 /// `system.replay` off drops the recording (a bundle then has none) and
-/// is kept; on again records anew.
+/// is kept; on again records anew, from a gap and what is shown now.
 #[test]
 fn replay_off_drops_the_rings_and_bundles_have_no_recording() {
     let Some(mut desk) = Desk::start("off") else {
@@ -673,11 +673,26 @@ fn replay_off_drops_the_rings_and_bundles_have_no_recording() {
     let ans = desk.report("on");
     let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
     let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    // (report review) Started anew: nothing from before is in it. It
+    // opens with the gap's end, and the surfaces mapped now are written
+    // again at that instant, so a replay of it knows what is shown;
+    // no mapping from before the gap is kept.
+    let entries = input.entries();
+    let first = entries.first().expect("an empty ring");
+    assert_eq!(first.rec.kind, kind::GAP_ENDS, "{first:?}");
+    assert_eq!(first.rec.u8(0), flight::gap::OFF);
+    let maps: Vec<_> = entries
+        .iter()
+        .filter(|e| e.rec.kind == kind::MAPPED)
+        .collect();
+    assert!(!maps.is_empty(), "the shown surfaces are not written again");
     assert!(
-        !input.entries().iter().any(|e| e.rec.kind == kind::MAPPED),
-        "started empty: what mapped before is not in it"
+        maps.iter().all(|e| e.rec.t == first.rec.t),
+        "a mapping from before the gap is kept: {maps:?}"
     );
-    assert!(dir.join("changes.flight").is_file());
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    let first = changes.entries().first().cloned().expect("an empty ring");
+    assert_eq!(first.rec.kind, kind::CHANGE_GAP_ENDS, "{first:?}");
 }
 
 /// A file over 2 MiB is listed missing with its size; a small one is
