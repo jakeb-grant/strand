@@ -2300,3 +2300,115 @@ fn a_pointer_handed_to_a_surface_that_maps_under_it_is_not_left_first() {
     // Mapped 8 s into the window: tick 480; the step two ticks on.
     assert_eq!(on, Some(482), "{text}");
 }
+
+/// (replayfix) A live frame drawn well before the report is its surface
+/// at rest: a colour's spring the live shell drew to its end. The
+/// replay's spring ends up to two ticks later on its own clock (its
+/// start quantised to the ticks, the live frame's presentation lead),
+/// so the frame held is the replay's last paint up to two ticks past
+/// the tick nearest `drawn_ns`, at rest too: the lamp's last step of
+/// colour, which no box shows, is not a drift. Further short, the
+/// replay is still on its way, and the pixels differ.
+#[test]
+fn a_live_frame_at_rest_is_held_to_the_replay_at_rest() {
+    let f = Fx::session();
+    let dir = f.write("rest");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    let (r, out) = replay_of(&dir, &defaults());
+    let trace = trace_of(&r, &out);
+    let sid = trace.surfaces[0].id;
+    let mark = trace
+        .events
+        .iter()
+        .find(|e| e.text == "mark report")
+        .unwrap()
+        .k;
+    // The lamp lit at 12 s: the bar's paints after it, to rest.
+    let lit = ((12 * S - p.start) / p.period) as u32;
+    let paints: Vec<u32> = trace
+        .frames
+        .iter()
+        .filter(|fr| fr.k >= lit && fr.k < mark && fr.painted.contains(&sid))
+        .map(|fr| fr.k)
+        .collect();
+    assert!(paints.len() > 3, "the lamp's colour springs: {paints:?}");
+    let rest = *paints.last().unwrap();
+    let entry = strand_eval::report::read_entry(&out.join(&r.id)).unwrap();
+    let image = |k: u32| {
+        let fr = trace.frames.iter().find(|fr| fr.k == k).unwrap();
+        strand_eval::report::png::decode(&entry.images[&fr.png[&sid]].png).unwrap()
+    };
+    let (w, h, px) = image(rest);
+    let o = origins();
+    let (_, bar) = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| replay::fidelity::same_origin(s, &o.bar))
+        .unwrap();
+    let at_rest: Vec<Json> = bar
+        .iter()
+        .map(|n| {
+            json!({
+                "ref": "0.0", "origin": format!("{LIVE}/{}", n.origin), "id": n.id,
+                "key": n.key, "box": n.rect, "opacity": n.opacity, "travel": 0.0, "fade": 0.0,
+            })
+        })
+        .collect();
+    // The live frame at rest, drawn at the replay's tick `k`.
+    let live_at = |k: u32, tag: &str| {
+        let mut g = Fx::session();
+        g.surfaces[0]["frame"] = json!("frames/1-Top.png");
+        let d = g.write(tag);
+        std::fs::write(
+            d.join("frames/1-Top.png"),
+            strand_eval::report::png::encode(w, h, &px).unwrap(),
+        )
+        .unwrap();
+        let drawn = json!({"format": 2, "surfaces": [{
+            "slot": 1, "root": "3.1", "drawn_ns": p.start + u64::from(k) * p.period,
+            "period_ns": p.period, "nodes": at_rest,
+        }]});
+        std::fs::write(d.join("drawn.json"), serde_json::to_vec(&drawn).unwrap()).unwrap();
+        replay_of(&d, &defaults()).0
+    };
+    // The replay a tick short of rest is not at rest: its lamp's colour
+    // is still on its way.
+    let (_, _, short) = image(rest - 1);
+    assert_ne!(short, px, "the tick before rest differs");
+    for back in [0, 1, 2] {
+        let v = live_at(rest - back, &format!("rest-{back}"));
+        assert_eq!(v.verdict.word(), "VERIFIED", "{back}: {}", v.verdict.line());
+        assert_eq!(v.verdict.ticks[0].1, rest, "{back}: {:?}", v.verdict.ticks);
+        assert_eq!(v.verdict.pixels_held, 1);
+        assert_eq!(v.fidelity.frames[0].k, Some(rest));
+    }
+    // Further back, to a tick whose lamp is still past the tolerance
+    // from rest: held there, and DRIFTED.
+    let off = |k: u32| {
+        let (_, _, q) = image(k);
+        q.iter()
+            .zip(&px)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap()
+    };
+    let far = (3..paints.len() as u32)
+        .find(|back| off(rest - back + 2) > 6)
+        .expect("a tick of the spring past the tolerance");
+    let v = live_at(rest - far, "rest-far");
+    assert_eq!(
+        v.verdict.ticks[0].1,
+        rest - far + 2,
+        "{:?}",
+        v.verdict.ticks
+    );
+    assert_eq!(v.verdict.word(), "DRIFTED", "{}", v.verdict.line());
+    assert!(
+        v.verdict
+            .line()
+            .contains(&format!("pixels differ on @{}", o.bar)),
+        "{}",
+        v.verdict.line()
+    );
+}

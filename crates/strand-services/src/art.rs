@@ -132,11 +132,13 @@ pub fn fetch(url: &str) -> Result<Art, String> {
     fetch_with(system(), url)
 }
 
-/// Fetch `url` with `agent` and keep it as a file; or why not.
+/// Fetch `url` with `agent` and keep it as a file; or why not. The
+/// thread takes no caught signal while it fetches ([`Unsignalled`]).
 pub fn fetch_with(agent: &ureq::Agent, url: &str) -> Result<Art, String> {
     if !is_remote(url) {
         return Err(format!("{url}: not an http(s) URL"));
     }
+    let _quiet = Unsignalled::block();
     let mut response = agent.get(url).call().map_err(|e| e.to_string())?;
     let body = response.body_mut();
     if body.content_length().is_some_and(|n| n > MAX_BYTES) {
@@ -153,6 +155,52 @@ pub fn fetch_with(agent: &ureq::Agent, url: &str) -> Result<Art, String> {
         file,
         bytes: bytes.len() as u64,
     })
+}
+
+/// (replayfix) While it lives, the thread blocks every signal but the
+/// faults its own code raises, and then gets its mask back: a signal
+/// the process catches (tokio's SIGCHLD handler, once a polled command
+/// is reaped as an orphan) goes to another thread instead of
+/// interrupting the fetch. With a read timeout on the socket (which
+/// [`TIMEOUT`] sets), `recv` interrupted by a handler fails with EINTR
+/// whatever `SA_RESTART` says, and ureq ends the fetch on that error,
+/// remembered as a failure for [`RETRY_AFTER`]. A signal sent to this
+/// thread alone waits until the fetch ends.
+struct Unsignalled(Option<libc::sigset_t>);
+
+impl Unsignalled {
+    fn block() -> Self {
+        // SAFETY: `sigset_t` is plain data; `sigfillset` and `sigdelset`
+        // initialise and edit it, and `pthread_sigmask` only changes this
+        // thread's mask and writes the old one to `old`.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&mut set);
+            for fault in [
+                libc::SIGSEGV,
+                libc::SIGBUS,
+                libc::SIGFPE,
+                libc::SIGILL,
+                libc::SIGTRAP,
+                libc::SIGSYS,
+                libc::SIGABRT,
+            ] {
+                libc::sigdelset(&mut set, fault);
+            }
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            let rc = libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+            Self((rc == 0).then_some(old))
+        }
+    }
+}
+
+impl Drop for Unsignalled {
+    fn drop(&mut self) {
+        if let Some(old) = &self.0 {
+            // SAFETY: `old` is the mask `pthread_sigmask` gave back.
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, old, std::ptr::null_mut()) };
+        }
+    }
 }
 
 /// Remote art fetched, being fetched and failed, by URL (see the module
@@ -646,17 +694,58 @@ mod tests {
             drop(held);
         });
         let asked = Instant::now();
-        assert!(
-            fetch_with(
-                &agent(Vec::new()),
-                &format!("http://127.0.0.1:{port}/a.png")
-            )
-            .is_err()
-        );
+        let e = fetch_with(
+            &agent(Vec::new()),
+            &format!("http://127.0.0.1:{port}/a.png"),
+        )
+        .unwrap_err();
         let took = asked.elapsed();
         assert!(
             took >= TIMEOUT - Duration::from_millis(100) && took < TIMEOUT + Duration::from_secs(3),
-            "{took:?}"
+            "{took:?}: {e}"
         );
+    }
+
+    /// (replayfix) A signal a handler catches, arriving on the thread
+    /// while its fetch waits for the answer (a polled command's SIGCHLD
+    /// once tokio reaps an orphan: the kernel picks any thread that does
+    /// not block it), does not end the fetch: with a read timeout on the
+    /// socket, `recv` fails with EINTR whatever `SA_RESTART` says, and
+    /// ureq gives up on that.
+    #[test]
+    fn a_signal_caught_while_a_fetch_waits_does_not_end_it() {
+        use std::os::unix::thread::JoinHandleExt;
+        extern "C" fn caught(_: libc::c_int) {}
+        // SAFETY: a handler that does nothing, installed with SA_RESTART
+        // as tokio's (signal-hook-registry's) are.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = caught as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut sa.sa_mask);
+            assert_eq!(libc::sigaction(libc::SIGUSR2, &sa, std::ptr::null_mut()), 0);
+        }
+        let picture = png();
+        let p = picture.clone();
+        // It answers late: the signals land while the fetch waits.
+        let (port, _) = serve(None, move |_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            ok(&p)
+        });
+        let fetching = std::thread::spawn(move || {
+            fetch_with(
+                &agent(Vec::new()),
+                &format!("http://127.0.0.1:{port}/a.png"),
+            )
+        });
+        let thread = fetching.as_pthread_t();
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(100));
+            // SAFETY: the thread is not joined yet, so its id is valid
+            // (an ended one's too, until the join).
+            unsafe { libc::pthread_kill(thread, libc::SIGUSR2) };
+        }
+        let art = fetching.join().unwrap().unwrap();
+        assert_eq!(std::fs::read(art.file.path()).unwrap(), picture);
     }
 }

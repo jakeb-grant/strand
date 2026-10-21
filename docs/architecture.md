@@ -6006,8 +6006,10 @@ transparent huge pages for life.
   String>` (`Art { file: pixmap::Pinned, bytes: u64 }`; blocking; the media body runs it on the runtime's blocking
   pool) fetches with `ureq` over rustls/ring and the system's
   certificates (`rustls-native-certs`), at most `art::MAX_BYTES` (8 MiB)
-  within `art::TIMEOUT` (10 s), checks the bytes are a PNG, JPEG, GIF or
-  WebP and writes them with `pixmap::write_file(bytes, ext)` (the
+  within `art::TIMEOUT` (10 s), with every signal but a fault blocked on
+  its thread while it runs (replayfix: a caught signal, tokio's SIGCHLD,
+  would fail the socket read with EINTR and end the fetch), checks the
+  bytes are a PNG, JPEG, GIF or WebP and writes them with `pixmap::write_file(bytes, ext)` (the
   content-addressed, pinned files `write_png` already made); the
   renderer decodes them as any local picture. `art::Cache` (16 URLs
   kept, LRU, at most `art::KEPT_BYTES` (16 MiB) of files together, since

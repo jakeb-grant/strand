@@ -387,7 +387,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         let last = sid.and_then(|id| {
             let fr =
                 super::drawn::frame_for(run, plan, id, super::drawn::live_drawn_ns(b, s.slot))?;
-            fr.png.get(&id).map(|p| (fr.k, p.clone()))
+            super::drawn::image_of(run, fr, id).map(|p| (fr.k, p.to_string()))
         });
         let live = std::fs::read(b.dir.join(png))
             .ok()

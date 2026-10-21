@@ -2425,7 +2425,16 @@ surface taken once. Of that surface it takes the last frame painted
 before the report: the replay's tick nearest `drawn_ns`, never past the
 report's own tick (`mark report`; the tick after it is drawn after the
 live shell's last frame), else the surface's last painted frame before
-the report. It names each row as `nodes.json` does, with its own
+the report. (replayfix) A live frame drawn more than two frame periods
+before the report shows its surface at rest (a surface paints every
+frame while anything on it is in flight, a colour's spring too), and
+a motion's end is as uncertain on the replay's clock as its start, so
+it is held to the replay's last paint up to two ticks past that
+nearest tick: the replay at rest too, not a frame short of it with a
+spring's last step of colour, which no box shows (the busy session's
+focused chip, 9 levels of blue off on 2,976 px). A replay paint that
+damaged nothing keeps no image; its pixels are the image kept before
+it. It names each row as `nodes.json` does, with its own
 travel and fade (the larger of its move since the frame before and
 over the next tick), and pairs the nodes in paint order by origin,
 `id:` and row key:

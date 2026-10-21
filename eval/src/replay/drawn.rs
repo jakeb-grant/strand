@@ -452,6 +452,16 @@ fn shown_at(t: &crate::trace::SurfaceInfo, report: u32) -> bool {
 /// live frame was drawn, ns since the rings' epoch; `None`: the report),
 /// never one at or after the report's tick; the first traced one when
 /// none was painted by then (the warm-up's last paint is it).
+///
+/// (replayfix) A live frame drawn more than [`STEP_FRAMES`] frame
+/// periods before the report is its surface at rest (a surface paints
+/// every frame while anything on it is in flight, a colour's spring
+/// too): it is held to the replay's last paint at or before
+/// [`STEP_FRAMES`] ticks past that nearest tick, the replay at rest
+/// too. A motion's end is as uncertain on the replay's clock as its
+/// start (quantised to the ticks, behind the live frame's presentation
+/// lead), so the nearest tick may hold the replay a frame or two short
+/// of rest: a spring's last step of colour, which no box shows.
 pub fn frame_for<'a>(
     run: &'a RunOutput,
     plan: &Plan,
@@ -461,9 +471,14 @@ pub fn frame_for<'a>(
     let report = report_tick(run, plan);
     let cap = report.saturating_sub(1);
     let period = plan.period.max(1);
+    let steps = STEP_FRAMES as u64;
     let target = drawn_ns
         .filter(|t| *t >= plan.start)
-        .map(|t| ((t - plan.start + period / 2) / period).min(u64::from(cap)) as u32)
+        .map(|t| {
+            let nearest = (t - plan.start + period / 2) / period;
+            let at_rest = plan.end.saturating_sub(t) > steps * period;
+            (nearest + if at_rest { steps } else { 0 }).min(u64::from(cap)) as u32
+        })
         .unwrap_or(cap);
     let paints = |fr: &&Frame| fr.painted.contains(&sid) && fr.k < report;
     let frames = &run.trace.frames;
@@ -603,6 +618,20 @@ pub fn live_drawn_ns(b: &Bundle, slot: u16) -> Option<u64> {
         .as_u64()
 }
 
+/// (replayfix) The image of `sid` as the replay's frame `fr` left it:
+/// its own, or, for a paint that damaged nothing (the trace keeps no
+/// image of it), the last one kept before it, which the buffer still
+/// holds.
+pub(crate) fn image_of<'a>(run: &'a RunOutput, fr: &Frame, sid: u32) -> Option<&'a str> {
+    run.trace
+        .frames
+        .iter()
+        .rev()
+        .filter(|f| f.k <= fr.k)
+        .find_map(|f| f.png.get(&sid))
+        .map(String::as_str)
+}
+
 /// The pixels of the replay's frame `fr` of `sid` against the bundle's
 /// PNG `png`, outside `mask` (logical px rects, scaled by `scale`):
 /// how many differ and their box, or why they could not be compared.
@@ -616,7 +645,7 @@ fn pixels_of(
     scale: f64,
     mask: &[[f64; 4]],
 ) -> Option<(u64, Option<[u32; 4]>, Option<String>)> {
-    let name = fr.png.get(&sid)?;
+    let name = image_of(run, fr, sid)?;
     let (w, h, px) = run
         .images
         .get(name)
@@ -805,4 +834,42 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         ));
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::ReplayLog;
+
+    /// (replayfix) A paint that damaged nothing keeps no image: its
+    /// pixels are the last image kept of that surface before it (the
+    /// busy session's request panel, painted again at tick 2 unchanged,
+    /// had its pixels silently not held).
+    #[test]
+    fn a_paint_that_damaged_nothing_shows_the_image_before_it() {
+        let frame = |k: u32, painted: &[u32], png: &[(u32, &str)]| Frame {
+            k,
+            painted: painted.to_vec(),
+            png: png.iter().map(|(s, p)| (*s, p.to_string())).collect(),
+            ..Frame::default()
+        };
+        let mut run = RunOutput {
+            trace: Default::default(),
+            images: BTreeMap::new(),
+            notes: Vec::new(),
+            log: ReplayLog::default(),
+        };
+        run.trace.frames = vec![
+            frame(0, &[1, 2], &[(1, "frames/a.png"), (2, "frames/b.png")]),
+            frame(2, &[1], &[]),
+            frame(3, &[2], &[(2, "frames/c.png")]),
+            frame(5, &[1, 2], &[(1, "frames/d.png")]),
+        ];
+        let at = |k: usize| run.trace.frames[k].clone();
+        assert_eq!(image_of(&run, &at(1), 1), Some("frames/a.png"));
+        assert_eq!(image_of(&run, &at(2), 2), Some("frames/c.png"));
+        assert_eq!(image_of(&run, &at(3), 2), Some("frames/c.png"));
+        assert_eq!(image_of(&run, &at(3), 1), Some("frames/d.png"));
+        assert_eq!(image_of(&run, &at(0), 3), None);
+    }
 }
