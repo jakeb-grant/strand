@@ -1416,7 +1416,7 @@ re-recorded for a stagger that numbers only children with an `enter`
 (their batch settles a step sooner, so their recordings are shorter, and
 their notes longer) it was 6,265,539 bytes; with the stagger review's
 two regressions (stagger-plain-turn and stagger-preset-turn, 7 kB) and
-the keyframes cells' notes read again it is 6,273,055 bytes, 18 kB under
+the keyframes cells' notes read again it is 6,273,496 bytes, 18 kB under
 the tripwire: the 155 scenarios 1.14 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
 Paint costs little because a field is written only on the ticks it

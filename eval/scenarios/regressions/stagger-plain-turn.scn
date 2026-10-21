@@ -4,18 +4,20 @@ numbers only the children with an `enter`, mounting into a surface already
 shown as on a surface's first frame. Into a bar already shown, a row with
 `stagger: 40ms` mounts a plain box, three keyed rows with an `enter`, a plain
 row holding an entering box (its own parent has no stagger), and a box whose
-`enter` is the `popin(0.8)` preset; then, with a `mark` cutting the batch
-while its last children still wait, a later batch of a plain box and one with
-an `enter`. The plain children are drawn at rest at once and take no turn:
-the keyed rows start at 0, 40 and 80 ms, the preset at 120 ms, and the later
-batch's box at once. eval/mutants/stagger-plain-turn.patch numbers every
-child entering again, so each of them starts one or two turns late."""
+`enter` is the `popin(0.8)` preset; then a later batch of a plain box and one
+with an `enter`. The plain children are drawn at rest at once and take no
+turn: the keyed rows start at 0, 40 and 80 ms, the preset at 120 ms, and the
+later batch's box at once. eval/mutants/stagger-plain-turn.patch numbers
+every child entering again, so each of them starts one or two turns late.
+Last, a `mark` cuts a third batch on its box's first frame, mid-enter
+(`vanish`'s pop-in read that frame as its own rest before the review)."""
 screen = { width = 400, scale = 1.0 }
 hz     = 60
 
 === shell.strand
 state more = false
 state late = false
+state cut = false
 bar Top {
   height: 30
   row { id: list; width: 400; height: 30; gap: 6; align: center; pad: 0, 10; stagger: 40ms
@@ -37,6 +39,9 @@ bar Top {
       box { id: plainlate; width: 6; height: 6; bg: #444444 }
       box { id: latebox; width: 10; height: 10; bg: #ff00ff; enter { opacity: 0; x: 8 } }
     }
+    if cut {
+      box { id: cutbox; width: 10; height: 10; bg: #00ffff; enter { opacity: 0 } }
+    }
   }
 }
 
@@ -44,8 +49,13 @@ bar Top {
 rest
 mark more
 set more true
-frames 3
+rest
+expect visible text("three")
 mark late
 set late true
 rest
-expect visible text("three")
+mark cut
+set cut true
+frames 1
+mark after
+rest
