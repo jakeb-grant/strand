@@ -159,6 +159,26 @@ impl Desk {
         ipc: bool,
         home: &[(String, String)],
     ) -> Option<Desk> {
+        Self::with_outputs(
+            tag,
+            extra,
+            files,
+            ipc,
+            home,
+            &["output HEADLESS-1 resolution 1280x720 position 0 0 scale 1"],
+        )
+    }
+
+    /// [`Desk::with_ipc`] on a sway with one headless output per line of
+    /// `outputs` (each its sway `output` command).
+    fn with_outputs(
+        tag: &str,
+        extra: &str,
+        files: &[(&str, &str)],
+        ipc: bool,
+        home: &[(String, String)],
+        outputs: &[&str],
+    ) -> Option<Desk> {
         if !tools() {
             return None;
         }
@@ -170,11 +190,7 @@ impl Desk {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let cfg = dir.join("sway.cfg");
-        std::fs::write(
-            &cfg,
-            "xwayland disable\noutput HEADLESS-1 resolution 1280x720 position 0 0 scale 1\n",
-        )
-        .unwrap();
+        std::fs::write(&cfg, format!("xwayland disable\n{}\n", outputs.join("\n"))).unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
         let mut cmd = Command::new("sway");
         // SAFETY: the hook runs between fork and exec and makes one
@@ -192,6 +208,7 @@ impl Desk {
                 .arg(&cfg)
                 .env("XDG_RUNTIME_DIR", &dir)
                 .env("WLR_BACKENDS", "headless")
+                .env("WLR_HEADLESS_OUTPUTS", outputs.len().max(1).to_string())
                 .env("WLR_RENDERER", "pixman")
                 .env("WLR_LIBINPUT_NO_DEVICES", "1")
                 .env_remove("WAYLAND_DISPLAY")
@@ -1051,6 +1068,141 @@ fn a_popup_session_is_kept_for_its_replay() {
             .any(|k| k.starts_with("Peek[") && k.ends_with("].over")),
         "{cells}"
     );
+    if let Some(k) = keep {
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();
+        std::fs::write(k.join("run"), desk.dir.display().to_string()).unwrap();
+    }
+}
+
+/// (fidelity) A bar on every screen with its state kept per screen: a
+/// click on a screen's button counts there and opens that screen's
+/// card, which grows a frame later; the service change every screen's
+/// bar counts; every click counted in one place.
+const STRIP: &str = "
+export state strip_taps = 0
+bar Strip {
+  edge: bottom; height: 40
+  state taps = 0
+  state seen = 0
+  state open = false
+  state grown = false
+  on change mood.level { seen = seen + 1 }
+  on change open after 30ms { grown = open }
+  row {
+    box { width: 80; height: 40; bg: taps > 0 ? #00ff00 : #0000ff
+      on click { taps = taps + 1; strip_taps = strip_taps + 1; open = !open }
+    }
+    box { width: 80; height: 40; bg: seen > 0 ? #ff0000 : #202020 }
+    box { width: 40; height: 40; bg: screen.focused ? #ffffff : #000000 }
+    if open {
+      box { height: 40; bg: #4040ff; width: grown ? 240 : 40 ~ spring(320, 0.7) }
+    }
+  }
+}
+";
+
+/// (fidelity) The four headless outputs: two at scale 1, one at 1.5 and
+/// one at 2, side by side, each 1280x720 logical px (sway's headless
+/// outputs share their make and model).
+const FOUR: [&str; 4] = [
+    "output HEADLESS-1 resolution 1280x720 position 0 0 scale 1",
+    "output HEADLESS-2 resolution 1920x1080 position 1280 0 scale 1.5",
+    "output HEADLESS-3 resolution 1280x720 position 2560 0 scale 1",
+    "output HEADLESS-4 resolution 2560x1440 position 3840 0 scale 2",
+];
+
+/// (fidelity) A session on four outputs, kept for its replay
+/// (scripts/eval/test-report-view.sh --e2e): clicks on the bars of
+/// three of them, a hover on another, a service change every bar counts.
+/// The bundle names each output with its id, scale, size, place and
+/// `order` in `screens.all`; the input ring holds input on several.
+/// With `STRAND_REPORT_KEEP=DIR` the bundle's path is written to
+/// `DIR/bundle` and the run's directory is left behind.
+#[test]
+fn a_four_output_session_is_kept_for_its_replay() {
+    let Some(mut desk) = Desk::with_outputs("four", STRIP, &[], false, &[], &FOUR) else {
+        return;
+    };
+    let keep = std::env::var_os("STRAND_REPORT_KEEP").map(PathBuf::from);
+    desk.keep = keep.is_some();
+    let (w, h) = (5120, 720);
+    let taps = |d: &Desk, n: &str| d.get("report.strip_taps").as_deref() == Some(n);
+    desk.pointer.motion(1280 + 30, 700, w, h);
+    desk.pointer.click(1280 + 40, 700, w, h);
+    desk.wait("HEADLESS-2's strip counted", |d| taps(d, "1"));
+    std::thread::sleep(Duration::from_millis(600));
+    std::fs::write(desk.data().join("mood.json"), r#"{"level": 7}"#).unwrap();
+    desk.wait("the service updated", |d| {
+        d.get("report.level").as_deref() == Some("7")
+    });
+    desk.pointer.motion(3840 + 30, 700, w, h);
+    desk.pointer.click(3840 + 40, 700, w, h);
+    desk.wait("HEADLESS-4's strip counted", |d| taps(d, "2"));
+    std::thread::sleep(Duration::from_millis(600));
+    desk.pointer.motion(2560 + 300, 700, w, h);
+    std::thread::sleep(Duration::from_millis(100));
+    desk.pointer.motion(2560 + 500, 700, w, h);
+    std::thread::sleep(Duration::from_millis(300));
+    desk.pointer.click(40, 20, w, h);
+    desk.wait("HEADLESS-1's top bar counted", |d| {
+        d.get("report.clicks").as_deref() == Some("1")
+    });
+    desk.pointer.motion(1280 + 30, 700, w, h);
+    desk.pointer.click(1280 + 40, 700, w, h);
+    desk.wait("HEADLESS-2's strip counted again", |d| taps(d, "3"));
+    std::thread::sleep(Duration::from_millis(1500));
+    let ans = desk.report("the card on one screen only");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let b = read_json(&dir.join("bundle.json"));
+    let outputs = b["outputs"].as_array().unwrap().clone();
+    assert_eq!(outputs.len(), 4, "{outputs:?}");
+    let mut order: Vec<(u64, String, f64)> = outputs
+        .iter()
+        .map(|o| {
+            (
+                o["order"]
+                    .as_u64()
+                    .expect("each output's place in screens.all"),
+                o["name"].as_str().unwrap().to_string(),
+                o["scale"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    order.sort_by_key(|o| o.0);
+    assert_eq!(
+        order.iter().map(|o| o.0).collect::<Vec<_>>(),
+        [0, 1, 2, 3],
+        "{outputs:?}"
+    );
+    let mut scales: Vec<f64> = order.iter().map(|o| o.2).collect();
+    scales.sort_by(f64::total_cmp);
+    assert_eq!(scales, [1.0, 1.0, 1.5, 2.0]);
+    let ids: std::collections::BTreeSet<&str> =
+        outputs.iter().filter_map(|o| o["id"].as_str()).collect();
+    assert_eq!(ids.len(), 4, "each output its own id: {outputs:?}");
+    // Input on three outputs' bars.
+    let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    let e = input.entries();
+    let on: std::collections::HashMap<u16, u8> = e
+        .iter()
+        .filter(|e| e.rec.kind == kind::MAPPED)
+        .map(|e| (e.rec.slot, e.rec.u8(8)))
+        .collect();
+    let pressed: std::collections::BTreeSet<u8> = e
+        .iter()
+        .filter(|e| e.rec.kind == kind::BUTTON)
+        .filter_map(|e| on.get(&e.rec.slot).copied())
+        .collect();
+    assert_eq!(pressed.len(), 3, "presses on three outputs: {pressed:?}");
+    let cells = read_json(&dir.join("cells.json"));
+    let strips = cells
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|k| k.starts_with("Strip[") && k.ends_with("].grown"))
+        .count();
+    assert_eq!(strips, 4, "{cells}");
     if let Some(k) = keep {
         std::fs::create_dir_all(&k).unwrap();
         std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();

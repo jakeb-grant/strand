@@ -325,6 +325,48 @@ fn a_value_over_the_cap_is_marked_truncated() {
     assert_ne!(e[0].rec.flags & flags::TRUNCATED, 0);
 }
 
+/// (fidelity) A name too long for the table rides in the arena with its
+/// value; a value over the cap keeps it: the name alone is written, the
+/// record marked truncated, so a reader still knows whose change it was
+/// (it lost both before, and a replay could not tell which cell).
+#[test]
+fn a_long_name_with_a_value_over_the_cap_keeps_its_name() {
+    let mut r = Ring::new(CHANGES, ring::CHANGES);
+    let long = format!(
+        "Notch[{}].history",
+        "Maker | Model | Maker Model SERIAL ".repeat(3)
+    );
+    assert!(long.len() >= flight::NAME_BYTES);
+    r.push_named(
+        1,
+        kind::CELL,
+        &long,
+        &[],
+        0,
+        Some(&mut |w: &mut flight::ArenaWriter<'_>| {
+            for _ in 0..VALUE_CAP + 1 {
+                w.put(b"x");
+            }
+        }),
+    );
+    r.push_named(
+        2,
+        kind::CELL,
+        &long,
+        &[],
+        0,
+        Some(&mut |w: &mut flight::ArenaWriter<'_>| w.put(b"[1,2]")),
+    );
+    let e = dump_of(&r).entries();
+    assert_eq!(e[0].rec.slot, flight::NAME_IN_ARENA);
+    assert_ne!(e[0].rec.flags & flags::TRUNCATED, 0);
+    assert_eq!(e[0].rec.flags & flags::LOST, 0);
+    assert_eq!(e[0].name.as_deref(), Some(long.as_str()));
+    assert_eq!(e[0].value, None, "the value itself is gone");
+    assert_eq!(e[1].name.as_deref(), Some(long.as_str()));
+    assert_eq!(e[1].value.as_deref(), Some(&b"[1,2]"[..]));
+}
+
 #[test]
 fn a_name_that_cannot_be_interned_rides_in_the_arena() {
     let mut r = Ring::new(

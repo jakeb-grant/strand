@@ -339,7 +339,9 @@ impl Rec {
 pub struct ARef {
     pub off: u32,
     pub len: u16,
-    /// It was over [`VALUE_CAP`] and was dropped (`len` 0).
+    /// It was over [`VALUE_CAP`] and was dropped (`len` 0, or (fidelity)
+    /// the length of the name a [`NAME_IN_ARENA`] record keeps alone,
+    /// ended by its 0 byte: [`Ring::named_value`]).
     pub truncated: bool,
 }
 
@@ -650,6 +652,38 @@ impl Ring {
         }
     }
 
+    /// (fidelity) [`Ring::value`] for a record named `in_arena` (its
+    /// name not interned: [`NAME_IN_ARENA`]): the name at the value's
+    /// head, ended by a 0 byte. A value past [`VALUE_CAP`] keeps its
+    /// name: the name alone is written again, the reference to it
+    /// marked truncated, so a reader still knows whose change it was.
+    pub fn named_value(
+        &mut self,
+        in_arena: Option<&str>,
+        write: impl FnOnce(&mut ArenaWriter<'_>),
+    ) -> ARef {
+        let a = self.value(|w| {
+            if let Some(n) = in_arena {
+                w.put(n.as_bytes());
+                w.put(&[0]);
+            }
+            write(w);
+        });
+        match in_arena {
+            Some(n) if a.truncated => {
+                let b = self.value(|w| {
+                    w.put(n.as_bytes());
+                    w.put(&[0]);
+                });
+                ARef {
+                    truncated: true,
+                    ..b
+                }
+            }
+            _ => a,
+        }
+    }
+
     /// (replayfix) Evicts every record up to the newest one of a kind
     /// with a value whose value the arena no longer holds (overwritten
     /// by the bytes written since): a ring keeps no change it lost the
@@ -711,11 +745,7 @@ impl Ring {
         rec.payload[..n].copy_from_slice(&inline[..n]);
         let in_arena = slot == NAME_IN_ARENA;
         if kind::has_value(kind) || in_arena {
-            let a = self.value(|w| {
-                if in_arena {
-                    w.put(name.as_bytes());
-                    w.put(&[0]);
-                }
+            let a = self.named_value(in_arena.then_some(name), |w| {
                 if let Some(v) = value {
                     v(w);
                 }
@@ -930,8 +960,10 @@ impl Dump {
                 };
                 let mut name = None;
                 let mut value = None;
+                // (fidelity) A truncated value of a record named in the
+                // arena still holds its name.
                 let raw = rec.value_ref().map(|a| {
-                    if a.truncated {
+                    if a.truncated && a.len == 0 {
                         Ok(None)
                     } else {
                         self.resolve(a).map(|b| Some(b.to_vec())).ok_or(())
@@ -959,6 +991,9 @@ impl Dump {
                     } else {
                         name = self.name(i).map(str::to_string);
                     }
+                }
+                if rec.flags & flags::TRUNCATED != 0 {
+                    bytes = None;
                 }
                 if kind::has_value(rec.kind) {
                     value = bytes;

@@ -103,6 +103,8 @@ fn edges_off(a: [f64; 4], b: [f64; 4]) -> f64 {
 pub struct Drift {
     /// The surface root's origin.
     pub surface: String,
+    /// (fidelity) The output it is on, with several.
+    pub output: Option<String>,
     pub live: Drawn,
     pub replay: Drawn,
     pub px: f64,
@@ -125,6 +127,8 @@ impl Drift {
 pub struct Pixels {
     /// The surface root's origin.
     pub surface: String,
+    /// (fidelity) The output it is on, with several.
+    pub output: Option<String>,
     pub png: String,
     pub over: u64,
     /// Their bounding box, buffer px: `[x, y, w, h]`.
@@ -150,9 +154,9 @@ pub struct Verdict {
     /// Nodes moving at the report held within their bound.
     pub in_motion: usize,
     /// Nodes the live shell drew that the replay did not, and the other
-    /// way, with their surface's origin.
-    pub live_only: Vec<(String, Drawn)>,
-    pub replay_only: Vec<(String, Drawn)>,
+    /// way, with their surface's origin and (fidelity) output.
+    pub live_only: Vec<(String, Option<String>, Drawn)>,
+    pub replay_only: Vec<(String, Option<String>, Drawn)>,
     /// Live surfaces with no replayed frame to hold them to.
     pub missing: Vec<String>,
     /// Surfaces the replay showed at the report that the live shell did
@@ -170,8 +174,13 @@ pub struct Verdict {
     /// The replay's own boxes at the report: each surface shown then
     /// (its root's origin) and its nodes, in paint order.
     pub replayed: Vec<(String, Vec<Drawn>)>,
+    /// (fidelity) The output of each of `replayed`, in its order.
+    pub replayed_on: Vec<Option<String>>,
     /// The replay's tick each compared surface was held at.
     pub ticks: Vec<Tick>,
+    /// (fidelity) How many outputs were replayed: with several, a
+    /// surface is named with its output.
+    pub outputs: usize,
 }
 
 /// (replay-clip) A compared surface's frame: its root's origin, the
@@ -183,6 +192,8 @@ pub struct Verdict {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tick {
     pub origin: String,
+    /// (fidelity) The output it is on, with several.
+    pub output: Option<String>,
     pub k: u32,
     pub sid: u32,
     pub in_motion: usize,
@@ -305,11 +316,13 @@ impl Verdict {
     /// One line per difference.
     pub fn lines(&self) -> Vec<String> {
         let rect = |r: [f64; 4]| format!("[{:.1}, {:.1}, {:.1}, {:.1}]", r[0], r[1], r[2], r[3]);
+        let on = |o: &Option<String>| super::plan::on_words(o, self.outputs);
         let drift = |d: &Drift| {
             format!(
-                "{} (surface @{}): live {} opacity {:.2}, replay {} opacity {:.2}: {:.1} px off{}{}",
+                "{} (surface @{}{}): live {} opacity {:.2}, replay {} opacity {:.2}: {:.1} px off{}{}",
                 d.live.name(),
                 d.surface,
+                on(&d.output),
                 rect(d.live.rect),
                 d.live.opacity,
                 rect(d.replay.rect),
@@ -344,26 +357,34 @@ impl Verdict {
         for d in &self.drifts {
             out.push(drift(d));
         }
-        for (s, n) in &self.live_only {
+        for (s, o, n) in &self.live_only {
             out.push(format!(
-                "{} (surface @{s}): drawn live at {}, not in the replay",
+                "{} (surface @{s}{}): drawn live at {}, not in the replay",
                 n.name(),
+                on(o),
                 rect(n.rect)
             ));
         }
-        for (s, n) in &self.replay_only {
+        for (s, o, n) in &self.replay_only {
             out.push(format!(
-                "{} (surface @{s}): drawn in the replay at {}, not live",
+                "{} (surface @{s}{}): drawn in the replay at {}, not live",
                 n.name(),
+                on(o),
                 rect(n.rect)
             ));
         }
         for p in &self.pixels {
             out.push(match &p.why {
-                Some(w) => format!("pixels of @{} ({}): not compared: {w}", p.surface, p.png),
-                None => format!(
-                    "pixels of @{} ({}): {} differ past {GPU_TOLERANCE} from the live frame{}{}",
+                Some(w) => format!(
+                    "pixels of @{}{} ({}): not compared: {w}",
                     p.surface,
+                    on(&p.output),
+                    p.png
+                ),
+                None => format!(
+                    "pixels of @{}{} ({}): {} differ past {GPU_TOLERANCE} from the live frame{}{}",
+                    p.surface,
+                    on(&p.output),
                     p.png,
                     p.over,
                     p.bbox.map_or_else(String::new, |b| format!(
@@ -396,6 +417,7 @@ impl Verdict {
         let drift = |d: &Drift| {
             json!({
                 "surface": d.surface,
+                "output": d.output,
                 "node": d.live.name(),
                 "live": node(&d.live),
                 "replay": node(&d.replay),
@@ -412,17 +434,17 @@ impl Verdict {
             "nodes": self.nodes,
             "tolerance": {"px": PX, "opacity": OPACITY, "moving_frames": STEP_FRAMES},
             "unchecked": self.unchecked,
-            "ticks": self.ticks.iter().map(|t| json!({"surface": t.origin, "k": t.k, "sid": t.sid, "in_motion": t.in_motion})).collect::<Vec<_>>(),
+            "ticks": self.ticks.iter().map(|t| json!({"surface": t.origin, "output": t.output, "k": t.k, "sid": t.sid, "in_motion": t.in_motion})).collect::<Vec<_>>(),
             "drifted": self.drifts.iter().map(drift).collect::<Vec<_>>(),
             "in_motion": self.in_motion,
             "pixels_held": self.pixels_held,
             "moving_out_of_step": self.moving.iter().map(drift).collect::<Vec<_>>(),
-            "live_only": self.live_only.iter().map(|(s, n)| json!({"surface": s, "node": n.name(), "live": node(n)})).collect::<Vec<_>>(),
-            "replay_only": self.replay_only.iter().map(|(s, n)| json!({"surface": s, "node": n.name(), "replay": node(n)})).collect::<Vec<_>>(),
+            "live_only": self.live_only.iter().map(|(s, o, n)| json!({"surface": s, "output": o, "node": n.name(), "live": node(n)})).collect::<Vec<_>>(),
+            "replay_only": self.replay_only.iter().map(|(s, o, n)| json!({"surface": s, "output": o, "node": n.name(), "replay": node(n)})).collect::<Vec<_>>(),
             "missing": self.missing,
             "replay_only_surfaces": self.replay_only_surfaces,
             "pixels": self.pixels.iter().map(|p| json!({
-                "surface": p.surface, "png": p.png, "over": p.over, "bbox": p.bbox, "why": p.why,
+                "surface": p.surface, "output": p.output, "png": p.png, "over": p.over, "bbox": p.bbox, "why": p.why,
             })).collect::<Vec<_>>(),
             "changed_files": self.changed_files,
         })
@@ -588,31 +610,35 @@ fn same_ref(a: &NodeRef, b: &NodeRef) -> bool {
     same_origin(&a.origin, &b.origin) && a.id == b.id && a.key == b.key
 }
 
-/// Which replay surface each live surface on the replayed output is
-/// (`bundle.json`'s, by slot): the one shown at the report whose root is
-/// the same node (origin, `id:`, row key), each taken once, in order.
-/// `None`: no such surface, or a root `nodes.json` does not name.
+/// Which replay surface each live surface is (`bundle.json`'s, by
+/// slot): the one shown at the report whose root is the same node
+/// (origin, `id:`, row key) and (fidelity) on the same output, when
+/// both say, each taken once, in order. `None`: no such surface, or a
+/// root `nodes.json` does not name.
 pub fn match_surfaces(b: &Bundle, plan: &Plan, run: &RunOutput) -> BTreeMap<u16, Option<u32>> {
     let report = report_tick(run, plan);
-    let shown: Vec<(u32, Option<NodeRef>)> = run
+    let shown: Vec<(u32, Option<NodeRef>, Option<String>)> = run
         .trace
         .surfaces
         .iter()
         .filter(|t| shown_at(t, report))
-        .map(|t| (t.id, replay_root(run, &t.root)))
+        .map(|t| (t.id, replay_root(run, &t.root), t.output.clone()))
         .collect();
     let mut used = vec![false; shown.len()];
     let mut out = BTreeMap::new();
     for rec in &b.surfaces {
-        if rec.output.as_deref().is_some_and(|o| o != plan.output.name) {
-            continue;
-        }
         let hit = live_root(b, &rec.root).and_then(|want| {
             shown
                 .iter()
                 .enumerate()
-                .find(|(i, (_, r))| !used[*i] && r.as_ref().is_some_and(|r| same_ref(r, &want)))
-                .map(|(i, (id, _))| (i, *id))
+                .find(|(i, (_, r, o))| {
+                    let same_output = match (o, &rec.output) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => true,
+                    };
+                    !used[*i] && same_output && r.as_ref().is_some_and(|r| same_ref(r, &want))
+                })
+                .map(|(i, (id, ..))| (i, *id))
         });
         if let Some((i, _)) = hit {
             used[i] = true;
@@ -700,12 +726,16 @@ fn grown(r: [f64; 4], by: f64) -> [f64; 4] {
 
 /// Holds the replay's frame at the report to `drawn.json`.
 pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
-    let mut v = Verdict::default();
+    let mut v = Verdict {
+        outputs: plan.outputs.len(),
+        ..Verdict::default()
+    };
     let report = report_tick(run, plan);
     for t in run.trace.surfaces.iter().filter(|t| shown_at(t, report)) {
         let origin = replay_root(run, &t.root).map_or_else(|| t.root.clone(), |r| r.origin);
         if let Some(fr) = frame_for(run, plan, t.id, None) {
             v.replayed.push((origin, nodes_of(run, fr, t.id)));
+            v.replayed_on.push(t.output.clone());
         }
     }
     let Some(surfaces) = b.drawn["surfaces"].as_array() else {
@@ -722,10 +752,8 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
             continue;
         };
         let rec = b.surfaces.iter().find(|r| r.slot == slot);
-        // Only the output replayed (the sandbox has one screen).
-        if rec.is_some_and(|r| r.output.as_deref().is_some_and(|o| o != plan.output.name)) {
-            continue;
-        }
+        // (fidelity) Every output is replayed.
+        let output = rec.and_then(|r| r.output.clone());
         let root = s["root"].as_str().unwrap_or("");
         let Some(want) = live_root(b, root) else {
             v.missing
@@ -763,6 +791,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         let at = v.ticks.len();
         v.ticks.push(Tick {
             origin: origin.clone(),
+            output: output.clone(),
             k: fr.k,
             sid,
             in_motion: 0,
@@ -779,13 +808,14 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
                 .find(|(i, r)| !used[*i] && l.same(r))
                 .map(|(i, _)| i);
             let Some(i) = m else {
-                v.live_only.push((origin.clone(), l));
+                v.live_only.push((origin.clone(), output.clone(), l));
                 continue;
             };
             used[i] = true;
             let r = &replay[i];
             let d = Drift {
                 surface: origin.clone(),
+                output: output.clone(),
                 px: l.px_off(r),
                 opacity: (l.opacity - r.opacity).abs(),
                 travel: l.travel.max(r.travel),
@@ -815,7 +845,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         }
         for (i, r) in replay.into_iter().enumerate() {
             if !used[i] {
-                v.replay_only.push((origin.clone(), r));
+                v.replay_only.push((origin.clone(), output.clone(), r));
             }
         }
         // The frame's pixels against the bundle's PNG of it.
@@ -832,6 +862,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
             }
             v.pixels.push(Pixels {
                 surface: origin.clone(),
+                output: output.clone(),
                 png: png.clone(),
                 over,
                 bbox,
@@ -850,8 +881,13 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
     }
     if v.surfaces == 0 && v.missing.is_empty() && v.replay_only_surfaces.is_empty() {
         v.unchecked = Some(format!(
-            "drawn.json has no surface on {}, the output replayed",
-            plan.output.name
+            "drawn.json has no surface on {}, the output{} replayed",
+            plan.outputs
+                .iter()
+                .map(|o| o.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            if plan.outputs.len() == 1 { "" } else { "s" }
         ));
     }
     v

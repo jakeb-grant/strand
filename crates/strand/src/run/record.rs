@@ -842,11 +842,8 @@ fn push_value(
     let n = inline.len().min(6);
     rec.payload[..n].copy_from_slice(&inline[..n]);
     let mut held = false;
-    let a: ARef = r.value(|w| {
-        if slot == NAME_IN_ARENA {
-            w.put(name.as_bytes());
-            w.put(&[0]);
-        }
+    // (fidelity) A value over the cap keeps its name.
+    let a: ARef = r.named_value((slot == NAME_IN_ARENA).then_some(name), |w| {
         held = write(w);
     });
     rec = rec.with_value(a);
@@ -2532,6 +2529,27 @@ mod tests {
             Some(&kind::CLICK_AWAY),
             "slots are kept"
         );
+    }
+
+    /// (fidelity) A cell kept per screen has a name too long for the
+    /// ring's table; a write of it over the value cap still says whose
+    /// it was (a version-1 recorder lost the name with the value).
+    #[test]
+    fn a_long_named_cell_over_the_cap_keeps_its_name() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        let path = "Notch[Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q HQ1MTS2].history";
+        let big = Value::list(vec![Value::int(1); flight::VALUE_CAP]);
+        c.cell(1, path, &Value::int(0), &big);
+        c.cell(2, path, &big, &Value::int(1));
+        let e = entries(c.ring().unwrap());
+        let cells: Vec<&Entry> = e.iter().filter(|e| e.rec.kind == kind::CELL).collect();
+        assert_eq!(cells.len(), 2);
+        for c in &cells {
+            assert_eq!(c.rec.slot, NAME_IN_ARENA);
+            assert_eq!(c.name.as_deref(), Some(path));
+            assert_ne!(c.rec.flags & flags::TRUNCATED, 0);
+            assert_eq!(c.value, None);
+        }
     }
 
     fn program(src: &str) -> Arc<Program> {

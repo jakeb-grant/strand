@@ -23,7 +23,12 @@
 #              session (four workspaces of windows, a clock, a player,
 #              notifications, a title changing) whose every press lands
 #              on the chip it did live, with no value lost; (replay-clip)
-#              the session's clip, each box the replay's trace's
+#              the session's clip, each box the replay's trace's;
+#              (fidelity) a session on four headless outputs (two scales
+#              besides 1, a bar per screen with its state kept per
+#              screen, input on three): every output replayed as a
+#              screen of its own, no divergence, VERIFIED on every
+#              surface, and its clip naming each surface's output
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -328,6 +333,58 @@ PY
   else
     tail -40 "$DIR/e2e-popup.log"
     no "the hover popup session on a headless sway was not reported"
+  fi
+
+  # (fidelity) A session on four outputs: each a screen of the replay,
+  # its input taken there, every surface held to its own.
+  keep=$DIR/keep-four
+  if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
+    a_four_output_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-four.log" 2>&1 && [ -f "$keep/bundle" ]; then
+    ok "a session on four outputs is reported"
+    bundle=$(cat "$keep/bundle")
+    run_dir=$(cat "$keep/run")
+    made+=("$(scenario_name "$bundle")")
+    if bash scripts/report-view.sh --no-open "$bundle" >"$DIR/e2e-four-view" 2>&1; then
+      ok "its bundle replays"
+      rep=$bundle/replay
+      sed -n '1,/^timeline/p' "$rep/replay.txt"
+      scn=$(ls "$rep"/report-*/scenario.scn | head -1)
+      n=$(sed -n '/^screens = \[/,/^\]/p' "$scn" | grep -c '^  { width')
+      [ "$n" = 4 ] && ok "the replay has a screen per output" || no "the replay has $n screens: $(head -12 "$scn")"
+      grep -q '^screen HEADLESS-' "$scn" && ok "its input is taken on its own output" ||
+        no "no \`screen\` step: $(grep -n '^screen\|^press' "$scn" | head)"
+      grep -q '"faithful": true' "$rep/fidelity.json" && ok "the four-output session replays faithfully" ||
+        no "the four-output session diverges: $(grep -A3 '"first"' "$rep/fidelity.json")"
+      if python3 -I - "$rep/fidelity.json" <<'PY'
+import json, sys
+f = json.load(open(sys.argv[1]))
+outs = {o["name"] for o in f["outputs"]}
+held = {t.get("output") for t in f["verdict"]["ticks"]}
+print("   outputs", sorted(outs), "held on", sorted(o for o in held if o))
+sys.exit(0 if len(outs) == 4 and held == outs else 1)
+PY
+      then
+        ok "a surface on every output was held to the live one"
+      else
+        no "not every output's surfaces were held (above)"
+      fi
+      head -1 "$rep/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
+        ok "the four-output session is VERIFIED against the live shell's drawn boxes" ||
+        no "the four-output session is not VERIFIED: $(sed -n '1,/^glitch report/p' "$rep/replay.txt")"
+      if bash scripts/eval/eval.sh replay clip "$bundle" --from -1s >"$DIR/clip-four.txt" 2>&1 &&
+        grep -q '^  @.* on HEADLESS-[1-4]: ' "$DIR/clip-four.txt"; then
+        ok "its clip names each surface's output"
+      else
+        no "its clip does not name the outputs: $(sed -n '/^fidelity:/,/^elements/p' "$DIR/clip-four.txt" | head -20)"
+      fi
+    else
+      cat "$DIR/e2e-four-view"
+      no "the four-output session's bundle could not be replayed"
+    fi
+    rm -rf "$run_dir"
+  else
+    tail -40 "$DIR/e2e-four.log"
+    no "the four-output session on a headless sway was not reported"
   fi
 
   # (replayfix) A busy shell over its whole window: workspaces with

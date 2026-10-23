@@ -459,26 +459,37 @@ var StrandClip = (function () {
       return d.node + ': live ' + rect(d.live.box) + ' opacity ' + num(d.live.opacity, 2) + ', replay ' +
         rect(d.replay.box) + ' opacity ' + num(d.replay.opacity, 2) + ': ' + num(d.px, 1) + ' px off';
     }
-    // What the verdict found on the surfaces rooted at `origin`: its
-    // differences, and apart from them its nodes moving out of step
-    // (which it does not count as a difference, and held to nothing).
-    function found(origin) {
+    // What the verdict found on the surfaces rooted at `origin` (on
+    // `output`, when both say: fidelity): its differences, and apart
+    // from them its nodes moving out of step (which it does not count as
+    // a difference, and held to nothing).
+    function found(origin, output) {
       var out = [], moving = [];
-      (V.drifted || []).forEach(function (d) { if (sameOrigin(d.surface, origin)) out.push(drift(d)); });
+      function here(d) { return sameOrigin(d.surface, origin) && (!d.output || !output || d.output === output); }
+      (V.drifted || []).forEach(function (d) { if (here(d)) out.push(drift(d)); });
       (V.live_only || []).forEach(function (d) {
-        if (sameOrigin(d.surface, origin)) out.push(d.node + ': drawn live at ' + rect(d.live.box) + ', not in the replay');
+        if (here(d)) out.push(d.node + ': drawn live at ' + rect(d.live.box) + ', not in the replay');
       });
       (V.replay_only || []).forEach(function (d) {
-        if (sameOrigin(d.surface, origin)) out.push(d.node + ': drawn in the replay at ' + rect(d.replay.box) + ', not live');
+        if (here(d)) out.push(d.node + ': drawn in the replay at ' + rect(d.replay.box) + ', not live');
       });
       (V.pixels || []).forEach(function (p) {
-        if (!sameOrigin(p.surface, origin)) return;
+        if (!here(p)) return;
         out.push(p.why ? 'its pixels were not compared: ' + p.why
           : p.over + ' of its pixels differ from the live frame' + (p.bbox ? ', in ' + p.bbox[2] + 'x' + p.bbox[3] + ' at ' + p.bbox[0] + ',' + p.bbox[1] : ''));
       });
-      (V.moving_out_of_step || []).forEach(function (d) { if (sameOrigin(d.surface, origin)) moving.push(drift(d)); });
+      (V.moving_out_of_step || []).forEach(function (d) { if (here(d)) moving.push(drift(d)); });
       return { diffs: out, moving: moving };
     }
+    // (fidelity) Where the replay parted from the live shell before the
+    // report's frame: a VERIFIED frame may have been drawn from another
+    // state, so each says so.
+    var P = (V && V.parted) || null;
+    var partedWords = P && P.count > 0
+      ? 'but the replay parted from the live shell ' + (P.count === 1 ? 'once' : P.count + ' times') +
+        ' earlier in the window, first at ' + secs(P.first.t) + ' s (' + P.first.what + ': ' + P.first.text + ')'
+      : null;
+    var several = (F.outputs || []).length > 1;
     if (!V) {
       lines.push('no verdict: this replay is from a strand-eval before the live boxes were compared; nothing checked its frames ' +
         'against what the live shell drew');
@@ -517,7 +528,7 @@ var StrandClip = (function () {
       };
       surfaces.push(s);
       if (!V || V.unchecked) return;
-      var at = '@' + origin + ': ';
+      var at = '@' + origin + (several && info.output ? ' on ' + info.output : '') + ': ';
       var count = (shown.length ? plural(shown.length, 'frame') + ' painted in this slice' : 'no frame painted in this slice') +
         (before.length ? (shown.length ? ', plus ' : '; ') + 'k' + before.join(', k') + ', drawn before it and held at its start' : '');
       var own = ': they are the replay\'s own, drawn from the recorded input';
@@ -550,7 +561,7 @@ var StrandClip = (function () {
           (ticks[0] > all[all.length - 1] ? 'after' : 'before') + ' them');
         return;
       }
-      var f = found(origin);
+      var f = found(origin, info.output);
       s.differences = f.diffs;
       s.moving_out_of_step = f.moving;
       // Compared surfaces rooted where this one is: what the verdict
@@ -572,7 +583,8 @@ var StrandClip = (function () {
             ' travel, ' + (im === 1 ? 'its box' : 'their boxes') + ' left out of the pixel comparison'
             : im < 0 ? '; ' + V.in_motion + ' moving at the report on the surfaces compared (fidelity.json does not say which), each held ' +
               'within ' + num(MF) + ' frames of its travel, its box left out of the pixel comparison' : '') +
-          (px ? '; its pixels as the live frame\'s' + (im !== 0 ? ' outside those boxes' : '') : ' (its pixels were not compared)'));
+          (px ? '; its pixels as the live frame\'s' + (im !== 0 ? ' outside those boxes' : '') : ' (its pixels were not compared)') +
+          (partedWords ? '; ' + partedWords : ''));
       } else if (peers > 1) {
         lines.push(head + 'it or another surface rooted at @' + origin + ' differs (' + f.diffs.length + '; the verdict compared ' + peers +
           ' surfaces rooted there and names what it found by the root alone):');
@@ -603,9 +615,10 @@ var StrandClip = (function () {
       lines.push('no divergence from the recorded session (presses, surfaces mapped, cell writes) in this slice');
     }
     if (earlier.length) {
-      var last = earlier[earlier.length - 1];
-      lines.push(earlier.length + ' earlier in the window, the last at ' + secs(last.t) + ' s (' + last.what + ': ' + last.text +
-        '): the replay may already part from the live shell here');
+      var first = earlier[0], last = earlier[earlier.length - 1];
+      lines.push(earlier.length + ' earlier in the window, the first at ' + secs(first.t) + ' s (' + first.what + ': ' + first.text +
+        ')' + (earlier.length > 1 ? ', the last at ' + secs(last.t) + ' s (' + last.what + ': ' + last.text + ')' : '') +
+        ': the replay may already part from the live shell here');
     }
     var limits = F.limits || [];
     if (limits.length) {
@@ -617,6 +630,7 @@ var StrandClip = (function () {
       json: {
         verdict: V ? V.verdict : null,
         line: V ? V.line : null,
+        parted: P,
         surfaces: surfaces,
         divergences: inSlice,
         divergences_before: earlier.length,

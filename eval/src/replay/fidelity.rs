@@ -35,6 +35,8 @@ pub struct FrameDiff {
     pub png: String,
     /// The surface root's origin.
     pub origin: String,
+    /// (fidelity) The output the live surface was on.
+    pub output: Option<String>,
     /// The replay's tick it is held to (`None`: no frame of it).
     pub k: Option<u32>,
     /// Pixels past the `cpu-gpu` tolerance, of `total`.
@@ -245,8 +247,14 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
             let close = at.is_some_and(|k| {
                 tick_t(k).abs_diff(m.t) <= MAP_FRAMES * period || (booting && k <= k0)
             });
+            // (fidelity) On the same output, when both say.
+            let same_output = match (&s.output, &m.output) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
             !taken
                 && close
+                && same_output
                 && root_origin(trace, &s.root).is_some_and(|o| same_origin(&o, &m.origin))
         });
         match near {
@@ -261,15 +269,17 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
                 t: m.t,
                 what: "surface",
                 text: format!(
-                    "surface @{} {} live; the replay's did not within {MAP_FRAMES} frames",
+                    "surface @{}{} {} live; the replay's did not within {MAP_FRAMES} frames",
                     m.origin,
+                    super::plan::on_words(&m.output, plan.outputs.len()),
                     if m.mapped { "mapped" } else { "went" }
                 ),
             }),
         }
     }
     for (i, s) in trace.surfaces.iter().enumerate() {
-        let origin = root_origin(trace, &s.root).unwrap_or_default();
+        let origin = root_origin(trace, &s.root).unwrap_or_default()
+            + &super::plan::on_words(&s.output, plan.outputs.len());
         if s.attached > k0 && !used[i].0 && tick_t(s.attached) >= traced_at {
             f.divergences.push(Divergence {
                 t: tick_t(s.attached),
@@ -290,41 +300,110 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
     }
 
     // Cell writes: each live one against the replay's next of the path.
+    // (fidelity) In passes, so a write the ring kept whole takes its
+    // own first: each live write with its value against the replay's
+    // write of the same path and value nearest it in time, within
+    // MAP_FRAMES frames, then against the next of them at any time (so
+    // a live write the replay did not make takes no later write that
+    // matches one it did, and a divergence is at the write that
+    // parted); then each whose value was lost
+    // against the replay's write of its path nearest it in time, within
+    // MAP_FRAMES frames; then each whose name was lost too against the
+    // nearest write of a cell whose name the ring's table does not
+    // hold; last, each live write still unmatched against the replay's
+    // next write of its path, or none.
     let writes = &run.log.writes;
     f.writes = (plan.writes.len(), writes.len());
     let mut taken = vec![false; writes.len()];
-    for w in &plan.writes {
-        let hit = writes.iter().enumerate().find(|(i, r)| {
-            !taken[*i]
-                && r.path == w.path
-                && serde_json::from_str::<Json>(&r.value).is_ok_and(|v| v == w.value)
-        });
-        match hit {
-            Some((i, _)) => taken[i] = true,
-            None => {
-                let other = writes.iter().enumerate().find(|(i, r)| {
-                    !taken[*i] && r.path == w.path && since_start(r.t) + 2 * period >= w.t
-                });
-                let text = match other {
-                    Some((i, r)) => {
-                        taken[i] = true;
-                        format!(
-                            "cell {} = {} live, the replay wrote {}",
-                            w.path, w.value, r.value
-                        )
-                    }
-                    None => format!(
-                        "cell {} = {} live, the replay never wrote it",
-                        w.path, w.value
-                    ),
-                };
-                f.divergences.push(Divergence {
-                    t: w.t,
-                    what: "cell",
-                    text,
-                });
+    let mut done = vec![false; plan.writes.len()];
+    let near = MAP_FRAMES * period;
+    let value_of = |r: &crate::harness::WriteLog| serde_json::from_str::<Json>(&r.value).ok();
+    for close in [true, false] {
+        for (wi, w) in plan.writes.iter().enumerate() {
+            let (Some(path), Some(value)) = (&w.path, &w.value) else {
+                continue;
+            };
+            if done[wi] {
+                continue;
+            }
+            let mut same = writes.iter().enumerate().filter(|(i, r)| {
+                !taken[*i] && r.path == *path && value_of(r).as_ref() == Some(value)
+            });
+            let hit = if close {
+                same.filter(|(_, r)| since_start(r.t).abs_diff(w.t) <= near)
+                    .min_by_key(|(_, r)| since_start(r.t).abs_diff(w.t))
+            } else {
+                same.next()
+            };
+            if let Some((i, _)) = hit {
+                taken[i] = true;
+                done[wi] = true;
             }
         }
+    }
+    let mut by_time = 0usize;
+    for pass in 0..2 {
+        for (wi, w) in plan.writes.iter().enumerate() {
+            if done[wi] || w.value.is_some() {
+                continue;
+            }
+            let fits = |r: &crate::harness::WriteLog| match (&w.path, pass) {
+                (Some(p), 0) => r.path == *p,
+                (None, 1) => !plan.interned.contains(&r.path),
+                _ => false,
+            };
+            let hit = writes
+                .iter()
+                .enumerate()
+                .filter(|(i, r)| !taken[*i] && fits(r) && since_start(r.t).abs_diff(w.t) <= near)
+                .min_by_key(|(_, r)| since_start(r.t).abs_diff(w.t));
+            if let Some((i, _)) = hit {
+                taken[i] = true;
+                done[wi] = true;
+                by_time += 1;
+            }
+        }
+    }
+    if by_time > 0 {
+        f.notes.push(format!(
+            "{by_time} live cell write{} whose value (or name and value) the ring lost {} held \
+             to the replay's write nearest in time (within {MAP_FRAMES} frames), not by value",
+            if by_time == 1 { "" } else { "s" },
+            if by_time == 1 { "is" } else { "are" }
+        ));
+    }
+    for (wi, w) in plan.writes.iter().enumerate() {
+        if done[wi] {
+            continue;
+        }
+        let text = match (&w.path, &w.value) {
+            (Some(path), Some(value)) => {
+                let other = writes.iter().enumerate().find(|(i, r)| {
+                    !taken[*i] && r.path == *path && since_start(r.t) + 2 * period >= w.t
+                });
+                match other {
+                    Some((i, r)) => {
+                        taken[i] = true;
+                        format!("cell {path} = {value} live, the replay wrote {}", r.value)
+                    }
+                    None => format!("cell {path} = {value} live, the replay never wrote it"),
+                }
+            }
+            (Some(path), None) => format!(
+                "cell {path} changed live (its value was not kept), the replay did not write it \
+                 within {MAP_FRAMES} frames"
+            ),
+            (None, _) => format!(
+                "a cell changed live (its name and value were lost from the ring's arena), the \
+                 replay wrote no cell whose name the ring's table does not hold within \
+                 {MAP_FRAMES} frames"
+            ),
+        };
+        f.divergences.push(Divergence {
+            t: w.t,
+            what: "cell",
+            text,
+        });
     }
     for (i, r) in writes.iter().enumerate() {
         if !taken[i] && since_start(r.t) >= traced_at {
@@ -336,7 +415,8 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         }
     }
 
-    // The frame at the report against each bundle PNG on this output:
+    // The frame at the report against each bundle PNG, (fidelity) on
+    // every output:
     // (replay-owner) the replay's frame nearest the time the live one
     // was drawn, never one after the report, of the surface whose root
     // is the same node (`drawn::frame_for`, `drawn::match_surfaces`).
@@ -359,13 +439,11 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         let Some(png) = &s.frame else {
             continue;
         };
-        if s.output.as_deref().is_some_and(|o| o != plan.output.name) {
-            continue;
-        }
         let Some(origin) = origin_of_root(&s.root) else {
             f.frames.push(FrameDiff {
                 png: png.clone(),
                 origin: String::new(),
+                output: s.output.clone(),
                 k: None,
                 over: 0,
                 total: 0,
@@ -377,6 +455,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         let mut d = FrameDiff {
             png: png.clone(),
             origin: origin.clone(),
+            output: s.output.clone(),
             k: None,
             over: 0,
             total: 0,
@@ -419,10 +498,11 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
             }
         }
         if d.diverges() {
+            let on = super::plan::on_words(&s.output, plan.outputs.len());
             let text = match &d.why {
-                Some(w) => format!("frame {png} (@{origin}): {w}"),
+                Some(w) => format!("frame {png} (@{origin}{on}): {w}"),
                 None => format!(
-                    "frame {png} (@{origin}): {:.1}% of the pixels differ past {GPU_TOLERANCE}, in {}",
+                    "frame {png} (@{origin}{on}): {:.1}% of the pixels differ past {GPU_TOLERANCE}, in {}",
                     d.share() * 100.0,
                     d.bbox.map_or_else(String::new, |b| format!(
                         "{}x{} at {},{}",
@@ -468,6 +548,16 @@ impl Fidelity {
                 "hz": plan.output.hz,
                 "why": plan.output.why,
             },
+            // (fidelity) Every output replayed, in `screens.all`'s order.
+            "outputs": plan.outputs.iter().map(|o| json!({
+                "name": o.name,
+                "id": o.id,
+                "size": [o.width, o.height],
+                "scale": o.scale,
+                "hz": o.hz,
+                "at": o.at,
+                "main": o.name == plan.output.name,
+            })).collect::<Vec<_>>(),
             "faithful": self.divergences.is_empty(),
             "first": self.divergences.first().map(|d| json!({"t": rel(d.t), "what": d.what, "text": d.text})),
             "divergences": self.divergences.iter().map(|d| json!({"t": rel(d.t), "what": d.what, "text": d.text})).collect::<Vec<_>>(),
@@ -476,6 +566,7 @@ impl Fidelity {
             "frames": self.frames.iter().map(|d| json!({
                 "png": d.png,
                 "origin": d.origin,
+                "output": d.output,
                 "k": d.k,
                 "over": d.over,
                 "total": d.total,

@@ -204,6 +204,11 @@ pub struct SurfaceInfo {
     /// entry per change, for `checks::placement`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub places: Vec<PlaceRec>,
+    /// (fidelity) The output it is on (its name in `screens.all`), when
+    /// the run has several (a replay of a report from several outputs);
+    /// none with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 /// (eval-rules-4) A surface's declared placement from tick `k`: its
@@ -471,6 +476,10 @@ pub struct Frame {
     /// a trace from before it was recorded: the scenario's.
     #[serde(default)]
     pub scale: f64,
+    /// (fidelity) With several outputs, each shown surface's scale (its
+    /// output's): `scale` is the main output's. Empty with one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scales: BTreeMap<u32, f64>,
     /// Logic's diff with changes in it, or input, reached the renderer
     /// since the frame before: what is laid out anew may be theirs.
     #[serde(default)]
@@ -1192,12 +1201,30 @@ impl RunTrace {
 
     /// The screen's scale at `f`: its own, else the scenario's, else 1.
     pub fn scale_at(&self, f: &Frame) -> f64 {
-        if f.scale > 0.0 {
+        let main = if f.scale > 0.0 {
             f.scale
         } else if self.scenario.scale > 0.0 {
             self.scenario.scale
         } else {
             1.0
+        };
+        // (fidelity) With several outputs, the coarsest of them: a
+        // frame's tolerance is one physical pixel of any surface in it.
+        f.scales
+            .values()
+            .copied()
+            .filter(|s| *s > 0.0)
+            .fold(main, f64::min)
+    }
+
+    /// (fidelity) The scale surface `surface` was drawn at in frame `f`:
+    /// its output's, else the frame's.
+    pub fn scale_on(&self, f: &Frame, surface: u32) -> f64 {
+        match f.scales.get(&surface) {
+            Some(s) if *s > 0.0 => *s,
+            _ if f.scale > 0.0 => f.scale,
+            _ if self.scenario.scale > 0.0 => self.scenario.scale,
+            _ => 1.0,
         }
     }
 

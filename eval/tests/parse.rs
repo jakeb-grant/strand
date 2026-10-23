@@ -950,3 +950,47 @@ fn the_keyboard_steps_parse() {
         assert!(msg.contains(want), "{step}: {msg}");
     }
 }
+
+/// (fidelity) `screens` lists every screen, each its own output with
+/// its identity, scale, size and place; `main_screen` names the main
+/// one; `screen NAME` focuses one. Their mistakes name their line.
+#[test]
+fn several_screens_parse() {
+    let s = parse(
+        "id = \"t\"\nscreens = [\n  { width = 1280, height = 720, scale = 1.0, name = \"DP-1\", id = \"A | B | A B 1\" },\n  \
+         { width = 1280, height = 720, scale = 1.5, name = \"DP-2\", id = \"A | B | A B 2\", x = 1280, y = 0 },\n]\n\
+         main_screen = \"DP-2\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nscreen DP-1\nrest\n",
+    );
+    assert_eq!(s.screens.len(), 2);
+    assert_eq!(s.main, 1);
+    assert_eq!(s.screen.scale, 1.5, "`screen` is the main one's");
+    assert_eq!(s.identity.name, "DP-2");
+    assert_eq!(s.screens[1].at, [1280, 0]);
+    assert_eq!(s.screens[0].identity.id, "A | B | A B 1");
+    assert_eq!(s.steps[0].kind, StepKind::Screen("DP-1".into()));
+    // One screen: `screen`, as before.
+    let s = parse(MIN);
+    assert_eq!(s.screens.len(), 1);
+    assert_eq!(s.main, 0);
+    let bad = |header: &str, want: &str| {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n{header}\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n"
+        ));
+        assert!(msg.contains(want), "{msg}");
+        assert!(line >= 2, "{line}: {msg}");
+    };
+    bad(
+        "screen = { width = 300 }\nscreens = [ { width = 300 } ]",
+        "one or the other",
+    );
+    bad("main_screen = \"DP-1\"", "names one of `screens`");
+    bad(
+        "screens = [ { width = 300, name = \"DP-1\" } ]\nmain_screen = \"DP-9\"",
+        "none of `screens`",
+    );
+    bad(
+        "screens = [ { width = 300, name = \"DP-1\" }, { width = 300, name = \"DP-1\" } ]",
+        "two screens are named `DP-1`",
+    );
+    bad("screens = []", "one at least");
+}

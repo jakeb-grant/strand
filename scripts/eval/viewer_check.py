@@ -284,6 +284,28 @@ def exercise_simple(page, chk, where, tag, kind):
       .filter(b => b.offsetParent).map(b => [b.name || b.id, b.getBoundingClientRect().height])""")
     low = [b for b in sels if b[1] < 35.5]
     chk.expect(not low, where, f"selects under 36 px tall: {low[:4]}")
+    # (fidelity) A replay of several outputs: the picker, outside
+    # Details, shows one output's surfaces at a time, each labelled with
+    # it, every option fitting the stage; "every output" shows them all.
+    pick = page.locator("#toolbar .outpick select")
+    if pick.count():
+        opts = page.evaluate("() => Array.from(document.querySelectorAll('#toolbar .outpick option')).map(o => o.value)")
+        first = pick.input_value()
+        chk.expect(len(opts) >= 3, where, f"the output picker offers {opts}")
+        h = pick.evaluate("s => s.getBoundingClientRect().height")
+        chk.expect(h >= 35.5, where, f"the output picker is {h} px tall")
+        counts = {}
+        for v in opts:
+            page.locator("#toolbar .outpick select").select_option(v)
+            settle(page, 80)
+            labels = [t for t in page.locator("#stage .surface-label").all_inner_texts() if not t.startswith("the live pointer")]
+            counts[v] = len(labels)
+            if v:
+                chk.expect(bool(labels) and all(f" on {v} " in t for t in labels), where, f"output {v} shows {labels}")
+            chk.expect(fits(page), where, f"output {v or 'every'}: the fitted stage is wider than the stage")
+        chk.expect(counts.get("", 0) == sum(c for k, c in counts.items() if k), where, f"every output does not show each one's: {counts}")
+        page.locator("#toolbar .outpick select").select_option(first)
+        settle(page, 80)
     for name in ("Where it rests", "Onion skin"):
         b = page.locator("#toolbar button", has_text=name)
         chk.expect(b.count() == 1, where, f"no {name!r} toggle")

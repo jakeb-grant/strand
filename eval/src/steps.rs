@@ -219,6 +219,11 @@ pub enum StepKind {
     ReduceMotion(bool),
     Scale(f64),
     Hz(u32),
+    /// (fidelity) `screen NAME`: the compositor's focused output is that
+    /// screen of `screens`: a surface named on several screens (a `bar`
+    /// on every one) is taken on it, and a `screens: focused` surface
+    /// maps on it.
+    Screen(String),
     Backend(BackendMode),
     // Annotation.
     Mark(String),
@@ -779,6 +784,10 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                 return Err("`hz 0`: a refresh rate is above 0".into());
             }
             StepKind::Hz(n)
+        }
+        "screen" => {
+            only(2)?;
+            StepKind::Screen(need(1, "a screen's name")?.to_string())
         }
         "backend" => {
             only(2)?;

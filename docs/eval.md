@@ -148,6 +148,8 @@ expect still #after
 | `id` | required | The scenario's name in reports. |
 | `about` | none | What it holds, in prose. |
 | `screen` | `{ width = 300, height = 1080, scale = 1.0 }` | The screen (scale up to 4). (replayfix) Also who it is in `screens.all`: `name` (`"DP-1"`), `id` (`"Mock \| DP-1"`), `make`, `model`, `description`; a replay names the live output so. |
+| `screens` | none | (fidelity) Several screens in place of `screen`, in `screens.all`'s order: `[ { width, height, scale, name, id, make, model, description, x, y }, … ]`, each its own output with its own scale, size and place in the layout (`x`, `y`, logical px); the names and ids are distinct. The first is focused at boot. A surface pinned to a screen (`screens: [..]`, a `bar` per screen) maps on its own; any other on the focused one. Not with `screen`, nor with the surface leg. |
+| `main_screen` | the first | (fidelity) The screen of `screens` that `scale` steps, the trace's `scale` and the viewer start with, by name. |
 | `hz` | 60 | The refresh rate; a `hz` step changes it. |
 | `backend` | `"cpu"` | `"cpu"`, `"gpu"` or `"both"` (see CPU and GPU). |
 | `text` | `"inline"` | `"inline"` only; `"worker"` is refused as unsupported. |
@@ -252,7 +254,10 @@ advance the clock.
   `reduce-motion off` step turns motion back on (eval-rules-5; before,
   the header held render reduced for the whole run). Only the twin
   (`--reduced-motion`) is reduced whatever the steps say.
-- `scale S`.
+- `scale S` (with `screens`: the main screen's).
+- `screen NAME` (fidelity): the focused screen, by name; a step on a
+  surface named by its origin finds it on the focused screen first, and
+  a surface mapped after it opens there.
 - `hz N`.
 - `backend cpu|gpu`.
 
@@ -2342,16 +2347,25 @@ work:
    writes a gap's end (`gap::OFF`) into each new ring, and the outputs,
    surfaces and surface roots shown then again, so a window starts
    after the recorder off as it does after a lock.
-3. **Picks one output** (the sandbox has one screen): the one with the
-   most input in the window's last 10 s, else (replayfix) the one with
-   the most input in the whole window, else the one the newest mapped
-   surface is on; `--output` names another. The reason is in the
-   `output:` line. Its logical size, scale
-   and refresh are the header's `screen` and `hz`, and (replayfix) its
-   connector name, make and model, and the `screens.all` id and
-   description `bundle.json` records for it, the `screen`'s identity, so
+3. **Replays every output** (fidelity; decisions.md fidelity
+   2026-10-23): each live output is a screen of the sandbox
+   (`screens`), in `screens.all`'s order (`bundle.json`'s `order`;
+   an older bundle's by its outputs' first surfaces, with a note),
+   each with its logical size, scale and place in the layout and
+   (replayfix) its connector name, make and model, and the
+   `screens.all` id and description `bundle.json` records for it, so
    per-screen data (`workspaces.slots(screen)`) and the cells kept per
-   screen (`Notch[<id>].grown`) name the screen they did live.
+   screen (`Notch[<id>].grown`) name the screen they did live, and a
+   `bar` mounted per screen is mounted on each. The **main** output,
+   the one with the most input in the window's last 10 s, else
+   (replayfix) the one with the most input in the whole window, else
+   the one the newest mapped surface is on (`--output` names another),
+   is `main_screen`, the `output:` line with its reason, and the
+   viewer's first; its refresh is the header's `hz`: the sandbox has
+   one clock, so an output that refreshed at another rate is a limit.
+   Input is taken on the output it was on: a `screen` step before
+   input on another output's surface, and every surface's input, map
+   and frame is held to its own output's.
    (replayfix) A bundle from before outputs carried their id has it
    read back from its cells' names (`plan::recovered_id`: the one
    `X[<make> | <model> | …]` id for that make and model), with a note;
@@ -2373,7 +2387,24 @@ work:
    exactly; a keyed list's older diffs are undone from the list after
    the lost one as if it had changed nothing, and the whole list is set
    at its time. A note names each such field, its newest lost record
-   and how many older ones were lost. Only a record that does not fit
+   and how many older ones were lost; (fidelity) a limit counts them:
+   what such a change set off live comes later in the replay, at the
+   next value known, or not at all. A cell's change holds the value
+   before it, so only a cell whose oldest change in the window lost its
+   value does not know its start: in a window from the shell's start it
+   starts as the config declares it (not seeded), as it did live,
+   rather than at the value after that change, which the replay then
+   never made; otherwise it starts at the value after it, and a note
+   says so either way. (fidelity) A name too long for the changes
+   ring's table (64 bytes, a per-screen cell's `Notch[<id>].grown`) is
+   kept at the head of its value; a version-1 recorder lost the two
+   together, and still lost the name with a value over the cap
+   (`Ring::named_value` now writes the name alone then). Such a
+   nameless record is a change of some field or cell the table does
+   not hold: one of those with a nameless record of its kind older than
+   its own oldest one starts, in a window from the shell's start, as
+   the config declares it (a cell), else at the value rewound to, with
+   a note. Only a record that does not fit
    the value after it (a list diff whose indices are past its end)
    stops its field, which then starts at the oldest value known, with a
    note.
@@ -2502,7 +2533,7 @@ over the next tick), and pairs the nodes in paint order by origin,
   its phase on the replay's clock parts from the live shell's (a loop
   begun before the window) rather than where it is drawn;
 - **NOT CHECKED**: a bundle with no `drawn.json` (a strand from before
-  it) or none of its surfaces on the output replayed.
+  it) or none of its surfaces held to a replayed one.
 
 The live side costs nothing per frame: the boxes are flattened again
 on demand, at the report, from the renderer's retained scene at the
@@ -2537,24 +2568,46 @@ and says where it first parts from it:
   boot shows on its first frame);
 - each recorded cell write against the replay's own writes (cells are
   never driven, only seeded: the replay's handlers write them);
+  (fidelity) in passes: a write the ring kept whole against the
+  replay's write of the same path and value nearest it in time, within
+  two frames, then against the next of them at any time, so a live
+  write the replay did not make is the divergence at its own time,
+  not the later one it would take; a write whose value was lost
+  against the replay's write of its path nearest in time, within two
+  frames; one whose name was lost too against the nearest write of a
+  cell the ring's table does not hold; each held by time is counted in
+  a note;
 - the replay's frame at the report against each bundle PNG of the same
-  surface: the share of pixels past the `cpu-gpu` tolerance and their
-  bounding box.
+  surface, (fidelity) on every output: the share of pixels past the
+  `cpu-gpu` tolerance and their bounding box.
+
+(fidelity) **The verdict says where the replay parted before the
+frame it holds.** VERIFIED and DRIFTED are of the frame at the report;
+a replay that parted from the live shell earlier in the window (any
+divergence but a frame's) says so on the same line, wherever the
+verdict is given (`replay.txt`'s first line, `fidelity.json`'s
+`verdict.line` with `verdict.parted`: `count`, `first`, `last`, the
+summary, the page's header and a clip's fidelity lines, clip.js the
+one source): `…; but the replay parted from the live shell N times
+earlier in the window, first at -31.54s (cell: …)`.
 
 It also lists what it did not reproduce: typed text (the keys counted,
 typed as `x`; password spans, typed as eight), pastes, services it has
 no stand-in for (a plugin whose schema is not in the bundle), calls
 answered by the mock because no answer was recorded, other programs'
 windows (`thumbnail` nodes draw nothing, and the compositor's blur and
-its own animations are not modelled), outputs other than the one
-replayed and the input on them, horizontal scrolls (a scenario scrolls
+its own animations are not modelled), (fidelity) an output whose
+refresh rate differs from the main one's (one clock), service changes
+whose values the ring lost, horizontal scrolls (a scenario scrolls
 vertically only), files listed in the bundle's `missing`, and the
 reload, gap or cap the window starts after.
 
 **`replay.txt`**, what an agent reads first. Its first line is the
 verdict, each difference under it; then its head gives the
-words, the window, the output, the traced part and the comparison
-above. Then (replayfix) the timeline, under `timeline (seconds before
+words, the window, the main output, (fidelity) every screen replayed
+in `screens.all`'s order, the traced part and the comparison above;
+with several outputs a frame, a surface and a difference name their
+output (`@notch.strand:68:1 on DP-8`). Then (replayfix) the timeline, under `timeline (seconds before
 the report): …` (`replay::TIMELINE`), one line per event in time
 order, time relative to the report: input as its step with the
 surface's and the hit node's source location (a run of pointer moves
@@ -2578,7 +2631,15 @@ changes, surfaces mapped and gone, late frames, the divergences and the
 hints, and the report, with a legend; it opens at the report. The live
 pointer at the scrubbed time is drawn over the frame (a ring and a
 cross) and named in the label (`pointer 58.3, 344.2 on @…`, or off the
-replayed surfaces). The buttons and keys step from one event to the
+replayed surfaces). (fidelity) With several outputs a picker above the
+stage, beside the two overlays and outside Details, shows one output's
+surfaces (the main one first, or every output; the last picked is
+remembered as `strand-eval:output` when the replay has it), each
+labelled with its output and scale and drawn at its own scale (the
+trace's per-frame `scales`), and the pointer named and drawn on its
+own output. A fitted zoom may go below a quarter (to 0.05), so a
+full-width bar on a scale-2 output fits a phone's stage; viewer-check
+picks each output and holds every one to the stage's width. The buttons and keys step from one event to the
 next, play runs in real time from one to the next (a second at most
 per step). A run with no timeline (every other run, an A/B page) keeps
 the frame scrubber. The checks' findings follow, as `summary.txt`
@@ -2722,9 +2783,15 @@ not in nodes.json)`). A slice before the trace's start (`strand replay
 traced; `window.traced_seconds`) is refused saying so, and one that
 crosses it says `untraced before -N s`. A report with no `drawn.json`
 is NOT CHECKED throughout. The divergences from the recorded session
-inside the slice are listed, with how many came earlier and the last of them
-("the replay may already part from the live shell here"), and the
-limits follow.
+inside the slice are listed, with how many came earlier, the first
+and the last of them ("N earlier in the window, the first at T s
+(what: text), the last at …: the replay may already part from the live
+shell here"), and the limits follow. (fidelity) The verdict's line
+carries the replay's partings before the report frame (above), and a
+surface's VERIFIED line says the same, so a VERIFIED frame never reads
+as a faithful window; with several outputs each surface is named with
+its output (`@notch.strand:68:1 on DP-8`) and a verdict's frame is
+placed on a surface of its own output.
 
 **The crop**: for each surface, the union of the elements' drawn boxes
 on it over the slice, 8 px around (`MARGIN`), in buffer pixels, clamped

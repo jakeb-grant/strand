@@ -144,19 +144,35 @@ fn the_busiest_output_is_replayed() {
         (p.output.width, p.output.height, p.output.scale, p.output.hz),
         (2560, 1440, 1.5, 144)
     );
+    // (fidelity) Both outputs are screens, the busiest the main one;
+    // in a bundle with no `order`, in the order their surfaces mapped.
     assert!(
-        text.contains("screen = { width = 2560, height = 1440, scale = 1.5, name = \"HDMI-A-1\""),
+        text.contains("screens = [\n  { width = 1280, height = 720, scale = 1, name = \"DP-1\""),
         "{text}"
     );
     assert!(
-        p.limits.iter().any(|l| l.starts_with("other outputs:")),
+        text.contains("  { width = 2560, height = 1440, scale = 1.5, name = \"HDMI-A-1\""),
+        "{text}"
+    );
+    assert!(text.contains("main_screen = \"HDMI-A-1\""), "{text}");
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.contains("`screens.all`'s order is not in the bundle")),
+        "{:?}",
+        p.notes
+    );
+    assert!(
+        !p.limits.iter().any(|l| l.contains("is not replayed")),
         "{:?}",
         p.limits
     );
     assert!(
+        p.limits.iter().any(|l| l
+            == "output DP-1 refreshed at 60 Hz live; the replay ticks every screen at 144 Hz, \
+                HDMI-A-1's rate"),
+        "{:?}",
         p.limits
-            .iter()
-            .any(|l| l.contains("output DP-1 is not replayed"))
     );
     // `--output` names the other.
     let (_, p, _) = plan_of(
@@ -241,6 +257,14 @@ fn a_lost_value_is_set_where_it_was_and_the_history_before_it_kept() {
     assert!(i7.is_some() && i9.is_some() && i7 < i9, "{text}");
     // The cell rewinds as before.
     assert_eq!(p.seeds["shell.clicks"], json!(0));
+    // (fidelity) Named as a limit too: what it set off may come later.
+    assert!(
+        p.limits.iter().any(|l| l.starts_with(
+            "1 change of 1 service field lost its value from the changes ring's arena or over its cap"
+        ) && l.contains("comes later in the replay")),
+        "{:?}",
+        p.limits
+    );
 
     // Its value after it already played: nothing is set there.
     let mut f = Fx::session();
@@ -535,7 +559,12 @@ fn every_limit_is_named() {
     has("pastes: 1");
     has("service `weather` has no stand-in");
     has("other programs' windows");
-    has("output HDMI-A-1 is not replayed");
+    // (fidelity) Every output is replayed: none is a limit.
+    assert!(
+        !p.limits.iter().any(|l| l.contains("HDMI-A-1")),
+        "{:?}",
+        p.limits
+    );
     has("missing file /home/u/big.png");
     has("the window starts after the reload");
     has("clicks outside the shell's surfaces");

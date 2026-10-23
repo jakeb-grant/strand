@@ -255,6 +255,18 @@ impl Default for ScreenIdentity {
     }
 }
 
+/// (fidelity) One screen of `screens.all`: its size and scale, who it
+/// is, and where it lies in the compositor's layout (logical px). A
+/// scenario has one at least; a replay of a report from several
+/// outputs has one per live output, in the order the live
+/// `screens.all` listed them (the first is `screens.focused`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenDef {
+    pub screen: Screen,
+    pub identity: ScreenIdentity,
+    pub at: [i32; 2],
+}
+
 /// Tolerances (docs/eval.md, "Checks").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tolerance {
@@ -327,9 +339,17 @@ pub struct Scenario {
     /// The file it was read from (for messages; may not exist).
     pub file: PathBuf,
     pub place: Place,
+    /// The main screen: (fidelity) the one `main_screen` names among
+    /// `screens`, whose scale each frame's `scale` is and the one a
+    /// replay's viewer opens on; the only one without `screens`.
     pub screen: Screen,
     /// (replayfix) Who the screen is in `screens.all`.
     pub identity: ScreenIdentity,
+    /// (fidelity) Every screen, in `screens.all`'s order (the first is
+    /// `screens.focused`): `screen` alone without a `screens` header.
+    pub screens: Vec<ScreenDef>,
+    /// (fidelity) The main screen's index in `screens`.
+    pub main: usize,
     pub hz: u32,
     pub text: TextMode,
     pub backend: BackendMode,
@@ -381,6 +401,8 @@ struct Header {
     id: String,
     about: Option<String>,
     screen: Option<ScreenH>,
+    screens: Option<Vec<ScreenH>>,
+    main_screen: Option<String>,
     hz: Option<u32>,
     text: Option<String>,
     backend: Option<String>,
@@ -439,6 +461,63 @@ struct ScreenH {
     make: Option<String>,
     model: Option<String>,
     description: Option<String>,
+    /// (fidelity) Where it lies in the layout, a `screens` entry's.
+    x: Option<i32>,
+    y: Option<i32>,
+}
+
+impl ScreenH {
+    fn empty() -> ScreenH {
+        ScreenH {
+            width: None,
+            height: None,
+            scale: None,
+            name: None,
+            id: None,
+            make: None,
+            model: None,
+            description: None,
+            x: None,
+            y: None,
+        }
+    }
+
+    /// The screen it describes, the mock's identity filling what it
+    /// leaves out; `Err` with why it is refused.
+    fn def(self, nth: usize) -> Result<ScreenDef, String> {
+        let scale = self.scale.unwrap_or(1.0);
+        if !(scale > 0.0 && scale <= 4.0) {
+            return Err(format!("screen scale {scale}: 0 to 4"));
+        }
+        let d = ScreenIdentity::default();
+        // (fidelity) The mock's second screen and on are `DP-2`, …: two
+        // screens are never one.
+        let (dn, did) = if nth == 0 {
+            (d.name, d.id)
+        } else {
+            let n = format!("DP-{}", nth + 1);
+            (n.clone(), format!("Mock | {n}"))
+        };
+        let identity = ScreenIdentity {
+            id: self.id.unwrap_or(did),
+            name: self.name.unwrap_or(dn),
+            make: self.make.unwrap_or(d.make),
+            model: self.model.unwrap_or(d.model),
+            description: self.description.unwrap_or(d.description),
+        };
+        if identity.id.is_empty() || identity.name.is_empty() {
+            return Err("a screen's `id` and `name` are not empty".into());
+        }
+        Ok(ScreenDef {
+            screen: Screen {
+                width: self.width.unwrap_or(300).max(1),
+                height: self.height.unwrap_or(1080).max(1),
+                scale,
+            },
+            identity,
+            at: [self.x.unwrap_or(0), self.y.unwrap_or(0)],
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -681,44 +760,67 @@ impl Scenario {
                 format!("id `{id}`: lowercase letters, digits, `.`, `_` and `-`"),
             ));
         }
-        let (screen, identity) = {
-            let s = h.screen.unwrap_or(ScreenH {
-                width: None,
-                height: None,
-                scale: None,
-                name: None,
-                id: None,
-                make: None,
-                model: None,
-                description: None,
-            });
-            let scale = s.scale.unwrap_or(1.0);
-            if !(scale > 0.0 && scale <= 4.0) {
-                return Err(err(hl("screen"), format!("screen scale {scale}: 0 to 4")));
-            }
-            let d = ScreenIdentity::default();
-            let identity = ScreenIdentity {
-                id: s.id.unwrap_or(d.id),
-                name: s.name.unwrap_or(d.name),
-                make: s.make.unwrap_or(d.make),
-                model: s.model.unwrap_or(d.model),
-                description: s.description.unwrap_or(d.description),
-            };
-            if identity.id.is_empty() || identity.name.is_empty() {
+        // (fidelity) `screens`: every screen, in `screens.all`'s order;
+        // `main_screen` names the main one (the first by default).
+        let (screens, main) = match (h.screen, h.screens) {
+            (Some(_), Some(_)) => {
                 return Err(err(
-                    hl("screen"),
-                    "a screen's `id` and `name` are not empty".into(),
+                    hl("screens"),
+                    "`screen` and `screens` are one or the other (`main_screen` names the main \
+                     one of `screens`)"
+                        .into(),
                 ));
             }
-            (
-                Screen {
-                    width: s.width.unwrap_or(300).max(1),
-                    height: s.height.unwrap_or(1080).max(1),
-                    scale,
-                },
-                identity,
-            )
+            (one, None) => {
+                if h.main_screen.is_some() {
+                    return Err(err(
+                        hl("main_screen"),
+                        "`main_screen` names one of `screens`".into(),
+                    ));
+                }
+                let d = one
+                    .unwrap_or_else(ScreenH::empty)
+                    .def(0)
+                    .map_err(|m| err(hl("screen"), m))?;
+                (vec![d], 0)
+            }
+            (None, Some(list)) => {
+                if list.is_empty() {
+                    return Err(err(hl("screens"), "`screens` lists one at least".into()));
+                }
+                let mut defs: Vec<ScreenDef> = Vec::new();
+                for (i, s) in list.into_iter().enumerate() {
+                    let d = s.def(i).map_err(|m| err(hl("screens"), m))?;
+                    if defs.iter().any(|o| {
+                        o.identity.name == d.identity.name || o.identity.id == d.identity.id
+                    }) {
+                        return Err(err(
+                            hl("screens"),
+                            format!(
+                                "two screens are named `{}` (or share the id `{}`)",
+                                d.identity.name, d.identity.id
+                            ),
+                        ));
+                    }
+                    defs.push(d);
+                }
+                let main = match &h.main_screen {
+                    None => 0,
+                    Some(n) => {
+                        defs.iter()
+                            .position(|d| &d.identity.name == n)
+                            .ok_or_else(|| {
+                                err(
+                                    hl("main_screen"),
+                                    format!("main_screen `{n}` is none of `screens`"),
+                                )
+                            })?
+                    }
+                };
+                (defs, main)
+            }
         };
+        let (screen, identity) = (screens[main].screen, screens[main].identity.clone());
         let hz = h.hz.unwrap_or(60);
         if hz == 0 || hz > 1000 {
             return Err(err(hl("hz"), format!("hz {hz}: 1 to 1000")));
@@ -772,6 +874,13 @@ impl Scenario {
         let surface =
             h.surface.unwrap_or(false) || checks.iter().any(|c| CheckId::SURFACE.contains(c));
         if surface {
+            if screens.len() > 1 {
+                return Err(err(
+                    hl("surface"),
+                    "the surface leg runs on one screen (the fake compositor has one output)"
+                        .into(),
+                ));
+            }
             if screen.scale != 1.0 {
                 return Err(err(
                     hl("surface"),
@@ -969,6 +1078,8 @@ impl Scenario {
             place,
             screen,
             identity,
+            screens,
+            main,
             hz,
             text: text_mode,
             backend,
@@ -997,5 +1108,13 @@ impl Scenario {
     /// Whether it runs `check`.
     pub fn runs(&self, check: CheckId) -> bool {
         self.checks.contains(&check)
+    }
+
+    /// (fidelity) The screen named `output` (a trace surface's), else
+    /// the main one.
+    pub fn screen_of(&self, output: Option<&str>) -> Screen {
+        output
+            .and_then(|o| self.screens.iter().find(|d| d.identity.name == o))
+            .map_or(self.screen, |d| d.screen)
     }
 }

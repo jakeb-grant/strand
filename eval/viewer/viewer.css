@@ -111,7 +111,9 @@ code, .mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-siz
 .warn { color: var(--changed); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 8px 0; }
 .field { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); }
+.outpick { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); max-width: 100%; }
 .field select, .field input[type=number] { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
+.outpick select { font: inherit; font-size: 15px; min-height: 36px; max-width: 100%; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; }
 .stage {
   background: var(--stage); border-radius: 8px; padding: 10px; overflow: auto; max-height: 70vh;
   display: flex; flex-direction: column; gap: 10px;

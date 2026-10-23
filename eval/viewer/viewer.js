@@ -22,6 +22,12 @@
   // the rest and onion overlays and the clip; the dense views (the
   // checks, Cost, the node tree, Curves, the filmstrip) behind Details.
   var REPLAY = !!TL;
+  // (fidelity) A replay of a report from several outputs: each output a
+  // screen of the sandbox (fidelity.json's `outputs`, in `screens.all`'s
+  // order); the stage shows one at a time, the main one first.
+  var OUTPUTS = (DATA.replay && DATA.replay.record && DATA.replay.record.outputs) || [];
+  var MAIN_OUTPUT = null;
+  OUTPUTS.forEach(function (o) { if (o.main) MAIN_OUTPUT = o.name; });
 
   // ---- small helpers ------------------------------------------------------
 
@@ -89,13 +95,15 @@
         if (!(String(s) in f.sizes)) cur.delete(s);
       });
       // A frame's own scale (a `scale` step changes it); a trace from
-      // before it was recorded has the scenario's.
+      // before it was recorded has the scenario's; (fidelity) with
+      // several outputs, each surface's its output's.
       var fscale = f.scale || t.scenario.scale || 1;
       f.painted.forEach(function (s) {
         var prev = cur.get(s);
         var fresh = f.png && f.png[s];
         var png = fresh || (prev ? prev.png : null);
-        var scale = fresh || !prev ? fscale : prev.scale;
+        var own = (f.scales && f.scales[s]) || fscale;
+        var scale = fresh || !prev ? own : prev.scale;
         cur.set(s, { rows: f.n.filter(function (r) { return r[C.s] === s; }), png: png, size: f.sizes[s], scale: scale });
       });
       Array.from(cur.keys()).forEach(function (s) {
@@ -206,8 +214,8 @@
     sc.stops = out;
     return out;
   }
-  // Where the live pointer was at `ms`: {on, x, y}, or null when it was
-  // on none of the replayed output's surfaces.
+  // Where the live pointer was at `ms`: {on, output, x, y}, or null when
+  // it was on none of the replayed surfaces.
   function pointerAt(ms) {
     var pts = TL.pointer || [], found = null;
     for (var i = 0; i < pts.length; i++) { if (tlAt(pts[i].t) <= ms + 1e-6) found = pts[i]; else break; }
@@ -221,6 +229,25 @@
     sc.trace.surfaces.forEach(function (x) { if (x.id === sid) s = x; });
     var m = s ? sc.trace.nodes[s.root] : null;
     return m && m.origin ? m.origin : null;
+  }
+  // (fidelity) The output surface `sid` is on (none with one).
+  function outputOf(sc, sid) {
+    var o = null;
+    sc.trace.surfaces.forEach(function (x) { if (x.id === sid) o = x.output || null; });
+    return o;
+  }
+  // (fidelity) The live pointer `p` is on surface `sid`: its root's
+  // origin, and its output when both say.
+  function pointerOn(sc, sid, p) {
+    var o = rootOrigin(sc, sid), out = outputOf(sc, sid);
+    return !!(p && o && sameOrigin(o, p.on) && (!p.output || !out || p.output === out));
+  }
+  // (fidelity) Whether the stage shows surface `sid`: every one with one
+  // output, else those on the output picked.
+  function onStage(sc, sid) {
+    if (OUTPUTS.length < 2 || !S.output) return true;
+    var out = outputOf(sc, sid);
+    return !out || out === S.output;
   }
   // The span with no repaint around `ms`: [from, to] ms (the frame held
   // and the next, or the window's ends).
@@ -258,6 +285,14 @@
     tab: store.get('strand-eval:tab') || 'findings',
     scope: 'segment',
     failOnly: false,
+    // (fidelity) The output the stage shows, with several: the one
+    // picked last when this replay has it ('' for every output), else
+    // the main one.
+    output: (function () {
+      var v = store.get('strand-eval:output');
+      if (v === '') return null;
+      return OUTPUTS.some(function (o) { return o.name === v; }) ? v : MAIN_OUTPUT;
+    })(),
     // (replayfix) A replay's scrubbed time, ms into its window.
     t: 0,
     // (replay-clip) Details shown (remembered per viewer), and the
@@ -445,6 +480,20 @@
       var full = el('span', { cls: 'dense fields' });
       t.appendChild(full);
       t = full;
+    }
+    // (fidelity) Which output the stage shows: every one replayed.
+    if (OUTPUTS.length > 1) {
+      var outs = OUTPUTS.map(function (o) { return [o.name, o.name + ' ' + o.size[0] + 'x' + o.size[1] + ' @' + o.scale + (o.main ? ' (main)' : '')]; });
+      outs.push(['', 'every output']);
+      var pick = sel('output', S.output || '', outs, function (v) {
+        S.output = v || null;
+        store.set('strand-eval:output', v);
+        widestReset();
+      });
+      // On a replay's page it stays out of Details: which output is
+      // shown is not a dense view.
+      if (REPLAY) pick.className = 'outpick';
+      (REPLAY ? $('toolbar') : t).insertBefore(pick, (REPLAY ? $('toolbar') : t).firstChild);
     }
     t.appendChild(sel('zoom', S.zoom, [['fit', 'fit'], [1, '1×'], [2, '2×'], [3, '3×'], [4, '4×'], [6, '6×'], [8, '8×']], function (v) { S.zoom = v === 'fit' ? 'fit' : +v; }));
     t.appendChild(chk('boxes', S.boxes, function (v) { S.boxes = v; }, 'Drawn boxes solid: blue authored, orange derived, red failing'));
@@ -811,8 +860,8 @@
   // (replayfix) The live pointer at the scrubbed time, when it was on
   // this surface: a ring with a cross, and its place.
   function drawPointer(x, sc, sid, scale, z) {
-    var p = pointerAt(S.t), o = rootOrigin(sc, sid);
-    if (!p || !o || !sameOrigin(o, p.on)) return;
+    var p = pointerAt(S.t);
+    if (!pointerOn(sc, sid, p)) return;
     var px = p.x * scale * z, py = p.y * scale * z;
     x.save();
     x.lineWidth = 2;
@@ -933,12 +982,15 @@
     sc.trace.surfaces.forEach(function (s) { info[s.id] = s; });
     if (TL) {
       var p = pointerAt(S.t), shown = false;
-      if (p) sc.tl.screens[i].forEach(function (v, sid) { var o = rootOrigin(sc, sid); if (o && sameOrigin(o, p.on)) shown = true; });
-      if (p && !shown) box.appendChild(el('div', { cls: 'surface-label warn', text: 'the live pointer is on @' + p.on + ' (' + fmt(p.x, 1) + ', ' + fmt(p.y, 1) + '), a surface the replay does not show here' }));
+      if (p) sc.tl.screens[i].forEach(function (v, sid) { if (onStage(sc, sid) && pointerOn(sc, sid, p)) shown = true; });
+      var where = p && p.output && OUTPUTS.length > 1 ? ' on ' + p.output : '';
+      if (p && !shown) box.appendChild(el('div', { cls: 'surface-label warn', text: 'the live pointer is on @' + p.on + where + ' (' + fmt(p.x, 1) + ', ' + fmt(p.y, 1) + '), a surface the replay does not show here' }));
     }
     sc.tl.screens[i].forEach(function (v, sid) {
+      if (!onStage(sc, sid)) return;
       var s = info[sid];
-      box.appendChild(el('div', { cls: 'surface-label', text: (s ? s.label : 'surface ' + sid) + (v.png && !hasImage(sc, v.png) ? ' (wireframe)' : '') }));
+      var on = s && s.output && OUTPUTS.length > 1 ? ' on ' + s.output + ' (scale ' + fmt(v.scale || 1, 2).replace(/\.?0+$/, '') + ')' : '';
+      box.appendChild(el('div', { cls: 'surface-label', text: (s ? s.label : 'surface ' + sid) + on + (v.png && !hasImage(sc, v.png) ? ' (wireframe)' : '') }));
       box.appendChild(surfaceCanvas(sc, i, sid, other));
     });
     return box;
@@ -978,10 +1030,15 @@
     if (sc.widest) return sc.widest;
     var w = 1;
     sc.tl.screens.forEach(function (scr) {
-      scr.forEach(function (v) { if (v.size) w = Math.max(w, Math.ceil(v.size[0] * (v.scale || 1))); });
+      scr.forEach(function (v, sid) { if (v.size && onStage(sc, sid)) w = Math.max(w, Math.ceil(v.size[0] * (v.scale || 1))); });
     });
     sc.widest = w;
     return w;
+  }
+
+  // (fidelity) The widest surface again, for the output picked.
+  function widestReset() {
+    DATA.runs.forEach(function (run) { run.scenarios.forEach(function (s) { s.widest = 0; }); });
   }
 
   // S.zoom, with 'fit' resolved against the stage's width. Side by side
@@ -993,7 +1050,9 @@
     var w = Math.max(widest(a), b ? widest(b) : 1);
     var z = room / w;
     if (view === 'side' && b && (room - 14) / 2 / w >= 2) z = (room - 14) / 2 / w;
-    return z >= 1 ? Math.min(8, Math.floor(z)) : Math.max(0.25, z);
+    // (fidelity) A full-width bar on a scale-2 output is 2,560 px wide or
+    // more: below a quarter too, it fits a phone's stage.
+    return z >= 1 ? Math.min(8, Math.floor(z)) : Math.max(0.05, z);
   }
 
   // ---- scrubber -------------------------------------------------------------------
@@ -1105,7 +1164,7 @@
       }
     }
     var pa = pointerAt(S.t);
-    bits.push(pa ? 'pointer ' + fmt(pa.x, 1) + ', ' + fmt(pa.y, 1) + ' on @' + pa.on : 'pointer off the replayed surfaces');
+    bits.push(pa ? 'pointer ' + fmt(pa.x, 1) + ', ' + fmt(pa.y, 1) + ' on @' + pa.on + (pa.output && OUTPUTS.length > 1 ? ' on ' + pa.output : '') : 'pointer off the replayed surfaces');
     $('frame-label').textContent = bits.join(' · ');
     var legend = $('track-legend');
     if (legend && !legend.childNodes.length) {

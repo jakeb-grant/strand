@@ -237,6 +237,7 @@ pub fn replay(
     let ok = checked.report.ok();
     let text = replay_txt(&b, &plan, &fid, &verdict, &limits, &checked, &path);
     let json = fidelity_json(&b, &plan, &fid, &verdict, &limits, &checked);
+    let line = verdict_line(&verdict, &fid, &plan);
     let mut entries = vec![Entry {
         id: sc.id.clone(),
         file: sc.file.display().to_string(),
@@ -253,7 +254,7 @@ pub fn replay(
         frames: frames.unwrap_or(Frames::All),
         replay: Some(serde_json::json!({
             "verdict": verdict.word(),
-            "line": verdict.line(),
+            "line": line,
             "drifted": verdict.lines(),
             "fidelity": first_line(&fid),
             "hints": HINTS,
@@ -270,7 +271,7 @@ pub fn replay(
         })),
     };
     let mut all = vec![
-        format!("verdict: {}", verdict.line()),
+        format!("verdict: {line}"),
         format!("fidelity: {}", first_line(&fid)),
         format!("{HINTS}:"),
     ];
@@ -374,7 +375,12 @@ fn fidelity_json(
         })
         .collect();
     if let Some(o) = json.as_object_mut() {
-        o.insert("verdict".into(), verdict.json());
+        let mut v = verdict.json();
+        if let Some(vo) = v.as_object_mut() {
+            vo.insert("line".into(), verdict_line(verdict, fid, plan).into());
+            vo.insert("parted".into(), parted_json(fid, plan));
+        }
+        o.insert("verdict".into(), v);
         o.insert(
             "hints".into(),
             serde_json::json!({"label": HINTS, "findings": findings}),
@@ -401,6 +407,55 @@ fn verdict_first(json: &serde_json::Value) -> Result<Vec<u8>, Error> {
         ",\n"
     };
     Ok(format!("{{\n  \"verdict\": {v}{sep}{body}\n").into_bytes())
+}
+
+/// (fidelity) The divergences before the report's frame: every one but
+/// the frames compared at the report (which the verdict holds itself).
+pub fn parted(fid: &Fidelity) -> Vec<&fidelity::Divergence> {
+    fid.divergences
+        .iter()
+        .filter(|d| d.what != "frame")
+        .collect()
+}
+
+/// (fidelity) The verdict in one line, saying when the replay parted
+/// from the live shell earlier in the window: VERIFIED and DRIFTED are
+/// of the frame at the report, and a replay that parted from the live
+/// shell before it may have drawn that frame from another state, so the
+/// line never says VERIFIED alone then (how many times, the first's
+/// time before the report, and what).
+pub fn verdict_line(verdict: &Verdict, fid: &Fidelity, plan: &Plan) -> String {
+    let line = verdict.line();
+    let p = parted(fid);
+    let Some(first) = p.first() else {
+        return line;
+    };
+    format!(
+        "{line}; but the replay parted from the live shell {} earlier in the window, first at \
+         {} ({}: {})",
+        match p.len() {
+            1 => "once".to_string(),
+            n => format!("{n} times"),
+        },
+        before(plan, first.t),
+        first.what,
+        first.text
+    )
+}
+
+/// (fidelity) [`parted`] as `fidelity.json`'s `verdict.parted`: how
+/// many, and the first (seconds before the report, what, text).
+pub fn parted_json(fid: &Fidelity, plan: &Plan) -> serde_json::Value {
+    let len = plan.end - plan.start;
+    let p = parted(fid);
+    serde_json::json!({
+        "count": p.len(),
+        "first": p.first().map(|d| serde_json::json!({
+            "t": (d.t as f64 - len as f64) / 1e9,
+            "what": d.what,
+            "text": d.text,
+        })),
+    })
 }
 
 /// The comparison with the live shell in one line: no divergence, or
@@ -675,7 +730,7 @@ pub fn timeline_json(plan: &Plan, fid: &Fidelity) -> serde_json::Value {
             "t": rel(e.t), "kind": e.kind, "text": e.text,
         })).collect::<Vec<_>>(),
         "pointer": plan.pointer.iter().map(|p| serde_json::json!({
-            "t": rel(p.t), "on": p.origin, "x": p.x, "y": p.y,
+            "t": rel(p.t), "on": p.origin, "output": p.output, "x": p.x, "y": p.y,
         })).collect::<Vec<_>>(),
         "divergences": fid.divergences.iter().map(|d| serde_json::json!({
             "t": rel(d.t), "what": d.what, "text": d.text,
@@ -698,7 +753,7 @@ fn replay_txt(
     let len = plan.end - plan.start;
     // (replay-owner) The verdict first: whether the replay drew what the
     // live shell drew at the report.
-    let _ = writeln!(s, "verdict: {}", verdict.line());
+    let _ = writeln!(s, "verdict: {}", verdict_line(verdict, fid, plan));
     for l in verdict.lines() {
         let _ = writeln!(s, "  {l}");
     }
@@ -718,6 +773,27 @@ fn replay_txt(
         "output: {} {}x{} scale {} at {} Hz ({})",
         o.name, o.width, o.height, o.scale, o.hz, o.why
     );
+    // (fidelity) Every output, each a screen of the sandbox.
+    if plan.outputs.len() > 1 {
+        let _ = writeln!(s, "screens (screens.all's order, each replayed):");
+        for o in &plan.outputs {
+            let _ = writeln!(
+                s,
+                "  {} {}x{} scale {}{}{}",
+                o.name,
+                o.width,
+                o.height,
+                o.scale,
+                o.id.as_deref()
+                    .map_or_else(String::new, |i| format!(" ({i})")),
+                if o.name == plan.output.name {
+                    ", the main one"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
     let _ = writeln!(
         s,
         "presses: {} live, {} replayed; cell writes: {} live, {} replayed",
@@ -743,7 +819,13 @@ fn replay_txt(
                     ))
                 ),
             };
-            let _ = writeln!(s, "  {} @{}: {what}", f.png, f.origin);
+            let _ = writeln!(
+                s,
+                "  {} @{}{}: {what}",
+                f.png,
+                f.origin,
+                plan::on_words(&f.output, plan.outputs.len())
+            );
         }
     }
     let _ = writeln!(s, "not reproduced:");

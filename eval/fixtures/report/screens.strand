@@ -1,0 +1,29 @@
+// (fidelity) The multi-output replay's fixture shell (eval/tests/screens.rs):
+// a bar on every screen, its state kept per screen. A click on a screen's
+// button counts there alone and opens that screen's card, which grows a
+// frame after it mounts (as a dashboard swells out of its island); a
+// service change lights every screen's lamp and counts on each; the
+// focused screen's mark is white; the clicks of every screen are counted
+// in one place.
+export state clicks = 0
+service mood from file "/run/strand-replay-fixture/mood.json" { level: int }
+bar Strip {
+  edge: top; height: 40
+  state taps = 0
+  state seen = 0
+  state open = false
+  state grown = false
+  on change mood.level { seen = seen + 1 }
+  on change open after 30ms { grown = open }
+  row {
+    box { id: button; width: 80; height: 40; bg: taps > 0 ? #00ff00 : #0000ff
+      on click { taps = taps + 1; clicks = clicks + 1; open = !open }
+    }
+    box { id: lamp; width: 80; height: 40; bg: seen > 0 ? #ff0000 : #202020 }
+    box { id: mark; width: 40; height: 40; bg: screen.focused ? #ffffff : #000000 }
+    if open {
+      box { id: card; height: 40; bg: #4040ff
+            width: grown ? 240 : 40 ~ spring(320, 0.7) }
+    }
+  }
+}

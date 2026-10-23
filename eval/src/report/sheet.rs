@@ -122,7 +122,6 @@ pub fn sheet(
     let Some(at) = tl.at(k) else { return Ok(None) };
     // The crop is in the buffer pixels of the finding's frame; a frame
     // drawn at another scale (a `scale` step) is read at its own.
-    let scale = trace.scale_at(tl.frames[at]) as f32;
     let lo = (at as i64 - SPAN).max(0) as usize;
     let hi = ((at as i64 + SPAN) as usize).min(tl.ks.len() - 1);
     let Some(surface) = tl
@@ -132,6 +131,7 @@ pub fn sheet(
     else {
         return Ok(None);
     };
+    let scale = trace.scale_on(tl.frames[at], surface) as f32;
     // The segment's start: the box the node is held to.
     let start = trace
         .segments
@@ -209,7 +209,7 @@ pub fn sheet(
             .rev()
             .find_map(|x| Some((tl.frames[x].png.get(&surface)?, tl.frames[x])));
         let name = shown.map(|(n, _)| n.as_str());
-        let ratio = shown.map_or(1.0, |(_, f)| trace.scale_at(f) as f32 / scale);
+        let ratio = shown.map_or(1.0, |(_, f)| trace.scale_on(f, surface) as f32 / scale);
         let img = match name.and_then(|n| images.get(n).map(|im| (n, im))) {
             Some((n, im)) => {
                 if !decoded.contains_key(n) {

@@ -730,7 +730,8 @@ pub fn reduced_scrolls(
                 | StepKind::Wait(_)
                 | StepKind::Rest { .. }
                 | StepKind::Jitter(_)
-                | StepKind::Hz(_) => {}
+                | StepKind::Hz(_)
+                | StepKind::Screen(_) => {}
                 _ => others.push((e.k, e.k)),
             }
         }

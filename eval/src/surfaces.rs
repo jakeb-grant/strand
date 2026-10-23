@@ -48,7 +48,7 @@ use strand_scene::{
 use strand_surface::placement::{self, LayerConfig, PopupConfig, UsableArea};
 
 use crate::Error;
-use crate::scenario::Screen;
+use crate::scenario::{Screen, ScreenDef};
 
 /// The name the single screen's output has.
 pub const OUTPUT: &str = "DP-1";
@@ -80,6 +80,10 @@ pub struct Shown {
     /// manager last set (`Painter::surface_pose`, set with the frame's
     /// commit), logical pixels.
     pub pose: [f32; 2],
+    /// (fidelity) The output it is on (an index of `Surfaces::outputs`):
+    /// a layer surface's is the screen its `screens:` names, else the
+    /// focused output when it mapped; a popup's its parent's.
+    pub output: usize,
     /// How the compositor places it.
     place: Place,
     /// Configured at least once.
@@ -120,36 +124,126 @@ pub enum Change {
     Detached(SurfaceId),
 }
 
+/// (fidelity) One output: its screen and who it is (`screens.all`'s
+/// name and id).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Output {
+    pub screen: Screen,
+    pub name: String,
+    pub id: String,
+}
+
 /// The shown surfaces.
 #[derive(Debug)]
 pub struct Surfaces {
     pub shown: Vec<Shown>,
     next: u32,
     specs: HashMap<NodeId, SurfaceSpec>,
+    /// The main output's screen (`outputs[main]`'s, kept in step).
     pub screen: Screen,
+    /// (fidelity) Every output, in `screens.all`'s order.
+    pub outputs: Vec<Output>,
+    /// The main output's index.
+    pub main: usize,
+    /// (fidelity) The compositor's focused output (a `screen` step
+    /// moves it): where a surface no screen pins maps.
+    pub focused: usize,
     /// (eval-surface-leg) With the surface leg, every change the renderer
     /// reported, as it reported it, for the real surface manager.
     pub tee: Option<Vec<(NodeId, SurfaceChange)>>,
 }
 
 impl Surfaces {
+    /// One output, the mock's.
     pub fn new(screen: Screen) -> Surfaces {
+        Surfaces::of(
+            vec![Output {
+                screen,
+                name: OUTPUT.into(),
+                id: SCREEN_ID.into(),
+            }],
+            0,
+        )
+    }
+
+    /// (fidelity) `outputs` (one at least), `main` the main one's index.
+    pub fn of(outputs: Vec<Output>, main: usize) -> Surfaces {
+        let main = main.min(outputs.len().saturating_sub(1));
         Surfaces {
             shown: Vec::new(),
             next: 1,
             specs: HashMap::new(),
-            screen,
+            screen: outputs.get(main).map_or(
+                Screen {
+                    width: 300,
+                    height: 1080,
+                    scale: 1.0,
+                },
+                |o| o.screen,
+            ),
+            outputs,
+            main,
+            focused: 0,
             tee: None,
         }
     }
 
+    /// (fidelity) A scenario's screens as outputs.
+    pub fn of_screens(screens: &[ScreenDef], main: usize) -> Surfaces {
+        Surfaces::of(
+            screens
+                .iter()
+                .map(|d| Output {
+                    screen: d.screen,
+                    name: d.identity.name.clone(),
+                    id: d.identity.id.clone(),
+                })
+                .collect(),
+            main,
+        )
+    }
+
+    /// The main output's scale.
     pub fn scale(&self) -> Result<Scale, Error> {
-        Scale::from_f64(self.screen.scale).ok_or_else(|| {
-            Error::Run(format!(
-                "scale {} is not one Wayland has",
-                self.screen.scale
-            ))
-        })
+        scale_of(self.screen.scale)
+    }
+
+    /// (fidelity) The main output's scale set to `s` (a `scale` step).
+    pub fn set_main_scale(&mut self, s: f64) {
+        self.screen.scale = s;
+        if let Some(o) = self.outputs.get_mut(self.main) {
+            o.screen.scale = s;
+        }
+    }
+
+    /// (fidelity) Output `i`'s screen (the main one's past the end).
+    pub fn screen_of(&self, i: usize) -> Screen {
+        if i == self.main {
+            return self.screen;
+        }
+        self.outputs.get(i).map_or(self.screen, |o| o.screen)
+    }
+
+    /// (fidelity) Output `i`'s name.
+    pub fn output_name(&self, i: usize) -> &str {
+        self.outputs.get(i).map_or(OUTPUT, |o| o.name.as_str())
+    }
+
+    /// (fidelity) Whether there is more than one output: only then does
+    /// a trace say which output each surface is on.
+    pub fn several(&self) -> bool {
+        self.outputs.len() > 1
+    }
+
+    /// (fidelity) Surface `id`'s output's scale, as Wayland has it.
+    pub fn scale_for(&self, id: SurfaceId) -> Result<Scale, Error> {
+        scale_of(self.scale_of_surface(id))
+    }
+
+    /// (fidelity) Surface `id`'s output's scale.
+    pub fn scale_of_surface(&self, id: SurfaceId) -> f64 {
+        self.get(id)
+            .map_or(self.screen.scale, |s| self.screen_of(s.output).scale)
     }
 
     /// (eval-rules-4) Surface `id`'s placement as its spec declares it
@@ -199,9 +293,35 @@ impl Surfaces {
         self.shown.iter().find(|s| s.id == id)
     }
 
-    /// The screen's logical size, as the output describes it.
+    /// The main screen's logical size, as the output describes it.
     fn full(&self) -> (u32, u32) {
-        (self.screen.width.max(1), self.screen.height.max(1))
+        self.full_of(self.main)
+    }
+
+    /// (fidelity) Output `i`'s logical size.
+    fn full_of(&self, i: usize) -> (u32, u32) {
+        let s = self.screen_of(i);
+        (s.width.max(1), s.height.max(1))
+    }
+
+    /// (fidelity) The output a layer surface of `spec` maps on: the
+    /// first of the screens its `screens:` names (by id or connector, as
+    /// the surface manager's `wants` matches them), else the focused
+    /// output; with one output, that one whatever it names (as before
+    /// there were several).
+    fn output_for(&self, spec: &SurfaceSpec) -> usize {
+        if self.outputs.len() <= 1 {
+            return 0;
+        }
+        if let strand_scene::Screens::Named(names) = &spec.screens
+            && let Some(i) = self
+                .outputs
+                .iter()
+                .position(|o| names.iter().any(|n| *n == o.id || *n == o.name))
+        {
+            return i;
+        }
+        self.focused.min(self.outputs.len() - 1)
     }
 
     /// (eval-false-alarms) A shown layer surface whose configured size is
@@ -345,10 +465,21 @@ impl Surfaces {
                     // as the manager's `create_surface` leaves it.
                     return Ok(());
                 };
-                let (w, h) = self.full();
+                // (fidelity) Fitted to the output it is on, or will map on.
+                let on = at.map_or_else(|| self.output_for(&spec), |i| self.shown[i].output);
+                let (w, h) = self.full_of(on);
                 config.fit((w as i32, h as i32));
                 Place::Layer(config)
             }
+        };
+        // (fidelity) A popup is on its parent's output.
+        let output = match &place {
+            Place::Popup { parent, .. } => self
+                .shown
+                .iter()
+                .find(|s| s.node == *parent)
+                .map_or(0, |p| p.output),
+            Place::Layer(_) => at.map_or_else(|| self.output_for(&spec), |i| self.shown[i].output),
         };
         match at {
             Some(i) => self.shown[i].place = place,
@@ -367,6 +498,7 @@ impl Surfaces {
                     origin: [0.0, 0.0],
                     rest: [0.0, 0.0],
                     pose: [0.0, 0.0],
+                    output,
                     place,
                     configured: false,
                 });
@@ -399,7 +531,7 @@ impl Surfaces {
     /// the screen along its anchor's edge from where its parent lies.
     fn popup_at(&self, c: &PopupConfig, p: &Shown) -> (i32, i32) {
         let (gx, gy) = geometry(p);
-        let (sw, sh) = self.full();
+        let (sw, sh) = self.full_of(p.output);
         let within = (
             -(whole(p.origin[0]) + gx),
             -(whole(p.origin[1]) + gy),
@@ -418,18 +550,54 @@ impl Surfaces {
     /// configure put it on its parent. A surface given a new size is
     /// configured at it; one only moved is placed.
     fn arrange(&mut self, out: &mut Vec<Change>) -> Result<(), Error> {
-        let scale = self.scale()?;
-        let full = self.full();
+        let mut scales = Vec::with_capacity(self.outputs.len());
+        for i in 0..self.outputs.len().max(1) {
+            scales.push(scale_of(self.screen_of(i).scale)?);
+        }
+        let mut placed: Vec<Arranged> = Vec::new();
+        // (fidelity) Each output's layer surfaces in the area its own
+        // exclusive zones leave.
+        for o in 0..scales.len() {
+            self.arrange_layers(o, &mut placed);
+        }
+        self.arrange_popups(&mut placed);
+        for (id, size, origin, rest) in placed {
+            let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
+                continue;
+            };
+            let scale = scales.get(sh.output).copied().unwrap_or(scales[0]);
+            let logical = [size[0] as f32, size[1] as f32];
+            let moved = sh.origin != origin;
+            sh.origin = origin;
+            sh.rest = rest;
+            if !sh.configured || sh.logical != logical {
+                let size = physical(logical, scale);
+                sh.configured = true;
+                sh.logical = logical;
+                sh.size = size;
+                sh.pixels = vec![0; (size.w * size.h * 4) as usize];
+                sh.fresh = true;
+                out.push(Change::Configured(id, size, scale));
+            } else if moved {
+                out.push(Change::Placed(id));
+            }
+        }
+        Ok(())
+    }
+
+    /// (fidelity) Output `o`'s layer surfaces, sized and placed.
+    fn arrange_layers(&self, o: usize, placed: &mut Vec<Arranged>) {
+        let full = self.full_of(o);
         let layers: Vec<(SurfaceId, LayerConfig)> = self
             .shown
             .iter()
+            .filter(|s| s.output == o)
             .filter_map(|s| match &s.place {
                 Place::Layer(c) => Some((s.id, c.clone())),
                 Place::Popup { .. } => None,
             })
             .collect();
         let list: Vec<(SurfaceId, &LayerConfig)> = layers.iter().map(|(i, c)| (*i, c)).collect();
-        let mut placed: Vec<Arranged> = Vec::new();
         for (id, c) in &layers {
             let area = placement::arranged_area(full, &list, id);
             let size = configured_size(c, area);
@@ -452,6 +620,10 @@ impl Surfaces {
                 [x as f32, y as f32],
             ));
         }
+    }
+
+    /// The popups, each where its configure put it on its parent.
+    fn arrange_popups(&self, placed: &mut Vec<Arranged>) {
         // Popups in the order they were shown: a parent before its
         // popups.
         for i in 0..self.shown.len() {
@@ -475,27 +647,6 @@ impl Surfaces {
             // A popup of this popup reads where it lies now, from here.
             placed.push((self.shown[i].id, [w.max(1), h.max(1)], o, o));
         }
-        for (id, size, origin, rest) in placed {
-            let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
-                continue;
-            };
-            let logical = [size[0] as f32, size[1] as f32];
-            let moved = sh.origin != origin;
-            sh.origin = origin;
-            sh.rest = rest;
-            if !sh.configured || sh.logical != logical {
-                let size = physical(logical, scale);
-                sh.configured = true;
-                sh.logical = logical;
-                sh.size = size;
-                sh.pixels = vec![0; (size.w * size.h * 4) as usize];
-                sh.fresh = true;
-                out.push(Change::Configured(id, size, scale));
-            } else if moved {
-                out.push(Change::Placed(id));
-            }
-        }
-        Ok(())
     }
 
     /// (eval-rules-6) Surface `id`'s frame commits with a compositor
@@ -538,7 +689,7 @@ impl Surfaces {
     /// output, a popup on its parent's.
     pub fn origin(&self, id: SurfaceId) -> Option<(Option<String>, LogicalPoint)> {
         let sh = self.get(id)?;
-        let output = (sh.kind != NodeKind::Popup).then(|| OUTPUT.to_string());
+        let output = (sh.kind != NodeKind::Popup).then(|| self.output_name(sh.output).to_string());
         Some((output, LogicalPoint::new(sh.origin[0], sh.origin[1])))
     }
 
@@ -558,7 +709,7 @@ impl Surfaces {
         let Some(sh) = self.get(id) else {
             return 0;
         };
-        let (sw, shh) = self.full();
+        let (sw, shh) = self.full_of(sh.output);
         let [x, y] = sh.rest;
         let [w, h] = sh.logical;
         let at = |gap: f32| gap <= 0.5;
@@ -575,12 +726,13 @@ impl Surfaces {
                 let layers: Vec<(SurfaceId, &LayerConfig)> = self
                     .shown
                     .iter()
+                    .filter(|s| s.output == sh.output)
                     .filter_map(|s| match &s.place {
                         Place::Layer(c) => Some((s.id, c)),
                         Place::Popup { .. } => None,
                     })
                     .collect();
-                let a = placement::arranged_area(self.full(), &layers, &id);
+                let a = placement::arranged_area(self.full_of(sh.output), &layers, &id);
                 let edges = c.anchors;
                 Some((a, edges))
             }
@@ -620,12 +772,13 @@ impl Surfaces {
         })
     }
 
-    /// Every shown surface at the screen's (new) scale: the surfaces to
-    /// configure again.
+    /// Every shown surface on the main screen at its (new) scale: the
+    /// surfaces to configure again.
     pub fn rescale(&mut self) -> Result<Vec<Change>, Error> {
         let scale = self.scale()?;
+        let main = self.main;
         let mut out = Vec::new();
-        for sh in &mut self.shown {
+        for sh in self.shown.iter_mut().filter(|s| s.output == main) {
             let size = physical(sh.logical, scale);
             sh.size = size;
             sh.pixels = vec![0; (size.w * size.h * 4) as usize];
@@ -642,7 +795,7 @@ impl Surfaces {
         id: SurfaceId,
         time: std::time::Duration,
     ) -> Result<Damage, Error> {
-        let scale = self.scale()?;
+        let scale = scale_of(self.scale_of_surface(id))?;
         let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
             return Ok(Damage::new());
         };
@@ -680,6 +833,11 @@ impl Surfaces {
         dev.draw(frame, &mut sh.pixels, sh.size)?;
         Ok(true)
     }
+}
+
+/// A scale Wayland has, else why not.
+fn scale_of(s: f64) -> Result<Scale, Error> {
+    Scale::from_f64(s).ok_or_else(|| Error::Run(format!("scale {s} is not one Wayland has")))
 }
 
 /// The size a compositor configures a layer surface of `c` at in `area`

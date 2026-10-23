@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
-use strand_core::flight::{Entry, flags, gap, kind, modifiers, request};
+use strand_core::flight::{Entry, NAME_IN_ARENA, flags, gap, kind, modifiers, request};
 
 use super::bundle::{Bundle, node_ref_at};
 use crate::harness::NodeRef;
@@ -42,7 +42,8 @@ pub struct Options {
     pub gpu: bool,
 }
 
-/// The output replayed.
+/// An output replayed: (fidelity) every live output is, each a screen
+/// of the sandbox; the main one is the one the viewer opens on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputPick {
     pub name: String,
@@ -57,7 +58,10 @@ pub struct OutputPick {
     pub height: u32,
     pub scale: f64,
     pub hz: u32,
-    /// Why it was picked.
+    /// (fidelity) Where it lay in the compositor's layout (logical px),
+    /// when `bundle.json` says.
+    pub at: Option<[i32; 2]>,
+    /// Why it was picked (the main one), or its place among the others.
     pub why: String,
 }
 
@@ -77,14 +81,21 @@ pub struct LiveMap {
     pub t: u64,
     pub origin: String,
     pub mapped: bool,
+    /// (fidelity) The output it was on, when the ring says.
+    pub output: Option<String>,
 }
 
 /// A cell write as the live shell recorded it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveWrite {
     pub t: u64,
-    pub path: String,
-    pub value: Json,
+    /// (fidelity) `None`: its name was lost with its value from the
+    /// ring's arena (a name too long for the ring's table is kept with
+    /// the value), so it is some cell whose name is not in the table.
+    pub path: Option<String>,
+    /// (fidelity) `None`: its value was lost (over the cap, or from the
+    /// ring's arena); the replay's write of it is matched by time.
+    pub value: Option<Json>,
 }
 
 /// One line of the event list `replay.txt` gives.
@@ -107,6 +118,8 @@ pub struct PointerAt {
     /// Since the window's start.
     pub t: u64,
     pub origin: Option<String>,
+    /// (fidelity) The output of the surface it was on.
+    pub output: Option<String>,
     pub x: f32,
     pub y: f32,
 }
@@ -151,7 +164,14 @@ pub struct Plan {
     pub end: u64,
     /// What the window starts after.
     pub start_why: String,
+    /// The main output: the one with the most input, the viewer's.
     pub output: OutputPick,
+    /// (fidelity) Every output, in the live `screens.all`'s order (the
+    /// first was `screens.focused`), the main one among them.
+    pub outputs: Vec<OutputPick>,
+    /// (fidelity) The changes ring's name table: a cell write whose name
+    /// was lost is one of the cells not in it.
+    pub interned: BTreeSet<String>,
     /// When the window starts at the shell's start: up to the first
     /// input (ns since the window's start), the live shell was still
     /// mapping what the sandbox's boot maps at once. 0 otherwise.
@@ -179,6 +199,15 @@ pub struct Plan {
     /// (replayfix) The live pointer over the window, one entry per
     /// recorded move, press or leave on the replayed output.
     pub pointer: Vec<PointerAt>,
+}
+
+/// (fidelity) ` on DP-2` when there are several outputs and `output`
+/// names one; nothing otherwise.
+pub fn on_words(output: &Option<String>, outputs: usize) -> String {
+    match output {
+        Some(o) if outputs > 1 => format!(" on {o}"),
+        _ => String::new(),
+    }
 }
 
 /// The live origin of a node's file, under the config directory.
@@ -687,85 +716,169 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             },
         },
     };
-    let from_json = b.json["outputs"]
+    // (fidelity) Every output, each as `bundle.json` and the input ring
+    // describe it.
+    let json_outputs: Vec<&Json> = b.json["outputs"]
         .as_array()
-        .and_then(|a| a.iter().find(|o| o["name"].as_str() == Some(&name)));
-    let (mut width, mut height, mut scale) = (1920, 1080, 1.0);
-    if let Some(o) = slots.outputs.values().find(|o| o.0 == name) {
-        (width, height, scale) = (o.1, o.2, o.3);
-    } else if let Some(o) = from_json {
-        width = o["size"][0].as_u64().unwrap_or(1920) as u32;
-        height = o["size"][1].as_u64().unwrap_or(1080) as u32;
-        scale = o["scale"].as_f64().unwrap_or(1.0);
-    } else if opts.output.is_some() {
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    let mut names: Vec<String> = json_outputs
+        .iter()
+        .filter_map(|o| o["name"].as_str().map(str::to_string))
+        .collect();
+    let mut by_slot: Vec<(u16, &str)> = slots
+        .outputs
+        .iter()
+        .map(|(slot, o)| (*slot, o.0.as_str()))
+        .collect();
+    by_slot.sort_by_key(|(slot, _)| *slot);
+    for (_, o) in &by_slot {
+        if !names.iter().any(|n| n == o) {
+            names.push((*o).to_string());
+        }
+    }
+    if opts.output.is_some() && !names.contains(&name) {
         return Err(crate::Error::Usage(format!(
             "--output {name}: the bundle records no such output"
         )));
     }
-    if width == 0 || height == 0 {
-        (width, height) = (1920, 1080);
+    if !names.contains(&name) {
+        names.push(name.clone());
     }
-    if !(scale > 0.0 && scale <= 4.0) {
-        scale = 1.0;
-    }
-    let on_output = |slot: u16| slots.output_of(b, slot).is_none_or(|o| o == name);
-    let mut periods: BTreeMap<u64, usize> = BTreeMap::new();
-    for (slot, p) in &slots.periods {
-        if on_output(*slot) && *p > 0 {
-            *periods.entry(*p).or_default() += 1;
-        }
-    }
-    let hz = periods
-        .iter()
-        .max_by_key(|(_, c)| **c)
-        .map_or(60, |(p, _)| {
-            ((1e9 / *p as f64).round() as u32).clamp(1, 1000)
-        });
-    let period = 1_000_000_000 / u64::from(hz);
-    let text = |k: &str| from_json.and_then(|o| o[k].as_str()).map(str::to_string);
-    let (mut id, mut description) = (text("id"), text("description"));
     let mut early_notes = Vec::new();
-    if id.is_none()
-        && let (Some(make), Some(model)) = (text("make"), text("model"))
-        && recovered_id(b, &make, &model).is_none()
-        && b.json["outputs"].as_array().is_some_and(|a| {
-            a.iter()
+    let pick_of = |name: &str, why: String, notes: &mut Vec<String>| -> OutputPick {
+        let from_json = json_outputs
+            .iter()
+            .copied()
+            .find(|o| o["name"].as_str() == Some(name));
+        let (mut width, mut height, mut scale) = (1920, 1080, 1.0);
+        if let Some(o) = slots.outputs.values().find(|o| o.0 == name) {
+            (width, height, scale) = (o.1, o.2, o.3);
+        } else if let Some(o) = from_json {
+            width = o["size"][0].as_u64().unwrap_or(1920) as u32;
+            height = o["size"][1].as_u64().unwrap_or(1080) as u32;
+            scale = o["scale"].as_f64().unwrap_or(1.0);
+        }
+        if width == 0 || height == 0 {
+            (width, height) = (1920, 1080);
+        }
+        if !(scale > 0.0 && scale <= 4.0) {
+            scale = 1.0;
+        }
+        let mut periods: BTreeMap<u64, usize> = BTreeMap::new();
+        for (slot, p) in &slots.periods {
+            if slots.output_of(b, *slot).is_none_or(|o| o == name) && *p > 0 {
+                *periods.entry(*p).or_default() += 1;
+            }
+        }
+        let hz = periods
+            .iter()
+            .max_by_key(|(_, c)| **c)
+            .map_or(60, |(p, _)| {
+                ((1e9 / *p as f64).round() as u32).clamp(1, 1000)
+            });
+        let text = |k: &str| from_json.and_then(|o| o[k].as_str()).map(str::to_string);
+        let (mut id, mut description) = (text("id"), text("description"));
+        if id.is_none()
+            && let (Some(make), Some(model)) = (text("make"), text("model"))
+            && recovered_id(b, &make, &model).is_none()
+            && json_outputs
+                .iter()
                 .filter(|o| {
                     o["make"].as_str() == Some(&make) && o["model"].as_str() == Some(&model)
                 })
                 .count()
                 > 1
-        })
-    {
-        early_notes.push(format!(
-            "the screen's id is not known: the bundle is from before its outputs carried their \
-             ids, and another output is a {make} {model} too, so the cells kept per screen \
-             cannot tell which is this one's; they start at their defaults"
-        ));
-    }
-    if id.is_none()
-        && let (Some(make), Some(model)) = (text("make"), text("model"))
-        && let Some((i, d)) = recovered_id(b, &make, &model)
-    {
-        early_notes.push(format!(
-            "the screen's id `{i}` is read from the cells kept per screen: the bundle is from \
-             before its outputs carried their ids"
-        ));
-        id = Some(i);
-        description = description.or(Some(d));
-    }
-    let output = OutputPick {
-        id,
-        make: text("make"),
-        model: text("model"),
-        description,
-        name: name.clone(),
-        width,
-        height,
-        scale,
-        hz,
-        why,
+        {
+            notes.push(format!(
+                "the screen's id is not known ({name}): the bundle is from before its outputs \
+                 carried their ids, and another output is a {make} {model} too, so the cells \
+                 kept per screen cannot tell which is this one's; they start at their defaults"
+            ));
+        }
+        if id.is_none()
+            && let (Some(make), Some(model)) = (text("make"), text("model"))
+            && let Some((i, d)) = recovered_id(b, &make, &model)
+        {
+            notes.push(format!(
+                "the screen's id `{i}` is read from the cells kept per screen: the bundle is \
+                 from before its outputs carried their ids"
+            ));
+            id = Some(i);
+            description = description.or(Some(d));
+        }
+        let at = from_json.and_then(|o| {
+            let p = o["position"].as_array()?;
+            Some([p.first()?.as_i64()? as i32, p.get(1)?.as_i64()? as i32])
+        });
+        OutputPick {
+            id,
+            make: text("make"),
+            model: text("model"),
+            description,
+            name: name.to_string(),
+            width,
+            height,
+            scale,
+            hz,
+            at,
+            why,
+        }
     };
+    // (fidelity) `screens.all`'s order: `bundle.json`'s `order` (each
+    // output's place in it); in a bundle from before it was recorded,
+    // the order the shell's surfaces first mapped on them (it mounts a
+    // `bar` per screen in that order), then the input ring's.
+    let order_of = |n: &str| -> Option<u64> {
+        json_outputs
+            .iter()
+            .find(|o| o["name"].as_str() == Some(n))
+            .and_then(|o| o["order"].as_u64())
+    };
+    let ordered = !names.is_empty() && names.iter().all(|n| order_of(n).is_some());
+    if ordered {
+        names.sort_by_key(|n| order_of(n).unwrap_or(u64::MAX));
+    } else {
+        let first_surface = |n: &str| -> (u16, u16) {
+            let out_slot = by_slot
+                .iter()
+                .find(|(_, o)| *o == n)
+                .map_or(u16::MAX, |(s, _)| *s);
+            let surface = slots
+                .surfaces
+                .keys()
+                .filter(|s| slots.output_of(b, **s).as_deref() == Some(n))
+                .min()
+                .copied()
+                .unwrap_or(u16::MAX);
+            (surface, out_slot)
+        };
+        names.sort_by_key(|n| first_surface(n));
+        if names.len() > 1 {
+            early_notes.push(format!(
+                "`screens.all`'s order is not in the bundle (one from before it was recorded): \
+                 it is taken as the order the shell's surfaces first mapped on its outputs ({}), \
+                 so `screens.focused`, its first, may be another screen than it was live",
+                names.join(", ")
+            ));
+        }
+    }
+    let mut outputs = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        let w = if *n == name {
+            why.clone()
+        } else {
+            format!("screen {} of {}", i + 1, names.len())
+        };
+        outputs.push(pick_of(n, w, &mut early_notes));
+    }
+    let output = outputs
+        .iter()
+        .find(|o| o.name == name)
+        .cloned()
+        .unwrap_or_else(|| pick_of(&name, why.clone(), &mut early_notes));
+    let hz = output.hz;
+    let period = 1_000_000_000 / u64::from(hz);
 
     // The surfaces' roots: their origins, from the changes ring's root
     // records and `nodes.json`.
@@ -846,6 +959,10 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // Per field: its newest lost record's time, why, its kind, and how
     // many were lost.
     let mut lost_of: BTreeMap<String, (u64, &'static str, u8, usize)> = BTreeMap::new();
+    // (fidelity) Per cell: whether its oldest change in the window lost
+    // its value (each change holds the value before it, so only the
+    // oldest one's loss leaves the cell's start unknown).
+    let mut oldest_lost: HashMap<String, bool> = HashMap::new();
     for (i, e) in b.change_entries.iter().enumerate().rev() {
         if !in_window(e.rec.t) || !matches!(e.rec.kind, kind::FIELD | kind::KEYED | kind::CELL) {
             continue;
@@ -859,6 +976,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         let svc = name.split('.').next().unwrap_or("");
         if e.rec.kind != kind::CELL && (SANDBOX_OWNS.contains(&svc) || !known(svc)) {
             continue;
+        }
+        if e.rec.kind == kind::CELL {
+            oldest_lost.insert(
+                name.clone(),
+                e.rec.flags & (flags::LOST | flags::TRUNCATED) != 0,
+            );
         }
         if e.rec.flags & (flags::LOST | flags::TRUNCATED) != 0 {
             if let Some(after) = cur.get(&name) {
@@ -908,16 +1031,33 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             }
         }
     }
+    // (fidelity) A cell whose oldest change in the window lost its
+    // value does not know its value at the window's start: in a window
+    // from the shell's start it starts as the config declares it, as it
+    // did live (the rewind would have started it at the value after
+    // that change, so the change was never made in the replay);
+    // otherwise it starts at the value after it, and says so.
+    let boot = start_why == "the shell's start";
     for (name, (t, what, k, n)) in &lost_of {
         let more = if *n > 1 {
             format!(", and the values of {} older ones are gone too", n - 1)
         } else {
             String::new()
         };
+        let unknown = *k == kind::CELL && oldest_lost.get(name).copied().unwrap_or(false);
         let how = match *k {
             kind::KEYED => {
                 "the replay sets the list after it whole there, and undoes the changes before it \
                  from that list as if it had changed nothing"
+            }
+            kind::CELL if unknown && boot => {
+                cur.remove(name);
+                "no older change says what it was before, so the replay starts it as the config \
+                 declares it, as the live shell started"
+            }
+            kind::CELL if unknown => {
+                "no older change says what it was before, so the replay starts it at the value \
+                 after it, which it may not have been at the window's start"
             }
             kind::CELL => "the changes before it are undone as recorded",
             _ => {
@@ -930,6 +1070,87 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             secs(*t as i128 - end as i128)
         ));
     }
+    // (fidelity) A change whose name was not interned (longer than the
+    // name table holds, or the table full) keeps its name in the arena
+    // with its value; a version-1 recorder lost both together, and
+    // still lost the name with a value over the cap. Such a nameless
+    // record is a change of some field or cell whose name is not in
+    // the table: rewinding past it, that one's value before is not
+    // known. A name the table does not hold, with such a record of its
+    // kind older than its own oldest one in the window, does not know
+    // its value at the window's start: in a window from the shell's
+    // start a cell starts as the config declares it, as it did live;
+    // otherwise it starts at the value rewound to, and says so.
+    let interned: BTreeSet<String> = b
+        .changes
+        .as_ref()
+        .map(|d| d.names.iter().cloned().collect())
+        .unwrap_or_default();
+    let nameless: Vec<(u64, u8)> = b
+        .change_entries
+        .iter()
+        .filter(|e| {
+            in_window(e.rec.t)
+                && e.name.is_none()
+                && e.rec.slot == NAME_IN_ARENA
+                && matches!(e.rec.kind, kind::FIELD | kind::KEYED | kind::CELL)
+        })
+        .map(|e| (e.rec.t, e.rec.kind))
+        .collect();
+    if !nameless.is_empty() {
+        let is_cell = |n: &str| b.cells.get(n).is_some();
+        let mut unsure: Vec<(String, u64)> = Vec::new();
+        for n in cur.keys() {
+            if interned.contains(n) {
+                continue;
+            }
+            let cell = is_cell(n);
+            let oldest = b
+                .change_entries
+                .iter()
+                .filter(|e| in_window(e.rec.t) && e.name.as_deref() == Some(n.as_str()))
+                .map(|e| e.rec.t)
+                .next()
+                .unwrap_or(u64::MAX);
+            let first = nameless
+                .iter()
+                .find(|(t, k)| *t < oldest && ((*k == kind::CELL) == cell));
+            if let Some((t, _)) = first {
+                unsure.push((n.clone(), *t));
+            }
+        }
+        let count = |k: bool| {
+            nameless
+                .iter()
+                .filter(|(_, x)| (*x == kind::CELL) == k)
+                .count()
+        };
+        for (n, t) in unsure {
+            let cell = is_cell(&n);
+            let lost = count(cell);
+            let head = format!(
+                "`{n}`: {lost} change{} of a {} whose name, like this one's, is too long for the \
+                 changes ring's table lost the name with the value (the first at {}), so this one \
+                 may have changed before its oldest change recorded",
+                if lost == 1 { "" } else { "s" },
+                if cell { "cell" } else { "service field" },
+                secs(t as i128 - end as i128)
+            );
+            if boot && cell {
+                cur.remove(&n);
+                notes.push(format!(
+                    "{head}: the replay starts it as the config declares it, as the live shell \
+                     started"
+                ));
+            } else {
+                notes.push(format!(
+                    "{head}: the replay starts it at {}, which it may not have been at the \
+                     window's start",
+                    cur.get(&n).map_or_else(|| "null".into(), compact)
+                ));
+            }
+        }
+    }
     let seeds = cur.clone();
 
     // 5. The steps.
@@ -939,7 +1160,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut maps = Vec::new();
     let mut writes = Vec::new();
     let mut track: Vec<PointerAt> = Vec::new();
-    let mut other_output = 0usize;
+    // (fidelity) The sandbox's focused output: input on a surface of
+    // another is taken there after a `screen` step.
+    let mut screen_now = outputs
+        .first()
+        .map_or_else(|| name.clone(), |o| o.name.clone());
     let mut unknown_surface = 0usize;
     let mut typed = 0u64;
     let mut password_spans = 0usize;
@@ -979,19 +1204,23 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                         (rel(t) + period / 2) / period + super::fidelity::MAP_FRAMES,
                     );
                 }
-                if on_output(e.rec.slot)
-                    && let Some(o) = root.as_deref().and_then(origin_of_root)
-                {
+                if let Some(o) = root.as_deref().and_then(origin_of_root) {
                     let mapped = e.rec.kind == kind::MAPPED;
+                    let output = slots.output_of(b, e.rec.slot);
                     events.push(Event {
                         kind: "surface",
                         t: rel(t),
-                        text: format!("surface {} @{o}", if mapped { "mapped" } else { "gone" }),
+                        text: format!(
+                            "surface {} @{o}{}",
+                            if mapped { "mapped" } else { "gone" },
+                            on_words(&output, outputs.len())
+                        ),
                     });
                     maps.push(LiveMap {
                         t: rel(t),
                         origin: o,
                         mapped,
+                        output,
                     });
                 }
                 continue;
@@ -1001,10 +1230,16 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 continue;
             }
             kind::LATE if in_window(t) => {
-                if let Some(sel) = sel_of(e.rec.slot).filter(|_| on_output(e.rec.slot)) {
+                if let Some(sel) = sel_of(e.rec.slot) {
                     let missed = u64::from(e.rec.u16(0));
                     let at = rel(t).saturating_sub(missed * period);
                     let nb = shown_from.get(&e.rec.slot).copied().unwrap_or(0);
+                    if let Some(o) = slots.output_of(b, e.rec.slot)
+                        && o != screen_now
+                    {
+                        push_on(&mut timed, at, format!("screen {o}"), 0, nb);
+                        screen_now = o;
+                    }
                     push_on(
                         &mut timed,
                         at,
@@ -1024,7 +1259,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             _ => continue,
         }
         // (replayfix) The pointer's place for the viewer: off the
-        // replayed output's known surfaces when it enters another.
+        // known surfaces when it enters another (Strand's own panel).
         let off = |track: &mut Vec<PointerAt>| {
             if matches!(e.rec.kind, kind::ENTER | kind::MOTION)
                 && track.last().is_some_and(|p| p.origin.is_some())
@@ -1032,16 +1267,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 track.push(PointerAt {
                     t: rel(t),
                     origin: None,
+                    output: None,
                     x: 0.0,
                     y: 0.0,
                 });
             }
         };
-        if !on_output(e.rec.slot) {
-            off(&mut track);
-            other_output += 1;
-            continue;
-        }
         let Some(sel) = sel_of(e.rec.slot) else {
             off(&mut track);
             unknown_surface += 1;
@@ -1050,6 +1281,17 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         let at = rel(t);
         let r = &e.rec;
         let nb = shown_from.get(&r.slot).copied().unwrap_or(0);
+        // (fidelity) Input on another output's surface: that output
+        // focused first, so the step is taken on its surface.
+        let out_now = slots.output_of(b, r.slot);
+        if let Some(o) = &out_now
+            && *o != screen_now
+            && r.kind != kind::LEAVE
+            && r.kind != kind::KEYBOARD_LEAVE
+        {
+            push_on(&mut timed, at, format!("screen {o}"), 0, nb);
+            screen_now = o.clone();
+        }
         let xy = |r: &strand_core::flight::Rec| (r.f32(0), r.f32(4));
         // The pointer moved to `x, y` on this surface, and keyboard
         // focus on it, each a step only when it changes.
@@ -1059,6 +1301,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 track.push(PointerAt {
                     t: at,
                     origin: Some(sel[1..].to_string()),
+                    output: out_now.clone(),
                     x,
                     y,
                 });
@@ -1102,7 +1345,6 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                             && n.rec.slot != r.slot
                             && n.rec.t.saturating_sub(t) <= HANDOFF_NS
                             && in_window(n.rec.t)
-                            && on_output(n.rec.slot)
                             && sel_of(n.rec.slot).is_some()
                     });
                 if !handed {
@@ -1112,6 +1354,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 track.push(PointerAt {
                     t: at,
                     origin: None,
+                    output: None,
                     x: 0.0,
                     y: 0.0,
                 });
@@ -1309,6 +1552,28 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             continue;
         }
         let at = rel(t);
+        // (fidelity) A cell write whose value, or name and value, were
+        // lost: compared by its time.
+        let lost = e.rec.flags & (flags::LOST | flags::TRUNCATED) != 0;
+        if e.rec.kind == kind::CELL && lost {
+            let what = match &e.name {
+                Some(n) => format!("cell {n} changed (live; its value was not kept)"),
+                None => "a cell changed (live; its name and value were lost from the ring's \
+                         arena)"
+                    .to_string(),
+            };
+            events.push(Event {
+                kind: "change",
+                t: at,
+                text: what,
+            });
+            writes.push(LiveWrite {
+                t: at,
+                path: e.name.clone(),
+                value: None,
+            });
+            continue;
+        }
         let Some(name) = e.name.clone() else {
             continue;
         };
@@ -1458,8 +1723,8 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     });
                     writes.push(LiveWrite {
                         t: at,
-                        path: name,
-                        value: pair[1].clone(),
+                        path: Some(name),
+                        value: Some(pair[1].clone()),
                     });
                 }
             }
@@ -1527,19 +1792,34 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         "other programs' windows: `thumbnail` nodes draw nothing, and the compositor's blur and its own animations are not modelled"
             .into(),
     );
+    // (fidelity) Service changes whose values the ring lost: the replay
+    // cannot make them when the live shell did.
+    let (lost_fields, lost_changes) = lost_of
+        .values()
+        .filter(|(_, _, k, _)| *k != kind::CELL)
+        .fold((0, 0), |(f, c), (_, _, _, n)| (f + 1, c + n));
+    if lost_changes > 0 {
+        limits.push(format!(
+            "{lost_changes} change{} of {lost_fields} service field{} lost {} value{} from the \
+             changes ring's arena or over its cap: the replay makes each field's value at the \
+             next change it knows, so what such a change set off live comes later in the replay, \
+             or not at all (the notes name each field)",
+            if lost_changes == 1 { "" } else { "s" },
+            if lost_fields == 1 { "" } else { "s" },
+            if lost_changes == 1 { "its" } else { "their" },
+            if lost_changes == 1 { "" } else { "s" },
+        ));
+    }
     if uses_thumbnails(&b.config_dir()) {
         limits.push("the config draws `thumbnail` nodes, which draw nothing here".into());
     }
-    if other_output > 0 {
-        limits.push(format!(
-            "other outputs: {other_output} input records on outputs other than {name} not replayed"
-        ));
-    }
-    let outputs: BTreeSet<&str> = slots.outputs.values().map(|o| o.0.as_str()).collect();
-    for o in outputs {
-        if o != name {
+    // (fidelity) One clock: every screen ticks at the main one's rate.
+    for o in &outputs {
+        if o.hz != hz {
             limits.push(format!(
-                "output {o} is not replayed (the sandbox has one screen)"
+                "output {} refreshed at {} Hz live; the replay ticks every screen at {hz} Hz, \
+                 {}'s rate",
+                o.name, o.hz, name
             ));
         }
     }
@@ -1635,6 +1915,8 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         end,
         start_why,
         output,
+        outputs,
+        interned,
         boot_until,
         warmup_ms,
         traced_ns,
@@ -1772,23 +2054,38 @@ impl Plan {
         // (replayfix) The screen is the live output: per-screen data
         // (`workspaces.slots(screen)`) and the cells kept per screen
         // name it.
-        let o = &self.output;
-        let mut who = format!(", name = {}", toml_str(&o.name));
-        for (k, v) in [
-            ("id", &o.id),
-            ("make", &o.make),
-            ("model", &o.model),
-            ("description", &o.description),
-        ] {
-            if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
-                let _ = write!(who, ", {k} = {}", toml_str(v));
+        let one = |o: &OutputPick, at: bool| {
+            let mut who = format!(", name = {}", toml_str(&o.name));
+            for (k, v) in [
+                ("id", &o.id),
+                ("make", &o.make),
+                ("model", &o.model),
+                ("description", &o.description),
+            ] {
+                if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+                    let _ = write!(who, ", {k} = {}", toml_str(v));
+                }
             }
+            if at && let Some([x, y]) = o.at {
+                let _ = write!(who, ", x = {x}, y = {y}");
+            }
+            format!(
+                "{{ width = {}, height = {}, scale = {}{who} }}",
+                o.width, o.height, o.scale
+            )
+        };
+        // (fidelity) Every live output a screen, in `screens.all`'s
+        // order; the main one named.
+        if self.outputs.len() > 1 {
+            let _ = writeln!(s, "screens = [");
+            for o in &self.outputs {
+                let _ = writeln!(s, "  {},", one(o, true));
+            }
+            let _ = writeln!(s, "]");
+            let _ = writeln!(s, "main_screen = {}", toml_str(&self.output.name));
+        } else {
+            let _ = writeln!(s, "screen = {}", one(&self.output, false));
         }
-        let _ = writeln!(
-            s,
-            "screen = {{ width = {}, height = {}, scale = {}{who} }}",
-            o.width, o.height, o.scale
-        );
         let _ = writeln!(s, "hz = {}", self.output.hz);
         let _ = writeln!(
             s,

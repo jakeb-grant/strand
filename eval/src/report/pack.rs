@@ -50,7 +50,7 @@ pub const WHOLE_SHARE: f64 = 0.75;
 
 /// The frame fields the viewer draws (eval/viewer/viewer.js): a packed
 /// page holds these of each frame, `trace.json` every field.
-pub const VIEW_FIELDS: [&str; 9] = [
+pub const VIEW_FIELDS: [&str; 10] = [
     "k",
     "t_ns",
     "painted",
@@ -58,6 +58,8 @@ pub const VIEW_FIELDS: [&str; 9] = [
     "png",
     "n",
     "scale",
+    // (fidelity) Each surface's scale, with several outputs.
+    "scales",
     "held_text",
     "cost",
 ];

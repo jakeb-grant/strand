@@ -557,7 +557,9 @@ fn fill(job: &Job, dir: &Path) -> io::Result<()> {
 }
 
 /// (replayfix) The diagnostics' outputs, each with its screen's `id` and
-/// `description` (`screens.all`'s, matched by connector name).
+/// `description` (`screens.all`'s, matched by connector name), and
+/// (fidelity) its `order`, its place in `screens.all`: a replay gives
+/// its screens in that order.
 fn outputs_with_ids(outputs: &Json, screens: &[(String, String, String)]) -> Json {
     let Some(list) = outputs.as_array() else {
         return outputs.clone();
@@ -568,10 +570,11 @@ fn outputs_with_ids(outputs: &Json, screens: &[(String, String, String)]) -> Jso
             let mut o = o.clone();
             let screen = o["name"]
                 .as_str()
-                .and_then(|n| screens.iter().find(|s| s.0 == n));
-            if let (Some(m), Some((_, id, description))) = (o.as_object_mut(), screen) {
+                .and_then(|n| screens.iter().enumerate().find(|(_, s)| s.0 == n));
+            if let (Some(m), Some((i, (_, id, description)))) = (o.as_object_mut(), screen) {
                 m.insert("id".into(), Json::String(id.clone()));
                 m.insert("description".into(), Json::String(description.clone()));
+                m.insert("order".into(), Json::from(i));
             }
             o
         })

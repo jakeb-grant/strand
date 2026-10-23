@@ -766,6 +766,10 @@ struct Harness {
     /// tap, with the tick the instance was stepped at.
     log: ReplayLog,
     tapped: Rc<std::cell::RefCell<Vec<(String, String)>>>,
+    /// (fidelity) The cells a `[seed]` set, with the value the tap tells
+    /// of it: a seed is where the replay starts, never a write of the
+    /// shell's, so its tap is not kept.
+    seeded: HashMap<String, String>,
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -955,7 +959,7 @@ impl Harness {
             router,
             i0,
             clock: Clock::new(sc.hz),
-            surfaces: Surfaces::new(sc.screen),
+            surfaces: Surfaces::of_screens(&sc.screens, sc.main),
             labels: Labels::new(),
             text: TextRules::default(),
             pointer: Pointer::default(),
@@ -994,6 +998,7 @@ impl Harness {
             warmed: false,
             log: ReplayLog::default(),
             tapped: Rc::default(),
+            seeded: HashMap::new(),
         };
         if opts.log {
             let prog = h.inst.vm().prog.clone();
@@ -1049,9 +1054,7 @@ impl Harness {
         Some(NodeRef {
             origin: format!("{}:{l}:{c}", f.name),
             id: ident.as_ref().and_then(|i| i.id.clone()),
-            key: ident
-                .as_ref()
-                .and_then(|i| row_key(i, &self.sc.identity.id)),
+            key: ident.as_ref().and_then(|i| row_key(i, &self.sc.screens)),
         })
     }
 
@@ -1065,8 +1068,14 @@ impl Harness {
         let k = self.clock.k();
         let t = self.clock.now();
         for (path, value) in self.tapped.borrow_mut().drain(..) {
+            if self.seeded.get(&path) == Some(&value) {
+                self.seeded.remove(&path);
+                continue;
+            }
             self.log.writes.push(WriteLog { k, t, path, value });
         }
+        // A seed that changed nothing told the tap of nothing.
+        self.seeded.clear();
         for (m, queued) in fetches {
             self.log.fetches.push((k, m, queued));
         }
@@ -1126,6 +1135,13 @@ impl Harness {
             let prog = &self.inst.vm().prog;
             let v = strand_compiler::vm::json::from_json(&prog.types, &ty, &j)
                 .map_err(|m| Error::Config(format!("[seed] `{path}`: {m}")))?;
+            if self.opts.log {
+                let mut text = String::new();
+                let _ = strand_compiler::vm::json::to_json(&prog.types, &v, &mut text, &mut |t| {
+                    prog.is_text_literal(t)
+                });
+                self.seeded.insert(path.clone(), text);
+            }
             self.inst
                 .seed_cell(&path, v)
                 .map_err(|e| Error::Config(format!("[seed] `{path}`: {e}")))?;
@@ -1347,31 +1363,41 @@ impl Harness {
         }
     }
 
-    /// `screens.all` and `screens.focused`: the one screen, as
-    /// crates/strand/src/run/mod.rs `set_screens` makes it.
+    /// `screens.all` and `screens.focused`: (fidelity) every screen, in
+    /// the scenario's order, the first focused, as
+    /// crates/strand/src/run/mod.rs `set_screens` makes them.
     fn set_screens(&mut self) -> Result<(), Error> {
-        let s: Screen = self.surfaces.screen;
-        let who = &self.sc.identity;
-        let screen = self.host.record(
-            "Screen",
-            &[
-                ("id", Value::text(who.id.as_str())),
-                ("name", Value::text(who.name.as_str())),
-                ("make", Value::text(who.make.as_str())),
-                ("model", Value::text(who.model.as_str())),
-                ("description", Value::text(who.description.as_str())),
-                ("scale", Value::float(s.scale)),
-                ("width", Value::float(f64::from(s.width))),
-                ("height", Value::float(f64::from(s.height))),
-                ("focused", Value::Bool(true)),
-            ],
-        );
+        let records: Vec<Value> = self
+            .sc
+            .screens
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let s: Screen = self.surfaces.screen_of(i);
+                let who = &d.identity;
+                self.host.record(
+                    "Screen",
+                    &[
+                        ("id", Value::text(who.id.as_str())),
+                        ("name", Value::text(who.name.as_str())),
+                        ("make", Value::text(who.make.as_str())),
+                        ("model", Value::text(who.model.as_str())),
+                        ("description", Value::text(who.description.as_str())),
+                        ("scale", Value::float(s.scale)),
+                        ("width", Value::float(f64::from(s.width))),
+                        ("height", Value::float(f64::from(s.height))),
+                        ("focused", Value::Bool(i == 0)),
+                    ],
+                )
+            })
+            .collect();
+        let focused = records.first().cloned().unwrap_or(Value::Null);
         let run = |e: strand_core::Error| Error::Run(format!("screens: {e}"));
         self.host
-            .set(&self.rt, "screens.all", Value::list(vec![screen.clone()]))
+            .set(&self.rt, "screens.all", Value::list(records))
             .map_err(run)?;
         self.host
-            .set(&self.rt, "screens.focused", screen)
+            .set(&self.rt, "screens.focused", focused)
             .map_err(run)
     }
 
@@ -1755,6 +1781,15 @@ impl Harness {
                         detached: None,
                         content,
                         places: Vec::new(),
+                        output: self
+                            .surfaces
+                            .several()
+                            .then(|| {
+                                self.surfaces
+                                    .get(id)
+                                    .map(|s| self.surfaces.output_name(s.output).to_string())
+                            })
+                            .flatten(),
                     });
                 }
                 Change::Placed(_) => {}
@@ -1892,20 +1927,27 @@ impl Harness {
     }
 
     /// The surface a step's `on` names, else the pointer's, else the
-    /// first shown.
+    /// first shown; (fidelity) of those, one on the focused output (a
+    /// `screen` step's) first: a `bar` named once is on every screen.
     fn surface_for(&mut self, on: &Option<Selector>, line: u32) -> Result<SurfaceId, Error> {
+        let focused = self.surfaces.focused;
         if let Some(sel) = on {
             let nodes = self.resolve(sel, line)?;
+            let mut found: Option<SurfaceId> = None;
             for (n, _) in &nodes {
                 let root = self.r.tree().root_of(*n).unwrap_or(*n);
                 // The innermost surface: the node itself, or its root.
                 for cand in [*n, root] {
                     if let Some(s) = self.surfaces.shown.iter().find(|s| s.node == cand) {
-                        return Ok(s.id);
+                        if s.output == focused {
+                            return Ok(s.id);
+                        }
+                        found.get_or_insert(s.id);
+                        break;
                     }
                 }
             }
-            return Err(self.err(line, format!("`{sel}` is on no shown surface")));
+            return found.ok_or_else(|| self.err(line, format!("`{sel}` is on no shown surface")));
         }
         if let Some(s) = self
             .pointer
@@ -1916,7 +1958,9 @@ impl Harness {
         }
         self.surfaces
             .shown
-            .first()
+            .iter()
+            .find(|s| s.output == focused)
+            .or_else(|| self.surfaces.shown.first())
             .map(|s| s.id)
             .ok_or_else(|| self.err(line, "no surface is shown".into()))
     }
@@ -2267,7 +2311,7 @@ impl Harness {
                         "`scale {f}` with the surface leg (its fake compositor's output has scale 1)"
                     )));
                 }
-                self.surfaces.screen.scale = *f;
+                self.surfaces.set_main_scale(*f);
                 self.surfaces.scale()?;
                 self.set_screens()?;
                 // Each surface configured at the new scale, as the
@@ -2284,6 +2328,22 @@ impl Harness {
             StepKind::Hz(n) => {
                 self.event(step);
                 self.clock.set_hz(*n);
+            }
+            StepKind::Screen(name) => {
+                self.event(step);
+                let Some(i) = self.surfaces.outputs.iter().position(|o| o.name == *name) else {
+                    let names: Vec<&str> = self
+                        .surfaces
+                        .outputs
+                        .iter()
+                        .map(|o| o.name.as_str())
+                        .collect();
+                    return Err(self.err(
+                        line,
+                        format!("`screen {name}`: the screens are {}", names.join(", ")),
+                    ));
+                };
+                self.surfaces.focused = i;
             }
             StepKind::Backend(b) => {
                 self.event(step);
@@ -2716,7 +2776,8 @@ impl Harness {
                 if let Some(dev) = self.gpu.as_mut() {
                     for sh in &self.surfaces.shown {
                         if self.gpu_attached.insert(sh.id) {
-                            dev.attach(&mut self.r, sh.id, sh.size, self.surfaces.scale()?);
+                            let scale = self.surfaces.scale_for(sh.id)?;
+                            dev.attach(&mut self.r, sh.id, sh.size, scale);
                         }
                     }
                 }
@@ -2847,7 +2908,7 @@ impl Harness {
             Some(false) => Damage::new(),
             None => cpu_damage,
         };
-        let scale = match self.surfaces.scale() {
+        let scale = match self.surfaces.scale_for(id) {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -2872,7 +2933,7 @@ impl Harness {
     /// paint at `t` left it, against the same frame repainted in full
     /// into a fresh buffer (`Renderer::repaint_fresh`).
     fn redraw_cpu(&mut self, id: SurfaceId, t: Duration) -> Result<(), Error> {
-        let scale = self.surfaces.scale()?;
+        let scale = self.surfaces.scale_for(id)?;
         let Some(sh) = self.surfaces.get(id) else {
             return Ok(());
         };
@@ -2915,7 +2976,7 @@ impl Harness {
     /// drew it, against the same frame drawn fresh on a device of its own
     /// ([`Fresh`]). A GPU frame redraws the whole buffer.
     fn redraw_gpu(&mut self, id: SurfaceId) -> Result<(), Error> {
-        let scale = self.surfaces.scale()?;
+        let scale = self.surfaces.scale_for(id)?;
         let Some(sh) = self.surfaces.get(id) else {
             return Ok(());
         };
@@ -3113,6 +3174,15 @@ impl Harness {
                 })
                 .collect(),
             scale: self.surfaces.screen.scale,
+            scales: if self.surfaces.several() {
+                self.surfaces
+                    .shown
+                    .iter()
+                    .map(|s| (s.id.0, self.surfaces.scale_of_surface(s.id)))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            },
             driven: std::mem::take(&mut self.driven),
             origins: self
                 .surfaces
@@ -3531,7 +3601,7 @@ impl Harness {
                     &n.paint,
                     &n.images,
                     n.drawn,
-                    self.surfaces.screen.scale,
+                    self.surfaces.scale_of_surface(SurfaceId(surface)),
                 ),
             });
         }
@@ -3733,12 +3803,16 @@ struct Committed {
 /// Logic's wall clock at presentation time `t`.
 /// (report) The `for` row key a node is mounted under: `None` outside
 /// any, and for a node directly in a per-screen surface, whose innermost
-/// qualifier is the screen's id, which differs between the live shell's
-/// output and the sandbox's (the binary's `row_key` in
-/// `run/request/report.rs`, which `nodes.json` is written by).
-fn row_key(i: &strand_compiler::instantiate::inspect::Identity, screen: &str) -> Option<String> {
+/// qualifier is its screen's id (fidelity: one of the scenario's
+/// screens), which differs between the live shell's output and the
+/// sandbox's (the binary's `row_key` in `run/request/report.rs`, which
+/// `nodes.json` is written by).
+fn row_key(
+    i: &strand_compiler::instantiate::inspect::Identity,
+    screens: &[crate::scenario::ScreenDef],
+) -> Option<String> {
     let key = i.key.as_ref()?;
-    (key != screen).then(|| key.clone())
+    (!screens.iter().any(|d| d.identity.id == *key)).then(|| key.clone())
 }
 
 /// (report) The trace of a run with a `warmup` from its first traced

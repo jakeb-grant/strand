@@ -319,6 +319,7 @@ impl Recording {
                 detached: s.detached,
                 content: [false, false],
                 places: Vec::new(),
+                output: roots.get(&s.id).and_then(|r| r.output.clone()),
             })
             .collect();
         for (k, label) in &self.labels {

@@ -1809,9 +1809,14 @@ threads** (as `strand_core::ipc`).
   …) -> ARef` (a value written straight into the arena by a bounded
   writer, so nothing is allocated; past `VALUE_CAP`, 8,192 bytes
   (replayfix; 2,048 before), or the arena's size if smaller, it is
-  dropped and the record is marked truncated); `push_named(t, kind, name, inline, flags, value)` (a
+  dropped and the record is marked truncated); (fidelity)
+  `named_value(in_arena: Option<&str>, write) -> ARef` (`value` with
+  the name at its head, ended by a 0 byte; a value past the cap keeps
+  the name: the name alone is written, the `ARef` marked truncated with
+  the name's length, so the reader still names the change);
+  `push_named(t, kind, name, inline, flags, value)` (a
   change record: the name interned, or written at the head of the
-  value ended by a 0 byte when it cannot be); `pause(t, gap_kind,
+  value ended by a 0 byte when it cannot be, through `named_value`); `pause(t, gap_kind,
   why)` and `resume(t, gap_kind, why)` (a gap's two records, nothing
   appended between); `newest()`; `clear()`; `dump(&self, now_ns) ->
   Vec<u8>` (the only allocation, made when a report asks); `read(&[u8])
@@ -2101,7 +2106,7 @@ Without `save` the answer is as before. With it:
 
 | Path | What |
 | --- | --- |
-| `bundle.json` | `{"format": 1, "words", "wall": RFC 3339 with offset, "now_ns", "epoch_unix_ns", "strand": {"version", "commit"}, "config_dir", "outputs", "surfaces", "replay": bool, "files": {path: blake3}, "missing": [{path, bytes, why}]}`; `surfaces` as `MainBundle`'s, `config_dir` the directory `config/` mirrors |
+| `bundle.json` | `{"format": 1, "words", "wall": RFC 3339 with offset, "now_ns", "epoch_unix_ns", "strand": {"version", "commit"}, "config_dir", "outputs", "surfaces", "replay": bool, "files": {path: blake3}, "missing": [{path, bytes, why}]}`; `surfaces` as `MainBundle`'s, `outputs` the diagnostics' outputs (name, make, model, scale, size, position, refresh), each (replayfix) with its `screens.all` `id` and `description` and (fidelity) its `order`, its index in `screens.all`, `config_dir` the directory `config/` mirrors |
 | `words.txt` | the words |
 | `diagnostics.json`, `diagnostics.txt` | what `strand report --json` and `strand report` print (no serials or ids, as `report.rs` holds) |
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
@@ -2155,7 +2160,15 @@ into `<bundle>/replay/`. The mock host it runs on
 (`SchemaHost::mock_at`) takes the window start's wall time and offset
 for `clock` and local time, and keeps a log of the fetches it made
 (`SchemaHost::take_fetches`: whether a queued `answer` gave each),
-which the replay lists as calls the mock answered. The interfaces
+which the replay lists as calls the mock answered. (fidelity) A
+report from several outputs replays each as a screen of the sandbox
+through the interfaces any eval run uses: the scenario's `screens` set
+as `screens.all` (each output its own `Monitor` with its identity,
+scale and place), a surface pinned by `Screens::Named` mapped on its
+own output, and eval's own trace marking each surface's output
+(`SurfaceInfo::output`) and scale (`Frame::scales`); no crate's
+interface changes for it, beyond `Ring::named_value` above and the
+bundle's outputs' `order`. The interfaces
 eval uses for it: `Instance::seed_cell(path, Value)` (a cell set as a
 baseline, no `on change`, refused when its type does not hold the
 value), `Instance::cell_type(path) -> Option<Ty>` (a cell's declared
