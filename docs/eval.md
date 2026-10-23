@@ -2456,10 +2456,10 @@ work:
    plays a `LOCAL` record as a `set`: the replay's own handler, run by
    the same press, writes it, and the record only moves what the
    replay knows the field holds, so the answers after it are applied
-   on it. A version-1 or -2 ring kept a write's value (`WRITE`) and
-   not what it replaced, and a field written only by the config has no
-   record at all: there the planner applies each written value under
-   the answers after it, and starts each place the config wrote at
+   on it. A version-1 or -2 ring kept a field's write's value
+   (`WRITE`) and not what it replaced, and a field written only by the
+   config has no other record: there the planner applies each written
+   value under the answers after it, and starts each place the config wrote at
    the last value recorded before its first write in the window (a
    field's change, or a write, at or above that place), or, in a
    window from the shell's start with nothing recorded before it, at
@@ -2469,7 +2469,17 @@ work:
    (a gap or reload before it, or an edit only below that place) a
    limit names the field, how often it was written and the value it
    starts at, which it may not have been: what reads it, and a write
-   made from it (a toggle), may differ from the live shell's.
+   made from it (a toggle), may differ from the live shell's. Such a
+   ring kept nothing at all of a write to an item of a keyed list
+   (`dev.volume = …` for `dev` from `audio.sinks`: no `WRITE`, and its
+   echo is never a change), so the rewind cannot undo one made in the
+   window and no record says whether one was: the planner compiles the
+   bundle's config and, in a limit per list, names each place it
+   writes an item (the item's field at `file:line`) by the lists whose
+   items have that field writable (`audio.sinks` or `audio.sources`
+   for `volume`): such a list starts with the write already made, as
+   at the report (a config that does not compile here is one limit
+   saying it could not tell).
 5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
@@ -2641,6 +2651,28 @@ and says where it first parts from it:
   cell the ring's table could not hold (a name of 64 bytes or more, any
   when it was full); each held by time is named in a note, with its
   time and the replay's write it was held to;
+- (services) each config's write to a service the ring recorded (a
+  `WRITE`: `audio.sink.muted = true`; from version 3 an item's write,
+  a `LOCAL` keyed record) against the writes the replay's own handlers
+  made, which the sandbox's stand-in logs (none is played as a `set`,
+  so nothing else checks them, and the next answer set whole would
+  hide one made otherwise): in the passes cell writes take, a field's
+  write by its place and value (a number within a thousandth: a
+  pointer step's place is written to a hundredth of a pixel, and a
+  slider's value follows it), an item's by the place below the item
+  and the value its diffs set there. A live write the next write of
+  its place replaced less than a tick later (a drag's motion on an
+  output faster than the replay's clock, two motions handled at once)
+  is below the replay's clock, which takes input once a tick: it is
+  held when the replay made it and otherwise counted in a note, never
+  a divergence. Any other live write unmatched is a `service`
+  divergence at its own time, naming the replay's write of its place if it made one
+  (`service write audio.sink.volume = 0.35 live, the replay wrote
+  audio.sink.volume = 0.3`), and a field's write the replay made in
+  the traced part that the live shell did not is one too (an item's
+  is not: the live shell recorded none that left its item as it was).
+  `replay.txt`'s head and `fidelity.json`'s `service_writes` count
+  them, live and replayed;
 - the replay's frame at the report against each bundle PNG of the same
   surface, (fidelity) on every output: the share of pixels past the
   `cpu-gpu` tolerance and their bounding box.

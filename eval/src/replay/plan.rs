@@ -103,6 +103,23 @@ pub struct LiveWrite {
     pub value: Option<Json>,
 }
 
+/// (services) A config's write to a service as the live shell recorded
+/// it, which the replay's own handler makes again: held to the replay's
+/// writes by fidelity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveServiceWrite {
+    pub t: u64,
+    /// The place written, as a `WRITE` record names it
+    /// (`audio.sink.muted`); for an item's write (`item`), the keyed
+    /// list it landed in (`audio.sinks`).
+    pub path: String,
+    /// The value written; for an item's write, the list's diffs (a
+    /// `LOCAL` keyed record's `d`). `None`: lost from the ring.
+    pub value: Option<Json>,
+    /// An item's write (`dev.volume = …`), from changes dump version 3.
+    pub item: bool,
+}
+
 /// One line of the event list `replay.txt` gives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
@@ -216,6 +233,8 @@ pub struct Plan {
     pub presses: Vec<LivePress>,
     pub maps: Vec<LiveMap>,
     pub writes: Vec<LiveWrite>,
+    /// (services) The config's writes to services in the window.
+    pub service_writes: Vec<LiveServiceWrite>,
     pub events: Vec<Event>,
     /// (replayfix) The live pointer over the window, one entry per
     /// recorded move, press or leave on the replayed output.
@@ -286,7 +305,7 @@ fn set_value(v: &Json) -> String {
 
 /// (report review) `v` with each held-back text (`{"~text": N}`) as N
 /// `x`s.
-fn unheld(v: &Json) -> Json {
+pub(crate) fn unheld(v: &Json) -> Json {
     match v {
         Json::Object(o) if o.len() == 1 && o.get("~text").is_some_and(Json::is_u64) => {
             Json::String("x".repeat(o["~text"].as_u64().unwrap_or(0) as usize))
@@ -1249,9 +1268,10 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // never starts one as the config declares it (the sandbox keeps no
     // store: it starts there unless seeded). Unknown when the config does
     // not compile here: then every cell is taken as one.
-    let persisted = crate::harness::compile_dir(&b.config_dir())
-        .ok()
-        .map(|p| crate::harness::persisted_cells(&p));
+    let compiled = crate::harness::compile_dir_with_sources(&b.config_dir()).ok();
+    let persisted = compiled
+        .as_ref()
+        .map(|(p, _)| crate::harness::persisted_cells(p));
     let is_persisted = |n: &str| {
         persisted
             .as_ref()
@@ -1510,6 +1530,47 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                  a write made from it (a toggle), may differ from the live shell's"
             ));
         }
+        // A write to an item of a keyed list (`dev.volume = …` for
+        // `dev` from `audio.sinks`) has no record at all in such a ring:
+        // no `WRITE`, and its echo is never a change. So the rewind
+        // cannot undo one made in the window, and nothing in the ring
+        // says whether one was: each place the config makes one is
+        // named, by the lists it may land in.
+        match &compiled {
+            Some((prog, map)) => {
+                let mut by_lists: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();
+                for s in crate::harness::item_write_sites(prog, map) {
+                    by_lists
+                        .entry(s.lists)
+                        .or_default()
+                        .push(format!("`{}` at {}", s.field, s.at));
+                }
+                for (lists, sites) in by_lists {
+                    let named = if lists.is_empty() {
+                        "a keyed list".to_string()
+                    } else {
+                        let l: Vec<String> = lists.iter().map(|l| format!("`{l}`")).collect();
+                        format!("service list {}", l.join(" or "))
+                    };
+                    limits.push(format!(
+                        "{named}: the config writes an item of it ({}), and this report's \
+                         recorder (changes dump version {version}, before version \
+                         {WRITES_RECORDED}) kept nothing of a config's write to an item of a \
+                         keyed list, so the rewind cannot undo one made in the window: the list \
+                         starts with it already made, as it was at the report, and what reads it, \
+                         and a toggle made from it, may differ from the live shell's",
+                        sites.join(", ")
+                    ));
+                }
+            }
+            None => limits.push(format!(
+                "service lists: the config could not be compiled here to say whether it writes \
+                 an item of a keyed list (`dev.volume = …`), and this report's recorder (changes \
+                 dump version {version}, before version {WRITES_RECORDED}) kept nothing of such \
+                 a write, so the rewind cannot undo one made in the window: a list may start \
+                 with it already made, as it was at the report"
+            )),
+        }
     }
     let seeds = cur.clone();
 
@@ -1582,6 +1643,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut presses = Vec::new();
     let mut maps = Vec::new();
     let mut writes = Vec::new();
+    let mut service_writes = Vec::new();
     let mut track: Vec<PointerAt> = Vec::new();
     // (fidelity) The latest focus the recording shows (input on a
     // surface of an output, ns since the window's start): a `screens:
@@ -2048,6 +2110,16 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         // handler makes that write again, so it is never set, only
         // played, as the value later changes play on.
         let local = e.rec.flags & flags::LOCAL != 0;
+        if local && e.rec.kind == kind::KEYED {
+            service_writes.push(LiveServiceWrite {
+                t: at,
+                path: name.clone(),
+                value: value(e)
+                    .filter(|_| !bridged.contains_key(&i))
+                    .map(|j| j["d"].clone()),
+                item: true,
+            });
+        }
         if let Some(after) = bridged.get(&i)
             && matches!(e.rec.kind, kind::FIELD | kind::KEYED)
         {
@@ -2226,6 +2298,14 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 ),
             }),
             kind::WRITE => {
+                if known(&svc) {
+                    service_writes.push(LiveServiceWrite {
+                        t: at,
+                        path: name.clone(),
+                        value: v.clone().filter(|_| !lost),
+                        item: false,
+                    });
+                }
                 // (services) A recorder before changes dump version 3
                 // kept the write alone, not the change it made: the
                 // value written is played on the field, so a change the
@@ -2497,6 +2577,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         presses,
         maps,
         writes,
+        service_writes,
         events,
         pointer: track,
     })

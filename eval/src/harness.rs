@@ -172,6 +172,19 @@ pub struct WriteLog {
     pub value: String,
 }
 
+/// (services) A config's write to a service, as the sandbox's stand-in
+/// took it: a field's (`audio.sink.muted`, as a `WRITE` record names
+/// it) or, `item`, an item's of a keyed list (`AudioDevice(56).volume`,
+/// the item's record and key), with the value written, as JSON.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceWriteLog {
+    pub k: u32,
+    pub t: Duration,
+    pub path: String,
+    pub value: serde_json::Value,
+    pub item: bool,
+}
+
 /// (report review) A replay's step the sandbox could not take: its
 /// line, when, and why.
 #[derive(Clone, Debug, PartialEq)]
@@ -186,6 +199,8 @@ pub struct SkippedStep {
 pub struct ReplayLog {
     pub presses: Vec<PressLog>,
     pub writes: Vec<WriteLog>,
+    /// (services) The config's writes to services, in order.
+    pub service_writes: Vec<ServiceWriteLog>,
     /// (report review) Steps skipped (`RunOptions::log` only).
     pub skipped: Vec<SkippedStep>,
     /// Each fetch: its tick, method, and whether a queued `answer` gave
@@ -538,18 +553,166 @@ pub fn service_default(field: &str) -> Option<serde_json::Value> {
 /// (fidelity) The config in directory `dir` compiled, as a run compiles
 /// it: what a replay's planner reads of the shell it replays.
 pub fn compile_dir(dir: &std::path::Path) -> Result<Arc<Program>, Error> {
+    compile_dir_with_sources(dir).map(|(p, _)| p)
+}
+
+/// (services) [`compile_dir`], with the sources its spans name (each
+/// file named under `dir`).
+pub fn compile_dir_with_sources(dir: &std::path::Path) -> Result<(Arc<Program>, SourceMap), Error> {
     let map = sources_of(&Config::Path(dir.to_path_buf()))?;
     let services = strand_services_schema::schemas();
     let schema = Schema::builtin_with(&services)
         .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
-    let build = Build::compile_with(None, map, &schema).map_err(|d| {
+    let build = Build::compile_with(None, map.clone(), &schema).map_err(|d| {
         Error::Config(format!(
             "{}: the config does not compile ({} diagnostics)",
             dir.display(),
             d.len()
         ))
     })?;
-    Ok(build.program)
+    Ok((build.program, map))
+}
+
+/// (services) A place in a config that writes an item of a service's
+/// keyed list (`dev.volume = …` for `dev` an `AudioDevice`, as
+/// `ServiceHost::write_item` takes it): a handler's assignment or list
+/// mutation, or a two-way binding (`<->`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemWriteSite {
+    /// `file:line`, the file named under the config directory.
+    pub at: String,
+    /// The item's field written (`volume`).
+    pub field: String,
+    /// The keyed lists whose items have that field writable
+    /// (`audio.sinks`, `audio.sources`): the list the write lands in is
+    /// the one holding the item's key, known only as it runs.
+    pub lists: Vec<String>,
+}
+
+/// (services) Every place `prog` writes an item of a service's keyed
+/// list ([`ItemWriteSite`]), by file and line, one per line and field. A recorder
+/// before changes dump version 3 kept nothing of such a write.
+pub fn item_write_sites(prog: &Program, map: &SourceMap) -> Vec<ItemWriteSite> {
+    use strand_compiler::lower::code::{Op, Place, PlaceRoot, PlaceSeg};
+    use strand_compiler::lower::{Node, Prop};
+    let services = strand_services_schema::schemas();
+    let schema = Schema::builtin_with(&services).ok();
+    // The keyed lists whose items have `field` writable.
+    let lists_of = |field: &str| -> Vec<String> {
+        let Some(schema) = &schema else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (svc, r) in &schema.services {
+            let Some(def) = schema.types.records.get(r.0 as usize) else {
+                continue;
+            };
+            for f in &def.fields {
+                let Ty::List(item, _) = f.ty.non_null() else {
+                    continue;
+                };
+                let Ty::Record(ir) = item.non_null() else {
+                    continue;
+                };
+                let Some(idef) = schema.types.records.get(ir.0 as usize) else {
+                    continue;
+                };
+                if idef.key.is_some() && idef.fields.iter().any(|x| x.name == field && x.rw) {
+                    out.push(format!("{svc}.{}", f.name));
+                }
+            }
+        }
+        out
+    };
+    let mut sites = BTreeMap::new();
+    let mut site = |file: strand_compiler::source::FileId, start: u32, place: &Place| {
+        if place.root != PlaceRoot::Item {
+            return;
+        }
+        let Some(f) = map.get(file) else {
+            return;
+        };
+        let (line, _) = crate::labels::line_col(&f.text, start as usize);
+        let field = match place.segs.first() {
+            Some(PlaceSeg::Field(n)) => n.clone(),
+            _ => String::new(),
+        };
+        let lists = lists_of(&field);
+        sites.insert((f.name.clone(), line, field), lists);
+    };
+    // Handlers, `fn`s and lambdas: every chunk's stores and mutations.
+    for c in &prog.chunks {
+        for (i, op) in c.ops.iter().enumerate() {
+            let (Op::Store { place, .. } | Op::Mutate { place, .. }) = op else {
+                continue;
+            };
+            let (Some(p), Some(span)) = (c.places.get(*place as usize), c.spans.get(i)) else {
+                continue;
+            };
+            site(c.file, span.start, p);
+        }
+    }
+    // Two-way bindings.
+    fn props<'a>(ps: &'a [Prop], out: &mut Vec<&'a Prop>) {
+        for p in ps {
+            out.push(p);
+            props(&p.sub, out);
+        }
+    }
+    fn walk<'a>(ns: &'a [Node], out: &mut Vec<&'a Prop>) {
+        for n in ns {
+            match n {
+                Node::Element(e) => {
+                    props(&e.props, out);
+                    props(e.arg.as_slice(), out);
+                    walk(&e.children, out);
+                    walk(&e.call_handlers, out);
+                }
+                Node::Surface(s) => {
+                    props(&s.element.props, out);
+                    props(s.element.arg.as_slice(), out);
+                    walk(&s.element.children, out);
+                    walk(&s.body.nodes, out);
+                }
+                Node::If { then, else_, .. } => {
+                    walk(then, out);
+                    walk(else_, out);
+                }
+                Node::For(f) => walk(&f.body.nodes, out),
+                Node::Match { arms, .. } => {
+                    for a in arms {
+                        walk(a, out);
+                    }
+                }
+                Node::When { props: ps, .. } | Node::Pose { props: ps, .. } => props(ps, out),
+                _ => {}
+            }
+        }
+    }
+    let mut bound = Vec::new();
+    for f in &prog.files {
+        walk(&f.items, &mut bound);
+    }
+    for c in prog.components.values() {
+        walk(&c.body.nodes, &mut bound);
+    }
+    for p in bound {
+        let Some(tw) = &p.two_way else {
+            continue;
+        };
+        let c = prog.chunk(p.value);
+        if let Some(start) = c.spans.iter().map(|s| s.start).min() {
+            site(c.file, start, &tw.place);
+        }
+    }
+    sites
+        .into_iter()
+        .map(|((file, line, field), lists)| ItemWriteSite {
+            at: format!("{file}:{line}"),
+            field,
+            lists,
+        })
+        .collect()
 }
 
 /// (fidelity) The cells `prog` keeps across restarts (`persist`), each
@@ -1171,13 +1334,36 @@ impl Harness {
 
     /// (report) The cell writes the tap was told of, kept at tick `k`.
     fn keep_writes(&mut self) {
-        // The mock's log is drained whether kept or not.
+        // The mock's logs are drained whether kept or not.
         let fetches = self.host.take_fetches();
+        let service_writes = self.host.take_writes();
         if !self.opts.log {
             return;
         }
         let k = self.clock.k();
         let t = self.clock.now();
+        // (services) The config's writes to services: an item's is named
+        // by its record, which has a key (`AudioDevice(56).volume`), a
+        // field's by its service (`audio.sink.volume`), whose record of
+        // fields has none.
+        let types = &self.inst.vm().prog.types;
+        for w in service_writes {
+            let head = w.path.split(['.', '[', '(']).next().unwrap_or("");
+            let item = types
+                .records
+                .iter()
+                .any(|r| r.name == head && r.key.is_some());
+            let value =
+                serde_json::from_str(&strand_compiler::vm::json::to_json_string(types, &w.value))
+                    .unwrap_or(serde_json::Value::Null);
+            self.log.service_writes.push(ServiceWriteLog {
+                k,
+                t,
+                path: w.path,
+                value,
+                item,
+            });
+        }
         for (path, value) in self.tapped.borrow_mut().drain(..) {
             if self.seeded.get(&path) == Some(&value) {
                 self.seeded.remove(&path);

@@ -833,8 +833,14 @@ fn replay_txt(
     }
     let _ = writeln!(
         s,
-        "presses: {} live, {} replayed; cell writes: {} live, {} replayed",
-        fid.presses.0, fid.presses.1, fid.writes.0, fid.writes.1
+        "presses: {} live, {} replayed; cell writes: {} live, {} replayed; service writes: {} \
+         live, {} replayed",
+        fid.presses.0,
+        fid.presses.1,
+        fid.writes.0,
+        fid.writes.1,
+        fid.service_writes.0,
+        fid.service_writes.1
     );
     let _ = writeln!(s, "fidelity: {}", first_line(fid));
     for d in &fid.divergences {

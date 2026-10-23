@@ -155,6 +155,19 @@ fn wrote(f: &mut Fx, t: u64, name: &str, value: &str, field: &str, change: &str,
 /// alone). With `lock`, a lock from 4 s to 5 s: the window starts after
 /// it, and the changes ring holds nothing of the shell's run before.
 fn session(local: bool, lock: bool) -> Fx {
+    session_with(local, lock, false)
+}
+
+/// [`session`]; with `odd`, the live shell's handlers wrote other values
+/// than the fixture's make: the volume 0.35 at 10 s (the fixture writes
+/// 0.3), and the knob's item 0.85 at 18 s (it writes 0.9); and Focus
+/// was written off a millisecond before it was written on at 8 s.
+fn session_with(local: bool, lock: bool, odd: bool) -> Fx {
+    let (vol, knob) = if odd {
+        ("0.35", "0.85")
+    } else {
+        ("0.3", "0.9")
+    };
     let o = origins();
     let mut f = Fx::session();
     f.input = flight::Ring::new(flight::INPUT, flight::ring::INPUT);
@@ -212,6 +225,17 @@ fn session(local: bool, lock: bool) -> Fx {
     // 8 s: Focus on.
     click(&mut f, "quiet", 8 * S);
     let up = 8 * S + 100 * MS;
+    if odd {
+        // Written twice within a tick, the first replaced at once.
+        change_with(
+            &mut f,
+            up - MS,
+            kind::WRITE,
+            "notifications.dnd",
+            "false",
+            0,
+        );
+    }
     wrote(
         &mut f,
         up,
@@ -237,9 +261,9 @@ fn session(local: bool, lock: bool) -> Fx {
         &mut f,
         up,
         "audio.sink.volume",
-        "0.3",
+        vol,
         "audio.sink",
-        r#"{"e":[["volume",0.6,0.3]]}"#,
+        &format!(r#"{{"e":[["volume",0.6,{vol}]]}}"#),
         local,
     );
     f.cell(up, "shell.seen", "[1,2]");
@@ -254,7 +278,7 @@ fn session(local: bool, lock: bool) -> Fx {
         kind::KEYED,
         "audio.sinks",
         &[],
-        &format!(r#"{{"d":[{{"patch":[0,56,[["volume",0.6,0.3],["muted",false,true],["icon","{medium}","{muted}"]]]}}],"r":[]}}"#),
+        &format!(r#"{{"d":[{{"patch":[0,56,[["volume",0.6,{vol}],["muted",false,true],["icon","{medium}","{muted}"]]]}}],"r":[]}}"#),
     );
     // 12 s and 14 s: Focus off and on.
     for (t, from, to) in [(12 * S, true, false), (14 * S, false, true)] {
@@ -305,11 +329,15 @@ fn session(local: bool, lock: bool) -> Fx {
             up,
             kind::KEYED,
             "audio.sinks",
-            r#"{"d":[{"patch":[0,56,[["volume",0.3,0.9]]]}],"r":[]}"#,
+            &format!(r#"{{"d":[{{"patch":[0,56,[["volume",0.3,{knob}]]]}}],"r":[]}}"#),
             flags::LOCAL,
         );
     }
-    f.field(up + 50 * MS, "audio.sink", r#"{"e":[["volume",0.3,0.9]]}"#);
+    f.field(
+        up + 50 * MS,
+        "audio.sink",
+        &format!(r#"{{"e":[["volume",0.3,{knob}]]}}"#),
+    );
     f.cell(up + 50 * MS, "shell.seen", "[3,4]");
     f.pointer(BAR, kind::LEAVE, 0.0, 0.0, 20 * S);
     f.services = json!({
@@ -579,4 +607,210 @@ fn a_service_default_is_its_stores_start_and_never_systems() {
     assert_eq!(harness::service_default("system.dark"), None);
     assert_eq!(harness::service_default("system.replay"), None);
     assert_eq!(harness::service_default("notifications.nothing"), None);
+}
+
+/// (services) A version-1 or -2 ring has no record of a config's write
+/// to an item of a keyed list (`dev.volume = …` for `dev` from
+/// `audio.sinks`): no `WRITE`, and its echo is never a change. Here the
+/// knob's write at 18 s is the only change of `audio.sinks` in the
+/// window, so the rewind leaves the list at its value at the report
+/// (0.9, where live it was 0.3 until 18 s) and nothing else in the
+/// ring says so: the planner names each place the config writes an
+/// item, by the lists it may land in. A version-3 ring records the
+/// write (`LOCAL`), and the list starts where it was, with no such
+/// limit.
+#[test]
+fn an_item_write_an_older_ring_did_not_record_is_named() {
+    let item_only = |local: bool| {
+        let o = origins();
+        let mut f = Fx::session();
+        f.input = flight::Ring::new(flight::INPUT, flight::ring::INPUT);
+        f.changes = flight::Ring::new(flight::CHANGES, flight::ring::CHANGES);
+        f.config = shell();
+        f.nodes.clear();
+        f.surfaces.clear();
+        f.outputs.clear();
+        f.output(0, "DP-1", 1280, 720, 120, 900 * MS);
+        f.node(root(), &o.bar, None);
+        for (id, origin) in &o.ids {
+            f.node(node(id), origin, Some(id));
+        }
+        f.surface(BAR, 0, root(), &o.bar, S, 16_666_667);
+        f.pointer(BAR, kind::ENTER, 300.0, 20.0, 2 * S);
+        let empty = json!({"id": 0, "name": "", "description": "", "icon": "", "default": false, "muted": false, "volume": 0.0});
+        change_with(
+            &mut f,
+            500 * MS,
+            kind::FIELD,
+            "audio.sink",
+            &format!("[{empty},{}]", sink(false, 0.3, "low")),
+            flags::BOOT,
+        );
+        change_with(
+            &mut f,
+            500 * MS,
+            kind::KEYED,
+            "audio.sinks",
+            &format!(
+                r#"{{"d":[{{"reset":[[56,{}]]}}],"r":[]}}"#,
+                sink(false, 0.3, "low")
+            ),
+            flags::BOOT,
+        );
+        click(&mut f, "knob", 18 * S);
+        let up = 18 * S + 100 * MS;
+        if local {
+            change_with(
+                &mut f,
+                up,
+                kind::KEYED,
+                "audio.sinks",
+                r#"{"d":[{"patch":[0,56,[["volume",0.3,0.9]]]}],"r":[]}"#,
+                flags::LOCAL,
+            );
+        }
+        f.field(up + 50 * MS, "audio.sink", r#"{"e":[["volume",0.3,0.9]]}"#);
+        f.cell(up + 50 * MS, "shell.seen", "[0,1]");
+        f.cell(up + 50 * MS, "shell.said", r#"["","loud"]"#);
+        f.pointer(BAR, kind::LEAVE, 0.0, 0.0, 20 * S);
+        f.services = json!({
+            "notifications": {"running": true, "fields": {"dnd": false, "count": 0, "all": [], "popups": []}},
+            "audio": {"running": true, "fields": {
+                "sink": sink(false, 0.9, "low"),
+                "sinks": [sink(false, 0.9, "low")],
+            }},
+        });
+        f.cells = json!({"shell.seen": 1, "shell.said": "loud"});
+        f
+    };
+    let dir = write_as(&item_only(false), "writes-item-v2", 2);
+    let (r, _) = replay_of(&dir, &defaults());
+    // Unrecorded, the write is not undone: the list starts as at the
+    // report, as the limit warns.
+    assert_eq!(
+        r.plan.seeds["audio.sinks"][0]["volume"],
+        json!(0.9),
+        "{}",
+        r.text
+    );
+    let named: Vec<&String> = r
+        .plan
+        .limits
+        .iter()
+        .filter(|l| l.starts_with("service list "))
+        .collect();
+    assert_eq!(named.len(), 1, "{:#?}", r.plan.limits);
+    assert!(
+        named[0].starts_with(
+            "service list `audio.sinks` or `audio.sources`: the config writes an item of it \
+             (`volume` at shell.strand:11), and this report's recorder (changes dump version 2, \
+             before version 3) kept nothing of a config's write to an item of a keyed list, so \
+             the rewind cannot undo one made in the window: the list starts with it already \
+             made"
+        ),
+        "{}",
+        named[0]
+    );
+    assert!(
+        r.text
+            .contains("  - service list `audio.sinks` or `audio.sources`: "),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.json["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().starts_with("service list ")),
+        "{}",
+        r.json
+    );
+    // Recorded, it is undone, and nothing needs saying.
+    let dir = write_as(&item_only(true), "writes-item-v3", 3);
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(
+        r.plan.seeds["audio.sinks"][0]["volume"],
+        json!(0.3),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.plan
+            .limits
+            .iter()
+            .all(|l| !l.starts_with("service list ")),
+        "{:#?}",
+        r.plan.limits
+    );
+    assert!(
+        r.fidelity.divergences.is_empty(),
+        "{:#?}\n{}",
+        r.fidelity.divergences,
+        r.text
+    );
+}
+
+/// (services) The replay's own handlers make every write the config
+/// made live (none is played as a `set`), so each is held to the live
+/// one: here the live shell wrote the volume 0.35 at 10 s and the
+/// knob's item 0.85 at 18 s, where the fixture's handlers write 0.3 and
+/// 0.9. Each is a `service` divergence at its own time, so the verdict
+/// says the replay parted there, whatever the frame at the report. In
+/// the faithful session every write is held, both ways (the tests
+/// above: no divergence). A write replaced less than a tick later (two
+/// written at once, a drag's motion on a faster output) is below the
+/// replay's clock: a note, not a divergence.
+#[test]
+fn a_service_write_the_replay_made_otherwise_diverges() {
+    let dir = write_as(&session_with(true, false, true), "writes-odd", 3);
+    let (r, _) = replay_of(&dir, &defaults());
+    let service: Vec<&str> = r
+        .fidelity
+        .divergences
+        .iter()
+        .filter(|d| d.what == "service")
+        .map(|d| d.text.as_str())
+        .collect();
+    assert_eq!(
+        service,
+        [
+            "service write audio.sink.volume = 0.35 live, the replay wrote audio.sink.volume = 0.3",
+            "service write an item of audio.sinks ([{\"patch\":[0,56,[[\"volume\",0.3,0.85]]]}]) \
+             live, the replay wrote AudioDevice(56).volume = 0.9",
+        ],
+        "{:#?}\n{}",
+        r.fidelity.divergences,
+        r.text
+    );
+    let at = |text: &str| {
+        r.fidelity
+            .divergences
+            .iter()
+            .find(|d| d.text == text)
+            .map(|d| d.t)
+            .unwrap()
+    };
+    let len = r.plan.end - r.plan.start;
+    // At the writes' own times: 10.1 s and 18.1 s of a report at 30 s.
+    assert_eq!(len - at(service[0]), 19_900_000_000, "{}", r.text);
+    assert_eq!(len - at(service[1]), 11_900_000_000, "{}", r.text);
+    let line = strand_eval::replay::verdict_line(&r.verdict, &r.fidelity, &r.plan);
+    assert!(line.contains("parted from the live shell"), "{line}");
+    assert_eq!(
+        r.json["service_writes"],
+        json!({"live": 9, "replay": 8}),
+        "{}",
+        r.json
+    );
+    // The write replaced within a tick is below the replay's clock: not
+    // required of it, and said.
+    assert!(
+        r.fidelity.notes.iter().any(|n| n
+            == "1 live service write that the next write of its place replaced less than a \
+                tick (16.7 ms) later was not made in the replay, which takes input once a tick: \
+                notifications.dnd ×1"),
+        "{:#?}",
+        r.fidelity.notes
+    );
 }

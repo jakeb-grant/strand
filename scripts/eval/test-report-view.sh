@@ -32,8 +32,9 @@
 #              (services) a session writing service fields from its
 #              handlers on a private PipeWire (a mute with the volume
 #              beside it, an item's volume, do not disturb twice), from
-#              after a recorder off: no divergence, no config write
-#              played as a service's change, VERIFIED
+#              after a recorder off: no divergence (each service write
+#              held to the live one), no config write played as a
+#              service's change, VERIFIED
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -483,12 +484,13 @@ import json, sys
 f = json.load(open(sys.argv[1]))
 for d in f["divergences"]:
     print("  ", d["t"], d["what"], d["text"])
-p, c = f["presses"], f["cell_writes"]
-print("   presses", p, "cell writes", c)
-sys.exit(1 if f["divergences"] or p["live"] < 6 or p["live"] != p["replay"] or c["live"] != c["replay"] else 0)
+p, c, w = f["presses"], f["cell_writes"], f["service_writes"]
+print("   presses", p, "cell writes", c, "service writes", w)
+sys.exit(1 if f["divergences"] or p["live"] < 6 or p["live"] != p["replay"] or c["live"] != c["replay"]
+         or w["live"] < 4 or w["live"] != w["replay"] else 0)
 PY
       then
-        ok "every write's handler and every answer after it replay as they ran live"
+        ok "every write's handler and every answer after it replay as they ran live, each write the live one"
       else
         no "the writes session parts from the live shell (above)"
       fi

@@ -2118,13 +2118,17 @@ impl<S: Service> DynService for Client<S> {
         }
         // (services) With a tap installed the field's value before the
         // write is read too: the write is told as the change it makes.
+        // A write of the field whole reads it for the tap alone: a read
+        // that fails leaves the write as it is untapped, and untold
+        // (`write_item` reads so too). A write below it needs the value.
         let reg = self.0.reg.upgrade().filter(|r| r.tapped());
-        let before = if path.is_empty() && reg.is_none() {
-            None
+        if let Some(reg) = &reg {
+            reg.tap_reads.set(reg.tap_reads.get() + 1);
+        }
+        let before = if path.is_empty() {
+            reg.as_ref()
+                .and_then(|_| rt.untrack(|rt| self.0.cells.read(rt, field)).ok())
         } else {
-            if let Some(reg) = &reg {
-                reg.tap_reads.set(reg.tap_reads.get() + 1);
-            }
             Some(rt.untrack(|rt| self.0.cells.read(rt, field))?)
         };
         let whole = match (&before, path.is_empty()) {
