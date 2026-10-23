@@ -28,6 +28,14 @@
   var OUTPUTS = (DATA.replay && DATA.replay.record && DATA.replay.record.outputs) || [];
   var MAIN_OUTPUT = null;
   OUTPUTS.forEach(function (o) { if (o.main) MAIN_OUTPUT = o.name; });
+  // The output picked on this replay's page is remembered for it alone:
+  // keyed by its report (fidelity.json's `bundle`, else its words and
+  // window).
+  var OUTPUT_KEY = (function () {
+    var r = (DATA.replay && DATA.replay.record) || {};
+    var id = r.bundle || ((r.words || '') + '|' + ((r.window && r.window.seconds) || ''));
+    return 'strand-eval:output:' + id;
+  })();
 
   // ---- small helpers ------------------------------------------------------
 
@@ -286,10 +294,12 @@
     scope: 'segment',
     failOnly: false,
     // (fidelity) The output the stage shows, with several: the one
-    // picked last when this replay has it ('' for every output), else
-    // the main one.
+    // picked last on this replay's page ('' for every output), else the
+    // main one: a choice is remembered per replay (OUTPUT_KEY), so the
+    // next replay opens on its own main output.
     output: (function () {
-      var v = store.get('strand-eval:output');
+      var v = store.get(OUTPUT_KEY);
+      if (v === null) return MAIN_OUTPUT;
       if (v === '') return null;
       return OUTPUTS.some(function (o) { return o.name === v; }) ? v : MAIN_OUTPUT;
     })(),
@@ -487,7 +497,7 @@
       outs.push(['', 'every output']);
       var pick = sel('output', S.output || '', outs, function (v) {
         S.output = v || null;
-        store.set('strand-eval:output', v);
+        store.set(OUTPUT_KEY, v);
         widestReset();
       });
       // On a replay's page it stays out of Details: which output is

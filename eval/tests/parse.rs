@@ -386,10 +386,12 @@ drag 10,10 -> 40,10 over 120ms on #card
         StepKind::Drop {
             n: 3,
             surface: None,
+            output: None,
         },
         StepKind::Drop {
             n: 2,
             surface: Some(Selector::Id("pop".into())),
+            output: None,
         },
         StepKind::Jitter(vec![1.0, 1.0, 2.0, 1.0]),
         StepKind::ReduceMotion(true),
@@ -567,6 +569,7 @@ fn mistakes_name_their_line() {
         ("swipe 60 over 0", "not milliseconds"),
         ("swipe 60 over 80 now", "unexpected `now`"),
         ("drop 2 on #x", "surface=<selector>"),
+        ("drop 2 surface=#x on DP-2", "output=<screen>"),
         ("set dnd", "a path and a value"),
         ("set \"unclosed", "not closed"),
         ("expect still #a-b", "an id is a name"),
@@ -959,7 +962,8 @@ fn several_screens_parse() {
     let s = parse(
         "id = \"t\"\nscreens = [\n  { width = 1280, height = 720, scale = 1.0, name = \"DP-1\", id = \"A | B | A B 1\" },\n  \
          { width = 1280, height = 720, scale = 1.5, name = \"DP-2\", id = \"A | B | A B 2\", x = 1280, y = 0 },\n]\n\
-         main_screen = \"DP-2\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nscreen DP-1\nrest\n",
+         main_screen = \"DP-2\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nscreen DP-1\nrest\n\
+         drop 1 surface=#top output=DP-2\n",
     );
     assert_eq!(s.screens.len(), 2);
     assert_eq!(s.main, 1);
@@ -968,6 +972,15 @@ fn several_screens_parse() {
     assert_eq!(s.screens[1].at, [1280, 0]);
     assert_eq!(s.screens[0].identity.id, "A | B | A B 1");
     assert_eq!(s.steps[0].kind, StepKind::Screen("DP-1".into()));
+    // (fidelity) A late frame on one screen's surface, no focus moved.
+    assert_eq!(
+        s.steps[2].kind,
+        StepKind::Drop {
+            n: 1,
+            surface: Some(Selector::Id("top".into())),
+            output: Some("DP-2".into()),
+        }
+    );
     // One screen: `screen`, as before.
     let s = parse(MIN);
     assert_eq!(s.screens.len(), 1);

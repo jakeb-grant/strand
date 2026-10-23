@@ -157,11 +157,12 @@ pub struct Verdict {
     /// way, with their surface's origin and (fidelity) output.
     pub live_only: Vec<(String, Option<String>, Drawn)>,
     pub replay_only: Vec<(String, Option<String>, Drawn)>,
-    /// Live surfaces with no replayed frame to hold them to.
-    pub missing: Vec<String>,
+    /// Live surfaces with no replayed frame to hold them to: their
+    /// root's origin and (fidelity) output.
+    pub missing: Vec<(String, Option<String>)>,
     /// Surfaces the replay showed at the report that the live shell did
-    /// not (their root's origin).
-    pub replay_only_surfaces: Vec<String>,
+    /// not: their root's origin and (fidelity) output.
+    pub replay_only_surfaces: Vec<(String, Option<String>)>,
     /// Compared surfaces whose pixels differ from the bundle's PNG.
     pub pixels: Vec<Pixels>,
     /// Surfaces whose pixels were held to the bundle's PNG.
@@ -298,8 +299,17 @@ impl Verdict {
                 self.pixels
                     .iter()
                     .map(|p| match &p.why {
-                        Some(_) => format!("@{} (not compared)", p.surface),
-                        None => format!("@{} ({} px)", p.surface, p.over),
+                        Some(_) => format!(
+                            "@{}{} (not compared)",
+                            p.surface,
+                            super::plan::on_words(&p.output, self.outputs)
+                        ),
+                        None => format!(
+                            "@{}{} ({} px)",
+                            p.surface,
+                            super::plan::on_words(&p.output, self.outputs),
+                            p.over
+                        ),
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -344,14 +354,16 @@ impl Verdict {
             )
         };
         let mut out = Vec::new();
-        for s in &self.missing {
+        for (s, o) in &self.missing {
             out.push(format!(
-                "surface @{s}: the replay drew no frame of it at the report"
+                "surface @{s}{}: the replay drew no frame of it at the report",
+                on(o)
             ));
         }
-        for s in &self.replay_only_surfaces {
+        for (s, o) in &self.replay_only_surfaces {
             out.push(format!(
-                "surface @{s}: shown in the replay at the report, not live"
+                "surface @{s}{}: shown in the replay at the report, not live",
+                on(o)
             ));
         }
         for d in &self.drifts {
@@ -441,8 +453,8 @@ impl Verdict {
             "moving_out_of_step": self.moving.iter().map(drift).collect::<Vec<_>>(),
             "live_only": self.live_only.iter().map(|(s, o, n)| json!({"surface": s, "output": o, "node": n.name(), "live": node(n)})).collect::<Vec<_>>(),
             "replay_only": self.replay_only.iter().map(|(s, o, n)| json!({"surface": s, "output": o, "node": n.name(), "replay": node(n)})).collect::<Vec<_>>(),
-            "missing": self.missing,
-            "replay_only_surfaces": self.replay_only_surfaces,
+            "missing": self.missing.iter().map(|(s, o)| json!({"surface": s, "output": o})).collect::<Vec<_>>(),
+            "replay_only_surfaces": self.replay_only_surfaces.iter().map(|(s, o)| json!({"surface": s, "output": o})).collect::<Vec<_>>(),
             "pixels": self.pixels.iter().map(|p| json!({
                 "surface": p.surface, "output": p.output, "png": p.png, "over": p.over, "bbox": p.bbox, "why": p.why,
             })).collect::<Vec<_>>(),
@@ -757,7 +769,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         let root = s["root"].as_str().unwrap_or("");
         let Some(want) = live_root(b, root) else {
             v.missing
-                .push(format!("{root} (its root is not in nodes.json)"));
+                .push((format!("{root} (its root is not in nodes.json)"), output));
             continue;
         };
         let origin = want.origin.clone();
@@ -785,7 +797,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         let drawn_ns = s["drawn_ns"].as_u64();
         let Some((sid, fr)) = sid.and_then(|id| Some((id, frame_for(run, plan, id, drawn_ns)?)))
         else {
-            v.missing.push(origin);
+            v.missing.push((origin, output));
             continue;
         };
         let at = v.ticks.len();
@@ -877,7 +889,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
             continue;
         }
         let origin = replay_root(run, &t.root).map_or_else(|| t.root.clone(), |r| r.origin);
-        v.replay_only_surfaces.push(origin);
+        v.replay_only_surfaces.push((origin, t.output.clone()));
     }
     if v.surfaces == 0 && v.missing.is_empty() && v.replay_only_surfaces.is_empty() {
         v.unchecked = Some(format!(

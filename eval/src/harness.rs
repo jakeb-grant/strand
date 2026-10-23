@@ -437,8 +437,13 @@ const TIMER_ROUNDS: usize = 10_000;
 
 /// The sources of `sc`'s config, named as they are written in it.
 fn sources(sc: &Scenario) -> Result<SourceMap, Error> {
+    sources_of(&sc.config)
+}
+
+/// The sources of `config`, named as they are written in it.
+fn sources_of(config: &Config) -> Result<SourceMap, Error> {
     let mut map = SourceMap::new();
-    match &sc.config {
+    match config {
         Config::Inline(sections) => {
             for s in sections {
                 map.add(s.path.clone(), s.text.clone());
@@ -503,6 +508,87 @@ pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
     let build =
         Build::compile_with(None, map.clone(), &schema).map_err(|d| load_failed(sc, &map, &d))?;
     Ok((build.program, map))
+}
+
+/// (fidelity) The config in directory `dir` compiled, as a run compiles
+/// it: what a replay's planner reads of the shell it replays.
+pub fn compile_dir(dir: &std::path::Path) -> Result<Arc<Program>, Error> {
+    let map = sources_of(&Config::Path(dir.to_path_buf()))?;
+    let services = strand_services_schema::schemas();
+    let schema = Schema::builtin_with(&services)
+        .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
+    let build = Build::compile_with(None, map, &schema).map_err(|d| {
+        Error::Config(format!(
+            "{}: the config does not compile ({} diagnostics)",
+            dir.display(),
+            d.len()
+        ))
+    })?;
+    Ok(build.program)
+}
+
+/// (fidelity) The cells `prog` keeps across restarts (`persist`), each
+/// as a cell's path names it with its instance qualifiers taken off
+/// (`Owner.name`, `module.name`): the live shell starts them from its
+/// persist store, the sandbox, which has none, as the config declares
+/// them.
+pub fn persisted_cells(prog: &Program) -> std::collections::BTreeSet<String> {
+    use strand_compiler::lower::Node;
+    fn walk(ns: &[Node], out: &mut Vec<strand_compiler::hir::DefId>) {
+        for n in ns {
+            match n {
+                Node::State(st) if st.persist => out.push(st.def),
+                Node::Element(e) => walk(&e.children, out),
+                Node::Surface(s) => {
+                    walk(&s.element.children, out);
+                    walk(&s.body.nodes, out);
+                }
+                Node::If { then, else_, .. } => {
+                    walk(then, out);
+                    walk(else_, out);
+                }
+                Node::For(f) => walk(&f.body.nodes, out),
+                Node::Match { arms, .. } => {
+                    for a in arms {
+                        walk(a, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut defs = Vec::new();
+    for f in &prog.files {
+        walk(&f.items, &mut defs);
+    }
+    for c in prog.components.values() {
+        walk(&c.body.nodes, &mut defs);
+    }
+    defs.into_iter()
+        .map(|d| {
+            let info = prog.def(d);
+            let owner = info
+                .owner
+                .map_or_else(|| info.module.clone(), |o| prog.owner_name(o));
+            format!("{owner}.{}", info.name)
+        })
+        .collect()
+}
+
+/// (fidelity) A cell's path with its instance qualifiers taken off:
+/// `Notch[<screen id>].grown` is `Notch.grown`.
+pub fn bare_cell_path(path: &str) -> String {
+    let mut bare = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for c in path.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => bare.push(c),
+            _ => {}
+        }
+    }
+    bare
 }
 
 /// The values `paths` (top-level states) have once `sc`'s config has
@@ -1931,6 +2017,35 @@ impl Harness {
     /// `screen` step's) first: a `bar` named once is on every screen.
     fn surface_for(&mut self, on: &Option<Selector>, line: u32) -> Result<SurfaceId, Error> {
         let focused = self.surfaces.focused;
+        self.surface_on(on, focused, line)
+    }
+
+    /// (fidelity) The index of screen `name` among the outputs.
+    fn screen_index(&self, name: &str, line: u32) -> Result<usize, Error> {
+        match self.surfaces.outputs.iter().position(|o| o.name == name) {
+            Some(i) => Ok(i),
+            None => {
+                let names: Vec<&str> = self
+                    .surfaces
+                    .outputs
+                    .iter()
+                    .map(|o| o.name.as_str())
+                    .collect();
+                Err(self.err(
+                    line,
+                    format!("screen `{name}`: the screens are {}", names.join(", ")),
+                ))
+            }
+        }
+    }
+
+    /// [`Harness::surface_for`] with output `focused` taken first.
+    fn surface_on(
+        &mut self,
+        on: &Option<Selector>,
+        focused: usize,
+        line: u32,
+    ) -> Result<SurfaceId, Error> {
         if let Some(sel) = on {
             let nodes = self.resolve(sel, line)?;
             let mut found: Option<SurfaceId> = None;
@@ -2285,12 +2400,16 @@ impl Harness {
                     self.r.set_text_hold_with(Some(Box::new(|_, _| false)));
                 }
             }
-            StepKind::Drop { n, surface } => {
+            StepKind::Drop { n, surface, output } => {
                 self.event(step);
                 match surface {
                     None => self.drop_all = *n,
                     Some(sel) => {
-                        let s = self.surface_for(&Some(sel.clone()), line)?;
+                        let on = match output {
+                            None => self.surfaces.focused,
+                            Some(name) => self.screen_index(name, line)?,
+                        };
+                        let s = self.surface_on(&Some(sel.clone()), on, line)?;
                         self.drop_one.insert(s, *n);
                     }
                 }
@@ -2331,19 +2450,7 @@ impl Harness {
             }
             StepKind::Screen(name) => {
                 self.event(step);
-                let Some(i) = self.surfaces.outputs.iter().position(|o| o.name == *name) else {
-                    let names: Vec<&str> = self
-                        .surfaces
-                        .outputs
-                        .iter()
-                        .map(|o| o.name.as_str())
-                        .collect();
-                    return Err(self.err(
-                        line,
-                        format!("`screen {name}`: the screens are {}", names.join(", ")),
-                    ));
-                };
-                self.surfaces.focused = i;
+                self.surfaces.focused = self.screen_index(name, line)?;
             }
             StepKind::Backend(b) => {
                 self.event(step);

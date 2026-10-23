@@ -7,6 +7,7 @@
 
 mod fx;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -158,10 +159,43 @@ fn nameless_lost(f: &mut Fx, t: u64) {
 /// - DP-2's button clicked at 8 s (opening its card, which grows) and
 ///   again at 20 s (closing it); with `lost_names`, its first click's
 ///   writes of its own cells lost their names with their values;
-/// - `mood.level` set to 7 at 12 s, which every screen's bar counts;
+/// - `mood.level` set to 7 at 12 s, which every screen's bar counts and
+///   keeps as its peak;
 /// - eDP-1's button clicked at 14 s (its card open at the report);
-/// - the pointer over HDMI-A-1's bar at 16 s, clicking nothing.
+/// - the pointer over HDMI-A-1's bar at 16 s, on its spot, and off it at
+///   17 s, clicking nothing.
 fn session(lost_names: bool) -> Fx {
+    session_with(&Opts {
+        lost_names,
+        ..Opts::default()
+    })
+}
+
+/// How [`session_with`] departs from the plain session.
+struct Opts {
+    lost_names: bool,
+    /// Output `i` first recorded at `out_at[i]`.
+    out_at: [u64; 4],
+    /// A late frame of DP-1's bar recorded at 17.05 s, 6 frames missed
+    /// (so its step is at 16.95 s), while the pointer is on HDMI-A-1's.
+    late: bool,
+    /// Output `i`'s `peak` write at 12 s lost its name with its value.
+    lose_peak: Option<usize>,
+}
+
+impl Default for Opts {
+    fn default() -> Opts {
+        Opts {
+            lost_names: false,
+            out_at: [900 * MS; 4],
+            late: false,
+            lose_peak: None,
+        }
+    }
+}
+
+fn session_with(opts: &Opts) -> Fx {
+    let lost_names = opts.lost_names;
     let o = origins();
     let mut f = Fx::session();
     f.input = flight::Ring::new(flight::INPUT, flight::ring::INPUT);
@@ -177,7 +211,7 @@ fn session(lost_names: bool) -> Fx {
             out.size.0,
             out.size.1,
             out.scale120,
-            900 * MS,
+            opts.out_at[i],
         );
         f.outputs[i] = json!({
             "name": out.name, "make": out.make, "model": out.model,
@@ -220,20 +254,31 @@ fn session(lost_names: bool) -> Fx {
     };
     click(&mut f, 1, 8 * S, 1, 1, true);
     f.field(12 * S, "mood.level", "[1,7]");
-    for out in &OUTS {
+    for (i, out) in OUTS.iter().enumerate() {
         f.cell(12 * S, &out.cell("seen"), "[0,1]");
+        if opts.lose_peak == Some(i) {
+            nameless_lost(&mut f, 12 * S);
+        } else {
+            f.cell(12 * S, &out.cell("peak"), "[0,7]");
+        }
     }
     click(&mut f, 3, 14 * S, 1, 2, true);
     f.pointer(bar_slot(2), kind::ENTER, 300.0, 20.0, 16 * S);
-    f.pointer(bar_slot(2), kind::MOTION, 500.0, 20.0, 17 * S);
+    f.pointer(bar_slot(2), kind::MOTION, 700.0, 20.0, 17 * S);
+    if opts.late {
+        f.input
+            .push(Rec::new(17 * S + 50 * MS, kind::LATE, bar_slot(0)).u16_at(0, 6));
+    }
     f.pointer(bar_slot(2), kind::LEAVE, 0.0, 0.0, 18 * S);
     click(&mut f, 1, 20 * S, 2, 3, false);
     let mut cells = serde_json::Map::new();
     cells.insert("shell.clicks".into(), json!(3));
+    cells.insert("shell.mode".into(), json!(0));
     for (i, out) in OUTS.iter().enumerate() {
         let (taps, open) = [(0, false), (2, false), (0, false), (1, true)][i];
         cells.insert(out.cell("taps"), json!(taps));
         cells.insert(out.cell("seen"), json!(1));
+        cells.insert(out.cell("peak"), json!(7));
         cells.insert(out.cell("open"), json!(open));
         cells.insert(out.cell("grown"), json!(open));
     }
@@ -486,11 +531,17 @@ fn a_name_lost_with_its_value_starts_its_cell_as_declared() {
         r.fidelity.divergences,
         r.text
     );
+    // Each match made by time is named: the live write's time and the
+    // replay's write it was held to.
+    let b_taps = b.cell("taps");
     assert!(
         r.fidelity
             .notes
             .iter()
-            .any(|n| n.contains("nearest in time")),
+            .any(|n| n.contains("nearest in time")
+                && n.contains(&format!(
+                    "a nameless write at -21.90s to the replay's {b_taps} = 1 at "
+                ))),
         "{:?}",
         r.fidelity.notes
     );
@@ -697,6 +748,550 @@ fn a_write_the_replay_missed_diverges_at_its_own_time() {
         )),
         "{}",
         r.text
+    );
+}
+
+/// (fidelity) Cause 3 alone: on one output (no screen left unreplayed,
+/// no name lost), a live write the replay did not make diverges at its
+/// own time, not at the later write the replay did make that matches
+/// it. DP-1's card closed live at 18 s with no input to close it, and
+/// again with the click at 20 s: main matched the 18 s write to the
+/// replay's write at 20.1 s and named the 20.1 s one (-9.90 s).
+#[test]
+fn a_write_the_replay_missed_on_one_output_diverges_at_its_own_time() {
+    let o = origins();
+    let out = &OUTS[0];
+    let mut f = Fx::session();
+    f.input = flight::Ring::new(flight::INPUT, flight::ring::INPUT);
+    f.changes = flight::Ring::new(flight::CHANGES, flight::ring::CHANGES);
+    f.config = shell();
+    f.nodes.clear();
+    f.surfaces.clear();
+    f.outputs.clear();
+    f.output(0, out.name, out.size.0, out.size.1, out.scale120, 900 * MS);
+    f.outputs[0] = json!({
+        "name": out.name, "make": out.make, "model": out.model,
+        "id": out.id(), "description": out.description(), "order": 0,
+        "scale": 1.0, "size": [out.size.0, out.size.1], "position": [0, 0],
+    });
+    f.node(bar_root(0), &o.bar, None);
+    f.node(button(0), &o.button, Some("button"));
+    f.surface(bar_slot(0), 0, bar_root(0), &o.bar, S, 16_666_667);
+    let click = |f: &mut Fx, t: u64, taps: u32, open: bool| {
+        f.pointer(bar_slot(0), kind::ENTER, 40.0, 20.0, t - S);
+        f.press(bar_slot(0), 40.0, 20.0, t, Some(button(0)));
+        let at = t + 100 * MS;
+        f.cell(at, &out.cell("taps"), &format!("[{},{taps}]", taps - 1));
+        f.cell(at, "shell.clicks", &format!("[{},{taps}]", taps - 1));
+        f.cell(at, &out.cell("open"), &format!("[{},{open}]", !open));
+        f.cell(
+            at + 33 * MS,
+            &out.cell("grown"),
+            &format!("[{},{open}]", !open),
+        );
+        f.pointer(bar_slot(0), kind::LEAVE, 0.0, 0.0, t + 500 * MS);
+    };
+    click(&mut f, 8 * S, 1, true);
+    f.cell(18 * S, &out.cell("open"), "[true,false]");
+    click(&mut f, 20 * S, 2, false);
+    f.cells = json!({
+        "shell.clicks": 2, "shell.mode": 0,
+        out.cell("taps"): 2, out.cell("seen"): 0, out.cell("peak"): 0,
+        out.cell("open"): false, out.cell("grown"): false,
+    });
+    let dir = f.write("screens-missed-one");
+    let (r, _) = replay_of(&dir, &defaults());
+    let cells: Vec<String> = r
+        .fidelity
+        .divergences
+        .iter()
+        .filter(|d| d.what == "cell")
+        .map(|d| d.text.clone())
+        .collect();
+    assert_eq!(
+        cells,
+        [format!(
+            "cell {} = false live, the replay never wrote it",
+            out.cell("open")
+        )],
+        "{}",
+        r.text
+    );
+    assert!(
+        r.text.contains(&format!(
+            "  -12.00s cell: cell {} = false live",
+            out.cell("open")
+        )),
+        "{}",
+        r.text
+    );
+}
+
+/// (fidelity) A clip crops each surface's frames in its own buffer's
+/// pixels, at its own output's scale: the main output (DP-2) is at 1.5,
+/// DP-1 and HDMI-A-1 at 1 and eDP-1 at 2, so a crop taken at the main
+/// output's scale would cut DP-1's 1280x40 buffer as 1920x60 and stop
+/// short of eDP-1's. The clip's JSON says each crop's output and scale.
+#[test]
+fn a_clip_crops_each_surface_at_its_own_outputs_scale() {
+    let dir = session(false).write("screens-clip-scale");
+    let (_, out) = replay_of(&dir, &defaults());
+    let rp = strand_eval::replay::clip::Replay::find(&out).unwrap();
+    let spec = strand_eval::replay::clip::Spec {
+        from: "-1s".into(),
+        to: None,
+        nodes: vec!["#button".into()],
+        note: String::new(),
+    };
+    let m = strand_eval::replay::clip::make(&rp, &spec, true).unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let crops = j["crop"].as_array().unwrap();
+    assert_eq!(crops.len(), 4, "{}", m.json);
+    let mut seen = Vec::new();
+    for c in crops {
+        let name = c["output"].as_str().expect("each crop names its output");
+        let o = OUTS.iter().find(|o| o.name == name).unwrap();
+        let scale = f64::from(o.scale120) / 120.0;
+        assert_eq!(c["scale"].as_f64(), Some(scale), "{name}: {c}");
+        let r: Vec<f64> = c["rect"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let (bw, bh) = (
+            (f64::from(o.size.0) * scale).round(),
+            (40.0 * scale).round(),
+        );
+        assert!(
+            r[0] + r[2] <= bw && r[1] + r[3] <= bh,
+            "{name}: crop {r:?} past its {bw}x{bh} buffer"
+        );
+        // The button is 80 px wide at the bar's left: its crop is about
+        // 80 px of the output's scale wide, plus the margin.
+        assert!(
+            r[2] >= 80.0 * scale && r[2] <= (80.0 + 2.0 * 16.0) * scale + 2.0,
+            "{name}: crop {r:?} is not the button's at {scale}"
+        );
+        seen.push(name.to_string());
+    }
+    seen.sort();
+    assert_eq!(seen, ["DP-1", "DP-2", "HDMI-A-1", "eDP-1"]);
+    // The saved frames are cut to those crops, each within its buffer.
+    assert!(m.missing.is_empty(), "{:?}", m.missing);
+}
+
+/// (fidelity) A late frame moves no focus: its step is back-dated by the
+/// frames it missed, so a `screen` step for it could land before input
+/// already taken on another output. A late frame of DP-1's bar recorded
+/// while the pointer moved on HDMI-A-1's: the `drop` names its output,
+/// and the pointer's step is taken on HDMI-A-1's bar (a bar shown on
+/// every screen is named once, so the focused output picks which).
+#[test]
+fn a_late_frame_moves_no_focus() {
+    let dir = session_with(&Opts {
+        late: true,
+        ..Opts::default()
+    })
+    .write("screens-late");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    let st = steps(&text);
+    let drop = st
+        .iter()
+        .position(|s| s.starts_with("drop 6 surface=@"))
+        .unwrap_or_else(|| panic!("no drop: {text}"));
+    assert!(st[drop].ends_with(" output=DP-1"), "{}", st[drop]);
+    let ptr = st
+        .iter()
+        .position(|s| s.starts_with("pointer 700.00,20.00 on @"))
+        .unwrap();
+    assert!(drop < ptr, "{text}");
+    let last_screen = st[..ptr]
+        .iter()
+        .rev()
+        .find(|s| s.starts_with("screen "))
+        .unwrap();
+    assert_eq!(*last_screen, "screen HDMI-A-1", "{text}");
+    let (r, out) = replay_of(&dir, &defaults());
+    assert!(
+        !r.fidelity.divergences.iter().any(|d| d.what == "step"),
+        "{:#?}",
+        r.fidelity.divergences
+    );
+    // The replay's pointer at 700, 20 is on HDMI-A-1's bar, off its spot (a repaint).
+    let trace: Json =
+        serde_json::from_str(&std::fs::read_to_string(find(&out, "trace.json")).unwrap()).unwrap();
+    let on: BTreeMap<u64, String> = trace["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_u64().unwrap(),
+                s["output"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let at = trace["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f.get("ptr"))
+        .find(|p| p["at"][0].as_f64() == Some(700.0))
+        .expect("the pointer at 700, 20");
+    assert_eq!(on[&at["s"].as_u64().unwrap()], "HDMI-A-1", "{at}");
+}
+
+/// The surfaces fixture shell (a panel on every screen, an OSD on the
+/// focused one) and the sandbox's origins of the panel's and the OSD's
+/// roots.
+fn surfaces_shell() -> String {
+    std::fs::read_to_string(
+        strand_eval::scenario::eval_root().join("fixtures/report/surfaces.strand"),
+    )
+    .unwrap()
+}
+
+fn surface_origins() -> &'static (String, String) {
+    static O: OnceLock<(String, String)> = OnceLock::new();
+    O.get_or_init(|| {
+        let dir = tmp("surfaces-probe");
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("shell.strand"), surfaces_shell()).unwrap();
+        let scn = dir.join("scenarios/local/probe.scn");
+        std::fs::create_dir_all(scn.parent().unwrap()).unwrap();
+        std::fs::write(
+            &scn,
+            format!(
+                "id = \"probe\"\nscreen = {{ width = 1280, height = 720, scale = 1.0 }}\nconfig_dir = \"{}\"\n\n=== steps\nset mood.level 7\nrest\n",
+                config.display()
+            ),
+        )
+        .unwrap();
+        let sc = Scenario::load(&scn).unwrap();
+        let t = harness::run(&sc, &RunOptions::default()).unwrap().trace;
+        let root_of = |id: &str| {
+            let s = t
+                .surfaces
+                .iter()
+                .find(|s| {
+                    t.nodes
+                        .values()
+                        .any(|m| m.id.as_deref() == Some(id) && m.parent.as_deref() == Some(&s.root))
+                })
+                .unwrap_or_else(|| panic!("no surface holds #{id}"));
+            t.nodes[&s.root].origin.clone().unwrap()
+        };
+        (root_of("tile"), root_of("flash"))
+    })
+}
+
+/// A surface of the surfaces fixture mapped live: `kind` its kind byte
+/// (1 a panel, 2 an OSD).
+#[allow(clippy::too_many_arguments)]
+fn map_surface(f: &mut Fx, slot: u16, out: u8, root: u64, origin: &str, t: u64, kind_byte: u8) {
+    let name = f.changes.name(&format!("{LIVE}/{origin}"));
+    let mut rec = Rec::new(t - MS, kind::ROOT, name).u64_at(0, root);
+    rec.payload[8] = kind_byte;
+    f.changes.push(rec);
+    f.input
+        .push(Rec::new(t, kind::REFRESH, slot).u32_at(0, 16_666_667));
+    f.input.push(
+        Rec::new(t, kind::MAPPED, slot)
+            .u64_at(0, root)
+            .u8_at(8, out)
+            .u8_at(9, kind_byte),
+    );
+    let o = &OUTS[usize::from(out)];
+    let scale = f64::from(o.scale120) / 120.0;
+    f.surfaces.push(json!({
+        "slot": slot, "namespace": "strand", "kind": if kind_byte == 1 { "panel" } else { "osd" },
+        "root": format!("{}.{}", root as u32, (root >> 32) as u32),
+        "output": o.name, "backend": "cpu", "size": [80, 40],
+        "buffer": [(80.0 * scale).round(), (40.0 * scale).round()],
+        "scale": scale, "frame": null, "repainted": 0
+    }));
+}
+
+/// The board: one panel node, shown live on all four outputs (slots 1
+/// to 4) from 1 s.
+const BOARD: u64 = 3 | (1 << 32);
+const FLASH: u64 = 30 | (1 << 32);
+
+fn board_session() -> Fx {
+    let (board, flash) = surface_origins();
+    let mut f = Fx::session();
+    f.input = flight::Ring::new(flight::INPUT, flight::ring::INPUT);
+    f.changes = flight::Ring::new(flight::CHANGES, flight::ring::CHANGES);
+    f.config = surfaces_shell();
+    f.nodes.clear();
+    f.surfaces.clear();
+    f.outputs.clear();
+    for (i, out) in OUTS.iter().enumerate() {
+        f.output(
+            i as u16,
+            out.name,
+            out.size.0,
+            out.size.1,
+            out.scale120,
+            900 * MS,
+        );
+        f.outputs[i] = json!({
+            "name": out.name, "make": out.make, "model": out.model,
+            "id": out.id(), "description": out.description(), "order": i,
+            "scale": f64::from(out.scale120) / 120.0,
+            "size": [out.size.0, out.size.1], "position": [out.at.0, out.at.1],
+        });
+    }
+    f.node(BOARD, board, None);
+    f.node(FLASH, flash, None);
+    for i in 0..4u8 {
+        map_surface(&mut f, u16::from(i) + 1, i, BOARD, board, S, 1);
+    }
+    f.services = json!({"mood": {"running": true, "fields": {"level": 1}}});
+    f.cells = json!({});
+    f
+}
+
+/// (fidelity) A panel the live shell showed on every output at once
+/// (`screens: all`: one node, a surface of it on each) is drawn by the
+/// sandbox on one output, which keeps one surface per node: the replay
+/// says so plainly, naming the outputs it was not replayed on, and its
+/// maps there are no focus.
+#[test]
+fn a_node_shown_on_every_output_is_named_where_it_was_not_replayed() {
+    let (board, _) = surface_origins();
+    let dir = board_session().write("screens-board");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    assert_eq!(
+        p.shared,
+        [(
+            board.clone(),
+            ["DP-1", "DP-2", "HDMI-A-1", "eDP-1"]
+                .map(String::from)
+                .to_vec()
+        )],
+        "{text}"
+    );
+    assert!(
+        !steps(&text).iter().any(|s| s.starts_with("screen ")),
+        "{text}"
+    );
+    let (r, _) = replay_of(&dir, &defaults());
+    let want = format!(
+        "@{board} was shown live on DP-1, DP-2, HDMI-A-1, eDP-1 at once, one surface of one node \
+         on each (its `screens:` is `all` or a list); the sandbox shows a node on one output, so \
+         the replay drew it on DP-1 only and not on DP-2, HDMI-A-1, eDP-1"
+    );
+    assert!(
+        r.limits.contains(&want),
+        "{:#?}\n{:?}\n{}",
+        r.limits,
+        r.plan.shared,
+        r.text
+    );
+    assert!(
+        r.json["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str() == Some(want.as_str())),
+        "fidelity.json's limits"
+    );
+}
+
+/// (fidelity) A `screens: focused` surface maps on the output the
+/// compositor had focused, which the live map names: after the pointer
+/// left DP-2's board, focus moved to eDP-1 through another program's
+/// window (nothing of Strand's recorded it), and the OSD a service change
+/// opened mapped live on eDP-1. The replay puts the sandbox's focus on
+/// eDP-1 after the last input before that map, so its OSD maps there too.
+#[test]
+fn a_focused_osd_maps_on_the_output_its_live_map_named() {
+    let (_, flash) = surface_origins();
+    let mut f = board_session();
+    f.pointer(2, kind::ENTER, 40.0, 20.0, 8 * S);
+    f.pointer(2, kind::LEAVE, 0.0, 0.0, 9 * S);
+    f.field(12 * S, "mood.level", "[1,7]");
+    map_surface(&mut f, 5, 3, FLASH, flash, 12 * S + 20 * MS, 2);
+    f.services = json!({"mood": {"running": true, "fields": {"level": 7}}});
+    let dir = f.write("screens-osd");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    let st = steps(&text);
+    let to_edp = st
+        .iter()
+        .position(|s| *s == "screen eDP-1")
+        .unwrap_or_else(|| panic!("{text}"));
+    let set = st
+        .iter()
+        .position(|s| s.starts_with("set mood.level 7"))
+        .unwrap();
+    assert!(to_edp < set, "{text}");
+    let (r, out) = replay_of(&dir, &defaults());
+    let trace: Json =
+        serde_json::from_str(&std::fs::read_to_string(find(&out, "trace.json")).unwrap()).unwrap();
+    let osd_on: Vec<&str> = trace["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| {
+            trace["nodes"][s["root"].as_str().unwrap()]["origin"]
+                .as_str()
+                .is_some_and(|o| same_origin(o, flash))
+        })
+        .filter_map(|s| s["output"].as_str())
+        .collect();
+    assert_eq!(osd_on, ["eDP-1"], "{text}");
+    assert!(
+        !r.fidelity
+            .divergences
+            .iter()
+            .any(|d| d.what == "surface" && d.text.contains(flash.as_str())),
+        "{:#?}",
+        r.fidelity.divergences
+    );
+}
+
+/// (fidelity) An output unplugged in the window is replayed for all of
+/// it: the replay says so in its limits, and since `screens.all` at the
+/// report no longer held it (no `order`), it goes after the others, said
+/// in a note. One plugged in during the window, after the shell was
+/// told of the others at its start, is a limit too.
+#[test]
+fn an_output_plugged_in_or_out_in_the_window_is_a_limit() {
+    let mut f = session(false);
+    f.input.push(Rec::new(25 * S, kind::UNMAPPED, bar_slot(2)));
+    f.input.push(Rec::new(25 * S, kind::OUTPUT_GONE, 2));
+    f.outputs.retain(|o| o["name"] != "HDMI-A-1");
+    f.surfaces.retain(|s| s["slot"] != bar_slot(2));
+    let dir = f.write("screens-gone");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    let names: Vec<&str> = p.outputs.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["DP-1", "DP-2", "eDP-1", "HDMI-A-1"]);
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.contains("HDMI-A-1 is not in it") && n.contains("put after the others")),
+        "{:#?}",
+        p.notes
+    );
+    assert!(
+        p.limits.iter().any(|l| l.starts_with(
+            "output HDMI-A-1 was unplugged at -5.00s live; the replay has it for the whole window"
+        )),
+        "{:#?}",
+        p.limits
+    );
+    let dir = session_with(&Opts {
+        out_at: [900 * MS, 900 * MS, 10 * S, 900 * MS],
+        ..Opts::default()
+    })
+    .write("screens-plugged");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    assert!(
+        p.limits.iter().any(|l| l.starts_with(
+            "output HDMI-A-1 was plugged in at -20.00s live; the replay has it for the whole window"
+        )),
+        "{:#?}",
+        p.limits
+    );
+    // The others, told of as the shell started, are no limit.
+    assert_eq!(
+        p.limits.iter().filter(|l| l.starts_with("output ")).count(),
+        1,
+        "{:#?}",
+        p.limits
+    );
+}
+
+/// (fidelity) A `persist` cell starts live from the persist store, which
+/// the bundle does not carry: a version-1 ring lost DP-2's `peak` write
+/// (its long name with its value), so its value at the window's start is
+/// not known, and the replay starts it at the value rewound to, saying it
+/// may not have been so, never as the config declares it (the shell did
+/// not start it there). A short name the table has room for is never
+/// taken for a nameless record's (`shell.mode`, never written).
+#[test]
+fn a_persisted_cell_is_never_started_as_declared() {
+    let dir = session_with(&Opts {
+        lose_peak: Some(1),
+        ..Opts::default()
+    })
+    .write("screens-persist");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    let peak = OUTS[1].cell("peak");
+    assert_eq!(p.seeds.get(&peak), Some(&json!(7)), "{text}");
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.starts_with(&format!("`{peak}`")) && n.contains("`persist` cell")),
+        "{:#?}",
+        p.notes
+    );
+    assert!(
+        !p.notes.iter().any(|n| n.contains("shell.mode")),
+        "{:#?}",
+        p.notes
+    );
+    assert_eq!(p.seeds.get("shell.mode"), Some(&json!(0)));
+    // Not persisted: DP-1's `taps`, long and never written in the window,
+    // starts as declared in a window from the shell's start.
+    assert!(!p.seeds.contains_key(&OUTS[0].cell("taps")), "{text}");
+}
+
+/// (fidelity) A live surface the replay drew no frame of is named with
+/// its output, in the verdict's lines and in `fidelity.json`'s
+/// `missing`.
+#[test]
+fn a_surface_the_replay_never_drew_is_named_with_its_output() {
+    let mut f = session(false);
+    let o = origins();
+    // A fifth live surface on HDMI-A-1, rooted at the button's node: the
+    // replay shows no surface rooted there.
+    f.surfaces.push(json!({
+        "slot": 9, "namespace": "strand", "kind": "panel",
+        "root": format!("{}.{}", button(2) as u32, (button(2) >> 32) as u32),
+        "output": "HDMI-A-1", "backend": "cpu", "size": [80, 40], "buffer": [80, 40],
+        "scale": 1.0, "frame": null, "repainted": 0
+    }));
+    let dir = f.write("screens-missing");
+    let (r, _) = replay_of(&dir, &defaults());
+    let mut bars: Vec<Vec<Drawn>> = vec![Vec::new(); 4];
+    for ((_, nodes), output) in r.verdict.replayed.iter().zip(&r.verdict.replayed_on) {
+        let i = OUTS
+            .iter()
+            .position(|x| Some(x.name) == output.as_deref())
+            .unwrap();
+        bars[i] = nodes.clone();
+    }
+    write_drawn_bars(&dir, &bars);
+    let mut drawn: Json =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("drawn.json")).unwrap()).unwrap();
+    drawn["surfaces"].as_array_mut().unwrap().push(json!({
+        "slot": 9,
+        "root": format!("{}.{}", button(2) as u32, (button(2) >> 32) as u32),
+        "nodes": [],
+    }));
+    std::fs::write(dir.join("drawn.json"), serde_json::to_vec(&drawn).unwrap()).unwrap();
+    let (r, out) = replay_of(&dir, &defaults());
+    assert_eq!(
+        r.verdict.missing,
+        [(o.button.clone(), Some("HDMI-A-1".to_string()))]
+    );
+    assert!(
+        r.verdict.lines().contains(&format!(
+            "surface @{} on HDMI-A-1: the replay drew no frame of it at the report",
+            o.button
+        )),
+        "{:#?}",
+        r.verdict.lines()
+    );
+    let j: Json =
+        serde_json::from_str(&std::fs::read_to_string(out.join("fidelity.json")).unwrap()).unwrap();
+    assert_eq!(
+        j["verdict"]["missing"],
+        json!([{"surface": o.button, "output": "HDMI-A-1"}])
     );
 }
 

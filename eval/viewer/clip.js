@@ -165,16 +165,21 @@ var StrandClip = (function () {
     t.frames.forEach(function (f) {
       while (gi < gone.length && gone[gi][0] < f.k) { detach(gone[gi][0], gone[gi][1]); gi++; }
       Object.keys(cur).forEach(function (s) { if (!(String(s) in (f.sizes || {}))) delete cur[s]; });
-      var scale = f.scale || t.scenario.scale || 1;
+      // A frame's own scale; (fidelity) with several outputs, each
+      // surface's its output's (`scales`), as the viewer's timeline
+      // holds it: a surface on another output than the main one is
+      // cropped in its own buffer's pixels.
+      var fscale = f.scale || t.scenario.scale || 1;
       (f.painted || []).forEach(function (s) {
         var prev = cur[s], fresh = f.png && f.png[s];
         var rows = {};
         (f.n || []).forEach(function (r) { if (r[C.s] === s) rows[r[0]] = r; });
+        var own = (f.scales && f.scales[s]) || fscale;
         cur[s] = {
           rows: rows,
           png: fresh || (prev ? prev.png : null),
           size: f.sizes[s],
-          scale: fresh || !prev ? scale : prev.scale,
+          scale: fresh || !prev ? own : prev.scale,
           k: f.k
         };
       });
@@ -356,7 +361,7 @@ var StrandClip = (function () {
       fid.json.untraced_before = -traced;
     }
     var hints = hintsOf(src.checks, keys, k0, k1, period, W, F);
-    var crop = cropOf(steps, sids, keys, elements);
+    var crop = cropOf(steps, sids, keys, elements, surfInfo);
     // The command again: a tick given stays a tick.
     function arg(x) { return x.k !== null ? 'k' + x.k : secs(x.t) + 's'; }
     var cli = 'strand replay clip ' + quote(F.bundle || '<report>') + ' --from ' + arg(F0) + ' --to ' + arg(T0) +
@@ -504,8 +509,17 @@ var StrandClip = (function () {
     var tol = (V && V.tolerance) || {};
     var PXT = tol.px === undefined ? 1 : tol.px, OPT = tol.opacity === undefined ? 0.02 : tol.opacity;
     var MF = tol.moving_frames === undefined ? 2 : tol.moving_frames;
+    // (fidelity) A surface `missing` or `replay_only_surfaces` names: its
+    // root's origin and output (a fidelity.json from before names the
+    // root alone).
+    function named(m) { return typeof m === 'string' ? { surface: m, output: null } : { surface: m.surface, output: m.output || null }; }
+    function names(m, origin, output) {
+      var n = named(m);
+      return sameOrigin(n.surface, origin) && (!n.output || !output || n.output === output);
+    }
     // Live surfaces the verdict could place on no replayed one.
-    var unplaced = ((V && V.missing) || []).filter(function (m) { return / \(its root is not in nodes\.json\)$/.test(m); });
+    var unplaced = ((V && V.missing) || []).map(named).filter(function (m) { return / \(its root is not in nodes\.json\)$/.test(m.surface); })
+      .map(function (m) { return m.surface + (several && m.output ? ' on ' + m.output : ''); });
     X.sids.forEach(function (sid) {
       var origin = X.rootOrigin(sid), info = X.surfInfo[sid] || {};
       // The frames of it the slice shows (each paint's tick): those
@@ -544,10 +558,15 @@ var StrandClip = (function () {
       if (!ticks.length) {
         var gone = info.detached !== null && info.detached !== undefined && info.detached <= X.reportK
           ? 'it went at k' + info.detached + ' (' + secs(tOf(info.detached)) + ' s)' : null;
-        var them = rooted > 1 ? ' (of a surface rooted there: ' + rooted + ' of this replay are)' : '';
-        var why = (V.missing || []).some(function (m) { return sameOrigin(m, origin); })
+        // With several outputs, a surface `missing` names with its output
+        // is this one only on that output.
+        var peersOn = X.surfaces.filter(function (x) {
+          return sameOrigin(X.rootOrigin(x.id), origin) && (!several || !info.output || (X.surfInfo[x.id] || {}).output === info.output);
+        }).length;
+        var them = peersOn > 1 ? ' (of a surface rooted there: ' + peersOn + ' of this replay are' + (several && info.output ? ' on ' + info.output : '') + ')' : '';
+        var why = (V.missing || []).some(function (m) { return names(m, origin, info.output); })
           ? 'the live shell showed it at the report and the replay drew no frame of it then' + them + (gone ? '; ' + gone : '')
-          : (V.replay_only_surfaces || []).some(function (m) { return sameOrigin(m, origin); })
+          : (V.replay_only_surfaces || []).some(function (m) { return names(m, origin, info.output); })
             ? 'it was shown at the report in the replay only, not live' + them
             : gone ? gone + ', before the report'
               : 'the verdict compared no frame of it' + (unplaced.length ? '; it could not place ' + plural(unplaced.length, 'live surface') +
@@ -662,7 +681,7 @@ var StrandClip = (function () {
   // it over the slice, `MARGIN` px around, in buffer px, clamped to the
   // surface (its whole buffer with no element); and the frames of it the
   // slice shows, each image once, named by the tick it was painted at.
-  function cropOf(steps, sids, keys, elements) {
+  function cropOf(steps, sids, keys, elements, surfInfo) {
     return sids.map(function (sid) {
       var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, scale = 0, W = 0, H = 0;
       steps.forEach(function (st) {
@@ -695,7 +714,12 @@ var StrandClip = (function () {
         last = v.png;
         frames.push({ k: v.k, image: v.png, file: 'frames/k' + v.k + '-s' + sid + '.png' });
       });
-      return { surface: sid, rect: r, scale: scale, frames: frames };
+      // (fidelity) The output it is on, with several: its scale is
+      // that output's.
+      var on = surfInfo && surfInfo[sid] && surfInfo[sid].output;
+      var c = { surface: sid, rect: r, scale: scale, frames: frames };
+      if (on) c.output = on;
+      return c;
     });
   }
 

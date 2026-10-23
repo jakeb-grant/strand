@@ -213,6 +213,10 @@ pub enum StepKind {
     Drop {
         n: u32,
         surface: Option<Selector>,
+        /// (fidelity) `output=NAME`: of the surfaces `surface` names, the
+        /// one on that screen (a replay's late frame on a bar shown on
+        /// every screen), the focus left where it is.
+        output: Option<String>,
     },
     Jitter(Vec<f64>),
     // Environment.
@@ -735,14 +739,25 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
         },
         "drop" => {
             let n = count(need(1, "a number of frames")?, "frames")?;
+            let usage = "`drop N [surface=<selector> [output=<screen>]]`";
             let surface = match arg(2) {
-                Some(s) => Some(selector(s.strip_prefix("surface=").ok_or_else(|| {
-                    format!("unexpected `{s}` (`drop N [surface=<selector>]`)")
-                })?)?),
+                Some(s) => Some(selector(
+                    s.strip_prefix("surface=")
+                        .ok_or_else(|| format!("unexpected `{s}` ({usage})"))?,
+                )?),
                 None => None,
             };
-            only(3)?;
-            StepKind::Drop { n, surface }
+            let output = match arg(3) {
+                Some(o) => Some(
+                    o.strip_prefix("output=")
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| format!("unexpected `{o}` ({usage})"))?
+                        .to_string(),
+                ),
+                None => None,
+            };
+            only(4)?;
+            StepKind::Drop { n, surface, output }
         }
         "jitter" => {
             only(2)?;

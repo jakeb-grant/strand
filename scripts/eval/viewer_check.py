@@ -304,6 +304,11 @@ def exercise_simple(page, chk, where, tag, kind):
                 chk.expect(bool(labels) and all(f" on {v} " in t for t in labels), where, f"output {v} shows {labels}")
             chk.expect(fits(page), where, f"output {v or 'every'}: the fitted stage is wider than the stage")
         chk.expect(counts.get("", 0) == sum(c for k, c in counts.items() if k), where, f"every output does not show each one's: {counts}")
+        # The output picked is remembered for this replay alone: the next
+        # replay's page opens on its own main output.
+        keys = page.evaluate("() => { try { return Object.keys(localStorage).filter(k => k.startsWith('strand-eval:output')); } catch (e) { return null; } }")
+        chk.expect(keys is None or (bool(keys) and all(k.startswith("strand-eval:output:") and len(k) > 19 for k in keys)), where,
+                   f"the output picked is not remembered per replay: {keys}")
         page.locator("#toolbar .outpick select").select_option(first)
         settle(page, 80)
     for name in ("Where it rests", "Onion skin"):

@@ -148,7 +148,7 @@ expect still #after
 | `id` | required | The scenario's name in reports. |
 | `about` | none | What it holds, in prose. |
 | `screen` | `{ width = 300, height = 1080, scale = 1.0 }` | The screen (scale up to 4). (replayfix) Also who it is in `screens.all`: `name` (`"DP-1"`), `id` (`"Mock \| DP-1"`), `make`, `model`, `description`; a replay names the live output so. |
-| `screens` | none | (fidelity) Several screens in place of `screen`, in `screens.all`'s order: `[ { width, height, scale, name, id, make, model, description, x, y }, … ]`, each its own output with its own scale, size and place in the layout (`x`, `y`, logical px); the names and ids are distinct. The first is focused at boot. A surface pinned to a screen (`screens: [..]`, a `bar` per screen) maps on its own; any other on the focused one. Not with `screen`, nor with the surface leg. |
+| `screens` | none | (fidelity) Several screens in place of `screen`, in `screens.all`'s order: `[ { width, height, scale, name, id, make, model, description, x, y }, … ]`, each its own output with its own scale, size and place in the layout (`x`, `y`, logical px); the names and ids are distinct. The first is focused at boot. A surface pinned to a screen (`screens: [..]`, a `bar` per screen) maps on its own; any other on the focused one. The sandbox shows one surface per node: a node on several screens at once (`screens: all` on a panel or OSD, or a list of screens) is shown on one, the first it names, else the focused one, and a replay names the others in its limits. Not with `screen`, nor with the surface leg. |
 | `main_screen` | the first | (fidelity) The screen of `screens` that `scale` steps, the trace's `scale` and the viewer start with, by name. |
 | `hz` | 60 | The refresh rate; a `hz` step changes it. |
 | `backend` | `"cpu"` | `"cpu"`, `"gpu"` or `"both"` (see CPU and GPU). |
@@ -241,8 +241,11 @@ advance the clock.
 - `text hold [where "s"]`.
 - `text release [where "s"] [via waker|paint]`.
 - `text late N [where "s"] [via …]`.
-- `drop N [surface=<selector>]`: the next N ticks paint nothing, on
-  every surface or on the one named.
+- `drop N [surface=<selector> [output=<screen>]]`: the next N ticks
+  paint nothing, on every surface or on the one named; (fidelity)
+  `output=` takes, of the surfaces the selector names, the one on that
+  screen (a `bar` per screen is named once), the focus left where it is
+  (a replay's late frame).
 - `jitter 1,1,2,1` sets per-tick period factors.
 
 **Environment**
@@ -257,7 +260,7 @@ advance the clock.
 - `scale S` (with `screens`: the main screen's).
 - `screen NAME` (fidelity): the focused screen, by name; a step on a
   surface named by its origin finds it on the focused screen first, and
-  a surface mapped after it opens there.
+  a `screens: focused` surface mapped after it opens there.
 - `hz N`.
 - `backend cpu|gpu`.
 
@@ -679,7 +682,11 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `late-present` | Comes with `surface = true`. Every frame that drew is committed in its tick and shown by that tick's refresh: not later, not replaced first, not never (see Surface leg). |
 
 `tol` is `edge_px`, and at least one physical pixel at the coarsest scale
-any frame was drawn at.
+any frame was drawn at ((fidelity) of any surface, on any output). A
+check's own pixel of give on a row (`coherence`'s `inherit`, `pivot`,
+`drag` and `morph`, `reach`, `tiling`'s pixels apart) is one physical
+pixel of that row's surface (`RunTrace::scale_on`: its output's, with
+several), as it is with one output.
 
 Authored axes pass to children as motion carries them: an ancestor's
 offset authors their x and y, its opacity their opacity, its scale or
@@ -2364,8 +2371,29 @@ work:
    viewer's first; its refresh is the header's `hz`: the sandbox has
    one clock, so an output that refreshed at another rate is a limit.
    Input is taken on the output it was on: a `screen` step before
-   input on another output's surface, and every surface's input, map
-   and frame is held to its own output's.
+   input on another output's surface, placed once the steps are in
+   time order (so a step placed earlier never moves the focus under
+   input already taken: a late frame's `drop` is back-dated by the
+   frames it missed, and names its surface's output with `output=`
+   rather than focusing it), and every surface's input, map and frame
+   is held to its own output's. A panel or OSD (`screens: focused` by
+   default) that mapped live on an output puts the sandbox's focus
+   there right after the latest input before it (the compositor's focus
+   can move through another program's window, which nothing of
+   Strand's records), so the replay maps it where the live shell did;
+   not for a bar, a popup or a node shown on several outputs at once.
+   (fidelity) The sandbox keeps one surface per node: a node the live
+   shell showed on several outputs at once (one surface of it on each:
+   `screens: all` on a panel or OSD, or a list of screens) is drawn on
+   one, and a limit names it, the outputs it was shown on live and
+   those the replay did not draw it on. An output plugged in or
+   unplugged in the window (the input ring's `OUTPUT` and `OUTPUT_GONE`
+   times) is a screen for the whole window: a limit says when it came
+   or went live (one the shell was told of before its first input, in a
+   window from its start, was there from its start); one unplugged
+   before the window and not back is no screen. One `bundle.json` lists
+   without an `order` (no longer plugged in at the report) goes after
+   those with one, with a note.
    (replayfix) A bundle from before outputs carried their id has it
    read back from its cells' names (`plan::recovered_id`: the one
    `X[<make> | <model> | …]` id for that make and model), with a note;
@@ -2395,16 +2423,23 @@ work:
    starts as the config declares it (not seeded), as it did live,
    rather than at the value after that change, which the replay then
    never made; otherwise it starts at the value after it, and a note
-   says so either way. (fidelity) A name too long for the changes
+   says so either way. (fidelity) A `persist` cell is never started as
+   declared: live it started from the persist store, which the bundle
+   does not carry, so it starts at the value rewound to, with a note
+   that it may not have been so (the planner compiles the bundle's
+   config to know which cells persist; one that does not compile
+   counts every cell as one). (fidelity) A name too long for the changes
    ring's table (64 bytes, a per-screen cell's `Notch[<id>].grown`) is
    kept at the head of its value; a version-1 recorder lost the two
    together, and still lost the name with a value over the cap
    (`Ring::named_value` now writes the name alone then). Such a
    nameless record is a change of some field or cell the table does
-   not hold: one of those with a nameless record of its kind older than
-   its own oldest one starts, in a window from the shell's start, as
-   the config declares it (a cell), else at the value rewound to, with
-   a note. Only a record that does not fit
+   not hold, a name of 64 bytes or more (any name when the table was
+   full: a short one not in a table with room was never recorded): one
+   of those with a nameless record of its kind older than its own
+   oldest one (or with none in the window) starts, in a window from the
+   shell's start, as the config declares it (a cell that does not
+   persist), else at the value rewound to, with a note. Only a record that does not fit
    the value after it (a list diff whose indices are past its end)
    stops its field, which then starts at the oldest value known, with a
    note.
@@ -2575,8 +2610,9 @@ and says where it first parts from it:
   not the later one it would take; a write whose value was lost
   against the replay's write of its path nearest in time, within two
   frames; one whose name was lost too against the nearest write of a
-  cell the ring's table does not hold; each held by time is counted in
-  a note;
+  cell the ring's table could not hold (a name of 64 bytes or more, any
+  when it was full); each held by time is named in a note, with its
+  time and the replay's write it was held to;
 - the replay's frame at the report against each bundle PNG of the same
   surface, (fidelity) on every output: the share of pixels past the
   `cpu-gpu` tolerance and their bounding box.
@@ -2597,7 +2633,9 @@ no stand-in for (a plugin whose schema is not in the bundle), calls
 answered by the mock because no answer was recorded, other programs'
 windows (`thumbnail` nodes draw nothing, and the compositor's blur and
 its own animations are not modelled), (fidelity) an output whose
-refresh rate differs from the main one's (one clock), service changes
+refresh rate differs from the main one's (one clock), a node shown on
+several outputs at once (drawn on one), an output plugged in or
+unplugged in the window, service changes
 whose values the ring lost, horizontal scrolls (a scenario scrolls
 vertically only), files listed in the bundle's `missing`, and the
 reload, gap or cap the window starts after.
@@ -2775,7 +2813,9 @@ recorded input, never compared with what the live shell drew; a surface
 the verdict did not compare is said so with why, as the trace and
 `fidelity.json` hold it: the live shell showed it and the replay drew
 no frame of it at the report (`missing`), shown in the replay only
-(`replay_only_surfaces`), not shown at the report (the trace has it
+(`replay_only_surfaces`; (fidelity) each `{surface, output}`, its
+root's origin and output, a string of the root in an older file, so a
+surface is matched on its own output), not shown at the report (the trace has it
 detached before), else "the verdict compared no frame of it", quoting
 the live surfaces it could place on none (`missing`'s `… (its root is
 not in nodes.json)`). A slice before the trace's start (`strand replay
@@ -2795,7 +2835,10 @@ placed on a surface of its own output.
 
 **The crop**: for each surface, the union of the elements' drawn boxes
 on it over the slice, 8 px around (`MARGIN`), in buffer pixels, clamped
-to the surface; the whole surface when no element is drawn on it. Each
+to the surface; the whole surface when no element is drawn on it.
+(fidelity) Buffer pixels at the surface's own scale: with several
+outputs, its output's (the trace frame's `scales`), never the main
+one's, and the crop names its `output`. Each
 frame of it the slice shows is cropped once (a frame held from the one
 before is not repeated), named by the tick that surface painted it at;
 the crops are deflated PNGs. On the command

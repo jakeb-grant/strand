@@ -377,6 +377,26 @@ PY
       else
         no "its clip does not name the outputs: $(sed -n '/^fidelity:/,/^elements/p' "$DIR/clip-four.txt" | head -20)"
       fi
+      # Each surface is cropped at its own output's scale, within its
+      # buffer.
+      if bash scripts/eval/eval.sh replay clip "$bundle" --from -1s --json >"$DIR/clip-four.json" 2>"$DIR/clip-four.err" &&
+        python3 -I - "$DIR/clip-four.json" "$rep/fidelity.json" <<'PY'
+import json, sys
+clip = json.load(open(sys.argv[1]))
+outs = {o["name"]: o for o in json.load(open(sys.argv[2]))["outputs"]}
+bad = []
+for c in clip["crop"]:
+    o = outs.get(c.get("output"))
+    if o is None or abs(c["scale"] - o["scale"]) > 1e-9:
+        bad.append((c["surface"], c.get("output"), c["scale"]))
+print("   crops", [(c.get("output"), c["scale"], c["rect"]) for c in clip["crop"]])
+sys.exit(1 if bad or len(clip["crop"]) < 4 else 0)
+PY
+      then
+        ok "its clip crops each surface at its own output's scale"
+      else
+        no "its clip crops a surface at another output's scale (above)"
+      fi
     else
       cat "$DIR/e2e-four-view"
       no "the four-output session's bundle could not be replayed"

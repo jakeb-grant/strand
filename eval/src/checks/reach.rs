@@ -83,11 +83,13 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             .unwrap_or_default()
     };
     for f in &cx.trace.frames {
-        let s = cx.trace.scale_at(f);
         for sh in &f.shadows {
             if sh.a <= 0.0 || cx.allowed(CheckId::Coherence, &sh.key) {
                 continue;
             }
+            // (fidelity) Its surface's scale: with several outputs, its
+            // own output's.
+            let s = cx.trace.scale_on(f, sh.s);
             let [x, y, blur, spread] = sh.asked.map(f64::from);
             if !(blur.is_finite() && x.is_finite() && y.is_finite() && spread.is_finite()) {
                 continue;

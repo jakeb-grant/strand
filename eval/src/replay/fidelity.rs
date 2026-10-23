@@ -104,7 +104,7 @@ fn since_start(t: Duration) -> u64 {
 }
 
 /// The origin of a trace surface's root.
-fn root_origin(trace: &RunTrace, root: &str) -> Option<String> {
+pub(crate) fn root_origin(trace: &RunTrace, root: &str) -> Option<String> {
     trace
         .nodes
         .get(root)
@@ -341,15 +341,29 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
             }
         }
     }
-    let mut by_time = 0usize;
+    // (fidelity) Each match made by time, named: the live write's path
+    // (or none), its time, and the replay's write it was held to.
+    let mut by_time: Vec<String> = Vec::new();
+    let at = |t: u64| {
+        format!(
+            "{:+.2}s",
+            t as f64 / 1e9 - (plan.end - plan.start) as f64 / 1e9
+        )
+    };
     for pass in 0..2 {
         for (wi, w) in plan.writes.iter().enumerate() {
             if done[wi] || w.value.is_some() {
                 continue;
             }
+            // A write that lost its name is of a cell the ring's table
+            // could not hold: one whose name is too long for it (or any,
+            // when it was full).
             let fits = |r: &crate::harness::WriteLog| match (&w.path, pass) {
                 (Some(p), 0) => r.path == *p,
-                (None, 1) => !plan.interned.contains(&r.path),
+                (None, 1) => {
+                    !plan.interned.contains(&r.path)
+                        && (r.path.len() >= strand_core::flight::NAME_BYTES || plan.names_full)
+                }
                 _ => false,
             };
             let hit = writes
@@ -357,19 +371,30 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
                 .enumerate()
                 .filter(|(i, r)| !taken[*i] && fits(r) && since_start(r.t).abs_diff(w.t) <= near)
                 .min_by_key(|(_, r)| since_start(r.t).abs_diff(w.t));
-            if let Some((i, _)) = hit {
+            if let Some((i, r)) = hit {
                 taken[i] = true;
                 done[wi] = true;
-                by_time += 1;
+                by_time.push(format!(
+                    "{} at {} to the replay's {} = {} at {}",
+                    w.path
+                        .as_ref()
+                        .map_or_else(|| "a nameless write".to_string(), |p| format!("`{p}`")),
+                    at(w.t),
+                    r.path,
+                    r.value,
+                    at(since_start(r.t))
+                ));
             }
         }
     }
-    if by_time > 0 {
+    if !by_time.is_empty() {
+        let n = by_time.len();
         f.notes.push(format!(
-            "{by_time} live cell write{} whose value (or name and value) the ring lost {} held \
-             to the replay's write nearest in time (within {MAP_FRAMES} frames), not by value",
-            if by_time == 1 { "" } else { "s" },
-            if by_time == 1 { "is" } else { "are" }
+            "{n} live cell write{} whose value (or name and value) the ring lost {} held to the \
+             replay's write nearest in time (within {MAP_FRAMES} frames), not by value: {}",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "is" } else { "are" },
+            by_time.join("; ")
         ));
     }
     for (wi, w) in plan.writes.iter().enumerate() {

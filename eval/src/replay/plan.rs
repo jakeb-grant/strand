@@ -138,6 +138,13 @@ struct Timed {
     /// (replayfix) two ticks after the live map, the comparison's
     /// tolerance.
     not_before: u64,
+    /// (fidelity) The output the compositor had focused for it: input
+    /// on that output's surface, or the output a `screens: focused`
+    /// surface mapped on next. A `screen` step comes before it when the
+    /// sandbox's focus is elsewhere, placed once the steps are in order
+    /// (so a step placed earlier, a late frame's, never moves it). An
+    /// empty `text` is the focus alone.
+    on: Option<String>,
 }
 
 /// A step at `t` (since the window's start), running `ticks`.
@@ -153,6 +160,7 @@ fn push_on(timed: &mut Vec<Timed>, t: u64, text: String, ticks: u64, not_before:
         text,
         ticks,
         not_before,
+        on: None,
     });
 }
 
@@ -172,6 +180,14 @@ pub struct Plan {
     /// (fidelity) The changes ring's name table: a cell write whose name
     /// was lost is one of the cells not in it.
     pub interned: BTreeSet<String>,
+    /// (fidelity) The table was full: a name not in it may be short.
+    pub names_full: bool,
+    /// (fidelity) Each surface root the live shell showed on several
+    /// outputs at once (one node, a surface on each: `screens: all` on
+    /// a panel or OSD, or a list of screens), its origin and those
+    /// outputs. The sandbox shows a node on one output; the replay
+    /// names the others in its limits.
+    pub shared: Vec<(String, Vec<String>)>,
     /// When the window starts at the shell's start: up to the first
     /// input (ns since the window's start), the live shell was still
     /// mapping what the sandbox's boot maps at once. 0 otherwise.
@@ -732,8 +748,28 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         .map(|(slot, o)| (*slot, o.0.as_str()))
         .collect();
     by_slot.sort_by_key(|(slot, _)| *slot);
-    for (_, o) in &by_slot {
-        if !names.iter().any(|n| n == o) {
+    // (fidelity) When each output was plugged in and unplugged, as the
+    // input ring recorded it (an `OUTPUT` record when it came or changed,
+    // `OUTPUT_GONE` when it went).
+    let mut came: HashMap<u16, Vec<u64>> = HashMap::new();
+    let mut went: HashMap<u16, Vec<u64>> = HashMap::new();
+    for e in &b.inputs {
+        match e.rec.kind {
+            kind::OUTPUT => came.entry(e.rec.slot).or_default().push(e.rec.t),
+            kind::OUTPUT_GONE => went.entry(e.rec.slot).or_default().push(e.rec.t),
+            _ => {}
+        }
+    }
+    // Gone before the window and not back: no screen of it.
+    let gone_before = |slot: u16| -> bool {
+        let last_went = went
+            .get(&slot)
+            .and_then(|v| v.iter().copied().filter(|t| *t < start).max());
+        last_went.is_some_and(|g| !came.get(&slot).is_some_and(|v| v.iter().any(|t| *t > g)))
+    };
+    for (slot, o) in &by_slot {
+        let in_json = json_outputs.iter().any(|j| j["name"].as_str() == Some(*o));
+        if !names.iter().any(|n| n == o) && (in_json || !gone_before(*slot)) {
             names.push((*o).to_string());
         }
     }
@@ -836,8 +872,32 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             .and_then(|o| o["order"].as_u64())
     };
     let ordered = !names.is_empty() && names.iter().all(|n| order_of(n).is_some());
+    // (fidelity) Some with an `order` (those `screens.all` held at the
+    // report), some without (an output unplugged before it): those in
+    // their order, the others after them.
+    let partly = !ordered && names.iter().any(|n| order_of(n).is_some());
     if ordered {
         names.sort_by_key(|n| order_of(n).unwrap_or(u64::MAX));
+    } else if partly {
+        let first_slot = |n: &str| -> u16 {
+            by_slot
+                .iter()
+                .find(|(_, o)| *o == n)
+                .map_or(u16::MAX, |(s, _)| *s)
+        };
+        names.sort_by_key(|n| (order_of(n).unwrap_or(u64::MAX), first_slot(n)));
+        let unordered: Vec<&str> = names
+            .iter()
+            .filter(|n| order_of(n).is_none())
+            .map(String::as_str)
+            .collect();
+        early_notes.push(format!(
+            "`screens.all`'s order at the report is in the bundle, but {} {} not in it (no              longer plugged in at the report): {} put after the others, so `screens.all` may              have listed {} elsewhere live",
+            unordered.join(", "),
+            if unordered.len() == 1 { "is" } else { "are" },
+            if unordered.len() == 1 { "it is" } else { "they are" },
+            if unordered.len() == 1 { "it" } else { "them" },
+        ));
     } else {
         let first_surface = |n: &str| -> (u16, u16) {
             let out_slot = by_slot
@@ -1038,6 +1098,27 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // that change, so the change was never made in the replay);
     // otherwise it starts at the value after it, and says so.
     let boot = start_why == "the shell's start";
+    // (fidelity) The cells the config persists: live they start from
+    // the persist store, which the bundle does not carry, so the replay
+    // never starts one as the config declares it (the sandbox keeps no
+    // store: it starts there unless seeded). Unknown when the config does
+    // not compile here: then every cell is taken as one.
+    let persisted = crate::harness::compile_dir(&b.config_dir())
+        .ok()
+        .map(|p| crate::harness::persisted_cells(&p));
+    let is_persisted = |n: &str| {
+        persisted
+            .as_ref()
+            .is_none_or(|set| set.contains(&crate::harness::bare_cell_path(n)))
+    };
+    let kept_note = |at: &str| {
+        format!(
+            "it is a `persist` cell (or the config could not be read to say it is not), which \
+             the live shell started from its persist store, and the bundle holds no copy of that \
+             store, so the replay starts it at {at}, the value rewound to, which it may not have \
+             been at the window's start"
+        )
+    };
     for (name, (t, what, k, n)) in &lost_of {
         let more = if *n > 1 {
             format!(", and the values of {} older ones are gone too", n - 1)
@@ -1050,10 +1131,19 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 "the replay sets the list after it whole there, and undoes the changes before it \
                  from that list as if it had changed nothing"
             }
-            kind::CELL if unknown && boot => {
+            kind::CELL if unknown && boot && !is_persisted(name) => {
                 cur.remove(name);
                 "no older change says what it was before, so the replay starts it as the config \
                  declares it, as the live shell started"
+            }
+            kind::CELL if unknown && boot => {
+                notes.push(format!(
+                    "`{name}`: its change at {} {what}{more}; no older change says what it was \
+                     before: {}",
+                    secs(*t as i128 - end as i128),
+                    kept_note(&cur.get(name).map_or_else(|| "null".into(), compact))
+                ));
+                continue;
             }
             kind::CELL if unknown => {
                 "no older change says what it was before, so the replay starts it at the value \
@@ -1086,6 +1176,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         .as_ref()
         .map(|d| d.names.iter().cloned().collect())
         .unwrap_or_default();
+    // A name the table does not hold is one too long for it, or any
+    // when it is full; a short one not in a table with room was never
+    // recorded, so a nameless record is not its.
+    let names_full = interned.len() >= strand_core::flight::CHANGES.names;
+    let not_held = |n: &str| {
+        !interned.contains(n) && (n.len() >= strand_core::flight::NAME_BYTES || names_full)
+    };
     let nameless: Vec<(u64, u8)> = b
         .change_entries
         .iter()
@@ -1101,7 +1198,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         let is_cell = |n: &str| b.cells.get(n).is_some();
         let mut unsure: Vec<(String, u64)> = Vec::new();
         for n in cur.keys() {
-            if interned.contains(n) {
+            if !not_held(n) {
                 continue;
             }
             let cell = is_cell(n);
@@ -1128,15 +1225,25 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         for (n, t) in unsure {
             let cell = is_cell(&n);
             let lost = count(cell);
+            let why = if n.len() >= strand_core::flight::NAME_BYTES {
+                "whose name, like this one's, is too long for the changes ring's table"
+            } else {
+                "whose name the changes ring's table did not hold (it was full, and does not hold \
+                 this one's)"
+            };
             let head = format!(
-                "`{n}`: {lost} change{} of a {} whose name, like this one's, is too long for the \
-                 changes ring's table lost the name with the value (the first at {}), so this one \
-                 may have changed before its oldest change recorded",
+                "`{n}`: {lost} change{} of a {} {why} lost the name with the value (the first at \
+                 {}), so this one may have changed before its oldest change recorded",
                 if lost == 1 { "" } else { "s" },
                 if cell { "cell" } else { "service field" },
                 secs(t as i128 - end as i128)
             );
-            if boot && cell {
+            if boot && cell && is_persisted(&n) {
+                notes.push(format!(
+                    "{head}: {}",
+                    kept_note(&cur.get(&n).map_or_else(|| "null".into(), compact))
+                ));
+            } else if boot && cell {
                 cur.remove(&n);
                 notes.push(format!(
                     "{head}: the replay starts it as the config declares it, as the live shell \
@@ -1153,6 +1260,69 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     }
     let seeds = cur.clone();
 
+    // (fidelity) The roots the live shell showed on several outputs at
+    // once in the window: one node, a surface on each output its
+    // `screens:` asks for (`all`, or a list).
+    let mut spans: Vec<(String, String, u64, u64)> = Vec::new();
+    let mut open_at: HashMap<u16, (String, Option<String>, u64)> = HashMap::new();
+    let mut seen_slots: BTreeSet<u16> = BTreeSet::new();
+    let out_name = |o: u8| -> Option<String> {
+        (o != u8::MAX)
+            .then(|| slots.outputs.get(&u16::from(o)).map(|x| x.0.clone()))
+            .flatten()
+    };
+    for e in &b.inputs {
+        let close = |open_at: &mut HashMap<u16, (String, Option<String>, u64)>,
+                     spans: &mut Vec<(String, String, u64, u64)>,
+                     to: u64| {
+            if let Some((r, Some(o), from)) = open_at.remove(&e.rec.slot) {
+                spans.push((r, o, from, to));
+            }
+        };
+        match e.rec.kind {
+            kind::MAPPED => {
+                close(&mut open_at, &mut spans, e.rec.t);
+                seen_slots.insert(e.rec.slot);
+                open_at.insert(e.rec.slot, (node_ref_at(e), out_name(e.rec.u8(8)), e.rec.t));
+            }
+            kind::UNMAPPED => close(&mut open_at, &mut spans, e.rec.t),
+            _ => {}
+        }
+    }
+    for (_, (r, o, from)) in open_at {
+        if let Some(o) = o {
+            spans.push((r, o, from, end));
+        }
+    }
+    // Mapped before the ring's oldest record, and shown at the report.
+    for sr in &b.surfaces {
+        if !seen_slots.contains(&sr.slot)
+            && let Some(o) = &sr.output
+        {
+            spans.push((sr.root.clone(), o.clone(), 0, end));
+        }
+    }
+    let mut shared_on: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (i, a) in spans.iter().enumerate() {
+        for c in &spans[i + 1..] {
+            let (from, to) = (a.2.max(c.2), a.3.min(c.3));
+            if a.0 == c.0 && a.1 != c.1 && from < to && to > start && from <= end {
+                let on = shared_on.entry(a.0.clone()).or_default();
+                on.insert(a.1.clone());
+                on.insert(c.1.clone());
+            }
+        }
+    }
+    let shared_roots: BTreeSet<String> = shared_on.keys().cloned().collect();
+    let shared: Vec<(String, Vec<String>)> = shared_on
+        .iter()
+        .filter_map(|(r, on)| {
+            let mut on: Vec<String> = on.iter().cloned().collect();
+            on.sort_by_key(|o| names.iter().position(|n| n == o).unwrap_or(usize::MAX));
+            Some((origin_of_root(r)?, on))
+        })
+        .collect();
+
     // 5. The steps.
     let mut timed: Vec<Timed> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
@@ -1160,11 +1330,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     let mut maps = Vec::new();
     let mut writes = Vec::new();
     let mut track: Vec<PointerAt> = Vec::new();
-    // (fidelity) The sandbox's focused output: input on a surface of
-    // another is taken there after a `screen` step.
-    let mut screen_now = outputs
-        .first()
-        .map_or_else(|| name.clone(), |o| o.name.clone());
+    // (fidelity) The latest focus the recording shows (input on a
+    // surface of an output, ns since the window's start): a `screens:
+    // focused` surface the live shell mapped later was mapped on the
+    // output the compositor had focused then, which is put there (a
+    // focus alone) right after it.
+    let mut last_focus_at = 0u64;
     let mut unknown_surface = 0usize;
     let mut typed = 0u64;
     let mut password_spans = 0usize;
@@ -1207,6 +1378,28 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 if let Some(o) = root.as_deref().and_then(origin_of_root) {
                     let mapped = e.rec.kind == kind::MAPPED;
                     let output = slots.output_of(b, e.rec.slot);
+                    // (fidelity) A panel or OSD (`screens: focused` by
+                    // default) mapped live on the output the compositor
+                    // had focused: the sandbox's focus is put there right
+                    // after the latest input before it, so its own map of
+                    // it (made a roundtrip earlier) lands there too. Not
+                    // for a bar (on its screens whatever is focused), a
+                    // popup (on its parent's) or a root shown on several
+                    // outputs at once (`screens: all` or a list).
+                    if mapped
+                        && outputs.len() > 1
+                        && matches!(e.rec.u8(9), 1 | 2)
+                        && let Some(out) = &output
+                        && !shared_roots.contains(&node_ref_at(e))
+                    {
+                        timed.push(Timed {
+                            t: last_focus_at.min(rel(t)),
+                            text: String::new(),
+                            ticks: 0,
+                            not_before: 0,
+                            on: Some(out.clone()),
+                        });
+                    }
                     events.push(Event {
                         kind: "surface",
                         t: rel(t),
@@ -1234,16 +1427,18 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     let missed = u64::from(e.rec.u16(0));
                     let at = rel(t).saturating_sub(missed * period);
                     let nb = shown_from.get(&e.rec.slot).copied().unwrap_or(0);
-                    if let Some(o) = slots.output_of(b, e.rec.slot)
-                        && o != screen_now
-                    {
-                        push_on(&mut timed, at, format!("screen {o}"), 0, nb);
-                        screen_now = o;
-                    }
+                    // (fidelity) On its own output's surface, by name: a
+                    // late frame is no input, and moves no focus (its
+                    // back-dated step would come before input already
+                    // taken on another output).
+                    let on = match slots.output_of(b, e.rec.slot) {
+                        Some(o) if outputs.len() > 1 => format!(" output={o}"),
+                        _ => String::new(),
+                    };
                     push_on(
                         &mut timed,
                         at,
-                        format!("drop {missed} surface={sel}"),
+                        format!("drop {missed} surface={sel}{on}"),
                         0,
                         nb,
                     );
@@ -1281,16 +1476,14 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         let at = rel(t);
         let r = &e.rec;
         let nb = shown_from.get(&r.slot).copied().unwrap_or(0);
-        // (fidelity) Input on another output's surface: that output
-        // focused first, so the step is taken on its surface.
+        // (fidelity) Input on an output's surface is taken with that
+        // output focused: each step this record makes is marked with it
+        // (a `screen` step goes before it once the steps are in order).
         let out_now = slots.output_of(b, r.slot);
-        if let Some(o) = &out_now
-            && *o != screen_now
-            && r.kind != kind::LEAVE
-            && r.kind != kind::KEYBOARD_LEAVE
-        {
-            push_on(&mut timed, at, format!("screen {o}"), 0, nb);
-            screen_now = o.clone();
+        let mark = timed.len();
+        let focuses = r.kind != kind::LEAVE && r.kind != kind::KEYBOARD_LEAVE;
+        if focuses && out_now.is_some() {
+            last_focus_at = at;
         }
         let xy = |r: &strand_core::flight::Rec| (r.f32(0), r.f32(4));
         // The pointer moved to `x, y` on this surface, and keyboard
@@ -1537,6 +1730,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             kind::CLICK_AWAY => click_aways += 1,
             kind::DRAG => drags += 1,
             _ => {}
+        }
+        if focuses && let Some(o) = &out_now {
+            for s in &mut timed[mark..] {
+                s.on = Some(o.clone());
+            }
         }
     }
 
@@ -1823,6 +2021,70 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             ));
         }
     }
+    // (fidelity) An output plugged in or unplugged in the window: the
+    // sandbox has every screen it replays for the whole of it.
+    let first_input = b
+        .inputs
+        .iter()
+        .find(|e| is_input(e.rec.kind) && in_window(e.rec.t))
+        .map_or(end, |e| e.rec.t);
+    let input_wrapped = b.input.as_ref().is_some_and(|d| d.wrapped);
+    let mut plugged: Vec<(u16, &str)> = slots
+        .outputs
+        .iter()
+        .map(|(slot, o)| (*slot, o.0.as_str()))
+        .collect();
+    plugged.sort_by_key(|(slot, _)| *slot);
+    for (slot, o) in plugged {
+        if !names.iter().any(|n| n == o) {
+            continue;
+        }
+        let when = |t: u64| secs(t as i128 - end as i128);
+        for g in went
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|t| in_window(*t))
+        {
+            let back = came
+                .get(&slot)
+                .and_then(|v| v.iter().copied().filter(|t| *t > g).min())
+                .map_or_else(String::new, |t| {
+                    format!(" and plugged in again at {}", when(t))
+                });
+            limits.push(format!(
+                "output {o} was unplugged at {}{back} live; the replay has it for the whole \
+                 window: its surfaces stay on it, and `screens.all` holds it, where the live \
+                 shell had neither",
+                when(g)
+            ));
+        }
+        let Some(first) = came.get(&slot).and_then(|v| v.iter().copied().min()) else {
+            continue;
+        };
+        // An output the live shell was still being told of as it booted
+        // (before the first input of a window from its start) was there
+        // from its start.
+        if first <= start || (boot && first <= first_input) {
+            continue;
+        }
+        limits.push(if input_wrapped {
+            format!(
+                "output {o} is first recorded at {} (plugged in then, or recorded again when it \
+                 changed; the input ring's older records are gone): the replay has it for the \
+                 whole window",
+                when(first)
+            )
+        } else {
+            format!(
+                "output {o} was plugged in at {} live; the replay has it for the whole window, so \
+                 what the shell shows on each screen is on it from the start (mapped at the \
+                 sandbox's boot), and `screens.all` holds it before the live shell's did",
+                when(first)
+            )
+        });
+    }
     if unknown_surface > 0 {
         limits.push(format!(
             "{unknown_surface} input records on surfaces whose root is not known are not replayed \
@@ -1886,13 +2148,27 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     timed.sort_by_key(|s| s.t);
     let mut steps = Vec::new();
     let mut tick = 0u64;
+    // (fidelity) The sandbox's focused output (its first screen, as it
+    // boots): a step marked with another is taken after a `screen` step,
+    // here, in the order the steps run.
+    let mut focus_now = outputs.first().map(|o| o.name.clone());
     for s in timed {
         let want = ((s.t + period / 2) / period).max(s.not_before);
         if want > tick {
             steps.push(format!("frames {}", want - tick));
             tick = want;
         }
-        steps.push(s.text);
+        if outputs.len() > 1
+            && let Some(o) = &s.on
+            && focus_now.as_ref() != Some(o)
+            && outputs.iter().any(|x| x.name == *o)
+        {
+            steps.push(format!("screen {o}"));
+            focus_now = Some(o.clone());
+        }
+        if !s.text.is_empty() {
+            steps.push(s.text);
+        }
         tick += s.ticks;
     }
     let end_tick = (len + period / 2) / period;
@@ -1917,6 +2193,8 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         output,
         outputs,
         interned,
+        names_full,
+        shared,
         boot_until,
         warmup_ms,
         traced_ns,

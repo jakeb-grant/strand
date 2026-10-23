@@ -1200,21 +1200,16 @@ impl RunTrace {
     }
 
     /// The screen's scale at `f`: its own, else the scenario's, else 1.
+    /// (fidelity) With several outputs, the main one's: a check holds
+    /// each surface to its own output's ([`RunTrace::scale_on`]).
     pub fn scale_at(&self, f: &Frame) -> f64 {
-        let main = if f.scale > 0.0 {
+        if f.scale > 0.0 {
             f.scale
         } else if self.scenario.scale > 0.0 {
             self.scenario.scale
         } else {
             1.0
-        };
-        // (fidelity) With several outputs, the coarsest of them: a
-        // frame's tolerance is one physical pixel of any surface in it.
-        f.scales
-            .values()
-            .copied()
-            .filter(|s| *s > 0.0)
-            .fold(main, f64::min)
+        }
     }
 
     /// (fidelity) The scale surface `surface` was drawn at in frame `f`:
@@ -1230,10 +1225,18 @@ impl RunTrace {
 
     /// The least scale any frame was drawn at (the scenario's when none
     /// was): the coarsest physical pixel, in logical px, is its inverse.
+    /// (fidelity) With several outputs, of any surface on any of them,
+    /// as a `scale` step makes it the coarsest of the run.
     pub fn min_scale(&self) -> f64 {
         self.frames
             .iter()
-            .map(|f| self.scale_at(f))
+            .map(|f| {
+                f.scales
+                    .values()
+                    .copied()
+                    .filter(|s| *s > 0.0)
+                    .fold(self.scale_at(f), f64::min)
+            })
             .fold(None, |m: Option<f64>, s| Some(m.map_or(s, |m| m.min(s))))
             .unwrap_or(if self.scenario.scale > 0.0 {
                 self.scenario.scale

@@ -4,8 +4,11 @@
 // frame after it mounts (as a dashboard swells out of its island); a
 // service change lights every screen's lamp and counts on each; the
 // focused screen's mark is white; the clicks of every screen are counted
-// in one place.
+// in one place. Each screen keeps the highest level it saw across
+// restarts (`peak`, persisted); `mode`, never written, whitens every mark;
+// a spot after them lights under the pointer.
 export state clicks = 0
+state mode = 0
 service mood from file "/run/strand-replay-fixture/mood.json" { level: int }
 bar Strip {
   edge: top; height: 40
@@ -13,17 +16,19 @@ bar Strip {
   state seen = 0
   state open = false
   state grown = false
-  on change mood.level { seen = seen + 1 }
+  state peak = 0 persist
+  on change mood.level { seen = seen + 1; peak = mood.level }
   on change open after 30ms { grown = open }
   row {
     box { id: button; width: 80; height: 40; bg: taps > 0 ? #00ff00 : #0000ff
       on click { taps = taps + 1; clicks = clicks + 1; open = !open }
     }
     box { id: lamp; width: 80; height: 40; bg: seen > 0 ? #ff0000 : #202020 }
-    box { id: mark; width: 40; height: 40; bg: screen.focused ? #ffffff : #000000 }
+    box { id: mark; width: 40; height: 40; bg: screen.focused || mode > 0 ? #ffffff : #000000 }
     if open {
       box { id: card; height: 40; bg: #4040ff
             width: grown ? 240 : 40 ~ spring(320, 0.7) }
     }
+    box { id: spot; width: 400; height: 40; bg: #303030; when hover { bg: #606060 } }
   }
 }

@@ -127,8 +127,6 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
         })
     };
     for f in &cx.trace.frames {
-        let scale = cx.trace.scale_at(f).max(0.25);
-        let give = cx.tol + 1.0 / scale;
         let rows: HashMap<(&str, u32), &Row> =
             f.n.iter()
                 .map(|r| ((r.key.as_str(), r.surface), r))
@@ -154,6 +152,11 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
             if exempt(f.k, &r.key) {
                 continue;
             }
+            // (fidelity) Its surface's scale: with several outputs, its
+            // own output's, so each surface keeps the tolerance it has
+            // alone.
+            let scale = cx.trace.scale_on(f, r.surface).max(0.25);
+            let give = cx.tol + 1.0 / scale;
             // inherit (a node whose own keyframes, time-driven props or
             // lean place it is offset by more than its parts report)
             let unreported = Motions::KEYFRAMES | Motions::TIME | Motions::LEAN | Motions::JELLY;
@@ -291,7 +294,8 @@ fn drag(cx: &Cx) -> Vec<Finding> {
     let mut knobs = 0u64;
     for f in &cx.trace.frames {
         let Some(ptr) = f.ptr else { continue };
-        let s = cx.trace.scale_at(f);
+        // (fidelity) The knob is on the pointer's surface: its scale.
+        let s = cx.trace.scale_on(f, ptr.s);
         let snap = |v: f64| (v * s).round() / s;
         let give = cx.tol + 1.0 / s;
         for key in f.drags.keys() {
@@ -374,13 +378,14 @@ fn morph_start(cx: &Cx) -> Vec<Finding> {
     // Per node and surface: it morphed in the surface's last frame.
     let mut was: HashMap<(&str, u32), bool> = HashMap::new();
     for (fi, f) in cx.trace.frames.iter().enumerate() {
-        let scale = cx.trace.scale_at(f).max(0.25);
-        let give = cx.tol + 1.0 / scale;
         let mut now: HashMap<(&str, u32), bool> = HashMap::new();
         for r in &f.n {
             let Some(name) = named.get(r.key.as_str()) else {
                 continue;
             };
+            // (fidelity) Its surface's scale.
+            let scale = cx.trace.scale_on(f, r.surface).max(0.25);
+            let give = cx.tol + 1.0 / scale;
             let morphs = Motions(r.mot).contains(Motions::SHARED_MORPH);
             now.insert((r.key.as_str(), r.surface), morphs);
             let before = was
@@ -558,10 +563,11 @@ fn morph_arrival(cx: &Cx) -> Vec<Finding> {
         let k = tl.ks[i];
         let Some((_, seg)) = segment(k) else { continue };
         let t = tl.frames[i].t_ns;
-        let scale = cx.trace.scale_at(tl.frames[i]).max(0.25);
-        let give = cx.tol + 1.0 / scale;
         for (key, r) in &tl.screens[i] {
             let Some(name) = named.get(key) else { continue };
+            // (fidelity) Its surface's scale.
+            let scale = cx.trace.scale_on(tl.frames[i], r.surface).max(0.25);
+            let give = cx.tol + 1.0 / scale;
             // Drawn, wherever on its surface: a morph from a box on
             // another surface starts off its own (the pill above the
             // panel), where its buffer cuts it.

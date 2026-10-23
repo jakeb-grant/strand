@@ -1,0 +1,13 @@
+// (fidelity) The multi-output replay's fixture for surfaces other than a
+// per-screen bar (eval/tests/screens.rs): a panel on every screen (one
+// node, a surface of it on each output) and an OSD on the focused screen,
+// shown while a service's level is above 5.
+service mood from file "/run/strand-replay-fixture/mood.json" { level: int }
+panel Board {
+  anchor: top; screens: all; open: true
+  box { id: tile; width: 80; height: 40; bg: #ff0000 }
+}
+osd Flash {
+  anchor: bottom; margin: 0, 0, 96; open: mood.level > 5
+  box { id: flash; width: 120; height: 40; bg: #ffffff }
+}

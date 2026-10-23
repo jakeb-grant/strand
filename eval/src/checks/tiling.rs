@@ -119,7 +119,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                 e.push((l + lw, d + dw, r.key.as_str(), hi));
             }
         }
-        for ((_, _, axis), mut list) in edges {
+        for ((surface, _, axis), mut list) in edges {
             list.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut start = 0;
             while start < list.len() {
@@ -155,7 +155,7 @@ pub fn run(cx: &Cx) -> Vec<Finding> {
                                 name(b.2),
                                 b.3,
                                 hi,
-                                (f64::from(hi - lo) * cx.trace.scale_at(f)).round()
+                                (f64::from(hi - lo) * cx.trace.scale_on(f, surface)).round()
                             ),
                         )
                         .at(f.k)

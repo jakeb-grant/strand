@@ -10,7 +10,7 @@ pub mod drawn;
 pub mod fidelity;
 pub mod plan;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -217,6 +217,43 @@ pub fn replay(
                 ""
             }
         ));
+    }
+    // (fidelity) A node the live shell showed on several outputs at
+    // once: the sandbox shows a node on one, so the others are named.
+    for (origin, live) in &plan.shared {
+        let drawn: BTreeSet<&str> = checked
+            .run
+            .trace
+            .surfaces
+            .iter()
+            .filter(|s| {
+                fidelity::root_origin(&checked.run.trace, &s.root)
+                    .is_some_and(|o| fidelity::same_origin(&o, origin))
+            })
+            .filter_map(|s| s.output.as_deref())
+            .collect();
+        let not: Vec<&str> = live
+            .iter()
+            .map(String::as_str)
+            .filter(|o| !drawn.contains(o))
+            .collect();
+        if !not.is_empty() {
+            limits.push(format!(
+                "@{origin} was shown live on {} at once, one surface of one node on each (its \
+                 `screens:` is `all` or a list); the sandbox shows a node on one output, so the \
+                 replay drew it {} and not on {}",
+                live.join(", "),
+                if drawn.is_empty() {
+                    "on none".to_string()
+                } else {
+                    format!(
+                        "on {} only",
+                        drawn.iter().copied().collect::<Vec<_>>().join(", ")
+                    )
+                },
+                not.join(", ")
+            ));
+        }
     }
     for (m, n) in &fid.mock_answered {
         limits.push(format!(
