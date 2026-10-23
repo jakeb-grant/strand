@@ -384,12 +384,14 @@ impl Painter for Renderer {
                 self.paint_times.raster.as_secs_f64() * 1e3,
             );
         }
+        let placed = self.placed_root(surface);
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.posed = s.cache.as_ref().and_then(|f| f.pose);
             s.painted_regions = s.cache.as_ref().map(|f| super::PaintedRegions {
                 blur: f.blur.clone(),
                 input: f.input.clone(),
                 root_paints: f.root_paints,
+                placed,
             });
             // The next frame waits for its own new text.
             s.text_deadline = None;
@@ -452,30 +454,40 @@ impl Painter for Renderer {
     /// input only in the boxes of its top-level elements that drew
     /// anything in the last frame (a blur or backdrop counts), as drawn
     /// (spec.md 6.7): an island moving inside a wide popup lets the
-    /// pointer through everywhere else. Every other surface keeps the
-    /// surface manager's region: a popup opened by `open:` takes clicks
-    /// in its gaps as it always did (spec.md 14, decisions.md
+    /// pointer through everywhere else. Every other surface (but for
+    /// growth's, below) keeps the surface manager's region: a popup
+    /// opened by `open:` takes clicks in its gaps as it always did (spec.md 14, decisions.md
     /// m6-w2-surface). While a press that went down on the popup is
     /// held (a slider's drag) it takes its whole box: a compositor that
     /// does not keep the pointer on the pressed surface (Hyprland with no
     /// keyboard focus anywhere) would otherwise send it elsewhere, and
     /// end the drag, as soon as it leaves the drawn content
     /// (decisions.md m6-owner-fixes, owner-testing.md bug 15).
+    ///
+    /// (growth) A content-sized panel or popup whose box was drawn
+    /// inside its buffer short of filling it (its box springs over a step
+    /// in the larger buffer, or a shrink holds the buffer) takes input in
+    /// that box alone: the margin it has not reached, or has left, draws
+    /// nothing and passes the pointer to what is behind it. An OSD or a
+    /// tooltip takes none (`Renderer::placed_root`).
     fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
         let s = self.surfaces.get(&surface)?;
         let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
         // The last painted frame's (eval-r3: not the cache, which the
         // frame's end may have dropped), else the scene about to be.
-        let (input, root_paints) = match (&s.painted_regions, &s.cache) {
-            (Some(p), _) => (&p.input, p.root_paints),
-            (None, Some(f)) => (&f.input, f.root_paints),
+        let (input, root_paints, placed) = match (&s.painted_regions, &s.cache) {
+            (Some(p), _) => (&p.input, p.root_paints, p.placed),
+            (None, Some(f)) => (&f.input, f.root_paints, None),
             (None, None) => return None,
         };
         let held = self.extras.widgets.pressed.contains(&s.root);
-        if !hover || root_paints || held {
+        if held {
             return None;
         }
-        Some(input.clone())
+        if hover && !root_paints {
+            return Some(input.clone());
+        }
+        placed.map(|r| vec![r])
     }
 }
 

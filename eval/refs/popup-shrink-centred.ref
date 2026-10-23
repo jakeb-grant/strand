@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-shrink-centred"
 verdict good
-note "growth: read against the reference: the popup springs its height 52 -> 91.3 -> 90 taller (k60-75) and its width 164 -> 222.7 -> 220 wider (k107-123) from its anchor where the reference snapped; the card's own overshoot past the buffer is followed and cut by it, #mark is still in every settled segment"
+note "growth: read against the reference: the popup springs its height 52 -> 91.3 -> 90 taller (k60-75) and its width 164 -> 222.7 -> 220 wider (k107-123) from its anchor where the reference snapped; the card's own overshoot past the buffer is followed and cut by it, #mark is still in every settled segment; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: popup#pop k34-115 (45 frames, first i=2,0,216,50)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario f6a2393e93c08e28
-seal 5734fab345b366d9
+seal 147a53c9dcb8725e
 S1 0 - "bar Top"
 S2 1 163 "popup#pop"
 N0 "anchor|shell.strand:8:5|[Mock | DP-1]#1" "box#anchor"
@@ -165,51 +165,66 @@ n7 op=255
 n8 op=255
 k33
 k34
+s2 i=2,0,216,50
 n5 x=2 w=216
 n6 x=2 w=216
 k35
+s2 i=6,0,208,50
 n5 x=6 w=208
 n6 x=6 w=208
 k36
+s2 i=11,0,198,50
 n5 x=11 w=198 v=11.328125,0,198,50
 n6 x=11 w=198 v=11.328125,0,198,50
 k37
+s2 i=16,0,189,50
 n5 x=16 w=189 v=16,0,189.328125,50
 n6 x=16 w=189 v=16,0,189.328125,50
 k38
+s2 i=20,0,180,50
 n5 x=20 w=180 v=d
 n6 x=20 w=180 v=d
 k39
+s2 i=24,0,173,50
 n5 x=24 w=173 v=24,0,173.328125,50
 n6 x=24 w=173 v=24,0,173.328125,50
 k40
+s2 i=26,0,168,50
 n5 x=26 w=168 v=d
 n6 x=26 w=168 v=d
 k41
+s2 i=28,0,164,50
 n5 x=28 w=164
 n6 x=28 w=164
 k42
+s2 i=29,0,161,50
 n5 x=29 w=161 v=29.328125,0,160.671875,50
 n6 x=29 w=161 v=29.328125,0,160.671875,50
 k43
+s2 i=30,0,159,50
 n5 x=30 w=159 v=30,0,159.328125,50
 n6 x=30 w=159 v=30,0,159.328125,50
 k44
+s2 i=31,0,159,50
 n5 x=31 v=31.328125,0,158.671875,50
 n6 x=31 v=31.328125,0,158.671875,50
 k45
+s2 i=31,0,158,50
 n5 w=158 v=31.328125,0,158,50
 n6 w=158 v=31.328125,0,158,50
 k46
 k47
+s2 i=31,0,159,50
 n5 w=159 v=31.328125,0,158.671875,50
 n6 w=159 v=31.328125,0,158.671875,50
 k48
 k49
+s2 i=30,0,159,50
 n5 x=30 v=30,0,159.328125,50
 n6 x=30 v=30,0,159.328125,50
 k50
 k51
+s2 i=30,0,160,50
 n5 w=160 v=d
 n6 w=160 v=d
 k52
@@ -220,40 +235,49 @@ k56
 k57
 k58
 k59
-s2 z=160,50 o=100,36
+s2 z=160,50 o=100,36 i=-
 n5 x=0
 n6 x=0
 n7 x=38 v=38,20,84,15.328125 ink=38,22,82.671875,10.671875
 n8 x=60
 k60
-s2 z=160,90
+s2 z=160,90 i=0,0,160,52
 n5 h=52
 n6 h=52
 k61
+s2 i=0,0,160,58
 n5 h=58
 n6 h=58
 k62
+s2 i=0,0,160,64
 n5 h=64
 n6 h=64
 k63
+s2 i=0,0,160,71
 n5 h=71 v=0,0,160,71.328125
 n6 h=71 v=0,0,160,71.328125
 k64
+s2 i=0,0,160,77
 n5 h=77 v=0,0,160,77.328125
 n6 h=77 v=0,0,160,77.328125
 k65
+s2 i=0,0,160,81
 n5 h=81 v=0,0,160,81.328125
 n6 h=81 v=0,0,160,81.328125
 k66
+s2 i=0,0,160,85
 n5 h=85 v=0,0,160,85.328125
 n6 h=85 v=0,0,160,85.328125
 k67
+s2 i=0,0,160,88
 n5 h=88 v=d
 n6 h=88 v=d
 k68
+s2 i=0,0,160,89
 n5 h=89 v=0,0,160,89.328125
 n6 h=89 v=0,0,160,89.328125
 k69
+s2 i=-
 n5 h=90 v=d
 n6 h=90 v=d
 k70
@@ -274,36 +298,47 @@ k80
 k81
 k82
 k83
+s2 i=0,0,160,88
 n5 h=88
 n6 h=88
 k84
+s2 i=0,0,160,82
 n5 h=82
 n6 h=82
 k85
+s2 i=0,0,160,76
 n5 h=76
 n6 h=76
 k86
+s2 i=0,0,160,69
 n5 h=69 v=0,0,160,69.328125
 n6 h=69 v=0,0,160,69.328125
 k87
+s2 i=0,0,160,63
 n5 h=63 v=0,0,160,63.328125
 n6 h=63 v=0,0,160,63.328125
 k88
+s2 i=0,0,160,59
 n5 h=59 v=0,0,160,59.328125
 n6 h=59 v=0,0,160,59.328125
 k89
+s2 i=0,0,160,55
 n5 h=55 v=0,0,160,55.328125
 n6 h=55 v=0,0,160,55.328125
 k90
+s2 i=0,0,160,52
 n5 h=52 v=d
 n6 h=52 v=d
 k91
+s2 i=0,0,160,51
 n5 h=51 v=0,0,160,51.328125
 n6 h=51 v=0,0,160,51.328125
 k92
+s2 i=0,0,160,50
 n5 h=50 v=d
 n6 h=50 v=d
 k93
+s2 i=0,0,160,49
 n5 h=49 v=0,0,160,49.328125
 n6 h=49 v=0,0,160,49.328125
 k94
@@ -312,6 +347,7 @@ k96
 k97
 k98
 k99
+s2 i=0,0,160,50
 n5 h=50 v=d
 n6 h=50 v=d
 k100
@@ -321,38 +357,47 @@ k103
 k104
 k105
 k106
-s2 z=160,50
+s2 z=160,50 i=-
 k107
-s2 z=220,50 o=70,36
+s2 z=220,50 o=70,36 i=28,0,164,50
 n5 x=28 w=164
 n6 x=28 w=164
 n7 x=68 v=68,20,84,15.328125 ink=68,22,82.671875,10.671875
 n8 x=90
 k108
+s2 i=24,0,172,50
 n5 x=24 w=172
 n6 x=24 w=172
 k109
+s2 i=19,0,182,50
 n5 x=19 w=182 v=19.328125,0,182,50
 n6 x=19 w=182 v=19.328125,0,182,50
 k110
+s2 i=14,0,191,50
 n5 x=14 w=191 v=14,0,191.328125,50
 n6 x=14 w=191 v=14,0,191.328125,50
 k111
+s2 i=10,0,200,50
 n5 x=10 w=200 v=d
 n6 x=10 w=200 v=d
 k112
+s2 i=6,0,207,50
 n5 x=6 w=207 v=6,0,207.328125,50
 n6 x=6 w=207 v=6,0,207.328125,50
 k113
+s2 i=4,0,212,50
 n5 x=4 w=212 v=d
 n6 x=4 w=212 v=d
 k114
+s2 i=2,0,216,50
 n5 x=2 w=216
 n6 x=2 w=216
 k115
+s2 i=1,0,219,50
 n5 x=1 w=219 v=1.328125,0,218.671875,50
 n6 x=1 w=219 v=1.328125,0,218.671875,50
 k116
+s2 i=-
 n5 x=0 w=221 v=0,0,221.328125,50
 n6 x=0 w=221 v=0,0,221.328125,50
 k117

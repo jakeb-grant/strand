@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "toast-stack"
 verdict good
-note "growth: read against the reference: the panel and col#stack spring 121 -> 137 -> 147 -> 152 -> 151 (k1-6) where the reference snapped; the toasts' own motion is the reference's"
+note "growth: read against the reference: the panel and col#stack spring 121 -> 137 -> 147 -> 152 -> 151 (k1-6) where the reference snapped; the toasts' own motion is the reference's; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Toasts k1-34 (11 frames, first i=0,0,240,121)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 2c006773271933ff
-seal 27a5efdd50c528e0
+seal fc8726df420ce6c5
 S1 0 - "panel Toasts"
 S2 0 - "bar Top"
 N0 "header|shell.strand:10:5|#0" "text#header"
@@ -36,7 +36,7 @@ n7 x=38 y=79 w=78 h=15 txt=S ord=8 ink=39,80,76,11 fg=eceff4ff gl=["Build\u0020f
 n8 srf=2 x=0 y=0 w=320 h=30 bg=faf9ffff
 n9 x=0 y=0 w=240 h=111
 k1 p1
-s1 z=240,151
+s1 z=240,151 i=0,0,240,121
 n1 h=121
 n2 y=79 ord=9
 n3 y=39 ord=6
@@ -49,6 +49,7 @@ n10 x=97 y=29 w=220 h=34 op=37 ord=3 bg=2b303bff
 n11 x=107 y=40 w=12 h=12 op=37 ord=4 bg=a3be8cff
 n12 x=127 y=39 w=76 h=15 op=37 txt=S ord=5 ink=128,40,75,13 fg=eceff4ff gl=["Incoming\u0020call"]
 k2
+s1 i=0,0,240,137
 n1 h=137
 n2 y=95
 n3 y=55
@@ -61,6 +62,7 @@ n10 x=51 op=98
 n11 x=61 op=98
 n12 x=81 op=98 ink=82,40,75,13
 k3
+s1 i=0,0,240,147
 n1 h=147
 n2 y=105
 n3 y=65
@@ -73,6 +75,7 @@ n10 x=21 op=151
 n11 x=31 op=151
 n12 x=51 op=151 ink=52,40,75,13
 k4
+s1 i=-
 n1 h=151
 n2 y=109
 n3 y=69
@@ -135,6 +138,7 @@ n11 op=255
 n12 op=255
 k14
 k15
+s1 i=0,0,240,142
 n1 h=142
 n2 y=100
 n3 h=25 op=218 hid=inert
@@ -144,6 +148,7 @@ n6 y=111
 n7 y=110 ink=39,111,76,11
 n9 h=142
 k16
+s1 i=0,0,240,129
 n1 h=129
 n2 y=87
 n3 h=12 op=157
@@ -153,6 +158,7 @@ n6 y=98
 n7 y=97 ink=39,98,76,11
 n9 h=129
 k17
+s1 i=0,0,240,119
 n1 h=119
 n2 y=77
 n3 h=4 op=104
@@ -162,6 +168,7 @@ n6 y=88
 n7 y=86 ink=39,87,76,11
 n9 h=119
 k18
+s1 i=0,0,240,111
 n1 h=111
 n2 y=69 ord=7
 n3 h=0 op=65 bg=-
@@ -195,8 +202,9 @@ n3 -
 n6 ord=7
 n7 ord=8
 k30
-s1 z=240,111
+s1 z=240,111 i=-
 k31
+s1 i=0,0,240,93
 n1 h=93
 n2 y=60 h=25 op=218 hid=inert
 n6 y=67 op=218 hid=inert
@@ -206,6 +214,7 @@ n10 h=25 op=218 hid=inert
 n11 y=36 op=218 hid=inert
 n12 y=34 op=218 hid=inert ink=39,35,75,13
 k32
+s1 i=0,0,240,67
 n1 h=67
 n2 y=47 h=12 op=157
 n6 y=47 op=157
@@ -215,6 +224,7 @@ n10 h=12 op=157
 n11 y=29 op=157
 n12 y=28 op=157 ink=39,29,75,13
 k33
+s1 i=0,0,240,46
 n1 h=46
 n2 y=34 h=4 op=104
 n6 y=30 op=104
@@ -224,6 +234,7 @@ n10 h=4 op=104
 n11 y=25 op=104
 n12 y=23 op=104 ink=39,24,75,13
 k34
+s1 i=0,0,240,31
 n1 h=31
 n2 y=23 h=0 op=65 ord=4 bg=-
 n6 -
@@ -264,4 +275,4 @@ k45
 n2 -
 n10 -
 k46
-s1 z=240,31
+s1 z=240,31 i=-

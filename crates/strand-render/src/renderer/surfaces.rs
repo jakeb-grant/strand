@@ -311,6 +311,8 @@ impl Renderer {
                 query_hold: None,
                 query_held: false,
                 size_hold: None,
+                awaits: false,
+                awaited: None,
                 size_paused: Duration::ZERO,
                 animating: false,
                 anim_layout: false,
@@ -363,6 +365,9 @@ impl Renderer {
         let wait = self.first_frame_wait;
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.resize(size, scale);
+            // (growth) The configure it awaited came (at that size or
+            // another).
+            s.awaits = false;
             if !s.painted && s.wait_until.is_none() && size != Size::default() {
                 s.wait_until = Some(Instant::now() + wait);
                 s.wait_paused = Duration::ZERO;

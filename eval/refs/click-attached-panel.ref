@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "click-attached-panel"
 verdict good
-note "eval-coverage-3 first reference, read frame by frame: the pointer moves onto the bar button (hover fill springs), the press scales it to 0.92 about its centre and back on release, the click opens the attached control panel on slide(top) with its shadow and a two-line note, a second click closes it, and leaving clears the hover"
-date 2026-10-19
-rev "a7965714+changes"
+note "growth review: read against the reference, every box and value equal but the input region: while the box is drawn short of its buffer (held as something on it moves) the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Control k23-31 (4 frames, first i=28,0,240,90)"
+date 2026-10-23
+rev "abffdefe+changes"
 approver "claude"
 scenario b36d95e2e72f3219
-seal f5d36b16d1dbdc84
+seal a7847a04c6da5a51
 S1 0 - "bar Top"
 S2 23 48 "panel Control"
 N0 "button_text|shell.strand:10:7|[Mock | DP-1]#0" "text#button_text"
@@ -72,7 +72,7 @@ k22
 n0 v=70.234375,5.796875,51.515625,18.40625
 n1 v=70.234375,5.796875,51.515625,18.40625
 k23 p1,2
-s2 z=296,126 o=52,30
+s2 z=296,126 o=52,30 i=28,0,240,90
 n0 v=69.65625,5.59375,52.6875,18.8125
 n1 v=69.65625,5.59375,52.6875,18.8125 sc=0.941,0.941
 n5 srf=2 x=28 y=-90 w=240 h=90 ord=1 bg=313244ff sh=000000b0@0,-112,296,146 pt=-14,0,268,90
@@ -118,6 +118,7 @@ n8 y=50
 n9 y=50
 n10 y=0
 k28
+s2 i=28,0,240,92
 n0 v=67.953125,4.984375,56.109375,20.03125
 n1 v=67.953125,4.984375,56.109375,20.03125
 n5 y=3 h=89 sh=000000b0@0,-19,296,145 pt=-14,0,268,89
@@ -133,6 +134,7 @@ n5 y=2 h=90 sh=000000b0@0,-20,296,146 pt=-14,0,268,90
 n6 y=14 h=30 ink=40,15,206,28
 n10 y=2 h=90
 k30
+s2 i=28,0,240,91
 n0 v=67.984375,5,56.015625,20
 n1 v=67.984375,5,56.015625,20 sc=1,1
 n5 y=1 sh=000000b0@0,-21,296,146
@@ -142,6 +144,7 @@ n8 y=51
 n9 y=51
 n10 y=1
 k31
+s2 i=28,0,240,90
 n0 v=d
 n1 v=d
 n5 y=0 sh=000000b0@0,-22,296,146
@@ -155,7 +158,7 @@ k33
 k34
 k35
 k36
-s2 z=296,124
+s2 z=296,124 i=-
 k37 p1,2
 n5 y=-23 sh=000000b0@0,-45,296,146
 n6 y=-11 h=29 ink=40,-10,206,28

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell"
 verdict good
-note "growth: read against the reference: the panel and col#deck spring 152 -> 166 -> 173 -> 176 -> 175 (k15-19) where the reference snapped; the note's own height overshoot (19) and the rows below it ride 1 px past the buffer, cut by it, where the frame squeezed them; every value at rest equal"
+note "growth: read against the reference: the panel and col#deck spring 152 -> 166 -> 173 -> 176 -> 175 (k15-19) where the reference snapped; the note's own height overshoot (19) and the rows below it ride 1 px past the buffer, cut by it, where the frame squeezed them; every value at rest equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Cards k15-17 (3 frames, first i=12,0,280,152)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 620f647ac0c7a0e1
-seal 183c273796f16461
+seal ca4dce4ce5a97b9f
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -55,7 +55,7 @@ k13
 n7 op=255
 k14
 k15
-s1 z=304,193
+s1 z=304,193 i=12,0,280,152
 n0 y=62 ord=5
 n1 y=62 ord=6
 n2 h=152
@@ -65,6 +65,7 @@ n6 h=152
 n7 y=62 ord=7
 n8 x=28 y=45 w=120 h=5 op=37 ord=3 bg=3b4252ff
 k16
+s1 i=12,0,280,166
 n0 y=76
 n1 y=76
 n2 h=166
@@ -74,6 +75,7 @@ n6 h=166
 n7 y=76
 n8 h=12 op=98
 k17
+s1 i=12,0,280,173
 n0 y=83
 n1 y=83
 n2 h=173
@@ -83,6 +85,7 @@ n6 h=173
 n7 y=83
 n8 h=16 op=151
 k18
+s1 i=-
 n0 y=85
 n1 y=85
 n2 h=175

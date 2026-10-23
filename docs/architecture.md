@@ -2526,7 +2526,23 @@ re-base, if it needs one, is a dated decisions.md entry.
   an overshoot past the buffer is laid out where it is and cut by it.
   The pass that starts a step glides what the step moves from where it
   was drawn, compared with the box laid out where the last frame drew
-  it. A content-sized surface never shrinks while something on it
+  it. The chain of boxes that follow goes into a `pages` (its page fills
+  it) and across a `scroll` or `list`, never down one, where everything
+  keeps its rest size. A far-anchored box is placed by the room between
+  the frame and the box, each rounded (`RootSize::Placed`'s `exact`), so
+  its anchored edge is where the frame's snaps at rest at any scale. A
+  growth's buffer shift counts in a FLIP only on an axis where the box is
+  placed short of its buffer: one filling the larger buffer at once
+  (`~ instant`) moved with its edge, and what it holds snaps with it.
+  While the root's box lies short of its buffer, `Painter::input_region`
+  is that box as laid out and as drawn (`Renderer::placed_root`), so the
+  margin passes the pointer (not on an OSD or a tooltip, which take none). A surface painted before the configure at
+  the larger size it asked for (`SurfaceState::awaits`, once per size)
+  keeps its box at the buffer's size with what it holds kept, and the
+  step is measured from there when the configure comes. Once a surface
+  rests, a popup anchored in it whose anchor's box moved is re-resolved
+  (`place_waiting_popups`), so it never keeps an anchor read from a
+  preview pass in the old buffer. A content-sized surface never shrinks while something on it
   moves or its box springs down, and asks for its own size once nothing
   does. The paint that
   finishes an exit (a ghost unmounted, a surface closed) or lets a held
@@ -4870,8 +4886,10 @@ and the connection):
   commit and kept in `SurfaceInfo::painted_input`): render asks it for a
   `trigger: hover` popup that draws nothing itself, the boxes of its
   top-level elements that drew (a blur or backdrop counts), so the
-  pointer passes through the rest (a travelling island); `None`, for
-  every other surface, keeps the manager's region. A popup keeps its
+  pointer passes through the rest (a travelling island); (growth) a
+  content-sized panel or popup whose box is drawn short of its buffer
+  (springing over a step, or held), that box; `None`, for every other
+  surface, keeps the manager's region. A popup keeps its
   configure position (`Role::Popup::at`) and is placed again whenever
   its parent's origin changes, so `SurfaceHost::surface_placed` tells
   the host its new place after its parent's; render reports a popup's

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "notif-centre-stagger"
 verdict good
-note "growth: read against the reference: the panel and col#list spring their height as the four cards stagger in (110 -> 276 -> 270, k1-8), Chat's (k23-29) and clear all's shrink (255 -> 46 -> 54, k52-59) where the reference snapped; the cards' own fades and slides and the header are the reference's"
+note "growth: read against the reference: the panel and col#list spring their height as the four cards stagger in (110 -> 276 -> 270, k1-8), Chat's (k23-29) and clear all's shrink (255 -> 46 -> 54, k52-59) where the reference snapped; the cards' own fades and slides and the header are the reference's; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Centre k1-60 (24 frames, first i=0,0,280,110)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 2773d1c057d23553
-seal d185549130947490
+seal 3fd2cf55476d35d2
 S1 0 - "panel Centre"
 N0 "centre|shell.strand:6:3|#0" "col#centre"
 N1 "clear|shell.strand:9:7|#0" "box#clear"
@@ -38,7 +38,7 @@ n3 x=12 y=42 w=256 h=0 ord=5
 n4 x=12 y=15 w=206 h=15 txt=S ord=3 ink=12,16,79,11 fg=cdd6f4ff gl=["Notifications"]
 n5 x=0 y=0 w=280 h=54
 k1
-s1 z=280,278
+s1 z=280,278 i=0,0,280,110
 n0 h=110
 n3 h=56
 n5 h=110
@@ -49,6 +49,7 @@ n9 x=12 y=202 w=256 h=48 op=0 hid=opacity0 ord=11
 n10 x=20 y=44 w=240 h=15 op=37 txt=S ord=7 ink=20,45,25,11 fg=cdd6f4ff gl=["Mail"]
 n11 x=20 y=61 w=240 h=15 op=37 txt=S ord=8 ink=20,63,52,10 fg=a6adc8ff gl=["Just\u0020now"]
 k2
+s1 i=0,0,280,192
 n0 h=192
 n3 h=138
 n5 h=192
@@ -56,6 +57,7 @@ n8 y=39 op=98
 n10 y=47 op=98 ink=20,48,25,11
 n11 y=64 op=98 ink=20,66,52,10
 k3
+s1 i=0,0,280,246
 n0 h=246
 n3 h=192
 n5 h=246
@@ -68,6 +70,7 @@ n11 y=66 op=151 ink=20,68,52,10
 n12 x=20 y=100 w=240 h=15 op=37 txt=S ord=10 ink=20,101,56,11 fg=cdd6f4ff gl=["Calendar"]
 n13 x=20 y=117 w=240 h=15 op=37 txt=S ord=11 ink=20,119,52,10 fg=a6adc8ff gl=["Just\u0020now"]
 k4
+s1 i=0,0,280,270
 n0 h=270
 n3 h=216
 n5 h=270
@@ -78,6 +81,7 @@ n11 y=67 op=190 ink=20,69,52,10
 n12 y=103 op=98 ink=20,104,56,11
 n13 y=120 op=98 ink=20,122,52,10
 k5
+s1 i=0,0,280,276
 n0 h=276
 n5 h=276
 n6 y=148 op=37 hid=- bg=313244ff
@@ -91,6 +95,7 @@ n13 y=122 op=151 ink=20,124,52,10
 n14 x=20 y=156 w=240 h=15 op=37 txt=S ord=13 ink=20,157,32,11 fg=cdd6f4ff gl=["Build"]
 n15 x=20 y=173 w=240 h=15 op=37 txt=S ord=14 ink=20,175,52,10 fg=a6adc8ff gl=["Just\u0020now"]
 k6
+s1 i=0,0,280,275
 n0 h=275
 n5 h=275
 n6 y=151 op=98
@@ -103,6 +108,7 @@ n13 y=123 op=190 ink=20,125,52,10
 n14 y=159 op=98 ink=20,160,32,11
 n15 y=176 op=98 ink=20,178,52,10
 k7
+s1 i=0,0,280,273
 n0 h=273
 n5 h=273
 n6 y=153 op=151
@@ -115,6 +121,7 @@ n13 op=216
 n14 y=161 op=151 ink=20,162,32,11
 n15 y=178 op=151 ink=20,180,52,10
 k8
+s1 i=0,0,280,271
 n0 h=271
 n5 h=271
 n6 y=154 op=190
@@ -130,6 +137,7 @@ n15 y=179 op=190 ink=20,181,52,10
 n16 x=20 y=212 w=240 h=15 op=37 txt=S ord=16 ink=20,213,37,11 fg=cdd6f4ff gl=["Music"]
 n17 x=20 y=229 w=240 h=15 op=37 txt=S ord=17 ink=20,231,52,10 fg=a6adc8ff gl=["Just\u0020now"]
 k9
+s1 i=0,0,280,270
 n0 h=270
 n5 h=270
 n6 op=216
@@ -232,9 +240,9 @@ n16 op=255
 n17 op=255
 k21
 k22
-s1 z=280,270
+s1 z=280,270 i=-
 k23
-s1 z=280,328
+s1 z=280,328 i=0,0,280,285
 n0 h=285
 n3 h=231
 n5 h=285
@@ -254,6 +262,7 @@ n18 x=12 y=36 w=256 h=48 op=37 ord=6 bg=313244ff
 n19 x=20 y=44 w=240 h=15 op=37 txt=S ord=7 ink=20,45,29,11 fg=cdd6f4ff gl=["Chat"]
 n20 x=20 y=61 w=240 h=15 op=37 txt=S ord=8 ink=20,63,52,10 fg=a6adc8ff gl=["Just\u0020now"]
 k24
+s1 i=0,0,280,306
 n0 h=306
 n3 h=252
 n5 h=306
@@ -273,6 +282,7 @@ n18 y=39 op=98
 n19 y=47 op=98 ink=20,48,29,11
 n20 y=64 op=98 ink=20,66,52,10
 k25
+s1 i=0,0,280,320
 n0 h=320
 n3 h=266
 n5 h=320
@@ -292,6 +302,7 @@ n18 y=41 op=151
 n19 y=49 op=151 ink=20,50,29,11
 n20 y=66 op=151 ink=20,68,52,10
 k26
+s1 i=0,0,280,326
 n0 h=326
 n3 h=272
 n5 h=326
@@ -311,6 +322,7 @@ n18 y=42 op=190
 n19 y=50 op=190 ink=20,51,29,11
 n20 y=67 op=190 ink=20,69,52,10
 k27
+s1 i=-
 n0 h=328
 n5 h=328
 n6 y=212
@@ -329,6 +341,7 @@ n18 op=216
 n19 op=216
 n20 op=216
 k28
+s1 i=0,0,280,327
 n0 h=327
 n5 h=327
 n6 y=211
@@ -351,6 +364,7 @@ n18 op=241
 n19 op=241
 n20 op=241
 k30
+s1 i=0,0,280,326
 n0 h=326
 n5 h=326
 n6 y=210
@@ -387,7 +401,7 @@ n19 op=255
 n20 op=255
 k36
 k37
-s1 z=280,326
+s1 z=280,326 i=-
 k38
 n6 x=18 op=218 hid=inert
 n7 x=18 op=218 hid=inert
@@ -598,6 +612,7 @@ n18 hid=opacity0 bg=-
 n19 -
 n20 -
 k52
+s1 i=0,0,280,255
 n0 h=255
 n3 h=201
 n5 h=255
@@ -607,30 +622,38 @@ n8 -
 n9 -
 n18 -
 k53
+s1 i=0,0,280,152
 n0 h=152
 n3 h=98
 n5 h=152
 k54
+s1 i=0,0,280,84
 n0 h=84
 n3 h=30
 n5 h=84
 k55
+s1 i=0,0,280,54
 n0 h=54
 n3 h=0
 n5 h=54
 k56
+s1 i=0,0,280,46
 n0 h=46
 n5 h=46
 k57
+s1 i=0,0,280,48
 n0 h=48
 n5 h=48
 k58
+s1 i=0,0,280,51
 n0 h=51
 n5 h=51
 k59
+s1 i=0,0,280,53
 n0 h=53
 n5 h=53
 k60
+s1 i=0,0,280,54
 n0 h=54
 n5 h=54
 k61
@@ -639,4 +662,4 @@ k63
 k64
 k65
 k66
-s1 z=280,54
+s1 z=280,54 i=-

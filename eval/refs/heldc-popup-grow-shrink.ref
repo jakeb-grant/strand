@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-popup-grow-shrink"
 verdict good
-note "growth: read against the reference: the popup and col#card spring 70 -> 86 -> 96 -> 101 -> 100 (k2-7) where the reference snapped; #extra's and #last's 1 px with the card's overshoot (k6-7), cut by the buffer; every other value equal"
+note "growth: read against the reference: the popup and col#card spring 70 -> 86 -> 96 -> 101 -> 100 (k2-7) where the reference snapped; #extra's and #last's 1 px with the card's overshoot (k6-7), cut by the buffer; every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: popup@shell.strand:7 k2-19 (7 frames, first i=0,0,160,70)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 4f995b84b7a579ec
-seal f3f639f9827d0aaa
+seal 2b3ef2b29e1b1b7f
 S1 0 - "bar Top"
 S2 1 - "popup@shell.strand:7"
 N0 "anchor|shell.strand:6:5|[Mock | DP-1]#0" "box#anchor"
@@ -29,22 +29,25 @@ n4 srf=2 x=8 y=8 w=144 h=20 ord=2 bg=5b8defff
 n5 srf=2 x=8 y=34 w=144 h=12 ord=3 bg=c678ddff
 n6 srf=2 x=0 y=0 w=160 h=54
 k2
-s2 z=160,100
+s2 z=160,100 i=0,0,160,70
 n3 h=70
 n5 y=50 ord=4
 n6 h=70
 n7 srf=2 x=8 y=34 w=144 h=10 op=37 ord=3 bg=8bd17cff
 k3
+s2 i=0,0,160,86
 n3 h=86
 n5 y=66
 n6 h=86
 n7 h=26 op=98
 k4
+s2 i=0,0,160,96
 n3 h=96
 n5 y=76
 n6 h=96
 n7 h=36 op=151
 k5
+s2 i=-
 n3 h=100
 n5 y=80
 n6 h=100
@@ -74,21 +77,25 @@ k14
 n7 op=255
 k15
 k16
+s2 i=0,0,160,90
 n3 h=90
 n5 y=70
 n6 h=90
 n7 h=30 op=218 hid=inert
 k17
+s2 i=0,0,160,74
 n3 h=74
 n5 y=54
 n6 h=74
 n7 h=14 op=157
 k18
+s2 i=0,0,160,63
 n3 h=63
 n5 y=43
 n6 h=63
 n7 h=4 op=104
 k19
+s2 i=0,0,160,54
 n3 h=54
 n5 y=34
 n6 h=54
@@ -116,4 +123,4 @@ k30
 n5 ord=3
 n7 -
 k31
-s2 z=160,54
+s2 z=160,54 i=-

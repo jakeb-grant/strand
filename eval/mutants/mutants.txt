@@ -307,7 +307,8 @@ growth-step-flip.patch         curated/osd-edge-margins.scn       teleport:#leve
 # growth-fill-drawn.patch: a box alone in its parent at rest is taken to
 # fill it although the last frame drew it smaller (a crossfade's arriving
 # card while the leaving one held the stack): it stretches to the box in
-# flight at the step's first frame.
+# flight at the step's first frame. Re-cut in growth's review: the fill
+# test gained `!scrolls` (nothing fills down a `scroll` or `list`).
 growth-fill-drawn.patch        regressions/held-grow-glide.scn    teleport
 # growth-overshoot-cut.patch: a box whose own spring overshoots past the
 # buffer it asked for is laid out at the buffer's size again, its content
@@ -322,6 +323,9 @@ growth-keep-far.patch          curated/osd-bottom-grow-1_5.scn    expect:#head:y
 # growth-exact-origin.patch: a box springing over a step is placed by the
 # whole-pixel edge shift of a smaller box (kept to the frame) instead of at
 # its exact share: at 1.5 its anchored bottom edge is off the buffer's.
+# Re-cut in growth's review (2026-10-22): both exact branches go, the far
+# edge's (the room between the frame and the box, each rounded) and the
+# share's.
 growth-exact-origin.patch      curated/osd-bottom-grow-1_5.scn    expect:#head:y
 # growth-step-clip.patch: a box springing over a step (and what follows it)
 # no longer clips what it holds: the launcher's returning rows are drawn

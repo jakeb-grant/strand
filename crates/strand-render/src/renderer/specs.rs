@@ -353,6 +353,23 @@ impl Renderer {
             let Some(s) = self.surfaces.get_mut(&id) else {
                 continue;
             };
+            // (growth) A larger buffer asked for, its configure to come.
+            let have = s.scale.logical_size(s.size);
+            let up = |want: Option<f32>, have: f32| want.is_some_and(|v| v.round() - have > 0.5);
+            let larger = wanted
+                .filter(|(w, h)| s.size != Size::default() && (up(*w, have.w) || up(*h, have.h)))
+                .map(|(w, h)| LogicalSize::new(w.unwrap_or(have.w), h.unwrap_or(have.h)));
+            match larger {
+                Some(t) if s.awaited != Some(t) => {
+                    s.awaits = true;
+                    s.awaited = Some(t);
+                }
+                Some(_) => {}
+                None => {
+                    s.awaits = false;
+                    s.awaited = None;
+                }
+            }
             let holds = !self.resize_wait.is_zero() && s.size != Size::default();
             let Some((w, h)) = wanted.filter(|_| holds) else {
                 s.size_hold = None;
@@ -723,18 +740,43 @@ impl Renderer {
     /// the next refresh, as before: following it here would reposition
     /// (or, below `xdg_wm_base` 3, make again) the popup every frame
     /// it springs.
+    ///
+    /// (growth) Once `root` rests (nothing on it springs, nor its box over
+    /// a step, and it is laid out in the buffer it asked for), a popup
+    /// whose anchor's box is not the one it was placed at is re-resolved
+    /// too: its anchor was last read from a pass laid out in a buffer the
+    /// surface was leaving (a preview pass before its configure squeezes
+    /// or moves what the old buffer holds), or while it moved.
     pub(super) fn place_waiting_popups(&mut self, root: NodeId) {
-        let waiting: Vec<NodeId> = self
+        let rest = !self.anim.sizes_moving(&self.tree, root)
+            && !self.anim.size_pending(&self.tree, root)
+            && !self.held.contains(&root)
+            && self
+                .surfaces
+                .values()
+                .filter(|s| s.root == root)
+                .all(|s| !s.awaits && s.boxes.is_some());
+        let moved = |a: LogicalRect, b: LogicalRect| {
+            [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)]
+                .iter()
+                .any(|(p, q)| (p - q).abs() > 0.5)
+        };
+        let waiting: Vec<(NodeId, Option<LogicalRect>)> = self
             .specs
             .iter()
             .filter(|(_, s)| {
-                s.kind == NodeKind::Popup && s.parent == Some(root) && s.anchor_rect.is_none()
+                s.kind == NodeKind::Popup
+                    && s.parent == Some(root)
+                    && (s.anchor_rect.is_none() || rest)
             })
-            .map(|(id, _)| *id)
+            .map(|(id, s)| (*id, s.anchor_rect))
             .collect();
-        for id in waiting {
+        for (id, placed) in waiting {
             let anchor = self.tree.get(id).and_then(|n| n.parent);
-            if anchor.and_then(|a| self.anchor_box(a, root)).is_some() {
+            let Some(now) = anchor.and_then(|a| self.anchor_box(a, root)) else {
+                continue;
+            };
+            if placed.is_none_or(|p| moved(p, now)) {
                 self.spec_dirty.insert(id);
             }
         }

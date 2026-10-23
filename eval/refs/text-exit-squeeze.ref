@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "text-exit-squeeze"
 verdict good
-note "growth: read against the reference: the panel springs its height 34 -> 32 -> 31 (k73-74) where the reference snapped; every other value equal"
+note "growth: read against the reference: the panel springs its height 35 -> 34 -> 32 -> 31 (k73-75) where the reference snapped to 31 at k73, and the buffer's shrink (s1 z=37,31) comes 7 ticks later, at k81 and not k74, as the hold waits for that spring to rest, with six empty ticks (k76-80) between; every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Status k59-75 (7 frames, first i=0,0,117,35)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 501e141edd717b74
-seal 15270a3d1e24792f
+seal a049c05a708f9ec5
 S1 0 - "panel Status"
 S2 0 - "bar Top"
 N0 "clock|shell.strand:9:14|[Mock | DP-1]#0" "text#clock"
@@ -173,24 +173,28 @@ k58
 n1 ord=7
 n14 -
 k59 p1
+s1 i=0,0,117,35
 n2 x=88 ink=89,11,19,11
 n3 w=72 op=218 hid=inert
 n6 w=117
 n7 w=117
 n8 op=218 hid=inert
 k60
+s1 i=0,0,80,35
 n2 x=51 ink=52,11,19,11
 n3 w=35 op=157
 n6 w=80
 n7 w=80
 n8 op=157
 k61
+s1 i=0,0,56,35
 n2 x=27 ink=28,11,19,11
 n3 w=11 op=104
 n6 w=56
 n7 w=56
 n8 x=13 op=104 ink=14,11,80,11
 k62
+s1 i=0,0,37,35
 n2 x=8 ord=3 ink=9,11,19,11
 n3 w=0 op=65 bg=-
 n6 w=37
@@ -216,14 +220,17 @@ n3 op=0
 k72
 n3 hid=opacity0
 k73
+s1 i=0,1,37,34
 n2 ord=2
 n3 -
 n6 y=1 h=34
 n7 y=1 h=34
 k74
+s1 i=0,1,37,32
 n6 h=32
 n7 h=32
 k75
+s1 i=0,2,37,31
 n6 y=2 h=31
 n7 y=2 h=31
 k76
@@ -232,7 +239,7 @@ k78
 k79
 k80
 k81
-s1 z=37,31 o=12,150
+s1 z=37,31 o=12,150 i=-
 n2 y=8 ink=9,9,19,11
 n6 y=0
 n7 y=0

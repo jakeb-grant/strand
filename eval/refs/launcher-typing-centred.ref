@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "launcher-typing-centred"
 verdict good
-note "growth: read against the reference: the centred panel's root now follows col#card's own glide and height spring (k21-33) where it held the larger buffer; the card, prompt and list keep the reference's path within 1 px of rounding; at rest every value equal"
+note "growth: read against the reference: the centred panel's root now follows col#card's own glide and height spring (k21-33) where it held the larger buffer; the card, prompt and list keep the reference's path within 1 px of rounding; at rest every value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Launcher k2-29 (23 frames, first i=0,15,216,214)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 921ae077ab85ccd6
-seal 9ff15f486fd3ffbc
+seal 2f1b5f4faa6766c9
 S1 0 - "panel Launcher"
 N0 "card|shell.strand:7:3|#0" "col#card"
 N1 "prompt|shell.strand:8:5|#0" "text#prompt"
@@ -21,71 +21,85 @@ n3 x=0 y=0 w=216 h=245
 k1
 n1 x=105 w=7 ink=105,13,7,8 gl=["c"]
 k2
+s1 i=0,15,216,214
 n0 y=15 h=214
 n1 x=101 y=24 w=14 ink=101,28,14,8 gl=["ca"]
 n2 y=44 h=176
 n3 y=15 h=214
 k3
+s1 i=0,38,216,168
 n0 y=38 h=168
 n1 y=47 ink=101,51,14,8
 n2 y=67 h=87
 n3 y=38 h=168
 k4
+s1 i=0,53,216,138
 n0 y=53 h=138
 n1 y=62 ink=101,66,14,8
 n2 y=82
 n3 y=53 h=138
 k5
+s1 i=0,59,216,125
 n0 y=59 h=125
 n1 y=68 ink=101,72,14,8
 n2 y=88
 n3 y=59 h=125
 k6
+s1 i=0,65,216,114
 n0 y=65 h=114
 n1 x=100 y=74 w=17 ink=100,75,16,11 gl=["cal"]
 n2 y=94 h=76
 n3 y=65 h=114
 k7
+s1 i=0,70,216,103
 n0 y=70 h=103
 n1 y=79 ink=100,80,16,11
 n2 y=99 h=57
 n3 y=70 h=103
 k8
+s1 i=0,74,216,97
 n0 y=74 h=97
 n1 y=83 ink=100,84,16,11
 n2 y=103
 n3 y=74 h=97
 k9
+s1 i=0,75,216,95
 n0 y=75 h=95
 n1 y=84 ink=100,85,16,11
 n2 y=104
 n3 y=75 h=95
 k10
+s1 i=0,79,216,86
 n0 y=79 h=86
 n1 x=96 y=88 w=24 ink=96,89,23,11 gl=["calc"]
 n2 y=108 h=48
 n3 y=79 h=86
 k11
+s1 i=0,84,216,75
 n0 y=84 h=75
 n1 y=93 ink=96,94,23,11
 n2 y=113 h=27
 n3 y=84 h=75
 k12
+s1 i=0,88,216,68
 n0 y=88 h=68
 n1 y=97 ink=96,98,23,11
 n2 y=117
 n3 y=88 h=68
 k13
+s1 i=0,90,216,65
 n0 y=90 h=65
 n1 y=99 ink=96,100,23,11
 n2 y=119
 n3 y=90 h=65
 k14
+s1 i=0,90,216,64
 n0 h=64
 n2 h=26
 n3 h=64
 k15
 k16
+s1 i=0,90,216,65
 n0 h=65
 n2 h=27
 n3 h=65
@@ -93,60 +107,67 @@ k17
 k18
 k19
 k20
-s1 z=216,65 o=72,288
+s1 z=216,65 o=72,288 i=-
 n0 y=0
 n1 y=9 ink=96,10,23,11
 n2 y=29
 n3 y=0
 k21
-s1 z=216,95 o=72,273
+s1 z=216,95 o=72,273 i=0,11,216,73
 n0 y=11 h=73
 n1 x=100 y=20 w=17 ink=100,21,16,11 gl=["cal"]
 n2 y=40 h=35
 n3 y=11 h=73
 k22
+s1 i=0,5,216,84
 n0 y=5 h=84
 n1 y=14 ink=100,15,16,11
 n2 y=34 h=46
 n3 y=5 h=84
 k23
+s1 i=0,1,216,92
 n0 y=1 h=92
 n1 y=10 ink=100,11,16,11
 n2 y=30 h=54
 n3 y=1 h=92
 k24
-s1 z=216,125 o=72,258
+s1 z=216,125 o=72,258 i=0,11,216,103
 n0 y=11 h=103
 n1 x=101 y=20 w=14 ink=101,24,14,8 gl=["ca"]
 n2 y=40 h=65
 n3 y=11 h=103
 k25
+s1 i=0,4,216,115
 n0 y=4 h=115
 n1 y=13 ink=101,17,14,8
 n2 y=33 h=77
 n3 y=4 h=115
 k26
+s1 i=0,1,216,122
 n0 y=1 h=122
 n1 y=10 ink=101,14,14,8
 n2 y=30 h=84
 n3 y=1 h=122
 k27
-s1 z=216,245 o=72,198
+s1 z=216,245 o=72,198 i=0,44,216,157
 n0 y=44 h=157
 n1 x=105 y=53 w=7 ink=105,57,7,8 gl=["c"]
 n2 y=73 h=119
 n3 y=44 h=157
 k28
+s1 i=0,21,216,203
 n0 y=21 h=203
 n1 y=30 ink=105,34,7,8
 n2 y=50 h=165
 n3 y=21 h=203
 k29
+s1 i=0,6,216,232
 n0 y=6 h=232
 n1 y=15 ink=105,19,7,8
 n2 y=35 h=194
 n3 y=6 h=232
 k30
+s1 i=-
 n0 y=0 h=245
 n1 y=9 ink=105,13,7,8
 n2 y=29 h=207

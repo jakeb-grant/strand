@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "clip-carries-rows"
 verdict good
-note "clip-blink: initial reference; a centred network picker's clipped list narrows to the saved networks and then one row, each row that stays carried by its list (no glide from above its new top edge) and the one moving up a slot inside the one-row list starting where it shows"
-date 2026-10-19
-rev "27406340+changes"
+note "growth: the scenario's panel says `height: auto ~ instant`, growth's hatch, which keeps clip-blink's snap: read against clip-blink's reference, every box and value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Networks k15-31 (2 frames, first i=0,54,220,111)"
+date 2026-10-23
+rev "abffdefe+changes"
 approver "claude"
-scenario 4c2c5efe90034fc7
-seal ce433a8955f625b0
+scenario 5005a4abb6d4be09
+seal 7c3be576f8c6f3d1
 S1 0 - "panel Networks"
 N0 "card|shell.strand:8:3|#0" "col#card"
 N1 "heading|shell.strand:9:5|#0" "text#heading"
@@ -133,6 +133,7 @@ n10 -
 n11 ord=8
 n12 -
 k15
+s1 i=0,54,220,111
 n0 y=54 h=111
 n1 y=64 ink=10,65,30,10
 n2 y=87 h=68
@@ -145,7 +146,7 @@ n9 y=96 ink=20,97,32,11
 n11 y=132 ord=7 ink=20,133,31,11
 n13 y=54 h=111
 k16
-s1 z=220,111 o=50,185
+s1 z=220,111 o=50,185 i=-
 n0 y=0
 n1 y=10 ink=10,11,30,10
 n2 y=33
@@ -197,6 +198,7 @@ n6 ord=5
 n9 -
 n11 ord=6
 k31
+s1 i=0,18,220,75
 n0 y=18 h=75
 n1 y=28 ink=10,29,30,10
 n2 y=51 h=32
@@ -205,7 +207,7 @@ n6 y=51 ord=4
 n11 y=60 ord=5 ink=20,61,31,11
 n13 y=18 h=75
 k32
-s1 z=220,75 o=50,203
+s1 z=220,75 o=50,203 i=-
 n0 y=0
 n1 y=10 ink=10,11,30,10
 n2 y=33

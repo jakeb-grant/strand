@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "damage-fraction"
 verdict good
-note "growth: read against the reference: the panel's box springs with row#card 158 -> 164 -> 168 -> 170 (k1-3, k24-26) where the reference drew the full buffer; the pill's morph is the reference's"
+note "growth: read against the reference: the panel's box springs with row#card 158 -> 164 -> 168 -> 170 (k1-3, k24-26) where the reference drew the full buffer; the pill's morph is the reference's; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Media k1-26 (10 frames, first i=6,0,158,64)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 510b0e15c199d313
-seal 8add811449e8c7e3
+seal 26463d39f6ebee6f
 S1 0 - "panel Media"
 N0 "art|shell.strand:7:5|#0" "box#art"
 N1 "card|shell.strand:6:3|#0" "row#card"
@@ -23,7 +23,7 @@ n3 x=110 y=17 w=30 h=30 ord=4 bd=f9e2afff
 n4 x=110 y=17 w=40 h=14 ord=5 bg=a6e3a1ff
 n5 x=0 y=0 w=154 h=64
 k1
-s1 z=170,64 o=35,12
+s1 z=170,64 o=35,12 i=6,0,158,64
 n0 x=20
 n1 x=6 w=158
 n2 x=68 w=40
@@ -31,6 +31,7 @@ n3 x=120
 n4 x=120
 n5 x=6 w=158
 k2
+s1 i=3,0,164,64
 n0 x=17
 n1 x=3 w=164
 n2 x=65 w=46
@@ -38,6 +39,7 @@ n3 x=123
 n4 x=123
 n5 x=3 w=164
 k3
+s1 i=1,0,168,64
 n0 x=15
 n1 x=1 w=168
 n2 x=63 w=50
@@ -45,6 +47,7 @@ n3 x=125
 n4 x=125
 n5 x=1 w=168
 k4
+s1 i=-
 n0 x=14
 n1 x=0 w=170
 n2 x=62 w=52
@@ -66,6 +69,7 @@ k11
 n3 v=126,17.328125,30,30
 n4 v=126,17.328125,40,14
 k12
+s1 i=2,0,166,64
 n0 x=16
 n1 x=2 w=166
 n2 x=64 w=48
@@ -73,6 +77,7 @@ n3 x=124 v=124,17.328125,30,30
 n4 x=124 v=124,17.328125,40,14
 n5 x=2 w=166
 k13
+s1 i=5,0,160,64
 n0 x=19 v=19.328125,14,36,36
 n1 x=5 w=160 v=5.328125,0,160,64
 n2 x=67 w=42 v=67.328125,14,42,36
@@ -80,6 +85,7 @@ n3 x=121 v=121.328125,17.328125,30,30
 n4 x=121 v=121.328125,17.328125,40,14
 n5 x=5 w=160 v=5.328125,0,160,64
 k14
+s1 i=7,0,156,64
 n0 x=21 v=21.328125,14,36,36
 n1 x=7 w=156 v=7.328125,0,156,64
 n2 x=69 w=38 v=69.328125,14,38,36
@@ -87,6 +93,7 @@ n3 x=119 v=119.328125,17.328125,30,30
 n4 x=119 v=119.328125,17.328125,40,14
 n5 x=7 w=156 v=7.328125,0,156,64
 k15
+s1 i=8,0,154,64
 n0 x=22 v=d
 n1 x=8 w=154 v=d
 n2 x=70 w=36 v=d
@@ -100,7 +107,7 @@ k19
 k20
 k21
 k22
-s1 z=154,64 o=43,12
+s1 z=154,64 o=43,12 i=-
 n0 x=14
 n1 x=0
 n2 x=62
@@ -115,7 +122,7 @@ n3 v=110.40625,16.796875,29.59375,30.40625
 n4 v=110.40625,16.796875,40,14.40625
 n5 v=0,0,154.40625,64
 k24
-s1 z=170,64 o=35,12
+s1 z=170,64 o=35,12 i=6,0,158,64
 n0 x=20 v=20,14.40625,36,36
 n1 x=6 w=158 v=6.40625,0,157.59375,64
 n2 x=68 w=40 v=68,14.40625,40,36
@@ -123,6 +130,7 @@ n3 x=120 v=120,16.796875,30.40625,30.40625
 n4 x=120 v=120,16.796875,40,14.40625
 n5 x=6 w=158 v=6.40625,0,157.59375,64
 k25
+s1 i=3,0,164,64
 n0 x=17 v=16.796875,14.40625,36,36
 n1 x=3 w=164 v=3.203125,0,164,64
 n2 x=65 w=46 v=64.796875,14.40625,46.40625,36
@@ -130,6 +138,7 @@ n3 x=123 v=123.203125,16.796875,29.59375,30.40625
 n4 x=123 v=123.203125,16.796875,40,14.40625
 n5 x=3 w=164 v=3.203125,0,164,64
 k26
+s1 i=1,0,168,64
 n0 x=15 v=15.203125,14.40625,36,36
 n1 x=1 w=168 v=0.796875,0,168,64
 n2 x=63 w=50 v=63.203125,14.40625,49.59375,36
@@ -137,6 +146,7 @@ n3 x=125 v=124.796875,16.796875,30.40625,30.40625
 n4 x=125 v=124.796875,16.796875,40,14.40625
 n5 x=1 w=168 v=0.796875,0,168,64
 k27
+s1 i=-
 n0 x=14 v=14.40625,14.40625,36,36
 n1 x=0 w=170 v=0,0,170.40625,64
 n2 x=62 w=52 v=62.40625,14.40625,52,36 pt=0,-0.015625,52,36

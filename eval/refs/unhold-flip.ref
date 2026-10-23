@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "unhold-flip"
 verdict good
-note "integration-r6 (one fold fix, eval-coverage-3's HAIR, its hair taken out of the folded margin): as ca, cal, calc fold rows away the results column shrinks monotonically 207 to 27 px and the card 245 to 65 by k13 with no k6 rise and no step at an unmount (main's reference rose at k6 and stepped at k16 and k20); against eval-coverage-3's recording only k14-k20 differ, the card resting at y 90 from k14 where the two hairs had it at 89 until the unmount at k20 moved it 1 px; read in explain"
-date 2026-10-19
-rev "1abf5f54+changes"
+note "growth review: read against the reference, every box and value equal but the input region: while the box is drawn short of its buffer (held as something on it moves) the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Launcher k2-14 (13 frames, first i=0,14,216,217)"
+date 2026-10-23
+rev "abffdefe+changes"
 approver "claude"
 scenario a60312620c8e1f33
-seal c150affae449fd30
+seal 862d86ac0c74ba13
 S1 0 - "panel Launcher"
 N0 "card|shell.strand:7:3|#0" "col#card"
 N1 "prompt|shell.strand:8:5|#0" "text#prompt"
@@ -49,6 +49,7 @@ n17 x=0 y=0 w=216 h=245
 k1
 n1 x=105 w=7 ink=105,13,7,8 gl=["c"]
 k2
+s1 i=0,14,216,217
 n0 y=14 h=217
 n1 x=101 y=23 w=14 ink=101,27,14,8 gl=["ca"]
 n2 y=43 h=179
@@ -68,6 +69,7 @@ n15 y=158 op=218 hid=inert ink=80,159,30,11
 n16 y=181 op=218 hid=inert ink=80,183,49,10
 n17 y=14 h=217
 k3
+s1 i=0,34,216,176
 n0 y=34 h=176
 n1 y=43 ink=101,47,14,8
 n2 y=63 h=138
@@ -87,6 +89,7 @@ n15 y=163 op=157 ink=80,164,30,11
 n16 y=176 op=157 ink=80,178,49,10
 n17 y=34 h=176
 k4
+s1 i=0,48,216,149
 n0 y=48 h=149
 n1 y=57 ink=101,61,14,8
 n2 y=77 h=111
@@ -106,6 +109,7 @@ n15 y=167 op=104 ink=80,168,30,11
 n16 y=173 op=104 ink=80,175,49,10
 n17 y=48 h=149
 k5
+s1 i=0,59,216,125
 n0 y=59 h=125
 n1 y=68 ink=101,72,14,8
 n2 y=88 h=87
@@ -125,6 +129,7 @@ n15 -
 n16 -
 n17 y=59 h=125
 k6
+s1 i=0,63,216,118
 n0 y=63 h=118
 n1 x=100 y=72 w=17 ink=100,73,16,11 gl=["cal"]
 n2 y=92 h=80
@@ -140,6 +145,7 @@ n11 y=128 ink=80,129,50,11
 n12 op=218 hid=inert
 n17 y=63 h=118
 k7
+s1 i=0,68,216,108
 n0 y=68 h=108
 n1 y=77 ink=100,78,16,11
 n2 y=97 h=70
@@ -155,6 +161,7 @@ n11 y=133 ink=80,134,50,11
 n12 op=157
 n17 y=68 h=108
 k8
+s1 i=0,72,216,101
 n0 y=72 h=101
 n1 y=81 ink=100,82,16,11
 n2 y=101 h=63
@@ -170,6 +177,7 @@ n11 y=137 ink=80,138,50,11
 n12 y=155 op=104 ink=80,159,44,8
 n17 y=72 h=101
 k9
+s1 i=0,74,216,95
 n0 y=74 h=95
 n1 y=83 ink=100,84,16,11
 n2 y=103 h=57
@@ -185,6 +193,7 @@ n11 y=139 ink=80,140,50,11
 n12 -
 n17 y=74 h=95
 k10
+s1 i=0,78,216,88
 n0 y=78 h=88
 n1 x=96 y=87 w=24 ink=96,88,23,11 gl=["calc"]
 n2 y=107 h=50
@@ -199,6 +208,7 @@ n10 y=113 ink=80,114,56,11
 n11 op=218 hid=inert
 n17 y=78 h=88
 k11
+s1 i=0,83,216,78
 n0 y=83 h=78
 n1 y=92 ink=96,93,23,11
 n2 y=112 h=40
@@ -213,6 +223,7 @@ n10 y=118 ink=80,119,56,11
 n11 op=157
 n17 y=83 h=78
 k12
+s1 i=0,87,216,71
 n0 y=87 h=71
 n1 y=96 ink=96,97,23,11
 n2 y=116 h=33
@@ -227,6 +238,7 @@ n10 y=122 ink=80,123,56,11
 n11 y=140 op=104 ink=80,141,50,11
 n17 y=87 h=71
 k13
+s1 i=0,89,216,65
 n0 y=89 h=65
 n1 y=98 ink=96,99,23,11
 n2 y=118 h=27
@@ -241,6 +253,7 @@ n10 y=124 ink=80,125,56,11
 n11 -
 n17 y=89 h=65
 k14
+s1 i=0,90,216,65
 n0 y=90
 n1 y=99 ink=96,100,23,11
 n2 y=119
@@ -288,7 +301,7 @@ n4 hid=opacity0
 k24
 n4 -
 k25
-s1 z=216,65 o=72,288
+s1 z=216,65 o=72,288 i=-
 n0 y=0
 n1 y=9 ink=96,10,23,11
 n2 y=29

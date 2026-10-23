@@ -203,6 +203,15 @@ struct SurfaceState {
     /// A content-sized surface whose spec asks for another size than it
     /// is configured at: the buffer size it waits for, and until when.
     size_hold: Option<(LogicalSize, Instant)>,
+    /// (growth) A content-sized surface whose spec asks for a larger
+    /// buffer than it has, painted before that configure comes: its box
+    /// keeps the buffer's size and what it holds keeps its layout at
+    /// rest, cut by it (`Renderer::lay_out_stepped`). Each size asked for
+    /// awaits at most once (`awaited`): one the compositor configured at
+    /// another size fills the buffer it has.
+    awaits: bool,
+    /// The last size it awaited.
+    awaited: Option<LogicalSize>,
     /// How far other surfaces' paints have moved `size_hold` on (at most
     /// [`MAX_HOLD_PAUSE`]).
     size_paused: Duration,
@@ -293,6 +302,10 @@ struct PaintedRegions {
     blur: Vec<strand_scene::BlurRegion>,
     input: Vec<strand_scene::LogicalRect>,
     root_paints: bool,
+    /// (growth) A content-sized surface's box drawn inside its buffer
+    /// short of filling it ([`Renderer::placed_root`]): where it takes
+    /// the pointer.
+    placed: Option<strand_scene::LogicalRect>,
 }
 
 impl SurfaceState {

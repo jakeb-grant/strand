@@ -1,8 +1,8 @@
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -927,7 +927,7 @@
-                 };
-                 let fill = !crate::layout::is_leaf(cn.kind)
+@@ -1004,7 +1004,7 @@
+                 let fill = !scrolls
+                     && !crate::layout::is_leaf(cn.kind)
                      && !own_size(cn, axis)
 -                    && (((outer - inner).abs() < 0.5 && was_fill) || stepped);
 +                    && (((outer - inner).abs() < 0.5 && (was_fill || true)) || stepped);

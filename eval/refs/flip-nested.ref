@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "flip-nested"
 verdict good
-note "growth: read against the reference: the panel's root and row#frame spring 73 -> 81 -> 86 -> 89 -> 88 (k1-5) where the reference snapped to 88; nothing inside moves, every other value equal"
+note "growth: read against the reference: the panel's root and row#frame spring 73 -> 81 -> 86 -> 89 -> 88 (k1-5) where the reference snapped to 88; nothing inside moves, every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Tools k1-15 (9 frames, first i=0,0,276,73)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 27f77af5d98a5cee
-seal 739bfe7d4e6fb7e5
+seal c4425a049c3edf10
 S1 0 - "panel Tools"
 N0 "b1|shell.strand:10:9|#0" "box#b1"
 N1 "b2|shell.strand:11:9|#1" "box#b2"
@@ -29,7 +29,7 @@ n6 x=48 y=8 w=220 h=52 ord=3 bg=1d2027ff
 n7 x=133 y=30 w=50 h=24 ord=5 bg=2f3542ff
 n8 x=0 y=0 w=276 h=68
 k1
-s1 z=276,88
+s1 z=276,88 i=0,0,276,73
 n0 x=130 y=40
 n1 y=40
 n2 x=172 y=40
@@ -39,6 +39,7 @@ n6 h=57
 n7 x=130 y=35 w=70
 n8 h=73
 k2
+s1 i=0,0,276,81
 n0 x=127 y=48
 n1 y=48
 n2 x=175 y=48
@@ -48,6 +49,7 @@ n6 h=65
 n7 x=127 y=43
 n8 h=81
 k3
+s1 i=0,0,276,86
 n0 x=124 y=53
 n1 y=53
 n2 x=178 y=53
@@ -57,6 +59,7 @@ n6 h=70
 n7 x=124 y=48
 n8 h=86
 k4
+s1 i=-
 n0 x=123 y=55
 n1 y=55
 n2 x=179 y=55
@@ -87,6 +90,7 @@ k7
 k8
 k9
 k10
+s1 i=0,0,276,83
 n0 x=126 y=50
 n1 y=50
 n2 x=176 y=50
@@ -96,6 +100,7 @@ n6 h=67
 n7 x=126 y=45 w=50
 n8 h=83
 k11
+s1 i=0,0,276,75
 n0 x=129 y=42
 n1 y=42
 n2 x=173 y=42
@@ -105,6 +110,7 @@ n6 h=59
 n7 x=129 y=37
 n8 h=75
 k12
+s1 i=0,0,276,70
 n0 x=132 y=37
 n1 y=37
 n2 x=170 y=37
@@ -114,6 +120,7 @@ n6 h=54
 n7 x=132 y=32
 n8 h=70
 k13
+s1 i=0,0,276,68
 n0 x=133 y=35
 n1 y=35
 n2 x=169 y=35
@@ -123,6 +130,7 @@ n6 h=52
 n7 x=133 y=30
 n8 h=68
 k14
+s1 i=0,0,276,67
 n0 y=34
 n1 y=34
 n2 y=34
@@ -132,6 +140,7 @@ n6 h=51
 n7 y=29
 n8 h=67
 k15
+s1 i=0,0,276,68
 n0 y=35
 n1 y=35
 n2 y=35
@@ -144,4 +153,4 @@ k16
 k17
 k18
 k19
-s1 z=276,68
+s1 z=276,68 i=-

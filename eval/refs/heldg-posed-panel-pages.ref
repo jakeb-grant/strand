@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldg-posed-panel-pages"
 verdict good
-note "growth: read against the reference: page two's pages box steps 52 -> 40 -> 32 -> 28 with the panel 100 -> 75 -> 76 (k39-44) where the reference snapped; the close comes 9 ticks later as the rest waits for that spring, and its compositor slide is the reference's own curve shifted by those ticks"
+note "growth: read against the reference: page two's pages box steps 52 -> 40 -> 32 -> 28 with the panel 100 -> 75 -> 76 (k39-44) where the reference snapped; the close comes 9 ticks later as the rest waits for that spring, and its compositor slide is the reference's own curve shifted by those ticks; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Side k39-45 (6 frames, first i=0,0,220,100)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 779d594fe8d0bdce
-seal 12e16c0f496540cb
+seal 2bf783155fa666d4
 S1 1 63 "panel Side"
 N0 "switch|shell.strand:11:7|#0" "box#switch"
 N1 "|shell.strand:10:7|#0" "text(\"One\")"
@@ -224,6 +224,7 @@ k36
 k37
 k38
 k39
+s1 i=0,0,220,100
 n3 h=52
 n4 -
 n5 -
@@ -241,35 +242,40 @@ n17 ord=9
 n18 ord=10
 n19 ord=11
 k40
+s1 i=0,0,220,88
 n3 h=40
 n12 h=88
 n13 h=88
 n15 h=40
 n16 h=40
 k41
+s1 i=0,0,220,80
 n3 h=32
 n12 h=80
 n13 h=80
 n15 h=32
 n16 h=32
 k42
+s1 i=0,0,220,76
 n3 h=28
 n12 h=76
 n13 h=76
 n15 h=28
 n16 h=28
 k43
+s1 i=0,0,220,75
 n12 h=75
 n13 h=75
 k44
 k45
+s1 i=0,0,220,76
 n12 h=76
 n13 h=76
 k46
 k47
 k48
 k49
-s1 z=220,76
+s1 z=220,76 i=-
 k50
 s1 P=219,1,52.046875,0
 k51

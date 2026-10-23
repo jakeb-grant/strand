@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "panel-odd-centre-1_5"
 verdict good
-note "growth: as panel-odd-centre at 1.5: the panel and popup spring from their centres (k15-21); content rides the left edge within one device pixel of the centring's rounding, every value at rest equal"
+note "growth: as panel-odd-centre at 1.5: the panel and popup spring from their centres (k15-21); content rides the left edge within one device pixel of the centring's rounding, every value at rest equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Note k2-17 (10 frames, first i=9,0,203,60); popup#pop k2-17 (10 frames, first i=9,0,203,40)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario f0667c1973fb847a
-seal 84c0ee546530fa75
+seal 1fbd5b186f407801
 S1 0 - "panel Note"
 S2 0 - "bar Top"
 S3 1 - "popup#pop"
@@ -38,6 +38,8 @@ n8 srf=3 x=0 y=0 w=221 h=40 v=0,0,221.328125,40 ord=1 bg=202030ff
 n9 srf=3 x=6 y=6 w=40 h=10 ord=2 bg=ff8000ff
 n10 srf=3 x=0 y=0 w=221 h=40 v=0,0,221.328125,40
 k2 p1,3
+s1 i=9,0,203,60
+s3 i=9,0,203,40
 n1 x=9 w=203 v=9.328125,0,202.671875,60
 n3 x=17 v=17.328125,8,40,10
 n5 x=17 v=17.328125,22,44,15.328125 ink=17.328125,24,42.671875,10.671875
@@ -46,6 +48,8 @@ n8 x=9 w=203 v=9.328125,0,202.671875,40
 n9 x=15 v=15.328125,6,40,10
 n10 x=9 w=203 v=9.328125,0,202.671875,40
 k3
+s1 i=22,0,176,60
+s3 i=22,0,176,40
 n1 x=22 w=176 v=d
 n3 x=30 v=d
 n5 x=30 v=30,22,44,15.328125 ink=30,24,42.671875,10.671875
@@ -54,6 +58,8 @@ n8 x=22 w=176 v=d
 n9 x=28 v=d
 n10 x=22 w=176 v=d
 k4
+s1 i=31,0,158,60
+s3 i=31,0,158,40
 n1 x=31 w=158 v=31.328125,0,158,60
 n3 x=39 v=39.328125,8,40,10
 n5 x=39 v=39.328125,22,44,15.328125 ink=39.328125,24,42.671875,10.671875
@@ -62,6 +68,8 @@ n8 x=31 w=158 v=31.328125,0,158,40
 n9 x=37 v=37.328125,6,40,10
 n10 x=31 w=158 v=31.328125,0,158,40
 k5
+s1 i=35,0,150,60
+s3 i=35,0,150,40
 n1 x=35 w=150 v=35.328125,0,150,60
 n3 x=43 v=43.328125,8,40,10
 n5 x=43 v=43.328125,22,44,15.328125 ink=43.328125,24,42.671875,10.671875
@@ -70,6 +78,8 @@ n8 x=35 w=150 v=35.328125,0,150,40
 n9 x=41 v=41.328125,6,40,10
 n10 x=35 w=150 v=35.328125,0,150,40
 k6
+s1 i=36,0,148,60
+s3 i=36,0,148,40
 n1 x=36 w=148 v=d
 n3 x=44 v=d
 n5 x=44 v=44,22,44,15.328125 ink=44,24,42.671875,10.671875
@@ -79,6 +89,8 @@ n9 x=42 v=d
 n10 x=36 w=148 v=d
 k7
 k8
+s1 i=35,0,149,60
+s3 i=35,0,149,40
 n1 x=35 w=149 v=35.328125,0,148.671875,60
 n3 x=43 v=43.328125,8,40,10
 n5 x=43 v=43.328125,22,44,15.328125 ink=43.328125,24,42.671875,10.671875
@@ -87,6 +99,8 @@ n8 x=35 w=149 v=35.328125,0,148.671875,40
 n9 x=41 v=41.328125,6,40,10
 n10 x=35 w=149 v=35.328125,0,148.671875,40
 k9
+s1 i=35,0,150,60
+s3 i=35,0,150,40
 n1 w=150 v=35.328125,0,150,60
 n6 w=150 v=35.328125,0,150,60
 n8 w=150 v=35.328125,0,150,40
@@ -96,8 +110,8 @@ k11
 k12
 k13
 k14
-s1 z=150,60 o=125,30
-s3 z=150,40 o=105,36
+s1 z=150,60 o=125,30 i=-
+s3 z=150,40 o=105,36 i=-
 n1 x=0 v=d
 n3 x=8 v=d
 n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875
@@ -106,8 +120,8 @@ n8 x=0 v=d
 n9 x=6 v=d
 n10 x=0 v=d
 k15
-s1 z=221,60 o=90,30
-s3 z=221,40 o=70,36
+s1 z=221,60 o=90,30 i=26,0,168,60
+s3 z=221,40 o=70,36 i=26,0,168,40
 n1 x=26 w=168
 n3 x=34
 n5 x=34 v=34,22,44,15.328125 ink=34,24,42.671875,10.671875
@@ -116,6 +130,8 @@ n8 x=26 w=168
 n9 x=32
 n10 x=26 w=168
 k16
+s1 i=12,0,195,60
+s3 i=12,0,195,40
 n1 x=12 w=195 v=12,0,195.328125,60
 n3 x=20
 n5 x=20 v=20,22,44,15.328125 ink=20,24,42.671875,10.671875
@@ -124,6 +140,8 @@ n8 x=12 w=195 v=12,0,195.328125,40
 n9 x=18
 n10 x=12 w=195 v=12,0,195.328125,40
 k17
+s1 i=3,0,213,60
+s3 i=3,0,213,40
 n1 x=3 w=213 v=3.328125,0,212.671875,60
 n3 x=11 v=11.328125,8,40,10
 n5 x=11 v=11.328125,22,44,15.328125 ink=11.328125,24,42.671875,10.671875
@@ -132,6 +150,8 @@ n8 x=3 w=213 v=3.328125,0,212.671875,40
 n9 x=9 v=9.328125,6,40,10
 n10 x=3 w=213 v=3.328125,0,212.671875,40
 k18
+s1 i=-
+s3 i=-
 n1 x=0 w=221 v=0,0,221.328125,60
 n3 x=8 v=d
 n5 x=8 v=8,22,44,15.328125 ink=8,24,42.671875,10.671875

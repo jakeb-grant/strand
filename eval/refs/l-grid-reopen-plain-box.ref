@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "l-grid-reopen-plain-box"
 verdict good
-note "growth: read against the reference: the reopened panel's box and the grid in its chain spring 91 -> 113 -> 128 -> 136 -> 134 (k1-7) up and down from the centre where the reference drew the full box at once and glided the col; the tiles keep their places and turns, every other value equal"
+note "growth: read against the reference: the first shown panel's box (S1) and the grid in its chain spring 91 -> 113 -> 128 -> 134 -> 136 -> 135 -> 134 (S1 k1-8) up and down from the centre where the reference drew the full box at once and glided the col; the reopened panel (S2, from k22) is unchanged; the tiles keep their places and turns, every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel AppGrid k1-3 (3 frames, first i=0,21,300,91)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 9c96ef9cfa792685
-seal 85394fb0250ea293
+seal 6d1d259129a72fa4
 S1 0 21 "panel AppGrid"
 S2 22 - "panel AppGrid"
 N0 "|grid.strand:4:1|#0" "panel@grid.strand:4"
@@ -30,7 +30,7 @@ n1 x=0 y=0 w=300 h=76 ord=1 bg=1a1b22e6
 n2 x=14 y=14 w=272 h=48 ord=2
 n3 x=14 y=14 w=48 h=48 ord=3 bg=333333ff
 k1
-s1 z=300,134 o=90,83
+s1 z=300,134 o=90,83 i=0,21,300,91
 n0 y=21 h=91
 n1 y=21 h=91
 n2 y=35 h=63
@@ -42,6 +42,7 @@ n7 x=72 y=93 w=32 h=48 op=0 sc=0.85,0.85 hid=opacity0 ord=9
 n8 x=114 y=35 w=32 h=48 op=0 sc=0.85,0.85 hid=opacity0 ord=6
 n9 x=72 y=43 w=32 h=32 v=73.78125,44.78125,28.453125,28.453125 op=37 ord=5 bg=61afefff
 k2
+s1 i=0,10,300,113
 n0 y=10 h=113
 n1 y=10 h=113
 n2 y=24 h=85
@@ -54,6 +55,7 @@ n8 y=24 v=115.78125,26.65625,28.453125,42.671875 op=37 sc=0.889,0.889 hid=-
 n9 y=32 v=72.859375,32.859375,30.265625,30.265625 op=98
 n10 x=114 y=32 w=32 h=32 v=115.78125,33.78125,28.453125,28.453125 op=37 ord=7 bg=61afefff
 k3
+s1 i=0,3,300,128
 n0 y=3 h=128
 n1 y=3 h=128
 n2 y=17 h=100
@@ -66,6 +68,7 @@ n8 y=17 v=114.859375,18.296875,30.265625,45.40625 op=98 sc=0.946,0.946
 n9 y=25 v=72.265625,25.265625,31.46875,31.46875 op=151
 n10 y=25 v=114.859375,25.859375,30.265625,30.265625 op=98
 k4
+s1 i=-
 n0 y=0 h=134
 n1 y=0 h=134
 n2 y=14 h=106

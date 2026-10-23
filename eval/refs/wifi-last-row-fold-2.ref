@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "wifi-last-row-fold-2"
 verdict good
-note "eval-coverage-3 first reference, read: at 2 the last network row leaves to height 0 and the content-sized card shrinks with it, its neighbour above giving up the gap, so nothing moves when it unmounts; then a middle row, then the row left last; the connected row stays put"
-date 2026-10-19
-rev "a7965714+changes"
+note "growth review: read against the reference, every box and value equal but the input region: while the box is drawn short of its buffer (held as something on it moves) the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: popup@shell.strand:8 k1-36 (12 frames, first i=0,0,200,139)"
+date 2026-10-23
+rev "abffdefe+changes"
 approver "claude"
 scenario 462785753d52b987
-seal 973999cc9880e073
+seal cae3a9774de1e2a4
 S1 0 - "bar Top"
 S2 0 - "popup@shell.strand:8"
 N0 "net_cafe|shell.strand:20:13|[Mock | DP-1]#2" "row#net_cafe"
@@ -39,23 +39,27 @@ n10 x=0 y=0 w=360 h=28 bg=191724ff
 n11 x=0 y=0 w=360 h=28 ord=1
 n12 srf=2 x=0 y=0 w=200 h=146
 k1 p2
+s2 i=0,0,200,139
 n1 h=21 op=218 hid=inert
 n4 h=139
 n9 y=113 op=218 hid=inert ink=16.5,115,34.5,10
 n12 h=139
 k2
+s2 i=0,0,200,128
 n1 h=10 op=157
 n4 h=128
 n6 y=14 h=16 ink=16.5,16,103,10
 n9 y=108 op=157 ink=16.5,110,34.5,10
 n12 h=128
 k3
+s2 i=0,0,200,118
 n1 y=107 h=3 op=104
 n4 h=118
 n6 y=15 h=15 ink=16.5,17,103,10
 n9 y=101 op=104 ink=16.5,103,34.5,10
 n12 h=118
 k4
+s2 i=0,0,200,112
 n1 y=104 h=0 op=65 bg=-
 n4 h=112
 n9 -
@@ -82,8 +86,9 @@ n1 hid=opacity0
 k15
 n1 -
 k16
-s2 z=200,112
+s2 z=200,112 i=-
 k17
+s2 i=0,0,200,105
 n0 y=69
 n2 h=21 op=218 hid=inert
 n4 h=105
@@ -91,6 +96,7 @@ n7 y=45 op=218 hid=inert ink=17,47.5,33.5,9.5
 n8 y=75 ink=16.5,77,26.5,10
 n12 h=105
 k18
+s2 i=0,0,200,94
 n0 y=58
 n2 h=10 op=157
 n4 h=94
@@ -98,6 +104,7 @@ n7 y=40 op=157 ink=17,42.5,33.5,9.5
 n8 y=65 ink=16.5,67,26.5,10
 n12 h=94
 k19
+s2 i=0,0,200,84
 n0 y=48
 n2 h=3 op=104
 n4 h=84
@@ -105,6 +112,7 @@ n7 y=36 op=104 ink=17,38.5,33.5,9.5
 n8 y=55 ink=16.5,57,26.5,10
 n12 h=84
 k20
+s2 i=0,0,200,78
 n0 y=42 ord=5
 n2 h=0 op=65 bg=-
 n4 h=78
@@ -135,23 +143,27 @@ n0 ord=4
 n2 -
 n8 ord=5
 k32
-s2 z=200,78
+s2 z=200,78 i=-
 k33
+s2 i=0,0,200,71
 n0 h=21 op=218 hid=inert
 n4 h=71
 n8 y=45 op=218 hid=inert ink=16.5,47,26.5,10
 n12 h=71
 k34
+s2 i=0,0,200,60
 n0 h=10 op=157
 n4 h=60
 n8 y=40 op=157 ink=16.5,42,26.5,10
 n12 h=60
 k35
+s2 i=0,0,200,50
 n0 y=39 h=3 op=104
 n4 h=50
 n8 y=33 op=104 ink=16.5,35,26.5,10
 n12 h=50
 k36
+s2 i=0,0,200,44
 n0 y=36 h=0 op=65 bg=-
 n4 h=44
 n8 -
@@ -178,4 +190,4 @@ n0 hid=opacity0
 k47
 n0 -
 k48
-s2 z=200,44
+s2 z=200,44 i=-

@@ -544,9 +544,18 @@ pub(crate) fn layout(
             // Where the smaller box's edge will be: the size it asks for
             // is its content's, up to a whole pixel (`refresh_specs`).
             let room = |have: f32, used: f32, f: f32| {
-                if exact {
-                    // Whole pixels, as every box is snapped: its anchored
-                    // edge is the frame's.
+                if exact && f >= 1.0 {
+                    // Anchored by its far edge: that edge is where the
+                    // frame's is snapped at rest, at any scale. The box
+                    // spans `used` rounded (boxes snap from the origin,
+                    // which stays whole), so the origin is the room
+                    // between the two rounded: at 1.25 a 68 px buffer is
+                    // 54.4 px, and a whole share of the unrounded room
+                    // left the edge a pixel past it, or short.
+                    have.round() - used.round()
+                } else if exact {
+                    // Whole pixels, as every box is snapped: an edge
+                    // anchored near is the frame's.
                     ((have - used) * f).round()
                 } else {
                     edge_shift(have, used.ceil(), f).max(0.0)

@@ -356,6 +356,11 @@ pub struct Flattened {
     /// (M6) The surface root draws something itself (a background, a
     /// border): its whole box takes input.
     pub root_paints: bool,
+    /// (growth) The surface root's box as drawn (paint offsets in, before
+    /// transforms), logical: with its laid-out box, where a content-sized
+    /// surface drawn short of its buffer takes input
+    /// (`Renderer::placed_root`).
+    pub root_box: Option<LogicalRect>,
     /// (replay-owner) Each node as drawn, for a flatten that asked
     /// ([`flatten_drawn`]): a glitch report's on-demand record, never a
     /// frame's (`None` then).

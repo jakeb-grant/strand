@@ -85,6 +85,13 @@ struct Host {
     surfaces: HashMap<NodeId, (SurfaceId, Buffer, u8)>,
     next: u32,
     k: u32,
+    /// The output's scale: buffers are `round(logical × scale)` pixels.
+    scale: Scale,
+    /// How many frames a configure at a new size comes after the spec
+    /// asked for it: the surface is painted at its old size meanwhile.
+    delay: u32,
+    /// Configures still to come: the buffer size and the frames left.
+    pending: HashMap<NodeId, (Size, u32)>,
 }
 
 impl Host {
@@ -93,12 +100,20 @@ impl Host {
     }
 
     fn with(r: Renderer, diff: SceneDiff, watch: NodeId) -> Host {
+        Host::at(r, diff, watch, Scale::ONE, 0)
+    }
+
+    /// At `scale`, each configure at a new size `delay` frames late.
+    fn at(r: Renderer, diff: SceneDiff, watch: NodeId, scale: Scale, delay: u32) -> Host {
         let mut h = Host {
             r,
             watch,
             surfaces: HashMap::new(),
             next: 100,
             k: 1,
+            scale,
+            delay,
+            pending: HashMap::new(),
         };
         h.apply(diff);
         h
@@ -125,26 +140,56 @@ impl Host {
                     continue;
                 }
                 let o = spec.overhang;
-                let size = Size::new(
-                    (spec.width.unwrap_or(1.0) + o.left + o.right) as u32,
-                    (spec.height.unwrap_or(1.0) + o.top + o.bottom) as u32,
+                let logical = LogicalSize::new(
+                    (spec.width.unwrap_or(1.0) + o.left + o.right).floor(),
+                    (spec.height.unwrap_or(1.0) + o.top + o.bottom).floor(),
                 );
+                let size = self.scale.physical_size(logical);
                 if !self.surfaces.contains_key(&node) {
                     self.next += 1;
                     let id = SurfaceId(self.next);
                     self.r.attach_surface(id, node);
                     self.surfaces
-                        .insert(node, (id, Buffer::new(size.w, size.h, Scale::ONE), 0));
-                    self.r.configure_surface(id, size, Scale::ONE);
+                        .insert(node, (id, Buffer::new(size.w, size.h, self.scale), 0));
+                    self.r.configure_surface(id, size, self.scale);
                     continue;
                 }
-                let (id, buf, age) = self.surfaces.get_mut(&node).unwrap();
-                if buf.size != size {
-                    *buf = Buffer::new(size.w, size.h, Scale::ONE);
-                    *age = 0;
-                    self.r.configure_surface(*id, size, Scale::ONE);
+                if self.surfaces[&node].1.size == size {
+                    self.pending.remove(&node);
+                } else if self.delay > 0 {
+                    self.pending.insert(node, (size, self.delay));
+                } else {
+                    self.configure(node, size);
                 }
             }
+        }
+    }
+
+    /// The surface manager's configure of `node`'s surface at `size`.
+    fn configure(&mut self, node: NodeId, size: Size) {
+        let scale = self.scale;
+        let Some((id, buf, age)) = self.surfaces.get_mut(&node) else {
+            return;
+        };
+        if buf.size != size {
+            *buf = Buffer::new(size.w, size.h, scale);
+            *age = 0;
+            self.r.configure_surface(*id, size, scale);
+        }
+    }
+
+    /// The configures whose delay ran out come.
+    fn deliver(&mut self) {
+        let mut due = Vec::new();
+        for (node, (size, left)) in self.pending.iter_mut() {
+            *left -= 1;
+            if *left == 0 {
+                due.push((*node, *size));
+            }
+        }
+        for (node, size) in due {
+            self.pending.remove(&node);
+            self.configure(node, size);
         }
     }
 
@@ -180,10 +225,11 @@ impl Host {
                 });
             }
         }
-        if !any {
+        if !any && self.pending.is_empty() {
             return None;
         }
         self.k += 1;
+        self.deliver();
         if self.r.has_surface_changes() {
             self.r.update();
             self.sync();
@@ -854,6 +900,357 @@ fn a_card_a_crossfade_leaves_alone_keeps_its_size() {
             (x - 940.0).abs() <= 3.0 && (y - 532.5).abs() <= 3.0,
             "stays centred on screen, but for the undershoot it rides: {x},{y} in {:?}",
             s.buf
+        );
+    }
+}
+
+/// A page fills its `pages`, and the `pages` its panel: as the panel
+/// springs, the page and its column follow the box, but the rows they
+/// hold keep their sizes at rest, as in any box that follows it. (They
+/// were squeezed to the box in flight: a row of `height: 30` drawn 19 px
+/// tall on the growth's first frame, the chain stopping at the `pages`.)
+#[test]
+fn a_page_in_a_springing_panel_keeps_its_rows() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Anchor, kw("center"))],
+    );
+    let pages = b.node(NodeKind::Pages, Some(root), vec![]);
+    let page = b.node(NodeKind::Page, Some(pages), vec![]);
+    let col = b.node(NodeKind::Col, Some(page), vec![(Prop::Gap, num(4.0))]);
+    let red = b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![
+            (Prop::Width, num(100.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.now().0, Size::new(100, 30));
+    let (d, green) = mount(col, 60, 1);
+    h.apply(d);
+    let shots = h.shots();
+    let hs: Vec<f32> = shots.iter().map(|s| s.rects[&root].h).collect();
+    springs(&hs, 30.0, 54.0);
+    for s in &shots {
+        assert!(s.clean, "nothing past the box: {:?}", s.rects[&root]);
+        assert_eq!(
+            (s.rects[&red].w, s.rects[&red].h),
+            (100.0, 30.0),
+            "the red row is never squeezed: {hs:?}"
+        );
+        assert_eq!(
+            (s.rects[&green].w, s.rects[&green].h),
+            (140.0, 20.0),
+            "nor the new one"
+        );
+        // The page and its column follow the box.
+        assert_eq!(s.rects[&page].h, s.rects[&root].h);
+        assert_eq!(s.rects[&col].h, s.rects[&root].h);
+    }
+}
+
+/// A `scroll` filling the panel's width follows it there, and what it
+/// holds keeps its size at rest across it as in any box that follows:
+/// a row half the scroll's width keeps its 70 px, never narrowed with
+/// the box in flight.
+#[test]
+fn a_scroll_in_a_springing_panel_keeps_its_rows() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Anchor, kw("center"))],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Gap, num(4.0))]);
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(10.0))],
+    );
+    let scroll = b.node(NodeKind::Scroll, Some(col), vec![(Prop::Height, num(30.0))]);
+    let half = b.node(
+        NodeKind::Box,
+        Some(scroll),
+        vec![
+            (Prop::Width, PropValue::Length(Length::Percent(50.0))),
+            (Prop::Height, num(30.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    assert_eq!(h.now().1.w, 100.0);
+    let (d, _) = mount(col, 60, 2);
+    h.apply(d);
+    let shots = h.shots();
+    let ws: Vec<f32> = shots.iter().map(|s| s.rects[&root].w).collect();
+    springs(&ws, 100.0, 140.0);
+    for s in &shots {
+        assert!(s.clean, "nothing past the box: {:?}", s.rects[&root]);
+        assert_eq!(s.rects[&scroll].w, s.rects[&root].w, "the scroll follows");
+        assert_eq!(s.rects[&half].w, 70.0, "its row keeps its width: {ws:?}");
+    }
+}
+
+/// A growth under `size: auto ~ instant` snaps what the box holds with
+/// it: the box takes its new size and place on the first frame, and the
+/// red row is drawn at its new place on screen from that frame on, whole
+/// (30 px tall), never glided from where the smaller box held it nor
+/// covered by the row that mounted below it. (Each row glided on its own
+/// from where it was on screen, the new one drawn at rest at once over
+/// the red row's bottom.)
+#[test]
+fn auto_instant_snaps_what_a_growth_moves() {
+    let (mut diff, root, col, red) = centred_panel(vec![]);
+    diff.push(SceneOp::SetProp {
+        id: root,
+        prop: Prop::Size,
+        value: kw("auto"),
+        transition: Transition::Instant,
+    });
+    let mut h = Host::new(diff, root);
+    h.run();
+    assert_eq!(h.now().0, Size::new(100, 30));
+    let (d, green) = mount_plain(col, 60, 1);
+    h.apply(d);
+    let shots = h.shots();
+    assert!(!shots.is_empty());
+    for s in &shots {
+        let r = s.rects[&root];
+        assert_eq!((r.w, r.h), (140.0, 54.0), "snaps: {r:?}");
+        assert_eq!(
+            s.red_on_screen(CENTRE),
+            [890, 513, 990, 543],
+            "the red row snaps"
+        );
+        let (gx, gy, _, _) = on_screen(s, green, CENTRE);
+        let (_, ry, _, rh) = on_screen(s, red, CENTRE);
+        assert!(gy >= ry + rh, "nothing covers the red row: {gx},{gy}");
+    }
+}
+
+/// While a centred panel's box springs larger inside its larger buffer,
+/// the margin the box has not reached yet passes the pointer through, as
+/// nothing is drawn there; the box takes it, and at rest the whole box.
+#[test]
+fn the_margin_a_growth_has_not_reached_passes_the_pointer() {
+    let (diff, root, col, red) = centred_panel(vec![]);
+    let mut h = Host::new(diff, root);
+    h.run();
+    let id = h.surfaces[&root].0;
+    let at = |x: f32, y: f32| LogicalPoint::new(x, y);
+    assert!(h.r.takes_input_at(id, at(1.0, 1.0)));
+    let (d, _) = mount(col, 60, 1);
+    h.apply(d);
+    let s = h.frame().expect("moving").expect("painted");
+    let r = s.rects[&root];
+    assert_eq!(s.buf, Size::new(140, 54));
+    assert!(
+        r.x >= 2.0 && r.y >= 2.0,
+        "the box has not reached the corner: {r:?}"
+    );
+    assert!(
+        !h.r.takes_input_at(id, at(1.0, 1.0)),
+        "the corner passes the pointer: {r:?}"
+    );
+    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    assert!(h.r.takes_input_at(id, at(cx, cy)), "the box takes it");
+    let rr = s.rects[&red];
+    assert!(h.r.takes_input_at(id, at(rr.x + 1.0, rr.y + 1.0)));
+    h.run();
+    assert!(
+        h.r.takes_input_at(id, at(1.0, 1.0)),
+        "at rest, the whole box"
+    );
+    assert!(h.r.takes_input_at(id, at(139.0, 53.0)));
+}
+
+/// An OSD takes no input (the surface manager gives it an empty region):
+/// growing, it asks for none of its own either.
+#[test]
+fn a_growing_osd_still_takes_no_input() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Osd,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Anchor, kw("center"))],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Gap, num(4.0))]);
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(30.0))],
+    );
+    let mut h = Host::new(b.diff, root);
+    h.run();
+    let id = h.surfaces[&root].0;
+    let (d, _) = mount(col, 60, 1);
+    h.apply(d);
+    let s = h.frame().expect("moving").expect("painted");
+    let r = s.rects[&root];
+    assert!(r.w < 139.5, "its box springs: {r:?}");
+    assert_eq!(
+        Painter::input_region(&h.r, id),
+        None,
+        "the manager's region stands"
+    );
+}
+
+/// At a fractional scale (1.25) a bottom OSD's box keeps its bottom edge
+/// where it rests at every size, growing as shrinking: the buffer's
+/// logical height is not whole (68 px is 54.4 px), and the box placed at
+/// a whole share of the room left its bottom past the buffer (or short
+/// of it), so its last row moved a device pixel and back.
+#[test]
+fn a_bottom_osd_keeps_its_edge_at_a_fractional_scale() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Osd,
+        None,
+        vec![(Prop::Bg, color("#1e1e2e")), (Prop::Anchor, kw("bottom"))],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(root),
+        vec![(Prop::Width, num(140.0)), (Prop::Gap, num(4.0))],
+    );
+    let red = b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+    );
+    let scale = Scale::new(150).expect("1.25");
+    let mut h = Host::at(renderer(), b.diff, root, scale, 0);
+    h.run();
+    // Where the box's bottom and the red row rest, from the buffer's
+    // bottom (device px).
+    let rest = |h: &Host| {
+        let (id, buf, _) = &h.surfaces[&root];
+        let r = h.r.boxes(*id).expect("laid out").rects[&root];
+        let [_, t, _, b] = red_bounds(buf).expect("red");
+        (
+            buf.size.h as i64 - t,
+            buf.size.h as i64 - b,
+            r.y + r.h,
+            buf.size.h,
+        )
+    };
+    let alone = rest(&h);
+    let (d, green) = mount_plain(col, 60, 0);
+    h.apply(d);
+    let grown = h.shots();
+    let both = rest(&h);
+    let mut d = SceneDiff::new();
+    d.remove(green);
+    h.apply(d);
+    let shrunk = h.shots();
+    assert_eq!(rest(&h), alone, "back where it was");
+    // Where the red row rests from the bottom of a buffer of each height.
+    let at_rest = |buf_h: u32| {
+        let r = [alone, both].into_iter().find(|r| r.3 == buf_h);
+        r.map(|r| (r.0, r.1)).expect("a buffer it rests in")
+    };
+    for (what, shots) in [("grows", &grown), ("shrinks", &shrunk)] {
+        assert!(shots.len() >= 4, "it {what} over several frames");
+        for s in shots {
+            let [_, t, _, b] = s.red.expect("red");
+            let h_px = s.buf.h as i64;
+            let r = s.rects[&root];
+            // Its top is cut while the spring's undershoot passes it.
+            let top = if r.y <= s.rects[&red].y {
+                h_px - t
+            } else {
+                at_rest(s.buf.h).0
+            };
+            assert_eq!(
+                (top, h_px - b),
+                at_rest(s.buf.h),
+                "as it {what}, the last row stays put: {:?} in {:?}",
+                s.red,
+                s.buf
+            );
+            let bottom = scale.logical_size(s.buf).h.round();
+            assert!(
+                (r.y + r.h - bottom).abs() < 1e-3,
+                "as it {what}, its bottom edge is where it rests ({bottom}): {r:?} in {:?}",
+                s.buf
+            );
+        }
+    }
+}
+
+/// A growth painted before its configure comes (the compositor is slow):
+/// the frames drawn in the old buffer show the box at its old size with
+/// its rows kept at their sizes, cut by it, never squeezed into it; once
+/// the configure comes the box springs from there.
+#[test]
+fn a_growth_before_its_configure_keeps_its_rows() {
+    let (diff, root, col, red) = centred_panel(vec![]);
+    let mut h = Host::at(renderer(), diff, root, Scale::ONE, 2);
+    h.run();
+    let (d, green) = mount(col, 60, 1);
+    h.apply(d);
+    let shots = h.shots();
+    let early: Vec<&Shot> = shots
+        .iter()
+        .filter(|s| s.buf == Size::new(100, 30))
+        .collect();
+    assert!(!early.is_empty(), "frames are painted before the configure");
+    for s in &shots {
+        assert!(s.clean, "nothing past the box: {:?}", s.rects[&root]);
+        assert_eq!(s.rects[&red].h, 30.0, "the red row is never squeezed");
+        assert_eq!(s.rects[&green].h, 20.0, "nor the new one");
+    }
+    for s in &early {
+        let r = s.rects[&root];
+        assert_eq!((r.w, r.h), (100.0, 30.0), "the old box: {r:?}");
+    }
+    let late: Vec<f32> = shots
+        .iter()
+        .filter(|s| s.buf == Size::new(140, 54))
+        .map(|s| s.rects[&root].h)
+        .collect();
+    springs(&late, 30.0, 54.0);
+}
+
+/// A popup open on an item of a panel that grows is anchored, once the
+/// panel rests, to the item's box at rest: never left at a box the item
+/// had only in a pass laid out in the old buffer (squeezed, and moved).
+#[test]
+fn a_popup_takes_its_anchor_at_rest_after_its_panel_grows() {
+    let (mut diff, root, col, _) = centred_panel(vec![]);
+    let item = NodeId::new(50, 0);
+    let popup = NodeId::new(51, 0);
+    let inner = NodeId::new(52, 0);
+    diff.create(item, NodeKind::Box, Some(col), u32::MAX)
+        .set(item, Prop::Width, num(40.0))
+        .set(item, Prop::Height, num(20.0));
+    diff.create(popup, NodeKind::Popup, Some(item), u32::MAX)
+        .set(popup, Prop::Bg, color("#1e1e2e"));
+    diff.create(inner, NodeKind::Box, Some(popup), u32::MAX)
+        .set(inner, Prop::Width, num(50.0))
+        .set(inner, Prop::Height, num(50.0));
+    for index in [0, 3] {
+        let mut h = Host::new(diff.clone(), root);
+        h.run();
+        let id = h.surfaces[&root].0;
+        let anchor = |h: &Host| h.r.surface_spec(popup).and_then(|s| s.anchor_rect);
+        let item_box = |h: &Host| h.r.boxes(id).expect("laid out").rects[&item];
+        assert_eq!(anchor(&h), Some(item_box(&h)));
+        let (d, _) = mount(col, 60, index);
+        h.apply(d);
+        h.run();
+        let rest = item_box(&h);
+        assert_eq!(
+            anchor(&h),
+            Some(rest),
+            "a row mounted at {index}: anchored to the item at rest"
         );
     }
 }

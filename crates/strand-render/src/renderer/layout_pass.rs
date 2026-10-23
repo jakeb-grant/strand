@@ -299,6 +299,42 @@ impl Renderer {
         Some((axes, self.resize_share_of(root)?))
     }
 
+    /// (growth) Where a content-sized panel's or popup's root takes
+    /// input on `surface`'s frame when its box lies inside its buffer's
+    /// box short of filling it on an axis (its box springs over a step in
+    /// the larger buffer, its content's springs move it, or a shrink holds
+    /// the buffer): its box as laid out and as drawn (a pose's offset
+    /// moves it), together, cut to the buffer's box. `None` for any other
+    /// surface or frame, and for one that takes no input (an OSD, a
+    /// tooltip: the surface manager gives it an empty region).
+    pub(super) fn placed_root(&self, surface: SurfaceId) -> Option<LogicalRect> {
+        let s = self.surfaces.get(&surface)?;
+        let spec = self.specs.get(&s.root)?;
+        if spec.kind == NodeKind::Osd || spec.tooltip {
+            return None;
+        }
+        self.stepped_root(s.root)?;
+        let frame = s.laid_frame?;
+        let r = *s.boxes.as_ref()?.rects.get(&s.root)?;
+        if !(r.w < frame.w - 0.5 || r.h < frame.h - 0.5) {
+            return None;
+        }
+        let drawn = s.cache.as_ref().and_then(|f| f.root_box);
+        let (mut x0, mut y0, mut x1, mut y1) = (r.x, r.y, r.x + r.w, r.y + r.h);
+        if let Some(d) = drawn.filter(|d| d.w > 0.0 && d.h > 0.0) {
+            (x0, y0) = (x0.min(d.x), y0.min(d.y));
+            (x1, y1) = (x1.max(d.x + d.w), y1.max(d.y + d.h));
+        }
+        let (x0, y0) = (x0.max(frame.x), y0.max(frame.y));
+        let (x1, y1) = (x1.min(frame.x + frame.w), y1.min(frame.y + frame.h));
+        Some(LogicalRect::new(
+            x0,
+            y0,
+            (x1 - x0).max(0.0),
+            (y1 - y0).max(0.0),
+        ))
+    }
+
     /// (growth) The curve a step of `root`'s box springs along on `axis`
     /// (0 the width, 1 the height): its `width`'s (`height`'s) transition,
     /// else `size`'s, else the default, `$motion.spatial` (design.md
@@ -372,6 +408,10 @@ impl Renderer {
         let asked = |v: Option<f32>, have: f32| v.is_none_or(|v| (v - have).abs() < 0.5);
         let asked =
             spec.is_some_and(|sp| sp.open && asked(sp.width, frame.w) && asked(sp.height, frame.h));
+        // Asking for a larger buffer than it has, its configure still to
+        // come (the compositor is slow, or a preview pass): drawn at the
+        // size it has, with what it holds kept as a step keeps it.
+        let early = s.awaits && s.painted && !self.anim.reduced() && spec.is_some_and(|sp| sp.open);
         // Measured once the size springs it holds have started: one that
         // waits (an `enter` pose's, in a preview with no clock) leaves the
         // step to the first pass it has started in.
@@ -384,7 +424,7 @@ impl Renderer {
         let Some(s) = self.surfaces.get(&id) else {
             return self.run_layout(root, fallback, info, sizes);
         };
-        if !measure && !kids && !held && !stepping {
+        if !measure && !kids && !held && !stepping && !early {
             self.anim.set_step_fills(root, None);
             return self.run_layout(root, fallback, info, sizes);
         }
@@ -395,15 +435,23 @@ impl Renderer {
             .map(|(d, _)| d)
             .or_else(|| old.map(|o| &o.rects));
         let was = drawn.and_then(|d| d.get(&root)).map(|r| [r.w, r.h]);
-        let drawn: HashMap<NodeId, [f32; 2]> = if stepping || measure {
+        let drawn: HashMap<NodeId, [f32; 2]> = if stepping || measure || early {
             drawn
                 .map(|d| d.iter().map(|(n, r)| (*n, [r.w, r.h])).collect())
                 .unwrap_or_default()
         } else {
             HashMap::new()
         };
-        // The content at its size in flight: laid out with the box free.
-        let free = self.run_layout(root, placed, info, sizes);
+        // The content at its size in flight: laid out with the box free
+        // (awaiting its configure, past the buffer it has: `placed` lays
+        // a box larger than its buffer at the buffer's size).
+        let early = early && !stepping;
+        let free = self.run_layout(
+            root,
+            if early { exact_of(placed) } else { placed },
+            info,
+            sizes,
+        );
         let Some(content) = free.rects.get(&root).map(|r| [r.w, r.h]) else {
             self.anim.set_step_fills(root, None);
             return free;
@@ -433,7 +481,14 @@ impl Renderer {
                 }
             }
         }
-        let step = self.anim.sample_step(root);
+        let mut step = self.anim.sample_step(root);
+        if early {
+            // Its box stays the buffer's where its content outgrew it; the
+            // step is measured from there once the configure comes.
+            let past =
+                |sized: bool, c: f32, have: f32| (sized && c - have > 0.5).then_some(have - c);
+            step = [past(cw, content[0], frame.w), past(ch, content[1], frame.h)];
+        }
         if step.iter().any(Option::is_some) {
             let (forced, chains) =
                 step_layout(&self.tree, root, (&free, &drawn), sizes, content, step);
@@ -455,7 +510,9 @@ impl Renderer {
                 }
             }
             let boxes = keep_far(&self.tree, root, &free, laid, &fills);
-            self.anim.set_step_fills(root, Some(fills));
+            // Awaiting its configure, nothing springs: the buffer cuts
+            // what passes it, and nothing clips what it holds besides.
+            self.anim.set_step_fills(root, (!early).then_some(fills));
             return boxes;
         }
         self.anim.set_step_fills(root, None);
@@ -546,8 +603,9 @@ impl Renderer {
                     && let Some((flip, all)) = &s.flip_open
                     && !reduced
                 {
+                    let placed = placed_in(&boxes, root, frame);
                     let drawn = match &s.drawn_boxes {
-                        Some((d, size)) => moved_by(d, buffer_shift(*size, logical, share)),
+                        Some((d, size)) => moved_by(d, buffer_shift(*size, logical, share, placed)),
                         None => moved_by(&old.rects, (0.0, 0.0)),
                     };
                     glide_moved(
@@ -687,12 +745,15 @@ impl Renderer {
             // (bottom-osd-shrink) Where a shrink moved the buffer's near
             // edge on screen: boxes are compared where they were drawn
             // on screen, not in the buffer.
+            let placed = placed_in(&boxes, root, frame);
             let shift = if resized {
-                buffer_shift(s.laid_size, logical, share)
+                buffer_shift(s.laid_size, logical, share, placed)
             } else {
                 (0.0, 0.0)
             };
-            let drawn_shift = base.as_ref().map(|b| buffer_shift(b.1, logical, share));
+            let drawn_shift = base
+                .as_ref()
+                .map(|b| buffer_shift(b.1, logical, share, placed));
             let laid_size = s.laid_size;
             s.laid_frame = Some(frame);
             s.laid_size = Some(logical);
@@ -871,8 +932,9 @@ fn exact_of(placed: RootSize) -> RootSize {
 /// its buffer was configured at is cut by the buffer), and the boxes that
 /// follow it there.
 /// A box follows its parent on an axis when it is a container with no
-/// size of its own there (from the root down, and not into a `scroll`,
-/// `list` or `pages`, which lay out their own) and either fills it (its box, with
+/// size of its own there (from the root down: into a `pages`, whose page
+/// fills it, and across a `scroll` or `list`, never down one, where what
+/// it holds scrolls) and either fills it (its box, with
 /// its margins, spans its parent's less the padding, at rest and where
 /// the last frame drew them: a card filling a panel) or is where the step is (the last frame drew it larger or
 /// smaller than it lies at rest by as much as the root: a grid that lost
@@ -919,6 +981,9 @@ fn step_layout(
             };
             let pad = resolved_insets(tree, n, Prop::Pad);
             let inner = span(nb, axis) - pad_sum(pad, axis);
+            // Down a `scroll` or `list` what it holds scrolls: nothing
+            // fills it there, and it all keeps its size at rest.
+            let scrolls = axis == 1 && matches!(node.kind, NodeKind::Scroll | NodeKind::List);
             for c in &node.children {
                 let (Some(cn), Some(cb)) = (tree.get(*c), free.rects.get(c)) else {
                     continue;
@@ -942,7 +1007,8 @@ fn step_layout(
                     }
                     _ => true,
                 };
-                let fill = !crate::layout::is_leaf(cn.kind)
+                let fill = !scrolls
+                    && !crate::layout::is_leaf(cn.kind)
                     && !own_size(cn, axis)
                     && (((outer - inner).abs() < 0.5 && was_fill) || stepped);
                 let e = forced.entry(*c).or_default();
@@ -953,10 +1019,9 @@ fn step_layout(
                 if fill {
                     e.size[axis] = Some((span(cb, axis) + d).max(0.0));
                     chains[axis].insert(*c);
-                    // A `scroll`, `list` or `pages` lays out its own.
-                    if !matches!(cn.kind, NodeKind::Scroll | NodeKind::List | NodeKind::Pages) {
-                        stack.push(*c);
-                    }
+                    // Into a `pages` too (its page fills it) and across a
+                    // `scroll` or `list` (its rows span it).
+                    stack.push(*c);
                 } else {
                     e.keep[axis] = Some(span(cb, axis));
                 }
@@ -1117,21 +1182,41 @@ fn moved_by(
 /// (bottom-osd-shrink) How far a resize from a buffer of logical size
 /// `was` to one of `now` moved the buffer's near edge on screen (`share`:
 /// the part of a resize each axis's near edge takes). (growth) A growth
-/// too: a content-sized surface's box is placed where the compositor
-/// keeps it in the larger buffer (`RootSize::Placed`), and nothing glides
-/// it by the compositor's move besides.
+/// too, on an axis where the surface's box is `placed` inside the larger
+/// buffer where the compositor keeps it (`RootSize::Placed`: its box
+/// springs, or its content's springs move it), so nothing glides it by
+/// the compositor's move besides. Where its box fills the larger buffer
+/// at once (`~ instant`, no step), it moved with the buffer's edge, and
+/// what it holds moved with it: it snaps, as the box does (no glide of
+/// its own from where each row was on screen).
 fn buffer_shift(
     was: Option<strand_scene::LogicalSize>,
     now: strand_scene::LogicalSize,
     share: Option<(f32, f32)>,
+    placed: (bool, bool),
 ) -> (f32, f32) {
     match (was, share) {
         (Some(was), Some((fx, fy))) => {
-            let shift = crate::layout::edge_shift;
-            (shift(was.w, now.w, fx), shift(was.h, now.h, fy))
+            let shift = |was: f32, now: f32, f: f32, placed: bool| {
+                let v = crate::layout::edge_shift(was, now, f);
+                if v < 0.0 && !placed { 0.0 } else { v }
+            };
+            (
+                shift(was.w, now.w, fx, placed.0),
+                shift(was.h, now.h, fy, placed.1),
+            )
         }
         _ => (0.0, 0.0),
     }
+}
+
+/// (growth) Per axis, whether the root's box in `boxes` lies inside its
+/// buffer's box `frame` short of filling it (placed where the compositor
+/// keeps it, [`buffer_shift`]).
+fn placed_in(boxes: &Boxes, root: NodeId, frame: LogicalRect) -> (bool, bool) {
+    boxes.rects.get(&root).map_or((false, false), |r| {
+        (r.w < frame.w - 0.5, r.h < frame.h - 0.5)
+    })
 }
 
 /// (launcher-flip-pass) What the FLIP passes since the last frame gave

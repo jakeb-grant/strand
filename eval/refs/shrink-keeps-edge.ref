@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shrink-keeps-edge"
 verdict good
-note "growth: read against the reference: the right-edge panel springs its height 41 -> 38 -> 36 -> 35 (k31-33) where the reference snapped; #time keeps its place on every frame"
+note "growth: read against the reference: the right-edge panel springs its height 41 -> 38 -> 36 -> 35 (k31-33) where the reference snapped; #time keeps its place on every frame; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Tray k17-34 (11 frames, first i=26,0,136,43)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 769a0bd2b95d09c1
-seal 84ab22bbaf34ab9f
+seal 5a6d922b1b6a59a7
 S1 0 - "osd Brightness"
 S2 0 - "panel Tray"
 N0 "chip|shell.strand:21:7|#0" "box#chip"
@@ -94,28 +94,33 @@ n5 y=17
 n9 y=0
 n10 y=0
 k17 p2
+s2 i=26,0,136,43
 n0 x=36 w=75 op=218 hid=inert
 n6 x=26 w=136
 n7 x=26 w=136
 n8 x=46 op=218 hid=inert ink=47,15,80,11
 k18
+s2 i=64,0,97,43
 n0 x=74 w=36 op=157
 n3 x=118 ink=118,15,32,11
 n6 x=64 w=97
 n7 x=64 w=97
 n8 x=84 op=157 ink=85,15,80,11
 k19
+s2 i=89,0,72,43
 n0 x=99 w=11 op=104
 n6 x=89 w=72
 n7 x=89 w=72
 n8 x=105 op=104 ink=106,15,80,11
 k20
+s2 i=108,0,53,43
 n0 x=118 w=0 op=65 bg=-
 n3 ord=3
 n6 x=108 w=53
 n7 x=108 w=53
 n8 -
 k21
+s2 i=109,0,53,43
 n0 x=119 op=39
 n3 x=119 ink=119,15,32,11
 n6 x=109
@@ -129,6 +134,7 @@ n0 op=8
 k25
 n0 op=4
 k26
+s2 i=108,0,53,43
 n0 x=118 op=2
 n3 x=118 ink=118,15,32,11
 n6 x=108
@@ -137,6 +143,7 @@ k27
 n0 op=1
 k28
 k29
+s2 i=109,0,53,43
 n0 x=119 op=0
 n3 x=119 ink=119,15,32,11
 n6 x=109
@@ -144,17 +151,21 @@ n7 x=109
 k30
 n0 hid=opacity0
 k31
+s2 i=109,1,53,41
 n0 -
 n3 ord=2
 n6 y=1 h=41
 n7 y=1 h=41
 k32
+s2 i=109,3,53,38
 n6 y=3 h=38
 n7 y=3 h=38
 k33
+s2 i=109,4,53,36
 n6 y=4 h=36
 n7 y=4 h=36
 k34
+s2 i=109,4,53,35
 n6 h=35
 n7 h=35
 k35
@@ -163,7 +174,7 @@ k37
 k38
 k39
 k40
-s2 z=53,35 o=563,223
+s2 z=53,35 o=563,223 i=-
 n3 x=10 y=10 ink=10,11,32,11
 n6 x=0 y=0
 n7 x=0 y=0

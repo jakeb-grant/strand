@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "spilling-texts-grow"
 verdict good
-note "growth: read against the reference: the panel and col#stack spring 160 -> 171 -> 179 -> 183 -> 182 (k15-20) where the reference snapped; the cards' own 1 px height overshoot is kept, cut by the buffer, where the frame squeezed it; every value at rest equal"
+note "growth: read against the reference: the panel and col#stack spring 160 -> 171 -> 179 -> 183 -> 182 (k15-20) where the reference snapped; the cards' own 1 px height overshoot is kept, cut by the buffer, where the frame squeezed it; every value at rest equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Cards k1-17 (9 frames, first i=0,0,260,174)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 975e1d5b29fd6435
-seal 68951f714f5fdfd5
+seal b0494fb33ec7d40e
 S1 0 - "panel Cards"
 N0 "ell_card|shell.strand:9:5|#1" "box#ell_card"
 N1 "heading|shell.strand:5:5|#0" "text#heading"
@@ -29,6 +29,7 @@ n6 x=10 y=33 w=90 h=72 ord=3 bg=313244ff
 n7 x=16 y=39 w=78 h=60 txt=S ord=4 ink=16,41,72,55 fit=78 fg=cdd6f4ff gl=["A\u0020message\u0020long\u0020enough\u0020to\u0020wrap\u0020onto\u0020several\u0020lines"]
 n8 x=0 y=0 w=260 h=182
 k1
+s1 i=0,0,260,174
 n0 y=105 w=124
 n2 y=140 w=124
 n3 y=140 w=124 ink=10,141,58,13
@@ -38,6 +39,7 @@ n6 w=124 h=64
 n7 w=112 h=52 ink=16,40,101,41 fit=112
 n8 h=174
 k2
+s1 i=0,0,260,163
 n0 y=94 w=173
 n2 y=129 w=173
 n3 y=129 w=173 ink=10,130,58,13
@@ -47,6 +49,7 @@ n6 w=173 h=53
 n7 w=161 h=41 ink=15,40,155,28 fit=161
 n8 h=163
 k3
+s1 i=0,0,260,155
 n0 y=86 w=206
 n2 y=121 w=206
 n3 y=121 w=206 ink=10,122,58,13
@@ -56,6 +59,7 @@ n6 w=206 h=45
 n7 w=194 h=33 ink=16,40,186,26 fit=194
 n8 h=155
 k4
+s1 i=0,0,260,152
 n0 y=83 w=220
 n2 y=118 w=220
 n3 y=118 w=220 ink=10,119,58,13
@@ -65,6 +69,7 @@ n6 w=220 h=42
 n7 w=208 h=30 fit=208
 n8 h=152
 k5
+s1 i=0,0,260,151
 n0 y=82 w=224
 n2 y=117 w=224
 n3 y=117 w=224 ink=10,118,58,13
@@ -81,6 +86,7 @@ n5 w=211
 n6 w=223
 n7 w=211 fit=211
 k7
+s1 i=0,0,260,152
 n0 y=83 w=222
 n2 y=118 w=222
 n3 y=118 w=222 ink=10,119,58,13
@@ -108,9 +114,9 @@ k11
 k12
 k13
 k14
-s1 z=260,152
+s1 z=260,152 i=-
 k15
-s1 z=260,182
+s1 z=260,182 i=0,0,260,160
 n0 y=91 w=186
 n2 y=126 w=186
 n3 y=126 w=186 ink=10,127,58,13
@@ -120,6 +126,7 @@ n6 w=186 h=50
 n7 w=174 h=38 ink=15,40,155,28 fit=174
 n8 h=160
 k16
+s1 i=0,0,260,171
 n0 y=102 w=137
 n2 y=137 w=137
 n3 y=137 w=137 ink=10,138,58,13
@@ -129,6 +136,7 @@ n6 w=137 h=61
 n7 w=125 h=49 ink=16,40,118,41 fit=125
 n8 h=171
 k17
+s1 i=0,0,260,179
 n0 y=110 w=104
 n2 y=145 w=104
 n3 y=145 w=104 ink=10,146,58,13
@@ -138,6 +146,7 @@ n6 w=104 h=69
 n7 w=92 h=57 ink=15,41,87,55 fit=92
 n8 h=179
 k18
+s1 i=-
 n0 y=113 w=90
 n2 y=148 w=90
 n3 y=148 w=90 ink=10,149,58,13

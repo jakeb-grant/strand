@@ -8076,12 +8076,12 @@ k62
 k63
 ref "m.enter-fade__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario a2e423be45447126
-seal 26bc204a5760daa5
+seal f289a6a1c30e44d4
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -8167,37 +8167,47 @@ n12 op=255
 n13 op=255
 k14
 k15 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k16
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k17
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k18
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k19
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k20
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k21
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k22
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k23
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k24
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k25
+s2 i=-
 n10 h=80
 n11 h=80
 k26
@@ -13757,12 +13767,12 @@ k54
 k55
 ref "m.enter-scale__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 262115a3f1723fe1
-seal 7c4dde71ca44323e
+seal 63d0ad655d85734c
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -13838,37 +13848,47 @@ n12 v=d sc=1,1
 n13 v=d
 k10
 k11 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k12
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k13
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k14
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k20
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k21
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -19706,12 +19726,12 @@ k62
 k63
 ref "m.enter-slide__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 0d3e1ce3a7c0f72a
-seal dc4edd80eaeb8806
+seal 4e1a7742280670f3
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -19797,37 +19817,47 @@ n12 op=255
 n13 op=255
 k14
 k15 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k16
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k17
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k18
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k19
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k20
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k21
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k22
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k23
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k24
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k25
+s2 i=-
 n10 h=80
 n11 h=80
 k26
@@ -25041,12 +25071,12 @@ k57
 k58
 ref "m.exit-fade__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario e2daad00ab3d3014
-seal 15591afa53f2993c
+seal 87ebb631392eec58
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -25105,37 +25135,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -29613,12 +29653,12 @@ k52
 k53
 ref "m.exit-height0__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 846ce9c7f056ff8d
-seal 4a025a092d0f4d06
+seal 5ebc63644a2860f5
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -29677,37 +29717,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -34379,12 +34429,12 @@ k57
 k58
 ref "m.exit-slide__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario c42b72dbd999167f
-seal 8f65d841bf0172f3
+seal e8367fe02e0e05cb
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -34443,37 +34493,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -39356,12 +39416,12 @@ k43
 k44
 ref "m.flip-nested__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 9d02aee96c02b651
-seal 200bb7a5c9cd5d28
+seal a8c821536bc57592
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -39442,7 +39502,7 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 n14 w=189
@@ -39457,6 +39517,7 @@ n22 x=37 ord=6
 n23 x=13 ord=9
 n24 x=27 ord=4
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 n14 w=219
@@ -39471,6 +39532,7 @@ n22 x=23
 n23 x=24
 n24 x=16
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 n14 w=239
@@ -39485,6 +39547,7 @@ n22 x=14
 n23 x=31
 n24 x=9
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 n14 w=248
@@ -39499,6 +39562,7 @@ n22 x=10
 n23 x=34
 n24 x=6
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 n14 w=250
@@ -39511,11 +39575,13 @@ n22 x=9
 n23 x=35
 n24 x=5
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 n16 x=36
 n20 x=38
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 n14 w=249
@@ -39524,18 +39590,22 @@ n22 x=10
 n23 x=34
 n24 x=6
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 n14 w=248
 n15 x=50
 n19 x=52
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -44638,12 +44708,12 @@ k43
 k44
 ref "m.flip-reorder__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario f1032dad219226af
-seal 0c9f54a8a1cadbfa
+seal fc8caf68569ab0a6
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
@@ -44734,7 +44804,7 @@ k7
 k8
 k9
 k10 p1,2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n9 x=107 ord=10
 n10 x=112 ord=8
 n11 x=105 ord=9
@@ -44742,6 +44812,7 @@ n12 x=110 ord=7
 n14 w=201 h=52
 n15 h=52
 k11
+s2 i=0,0,280,56
 n9 x=115
 n10 x=107
 n11 x=113
@@ -44749,6 +44820,7 @@ n12 x=105
 n14 w=231 h=56
 n15 h=56
 k12
+s2 i=0,0,280,60
 n9 x=120
 n10 x=104
 n11 x=118
@@ -44756,6 +44828,7 @@ n12 x=102
 n14 w=251 h=60
 n15 h=60
 k13
+s2 i=0,0,280,65
 n9 x=122
 n10 x=102
 n11 x=120
@@ -44763,28 +44836,35 @@ n12 x=100
 n14 w=260 h=65
 n15 h=65
 k14
+s2 i=0,0,280,69
 n9 x=123
 n11 x=121
 n14 w=262 h=69
 n15 h=69
 k15
+s2 i=0,0,280,72
 n9 x=122
 n11 x=120
 n14 h=72
 n15 h=72
 k16
+s2 i=0,0,280,75
 n14 w=261 h=75
 n15 h=75
 k17
+s2 i=0,0,280,77
 n14 w=260 h=77
 n15 h=77
 k18
+s2 i=0,0,280,78
 n14 h=78
 n15 h=78
 k19 p2
+s2 i=0,0,280,79
 n14 h=79
 n15 h=79
 k20
+s2 i=-
 n14 h=80
 n15 h=80
 k21
@@ -62475,12 +62555,12 @@ k63
 k64
 ref "m.popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 8833cf99b4757b68
-seal 574dbc9bf0aec774
+seal 94d3c308fcd71fb8
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62539,37 +62619,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -62617,12 +62707,12 @@ k41
 k42
 ref "m.popup-content-height__blur.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario a5b3061cdd2d0363
-seal 307336aa92c57486
+seal c4c3f01b84b62c87
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62681,37 +62771,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -62759,12 +62859,12 @@ k41
 k42
 ref "m.popup-content-height__clip.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 5d47ab02573ab958
-seal 0eefd047e962c6bc
+seal 0ea7ea7d6865fe05
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62823,37 +62923,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -62901,12 +63011,12 @@ k41
 k42
 ref "m.popup-content-height__colour-shift.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 5061511ceb52fc82
-seal 42c2a8413d75d56a
+seal a834780c08ba9b0f
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62965,47 +63075,57 @@ k7
 k8
 k9
 k10 p1,2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 n12 bg=4f7decff
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 n12 bg=7f9bcaff
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 n12 bg=aaafa6ff
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 n12 bg=c9bb85ff
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 n12 bg=dec269ff
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 n12 bg=ecc652ff
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 n12 bg=f4c93eff
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 n12 bg=f9ca2eff
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 n12 bg=fbcb22ff
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 n12 bg=fdcb17ff
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 n12 bg=fecc0fff
@@ -63055,12 +63175,12 @@ k41
 k42
 ref "m.popup-content-height__gpu.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 96ec8dcccc642fce
-seal 4426306855fa9a22
+seal 92ade5b54c1e7cd8
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63119,37 +63239,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -63197,12 +63327,12 @@ k41
 k42
 ref "m.popup-content-height__image.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario b9e5794c503aae0b
-seal fb40e4300f3f35d9
+seal 6d2190e1fac31bb6
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63262,7 +63392,7 @@ k8
 k9
 k10
 k11 p1,2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201 h=52
@@ -63270,6 +63400,7 @@ n11 h=52
 n12 w=20
 n13 w=20 im=0,-0.671875,20,13.328125@20,13
 k12
+s2 i=0,0,280,56
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231 h=56
@@ -63277,6 +63408,7 @@ n11 h=56
 n12 w=25
 n13 w=25 im=0,-2.328125,25,16.671875@20,13
 k13
+s2 i=0,0,280,60
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251 h=60
@@ -63284,6 +63416,7 @@ n11 h=60
 n12 w=28
 n13 w=28 im=0,-3.328125,28,18.671875@20,13
 k14
+s2 i=0,0,280,65
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260 h=65
@@ -63291,25 +63424,32 @@ n11 h=65
 n12 w=30
 n13 w=30 im=0,-4,30,20@20,13
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 n13 im=0,0,30,12@30,12
 k20 p2
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k21
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -63358,12 +63498,12 @@ k43
 k44
 ref "m.popup-content-height__jelly.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario b3d5d40fa475355c
-seal 4cba7fd5edfb263a
+seal 352a7beeb204186f
 S1 0 - "bar Top"
 S2 1 102 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63619,37 +63759,47 @@ k77
 n12 v=d
 n13 v=d
 k78 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k79
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k80
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k81
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k82
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k83
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k84
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k85
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k86
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k87
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k88
+s2 i=-
 n10 h=80
 n11 h=80
 k89
@@ -63697,12 +63847,12 @@ k109
 k110
 ref "m.popup-content-height__keyframes.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 923e78585fec402a
-seal 80fa63295d470e47
+seal 181e55785519a4c5
 S1 0 - "bar Top"
 S2 1 45 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63804,37 +63954,47 @@ n12 x=36 v=d
 n13 x=36 v=d ink=36,10,11,10
 k20
 k21 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k22
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k23
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k24
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k25
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k26
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k27
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k28
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k29
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k30
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k31
+s2 i=-
 n10 h=80
 n11 h=80
 k32
@@ -63882,12 +64042,12 @@ k52
 k53
 ref "m.popup-content-height__late-text-1.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario ca9cc7eebcf336fb
-seal fb622c1c952cfb47
+seal cdb33c1244670c1b
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63947,37 +64107,47 @@ k8
 k9
 k10
 k11 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k12
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k13
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k14
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k20
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k21
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -64025,12 +64195,12 @@ k42
 k43
 ref "m.popup-content-height__late-text-paint.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario ea3147408964ad43
-seal f6d7b1cd25df2e30
+seal cdc19fb60204c181
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64090,37 +64260,47 @@ k8
 k9
 k10
 k11 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k12
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k13
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k14
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k20
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k21
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -64168,12 +64348,12 @@ k42
 k43
 ref "m.popup-content-height__lean.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 5ffd8b3ce499624e
-seal ab773c4f172f960e
+seal cee6c400a888b83f
 S1 0 - "bar Top"
 S2 1 48 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64268,37 +64448,47 @@ k21
 n12 v=35.015625,8.234375,13.96875,16.53125 rot=8
 n13 v=35.015625,8.234375,13.96875,16.53125
 k24 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k25
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k26
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k27
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k28
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k29
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k30
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k31
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k32
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k33
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k34
+s2 i=-
 n10 h=80
 n11 h=80
 k35
@@ -64409,12 +64599,12 @@ n12 -
 n13 -
 ref "m.popup-content-height__reveal.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario ffa072797c826dde
-seal 9049ee5e04c99436
+seal 50f04f712efae9b1
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64474,37 +64664,47 @@ k8
 k9
 k10
 k11 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k12
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k13
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k14
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k20
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k21
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -64564,12 +64764,12 @@ k52
 k53
 ref "m.popup-content-height__roll-text.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 4faa534fbda9adb9
-seal 16fb04b7e544e2dc
+seal 200d9dc7e8b6b023
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64629,39 +64829,49 @@ k8
 k9
 k10
 k11 p1,2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 n13 ink=36,10,14,10 fg=ff00ffff/ff00ffff gl=["42","41[1]"]
 k12
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k13
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k14
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k15
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k16
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k17
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k18
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k19
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k20
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 n13 fg=ff00ffff gl=["42"]
 k21 p2
+s2 i=-
 n10 h=80
 n11 h=80
 k22
@@ -64710,12 +64920,12 @@ k43
 k44
 ref "m.popup-content-height__scale-1.5.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 2a5b89832638cce6
-seal 0d2b181881073621
+seal fabc92aeb8ff7a6f
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64774,37 +64984,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52 v=0,0,201.328125,52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56 v=0,0,231.328125,56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60 v=0,0,251.328125,60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65 v=0,0,260,65.328125
 n11 h=65 v=0,0,280,65.328125
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69 v=0,0,262,69.328125
 n11 h=69 v=0,0,280,69.328125
 k15
+s2 i=0,0,280,72
 n10 h=72 v=d
 n11 h=72 v=d
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75 v=0,0,261.328125,75.328125
 n11 h=75 v=0,0,280,75.328125
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77 v=0,0,260,77.328125
 n11 h=77 v=0,0,280,77.328125
 k18
+s2 i=0,0,280,78
 n10 h=78 v=d
 n11 h=78 v=d
 k19
+s2 i=0,0,280,79
 n10 h=79 v=0,0,260,79.328125
 n11 h=79 v=0,0,280,79.328125
 k20
+s2 i=-
 n10 h=80 v=d
 n11 h=80 v=d
 k21
@@ -64852,12 +65072,12 @@ k41
 k42
 ref "m.popup-content-height__scale-2.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario b8742dfc856657e6
-seal 6767a9ae08580c75
+seal 131ab4c441d6652d
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64916,37 +65136,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -64994,12 +65224,12 @@ k41
 k42
 ref "m.popup-content-height__scroll.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 92e4540393514029
-seal 4112320a67e4f411
+seal 833520b67f2dd794
 S1 0 - "bar Top"
 S2 1 55 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65216,37 +65446,47 @@ n13 y=12 v=d
 n19 y=26 v=d
 n20 y=40 v=d
 k31 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n15 w=201 h=52
 n16 h=52
 k32
+s2 i=0,0,280,56
 n15 w=231 h=56
 n16 h=56
 k33
+s2 i=0,0,280,60
 n15 w=251 h=60
 n16 h=60
 k34
+s2 i=0,0,280,65
 n15 w=260 h=65
 n16 h=65
 k35
+s2 i=0,0,280,69
 n15 w=262 h=69
 n16 h=69
 k36
+s2 i=0,0,280,72
 n15 h=72
 n16 h=72
 k37
+s2 i=0,0,280,75
 n15 w=261 h=75
 n16 h=75
 k38
+s2 i=0,0,280,77
 n15 w=260 h=77
 n16 h=77
 k39
+s2 i=0,0,280,78
 n15 h=78
 n16 h=78
 k40
+s2 i=0,0,280,79
 n15 h=79
 n16 h=79
 k41
+s2 i=-
 n15 h=80
 n16 h=80
 k42
@@ -65301,12 +65541,12 @@ k62
 k63
 ref "m.popup-content-height__shadow.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 8890d2eba5fdd750
-seal 5f5c68de302ce23a
+seal 7cbd6c184746a637
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65365,37 +65605,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k20
+s2 i=-
 n10 h=80
 n11 h=80
 k21
@@ -65443,12 +65693,12 @@ k41
 k42
 ref "m.popup-content-height__shared-morph.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 73b14144a7e8de60
-seal f1fd24fdc977b538
+seal df0e46976e42bf1a
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65539,37 +65789,47 @@ k14
 n13 x=36 v=d
 n14 x=36 v=d
 k15 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n11 w=201 h=52
 n12 h=52
 k16
+s2 i=0,0,280,56
 n11 w=231 h=56
 n12 h=56
 k17
+s2 i=0,0,280,60
 n11 w=251 h=60
 n12 h=60
 k18
+s2 i=0,0,280,65
 n11 w=260 h=65
 n12 h=65
 k19
+s2 i=0,0,280,69
 n11 w=262 h=69
 n12 h=69
 k20
+s2 i=0,0,280,72
 n11 h=72
 n12 h=72
 k21
+s2 i=0,0,280,75
 n11 w=261 h=75
 n12 h=75
 k22
+s2 i=0,0,280,77
 n11 w=260 h=77
 n12 h=77
 k23
+s2 i=0,0,280,78
 n11 h=78
 n12 h=78
 k24
+s2 i=0,0,280,79
 n11 h=79
 n12 h=79
 k25
+s2 i=-
 n11 h=80
 n12 h=80
 k26
@@ -65635,12 +65895,12 @@ k52
 n6 x=112 v=d
 ref "m.popup-content-height__slider-drag.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 242dd99421dd7367
-seal 48cfd1ed2ca29b01
+seal 3e173aa9dc7dbaee
 S1 0 - "bar Top"
 S2 1 54 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65744,37 +66004,47 @@ n7 pt=0,7,120,4/0,7,88.0625,4/80.0625,1,16,16
 k29
 n7 pt=0,7,120,4/0,7,88,4/80,1,16,16
 k30 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n12 w=201 h=52
 n13 h=52
 k31
+s2 i=0,0,280,56
 n12 w=231 h=56
 n13 h=56
 k32
+s2 i=0,0,280,60
 n12 w=251 h=60
 n13 h=60
 k33
+s2 i=0,0,280,65
 n12 w=260 h=65
 n13 h=65
 k34
+s2 i=0,0,280,69
 n12 w=262 h=69
 n13 h=69
 k35
+s2 i=0,0,280,72
 n12 h=72
 n13 h=72
 k36
+s2 i=0,0,280,75
 n12 w=261 h=75
 n13 h=75
 k37
+s2 i=0,0,280,77
 n12 w=260 h=77
 n13 h=77
 k38
+s2 i=0,0,280,78
 n12 h=78
 n13 h=78
 k39
+s2 i=0,0,280,79
 n12 h=79
 n13 h=79
 k40
+s2 i=-
 n12 h=80
 n13 h=80
 k41
@@ -65824,12 +66094,12 @@ k61
 k62
 ref "m.popup-content-height__stagger.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario f5a61c377ff74208
-seal b519340e27e082e0
+seal e16bb1ef12230f67
 S1 0 - "bar Top"
 S2 1 40 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65921,37 +66191,47 @@ k14
 n14 op=255
 k15
 k16 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k17
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k18
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k19
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k20
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k21
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k22
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k23
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k24
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k25
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k26
+s2 i=-
 n10 h=80
 n11 h=80
 k27
@@ -79093,12 +79373,12 @@ k57
 k58
 ref "m.size-spring__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 5fe6a96dc41cb2b2
-seal 6da585e3845d6ab4
+seal bd3f8c50b724f3e3
 S1 0 - "bar Top"
 S2 1 36 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -79157,37 +79437,47 @@ k7
 k8
 k9
 k10 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=186 h=52
 n11 h=52
 k11
+s2 i=0,0,280,56
 n10 w=200 h=56
 n11 h=56
 k12
+s2 i=0,0,280,60
 n10 w=216 h=60
 n11 h=60
 k13
+s2 i=0,0,280,65
 n10 w=231 h=65
 n11 h=65
 k14
+s2 i=0,0,280,69
 n10 w=243 h=69
 n11 h=69
 k15
+s2 i=0,0,280,72
 n10 w=252 h=72
 n11 h=72
 k16
+s2 i=0,0,280,75
 n10 w=258 h=75
 n11 h=75
 k17
+s2 i=0,0,280,77
 n10 w=262 h=77
 n11 h=77
 k18
+s2 i=0,0,280,78
 n10 w=263 h=78
 n11 h=78
 k19
+s2 i=0,0,280,79
 n10 w=264 h=79
 n11 h=79
 k20
+s2 i=-
 n10 w=263 h=80
 n11 h=80
 k21
@@ -87064,12 +87354,12 @@ k56
 k57
 ref "m.text-estimate-far__popup-content-height.60"
 verdict good
-note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; and (review) in the popup's input region on those same ticks: while its box is drawn short of its 280x80 buffer it takes input in that box alone (i=0,0,280,52 on the first, each the popup's box), its whole buffer again at rest; no other node or surface differs in any cell"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 735febf8259abc6c
-seal 05fdbde2c4d425ae
+seal d5c516f92e45295a
 S1 0 - "bar Top"
 S2 1 38 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -87136,37 +87426,47 @@ k11
 k12
 k13
 k14 p2
-s2 z=280,80
+s2 z=280,80 i=0,0,280,52
 n10 w=201 h=52
 n11 h=52
 k15
+s2 i=0,0,280,56
 n10 w=231 h=56
 n11 h=56
 k16
+s2 i=0,0,280,60
 n10 w=251 h=60
 n11 h=60
 k17
+s2 i=0,0,280,65
 n10 w=260 h=65
 n11 h=65
 k18
+s2 i=0,0,280,69
 n10 w=262 h=69
 n11 h=69
 k19
+s2 i=0,0,280,72
 n10 h=72
 n11 h=72
 k20
+s2 i=0,0,280,75
 n10 w=261 h=75
 n11 h=75
 k21
+s2 i=0,0,280,77
 n10 w=260 h=77
 n11 h=77
 k22
+s2 i=0,0,280,78
 n10 h=78
 n11 h=78
 k23
+s2 i=0,0,280,79
 n10 h=79
 n11 h=79
 k24
+s2 i=-
 n10 h=80
 n11 h=80
 k25

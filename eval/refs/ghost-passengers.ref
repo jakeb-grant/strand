@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "ghost-passengers"
 verdict good
-note "growth: read against the reference: the panel springs its height 125 -> 109 -> 99 -> 93 -> 94 (k14-20) where the reference snapped; the entry row and its passengers keep the reference's glide on every frame"
+note "growth: read against the reference: the panel springs its height 125 -> 109 -> 99 -> 93 -> 94 (k14-20) where the reference snapped; the entry row and its passengers keep the reference's glide on every frame; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel List k14-21 (6 frames, first i=0,0,240,125)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 8b9b5501a50a13cf
-seal 31110b8e1d0819d4
+seal 6f8d94ed2c3391ea
 S1 0 - "panel List"
 N0 "badge|shell.strand:11:9|[call]#0" "box#badge"
 N1 "badge|shell.strand:11:9|[chat]#0" "box#badge"
@@ -102,6 +102,7 @@ n6 ord=10
 n9 ord=9
 n10 -
 k14
+s1 i=0,0,240,125
 n0 y=89 ord=7
 n3 y=81 ord=6
 n4 -
@@ -110,6 +111,7 @@ n9 y=87 ord=8
 n12 h=125
 n13 h=125
 k15
+s1 i=0,0,240,109
 n0 y=73
 n3 y=65
 n6 y=71
@@ -117,6 +119,7 @@ n9 y=71
 n12 h=109
 n13 h=109
 k16
+s1 i=0,0,240,99
 n0 y=63
 n3 y=55
 n6 y=61
@@ -124,6 +127,7 @@ n9 y=61
 n12 h=99
 n13 h=99
 k17
+s1 i=0,0,240,94
 n0 y=58
 n3 y=50
 n6 y=56
@@ -131,6 +135,7 @@ n9 y=56
 n12 h=94
 n13 h=94
 k18
+s1 i=0,0,240,93
 n0 y=57
 n3 y=49
 n6 y=55
@@ -140,6 +145,7 @@ n13 h=93
 k19
 k20
 k21
+s1 i=0,0,240,94
 n0 y=58
 n3 y=50
 n6 y=56
@@ -149,4 +155,4 @@ n13 h=94
 k22
 k23
 k24
-s1 z=240,94
+s1 z=240,94 i=-

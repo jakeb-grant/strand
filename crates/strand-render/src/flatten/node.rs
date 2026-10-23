@@ -1580,6 +1580,7 @@ impl<'a> Flattener<'a> {
         // in its whole box, as drawn (below, once its subtree is drawn).
         if root {
             self.out.root_paints = (!ink.is_empty() || self.out.blur.len() > blur_start) && !inert;
+            self.out.root_box = Some(rect);
         }
         // (m6-owner-fixes, G-c) `hit: none`: no input in its own box;
         // its children take theirs, and stand for it in a hover popup's

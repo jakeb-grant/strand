@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "calendar-grid-144hz"
 verdict good
-note "growth: read against the reference tick by tick: the six-week month now springs the panel 205 -> 236 -> 235 (k189-205) with grid#days stepping inside it, and back 233 -> 202 -> 203 once the cells have faded (k297-312), where the reference snapped; no cell and no heading moves, every other value equal"
+note "growth: read against the reference tick by tick: the six-week month now springs the panel 205 -> 236 -> 235 (k189-205) with grid#days stepping inside it, and back 233 -> 202 -> 203 once the cells have faded (k297-312), where the reference snapped; no cell and no heading moves, every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Calendar k189-313 (21 frames, first i=0,0,244,205)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario a0b1db86aec4ac2d
-seal f198d1139a4f0efe
+seal a6727e9521a87906
 S1 0 - "panel Calendar"
 N0 "cal|shell.strand:7:3|#0" "col#cal"
 N1 "days|shell.strand:9:5|#0" "grid#days"
@@ -258,7 +258,7 @@ k144
 n14 bg=313244ff
 n31 bg=89b4faff
 k189
-s1 z=244,235
+s1 z=244,235 i=0,0,244,205
 n0 h=205
 n1 h=158
 n38 h=205
@@ -270,6 +270,7 @@ n43 x=140 y=195 w=28 h=28 op=8 hid=clipped ord=43 bg=313244ff
 n44 x=172 y=195 w=28 h=28 op=8 hid=clipped ord=44 bg=313244ff
 n45 x=204 y=195 w=28 h=28 op=8 hid=clipped ord=45 bg=313244ff
 k190
+s1 i=0,0,244,209
 n0 h=209
 n1 h=162
 n38 h=209
@@ -281,6 +282,7 @@ n43 op=27 hid=-
 n44 op=27 hid=-
 n45 op=27 hid=-
 k191
+s1 i=0,0,244,215
 n0 h=215
 n1 h=168
 n38 h=215
@@ -292,6 +294,7 @@ n43 op=52
 n44 op=52
 n45 op=52
 k192
+s1 i=0,0,244,220
 n0 h=220
 n1 h=173
 n38 h=220
@@ -303,6 +306,7 @@ n43 op=78
 n44 op=78
 n45 op=78
 k193
+s1 i=0,0,244,224
 n0 h=224
 n1 h=177
 n38 h=224
@@ -314,6 +318,7 @@ n43 op=103
 n44 op=103
 n45 op=103
 k194
+s1 i=0,0,244,228
 n0 h=228
 n1 h=181
 n38 h=228
@@ -325,6 +330,7 @@ n43 op=127
 n44 op=127
 n45 op=127
 k195
+s1 i=0,0,244,231
 n0 h=231
 n1 h=184
 n38 h=231
@@ -336,6 +342,7 @@ n43 op=148
 n44 op=148
 n45 op=148
 k196
+s1 i=0,0,244,233
 n0 h=233
 n1 h=186
 n38 h=233
@@ -347,6 +354,7 @@ n43 op=166
 n44 op=166
 n45 op=166
 k197
+s1 i=0,0,244,234
 n0 h=234
 n1 h=187
 n38 h=234
@@ -358,6 +366,7 @@ n43 op=182
 n44 op=182
 n45 op=182
 k198
+s1 i=-
 n0 h=235
 n1 h=188
 n38 h=235
@@ -728,6 +737,7 @@ n43 hid=opacity0 bg=-
 n44 hid=opacity0 bg=-
 n45 hid=opacity0 bg=-
 k297
+s1 i=0,0,244,233
 n0 h=233
 n1 h=186
 n38 h=233
@@ -739,42 +749,52 @@ n43 -
 n44 -
 n45 -
 k298
+s1 i=0,0,244,229
 n0 h=229
 n1 h=182
 n38 h=229
 k299
+s1 i=0,0,244,223
 n0 h=223
 n1 h=176
 n38 h=223
 k300
+s1 i=0,0,244,218
 n0 h=218
 n1 h=171
 n38 h=218
 k301
+s1 i=0,0,244,214
 n0 h=214
 n1 h=167
 n38 h=214
 k302
+s1 i=0,0,244,210
 n0 h=210
 n1 h=163
 n38 h=210
 k303
+s1 i=0,0,244,207
 n0 h=207
 n1 h=160
 n38 h=207
 k304
+s1 i=0,0,244,205
 n0 h=205
 n1 h=158
 n38 h=205
 k305
+s1 i=0,0,244,204
 n0 h=204
 n1 h=157
 n38 h=204
 k306
+s1 i=0,0,244,203
 n0 h=203
 n1 h=156
 n38 h=203
 k307
+s1 i=0,0,244,202
 n0 h=202
 n38 h=202
 k308
@@ -783,6 +803,7 @@ k310
 k311
 k312
 k313
+s1 i=0,0,244,203
 n0 h=203
 n38 h=203
 k314
@@ -792,4 +813,4 @@ k317
 k318
 k319
 k320
-s1 z=244,203
+s1 z=244,203 i=-

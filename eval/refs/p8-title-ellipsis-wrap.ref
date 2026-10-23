@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-title-ellipsis-wrap"
 verdict good
-note "growth: read against the reference: the card's panel springs 66 -> 89 -> 88 as the body wraps to three lines (k2-12) and back 80 -> 57 -> 58 (k13-18), where the reference snapped every segment in one tick; the later bar segments are the reference's shifted by those ticks"
+note "growth: read against the reference: the card's panel springs 66 -> 89 -> 88 as the body wraps to three lines (k2-12) and back 80 -> 57 -> 58 (k13-18), where the reference snapped every segment in one tick; the later bar segments are the reference's shifted by those ticks; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Card k2-19 (9 frames, first i=0,0,300,66)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 2dcee18b2222871b
-seal fad12d7b5e894aae
+seal 0fc5d458c8b82814
 S1 0 - "panel Card"
 S2 0 - "bar Top"
 N0 "body|shell.strand:21:5|#1" "text#body"
@@ -35,17 +35,20 @@ n2 x=272 w=120 ink=272,11,116,11 fit=120 gl=["~/projects/strand/docs/design.md"]
 n3 w=200 ink=8,9,193,13 fit=200 gl=["Firefox\u0020—\u0020Strand\u0020design\u0020doc:\u0020shell\u0020toolkit,\u0020first\u0020principles"]
 n4 x=216 w=48
 k2 p1
-s1 z=300,88
+s1 z=300,88 i=0,0,300,66
 n0 h=45 ink=12,32,267,43 fit=276 gl=["I\u0020went\u0020through\u0020the\u0020review\u0020comments\u0020and\u0020most\u0020are\u0020small,\u0020but\u0020the\u0020one\u0020about\u0020the\u0020layout\u0020pass\u0020needs\u0020a\u0020proper\u0020answer\u0020before\u0020we\u0020merge,\u0020so\u0020can\u0020we\u0020talk\u0020about\u0020it\u0020after\u0020lunch\u0020tomorrow,\u0020maybe\u0020around\u0020two?"]
 n1 h=66
 n5 h=66
 k3
+s1 i=0,0,300,77
 n1 h=77
 n5 h=77
 k4
+s1 i=0,0,300,85
 n1 h=85
 n5 h=85
 k5
+s1 i=-
 n1 h=88
 n5 h=88
 k6
@@ -63,30 +66,36 @@ n2 ink=272,11,120,11 gl=["~/projects/strand/crates/strand-render/src/renderer/te
 n3 w=179 ink=8,9,178,13 fit=- gl=["Terminal\u0020—\u0020~/projects/strand"]
 n4 x=195 w=69
 k13 p1
+s1 i=0,0,300,80
 n0 h=15 ink=13,32,42,11 fit=- gl=["Lunch?"]
 n1 h=80
 n5 h=80
 k14
+s1 i=0,0,300,69
 n1 h=69
 n5 h=69
 k15
+s1 i=0,0,300,61
 n1 h=61
 n5 h=61
 k16
+s1 i=0,0,300,58
 n1 h=58
 n5 h=58
 k17
+s1 i=0,0,300,57
 n1 h=57
 n5 h=57
 k18
 k19
+s1 i=0,0,300,58
 n1 h=58
 n5 h=58
 k20
 k21
 k22
 k23
-s1 z=300,58
+s1 z=300,58 i=-
 k24 p2
 n2 x=382 w=10 ink=382,11,10,9 fit=- gl=["~/"]
 n3 w=30 ink=8,9,30,11 gl=["Files"]

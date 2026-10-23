@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-click-away"
 verdict good
-note "first reference (integration-r8, popup click-away): read: a click on the clock opens the calendar popup (fades in from 4 px up), a second click on the clock closes it (its own handler, not reopened), a third opens it, and a click on the bar's right side closes it as a click away; every rule passes"
-date 2026-10-20
-rev "6a99b771+changes"
+note "growth review: read against the reference, every box and value equal but the input region: while the box is drawn short of its buffer (held as something on it moves) the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: popup@bar.strand:8 k1-1 (1 frames, first i=0,0,160,56); popup@bar.strand:8 k31-31 (1 frames, first i=0,0,160,56)"
+date 2026-10-23
+rev "abffdefe+changes"
 approver "claude"
 scenario d16f825c3555857b
-seal 758cb2eb1ab52536
+seal 8e9f0b96c1408cff
 S1 0 - "bar Top"
 S2 1 30 "popup@bar.strand:8"
 S3 31 60 "popup@bar.strand:8"
@@ -27,7 +27,7 @@ n2 x=92 y=15 w=242 h=0 ord=3
 n3 x=0 y=0 w=360 h=30 bg=faf9ffff
 n4 x=0 y=0 w=360 h=30 ord=1
 k1 p2
-s2 z=160,58 o=0,36
+s2 z=160,58 o=0,36 i=0,0,160,56
 n5 srf=2 x=0 y=-4 w=160 h=56 op=0 hid=opacity0 ord=1
 n6 srf=2 x=0 y=0 w=160 h=56
 k2
@@ -81,7 +81,7 @@ n7 op=255
 n8 op=255
 k15
 k16
-s2 z=160,56
+s2 z=160,56 i=-
 k17
 n5 y=-1 op=218 hid=inert
 n7 y=7 op=218 hid=inert ink=8,9,69,15
@@ -137,7 +137,7 @@ n5 hid=opacity0 bg=- bd=-
 n7 -
 n8 -
 k31 p3
-s3 z=160,58 o=0,36
+s3 z=160,58 o=0,36 i=0,0,160,56
 n5 srf=3
 n6 srf=3
 k32
@@ -191,7 +191,7 @@ n7 op=255
 n8 op=255
 k45
 k46
-s3 z=160,56
+s3 z=160,56 i=-
 k47
 n5 y=-1 op=218 hid=inert
 n7 y=7 op=218 hid=inert ink=8,9,69,15

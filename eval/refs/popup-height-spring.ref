@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-height-spring"
 verdict good
-note "growth: read against the reference: the popup's box springs 74 -> 141 -> 140 (k2-19) with its card where the reference held the 140 px buffer; nothing inside moves"
+note "growth: read against the reference: the popup's box springs 74 -> 141 -> 140 (k2-19) with its card where the reference held the 140 px buffer; nothing inside moves; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: popup#pop k2-45 (23 frames, first i=0,0,160,74)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario a951d72f1c30d5ea
-seal e7e824e5863ff5a2
+seal 5483349d78a35178
 S1 0 - "bar Top"
 S2 1 53 "popup#pop"
 N0 "anchor|shell.strand:7:5|[Mock | DP-1]#1" "box#anchor"
@@ -32,57 +32,67 @@ n6 srf=2 x=8 y=34 w=144 h=10 ord=3 bg=2e3440ff
 n7 srf=2 x=8 y=50 w=144 h=12 ord=4 bg=c678ddff
 n8 srf=2 x=0 y=0 w=160 h=70
 k2
-s2 z=160,140
+s2 z=160,140 i=0,0,160,74
 n4 h=74
 n6 h=14
 n7 y=54
 n8 h=74
 k3
+s2 i=0,0,160,83
 n4 h=83
 n6 h=23
 n7 y=63
 n8 h=83
 k4
+s2 i=0,0,160,94
 n4 h=94
 n6 h=34
 n7 y=74
 n8 h=94
 k5
+s2 i=0,0,160,105
 n4 h=105
 n6 h=45
 n7 y=85
 n8 h=105
 k6
+s2 i=0,0,160,114
 n4 h=114
 n6 h=54
 n7 y=94
 n8 h=114
 k7
+s2 i=0,0,160,122
 n4 h=122
 n6 h=62
 n7 y=102
 n8 h=122
 k8
+s2 i=0,0,160,128
 n4 h=128
 n6 h=68
 n7 y=108
 n8 h=128
 k9
+s2 i=0,0,160,133
 n4 h=133
 n6 h=73
 n7 y=113
 n8 h=133
 k10
+s2 i=0,0,160,136
 n4 h=136
 n6 h=76
 n7 y=116
 n8 h=136
 k11
+s2 i=0,0,160,138
 n4 h=138
 n6 h=78
 n7 y=118
 n8 h=138
 k12
+s2 i=-
 n4 h=140
 n6 h=80
 n7 y=120
@@ -110,61 +120,73 @@ k24
 k25
 k26
 k27
+s2 i=0,0,160,136
 n4 h=136
 n6 h=76
 n7 y=116
 n8 h=136
 k28
+s2 i=0,0,160,127
 n4 h=127
 n6 h=67
 n7 y=107
 n8 h=127
 k29
+s2 i=0,0,160,116
 n4 h=116
 n6 h=56
 n7 y=96
 n8 h=116
 k30
+s2 i=0,0,160,105
 n4 h=105
 n6 h=45
 n7 y=85
 n8 h=105
 k31
+s2 i=0,0,160,96
 n4 h=96
 n6 h=36
 n7 y=76
 n8 h=96
 k32
+s2 i=0,0,160,88
 n4 h=88
 n6 h=28
 n7 y=68
 n8 h=88
 k33
+s2 i=0,0,160,82
 n4 h=82
 n6 h=22
 n7 y=62
 n8 h=82
 k34
+s2 i=0,0,160,77
 n4 h=77
 n6 h=17
 n7 y=57
 n8 h=77
 k35
+s2 i=0,0,160,74
 n4 h=74
 n6 h=14
 n7 y=54
 n8 h=74
 k36
+s2 i=0,0,160,72
 n4 h=72
 n6 h=12
 n7 y=52
 n8 h=72
 k37
+s2 i=0,0,160,70
 n4 h=70
 n6 h=10
 n7 y=50
 n8 h=70
 k38
+s2 i=0,0,160,69
 n4 h=69
 n6 h=9
 n7 y=49
@@ -176,6 +198,7 @@ k42
 k43
 k44
 k45
+s2 i=0,0,160,70
 n4 h=70
 n6 h=10
 n7 y=50
@@ -187,4 +210,4 @@ k49
 k50
 k51
 k52
-s2 z=160,70
+s2 z=160,70 i=-

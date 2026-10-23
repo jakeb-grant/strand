@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-card-resize-150"
 verdict good
-note "growth: read against the reference: the panel and col#card spring 101 -> 132 -> 131.3 (k1-6) where the reference snapped; #body's own spring now keeps its 65.3 overshoot (k5-6, cut by the buffer) where the frame squeezed it to 64, #foot riding it 1.3 px; #label's 1.3 px rounding step at 1.5 now falls at k7 not k5; the settled segment is still"
+note "growth: read against the reference: the panel and col#card spring 101 -> 132 -> 131.3 (k1-6) where the reference snapped; #body's own spring now keeps its 65.3 overshoot (k5-6, cut by the buffer) where the frame squeezed it to 64, #foot riding it 1.3 px; #label's 1.3 px rounding step at 1.5 now falls at k7 not k5; the settled segment is still; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Card k1-17 (9 frames, first i=19,0,180,101)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 9a64844c76557e62
-seal 28f5bc760e8dd10a
+seal f54fc13428a4acca
 S1 0 - "panel Card"
 N0 "body|shell.strand:10:5|#0" "box#body"
 N1 "card|shell.strand:4:3|#0" "col#card"
@@ -25,22 +25,25 @@ n4 x=29 y=13 w=14 h=14 v=29.328125,13.328125,14,14 ord=3 bg=e5c07bff
 n5 x=49 y=13 w=42 h=15 v=49.328125,13.328125,42,14.671875 txt=S ord=4 ink=50,16,40.671875,12.671875 fg=eeeeeeff gl=["Battery"]
 n6 x=19 y=0 w=180 h=90 v=19.328125,0,180,90
 k1
-s1 z=218,154
+s1 z=218,154 i=19,0,180,101
 n0 h=34 v=29.328125,38,160,34
 n1 h=101 v=19.328125,0,180,101.328125 sh=00000066@0.671875,-14.671875,217.328125,138.671875
 n2 y=80 v=29.328125,80,160,11.328125
 n6 h=101 v=19.328125,0,180,101.328125
 k2
+s1 i=19,0,180,116
 n0 h=49 v=29.328125,38,160,49.328125
 n1 h=116 v=19.328125,0,180,116 sh=00000066@0.671875,-14.671875,217.328125,153.328125
 n2 y=95 v=29.328125,95.328125,160,10.671875
 n6 h=116 v=19.328125,0,180,116
 k3
+s1 i=19,0,180,126
 n0 h=59 v=29.328125,38,160,59.328125
 n1 h=126 v=19.328125,0,180,126 sh=00000066@0.671875,-14.671875,217.328125,163.328125
 n2 y=105 v=29.328125,105.328125,160,10.671875
 n6 h=126 v=19.328125,0,180,126
 k4
+s1 i=-
 n0 h=64 v=29.328125,38,160,64
 n1 h=131 v=19.328125,0,180,131.328125 sh=00000066@0.671875,-14.671875,217.328125,168.671875
 n2 y=110 v=29.328125,110,160,11.328125
@@ -62,32 +65,38 @@ k9
 k10
 n5 y=13 v=49.328125,13.328125,42,14.671875 ink=50,16,40.671875,12.671875
 k11
+s1 i=19,0,180,120
 n0 h=53 v=29.328125,38,160,53.328125
 n1 h=120 v=19.328125,0,180,120 sh=00000066@0.671875,-14.671875,217.328125,157.328125
 n2 y=99 v=29.328125,99.328125,160,10.671875
 n6 h=120 v=19.328125,0,180,120
 k12
+s1 i=19,0,180,105
 n0 h=38 v=29.328125,38,160,38
 n1 h=105 v=19.328125,0,180,105.328125 sh=00000066@0.671875,-14.671875,217.328125,142.671875
 n2 y=84 v=29.328125,84,160,11.328125
 n6 h=105 v=19.328125,0,180,105.328125
 k13
+s1 i=19,0,180,95
 n0 h=28 v=29.328125,38,160,28
 n1 h=95 v=19.328125,0,180,95.328125 sh=00000066@0.671875,-14.671875,217.328125,132.671875
 n2 y=74 v=29.328125,74,160,11.328125
 n6 h=95 v=19.328125,0,180,95.328125
 k14
+s1 i=19,0,180,90
 n0 h=23 v=29.328125,38,160,23.328125
 n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
 n2 y=69 v=29.328125,69.328125,160,10.671875
 n6 h=90 v=19.328125,0,180,90
 k15
+s1 i=19,0,180,89
 n0 h=22 v=29.328125,38,160,22
 n1 h=89 v=19.328125,0,180,89.328125 sh=00000066@0.671875,-14.671875,217.328125,126.671875
 n2 y=68 v=29.328125,68,160,11.328125
 n6 h=89 v=19.328125,0,180,89.328125
 k16
 k17
+s1 i=19,0,180,90
 n0 h=23 v=29.328125,38,160,23.328125
 n1 h=90 v=19.328125,0,180,90 sh=00000066@0.671875,-14.671875,217.328125,127.328125
 n2 y=69 v=29.328125,69.328125,160,10.671875
@@ -96,4 +105,4 @@ k18
 k19
 k20
 k21
-s1 z=218,113
+s1 z=218,113 i=-

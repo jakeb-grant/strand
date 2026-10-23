@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "wallpaper-fill-preview"
 verdict good
-note "growth: read against the reference: the panel and its row spring their width 311 -> 347 -> 371 -> 385 -> 382 (k1-7) where the reference snapped; the preview and its stand-in decode are the reference's"
+note "growth: read against the reference: the panel and its row spring their width 311 -> 347 -> 371 -> 385 -> 382 (k1-7) where the reference snapped; the preview and its stand-in decode are the reference's; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Walls k1-21 (11 frames, first i=0,0,311,180)"
 date 2026-10-23
-rev "94d165c6+changes"
+rev "abffdefe+changes"
 approver "claude"
 scenario 2f2d8cc9d41007c5
-seal 49535abd4945f096
+seal 100df47f82125376
 S1 0 - "panel Walls"
 N0 "lock|shell.strand:8:7|#0" "image#lock"
 N1 "whole|shell.strand:5:5|#0" "image#whole"
@@ -23,25 +23,28 @@ n3 x=0 y=0 w=286 h=180 ord=1 bg=181825ff
 n4 x=180 y=10 w=96 h=75 ord=3
 n5 x=180 y=10 w=96 h=15 txt=S ord=4 ink=181,11,69,11 fg=cdd6f4ff gl=["Lock\u0020screen"]
 k1
-s1 z=382,180
+s1 z=382,180 i=0,0,311,180
 n0 w=121 h=68 im=0,-17,121,102@160,160
 n2 w=311
 n3 w=311
 n4 w=121 h=89
 n5 w=121
 k2
+s1 i=0,0,347,180
 n0 w=157 h=89 im=0,-22.25,157,133.5@160,160
 n2 w=347
 n3 w=347
 n4 w=157 h=110
 n5 w=157
 k3
+s1 i=0,0,371,180
 n0 w=181 h=102 im=0,-25.5,181,153@160,160
 n2 w=371
 n3 w=371
 n4 w=181 h=123
 n5 w=181
 k4
+s1 i=-
 n0 w=192 h=108 im=0,-27,192,162@160,160
 n2 w=382
 n3 w=382
@@ -78,48 +81,56 @@ k12
 k13
 n0 im=0,0,192,108@192,108
 k14
+s1 i=0,0,357,180
 n0 w=167 h=94 im=0,0,167,94@192,108
 n2 w=357
 n3 w=357
 n4 w=167 h=115
 n5 w=167
 k15
+s1 i=0,0,321,180
 n0 w=131 h=73 im=0,-18.25,131,109.5@160,160
 n2 w=321
 n3 w=321
 n4 w=131 h=94
 n5 w=131
 k16
+s1 i=0,0,297,180
 n0 w=107 h=60 im=0,-15,107,90@160,160
 n2 w=297
 n3 w=297
 n4 w=107 h=81
 n5 w=107
 k17
+s1 i=0,0,286,180
 n0 w=96 h=54 im=0,0,96,54@96,54
 n2 w=286
 n3 w=286
 n4 w=96 h=75
 n5 w=96
 k18
+s1 i=0,0,283,180
 n0 w=93 h=52 im=0,0,93,52@96,54
 n2 w=283
 n3 w=283
 n4 w=93 h=73
 n5 w=93
 k19
+s1 i=0,0,284,180
 n0 w=94 h=53 im=0,0,94,53@96,54
 n2 w=284
 n3 w=284
 n4 w=94 h=74
 n5 w=94
 k20
+s1 i=0,0,285,180
 n0 w=95 im=0,0,95,53@96,54
 n2 w=285
 n3 w=285
 n4 w=95
 n5 w=95
 k21
+s1 i=0,0,286,180
 n0 w=96 h=54 im=0,0,96,54@96,54
 n2 w=286
 n3 w=286
@@ -131,4 +142,4 @@ k24
 k25
 k26
 k27
-s1 z=286,180
+s1 z=286,180 i=-
