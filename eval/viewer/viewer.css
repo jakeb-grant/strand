@@ -246,8 +246,8 @@ body.replay .track .m.report, body.replay .track.timeline .m.cur, body.replay .t
 .clip-label { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
 .clip-list .remove { margin-left: auto; }
 .clip-out { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
-pre.cmd:empty { display: none; }
+#clip pre.cmd:empty { display: none; }
 .clip-text { max-height: 40vh; overflow: auto; white-space: pre; font-size: 12px; }
-.mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; overflow-wrap: anywhere; }
+#clip .mono { overflow-wrap: anywhere; }
 .byhand { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12px; }
 .offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }

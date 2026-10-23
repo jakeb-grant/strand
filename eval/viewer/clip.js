@@ -12,9 +12,11 @@ var StrandClip = (function () {
 
   // Logical px kept around the selection when its frames are cropped.
   var MARGIN = 8;
-  // A tick is in the slice within half a ms of its ends: the spec keeps
-  // times to the ms, and ticks are 4 ms apart or more.
-  var SLACK_MS = 0.5;
+  // A tick is in the slice within a ms of its ends: a time in the spec
+  // is kept to the ms (half a ms off at most, and the window's length
+  // has digits past the ms), and ticks are 4 ms apart or more. A tick
+  // (`k5226`) is exact.
+  var SLACK_MS = 1;
   // Rest boxes this close to the drawn box (1/128 px, under the trace's
   // quantum) read `same`.
   var SAME = 1 / 128;
@@ -98,21 +100,24 @@ var StrandClip = (function () {
 
   // ---- the spec ---------------------------------------------------------------
 
-  // A time: seconds before the report (`-3.2`, `-3.2s`, `-3200ms`) or a
-  // tick (`k5226`), as seconds before the report to the ms.
+  // A time: seconds before the report (`-3.2`, `-3.2s`, `-3200ms`), to
+  // the ms, or a tick (`k5226`), exact: `{t}` seconds before the report
+  // (to the ms, as the text shows it), `{ms}` into the window (a tick's
+  // own, never rounded) and `{k}` the tick given (else null).
   function timeOf(v, what, W, period) {
-    var t = null;
+    var t = null, k = null;
     if (typeof v === 'number') t = v;
     else if (typeof v === 'string') {
       var s = v.trim(), m;
-      if ((m = /^k(\d+)$/.exec(s))) t = +m[1] * period / 1e9 - W;
+      if ((m = /^k(\d+)$/.exec(s))) { k = +m[1]; t = k * period / 1e9 - W; }
       else if ((m = /^([+-]?(?:\d+\.?\d*|\.\d+))(s|ms)?$/.exec(s))) t = m[2] === 'ms' ? +m[1] / 1000 : +m[1];
     }
     if (t === null || !isFinite(t)) {
       refuse('spec', what + ' ' + JSON.stringify(v) + ': seconds before the report (-3.2s, -3200ms) or a tick (k5226)');
     }
     t = Math.round(t * 1000) / 1000;
-    return t === 0 ? 0 : t;
+    if (t === 0) t = 0;
+    return { t: t, ms: k !== null ? k * period / 1e6 : (t + W) * 1000, k: k };
   }
 
   // The nodes a selector names: a key, `#id`, or a config place
@@ -202,18 +207,39 @@ var StrandClip = (function () {
     var W = F.window.seconds;
     var hz = (t.scenario && t.scenario.hz) || 60;
     var period = Math.floor(1e9 / hz);
-    var from = timeOf(spec.from, '--from', W, period);
-    var to = spec.to === undefined || spec.to === null || spec.to === '' ? 0 : timeOf(spec.to, '--to', W, period);
-    if (from < -W - 0.0005) refuse('spec', '--from ' + secs(from) + 's is before the window, which starts at ' + secs(-W) + ' s');
-    if (to > 0.0005) refuse('spec', '--to ' + secs(to) + 's is after the report (0 s)');
-    if (!(to > from)) refuse('empty-slice', 'the slice ' + secs(from) + ' s to ' + secs(to) + ' s is empty: --from must come before --to');
+    var F0 = timeOf(spec.from, '--from', W, period);
+    var T0 = spec.to === undefined || spec.to === null || spec.to === '' ? { t: 0, ms: W * 1000, k: null } : timeOf(spec.to, '--to', W, period);
+    var from = F0.t, to = T0.t;
+    function said(x) { return x.k !== null ? 'k' + x.k + ' (' + secs(x.t) + ' s)' : secs(x.t) + 's'; }
+    if (F0.ms < -0.5) refuse('spec', '--from ' + said(F0) + ' is before the window, which starts at ' + secs(-W) + ' s');
+    if (T0.ms > W * 1000 + 0.5) refuse('spec', '--to ' + said(T0) + ' is after the report (0 s)');
+    if (!(T0.ms > F0.ms)) refuse('empty-slice', 'the slice ' + said(F0) + ' to ' + said(T0) + ' is empty: --from must come before --to');
     var keys = [];
     (spec.nodes || []).forEach(function (sel) {
       resolve(t, String(sel)).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
     });
     var note = String(spec.note || '').trim();
-    var fromMs = (from + W) * 1000, toMs = (to + W) * 1000;
+    var fromMs = F0.ms, toMs = T0.ms;
     function ms(k) { return k * period / 1e6; }
+    // The slice's ticks: every tick within SLACK_MS of its ends, the one
+    // test its steps are kept by, so its first and last ticks are those
+    // of the frames it keeps.
+    var lo = fromMs - SLACK_MS, hi = toMs + SLACK_MS;
+    var k0 = Math.max(0, Math.ceil(lo * 1e6 / period));
+    while (k0 > 0 && ms(k0 - 1) >= lo) k0--;
+    while (ms(k0) < lo) k0++;
+    var k1 = Math.max(-1, Math.floor(hi * 1e6 / period));
+    while (ms(k1 + 1) <= hi) k1++;
+    while (k1 >= 0 && ms(k1) > hi) k1--;
+    // (replay-clip) `--traced`: the window's start replayed as a warm-up,
+    // drawn and not traced.
+    var traced = F.window.traced_seconds;
+    var untracedMs = traced > 0 && traced < W - 0.0005 ? (W - traced) * 1000 : 0;
+    if (untracedMs > 0 && hi < untracedMs) {
+      refuse('empty-slice', 'the slice ' + said(F0) + ' to ' + said(T0) + ' is before the trace starts, at ' + secs(-traced) +
+        ' s: the replay drew the window\'s start as a warm-up (`--traced ' + num(traced) + '`) and kept no trace of it ' +
+        '(`strand replay <report> --traced all` traces it)');
+    }
     function tOf(k) { return Math.round((ms(k) / 1000 - W) * 1e4) / 1e4; }
 
     // The steps of the slice: the one shown at its start (the last before
@@ -250,17 +276,15 @@ var StrandClip = (function () {
     }
     walk(t, C, function (st, cur) {
       var at = ms(st.k);
-      if (at < fromMs - SLACK_MS) { held = { st: st, cur: cur, snap: null }; held.snap = snap(st, cur); return; }
-      if (at > toMs + SLACK_MS) return;
+      if (at < lo) { held = { st: st, cur: cur, snap: null }; held.snap = snap(st, cur); return; }
+      if (at > hi) return;
       steps.push(snap(st, cur));
     });
     if (held) { held.snap.held = true; steps.unshift(held.snap); }
     if (!steps.length) {
       refuse('empty-slice', 'nothing was drawn by ' + secs(to) + ' s: the replay\'s first frame comes later');
     }
-    var k0 = Math.ceil(fromMs * 1e6 / period - 1e-6), k1 = Math.floor(toMs * 1e6 / period + 1e-6);
     var painted = steps.filter(function (s) { return !s.held && s.painted.length; }).length;
-    var kFirst = steps[0].k, kLast = steps[steps.length - 1].k;
 
     var surfInfo = {};
     t.surfaces.forEach(function (s) { surfInfo[s.id] = s; });
@@ -276,13 +300,20 @@ var StrandClip = (function () {
     // Each element, frame by frame.
     var elements = keys.map(function (key, n) {
       var m = t.nodes[key] || {};
-      var sids = [];
+      var sids = [], was = null;
       var frames = steps.map(function (st) {
-        var v = st.el[key];
+        var v = st.el[key], on = was;
+        was = v ? v.s : null;
         if (v && sids.indexOf(v.s) < 0) sids.push(v.s);
         var f = { k: st.k, t: tOf(st.k) };
         if (st.held) f.held = true;
-        if (!v) { f.drawn = null; return f; }
+        if (!v) {
+          f.drawn = null;
+          // Its surface went (detached) by this step.
+          var d = on !== null && surfInfo[on] ? surfInfo[on].detached : null;
+          if (d !== null && d !== undefined && d <= st.k) f.gone = true;
+          return f;
+        }
         f.surface = v.s;
         f.drawn = v.drawn;
         f.rest = v.rest;
@@ -315,15 +346,25 @@ var StrandClip = (function () {
     }
     sids.sort(function (a, b) { return a - b; });
 
-    var fid = fidelityOf(F, steps, sids, rootOrigin, from, to, tOf);
-    var hints = hintsOf(src.checks, keys, kFirst, kLast, period, W, F);
+    var fid = fidelityOf(F, {
+      steps: steps, sids: sids, rootOrigin: rootOrigin, surfInfo: surfInfo, surfaces: t.surfaces, k0: k0,
+      from: from, to: to, tOf: tOf, reportK: Math.floor(W * 1e9 / period + 1e-6)
+    });
+    if (untracedMs > 0 && untracedMs > lo) {
+      fid.lines.unshift('untraced before ' + secs(-traced) + ' s: the replay drew the window\'s start as a warm-up (`--traced ' +
+        num(traced) + '`) and kept no trace of it, so this slice holds nothing of its first ' + num((untracedMs - fromMs) / 1000) + ' s');
+      fid.json.untraced_before = -traced;
+    }
+    var hints = hintsOf(src.checks, keys, k0, k1, period, W, F);
     var crop = cropOf(steps, sids, keys, elements);
-    var cli = 'strand replay clip ' + quote(F.bundle || '<report>') + ' --from ' + secs(from) + 's --to ' + secs(to) + 's' +
+    // The command again: a tick given stays a tick.
+    function arg(x) { return x.k !== null ? 'k' + x.k : secs(x.t) + 's'; }
+    var cli = 'strand replay clip ' + quote(F.bundle || '<report>') + ' --from ' + arg(F0) + ' --to ' + arg(T0) +
       keys.map(function (k) { return ' --node ' + quote(k); }).join('') + (note ? ' --note ' + quote(note) : '');
 
     var json = {
       clip: 1,
-      spec: { report: base(F.bundle), from: from, to: to, nodes: keys, note: note },
+      spec: { report: base(F.bundle), from: from, to: to, from_tick: F0.k, to_tick: T0.k, nodes: keys, note: note },
       report: { name: base(F.bundle), words: F.words || '', bundle: F.bundle || null },
       slice: {
         from: from, to: to, from_k: k0, to_k: k1, ticks: Math.max(0, k1 - k0 + 1), period_ns: period,
@@ -333,6 +374,8 @@ var StrandClip = (function () {
       fidelity: fid.json,
       hints: hints.json,
       crop: crop,
+      // Frames `crop` names that a .zip of the clip lacks (filesOf).
+      missing: [],
       cli: cli
     };
 
@@ -340,7 +383,7 @@ var StrandClip = (function () {
     var L = [];
     L.push('Strand replay clip: ' + JSON.stringify(F.words || '') + ' (report ' + base(F.bundle) + ')');
     L.push('slice: ' + secs(from) + ' s to ' + secs(to) + ' s before the report, ticks k' + k0 + ' to k' + k1 +
-      ' (' + num(to - from) + ' s, ' + painted + ' frame' + (painted === 1 ? '' : 's') + ' painted' +
+      ' (' + num((toMs - fromMs) / 1000) + ' s, ' + painted + ' frame' + (painted === 1 ? '' : 's') + ' painted' +
       (steps[0].held ? '; k' + steps[0].k + ', drawn ' + secs(tOf(steps[0].k)) + ' s, held at its start' : '') + ')');
     if (note) L.push('note: ' + note);
     L.push('fidelity:');
@@ -368,7 +411,7 @@ var StrandClip = (function () {
     var rows = [];
     var cur = null;
     function cells(f) {
-      if (!f.drawn) return ['not drawn', '', '', '', ''];
+      if (!f.drawn) return [f.gone ? 'not drawn: its surface went' : 'not drawn', '', '', '', ''];
       var same = f.rest.every(function (v, i) { return Math.abs(v - f.drawn[i]) <= SAME; });
       var sc = Math.abs(f.scale[0] - f.scale[1]) <= 1e-6 ? num(f.scale[0]) : num(f.scale[0]) + ', ' + num(f.scale[1]);
       var by = f.moved_by.map(function (m) { return m.toLowerCase(); }).join('+');
@@ -380,14 +423,15 @@ var StrandClip = (function () {
     }
     e.frames.forEach(function (f) {
       var c = cells(f), sig = JSON.stringify([f.drawn, f.rest, f.opacity, f.scale, f.rotate || 0, f.moved_by, f.inherited, f.hidden, f.surface]);
-      if (cur && cur.sig === sig && !f.held) { cur.last = f; cur.n++; return; }
+      // The frame held at the slice's start (drawn before it) is a row
+      // of its own: no frame of the slice joins it.
+      if (cur && !cur.first.held && !f.held && cur.sig === sig) { cur.last = f; cur.n++; return; }
       cur = { sig: sig, first: f, last: f, n: 1, cells: c };
       rows.push(cur);
     });
     var lines = rows.map(function (r) {
       var a = r.first, b = r.last;
-      var ks = a.k === b.k ? 'k' + a.k : 'k' + a.k + '..k' + b.k;
-      if (a.held) ks += ' (held)';
+      var ks = 'k' + a.k + (a.held ? ' (held)' : '') + (a.gone ? ' (gone)' : '') + (a.k === b.k ? '' : '..k' + b.k);
       var ts = a.k === b.k ? secs(a.t) : secs(a.t) + '..' + secs(b.t);
       return [ks, ts].concat(r.cells);
     });
@@ -402,17 +446,25 @@ var StrandClip = (function () {
   // to the live shell's last frame, when it is in the slice, and how it
   // came out; every other frame is the replay's own, never compared; the
   // session's divergences in the slice; what the replay does not
-  // reproduce.
-  function fidelityOf(F, steps, sids, rootOrigin, from, to, tOf) {
+  // reproduce. The verdict names what it found on a surface by the
+  // surface's root origin, and each frame it held (`verdict.ticks`) by
+  // the replayed surface too (`sid`): a clip places a comparison on one
+  // surface only where those say which.
+  function fidelityOf(F, X) {
     var V = F.verdict || null, lines = [], surfaces = [];
+    var steps = X.steps, tOf = X.tOf;
     function rect(r) { return '[' + (r || []).map(function (v) { return num(v, 1); }).join(', ') + ']'; }
-    function differences(origin) {
-      var out = [];
-      (V.drifted || []).forEach(function (d) {
-        if (!sameOrigin(d.surface, origin)) return;
-        out.push(d.node + ': live ' + rect(d.live.box) + ' opacity ' + num(d.live.opacity, 2) + ', replay ' +
-          rect(d.replay.box) + ' opacity ' + num(d.replay.opacity, 2) + ': ' + num(d.px, 1) + ' px off');
-      });
+    function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+    function drift(d) {
+      return d.node + ': live ' + rect(d.live.box) + ' opacity ' + num(d.live.opacity, 2) + ', replay ' +
+        rect(d.replay.box) + ' opacity ' + num(d.replay.opacity, 2) + ': ' + num(d.px, 1) + ' px off';
+    }
+    // What the verdict found on the surfaces rooted at `origin`: its
+    // differences, and apart from them its nodes moving out of step
+    // (which it does not count as a difference, and held to nothing).
+    function found(origin) {
+      var out = [], moving = [];
+      (V.drifted || []).forEach(function (d) { if (sameOrigin(d.surface, origin)) out.push(drift(d)); });
       (V.live_only || []).forEach(function (d) {
         if (sameOrigin(d.surface, origin)) out.push(d.node + ': drawn live at ' + rect(d.live.box) + ', not in the replay');
       });
@@ -424,12 +476,9 @@ var StrandClip = (function () {
         out.push(p.why ? 'its pixels were not compared: ' + p.why
           : p.over + ' of its pixels differ from the live frame' + (p.bbox ? ', in ' + p.bbox[2] + 'x' + p.bbox[3] + ' at ' + p.bbox[0] + ',' + p.bbox[1] : ''));
       });
-      (V.moving_out_of_step || []).forEach(function (d) {
-        if (sameOrigin(d.surface, origin)) out.push('moving out of step (not a difference): ' + d.node + ', ' + num(d.px, 1) + ' px off');
-      });
-      return out;
+      (V.moving_out_of_step || []).forEach(function (d) { if (sameOrigin(d.surface, origin)) moving.push(drift(d)); });
+      return { diffs: out, moving: moving };
     }
-    function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
     if (!V) {
       lines.push('no verdict: this replay is from a strand-eval before the live boxes were compared; nothing checked its frames ' +
         'against what the live shell drew');
@@ -439,62 +488,123 @@ var StrandClip = (function () {
     } else {
       lines.push('the verdict, of the replay\'s last frame before the report: ' + V.line);
     }
-    sids.forEach(function (sid) {
-      var origin = rootOrigin(sid);
-      // The frames of it the slice shows: each paint's tick.
-      var shown = [];
-      steps.forEach(function (st) { var v = st.surf[sid]; if (v && shown.indexOf(v.k) < 0) shown.push(v.k); });
-      var ticks = V && !V.unchecked ? (V.ticks || []).filter(function (x) { return sameOrigin(x.surface, origin); }).map(function (x) { return x.k; }) : [];
-      var held = ticks.filter(function (k) { return shown.indexOf(k) >= 0; });
-      var s = { surface: sid, origin: origin, frames: shown, compared: ticks, compared_in_slice: held, differences: [] };
+    var vt = V && !V.unchecked ? (V.ticks || []) : [];
+    var bySid = vt.length > 0 && vt.every(function (x) { return x.sid !== undefined && x.sid !== null; });
+    var tol = (V && V.tolerance) || {};
+    var PXT = tol.px === undefined ? 1 : tol.px, OPT = tol.opacity === undefined ? 0.02 : tol.opacity;
+    var MF = tol.moving_frames === undefined ? 2 : tol.moving_frames;
+    // Live surfaces the verdict could place on no replayed one.
+    var unplaced = ((V && V.missing) || []).filter(function (m) { return / \(its root is not in nodes\.json\)$/.test(m); });
+    X.sids.forEach(function (sid) {
+      var origin = X.rootOrigin(sid), info = X.surfInfo[sid] || {};
+      // The frames of it the slice shows (each paint's tick): those
+      // painted in it, and the one drawn before it and held at its start.
+      var shown = [], before = [];
+      steps.forEach(function (st) {
+        var v = st.surf[sid];
+        if (!v) return;
+        var to = v.k >= X.k0 ? shown : before;
+        if (to.indexOf(v.k) < 0) to.push(v.k);
+      });
+      var all = before.concat(shown);
+      var rooted = X.surfaces.filter(function (s) { return sameOrigin(X.rootOrigin(s.id), origin); }).length;
+      var mine = vt.filter(function (x) { return bySid ? x.sid === sid : sameOrigin(x.surface, origin); });
+      var ticks = mine.map(function (x) { return x.k; });
+      var held = ticks.filter(function (k) { return all.indexOf(k) >= 0; });
+      var s = {
+        surface: sid, origin: origin, frames: shown, held_before: before, compared: ticks, compared_in_slice: held,
+        in_motion: null, differences: [], moving_out_of_step: []
+      };
       surfaces.push(s);
       if (!V || V.unchecked) return;
       var at = '@' + origin + ': ';
+      var count = (shown.length ? plural(shown.length, 'frame') + ' painted in this slice' : 'no frame painted in this slice') +
+        (before.length ? (shown.length ? ', plus ' : '; ') + 'k' + before.join(', k') + ', drawn before it and held at its start' : '');
+      var own = ': they are the replay\'s own, drawn from the recorded input';
+      // An older fidelity.json names the frames it held by the root alone,
+      // which more than one surface of this replay has.
+      if (mine.length && !bySid && rooted > 1) {
+        s.compared = []; s.compared_in_slice = [];
+        lines.push(at + 'none of its frames here (' + count + ') is said to be compared with what the live shell drew: the verdict ' +
+          'held k' + ticks.join(', k') + ' of a surface rooted at @' + origin + ', which ' + rooted + ' surfaces of this replay are, and ' +
+          'its fidelity.json does not say which (`strand replay` again records it)' + own);
+        return;
+      }
       if (!ticks.length) {
-        var why = (V.missing || []).some(function (m) { return sameOrigin(m, origin); }) ? 'the replay drew no frame of it at the report'
-          : (V.replay_only_surfaces || []).some(function (m) { return sameOrigin(m, origin); }) ? 'it was shown at the report in the replay only, not live'
-            : 'it was not shown at the report';
-        lines.push(at + 'none of its ' + plural(shown.length, 'frame') + ' in this slice was compared with what the live shell drew (' +
-          why + '): they are the replay\'s own, drawn from the recorded input');
+        var gone = info.detached !== null && info.detached !== undefined && info.detached <= X.reportK
+          ? 'it went at k' + info.detached + ' (' + secs(tOf(info.detached)) + ' s)' : null;
+        var them = rooted > 1 ? ' (of a surface rooted there: ' + rooted + ' of this replay are)' : '';
+        var why = (V.missing || []).some(function (m) { return sameOrigin(m, origin); })
+          ? 'the live shell showed it at the report and the replay drew no frame of it then' + them + (gone ? '; ' + gone : '')
+          : (V.replay_only_surfaces || []).some(function (m) { return sameOrigin(m, origin); })
+            ? 'it was shown at the report in the replay only, not live' + them
+            : gone ? gone + ', before the report'
+              : 'the verdict compared no frame of it' + (unplaced.length ? '; it could not place ' + plural(unplaced.length, 'live surface') +
+                ' on a replayed one: ' + unplaced.join('; ') : '');
+        lines.push(at + 'none of its frames here (' + count + ') was compared with what the live shell drew (' + why + ')' + own);
         return;
       }
       if (!held.length) {
-        lines.push(at + 'none of its ' + plural(shown.length, 'frame') + ' in this slice was compared with what the live shell ' +
-          'drew: they are the replay\'s own, drawn from the recorded input; the verdict held k' + ticks.join(', k') + ' (' +
-          secs(tOf(ticks[0])) + ' s), ' + (ticks[0] > shown[shown.length - 1] ? 'after' : 'before') + ' them');
+        lines.push(at + 'none of its frames here (' + count + ') was compared with what the live shell drew' + own +
+          '; the verdict held k' + ticks.join(', k') + ' (' + secs(tOf(ticks[0])) + ' s), ' +
+          (ticks[0] > all[all.length - 1] ? 'after' : 'before') + ' them');
         return;
       }
-      var diffs = differences(origin);
-      s.differences = diffs;
+      var f = found(origin);
+      s.differences = f.diffs;
+      s.moving_out_of_step = f.moving;
+      // Compared surfaces rooted where this one is: what the verdict
+      // found there is not placed on one of them.
+      var peers = vt.filter(function (x) { return sameOrigin(x.surface, origin); }).length;
+      // Its nodes moving at the report and held within their bound: on
+      // its tick (an older fidelity.json: the verdict's, when it held
+      // one surface; else unknown, -1).
+      var im = mine.length === 1 && mine[0].in_motion !== undefined && mine[0].in_motion !== null ? mine[0].in_motion
+        : vt.length === 1 ? (V.in_motion || 0) : (V.in_motion ? -1 : 0);
+      s.in_motion = im < 0 ? null : im;
       var px = (F.frames || []).some(function (p) { return sameOrigin(p.origin, origin) && held.indexOf(p.k) >= 0 && !p.why; });
-      var tol = V.tolerance || { px: 1, opacity: 0.02 };
-      var head = at + 'of its ' + plural(shown.length, 'frame') + ' in this slice, k' + held.join(', k') + ' was held to the live ' +
-        'shell\'s last frame: ';
-      if (!diffs.length) {
-        lines.push(head + 'VERIFIED, every node of it within ' + num(tol.px) + ' px and ' + num(tol.opacity) + ' opacity of the ' +
-          'live boxes' + (px ? ', and its pixels as the live frame\'s' : ' (its pixels were not compared)'));
+      var head = at + 'of its frames here (' + count + '), k' + held.join(', k') + ' was held to the live shell\'s last frame: ';
+      if (!f.diffs.length) {
+        var moves = im !== 0 || f.moving.length > 0;
+        lines.push(head + 'VERIFIED, every node of it' + (moves ? ' at rest' : '') + ' within ' + num(PXT) + ' px and ' + num(OPT) +
+          ' opacity of the live boxes' +
+          (im > 0 ? '; ' + plural(im, 'node') + ' moving at the report, held within ' + num(MF) + ' frames of ' + (im === 1 ? 'its' : 'their') +
+            ' travel, ' + (im === 1 ? 'its box' : 'their boxes') + ' left out of the pixel comparison'
+            : im < 0 ? '; ' + V.in_motion + ' moving at the report on the surfaces compared (fidelity.json does not say which), each held ' +
+              'within ' + num(MF) + ' frames of its travel, its box left out of the pixel comparison' : '') +
+          (px ? '; its pixels as the live frame\'s' + (im !== 0 ? ' outside those boxes' : '') : ' (its pixels were not compared)'));
+      } else if (peers > 1) {
+        lines.push(head + 'it or another surface rooted at @' + origin + ' differs (' + f.diffs.length + '; the verdict compared ' + peers +
+          ' surfaces rooted there and names what it found by the root alone):');
+        f.diffs.forEach(function (d) { lines.push('  ' + d); });
       } else {
-        lines.push(head + 'it differs (' + diffs.length + '):');
-        diffs.forEach(function (d) { lines.push('  ' + d); });
+        lines.push(head + 'it differs (' + f.diffs.length + '):');
+        f.diffs.forEach(function (d) { lines.push('  ' + d); });
       }
-      var own = shown.length - held.length;
-      if (own > 0) {
-        lines.push('  the other ' + plural(own, 'frame') + ' of it are the replay\'s own, drawn from the recorded input, never ' +
+      if (f.moving.length) {
+        lines.push('  moving out of step with the live shell (' + f.moving.length + '; the verdict counts ' +
+          (f.moving.length === 1 ? 'it' : 'them') + ' as no difference and held ' + (f.moving.length === 1 ? 'it' : 'them') + ' to no bound):');
+        f.moving.forEach(function (d) { lines.push('    ' + d); });
+      }
+      var rest = all.length - held.length;
+      if (rest > 0) {
+        lines.push('  the other ' + plural(rest, 'frame') + ' of it here are the replay\'s own, drawn from the recorded input, never ' +
           'compared with what the live shell drew');
       }
     });
     var D = F.divergences || [];
+    var from = X.from, to = X.to;
     var inSlice = D.filter(function (d) { return d.t >= from - 0.0005 && d.t <= to + 0.0005; });
-    var before = D.filter(function (d) { return d.t < from - 0.0005; });
+    var earlier = D.filter(function (d) { return d.t < from - 0.0005; });
     if (inSlice.length) {
       lines.push('divergences from the recorded session in this slice (' + inSlice.length + '):');
       inSlice.forEach(function (d) { lines.push('  ' + secs(d.t) + ' s ' + d.what + ': ' + d.text); });
     } else {
       lines.push('no divergence from the recorded session (presses, surfaces mapped, cell writes) in this slice');
     }
-    if (before.length) {
-      var last = before[before.length - 1];
-      lines.push(before.length + ' earlier in the window, the last at ' + secs(last.t) + ' s (' + last.what + ': ' + last.text +
+    if (earlier.length) {
+      var last = earlier[earlier.length - 1];
+      lines.push(earlier.length + ' earlier in the window, the last at ' + secs(last.t) + ' s (' + last.what + ': ' + last.text +
         '): the replay may already part from the live shell here');
     }
     var limits = F.limits || [];
@@ -509,7 +619,7 @@ var StrandClip = (function () {
         line: V ? V.line : null,
         surfaces: surfaces,
         divergences: inSlice,
-        divergences_before: before.length,
+        divergences_before: earlier.length,
         limits: limits,
         statement: lines
       }
@@ -537,7 +647,7 @@ var StrandClip = (function () {
   // The crop of each surface: the union of the elements' drawn boxes on
   // it over the slice, `MARGIN` px around, in buffer px, clamped to the
   // surface (its whole buffer with no element); and the frames of it the
-  // slice shows, each image once.
+  // slice shows, each image once, named by the tick it was painted at.
   function cropOf(steps, sids, keys, elements) {
     return sids.map(function (sid) {
       var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, scale = 0, W = 0, H = 0;
@@ -569,7 +679,7 @@ var StrandClip = (function () {
         var v = st.surf[sid];
         if (!v || !v.png || v.png === last) return;
         last = v.png;
-        frames.push({ k: st.k, image: v.png, file: 'frames/k' + st.k + '-s' + sid + '.png' });
+        frames.push({ k: v.k, image: v.png, file: 'frames/k' + v.k + '-s' + sid + '.png' });
       });
       return { surface: sid, rect: r, scale: scale, frames: frames };
     });
@@ -1003,9 +1113,10 @@ var StrandClip = (function () {
 
   // A clip's files: clip.txt, clip.json and each cropped frame, PNG.
   // A frame whose pixels are not there (a page that thinned it) is left
-  // out and named in `missing`.
+  // out, named in `missing`, and said so in the .zip's clip.txt and
+  // clip.json (its `missing`).
   function filesOf(src, made) {
-    var files = [{ name: 'clip.txt', bytes: utf8(made.text) }, { name: 'clip.json', bytes: utf8(JSON.stringify(made.json, null, 1) + '\n') }];
+    var files = [null, null];
     var cache = new Map(), missing = [];
     made.json.crop.forEach(function (c) {
       var r = c.rect, last = null;
@@ -1029,6 +1140,14 @@ var StrandClip = (function () {
         files.push({ name: f.file, bytes: last.png });
       });
     });
+    var text = made.text, json = made.json;
+    if (missing.length) {
+      text += 'frames left out of this .zip (' + missing.length + ', their pixels not held by what made it): ' + missing.join(', ') + '\n';
+      json = JSON.parse(JSON.stringify(json));
+      json.missing = missing.slice();
+    }
+    files[0] = { name: 'clip.txt', bytes: utf8(text) };
+    files[1] = { name: 'clip.json', bytes: utf8(JSON.stringify(json, null, 1) + '\n') };
     return { files: files, missing: missing };
   }
 

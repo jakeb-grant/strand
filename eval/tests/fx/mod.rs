@@ -308,6 +308,7 @@ pub fn write_drawn(dir: &Path, nodes: &[replay::drawn::Drawn]) {
                 "ref": "0.0",
                 "origin": format!("{LIVE}/{}", n.origin),
                 "id": n.id, "key": n.key, "box": n.rect, "opacity": n.opacity,
+                "travel": n.travel, "fade": n.fade,
             })
         })
         .collect();

@@ -278,8 +278,12 @@ def exercise_simple(page, chk, where, tag, kind):
         chk.expect(not page.locator(sel).first.is_visible(), where, f"{sel} shows without Details")
     big = page.evaluate("""() => Array.from(document.querySelectorAll('.controls .btn, #toolbar .btn, #details-bar .btn, #clip .btn'))
       .filter(b => b.offsetParent).map(b => [b.textContent, b.getBoundingClientRect().height])""")
-    small = [b for b in big if b[1] < 36]
-    chk.expect(bool(big) and not small, where, f"buttons under 36 px tall: {small[:4]}")
+    small = [b for b in big if b[1] < 39.5]
+    chk.expect(bool(big) and not small, where, f"buttons under 40 px tall: {small[:4]}")
+    sels = page.evaluate("""() => Array.from(document.querySelectorAll('.controls select'))
+      .filter(b => b.offsetParent).map(b => [b.name || b.id, b.getBoundingClientRect().height])""")
+    low = [b for b in sels if b[1] < 35.5]
+    chk.expect(not low, where, f"selects under 36 px tall: {low[:4]}")
     for name in ("Where it rests", "Onion skin"):
         b = page.locator("#toolbar button", has_text=name)
         chk.expect(b.count() == 1, where, f"no {name!r} toggle")
@@ -391,6 +395,109 @@ def exercise_clip(page, chk, tl, where, tag, kind):
     page.locator("#clip textarea").first.fill("")
 
 
+# (replay-clip) Where a click on the frame lands on a node that does not
+# show: a frame and surface of the page's trace, a point in a hidden row
+# (opacity 0, scale 0, clipped, or no opacity) where that hidden row is
+# the smallest under it, and the node that shows there (or none).
+HIDDEN_PICK = """() => {
+  var d = JSON.parse(document.getElementById('run').textContent), sc = d.runs[0].scenarios[0], t = sc.trace;
+  StrandClip.unpack(t);
+  var C = {}; t.cols.forEach(function (c, i) { C[c] = i; });
+  var per = d.replay.timeline.period_ns, cur = {};
+  function o(r) { var x = {}; t.cols.forEach(function (c, i) { x[c] = r[i]; }); return x; }
+  function shows(x) { return x.hid !== 'opacity0' && x.hid !== 'scale0' && x.hid !== 'clipped' && x.vw > 0 && x.vh > 0 && x.op > 0; }
+  for (var fi = 0; fi < t.frames.length; fi++) {
+    var f = t.frames[fi], next = t.frames[fi + 1];
+    Object.keys(cur).forEach(function (s) { if (!(s in (f.sizes || {}))) delete cur[s]; });
+    (f.painted || []).forEach(function (s) { cur[s] = f.n.filter(function (r) { return r[C.s] === s; }).map(o); });
+    // A frame the slider can show alone: a whole ms after it, before the next.
+    var ms = Math.ceil(f.k * per / 1e6 + 0.01);
+    if (next && next.k * per / 1e6 <= ms + 0.5) continue;
+    for (var s in cur) {
+      var rows = cur[s], gone = t.surfaces.filter(function (q) { return String(q.id) === String(s); })[0];
+      // Not one that goes before the slider's time.
+      if (gone && gone.detached !== null && gone.detached !== undefined && gone.detached * per / 1e6 <= ms) continue;
+      for (var j = 0; j < rows.length; j++) {
+        var h = rows[j];
+        if (shows(h) || !(h.vw > 2 && h.vh > 2)) continue;
+        for (var gx = 1; gx < 6; gx++) for (var gy = 1; gy < 6; gy++) {
+          var lx = h.vx + h.vw * gx / 6, ly = h.vy + h.vh * gy / 6, any = null, vis = null;
+          rows.forEach(function (x) {
+            if (lx < x.vx || ly < x.vy || lx > x.vx + x.vw || ly > x.vy + x.vh) return;
+            if (!any || x.vw * x.vh < any.vw * any.vh) any = x;
+            if (shows(x) && (!vis || x.vw * x.vh < vis.vw * vis.vh)) vis = x;
+          });
+          if (any && !shows(any)) {
+            var info = t.surfaces.filter(function (q) { return String(q.id) === String(s); })[0];
+            return { ms: ms, k: f.k, label: info ? info.label : null, size: (f.sizes || {})[s], x: lx, y: ly,
+              hidden: any.key, want: vis ? ((t.nodes[vis.key] || {}).label || vis.key) : null };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}"""
+
+
+def exercise_clip_picks(page, chk, where):
+    """(replay-clip) A click where a node that does not show lies adds the
+    node that shows there, or none, never the hidden one; `[` and `]`
+    pressed on two painted frames give a clip of exactly their ticks."""
+    spot = page.evaluate(HIDDEN_PICK)
+    if spot and spot["label"]:
+        slide(page, spot["ms"])
+        settle(page, 150)
+        clear = page.locator("#clip button", has_text="Clear elements")
+        if clear.count():
+            clear.click()
+            settle(page, 60)
+        # One label a canvas (the live pointer's warning is none's).
+        labels = [t for t in page.locator("#stage .surface-label").all_inner_texts() if not t.startswith("the live pointer")]
+        idx = next((i for i, t in enumerate(labels) if t.startswith(spot["label"])), None)
+        canvases = page.locator("#stage canvas")
+        chk.expect(idx is not None and idx < canvases.count(), where, f"no canvas for {spot['label']!r}: {labels}")
+        if idx is not None and idx < canvases.count():
+            r = canvases.nth(idx).bounding_box()
+            w, h = spot["size"]
+            page.mouse.click(r["x"] + spot["x"] / w * r["width"], r["y"] + spot["y"] / h * r["height"])
+            settle(page, 80)
+            got = page.locator("#clip .clip-list li .clip-label").all_inner_texts()
+            want = [spot["want"]] if spot["want"] else []
+            chk.expect(got == want, where,
+                       f"a click on hidden {spot['hidden']} at k{spot['k']} picked {got}, not {want}")
+            if got:
+                page.locator("#clip button", has_text="Clear elements").click()
+                settle(page, 60)
+    else:
+        print("    (no hidden node to click past on this page)", flush=True)
+    # [ and ] on two painted frames (the filmstrip sets a frame's own
+    # time): the clip's ticks are theirs, and its command names them.
+    details(page, chk, where, True)
+    page.keyboard.press("End")
+    settle(page, 80)
+    # (A paint and a surface going can share a tick: one title, twice.)
+    titles = list(dict.fromkeys(t for t in page.evaluate("() => Array.from(document.querySelectorAll('#film canvas')).map(c => c.title)")
+                                if re.match(r"^k\d+$", t)))
+    chk.expect(len(titles) >= 3, where, f"the filmstrip holds {titles[-4:]}")
+    if len(titles) >= 3:
+        a, b = titles[-3], titles[-2]
+        page.locator(f'#film canvas[title="{a}"]').first.click()
+        settle(page, 60)
+        page.keyboard.press("[")
+        page.locator(f'#film canvas[title="{b}"]').first.click()
+        settle(page, 60)
+        page.keyboard.press("]")
+        settle(page, 200)
+        text = page.locator("#clip pre.clip-text").text_content() or ""
+        cmd = page.locator("#clip pre.cmd").first.text_content() or ""
+        chk.expect(f"ticks {a} to {b} (" in text, where, f"[ on {a} and ] on {b} clip {text.splitlines()[1:2]}")
+        chk.expect(f"--from {a} --to {b}" in cmd, where, f"[ on {a} and ] on {b}: the command reads {cmd!r}")
+        page.locator("#clip button", has_text="Clear slice").click()
+        settle(page, 60)
+    details(page, chk, where, False)
+
+
 def exercise_clip_phone(page, chk, where):
     """(replay-clip) The clip at a phone's width, with no sideways page
     scroll."""
@@ -453,6 +560,7 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
         exercise_simple(page, chk, where, tag, kind)
         exercise_time(page, chk, tl, where, tag, kind)
         exercise_clip(page, chk, tl, where, tag, kind)
+        exercise_clip_picks(page, chk, where)
         details(page, chk, where, True)
         exercise_rest(page, chk, data, sc, kind, tag, where, i, lambda: slide(page, int(slider.get_attribute("max") or "0")))
         details(page, chk, where, False)

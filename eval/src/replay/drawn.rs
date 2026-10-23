@@ -170,8 +170,22 @@ pub struct Verdict {
     /// The replay's own boxes at the report: each surface shown then
     /// (its root's origin) and its nodes, in paint order.
     pub replayed: Vec<(String, Vec<Drawn>)>,
-    /// The replay's tick each compared surface was held at, by origin.
-    pub ticks: Vec<(String, u32)>,
+    /// The replay's tick each compared surface was held at.
+    pub ticks: Vec<Tick>,
+}
+
+/// (replay-clip) A compared surface's frame: its root's origin, the
+/// replay's tick it was held at, the replayed surface (the trace's
+/// surface id, so a clip places the comparison on one surface when two
+/// share a root's origin), and how many of its nodes were moving at the
+/// report and held within their bound (their boxes left out of the
+/// pixel comparison).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tick {
+    pub origin: String,
+    pub k: u32,
+    pub sid: u32,
+    pub in_motion: usize,
 }
 
 impl Verdict {
@@ -398,7 +412,7 @@ impl Verdict {
             "nodes": self.nodes,
             "tolerance": {"px": PX, "opacity": OPACITY, "moving_frames": STEP_FRAMES},
             "unchecked": self.unchecked,
-            "ticks": self.ticks.iter().map(|(s, k)| json!({"surface": s, "k": k})).collect::<Vec<_>>(),
+            "ticks": self.ticks.iter().map(|t| json!({"surface": t.origin, "k": t.k, "sid": t.sid, "in_motion": t.in_motion})).collect::<Vec<_>>(),
             "drifted": self.drifts.iter().map(drift).collect::<Vec<_>>(),
             "in_motion": self.in_motion,
             "pixels_held": self.pixels_held,
@@ -746,7 +760,13 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
             v.missing.push(origin);
             continue;
         };
-        v.ticks.push((origin.clone(), fr.k));
+        let at = v.ticks.len();
+        v.ticks.push(Tick {
+            origin: origin.clone(),
+            k: fr.k,
+            sid,
+            in_motion: 0,
+        });
         let replay = nodes_of(run, fr, sid);
         v.surfaces += 1;
         v.nodes += live.len();
@@ -785,6 +805,7 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
             if d.px <= px_bound && d.opacity <= op_bound {
                 if d.moving() {
                     v.in_motion += 1;
+                    v.ticks[at].in_motion += 1;
                 }
             } else if d.moving() {
                 v.moving.push(d);

@@ -243,10 +243,16 @@ fn a_clips_text_is_compact_and_stable() {
         last.split_whitespace().next().unwrap().contains(".."),
         "a row names its frames: {lamp}"
     );
-    // No two rows alike one after the other: a row only where a value
-    // changed.
+    // The frame held at the slice's start, drawn before it, is a row of
+    // its own: no frame of the slice joins it.
+    assert!(
+        !rows[0].split_whitespace().next().unwrap().contains(".."),
+        "{lamp}"
+    );
+    // No two rows of the slice alike one after the other: a row only
+    // where a value changed.
     let cells = |r: &str| r.split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
-    for w in rows.windows(2) {
+    for w in rows[1..].windows(2) {
         assert_ne!(cells(w[0]), cells(w[1]), "{lamp}");
     }
     // The fixture's report has no live boxes: nothing compared the
@@ -269,6 +275,225 @@ fn a_clips_text_is_compact_and_stable() {
     let _ = std::fs::remove_dir_all(out.parent().unwrap());
 }
 
+/// The rows of an element's table in a clip's text: its `[n] ` block.
+fn rows_of(text: &str, n: usize) -> Vec<String> {
+    text.split(&format!("[{n}] "))
+        .nth(1)
+        .unwrap()
+        .split(&format!("[{}] ", n + 1))
+        .next()
+        .unwrap()
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with('k') && l[1..].starts_with(|c: char| c.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A row's first and last tick: `k12..k30` → (12, 30), `k7 (held)` → (7, 7).
+fn row_ticks(row: &str) -> (u64, u64) {
+    let ks: Vec<u64> = row
+        .split_whitespace()
+        .take_while(|w| w.starts_with('k') || w.starts_with('('))
+        .collect::<String>()
+        .split("..")
+        .map(|k| {
+            k.trim_start_matches('k')
+                .split('(')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    (ks[0], *ks.last().unwrap())
+}
+
+/// (replay-clip) A slice's ends are exact: given as ticks (`--from kA
+/// --to kB`) its header, its JSON and its rows start at kA and end at kB;
+/// given as times to the ms (what the page writes for a time between two
+/// frames, or the owner types), a tick within the ms is in it, at either
+/// end, whatever digits the window's length has. The hints are those in
+/// the slice's ticks, never the frame held at its start; the .zip names
+/// each crop by the tick its surface painted, and says which frames it
+/// lacks.
+#[test]
+fn a_clips_ends_are_its_ticks() {
+    let out = replayed("clip-ticks");
+    let r = Replay::find(&out).unwrap();
+    let (t, _) = trace_of(&out);
+    let w = window(&out);
+    let sid = t.surfaces[0].id;
+    let period = (1e9_f64 / 60.0).floor();
+    let secs = |k: u64| k as f64 * period / 1e9 - w;
+    // The bar's paints around the click (the lamp gliding).
+    let (lo, hi) = (7.5 - 30.0 + w, 9.5 - 30.0 + w);
+    let paints: Vec<u64> = t
+        .frames
+        .iter()
+        .filter(|f| f.painted.contains(&sid))
+        .map(|f| u64::from(f.k))
+        .filter(|k| {
+            let s = *k as f64 * period / 1e9;
+            s >= lo && s <= hi
+        })
+        .collect();
+    assert!(paints.len() > 8, "the glide paints: {paints:?}");
+    let (ka, kb) = (paints[2], paints[paints.len() - 3]);
+    let m = clip::make(
+        &r,
+        &spec(&format!("k{ka}"), Some(&format!("k{kb}")), &["#lamp"], ""),
+        false,
+    )
+    .unwrap();
+    assert!(
+        m.text.contains(&format!("ticks k{ka} to k{kb} (")),
+        "{}",
+        m.text
+    );
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    assert_eq!(j["slice"]["from_k"], ka);
+    assert_eq!(j["slice"]["to_k"], kb);
+    assert_eq!(j["slice"]["ticks"], kb - ka + 1);
+    assert_eq!(j["spec"]["from_tick"], ka);
+    assert_eq!(j["spec"]["to_tick"], kb);
+    let steps: Vec<u64> = j["slice"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    let held = j["slice"]["held_from"].as_u64();
+    let inside: Vec<u64> = steps
+        .iter()
+        .copied()
+        .skip(usize::from(held.is_some()))
+        .collect();
+    assert_eq!((inside[0], *inside.last().unwrap()), (ka, kb), "{steps:?}");
+    // The rows: the held frame's apart, then from kA to kB.
+    let rows = rows_of(&m.text, 1);
+    assert!(rows[0].contains("(held)"), "{rows:?}");
+    assert_eq!(row_ticks(&rows[1]).0, ka, "{rows:?}");
+    assert_eq!(row_ticks(rows.last().unwrap()).1, kb, "{rows:?}");
+    assert!(
+        m.text
+            .contains(&format!(" --from k{ka} --to k{kb} --node ")),
+        "a tick given is a tick again: {}",
+        m.text
+    );
+    // The same ends as times to the ms, each tick of the glide: the tick
+    // is the slice's end, at either end.
+    for &k in &paints {
+        let at = format!("{:.3}s", secs(k));
+        let m = clip::make(&r, &spec(&at, None, &[], ""), false).unwrap();
+        let j: Json = serde_json::from_str(&m.json).unwrap();
+        assert_eq!(j["slice"]["from_k"], k, "--from {at}");
+        let m = clip::make(&r, &spec(&format!("{:.3}s", -w), Some(&at), &[], ""), false).unwrap();
+        let j: Json = serde_json::from_str(&m.json).unwrap();
+        assert_eq!(j["slice"]["to_k"], k, "--to {at}");
+        let steps = j["slice"]["steps"].as_array().unwrap();
+        assert_eq!(steps.last().unwrap(), k, "--to {at}: {steps:?}");
+    }
+    // Hints: one on the lamp at the frame held at the slice's start (drawn
+    // before it), one at kA; only kA's is the clip's.
+    let lamp = key_of(&t, "lamp");
+    let held = held.expect("a frame held at the slice's start");
+    let checks = r.entry.join("checks.json");
+    let mut c: Json = std::fs::read_to_string(&checks)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({"results": []}));
+    let finding =
+        |k: u64, msg: &str| serde_json::json!({"sev": "warn", "key": lamp, "k": k, "msg": msg});
+    c["results"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "check": "probe",
+            "findings": [finding(held, "before the slice"), finding(ka, "in the slice")],
+        }));
+    std::fs::write(&checks, serde_json::to_vec(&c).unwrap()).unwrap();
+    // A frame's pixels gone: the .zip says it lacks it.
+    let s = spec(&format!("k{ka}"), Some(&format!("k{kb}")), &["#lamp"], "");
+    let full = clip::make(&r, &s, true).unwrap();
+    let j: Json = serde_json::from_str(&full.json).unwrap();
+    assert!(
+        full.text.contains(&format!("probe k{ka} ")),
+        "{}",
+        full.text
+    );
+    assert!(!full.text.contains("before the slice"), "{}", full.text);
+    let paints_of = |k: u64| {
+        t.frames
+            .iter()
+            .any(|f| u64::from(f.k) == k && f.painted.contains(&sid))
+    };
+    let crop = &j["crop"][0]["frames"];
+    for f in crop.as_array().unwrap() {
+        let k = f["k"].as_u64().unwrap();
+        assert!(
+            paints_of(k),
+            "a crop named by k{k}, where its surface did not paint"
+        );
+        assert_eq!(f["file"], format!("frames/k{k}-s{sid}.png"));
+    }
+    assert_eq!(j["missing"], serde_json::json!([]));
+    let image = crop[1]["image"].as_str().unwrap().to_string();
+    let file = crop[1]["file"].as_str().unwrap().to_string();
+    for p in [
+        r.entry.join(&image),
+        r.entry.join(report::pack::patch_file(&image)),
+    ] {
+        let _ = std::fs::remove_file(p);
+    }
+    let thin = clip::make(&r, &s, true).unwrap();
+    assert!(thin.missing.contains(&file), "{:?}", thin.missing);
+    let files = unzip(thin.zip.as_ref().unwrap());
+    assert!(!files.contains_key(&file));
+    let txt = String::from_utf8(files["clip.txt"].clone()).unwrap();
+    assert!(
+        txt.contains("frames left out of this .zip") && txt.contains(&file),
+        "{txt}"
+    );
+    let zj: Json = serde_json::from_slice(&files["clip.json"]).unwrap();
+    assert!(
+        zj["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == file.as_str()),
+        "{}",
+        zj["missing"]
+    );
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// (replay-clip) `--traced N`: the window's start is a warm-up, drawn
+/// and not traced. A slice wholly in it is refused saying so (not "the
+/// replay's first frame comes later"); one that crosses into the trace
+/// says it holds nothing of the part before.
+#[test]
+fn a_clip_says_what_the_trace_does_not_hold() {
+    let dir = Fx::session().write("clip-traced");
+    let (_, out) = replay_of(&dir, &traced_20());
+    let r = Replay::find(&out).unwrap();
+    let w = window(&out);
+    assert!(w > 21.0, "{w}");
+    let at = |s: f64| format!("{s:.3}s");
+    let e = clip::make(&r, &spec(&at(-w + 0.5), Some(&at(-21.0)), &[], ""), false).unwrap_err();
+    assert!(
+        matches!(&e, ClipError::EmptySlice(m) if m.contains("--traced 20") && m.contains("before the trace starts")),
+        "{e:?}"
+    );
+    let m = clip::make(&r, &spec(&at(-w + 0.5), Some("-5s"), &["#lamp"], ""), false).unwrap();
+    assert!(m.text.contains("untraced before -20.000 s"), "{}", m.text);
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    assert_eq!(j["fidelity"]["untraced_before"].as_f64(), Some(-20.0));
+    let m = clip::make(&r, &spec("-15s", Some("-5s"), &["#lamp"], ""), false).unwrap();
+    assert!(!m.text.contains("untraced"), "{}", m.text);
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
 /// The frames the verdict held to the live boxes are said to be, and
 /// only those: a slice that ends at the report holds the frame compared
 /// (VERIFIED, or each difference named), one earlier holds frames
@@ -288,7 +513,7 @@ fn a_clip_says_which_of_its_frames_were_compared() {
     write_drawn(&dir, &bar);
     let (r, out) = replay_of(&dir, &defaults());
     assert_eq!(r.verdict.word(), "VERIFIED");
-    let k = r.verdict.ticks[0].1;
+    let k = r.verdict.ticks[0].k;
     let rp = Replay::find(&out).unwrap();
     let surface_lines = |t: &str| -> Vec<String> {
         t.lines()
@@ -347,7 +572,326 @@ fn a_clip_says_which_of_its_frames_were_compared() {
         end.text
     );
     assert!(!l.iter().any(|l| l.contains("VERIFIED")), "{}", end.text);
+    // The lamp moving at the report live (2 px a frame), where the replay
+    // drew it: held within its travel, its box left out of the pixels,
+    // and the clip says so rather than "within 1 px".
+    let mut moving = bar.clone();
+    moving
+        .iter_mut()
+        .find(|n| n.id.as_deref() == Some("lamp"))
+        .unwrap()
+        .travel = 2.0;
+    write_drawn(&dir, &moving);
+    let (r, out) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "VERIFIED", "{}", r.verdict.line());
+    assert_eq!(r.verdict.in_motion, 1);
+    assert_eq!(r.verdict.ticks[0].in_motion, 1);
+    let rp = Replay::find(&out).unwrap();
+    let end = clip::make(&rp, &spec("-1s", None, &["#lamp"], ""), false).unwrap();
+    let l = surface_lines(&end.text);
+    assert!(
+        l[0].contains("VERIFIED, every node of it at rest within 1 px")
+            && l[0].contains(
+                "1 node moving at the report, held within 2 frames of its travel, its box left out of the pixel comparison"
+            ),
+        "{}",
+        end.text
+    );
+    let j: Json = serde_json::from_str(&end.json).unwrap();
+    assert_eq!(j["fidelity"]["surfaces"][0]["in_motion"], 1);
+    // 3 px off and moving 0.5 px a frame: past its bound, moving out of
+    // step, which the verdict counts as no difference; the clip names it
+    // on its own line, never as a difference.
+    let mut step = bar.clone();
+    let lamp = step
+        .iter_mut()
+        .find(|n| n.id.as_deref() == Some("lamp"))
+        .unwrap();
+    lamp.rect[0] += 3.0;
+    lamp.travel = 0.5;
+    write_drawn(&dir, &step);
+    let (r, out) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.word(), "VERIFIED", "{}", r.verdict.line());
+    assert_eq!(r.verdict.moving.len(), 1, "{}", r.verdict.line());
+    let rp = Replay::find(&out).unwrap();
+    let end = clip::make(&rp, &spec("-1s", None, &["#lamp"], ""), false).unwrap();
+    let l = surface_lines(&end.text);
+    assert!(
+        l[0].contains("VERIFIED, every node of it at rest") && !l[0].contains("differs"),
+        "{}",
+        end.text
+    );
+    assert!(
+        l[1].starts_with("    moving out of step with the live shell (1;"),
+        "{}",
+        end.text
+    );
+    assert!(
+        l[2].contains("lamp") && l[2].contains("3 px off"),
+        "{}",
+        end.text
+    );
+    let j: Json = serde_json::from_str(&end.json).unwrap();
+    assert_eq!(
+        j["fidelity"]["surfaces"][0]["differences"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        j["fidelity"]["surfaces"][0]["moving_out_of_step"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // The verdict's frame is placed by the replayed surface: a tick of
+    // another surface is no comparison of this one, whatever its root.
+    let fid = out.join("fidelity.json");
+    let mut f: Json = serde_json::from_str(&std::fs::read_to_string(&fid).unwrap()).unwrap();
+    let sid = f["verdict"]["ticks"][0]["sid"].as_u64().unwrap();
+    f["verdict"]["ticks"][0]["sid"] = serde_json::json!(sid + 98);
+    std::fs::write(&fid, serde_json::to_vec_pretty(&f).unwrap()).unwrap();
+    let end = clip::make(&rp, &spec("-1s", None, &["#lamp"], ""), false).unwrap();
+    let l = surface_lines(&end.text);
+    assert!(!l.iter().any(|l| l.contains("VERIFIED")), "{}", end.text);
+    assert!(
+        l[0].contains("(the verdict compared no frame of it)"),
+        "{}",
+        end.text
+    );
+    // A fidelity.json from before the replayed surface was recorded:
+    // placed by its root while no other surface has that root.
+    for t in f["verdict"]["ticks"].as_array_mut().unwrap() {
+        t.as_object_mut().unwrap().remove("sid");
+    }
+    std::fs::write(&fid, serde_json::to_vec_pretty(&f).unwrap()).unwrap();
+    let end = clip::make(&rp, &spec("-1s", None, &["#lamp"], ""), false).unwrap();
+    let l = surface_lines(&end.text);
+    assert!(l[0].contains("VERIFIED"), "{}", end.text);
     let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// (replay-clip) A replay of Strand's own making, written by hand: a bar
+/// (surface 1) and two popups rooted at one place in the config
+/// (surfaces 2 and 3, `a.strand:5:1`), the second going at k30; the
+/// verdict compared surface 2 at k55, and could not place one live
+/// surface.
+fn synthetic(tag: &str, verdict: Json) -> Replay {
+    let dir = tmp(tag);
+    let entry = dir.join("report-synthetic");
+    std::fs::create_dir_all(&entry).unwrap();
+    let cols = [
+        "key", "s", "vx", "vy", "vw", "vh", "lx", "ly", "lw", "lh", "op", "sx", "sy", "hid", "mot",
+        "emot",
+    ];
+    let row = |key: &str, s: u32, x: f64, op: f64, hid: Option<&str>| {
+        serde_json::json!([
+            key, s, x, 0.0, 10.0, 10.0, x, 0.0, 10.0, 10.0, op, 1.0, 1.0, hid, 0, 0
+        ])
+    };
+    let (bar, p0, p1) = (
+        "bar|a.strand:1:1|#0",
+        "p|a.strand:5:1|#0",
+        "p|a.strand:5:1|#1",
+    );
+    let (mark, dot) = ("mark|a.strand:7:3|#0", "dot|a.strand:9:3|#0");
+    let all = |x: f64| {
+        vec![
+            row(bar, 1, 0.0, 1.0, None),
+            row(p0, 2, 0.0, 1.0, None),
+            row(mark, 2, 20.0, 1.0, None),
+            row(p1, 3, 0.0, 1.0, None),
+            row(dot, 3, x, 1.0, None),
+        ]
+    };
+    let frame = |k: u32, painted: &[u32], sizes: &[u32], n: Vec<Json>| {
+        let sz: serde_json::Map<String, Json> = sizes
+            .iter()
+            .map(|s| (s.to_string(), serde_json::json!([100.0, 40.0])))
+            .collect();
+        serde_json::json!({"k": k, "painted": painted, "sizes": sz, "n": n, "png": {}})
+    };
+    let trace = serde_json::json!({
+        "cols": cols,
+        "scenario": {"hz": 60, "scale": 1.0},
+        "nodes": {
+            bar: {"label": "bar Top", "origin": "a.strand:1:1"},
+            p0: {"label": "popup#p", "origin": "a.strand:5:1"},
+            p1: {"label": "popup#p", "origin": "a.strand:5:1"},
+            mark: {"label": "box#mark", "origin": "a.strand:7:3", "id": "mark"},
+            dot: {"label": "box#dot", "origin": "a.strand:9:3", "id": "dot"},
+        },
+        "surfaces": [
+            {"id": 1, "root": bar, "label": "bar Top", "detached": null},
+            {"id": 2, "root": p0, "label": "popup#p", "detached": null},
+            {"id": 3, "root": p1, "label": "popup#p", "detached": 30},
+        ],
+        "frames": [
+            frame(10, &[1, 2, 3], &[1, 2, 3], all(30.0)),
+            frame(20, &[2, 3], &[1, 2, 3], all(30.0)),
+            frame(25, &[3], &[1, 2, 3], all(34.0)),
+            frame(40, &[2], &[1, 2], all(34.0)[..3].to_vec()),
+            frame(55, &[1, 2], &[1, 2], all(34.0)[..3].to_vec()),
+        ],
+    });
+    std::fs::write(entry.join("trace.json"), trace.to_string()).unwrap();
+    let fid = serde_json::json!({
+        "bundle": "/reports/synthetic",
+        "words": "the dot",
+        "window": {"seconds": 1.0, "traced_seconds": 1.0},
+        "verdict": verdict,
+        "frames": [],
+        "divergences": [],
+        "limits": [],
+    });
+    std::fs::write(dir.join("fidelity.json"), fid.to_string()).unwrap();
+    Replay { dir, entry }
+}
+
+fn verdict_of(ticks: Json, drifted: Json) -> Json {
+    serde_json::json!({
+        "verdict": "VERIFIED", "line": "VERIFIED: the replay drew all 2 nodes on 1 surface where the live shell did",
+        "tolerance": {"px": 1.0, "opacity": 0.02, "moving_frames": 2.0},
+        "ticks": ticks, "in_motion": 0, "drifted": drifted, "live_only": [], "replay_only": [],
+        "moving_out_of_step": [], "pixels": [], "replay_only_surfaces": [],
+        "missing": ["9.1 (its root is not in nodes.json)"],
+    })
+}
+
+/// The fidelity lines of a clip's text: each `@surface` line and those
+/// under it.
+fn fidelity_lines(t: &str) -> Vec<String> {
+    t.lines()
+        .skip_while(|l| *l != "fidelity:")
+        .take_while(|l| !l.starts_with("elements ("))
+        .filter(|l| l.starts_with("  @") || l.starts_with("    "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// (replay-clip) Two surfaces rooted at one place: the verdict's frame
+/// is placed on the one it names (`sid`), never on the other; without
+/// `sid` (an older fidelity.json) on neither; what it found on a root two
+/// compared surfaces share is said to be on one of them. A surface not
+/// compared is said why, as the trace and fidelity.json hold it: gone
+/// before the report, or "the verdict compared no frame of it" with the
+/// live surface it could not place. The held frame is a row of its own,
+/// and a row from a surface's going is `(gone)`.
+#[test]
+fn a_clip_places_the_verdict_on_the_surface_it_compared() {
+    let tick = |sid: u32, k: u32| serde_json::json!({"surface": "a.strand:5:1", "k": k, "sid": sid, "in_motion": 0});
+    let spec = spec("k15", None, &["#mark", "#dot", "bar|a.strand:1:1|#0"], "");
+    let r = synthetic(
+        "clip-place",
+        verdict_of(serde_json::json!([tick(2, 55)]), serde_json::json!([])),
+    );
+    let mut made = vec![r.dir.clone()];
+    let m = clip::make(&r, &spec, false).unwrap();
+    let l = fidelity_lines(&m.text);
+    let on = |at: &str| {
+        l.iter()
+            .find(|x| x.starts_with(&format!("  @{at}")))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let surf = |sid: u64| {
+        j["fidelity"]["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["surface"] == sid)
+            .unwrap()
+            .clone()
+    };
+    let lines: Vec<&String> = l
+        .iter()
+        .filter(|x| x.starts_with("  @a.strand:5:1"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{}", m.text);
+    assert!(
+        lines[0].contains("k55 was held to the live shell's last frame: VERIFIED"),
+        "{}",
+        m.text
+    );
+    assert!(
+        lines[1].contains("(it went at k30 (")
+            && lines[1].contains("), before the report)")
+            && !lines[1].contains("VERIFIED"),
+        "{}",
+        m.text
+    );
+    assert_eq!(surf(2)["compared_in_slice"], serde_json::json!([55]));
+    assert_eq!(surf(3)["compared_in_slice"], serde_json::json!([]));
+    assert!(
+        on("a.strand:1:1").contains(
+            "(the verdict compared no frame of it; it could not place 1 live surface on a replayed one: 9.1 (its root is not in nodes.json))"
+        ),
+        "{}",
+        m.text
+    );
+    // Its frames counted apart from the one held at its start.
+    assert!(
+        lines[0].contains(
+            "3 frames painted in this slice, plus k10, drawn before it and held at its start"
+        ),
+        "{}",
+        m.text
+    );
+    // The rows: the held frame's apart; the dot's from its surface going.
+    let mark = rows_of(&m.text, 1);
+    assert!(mark[0].starts_with("k10 (held) "), "{mark:?}");
+    assert!(mark[1].starts_with("k20..k55 "), "{mark:?}");
+    let dot = rows_of(&m.text, 2);
+    assert!(
+        dot.iter()
+            .any(|r| r.starts_with("k30 (gone)..k55 ") && r.contains("not drawn: its surface went")),
+        "{dot:?}"
+    );
+    // An older fidelity.json, no `sid`: two surfaces have that root, so
+    // neither is said compared.
+    let mut old = tick(2, 55);
+    old.as_object_mut().unwrap().remove("sid");
+    let r = synthetic(
+        "clip-place-old",
+        verdict_of(serde_json::json!([old]), serde_json::json!([])),
+    );
+    made.push(r.dir.clone());
+    let m = clip::make(&r, &spec, false).unwrap();
+    let l = fidelity_lines(&m.text);
+    assert!(!l.iter().any(|x| x.contains("VERIFIED")), "{}", m.text);
+    assert!(
+        l.iter()
+            .filter(|x| x.contains("which 2 surfaces of this replay are"))
+            .count()
+            == 2,
+        "{}",
+        m.text
+    );
+    // Two compared surfaces on one root, and a drift named by the root:
+    // on one of them, never VERIFIED.
+    let drift = serde_json::json!([{
+        "surface": "a.strand:5:1", "node": "box#mark",
+        "live": {"box": [20.0, 0.0, 10.0, 10.0], "opacity": 1.0},
+        "replay": {"box": [24.0, 0.0, 10.0, 10.0], "opacity": 1.0}, "px": 4.0,
+    }]);
+    let r = synthetic(
+        "clip-place-peers",
+        verdict_of(serde_json::json!([tick(2, 55), tick(3, 25)]), drift),
+    );
+    let m = clip::make(&r, &spec, false).unwrap();
+    let l = fidelity_lines(&m.text);
+    assert!(!l.iter().any(|x| x.contains("VERIFIED")), "{}", m.text);
+    assert_eq!(
+        l.iter()
+            .filter(|x| x.contains("it or another surface rooted at @a.strand:5:1 differs (1; the verdict compared 2 surfaces"))
+            .count(),
+        2,
+        "{}",
+        m.text
+    );
+    for d in made.iter().chain([&r.dir]) {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
 
 /// A stored zip's files by name.
@@ -562,6 +1106,8 @@ fn a_replayed_session_clips_as_its_trace() {
     };
     let m = clip::make(&r, &s, false).unwrap();
     let j: Json = serde_json::from_str(&m.json).unwrap();
+    // Its whole window traced: nothing of it is said to be untraced.
+    assert!(!m.text.contains("untraced"), "{}", m.text);
     let mut checked = 0;
     for e in j["elements"].as_array().unwrap() {
         let key = e["key"].as_str().unwrap();

@@ -112,6 +112,8 @@
   // report, packed"), unpacked in place: clip.js's, the one unpacker
   // the clip and the viewer share (replay-clip).
   var unpack = StrandClip.unpack;
+  // Where a node rests (the stage's dashed box, below): clip.js's too.
+  var rest = StrandClip.rest;
 
   function prep(sc) {
     if (sc.C) return sc;
@@ -558,11 +560,9 @@
   // ancestors' springs). The laid box alone is before every paint
   // offset, so a card a written `x` centres, and all inside it, would
   // read as off their places at rest (viewer-owner). A trace from
-  // before the parts were recorded has none: its laid box.
-  function rest(o) {
-    var dx = (o.ix || 0) - (o.fx || 0) + (o.wx || 0), dy = (o.iy || 0) - (o.fy || 0) + (o.wy || 0);
-    return [o.lx + dx, o.ly + dy, o.lw, o.lh];
-  }
+  // before the parts were recorded has none: its laid box. It is
+  // clip.js's (`rest`, beside `unpack` above), so the dashed box and a
+  // clip's `rest` are one (replay-clip).
 
   // A node moves when a motion drives it or its drawn box is off where
   // it rests by more than a physical pixel at the surface's `scale`: a
@@ -745,9 +745,17 @@
     return cv;
   }
 
+  // (replay-clip) What a click or a rectangle can add to a clip: a node
+  // that shows, by the rule the checks use for what is invisible (hidden
+  // at opacity 0, scale 0 or clipped away; checks/mod.rs), with a box and
+  // some opacity.
+  function pickableRow(o) {
+    return o.hid !== 'opacity0' && o.hid !== 'scale0' && o.hid !== 'clipped' && o.vw > 0 && o.vh > 0 && o.op > 0;
+  }
+
   // (replay-clip) A replay's surface: a click adds the node under it to
   // the clip or takes it out; a rectangle dragged over it adds every
-  // node drawn wholly inside it.
+  // node drawn wholly inside it. Neither adds one that does not show.
   function pickable(cv, sc, i, sid) {
     var wrap = el('div', { cls: 'surface' }, cv);
     var p0 = null, band = null;
@@ -785,13 +793,13 @@
         var x0 = Math.min(a[0], b[0]), y0 = Math.min(a[1], b[1]), x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
         sc.tl.screens[i].get(sid).rows.forEach(function (r) {
           var o = obj(sc, r);
-          if (o.hid === 'opacity0' || o.hid === 'scale0' || o.vw <= 0 || o.vh <= 0) return;
+          if (!pickableRow(o)) return;
           if (o.vx >= x0 && o.vy >= y0 && o.vx + o.vw <= x1 && o.vy + o.vh <= y1) S.sel.add(o.key);
         });
         draw();
         return;
       }
-      var o = hit(ev, sc, i, sid, cv);
+      var o = hit(ev, sc, i, sid, cv, pickableRow);
       if (!o) return;
       if (S.sel.has(o.key)) S.sel.delete(o.key); else S.sel.add(o.key);
       draw();
@@ -853,7 +861,9 @@
     x.lineWidth = 1;
   }
 
-  function hit(ev, sc, i, sid, cv) {
+  // The smallest node drawn under the pointer (`ok`, when given, says
+  // which rows count).
+  function hit(ev, sc, i, sid, cv, ok) {
     var rect = cv.getBoundingClientRect();
     var scale = sc.tl.screens[i].get(sid).scale || 1;
     var lx = (ev.clientX - rect.left) * (cv.width / rect.width) / Z / scale;
@@ -861,6 +871,7 @@
     var best = null, area = Infinity;
     sc.tl.screens[i].get(sid).rows.forEach(function (r) {
       var o = obj(sc, r);
+      if (ok && !ok(o)) return;
       if (lx < o.vx || ly < o.vy || lx > o.vx + o.vw || ly > o.vy + o.vh) return;
       var a = o.vw * o.vh;
       if (a < area) { area = a; best = o; }
@@ -1614,13 +1625,21 @@
 
   // ---- (replay-clip) the clip ----------------------------------------------------------
 
-  // The clip's spec: the slice as seconds before the report (ms
-  // precision, what `--from` and `--to` read), the selection's keys and
-  // the note. Its data comes from clip.js on the trace and fidelity.json,
-  // the same as `strand replay clip` gives (eval/tests/clip.rs).
+  // The clip's spec: each end of the slice a tick (`k5226`) when it is
+  // on a painted frame's tick (`[` or `]` pressed on a frame), else
+  // seconds before the report to the ms (what `--from` and `--to`
+  // read), rounded once; the selection's keys and the note. Its data
+  // comes from clip.js on the trace and fidelity.json, the same as
+  // `strand replay clip` gives (eval/tests/clip.rs).
   function clipSpec() {
     if (S.clip.from === null) return null;
-    function at(ms) { return (Math.round(ms) / 1000 - TL.seconds).toFixed(3) + 's'; }
+    var a = A();
+    function at(ms) {
+      var i = a ? atMs(a, ms) : -1;
+      if (i >= 0 && Math.abs(tlMs(a.tl.ks[i]) - ms) < 1e-6) return 'k' + a.tl.ks[i];
+      var s = (ms / 1000 - TL.seconds).toFixed(3);
+      return (s === '-0.000' ? '0.000' : s) + 's';
+    }
     return {
       from: at(S.clip.from),
       to: S.clip.to === null ? null : at(S.clip.to),

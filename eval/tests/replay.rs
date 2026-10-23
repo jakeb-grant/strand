@@ -1344,7 +1344,7 @@ fn the_frame_held_is_the_last_before_the_report() {
     let (r, _) = replay_of(&dir, &defaults());
     assert_eq!(r.verdict.word(), "VERIFIED", "{}", r.verdict.line());
     assert_eq!(r.verdict.ticks.len(), 1);
-    assert_eq!(r.verdict.ticks[0].1, mark - 1, "{:?}", r.verdict.ticks);
+    assert_eq!(r.verdict.ticks[0].k, mark - 1, "{:?}", r.verdict.ticks);
     assert!(r.verdict.in_motion >= 1, "{}", r.verdict.line());
     assert!(
         r.verdict.line().contains("moving at the report"),
@@ -2076,7 +2076,7 @@ fn a_live_frame_at_rest_is_held_to_the_replay_at_rest() {
     for back in [0, 1, 2] {
         let v = live_at(rest - back, &format!("rest-{back}"));
         assert_eq!(v.verdict.word(), "VERIFIED", "{back}: {}", v.verdict.line());
-        assert_eq!(v.verdict.ticks[0].1, rest, "{back}: {:?}", v.verdict.ticks);
+        assert_eq!(v.verdict.ticks[0].k, rest, "{back}: {:?}", v.verdict.ticks);
         assert_eq!(v.verdict.pixels_held, 1);
         assert_eq!(v.fidelity.frames[0].k, Some(rest));
     }
@@ -2095,7 +2095,7 @@ fn a_live_frame_at_rest_is_held_to_the_replay_at_rest() {
         .expect("a tick of the spring past the tolerance");
     let v = live_at(rest - far, "rest-far");
     assert_eq!(
-        v.verdict.ticks[0].1,
+        v.verdict.ticks[0].k,
         rest - far + 2,
         "{:?}",
         v.verdict.ticks

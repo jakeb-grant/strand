@@ -1659,9 +1659,11 @@ keys and play step through time; and the page being packed, its first,
 middle and last painted frames and the one farthest from a whole frame
 are drawn from their pixels, none as a wireframe. (replay-clip) The replay's page shows no scenario list,
 keeps the dense views behind Details (and remembers it), its buttons are
-at least 36 px tall and its two overlays toggle; the clip is set by a
-drag on the timeline and by `[` and `]`, its elements by a click and a
-rectangle on the frame and a `Remove`; Copy for agent copies the text
+at least 40 px tall (its selects 36) and its two overlays toggle; the
+clip is set by a drag on the timeline and by `[` and `]` (pressed on two
+painted frames, the clip's ticks are exactly those frames'), its
+elements by a click and a rectangle on the frame (never one that does
+not show) and a `Remove`; Copy for agent copies the text
 the page's clip.js makes (its note and its command the ones shown), Save
 clip gives one `.zip` holding it, and a clipboard that refuses both ways
 leaves the text selected to copy by hand. Screenshots of each mode land in
@@ -2573,7 +2575,7 @@ it (the hints are small marks on its timeline), and the clip. The
 checks' table, Cost, the node tree, Curves, the filmstrip and the full
 toolbar sit behind a `Details` toggle, remembered in this browser
 (`strand-eval:details`, `localStorage` in `try`/`catch`). Its buttons
-and tabs are at least 40 px tall, a selected one filled in the accent,
+and tabs are at least 40 px tall (its selects 36), a selected one filled in the accent,
 in the theme's tokens, light and dark; at a phone's width nothing
 scrolls the page sideways.
 
@@ -2584,10 +2586,17 @@ each was drawn and where it rests. On the page:
 
 - **When**: drag across the timeline (the slice is a band on it), or
   press `[` and `]` while scrubbing (`Start here [`, `End here ]`);
-  `Clear slice` drops it. With no end, it runs to the report.
+  `Clear slice` drops it. With no end, it runs to the report. An end set
+  on a painted frame (the time shown is its tick's) is that tick
+  (`k5226`) in the spec, so the frame on screen is the slice's first or
+  last; any other end is its time to the ms.
 - **What**: click an element on the frame to add or remove it, or drag
   a rectangle over the frame to add every element drawn wholly inside
-  it. The clip's elements are filled and outlined in the accent; a list
+  it. Neither adds an element that does not show, by the checks' rule
+  (hidden at opacity 0, at scale 0 or clipped away), nor one with no box
+  or no opacity: a click takes the smallest that shows under it. The
+  hover card still names whatever is under the pointer. The clip's
+  elements are filled and outlined in the accent; a list
   gives each one's label and config `file:line` (the node's origin),
   with a `Remove` button.
 - **A note**: optional free text.
@@ -2597,8 +2606,10 @@ each was drawn and where it rests. On the page:
   copy by hand (the page says which). **Save clip** downloads one
   `.zip` (stored, a `Blob` and `a[download]`): `clip.txt`, `clip.json`
   and the slice's frames cropped around the elements
-  (`frames/k<tick>-s<surface>.png`). The page loads nothing and names
-  no URL.
+  (`frames/k<tick>-s<surface>.png`, the tick that surface painted the
+  frame at). A frame whose pixels the page does not hold is left out,
+  and the `.zip`'s `clip.txt` (a last line) and `clip.json` (`missing`)
+  name it. The page loads nothing and names no URL.
 - The page shows the same clip's command (`strand replay clip …`) and
   the text it copies.
 
@@ -2617,8 +2628,14 @@ strand replay clip [report] --from T [--to T] [--node SEL]... [--note TEXT] [--j
 file in QuickJS (`rquickjs`) on the replay's `trace.json`, `checks.json`
 and `fidelity.json`: the text on stdout (`--json`: the JSON), and with
 `--save` the same `.zip`. `T` is seconds before the report (`-3.2s`,
-`-3200ms`, `-3.2`) or a tick (`k5226`), to the ms; `--to` defaults to
-the report. `SEL` is a node's key, `#id` (an `also` id too), or a
+`-3200ms`, `-3.2`), to the ms, or a tick (`k5226`), exact; `--to`
+defaults to the report. A tick is in the slice when it lies within a ms
+of its ends (a time to the ms is half a ms off at most; ticks are 4 ms
+apart or more), and the slice's ticks in its text and JSON
+(`slice.from_k`, `slice.to_k`, `slice.ticks`) are its first and last by
+that one rule, so they are those of the frames its rows hold; a tick
+given stays a tick in `regenerate:` (`spec.from_tick`, `spec.to_tick`).
+`SEL` is a node's key, `#id` (an `also` id too), or a
 config place, `file:line` or `file:line:col` (the file by its name or
 with folders), every node written there. `<report>` is a glitch report
 (its `replay/`) or a replay's report (`--out` of `replay`); one not
@@ -2636,30 +2653,56 @@ The text, compact for an agent's context:
 
 - the report's words and name; the slice in seconds before the report
   and in ticks, how many frames painted in it, and the frame held at
-  its start (the last painted before it);
+  its start (the last painted before it, a row of its own: `k1819
+  (held)`, never joined by a frame of the slice);
 - the note;
 - the fidelity statement for the slice (below), the hints on the
-  elements in it, and what the replay does not reproduce;
+  elements at the slice's ticks (not the held frame's), and what the
+  replay does not reproduce;
 - per element its label, config line, surface and key, and a table, a
   row only where a value changes, naming the frames it holds
   (`k3655..k3680` and their times): the drawn box, the rest box (`same`
   when it is the drawn one), opacity, scale and the motions that move it
-  (its own; `hidden: …` when it is hidden); `not drawn` where it is not;
+  (its own; `hidden: …` when it is hidden); `not drawn` where it is not,
+  `kN (gone) … not drawn: its surface went` from the step its surface
+  detached;
 - `regenerate:` and the command that makes the clip again.
 
 **Its fidelity, honestly.** For each surface the clip is of: the frames
-the slice shows of it (their paint ticks); the verdict compared one
-frame of a surface with the live shell, the last before the report
-(`verdict.ticks`), and the clip says `VERIFIED` only of that frame and
-only when the slice shows it and the verdict found nothing on that
-surface, naming whether its pixels were compared too; else it lists
-each difference the verdict found there. Every other frame is said to
-be the replay's own, drawn from the recorded input, never compared with
-what the live shell drew; a surface the verdict did not compare is said
-so with why (not shown at the report, shown in the replay only, drawn
-by the replay at no frame there); a report with no `drawn.json` is NOT
-CHECKED throughout. The divergences from the recorded session inside
-the slice are listed, with how many came earlier and the last of them
+the slice shows of it (their paint ticks: those painted in the slice,
+and apart, the one drawn before it and held at its start); the verdict
+compared one frame of a surface with the live shell, the last before
+the report (`verdict.ticks`: its root's origin, the tick, the replayed
+surface `sid`, and `in_motion`, how many of its nodes were moving at
+the report and held within their bound), and the clip says `VERIFIED`
+only of that frame, only when the slice shows it and the verdict found
+nothing on that surface, and only of what the verdict held: its nodes
+at rest within `tolerance.px` and `tolerance.opacity` of the live
+boxes, those moving at the report within `tolerance.moving_frames`
+frames of their travel with their boxes left out of the pixel
+comparison (said so when there are any), and whether its pixels were
+compared. Nodes `moving_out_of_step` (past that bound; no difference to
+the verdict, held to nothing) are named on a line of their own, never
+as differences and never as held. Otherwise it lists each difference
+the verdict found there. A verdict's frame is placed on a surface by
+its `sid`; a `fidelity.json` from before `sid` was recorded is placed
+by the root's origin only where one surface of the replay has that
+root (else nothing of it is said compared), and what the verdict found
+on a root that two compared surfaces share is said to be on one of
+them. Every other frame is said to be the replay's own, drawn from the
+recorded input, never compared with what the live shell drew; a surface
+the verdict did not compare is said so with why, as the trace and
+`fidelity.json` hold it: the live shell showed it and the replay drew
+no frame of it at the report (`missing`), shown in the replay only
+(`replay_only_surfaces`), not shown at the report (the trace has it
+detached before), else "the verdict compared no frame of it", quoting
+the live surfaces it could place on none (`missing`'s `… (its root is
+not in nodes.json)`). A slice before the trace's start (`strand replay
+--traced N`: the window's start replayed as a warm-up, drawn and not
+traced; `window.traced_seconds`) is refused saying so, and one that
+crosses it says `untraced before -N s`. A report with no `drawn.json`
+is NOT CHECKED throughout. The divergences from the recorded session
+inside the slice are listed, with how many came earlier and the last of them
 ("the replay may already part from the live shell here"), and the
 limits follow.
 
@@ -2667,7 +2710,8 @@ limits follow.
 on it over the slice, 8 px around (`MARGIN`), in buffer pixels, clamped
 to the surface; the whole surface when no element is drawn on it. Each
 frame of it the slice shows is cropped once (a frame held from the one
-before is not repeated); the crops are deflated PNGs. On the command
+before is not repeated), named by the tick that surface painted it at;
+the crops are deflated PNGs. On the command
 line the frames are rebuilt by `report::pack::Composer`, on the page
 from its data URIs by clip.js; the parity test holds the two equal.
 
