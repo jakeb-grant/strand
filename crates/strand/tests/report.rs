@@ -6,14 +6,19 @@
 //! back part by part. (replayfix) A busy session (four workspaces of
 //! windows, a clock, an MPRIS player, notifications) runs over sway's
 //! IPC with its own home's desktop entries, kept whole by the changes
-//! ring.
+//! ring. (services) A session writing service fields from its handlers
+//! (a mute toggled with the volume set beside it, an item's volume, do
+//! not disturb) runs on a private PipeWire.
 //!
-//! Skipped, loudly, without sway or grim (CI sets `STRAND_REQUIRE_SWAY`).
+//! Skipped, loudly, without sway or grim (CI sets `STRAND_REQUIRE_SWAY`),
+//! or PipeWire for the audio session (`STRAND_REQUIRE_PIPEWIRE`).
 
 mod support;
 
 #[path = "../../strand-services/tests/common/data_control.rs"]
 mod data_control;
+#[path = "../../strand-services/tests/pipewire/mod.rs"]
+mod pipewire;
 #[allow(dead_code)]
 #[path = "../../strand-services/tests/common/window.rs"]
 mod window;
@@ -26,6 +31,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use data_control::DataControl;
+use pipewire::PipeWire;
 use serde_json::{Value as Json, json};
 use strand_core::flight::{self, Rec, kind};
 use strand_services::testing::PrivateBus;
@@ -179,6 +185,20 @@ impl Desk {
         home: &[(String, String)],
         outputs: &[&str],
     ) -> Option<Desk> {
+        Self::with_env(tag, extra, files, ipc, home, outputs, &[])
+    }
+
+    /// [`Desk::with_outputs`] with `env` set for `strand run` (a private
+    /// PipeWire's runtime directory).
+    fn with_env(
+        tag: &str,
+        extra: &str,
+        files: &[(&str, &str)],
+        ipc: bool,
+        home: &[(String, String)],
+        outputs: &[&str],
+        env: &[(&str, PathBuf)],
+    ) -> Option<Desk> {
         if !tools() {
             return None;
         }
@@ -307,6 +327,8 @@ impl Desk {
         if ipc {
             run.env("SWAYSOCK", &desk.sway_ipc);
         }
+        run.env_remove("PIPEWIRE_REMOTE")
+            .envs(env.iter().map(|(k, v)| (*k, v)));
         let child = run.spawn().unwrap();
         desk.strand = Some(Proc(child));
         desk.wait("strand answers", |d| d.get("report.clicks").is_some());
@@ -1518,6 +1540,191 @@ fn a_busy_session_is_kept_for_its_whole_window() {
         changes.evicted
     );
     drop(windows);
+    if let Some(k) = keep {
+        std::fs::create_dir_all(&k).unwrap();
+        std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();
+        std::fs::write(k.join("run"), desk.dir.display().to_string()).unwrap();
+    }
+}
+
+/// (services) The writes session's config: a toggle of a field written
+/// whole (do not disturb), a toggle of a leaf of a record field with
+/// another leaf set in the same handler (mute, and the volume beside
+/// it), an item of a keyed list written through a component's
+/// parameter (the knob), what reads each (a box as wide as the volume,
+/// one shown while a sink of the list is loud), and an `on change` counting the sink's changes and saying what it
+/// last saw.
+const WRITES: &str = "export state seen = 0
+export state said = \"\"
+export let dnd = notifications.dnd
+export let muted = audio.sink.muted
+export let vol = audio.sink.volume
+component Knob(dev: AudioDevice) {
+  box { width: 60; height: 32; bg: dev.volume > 0.5 ? #4080ff : #203060
+    on click { dev.volume = dev.volume > 0.5 ? 0.2 : 0.9 } }
+}
+bar Sound {
+  edge: bottom; height: 32
+  on change audio.sink.volume, audio.sink.muted {
+    seen = seen + 1
+    said = audio.sink.muted ? \"muted\" : \"loud\"
+  }
+  row {
+    box { width: 100; height: 32; bg: notifications.dnd ? #8000ff : #303030
+      on click { notifications.dnd = !notifications.dnd } }
+    box { width: 100; height: 32; bg: audio.sink.muted ? #ff0000 : #00ff00
+      on click { audio.sink.muted = !audio.sink.muted; audio.sink.volume = 0.3 } }
+    Knob { dev: audio.sink }
+    box { width: audio.sink.volume * 200; height: 32; bg: #c0c0c0 }
+    if notifications.dnd { box { width: 20; height: 32; bg: #ffffff } }
+    if audio.sink.muted { box { width: 20; height: 32; bg: #ff8800 } }
+    if audio.sinks.filter(s => s.volume > 0.5).len > 0 { box { width: 20; height: 32; bg: #00ffff } }
+  }
+}
+";
+
+/// (services) A session whose handlers write service fields, and whose
+/// sink also changes from outside (`wpctl`), on a private PipeWire: a
+/// mute toggled with the volume set in the same handler, an item's
+/// volume written through a parameter, do not disturb toggled twice in
+/// a row. Recording goes off and on again after the first writes, so
+/// the window starts with the sink already muted by one. Each write is
+/// in the changes ring as the change it made (a `LOCAL` FIELD or KEYED
+/// record beside its WRITE), so its replay starts every field where it
+/// was and plays each answer on what the write left (scripts/eval/
+/// test-report-view.sh --e2e: no divergence, VERIFIED). With
+/// `STRAND_REPORT_KEEP=DIR` the bundle's path is written to
+/// `DIR/bundle`.
+#[test]
+fn a_service_write_session_is_kept_for_its_replay() {
+    if !tools() {
+        return;
+    }
+    let Some(pw) = PipeWire::start("a_service_write_session_is_kept_for_its_replay") else {
+        return;
+    };
+    pw.wait_for_defaults();
+    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.5"]);
+    pw.wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "0"]);
+    let Some(mut desk) = Desk::with_env(
+        "writes",
+        "",
+        &[("writes.strand", WRITES)],
+        false,
+        &[],
+        &["output HEADLESS-1 resolution 1280x720 position 0 0 scale 1"],
+        &[("PIPEWIRE_RUNTIME_DIR", pw.dir.path().to_path_buf())],
+    ) else {
+        return;
+    };
+    let keep = std::env::var_os("STRAND_REPORT_KEEP").map(PathBuf::from);
+    desk.keep = keep.is_some();
+    let near = |d: &Desk, v: f64| {
+        d.get("writes.vol")
+            .and_then(|s| s.parse::<f64>().ok())
+            .is_some_and(|x| (x - v).abs() < 0.01)
+    };
+    let sink = |d: &Desk, muted: bool, v: f64| {
+        d.get("writes.muted").as_deref() == Some(if muted { "true" } else { "false" }) && near(d, v)
+    };
+    let dnd = |d: &Desk, on: bool| {
+        d.get("writes.dnd").as_deref() == Some(if on { "true" } else { "false" })
+    };
+    let (w, h) = (1280, 720);
+    let click = |d: &mut Desk, x: u32| {
+        d.pointer.motion(x, h - 16, w, h);
+        d.pointer.click(x, h - 16, w, h);
+    };
+    let (quiet, mute, knob) = (50, 150, 230);
+    desk.wait("the sink at 0.5", |d| sink(d, false, 0.5));
+    // Before the window: a change from outside, then the mute (and the
+    // volume beside it) and do not disturb written by the config.
+    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.7"]);
+    desk.wait("the sink at 0.7", |d| sink(d, false, 0.7));
+    click(&mut desk, mute);
+    desk.wait("muted at 0.3", |d| sink(d, true, 0.3));
+    assert!(
+        sink(&desk, true, 0.3),
+        "PipeWire: {:?}",
+        pw.volume_of("@DEFAULT_AUDIO_SINK@")
+    );
+    click(&mut desk, quiet);
+    desk.wait("do not disturb on", |d| dnd(d, true));
+    // The window starts here, with the sink muted and do not disturb
+    // on.
+    desk.ok(&["set", "system.replay", "false"]);
+    desk.wait("recording off", |d| {
+        d.get("report.recording").as_deref() == Some("false")
+    });
+    desk.ok(&["set", "system.replay", "true"]);
+    desk.wait("recording on", |d| {
+        d.get("report.recording").as_deref() == Some("true")
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    pw.wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", "0.45"]);
+    desk.wait("muted at 0.45", |d| sink(d, true, 0.45));
+    click(&mut desk, mute);
+    desk.wait("unmuted at 0.3", |d| sink(d, false, 0.3));
+    std::thread::sleep(Duration::from_millis(400));
+    click(&mut desk, knob);
+    desk.wait("the knob set 0.9", |d| sink(d, false, 0.9));
+    std::thread::sleep(Duration::from_millis(400));
+    click(&mut desk, quiet);
+    desk.wait("do not disturb off", |d| dnd(d, false));
+    click(&mut desk, quiet);
+    desk.wait("do not disturb on again", |d| dnd(d, true));
+    std::thread::sleep(Duration::from_millis(400));
+    click(&mut desk, mute);
+    desk.wait("muted at 0.3 again", |d| sink(d, true, 0.3));
+    // Unmuted from outside, then muted by the config with the volume
+    // it already has.
+    pw.wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "0"]);
+    desk.wait("unmuted from outside", |d| sink(d, false, 0.3));
+    click(&mut desk, mute);
+    desk.wait("muted a third time", |d| sink(d, true, 0.3));
+    std::thread::sleep(Duration::from_millis(1500));
+    let ans = desk.report("the writes session");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let changes = flight::read(&std::fs::read(dir.join("changes.flight")).unwrap()).unwrap();
+    assert_eq!(changes.version, flight::VERSION);
+    let e = changes.entries();
+    let shown: Vec<String> = e
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.rec.kind,
+                kind::FIELD | kind::KEYED | kind::WRITE | kind::CELL
+            )
+        })
+        .map(|e| {
+            format!(
+                "{} {:#x} {:#x} {:?} {}",
+                e.rec.t,
+                e.rec.kind,
+                e.rec.flags,
+                e.name,
+                String::from_utf8_lossy(e.value.as_deref().unwrap_or_default())
+            )
+        })
+        .collect();
+    let shown = shown.join("\n");
+    let local = |name: &str, k: u8| {
+        e.iter()
+            .filter(|e| {
+                e.rec.kind == k
+                    && e.rec.flags & flight::flags::LOCAL != 0
+                    && e.name.as_deref() == Some(name)
+            })
+            .count()
+    };
+    // Every write in the window is recorded as the change it made: the
+    // sink's three mutes (two with the volume changed beside them, one
+    // not), do not disturb's two, the knob's item.
+    assert!(local("audio.sink", kind::FIELD) >= 3, "{shown}");
+    assert_eq!(local("notifications.dnd", kind::FIELD), 2, "{shown}");
+    assert!(local("audio.sinks", kind::KEYED) >= 1, "{shown}");
+    let writes = e.iter().filter(|e| e.rec.kind == kind::WRITE).count();
+    assert!(writes >= 8, "{writes} writes\n{shown}");
     if let Some(k) = keep {
         std::fs::create_dir_all(&k).unwrap();
         std::fs::write(k.join("bundle"), dir.display().to_string()).unwrap();

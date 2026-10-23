@@ -1826,7 +1826,8 @@ threads** (as `strand_core::ipc`).
   `json_color` write the value encoding below into any `fmt::Write`.
 - **Records** are 24 bytes, little-endian: `t` u64 (ns since the
   epoch), `kind` u8, `flags` u8 (1 truncated, 2 redacted, 4 lost, set
-  by the reader, 8 a service's boot value), `slot` u16 (a surface or
+  by the reader, 8 a service's boot value, (services) 16 a change the
+  config's own write made, `LOCAL`), `slot` u16 (a surface or
   output slot in the input ring, a name index in the changes ring),
   then 12 bytes of payload by kind. An arena reference (`ARef`) is an
   absolute offset u32 and a length u16 at payload bytes 6..12 (a value
@@ -1885,7 +1886,12 @@ threads** (as `strand_core::ipc`).
   action's name; exit i32: 0 it succeeded, 1 it failed or never
   started, 0 on its start record; argument count u8, started u8),
   `0x46` write (an `rw` service field the config wrote; arena: the
-  value), `0x47` reload (name `reload`; the module files, the cells
+  value; (services) the change it made to the field, or to an item of a
+  keyed list, is a field or keyed record flagged `LOCAL` at the same
+  time, its old value what the write replaced: a local write is applied
+  at once and its echo is never a patch, so without it a service's
+  answer after a write was recorded as edits from a value the field
+  never held), `0x47` reload (name `reload`; the module files, the cells
   kept and the cells reset, u16 each; arena `{file: blake3}`),
   `0x48` surface root (name: its origin `file.strand:LINE:COL`, the
   file under the config directory as `nodes.json` names it; the
@@ -1910,8 +1916,11 @@ threads** (as `strand_core::ipc`).
   when that is text on the same surface: the count grows and `last`
   moves.
 - **The dump** (`input.flight`, `changes.flight`): a 64-byte header
-  (magic `STRNDFLT`, version u16 = 2 (replayfix: values may be edits
-  and patches, and no record's value is lost; version 1 still reads),
+  (magic `STRNDFLT`, version u16 = 3 (replayfix, version 2: values
+  may be edits and patches, and no record's value is lost; (services)
+  version 3: a config's write to a service field is recorded as the
+  change it made, `LOCAL`; versions 1 and 2 still read, and
+  `Dump::version` says which was read),
   ring u8, flags u8 (1 wrapped, 2
   paused), record size u16, record count u32, name count u32, arena
   length u32, the arena's first absolute offset u64, the dump's
@@ -1965,13 +1974,18 @@ thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
   callback the registry calls on the logic thread for every patch
   `Services::pump` applies: `TapEvent { service: &str, change:
   Change<'_> }`, `Change::Field { field, old: &Data, new: &Data,
-  initial }` (the old value read from the cell before the patch, only
+  initial, local }` (the old value read from the cell before the patch, only
   while a tap is installed), `Change::Keyed { field, diffs:
-  &[VecDiff<Data, Data>], removed: &[Data], initial }`, `Change::Event {
+  &[VecDiff<Data, Data>], removed: &[Data], initial, local }`, `Change::Event {
   event, args: &[Data] }`. The patches a refusal or an unavailable
   service resets fields with are tapped too; a patch that leaves a
   field as it was is not. An echo of a local write is not a patch, so
-  it is never tapped. `Services::snapshot(rt)` reads every registered
+  it is never tapped. (services) A local write (`DynService::write`, a
+  field or a leaf of one; `write_item`, an item of a keyed list) is
+  told as it is applied, with `local: true`: the field's value before
+  and after (a write leaving it as it was is not told), or the list's
+  `Update` of the item with the item it replaced in `removed`; the
+  recorder writes it as a field or keyed record flagged `LOCAL`. `Services::snapshot(rt)` reads every registered
   service's fields as `ServiceSnapshot { name, running, fields }`. `Data::write_json(&self, w, &mut dyn
   FnMut(&str) -> bool)` (new) writes a value, the closure deciding per
   text whether it is kept. Config services (`service … from`) run on

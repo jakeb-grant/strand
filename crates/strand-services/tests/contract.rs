@@ -1859,6 +1859,10 @@ enum Heard {
     Field(&'static str, Data, Data, bool),
     Keyed(&'static str, usize, Vec<Data>, bool),
     Event(&'static str, Vec<Data>),
+    /// (services) A local write's change: a field's old and new value,
+    /// or a keyed field's diffs and the items they replaced.
+    WroteField(&'static str, Data, Data),
+    WroteKeyed(&'static str, Vec<VecDiff<Data, Data>>, Vec<Data>),
 }
 
 fn tap_into(s: &Services) -> Rc<std::cell::RefCell<Vec<(String, Heard)>>> {
@@ -1871,13 +1875,29 @@ fn tap_into(s: &Services) -> Rc<std::cell::RefCell<Vec<(String, Heard)>>> {
                 field,
                 old,
                 new,
+                local: true,
+                ..
+            } => Heard::WroteField(field, (*old).clone(), (*new).clone()),
+            Change::Field {
+                field,
+                old,
+                new,
                 initial,
+                local: false,
             } => Heard::Field(field, (*old).clone(), (*new).clone(), *initial),
             Change::Keyed {
                 field,
                 diffs,
                 removed,
+                local: true,
+                ..
+            } => Heard::WroteKeyed(field, diffs.to_vec(), removed.to_vec()),
+            Change::Keyed {
+                field,
+                diffs,
+                removed,
                 initial,
+                local: false,
             } => Heard::Keyed(field, diffs.len(), removed.to_vec(), *initial),
             Change::Event { event, args } => Heard::Event(event, args.to_vec()),
         };
@@ -1965,6 +1985,8 @@ fn the_tap_sees_every_applied_patch_with_its_old_value() {
 /// (report) The echo of a local write is no patch: the write changed
 /// the field already, its echo changes nothing and is never told; the
 /// write's own answer, when it differs (a clamp), is a change.
+/// (services) The write itself is told as it lands, as the change it
+/// made (`local`), so a recording holds the value it replaced.
 #[test]
 fn an_echo_of_a_local_write_is_not_tapped() {
     let (sc, _guard) = script();
@@ -1982,17 +2004,85 @@ fn an_echo_of_a_local_write_is_not_tapped() {
     until(&rt, &s, "the gain's answer", || {
         probe.cells().gain.pending_writes(&rt) == 0
     });
-    assert!(heard.borrow().is_empty(), "{:?}", heard.borrow());
+    let p = |h: Heard| ("probe".to_string(), h);
+    assert_eq!(
+        *heard.borrow(),
+        [p(Heard::WroteField(
+            "gain",
+            Data::Float(0.0),
+            Data::Float(2.0)
+        ))],
+        "the write, not its echo"
+    );
     dynamic.write(&rt, 0, &[], Data::Float(1.5)).unwrap();
     assert_eq!(sc.next(), "write level 1.5");
     until(&rt, &s, "the clamped level", || {
         probe.cells().level.get_untracked(&rt) == Ok(1.0)
     });
     assert_eq!(
+        heard.borrow()[1..],
+        [
+            p(Heard::WroteField(
+                "level",
+                Data::Float(0.0),
+                Data::Float(1.5)
+            )),
+            p(Heard::Field(
+                "level",
+                Data::Float(1.5),
+                Data::Float(1.0),
+                false
+            )),
+        ]
+    );
+    s.shutdown();
+}
+
+/// (services) A local write of an item of a keyed list (`s.volume =
+/// 0.5` for `s` in `audio.sinks`) is told as the update it made at the
+/// item's index, with the item it replaced; its echo never.
+#[test]
+fn a_local_item_write_is_tapped_with_the_item_it_replaced() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let dynamic = probe.dynamic();
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Update(Box::new(|p| {
+        p.all = vec![ws(1, "a"), ws(2, "b")]
+    })));
+    sc.cmd(Cmd::Ready);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let heard = tap_into(&s);
+    let path = [Step::Field("name".into())];
+    dynamic
+        .write_item(
+            &rt,
+            "Workspace",
+            &ws(2, "b").to_data(),
+            &path,
+            Data::text("x"),
+        )
+        .unwrap();
+    assert_eq!(sc.next(), "write item all Int(2).name Text(\"x\")");
+    until(&rt, &s, "the answer", || {
+        probe.cells().all.pending_item_writes(&rt, &2) == 0
+    });
+    assert_eq!(
         *heard.borrow(),
         [(
             "probe".to_string(),
-            Heard::Field("level", Data::Float(1.5), Data::Float(1.0), false)
+            Heard::WroteKeyed(
+                "all",
+                vec![VecDiff::Update {
+                    index: 1,
+                    key: Data::Int(2),
+                    value: ws(2, "x").to_data(),
+                }],
+                vec![ws(2, "b").to_data()],
+            )
         )]
     );
     s.shutdown();

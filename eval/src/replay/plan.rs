@@ -28,6 +28,11 @@ pub const WINDOW_CAP_NS: u64 = 120_000_000_000;
 /// calendar it computes from `wall`, and `auth`, which is never recorded.
 pub const SANDBOX_OWNS: [&str; 4] = ["screens", "clock", "calendar", "auth"];
 
+/// (services) The changes dump version from which a config's write to a
+/// service field is recorded as the change it made
+/// (`strand_core::flight::flags::LOCAL`).
+pub const WRITES_RECORDED: u16 = 3;
+
 /// What the replay is asked for.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
@@ -375,6 +380,147 @@ pub fn field_before(v: &Json, after: Option<&Json>) -> Option<Json> {
         Json::Array(pair) if pair.len() == 2 => Some(pair[0].clone()),
         Json::Object(o) => apply_edits(after?, o.get("e")?.as_array()?, false),
         _ => None,
+    }
+}
+
+/// (services) A `WRITE` record's name (`audio.sink.muted`,
+/// `notifications.dnd`, `x.list[2].y`) as the field written
+/// (`audio.sink`) and the place below it, as an edit's path names one
+/// (`muted`; empty for the field whole; `list.2.y`).
+pub fn write_place(name: &str) -> Option<(String, String)> {
+    let (svc, rest) = name.split_once('.')?;
+    let end = rest.find(['.', '[']).unwrap_or(rest.len());
+    let (field, below) = rest.split_at(end);
+    if field.is_empty() {
+        return None;
+    }
+    let path: Vec<&str> = below
+        .split(['.', '[', ']'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some((format!("{svc}.{field}"), path.join(".")))
+}
+
+/// (services) Whether a field record's value (`[old, new]`, or its
+/// edits) changes the place `path` names: the value whole does, and an
+/// edit at that place, above it or below it.
+pub fn touches(v: &Json, path: &str) -> bool {
+    let within = |a: &str, b: &str| a.is_empty() || b == a || b.starts_with(&format!("{a}."));
+    match v {
+        Json::Array(pair) => pair.len() == 2,
+        Json::Object(o) => o.get("e").and_then(Json::as_array).is_some_and(|edits| {
+            edits.iter().any(|e| {
+                e.get(0)
+                    .and_then(Json::as_str)
+                    .is_some_and(|p| within(p, path) || within(path, p))
+            })
+        }),
+        _ => false,
+    }
+}
+
+/// (services) What a place the config wrote held before its oldest
+/// write ([`before_write`]).
+#[derive(Debug, PartialEq)]
+pub enum Before {
+    /// The last change recorded before the write, at that time, left it
+    /// at that value.
+    Known(u64, Json),
+    /// No change of it is recorded since the shell started: its default.
+    Default,
+    /// Not known.
+    Unknown,
+}
+
+/// (services) What field `field`'s place `path` held just before `t`, as
+/// a recorder before changes dump version 3 tells it: the place's value
+/// after the last record before `t` that set it (a service's report,
+/// boot values among them, or the config's write of it or of the field
+/// whole). With none, its default, when `whole_run` (the changes ring
+/// never wrapped) and no gap or reload came before `t`; a record that
+/// lost its value, or set only part of the place, leaves it unknown.
+pub fn before_write(b: &Bundle, field: &str, path: &str, t: u64, whole_run: bool) -> Before {
+    let v_at = |v: &Json, at: &str| -> Option<Json> {
+        let mut v = v.clone();
+        place(&mut v, at).map(|x| x.clone())
+    };
+    // `at` below `of`: the rest of the path, dot-joined.
+    let below = |of: &str, at: &str| -> Option<String> {
+        if of.is_empty() {
+            Some(at.to_string())
+        } else if at == of {
+            Some(String::new())
+        } else {
+            at.strip_prefix(&format!("{of}.")).map(str::to_string)
+        }
+    };
+    for e in b.change_entries.iter().rev().filter(|e| e.rec.t < t) {
+        if matches!(
+            e.rec.kind,
+            kind::RELOAD | kind::CHANGE_GAP_BEGINS | kind::CHANGE_GAP_ENDS
+        ) {
+            return Before::Unknown;
+        }
+        match e.rec.kind {
+            kind::FIELD if e.name.as_deref() == Some(field) => {
+                let Some(v) = value(e) else {
+                    return Before::Unknown;
+                };
+                match &v {
+                    Json::Array(pair) if pair.len() == 2 => {
+                        return v_at(&pair[1], path)
+                            .map_or(Before::Unknown, |x| Before::Known(e.rec.t, x));
+                    }
+                    Json::Object(o) => {
+                        let edits = o
+                            .get("e")
+                            .and_then(Json::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        // The newest edit of the place, or above it, says
+                        // what it became; one only below it leaves it
+                        // partly known.
+                        for ed in edits.iter().rev() {
+                            let Some(p) = ed.get(0).and_then(Json::as_str) else {
+                                continue;
+                            };
+                            if let Some(rest) = below(p, path) {
+                                return ed
+                                    .get(2)
+                                    .and_then(|n| v_at(n, &rest))
+                                    .map_or(Before::Unknown, |x| Before::Known(e.rec.t, x));
+                            }
+                            if below(path, p).is_some() {
+                                return Before::Unknown;
+                            }
+                        }
+                    }
+                    _ => return Before::Unknown,
+                }
+            }
+            kind::WRITE => {
+                let Some((f, p)) = e.name.as_deref().and_then(write_place) else {
+                    continue;
+                };
+                if f != field {
+                    continue;
+                }
+                if let Some(rest) = below(&p, path) {
+                    return value(e)
+                        .and_then(|w| v_at(&w, &rest))
+                        .map_or(Before::Unknown, |x| Before::Known(e.rec.t, x));
+                }
+                if below(path, &p).is_some() {
+                    return Before::Unknown;
+                }
+            }
+            _ => {}
+        }
+    }
+    if whole_run {
+        Before::Default
+    } else {
+        Before::Unknown
     }
 }
 
@@ -1258,6 +1404,113 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             }
         }
     }
+    // (services) From changes dump version 3 a config's write to a
+    // service field is recorded as the change it made (flagged `LOCAL`),
+    // with what it replaced, and the rewind undoes it as any change. An
+    // older recorder kept the write alone (`WRITE`, the value written),
+    // so the rewind passed it by: a place the config wrote with no older
+    // change of it in the window would start at its value at the report.
+    // What it held before its oldest write is the value the last change
+    // recorded before that write left it (a service's report, its boot
+    // value among them, or an earlier write), or, with none, its
+    // default, when the changes ring holds every change since the shell
+    // started (it never wrapped, no gap, no reload before the write: the
+    // recorder tells every change of a field the config reads from the
+    // services' first report on). Otherwise it is not known: it starts
+    // at the value rewound to, and a limit says so.
+    let writes_recorded = b
+        .changes
+        .as_ref()
+        .is_none_or(|d| d.version >= WRITES_RECORDED);
+    if !writes_recorded {
+        let version = b.changes.as_ref().map_or(0, |d| d.version);
+        let whole_run = b.changes.as_ref().is_some_and(|d| !d.wrapped);
+        // Per place written: how many writes, and the oldest's time.
+        let mut written: BTreeMap<(String, String), (usize, u64)> = BTreeMap::new();
+        for e in &b.change_entries {
+            if e.rec.kind != kind::WRITE || !in_window(e.rec.t) {
+                continue;
+            }
+            let Some(place_of) = e.name.as_deref().and_then(write_place) else {
+                continue;
+            };
+            let svc = place_of.0.split('.').next().unwrap_or("");
+            if SANDBOX_OWNS.contains(&svc) || !known(svc) {
+                continue;
+            }
+            let w = written.entry(place_of).or_insert((0, e.rec.t));
+            w.0 += 1;
+        }
+        for ((field, path), (n, first)) in written {
+            let older = b.change_entries.iter().any(|e| {
+                e.rec.t < first
+                    && in_window(e.rec.t)
+                    && e.rec.kind == kind::FIELD
+                    && e.name.as_deref() == Some(field.as_str())
+                    && value(e).is_some_and(|v| touches(&v, &path))
+            });
+            if older {
+                continue;
+            }
+            let shown = if path.is_empty() {
+                field.clone()
+            } else {
+                format!("{field}.{path}")
+            };
+            let head = format!(
+                "service field `{shown}`: the config wrote it {n} time{} in the window (first at \
+                 {}), and this report's recorder (changes dump version {version}, before version \
+                 {WRITES_RECORDED}) kept what each write set but not what it replaced",
+                if n == 1 { "" } else { "s" },
+                secs(first as i128 - end as i128),
+            );
+            match before_write(b, &field, &path, first, whole_run) {
+                Before::Known(t, v) => {
+                    let mut now = cur.get(&field).cloned().unwrap_or(Json::Null);
+                    if let Some(slot) = place(&mut now, &path) {
+                        *slot = v.clone();
+                        cur.insert(field.clone(), now);
+                        notes.push(format!(
+                            "{head}; the last change recorded before it, at {}, left it at {}: \
+                             the replay starts it there",
+                            secs(t as i128 - end as i128),
+                            compact(&v)
+                        ));
+                        continue;
+                    }
+                }
+                Before::Default => {
+                    let mut now = cur.get(&field).cloned().unwrap_or(Json::Null);
+                    let default = crate::harness::service_default(&field)
+                        .and_then(|mut d| place(&mut d, &path).map(|x| x.clone()));
+                    if let Some(d) = default
+                        && let Some(slot) = place(&mut now, &path)
+                    {
+                        *slot = d.clone();
+                        cur.insert(field.clone(), now);
+                        notes.push(format!(
+                            "{head}; the changes ring holds every change since the shell started, \
+                             and none of it before that write, so it held its default, {}: the \
+                             replay starts it there",
+                            compact(&d)
+                        ));
+                        continue;
+                    }
+                }
+                Before::Unknown => {}
+            }
+            let start = cur
+                .get(&field)
+                .cloned()
+                .and_then(|mut v| place(&mut v, &path).map(|x| x.clone()))
+                .map_or_else(|| "its default".to_string(), |v| compact(&v));
+            limits.push(format!(
+                "{head}, and no change recorded says what it was before, so the replay starts it \
+                 at {start}, the value rewound to, which it may not have been: what reads it, and \
+                 a write made from it (a toggle), may differ from the live shell's"
+            ));
+        }
+    }
     let seeds = cur.clone();
 
     // (fidelity) The roots the live shell showed on several outputs at
@@ -1791,6 +2044,10 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         if stopped.get(&name).is_some_and(|s| t <= *s) {
             continue;
         }
+        // (services) A change the config's own write made: the replay's
+        // handler makes that write again, so it is never set, only
+        // played, as the value later changes play on.
+        let local = e.rec.flags & flags::LOCAL != 0;
         if let Some(after) = bridged.get(&i)
             && matches!(e.rec.kind, kind::FIELD | kind::KEYED)
         {
@@ -1803,7 +2060,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 lists.insert(name.clone(), after.as_array().cloned().unwrap_or_default());
             }
             played.insert(name.clone(), after.clone());
-            if now != *after {
+            if now != *after && !local {
                 let shown = if e.rec.kind == kind::KEYED {
                     compact(after)
                 } else {
@@ -1828,6 +2085,10 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 // value before it.
                 let before = played.get(&name).or_else(|| seeds.get(&name));
                 if let Some(after) = v.as_ref().and_then(|j| field_after(j, before)) {
+                    if local {
+                        played.insert(name.clone(), after);
+                        continue;
+                    }
                     push(
                         &mut timed,
                         at,
@@ -1854,6 +2115,14 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     apply_keyed(list, j["d"].as_array().map_or(&[][..], Vec::as_slice));
                     let whole = Json::Array(list.clone());
                     played.insert(name.clone(), whole.clone());
+                    if local {
+                        events.push(Event {
+                            kind: "change",
+                            t: at,
+                            text: format!("config wrote an item of {name}: {}", compact(&j["d"])),
+                        });
+                        continue;
+                    }
                     push(&mut timed, at, format!("set {name} {}", compact(&whole)), 0);
                     events.push(Event {
                         kind: "change",
@@ -1956,14 +2225,33 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     }
                 ),
             }),
-            kind::WRITE => events.push(Event {
-                kind: "change",
-                t: at,
-                text: format!(
-                    "config wrote {name} = {}",
-                    v.as_ref().map_or("?".into(), compact)
-                ),
-            }),
+            kind::WRITE => {
+                // (services) A recorder before changes dump version 3
+                // kept the write alone, not the change it made: the
+                // value written is played on the field, so a change the
+                // service answers with later plays on what the write
+                // left, not on what it replaced.
+                if !writes_recorded && let (Some(w), Some((field, path))) = (&v, write_place(&name))
+                {
+                    let mut now = played
+                        .get(&field)
+                        .or_else(|| seeds.get(&field))
+                        .cloned()
+                        .unwrap_or(Json::Null);
+                    if let Some(slot) = place(&mut now, &path) {
+                        *slot = w.clone();
+                        played.insert(field, now);
+                    }
+                }
+                events.push(Event {
+                    kind: "change",
+                    t: at,
+                    text: format!(
+                        "config wrote {name} = {}",
+                        v.as_ref().map_or("?".into(), compact)
+                    ),
+                });
+            }
             kind::ROOT | kind::ROOT_GONE => {}
             _ => {}
         }

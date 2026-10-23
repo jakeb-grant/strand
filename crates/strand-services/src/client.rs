@@ -249,19 +249,25 @@ pub struct TapEvent<'a> {
 #[derive(Debug)]
 pub enum Change<'a> {
     /// A plain field took `new` (it held `old`). `initial`: a boot value.
+    /// (services) `local`: the config's own write made it, applied at
+    /// once before the service answers (its echo is never told).
     Field {
         field: &'static str,
         old: &'a Data,
         new: &'a Data,
         initial: bool,
+        local: bool,
     },
     /// A keyed field changed by `diffs`; `removed` holds the items those
-    /// diffs removed or replaced, in the order they went.
+    /// diffs removed or replaced, in the order they went. (services)
+    /// `local`: the config's write of one item (`s.volume = 0.5` for `s`
+    /// in the list), applied at once.
     Keyed {
         field: &'static str,
         diffs: &'a [VecDiff<Data, Data>],
         removed: &'a [Data],
         initial: bool,
+        local: bool,
     },
     /// An event fired.
     Event {
@@ -525,7 +531,9 @@ impl Services {
     /// patch, only while a tap is installed), a keyed field's diffs with
     /// the items they removed, an event's arguments. The echo of a local
     /// write changes nothing, so it is never told; nor is a report equal
-    /// to what the field holds.
+    /// to what the field holds. (services) The local write itself is
+    /// told, as it lands, as the change it made (`local`): a field's old
+    /// and new value, or the item of a keyed list it replaced.
     pub fn tap(&self, tap: Option<Tap>) {
         *self.0.tap.borrow_mut() = tap;
     }
@@ -1433,6 +1441,7 @@ impl<S: Service> ClientInner<S> {
                         diffs: &diffs,
                         removed: &removed,
                         initial,
+                        local: false,
                     },
                 );
             }
@@ -1461,12 +1470,49 @@ impl<S: Service> ClientInner<S> {
                             old: &old,
                             new: &new,
                             initial,
+                            local: false,
                         },
                     );
                 }
             }
             _ => {}
         }
+    }
+
+    /// (services) Tells the tap of a local write to the item keyed `key`
+    /// of keyed field `field`, which held `old` before it: the item it
+    /// replaced, as an update at its index.
+    fn tell_item_write(
+        &self,
+        rt: &Runtime,
+        reg: &Registry,
+        field: usize,
+        key: &Data,
+        old: Vec<Data>,
+    ) {
+        let Ok(new) = self.cells.keyed_items(rt, field) else {
+            return;
+        };
+        let Some(index) = (0..new.len().min(old.len())).find(|&i| new[i] != old[i]) else {
+            return;
+        };
+        let name = S::FIELDS.get(field).map_or("", |f| f.name);
+        let diffs = [VecDiff::Update {
+            index,
+            key: key.clone(),
+            value: new[index].clone(),
+        }];
+        let removed = [old[index].clone()];
+        reg.tell(
+            &self.name,
+            Change::Keyed {
+                field: name,
+                diffs: &diffs,
+                removed: &removed,
+                initial: false,
+                local: true,
+            },
+        );
     }
 
     /// Applies every envelope the run has sent.
@@ -2070,14 +2116,24 @@ impl<S: Service> DynService for Client<S> {
             self.0.dropped_write(info.name, &e);
             return Ok(());
         }
-        let whole = if path.is_empty() {
-            value.clone()
+        // (services) With a tap installed the field's value before the
+        // write is read too: the write is told as the change it makes.
+        let reg = self.0.reg.upgrade().filter(|r| r.tapped());
+        let before = if path.is_empty() && reg.is_none() {
+            None
         } else {
-            let cur = rt.untrack(|rt| self.0.cells.read(rt, field))?;
-            cur.with_path(path, value.clone())
-                .map_err(|e| Error::failed(format!("{}.{}: {e}", S::NAME, info.name)))?
+            if let Some(reg) = &reg {
+                reg.tap_reads.set(reg.tap_reads.get() + 1);
+            }
+            Some(rt.untrack(|rt| self.0.cells.read(rt, field))?)
         };
-        let (path, name, sent_whole) = (path.to_vec(), info.name, whole.clone());
+        let whole = match (&before, path.is_empty()) {
+            (Some(cur), false) => cur
+                .with_path(path, value.clone())
+                .map_err(|e| Error::failed(format!("{}.{}: {e}", S::NAME, info.name)))?,
+            _ => value.clone(),
+        };
+        let (steps, name, sent_whole) = (path.to_vec(), info.name, whole.clone());
         let me = Rc::downgrade(&self.0);
         self.0.cells.write(
             rt,
@@ -2090,7 +2146,7 @@ impl<S: Service> DynService for Client<S> {
                         Write {
                             field: name,
                             key: None,
-                            path,
+                            path: steps,
                             value,
                             field_value: sent_whole,
                             held: None,
@@ -2099,7 +2155,22 @@ impl<S: Service> DynService for Client<S> {
                     );
                 }
             }),
-        )
+        )?;
+        if let (Some(reg), Some(old)) = (reg, before)
+            && old != whole
+        {
+            reg.tell(
+                &self.0.name,
+                Change::Field {
+                    field: info.name,
+                    old: &old,
+                    new: &whole,
+                    initial: false,
+                    local: true,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn write_item(
@@ -2132,7 +2203,17 @@ impl<S: Service> DynService for Client<S> {
             return Ok(());
         }
         let mut last = None;
+        // (services) With a tap installed the write is told as the
+        // change it makes to the list that took it.
+        let reg = self.0.reg.upgrade().filter(|r| r.tapped());
         for i in lists {
+            let before = match &reg {
+                Some(reg) => {
+                    reg.tap_reads.set(reg.tap_reads.get() + 1);
+                    self.0.cells.keyed_items(rt, i).ok()
+                }
+                None => None,
+            };
             let (name, me, key2) = (S::FIELDS[i].name, Rc::downgrade(&self.0), key.clone());
             let (path2, value2, held) = (path.to_vec(), value.clone(), item.clone());
             let send: crate::store::SendItemWrite = Box::new(move |rt, index, item, generation| {
@@ -2167,7 +2248,12 @@ impl<S: Service> DynService for Client<S> {
             });
             // The list holding the key takes it (`sinks` or `sources`).
             match self.0.cells.write_item(rt, i, &key, path, &value, send) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    if let (Some(reg), Some(old)) = (&reg, before) {
+                        self.0.tell_item_write(rt, reg, i, &key, old);
+                    }
+                    return Ok(());
+                }
                 Err(e) => last = Some(e),
             }
         }

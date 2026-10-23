@@ -2446,6 +2446,30 @@ work:
    the value after it (a list diff whose indices are past its end)
    stops its field, which then starts at the oldest value known, with a
    note.
+   (services) A config's write to a service field (`audio.sink.muted =
+   …`, `notifications.dnd = …`, an item's `dev.volume = …`) is applied
+   live at once, and its echo is never a service's change; a version-3
+   ring records the change it made as a field or keyed record flagged
+   `LOCAL` (architecture.md "Glitch reports"), so the rewind undoes it
+   as any other, and a service's answer after it (often only the icon)
+   is an edit of the value the write left. The play forward never
+   plays a `LOCAL` record as a `set`: the replay's own handler, run by
+   the same press, writes it, and the record only moves what the
+   replay knows the field holds, so the answers after it are applied
+   on it. A version-1 or -2 ring kept a write's value (`WRITE`) and
+   not what it replaced, and a field written only by the config has no
+   record at all: there the planner applies each written value under
+   the answers after it, and starts each place the config wrote at
+   the last value recorded before its first write in the window (a
+   field's change, or a write, at or above that place), or, in a
+   window from the shell's start with nothing recorded before it, at
+   the service's default (its type's default, which the service's
+   store starts with; never `system`'s, seeded with what it kept across
+   restarts before the recorder starts), with a note naming either; with neither
+   (a gap or reload before it, or an edit only below that place) a
+   limit names the field, how often it was written and the value it
+   starts at, which it may not have been: what reads it, and a write
+   made from it (a toggle), may differ from the live shell's.
 5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
@@ -2462,7 +2486,8 @@ work:
    20 s), and the steps: the input on its timeline (`frames`
    between records, quantised to ticks; a pointer step only where it
    moves, a `focus` before keys on another surface), each service
-   change as a `set` (a keyed list as the whole list after its diffs)
+   change as a `set` (a keyed list as the whole list after its diffs;
+   (services) never a `LOCAL` one, which the replay's handler makes)
    or an `emit`, (report review) each `strand set`, `toggle` or `reset`
    the shell was sent (a compositor keybinding's, recorded as a request
    with the value after it) as a `set` or `toggle` at its time, a text

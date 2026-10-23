@@ -28,7 +28,12 @@
 #              besides 1, a bar per screen with its state kept per
 #              screen, input on three): every output replayed as a
 #              screen of its own, no divergence, VERIFIED on every
-#              surface, and its clip naming each surface's output
+#              surface, and its clip naming each surface's output;
+#              (services) a session writing service fields from its
+#              handlers on a private PipeWire (a mute with the volume
+#              beside it, an item's volume, do not disturb twice), from
+#              after a recorder off: no divergence, no config write
+#              played as a service's change, VERIFIED
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -453,6 +458,62 @@ PY
   else
     tail -40 "$DIR/e2e-busy.log"
     no "the busy session on a headless sway was not reported"
+  fi
+
+  # (services) A session whose handlers write service fields (a mute
+  # toggled with the volume set beside it, an item's volume, do not
+  # disturb toggled twice) and whose sink changes from outside, on a
+  # private PipeWire, recorded from after a recorder off: each write is
+  # in the changes ring as the change it made, so the replay starts
+  # every field where it was and plays each answer on what the write
+  # left.
+  keep=$DIR/keep-writes
+  if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
+    a_service_write_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-writes.log" 2>&1 && [ -f "$keep/bundle" ]; then
+    ok "a session writing service fields is reported"
+    bundle=$(cat "$keep/bundle")
+    run_dir=$(cat "$keep/run")
+    made+=("$(scenario_name "$bundle")")
+    if bash scripts/report-view.sh --no-open "$bundle" >"$DIR/e2e-writes-view" 2>&1; then
+      ok "its bundle replays"
+      rep=$bundle/replay
+      sed -n '1,/^timeline/p' "$rep/replay.txt"
+      if python3 -I - "$rep/fidelity.json" <<'PY'
+import json, sys
+f = json.load(open(sys.argv[1]))
+for d in f["divergences"]:
+    print("  ", d["t"], d["what"], d["text"])
+p, c = f["presses"], f["cell_writes"]
+print("   presses", p, "cell writes", c)
+sys.exit(1 if f["divergences"] or p["live"] < 6 or p["live"] != p["replay"] or c["live"] != c["replay"] else 0)
+PY
+      then
+        ok "every write's handler and every answer after it replay as they ran live"
+      else
+        no "the writes session parts from the live shell (above)"
+      fi
+      scn=$(ls "$rep"/report-*/scenario.scn | head -1)
+      if grep -q '^set notifications\.dnd' "$scn"; then
+        no "a config's write is played as a service's change: $(grep -n '^set notifications\.dnd' "$scn" | head -3)"
+      else
+        ok "a config's write is left to its handler, never played as a service's change"
+      fi
+      if grep -q 'kept what each write set but not what it replaced' "$rep/replay.txt"; then
+        no "a write's place is named unknown: $(grep 'kept what each write set' "$rep/replay.txt" | head -2)"
+      else
+        ok "no written field's start is guessed"
+      fi
+      head -1 "$rep/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
+        ok "the writes session is VERIFIED against the live shell's drawn boxes" ||
+        no "the writes session is not VERIFIED: $(sed -n '1,/^glitch report/p' "$rep/replay.txt")"
+    else
+      cat "$DIR/e2e-writes-view"
+      no "the writes session's bundle could not be replayed"
+    fi
+    rm -rf "$run_dir"
+  else
+    tail -40 "$DIR/e2e-writes.log"
+    no "the writes session on a headless sway and PipeWire was not reported"
   fi
 fi
 

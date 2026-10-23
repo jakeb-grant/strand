@@ -275,7 +275,10 @@ fn a_version_1_dump_with_a_lost_value_still_reads() {
     let mut bytes = r.dump(3);
     assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), flight::VERSION);
     bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
-    let e = flight::read(&bytes).unwrap().entries();
+    let d = flight::read(&bytes).unwrap();
+    // (services) The reader says which version it read.
+    assert_eq!(d.version, 1);
+    let e = d.entries();
     assert_eq!(e.len(), 2);
     assert_ne!(e[0].rec.flags & flags::LOST, 0);
     assert_eq!(e[0].value, None);
@@ -521,6 +524,7 @@ proptest! {
 #[test]
 fn an_aref_resolves_across_the_32_bit_wrap() {
     let d = Dump {
+        version: flight::VERSION,
         ring: ring::CHANGES,
         wrapped: true,
         paused: false,

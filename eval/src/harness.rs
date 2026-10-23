@@ -510,6 +510,31 @@ pub fn compile(sc: &Scenario) -> Result<(Arc<Program>, SourceMap), Error> {
     Ok((build.program, map))
 }
 
+/// (services) A builtin service field's default (`audio.sink`), as the
+/// sandbox's stand-in holds it unseeded (its type's default: false, 0,
+/// "", an empty list, null) and as a service's store holds it before its
+/// first report, as JSON. `None` for no such field, and for `system`,
+/// whose store starts at defaults of its own and is then seeded with
+/// what it kept across restarts before the recorder starts, so no record
+/// says where it began.
+pub fn service_default(field: &str) -> Option<serde_json::Value> {
+    let (svc, name) = field.split_once('.')?;
+    if svc == "system" {
+        return None;
+    }
+    let services = strand_services_schema::schemas();
+    let schema = Schema::builtin_with(&services).ok()?;
+    let r = schema.services.get(svc)?;
+    let def = schema.types.records.get(r.0 as usize)?;
+    let f = def.fields.iter().find(|f| f.name == name)?;
+    let v = strand_compiler::vm::schema_host::default_value(&schema.types, &f.ty);
+    serde_json::from_str(&strand_compiler::vm::json::to_json_string(
+        &schema.types,
+        &v,
+    ))
+    .ok()
+}
+
 /// (fidelity) The config in directory `dir` compiled, as a run compiles
 /// it: what a replay's planner reads of the shell it replays.
 pub fn compile_dir(dir: &std::path::Path) -> Result<Arc<Program>, Error> {

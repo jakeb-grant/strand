@@ -28,7 +28,12 @@ pub const MAGIC: &[u8; 8] = b"STRNDFLT";
 /// (`{"e": …}`) and a keyed change may patch an item (`{"patch": …}`)
 /// (docs/architecture.md, "Glitch reports", Values), and no record is
 /// kept whose value the arena lost. Version 1 dumps read as before.
-pub const VERSION: u16 = 2;
+/// (services) Version 3: a config's write to a service field (or to an
+/// item of a keyed list) is recorded as the change it made there, a
+/// `FIELD` or `KEYED` record flagged [`flags::LOCAL`], beside its
+/// `WRITE`; an older dump has the `WRITE` alone, the value written
+/// without what it replaced.
+pub const VERSION: u16 = 3;
 /// Bytes of one record.
 pub const RECORD_BYTES: usize = 24;
 /// Bytes of one name-table entry: a length byte and up to 63 bytes of
@@ -56,6 +61,13 @@ pub mod flags {
     pub const LOST: u8 = 4;
     /// A service's boot value.
     pub const BOOT: u8 = 8;
+    /// (services) A `FIELD` or `KEYED` change the config's own write
+    /// made (`audio.sink.muted = true`, `s.volume = 0.5` for `s` in a
+    /// list), applied at once on the logic thread before the service
+    /// answers: its value holds what the write replaced. A replay's own
+    /// handler makes that write again, so it is undone when rewinding
+    /// and never set when playing forward.
+    pub const LOCAL: u8 = 16;
 }
 
 /// Record kinds (architecture.md, "Glitch reports").
@@ -860,6 +872,8 @@ impl std::error::Error for FlightError {}
 /// A dump read back ([`read`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dump {
+    /// (services) The format it was written in ([`VERSION`] or older).
+    pub version: u16,
     /// [`ring::INPUT`] or [`ring::CHANGES`].
     pub ring: u8,
     /// The ring had evicted records.
@@ -1072,6 +1086,7 @@ pub fn read(bytes: &[u8]) -> Result<Dump, FlightError> {
         at += RECORD_BYTES;
     }
     Ok(Dump {
+        version,
         ring: which,
         wrapped: fl & 1 != 0,
         paused: fl & 2 != 0,

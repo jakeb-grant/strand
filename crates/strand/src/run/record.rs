@@ -993,12 +993,13 @@ impl ChangeRecorder {
                 old,
                 new,
                 initial,
+                local,
             } => {
                 if !self.reads.reads(ev.service, field) {
                     return;
                 }
                 name.push_str(field);
-                let f = if *initial { flags::BOOT } else { 0 };
+                let f = change_flags(*initial, *local);
                 // (replayfix) What changed in it, when that is shorter
                 // than the value before and after it whole.
                 let edits = field_edits(old, new, &keep);
@@ -1029,6 +1030,7 @@ impl ChangeRecorder {
                 diffs,
                 removed,
                 initial,
+                local,
             } => {
                 if !self.reads.reads(ev.service, field) {
                     return;
@@ -1040,7 +1042,7 @@ impl ChangeRecorder {
                     return;
                 };
                 name.push_str(field);
-                let f = if *initial { flags::BOOT } else { 0 };
+                let f = change_flags(*initial, *local);
                 push_value(r, t, kind::KEYED, &name, &[], f, |w| {
                     let mut held = false;
                     let mut k = |s: &str| {
@@ -1342,6 +1344,19 @@ impl ChangeRecorder {
     }
 }
 
+/// A service change's flags: a boot value's, and (services) a local
+/// write's, which a replay's own handler makes again.
+fn change_flags(initial: bool, local: bool) -> u8 {
+    let mut f = 0;
+    if initial {
+        f |= flags::BOOT;
+    }
+    if local {
+        f |= flags::LOCAL;
+    }
+    f
+}
+
 /// A declared service's patch: each field it set, as a `FIELD` record of
 /// its declared name (`mood.level`), its old value the last one recorded
 /// (`null` before any). Its values are kept as reported.
@@ -1356,6 +1371,7 @@ fn declared_change(
         field: "values",
         diffs,
         initial,
+        local,
         ..
     } = &ev.change
     else {
@@ -1374,7 +1390,7 @@ fn declared_change(
             _ => {}
         }
     }
-    let f = if *initial { flags::BOOT } else { 0 };
+    let f = change_flags(*initial, *local);
     for (i, v) in set {
         let Some(field) = fields.get(i) else {
             continue;
@@ -2645,6 +2661,7 @@ mod tests {
                     old: &old,
                     new: &new,
                     initial: false,
+                    local: false,
                 },
             },
         );
@@ -2674,6 +2691,7 @@ mod tests {
                     old: &old,
                     new: &new,
                     initial: false,
+                    local: false,
                 },
             },
         );
@@ -2724,6 +2742,7 @@ mod tests {
                         diffs,
                         removed: &[],
                         initial,
+                        local: false,
                     },
                 },
             );
@@ -2915,6 +2934,7 @@ mod tests {
                     diffs: &diffs,
                     removed: &removed,
                     initial: true,
+                    local: false,
                 },
             },
         );
@@ -2996,6 +3016,7 @@ mod tests {
                     old,
                     new,
                     initial: false,
+                    local: false,
                 },
             },
         );
@@ -3018,8 +3039,99 @@ mod tests {
                     diffs,
                     removed,
                     initial: false,
+                    local: false,
                 },
             },
+        );
+    }
+
+    /// (services) A config's write is recorded as the change it made,
+    /// flagged `LOCAL`, with what it replaced: a field's (here a leaf
+    /// below it, as its edits) and an item of a keyed list's; the
+    /// service's answer after it is an ordinary change from the value
+    /// the write left.
+    #[test]
+    fn a_local_write_is_recorded_with_what_it_replaced() {
+        use strand_core::VecDiff;
+        let mut c = ChangeRecorder::new(
+            true,
+            program(
+                "let a = notifications.dnd\nlet b = workspaces.focused\nlet c = workspaces.all.len",
+            ),
+        );
+        let tell = |c: &mut ChangeRecorder, t: u64, svc: &str, change: Change<'_>| {
+            c.service(
+                t,
+                &TapEvent {
+                    service: svc,
+                    change,
+                },
+            );
+        };
+        tell(
+            &mut c,
+            1,
+            "notifications",
+            Change::Field {
+                field: "dnd",
+                old: &Data::Bool(false),
+                new: &Data::Bool(true),
+                initial: false,
+                local: true,
+            },
+        );
+        let (w, written) = (
+            workspace(2, true, &["a", "b"]),
+            workspace(2, true, &["a", "x"]),
+        );
+        tell(
+            &mut c,
+            2,
+            "workspaces",
+            Change::Field {
+                field: "focused",
+                old: &w,
+                new: &written,
+                initial: false,
+                local: true,
+            },
+        );
+        let answered = workspace(2, false, &["a", "x"]);
+        field_change(&mut c, 3, "workspaces", "focused", &written, &answered);
+        let up = [VecDiff::Update {
+            index: 0,
+            key: Data::Int(2),
+            value: written.clone(),
+        }];
+        tell(
+            &mut c,
+            4,
+            "workspaces",
+            Change::Keyed {
+                field: "all",
+                diffs: &up,
+                removed: std::slice::from_ref(&w),
+                initial: false,
+                local: true,
+            },
+        );
+        let e = entries(c.ring().unwrap());
+        let local: Vec<bool> = e.iter().map(|e| e.rec.flags & flags::LOCAL != 0).collect();
+        assert_eq!(local, [true, true, false, true]);
+        assert_eq!(e[0].name.as_deref(), Some("notifications.dnd"));
+        assert_eq!(value_of(&e[0]), serde_json::json!([false, true]));
+        assert_eq!(
+            value_of(&e[1]),
+            serde_json::json!({"e": [["windows.1.title", "b", "x"]]})
+        );
+        assert_eq!(
+            value_of(&e[2]),
+            serde_json::json!({"e": [["focused", true, false]]})
+        );
+        assert_eq!(e[3].rec.kind, kind::KEYED);
+        assert_eq!(
+            value_of(&e[3])["d"],
+            serde_json::json!([{"patch": [0, 2, [["windows.1.title", "b", "x"]]]}])
         );
     }
 

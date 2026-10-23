@@ -1,0 +1,29 @@
+// (services) The glitch-report replay's fixture of a config's own writes
+// to service fields (eval/tests/writes.rs): a toggle of a field written
+// whole, a toggle of a leaf of a record field with another leaf set in
+// the same handler, an item of a keyed list written through a
+// component's parameter, what reads each, and an `on change` that
+// counts the record field's changes and says what it last saw.
+export state seen = 0
+export state said = ""
+component Knob(dev: AudioDevice) {
+  box { id: knob; width: 40; height: 40; bg: #4080ff
+    on click { dev.volume = dev.volume > 0.5 ? 0.2 : 0.9 } }
+}
+bar Top {
+  edge: top; height: 40
+  on change audio.sink.volume, audio.sink.muted {
+    seen = seen + 1
+    said = audio.sink.muted ? "muted" : "loud"
+  }
+  row {
+    box { id: quiet; width: 80; height: 40; bg: notifications.dnd ? #8000ff : #303030
+      on click { notifications.dnd = !notifications.dnd } }
+    box { id: mute; width: 80; height: 40; bg: audio.sink.muted ? #ff0000 : #00ff00
+      on click { audio.sink.muted = !audio.sink.muted; audio.sink.volume = 0.3 } }
+    Knob { dev: audio.sink }
+    if notifications.dnd { box { id: moon; width: 20; height: 40; bg: #ffffff } }
+    if audio.sink.muted { box { id: off; width: 20; height: 40; bg: #ff8800 } }
+    if audio.sinks.filter(s => s.volume > 0.5).len > 0 { box { id: loud; width: 20; height: 40; bg: #00ffff } }
+  }
+}
