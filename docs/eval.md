@@ -1613,22 +1613,29 @@ writes nothing outside `--out`, so its tests and mutant runs never do.
 elsewhere. It shows each scenario's frames:
 
 - scrubbable by tick, with a filmstrip of every frame and an onion skin
-  of the frames before;
+  of the frames before (as outlines, only the boxes the frame does not
+  draw again: a node drawn where it was lies under its own outline);
 - at `fit` zoom by default: the largest whole zoom (or the fraction
   below 1) at which the widest surface of the run fits the stage, so a
   phone shows the whole surface and the frame does not jump in size as
   the scrubber moves; A and B side by side only where each still gets
   twice its size, else one above the other;
-- with nodes outlined by drawn, visual or laid box;
+- with nodes outlined by drawn, visual or laid box, and dashed where
+  each comes to rest: its laid box moved by the written `x` and `y`, its
+  own and its ancestors', without the ancestors' springs in flight (the
+  laid box alone is before every paint offset, so a card a written `x`
+  centres, and all inside it, would read as off their places at rest).
+  A node counts as moving, and is outlined by default, when a motion
+  drives it or it is drawn off where it rests;
 - with the findings listed and linked to their frames;
 - with a node's path plotted per axis, at the panel's width;
 - with an A/B tab when the page holds two runs: a pixel difference of
   two runs with frames, and against an approved reference (which records
   no pixels) the nodes drawn differently from it, the run's solid red
   and the reference's dashed;
-- with an Approve tab: the run's approved reference and the command that
-  approves it, with the note and the approver typed there (see
-  Reference recordings).
+- with an Approve tab (not in a replay, which has no reference): the
+  run's approved reference and the command that approves it, with the
+  note and the approver typed there (see Reference recordings).
 
 The matrix grid lists, under each rate's grid, every cell that did not
 pass, linked to its page with its failed checks, so nothing needs a

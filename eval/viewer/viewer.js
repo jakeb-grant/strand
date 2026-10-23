@@ -431,7 +431,7 @@
     }
     t.appendChild(sel('zoom', S.zoom, [['fit', 'fit'], [1, '1×'], [2, '2×'], [3, '3×'], [4, '4×'], [6, '6×'], [8, '8×']], function (v) { S.zoom = v === 'fit' ? 'fit' : +v; }));
     t.appendChild(chk('boxes', S.boxes, function (v) { S.boxes = v; }, 'Drawn boxes solid: blue authored, orange derived, red failing'));
-    t.appendChild(chk('laid', S.laid, function (v) { S.laid = v; }, 'Laid boxes dashed'));
+    t.appendChild(chk('rest', S.laid, function (v) { S.laid = v; }, 'Where each comes to rest, dashed: its laid box moved by the written x and y, its own and its ancestors\''));
     t.appendChild(chk('every node', S.all, function (v) { S.all = v; }, 'Boxes of nodes that do not move too'));
     t.appendChild(sel('onion', S.onion, [[0, 'off'], [1, '1'], [2, '2'], [3, '3'], [4, '4'], [6, '6'], [8, '8']], function (v) { S.onion = +v; }));
     t.appendChild(sel('as', S.onionMode, [['outline', 'outlines'], ['ghost', 'ghost pixels']], function (v) { S.onionMode = v; }));
@@ -538,14 +538,32 @@
 
   // ---- the stage ------------------------------------------------------------------
 
-  // A node moves when a motion drives it or its drawn box is off its laid
-  // one by more than a physical pixel at the surface's `scale`: a drawn
-  // box is snapped to the pixel grid, so at a fractional scale a node at
-  // rest is up to a pixel from its laid box (integration-r6).
+  // Where a node comes to rest: its laid box moved by the written `x`
+  // and `y`, its own and its ancestors', without what is in flight (the
+  // ancestors' springs). The laid box alone is before every paint
+  // offset, so a card a written `x` centres, and all inside it, would
+  // read as off their places at rest (viewer-owner). A trace from
+  // before the parts were recorded has none: its laid box.
+  function rest(o) {
+    var dx = (o.ix || 0) - (o.fx || 0) + (o.wx || 0), dy = (o.iy || 0) - (o.fy || 0) + (o.wy || 0);
+    return [o.lx + dx, o.ly + dy, o.lw, o.lh];
+  }
+
+  // A node moves when a motion drives it or its drawn box is off where
+  // it rests by more than a physical pixel at the surface's `scale`: a
+  // drawn box is snapped to the pixel grid, so at a fractional scale a
+  // node at rest is up to a pixel from its laid box (integration-r6).
   function moving(sc, o, scale) {
     var tol = Math.max(0.01, 1 / (scale || 1) + 1e-6);
-    return o.mot || o.emot || Math.abs(o.vx - o.lx) > tol || Math.abs(o.vy - o.ly) > tol ||
-      Math.abs(o.vw - o.lw) > tol || Math.abs(o.vh - o.lh) > tol;
+    var b = rest(o);
+    return o.mot || o.emot || Math.abs(o.vx - b[0]) > tol || Math.abs(o.vy - b[1]) > tol ||
+      Math.abs(o.vw - b[2]) > tol || Math.abs(o.vh - b[3]) > tol;
+  }
+
+  // Whether a node's drawn box differs from `b`'s by more than `tol`.
+  function moved(o, b, tol) {
+    return Math.abs(o.vx - b.vx) > tol || Math.abs(o.vy - b.vy) > tol ||
+      Math.abs(o.vw - b.vw) > tol || Math.abs(o.vh - b.vh) > tol;
   }
 
   function colorOf(sc, o, scale) {
@@ -619,10 +637,18 @@
         var pim = img(sc, ps.png);
         if (pim) { x.globalAlpha = alpha * 0.6; x.drawImage(pim, 0, 0, W * z, H * z); x.globalAlpha = 1; }
       } else {
+        // Only a box this frame does not draw again: one drawn where the
+        // frame draws it lies under its own outline, so an onion of a
+        // node at rest showed nothing (viewer-owner).
+        var now = {};
+        scr.rows.forEach(function (r) { var o = obj(sc, r); now[o.key] = o; });
+        var tol = 1 / (scale || 1) / 2;
         x.globalAlpha = alpha;
+        x.lineWidth = 1;
         ps.rows.forEach(function (r) {
           var o = obj(sc, r);
-          if (!(S.sel.has(o.key) || sc.failKeys.has(o.key) || moving(sc, o, ps.scale || 1))) return;
+          if (o.hid === 'opacity0' || o.hid === 'scale0') return;
+          if (now[o.key] && !moved(o, now[o.key], tol)) return;
           x.strokeStyle = colorOf(sc, o, ps.scale || 1);
           x.setLineDash([]);
           x.strokeRect(o.vx * scale * z + 0.5, o.vy * scale * z + 0.5, Math.max(1, o.vw * scale * z - 1), Math.max(1, o.vh * scale * z - 1));
@@ -662,7 +688,8 @@
       if (S.laid) {
         x.setLineDash([4, 3]);
         x.globalAlpha = 0.8;
-        x.strokeRect(o.lx * scale * z + 0.5, o.ly * scale * z + 0.5, Math.max(1, o.lw * scale * z - 1), Math.max(1, o.lh * scale * z - 1));
+        var rb = rest(o);
+        x.strokeRect(rb[0] * scale * z + 0.5, rb[1] * scale * z + 0.5, Math.max(1, rb[2] * scale * z - 1), Math.max(1, rb[3] * scale * z - 1));
       }
       if (S.boxes) {
         x.setLineDash([]);
@@ -777,6 +804,7 @@
     tip.appendChild(el('div', null, el('b', { text: m.label || o.key }), m.origin ? ' ' + m.origin : ''));
     tip.appendChild(el('div', { cls: 'mono', text: o.key }));
     tip.appendChild(el('div', { text: 'drawn ' + [o.vx, o.vy, o.vw, o.vh].map(function (v) { return fmt(v); }).join(', ') +
+      ' · rest ' + rest(o).map(function (v) { return fmt(v); }).join(', ') +
       ' · laid ' + [o.lx, o.ly, o.lw, o.lh].map(function (v) { return fmt(v); }).join(', ') }));
     tip.appendChild(el('div', { text: 'opacity ' + fmt(o.op, 3) + ' (own ' + fmt(o.oo, 3) + ') · scale ' + fmt(o.sx, 3) + ', ' + fmt(o.sy, 3) +
       (o.rot ? ' · rotate ' + fmt(o.rot) : '') + (o.hid ? ' · hidden: ' + o.hid : '') + (o.txt ? ' · text ' + ({ S: 'shaped', E: 'by its estimate', I: 'stand-in' }[o.txt] || o.txt) : '') }));
@@ -1042,7 +1070,9 @@
 
   var TABS = [['findings', 'Findings'], ['nodes', 'Nodes'], ['curves', 'Curves'], ['cost', 'Cost']];
   if (AB) TABS.push(['ab', 'A/B']);
-  TABS.push(['verdict', 'Approve']);
+  // A replay is no scenario of the checkout's: it has no reference to
+  // approve (viewer-owner).
+  if (!DATA.replay) TABS.push(['verdict', 'Approve']);
   if (!TABS.some(function (t) { return t[0] === S.tab; })) S.tab = 'findings';
 
   function setTab(t) {
@@ -1155,7 +1185,8 @@
     p.appendChild(tree);
   }
 
-  var AXES_CURVE = [['x', 'vx', 'lx'], ['y', 'vy', 'ly'], ['w', 'vw', 'lw'], ['h', 'vh', 'lh'], ['opacity', 'op', null], ['scale', 'sx', null]];
+  // An axis: its name, its drawn column and its place in `rest`.
+  var AXES_CURVE = [['x', 'vx', 0], ['y', 'vy', 1], ['w', 'vw', 2], ['h', 'vh', 3], ['opacity', 'op', null], ['scale', 'sx', null]];
   // The series colours, theme tokens (--c1 to --c6) so dark mode lightens them.
   function hues() { return [1, 2, 3, 4, 5, 6].map(function (n) { return css('--c' + n); }); }
   // A chart's width in its own units: the panel's, within 300 to 640, so
@@ -1187,7 +1218,7 @@
     keys.forEach(function (k, n) {
       legend.appendChild(el('span', { style: 'color:' + HUES[n % HUES.length], text: '■ ' + label(a, k) }));
     });
-    legend.appendChild(el('span', { cls: 'note', text: 'solid drawn · dashed laid' + (AB ? ' · B dotted' : '') + ' · red band: the bound a failing finding held it to · grey: text held' }));
+    legend.appendChild(el('span', { cls: 'note', text: 'solid drawn · dashed at rest' + (AB ? ' · B dotted' : '') + ' · red band: the bound a failing finding held it to · grey: text held' }));
     p.appendChild(legend);
     var W = chartWidth(p), H = 110, L = 44, R = 8, T = 8, Bm = 18;
     function xs(i) { return L + (hi > lo ? (i - lo) / (hi - lo) : 0) * (W - L - R); }
@@ -1203,7 +1234,7 @@
           var v = r[sc.C[col[1]]];
           pts.push([i, v]);
           vmin = Math.min(vmin, v); vmax = Math.max(vmax, v);
-          if (col[2]) { var lv = r[sc.C[col[2]]]; lpts.push([i, lv]); vmin = Math.min(vmin, lv); vmax = Math.max(vmax, lv); } else lpts.push(null);
+          if (col[2] !== null) { var lv = rest(obj(sc, r))[col[2]]; lpts.push([i, lv]); vmin = Math.min(vmin, lv); vmax = Math.max(vmax, lv); } else lpts.push(null);
         }
         return { pts: pts, lpts: lpts };
       }
