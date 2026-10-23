@@ -37,6 +37,22 @@ pub const CELL_H: u32 = 64;
 /// smaller, so a surface uses up to four sizes).
 const MIN_CONTEXTS: usize = 8;
 
+/// (perf-bench) Where the last [`Raster::paint`] spent its time: the
+/// paint cache's gradients and shadows built (`prepare`), offscreen
+/// groups and fade layers drawn (`offscreen`), the display list encoded
+/// into the cells' vello contexts (`encode`), vello's rasterising of
+/// them (`fine`), and the cells copied into the buffer (`copy`); and the
+/// cells drawn. Wall-clock, advisory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RasterTimes {
+    pub prepare: std::time::Duration,
+    pub offscreen: std::time::Duration,
+    pub encode: std::time::Duration,
+    pub fine: std::time::Duration,
+    pub copy: std::time::Duration,
+    pub cells: u32,
+}
+
 /// Owns the vello contexts and scratch space between frames.
 #[derive(Debug)]
 pub struct Raster {
@@ -52,6 +68,8 @@ pub struct Raster {
     cache: PaintCache,
     /// (M4) Offscreen groups (blurred, colour-filtered subtrees).
     offscreen: crate::offscreen::Offscreen,
+    /// (perf-bench) The last paint's parts.
+    times: RasterTimes,
 }
 
 impl Default for Raster {
@@ -64,6 +82,7 @@ impl Default for Raster {
             rasterised: 0,
             cache: PaintCache::default(),
             offscreen: crate::offscreen::Offscreen::default(),
+            times: RasterTimes::default(),
         }
     }
 }
@@ -137,6 +156,11 @@ impl Raster {
         self.rasterised
     }
 
+    /// (perf-bench) Where the last paint spent its time.
+    pub fn times(&self) -> RasterTimes {
+        self.times
+    }
+
     fn context(&mut self, w: u16, h: u16) -> &mut RenderContext {
         match self
             .contexts
@@ -203,6 +227,7 @@ impl Raster {
         origin: (i64, i64),
     ) {
         self.rasterised = 0;
+        self.times = RasterTimes::default();
         if target.size.is_empty() || target.validate().is_err() {
             return;
         }
@@ -226,12 +251,20 @@ impl Raster {
         let now = std::time::Instant::now();
         self.prepare(items, &damage, window);
         self.cache.trim_idle(now);
+        let mut mark = std::time::Instant::now();
+        self.times.prepare = mark.saturating_duration_since(now);
         self.offscreen
             .prepare(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen
             .prepare_fades(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());
+        let mut lap = |part: &mut std::time::Duration| {
+            let at = std::time::Instant::now();
+            *part += at.saturating_duration_since(mark);
+            mark = at;
+        };
+        lap(&mut self.times.offscreen);
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -280,6 +313,8 @@ impl Raster {
                     ctx.pop_clip();
                 }
                 ctx.flush();
+                lap(&mut self.times.encode);
+                self.times.cells += 1;
                 let row = cell.w as usize * 4;
                 self.scratch.clear();
                 self.scratch.resize(row * cell.h as usize, 0);
@@ -291,6 +326,7 @@ impl Raster {
                 // Release image references so atlas pages can be updated
                 // in place.
                 ctx.reset();
+                lap(&mut self.times.fine);
                 let stride = target.stride as usize;
                 for c in &clips {
                     let lx0 = (c.left() - cell.left()) as usize * 4;
@@ -304,6 +340,7 @@ impl Raster {
                             .copy_from_slice(&self.scratch[ly * row + lx0..ly * row + lx1]);
                     }
                 }
+                lap(&mut self.times.copy);
             }
         }
     }

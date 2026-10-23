@@ -373,3 +373,87 @@ are 26,738,688 and 22,806,528 B (decisions.md growth).
 
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.
+
+## Animation frame cost (perf-bench)
+
+`crates/strand-render/tests/anim_bench.rs` (`#[ignore]`d; its header has
+the scenes, the env and the run), the timing profile, on the owner's
+laptop (Intel Core Ultra X7 358H: performance cores 0–3, efficiency
+cores 4–15; Intel Graphics, Mesa ANV 25.2.8), in the dev container,
+2026-10-23, at `main` d10f1e4e plus the bench's spans. Each scene: a
+warm-up cycle, then its cycles, three repeats on a fresh renderer; a
+frame's cost is the render thread's work on the CPU leg, and on the GPU
+leg the larger of that and the GPU thread's part (scene build, render,
+readback) of the frame. The budget is 8.33 ms (120 Hz). CPU 1× and the
+Intel legs ran pinned to the performance cores (`taskset -c 0-3`); CPU
+1.5× ran unpinned. The host was busy (load about 5), and repeats of
+the same work differ by up to 2×, so the figures are each repeat's
+range: p50 / p95 in ms, the lowest repeat first.
+
+| Scene | Size @ scale | CPU 1× | CPU 1.5× | Intel GPU 1× | Intel GPU 1.5× |
+| --- | --- | --- | --- | --- | --- |
+| morph-card | 940×640 | 4.5–5.3 / 19 | 5.6–10 / 28–42 | 1.7 / 3.5–4.2 | 1.4–2.0 / 2.6–8.0 |
+| shared-morph | 940×640 | 6.1–12 / 20–26 | 24–26 / 83–110 | 1.4–1.7 / 2.1 | 1.4–1.7 / 2.0 |
+| panel-open | screen | 7.1 / 9.5–24 | 34 / 46 | 2.1–2.8 / 3.3 | 3.2–3.8 / 4.2–5.1 |
+| resize-shadow | 940×640 | 3.0–6.7 / 8.2–8.7 | 4.7–13 / 10–16 | 1.6–1.8 / 2.2–2.7 | 1.8 / 2.5 |
+| resize-radius | 940×640 | 3.2–9.0 / 11–12 | 21–22 / 28–32 | 1.7–2.5 / 3.8–4.2 | 2.8–6.4 / 7.5–8.5 |
+| backdrop-blur | screen | 5.5–5.9 / 8.4–10 | 21–46 / 27–55 | 2.5–3.7 / 11.4–11.7 | 25.3 / 27–72 |
+| glass | 940×640 | 3.9–4.0 / 15 | 2.6–3.8 / 12 | 1.4–2.0 / 6.7 | 1.7–2.2 / 14.5–15 |
+| crossfade | screen | 8.3–8.9 / 27 (max 65) | 13.4–13.6 / 40 (max 94) | 2.5–3.4 / 4.1–4.6 (max 37) | 3.3–4.4 / 5.3–5.9 (max 52) |
+| theme-spring | 940×640 | 1.7–4.5 / 3.2–7.0 | 4.0–4.7 / 14–15 | 1.5–1.8 / 2.1–2.4 | 1.8–1.9 / 2.3–2.4 |
+| list-scroll | 940×640 | 2.4 / 7.8 | 4.3 / 11–14 | 1.8–2.1 / 2.5–2.8 | 2.2–2.3 / 2.8–3.0 |
+| shader | 940×640 | (GPU only) | | 1.0–1.1 / 1.4–1.6 | 1.1–1.5 / 1.7–1.9 |
+| goo | 940×640 | 4.1 / 4.4 | 8.9–12 / 9.8–14 | 3.3 / 4.7–6.2 | 6.9–7.0 / 8.0–8.2 |
+| letters | 940×640 | 0.48 / 0.49 | 1.1–1.2 / 1.2 | 1.0–1.2 / 1.3–1.6 | 1.3 / 1.6 |
+| stagger | screen | 4.1–4.2 / 5.7–9.6 | 9.2 / 14–18 | 1.8–2.5 / 2.6–3.0 | 3.1–3.3 / 3.9–4.0 |
+| fade | 940×640 | 2.5–7.8 / 6.8–8.7 | 5.6–5.7 / 18–20 | 2.0–2.1 / 2.6–2.8 | 2.3–2.8 / 2.9–3.5 |
+| flip | 940×640 | 4.8–7.1 / 11.4–11.5 | 7.2–8.2 / 21–23 | 1.2–1.8 / 1.9–2.2 | 1.7–2.2 / 2.5–3.0 |
+| cover-turn | 940×640 | 0.21 / 0.43 | 0.51–0.53 / 0.62–0.64 | 1.2–1.3 / 1.7–1.8 | 1.8 / 2.1–2.2 |
+| cover-mask | 940×640 | 6.7 / 13.3 | 13.3 / 13.3 | 1.8–1.9 / 3.6–3.7 | 3.1–3.3 / 4.9–6.1 |
+
+"Screen" is 1920×1200 at 1 and 2560×1440 at 1.5; a panel at 1.5 is
+1410×960 px. cover-mask ran with two repeats. On lavapipe (CI's
+device) the GPU leg's figures are the emulated GPU's run (the frame
+waits for it): panel-open 10–11 / 14 at 1×, backdrop-blur 25 / 38 and
+fade 43–53 / 71–80 at 1.5×; they say what CI's GPU tier costs, not a
+GPU's.
+
+Where the time goes (the stage means the table prints):
+
+- **Masks.** A masked group's mask is computed pixel by pixel over the
+  whole cell it is drawn in (`layers::cell_mask`; a shape's 120-edge
+  outline tested at each of a 256×64 cell's pixels): 6.5 ms a cell
+  whatever the shape, so a 40 px cover turning costs 6.7 ms a frame
+  (one cell) to 13.3 (two); without the mask, 0.16 ms. The GPU lowers a
+  masked group as a CPU pixmap, 1.8 ms (1×) and 3.1 ms (1.5×) of
+  lowering a frame. Its damage is under 0.02 Mpx, so it never promotes.
+- **Gradients under a transform** are drawn as each cell's part, built
+  every frame (`render_gradient_part`): most of stagger's encoding (2.7
+  ms at 1×, 5.9 at 1.5×, with 0.07–0.15 Mpx of damage, so it stays on
+  the CPU) and shared-morph's.
+- **Backdrop and glass on the GPU** are drawn on the CPU and uploaded
+  every frame: 17.6 ms of lowering a frame at 1.5× (backdrop-blur).
+- **A crossfade's first frame on a GPU surface** repaints the whole
+  surface on the CPU for its snapshot and uploads it (25–28 ms and
+  2.3–3.7 Mpx): the max.
+- **Corner tiles under a radius spring** are built every frame (3.5
+  builds a frame; 2.0 ms of preparing at 1×, 6.7 at 1.5×; on the GPU 3.6
+  ms of lowering at 1.5×, built and uploaded).
+- **Goo** contours its field on the CPU every frame (flatten 2.3 ms at
+  1×, 3.5–6.8 on the GPU leg, 30–64 k allocations a frame) and the GPU
+  uploads its 0.3–0.7 Mpx raster.
+- **Large CPU frames** are vello_cpu's fine raster on one thread (crossfade
+  9.3 ms, panel-open 6–12.7 ms of fine): a surface with a device moves
+  to the GPU at its first large frame, so this is what the first frame
+  and a machine without a GPU pay.
+- **First frames** (each scene's warm-up cycle on a fresh renderer): up
+  to 35–92 ms on the Intel GPU (pipelines, textures, uploads), 10–66 ms
+  on the CPU.
+
+Known costs checked: a resizing box with a shadow damages 0.50 of its
+0.60 Mpx; a radius spring builds corner tiles each frame; a GPU frame
+sends full damage; an animation whose frames damage under 0.2 Mpx stays
+on the CPU however slow (stagger, glass at 1×, cover-mask); text under
+scale and opacity springs is not re-shaped or re-rasterised (its glyphs
+come from the atlas, sampled; text wait is 0) but its group is
+re-composited every frame.

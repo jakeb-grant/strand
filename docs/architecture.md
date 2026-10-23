@@ -2804,7 +2804,15 @@ re-base, if it needs one, is a dated decisions.md entry.
   whose paint or size changes every frame is dithered cell by cell,
   uncached. `Renderer::last_paint_times` (`PaintTimes`) says where the
   last CPU paint spent its time (laying out and flattening, of that
-  waiting for text, drawing); `strand run`'s damage log prints it. A
+  waiting for text, drawing); `strand run`'s damage log prints it.
+  (perf-bench) It also splits flattening's layout out (`layout`), times
+  the damage diff (`diff`), lowering to the GPU's frame (`lower`) and
+  the crossfade's snapshot and blend (`blend`), and carries the
+  raster's own split (`raster_parts: RasterTimes`: preparing the paint
+  cache, offscreen groups, encoding cells, vello_cpu's fine pass and
+  copying out, with the cells drawn), which `tests/anim_bench.rs`
+  reports per frame; every timer is a few `Instant::now` calls a frame
+  on paths that already run, so idle work is unchanged. A
   frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
   passes it takes, its `update` and `paint` sharing the deadline
   (`SurfaceState::text_deadline`, set at its first wait, cleared once
@@ -5352,6 +5360,15 @@ Wayland crate. Its interface:
   that work is off the main thread.
 - `Readback` is `Bgra8Unorm` premultiplied rows (the `wl_shm` ARGB8888
   byte order), padded to wgpu's 256-byte row alignment, with its stride.
+- (perf-bench) `record_frame_phases(on: bool)` and
+  `take_frame_phases() -> Vec<FramePhases>` (`FramePhases { surface,
+  frame, total, phases: Vec<(&'static str, Duration)>, uploads: (count,
+  bytes) }`): while on, the thread keeps each frame's phase spans
+  (upload, passes, build, texture, render, then submit and read for a
+  readback or the present's acquire, submit and present; at most 4,096 frames,
+  the oldest dropped), the same marks its debug log prints, for the
+  animation bench (`strand-render/tests/anim_bench.rs`). Off by default;
+  nothing in the shell turns it on.
 
 **Thread.** One thread, started as the shell starts (the warm start,
 `BackendChange::Start`) or on the first demand after a failure, and

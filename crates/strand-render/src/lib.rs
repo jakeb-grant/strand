@@ -61,6 +61,7 @@ pub use layout::{
 };
 pub use media::thumbnail::Frame as ThumbnailFrame;
 pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
+pub use raster::RasterTimes;
 pub use renderer::FrameSummary;
 #[cfg(feature = "gpu")]
 pub use renderer::GPU_WAIT;

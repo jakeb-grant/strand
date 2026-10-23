@@ -48,7 +48,10 @@ mod thread;
 /// (gpu-first review 2) Debug-log diagnostics: a thread's scheduling
 /// and fault figures (`/proc/thread-self`), and the time past which a
 /// frame counts as slow.
-pub use thread::{SLOW_FRAME, thread_stats, thread_stats_since};
+pub use thread::{
+    FramePhases, SLOW_FRAME, record_frame_phases, take_frame_phases, thread_stats,
+    thread_stats_since,
+};
 mod timer;
 
 /// How the GPU is started.

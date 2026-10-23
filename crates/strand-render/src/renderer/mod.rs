@@ -390,6 +390,9 @@ pub struct Renderer {
     layout_passes: u64,
     /// Where the last paint spent its time.
     paint_times: PaintTimes,
+    /// (perf-bench) Time spent laying out so far ([`PaintTimes::layout`]
+    /// is this frame's share).
+    layout_spent: Duration,
     /// Laid-out sizes not yet handed to logic (`self.width`), and the
     /// last size each surface laid a watched node out at (a node shown on
     /// two surfaces of different sizes reports a change of either, never
@@ -575,6 +578,7 @@ impl Renderer {
             lists: lists::Lists::default(),
             layout_passes: 0,
             paint_times: PaintTimes::default(),
+            layout_spent: Duration::ZERO,
             facts: Vec::new(),
             facts_sent: HashMap::new(),
             placed_dirty: false,

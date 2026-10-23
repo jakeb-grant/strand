@@ -316,6 +316,8 @@ fn moved_out_of_order(both: &[(usize, usize, NodeId)]) -> Vec<usize> {
 }
 
 /// Where a CPU paint spent its time ([`Renderer::last_paint_times`]).
+/// Wall-clock spans, advisory: each is a few clock reads a frame (a few
+/// per raster cell), never a wakeup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaintTimes {
     /// Laying out and flattening (zero when it reused the scene
@@ -323,8 +325,21 @@ pub struct PaintTimes {
     pub flatten: Duration,
     /// Of that, waiting for the text worker to shape new text.
     pub text_wait: Duration,
+    /// (perf-bench) Of `flatten`, laying out (every pass the frame ran).
+    pub layout: Duration,
+    /// (perf-bench) Working out the frame's damage from the node records
+    /// (`diff_records`, `order_damage`).
+    pub diff: Duration,
+    /// (perf-bench) A GPU-drawn frame's display list lowered to
+    /// `strand-gpu`'s ops and uploads (zero for a CPU frame).
+    pub lower: Duration,
     /// Drawing.
     pub raster: Duration,
+    /// (perf-bench) Of `raster`, its parts ([`RasterTimes`]).
+    pub raster_parts: crate::raster::RasterTimes,
+    /// (perf-bench) A theme crossfade's snapshot taken and the frame
+    /// blended over it.
+    pub blend: Duration,
 }
 
 /// Only where it is changed (`NodeRecord::geom`): its own box moved or
@@ -602,6 +617,7 @@ impl Renderer {
         }
         let flatten_start = Instant::now();
         let waited = self.estimate_waited;
+        let laid = self.layout_spent;
         let mut f = match cached {
             Some(f) => f,
             None => self.flatten_surface(surface),
@@ -615,7 +631,8 @@ impl Renderer {
         self.paint_times = PaintTimes {
             flatten: flatten_start.elapsed(),
             text_wait: self.estimate_waited.saturating_sub(waited),
-            raster: Duration::ZERO,
+            layout: self.layout_spent.saturating_sub(laid),
+            ..PaintTimes::default()
         };
         // (M4) Its passes (drawn with what they have).
         #[cfg(feature = "gpu")]
@@ -631,7 +648,9 @@ impl Renderer {
         }
         // A theme crossfade on this surface paints every frame in full,
         // over the old frame taken before the first one is drawn.
+        let snapping = Instant::now();
         self.take_snapshot(surface, target);
+        self.paint_times.blend = snapping.elapsed();
         let fade = self.fade_frame(surface, target.time, target.size);
         // A cached scene was drawn at rest.
         let animating =
@@ -690,6 +709,7 @@ impl Renderer {
 
         // This frame's changes.
         let mut frame = Damage::new();
+        let diffing = Instant::now();
         if s.valid && !fade.full() {
             diff_records(&s.records, &f.records, &mut frame);
             order_damage((&s.order, &s.records), (&f.order, &f.records), &mut frame);
@@ -703,6 +723,7 @@ impl Renderer {
         } else {
             frame = Damage::full(target.size);
         }
+        self.paint_times.diff = diffing.elapsed();
         #[cfg(feature = "gpu")]
         frame.union_clipped(&clocked, bounds);
         // (M5) The inspector's outline and repaint flash, drawn after the
@@ -869,6 +890,7 @@ impl Renderer {
         if !drawn {
             self.raster
                 .paint(&f.items, &total, &self.atlas, scale, target);
+            self.paint_times.raster_parts = self.raster.times();
         }
         self.paint_times.raster = raster_start.elapsed();
         #[cfg(feature = "eval-hooks")]
@@ -879,7 +901,9 @@ impl Renderer {
         if let super::swap::FadeFrame::Blend(w) = fade
             && !lowered
         {
+            let blending = Instant::now();
             self.blend_fade(surface, w, target);
+            self.paint_times.blend += blending.elapsed();
         }
         // (eval-sandbox) Kept as drawn: the inspector's overlay
         // included, which the buffer shows too.

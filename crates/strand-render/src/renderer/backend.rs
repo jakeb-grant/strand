@@ -1640,6 +1640,7 @@ impl Renderer {
         size: Size,
         scale: Scale,
     ) -> Frame {
+        let lowering = Instant::now();
         let mut frame = lower(
             &mut self.raster,
             &mut self.gpu.uploads,
@@ -1651,6 +1652,7 @@ impl Renderer {
             scale,
         );
         frame.retire = self.gpu.uploads.retire();
+        self.paint_times.lower += lowering.elapsed();
         frame
     }
 

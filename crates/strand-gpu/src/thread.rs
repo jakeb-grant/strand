@@ -589,6 +589,7 @@ impl State {
     /// is answered `Failed` alone.
     fn frame(&mut self, dev: &Device, frame: Frame, queued: Duration, reply: &Reply<'_>) {
         let surface = frame.surface;
+        let id = frame.id;
         let mut ph = Phases::new();
         if let Err(error) = self.draw_frame(dev, frame, queued, reply, &mut ph) {
             reply.send(GpuReply::Failed {
@@ -597,7 +598,7 @@ impl State {
                 error,
             });
         }
-        ph.done(surface);
+        ph.done(surface, id);
     }
 
     fn draw_frame(
@@ -901,6 +902,51 @@ struct Phases {
 /// (render's main thread logs a paint as slow from the same figure).
 pub const SLOW_FRAME: Duration = Duration::from_millis(40);
 
+/// (perf-bench) Whether every frame's phases are kept for
+/// [`take_frame_phases`] ([`record_frame_phases`]).
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// (perf-bench) The frames' phases kept while recording, at most
+/// [`PHASES_KEPT`] (the oldest go first).
+static RECORDED: std::sync::Mutex<Vec<FramePhases>> = std::sync::Mutex::new(Vec::new());
+
+/// (perf-bench) Frames' phases kept while recording, at most.
+const PHASES_KEPT: usize = 4096;
+
+/// (perf-bench) Where one frame's time on the GPU thread went: its
+/// surface and render's frame number, the whole span, each phase as the
+/// thread names it (`upload`, `passes`, `build` (the vello_gpu scene
+/// encoded from the ops), `texture`, `render` (vello_gpu's preparation
+/// and recording), then `submit` and `read` for a readback, or the
+/// present's own marks), and the uploads with their pixels. Wall-clock,
+/// advisory.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FramePhases {
+    pub surface: Option<SurfaceId>,
+    pub frame: u64,
+    pub total: Duration,
+    pub phases: Vec<(&'static str, Duration)>,
+    pub uploads: (usize, u64),
+}
+
+/// (perf-bench) Keeps every frame's phases from now on (`true`) or stops
+/// and forgets them (`false`), for a benchmark ([`take_frame_phases`]).
+/// Off by default; off, a frame pays one atomic load for it.
+pub fn record_frame_phases(on: bool) {
+    RECORDING.store(on, Ordering::Relaxed);
+    if !on && let Ok(mut kept) = RECORDED.lock() {
+        kept.clear();
+    }
+}
+
+/// (perf-bench) The frames' phases kept since the last call, oldest first.
+pub fn take_frame_phases() -> Vec<FramePhases> {
+    RECORDED
+        .lock()
+        .map(|mut kept| std::mem::take(&mut *kept))
+        .unwrap_or_default()
+}
+
 /// This thread's time on a core and waiting for one (ns), and its major
 /// page faults (the disk read code or data back in).
 pub fn thread_stats() -> Option<(u64, u64, u64)> {
@@ -933,7 +979,7 @@ pub fn thread_stats_since(before: Option<(u64, u64, u64)>) -> String {
 
 impl Phases {
     fn new() -> Self {
-        let on = log::log_enabled!(log::Level::Debug);
+        let on = log::log_enabled!(log::Level::Debug) || RECORDING.load(Ordering::Relaxed);
         Phases {
             start: Instant::now(),
             sched: on.then(thread_stats).flatten(),
@@ -953,9 +999,34 @@ impl Phases {
         }
     }
 
-    /// Logs the frame's phases if it was slow.
-    fn done(&self, surface: SurfaceId) {
+    /// Logs the frame's phases if it was slow (and keeps them while
+    /// recording, [`record_frame_phases`]).
+    fn done(&self, surface: SurfaceId, frame: u64) {
         let took = self.start.elapsed();
+        if RECORDING.load(Ordering::Relaxed) {
+            let mut last = self.start;
+            let phases = self
+                .marks
+                .iter()
+                .map(|(what, at)| {
+                    let d = at.saturating_duration_since(last);
+                    last = *at;
+                    (*what, d)
+                })
+                .collect();
+            if let Ok(mut kept) = RECORDED.lock() {
+                if kept.len() >= PHASES_KEPT {
+                    kept.remove(0);
+                }
+                kept.push(FramePhases {
+                    surface: Some(surface),
+                    frame,
+                    total: took,
+                    phases,
+                    uploads: self.uploads,
+                });
+            }
+        }
         if took < SLOW_FRAME || !log::log_enabled!(log::Level::Debug) {
             return;
         }
