@@ -1483,8 +1483,8 @@ the keyframes cells' notes read again it was 6,273,496 bytes, 18 kB under
 the tripwire: the 155 scenarios 1.14 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
 With growth's two regressions (snapped-growth-cut and held-grow-glide,
-19 kB) and the 37 scenarios and 60 matrix cells whose boxes now spring
-over a step re-recorded (longer, with their notes) it is 6,324,276
+19 kB) and the 36 scenarios and 60 matrix cells whose boxes now spring
+over a step re-recorded (longer, with their notes) it is 6,322,836
 bytes: the 163 scenarios 1.18 MB, `matrix-60.ref` 2.07 MB and
 `matrix-144.ref` 3.07 MB, so the tripwire is 6.5 MiB since 2026-10-22
 (decisions.md growth).

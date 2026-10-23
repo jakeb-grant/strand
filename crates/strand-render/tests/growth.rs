@@ -609,6 +609,51 @@ fn auto_instant_snaps_the_growth() {
     assert_eq!((r.w, r.h), (140.0, 54.0), "snaps: {r:?}");
 }
 
+/// A shrink under `~ instant` snaps what the box holds too: as the green
+/// row snaps to nothing, the red row is drawn at its new place on screen
+/// from the first frame, never glided from where the larger box held it (a step on an instant curve
+/// opens no FLIP of everything).
+#[test]
+fn auto_instant_snaps_what_a_shrink_moves() {
+    let (mut diff, root, col, _) = centred_panel(vec![]);
+    for p in [Prop::Width, Prop::Height] {
+        diff.push(SceneOp::SetProp {
+            id: root,
+            prop: p,
+            value: kw("auto"),
+            transition: Transition::Instant,
+        });
+    }
+    let mut h = Host::new(diff, root);
+    h.run();
+    let (d, green) = mount_plain(col, 60, 1);
+    h.apply(d);
+    h.run();
+    assert_eq!(h.now().0, Size::new(140, 54));
+    // Narrower and shorter at once, with no structural change (a removal
+    // glides its siblings by FLIP, growth or not).
+    let mut d = SceneDiff::new();
+    for p in [Prop::Width, Prop::Height] {
+        d.push(SceneOp::SetProp {
+            id: green,
+            prop: p,
+            value: num(0.0),
+            transition: Transition::Instant,
+        });
+    }
+    h.apply(d);
+    let shots = h.shots();
+    assert_eq!(shots.last().unwrap().buf, Size::new(100, 34), "it shrinks");
+    let path: Vec<(i64, i64)> = shots
+        .iter()
+        .map(|s| {
+            let [l, t, _, _] = s.red_on_screen(CENTRE);
+            (l, t)
+        })
+        .collect();
+    assert!(path.iter().all(|p| *p == (910, 523)), "snaps: {path:?}");
+}
+
 /// `size: auto ~ instant` snaps both axes too.
 #[test]
 fn size_auto_instant_snaps_both_axes() {

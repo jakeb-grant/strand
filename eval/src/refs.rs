@@ -55,7 +55,7 @@ pub const HEADER: &str = "# strand-eval reference recordings (docs/eval.md, \"Re
 /// recording should not). The total sits about a round's growth above
 /// what the references take (integration-r4: 5.09 MB, 97% of the 5 MiB it
 /// was, after eval-coverage-2 grew the matrix from 552 to 914 cells;
-/// growth, 2026-10-22: 6,324,276 bytes, past the 6 MiB it was, once the
+/// growth, 2026-10-22: 6,322,836 bytes, past the 6 MiB it was, once the
 /// boxes that spring over a step were re-recorded).
 pub const TOTAL_BUDGET: u64 = 13 * 512 * 1024;
 pub const SCENARIO_FILE_BUDGET: u64 = 64 * 1024;

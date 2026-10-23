@@ -423,8 +423,11 @@ impl Renderer {
                 let delta = was[axis] - (then[axis] + now[axis]);
                 if sized && delta.abs() > STEP_MIN {
                     let curve = self.step_curve(root, axis);
+                    // `~ instant` takes the step at once: nothing springs,
+                    // and what it moves snaps as it did (no FLIP of all).
+                    let springs = curve != Curve::Instant;
                     self.anim.step_size(root, axis, delta, curve);
-                    if let Some(s) = self.surfaces.get_mut(&id) {
+                    if springs && let Some(s) = self.surfaces.get_mut(&id) {
                         s.step_started = true;
                     }
                 }

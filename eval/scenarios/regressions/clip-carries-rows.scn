@@ -9,7 +9,9 @@ moved inside it, and a row a clip would hide at its start (one moving up inside
 a list that shrank past it) starts where the clip shows it. A filter hides the
 networks not saved, and then the first saved one is forgotten, the other moving
 up into a list one row tall (`vanish`: nothing blinks out;
-eval/mutants/clip-carries-rows.patch reverts the fix)."""
+eval/mutants/clip-carries-rows.patch reverts the fix). Since growth the box of
+a content-sized panel springs over such a step, so the panel's
+`height: auto ~ instant` (growth's hatch) keeps the snap this finding is about."""
 screen = { width = 320, height = 480, scale = 1.0 }
 hz     = 60
 
@@ -20,7 +22,7 @@ let nets = ["home", "cafe-guest", "office", "printer-5G", "library"]
 let shown = nets.filter(n => (!saved_only || n == "home" || n == "office") && !(forgot && n == "home"))
 
 panel Networks {
-  anchor: center; open: true
+  anchor: center; open: true; height: auto ~ instant
   col { id: card; width: 220; pad: 10; gap: 8; radius: 10; bg: #232634; clip: true
     text "Wi-Fi" { id: heading; color: #c6d0f5 }
     list { id: nets; gap: 4; max_height: 300
