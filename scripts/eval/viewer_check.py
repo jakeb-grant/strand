@@ -253,6 +253,41 @@ def exercise_time(page, chk, tl, where, tag, kind):
     slide(page, top)
 
 
+def exercise_scroll_kept(page, chk, where, tag):
+    """(scroll-owner) Scrubbing, stepping and the keys leave the page
+    where the viewer scrolled it: the filmstrip's current frame was
+    brought into view by scrolling the page, and a part emptied and
+    refilled laid the page out shorter."""
+    for on in (True, False):
+        details(page, chk, where, on)
+        page.keyboard.press("Home")
+        settle(page, 40)
+        room = page.evaluate("() => document.documentElement.scrollHeight - window.innerHeight")
+        if room < 40:
+            continue
+        y = min(room, max(20, room // 2))
+        page.evaluate("(y) => window.scrollTo(0, y)", y)
+        settle(page, 40)
+        y = page.evaluate("() => window.scrollY")
+        moves = []
+        for k in ("ArrowRight", "ArrowRight", "ArrowLeft", "End", "Home"):
+            page.keyboard.press(k)
+            settle(page, 40)
+            moves.append((k, page.evaluate("() => window.scrollY")))
+        top = int(page.locator("#slider").get_attribute("max") or "0")
+        for v in (top // 3, top // 2, top):
+            slide(page, v)
+            moves.append((f"slide {v}", page.evaluate("() => window.scrollY")))
+        page.locator("#prev").evaluate("(b) => b.click()")
+        settle(page, 40)
+        moves.append(("<", page.evaluate("() => window.scrollY")))
+        bad = [(k, m) for k, m in moves if abs(m - y) > 1]
+        chk.expect(not bad, where, f"a scrub moved the page (Details {'on' if on else 'off'}, scrolled to {y}): {bad}")
+        page.evaluate("() => window.scrollTo(0, 0)")
+    chk.shot(page, f"{tag}-scroll-kept")
+    details(page, chk, where, False)
+
+
 def details(page, chk, where, on):
     """(replay-clip) A replay's dense views behind Details, remembered."""
     b = page.locator("#details-bar button")
@@ -586,6 +621,7 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
     if tl and len(data["runs"]) == 1:
         exercise_simple(page, chk, where, tag, kind)
         exercise_time(page, chk, tl, where, tag, kind)
+        exercise_scroll_kept(page, chk, where, tag)
         exercise_clip(page, chk, tl, where, tag, kind)
         exercise_clip_picks(page, chk, where)
         details(page, chk, where, True)

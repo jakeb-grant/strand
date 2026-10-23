@@ -1239,8 +1239,15 @@
         void sid;
       })(i);
     }
+    // The current frame brought into the strip's own view, sideways
+    // only: `scrollIntoView` scrolled the page too, down to the strip,
+    // on every scrub (scroll-owner).
     var cur = film.querySelector('.cur');
-    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (cur) {
+      var l = cur.offsetLeft - film.offsetLeft, r = l + cur.offsetWidth;
+      if (l < film.scrollLeft) film.scrollLeft = l;
+      else if (r > film.scrollLeft + film.clientWidth) film.scrollLeft = r - film.clientWidth;
+    }
   }
 
   // ---- panels ---------------------------------------------------------------------------
@@ -1684,12 +1691,18 @@
     if (j >= 0 && j < st.length) setTime(st[j]);
   }
 
+  // (scroll-owner) A scrub or a step redraws the page where the viewer
+  // left it: each part is emptied and refilled, and a part that reads
+  // its width while empty (a chart's, the fit zoom's) lays the page
+  // out shorter, so the browser moved the page's scroll; it is put back.
   function draw() {
+    var x = window.scrollX, y = window.scrollY;
     renderStage();
     renderScrub();
     renderFilm();
     if (S.tab !== 'verdict') renderPanel();
     if (REPLAY) renderClip();
+    if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
   }
 
   // ---- (replay-clip) the clip ----------------------------------------------------------

@@ -169,8 +169,10 @@ pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hove
   .stage { max-height: 55vh; }
 }
 
-/* (replay-owner) A replay's verdict, first in the header. */
-.verdict { padding: 6px 10px; border-radius: 6px; margin-bottom: 6px; border: 1px solid var(--line, #888); }
+/* (replay-owner) A replay's verdict, first in the header; (scroll-owner)
+   it names nodes and surfaces by long unbroken keys, so it wraps anywhere
+   rather than widen a phone's page. */
+.verdict { padding: 6px 10px; border-radius: 6px; margin-bottom: 6px; border: 1px solid var(--line, #888); overflow-wrap: anywhere; }
 .verdict strong { margin-right: 4px; }
 .verdict.v-verified { border-color: #2e9d58; color: #2e9d58; }
 .verdict.v-drifted { border-color: #d0453b; color: #d0453b; }
