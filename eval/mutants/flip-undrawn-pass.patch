@@ -1,6 +1,6 @@
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -326,7 +326,7 @@
+@@ -539,7 +539,7 @@
              let moving = self.anim.sizes_moving(&self.tree, root);
              if let Some(s) = self.surfaces.get_mut(&id) {
                  if let Some(old) = &old
@@ -9,16 +9,16 @@
                      && let Some((flip, all)) = &s.flip_open
                      && !reduced
                  {
-@@ -474,7 +474,7 @@
+@@ -706,7 +706,7 @@
              let scope = s
                  .flip_open
                  .clone()
--                .filter(|_| fresh || text || resized || chained);
-+                .filter(|_| fresh || text || resized || (false && chained));
-             if let (Some(old), Some(_)) = (&old, &s.flip_open) {
-                 s.unpainted.extend(
-                     boxes
-@@ -489,7 +489,7 @@
+-                .filter(|_| fresh || text || resized || stepped || chained);
++                .filter(|_| fresh || text || resized || stepped || (false && chained));
+             // (growth) A step that starts moves anything its box holds:
+             // all of it is compared where it was drawn.
+             let scope = match scope {
+@@ -728,7 +728,7 @@
                  && !self.anim.reduced()
              {
                  let old_rects = match (&base, drawn_shift) {
@@ -26,8 +26,8 @@
 +                    (Some(b), Some(d)) if false => moved_by(&b.0, d),
                      _ => moved_by(&old.rects, shift),
                  };
-                 let tables = [&self.tree.tokens];
-@@ -742,7 +742,7 @@
+                 let shifts = s.flip_shifts.get_or_insert_with(HashMap::new);
+@@ -1216,7 +1216,7 @@
              let rects = (old.get(c), new.get(c));
              let had = shifts.get(c).copied();
              // What the passes before this one since the frame gave it.

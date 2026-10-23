@@ -1,6 +1,6 @@
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -326,7 +326,7 @@
+@@ -539,7 +539,7 @@
              let moving = self.anim.sizes_moving(&self.tree, root);
              if let Some(s) = self.surfaces.get_mut(&id) {
                  if let Some(old) = &old
@@ -9,7 +9,7 @@
                      && let Some((flip, all)) = &s.flip_open
                      && !reduced
                  {
-@@ -462,17 +462,14 @@
+@@ -696,17 +696,15 @@
              let fresh = all || !flip.is_empty();
              if fresh {
                  let open = s.flip_open.get_or_insert_with(Default::default);
@@ -24,12 +24,13 @@
 -            let scope = s
 -                .flip_open
 -                .clone()
--                .filter(|_| fresh || text || resized || chained);
-+            let scope = Some((flip, all)).filter(|_| fresh || (false && (text || resized || chained)));
-             if let (Some(old), Some(_)) = (&old, &s.flip_open) {
-                 s.unpainted.extend(
-                     boxes
-@@ -487,8 +484,8 @@
+-                .filter(|_| fresh || text || resized || stepped || chained);
++            let scope = Some((flip, all))
++                .filter(|_| fresh || (false && (text || resized || stepped || chained)));
+             // (growth) A step that starts moves anything its box holds:
+             // all of it is compared where it was drawn.
+             let scope = match scope {
+@@ -728,8 +726,8 @@
                  && !self.anim.reduced()
              {
                  let old_rects = match (&base, drawn_shift) {
@@ -38,9 +39,9 @@
 +                    (Some(b), Some(d)) if false => moved_by(&b.0, d),
 +                    _ => moved_by(&old.rects, if true { (0.0, 0.0) } else { shift }),
                  };
-                 let tables = [&self.tree.tokens];
-                 let curve = Curve::of(
-@@ -507,7 +504,7 @@
+                 let shifts = s.flip_shifts.get_or_insert_with(HashMap::new);
+                 glide_moved(
+@@ -743,7 +741,7 @@
                      },
                      &flip,
                      all,
@@ -49,7 +50,7 @@
                      shifts,
                      curve,
                  );
-@@ -740,7 +737,7 @@
+@@ -1216,7 +1214,7 @@
              let rects = (old.get(c), new.get(c));
              let had = shifts.get(c).copied();
              // What the passes before this one since the frame gave it.
