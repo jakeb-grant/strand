@@ -210,6 +210,25 @@ fn held(cx: &Cx) -> Vec<Finding> {
                     );
                     e = [x0, y0, x1 - x0, y1 - y0];
                 }
+                // (growth) Cut by its surface's buffer, which clips all it
+                // holds: the probe records an ancestor's clip only when it
+                // is narrower than the surface, so a box springing its
+                // size that fills its surface (a panel's root) read what
+                // its buffer cut as shown (an entering card's overshoot
+                // past the panel's left edge, which is the buffer's).
+                // Not under a pose: it is taken off as `visible` does.
+                if !tl.is_posed(i, d.surface)
+                    && let Some([sw, sh]) = tl.size(i, d.surface)
+                {
+                    let [dx, dy] = tl.moved(i, d.surface).map(f64::from);
+                    let (sw, sh) = (f64::from(sw), f64::from(sh));
+                    let (x0, y0) = (e[0].max(dx), e[1].max(dy));
+                    let (x1, y1) = ((e[0] + e[2]).min(dx + sw), (e[1] + e[3]).min(dy + sh));
+                    if x1 <= x0 || y1 <= y0 {
+                        continue;
+                    }
+                    e = [x0, y0, x1 - x0, y1 - y0];
+                }
                 boxes += 1;
                 let over = [
                     b[0] - e[0],

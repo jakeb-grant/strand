@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read against the reference: the panel and col#deck spring 152 -> 166 -> 173 -> 176 -> 175 (k15-19) where the reference snapped; the note's own height overshoot (19) and the rows below it ride 1 px past the buffer, cut by it, where the frame squeezed them; every value at rest equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 620f647ac0c7a0e1
-seal 5ea1a3ce9318ea2a
+seal 183c273796f16461
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -58,37 +58,57 @@ k15
 s1 z=304,193
 n0 y=62 ord=5
 n1 y=62 ord=6
-n2 h=175
+n2 h=152
 n3 y=54 ord=4 sh=000000aa@9,39,154,70
 n5 y=100 ord=8 sh=000000cc@0,78,256,92/00000080@24,97,208,44
-n6 h=175
+n6 h=152
 n7 y=62 ord=7
 n8 x=28 y=45 w=120 h=5 op=37 ord=3 bg=3b4252ff
 k16
 n0 y=76
 n1 y=76
+n2 h=166
 n3 y=68 sh=000000aa@9,53,154,70
 n5 y=114 sh=000000cc@0,92,256,92/00000080@24,111,208,44
+n6 h=166
 n7 y=76
 n8 h=12 op=98
 k17
 n0 y=83
 n1 y=83
+n2 h=173
 n3 y=75 sh=000000aa@9,60,154,70
 n5 y=121 sh=000000cc@0,99,256,92/00000080@24,118,208,44
+n6 h=173
 n7 y=83
 n8 h=16 op=151
 k18
 n0 y=85
 n1 y=85
+n2 h=175
 n3 y=77 sh=000000aa@9,62,154,70
 n5 y=123 sh=000000cc@0,101,256,92/00000080@24,120,208,44
+n6 h=175
 n7 y=85
 n8 h=18 op=190
 k19
-n8 op=216
+n0 y=86
+n1 y=86
+n2 h=176
+n3 y=78 sh=000000aa@9,63,154,70
+n5 y=124 sh=000000cc@0,102,256,92/00000080@24,121,208,44
+n6 h=176
+n7 y=86
+n8 h=19 op=216
 k20
-n8 op=232
+n0 y=85
+n1 y=85
+n2 h=175
+n3 y=77 sh=000000aa@9,62,154,70
+n5 y=123 sh=000000cc@0,101,256,92/00000080@24,120,208,44
+n6 h=175
+n7 y=85
+n8 h=18 op=232
 k21
 n8 op=241
 k22

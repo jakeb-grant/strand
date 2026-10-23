@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "flip-nested"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read against the reference: the panel's root and row#frame spring 73 -> 81 -> 86 -> 89 -> 88 (k1-5) where the reference snapped to 88; nothing inside moves, every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 27f77af5d98a5cee
-seal 249607eacb2fe58c
+seal 739bfe7d4e6fb7e5
 S1 0 - "panel Tools"
 N0 "b1|shell.strand:10:9|#0" "box#b1"
 N1 "b2|shell.strand:11:9|#1" "box#b2"
@@ -34,45 +34,55 @@ n0 x=130 y=40
 n1 y=40
 n2 x=172 y=40
 n3 h=15
-n4 h=88
+n4 h=73
 n6 h=57
 n7 x=130 y=35 w=70
-n8 h=88
+n8 h=73
 k2
 n0 x=127 y=48
 n1 y=48
 n2 x=175 y=48
 n3 h=23
+n4 h=81
 n6 h=65
 n7 x=127 y=43
+n8 h=81
 k3
 n0 x=124 y=53
 n1 y=53
 n2 x=178 y=53
 n3 h=28
+n4 h=86
 n6 h=70
 n7 x=124 y=48
+n8 h=86
 k4
 n0 x=123 y=55
 n1 y=55
 n2 x=179 y=55
 n3 h=30
+n4 h=88
 n6 h=72
 n7 x=123 y=50
+n8 h=88
 k5
 n0 y=56
 n1 y=56
 n2 y=56
 n3 h=31
+n4 h=89
 n6 h=73
 n7 y=51
+n8 h=89
 k6
 n0 y=55
 n1 y=55
 n2 y=55
 n3 h=30
+n4 h=88
 n6 h=72
 n7 y=50
+n8 h=88
 k7
 k8
 k9

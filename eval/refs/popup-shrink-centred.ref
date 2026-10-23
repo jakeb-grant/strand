@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-shrink-centred"
 verdict good
-note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
-date 2026-10-18
-rev "40b54cc2+changes"
+note "growth: read against the reference: the popup springs its height 52 -> 91.3 -> 90 taller (k60-75) and its width 164 -> 222.7 -> 220 wider (k107-123) from its anchor where the reference snapped; the card's own overshoot past the buffer is followed and cut by it, #mark is still in every settled segment"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario f6a2393e93c08e28
-seal 4d17f24a022843fc
+seal 5734fab345b366d9
 S1 0 - "bar Top"
 S2 1 163 "popup#pop"
 N0 "anchor|shell.strand:8:5|[Mock | DP-1]#1" "box#anchor"
@@ -227,27 +227,37 @@ n7 x=38 v=38,20,84,15.328125 ink=38,22,82.671875,10.671875
 n8 x=60
 k60
 s2 z=160,90
-n5 h=90
+n5 h=52
 n6 h=52
 k61
+n5 h=58
 n6 h=58
 k62
+n5 h=64
 n6 h=64
 k63
+n5 h=71 v=0,0,160,71.328125
 n6 h=71 v=0,0,160,71.328125
 k64
+n5 h=77 v=0,0,160,77.328125
 n6 h=77 v=0,0,160,77.328125
 k65
+n5 h=81 v=0,0,160,81.328125
 n6 h=81 v=0,0,160,81.328125
 k66
+n5 h=85 v=0,0,160,85.328125
 n6 h=85 v=0,0,160,85.328125
 k67
+n5 h=88 v=d
 n6 h=88 v=d
 k68
+n5 h=89 v=0,0,160,89.328125
 n6 h=89 v=0,0,160,89.328125
 k69
+n5 h=90 v=d
 n6 h=90 v=d
 k70
+n5 h=91 v=0,0,160,91.328125
 n6 h=91 v=0,0,160,91.328125
 k71
 k72
@@ -255,6 +265,7 @@ k73
 k74
 k75
 k76
+n5 h=90 v=d
 n6 h=90 v=d
 k77
 k78
@@ -313,38 +324,55 @@ k106
 s2 z=160,50
 k107
 s2 z=220,50 o=70,36
-n5 w=220
+n5 x=28 w=164
 n6 x=28 w=164
 n7 x=68 v=68,20,84,15.328125 ink=68,22,82.671875,10.671875
 n8 x=90
 k108
+n5 x=24 w=172
 n6 x=24 w=172
 k109
+n5 x=19 w=182 v=19.328125,0,182,50
 n6 x=19 w=182 v=19.328125,0,182,50
 k110
-n6 x=14 w=192 v=d
+n5 x=14 w=191 v=14,0,191.328125,50
+n6 x=14 w=191 v=14,0,191.328125,50
 k111
-n6 x=10 w=200
+n5 x=10 w=200 v=d
+n6 x=10 w=200 v=d
 k112
-n6 x=6 w=208
+n5 x=6 w=207 v=6,0,207.328125,50
+n6 x=6 w=207 v=6,0,207.328125,50
 k113
-n6 x=4 w=212
+n5 x=4 w=212 v=d
+n6 x=4 w=212 v=d
 k114
+n5 x=2 w=216
 n6 x=2 w=216
 k115
-n6 x=1 w=218 v=1.328125,0,218,50
+n5 x=1 w=219 v=1.328125,0,218.671875,50
+n6 x=1 w=219 v=1.328125,0,218.671875,50
 k116
-n6 x=0 w=220 v=d
+n5 x=0 w=221 v=0,0,221.328125,50
+n6 x=0 w=221 v=0,0,221.328125,50
 k117
-n6 x=-1 w=222 v=-1.328125,0,222.671875,50
+n5 x=-1 v=-1.328125,0,221.328125,50
+n6 x=-1 v=-1.328125,0,221.328125,50
 k118
+n5 w=222 v=-1.328125,0,222.671875,50
+n6 w=222 v=-1.328125,0,222.671875,50
 k119
 k120
+n5 w=221 v=-1.328125,0,221.328125,50
+n6 w=221 v=-1.328125,0,221.328125,50
 k121
 k122
-n6 x=0 w=220 v=d
+n5 x=0 v=0,0,221.328125,50
+n6 x=0 v=0,0,221.328125,50
 k123
 k124
+n5 w=220 v=d
+n6 w=220 v=d
 k125
 k126
 k127

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldc-popup-grow-shrink"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read against the reference: the popup and col#card spring 70 -> 86 -> 96 -> 101 -> 100 (k2-7) where the reference snapped; #extra's and #last's 1 px with the card's overshoot (k6-7), cut by the buffer; every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 4f995b84b7a579ec
-seal dbb4e3517d302eb8
+seal f3f639f9827d0aaa
 S1 0 - "bar Top"
 S2 1 - "popup@shell.strand:7"
 N0 "anchor|shell.strand:6:5|[Mock | DP-1]#0" "box#anchor"
@@ -30,25 +30,37 @@ n5 srf=2 x=8 y=34 w=144 h=12 ord=3 bg=c678ddff
 n6 srf=2 x=0 y=0 w=160 h=54
 k2
 s2 z=160,100
-n3 h=100
+n3 h=70
 n5 y=50 ord=4
-n6 h=100
+n6 h=70
 n7 srf=2 x=8 y=34 w=144 h=10 op=37 ord=3 bg=8bd17cff
 k3
+n3 h=86
 n5 y=66
+n6 h=86
 n7 h=26 op=98
 k4
+n3 h=96
 n5 y=76
+n6 h=96
 n7 h=36 op=151
 k5
+n3 h=100
 n5 y=80
+n6 h=100
 n7 h=40 op=190
 k6
-n7 op=216
+n3 h=101
+n5 y=81
+n6 h=101
+n7 h=41 op=216
 k7
 n7 op=232
 k8
-n7 op=241
+n3 h=100
+n5 y=80
+n6 h=100
+n7 h=40 op=241
 k9
 n7 op=247
 k10

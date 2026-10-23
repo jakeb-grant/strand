@@ -1725,6 +1725,38 @@ fn transition_takes_the_design_masks_only() {
     );
 }
 
+/// (growth) `width`, `height` and `size` take `auto`, which is content
+/// sizing spelled out so it can name a curve (`width: auto ~ instant`
+/// snaps a content-sized surface's growth); any other keyword is an
+/// error.
+#[test]
+fn sizes_take_auto_only_as_a_keyword() {
+    for ok in [
+        "width: auto",
+        "height: auto ~ instant",
+        "size: auto ~ $motion.bouncy",
+        "width: auto ~ 200ms",
+    ] {
+        let (out, _) = compile_files(&[(
+            "a.strand",
+            format!("panel P {{\n  {ok}\n  box {{ width: 10 }}\n}}\n"),
+        )]);
+        let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{ok}: {errors:?}");
+    }
+    for bad in ["width: full", "height: none"] {
+        let (out, _) = compile_files(&[(
+            "a.strand",
+            format!("panel P {{\n  {bad}\n  box {{ width: 10 }}\n}}\n"),
+        )]);
+        assert!(
+            out.diagnostics.iter().any(|d| d.is_error()),
+            "{bad}: {:?}",
+            out.diagnostics
+        );
+    }
+}
+
 /// (M6) Declared actions (decisions.md m6-w2-language, the owner's
 /// ruling): the program must be allowed by `permit exec`; a call is
 /// checked like a function's (arity, types) and runs only in a handler;

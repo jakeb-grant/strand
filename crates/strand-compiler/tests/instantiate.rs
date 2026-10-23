@@ -5782,3 +5782,36 @@ fn text_literals_are_known_to_the_program() {
     );
     assert!(shell.host.answers_left().is_empty());
 }
+
+/// (growth) `width: auto ~ instant` reaches render as the keyword `auto`
+/// with its transition, which render reads as content sizing and the
+/// curve its growth takes.
+#[test]
+fn auto_sizes_carry_their_transition() {
+    let shell = boot(
+        &[(
+            "a.strand",
+            "panel P {\n  open: true\n  width: auto ~ instant\n  height: auto ~ 200ms\n  box { width: 10 }\n}\n",
+        )],
+        desktop,
+    );
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    let set = |prop: Prop| {
+        shell.boot.iter().rev().find_map(|op| match op {
+            SceneOp::SetProp {
+                id,
+                prop: p,
+                value,
+                transition,
+            } if *id == panel && *p == prop => Some((value.clone(), transition.clone())),
+            _ => None,
+        })
+    };
+    assert_eq!(
+        set(Prop::Width),
+        Some((PropValue::Keyword("auto".into()), Transition::Instant))
+    );
+    let (v, t) = set(Prop::Height).expect("height is set");
+    assert_eq!(v, PropValue::Keyword("auto".into()));
+    assert!(matches!(t, Transition::Duration { .. }), "{t:?}");
+}

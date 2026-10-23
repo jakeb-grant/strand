@@ -1,0 +1,13 @@
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -696,8 +696,8 @@
+             // (growth) A step that starts moves anything its box holds:
+             // all of it is compared where it was drawn.
+             let scope = match scope {
+-                Some((flip, _)) if stepped => Some((flip, true)),
+-                None if stepped => Some((HashSet::new(), true)),
++                Some((flip, _)) if false && stepped => Some((flip, true)),
++                None if false && stepped => Some((HashSet::new(), true)),
+                 scope => scope,
+             };
+             if let (Some(old), Some(_)) = (&old, &s.flip_open) {

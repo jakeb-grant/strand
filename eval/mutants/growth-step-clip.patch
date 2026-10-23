@@ -1,0 +1,14 @@
+--- a/crates/strand-render/src/anim/sizes.rs
++++ b/crates/strand-render/src/anim/sizes.rs
+@@ -17,9 +17,9 @@
+     pub fn sizing(&self, tree: &SceneTree, node: &Node) -> bool {
+         self.nodes
+             .get(&node.id)
+-            .is_some_and(|n| n.size.iter().chain(&n.step).any(Option::is_some))
++            .is_some_and(|n| n.size.iter().any(Option::is_some))
+             || self.size_held.contains_key(&node.id)
+-            || self.step_fills.values().any(|f| f.contains(&node.id))
++            || (node.id != node.id && self.step_fills.values().any(|f| f.contains(&node.id)))
+             || (self.exits.contains_key(&node.id)
+                 && exit_pose(node)
+                     .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))

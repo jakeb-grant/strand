@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "l-grid-reopen-plain-box"
 verdict good
-note "eval-finish review, first reference: read k0-42: on the shown panel the five tiles enter from opacity 0 / scale 0.85 one 25 ms turn apart after the box already there (Files at k1, Mail moving at k4); the panel closes at k21; reopened, the plain box is drawn at rest on the new surface's first frame (k22) and takes no turn, and the tiles take the turns from that frame (Files moving at k23, Mail held hidden at 0.85 until k26)"
-date 2026-10-20
-rev "b1224229+changes"
+note "growth: read against the reference: the reopened panel's box and the grid in its chain spring 91 -> 113 -> 128 -> 136 -> 134 (k1-7) up and down from the centre where the reference drew the full box at once and glided the col; the tiles keep their places and turns, every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 9c96ef9cfa792685
-seal 7416eb0973135088
+seal 85394fb0250ea293
 S1 0 21 "panel AppGrid"
 S2 22 - "panel AppGrid"
 N0 "|grid.strand:4:1|#0" "panel@grid.strand:4"
@@ -31,9 +31,9 @@ n2 x=14 y=14 w=272 h=48 ord=2
 n3 x=14 y=14 w=48 h=48 ord=3 bg=333333ff
 k1
 s1 z=300,134 o=90,83
-n0 h=134
-n1 y=21 h=134
-n2 y=35 h=106
+n0 y=21 h=91
+n1 y=21 h=91
+n2 y=35 h=63
 n3 y=35
 n4 x=72 y=35 w=32 h=48 v=73.78125,37.65625,28.453125,42.671875 op=37 sc=0.889,0.889 ord=4
 n5 x=156 y=35 w=32 h=48 op=0 sc=0.85,0.85 hid=opacity0 ord=7
@@ -42,8 +42,9 @@ n7 x=72 y=93 w=32 h=48 op=0 sc=0.85,0.85 hid=opacity0 ord=9
 n8 x=114 y=35 w=32 h=48 op=0 sc=0.85,0.85 hid=opacity0 ord=6
 n9 x=72 y=43 w=32 h=32 v=73.78125,44.78125,28.453125,28.453125 op=37 ord=5 bg=61afefff
 k2
-n1 y=10
-n2 y=24
+n0 y=10 h=113
+n1 y=10 h=113
+n2 y=24 h=85
 n3 y=24
 n4 y=24 v=72.859375,25.296875,30.265625,45.40625 op=98 sc=0.946,0.946
 n5 y=24 ord=8
@@ -53,8 +54,9 @@ n8 y=24 v=115.78125,26.65625,28.453125,42.671875 op=37 sc=0.889,0.889 hid=-
 n9 y=32 v=72.859375,32.859375,30.265625,30.265625 op=98
 n10 x=114 y=32 w=32 h=32 v=115.78125,33.78125,28.453125,28.453125 op=37 ord=7 bg=61afefff
 k3
-n1 y=3
-n2 y=17
+n0 y=3 h=128
+n1 y=3 h=128
+n2 y=17 h=100
 n3 y=17
 n4 y=17 v=72.265625,17.390625,31.46875,47.203125 op=151 sc=0.983,0.983
 n5 y=17
@@ -64,8 +66,9 @@ n8 y=17 v=114.859375,18.296875,30.265625,45.40625 op=98 sc=0.946,0.946
 n9 y=25 v=72.265625,25.265625,31.46875,31.46875 op=151
 n10 y=25 v=114.859375,25.859375,30.265625,30.265625 op=98
 k4
-n1 y=0
-n2 y=14
+n0 y=0 h=134
+n1 y=0 h=134
+n2 y=14 h=106
 n3 y=14
 n4 y=14 v=d op=190 sc=1,1
 n5 y=14 v=157.78125,16.65625,28.453125,42.671875 op=37 sc=0.889,0.889 hid=-
@@ -76,8 +79,9 @@ n9 y=22 v=d op=190
 n10 y=22 v=114.265625,22.265625,31.46875,31.46875 op=151
 n11 x=156 y=22 w=32 h=32 v=157.78125,23.78125,28.453125,28.453125 op=37 ord=9 bg=61afefff
 k5
-n1 y=-1
-n2 y=13
+n0 y=-1 h=136
+n1 y=-1 h=136
+n2 y=13 h=108
 n3 y=13
 n4 y=13 v=71.9375,12.90625,32.140625,48.203125 op=216 sc=1.004,1.004
 n5 y=13 v=156.859375,14.296875,30.265625,45.40625 op=98 sc=0.946,0.946
@@ -89,6 +93,9 @@ n10 y=21 v=d op=190
 n11 y=21 v=156.859375,21.859375,30.265625,30.265625 op=98
 n12 x=22 y=79 w=32 h=32 v=23.78125,80.78125,28.453125,28.453125 op=37 ord=11 bg=61afefff
 k6
+n0 h=135
+n1 h=135
+n2 h=107
 n4 v=71.9375,12.921875,32.109375,48.171875 op=232 sc=1.003,1.003
 n5 v=156.265625,13.390625,31.46875,47.203125 op=151 sc=0.983,0.983
 n6 v=15.296875,72.296875,45.40625,45.40625 op=98 sc=0.946,0.946
@@ -98,6 +105,7 @@ n10 v=113.9375,20.9375,32.140625,32.140625 op=216
 n11 v=156.265625,21.265625,31.46875,31.46875 op=151
 n12 v=22.859375,79.859375,30.265625,30.265625 op=98
 k7
+n0 y=0
 n1 y=0
 n2 y=14
 n3 y=14
@@ -112,6 +120,9 @@ n11 y=22 v=d op=190
 n12 y=80 v=22.265625,80.265625,31.46875,31.46875 op=151
 n13 x=72 y=80 w=32 h=32 v=73.78125,81.78125,28.453125,28.453125 op=37 ord=13 bg=61afefff
 k8
+n0 h=134
+n1 h=134
+n2 h=106
 n4 v=71.984375,13.984375,32.015625,48.03125 op=247 sc=1.001,1.001
 n5 v=155.9375,13.90625,32.140625,48.203125 op=216 sc=1.004,1.004
 n6 v=d op=190 sc=1,1

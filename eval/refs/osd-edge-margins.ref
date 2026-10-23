@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-edge-margins"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 72 -> 64 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read against the reference: the bottom-right OSD springs its width from its anchored right edge, 186 -> 209 -> 208 growing (k26-31) and 195 -> 158 -> 159 shrinking (k36-42); the meter and label glide with the left edge where the reference jumped them 49 px; every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 9cd0f0ffd092f719
-seal 26168c3cec781a08
+seal 72a947f77d596d06
 S1 0 - "bar Bottom"
 S2 1 63 "osd Level"
 N0 "dot|shell.strand:8:5|[Mock | DP-1]#0" "box#dot"
@@ -109,50 +109,71 @@ k25
 n4 pt=0,0,90,6
 k26
 s2 z=208,36 o=98,396
-n3 w=208
+n3 x=22 w=186
 n4 x=33 pt=0,0,97.8125,6
 n5 x=162 w=57 ink=162,12,56,11 gl=["maximum"]
-n6 x=22 w=208
+n6 x=22 w=186
 k27
+n3 x=11 w=197
 n4 x=22 pt=0,0,109.203125,6
 n5 x=151 ink=151,12,56,11
-n6 x=11
+n6 x=11 w=197
 k28
+n3 x=3 w=205
 n4 x=14 pt=0,0,116.6875,6
 n5 x=143 ink=143,12,56,11
-n6 x=3
+n6 x=3 w=205
 k29
+n3 x=0 w=208
 n4 x=11 pt=0,0,119.984375,6
 n5 x=140 ink=140,12,56,11
-n6 x=0
+n6 x=0 w=208
 k30
+n3 x=-1 w=209
 n4 x=10 pt=-
 n5 x=139 ink=139,12,56,11
-n6 x=-1
+n6 x=-1 w=209
 k31
 k32
+n3 x=0 w=208
 n4 x=11
 n5 x=140 ink=140,12,56,11
-n6 x=0
+n6 x=0 w=208
 k33
 k34
 k35
 k36
-n3 x=49 w=159
-n4 x=60 pt=0,0,88.765625,6
-n5 x=189 w=8 ink=189,12,7,11 gl=["0"]
-n6 x=49 w=159
+n3 x=13 w=195
+n4 x=24 pt=0,0,88.765625,6
+n5 x=153 w=8 ink=153,12,7,11 gl=["0"]
+n6 x=13 w=195
 k37
-n4 pt=0,0,43.1875,6
+n3 x=31 w=177
+n4 x=42 pt=0,0,43.1875,6
+n5 x=171 ink=171,12,7,11
+n6 x=31 w=177
 k38
-n4 pt=0,0,13.28125,6
+n3 x=44 w=164
+n4 x=55 pt=0,0,13.28125,6
+n5 x=184 ink=184,12,7,11
+n6 x=44 w=164
 k39
-n4 pt=0,0,0.046875,6
+n3 x=49 w=159
+n4 x=60 pt=0,0,0.046875,6
+n5 x=189 ink=189,12,7,11
+n6 x=49 w=159
 k40
-n4 bg=33384fff pt=-
+n3 x=50 w=158
+n4 x=61 bg=33384fff pt=-
+n5 x=190 ink=190,12,7,11
+n6 x=50 w=158
 k41
 k42
 k43
+n3 x=49 w=159
+n4 x=60
+n5 x=189 ink=189,12,7,11
+n6 x=49 w=159
 k44
 k45
 n4 bg=33384fff/9ece6aff pt=0,0,0.09375,6

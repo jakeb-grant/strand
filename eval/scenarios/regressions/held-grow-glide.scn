@@ -1,0 +1,57 @@
+id     = "held-grow-glide"
+about  = """A finding of round 4 (docs/decisions.md held-glides), kept for growth: a
+panel centred at the bottom of the screen shows one of two cards of
+different sizes in a stack (an `if`/`else`), crossfading between them,
+its content-sized box following the arriving card. One swap plays out;
+then swaps come faster than the fade (each one reverses the fade in
+flight); then a last swap settles. While the leaving card fades it holds
+the box at its size; once it unmounts the box springs to the arriving
+card's (decisions.md growth). The arriving card is alone in the stack at
+rest, but it did not fill the stack where the last frame drew them, so
+it keeps its size at rest and its place on screen as the box springs
+past it: it never stretches to the box in flight (`teleport`, 47 px on
+x and 94 on its width at its first frame;
+eval/mutants/growth-fill-drawn.patch takes every box alone in its parent
+at rest to fill it again). Round 4's render glided the holder 21 px right
+and back by the buffer's growth. At every rest only the shown card is
+drawn, as with motion reduced."""
+screen = { width = 360, height = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+state playing = false
+
+panel Card {
+  anchor: bottom; margin: 0, 0, 18, 0; open: true
+  stack { id: holder; pad: 10; radius: 14; bg: #202336; align: center
+    if playing {
+      col { gap: 4; enter { opacity: 0 }; exit { opacity: 0 }
+        text "Now playing" { color: #e0e3f4 }
+        text "A song with a rather long title" { color: #a8adc8 }
+      }
+    } else {
+      row { gap: 6; align: center; enter { opacity: 0 }; exit { opacity: 0 }
+        box { width: 13; height: 13; radius: 4; bg: #8bd5ca }
+        text "Idle" { color: #e0e3f4 }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark swap
+set playing true
+rest
+mark quick
+set playing false
+wait 60
+set playing true
+wait 60
+set playing false
+wait 40
+set playing true
+rest
+mark back
+set playing false
+rest

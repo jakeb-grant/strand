@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "reveal-enter"
 verdict good
-note "(replay-owner) rewritten apart from any shell's values, read k0-35: the drawer's width springs 50 -> 380 (k28); #near enters in view from 0.14 at k1; #far plays its enter from k1 cut out by the clip until the edge reaches x 304 at k10, at 0.99"
-date 2026-10-21
-rev "b6bf3792+changes"
+note "growth: read against the reference: the panel's root now follows the drawer's own width spring 60 -> 380 (k1-28) where the reference drew the full 380 px buffer from k1; #near and #far play as in the reference"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 72501bf3a34e92a1
-seal 6385dfb972ab3b37
+seal 3ea907d68f390de2
 S1 0 - "panel Drawer"
 N0 "drawer|shell.strand:5:3|#0" "row#drawer"
 N1 "|shell.strand:12:7|#0" "box@shell.strand:12"
@@ -24,87 +24,111 @@ k1
 s1 z=380,44
 n0 w=60
 n1 x=18 ord=4
-n2 w=380
+n2 w=60
 n4 x=304 y=10 w=40 h=24 v=309.921875,13.546875,28.15625,16.890625 op=37 sc=0.704,0.704 hid=clipped ord=5 bg=ebcb8bff
 n5 x=8 y=10 w=30 h=24 v=12.4375,13.546875,21.125,16.890625 op=37 sc=0.704,0.704 ord=3 bg=a3be8cff
 k2
 n0 w=84
 n1 x=32
+n2 w=84
 n4 v=306.875,11.734375,34.25,20.546875 op=98 sc=0.856,0.856
 n5 v=10.15625,11.734375,25.6875,20.546875 op=98 sc=0.856,0.856
 k3
 n0 w=115
 n1 x=42
+n2 w=115
 n4 v=304.890625,10.53125,38.234375,22.9375 op=151 sc=0.956,0.956
 n5 v=8.65625,10.53125,28.671875,22.9375 op=151 sc=0.956,0.956
 k4
 n0 w=149
 n1 x=46
+n2 w=149
 n4 v=d op=190 sc=1,1
 n5 v=d op=190 sc=1,1
 k5
 n0 w=182
 n1 x=47
+n2 w=182
 n4 v=303.78125,9.859375,40.453125,24.265625 op=216 sc=1.011,1.011
 n5 v=7.828125,9.859375,30.328125,24.265625 op=216 sc=1.011,1.011
 k6
 n0 w=213
+n2 w=213
 n4 v=303.8125,9.890625,40.375,24.21875 op=232 sc=1.009,1.009
 n5 v=7.859375,9.890625,30.28125,24.21875 op=232 sc=1.009,1.009
 k7
 n0 w=241
 n1 x=46
+n2 w=241
 n4 v=303.90625,9.9375,40.1875,24.109375 op=241 sc=1.005,1.005
 n5 v=7.921875,9.9375,30.140625,24.109375 op=241 sc=1.005,1.005
 k8
 n0 w=265
+n2 w=265
 n4 v=303.96875,9.984375,40.0625,24.046875 op=247 sc=1.002,1.002
 n5 v=7.96875,9.984375,30.046875,24.046875 op=247 sc=1.002,1.002
 k9
 n0 w=287
+n2 w=287
 n4 v=d op=251 sc=1,1
 n5 v=d op=251 sc=1,1
 k10
 n0 w=305
+n2 w=305
 n4 op=253 hid=-
 n5 op=253
 k11
 n0 w=320
+n2 w=320
 n4 op=254
 n5 op=254
 k12
 n0 w=332
+n2 w=332
 k13
 n0 w=342
+n2 w=342
 n4 op=255
 n5 op=255
 k14
 n0 w=350
+n2 w=350
 k15
 n0 w=357
+n2 w=357
 k16
 n0 w=362
+n2 w=362
 k17
 n0 w=366
+n2 w=366
 k18
 n0 w=370
+n2 w=370
 k19
 n0 w=372
+n2 w=372
 k20
 n0 w=374
+n2 w=374
 k21
 n0 w=376
+n2 w=376
 k22
 n0 w=377
+n2 w=377
 k23
 n0 w=378
+n2 w=378
 k24
 k25
 n0 w=379
+n2 w=379
 k26
 k27
 k28
 n0 w=380
+n2 w=380
 k29
 k30
 k31

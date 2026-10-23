@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell-1_5"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: as shadow-card-swell at 1.5: the panel and col#deck spring 152 -> 176 -> 175.3 (k15-19); the deck's rows ride the 0.7 px overshoot cut by the buffer, every value at rest equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario bc8cec8504e2b159
-seal 4889f19e426373bb
+seal 0a4f384abd6e88c8
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -58,37 +58,57 @@ k15
 s1 z=304,193
 n0 y=62 v=d ord=5
 n1 y=62 v=d ord=6
-n2 h=175 v=12,0,280,175.328125
+n2 h=152 v=d
 n3 y=54 v=d ord=4 sh=000000aa@9.328125,39.328125,153.328125,69.328125
 n5 y=100 v=d ord=8 sh=000000cc@0,78,256,92/00000080@24,97,208,44
-n6 h=175 v=12,0,280,175.328125
+n6 h=152 v=d
 n7 y=62 v=d ord=7
 n8 x=28 y=45 w=120 h=5 v=28,45.328125,120,4.671875 op=37 ord=3 bg=3b4252ff
 k16
 n0 y=76
 n1 y=76
+n2 h=166
 n3 y=68 sh=000000aa@9.328125,53.328125,153.328125,69.328125
 n5 y=114 sh=000000cc@0,92,256,92/00000080@24,111,208,44
+n6 h=166
 n7 y=76
 n8 h=12 v=28,45.328125,120,12 op=98
 k17
 n0 y=83 v=36,83.328125,24,16
 n1 y=83 v=66,83.328125,24,16
+n2 h=173 v=12,0,280,173.328125
 n3 y=75 v=28,75.328125,116,32 sh=000000aa@9.328125,60.671875,153.328125,69.328125
 n5 y=121 v=28,121.328125,200,36 sh=000000cc@0,99.328125,256,92/00000080@24,118.328125,208,44
+n6 h=173 v=12,0,280,173.328125
 n7 y=83 v=96,83.328125,40,16
 n8 h=16 v=28,45.328125,120,16 op=151
 k18
 n0 y=85 v=36,85.328125,24,16
 n1 y=85 v=66,85.328125,24,16
+n2 h=175 v=12,0,280,175.328125
 n3 y=77 v=28,77.328125,116,32 sh=000000aa@9.328125,62.671875,153.328125,69.328125
 n5 y=123 v=28,123.328125,200,36 sh=000000cc@0,101.328125,256,92/00000080@24,120.328125,208,44
+n6 h=175 v=12,0,280,175.328125
 n7 y=85 v=96,85.328125,40,16
 n8 h=18 v=28,45.328125,120,18 op=190
 k19
-n8 op=216
+n0 y=86 v=d
+n1 y=86 v=d
+n2 h=176 v=d
+n3 y=78 v=d sh=000000aa@9.328125,63.328125,153.328125,69.328125
+n5 y=124 v=d sh=000000cc@0,102,256,92/00000080@24,121,208,44
+n6 h=176 v=d
+n7 y=86 v=d
+n8 h=19 v=28,45.328125,120,18.671875 op=216
 k20
-n8 op=232
+n0 y=85 v=36,85.328125,24,16
+n1 y=85 v=66,85.328125,24,16
+n2 h=175 v=12,0,280,175.328125
+n3 y=77 v=28,77.328125,116,32 sh=000000aa@9.328125,62.671875,153.328125,69.328125
+n5 y=123 v=28,123.328125,200,36 sh=000000cc@0,101.328125,256,92/00000080@24,120.328125,208,44
+n6 h=175 v=12,0,280,175.328125
+n7 y=85 v=96,85.328125,40,16
+n8 h=18 v=28,45.328125,120,18 op=232
 k21
 n8 op=241
 k22

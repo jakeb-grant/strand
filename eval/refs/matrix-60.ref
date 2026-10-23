@@ -8076,12 +8076,12 @@ k62
 k63
 ref "m.enter-fade__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario a2e423be45447126
-seal bac9f2bd9723e7e9
+seal 26bc204a5760daa5
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -8169,27 +8169,37 @@ k14
 k15 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k16
 n10 w=231 h=56
+n11 h=56
 k17
 n10 w=251 h=60
+n11 h=60
 k18
 n10 w=260 h=65
+n11 h=65
 k19
 n10 w=262 h=69
+n11 h=69
 k20
 n10 h=72
+n11 h=72
 k21
 n10 w=261 h=75
+n11 h=75
 k22
 n10 w=260 h=77
+n11 h=77
 k23
 n10 h=78
+n11 h=78
 k24
 n10 h=79
+n11 h=79
 k25
 n10 h=80
+n11 h=80
 k26
 k27
 k28
@@ -13747,12 +13757,12 @@ k54
 k55
 ref "m.enter-scale__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 262115a3f1723fe1
-seal 743193ad614b91c4
+seal 7c4dde71ca44323e
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -13830,27 +13840,37 @@ k10
 k11 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k12
 n10 w=231 h=56
+n11 h=56
 k13
 n10 w=251 h=60
+n11 h=60
 k14
 n10 w=260 h=65
+n11 h=65
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 k20
 n10 h=79
+n11 h=79
 k21
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -19686,12 +19706,12 @@ k62
 k63
 ref "m.enter-slide__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 0d3e1ce3a7c0f72a
-seal d58e42a0aeffde90
+seal dc4edd80eaeb8806
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -19779,27 +19799,37 @@ k14
 k15 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k16
 n10 w=231 h=56
+n11 h=56
 k17
 n10 w=251 h=60
+n11 h=60
 k18
 n10 w=260 h=65
+n11 h=65
 k19
 n10 w=262 h=69
+n11 h=69
 k20
 n10 h=72
+n11 h=72
 k21
 n10 w=261 h=75
+n11 h=75
 k22
 n10 w=260 h=77
+n11 h=77
 k23
 n10 h=78
+n11 h=78
 k24
 n10 h=79
+n11 h=79
 k25
 n10 h=80
+n11 h=80
 k26
 k27
 k28
@@ -25011,12 +25041,12 @@ k57
 k58
 ref "m.exit-fade__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario e2daad00ab3d3014
-seal 88caa18664b4e0d0
+seal 15591afa53f2993c
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -25077,27 +25107,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -29573,12 +29613,12 @@ k52
 k53
 ref "m.exit-height0__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 846ce9c7f056ff8d
-seal cdacd8a4b028ae8f
+seal 4a025a092d0f4d06
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -29639,27 +29679,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -34329,12 +34379,12 @@ k57
 k58
 ref "m.exit-slide__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario c42b72dbd999167f
-seal 66a6ad44d14d700d
+seal 8f65d841bf0172f3
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -34395,27 +34445,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -39296,12 +39356,12 @@ k43
 k44
 ref "m.flip-nested__popup-content-height.60"
 verdict good
-note "eval-coverage-3: flip-nested's boxes now hold a 2 x 4 mark each (pad 2), a third level riding the glides; every block matches its reference node for node but for the four marks it adds (orders of the nodes both share kept), read cell by cell with a recording comparison"
-date 2026-10-19
-rev "a7965714+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 9d02aee96c02b651
-seal 952c8d5f20857943
+seal 200bb7a5c9cd5d28
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -39384,7 +39444,7 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 n14 w=189
 n15 x=19 ord=12
 n16 x=21 ord=10
@@ -39398,6 +39458,7 @@ n23 x=13 ord=9
 n24 x=27 ord=4
 k11
 n10 w=231 h=56
+n11 h=56
 n14 w=219
 n15 x=35
 n16 x=29
@@ -39411,6 +39472,7 @@ n23 x=24
 n24 x=16
 k12
 n10 w=251 h=60
+n11 h=60
 n14 w=239
 n15 x=45
 n16 x=34
@@ -39424,6 +39486,7 @@ n23 x=31
 n24 x=9
 k13
 n10 w=260 h=65
+n11 h=65
 n14 w=248
 n15 x=50
 n16 x=36
@@ -39437,6 +39500,7 @@ n23 x=34
 n24 x=6
 k14
 n10 w=262 h=69
+n11 h=69
 n14 w=250
 n15 x=51
 n16 x=37
@@ -39448,10 +39512,12 @@ n23 x=35
 n24 x=5
 k15
 n10 h=72
+n11 h=72
 n16 x=36
 n20 x=38
 k16
 n10 w=261 h=75
+n11 h=75
 n14 w=249
 n18 x=8
 n22 x=10
@@ -39459,15 +39525,19 @@ n23 x=34
 n24 x=6
 k17
 n10 w=260 h=77
+n11 h=77
 n14 w=248
 n15 x=50
 n19 x=52
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -44568,12 +44638,12 @@ k43
 k44
 ref "m.flip-reorder__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario f1032dad219226af
-seal 6a3bf1caede28780
+seal 0c9f54a8a1cadbfa
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#3" "box#after"
@@ -44670,43 +44740,53 @@ n10 x=112 ord=8
 n11 x=105 ord=9
 n12 x=110 ord=7
 n14 w=201 h=52
-n15 h=80
+n15 h=52
 k11
 n9 x=115
 n10 x=107
 n11 x=113
 n12 x=105
 n14 w=231 h=56
+n15 h=56
 k12
 n9 x=120
 n10 x=104
 n11 x=118
 n12 x=102
 n14 w=251 h=60
+n15 h=60
 k13
 n9 x=122
 n10 x=102
 n11 x=120
 n12 x=100
 n14 w=260 h=65
+n15 h=65
 k14
 n9 x=123
 n11 x=121
 n14 w=262 h=69
+n15 h=69
 k15
 n9 x=122
 n11 x=120
 n14 h=72
+n15 h=72
 k16
 n14 w=261 h=75
+n15 h=75
 k17
 n14 w=260 h=77
+n15 h=77
 k18
 n14 h=78
+n15 h=78
 k19 p2
 n14 h=79
+n15 h=79
 k20
 n14 h=80
+n15 h=80
 k21
 k22
 k23
@@ -62395,12 +62475,12 @@ k63
 k64
 ref "m.popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 8833cf99b4757b68
-seal f2cb2354b55cd0f5
+seal 574dbc9bf0aec774
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62461,27 +62541,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -62527,12 +62617,12 @@ k41
 k42
 ref "m.popup-content-height__blur.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario a5b3061cdd2d0363
-seal e5fc1580e088d732
+seal 307336aa92c57486
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62593,27 +62683,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -62659,12 +62759,12 @@ k41
 k42
 ref "m.popup-content-height__clip.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 5d47ab02573ab958
-seal 9661d284cc7b0a95
+seal 0eefd047e962c6bc
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62725,27 +62825,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -62791,12 +62901,12 @@ k41
 k42
 ref "m.popup-content-height__colour-shift.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 5061511ceb52fc82
-seal a74f09e34c982ec6
+seal 42c2a8413d75d56a
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -62857,37 +62967,47 @@ k9
 k10 p1,2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 n12 bg=4f7decff
 k11
 n10 w=231 h=56
+n11 h=56
 n12 bg=7f9bcaff
 k12
 n10 w=251 h=60
+n11 h=60
 n12 bg=aaafa6ff
 k13
 n10 w=260 h=65
+n11 h=65
 n12 bg=c9bb85ff
 k14
 n10 w=262 h=69
+n11 h=69
 n12 bg=dec269ff
 k15
 n10 h=72
+n11 h=72
 n12 bg=ecc652ff
 k16
 n10 w=261 h=75
+n11 h=75
 n12 bg=f4c93eff
 k17
 n10 w=260 h=77
+n11 h=77
 n12 bg=f9ca2eff
 k18
 n10 h=78
+n11 h=78
 n12 bg=fbcb22ff
 k19
 n10 h=79
+n11 h=79
 n12 bg=fdcb17ff
 k20
 n10 h=80
+n11 h=80
 n12 bg=fecc0fff
 k21
 n12 bg=ffcc00ff
@@ -62935,12 +63055,12 @@ k41
 k42
 ref "m.popup-content-height__gpu.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 96ec8dcccc642fce
-seal 890457ba7b5d3792
+seal 4426306855fa9a22
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63001,27 +63121,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -63067,12 +63197,12 @@ k41
 k42
 ref "m.popup-content-height__image.60"
 verdict good
-note "stand-in-fit follow-up at integration-r7 part 2: only paint.images (im) changed, on the ticks the whole-source stand-in draws: it is now a fill decode in the source's own shape, so its size and placement differ by the rounding the old cover decode carried"
-date 2026-10-20
-rev "c0222f5e+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario b9e5794c503aae0b
-seal e5ade85d98ecf3dd
+seal fb40e4300f3f35d9
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63136,42 +63266,52 @@ s2 z=280,80
 n0 x=108
 n5 x=62 ink=62,10,27,11
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 n12 w=20
 n13 w=20 im=0,-0.671875,20,13.328125@20,13
 k12
 n0 x=113
 n5 x=67 ink=67,10,27,11
 n10 w=231 h=56
+n11 h=56
 n12 w=25
 n13 w=25 im=0,-2.328125,25,16.671875@20,13
 k13
 n0 x=116
 n5 x=70 ink=70,10,27,11
 n10 w=251 h=60
+n11 h=60
 n12 w=28
 n13 w=28 im=0,-3.328125,28,18.671875@20,13
 k14
 n0 x=118
 n5 x=72 ink=72,10,27,11
 n10 w=260 h=65
+n11 h=65
 n12 w=30
 n13 w=30 im=0,-4,30,20@20,13
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 n13 im=0,0,30,12@30,12
 k20 p2
 n10 h=79
+n11 h=79
 k21
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -63218,12 +63358,12 @@ k43
 k44
 ref "m.popup-content-height__jelly.60"
 verdict good
-note "dock-drag at integration-r7 part 2: a lift let go is back among its siblings on the tick its glide lands (Animator::lift_rank), one tick sooner; only ord changes on the jelly cells, the blocks are otherwise their references"
-date 2026-10-20
-rev "c8b20d06+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario b3d5d40fa475355c
-seal 9d6604bddc6b3a60
+seal 4cba7fd5edfb263a
 S1 0 - "bar Top"
 S2 1 102 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63481,27 +63621,37 @@ n13 v=d
 k78 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k79
 n10 w=231 h=56
+n11 h=56
 k80
 n10 w=251 h=60
+n11 h=60
 k81
 n10 w=260 h=65
+n11 h=65
 k82
 n10 w=262 h=69
+n11 h=69
 k83
 n10 h=72
+n11 h=72
 k84
 n10 w=261 h=75
+n11 h=75
 k85
 n10 w=260 h=77
+n11 h=77
 k86
 n10 h=78
+n11 h=78
 k87
 n10 h=79
+n11 h=79
 k88
 n10 h=80
+n11 h=80
 k89
 k90
 k91
@@ -63547,12 +63697,12 @@ k109
 k110
 ref "m.popup-content-height__keyframes.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 923e78585fec402a
-seal 82dcc3d4e256ee48
+seal 80fa63295d470e47
 S1 0 - "bar Top"
 S2 1 45 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63656,27 +63806,37 @@ k20
 k21 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k22
 n10 w=231 h=56
+n11 h=56
 k23
 n10 w=251 h=60
+n11 h=60
 k24
 n10 w=260 h=65
+n11 h=65
 k25
 n10 w=262 h=69
+n11 h=69
 k26
 n10 h=72
+n11 h=72
 k27
 n10 w=261 h=75
+n11 h=75
 k28
 n10 w=260 h=77
+n11 h=77
 k29
 n10 h=78
+n11 h=78
 k30
 n10 h=79
+n11 h=79
 k31
 n10 h=80
+n11 h=80
 k32
 k33
 k34
@@ -63722,12 +63882,12 @@ k52
 k53
 ref "m.popup-content-height__late-text-1.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario ca9cc7eebcf336fb
-seal 7ce2752e1cf99017
+seal fb622c1c952cfb47
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63789,27 +63949,37 @@ k10
 k11 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k12
 n10 w=231 h=56
+n11 h=56
 k13
 n10 w=251 h=60
+n11 h=60
 k14
 n10 w=260 h=65
+n11 h=65
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 k20
 n10 h=79
+n11 h=79
 k21
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -63855,12 +64025,12 @@ k42
 k43
 ref "m.popup-content-height__late-text-paint.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario ea3147408964ad43
-seal 87d6208046fe539f
+seal f6d7b1cd25df2e30
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -63922,27 +64092,37 @@ k10
 k11 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k12
 n10 w=231 h=56
+n11 h=56
 k13
 n10 w=251 h=60
+n11 h=60
 k14
 n10 w=260 h=65
+n11 h=65
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 k20
 n10 h=79
+n11 h=79
 k21
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -63988,12 +64168,12 @@ k42
 k43
 ref "m.popup-content-height__lean.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 5ffd8b3ce499624e
-seal 66aabe1113a5703a
+seal ab773c4f172f960e
 S1 0 - "bar Top"
 S2 1 48 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64090,27 +64270,37 @@ n13 v=35.015625,8.234375,13.96875,16.53125
 k24 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k25
 n10 w=231 h=56
+n11 h=56
 k26
 n10 w=251 h=60
+n11 h=60
 k27
 n10 w=260 h=65
+n11 h=65
 k28
 n10 w=262 h=69
+n11 h=69
 k29
 n10 h=72
+n11 h=72
 k30
 n10 w=261 h=75
+n11 h=75
 k31
 n10 w=260 h=77
+n11 h=77
 k32
 n10 h=78
+n11 h=78
 k33
 n10 h=79
+n11 h=79
 k34
 n10 h=80
+n11 h=80
 k35
 k36
 k37
@@ -64219,12 +64409,12 @@ n12 -
 n13 -
 ref "m.popup-content-height__reveal.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario ffa072797c826dde
-seal 9b3f76f443bf592c
+seal 9049ee5e04c99436
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64286,27 +64476,37 @@ k10
 k11 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k12
 n10 w=231 h=56
+n11 h=56
 k13
 n10 w=251 h=60
+n11 h=60
 k14
 n10 w=260 h=65
+n11 h=65
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 k20
 n10 h=79
+n11 h=79
 k21
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -64364,12 +64564,12 @@ k52
 k53
 ref "m.popup-content-height__roll-text.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 4faa534fbda9adb9
-seal a04a6174dba2e9be
+seal 16fb04b7e544e2dc
 S1 0 - "bar Top"
 S2 1 35 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64431,29 +64631,39 @@ k10
 k11 p1,2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 n13 ink=36,10,14,10 fg=ff00ffff/ff00ffff gl=["42","41[1]"]
 k12
 n10 w=231 h=56
+n11 h=56
 k13
 n10 w=251 h=60
+n11 h=60
 k14
 n10 w=260 h=65
+n11 h=65
 k15
 n10 w=262 h=69
+n11 h=69
 k16
 n10 h=72
+n11 h=72
 k17
 n10 w=261 h=75
+n11 h=75
 k18
 n10 w=260 h=77
+n11 h=77
 k19
 n10 h=78
+n11 h=78
 k20
 n10 h=79
+n11 h=79
 n13 fg=ff00ffff gl=["42"]
 k21 p2
 n10 h=80
+n11 h=80
 k22
 k23
 k24
@@ -64500,12 +64710,12 @@ k43
 k44
 ref "m.popup-content-height__scale-1.5.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 2a5b89832638cce6
-seal 3251e79a844c793a
+seal 0d2b181881073621
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64566,27 +64776,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52 v=0,0,201.328125,52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56 v=0,0,231.328125,56
+n11 h=56
 k12
 n10 w=251 h=60 v=0,0,251.328125,60
+n11 h=60
 k13
 n10 w=260 h=65 v=0,0,260,65.328125
+n11 h=65 v=0,0,280,65.328125
 k14
 n10 w=262 h=69 v=0,0,262,69.328125
+n11 h=69 v=0,0,280,69.328125
 k15
 n10 h=72 v=d
+n11 h=72 v=d
 k16
 n10 w=261 h=75 v=0,0,261.328125,75.328125
+n11 h=75 v=0,0,280,75.328125
 k17
 n10 w=260 h=77 v=0,0,260,77.328125
+n11 h=77 v=0,0,280,77.328125
 k18
 n10 h=78 v=d
+n11 h=78 v=d
 k19
 n10 h=79 v=0,0,260,79.328125
+n11 h=79 v=0,0,280,79.328125
 k20
 n10 h=80 v=d
+n11 h=80 v=d
 k21
 k22
 k23
@@ -64632,12 +64852,12 @@ k41
 k42
 ref "m.popup-content-height__scale-2.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario b8742dfc856657e6
-seal 8e8f28ef74db8cd1
+seal 6767a9ae08580c75
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64698,27 +64918,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -64764,12 +64994,12 @@ k41
 k42
 ref "m.popup-content-height__scroll.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 92e4540393514029
-seal 128544d9d59b7add
+seal 4112320a67e4f411
 S1 0 - "bar Top"
 S2 1 55 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -64988,27 +65218,37 @@ n20 y=40 v=d
 k31 p2
 s2 z=280,80
 n15 w=201 h=52
-n16 h=80
+n16 h=52
 k32
 n15 w=231 h=56
+n16 h=56
 k33
 n15 w=251 h=60
+n16 h=60
 k34
 n15 w=260 h=65
+n16 h=65
 k35
 n15 w=262 h=69
+n16 h=69
 k36
 n15 h=72
+n16 h=72
 k37
 n15 w=261 h=75
+n16 h=75
 k38
 n15 w=260 h=77
+n16 h=77
 k39
 n15 h=78
+n16 h=78
 k40
 n15 h=79
+n16 h=79
 k41
 n15 h=80
+n16 h=80
 k42
 k43
 k44
@@ -65061,12 +65301,12 @@ k62
 k63
 ref "m.popup-content-height__shadow.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 8890d2eba5fdd750
-seal fa2d1455ca02b4ec
+seal 5f5c68de302ce23a
 S1 0 - "bar Top"
 S2 1 34 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65127,27 +65367,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=231 h=56
+n11 h=56
 k12
 n10 w=251 h=60
+n11 h=60
 k13
 n10 w=260 h=65
+n11 h=65
 k14
 n10 w=262 h=69
+n11 h=69
 k15
 n10 h=72
+n11 h=72
 k16
 n10 w=261 h=75
+n11 h=75
 k17
 n10 w=260 h=77
+n11 h=77
 k18
 n10 h=78
+n11 h=78
 k19
 n10 h=79
+n11 h=79
 k20
 n10 h=80
+n11 h=80
 k21
 k22
 k23
@@ -65193,12 +65443,12 @@ k41
 k42
 ref "m.popup-content-height__shared-morph.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 73b14144a7e8de60
-seal d013c89073d85ccc
+seal f1fd24fdc977b538
 S1 0 - "bar Top"
 S2 1 39 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65291,27 +65541,37 @@ n14 x=36 v=d
 k15 p2
 s2 z=280,80
 n11 w=201 h=52
-n12 h=80
+n12 h=52
 k16
 n11 w=231 h=56
+n12 h=56
 k17
 n11 w=251 h=60
+n12 h=60
 k18
 n11 w=260 h=65
+n12 h=65
 k19
 n11 w=262 h=69
+n12 h=69
 k20
 n11 h=72
+n12 h=72
 k21
 n11 w=261 h=75
+n12 h=75
 k22
 n11 w=260 h=77
+n12 h=77
 k23
 n11 h=78
+n12 h=78
 k24
 n11 h=79
+n12 h=79
 k25
 n11 h=80
+n12 h=80
 k26
 k27
 k28
@@ -65375,12 +65635,12 @@ k52
 n6 x=112 v=d
 ref "m.popup-content-height__slider-drag.60"
 verdict good
-note "eval-coverage-4: the scroll effect's list is flicked on the touchpad after its wheel steps (it flings into the list's end, or with motion reduced stops where the fingers lift), and the slider-drag effect's slider sits in a box moved by a resting x: 12; read cell by cell: before the flick each scroll cell's recording is its reference, the flick and fling are new ticks, and after them only the list's rows lie where the fling left them; each slider cell is its reference but for the slider drawn 12 px right with its knob under the pointer, and the box holding it"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 242dd99421dd7367
-seal f2f848888e4f46f0
+seal 48cfd1ed2ca29b01
 S1 0 - "bar Top"
 S2 1 54 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65486,27 +65746,37 @@ n7 pt=0,7,120,4/0,7,88,4/80,1,16,16
 k30 p2
 s2 z=280,80
 n12 w=201 h=52
-n13 h=80
+n13 h=52
 k31
 n12 w=231 h=56
+n13 h=56
 k32
 n12 w=251 h=60
+n13 h=60
 k33
 n12 w=260 h=65
+n13 h=65
 k34
 n12 w=262 h=69
+n13 h=69
 k35
 n12 h=72
+n13 h=72
 k36
 n12 w=261 h=75
+n13 h=75
 k37
 n12 w=260 h=77
+n13 h=77
 k38
 n12 h=78
+n13 h=78
 k39
 n12 h=79
+n13 h=79
 k40
 n12 h=80
+n13 h=80
 k41
 k42
 k43
@@ -65554,12 +65824,12 @@ k61
 k62
 ref "m.popup-content-height__stagger.60"
 verdict good
-note "stagger: a stagger numbers only children with an enter (owner, decisions.md stagger): the subject, with none, is at rest and takes no turn, so tag1 and tag2 each start one turn earlier, with the same opacity and offset trajectories; read with a decoder of both recordings: every other node and surface goes through the same states, and once the batch settles the run is its reference 2 ticks (60 Hz) or 4 (144 Hz) earlier, tick for tick"
-date 2026-10-21
-rev "49d44e8b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario f5a61c377ff74208
-seal 76571e32738e7b49
+seal b519340e27e082e0
 S1 0 - "bar Top"
 S2 1 40 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -65653,27 +65923,37 @@ k15
 k16 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k17
 n10 w=231 h=56
+n11 h=56
 k18
 n10 w=251 h=60
+n11 h=60
 k19
 n10 w=260 h=65
+n11 h=65
 k20
 n10 w=262 h=69
+n11 h=69
 k21
 n10 h=72
+n11 h=72
 k22
 n10 w=261 h=75
+n11 h=75
 k23
 n10 w=260 h=77
+n11 h=77
 k24
 n10 h=78
+n11 h=78
 k25
 n10 h=79
+n11 h=79
 k26
 n10 h=80
+n11 h=80
 k27
 k28
 k29
@@ -78813,12 +79093,12 @@ k57
 k58
 ref "m.size-spring__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 5fe6a96dc41cb2b2
-seal 0cb745a7a12f70aa
+seal 6da585e3845d6ab4
 S1 0 - "bar Top"
 S2 1 36 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -78879,27 +79159,37 @@ k9
 k10 p2
 s2 z=280,80
 n10 w=186 h=52
-n11 h=80
+n11 h=52
 k11
 n10 w=200 h=56
+n11 h=56
 k12
 n10 w=216 h=60
+n11 h=60
 k13
 n10 w=231 h=65
+n11 h=65
 k14
 n10 w=243 h=69
+n11 h=69
 k15
 n10 w=252 h=72
+n11 h=72
 k16
 n10 w=258 h=75
+n11 h=75
 k17
 n10 w=262 h=77
+n11 h=77
 k18
 n10 w=263 h=78
+n11 h=78
 k19
 n10 w=264 h=79
+n11 h=79
 k20
 n10 w=263 h=80
+n11 h=80
 k21
 k22
 n10 w=262
@@ -86774,12 +87064,12 @@ k56
 k57
 ref "m.text-estimate-far__popup-content-height.60"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; roll-rate's own cells match its recording but for eval-fa's popup origin; eval-coverage-2's scroll and slider-drag cells align with their blocks before, dropping only springs' tails and a roll's last sliver"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read every changed cell's comparison: all 60 are popup-content-height's (30 per rate) and differ only in popup#pop's drawn height, which now springs 50 -> 52 -> ... -> 80 along the spatial spring from the size the last frame drew (10 ticks at 60 Hz, 23 at 144) where the reference snapped to 80; no other node or surface differs in any cell"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 735febf8259abc6c
-seal 9b6d84b42bb28044
+seal 05fdbde2c4d425ae
 S1 0 - "bar Top"
 S2 1 38 "popup#pop"
 N0 "after|shell.strand:27:7|[Mock | DP-1]#1" "box#after"
@@ -86848,27 +87138,37 @@ k13
 k14 p2
 s2 z=280,80
 n10 w=201 h=52
-n11 h=80
+n11 h=52
 k15
 n10 w=231 h=56
+n11 h=56
 k16
 n10 w=251 h=60
+n11 h=60
 k17
 n10 w=260 h=65
+n11 h=65
 k18
 n10 w=262 h=69
+n11 h=69
 k19
 n10 h=72
+n11 h=72
 k20
 n10 w=261 h=75
+n11 h=75
 k21
 n10 w=260 h=77
+n11 h=77
 k22
 n10 h=78
+n11 h=78
 k23
 n10 h=79
+n11 h=79
 k24
 n10 h=80
+n11 h=80
 k25
 k26
 k27

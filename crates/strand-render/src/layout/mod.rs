@@ -123,12 +123,15 @@ pub enum RootSize {
     /// there, in whole logical pixels. An axis whose content is larger
     /// than the frame is laid out at the frame's size, as
     /// [`RootSize::Fixed`] does. `width` and `height` are the root's
-    /// definite sizes (a surface's own `width`/`height`).
+    /// definite sizes (a surface's own `width`/`height`). `exact`
+    /// (growth): a box springing over a step, placed at its exact share of
+    /// the room, so its anchored edge stays the frame's at any size.
     Placed {
         frame: LogicalRect,
         width: Option<f32>,
         height: Option<f32>,
         at: (f32, f32),
+        exact: bool,
     },
 }
 
@@ -506,13 +509,18 @@ pub(crate) fn layout(
     };
     b.compute(t, avail, texts, scrolls);
     let mut origin = origin;
-    if let RootSize::Placed { frame, at, .. } = size
+    if let RootSize::Placed {
+        frame, at, exact, ..
+    } = size
         && let Ok(l) = b.taffy.layout(t).map(|l| l.size)
     {
         // Larger than the surface's box on an axis (it grows, and the
         // configure at its new size is still to come): laid out at the
         // box's size there, as a fixed root is.
+        // (growth) Not a box springing over a step: its overshoot past
+        // the buffer is cut by the buffer, its anchored edge kept.
         let (wide, tall) = (l.width > frame.w + 0.5, l.height > frame.h + 0.5);
+        let (wide, tall) = (wide && !exact, tall && !exact);
         if (wide || tall)
             && let Ok(mut s) = b.taffy.style(t).cloned()
         {
@@ -535,7 +543,15 @@ pub(crate) fn layout(
         if let Ok(l) = b.taffy.layout(t).map(|l| l.size) {
             // Where the smaller box's edge will be: the size it asks for
             // is its content's, up to a whole pixel (`refresh_specs`).
-            let room = |have: f32, used: f32, f: f32| edge_shift(have, used.ceil(), f).max(0.0);
+            let room = |have: f32, used: f32, f: f32| {
+                if exact {
+                    // Whole pixels, as every box is snapped: its anchored
+                    // edge is the frame's.
+                    ((have - used) * f).round()
+                } else {
+                    edge_shift(have, used.ceil(), f).max(0.0)
+                }
+            };
             origin.0 += room(frame.w, l.width, at.0);
             origin.1 += room(frame.h, l.height, at.1);
         }

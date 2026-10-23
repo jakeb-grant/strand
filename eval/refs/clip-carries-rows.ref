@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "clip-carries-rows"
 verdict good
-note "clip-blink: initial reference; a centred network picker's clipped list narrows to the saved networks and then one row, each row that stays carried by its list (no glide from above its new top edge) and the one moving up a slot inside the one-row list starting where it shows"
-date 2026-10-19
-rev "27406340+changes"
+note "growth: read against the reference aligned by segment: the centred card springs from its centre 191 -> 108 -> 111 (k15-22) and 102 -> 74 -> 75 (k43-48) where the reference snapped; the rows that stay ride its top edge, office glides up a slot from where it was drawn (254 -> 236 on screen) inside the list's clip, the forget segment otherwise equal shifted by 12 ticks"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 4c2c5efe90034fc7
-seal ce433a8955f625b0
+seal 28331281874d171a
 S1 0 - "panel Networks"
 N0 "card|shell.strand:8:3|#0" "col#card"
 N1 "heading|shell.strand:9:5|#0" "text#heading"
@@ -133,18 +133,80 @@ n10 -
 n11 ord=8
 n12 -
 k15
+n0 y=14 h=191
+n1 y=24 ink=10,25,30,10
+n2 y=47 h=148
+n3 -
+n4 y=47
+n5 -
+n6 y=110 ord=6
+n7 -
+n9 y=56 ink=20,57,32,11
+n11 y=118 ord=7 ink=20,119,31,11
+n13 y=14 h=191
+k16
+n0 y=35 h=150
+n1 y=45 ink=10,46,30,10
+n2 y=68 h=107
+n4 y=68
+n6 y=117
+n9 y=77 ink=20,78,32,11
+n11 y=125 ink=20,126,31,11
+n13 y=35 h=150
+k17
+n0 y=48 h=123
+n1 y=58 ink=10,59,30,10
+n2 y=81 h=80
+n4 y=81
+n6 y=121
+n9 y=90 ink=20,91,32,11
+n11 y=129 ink=20,130,31,11
+n13 y=48 h=123
+k18
 n0 y=54 h=111
 n1 y=64 ink=10,65,30,10
 n2 y=87 h=68
-n3 -
 n4 y=87
-n5 -
-n6 y=123 ord=6
-n7 -
+n6 y=123
 n9 y=96 ink=20,97,32,11
-n11 y=132 ord=7 ink=20,133,31,11
+n11 y=132 ink=20,133,31,11
 n13 y=54 h=111
-k16
+k19
+n0 y=56 h=108
+n1 y=66 ink=10,67,30,10
+n2 y=89
+n4 y=89
+n6 y=124
+n9 y=98 ink=20,99,32,11
+n13 y=56 h=108
+k20
+n0 y=55
+n1 y=65 ink=10,66,30,10
+n2 y=88
+n4 y=88
+n6 y=123
+n9 y=97 ink=20,98,32,11
+n13 y=55
+k21
+n0 h=110
+n6 y=124
+n13 h=110
+k22
+n0 y=54 h=111
+n1 y=64 ink=10,65,30,10
+n2 y=87
+n4 y=87
+n6 y=123
+n9 y=96 ink=20,97,32,11
+n11 y=131 ink=20,132,31,11
+n13 y=54 h=111
+k23
+k24
+n11 y=132 ink=20,133,31,11
+k25
+k26
+k27
+k28
 s1 z=220,111 o=50,185
 n0 y=0
 n1 y=10 ink=10,11,30,10
@@ -154,57 +216,98 @@ n6 y=69
 n9 y=42 ink=20,43,32,11
 n11 y=78 ink=20,79,31,11
 n13 y=0
-k17
+k29
 n4 op=218 hid=inert
 n9 op=218 hid=inert
-k18
+k30
 n4 op=157
 n9 op=157
-k19
+k31
 n4 op=104
 n9 op=104
-k20
+k32
 n4 op=65
 n9 op=65
-k21
+k33
 n4 op=39
 n9 op=39
-k22
+k34
 n4 op=23
 n9 op=23
-k23
+k35
 n4 op=14
 n9 op=14
-k24
+k36
 n4 op=8
 n9 op=8
-k25
+k37
 n4 op=4
 n9 op=4
-k26
+k38
 n4 op=2
 n9 op=2
-k27
+k39
 n4 op=1
 n9 op=1
-k28
-k29
+k40
+k41
 n4 op=0
 n9 op=0
-k30
+k42
 n4 hid=opacity0 bg=-
 n6 ord=5
 n9 -
 n11 ord=6
-k31
+k43
+n0 y=5 h=102
+n1 y=15 ink=10,16,30,10
+n2 y=38 h=59
+n4 -
+n6 y=65 ord=4
+n11 y=73 ord=5 ink=20,74,31,11
+n13 y=5 h=102
+k44
+n0 y=12 h=88
+n1 y=22 ink=10,23,30,10
+n2 y=45 h=45
+n6 y=58
+n11 y=66 ink=20,67,31,11
+n13 y=12 h=88
+k45
+n0 y=16 h=79
+n1 y=26 ink=10,27,30,10
+n2 y=49 h=36
+n6 y=53
+n11 y=61 ink=20,62,31,11
+n13 y=16 h=79
+k46
 n0 y=18 h=75
 n1 y=28 ink=10,29,30,10
 n2 y=51 h=32
-n4 -
-n6 y=51 ord=4
-n11 y=60 ord=5 ink=20,61,31,11
+n6 y=51
+n11 y=60 ink=20,61,31,11
 n13 y=18 h=75
-k32
+k47
+n0 y=19 h=74
+n1 y=29 ink=10,30,30,10
+n2 y=52
+n11 y=59 ink=20,60,31,11
+n13 y=19 h=74
+k48
+n0 y=18
+n1 y=28 ink=10,29,30,10
+n2 y=51
+n6 y=50
+n13 y=18
+k49
+n0 h=75
+n6 y=51
+n13 h=75
+k50
+k51
+k52
+n11 y=60 ink=20,61,31,11
+k53
 s1 z=220,75 o=50,203
 n0 y=0
 n1 y=10 ink=10,11,30,10

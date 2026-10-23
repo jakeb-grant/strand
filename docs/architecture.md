@@ -2509,10 +2509,26 @@ re-base, if it needs one, is a dated decisions.md entry.
   its first clocked frame: nodes created under it meanwhile enter too.
   A size springing to or from zero folds its padding and the parent's
   gap beside it, so the slot reaches zero (decisions.md, wave3-pixels
-  (p2) fixer round 3). A content-sized surface that grows under an
-  anchor moving its origin glides its root's children from where they
-  were on screen. A content-sized surface never shrinks while something on it
-  moves, and asks for its own size once nothing does. The paint that
+  (p2) fixer round 3). (growth) A content-sized panel, OSD or popup
+  whose content's size steps (a text grew, a row mounted or left with no
+  pose that springs its size) springs its root's box over the step per
+  axis: `Animator`'s per-root step motion holds how far the box is from
+  the content's size and springs it to zero along the root's `width`'s,
+  `height`'s or `size`'s transition (`width: auto ~ …`; `$motion.spatial`
+  by default; `~ instant` and `reduced_motion` take the step at once).
+  `Renderer::lay_out_stepped` lays the root out at the size in flight:
+  the boxes that fill it on that axis at rest and in the last frame drawn
+  follow it (`StepFills`) and clip what they hold, which keeps its rest
+  size (`Forced::keep`) and, on the axis a far-anchored surface keeps
+  (a bottom OSD's height), its rest place by that edge. The box is
+  placed where the compositor keeps it as the buffer, configured at the
+  larger of the two sizes, is resized, so the anchored edge stays put;
+  an overshoot past the buffer is laid out where it is and cut by it.
+  The pass that starts a step glides what the step moves from where it
+  was drawn, compared with the box laid out where the last frame drew
+  it. A content-sized surface never shrinks while something on it
+  moves or its box springs down, and asks for its own size once nothing
+  does. The paint that
   finishes an exit (a ghost unmounted, a surface closed) or lets a held
   surface shrink refreshes the specs itself, so `has_surface_changes()`
   is true after it: the host must check it after every `paint` (the

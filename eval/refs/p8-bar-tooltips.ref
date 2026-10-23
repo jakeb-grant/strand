@@ -1,15 +1,15 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-bar-tooltips"
 verdict good
-note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: the delayed tooltip opens on the first icon, its text follows the state, moves to the second icon, a quick pass opens none, leave closes it"
-date 2026-10-20
-rev "3e015265"
+note "growth: read against the reference: the tooltip's popup springs 130 -> 133 -> 135 -> 136 as its text widens (k45-47) where the reference snapped; the surface lifetime is one tick longer for that spring, every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 86796d446a70f31c
-seal 76f9524f506021d2
+seal c1999466235d95c2
 S1 0 - "bar Top"
-S2 25 59 "popup tooltip"
-S3 86 103 "popup tooltip"
+S2 25 60 "popup tooltip"
+S3 87 104 "popup tooltip"
 N0 "bat|bar.strand:13:5|[Mock | DP-1]#2" "box#bat"
 N1 "net|bar.strand:7:5|[Mock | DP-1]#0" "box#net"
 N2 "vol|bar.strand:10:5|[Mock | DP-1]#1" "box#vol"
@@ -55,122 +55,126 @@ n6 srf=2 x=0 y=0 w=128 h=21 bg=2f3036ff
 n7 srf=2 x=8 y=4 w=112 h=13 txt=S ord=1 ink=8,6,112,11 fg=ffffffff gl=["Connected\u0020to\u0020home-5g"]
 k45
 s2 z=136,21 o=208,32
-n6 w=136
+n6 x=3 w=130
 n7 x=11 w=120 ink=11,6,120,11 gl=["Connected\u0020to\u0020cafe-guest"]
 k46
+n6 x=1 w=133
 n7 x=9 ink=9,6,120,11
 k47
+n6 x=0 w=135
 n7 x=8 ink=8,6,120,11
 k48
+n6 w=136
 k49
 k50
 k51
 k52
-k59 p1
+k53
+k60 p1
 s2 -
 n1 bg=455e9183
 n6 -
 n7 -
-k60
-n1 bg=455e9174
 k61
+n1 bg=455e9174
+k62
 n1 bg=455e9166
 n2 bg=455e9156
-k62
+k63
 n1 bg=455e915d
 n2 bg=455e9165
-k63
+k64
 n1 bg=455e9156
 n2 bg=455e9172
-k64
+k65
 n1 bg=455e9152
 n2 bg=455e917c
-k65
+k66
 n1 bg=455e9150
 n2 bg=455e9182
-k66
+k67
 n1 bg=455e914e
 n2 bg=455e9186
-k67
-n2 bg=455e9189
 k68
+n2 bg=455e9189
+k69
 n1 bg=455e914d
 n2 bg=455e918a
-k69
-n2 bg=455e918b
 k70
-n2 bg=455e918c
+n2 bg=455e918b
 k71
-k86 p3
+n2 bg=455e918c
+k72
+k87 p3
 s3 z=78,21 o=269,32
 n8 srf=3 x=0 y=0 w=78 h=21 bg=2f3036ff
 n9 srf=3 x=8 y=4 w=62 h=13 txt=S ord=1 ink=8,6,62,9 fg=ffffffff gl=["Volume\u002064%"]
-k103 p1
+k104 p1
 s3 -
 n2 bg=455e9183
 n8 -
 n9 -
-k104
+k105
 n0 bg=455e9156
 n2 bg=455e9174
-k105
+k106
 n0 bg=455e9165
 n2 bg=455e9166
-k106
+k107
 n0 bg=455e9172
 n2 bg=455e915d
-k107
+k108
 n0 bg=455e917c
 n2 bg=455e9156
-k108
+k109
 n0 bg=455e9179
 n2 bg=455e9152
-k109
+k110
 n0 bg=455e916e
 n2 bg=455e9159
-k110
+k111
 n0 bg=455e9163
 n2 bg=455e9167
-k111
+k112
 n0 bg=455e915b
 n2 bg=455e9173
-k112
+k113
 n0 bg=455e9155
 n2 bg=455e917d
-k113
+k114
 n0 bg=455e9152
 n2 bg=455e9183
-k114
+k115
 n0 bg=455e9150
 n2 bg=455e9187
-k115
+k116
 n0 bg=455e914e
 n2 bg=455e9189
-k116
-n2 bg=455e918a
 k117
+n2 bg=455e918a
+k118
 n0 bg=455e914d
 n2 bg=455e918b
-k118
-n2 bg=455e918c
 k119
-k124
-n2 bg=455e9183
+n2 bg=455e918c
+k120
 k125
-n2 bg=455e9174
+n2 bg=455e9183
 k126
-n2 bg=455e9166
+n2 bg=455e9174
 k127
-n2 bg=455e915d
+n2 bg=455e9166
 k128
-n2 bg=455e9156
+n2 bg=455e915d
 k129
-n2 bg=455e9152
+n2 bg=455e9156
 k130
-n2 bg=455e9150
+n2 bg=455e9152
 k131
-n2 bg=455e914e
+n2 bg=455e9150
 k132
+n2 bg=455e914e
 k133
-n2 bg=455e914d
 k134
+n2 bg=455e914d
+k135

@@ -21,6 +21,7 @@ enum Markup { none, basic }
 enum Fit { cover, contain, fill, none }
 enum CornerStyle { round, squircle }
 enum RadiusKeyword { full }
+enum SizeKeyword { auto }
 enum HitKeyword { none }
 enum Place { flow, absolute }
 enum Blend { normal, screen, add, multiply, overlay, difference }
@@ -1146,10 +1147,13 @@ group node {
   /// Names the element, so others read its state (`results.selected`)
   /// and keys route to it (`nav: results`).
   id: Node
-  /// Its width: logical pixels, or `40%` of the parent.
-  width: length
-  /// Its height: logical pixels, or a percentage of the parent.
-  height: length
+  /// Its width: logical pixels, or `40%` of the parent; `auto` (as
+  /// unset) sizes it by what it holds, and takes a transition there
+  /// (`width: auto ~ instant`).
+  width: length | SizeKeyword
+  /// Its height: logical pixels, or a percentage of the parent; `auto`
+  /// as for `width`.
+  height: length | SizeKeyword
   /// The smallest width it takes.
   min_width: length
   /// The smallest height it takes.
@@ -1158,8 +1162,8 @@ group node {
   max_width: length
   /// The largest height it takes: `max_height: 420`.
   max_height: length
-  /// Its width and height at once: `size: 8`.
-  size: length
+  /// Its width and height at once: `size: 8`; `auto` as for `width`.
+  size: length | SizeKeyword
   /// Its share of the space left in its row or column: `grow: 1`.
   grow: float
   /// How much it gives up when its row or column is too small: `shrink: 0`

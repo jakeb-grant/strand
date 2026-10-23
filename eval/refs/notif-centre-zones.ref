@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "notif-centre-zones"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 98 -> 92 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner; re-read at eval-finish (hidden-row look: a node hidden at opacity 0 is traced at its own scale and turn): k62 and k91 the osd's rows hidden at opacity 0 now at scale 0.92, where they read 1; nothing else differs"
-date 2026-10-20
-rev "b1224229+changes"
+note "growth: read against the reference: the panel and col#list spring each new card's height (k1-7, k16-22, k31-37) where the reference snapped; each card's enter and the clock are the reference's; held now cuts the entering card's 6 px overshoot by the buffer (decisions.md growth)"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario b4df102d9285d9b5
-seal f79749bb162d755c
+seal 4af06817b03b0e57
 S1 0 - "panel Centre"
 S2 0 - "bar Top"
 S3 0 - "bar Side"
@@ -51,28 +51,38 @@ n8 srf=2 x=0 y=0 w=360 h=28 bg=15161eff
 n9 srf=2 x=0 y=0 w=360 h=28 ord=1
 k1 p1
 s1 z=220,110
-n1 h=108
-n4 h=108
+n1 h=66
+n4 h=66
 n10 x=170 y=57 w=220 h=51 op=37 ord=5 bg=24283bff
-n11 x=179 y=66 w=202 h=15 op=37 txt=S ord=6 ink=179,67,27,11 fg=c0caf5ff gl=["build"]
-n12 x=179 y=84 w=202 h=15 op=37 txt=S ord=7 ink=179,85,73,11 fg=9aa5ceff gl=["a\u0020notification"]
+n11 x=179 y=66 w=202 h=15 op=37 hid=clipped txt=S ord=6 ink=179,67,27,11 fg=c0caf5ff gl=["build"]
+n12 x=179 y=84 w=202 h=15 op=37 hid=clipped txt=S ord=7 ink=179,85,73,11 fg=9aa5ceff gl=["a\u0020notification"]
 k2
+n1 h=87
+n4 h=87
 n10 x=83 op=98
-n11 x=92 op=98 ink=92,67,27,11
-n12 x=92 op=98 ink=92,85,73,11
+n11 x=92 op=98 hid=- ink=92,67,27,11
+n12 x=92 op=98 hid=- ink=92,85,73,11
 k3
+n1 h=102
+n4 h=102
 n10 x=25 op=151
 n11 x=34 op=151 ink=34,67,27,11
 n12 x=34 op=151 ink=34,85,73,11
 k4
+n1 h=108
+n4 h=108
 n10 x=0 op=190
 n11 x=9 op=190 ink=9,67,27,11
 n12 x=9 op=190 ink=9,85,73,11
 k5
+n1 h=110
+n4 h=110
 n10 x=-6 op=216
 n11 x=3 op=216 ink=3,67,27,11
 n12 x=3 op=216 ink=3,85,73,11
 k6
+n1 h=109
+n4 h=109
 n10 x=-5 op=232
 n11 x=4 op=232 ink=4,67,27,11
 n12 x=4 op=232 ink=4,85,73,11
@@ -81,6 +91,8 @@ n10 x=-3 op=241
 n11 x=6 op=241 ink=6,67,27,11
 n12 x=6 op=241 ink=6,85,73,11
 k8
+n1 h=108
+n4 h=108
 n10 x=-1 op=247
 n11 x=8 op=247 ink=8,67,27,11
 n12 x=8 op=247 ink=8,85,73,11
@@ -106,28 +118,38 @@ k15
 s1 z=220,108
 k16
 s1 z=220,167
-n1 h=165
-n4 h=165
+n1 h=123
+n4 h=123
 n13 x=170 y=114 w=220 h=51 op=37 ord=8 bg=24283bff
-n14 x=179 y=123 w=202 h=15 op=37 txt=S ord=9 ink=179,124,19,11 fg=c0caf5ff gl=["call"]
-n15 x=179 y=141 w=202 h=15 op=37 txt=S ord=10 ink=179,142,73,11 fg=9aa5ceff gl=["a\u0020notification"]
+n14 x=179 y=123 w=202 h=15 op=37 hid=clipped txt=S ord=9 ink=179,124,19,11 fg=c0caf5ff gl=["call"]
+n15 x=179 y=141 w=202 h=15 op=37 hid=clipped txt=S ord=10 ink=179,142,73,11 fg=9aa5ceff gl=["a\u0020notification"]
 k17
+n1 h=144
+n4 h=144
 n13 x=83 op=98
-n14 x=92 op=98 ink=92,124,19,11
-n15 x=92 op=98 ink=92,142,73,11
+n14 x=92 op=98 hid=- ink=92,124,19,11
+n15 x=92 op=98 hid=- ink=92,142,73,11
 k18
+n1 h=159
+n4 h=159
 n13 x=25 op=151
 n14 x=34 op=151 ink=34,124,19,11
 n15 x=34 op=151 ink=34,142,73,11
 k19
+n1 h=165
+n4 h=165
 n13 x=0 op=190
 n14 x=9 op=190 ink=9,124,19,11
 n15 x=9 op=190 ink=9,142,73,11
 k20
+n1 h=167
+n4 h=167
 n13 x=-6 op=216
 n14 x=3 op=216 ink=3,124,19,11
 n15 x=3 op=216 ink=3,142,73,11
 k21
+n1 h=166
+n4 h=166
 n13 x=-5 op=232
 n14 x=4 op=232 ink=4,124,19,11
 n15 x=4 op=232 ink=4,142,73,11
@@ -136,6 +158,8 @@ n13 x=-3 op=241
 n14 x=6 op=241 ink=6,124,19,11
 n15 x=6 op=241 ink=6,142,73,11
 k23
+n1 h=165
+n4 h=165
 n13 x=-1 op=247
 n14 x=8 op=247 ink=8,124,19,11
 n15 x=8 op=247 ink=8,142,73,11
@@ -161,28 +185,38 @@ k30
 s1 z=220,165
 k31
 s1 z=220,224
-n1 h=222
-n4 h=222
+n1 h=180
+n4 h=180
 n16 x=170 y=171 w=220 h=51 op=37 ord=11 bg=24283bff
-n17 x=179 y=180 w=202 h=15 op=37 txt=S ord=12 ink=179,181,40,13 fg=c0caf5ff gl=["update"]
-n18 x=179 y=198 w=202 h=15 op=37 txt=S ord=13 ink=179,199,73,11 fg=9aa5ceff gl=["a\u0020notification"]
+n17 x=179 y=180 w=202 h=15 op=37 hid=clipped txt=S ord=12 ink=179,181,40,13 fg=c0caf5ff gl=["update"]
+n18 x=179 y=198 w=202 h=15 op=37 hid=clipped txt=S ord=13 ink=179,199,73,11 fg=9aa5ceff gl=["a\u0020notification"]
 k32
+n1 h=201
+n4 h=201
 n16 x=83 op=98
-n17 x=92 op=98 ink=92,181,40,13
-n18 x=92 op=98 ink=92,199,73,11
+n17 x=92 op=98 hid=- ink=92,181,40,13
+n18 x=92 op=98 hid=- ink=92,199,73,11
 k33
+n1 h=216
+n4 h=216
 n16 x=25 op=151
 n17 x=34 op=151 ink=34,181,40,13
 n18 x=34 op=151 ink=34,199,73,11
 k34
+n1 h=222
+n4 h=222
 n16 x=0 op=190
 n17 x=9 op=190 ink=9,181,40,13
 n18 x=9 op=190 ink=9,199,73,11
 k35
+n1 h=224
+n4 h=224
 n16 x=-6 op=216
 n17 x=3 op=216 ink=3,181,40,13
 n18 x=3 op=216 ink=3,199,73,11
 k36
+n1 h=223
+n4 h=223
 n16 x=-5 op=232
 n17 x=4 op=232 ink=4,181,40,13
 n18 x=4 op=232 ink=4,199,73,11
@@ -191,6 +225,8 @@ n16 x=-3 op=241
 n17 x=6 op=241 ink=6,181,40,13
 n18 x=6 op=241 ink=6,199,73,11
 k38
+n1 h=222
+n4 h=222
 n16 x=-1 op=247
 n17 x=8 op=247 ink=8,181,40,13
 n18 x=8 op=247 ink=8,199,73,11

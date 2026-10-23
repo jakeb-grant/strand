@@ -520,6 +520,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `RadiusKeyword` | `full` |
 | `Screens` | `all`, `focused` |
 | `Shape` | `rect`, `circle`, `pill`, `cookie`, `clover`, `burst`, `flower`, `gem`, `sunny`, `triangle`, `pentagon`, `hexagon`, `heart` |
+| `SizeKeyword` | `auto` |
 | `SpectrumStyle` | `bars`, `mirror`, `wave`, `line` |
 | `SwapKind` | `none`, `disc`, `dissolve`, `pixelate` |
 | `Urgency` | `low`, `normal`, `critical` |

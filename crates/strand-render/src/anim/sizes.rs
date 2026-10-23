@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use strand_scene::{Curve, LogicalRect, Motion, NodeId, Prop, TokenScope, Transition};
 
 use super::pose::{exit_pose, pose_sizes};
-use super::{Animator, COLLAPSED, Forced, LineHold, PX_EPS, SizeMap};
+use super::{Animator, COLLAPSED, Forced, LineHold, NodeAnim, PX_EPS, SizeMap, StepFills};
 use crate::tree::{Node, SceneTree};
 
 impl Animator {
@@ -17,8 +17,9 @@ impl Animator {
     pub fn sizing(&self, tree: &SceneTree, node: &Node) -> bool {
         self.nodes
             .get(&node.id)
-            .is_some_and(|n| n.size.iter().any(Option::is_some))
+            .is_some_and(|n| n.size.iter().chain(&n.step).any(Option::is_some))
             || self.size_held.contains_key(&node.id)
+            || self.step_fills.values().any(|f| f.contains(&node.id))
             || (self.exits.contains_key(&node.id)
                 && exit_pose(node)
                     .is_some_and(|p| pose_sizes(tree, node, p).iter().any(Option::is_some)))
@@ -154,6 +155,7 @@ impl Animator {
                         size,
                         collapse,
                         hold: None,
+                        keep: [None, None],
                     },
                 );
             }
@@ -298,6 +300,32 @@ impl Animator {
 
     /// The sizes springs give nodes under `root` in this frame, over
     /// `rest`. Settled springs end (their node lays out at rest).
+    /// (growth) `rest` with the sizes in flight under `root` as the
+    /// surface's last frame drew them (one started since, at its start),
+    /// sampling nothing: what a step of its content's size is measured
+    /// against, so what springs is no step.
+    pub fn sizes_drawn(&self, tree: &SceneTree, root: NodeId, rest: &SizeMap) -> SizeMap {
+        let mut out = rest.clone();
+        if self.snapping() {
+            return out;
+        }
+        let at = self.prev.unwrap_or(self.time);
+        for (id, na) in &self.nodes {
+            if na.size.iter().all(Option::is_none) || tree.root_of(*id) != Some(root) {
+                continue;
+            }
+            let mut o = rest.get(id).copied().unwrap_or_default();
+            for axis in 0..2 {
+                if let Some(m) = na.size[axis].as_ref() {
+                    o.size[axis] = Some(m.peek(at)[0].max(0.0));
+                    o.collapse[axis] |= na.collapse[axis];
+                }
+            }
+            out.insert(*id, o);
+        }
+        out
+    }
+
     pub fn size_overrides(&mut self, tree: &SceneTree, root: NodeId, rest: &SizeMap) -> SizeMap {
         let mut out = rest.clone();
         let (at, commit, lead) = (self.time, self.commit, self.lead());
@@ -386,9 +414,9 @@ impl Animator {
 
     /// True if any size spring under `root` is moving.
     pub fn sizes_moving(&self, tree: &SceneTree, root: NodeId) -> bool {
-        self.nodes
-            .iter()
-            .any(|(id, n)| n.size.iter().any(Option::is_some) && tree.root_of(*id) == Some(root))
+        self.nodes.iter().any(|(id, n)| {
+            n.size.iter().chain(&n.step).any(Option::is_some) && tree.root_of(*id) == Some(root)
+        })
             // (unshaped-enter) Laid out again each frame while held, so
             // a hold that ends (its text came, or its wait ran out) lets
             // go at once.
@@ -404,5 +432,105 @@ impl Animator {
             })
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// (growth) A step of `delta` logical px on `axis` (0 the width, 1 the
+    /// height) of the box of `root`, a content-sized surface's root,
+    /// against its content's size: its box is drawn `delta` larger than
+    /// its content there, and springs back along `curve` (a step taken in
+    /// flight adds to it and keeps its velocity, as a glide's does).
+    /// Nothing moves under reduced motion or along `Curve::Instant`.
+    pub fn step_size(&mut self, root: NodeId, axis: usize, delta: f32, curve: Curve) {
+        if self.reduced || curve == Curve::Instant || !delta.is_finite() || axis > 1 {
+            return;
+        }
+        let last = self.prev;
+        self.nodes.entry(root).or_default().step[axis]
+            .get_or_insert_with(|| Motion::rest([0.0], PX_EPS).sampled_at(last))
+            .shift([delta], curve);
+    }
+
+    /// (growth) The step `root`'s box was drawn at on the surface's last
+    /// frame, per axis, without sampling (one started since, at its
+    /// start).
+    pub fn step_was(&self, root: NodeId) -> [f32; 2] {
+        let at = self.prev.unwrap_or(self.time);
+        let Some(na) = self.nodes.get(&root) else {
+            return [0.0; 2];
+        };
+        [0, 1].map(|a| na.step[a].as_ref().map_or(0.0, |m| m.peek(at)[0]))
+    }
+
+    /// (growth) The axes `root`'s box springs over a step on.
+    pub fn step_axes(&self, root: NodeId) -> [bool; 2] {
+        self.nodes
+            .get(&root)
+            .map_or([false; 2], |n| [n.step[0].is_some(), n.step[1].is_some()])
+    }
+
+    /// (growth) True while `root`'s box springs over a step.
+    pub fn stepping(&self, root: NodeId) -> bool {
+        self.nodes
+            .get(&root)
+            .is_some_and(|n| n.step.iter().any(Option::is_some))
+    }
+
+    /// (growth) The step `root`'s box takes in this frame, per axis
+    /// (`None`: none in flight); a frame that will be painted samples it,
+    /// and one that settles ends it. Snapping (reduced motion, a frame
+    /// with no clock) shows none, and a painted one drops it.
+    pub fn sample_step(&mut self, root: NodeId) -> [Option<f32>; 2] {
+        let (at, commit, lead, snap) = (self.time, self.commit, self.lead(), self.snapping());
+        let Some(na) = self.nodes.get_mut(&root) else {
+            return [None, None];
+        };
+        let mut out = [None, None];
+        for (axis, slot) in na.step.iter_mut().enumerate() {
+            let Some(m) = slot.as_mut() else { continue };
+            if snap {
+                if commit {
+                    *slot = None;
+                }
+                continue;
+            }
+            let v = if commit {
+                m.sample_frame(at, lead)
+            } else {
+                m.peek(at)
+            };
+            if m.is_settled(at) {
+                if commit {
+                    *slot = None;
+                }
+            } else {
+                out[axis] = Some(v[0]);
+            }
+        }
+        if out.iter().any(Option::is_some) {
+            self.active = true;
+        }
+        if self.nodes.get(&root).is_some_and(NodeAnim::is_empty) {
+            self.nodes.remove(&root);
+        }
+        out
+    }
+
+    /// (growth) The boxes that follow `root`'s box while it springs over
+    /// a step (`None`: it is at rest).
+    pub fn set_step_fills(&mut self, root: NodeId, fills: Option<StepFills>) {
+        match fills {
+            Some(f) => {
+                self.step_fills.insert(root, f);
+            }
+            None => {
+                self.step_fills.remove(&root);
+            }
+        }
+    }
+
+    /// (growth) The boxes that follow `root`'s box while it springs over
+    /// a step, if it does.
+    pub fn step_fills(&self, root: NodeId) -> Option<&StepFills> {
+        self.step_fills.get(&root)
     }
 }

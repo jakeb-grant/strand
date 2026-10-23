@@ -2705,7 +2705,7 @@ fn full_radius_and_percentage_offsets_spring() {
 /// A centred content-sized panel that grows (an `if` branch entering)
 /// is re-centred by the compositor: its rows are drawn where they were
 /// on screen and glide to their new place, never jumping by half the
-/// growth.
+/// growth (and its box springs with them, `growth.rs`).
 #[test]
 fn a_centred_panel_keeps_its_rows_in_place_as_it_grows() {
     let mut b = Builder::default();
@@ -2755,8 +2755,11 @@ fn a_centred_panel_keeps_its_rows_in_place_as_it_grows() {
     // 12 px the centred row moves (3.1 px), not a jump.
     assert!(ys[0] >= -19.0, "stays where it was: {ys:?}");
     assert_eq!(*ys.last().unwrap(), -27.0, "{ys:?}");
+    // (growth) With the box, which springs over the step: at most its
+    // fastest refresh (38% of the 12 px) and a pixel of rounding at
+    // either end.
     assert!(
-        ys.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] < 6.0),
+        ys.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] <= 6.6),
         "glides there: {ys:?}"
     );
 }

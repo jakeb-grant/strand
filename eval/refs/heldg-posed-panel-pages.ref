@@ -1,13 +1,13 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldg-posed-panel-pages"
 verdict good
-note "new (eval-rules-5): a compositor-posed panel slides in from 200 px, is closed and reopened mid-slide, pages right then closes; frames read: the switch comes on as the slide carries it, page one's rows leave through the pages clip, the reopened pose returns to rest"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "growth: read against the reference: page two's pages box steps 52 -> 40 -> 32 -> 28 with the panel 100 -> 75 -> 76 (k39-44) where the reference snapped; the close comes 9 ticks later as the rest waits for that spring, and its compositor slide is the reference's own curve shifted by those ticks"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 779d594fe8d0bdce
-seal d5e29e256f320942
-S1 1 54 "panel Side"
+seal 12e16c0f496540cb
+S1 1 63 "panel Side"
 N0 "switch|shell.strand:11:7|#0" "box#switch"
 N1 "|shell.strand:10:7|#0" "text(\"One\")"
 N2 "|shell.strand:12:9|#0" "box@shell.strand:12"
@@ -224,7 +224,7 @@ k36
 k37
 k38
 k39
-n3 h=28
+n3 h=52
 n4 -
 n5 -
 n6 -
@@ -233,40 +233,68 @@ n8 -
 n9 -
 n10 -
 n11 -
-n12 h=76
-n13 h=76
-n15 h=28 ord=7
-n16 h=28 ord=8
+n12 h=100
+n13 h=100
+n15 h=52 ord=7
+n16 h=52 ord=8
 n17 ord=9
 n18 ord=10
 n19 ord=11
 k40
-s1 z=220,76
+n3 h=40
+n12 h=88
+n13 h=88
+n15 h=40
+n16 h=40
 k41
-s1 P=219,1,52.046875,0
+n3 h=32
+n12 h=80
+n13 h=80
+n15 h=32
+n16 h=32
 k42
-s1 P=155,1,128.03125,0
+n3 h=28
+n12 h=76
+n13 h=76
+n15 h=28
+n16 h=28
 k43
-s1 P=104,1,177.875,0
+n12 h=75
+n13 h=75
 k44
-s1 P=64,1,199.921875,0
 k45
-s1 P=40,1,205.5625,0
+n12 h=76
+n13 h=76
 k46
-s1 P=24,1,204.640625,0
 k47
-s1 P=12,1,202.4375,0
 k48
-s1 P=8,1,200.84375,0
 k49
-s1 P=4,1,200.078125,0
+s1 z=220,76
 k50
-s1 P=4,1,199.859375,0
+s1 P=219,1,52.046875,0
 k51
-s1 P=0,1,199.859375,0
+s1 P=155,1,128.03125,0
 k52
-s1 P=0,1,199.921875,0
+s1 P=104,1,177.875,0
 k53
-s1 P=0,1,199.96875,0
+s1 P=64,1,199.921875,0
 k54
+s1 P=40,1,205.5625,0
+k55
+s1 P=24,1,204.640625,0
+k56
+s1 P=12,1,202.4375,0
+k57
+s1 P=8,1,200.84375,0
+k58
+s1 P=4,1,200.078125,0
+k59
+s1 P=4,1,199.859375,0
+k60
+s1 P=0,1,199.859375,0
+k61
+s1 P=0,1,199.921875,0
+k62
+s1 P=0,1,199.96875,0
+k63
 s1 -

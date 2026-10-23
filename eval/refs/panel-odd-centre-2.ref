@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "panel-odd-centre-2"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 31 -> 27 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: as panel-odd-centre at 2: the panel and popup spring from their centres (k15-21); content rides the left edge within one device pixel of the centring's rounding, every value at rest equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario bf4628370d256dad
-seal e51af0687844a9af
+seal f875d9d9203d1044
 S1 0 - "panel Note"
 S2 0 - "bar Top"
 S3 1 - "popup#pop"
@@ -111,42 +111,56 @@ s3 z=221,40 o=70,36
 n1 x=26 w=168
 n3 x=34
 n5 x=34 ink=34.5,24,42.5,10
-n6 w=221
+n6 x=26 w=168
 n8 x=26 w=168
 n9 x=32
-n10 w=221
+n10 x=26 w=168
 k16
-n1 x=13 w=195
-n3 x=21
-n5 x=21 ink=21.5,24,42.5,10
-n8 x=13 w=195
-n9 x=19
+n1 x=12 w=195
+n3 x=20
+n5 x=20 ink=20.5,24,42.5,10
+n6 x=12 w=195
+n8 x=12 w=195
+n9 x=18
+n10 x=12 w=195
 k17
-n1 x=4 w=213
-n3 x=12
-n5 x=12 ink=12.5,24,42.5,10
-n8 x=4 w=213
-n9 x=10
+n1 x=3 w=213
+n3 x=11
+n5 x=11 ink=11.5,24,42.5,10
+n6 x=3 w=213
+n8 x=3 w=213
+n9 x=9
+n10 x=3 w=213
 k18
 n1 x=0 w=221
 n3 x=8
 n5 x=8 ink=8.5,24,42.5,10
+n6 x=0 w=221
 n8 x=0 w=221
 n9 x=6
+n10 x=0 w=221
 k19
 n1 x=-1 w=223
 n3 x=7
 n5 x=7 ink=7.5,24,42.5,10
+n6 x=-1 w=223
 n8 x=-1 w=223
 n9 x=5
+n10 x=-1 w=223
 k20
 k21
-n1 x=0 w=221
+n1 x=0 w=222
 n3 x=8
 n5 x=8 ink=8.5,24,42.5,10
-n8 x=0 w=221
+n6 x=0 w=222
+n8 x=0 w=222
 n9 x=6
+n10 x=0 w=222
 k22
+n1 w=221
+n6 w=221
+n8 w=221
+n10 w=221
 k23
 k24
 k25

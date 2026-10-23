@@ -265,6 +265,18 @@ struct SurfaceState {
     /// a box laid out empty), so the frame its text arrives in does not
     /// glide them from there either.
     unpainted: HashSet<NodeId>,
+    /// (growth) A content-sized surface whose content's size may have
+    /// stepped in a pass where size springs it holds waited to start (a
+    /// preview): the first pass they have started in measures it, so the
+    /// step is the one they do not spring.
+    step_due: bool,
+    /// (growth) A step started in the pass being laid out: its FLIP
+    /// compares what it moved where it was drawn.
+    step_started: bool,
+    /// (growth) The boxes of the pass that started a step, laid out with
+    /// its box where the last frame drew it: what its FLIP compares, so
+    /// what the step's first frame moves is not taken for a change's.
+    step_flip: Option<HashMap<NodeId, strand_scene::LogicalRect>>,
     /// Presentation time of the last frame it painted.
     painted_time: Option<Duration>,
     /// Nodes with motion state its last fresh frame drew. With

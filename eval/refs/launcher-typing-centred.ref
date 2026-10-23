@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "launcher-typing-centred"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 44 -> 41 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
-date 2026-10-18
-rev "55dc894b+changes"
+note "growth: read against the reference: the centred panel's root now follows col#card's own glide and height spring (k21-33) where it held the larger buffer; the card, prompt and list keep the reference's path within 1 px of rounding; at rest every value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 921ae077ab85ccd6
-seal 9b9bb565394c4f96
+seal 9ff15f486fd3ffbc
 S1 0 - "panel Launcher"
 N0 "card|shell.strand:7:3|#0" "col#card"
 N1 "prompt|shell.strand:8:5|#0" "text#prompt"
@@ -103,60 +103,72 @@ s1 z=216,95 o=72,273
 n0 y=11 h=73
 n1 x=100 y=20 w=17 ink=100,21,16,11 gl=["cal"]
 n2 y=40 h=35
-n3 h=95
+n3 y=11 h=73
 k22
-n0 y=5 h=85
+n0 y=5 h=84
 n1 y=14 ink=100,15,16,11
-n2 y=34 h=47
+n2 y=34 h=46
+n3 y=5 h=84
 k23
-n0 y=2 h=91
-n1 y=11 ink=100,12,16,11
-n2 y=31 h=53
+n0 y=1 h=92
+n1 y=10 ink=100,11,16,11
+n2 y=30 h=54
+n3 y=1 h=92
 k24
 s1 z=216,125 o=72,258
 n0 y=11 h=103
 n1 x=101 y=20 w=14 ink=101,24,14,8 gl=["ca"]
 n2 y=40 h=65
-n3 h=125
+n3 y=11 h=103
 k25
-n0 y=5 h=115
-n1 y=14 ink=101,18,14,8
-n2 y=34 h=77
+n0 y=4 h=115
+n1 y=13 ink=101,17,14,8
+n2 y=33 h=77
+n3 y=4 h=115
 k26
-n0 y=1 h=123
+n0 y=1 h=122
 n1 y=10 ink=101,14,14,8
-n2 y=30 h=85
+n2 y=30 h=84
+n3 y=1 h=122
 k27
 s1 z=216,245 o=72,198
 n0 y=44 h=157
 n1 x=105 y=53 w=7 ink=105,57,7,8 gl=["c"]
 n2 y=73 h=119
-n3 h=245
+n3 y=44 h=157
 k28
 n0 y=21 h=203
 n1 y=30 ink=105,34,7,8
 n2 y=50 h=165
+n3 y=21 h=203
 k29
-n0 y=6 h=233
+n0 y=6 h=232
 n1 y=15 ink=105,19,7,8
-n2 y=35 h=195
+n2 y=35 h=194
+n3 y=6 h=232
 k30
 n0 y=0 h=245
 n1 y=9 ink=105,13,7,8
 n2 y=29 h=207
+n3 y=0 h=245
 k31
-n0 y=-2 h=249
+n0 y=-2 h=248
 n1 y=7 ink=105,11,7,8
 n2 y=27
+n3 y=-2 h=248
 k32
-n0 y=-1 h=247
+n0 y=-1
 n1 y=8 ink=105,12,7,8
 n2 y=28
+n3 y=-1
 k33
+n0 h=246
+n3 h=246
 k34
 n0 y=0 h=245
 n1 y=9 ink=105,13,7,8
 n2 y=29
+n3 y=0 h=245
 k35
 k36
 k37

@@ -297,3 +297,33 @@ offset-spring-doubled.patch    regressions/offset-out-and-back.scn coherence:#sh
 # renderer's motion bits, and holds the entry to its pose (`vanish`;
 # decisions.md evalfix review, replay-owner).
 exit-dropped.patch             regressions/ghost-passengers.scn vanish:#entry
+# (growth) A content-sized panel, OSD or popup springs its box over a step
+# of its content's size (decisions.md growth); each patch reverts one part
+# of how its content is laid out and drawn while it does.
+# growth-step-flip.patch: a pass that starts a step no longer compares all
+# the box holds where it was drawn (FLIP opened to it), so a change's
+# moves inside a shrinking bottom-right OSD jump: its meter and label 49 px.
+growth-step-flip.patch         curated/osd-edge-margins.scn       teleport:#level_meter:x
+# growth-fill-drawn.patch: a box alone in its parent at rest is taken to
+# fill it although the last frame drew it smaller (a crossfade's arriving
+# card while the leaving one held the stack): it stretches to the box in
+# flight at the step's first frame.
+growth-fill-drawn.patch        regressions/held-grow-glide.scn    teleport
+# growth-overshoot-cut.patch: a box whose own spring overshoots past the
+# buffer it asked for is laid out at the buffer's size again, its content
+# squeezed into it: the centred popup's mark moves 1.3 px as its card's
+# width overshoots.
+growth-overshoot-cut.patch     curated/popup-shrink-centred.scn   expect:#mark:x
+# growth-keep-far.patch: on an axis whose far edge the compositor keeps
+# (a bottom OSD's), what a stepping box holds flows from its moving near
+# edge again instead of lying where it rests by the far edge: the level
+# row moves as the box springs up.
+growth-keep-far.patch          curated/osd-bottom-grow-1_5.scn    expect:#head:y
+# growth-exact-origin.patch: a box springing over a step is placed by the
+# whole-pixel edge shift of a smaller box (kept to the frame) instead of at
+# its exact share: at 1.5 its anchored bottom edge is off the buffer's.
+growth-exact-origin.patch      curated/osd-bottom-grow-1_5.scn    expect:#head:y
+# growth-step-clip.patch: a box springing over a step (and what follows it)
+# no longer clips what it holds: the launcher's returning rows are drawn
+# past its box in flight, cut by the buffer.
+growth-step-clip.patch         regressions/snapped-growth-cut.scn contain

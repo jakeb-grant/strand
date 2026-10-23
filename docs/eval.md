@@ -979,9 +979,11 @@ says a node moves, not how, so it does not exempt from them; only an
   does (a collapsing toast hides what no longer fits)" (decisions.md
   wave3-pixels p2), and one exiting to a pose that sets its width or
   height clips until it unmounts (exit-height0), so what a descendant
-  shows (its visual box cut by its ancestors' clip) lies inside the
-  sizing box's visual box, within `tol` plus a quantum, however small the
-  box has become. A text's glyphs count with its box (eval-rules-4: its
+  shows (its visual box cut by its ancestors' clip and, on a surface no
+  pose moves, by the surface's buffer, which clips all it holds: growth,
+  since the probe records an ancestor's clip only when it is narrower
+  than its surface) lies inside the sizing box's visual box, within `tol`
+  plus a quantum, however small the box has become. A text's glyphs count with its box (eval-rules-4: its
   ink as drawn, cut by its ancestors' clip): a label wider than a badge
   growing from `width: 0` reaches past its box, and the badge clips it
   (set F's module swap drew "Muted" 10 px past its badge). Glyphs under
@@ -1449,7 +1451,7 @@ A node's first line leaves out what is at its default: the first surface,
 (`bg`, `bd`, `sh`, `fg`, `gl`, `pt`, `im`). Several of one kind are joined with `/`
 in paint order; `gl` is a JSON list.
 
-Everything together stays under 6 MiB. With each node's paint and glyph
+Everything together stays under 6.5 MiB. With each node's paint and glyph
 sources (eval-coverage) it was 4.15 MB, and with the integration's
 scenarios (eval-r3) 4.18 MB. With the scroll, control, placement and
 theme scenarios, the controls' parts and the two input effects
@@ -1477,15 +1479,21 @@ re-recorded for a stagger that numbers only children with an `enter`
 (their batch settles a step sooner, so their recordings are shorter, and
 their notes longer) it was 6,265,539 bytes; with the stagger review's
 two regressions (stagger-plain-turn and stagger-preset-turn, 7 kB) and
-the keyframes cells' notes read again it is 6,273,496 bytes, 18 kB under
+the keyframes cells' notes read again it was 6,273,496 bytes, 18 kB under
 the tripwire: the 155 scenarios 1.14 MB,
 `matrix-60.ref` 2.06 MB and `matrix-144.ref` 3.06 MB, 496 cells each.
+With growth's two regressions (snapped-growth-cut and held-grow-glide,
+19 kB) and the 37 scenarios and 60 matrix cells whose boxes now spring
+over a step re-recorded (longer, with their notes) it is 6,324,276
+bytes: the 163 scenarios 1.18 MB, `matrix-60.ref` 2.07 MB and
+`matrix-144.ref` 3.07 MB, so the tripwire is 6.5 MiB since 2026-10-22
+(decisions.md growth).
 Paint costs little because a field is written only on the ticks it
 changes. Compressed, as git stores it, that was about 530 kB before
 eval-coverage-5, whose files add 44 kB gzipped, and the integration's
 five 9 kB. eval/tests/refs.rs
-holds the total to 6 MiB (5 MiB until integration-r4, when the
-references reached 97% of it), a scenario's file to 64 KiB and a matrix
+holds the total to 6.5 MiB (5 MiB until integration-r4, when the
+references reached 97% of it, and 6 MiB until growth passed it), a scenario's file to 64 KiB and a matrix
 file to 8 KiB a cell. Each is a tripwire for a recording that stopped
 being compact, not a cap on scenarios.
 
@@ -1849,7 +1857,19 @@ out, its snap home is less than 0.75 of the excursion `teleport` gives it),
 offset-spring-doubled (`coherence`, offset-out-and-back: an offset's
 spring drawn twice; `teleport` does not catch it there, the doubled
 overshoot widening the segment's travel, decisions.md replay-owner) and exit-dropped (`vanish`, ghost-passengers:
-a removed node with an `exit` gets no ghost): 56 in all. A patch listed
+a removed node with an `exit` gets no ghost), and growth's six, each a
+part of a content-sized box springing over a step of its content undone
+(decisions.md growth): growth-step-flip (`teleport`, osd-edge-margins:
+the pass that starts a step glides only what a change named, so the
+meter jumps with the box's left edge), growth-fill-drawn (`teleport`,
+held-grow-glide: a crossfade's one box left is taken for a fill and
+squeezed with the panel), growth-overshoot-cut (`expect`,
+popup-shrink-centred: the card's overshoot past the buffer squeezed),
+growth-keep-far and growth-exact-origin (`expect`, osd-bottom-grow-1_5:
+a bottom OSD's rows kept to its near edge, or its box placed off the
+exact origin the buffer's resize gives it, move as it grows), and growth-step-clip (`contain`,
+snapped-growth-cut: the boxes that follow the spring stop clipping what
+they hold): 62 in all. A patch listed
 again against another scenario runs as `<name>-<scenario id>`. In a detached worktree of HEAD, each scenario
 must pass on HEAD and fail under its patch with at least the checks listed,
 or, for an expected failure written `unmatched:SELECTOR`, stop because
@@ -2798,14 +2818,15 @@ only a replay that cannot run does.
   frames (4 px on a bottom OSD); only an `expect still` holds it, since
   the label is laid elsewhere in the resized surface and carried by its
   parent's glide, which `bystander`, `envelope` and `pushed` excuse.
-- **Growth on a content-sized surface waits for the owner**
-  (integration-r5). The growth glide (`glide_origin`) is the
-  content-sized growth rule's, which the owner is deciding: a bottom
-  panel growing glides its card past its bottom on the first frame
-  (`contain` 16 px), and a centred card whose content snaps larger is
-  glided by half the growth from its corner (cut up to 11 px). These
-  stay out of the gate; held-glides' change to the growth glide waits on
-  laptop/fix-r5b. A shrink is fixed (bottom-osd-shrink); at scale 1.5 a
+- **Growth on a content-sized surface** (integration-r5; decided at
+  growth, 2026-10-22). The growth glide (`glide_origin`) is gone: the
+  owner chose a box that springs over the step (design.md "Growth
+  springs"), so a bottom panel growing no longer glides its card past
+  its bottom and a centred card no longer glides by half the growth;
+  held-glides' scenarios (`snapped-growth-cut`, `held-grow-glide`) are
+  in the gate. The label nudged by a parent's glide (above) and
+  `osd-edge-margins`' cut were read with the growth glide and were not
+  probed again. A shrink is fixed (bottom-osd-shrink); at scale 1.5 a
   held bottom OSD's last row is laid 1 px off on two frames as its row
   folds (the held root's placement rounding, popup-shrink's rule).
 

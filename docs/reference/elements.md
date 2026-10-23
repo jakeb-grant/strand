@@ -18,13 +18,13 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | Prop | Type | |
 | --- | --- | --- |
 | `id` | `Node` | Names the element, so others read its state (`results.selected`) and keys route to it (`nav: results`). |
-| `width` | `length` | Its width: logical pixels, or `40%` of the parent. |
-| `height` | `length` | Its height: logical pixels, or a percentage of the parent. |
+| `width` | `length \| SizeKeyword` | Its width: logical pixels, or `40%` of the parent; `auto` (as unset) sizes it by what it holds, and takes a transition there (`width: auto ~ instant`). |
+| `height` | `length \| SizeKeyword` | Its height: logical pixels, or a percentage of the parent; `auto` as for `width`. |
 | `min_width` | `length` | The smallest width it takes. |
 | `min_height` | `length` | The smallest height it takes. |
 | `max_width` | `length` | The largest width it takes. |
 | `max_height` | `length` | The largest height it takes: `max_height: 420`. |
-| `size` | `length` | Its width and height at once: `size: 8`. |
+| `size` | `length \| SizeKeyword` | Its width and height at once: `size: 8`; `auto` as for `width`. |
 | `grow` | `float` | Its share of the space left in its row or column: `grow: 1`. |
 | `shrink` | `float` | How much it gives up when its row or column is too small: `shrink: 0` keeps its size (default 1). |
 | `justify` | `Justify` | How its children share the main axis: `justify: space_between`. |
@@ -501,13 +501,13 @@ It takes no children.
 | Prop | Type | |
 | --- | --- | --- |
 | `id` | `Node` | Names the element, so others read its state (`results.selected`) and keys route to it (`nav: results`). |
-| `width` | `length` | Its width: logical pixels, or `40%` of the parent. |
-| `height` | `length` | Its height: logical pixels, or a percentage of the parent. |
+| `width` | `length \| SizeKeyword` | Its width: logical pixels, or `40%` of the parent; `auto` (as unset) sizes it by what it holds, and takes a transition there (`width: auto ~ instant`). |
+| `height` | `length \| SizeKeyword` | Its height: logical pixels, or a percentage of the parent; `auto` as for `width`. |
 | `min_width` | `length` | The smallest width it takes. |
 | `min_height` | `length` | The smallest height it takes. |
 | `max_width` | `length` | The largest width it takes. |
 | `max_height` | `length` | The largest height it takes: `max_height: 420`. |
-| `size` | `length` | Its width and height at once: `size: 8`. |
+| `size` | `length \| SizeKeyword` | Its width and height at once: `size: 8`; `auto` as for `width`. |
 | `grow` | `float` | Its share of the space left in its row or column: `grow: 1`. |
 | `shrink` | `float` | How much it gives up when its row or column is too small: `shrink: 0` keeps its size (default 1). |
 | `justify` | `Justify` | How its children share the main axis: `justify: space_between`. |

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use strand_scene::{
-    Anchor, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, Scale, Size,
+    Anchor, Curve, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, Scale, Size,
     SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 
@@ -163,6 +163,35 @@ pub fn resize_share(spec: &SurfaceSpec, parent: Option<&SurfaceSpec>) -> (f32, f
 }
 
 impl Renderer {
+    /// (growth) Whether the box of `root`, a shown content-sized panel,
+    /// OSD or popup described by `spec` and laid out last at `drawn`,
+    /// springs down over a step of its content's size to `size`: on an
+    /// axis it sizes by its content where `drawn` is larger, and whose
+    /// curve is not `instant` (`width: auto ~ instant`); never under
+    /// reduced motion.
+    fn steps_down(
+        &self,
+        root: NodeId,
+        spec: &SurfaceSpec,
+        drawn: LogicalRect,
+        size: LogicalSize,
+    ) -> bool {
+        if self.anim.reduced()
+            || !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd | NodeKind::Popup)
+        {
+            return false;
+        }
+        let Some(&(cw, ch)) = self.content_sized.get(&root) else {
+            return false;
+        };
+        let springs = |sized: bool, axis: usize, was: f32, now: f32| {
+            sized
+                && was - now > super::layout_pass::STEP_MIN
+                && self.step_curve(root, axis) != Curve::Instant
+        };
+        springs(cw, 0, drawn.w, size.w) || springs(ch, 1, drawn.h, size.h)
+    }
+
     /// (popup-shrink) [`resize_share`] of the surface node `root`.
     pub(super) fn resize_share_of(&self, root: NodeId) -> Option<(f32, f32)> {
         let spec = self.specs.get(&root)?;
@@ -583,10 +612,20 @@ impl Renderer {
                         self.layout_passes += 1;
                     }
                     // Never smaller while something on it moves (a toast
-                    // collapsing, its siblings sliding up): it shrinks
+                    // collapsing, its siblings sliding up), or while its
+                    // box springs down over a step of its content (growth:
+                    // a row gone with no pose, a text shorter): it shrinks
                     // once everything settles.
                     let mut held = false;
-                    if let Some(old) = old.filter(|_| self.moving(id)) {
+                    // Drawn at the size it asked for: one the compositor
+                    // gave another size fills it, and never springs.
+                    let near = |a: Option<f32>, b: f32| a.is_none_or(|a| (a - b).abs() < 1.0);
+                    let drawn = shown
+                        .filter(|s| s.painted)
+                        .and_then(|s| s.boxes.as_ref()?.rects.get(&id).copied())
+                        .filter(|r| old.is_some_and(|o| near(o.width, r.w) && near(o.height, r.h)));
+                    let steps = drawn.is_some_and(|r| self.steps_down(id, &spec, r, b.size));
+                    if let Some(old) = old.filter(|_| steps || self.moving(id)) {
                         let (w, h) = (old.width.unwrap_or(0.0), old.height.unwrap_or(0.0));
                         held = b.size.w.ceil() < w || b.size.h.ceil() < h;
                         b.size.w = b.size.w.max(w);

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "fade-layer-redraw"
 verdict good
-note "roll-rate: a spring now settles when its amplitude sqrt(x^2 + (v/w0)^2) is within its tolerance, a moment of its curve and not of the frames sampling it; read against the old run per segment and node, every difference is a spring ending at another tick, snapped within its tolerance, and what waits for it (an unmount, a glide into its room, a stagger's turn) starting that much sooner; no frame of a spring before its end changed"
-date 2026-10-18
-rev "40b54cc2+changes"
+note "growth: read against the reference: the panel and col#stack spring 65 -> 82 -> 92 -> 98 -> 97 (k1-7) where the reference snapped; the fading layer is the reference's"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 72d7ba06a9514e64
-seal 9f4822f2bd8db4d6
+seal 4c5ef0b27cef9645
 S1 0 - "panel Cards"
 N0 "leaving|shell.strand:15:7|#0" "col#leaving"
 N1 "stack|shell.strand:6:3|#0" "col#stack"
@@ -25,34 +25,42 @@ n4 x=12 y=12 w=260 h=54
 k1
 s1 z=291,133
 n0 y=23 ord=4 sh=00000060@-7,8,298,92
-n1 h=97
+n1 h=65
 n2 y=33 ord=5 ink=22,34,27,11
 n3 y=52 ord=6 ink=22,53,123,13
-n4 h=97
+n4 h=65
 n5 x=12 y=12 w=260 h=35 op=26 ord=2 bg=24273aff sh=00000060@-7,-3,298,73
 n6 x=22 y=22 w=240 h=15 op=26 txt=S ord=3 ink=22,23,32,11 fg=cad3f5ff gl=["12:00"]
 k2
 n0 y=40 sh=00000060@-7,25,298,92
+n1 h=82
 n2 y=50 ink=22,51,27,11
 n3 y=69 ink=22,70,123,13
+n4 h=82
 n5 op=69
 n6 op=69
 k3
 n0 y=50 sh=00000060@-7,35,298,92
+n1 h=92
 n2 y=60 ink=22,61,27,11
 n3 y=79 ink=22,80,123,13
+n4 h=92
 n5 op=106
 n6 op=106
 k4
 n0 y=55 sh=00000060@-7,40,298,92
+n1 h=97
 n2 y=65 ink=22,66,27,11
 n3 y=84 ink=22,85,123,13
+n4 h=97
 n5 op=133
 n6 op=133
 k5
 n0 y=56 sh=00000060@-7,41,298,92
+n1 h=98
 n2 y=66 ink=22,67,27,11
 n3 y=85 ink=22,86,123,13
+n4 h=98
 n5 op=151
 n6 op=151
 k6
@@ -63,8 +71,10 @@ n5 op=169
 n6 op=169
 k8
 n0 y=55 sh=00000060@-7,40,298,92
+n1 h=97
 n2 y=65 ink=22,66,27,11
 n3 y=84 ink=22,85,123,13
+n4 h=97
 n5 op=173
 n6 op=173
 k9

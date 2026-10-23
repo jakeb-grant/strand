@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "wallpaper-fill-preview"
 verdict good
-note "first reference (eval-coverage-5): read: while the fill preview springs to 192x108, the tile's 160x160 contain decode stands in drawn at 0,-17,121,102 for 121x68 (its letterbox scaled by the height's ratio), its own decode once at rest, and back"
-date 2026-10-20
-rev "3e015265"
+note "growth: read against the reference: the panel and its row spring their width 311 -> 347 -> 371 -> 385 -> 382 (k1-7) where the reference snapped; the preview and its stand-in decode are the reference's"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 2f2d8cc9d41007c5
-seal f949e484fb4d0c29
+seal 49535abd4945f096
 S1 0 - "panel Walls"
 N0 "lock|shell.strand:8:7|#0" "image#lock"
 N1 "whole|shell.strand:5:5|#0" "image#whole"
@@ -25,36 +25,50 @@ n5 x=180 y=10 w=96 h=15 txt=S ord=4 ink=181,11,69,11 fg=cdd6f4ff gl=["Lock\u0020
 k1
 s1 z=382,180
 n0 w=121 h=68 im=0,-17,121,102@160,160
-n2 w=382
-n3 w=382
+n2 w=311
+n3 w=311
 n4 w=121 h=89
 n5 w=121
 k2
 n0 w=157 h=89 im=0,-22.25,157,133.5@160,160
+n2 w=347
+n3 w=347
 n4 w=157 h=110
 n5 w=157
 k3
 n0 w=181 h=102 im=0,-25.5,181,153@160,160
+n2 w=371
+n3 w=371
 n4 w=181 h=123
 n5 w=181
 k4
 n0 w=192 h=108 im=0,-27,192,162@160,160
+n2 w=382
+n3 w=382
 n4 w=192 h=129
 n5 w=192
 k5
 n0 w=195 h=110 im=0,-27.5,195,165@160,160
+n2 w=385
+n3 w=385
 n4 w=195 h=131
 n5 w=195
 k6
 n0 w=194 h=109 im=0,-27.25,194,163.5@160,160
+n2 w=384
+n3 w=384
 n4 w=194 h=130
 n5 w=194
 k7
 n0 w=193 im=0,-27.25,193,163.5@160,160
+n2 w=383
+n3 w=383
 n4 w=193
 n5 w=193
 k8
 n0 w=192 h=108 im=0,-27,192,162@160,160
+n2 w=382
+n3 w=382
 n4 w=192 h=129
 n5 w=192
 k9

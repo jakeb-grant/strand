@@ -4,10 +4,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use strand_scene::Curve;
-use strand_scene::{
-    Damage, LogicalPoint, LogicalRect, NodeId, NodeKind, Prop, Scale, Size, SurfaceId, TokenScope,
-};
+use strand_scene::{Damage, LogicalPoint, LogicalRect, NodeId, Scale, Size, SurfaceId};
 
 use super::{Renderer, SurfaceState};
 
@@ -328,6 +325,9 @@ impl Renderer {
                 flip_shifts: None,
                 text_arrived: false,
                 unpainted: HashSet::new(),
+                step_due: false,
+                step_started: false,
+                step_flip: None,
                 painted_time: None,
                 overhang: self
                     .specs
@@ -361,7 +361,6 @@ impl Renderer {
     /// [`Renderer::frame_deadline`].
     pub fn configure_surface(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
         let wait = self.first_frame_wait;
-        self.glide_origin(surface, size, scale);
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.resize(size, scale);
             if !s.painted && s.wait_until.is_none() && size != Size::default() {
@@ -371,60 +370,6 @@ impl Renderer {
         }
         self.prune_scales();
         self.update();
-    }
-
-    /// A shown content-sized surface is about to grow: where its anchor
-    /// moves its origin (centred: half the growth; anchored to the right
-    /// or bottom edge: all of it; a popup as its positioner places it,
-    /// [`super::specs::resize_share`]), its content is drawn where it was
-    /// on screen and glides to its new place, instead of jumping as the
-    /// compositor re-centres the buffer.
-    pub(super) fn glide_origin(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
-        let Some(s) = self.surfaces.get(&surface) else {
-            return;
-        };
-        if !s.painted || s.scale != scale || s.size == size || s.size == Size::default() {
-            return;
-        }
-        let root = s.root;
-        let (old, new) = (s.scale.logical_size(s.size), scale.logical_size(size));
-        let Some(spec) = self.specs.get(&root) else {
-            return;
-        };
-        if self.anim.reduced()
-            || spec.kind == NodeKind::Bar
-            || !self.content_sized.contains_key(&root)
-        {
-            return;
-        }
-        let Some((fx, fy)) = self.resize_share_of(root) else {
-            return;
-        };
-        // Growth only: content kept in place in a smaller buffer would be
-        // cut off at its edge. A shrink comes once everything settled,
-        // and the content is laid out where the smaller box will be
-        // before it comes (`RootSize::Placed`, decisions.md popup-shrink).
-        // As far as the compositor moves the larger box's edge the other
-        // way, in whole pixels (`layout::edge_shift`).
-        let grow = |from: f32, to: f32, f: f32| (-crate::layout::edge_shift(from, to, f)).max(0.0);
-        let delta = [grow(old.w, new.w, fx), grow(old.h, new.h, fy)];
-        if delta.iter().all(|d| d.abs() < 0.5) {
-            return;
-        }
-        let tables = [&self.tree.tokens];
-        let curve = Curve::of(
-            &TokenScope::new(&tables).transition(&strand_scene::Transition::Default, Prop::X),
-        );
-        let kids: Vec<NodeId> = self
-            .tree
-            .get(root)
-            .map(|n| n.children.clone())
-            .unwrap_or_default();
-        for k in kids {
-            if self.tree.get(k).is_some_and(|n| !n.kind.is_surface()) {
-                self.anim.glide(k, delta, curve);
-            }
-        }
     }
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {

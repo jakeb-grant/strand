@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -455,7 +455,7 @@
+         // The free pass lays a box larger than its buffer at the buffer's
+         // size: one that fills it may be past it.
+         let full = |sized: bool, c: f32, have: f32| sized && (c - have).abs() < 1e-3;
+-        if kids && asked && (full(cw, content[0], frame.w) || full(ch, content[1], frame.h)) {
++        if false && kids && asked && (full(cw, content[0], frame.w) || full(ch, content[1], frame.h)) {
+             let past = self.run_layout(root, exact_of(placed), info, sizes);
+             let over = |sized: bool, c: f32, have: f32| sized && c - have > 1e-3;
+             if let Some(r) = past.rects.get(&root)

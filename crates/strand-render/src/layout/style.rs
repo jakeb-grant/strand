@@ -90,6 +90,16 @@ impl<'a> Build<'a> {
             style.min_size.height = LengthPercentageAuto::length(0.0);
             style.max_size.height = LengthPercentageAuto::auto();
         }
+        // (growth) Kept at its size at rest while the content-sized box
+        // around it springs: neither squeezed nor stretched.
+        if let (None, Some(w)) = (forced.size[0], forced.keep[0]) {
+            style.min_size.width = LengthPercentageAuto::length(w.max(0.0));
+            style.max_size.width = LengthPercentageAuto::length(w.max(0.0));
+        }
+        if let (None, Some(h)) = (forced.size[1], forced.keep[1]) {
+            style.min_size.height = LengthPercentageAuto::length(h.max(0.0));
+            style.max_size.height = LengthPercentageAuto::length(h.max(0.0));
+        }
         let mut margin = insets(get(Prop::Margin).as_deref());
         // The hair comes out of the folded margin it keeps, so the slot
         // still takes exactly what its size and fold give it.

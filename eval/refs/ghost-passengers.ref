@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "ghost-passengers"
 verdict good
-note "(replay-owner) rewritten apart from any shell's values, read k0-14: entry chat exits, width 224 -> 66 -> 70, linear fade 0.92 -> 0 at k12, unmounted at k14 where the panel shrinks to two rows (136 -> 94 tall) and call slides up; its #strip is cut out from k3 (entry 87 wide), so #label is drawn to k2; #badge rides at the entry's opacity to k12"
-date 2026-10-21
-rev "b6bf3792+changes"
+note "growth: read against the reference: the panel springs its height 125 -> 109 -> 99 -> 93 -> 94 (k14-20) where the reference snapped; the entry row and its passengers keep the reference's glide on every frame"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 8b9b5501a50a13cf
-seal a55608773c9d23f3
+seal 31110b8e1d0819d4
 S1 0 - "panel List"
 N0 "badge|shell.strand:11:9|[call]#0" "box#badge"
 N1 "badge|shell.strand:11:9|[chat]#0" "box#badge"
@@ -107,28 +107,36 @@ n3 y=81 ord=6
 n4 -
 n6 y=87 ord=9
 n9 y=87 ord=8
-n12 h=94
-n13 h=94
+n12 h=125
+n13 h=125
 k15
 n0 y=73
 n3 y=65
 n6 y=71
 n9 y=71
+n12 h=109
+n13 h=109
 k16
 n0 y=63
 n3 y=55
 n6 y=61
 n9 y=61
+n12 h=99
+n13 h=99
 k17
 n0 y=58
 n3 y=50
 n6 y=56
 n9 y=56
+n12 h=94
+n13 h=94
 k18
 n0 y=57
 n3 y=49
 n6 y=55
 n9 y=55
+n12 h=93
+n13 h=93
 k19
 k20
 k21
@@ -136,6 +144,8 @@ n0 y=58
 n3 y=50
 n6 y=56
 n9 y=56
+n12 h=94
+n13 h=94
 k22
 k23
 k24

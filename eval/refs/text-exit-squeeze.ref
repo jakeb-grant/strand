@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "text-exit-squeeze"
 verdict good
-note "unshaped-enter: read against the run with the fix reverted (identical to the old reference), 9 ticks change and all are the enter poses now playing: the \"plugged in\" label, not shaped as it mounts, arrived at its full 60 px on k1 and now springs from the pose's width 0 (16, 38, 53, 60, 62, 61, 61 px at k1..k7, the spring's overshoot) as it fades in; the Muted badge's label was laid squeezed with its box (1, 19, 32 px wide and 14 tall at k30..k32, the badge 18 tall) because its width at rest was taken while it was unshaped, and now keeps its 37 px line inside the springing badge, which is 19 tall as at rest (bar-blank-on-exit's rule); nothing else moves"
-date 2026-10-19
-rev "646cec9e+changes"
+note "growth: read against the reference: the panel springs its height 34 -> 32 -> 31 (k73-74) where the reference snapped; every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 501e141edd717b74
-seal 10814d76658e1904
+seal 15270a3d1e24792f
 S1 0 - "panel Status"
 S2 0 - "bar Top"
 N0 "clock|shell.strand:9:14|[Mock | DP-1]#0" "text#clock"
@@ -218,9 +218,20 @@ n3 hid=opacity0
 k73
 n2 ord=2
 n3 -
+n6 y=1 h=34
+n7 y=1 h=34
+k74
+n6 h=32
+n7 h=32
+k75
 n6 y=2 h=31
 n7 y=2 h=31
-k74
+k76
+k77
+k78
+k79
+k80
+k81
 s1 z=37,31 o=12,150
 n2 y=8 ink=9,9,19,11
 n6 y=0

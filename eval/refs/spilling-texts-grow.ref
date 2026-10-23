@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "spilling-texts-grow"
 verdict good
-note "eval-rules-3 coverage, read: the three cards spring from 90 to 220 px wide and back; the wrapped text's card goes from 72 to 42 px tall as it widens and the two cards below move up with it (and back down), the ellipsised title shows more of itself, the spilling text stays laid at its card's left; the heading never moves"
-date 2026-10-19
-rev "c554aa84+changes"
+note "growth: read against the reference: the panel and col#stack spring 160 -> 171 -> 179 -> 183 -> 182 (k15-20) where the reference snapped; the cards' own 1 px height overshoot is kept, cut by the buffer, where the frame squeezed it; every value at rest equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 975e1d5b29fd6435
-seal b868bfc5b17a7dcc
+seal 68951f714f5fdfd5
 S1 0 - "panel Cards"
 N0 "ell_card|shell.strand:9:5|#1" "box#ell_card"
 N1 "heading|shell.strand:5:5|#0" "text#heading"
@@ -114,39 +114,47 @@ s1 z=260,182
 n0 y=91 w=186
 n2 y=126 w=186
 n3 y=126 w=186 ink=10,127,58,13
-n4 h=182
+n4 h=160
 n5 y=97 w=174 ink=16,98,158,13
 n6 w=186 h=50
 n7 w=174 h=38 ink=15,40,155,28 fit=174
-n8 h=182
+n8 h=160
 k16
 n0 y=102 w=137
 n2 y=137 w=137
 n3 y=137 w=137 ink=10,138,58,13
+n4 h=171
 n5 y=108 w=125 ink=16,109,120,13 fit=125
 n6 w=137 h=61
 n7 w=125 h=49 ink=16,40,118,41 fit=125
+n8 h=171
 k17
 n0 y=110 w=104
 n2 y=145 w=104
 n3 y=145 w=104 ink=10,146,58,13
+n4 h=179
 n5 y=116 w=92 ink=16,117,87,13 fit=92
 n6 w=104 h=69
 n7 w=92 h=57 ink=15,41,87,55 fit=92
+n8 h=179
 k18
 n0 y=113 w=90
 n2 y=148 w=90
 n3 y=148 w=90 ink=10,149,58,13
+n4 h=182
 n5 y=119 w=78 ink=16,120,65,13 fit=78
 n6 w=90 h=72
 n7 w=78 h=60 ink=16,41,72,55 fit=78
+n8 h=182
 k19
-n0 w=86
-n2 w=86
-n3 w=86
-n5 w=74 fit=74
-n6 w=86
-n7 w=74 fit=74
+n0 y=114 w=86
+n2 y=149 w=86
+n3 y=149 w=86 ink=10,150,58,13
+n4 h=183
+n5 y=120 w=74 ink=16,121,65,13 fit=74
+n6 w=86 h=73
+n7 w=74 h=61 fit=74
+n8 h=183
 k20
 n0 w=87
 n2 w=87
@@ -155,12 +163,14 @@ n5 w=75 fit=75
 n6 w=87
 n7 w=75 fit=75
 k21
-n0 w=88
-n2 w=88
-n3 w=88
-n5 w=76 fit=76
-n6 w=88
-n7 w=76 fit=76
+n0 y=113 w=88
+n2 y=148 w=88
+n3 y=148 w=88 ink=10,149,58,13
+n4 h=182
+n5 y=119 w=76 ink=16,120,65,13 fit=76
+n6 w=88 h=72
+n7 w=76 h=60 fit=76
+n8 h=182
 k22
 n0 w=89
 n2 w=89

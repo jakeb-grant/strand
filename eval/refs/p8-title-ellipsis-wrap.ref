@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-title-ellipsis-wrap"
 verdict good
-note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: titles cut at the end and paths in the middle as focus changes; the card's wrapping body grows to three lines and back"
-date 2026-10-20
-rev "3e015265"
+note "growth: read against the reference: the card's panel springs 66 -> 89 -> 88 as the body wraps to three lines (k2-12) and back 80 -> 57 -> 58 (k13-18), where the reference snapped every segment in one tick; the later bar segments are the reference's shifted by those ticks"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 2dcee18b2222871b
-seal e4e6a34fdc53f0a1
+seal fad12d7b5e894aae
 S1 0 - "panel Card"
 S2 0 - "bar Top"
 N0 "body|shell.strand:21:5|#1" "text#body"
@@ -37,18 +37,57 @@ n4 x=216 w=48
 k2 p1
 s1 z=300,88
 n0 h=45 ink=12,32,267,43 fit=276 gl=["I\u0020went\u0020through\u0020the\u0020review\u0020comments\u0020and\u0020most\u0020are\u0020small,\u0020but\u0020the\u0020one\u0020about\u0020the\u0020layout\u0020pass\u0020needs\u0020a\u0020proper\u0020answer\u0020before\u0020we\u0020merge,\u0020so\u0020can\u0020we\u0020talk\u0020about\u0020it\u0020after\u0020lunch\u0020tomorrow,\u0020maybe\u0020around\u0020two?"]
+n1 h=66
+n5 h=66
+k3
+n1 h=77
+n5 h=77
+k4
+n1 h=85
+n5 h=85
+k5
 n1 h=88
 n5 h=88
-k3 p2
+k6
+n1 h=89
+n5 h=89
+k7
+k8
+n1 h=88
+n5 h=88
+k9
+k10
+k11
+k12 p2
 n2 ink=272,11,120,11 gl=["~/projects/strand/crates/strand-render/src/renderer/tests.rs"]
 n3 w=179 ink=8,9,178,13 fit=- gl=["Terminal\u0020—\u0020~/projects/strand"]
 n4 x=195 w=69
-k4 p1
-s1 z=300,58
+k13 p1
 n0 h=15 ink=13,32,42,11 fit=- gl=["Lunch?"]
+n1 h=80
+n5 h=80
+k14
+n1 h=69
+n5 h=69
+k15
+n1 h=61
+n5 h=61
+k16
 n1 h=58
 n5 h=58
-k5 p2
+k17
+n1 h=57
+n5 h=57
+k18
+k19
+n1 h=58
+n5 h=58
+k20
+k21
+k22
+k23
+s1 z=300,58
+k24 p2
 n2 x=382 w=10 ink=382,11,10,9 fit=- gl=["~/"]
 n3 w=30 ink=8,9,30,11 gl=["Files"]
 n4 x=46 w=328

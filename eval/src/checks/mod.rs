@@ -484,6 +484,17 @@ impl<'a> Timeline<'a> {
             .map_or([0.0, 0.0], |f| RunTrace::moved(&self.first, f, surface))
     }
 
+    /// (growth) Whether a pose the compositor applies moves `surface` at
+    /// frame `i`, when the rows are read on screen.
+    pub fn is_posed(&self, i: usize, surface: u32) -> bool {
+        !self.first.is_empty()
+            && self
+                .frames
+                .get(i)
+                .and_then(|f| f.posed(surface))
+                .is_some_and(|p| p.scale.abs() > 1e-6)
+    }
+
     pub fn visible_key(&self, i: usize, key: &str) -> bool {
         self.row(i, key).is_some_and(|r| self.visible(i, r))
     }

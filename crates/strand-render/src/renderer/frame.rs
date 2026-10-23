@@ -525,7 +525,6 @@ impl Renderer {
         s.time = target.time;
         self.clocks.frame(surface, target.time, self.now());
         self.anim.set_period(self.clocks.period(surface));
-        self.glide_origin(surface, target.size, target.scale);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -566,7 +565,8 @@ impl Renderer {
         let pending = self.anim.busy(&self.tree, root) || self.anim.opening(root) || swapping;
         // A node reading time repaints every frame of its clock.
         let ticking = self.clocks.running(surface);
-        let cached = if s.animating || pending || ticking {
+        // (growth) Nor while a step it may take waits for this frame.
+        let cached = if s.animating || pending || ticking || s.step_due {
             None
         } else {
             // A scene with time-bound nodes was evaluated at another

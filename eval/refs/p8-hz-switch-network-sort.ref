@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-hz-switch-network-sort"
 verdict good
-note "first reference (eval-coverage-5), practice-8's blind-authored scenario promoted; read: rows glide to the new sort while the rate goes 60, 144, 75 Hz, a new network fades in and its neighbours make room"
-date 2026-10-20
-rev "3e015265"
+note "growth: read against the reference: the panel, col#sheet and col#rows spring their height 239 -> 276 -> 275 as the new network fades in (k47-62) where the reference snapped; the rows' glides and fades are the reference's"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 41a2e609dc2da9dc
-seal 4c1e8e25e85ea00e
+seal 35275b98a64b6437
 S1 0 - "panel Wifi"
 N0 "rows|wifi.strand:24:5|#0" "col#rows"
 N1 "sheet|wifi.strand:18:3|#0" "col#sheet"
@@ -159,9 +159,9 @@ k18
 n14 y=170 ink=57,171,47,11
 k47
 s1 z=365,328
-n0 h=226
-n1 h=275 sh=0000004d@0,-21,394,349/00000033@33,5,328,283
-n3 h=275
+n0 h=190
+n1 h=239 sh=0000004d@0,-21,394,313/00000033@33,5,328,247
+n3 h=239
 n8 y=123 ord=17
 n9 y=161 ord=20
 n10 y=199 ord=24
@@ -177,6 +177,9 @@ n25 x=72 y=121 w=296 h=36 op=8 ord=14
 n26 x=80 y=132 w=216 h=15 op=8 txt=S ord=15 ink=80,133,38,11 fg=1a1b20ff gl=["Coffee"]
 n27 x=304 y=137 w=56 h=4 op=8 ord=16 bg=1a1b2026/455e91ff pt=0,0,30.796875,4
 k48
+n0 h=195
+n1 h=244 sh=0000004d@0,-21,394,318/00000033@33,5,328,252
+n3 h=244
 n8 y=128
 n9 y=166
 n10 y=204
@@ -192,6 +195,9 @@ n25 x=68 op=27
 n26 x=76 op=27 ink=76,133,38,11
 n27 x=300 op=27
 k49
+n0 h=202
+n1 h=251 sh=0000004d@0,-21,394,325/00000033@33,5,328,259
+n3 h=251
 n8 y=135
 n9 y=173
 n10 y=211
@@ -207,6 +213,9 @@ n25 x=64 op=52
 n26 x=72 op=52 ink=72,133,38,11
 n27 x=296 op=52
 k50
+n0 h=208
+n1 h=257 sh=0000004d@0,-21,394,331/00000033@33,5,328,265
+n3 h=257
 n8 y=141
 n9 y=179
 n10 y=217
@@ -222,6 +231,9 @@ n25 x=60 op=78
 n26 x=68 op=78 ink=68,133,38,11
 n27 x=292 op=78
 k51
+n0 h=213
+n1 h=262 sh=0000004d@0,-21,394,336/00000033@33,5,328,270
+n3 h=262
 n8 y=146
 n9 y=184
 n10 y=222
@@ -237,6 +249,9 @@ n25 x=57 op=103
 n26 x=65 op=103 ink=65,133,38,11
 n27 x=289 op=103
 k52
+n0 h=218
+n1 h=267 sh=0000004d@0,-21,394,341/00000033@33,5,328,275
+n3 h=267
 n8 y=151
 n9 y=189
 n10 y=227
@@ -252,6 +267,9 @@ n25 x=54 op=127
 n26 x=62 op=127 ink=62,133,38,11
 n27 x=286 op=127
 k53
+n0 h=221
+n1 h=270 sh=0000004d@0,-21,394,344/00000033@33,5,328,278
+n3 h=270
 n8 y=154
 n9 y=192
 n10 y=230
@@ -267,6 +285,9 @@ n25 x=52 op=148
 n26 x=60 op=148 ink=60,133,38,11
 n27 x=284 op=148
 k54
+n0 h=224
+n1 h=273 sh=0000004d@0,-21,394,347/00000033@33,5,328,281
+n3 h=273
 n8 y=157
 n9 y=195
 n10 y=233
@@ -282,6 +303,9 @@ n25 x=50 op=166
 n26 x=58 op=166 ink=58,133,38,11
 n27 x=282 op=166
 k55
+n0 h=225
+n1 h=274 sh=0000004d@0,-21,394,348/00000033@33,5,328,282
+n3 h=274
 n8 y=158
 n9 y=196
 n10 y=234
@@ -297,6 +321,9 @@ n25 x=49 op=182
 n26 x=57 op=182 ink=57,133,38,11
 n27 x=281 op=182
 k56
+n0 h=226
+n1 h=275 sh=0000004d@0,-21,394,349/00000033@33,5,328,283
+n3 h=275
 n8 y=159
 n9 y=197
 n10 y=235
@@ -312,6 +339,8 @@ n25 op=195
 n26 op=195
 n27 op=195
 k57
+n1 h=276 sh=0000004d@0,-21,394,350/00000033@33,5,328,284
+n3 h=276
 n8 y=160
 n9 y=198
 n10 y=236
@@ -350,6 +379,8 @@ n25 op=239
 n26 op=239
 n27 op=239
 k63
+n1 h=275 sh=0000004d@0,-21,394,349/00000033@33,5,328,283
+n3 h=275
 n8 y=159
 n9 y=197
 n10 y=235

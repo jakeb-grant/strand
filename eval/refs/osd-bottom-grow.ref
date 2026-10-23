@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-bottom-grow"
 verdict good
-note "eval-rules-3 coverage, read: the OSD grows 36 px at k1 (a 28 px row and its 8 px gap) upward from its anchored bottom edge; the level row is laid 36 px lower in the taller surface and stays at the same output place every frame (expect still), the new row fades and springs in from height 0 under the col's glide; nothing drawn past the surface"
-date 2026-10-19
-rev "c554aa84+changes"
+note "growth: read against the reference: the OSD's box springs up from its anchored bottom edge 49 -> 63 -> 72 -> 77 -> 76 (k1-6), its bottom at 252 on every frame, where the reference glided the whole col down past the buffer; #more is drawn at rest and revealed by the box, the level row keeps its output place every frame (expect still)"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 3729c5a328cea46f
-seal ba4084f03adf3807
+seal 2d31eec5ea5f73bc
 S1 0 - "osd Level"
 N0 "head|shell.strand:10:7|#0" "text#head"
 N1 "icon|shell.strand:9:7|#0" "box#icon"
@@ -25,27 +25,32 @@ k1
 s1 z=220,76 o=90,176
 n0 y=49 ord=5 ink=36,50,73,11
 n1 y=48 ord=4
-n2 h=76
-n3 y=27 h=76
+n2 y=27 h=49
+n3 y=27 h=49
 n4 y=48 ord=3
-n5 x=12 y=39 w=196 h=28 op=37 ord=2 bg=89b4faff
+n5 x=12 y=12 w=196 h=28 op=37 ord=2 bg=89b4faff
 k2
-n3 y=13
-n5 y=25 op=98
+n2 y=13 h=63
+n3 y=13 h=63
+n5 op=98
 k3
-n3 y=4
-n5 y=16 op=151
+n2 y=4 h=72
+n3 y=4 h=72
+n5 op=151
 k4
-n3 y=0
-n5 y=12 op=190
+n2 y=0 h=76
+n3 y=0 h=76
+n5 op=190
 k5
-n3 y=-1
-n5 y=11 op=216
+n2 y=-1 h=77
+n3 y=-1 h=77
+n5 op=216
 k6
 n5 op=232
 k7
-n3 y=0
-n5 y=12 op=241
+n2 y=0 h=76
+n3 y=0 h=76
+n5 op=241
 k8
 n5 op=247
 k9

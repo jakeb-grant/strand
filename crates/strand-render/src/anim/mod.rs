@@ -124,6 +124,11 @@ pub(crate) struct Forced {
     /// least, so what it holds keeps its layout and the squeezed box
     /// clips it. `None`: laid out for its box.
     pub hold: Option<f32>,
+    /// (growth) `[width, height]` a node keeps, its least and its most,
+    /// while a content-sized surface's box springs over a step of its
+    /// content: what the boxes filling that box hold keeps its layout at
+    /// rest, cut to them (`Renderer::lay_out_stepped`).
+    pub keep: [Option<f32>; 2],
 }
 
 /// (bar-blank-on-exit) What a node a pose squeezes on its width keeps
@@ -156,6 +161,10 @@ struct NodeAnim {
     /// `width`, `height` or `size` changed: the laid-out size springs to
     /// its new value.
     size_touched: bool,
+    /// (growth) Per axis, on a content-sized surface's root: how far its
+    /// box is from its content's size, springing to zero
+    /// ([`Animator::step_size`]).
+    step: [Option<Motion<1>>; 2],
 }
 
 /// Drops the paint state (the props' springs, logic's writes not yet
@@ -180,6 +189,26 @@ impl NodeAnim {
             && self.glide.is_none()
             && self.size.iter().all(Option::is_none)
             && !self.size_touched
+            && self.step.iter().all(Option::is_none)
+    }
+}
+
+/// (growth) The boxes that follow a content-sized surface's box while it
+/// springs over a step (`Renderer::lay_out_stepped`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct StepFills {
+    /// Per axis: the root and the boxes that follow it.
+    pub chains: [HashSet<NodeId>; 2],
+    /// Per axis: what they hold keeps to their far edge, the one the
+    /// compositor keeps (a bottom OSD's rows to its bottom edge), and
+    /// not to their near edge as it flows.
+    pub far: [bool; 2],
+}
+
+impl StepFills {
+    /// Whether `id` follows the box on either axis.
+    pub fn contains(&self, id: &NodeId) -> bool {
+        self.chains.iter().any(|c| c.contains(id))
     }
 }
 
@@ -236,6 +265,11 @@ pub(crate) struct Animator {
     /// set as the pose's size spring starts, kept while it moves or the
     /// node exits.
     line_holds: HashMap<NodeId, LineHold>,
+    /// (growth) Per content-sized surface root whose box springs over a
+    /// step: the boxes that follow its size in flight, per axis
+    /// (`Renderer::lay_out_stepped`). Each clips what it holds while it
+    /// does, as a box whose size springs does ([`Animator::sizing`]).
+    step_fills: HashMap<NodeId, StepFills>,
     /// Exiting nodes drawn since [`Animator::begin`].
     drawn: HashSet<NodeId>,
     finished: Vec<(NodeId, ExitKind)>,
@@ -1112,6 +1146,14 @@ impl Animator {
     }
 
     pub fn surface_closed(&mut self, mut under: impl FnMut(NodeId) -> bool) {
+        // (growth) A root's size step belongs to the box it was drawn
+        // at: opened again, it shows at its content's size.
+        for (id, na) in self.nodes.iter_mut() {
+            if under(*id) {
+                na.step = [None, None];
+            }
+        }
+        self.step_fills.retain(|id, _| !under(*id));
         drop_paint_state(&mut self.nodes, &mut under);
         self.jellies.retain(|id| !under(id));
         self.shared.stop(&mut under);
@@ -1120,6 +1162,7 @@ impl Animator {
     /// Drops the state of nodes `keep` rejects (gone from the tree).
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.lifted.retain(|id, _| keep(*id));
+        self.step_fills.retain(|id, _| keep(*id));
         self.times.retain(&mut keep);
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);
@@ -1281,6 +1324,14 @@ impl Animator {
                 m |= Motions::GLIDE;
             }
             for (s, axis) in na.size.iter().zip([Axes::W, Axes::H]) {
+                if s.is_some() {
+                    m |= Motions::SIZE_SPRING;
+                    a |= axis;
+                }
+            }
+            // (growth) A content-sized surface's box springing over a
+            // step of its content's size.
+            for (s, axis) in na.step.iter().zip([Axes::W, Axes::H]) {
                 if s.is_some() {
                     m |= Motions::SIZE_SPRING;
                     a |= axis;

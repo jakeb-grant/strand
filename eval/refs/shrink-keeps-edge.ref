@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shrink-keeps-edge"
 verdict good
-note "bottom-osd-shrink: initial reference; a bottom OSD loses its hint and a right-edge panel loses a chip, each held at its larger size while the row plays and shrinking once it settles, the rows that stay never moving on the output (no glide in the shrunken buffer)"
-date 2026-10-19
-rev "675b814a+changes"
+note "growth: read against the reference: the right-edge panel springs its height 41 -> 38 -> 36 -> 35 (k31-33) where the reference snapped; #time keeps its place on every frame"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 769a0bd2b95d09c1
-seal 61d285176c13ddad
+seal 84ab22bbaf34ab9f
 S1 0 - "osd Brightness"
 S2 0 - "panel Tray"
 N0 "chip|shell.strand:21:7|#0" "box#chip"
@@ -146,9 +146,23 @@ n0 hid=opacity0
 k31
 n0 -
 n3 ord=2
-n6 y=4 h=35
-n7 y=4 h=35
+n6 y=1 h=41
+n7 y=1 h=41
 k32
+n6 y=3 h=38
+n7 y=3 h=38
+k33
+n6 y=4 h=36
+n7 y=4 h=36
+k34
+n6 h=35
+n7 h=35
+k35
+k36
+k37
+k38
+k39
+k40
 s2 z=53,35 o=563,223
 n3 x=10 y=10 ink=10,11,32,11
 n6 x=0 y=0

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "damage-fraction"
 verdict good
-note "new regression (damage-fraction): the play button morphs circle to a 52 px pill and back at 1, 1.5 and 1.25 as its content-sized panel springs its width; read with explain: #play's pill outline passes 0.03 px above and 0.05 px below its box at k5-k8 and every frame's partial redraw equals its full repaint"
-date 2026-10-19
-rev "a7965714+changes"
+note "growth: read against the reference: the panel's box springs with row#card 158 -> 164 -> 168 -> 170 (k1-3, k24-26) where the reference drew the full buffer; the pill's morph is the reference's"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario 510b0e15c199d313
-seal 83775d49058224c4
+seal 8add811449e8c7e3
 S1 0 - "panel Media"
 N0 "art|shell.strand:7:5|#0" "box#art"
 N1 "card|shell.strand:6:3|#0" "row#card"
@@ -25,29 +25,32 @@ n5 x=0 y=0 w=154 h=64
 k1
 s1 z=170,64 o=35,12
 n0 x=20
-n1 x=6 w=170
+n1 x=6 w=158
 n2 x=68 w=40
 n3 x=120
 n4 x=120
-n5 w=170
+n5 x=6 w=158
 k2
 n0 x=17
-n1 x=3
+n1 x=3 w=164
 n2 x=65 w=46
 n3 x=123
 n4 x=123
+n5 x=3 w=164
 k3
 n0 x=15
-n1 x=1
+n1 x=1 w=168
 n2 x=63 w=50
 n3 x=125
 n4 x=125
+n5 x=1 w=168
 k4
 n0 x=14
-n1 x=0
+n1 x=0 w=170
 n2 x=62 w=52
 n3 x=126
 n4 x=126
+n5 x=0 w=170
 k5
 n2 pt=0,-0.03125,52,36.046875
 k6
@@ -114,29 +117,32 @@ n5 v=0,0,154.40625,64
 k24
 s1 z=170,64 o=35,12
 n0 x=20 v=20,14.40625,36,36
-n1 x=6 w=170 v=6.40625,0,169.59375,64
+n1 x=6 w=158 v=6.40625,0,157.59375,64
 n2 x=68 w=40 v=68,14.40625,40,36
 n3 x=120 v=120,16.796875,30.40625,30.40625
 n4 x=120 v=120,16.796875,40,14.40625
-n5 w=170 v=0,0,170.40625,64
+n5 x=6 w=158 v=6.40625,0,157.59375,64
 k25
 n0 x=17 v=16.796875,14.40625,36,36
-n1 x=3 v=3.203125,0,169.59375,64
+n1 x=3 w=164 v=3.203125,0,164,64
 n2 x=65 w=46 v=64.796875,14.40625,46.40625,36
 n3 x=123 v=123.203125,16.796875,29.59375,30.40625
 n4 x=123 v=123.203125,16.796875,40,14.40625
+n5 x=3 w=164 v=3.203125,0,164,64
 k26
 n0 x=15 v=15.203125,14.40625,36,36
-n1 x=1 v=0.796875,0,170.40625,64
+n1 x=1 w=168 v=0.796875,0,168,64
 n2 x=63 w=50 v=63.203125,14.40625,49.59375,36
 n3 x=125 v=124.796875,16.796875,30.40625,30.40625
 n4 x=125 v=124.796875,16.796875,40,14.40625
+n5 x=1 w=168 v=0.796875,0,168,64
 k27
 n0 x=14 v=14.40625,14.40625,36,36
-n1 x=0 v=0,0,170.40625,64
+n1 x=0 w=170 v=0,0,170.40625,64
 n2 x=62 w=52 v=62.40625,14.40625,52,36 pt=0,-0.015625,52,36
 n3 x=126 v=126.40625,16.796875,29.59375,30.40625
 n4 x=126 v=126.40625,16.796875,40,14.40625
+n5 x=0 w=170 v=0,0,170.40625,64
 k28
 n2 pt=0,-0.03125,52,36.046875
 k29

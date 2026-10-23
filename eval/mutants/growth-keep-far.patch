@@ -1,0 +1,11 @@
+--- a/crates/strand-render/src/renderer/layout_pass.rs
++++ b/crates/strand-render/src/renderer/layout_pass.rs
+@@ -964,7 +964,7 @@
+     forced: Boxes,
+     fills: &StepFills,
+ ) -> Boxes {
+-    if !fills.far.iter().any(|f| *f) {
++    if true || !fills.far.iter().any(|f| *f) {
+         return forced;
+     }
+     let mut out = forced;

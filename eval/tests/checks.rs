@@ -4130,6 +4130,55 @@ fn contain_fails_a_surface_that_cuts_its_shrinking_content() {
     );
 }
 
+/// (growth) A root springing its size (from `left`, `width` wide) on a
+/// surface 300 px wide, holding a card whose enter spring overshoots
+/// 6 px past the root's left edge at tick 3.
+fn overshooting(left: f32, width: f32) -> RunTrace {
+    let mut t = shape(6, |k| {
+        let root = row("panel", [left, 0.0, width, 30.0]);
+        let root = if (1..6).contains(&k) {
+            root.mot(Motions::SIZE_SPRING).auth(Axes::H)
+        } else {
+            root
+        };
+        let dx = [0.0, 40.0, 10.0, -6.0, -2.0, -1.0, 0.0][k as usize];
+        let card = row("card", [left, 5.0, 200.0, 20.0])
+            .laid_at(left, 5.0)
+            .at(left + dx, 5.0)
+            .spring(dx, 0.0)
+            .mot(Motions::ENTER | Motions::PROP_SPRING)
+            .auth(Axes::X)
+            .draws();
+        vec![root, card]
+    });
+    t.nodes.get_mut("card").unwrap().parent = Some("panel".into());
+    t.seal();
+    t
+}
+
+/// What its buffer cuts does not show: a card carried past the left edge
+/// of a springing root that is its surface's left edge too is held. Past
+/// a root narrower than its surface it shows, and fails.
+#[test]
+fn held_cuts_what_shows_by_its_surface() {
+    let sc = scenario("");
+    let t = overshooting(0.0, 300.0);
+    let r = check(&sc, &t);
+    assert_eq!(
+        status(&r, CheckId::Contain),
+        Status::Pass,
+        "{}",
+        show(&r, &t)
+    );
+    let t = overshooting(20.0, 260.0);
+    let r = check(&sc, &t);
+    assert!(
+        fails_on(&r, CheckId::Contain, "card", "x"),
+        "{}",
+        show(&r, &t)
+    );
+}
+
 /// A bar row holding a pill (`pill`, its ellipsised title `title` laid
 /// from 40 to `right`) and a status text (`status`, rigid: plain text
 /// keeps its width).

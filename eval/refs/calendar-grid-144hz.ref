@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "calendar-grid-144hz"
 verdict good
-note "eval-rules-3 coverage, read: as before but each change follows a 300 ms pause (an idle surface, as a click does): at 144 Hz the selected day's fill springs from #313244 to #89b4fa on day 20, then on day 3 (day 20's back); the six-week month grows the popup at once (203 to 235 px) and its seven new cells fade in; going back fades them out and the popup shrinks once they have gone; no cell moves, the heading never moves"
-date 2026-10-19
-rev "c554aa84+changes"
+note "growth: read against the reference tick by tick: the six-week month now springs the panel 205 -> 236 -> 235 (k189-205) with grid#days stepping inside it, and back 233 -> 202 -> 203 once the cells have faded (k297-312), where the reference snapped; no cell and no heading moves, every other value equal"
+date 2026-10-23
+rev "94d165c6+changes"
 approver "claude"
 scenario a0b1db86aec4ac2d
-seal 91547a2e084fa043
+seal f198d1139a4f0efe
 S1 0 - "panel Calendar"
 N0 "cal|shell.strand:7:3|#0" "col#cal"
 N1 "days|shell.strand:9:5|#0" "grid#days"
@@ -259,25 +259,31 @@ n14 bg=313244ff
 n31 bg=89b4faff
 k189
 s1 z=244,235
-n0 h=235
-n1 h=188
-n38 h=235
-n39 x=12 y=195 w=28 h=28 op=8 ord=39 bg=313244ff
-n40 x=44 y=195 w=28 h=28 op=8 ord=40 bg=313244ff
-n41 x=76 y=195 w=28 h=28 op=8 ord=41 bg=313244ff
-n42 x=108 y=195 w=28 h=28 op=8 ord=42 bg=313244ff
-n43 x=140 y=195 w=28 h=28 op=8 ord=43 bg=313244ff
-n44 x=172 y=195 w=28 h=28 op=8 ord=44 bg=313244ff
-n45 x=204 y=195 w=28 h=28 op=8 ord=45 bg=313244ff
+n0 h=205
+n1 h=158
+n38 h=205
+n39 x=12 y=195 w=28 h=28 op=8 hid=clipped ord=39 bg=313244ff
+n40 x=44 y=195 w=28 h=28 op=8 hid=clipped ord=40 bg=313244ff
+n41 x=76 y=195 w=28 h=28 op=8 hid=clipped ord=41 bg=313244ff
+n42 x=108 y=195 w=28 h=28 op=8 hid=clipped ord=42 bg=313244ff
+n43 x=140 y=195 w=28 h=28 op=8 hid=clipped ord=43 bg=313244ff
+n44 x=172 y=195 w=28 h=28 op=8 hid=clipped ord=44 bg=313244ff
+n45 x=204 y=195 w=28 h=28 op=8 hid=clipped ord=45 bg=313244ff
 k190
-n39 op=27
-n40 op=27
-n41 op=27
-n42 op=27
-n43 op=27
-n44 op=27
-n45 op=27
+n0 h=209
+n1 h=162
+n38 h=209
+n39 op=27 hid=-
+n40 op=27 hid=-
+n41 op=27 hid=-
+n42 op=27 hid=-
+n43 op=27 hid=-
+n44 op=27 hid=-
+n45 op=27 hid=-
 k191
+n0 h=215
+n1 h=168
+n38 h=215
 n39 op=52
 n40 op=52
 n41 op=52
@@ -286,6 +292,9 @@ n43 op=52
 n44 op=52
 n45 op=52
 k192
+n0 h=220
+n1 h=173
+n38 h=220
 n39 op=78
 n40 op=78
 n41 op=78
@@ -294,6 +303,9 @@ n43 op=78
 n44 op=78
 n45 op=78
 k193
+n0 h=224
+n1 h=177
+n38 h=224
 n39 op=103
 n40 op=103
 n41 op=103
@@ -302,6 +314,9 @@ n43 op=103
 n44 op=103
 n45 op=103
 k194
+n0 h=228
+n1 h=181
+n38 h=228
 n39 op=127
 n40 op=127
 n41 op=127
@@ -310,6 +325,9 @@ n43 op=127
 n44 op=127
 n45 op=127
 k195
+n0 h=231
+n1 h=184
+n38 h=231
 n39 op=148
 n40 op=148
 n41 op=148
@@ -318,6 +336,9 @@ n43 op=148
 n44 op=148
 n45 op=148
 k196
+n0 h=233
+n1 h=186
+n38 h=233
 n39 op=166
 n40 op=166
 n41 op=166
@@ -326,6 +347,9 @@ n43 op=166
 n44 op=166
 n45 op=166
 k197
+n0 h=234
+n1 h=187
+n38 h=234
 n39 op=182
 n40 op=182
 n41 op=182
@@ -334,6 +358,9 @@ n43 op=182
 n44 op=182
 n45 op=182
 k198
+n0 h=235
+n1 h=188
+n38 h=235
 n39 op=195
 n40 op=195
 n41 op=195
@@ -342,6 +369,8 @@ n43 op=195
 n44 op=195
 n45 op=195
 k199
+n0 h=236
+n38 h=236
 n39 op=206
 n40 op=206
 n41 op=206
@@ -390,6 +419,8 @@ n43 op=239
 n44 op=239
 n45 op=239
 k205
+n0 h=235
+n38 h=235
 n39 op=242
 n40 op=242
 n41 op=242
@@ -697,9 +728,9 @@ n43 hid=opacity0 bg=-
 n44 hid=opacity0 bg=-
 n45 hid=opacity0 bg=-
 k297
-n0 h=203
-n1 h=156
-n38 h=203
+n0 h=233
+n1 h=186
+n38 h=233
 n39 -
 n40 -
 n41 -
@@ -708,4 +739,57 @@ n43 -
 n44 -
 n45 -
 k298
+n0 h=229
+n1 h=182
+n38 h=229
+k299
+n0 h=223
+n1 h=176
+n38 h=223
+k300
+n0 h=218
+n1 h=171
+n38 h=218
+k301
+n0 h=214
+n1 h=167
+n38 h=214
+k302
+n0 h=210
+n1 h=163
+n38 h=210
+k303
+n0 h=207
+n1 h=160
+n38 h=207
+k304
+n0 h=205
+n1 h=158
+n38 h=205
+k305
+n0 h=204
+n1 h=157
+n38 h=204
+k306
+n0 h=203
+n1 h=156
+n38 h=203
+k307
+n0 h=202
+n38 h=202
+k308
+k309
+k310
+k311
+k312
+k313
+n0 h=203
+n38 h=203
+k314
+k315
+k316
+k317
+k318
+k319
+k320
 s1 z=244,203
