@@ -894,6 +894,44 @@ fn a_clip_places_the_verdict_on_the_surface_it_compared() {
     }
 }
 
+/// (replay-clip) Two elements of one label and config line (the two
+/// popups of `a.strand:5:1`, the second going at k30) are told apart in
+/// the text by their key's end and by when each goes; the slice's header
+/// counts frames any surface painted, and says over how many.
+#[test]
+fn a_clip_tells_apart_two_elements_of_one_line() {
+    let r = synthetic(
+        "clip-twins",
+        verdict_of(serde_json::json!([]), serde_json::json!([])),
+    );
+    let s = spec("k15", None, &["p|a.strand:5:1|#0", "p|a.strand:5:1|#1"], "");
+    let m = clip::make(&r, &s, false).unwrap();
+    let t = &m.text;
+    // k20, k25, k40 and k55 painted, over surfaces 1, 2 and 3.
+    assert!(
+        t.contains(", 4 frames painted across 3 surfaces; k10, drawn "),
+        "{t}"
+    );
+    assert!(
+        t.contains("\n[1] popup#p #0 · a.strand:5 · on popup#p (surface 2)\n"),
+        "{t}"
+    );
+    assert!(
+        t.contains("\n[2] popup#p #1 (gone from k30) · a.strand:5 · on popup#p (surface 3)\n"),
+        "{t}"
+    );
+    // One element of a line says nothing more.
+    let s = spec("k15", None, &["#mark"], "");
+    let m = clip::make(&r, &s, false).unwrap();
+    assert!(
+        m.text
+            .contains("\n[1] box#mark · a.strand:7 · on popup#p (surface 2)\n"),
+        "{}",
+        m.text
+    );
+    let _ = std::fs::remove_dir_all(&r.dir);
+}
+
 /// A stored zip's files by name.
 fn unzip(b: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;

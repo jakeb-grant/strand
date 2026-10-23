@@ -555,7 +555,7 @@ fn a_name_lost_with_its_value_starts_its_cell_as_declared() {
 }
 
 /// (fidelity) VERIFIED and DRIFTED are of the frame at the report; a
-/// replay that parted from the live shell earlier in the window says so
+/// replay that parted from the live shell before the report says so
 /// in the same line, everywhere the verdict is given (replay.txt's first
 /// line, fidelity.json, the page, a clip): how many times, the first's
 /// time and what. Here DP-1's bar counted a click live at 10 s that the
@@ -581,7 +581,7 @@ fn a_verified_frame_says_where_the_replay_parted_before_it() {
     let (r, out) = replay_of(&dir, &defaults());
     assert_eq!(r.verdict.word(), "VERIFIED", "{}", r.verdict.line());
     let want = format!(
-        "; but the replay parted from the live shell once earlier in the window, first at \
+        "; but the replay parted from the live shell once before the report, first at \
          -20.00s (cell: cell {} = 1 live, the replay never wrote it)",
         a.cell("taps")
     );
@@ -634,7 +634,7 @@ fn a_verified_frame_says_where_the_replay_parted_before_it() {
     );
     assert!(
         m.text
-            .contains("1 earlier in the window, the first at -20.000 s (cell: "),
+            .contains("1 before this slice, the first at -20.000 s (cell: "),
         "{}",
         m.text
     );
@@ -879,6 +879,17 @@ fn a_clip_crops_each_surface_at_its_own_outputs_scale() {
     assert_eq!(seen, ["DP-1", "DP-2", "HDMI-A-1", "eDP-1"]);
     // The saved frames are cut to those crops, each within its buffer.
     assert!(m.missing.is_empty(), "{:?}", m.missing);
+    // Each element's surface names its output in the text.
+    for o in OUTS {
+        assert!(
+            m.text
+                .lines()
+                .any(|l| l.starts_with('[') && l.contains(&format!(", on {})", o.name))),
+            "{}: {}",
+            o.name,
+            m.text
+        );
+    }
 }
 
 /// (fidelity) A late frame moves no focus: its step is back-dated by the

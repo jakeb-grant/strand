@@ -456,7 +456,7 @@ pub fn parted(fid: &Fidelity) -> Vec<&fidelity::Divergence> {
 }
 
 /// (fidelity) The verdict in one line, saying when the replay parted
-/// from the live shell earlier in the window: VERIFIED and DRIFTED are
+/// from the live shell before the report: VERIFIED and DRIFTED are
 /// of the frame at the report, and a replay that parted from the live
 /// shell before it may have drawn that frame from another state, so the
 /// line never says VERIFIED alone then (how many times, the first's
@@ -468,7 +468,7 @@ pub fn verdict_line(verdict: &Verdict, fid: &Fidelity, plan: &Plan) -> String {
         return line;
     };
     format!(
-        "{line}; but the replay parted from the live shell {} earlier in the window, first at \
+        "{line}; but the replay parted from the live shell {} before the report, first at \
          {} ({}: {})",
         match p.len() {
             1 => "once".to_string(),

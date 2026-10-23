@@ -2679,13 +2679,13 @@ and says where it first parts from it:
 
 (fidelity) **The verdict says where the replay parted before the
 frame it holds.** VERIFIED and DRIFTED are of the frame at the report;
-a replay that parted from the live shell earlier in the window (any
+a replay that parted from the live shell before it (any
 divergence but a frame's) says so on the same line, wherever the
 verdict is given (`replay.txt`'s first line, `fidelity.json`'s
 `verdict.line` with `verdict.parted`: `count`, `first`, `last`, the
 summary, the page's header and a clip's fidelity lines, clip.js the
 one source): `…; but the replay parted from the live shell N times
-earlier in the window, first at -31.54s (cell: …)`.
+before the report, first at -31.54s (cell: …)`.
 
 It also lists what it did not reproduce: typed text (the keys counted,
 typed as `x`; password spans, typed as eight), pastes, services it has
@@ -2831,15 +2831,21 @@ frames).
 The text, compact for an agent's context:
 
 - the report's words and name; the slice in seconds before the report
-  and in ticks, how many frames painted in it, and the frame held at
-  its start (the last painted before it, a row of its own: `k1819
-  (held)`, never joined by a frame of the slice);
+  and in ticks, how many frames painted in it (with `across N
+  surfaces` when more than one painted: a frame is counted once
+  whichever surfaces it painted, and each surface's own count is in the
+  fidelity lines), and the frame held at its start (the last painted
+  before it, a row of its own: `k1819 (held)`, never joined by a frame
+  of the slice);
 - the note;
 - the fidelity statement for the slice (below), the hints on the
   elements at the slice's ticks (not the held frame's), and what the
   replay does not reproduce;
-- per element its label, config line, surface and key, and a table, a
-  row only where a value changes, naming the frames it holds
+- per element its label, config line, surface (with several outputs,
+  the output it is on) and key (two elements of one label and line are
+  told apart by their key's end, `#0~22`, and the frame each appears at
+  or is gone from in the slice), and a table, a row only where a value
+  changes, naming the frames it holds
   (`k3655..k3680` and their times): the drawn box, the rest box (`same`
   when it is the drawn one), opacity, scale and the motions that move it
   (its own; `hidden: …` when it is hidden); `not drawn` where it is not,
@@ -2884,7 +2890,7 @@ traced; `window.traced_seconds`) is refused saying so, and one that
 crosses it says `untraced before -N s`. A report with no `drawn.json`
 is NOT CHECKED throughout. The divergences from the recorded session
 inside the slice are listed, with how many came earlier, the first
-and the last of them ("N earlier in the window, the first at T s
+and the last of them ("N before this slice, the first at T s
 (what: text), the last at …: the replay may already part from the live
 shell here"), and the limits follow. (fidelity) The verdict's line
 carries the replay's partings before the report frame (above), and a

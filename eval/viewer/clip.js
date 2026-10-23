@@ -290,12 +290,22 @@ var StrandClip = (function () {
       refuse('empty-slice', 'nothing was drawn by ' + secs(to) + ' s: the replay\'s first frame comes later');
     }
     var painted = steps.filter(function (s) { return !s.held && s.painted.length; }).length;
+    // The surfaces those frames painted: the header's count is of frames
+    // any of them painted, each surface's own count in the fidelity lines.
+    var paintedOn = [];
+    steps.forEach(function (s) {
+      if (!s.held) s.painted.forEach(function (sid) { if (paintedOn.indexOf(sid) < 0) paintedOn.push(sid); });
+    });
 
-    var surfInfo = {};
-    t.surfaces.forEach(function (s) { surfInfo[s.id] = s; });
+    var surfInfo = {}, outputs = [];
+    t.surfaces.forEach(function (s) {
+      surfInfo[s.id] = s;
+      if (s.output && outputs.indexOf(s.output) < 0) outputs.push(s.output);
+    });
     function surfName(sid) {
       var s = surfInfo[sid];
-      return s ? s.label + ' (surface ' + sid + ')' : 'surface ' + sid;
+      if (!s) return 'surface ' + sid;
+      return s.label + ' (surface ' + sid + (outputs.length > 1 && s.output ? ', on ' + s.output : '') + ')';
     }
     function rootOrigin(sid) {
       var s = surfInfo[sid], m = s ? t.nodes[s.root] : null;
@@ -389,6 +399,7 @@ var StrandClip = (function () {
     L.push('Strand replay clip: ' + JSON.stringify(F.words || '') + ' (report ' + base(F.bundle) + ')');
     L.push('slice: ' + secs(from) + ' s to ' + secs(to) + ' s before the report, ticks k' + k0 + ' to k' + k1 +
       ' (' + num((toMs - fromMs) / 1000) + ' s, ' + painted + ' frame' + (painted === 1 ? '' : 's') + ' painted' +
+      (paintedOn.length > 1 ? ' across ' + paintedOn.length + ' surfaces' : '') +
       (steps[0].held ? '; k' + steps[0].k + ', drawn ' + secs(tOf(steps[0].k)) + ' s, held at its start' : '') + ')');
     if (note) L.push('note: ' + note);
     L.push('fidelity:');
@@ -400,13 +411,38 @@ var StrandClip = (function () {
     if (!elements.length) L.push('elements: none chosen (name some with --node, or click them in the viewer)');
     else L.push('elements (' + elements.length + '): boxes are x, y, w, h in surface logical px; a row per change, its first and last frame');
     elements.forEach(function (e) {
-      L.push('[' + e.n + '] ' + e.label + ' · ' + e.source + ' · ' +
+      // Two elements of one label and line: each says its key's end (when
+      // theirs differ; one on each output differs by its surface) and
+      // when it comes or goes in the slice.
+      var twins = elements.filter(function (o) { return o !== e && o.label === e.label && o.source === e.source; });
+      var tell = twins.some(function (o) { return keyEnd(o.key) !== keyEnd(e.key); }) ? ' ' + keyEnd(e.key) : '';
+      L.push('[' + e.n + '] ' + e.label + (twins.length ? tell + comesOrGoes(e) : '') + ' · ' + e.source + ' · ' +
         (e.surfaces.length ? 'on ' + e.surfaces.map(function (s) { return surfName(s.id); }).join(', ') : 'not drawn in this slice'));
       L.push('    key ' + e.key);
       tableOf(e).forEach(function (l) { L.push('    ' + l); });
     });
     L.push('regenerate: ' + cli);
     return { text: L.join('\n') + '\n', json: json };
+  }
+
+  // A key's last part (`#0~22` of `|parts.strand:10:3|[…]#0~22`, `#1`
+  // of `p|a.strand:5:1|#1`): what tells apart two nodes of one config
+  // line.
+  function keyEnd(key) {
+    var i = Math.max(key.lastIndexOf(']'), key.lastIndexOf('|'));
+    return i >= 0 && i < key.length - 1 ? key.slice(i + 1) : key;
+  }
+  // When, in the slice, an element is first drawn or last drawn: the
+  // frame it appears at, and the first it is gone from.
+  function comesOrGoes(e) {
+    var fs = e.frames.filter(function (f) { return !f.held; });
+    var on = fs.map(function (f) { return !!f.drawn; });
+    var w = [];
+    var i = on.indexOf(true);
+    if (i > 0) w.push('appears at k' + fs[i].k);
+    var j = on.lastIndexOf(true);
+    if (j >= 0 && j < on.length - 1) w.push('gone from k' + fs[j + 1].k);
+    return w.length ? ' (' + w.join(', ') + ')' : '';
   }
 
   // One row per run of equal values: frames, time, drawn, rest, opacity,
@@ -492,7 +528,7 @@ var StrandClip = (function () {
     var P = (V && V.parted) || null;
     var partedWords = P && P.count > 0
       ? 'but the replay parted from the live shell ' + (P.count === 1 ? 'once' : P.count + ' times') +
-        ' earlier in the window, first at ' + secs(P.first.t) + ' s (' + P.first.what + ': ' + P.first.text + ')'
+        ' before the report, first at ' + secs(P.first.t) + ' s (' + P.first.what + ': ' + P.first.text + ')'
       : null;
     var several = (F.outputs || []).length > 1;
     if (!V) {
@@ -635,7 +671,7 @@ var StrandClip = (function () {
     }
     if (earlier.length) {
       var first = earlier[0], last = earlier[earlier.length - 1];
-      lines.push(earlier.length + ' earlier in the window, the first at ' + secs(first.t) + ' s (' + first.what + ': ' + first.text +
+      lines.push(earlier.length + ' before this slice, the first at ' + secs(first.t) + ' s (' + first.what + ': ' + first.text +
         ')' + (earlier.length > 1 ? ', the last at ' + secs(last.t) + ' s (' + last.what + ': ' + last.text + ')' : '') +
         ': the replay may already part from the live shell here');
     }
