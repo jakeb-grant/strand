@@ -166,7 +166,15 @@ def quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def is_replay(page):
+    return page.evaluate("() => document.body.classList.contains('replay')")
+
+
 def pick(page, sid):
+    # (replay-clip) A replay's page shows its one scenario, with no list.
+    if is_replay(page):
+        settle(page)
+        return
     page.locator("#list li", has=page.locator(".name", has_text=re.compile("^" + re.escape(sid) + "$"))).first.click()
     settle(page)
 
@@ -236,13 +244,169 @@ def exercise_time(page, chk, tl, where, tag, kind):
     chk.expect("(the report)" in label(page), where, "End does not go to the report")
     page.keyboard.press("Home")
     page.locator("#play").click()
-    page.wait_for_timeout(500)
+    # A span with nothing to show plays in a second at most.
+    page.wait_for_timeout(1300)
     if page.locator("#play").inner_text() == "Pause":
         page.locator("#play").click()
     chk.expect(seconds(page) > -length, where, "Play does not advance in time")
     exercise_packed(page, chk, tl, where, tag, kind)
     slide(page, top)
 
+
+def details(page, chk, where, on):
+    """(replay-clip) A replay's dense views behind Details, remembered."""
+    b = page.locator("#details-bar button")
+    if (b.get_attribute("aria-pressed") == "true") != on:
+        b.click()
+        settle(page, 80)
+    shown = page.locator("#tabs").is_visible()
+    chk.expect(shown == on, where, f"Details {'on' if on else 'off'} {'shows' if shown else 'hides'} the tabs")
+    stored = page.evaluate("() => { try { return localStorage.getItem('strand-eval:details'); } catch (e) { return 'x'; } }")
+    chk.expect(stored == ("1" if on else "0"), where, f"Details is not remembered: {stored!r}")
+
+
+def exercise_simple(page, chk, where, tag, kind):
+    """(replay-clip) A replay's page by default: the frame, the timeline,
+    the two overlays and the clip; the dense views behind Details."""
+    chk.expect(not page.locator("#list").is_visible(), where, "a replay's page shows the scenario list")
+    chk.expect(page.locator("#clip").is_visible(), where, "a replay's page has no clip panel")
+    chk.expect(page.locator("#details-bar button").is_visible(), where, "no Details toggle")
+    if page.locator("#details-bar button").get_attribute("aria-pressed") == "true":
+        page.locator("#details-bar button").click()
+        settle(page, 60)
+    for sel in ("#tabs", "#film", "#toolbar label.field"):
+        chk.expect(not page.locator(sel).first.is_visible(), where, f"{sel} shows without Details")
+    big = page.evaluate("""() => Array.from(document.querySelectorAll('.controls .btn, #toolbar .btn, #details-bar .btn, #clip .btn'))
+      .filter(b => b.offsetParent).map(b => [b.textContent, b.getBoundingClientRect().height])""")
+    small = [b for b in big if b[1] < 36]
+    chk.expect(bool(big) and not small, where, f"buttons under 36 px tall: {small[:4]}")
+    for name in ("Where it rests", "Onion skin"):
+        b = page.locator("#toolbar button", has_text=name)
+        chk.expect(b.count() == 1, where, f"no {name!r} toggle")
+        if not b.count():
+            continue
+        was = b.get_attribute("aria-pressed")
+        b.click()
+        settle(page, 60)
+        b = page.locator("#toolbar button", has_text=name)
+        chk.expect(b.get_attribute("aria-pressed") != was, where, f"{name!r} does not toggle")
+        # (Nothing need change on the stage: at rest, a node rests where
+        # it is drawn.)
+        b.click()
+        settle(page, 60)
+    chk.shot(page, f"{tag}-{kind}-simple", full=True)
+
+
+def exercise_clip(page, chk, tl, where, tag, kind):
+    """(replay-clip) The clip: a slice dragged on the timeline and set
+    with [ and ], elements clicked and dragged over on the frame, a
+    note, Copy for agent (the text on the clipboard, its command the
+    one shown), Save clip (one .zip), the clipboard refused (the text
+    left to copy by hand) and both cleared."""
+    length = tl["seconds"] * 1000
+    tb = page.locator("#track").bounding_box()
+    y = tb["y"] + tb["height"] / 2
+    page.mouse.move(tb["x"] + tb["width"] * 0.8, y)
+    page.mouse.down()
+    page.mouse.move(tb["x"] + tb["width"] * 0.9, y, steps=4)
+    page.mouse.move(tb["x"] + tb["width"] * 0.999, y, steps=4)
+    page.mouse.up()
+    settle(page, 80)
+    chk.expect(page.locator("#track .b.clip").count() == 1, where, "a drag on the timeline marks no slice")
+    when = page.locator("#clip .clip-row").first.inner_text()
+    chk.expect(" to " in when, where, f"the slice reads {when!r}")
+    # [ and ]: the slice from the time shown to the report.
+    at = round(length * 0.9)
+    slide(page, at)
+    page.keyboard.press("[")
+    page.keyboard.press("End")
+    page.keyboard.press("]")
+    settle(page, 60)
+    spec_from = "%.3fs" % (at / 1000 - tl["seconds"])
+    # Elements: a click on the frame, then a rectangle over it.
+    box = page.locator("#stage canvas").first.bounding_box()
+    chk.expect(box is not None, where, "no frame to pick elements on")
+    if box is None:
+        return
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + min(box["height"] - 2, 10))
+    settle(page, 80)
+    one = page.locator("#clip .clip-list li").count()
+    chk.expect(one >= 1, where, "a click on the frame picks no element")
+    page.mouse.move(box["x"] + 1, box["y"] + 1)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] / 3, box["y"] + box["height"] / 2, steps=3)
+    page.mouse.move(box["x"] + box["width"] * 2 / 3, box["y"] + box["height"] - 1, steps=3)
+    page.mouse.up()
+    settle(page, 80)
+    many = page.locator("#clip .clip-list li").count()
+    chk.expect(many >= one, where, "a rectangle over the frame drops elements")
+    chk.shot(page, f"{tag}-{kind}-clip-picked", full=True)
+    if many > 1:
+        page.locator("#clip .clip-list li .remove").last.click()
+        settle(page, 60)
+        chk.expect(page.locator("#clip .clip-list li").count() == many - 1, where, "Remove takes no element out")
+    labels = page.locator("#clip .clip-list li .clip-label").all_inner_texts()
+    chk.expect(all(labels), where, f"the clip lists an element with no label: {labels}")
+    page.locator("#clip textarea").first.fill("the card's ears lag")
+    settle(page, 400)
+    cmd = page.locator("#clip pre.cmd").first.inner_text()
+    chk.expect(cmd.startswith("strand replay clip ") and f"--from {spec_from}" in cmd and "--note 'the card" in cmd, where,
+               f"the command line reads {cmd!r}")
+    # Copy for agent.
+    page.evaluate("() => { window.__copied = null; }")
+    page.locator("#clip button", has_text="Copy for agent").click()
+    settle(page, 150)
+    copied = page.evaluate("() => window.__copied")
+    chk.expect(bool(copied) and copied.startswith("Strand replay clip: "), where, f"Copy for agent copied {str(copied)[:80]!r}")
+    if copied:
+        chk.expect("note: the card's ears lag" in copied and ("regenerate: " + cmd) in copied, where,
+                   "the copied clip lacks its note or its command")
+        chk.expect("http" not in copied, where, "the copied clip names a URL")
+    # Save clip: one .zip with the text, the JSON and the frames.
+    with page.expect_download() as dl:
+        page.locator("#clip button", has_text="Save clip").click()
+    d = dl.value
+    path = d.path()
+    raw = open(path, "rb").read() if path else b""
+    chk.expect(raw[:4] == b"PK\x03\x04" and d.suggested_filename.endswith(".zip"), where,
+               f"Save clip gave {d.suggested_filename!r} ({len(raw)} bytes)")
+    chk.expect(b"clip.txt" in raw and b"clip.json" in raw and b"frames/k" in raw, where,
+               "the .zip lacks the text, the JSON or a frame")
+    if copied:
+        chk.expect(copied.encode() in raw, where, "the .zip's text is not the copied clip")
+    # The clipboard refused both ways: the clip left selected in a box.
+    page.evaluate("""() => { navigator.clipboard.writeText = function () { return Promise.reject(new Error('no')); };
+      document.execCommand = function () { return false; }; }""")
+    page.locator("#clip button", has_text="Copy for agent").click()
+    settle(page, 150)
+    hand = page.locator("#clip textarea.byhand")
+    chk.expect(hand.count() == 1 and hand.input_value() == copied, where, "a refused clipboard leaves no clip to copy by hand")
+    chk.shot(page, f"{tag}-{kind}-clip", full=True)
+    page.locator("#clip button", has_text="Clear slice").click()
+    settle(page, 60)
+    chk.expect(page.locator("#track .b.clip").count() == 0, where, "Clear slice leaves the slice")
+    page.locator("#clip button", has_text="Clear elements").click()
+    settle(page, 60)
+    chk.expect(page.locator("#clip .clip-list li").count() == 0, where, "Clear elements leaves elements")
+    page.locator("#clip textarea").first.fill("")
+
+
+def exercise_clip_phone(page, chk, where):
+    """(replay-clip) The clip at a phone's width, with no sideways page
+    scroll."""
+    page.keyboard.press("Home")
+    page.keyboard.press("[")
+    page.keyboard.press("End")
+    page.keyboard.press("]")
+    box = page.locator("#stage canvas").first.bounding_box()
+    if box:
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + min(box["height"] - 2, 10))
+    settle(page, 150)
+    page.locator("#clip details summary").click()
+    settle(page, 60)
+    no_page_scroll(page, chk, where + " clip")
+    page.locator("#clip button", has_text="Clear slice").click()
+    settle(page, 40)
 
 def exercise_packed(page, chk, tl, where, tag, kind):
     """(replayfix) A replay's page is packed: its trace unpacks (the
@@ -286,8 +450,12 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
     slider = page.locator("#slider")
     tl = (data.get("replay") or {}).get("timeline")
     if tl and len(data["runs"]) == 1:
+        exercise_simple(page, chk, where, tag, kind)
         exercise_time(page, chk, tl, where, tag, kind)
+        exercise_clip(page, chk, tl, where, tag, kind)
+        details(page, chk, where, True)
         exercise_rest(page, chk, data, sc, kind, tag, where, i, lambda: slide(page, int(slider.get_attribute("max") or "0")))
+        details(page, chk, where, False)
         return
 
     # The scrubber: slider, buttons, keys.
@@ -352,13 +520,13 @@ def exercise_rest(page, chk, data, sc, kind, tag, where, i, back):
     chk.expect(h1 != h0 or page.evaluate("() => document.querySelectorAll('#stage canvas').length") == 0, where,
                "'every node' draws nothing new")
     chk.shot(page, f"{tag}-{kind}-overlay-every-node")
-    set_check(page, "laid", False)
+    set_check(page, "rest", False)
     set_check(page, "boxes", False)
     h2 = stage_hash(page)
-    chk.expect(h2 != h1, where, "turning boxes and laid boxes off changes nothing")
-    set_check(page, "laid", True)
+    chk.expect(h2 != h1, where, "turning boxes and rest boxes off changes nothing")
+    set_check(page, "rest", True)
     h3 = stage_hash(page)
-    chk.expect(h3 != h2, where, "laid boxes alone draw nothing")
+    chk.expect(h3 != h2, where, "rest boxes alone draw nothing")
     set_check(page, "boxes", True)
     set_check(page, "every node", False)
     chk.expect(stage_hash(page) == h0, where, "the overlays do not return to how they were")
@@ -402,7 +570,10 @@ def exercise_rest(page, chk, data, sc, kind, tag, where, i, back):
 
     # The panels.
     tabs = [t.strip() for t in page.locator("#tabs button").all_inner_texts()]
-    want_tabs = ["Findings", "Nodes", "Curves", "Cost"] + (["A/B"] if len(data["runs"]) == 2 else []) + ["Approve"]
+    want_tabs = ["Findings", "Nodes", "Curves", "Cost"] + (["A/B"] if len(data["runs"]) == 2 else [])
+    # (viewer-owner) A replay has no reference to approve.
+    if not data.get("replay"):
+        want_tabs.append("Approve")
     chk.expect(tabs == want_tabs, where, f"tabs {tabs}, not {want_tabs}")
 
     def tab(name):
@@ -451,11 +622,12 @@ def exercise_rest(page, chk, data, sc, kind, tag, where, i, back):
         settle(page, 40)
         charts = page.locator("#panel svg.chart")
         chk.expect(charts.count() >= 1, where, "no curves over the whole run")
+        charts.first.scroll_into_view_if_needed()
         b = charts.first.bounding_box()
         before = label(page)
         page.mouse.click(b["x"] + b["width"] * 0.8, b["y"] + b["height"] / 2)
         settle(page, 40)
-        chk.expect(label(page) != before or n < 3, where, "clicking a curve does not move the scrubber")
+        chk.expect(label(page) != before or frame_no(page)[1] < 3, where, "clicking a curve does not move the scrubber")
         size = page.evaluate("() => { var t = document.querySelector('#panel svg.chart text');"
                              " return t ? t.getBoundingClientRect().height : 0; }")
         chk.expect(size >= 9, where, f"the curves' labels are {size:.1f} px tall")
@@ -476,6 +648,8 @@ def exercise_rest(page, chk, data, sc, kind, tag, where, i, back):
     # its failing and its CHANGED one; an A/B page's is its passing and
     # its A/B one), and the exercise before left Good with a cleared note:
     # each exercise starts from no draft.
+    if data.get("replay"):
+        return
     page.evaluate("(k) => { try { window.localStorage.removeItem(k); } catch (e) {} }",
                   f"strand-eval:verdict:{run_out}/{sc['id']}")
     tab("Approve")
@@ -595,27 +769,33 @@ def themes_and_widths(browser, url, chk, tag, sid, kind):
             where = lambda: f"{tag}/{sid} {wname} {scheme}"
             watch(page, chk, where)
             page.goto(url)
-            page.wait_for_selector("#list li")
+            page.wait_for_selector("#list li", state="attached")
             pick(page, sid)
             settle(page)
             no_page_scroll(page, chk, where())
             chk.expect(fits(page), where(), "the fitted stage is wider than the stage")
             chk.shot(page, f"{tag}-{kind}-{wname}-{scheme}", full=True)
             if wname == "phone":
+                if is_replay(page):
+                    exercise_clip_phone(page, chk, where())
+                    details(page, chk, where(), True)
                 page.locator("#tabs button", has_text="Curves").click()
                 settle(page)
                 no_page_scroll(page, chk, where() + " curves")
                 chk.shot(page, f"{tag}-{kind}-{wname}-{scheme}-curves", full=True)
-                page.locator("#tabs button", has_text="Approve").click()
-                settle(page)
-                no_page_scroll(page, chk, where() + " approve")
+                if not is_replay(page):
+                    page.locator("#tabs button", has_text="Approve").click()
+                    settle(page)
+                    no_page_scroll(page, chk, where() + " approve")
+                else:
+                    details(page, chk, where(), False)
             ctx.close()
     # The toggle overrides the system: auto, light, dark.
     ctx = browser.new_context(viewport=DESKTOP, color_scheme="light")
     page = ctx.new_page()
     watch(page, chk, lambda: f"{tag} theme toggle")
     page.goto(url)
-    page.wait_for_selector("#list li")
+    page.wait_for_selector("#list li", state="attached")
     seen = []
     for _ in range(3):
         page.locator("#theme").click()
@@ -635,7 +815,7 @@ def check_viewer(browser, url, chk, tag):
     current = {"at": tag}
     watch(page, chk, lambda: current["at"])
     page.goto(url)
-    page.wait_for_selector("#list li")
+    page.wait_for_selector("#list li", state="attached")
     data = data_of(page)
     a = data["runs"][0]["scenarios"]
     items = page.locator("#list li").count()
@@ -645,8 +825,8 @@ def check_viewer(browser, url, chk, tag):
             if s["id"] not in ids:
                 ids.append(s["id"])
     chk.expect(items == len(ids), tag, f"the list has {items} scenarios, the page {len(ids)}")
-    # The filter.
-    if ids:
+    # The filter (a replay's page has none: one scenario, no list).
+    if ids and not is_replay(page):
         page.locator("#filter").fill(ids[-1])
         chk.expect(page.locator("#list li").count() >= 1, tag, "the filter hides the scenario it names")
         page.locator("#filter").fill("")
@@ -712,7 +892,7 @@ def check_grid(browser, url, chk, tag):
                     chk.expect("failed:" in title or "changed" in title or "known" in title, where,
                                f"a linked cell's title says nothing of why: {title!r}")
                     links.first.click()
-                    page.wait_for_selector("#list li")
+                    page.wait_for_selector("#list li", state="attached")
                     settle(page)
                     chk.expect(page.locator("#head h1").count() == 1, where, "a cell's page shows no scenario")
                     chk.shot(page, f"{tag}-matrix-cell-page", full=True)

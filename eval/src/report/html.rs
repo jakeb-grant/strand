@@ -21,6 +21,9 @@ use crate::checks::Timeline;
 const HTML: &str = include_str!("../../viewer/viewer.html");
 const CSS: &str = include_str!("../../viewer/viewer.css");
 const JS: &str = include_str!("../../viewer/viewer.js");
+/// (replay-clip) A replay's clip, made by the same file
+/// `strand-eval replay clip` runs.
+const CLIP: &str = crate::replay::clip::CLIP_JS;
 
 /// The largest page, bytes (under the 16 MB a page may take).
 pub const BUDGET: usize = 15 * 1024 * 1024;
@@ -304,7 +307,7 @@ fn escape(t: &str) -> String {
 
 /// The page's HTML.
 pub fn page(p: &Page) -> Result<String, Error> {
-    let shell_len = HTML.len() + CSS.len() + JS.len() + p.title.len();
+    let shell_len = HTML.len() + CSS.len() + JS.len() + CLIP.len() + p.title.len();
     // The page without images, to know the room left for them.
     let build = |chosen: &BTreeMap<(usize, usize), BTreeSet<String>>| -> Result<Value, Error> {
         let runs: Vec<Value> = p
@@ -370,6 +373,7 @@ pub fn page(p: &Page) -> Result<String, Error> {
     let page = HTML
         .replace("{{TITLE}}", &escape(&p.title))
         .replace("{{CSS}}", CSS)
+        .replace("{{CLIP}}", &CLIP.replace("</script", "<\\/script"))
         .replace("{{JS}}", &JS.replace("</script", "<\\/script"))
         .replace("{{DATA}}", &script_safe(&data));
     Ok(page)

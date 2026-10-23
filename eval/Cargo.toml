@@ -64,6 +64,13 @@ blake3 = "1.8.7"
 # (`derive` and the default colour features would add packages the
 # root lock lacks: clap_derive, anstream and seven more).
 clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
+# (replay-clip) `strand-eval replay clip` runs the viewer's own
+# eval/viewer/clip.js, the one place a clip is made, so the page and the
+# command line give the same text, JSON and frames (docs/eval.md, "A
+# clip"; decisions.md replay-clip). QuickJS, built from its C source:
+# boa_engine, pure Rust, pins ICU ~2.3 (0.22) or ~2.0 (0.21), and would
+# move the ICU strand-text builds with in eval/ off the root's 2.1.
+rquickjs = "0.14.0"
 
 [dev-dependencies]
 # tests/live.rs: its headless sway dies with the test (prctl).

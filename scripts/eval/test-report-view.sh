@@ -8,7 +8,9 @@
 #              newest replayed by default, <bundle>/replay/ written, a
 #              stub opener on PATH that must not run with --no-open and
 #              runs without it; what run.sh mounts for `eval replay`;
-#              a directory that is no bundle refused
+#              a directory that is no bundle refused; (replay-clip) a
+#              clip of the replay (text, command, .zip) and an unknown
+#              node refused
 #   --e2e      also end to end: `strand run` on a headless sway, a
 #              scripted session (a hover, a click on a button, a service
 #              update), `strand report`, the replay, fidelity.json
@@ -20,7 +22,8 @@
 #              takes every pointer step on it; (replayfix) a busy
 #              session (four workspaces of windows, a clock, a player,
 #              notifications, a title changing) whose every press lands
-#              on the chip it did live, with no value lost
+#              on the chip it did live, with no value lost; (replay-clip)
+#              the session's clip, each box the replay's trace's
 #
 # Run: scripts/container/run.sh bash scripts/eval/test-report-view.sh [--e2e]
 
@@ -99,6 +102,36 @@ grep -q '"faithful": true' "$newest/replay/fidelity.json" && ok "the fixture rep
 grep -q "input press left at 40.0,20.0" "$newest/replay/replay.txt" && ok "replay.txt lists the press" ||
   no "replay.txt lacks the press: $(head -40 "$newest/replay/replay.txt")"
 [ ! -e "$DIR/opened" ] && ok "--no-open opens nothing" || no "--no-open ran the opener: $(cat "$DIR/opened")"
+
+# (replay-clip) A clip of the replay: its text, its JSON and its .zip;
+# a node no replay holds refused.
+if bash scripts/eval/eval.sh replay clip "$newest" --from -22.5s --to -21s --node '#lamp' \
+  --note 'the lamp jumps' --save "$DIR/clip.zip" >"$DIR/clip.txt" 2>"$DIR/clip.err"; then
+  ok "replay clip runs on the replayed bundle"
+else
+  cat "$DIR/clip.err"
+  no "replay clip failed"
+fi
+grep -q '^Strand replay clip: "the bar dipped"' "$DIR/clip.txt" && grep -q '^\[1\] box#lamp · shell.strand:' "$DIR/clip.txt" &&
+  ok "the clip names the report and the lamp" || no "the clip reads: $(head -20 "$DIR/clip.txt")"
+grep -q "^regenerate: strand replay clip '$newest' --from -22.500s --to -21.000s --node 'lamp|" "$DIR/clip.txt" &&
+  ok "the clip names the command that makes it again" || no "no regenerate line: $(tail -2 "$DIR/clip.txt")"
+python3 -I - "$DIR/clip.zip" <<'PY' && ok "the .zip holds the text, the JSON and the frames" || no "the .zip is not the clip's"
+import json, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+assert z.testzip() is None, "a CRC"
+assert names[:2] == ["clip.txt", "clip.json"], names
+assert any(n.startswith("frames/k") and n.endswith(".png") for n in names), names
+j = json.loads(z.read("clip.json"))
+assert j["clip"] == 1 and j["spec"]["note"] == "the lamp jumps", j["spec"]
+PY
+if bash scripts/eval/eval.sh replay clip "$newest" --from -2s --node '#nothing' >/dev/null 2>"$DIR/clip.err"; then
+  no "a clip of a node the replay does not hold was made"
+else
+  grep -q 'no node "#nothing"' "$DIR/clip.err" && ok "a node the replay does not hold is refused" ||
+    no "the refusal does not say why: $(cat "$DIR/clip.err")"
+fi
 
 # A bundle named, opened.
 if bash scripts/report-view.sh "$older" --traced all >"$DIR/out2" 2>&1; then
@@ -184,6 +217,22 @@ if [ "$e2e" = 1 ]; then
       head -1 "$bundle/replay/replay.txt" | grep -q '^verdict: VERIFIED: ' &&
         ok "the replay is VERIFIED against the live shell's drawn boxes" ||
         no "the replay is not VERIFIED: $(sed -n '1,/^glitch report/p' "$bundle/replay/replay.txt")"
+      # (replay-clip) Its clip: the whole window, each element's boxes,
+      # opacity and scale at each frame the replay's trace's; and the
+      # command line's text.
+      if STRAND_CLIP_REPLAY=$bundle/replay cargo test -q --locked --manifest-path eval/Cargo.toml --test clip \
+        a_replayed_session_clips_as_its_trace -- --exact >"$DIR/clip-e2e.log" 2>&1; then
+        ok "the session's clip holds the boxes its trace does"
+      else
+        cat "$DIR/clip-e2e.log"
+        no "the session's clip parts from its trace"
+      fi
+      if bash scripts/eval/eval.sh replay clip "$bundle" --from -1s --save "$DIR/clip-e2e.zip" >"$DIR/clip-e2e.txt" 2>&1 &&
+        grep -q '^fidelity:' "$DIR/clip-e2e.txt" && [ -s "$DIR/clip-e2e.zip" ]; then
+        ok "replay clip runs on the session's report"
+      else
+        no "replay clip on the session's report: $(head -20 "$DIR/clip-e2e.txt")"
+      fi
       # Its bundle with one box moved 3 px: DRIFTED, naming that node.
       drift=$DIR/drifted/$(basename "$bundle")
       mkdir -p "$DIR/drifted"

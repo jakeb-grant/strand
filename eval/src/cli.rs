@@ -185,8 +185,12 @@ pub const REPLAY_VALUED: [&str; 6] = ["--to", "--out", "-o", "--output", "--trac
 /// session's Wayland display. It fails only when the replay cannot run;
 /// the checks' findings are hints, never a failure.
 pub fn replay(args: &[String]) -> Result<(), Error> {
+    // (replay-clip) `replay clip …`: a clip of a replay already made.
+    if args.first().is_some_and(|a| a == "clip") {
+        return replay_clip(&args[1..]);
+    }
     let a = Args::parse("replay", args, &REPLAY_VALUED, &["--no-open", "--gpu"])?;
-    let usage = "usage: strand-eval replay <bundle> [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]";
+    let usage = "usage: strand-eval replay <bundle> [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]\n       strand-eval replay clip <report> --from T [--to T] [--node SEL]... [--note TEXT] [--json] [--save FILE.zip]";
     let [dir] = a.words.as_slice() else {
         return Err(Error::Usage(usage.into()));
     };
@@ -266,6 +270,49 @@ pub fn replay(args: &[String]) -> Result<(), Error> {
     println!("viewer: {}", index.display());
     if !a.has("--no-open") {
         open(&index);
+    }
+    Ok(())
+}
+
+/// (replay-clip) `strand-eval replay clip <report> --from T [--to T]
+/// [--node SEL]… [--note TEXT] [--json] [--save FILE.zip]`: the clip of
+/// a replay (docs/eval.md, "A clip"), made by the viewer's own clip.js:
+/// its text on stdout (`--json`: its JSON), and with `--save` the .zip
+/// the page's Save clip gives (the text, the JSON and the slice's frames
+/// cropped around the elements). It reads the replay `strand replay`
+/// wrote (`<report>/replay/`, or a `--out` directory) and writes only
+/// `--save`'s file.
+pub fn replay_clip(args: &[String]) -> Result<(), Error> {
+    use crate::replay::clip::{self, CLIP_VALUED, USAGE};
+    let a = Args::parse("replay clip", args, &CLIP_VALUED, &["--json"])?;
+    let [dir] = a.words.as_slice() else {
+        return Err(Error::Usage(USAGE.into()));
+    };
+    let Some(from) = a.value(&["--from"]) else {
+        return Err(Error::Usage(format!(
+            "replay clip: --from is needed (where the slice starts)\n{USAGE}"
+        )));
+    };
+    let spec = clip::Spec {
+        from: from.to_string(),
+        to: a.value(&["--to"]).map(str::to_string),
+        nodes: a.values("--node").into_iter().map(str::to_string).collect(),
+        note: a.value(&["--note"]).unwrap_or("").to_string(),
+    };
+    let r = clip::Replay::find(Path::new(dir))?;
+    let save = a.value(&["--save"]).map(PathBuf::from);
+    let made = clip::make(&r, &spec, save.is_some())?;
+    if a.has("--json") {
+        print!("{}", made.json);
+    } else {
+        print!("{}", made.text);
+    }
+    if let (Some(to), Some(zip)) = (&save, &made.zip) {
+        report::write(to, zip)?;
+        eprintln!("clip saved: {}", to.display());
+    }
+    for m in &made.missing {
+        eprintln!("clip: {m} left out: its pixels are not in the replay's report");
     }
     Ok(())
 }

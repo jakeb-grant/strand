@@ -81,7 +81,7 @@ impl Patch {
         Value::Array(v)
     }
 
-    fn from_json(v: &Value) -> Option<Patch> {
+    pub fn from_json(v: &Value) -> Option<Patch> {
         let a = v.as_array()?;
         let base = a.first()?.as_str()?.to_string();
         let mut boxes = Vec::new();
@@ -504,7 +504,7 @@ type Load<'a> = Box<dyn Fn(&str) -> Option<Vec<u8>> + 'a>;
 /// Rebuilds patched frames, keeping the last few rebuilt to build the
 /// next on.
 pub struct Composer<'a> {
-    patches: &'a BTreeMap<String, Patch>,
+    patches: std::borrow::Cow<'a, BTreeMap<String, Patch>>,
     load: Load<'a>,
     recent: VecDeque<(String, u32, u32, Vec<u8>)>,
 }
@@ -524,7 +524,20 @@ impl<'a> Composer<'a> {
         load: impl Fn(&str) -> Option<Vec<u8>> + 'a,
     ) -> Composer<'a> {
         Composer {
-            patches,
+            patches: std::borrow::Cow::Borrowed(patches),
+            load: Box::new(load),
+            recent: VecDeque::new(),
+        }
+    }
+
+    /// (replay-clip) One that holds its patches (`strand-eval replay
+    /// clip` hands its frames to clip.js as it asks for them).
+    pub fn owned(
+        patches: BTreeMap<String, Patch>,
+        load: impl Fn(&str) -> Option<Vec<u8>> + 'a,
+    ) -> Composer<'a> {
+        Composer {
+            patches: std::borrow::Cow::Owned(patches),
             load: Box::new(load),
             recent: VecDeque::new(),
         }

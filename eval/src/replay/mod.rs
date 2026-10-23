@@ -5,6 +5,7 @@
 //! divergences are its output, not a failure.
 
 pub mod bundle;
+pub mod clip;
 pub mod drawn;
 pub mod fidelity;
 pub mod plan;
@@ -263,6 +264,9 @@ pub fn replay(
                 plan.traced_words()
             ),
             "timeline": timeline_json(&plan, &fid),
+            // (replay-clip) `fidelity.json` itself: a clip states what
+            // it says of the clip's frames (eval/viewer/clip.js).
+            "record": json.clone(),
         })),
     };
     let mut all = vec![

@@ -2176,6 +2176,12 @@ reads nothing of its output; `strand-eval replay` itself runs as a
 plain desktop process on its in-process stand-in for the compositor
 and the CPU, writes
 `<bundle>/replay/` and opens it with `xdg-open` unless `--no-open`.
+(replay-clip) `strand replay clip [report-dir] <args>` hands off the
+same way, as `strand-eval replay clip [<newest report>] <args>` (the
+report put after `clip`, the clip's options told from it by
+`CLIP_VALUED`, the same list as eval's `replay::clip::CLIP_VALUED`):
+it reads a replay already written and writes only its `--save` file
+(docs/eval.md, "A clip").
 (report review) A step the sandbox cannot
 take is skipped and kept as a divergence, the window is capped at
 120 s before the report, a request record is replayed as a `set` or

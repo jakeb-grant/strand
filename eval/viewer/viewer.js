@@ -18,6 +18,10 @@
   // the live input, changes and divergences are marks on it, and the
   // live pointer is drawn over the frame held at the scrubbed time.
   var TL = DATA.replay && DATA.replay.timeline && !AB ? DATA.replay.timeline : null;
+  // (replay-clip) A replay's page is simpler: the frame, the timeline,
+  // the rest and onion overlays and the clip; the dense views (the
+  // checks, Cost, the node tree, Curves, the filmstrip) behind Details.
+  var REPLAY = !!TL;
 
   // ---- small helpers ------------------------------------------------------
 
@@ -105,31 +109,9 @@
   }
 
   // (replayfix) A packed trace (a replay's, docs/eval.md "A replay's
-  // report, packed"): each frame names the fields equal to the frame
-  // before's in `=`, and its rows are runs of the frame before's
-  // (`[i, n]`), one of them with columns changed (`{i, c}`) or whole
-  // rows. Unpacked in place; an unchanged row is the same array.
-  function unpack(t) {
-    if (!t.packed) return;
-    var prev = {}, prevRows = [];
-    t.frames.forEach(function (f) {
-      (f['='] || []).forEach(function (k) { f[k] = prev[k]; });
-      delete f['='];
-      var rows = [];
-      (f.n || []).forEach(function (e) {
-        if (Array.isArray(e) && typeof e[0] === 'string') rows.push(e);
-        else if (Array.isArray(e)) { for (var i = 0; i < e[1]; i++) rows.push(prevRows[e[0] + i]); }
-        else {
-          var r = prevRows[e.i].slice();
-          for (var j = 0; j + 1 < e.c.length; j += 2) r[e.c[j]] = e.c[j + 1];
-          rows.push(r);
-        }
-      });
-      f.n = rows;
-      prev = f; prevRows = rows;
-    });
-    delete t.packed;
-  }
+  // report, packed"), unpacked in place: clip.js's, the one unpacker
+  // the clip and the viewer share (replay-clip).
+  var unpack = StrandClip.unpack;
 
   function prep(sc) {
     if (sc.C) return sc;
@@ -275,7 +257,13 @@
     scope: 'segment',
     failOnly: false,
     // (replayfix) A replay's scrubbed time, ms into its window.
-    t: 0
+    t: 0,
+    // (replay-clip) Details shown (remembered per viewer), and the
+    // clip's slice (ms into the window) and note; its elements are the
+    // selection, `sel`.
+    details: store.get('strand-eval:details') === '1',
+    clip: { from: null, to: null },
+    note: ''
   };
 
   function scOf(run, id) {
@@ -342,7 +330,9 @@
     S.i = 0;
     S.sel = new Set();
     var a = A();
-    if (a && a.fails.length) {
+    // (replay-clip) A replay's findings are hints: none is chosen for
+    // its clip unasked.
+    if (a && a.fails.length && !REPLAY) {
       a.fails.slice(0, 3).forEach(function (f) { if (f.key) S.sel.add(f.key); });
       var f0 = a.fails[0];
       if (f0.k !== null && f0.k !== undefined) S.i = Math.max(0, at(a, f0.k));
@@ -364,15 +354,26 @@
     // live boxes held to the replay's), then the fidelity line; the
     // checks' findings below are hints.
     var R = DATA.replay;
+    // (replay-clip) What a replay's page shows by default: what was
+    // reported and the verdict; the rest is under Details (`dense`).
+    var dense = REPLAY ? el('div', { cls: 'dense' }) : h;
     if (R) {
+      var words = R.record && R.record.words;
+      if (REPLAY && words !== undefined) {
+        h.appendChild(el('div', { cls: 'reported' }, el('span', { cls: 'note', text: 'reported ' }),
+          el('strong', { text: '\u201c' + words + '\u201d' }),
+          el('span', { cls: 'note', text: ' · ' + R.record.window.seconds.toFixed(1) + ' s replayed up to the report' })));
+      }
       var v = el('div', { cls: 'verdict v-' + R.verdict.toLowerCase().replace(/ /g, '-') });
       v.appendChild(el('strong', { text: R.verdict }));
       v.appendChild(document.createTextNode(' ' + R.line.replace(/^[A-Z ]+: /, '')));
       h.appendChild(v);
-      (R.drifted || []).forEach(function (l) { h.appendChild(el('div', { cls: 'drift', text: l })); });
-      h.appendChild(el('div', { cls: 'meta', text: 'fidelity: ' + R.fidelity }));
-      if (R.window) h.appendChild(el('div', { cls: 'meta', text: 'window: ' + R.window }));
+      (R.drifted || []).forEach(function (l) { dense.appendChild(el('div', { cls: 'drift', text: l })); });
+      dense.appendChild(el('div', { cls: 'meta', text: 'fidelity: ' + R.fidelity }));
+      if (R.window) dense.appendChild(el('div', { cls: 'meta', text: 'window: ' + R.window }));
     }
+    if (dense !== h) h.appendChild(dense);
+    h = dense;
     h.appendChild(el('h1', { text: a.id }));
     var bits = [
       AB ? DATA.runs.map(function (r) { return r.label; }).join(' vs ') : b.rev + (b.dirty ? ' (with changes)' : ''),
@@ -420,14 +421,28 @@
         if (String(o[0]) === String(value)) op.selected = true;
         s.appendChild(op);
       });
-      s.addEventListener('change', function () { set(s.value); draw(); });
+      s.addEventListener('change', function () { set(s.value); if (REPLAY) renderToolbar(); draw(); });
       return el('label', { cls: 'field' }, labelText + ' ', s);
     }
     function chk(labelText, value, set, title) {
       var c = el('input', { type: 'checkbox' });
       c.checked = value;
-      c.addEventListener('change', function () { set(c.checked); draw(); });
+      c.addEventListener('change', function () { set(c.checked); if (REPLAY) renderToolbar(); draw(); });
       return el('label', { cls: 'field', title: title || null }, c, ' ' + labelText);
+    }
+    // (replay-clip) A replay's two overlays, large: where each node
+    // rests, and the onion of the frames before; the full toolbar is
+    // under Details.
+    if (REPLAY) {
+      var big = function (text, on, title, flip) {
+        return el('button', { type: 'button', cls: 'btn big toggle', 'aria-pressed': on ? 'true' : 'false', title: title,
+          onclick: function () { flip(); renderToolbar(); draw(); } }, text);
+      };
+      t.appendChild(big('Where it rests', S.laid, 'Dashed: where each node comes to rest (its laid box moved by the written x and y)', function () { S.laid = !S.laid; }));
+      t.appendChild(big('Onion skin', S.onion > 0, 'Outlines of where the boxes were over the 4 frames before', function () { S.onion = S.onion > 0 ? 0 : 4; }));
+      var full = el('span', { cls: 'dense fields' });
+      t.appendChild(full);
+      t = full;
     }
     t.appendChild(sel('zoom', S.zoom, [['fit', 'fit'], [1, '1×'], [2, '2×'], [3, '3×'], [4, '4×'], [6, '6×'], [8, '8×']], function (v) { S.zoom = v === 'fit' ? 'fit' : +v; }));
     t.appendChild(chk('boxes', S.boxes, function (v) { S.boxes = v; }, 'Drawn boxes solid: blue authored, orange derived, red failing'));
@@ -699,9 +714,28 @@
       x.globalAlpha = 1;
       x.setLineDash([]);
     });
+    // (replay-clip) The clip's elements, unmistakable: filled and
+    // outlined in the accent.
+    if (REPLAY) {
+      scr.rows.forEach(function (r) {
+        var o = obj(sc, r);
+        if (!S.sel.has(o.key)) return;
+        x.save();
+        x.setLineDash([]);
+        x.fillStyle = css('--accent');
+        x.globalAlpha = 0.2;
+        x.fillRect(o.vx * scale * z, o.vy * scale * z, o.vw * scale * z, o.vh * scale * z);
+        x.globalAlpha = 1;
+        x.lineWidth = 2;
+        x.strokeStyle = css('--accent');
+        x.strokeRect(o.vx * scale * z + 1, o.vy * scale * z + 1, Math.max(1, o.vw * scale * z - 2), Math.max(1, o.vh * scale * z - 2));
+        x.restore();
+      });
+    }
     if (TL) drawPointer(x, sc, sid, scale, z);
     cv.addEventListener('mousemove', function (ev) { hover(ev, sc, i, sid, cv); });
     cv.addEventListener('mouseleave', function () { $('tip').hidden = true; });
+    if (REPLAY) return pickable(cv, sc, i, sid);
     cv.addEventListener('click', function (ev) {
       var o = hit(ev, sc, i, sid, cv);
       if (!o) return;
@@ -709,6 +743,61 @@
       draw();
     });
     return cv;
+  }
+
+  // (replay-clip) A replay's surface: a click adds the node under it to
+  // the clip or takes it out; a rectangle dragged over it adds every
+  // node drawn wholly inside it.
+  function pickable(cv, sc, i, sid) {
+    var wrap = el('div', { cls: 'surface' }, cv);
+    var p0 = null, band = null;
+    function logical(cx, cy) {
+      var r = cv.getBoundingClientRect(), scale = sc.tl.screens[i].get(sid).scale || 1;
+      return [(cx - r.left) * (cv.width / r.width) / Z / scale, (cy - r.top) * (cv.height / r.height) / Z / scale];
+    }
+    function stop() { p0 = null; if (band) { band.remove(); band = null; } }
+    cv.addEventListener('pointerdown', function (ev) {
+      if (ev.button !== 0) return;
+      p0 = [ev.clientX, ev.clientY];
+    });
+    cv.addEventListener('pointermove', function (ev) {
+      if (!p0) return;
+      if (!band && Math.abs(ev.clientX - p0[0]) + Math.abs(ev.clientY - p0[1]) < 6) return;
+      if (!band) {
+        band = el('div', { cls: 'rubber' });
+        wrap.appendChild(band);
+        try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: the drag still ends here */ }
+      }
+      var r = cv.getBoundingClientRect();
+      band.style.left = (Math.min(p0[0], ev.clientX) - r.left) + 'px';
+      band.style.top = (Math.min(p0[1], ev.clientY) - r.top) + 'px';
+      band.style.width = Math.abs(ev.clientX - p0[0]) + 'px';
+      band.style.height = Math.abs(ev.clientY - p0[1]) + 'px';
+      $('tip').hidden = true;
+      ev.preventDefault();
+    });
+    cv.addEventListener('pointerup', function (ev) {
+      if (!p0) return;
+      var start = p0, dragged = !!band;
+      stop();
+      if (dragged) {
+        var a = logical(start[0], start[1]), b = logical(ev.clientX, ev.clientY);
+        var x0 = Math.min(a[0], b[0]), y0 = Math.min(a[1], b[1]), x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
+        sc.tl.screens[i].get(sid).rows.forEach(function (r) {
+          var o = obj(sc, r);
+          if (o.hid === 'opacity0' || o.hid === 'scale0' || o.vw <= 0 || o.vh <= 0) return;
+          if (o.vx >= x0 && o.vy >= y0 && o.vx + o.vw <= x1 && o.vy + o.vh <= y1) S.sel.add(o.key);
+        });
+        draw();
+        return;
+      }
+      var o = hit(ev, sc, i, sid, cv);
+      if (!o) return;
+      if (S.sel.has(o.key)) S.sel.delete(o.key); else S.sel.add(o.key);
+      draw();
+    });
+    cv.addEventListener('pointercancel', stop);
+    return wrap;
   }
 
   // (replayfix) The live pointer at the scrubbed time, when it was on
@@ -981,6 +1070,14 @@
     });
     (TL.divergences || []).forEach(function (d) { mark('bad', tlAt(d.t), tlFmt(tlAt(d.t)) + ' divergence (' + d.what + '): ' + d.text); });
     a.failTicks.forEach(function (k) { mark('hint', tlMs(k), 'a hint at k' + k); });
+    // (replay-clip) The clip's slice.
+    if (S.clip.from !== null) {
+      var cto = S.clip.to === null ? len : S.clip.to;
+      tr.appendChild(el('span', { cls: 'b clip', title: 'the clip: ' + tlFmt(S.clip.from) + ' to ' + (S.clip.to === null ? 'the report' : tlFmt(cto)),
+        style: 'left:' + pct(S.clip.from) + ';width:calc(' + pct(cto) + ' - ' + pct(S.clip.from) + ')' }));
+    } else if (S.clip.to !== null) {
+      tr.appendChild(el('span', { cls: 'm clip-end', title: 'the clip ends at ' + tlFmt(S.clip.to), style: 'left:' + pct(S.clip.to) }));
+    }
     mark('report', len, 'the report');
     mark('cur', S.t, tlFmt(S.t));
     // The label: the time, the frame held, and what the time is.
@@ -1001,7 +1098,7 @@
     $('frame-label').textContent = bits.join(' · ');
     var legend = $('track-legend');
     if (legend && !legend.childNodes.length) {
-      [['rep', 'repaints'], ['idle', 'nothing changed'], ['ptr', 'pointer'], ['in', 'input'], ['chg', 'changes'], ['map', 'surfaces'], ['bad', 'divergences'], ['report', 'the report']].forEach(function (l) {
+      [['rep', 'repaints'], ['idle', 'nothing changed'], ['ptr', 'pointer'], ['in', 'input'], ['chg', 'changes'], ['map', 'surfaces'], ['bad', 'divergences'], ['hint', 'hints'], ['clip', 'the clip'], ['report', 'the report']].forEach(function (l) {
         legend.appendChild(el('span', null, el('i', { cls: 'k ' + l[0] }), ' ' + l[1]));
       });
     }
@@ -1512,10 +1609,265 @@
     renderScrub();
     renderFilm();
     if (S.tab !== 'verdict') renderPanel();
+    if (REPLAY) renderClip();
+  }
+
+  // ---- (replay-clip) the clip ----------------------------------------------------------
+
+  // The clip's spec: the slice as seconds before the report (ms
+  // precision, what `--from` and `--to` read), the selection's keys and
+  // the note. Its data comes from clip.js on the trace and fidelity.json,
+  // the same as `strand replay clip` gives (eval/tests/clip.rs).
+  function clipSpec() {
+    if (S.clip.from === null) return null;
+    function at(ms) { return (Math.round(ms) / 1000 - TL.seconds).toFixed(3) + 's'; }
+    return {
+      from: at(S.clip.from),
+      to: S.clip.to === null ? null : at(S.clip.to),
+      nodes: Array.from(S.sel),
+      note: S.note
+    };
+  }
+  var clipCache = { sig: null, made: null };
+  function clipMade(wantZip) {
+    var spec = clipSpec();
+    if (!spec) return null;
+    var sig = JSON.stringify(spec);
+    if (!wantZip && clipCache.sig === sig) return clipCache.made;
+    var a = A();
+    var made;
+    try { made = StrandClip.page(DATA, a, spec, wantZip); } catch (e) { made = { refused: { code: 'bug', message: 'clip.js failed: ' + e } }; }
+    if (!wantZip) { clipCache.sig = sig; clipCache.made = made; }
+    return made;
+  }
+  function setEnd(which) {
+    if (which === 'from') S.clip.from = S.t; else S.clip.to = S.t;
+    if (S.clip.from !== null && S.clip.to !== null && S.clip.from > S.clip.to) {
+      var f = S.clip.from; S.clip.from = S.clip.to; S.clip.to = f;
+    }
+    draw();
+  }
+  // `text` on the clipboard: the Clipboard API, else a selected textarea
+  // and execCommand, else the text left selected in a box to copy by
+  // hand. `done(how)` says which.
+  function copyText(text, box, done) {
+    function byHand() {
+      box.textContent = '';
+      var ta = el('textarea', { cls: 'byhand', readonly: 'readonly', rows: '8', 'aria-label': 'The clip, selected: copy it (Ctrl+C)' });
+      ta.value = text;
+      box.appendChild(el('div', { cls: 'note', text: 'The browser would not copy: the clip is selected below, copy it with Ctrl+C.' }));
+      box.appendChild(ta);
+      ta.focus();
+      ta.select();
+      done('by hand');
+    }
+    function legacy() {
+      var ta = el('textarea', { cls: 'offscreen' });
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) done('copied'); else byHand();
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done('copied'); }, legacy);
+        return;
+      }
+    } catch (e) { /* on to the textarea */ }
+    legacy();
+  }
+  function fileName() {
+    var R = DATA.replay && DATA.replay.record;
+    var id = R && R.bundle ? String(R.bundle).replace(/\/+$/, '').split('/').pop() : 'replay';
+    var spec = clipSpec();
+    return ('clip-' + id + '-' + spec.from + (spec.to ? '-' + spec.to : '')).replace(/[^A-Za-z0-9._-]+/g, '_') + '.zip';
+  }
+  function save(bytes, name) {
+    var blob = new Blob([bytes], { type: 'application/zip' });
+    var href = URL.createObjectURL(blob);
+    var a = el('a', { href: href, download: name, cls: 'offscreen' });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(href); }, 4000);
+  }
+
+  var clipShown = null;
+  function renderClip() {
+    var box = $('clip');
+    box.hidden = false;
+    var a = A();
+    if (!a) return;
+    var sig = JSON.stringify([S.clip, Array.from(S.sel)]);
+    if (clipShown === sig) return;
+    clipShown = sig;
+    box.textContent = '';
+    box.appendChild(el('h2', { text: 'Clip' }));
+    var len = tlLen();
+    // When.
+    var when = el('div', { cls: 'clip-row' });
+    when.appendChild(el('span', { cls: 'clip-what', text: 'When' }));
+    if (S.clip.from === null) {
+      when.appendChild(el('span', { cls: 'note', text: S.clip.to === null
+        ? 'Drag across the timeline, or press [ at the start and ] at the end while scrubbing.'
+        : 'Ends at ' + tlFmt(S.clip.to) + ': press [ where it starts.' }));
+    } else {
+      var to = S.clip.to === null ? len : S.clip.to;
+      when.appendChild(el('span', { cls: 'mono', text: tlFmt(S.clip.from) + ' to ' + (S.clip.to === null ? 'the report' : tlFmt(to)) +
+        ' (' + ((to - S.clip.from) / 1000).toFixed(3) + ' s)' }));
+    }
+    when.appendChild(el('button', { type: 'button', cls: 'btn', text: 'Start here [', title: 'The clip starts at the time shown ([)', onclick: function () { setEnd('from'); } }));
+    when.appendChild(el('button', { type: 'button', cls: 'btn', text: 'End here ]', title: 'The clip ends at the time shown (])', onclick: function () { setEnd('to'); } }));
+    if (S.clip.from !== null || S.clip.to !== null) {
+      when.appendChild(el('button', { type: 'button', cls: 'btn', text: 'Clear slice', onclick: function () { S.clip = { from: null, to: null }; draw(); } }));
+    }
+    box.appendChild(when);
+    // What.
+    var what = el('div', { cls: 'clip-row' });
+    what.appendChild(el('span', { cls: 'clip-what', text: 'What' }));
+    if (!S.sel.size) what.appendChild(el('span', { cls: 'note', text: 'Click elements on the frame to add or remove them, or drag a rectangle over them.' }));
+    else what.appendChild(el('button', { type: 'button', cls: 'btn', text: 'Clear elements', onclick: function () { S.sel = new Set(); draw(); } }));
+    box.appendChild(what);
+    if (S.sel.size) {
+      var list = el('ul', { cls: 'clip-list' });
+      Array.from(S.sel).forEach(function (key) {
+        var m = a.trace.nodes[key] || {};
+        var at = m.origin ? m.origin.split(':').slice(0, 2).join(':') : '';
+        list.appendChild(el('li', null,
+          el('span', { cls: 'clip-label', text: label(a, key) }),
+          el('span', { cls: 'mono note', text: at }),
+          el('button', { type: 'button', cls: 'btn remove', text: 'Remove', 'aria-label': 'Remove ' + label(a, key) + ' from the clip',
+            onclick: function () { S.sel.delete(key); draw(); } })));
+      });
+      box.appendChild(list);
+    }
+    // A note.
+    var note = el('textarea', { rows: '2', placeholder: 'A note for the agent (optional): what looks wrong', 'aria-label': 'Note' });
+    note.value = S.note;
+    box.appendChild(note);
+    // Copy and save.
+    var out = el('div', { cls: 'clip-out' });
+    var copy = el('button', { type: 'button', cls: 'btn big primary', text: 'Copy for agent' });
+    var saveBtn = el('button', { type: 'button', cls: 'btn big', text: 'Save clip' });
+    var status = el('span', { cls: 'note', role: 'status' });
+    var byhand = el('div');
+    var cmd = el('pre', { cls: 'cmd' });
+    var preview = el('pre', { cls: 'cmd clip-text' });
+    var more = el('details', { cls: 'clip-preview' }, el('summary', { text: 'The text it copies' }), preview);
+    var cliNote = el('div', { cls: 'note', text: 'The same clip from the command line:' });
+    function refresh() {
+      var made = clipMade(false);
+      var on = !!made && !made.refused;
+      copy.disabled = !on;
+      saveBtn.disabled = !on;
+      cliNote.hidden = !on;
+      more.hidden = !on;
+      if (!made) { cmd.textContent = ''; preview.textContent = ''; status.textContent = 'Set the slice first.'; return; }
+      if (made.refused) { cmd.textContent = ''; preview.textContent = ''; status.textContent = made.refused.message; return; }
+      status.textContent = '';
+      cmd.textContent = made.data.cli;
+      preview.textContent = made.text;
+    }
+    var timer = null;
+    note.addEventListener('input', function () {
+      S.note = note.value;
+      clearTimeout(timer);
+      timer = setTimeout(refresh, 200);
+    });
+    copy.addEventListener('click', function () {
+      clearTimeout(timer);
+      refresh();
+      var made = clipMade(false);
+      if (!made || made.refused) return;
+      copyText(made.text, byhand, function (how) {
+        status.textContent = how === 'copied' ? 'Copied: paste it to the agent.' : 'Selected: copy it by hand.';
+      });
+    });
+    saveBtn.addEventListener('click', function () {
+      clearTimeout(timer);
+      refresh();
+      var made = clipMade(true);
+      if (!made || made.refused) return;
+      save(made.zip, fileName());
+      status.textContent = 'Saved ' + fileName() + (made.missing && made.missing.length ? ' (' + made.missing.length + ' frames not in this page left out)' : '');
+    });
+    out.appendChild(copy);
+    out.appendChild(saveBtn);
+    out.appendChild(status);
+    box.appendChild(out);
+    box.appendChild(byhand);
+    box.appendChild(cliNote);
+    box.appendChild(cmd);
+    box.appendChild(more);
+    refresh();
+  }
+
+  // The dense views behind Details (remembered for this viewer).
+  function renderDetails() {
+    var bar = $('details-bar');
+    bar.hidden = false;
+    bar.textContent = '';
+    bar.appendChild(el('button', {
+      type: 'button', cls: 'btn big toggle', 'aria-pressed': S.details ? 'true' : 'false', 'aria-controls': 'main',
+      text: S.details ? 'Hide details' : 'Details: checks, nodes, curves, cost',
+      onclick: function () {
+        S.details = !S.details;
+        store.set('strand-eval:details', S.details ? '1' : '0');
+        document.body.classList.toggle('details', S.details);
+        renderDetails();
+        if (S.details) { renderPanel(); renderFilm(); }
+      }
+    }));
+  }
+
+  // A drag across the replay's timeline sets the clip's slice; a click
+  // still goes to its time.
+  function timelineDrag() {
+    var tr = $('track'), p0 = null, dragged = false;
+    function msAt(cx) {
+      var r = tr.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (cx - r.left) / Math.max(1, r.width))) * tlLen();
+    }
+    tr.addEventListener('pointerdown', function (ev) {
+      if (ev.button !== 0) return;
+      p0 = ev.clientX;
+      dragged = false;
+    });
+    tr.addEventListener('pointermove', function (ev) {
+      if (p0 === null) return;
+      if (!dragged && Math.abs(ev.clientX - p0) < 5) return;
+      if (!dragged) { try { tr.setPointerCapture(ev.pointerId); } catch (e) { /* the drag ends where it is let go */ } }
+      dragged = true;
+      var a0 = msAt(p0), a1 = msAt(ev.clientX);
+      S.clip = { from: Math.min(a0, a1), to: Math.max(a0, a1) };
+      renderScrub();
+      ev.preventDefault();
+    });
+    function end() {
+      if (p0 === null) return;
+      p0 = null;
+      if (dragged) draw();
+    }
+    tr.addEventListener('pointerup', end);
+    tr.addEventListener('pointercancel', end);
+    // The click that ends a drag is the drag's, not a mark's.
+    tr.addEventListener('click', function (ev) {
+      if (dragged) { dragged = false; ev.stopPropagation(); ev.preventDefault(); return; }
+      if (ev.target === tr) setTime(msAt(ev.clientX));
+    }, true);
+  }
+  if (REPLAY) {
+    document.body.classList.add('replay');
+    document.body.classList.toggle('details', S.details);
+    timelineDrag();
   }
 
   function renderAll() {
     $('run-title').textContent = DATA.title;
+    if (REPLAY) renderDetails();
     renderList();
     renderHead();
     renderToolbar();
@@ -1588,6 +1940,8 @@
     else if (e.key === 'Home') { setFrame(0); e.preventDefault(); }
     else if (e.key === 'End') { setFrame(a.tl.ks.length - 1); e.preventDefault(); }
     else if (e.key === ' ') { play(!S.playing); e.preventDefault(); }
+    else if (REPLAY && e.key === '[') { setEnd('from'); e.preventDefault(); }
+    else if (REPLAY && e.key === ']') { setEnd('to'); e.preventDefault(); }
   });
 
   // Start on the first scenario that did not pass, else the first.

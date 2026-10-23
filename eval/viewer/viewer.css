@@ -204,3 +204,50 @@ pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hove
 .track-legend .k.chg { background: var(--c3); }
 .track-legend .k.map { background: var(--c4); }
 .track-legend .k.bad, .track-legend .k.report { background: var(--fail); }
+
+/* (replay-clip) A replay's page: the frame large with the timeline under
+   it, large controls, the clip; the dense views behind Details. */
+body.replay .layout { grid-template-columns: minmax(0, 1fr); }
+body.replay .rail { display: none; }
+body.replay .main { max-width: 1400px; margin: 0 auto; width: 100%; }
+body.replay:not(.details) .dense,
+body.replay:not(.details) .film,
+body.replay:not(.details) .panels { display: none; }
+body.replay .dense.fields { display: contents; }
+body.replay:not(.details) .dense.fields { display: none; }
+body.replay .reported { font-size: 15px; margin-bottom: 6px; overflow-wrap: anywhere; }
+body.replay .stage { max-height: none; }
+body.replay .controls .btn, body.replay #clip .btn, .btn.big { min-height: 40px; min-width: 44px; padding: 8px 14px; font-size: 15px; border-radius: 8px; }
+body.replay .controls select { min-height: 36px; font-size: 15px; }
+body.replay .frame-label { font-size: 13px; flex-basis: 100%; }
+.btn.toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+.btn.toggle[aria-pressed="true"]:hover { background: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+.btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn.primary:disabled { filter: none; }
+body.replay .tabs { gap: 6px; border-bottom: 0; }
+body.replay .tabs button { font-size: 15px; min-height: 40px; padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+body.replay .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+body.replay .track.timeline { height: 56px; cursor: crosshair; touch-action: none; }
+body.replay .track .m.report, body.replay .track.timeline .m.cur, body.replay .track .b.untraced { height: 56px; }
+.track .b.clip { top: 0; height: 100%; background: var(--accent); opacity: 0.22; border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); pointer-events: none; }
+.track .m.clip-end { top: 0; height: 100%; width: 3px; background: var(--accent); }
+.track-legend .k.clip { background: var(--accent); opacity: 0.5; }
+.track-legend .k.hint { background: var(--skip); }
+.surface { position: relative; display: inline-block; touch-action: none; }
+.rubber { position: absolute; border: 2px dashed var(--accent); background: rgba(47, 98, 200, 0.15); pointer-events: none; }
+.details-bar { margin: 14px 0 4px; }
+#clip { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; }
+#clip h2 { font-size: 16px; margin: 0 0 8px; }
+.clip-row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 8px; }
+.clip-what { font-weight: 600; min-width: 44px; }
+.clip-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.clip-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.clip-label { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.clip-list .remove { margin-left: auto; }
+.clip-out { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
+pre.cmd:empty { display: none; }
+.clip-text { max-height: 40vh; overflow: auto; white-space: pre; font-size: 12px; }
+.mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; overflow-wrap: anywhere; }
+.byhand { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12px; }
+.offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }

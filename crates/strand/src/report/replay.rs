@@ -9,6 +9,11 @@
 //! With no directory named, the newest report under the state
 //! directory's `reports/` is replayed (bundle names start with their
 //! local time, so the last by name is the newest).
+//!
+//! (replay-clip) `strand replay clip [report-dir] --from T …` hands off
+//! the same way, as `strand-eval replay clip …`: a clip of the report's
+//! replay (docs/eval.md, "A clip"), the newest report's when none is
+//! named.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -59,13 +64,17 @@ pub(crate) fn newest(reports: &Path) -> Option<PathBuf> {
 /// directory.
 const VALUED: [&str; 6] = ["--out", "-o", "--to", "--output", "--traced", "--frames"];
 
+/// (replay-clip) The options `strand-eval replay clip` takes a value
+/// with (eval/src/replay/clip.rs `CLIP_VALUED`).
+const CLIP_VALUED: [&str; 5] = ["--from", "--to", "--node", "--note", "--save"];
+
 /// Whether `args` name a report directory (a word that is no option and
-/// no option's value).
-fn names_dir(args: &[OsString]) -> bool {
+/// no option's value; `valued`: the options that take one).
+fn names_dir(args: &[OsString], valued: &[&str]) -> bool {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let s = a.to_string_lossy();
-        if VALUED.contains(&s.as_ref()) {
+        if valued.contains(&s.as_ref()) {
             it.next();
         } else if !s.starts_with('-') {
             return true;
@@ -97,7 +106,15 @@ pub(crate) fn command(
     };
     let mut cmd = std::process::Command::new(eval);
     cmd.arg("replay");
-    if !names_dir(args) {
+    // (replay-clip) `clip` first: its own options, the report after it.
+    let (args, valued): (&[OsString], &[&str]) = match args.split_first() {
+        Some((first, rest)) if first == "clip" => {
+            cmd.arg("clip");
+            (rest, &CLIP_VALUED)
+        }
+        _ => (args, &VALUED),
+    };
+    if !names_dir(args, valued) {
         let Some(reports) = reports else {
             return Err("no state directory to find reports in (set HOME)".into());
         };
@@ -202,20 +219,66 @@ mod tests {
     #[test]
     fn a_named_directory_is_passed_on_and_an_options_value_is_not_one() {
         let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(names_dir(&os(&["/r/x"])));
-        assert!(names_dir(&os(&["--no-open", "/r/x"])));
-        assert!(!names_dir(&os(&["--no-open", "--traced", "5"])));
-        assert!(!names_dir(&os(&["--output", "DP-1"])));
+        assert!(names_dir(&os(&["/r/x"]), &VALUED));
+        assert!(names_dir(&os(&["--no-open", "/r/x"]), &VALUED));
+        assert!(!names_dir(&os(&["--no-open", "--traced", "5"]), &VALUED));
+        assert!(!names_dir(&os(&["--output", "DP-1"]), &VALUED));
         // `-o` is `--out`: its value is no report.
-        assert!(!names_dir(&os(&["-o", "/tmp/r"])));
-        assert!(!names_dir(&os(&[
-            "--no-open",
-            "-o",
-            "/tmp/r",
-            "--traced",
-            "all"
-        ])));
-        assert!(names_dir(&os(&["-o", "/tmp/r", "/r/x"])));
+        assert!(!names_dir(&os(&["-o", "/tmp/r"]), &VALUED));
+        assert!(!names_dir(
+            &os(&["--no-open", "-o", "/tmp/r", "--traced", "all"]),
+            &VALUED
+        ));
+        assert!(names_dir(&os(&["-o", "/tmp/r", "/r/x"]), &VALUED));
+    }
+
+    /// (replay-clip) `strand replay clip …` is `strand-eval replay clip
+    /// …`, the newest report put after `clip` when none is named, and a
+    /// clip option's value (a note, a node) is no report.
+    #[test]
+    fn a_clip_hands_off_with_the_newest_report_after_clip() {
+        let d = tmp("clip");
+        let exe = d.join("bin/strand");
+        stub(&d.join("bin").join(EVAL));
+        let reports = d.join("reports");
+        std::fs::create_dir_all(reports.join("2026-10-21_09-00-00")).unwrap();
+        std::fs::write(reports.join("2026-10-21_09-00-00/bundle.json"), "{}").unwrap();
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        let argv = |c: &std::process::Command| {
+            c.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let c = command(
+            &os(&[
+                "clip", "--from", "-3.2s", "--note", "the card", "--node", "#card",
+            ]),
+            Some(&exe),
+            Some(OsStr::new("")),
+            Some(&reports),
+        )
+        .unwrap();
+        let newest = reports.join("2026-10-21_09-00-00").display().to_string();
+        assert_eq!(
+            argv(&c),
+            [
+                "replay", "clip", &newest, "--from", "-3.2s", "--note", "the card", "--node",
+                "#card"
+            ]
+        );
+        let c = command(
+            &os(&["clip", "/r/x", "--from", "-1s"]),
+            Some(&exe),
+            Some(OsStr::new("")),
+            Some(&reports),
+        )
+        .unwrap();
+        assert_eq!(argv(&c), ["replay", "clip", "/r/x", "--from", "-1s"]);
+        assert!(!names_dir(
+            &os(&["--to", "-1s", "--save", "c.zip"]),
+            &CLIP_VALUED
+        ));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
