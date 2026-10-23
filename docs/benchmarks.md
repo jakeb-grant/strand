@@ -366,5 +366,10 @@ the report branch's binary (recording on, the default, in every run):
 | `.text`, default build (GPU backend) | 26,033,559 B (gate 26,214,400) |
 | `.text`, CPU-only | 22,045,783 B (gate 22,282,240) |
 
+The gates were raised on 2026-10-22 at the owner's word, after this
+report: `main` at 091c7f64 measured 26,207,698 B (GPU) and 22,218,514 B
+(CPU-only) in GitHub CI's budgets job (run 39691736543), and the gates
+are 26,738,688 and 22,806,528 B (decisions.md growth).
+
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.
