@@ -1128,6 +1128,21 @@ fn a_four_output_session_is_kept_for_its_replay() {
     desk.keep = keep.is_some();
     let (w, h) = (5120, 720);
     let taps = |d: &Desk, n: &str| d.get("report.strip_taps").as_deref() == Some(n);
+    // Every surface painted before the first click: `with_outputs`
+    // waits for two, and a strip not yet on screen takes no press, so
+    // the first click could find nothing (a strip and a top bar on
+    // each of the four outputs, and the panel).
+    desk.wait("every output's strip and bar show", |d| {
+        d.log_text()
+            .lines()
+            .filter(|l| l.starts_with("strand: damage"))
+            .filter_map(|l| l.split_whitespace().find(|w| w.starts_with("surface=")))
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            >= 9
+    });
+    std::thread::sleep(Duration::from_millis(200));
     desk.pointer.motion(1280 + 30, 700, w, h);
     desk.pointer.click(1280 + 40, 700, w, h);
     desk.wait("HEADLESS-2's strip counted", |d| taps(d, "1"));
