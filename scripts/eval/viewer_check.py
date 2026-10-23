@@ -253,6 +253,54 @@ def exercise_time(page, chk, tl, where, tag, kind):
     slide(page, top)
 
 
+def exercise_no_flicker(page, chk, where):
+    """(flicker-owner) A frame scrubbed to for the first time, its image
+    still decoding, holds the last image rather than flash the
+    wireframe: every stage canvas drawn at a frame that settles on its
+    image must have been drawn from an image (its own or the one held).
+    On the page opened afresh in a context of its own, so no frame was
+    decoded before (a reload keeps the images the memory cache holds)."""
+    ctx = page.context.browser.new_context(viewport=page.viewport_size)
+    try:
+        fresh = ctx.new_page()
+        watch(fresh, chk, lambda: where)
+        fresh.goto(page.url)
+        fresh.wait_for_selector("#list li", state="attached")
+        settle(fresh)
+        flicker_pass(fresh, chk, where)
+    finally:
+        ctx.close()
+
+
+def flicker_pass(page, chk, where):
+    page.evaluate("""() => {
+      window.__drawn = [];
+      new MutationObserver(function () {
+        var v = document.getElementById('slider').value;
+        document.querySelectorAll('#stage canvas[data-drawn]').forEach(function (c) {
+          if (!c.__seen) { c.__seen = 1; window.__drawn.push([v, c.dataset.drawn]); }
+        });
+      }).observe(document.getElementById('stage'), { childList: true, subtree: true });
+    }""")
+    top = int(page.locator("#slider").get_attribute("max") or "0")
+    steps = 24
+    for n in range(1, steps + 1):
+        v = top * n // (steps + 1)
+        page.locator("#slider").evaluate(
+            "(s, v) => { s.value = String(v); s.dispatchEvent(new Event('input', {bubbles: true})); }", v)
+    settle(page, 400)
+    seen = page.evaluate("() => window.__drawn")
+    # What each frame settles on, every image decoded by now.
+    final = {}
+    for v in sorted({v for v, _ in seen}):
+        slide(page, int(v))
+        settle(page, 150)
+        final[v] = page.evaluate("() => Array.from(document.querySelectorAll('#stage canvas[data-drawn]')).map(c => c.dataset.drawn)")
+    bad = sorted({v for v, d in seen if d == "wireframe" and "image" in final.get(v, [])})
+    chk.expect(not bad, where, f"a frame flashed its wireframe while its image decoded (slider at {bad[:6]})")
+    chk.expect(any(d == "image" for _, d in seen), where, "no stage was drawn from an image while scrubbing")
+
+
 def exercise_scroll_kept(page, chk, where, tag):
     """(scroll-owner) Scrubbing, stepping and the keys leave the page
     where the viewer scrolled it: the filmstrip's current frame was
@@ -622,6 +670,7 @@ def exercise_scenario(page, chk, data, sc, kind, tag):
         exercise_simple(page, chk, where, tag, kind)
         exercise_time(page, chk, tl, where, tag, kind)
         exercise_scroll_kept(page, chk, where, tag)
+        exercise_no_flicker(page, chk, where)
         exercise_clip(page, chk, tl, where, tag, kind)
         exercise_clip_picks(page, chk, where)
         details(page, chk, where, True)

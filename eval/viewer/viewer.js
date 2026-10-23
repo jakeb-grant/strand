@@ -532,11 +532,47 @@
     var c = sc.imgs[name];
     if (!c) {
       c = new Image();
-      c.onload = function () { draw(); };
+      c.onload = redrawSoon;
+      c.onerror = redrawSoon;
       c.src = sc.images[name];
       sc.imgs[name] = c;
     }
     return c.complete && c.naturalWidth ? c : null;
+  }
+
+  // (flicker-owner) Images that finish decoding together redraw once,
+  // at the next animation frame, not once each.
+  var redrawPending = false;
+  function redrawSoon() {
+    if (redrawPending) return;
+    redrawPending = true;
+    requestAnimationFrame(function () { redrawPending = false; draw(); });
+  }
+
+  // (flicker-owner) Whether an image of frame `name` (a patch's bases
+  // with it) is still decoding; a broken one is complete, not loading.
+  function loading(sc, name) {
+    for (var n = 0; n < 4096 && name; n++) {
+      if (sc.images[name]) {
+        var c = stored(sc, name) || sc.imgs[name];
+        if (c && !c.complete) return true;
+      }
+      var p = patchOf(sc, name);
+      if (!p) return false;
+      name = p[0];
+    }
+    return false;
+  }
+
+  // (flicker-owner) Starts decoding frame `name`'s images, a patch's
+  // bases with it, so a frame scrubbed to next is ready when it shows.
+  function warm(sc, name) {
+    for (var n = 0; n < 4096 && name; n++) {
+      if (sc.images[name]) stored(sc, name);
+      var p = patchOf(sc, name);
+      if (!p) return;
+      name = p[0];
+    }
   }
 
   // (replayfix) A packed report's frame may be a patch of the one
@@ -684,6 +720,7 @@
       }
       return cv;
     }
+    cv.dataset.drawn = im ? 'image' : 'wireframe';
     if (im) {
       x.drawImage(im, 0, 0, W * z, H * z);
     } else {
@@ -1009,6 +1046,16 @@
   var flickTimer = null;
   function renderStage() {
     var st = $('stage');
+    // (flicker-owner) A frame scrubbed to for the first time may have
+    // an image still decoding: the stage keeps the frame it shows until
+    // every image of the new one is ready (the load redraws), rather
+    // than flash the wireframe, or a blank surface, for a frame.
+    var a0 = A();
+    if (a0 && st.firstChild && S.i >= 0 && S.i < a0.tl.screens.length) {
+      var wait = false;
+      a0.tl.screens[S.i].forEach(function (v) { if (v.png && loading(a0, v.png)) wait = true; });
+      if (wait) return;
+    }
     st.textContent = '';
     var a = A(), b = B();
     if (!a) return;
@@ -1697,12 +1744,25 @@
   // out shorter, so the browser moved the page's scroll; it is put back.
   function draw() {
     var x = window.scrollX, y = window.scrollY;
+    warmAround();
     renderStage();
     renderScrub();
     renderFilm();
     if (S.tab !== 'verdict') renderPanel();
     if (REPLAY) renderClip();
     if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+  }
+
+  // (flicker-owner) The frames a scrub or a step reaches next, decoded
+  // ahead: three on, one back, each surface's.
+  function warmAround() {
+    var a = A();
+    if (!a) return;
+    for (var d = -1; d <= 3; d++) {
+      var j = S.i + d;
+      if (d === 0 || j < 0 || j >= a.tl.screens.length) continue;
+      a.tl.screens[j].forEach(function (v) { if (v.png) warm(a, v.png); });
+    }
   }
 
   // ---- (replay-clip) the clip ----------------------------------------------------------

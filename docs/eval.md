@@ -1633,8 +1633,9 @@ writes nothing outside `--out`, so its tests and mutant runs never do.
 elsewhere. It shows each scenario's frames:
 
 - scrubbable by tick, leaving the page where it is scrolled (the filmstrip
-  brings its current frame into its own view only), with a filmstrip of
-  every frame and an onion skin
+  brings its current frame into its own view only) and the frame shown
+  until every image of the next is decoded (the frames around the current
+  one decoded ahead), with a filmstrip of every frame and an onion skin
   of the frames before (as outlines, only the boxes the frame does not
   draw again: a node drawn where it was lies under its own outline);
 - at `fit` zoom by default: the largest whole zoom (or the fraction
