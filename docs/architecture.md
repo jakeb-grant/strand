@@ -774,7 +774,12 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   raster under the children), `gpu.rs` (M4, `gpu` builds: the bundled
   GPU effects as pass wants, decisions.md m4-gpu-effects).
 - `backdrop.rs` (S-effects): `backdrop: blur()` and `glass()`'s CPU
-  fallback, an offscreen group of what is drawn behind the node.
+  fallback, an offscreen group of what is drawn behind the node;
+  `hash_behind`, what the node's damage and its pass's want key hash of
+  what is behind it: the items over its region and (perf-gpu-retain
+  review) the clip, opacity, transform and layer markers around them
+  and every layer over it, the groups open at the node (its ancestors')
+  left out.
 - Top-level files beside the directories, among them: `cache.rs`
   (dithered gradients and blurred shadows drawn once into pixmaps, a
   large shadow as size-independent slice tiles),
@@ -5418,19 +5423,32 @@ Wayland crate. Its interface:
   vello's blurred rounded rect, the primitive the CPU draws shadows with,
   one per quadrant when its corners differ, so no shadow pixmap or
   corner tile is built for a GPU frame); `Op::Backdrop { region, ops,
-  pass, then, globals }` (a backdrop: `ops`, what is drawn behind it,
-  balanced, from the identity transform, rendered into a texture of
-  `region` whose origin is its corner, read as `strand_input` by `pass`
-  and each of `then`, the result drawn over `region` at the identity
-  transform under the clips and layers in force; each backdrop's
-  render is submitted on its own, before the frame's, its texture
-  reused by the surface's next frame and freed when that frame has no
-  backdrop of its size; `key`, render's hash of its want's key (what is
-  behind it, its passes and globals) and its region, or 0 when what is
-  behind it runs passes: a backdrop with the key of one the surface's
-  last frame drew is drawn from that one's pixels, nothing rendered or
-  run, and the last frame's pixels no backdrop of this frame keeps are
-  freed); and `Op::Snapshot { rect }` (the surface's
+  pass, then, globals, key, reduce }` (a backdrop: `ops`, what is drawn
+  behind it, balanced, from the identity transform, rendered into a
+  texture of `region` whose origin is its corner, read as
+  `strand_input` by `pass` and each of `then`, the result drawn over
+  `region` at the identity transform under the clips and layers in
+  force; each backdrop's render is submitted on its own, before the
+  frame's; `reduce` (1, 2 or 4; review) draws it at that fraction of
+  the region's size, rounded up, its passes run there with the
+  uniforms given, and scales its pixels back up by exactly `reduce`,
+  bilinearly from pixel centres with the edge pixels repeated, as the
+  CPU draws a backdrop blur under about 0.2 Mpx; `key`, render's hash
+  of its want's key (what is behind it, every group around what is
+  behind it included, its passes, globals and `reduce`), its region and
+  the pixels of each CPU-filtered group among its ops, or 0 when what
+  is behind it runs passes: a backdrop with the key of one the
+  surface's last frame drew is drawn from that one's pixels, nothing
+  rendered or run). (review) The textures a surface's backdrops render
+  and run their passes into come from a pool of its own, by size, each
+  handed back once read (`pass::Pool`), so a backdrop drawn anew every
+  frame allocates nothing once the pool has its two, what is behind it
+  and its pixels, which swap roles each frame; the pool keeps what a
+  frame handed back and frees the rest, and the last frame's pixels no
+  backdrop of the frame keeps are the frame's to draw into. A surface
+  holds two textures per backdrop drawn anew in its last frame and one
+  per backdrop drawn from its last pixels, none once a frame draws no
+  backdrop; and `Op::Snapshot { rect }` (the surface's
   crossfade snapshot 1:1 from the origin, nothing when none is held).
   `FrameSnapshot` is `None` (none held: one held is freed), `Take`
   (before the frame draws, the surface's last frame at the frame's
@@ -5737,9 +5755,11 @@ does not switch. The frame holds for the result like a readback frame,
 up to `GPU_WAIT` (8 ms), and otherwise draws the previous result. On a
 promoted surface a node's own pass (a `shader` node, aurora, particles)
 runs in the GPU frame; a layer's bundled passes (`filter:`, glass, a
-large backdrop blur) are always `Pass` requests read back, whose pixels
+large backdrop blur) are `Pass` requests read back, whose pixels
 render attaches to the layer (`strand_render::layers::Layer::gpu`) as
-its offscreen group on either backend. Render asks for a bundled pass
+its offscreen group, but a backdrop a GPU frame draws itself
+(perf-gpu-retain: `Op::Backdrop`; a blur under about 0.2 Mpx there at
+the CPU's reduction, and the CPU's wherever no GPU frame draws it). Render asks for a bundled pass
 only while its node shows (inside its ancestors' clip and the
 surface), which is what starts the device and keeps it up.
 

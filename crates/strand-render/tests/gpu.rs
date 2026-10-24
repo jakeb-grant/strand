@@ -2644,8 +2644,8 @@ fn backdrops_the_cpu_draws_with_others_keep_their_own_pass() {
 
 /// A small `backdrop: blur()` (under about 0.2 Mpx, the CPU's at
 /// quarter scale on a surface the CPU draws) is drawn in a presented
-/// surface's frame too, at full resolution: nothing rasterised or
-/// uploaded for it, smooth across the stripes behind.
+/// surface's frame too, at the same quarter scale (review): nothing
+/// rasterised or uploaded for it, smooth across the stripes behind.
 #[test]
 fn a_small_backdrop_blur_on_a_presented_surface_is_drawn_in_its_frame() {
     let Some(opts) = device() else { return };
@@ -2727,4 +2727,522 @@ fn a_backdrops_key_follows_what_is_behind_it() {
     assert!(r.apply(d).is_empty());
     let f = r.paint_gpu(S, t(48)).expect("moved");
     assert_ne!(backdrop_keys(&f), first, "drawn anew");
+}
+
+// ---------------------------------------------------------------------------
+// (perf-gpu-retain review) What a backdrop's key and pixels follow
+
+/// The stripes of [`backdrop_scene`] (nodes 1 to `w / 10`; the bar is 0
+/// and the card the next).
+fn stripe_ids(w: u32) -> impl Iterator<Item = NodeId> {
+    (1..=w / 10).map(|id| NodeId::new(id, 0))
+}
+
+/// The card of [`backdrop_scene`].
+fn card_id(w: u32) -> NodeId {
+    NodeId::new(w / 10 + 1, 0)
+}
+
+/// [`backdrop_scene`] with a `blur(sigma)` card at `at`, its stripes
+/// faded to 0.1 if `faded`.
+fn blur_scene(size: (u32, u32), at: (f32, f32, f32, f32), sigma: f32, faded: bool) -> SceneDiff {
+    let mut s = backdrop_scene(
+        size,
+        at,
+        backdrop_call("blur", vec![num(sigma)]),
+        vec![],
+        vec![],
+    );
+    if faded {
+        for id in stripe_ids(size.0) {
+            s.set(id, Prop::Opacity, num(0.1));
+        }
+    }
+    s
+}
+
+/// A presented renderer of `scene` without a device: its frames are
+/// lowered, not drawn.
+fn lowered(scene: SceneDiff, size: (u32, u32)) -> Renderer {
+    let mut r = renderer();
+    assert!(r.apply(scene).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(size.0, size.1, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    up_without_a_device(&mut r);
+    r
+}
+
+/// A backdrop's key and region (whole pixels).
+type Keyed = (u64, [i64; 4]);
+
+/// The keys and regions of `f`'s backdrops.
+fn keyed(f: &strand_gpu::Frame) -> Vec<Keyed> {
+    f.ops
+        .iter()
+        .filter_map(|o| match o {
+            strand_gpu::Op::Backdrop { key, region, .. } => Some((
+                *key,
+                [region.x0, region.y0, region.x1, region.y1].map(|v| v.round() as i64),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Paints `r`'s presented frames from `from_ms` until it settles: each
+/// frame's backdrop keys and regions, and the last frame drawn on `gpu`
+/// if given.
+fn settle(
+    r: &mut Renderer,
+    mut gpu: Option<(&mut Gpu, &mpsc::Receiver<()>)>,
+    from_ms: u64,
+) -> (Vec<Vec<Keyed>>, Option<Vec<u8>>) {
+    let mut keys = Vec::new();
+    let mut last = None;
+    for k in 0..240u64 {
+        let t = Duration::from_secs(1) + Duration::from_millis(from_ms + 16 * k);
+        if let Some(f) = r.paint_gpu(S, t) {
+            keys.push(keyed(&f));
+            if let Some((g, p)) = gpu.as_mut() {
+                last = Some(draw(g, p, f));
+            }
+        }
+        if !r.wants_frame(S) && k > 2 {
+            break;
+        }
+    }
+    (keys, last)
+}
+
+/// A change made to a scene.
+type Change = fn(&mut SceneDiff);
+
+/// A backdrop's key follows what is behind it however it changes: the
+/// stripes behind fading (their `PushOpacity` markers change, the items
+/// inside do not) or taking a `filter:` (a `PushLayer`), and the card
+/// moving a pixel over stripes it already covered (the items over its
+/// region are the same; what it reads is not: every frame drawing it
+/// elsewhere has another key). Before the review's fix (the want's key
+/// skipped every marker, and a backdrop drawn from its last pixels kept
+/// its pre-fade blur) the first two kept their key. Needs no device.
+#[test]
+fn a_backdrops_key_follows_a_fade_a_filter_or_a_move() {
+    let size = (640, 400);
+    let changes: [(&str, Change); 3] = [
+        ("fade", |d| {
+            for id in stripe_ids(640) {
+                d.set(id, Prop::Opacity, num(0.1));
+            }
+        }),
+        ("filter", |d| {
+            for id in stripe_ids(640) {
+                d.set(id, Prop::Filter, backdrop_call("grayscale", vec![num(1.0)]));
+            }
+        }),
+        // Its read region (x 77 to 425) crosses no stripe's edge moving
+        // to 102.
+        ("move", |d| {
+            d.set(card_id(640), Prop::X, num(102.0));
+        }),
+    ];
+    for (name, change) in changes {
+        let mut r = lowered(
+            blur_scene(size, (101.0, 20.0, 300.0, 300.0), 8.0, false),
+            size,
+        );
+        let (before, _) = settle(&mut r, None, 16);
+        let before = before.last().cloned().unwrap_or_default();
+        assert_eq!(before.len(), 1, "{name}");
+        assert_ne!(before[0].0, 0, "{name}");
+        let mut d = SceneDiff::new();
+        change(&mut d);
+        assert!(r.apply(d).is_empty());
+        let (after, _) = settle(&mut r, None, 2000);
+        assert!(!after.is_empty(), "{name}: repainted");
+        let last = after.last().cloned().unwrap_or_default();
+        assert_ne!(
+            last[0].0, before[0].0,
+            "{name}: drawn from the pixels before it"
+        );
+        if name == "move" {
+            assert_ne!(last[0].1, before[0].1, "moved");
+            for k in &after {
+                assert!(
+                    k[0].1 == before[0].1 || k[0].0 != before[0].0,
+                    "a frame drawing it at {:?} with the key it had at {:?}",
+                    k[0].1,
+                    before[0].1
+                );
+            }
+        } else {
+            for k in &after {
+                assert_ne!(
+                    k[0].0, before[0].0,
+                    "{name}: drawn from the pixels before it"
+                );
+            }
+        }
+    }
+}
+
+/// An ancestor fading leaves a backdrop's key alone: the group open
+/// around the card holds the backdrop itself, not what is behind it, so
+/// a box fading in with a blurred card in it blurs it once. Needs no
+/// device.
+#[test]
+fn an_ancestor_fading_keeps_a_backdrops_key() {
+    let size = (640, 400);
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Clip, PropValue::Bool(true)),
+        ],
+    );
+    let abs = |x: f32, y: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(y)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+        ]
+    };
+    for i in 0..64 {
+        let mut p = abs(i as f32 * 10.0, 0.0, 10.0, 400.0);
+        p.push((Prop::Bg, color(["#f38ba8", "#a6e3a1"][i % 2])));
+        b.node(NodeKind::Box, Some(root), p);
+    }
+    let group = b.node(NodeKind::Box, Some(root), abs(0.0, 0.0, 640.0, 400.0));
+    let mut p = abs(101.0, 20.0, 300.0, 300.0);
+    p.extend([
+        (Prop::Radius, num(12.0)),
+        (Prop::Backdrop, backdrop_call("blur", vec![num(8.0)])),
+    ]);
+    b.node(NodeKind::Box, Some(group), p);
+    let mut r = lowered(b.diff, size);
+    let (before, _) = settle(&mut r, None, 16);
+    let before = before.last().cloned().unwrap_or_default();
+    assert_eq!(before.len(), 1);
+    let mut d = SceneDiff::new();
+    d.set(group, Prop::Opacity, num(0.5));
+    assert!(r.apply(d).is_empty());
+    let (after, _) = settle(&mut r, None, 2000);
+    assert!(!after.is_empty(), "repainted");
+    assert_eq!(after.last(), Some(&before), "the same pixels");
+}
+
+/// A backdrop over a `shader` node with a clock is drawn anew every
+/// frame (key 0): the pass's pixels move with its clock, which the
+/// display list's hash does not see. Needs no device.
+#[test]
+fn a_backdrop_over_a_clocked_shader_is_drawn_anew() {
+    let clocked = Arc::new(ShaderCode {
+        path: "clock.wgsl".into(),
+        wgsl: "@fragment\n\
+               fn main(v: StrandVertex) -> @location(0) vec4<f32> {\n\
+                   return vec4<f32>(fract(strand.time), 0.0, 0.0, 1.0);\n\
+               }\n"
+        .into(),
+        uniforms: ShaderCode::packed(vec![]),
+    });
+    let size = (640, 400);
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Clip, PropValue::Bool(true)),
+        ],
+    );
+    let abs = |x: f32, y: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(y)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+        ]
+    };
+    let mut p = abs(60.0, 60.0, 200.0, 200.0);
+    p.push((Prop::Shader, PropValue::Shader(clocked)));
+    b.node(NodeKind::Shader, Some(root), p);
+    let mut p = abs(20.0, 20.0, 300.0, 300.0);
+    p.extend([
+        (Prop::Radius, num(12.0)),
+        (Prop::Backdrop, backdrop_call("blur", vec![num(8.0)])),
+    ]);
+    b.node(NodeKind::Box, Some(root), p);
+    let mut r = lowered(b.diff, size);
+    let t = |ms: u64| Duration::from_secs(1) + Duration::from_millis(ms);
+    for ms in [16, 32, 48] {
+        let f = r.paint_gpu(S, t(ms)).expect("the clock repaints");
+        assert_eq!(backdrop_keys(&f), vec![0], "at {ms} ms");
+    }
+}
+
+/// Pixels: a presented surface's blurred card after the stripes behind
+/// it fade, or after it moves a pixel, against the same scene drawn
+/// fresh on a device of its own: the same within the GPU tolerance. A
+/// small card (the CPU's reduction) and a large one (full size). The
+/// review measured the stale card at 89,902 and 113,350 pixels off.
+#[test]
+fn a_backdrops_pixels_follow_a_fade_or_a_move_behind_it() {
+    let Some(opts) = device() else { return };
+    let size = (640, 400);
+    for at in [(101.0, 20.0, 300.0, 300.0), (20.0, 20.0, 560.0, 360.0)] {
+        for (name, faded, moved) in [("fade", true, at.0), ("move", false, at.0 + 1.0)] {
+            let (mut r, mut gpu, pings) =
+                backdrop_presented(opts, blur_scene(size, at, 8.0, false), size);
+            let (_, before) = settle(&mut r, Some((&mut gpu, &pings)), 16);
+            let mut d = SceneDiff::new();
+            if faded {
+                for id in stripe_ids(size.0) {
+                    d.set(id, Prop::Opacity, num(0.1));
+                }
+            }
+            d.set(card_id(size.0), Prop::X, num(moved));
+            assert!(r.apply(d).is_empty());
+            let (_, live) = settle(&mut r, Some((&mut gpu, &pings)), 2000);
+            drop(gpu);
+            let (mut f, mut gpu2, pings2) = backdrop_presented(
+                opts,
+                blur_scene(size, (moved, at.1, at.2, at.3), 8.0, faded),
+                size,
+            );
+            let (_, fresh) = settle(&mut f, Some((&mut gpu2, &pings2)), 16);
+            drop(gpu2);
+            let (before, live, fresh) = (before.unwrap(), live.unwrap(), fresh.unwrap());
+            let (bad, worst) = compare_bytes(&live, &fresh);
+            assert!(
+                bad as f64 / f64::from(size.0 * size.1) <= EDGE_SHARE,
+                "{name} {at:?}: {bad} pixels past {GPU_TOLERANCE} of a fresh draw (worst {worst})"
+            );
+            let (changed, _) = compare_bytes(&before, &live);
+            assert!(changed > 0, "{name} {at:?}: the frame changed");
+        }
+    }
+}
+
+/// A small `backdrop: blur()` (under about 0.2 Mpx) looks the same
+/// whoever draws it: a presented surface draws it in its frame at the
+/// CPU's reduction (a quarter for sigma 8 and up), so the frame matches
+/// the CPU surface's, at scale 1 and 1.5, within the GPU tolerance. At
+/// full resolution it was 99.8% of the card past the tolerance (worst
+/// 11 at sigma 8, 19 at 16): the look changed at every promotion.
+#[test]
+fn a_small_backdrop_blur_looks_the_same_on_either_backend() {
+    let Some(opts) = device() else { return };
+    let logical = (640u32, 400u32);
+    let at = (100.0, 60.0, 240.0, 240.0);
+    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+        let size = scale.physical_size(LogicalSize::new(logical.0 as f32, logical.1 as f32));
+        for sigma in [2.0f32, 8.0, 16.0] {
+            let scene = || blur_scene(logical, at, sigma, false);
+            let mut c = renderer();
+            c.set_promotion(false);
+            assert!(c.apply(scene()).is_empty());
+            c.attach_surface(S, c.tree().roots()[0]);
+            c.configure_surface(S, size, scale);
+            let mut buf = Buffer::new(size.w, size.h, scale);
+            buf.paint_at(&mut c, S, 0, Duration::from_secs(1));
+            assert!(
+                !c.take_gpu_requests()
+                    .iter()
+                    .any(|q| matches!(q, GpuRequest::Pass(_))),
+                "a small blur is the CPU's on a CPU surface"
+            );
+            let mut r = renderer();
+            assert!(r.apply(scene()).is_empty());
+            r.attach_surface(S, r.tree().roots()[0]);
+            r.configure_surface(S, size, scale);
+            let mut first = Buffer::new(size.w, size.h, scale);
+            first.paint_at(&mut r, S, 0, Duration::from_secs(1));
+            let _ = r.take_gpu_requests();
+            r.promote_now(S);
+            let _ = r.take_backend_changes();
+            r.set_backend(S, Backend::GpuPresent);
+            let (ping, pings) = mpsc::channel();
+            let mut gpu = Gpu::spawn(
+                Box::new(move || {
+                    let _ = ping.send(());
+                }),
+                opts,
+            );
+            gpu.send(GpuRequest::Attach {
+                surface: S,
+                handles: None,
+                size,
+                scale,
+                opaque: false,
+            });
+            let frame = r
+                .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
+                .expect("the switch repaints");
+            let reduce: Vec<u32> = backdrops_in(&frame)
+                .iter()
+                .filter_map(|o| match o {
+                    strand_gpu::Op::Backdrop { reduce, .. } => Some(*reduce),
+                    _ => None,
+                })
+                .collect();
+            let sigma_px = sigma * scale.as_f32();
+            let want = if sigma_px >= 8.0 {
+                4
+            } else if sigma_px >= 2.0 {
+                2
+            } else {
+                1
+            };
+            assert_eq!(reduce, vec![want], "in the frame, at the CPU's reduction");
+            assert!(
+                !r.take_gpu_requests()
+                    .iter()
+                    .any(|q| matches!(q, GpuRequest::Pass(_))),
+                "no pass of its own"
+            );
+            let px = draw(&mut gpu, &pings, frame);
+            drop(gpu);
+            let (bad, worst) = compare_bytes(&px, &buf.pixels);
+            let share = bad as f64 / f64::from(size.w * size.h);
+            eprintln!(
+                "blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE}, worst {worst}"
+            );
+            assert!(
+                share <= EDGE_SHARE,
+                "blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
+            );
+        }
+    }
+}
+
+/// A surface promoted, sent back to the CPU and promoted again holds no
+/// GPU frame until it presents one (its GPU thread target is new): a
+/// crossfade planned while it was presented whose first frame is its
+/// first after the second promotion blends the CPU's snapshot, uploaded,
+/// not a frame the GPU thread no longer has (`Surf::shown` is cleared by
+/// each backend change). Needs no device.
+#[test]
+fn a_crossfade_right_after_a_second_promotion_blends_the_cpus_snapshot() {
+    const W: u32 = 640;
+    const H: u32 = 330;
+    let t0 = Duration::from_secs(1);
+    let at = |k: u32| t0 + Duration::from_nanos(1_000_000_000 * k as u64 / 60);
+    let (a, b) = split_tables();
+    let mut r = renderer();
+    fade_scene(&mut r, a);
+    let mut buf = Buffer::new(W, H, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, t0);
+    r.update();
+    buf.paint_at(&mut r, S, 0, t0);
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    assert!(r.paint_gpu(S, at(1)).is_some(), "presented");
+    let mut d = SceneDiff::new();
+    d.set_tokens(b, Transition::Default);
+    assert!(r.apply(d).is_empty());
+    assert_eq!(r.swap_crossfades(), 1, "the swap crossfades");
+    // Back to the CPU and promoted again before its first frame.
+    r.set_backend(S, Backend::Cpu);
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    assert_eq!(r.backend(S), Backend::GpuPresent);
+    let frame = r.paint_gpu(S, at(2)).expect("the crossfade's first frame");
+    assert!(
+        frame.ops.iter().any(|o| matches!(
+            o,
+            strand_gpu::Op::PushLayer(strand_gpu::Layer { blend: Some(_), .. })
+        )),
+        "a crossfade frame"
+    );
+    assert_eq!(frame.snapshot, strand_gpu::FrameSnapshot::None);
+    assert!(
+        !frame
+            .ops
+            .iter()
+            .any(|o| matches!(o, strand_gpu::Op::Snapshot { .. })),
+        "no GPU snapshot drawn"
+    );
+    assert!(
+        frame
+            .uploads
+            .iter()
+            .any(|u| u32::from(u.pixmap.width()) == W),
+        "the CPU's snapshot uploaded"
+    );
+}
+
+/// A crossfade landing mid-crossfade on a presented surface whose first
+/// fade the GPU thread holds, sent back to the CPU before the second's
+/// first frame: the CPU takes the second's snapshot as the blend the
+/// surface showed, drawing the first fade's snapshot from its old frame
+/// (it has no pixels of it), so the fade goes on from what was on
+/// screen, as a surface the CPU drew all along does. Without it the
+/// first frame jumped to the first fade's new frame alone.
+#[test]
+fn a_crossfade_replaced_after_its_gpu_snapshot_goes_on_from_the_blend_shown() {
+    const W: u32 = 640;
+    const H: u32 = 330;
+    let t0 = Duration::from_secs(1);
+    let at = |k: u32| t0 + Duration::from_nanos(1_000_000_000 * k as u64 / 60);
+    let swap = |r: &mut Renderer, t: &TokenTable| {
+        let mut d = SceneDiff::new();
+        d.set_tokens(t.clone(), Transition::Default);
+        assert!(r.apply(d).is_empty());
+    };
+    let (a, b) = split_tables();
+    // The CPU all along.
+    let mut cpu = renderer();
+    fade_scene(&mut cpu, a.clone());
+    let mut want = Buffer::new(W, H, Scale::ONE);
+    want.paint_at(&mut cpu, S, 0, t0);
+    cpu.update();
+    want.paint_at(&mut cpu, S, 0, t0);
+    let old = want.pixels.clone();
+    swap(&mut cpu, &b);
+    for k in 1..=4 {
+        want.paint_at(&mut cpu, S, 0, at(k));
+    }
+    let mid = want.pixels.clone();
+    swap(&mut cpu, &a);
+    want.paint_at(&mut cpu, S, 0, at(5));
+    // Presented through the first fade, then back on the CPU.
+    let mut r = renderer();
+    fade_scene(&mut r, a.clone());
+    let mut buf = Buffer::new(W, H, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, t0);
+    r.update();
+    buf.paint_at(&mut r, S, 0, t0);
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    assert!(r.paint_gpu(S, t0).is_some(), "the switch repaints");
+    swap(&mut r, &b);
+    let mut how = Vec::new();
+    for k in 1..=4 {
+        let f = r.paint_gpu(S, at(k)).expect("a crossfade frame");
+        how.push(f.snapshot);
+    }
+    use strand_gpu::FrameSnapshot::{Keep, Take};
+    assert_eq!(how, vec![Take, Keep, Keep, Keep], "held on the GPU");
+    swap(&mut r, &a);
+    r.set_backend(S, Backend::Cpu);
+    buf.paint_at(&mut r, S, 0, at(5));
+    let (bad, worst) = compare_bytes(&buf.pixels, &want.pixels);
+    assert!(
+        bad == 0 && worst <= 1,
+        "{bad} pixels past {GPU_TOLERANCE} of the CPU's blend (worst {worst})"
+    );
+    // The first fade was under way: neither its old frame nor its new.
+    let (moved, _) = compare_bytes(&mid, &old);
+    assert!(moved > 0, "mid-crossfade");
 }

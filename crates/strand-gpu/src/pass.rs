@@ -75,6 +75,91 @@ pub(crate) struct Drawn {
     pub height: u32,
 }
 
+/// (perf-gpu-retain review) Textures a surface's backdrops render and
+/// run their passes into, reused by size from frame to frame: those a
+/// frame handed back are kept for the next one ([`Pool::end_frame`]),
+/// the rest freed, so it holds no more than one frame's worth.
+#[derive(Default)]
+pub(crate) struct Pool {
+    /// Free textures, each with whether this frame handed it back.
+    free: Vec<(Drawn, bool)>,
+}
+
+impl Pool {
+    /// A free `width × height` texture, or a new one.
+    pub fn take(&mut self, dev: &Device, width: u32, height: u32) -> Drawn {
+        match self
+            .free
+            .iter()
+            .position(|(d, _)| d.width == width && d.height == height)
+        {
+            Some(i) => self.free.swap_remove(i).0,
+            None => target(dev, width, height),
+        }
+    }
+
+    /// `d`, done with in this frame: kept for the next.
+    pub fn give(&mut self, d: Drawn) {
+        self.free.push((d, true));
+    }
+
+    /// `d`, free for this frame to take, freed at its end if it does
+    /// not.
+    pub fn spare(&mut self, d: Drawn) {
+        self.free.push((d, false));
+    }
+
+    /// The end of a frame: what it handed back is kept, the rest freed.
+    pub fn end_frame(&mut self) {
+        self.free.retain(|(_, given)| *given);
+        for f in &mut self.free {
+            f.1 = false;
+        }
+    }
+
+    /// Textures held.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.free.len()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The textures [`target`] made on this thread (tests).
+    pub(crate) static TARGETS_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A texture a pass draws into, a frame is drawn into or copied to.
+pub(crate) fn target(dev: &Device, width: u32, height: u32) -> Drawn {
+    #[cfg(test)]
+    TARGETS_MADE.with(|n| n.set(n.get() + 1));
+    let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("strand target"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Drawn {
+        texture,
+        view,
+        width,
+        height,
+    }
+}
+
 fn code_key(code: &ShaderCode) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     code.wgsl.hash(&mut h);
@@ -318,23 +403,92 @@ impl Passes {
         globals: PassGlobals,
         input: Option<&wgpu::TextureView>,
     ) -> Result<Drawn, GpuError> {
-        let group0 = self.group0(dev, width, height, globals, input);
-        let p = self.pipeline(dev, code)?;
-        let group1 = Self::group1(dev, p, uniforms);
         let (texture, view) = Self::texture(dev, width, height);
-        {
-            let mut rp = begin(encoder, &view);
-            rp.set_pipeline(&p.pipeline);
-            rp.set_bind_group(0, &group0, &[]);
-            rp.set_bind_group(1, &group1, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        Ok(Drawn {
+        let target = Drawn {
             texture,
             view,
             width,
             height,
-        })
+        };
+        self.step_into(dev, encoder, code, uniforms, globals, input, &target)?;
+        Ok(target)
+    }
+
+    /// One fragment step of a pass into `target` (its size the pass's).
+    #[allow(clippy::too_many_arguments)]
+    fn step_into(
+        &mut self,
+        dev: &Device,
+        encoder: &mut wgpu::CommandEncoder,
+        code: &ShaderCode,
+        uniforms: &[f32],
+        globals: PassGlobals,
+        input: Option<&wgpu::TextureView>,
+        target: &Drawn,
+    ) -> Result<(), GpuError> {
+        let group0 = self.group0(dev, target.width, target.height, globals, input);
+        let p = self.pipeline(dev, code)?;
+        let group1 = Self::group1(dev, p, uniforms);
+        let mut rp = begin(encoder, &target.view);
+        rp.set_pipeline(&p.pipeline);
+        rp.set_bind_group(0, &group0, &[]);
+        rp.set_bind_group(1, &group1, &[]);
+        rp.draw(0..3, 0..1);
+        Ok(())
+    }
+
+    /// (perf-gpu-retain review) [`Self::draw`] over `input`, which it
+    /// takes, every step drawn into a texture of `pool` (made when none
+    /// of the size is free) and each texture read handed back to it once
+    /// read, `input` first: a backdrop drawn every frame allocates
+    /// nothing once its textures are in the pool. The pass's pixels are
+    /// returned (`Ok(None)`, `input` back in the pool, when it has no
+    /// step).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_pooled(
+        &mut self,
+        dev: &Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pass: &ShaderPass,
+        globals: PassGlobals,
+        input: Drawn,
+        pool: &mut Pool,
+    ) -> Result<Option<Drawn>, GpuError> {
+        let (width, height) = (input.width, input.height);
+        let steps = match &pass.code {
+            ShaderRef::File(code) => vec![(code.clone(), pass.uniforms.to_vec())],
+            ShaderRef::Bundled(Bundled::Particles) => {
+                // Reads no input: drawn as any pass.
+                let out = self.draw(dev, encoder, pass, width, height, globals, None);
+                pool.give(input);
+                return out;
+            }
+            ShaderRef::Bundled(b) => crate::bundled::steps(*b, &pass.uniforms),
+        };
+        if steps.is_empty() {
+            pool.give(input);
+            return Ok(None);
+        }
+        let mut read = input;
+        for (code, uniforms) in &steps {
+            let target = pool.take(dev, width, height);
+            let drawn = self.step_into(
+                dev,
+                encoder,
+                code,
+                uniforms,
+                globals,
+                Some(&read.view),
+                &target,
+            );
+            if let Err(e) = drawn {
+                pool.give(read);
+                pool.give(target);
+                return Err(e);
+            }
+            pool.give(std::mem::replace(&mut read, target));
+        }
+        Ok(Some(read))
     }
 
     /// `particles` above the CPU's cap: one instanced sprite per particle

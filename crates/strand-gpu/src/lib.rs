@@ -554,9 +554,17 @@ pub enum Op {
     /// rasterised input, its upload and the pass's readback are gone.
     ///
     /// `key` is what its pixels depend on (render hashes what is behind
-    /// it, its region, passes and globals): when the surface's last
-    /// frame drew a backdrop with the same key, its pixels are drawn
+    /// it, its region, passes, globals and `reduce`): when the surface's
+    /// last frame drew a backdrop with the same key, its pixels are drawn
     /// again as they are, nothing rendered or run; `0` draws it anew.
+    ///
+    /// (perf-gpu-retain review) `reduce` (1, 2 or 4) draws it at that
+    /// fraction of the region's size, as the CPU draws a small backdrop
+    /// blur: `ops` scaled down into a texture of the region's size over
+    /// `reduce` (rounded up), the passes run there (their uniforms as
+    /// given, in its pixels), and their pixels drawn back over `region`
+    /// scaled up by `reduce` exactly, sampled bilinearly from pixel
+    /// centres with the edge pixels repeated. 1 is full resolution.
     Backdrop {
         region: kurbo::Rect,
         ops: Vec<Op>,
@@ -564,6 +572,7 @@ pub enum Op {
         then: Vec<ShaderPass>,
         globals: PassGlobals,
         key: u64,
+        reduce: u32,
     },
     /// (perf-gpu-retain) The surface's snapshot ([`Frame::snapshot`])
     /// over `rect`, its pixels 1:1 from the origin at the identity

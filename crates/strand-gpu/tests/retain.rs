@@ -131,6 +131,7 @@ fn a_backdrop_in_a_frame_is_its_pass_over_what_is_behind_it() {
         then: Vec::new(),
         globals,
         key: 0,
+        reduce: 1,
     });
     ops.push(Op::PopClip);
     for id in [2, 3] {
@@ -211,6 +212,7 @@ fn passes_inside_a_backdrop_draw_into_what_it_reads() {
             then: Vec::new(),
             globals: PassGlobals::default(),
             key: 0,
+            reduce: 1,
         },
     ];
     assert_eq!(Op::passes_in(&ops), 3);
@@ -343,6 +345,7 @@ fn a_backdrop_with_its_last_key_is_drawn_from_its_last_pixels() {
             then: Vec::new(),
             globals: PassGlobals::default(),
             key,
+            reduce: 1,
         }]
     };
     let at = |h: &mut Harness, id, ops| {
@@ -363,4 +366,61 @@ fn a_backdrop_with_its_last_key_is_drawn_from_its_last_pixels() {
     // A frame without backdrops frees what was kept.
     at(&mut h, 6, solid(BLUE));
     assert_eq!(at(&mut h, 7, backdrop(BLUE, 8)), [255, 0, 0, 255]);
+}
+
+/// (perf-gpu-retain review) A backdrop drawn at a quarter of its size
+/// (`reduce: 4`, the CPU's reduction for a small blur): what is behind it
+/// is drawn into a texture a quarter its size, its pass runs there, and
+/// its pixels come back scaled up by exactly 4, bilinearly from pixel
+/// centres: a sharp red-to-blue edge at x = 16 becomes a ramp over the
+/// four pixels around it, as `backdrop::upscale` draws it on the CPU;
+/// at full size it stays sharp.
+#[test]
+fn a_reduced_backdrop_is_drawn_small_and_scaled_up() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(32, 8);
+    attach(&mut h, size);
+    let half = |x0: f64, c: [f32; 4]| Op::Fill {
+        path: Rect::new(x0, 0.0, x0 + 16.0, 8.0).to_path(0.1),
+        brush: Brush::Solid(AlphaColor::new(c)),
+        brush_transform: Affine::IDENTITY,
+        even_odd: false,
+    };
+    let copy = ShaderPass {
+        code: ShaderRef::File(code(
+            "@fragment\nfn main(v: StrandVertex) -> @location(0) vec4<f32> {\n    return textureSampleLevel(strand_input, strand_sampler, v.uv, 0.0);\n}\n",
+            vec![],
+        )),
+        uniforms: Arc::from([].as_slice()),
+        input: ShaderInput::Content,
+    };
+    let backdrop = |reduce: u32| {
+        vec![Op::Backdrop {
+            region: Rect::new(0.0, 0.0, 32.0, 8.0),
+            ops: vec![half(0.0, RED), half(16.0, BLUE)],
+            pass: copy.clone(),
+            then: Vec::new(),
+            globals: PassGlobals::default(),
+            key: 0,
+            reduce,
+        }]
+    };
+    let red = [0, 0, 255, 255];
+    let blue = [255, 0, 0, 255];
+    let px = frame(&mut h, frame_of(1, size, backdrop(1), FrameSnapshot::None));
+    assert_eq!(pixel(&px, 15, 4), red, "full size: sharp");
+    assert_eq!(pixel(&px, 16, 4), blue);
+    let px = frame(&mut h, frame_of(2, size, backdrop(4), FrameSnapshot::None));
+    assert_eq!(pixel(&px, 13, 4), red, "a quarter: red up to the ramp");
+    assert_eq!(pixel(&px, 18, 4), blue, "and blue after it");
+    // Source x of pixel x: (x + 0.5) / 4 - 0.5, between texels 3 (red)
+    // and 4 (blue) for x 14 to 17: 1/8, 3/8, 5/8, 7/8 of the way.
+    for (x, t) in [(14u32, 0.125f32), (15, 0.375), (16, 0.625), (17, 0.875)] {
+        let p = pixel(&px, x, 4);
+        let want = [255.0 * t, 0.0, 255.0 * (1.0 - t)];
+        let off = (0..3)
+            .map(|c| (f32::from(p[c]) - want[c]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(off <= 2.0, "x {x}: {p:?}, want {want:?}");
+    }
 }

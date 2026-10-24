@@ -176,14 +176,21 @@ pub(crate) fn build(
                 }
             }
             Op::Backdrop {
-                region, ops: inner, ..
+                region,
+                ops: inner,
+                reduce,
+                ..
             } => {
                 let drawn = sampled.passes.get(pass_index).copied().flatten();
                 // Its ops' passes were sampled by its own scene.
                 pass_index += 1 + Op::passes_in(inner);
                 if let Some(d) = drawn {
                     scene.set_transform(base);
-                    texture(scene, d, *region, false);
+                    if *reduce > 1 {
+                        texture_scaled(scene, d, *region, f64::from((*reduce).min(16)));
+                    } else {
+                        texture(scene, d, *region, false);
+                    }
                     scene.set_transform(cur);
                 }
             }
@@ -243,6 +250,23 @@ fn texture(scene: &mut Scene, d: DrawnPass, bounds: Rect, smooth: bool) {
             * Affine::scale_non_uniform(w / d.width as f64, h / d.height as f64),
     );
     scene.fill_path(&Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).to_path(0.1));
+    scene.reset_paint_transform();
+}
+
+/// (perf-gpu-retain review) Fills `bounds` with texture `d` scaled up
+/// by `k` from its corner, sampled bilinearly from pixel centres, the
+/// edge pixels repeated: as `backdrop::upscale` in strand-render draws a
+/// small backdrop blur back to its size.
+fn texture_scaled(scene: &mut Scene, d: DrawnPass, bounds: Rect, k: f64) {
+    if !(bounds.width() > 0.0 && bounds.height() > 0.0) {
+        return;
+    }
+    scene.set_paint(PaintType::Image(Image {
+        image: external(d),
+        sampler: sampler(true),
+    }));
+    scene.set_paint_transform(Affine::translate((bounds.x0, bounds.y0)) * Affine::scale(k));
+    scene.fill_path(&bounds.to_path(0.1));
     scene.reset_paint_transform();
 }
 

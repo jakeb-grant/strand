@@ -153,6 +153,14 @@ pub(crate) struct PassWant {
     pub timed: bool,
     /// It reads `strand.pointer`: a pointer motion repaints it.
     pub pointer: bool,
+    /// (perf-gpu-retain review) Drawn at this fraction of its size, its
+    /// uniforms in those pixels (a small backdrop blur at the CPU's
+    /// reduction, `backdrop::Pass::reduction`); 1 for full size.
+    pub reduce: u32,
+    /// (perf-gpu-retain review) Drawn only in a GPU frame
+    /// (`Op::Backdrop`), never asked for on its own: where no GPU frame
+    /// draws it the CPU does (a small backdrop blur).
+    pub inframe_only: bool,
 }
 
 /// The last pixels each pass gave, with the key of the want they
@@ -375,6 +383,8 @@ pub(crate) fn pass_want(
         input: PassInput::None,
         timed,
         pointer: reads,
+        reduce: 1,
+        inframe_only: false,
     })
 }
 
@@ -419,6 +429,8 @@ pub(crate) fn bundled_want(
         input,
         timed,
         pointer: reads,
+        reduce: 1,
+        inframe_only: false,
     })
 }
 
@@ -1348,6 +1360,7 @@ impl Renderer {
         {
             let wanted: HashSet<PassId> = wants
                 .iter()
+                .filter(|w| !w.inframe_only)
                 .map(|w| w.id)
                 .filter(|id| !inframe.contains(id))
                 .collect();
@@ -1384,6 +1397,11 @@ impl Renderer {
         let mut prepared = false;
         for w in wants {
             if gpu_drawn && (w.id.slot == Slot::Node || inframe.contains(&w.id)) {
+                continue;
+            }
+            // (review) A small backdrop blur no GPU frame draws is the
+            // CPU's, at its reduction, as on a surface the CPU draws.
+            if w.inframe_only {
                 continue;
             }
             let last = self.extras.shaders.map.get(&w.id);
@@ -2347,6 +2365,10 @@ impl Lowering<'_> {
         // globals and what is behind it) and where it is; none when what
         // is behind it runs passes of its own (their pixels move with
         // their clocks).
+        // (review) With the pixels of each group among them the CPU
+        // filtered (drawn as uploads, whose items it reads past the
+        // region), as `backdrop::key` pins them: the want's key hashes
+        // the items over the region and their groups.
         let key = if behind
             .iter()
             .any(|o| matches!(o, Op::Pass { .. } | Op::Backdrop { .. }))
@@ -2355,7 +2377,14 @@ impl Lowering<'_> {
         } else {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (w.key, w.at, w.size.w, w.size.h).hash(&mut h);
+            (w.key, w.at, w.size.w, w.size.h, w.reduce).hash(&mut h);
+            for (d, _) in items.iter().zip(&keep).filter(|(_, k)| **k) {
+                if let Item::PushLayer(g) = &d.item
+                    && let Some(n) = self.groups.get(&layer_key(g))
+                {
+                    (Arc::as_ptr(&n.pixmap) as usize, n.x, n.y).hash(&mut h);
+                }
+            }
             h.finish().max(1)
         };
         let (blend, opacity) = layer_parts(l);
@@ -2373,6 +2402,7 @@ impl Lowering<'_> {
             then: w.then.clone(),
             globals: w.globals,
             key,
+            reduce: w.reduce,
         });
         self.ops.push(Op::Transform(cur));
         self.ops.push(Op::PopLayer);

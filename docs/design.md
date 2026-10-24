@@ -491,7 +491,7 @@ This catalogue comes from a survey of popular Quickshell shells (end-4, caelesti
 | Colour filters on any subtree or image | `filter: grayscale(1)`, `saturate(1.3)`, `hue(30deg)`, `brightness(0.9)`, `tint($accent)` | Trivial–ok; Strand implements these itself, since vello's versions are unimplemented |
 | Blend modes | `blend: screen \| add \| multiply \| overlay \| difference` | Ok |
 | Masks: edge fades, radial reveals, shape masks | `mask: fade(bottom, 24)`, `mask: radial(…)`, `mask: shape(cookie)` | Trivial–ok |
-| Blur over your own content | `backdrop: blur(16)` inside a surface | Heavy; drawn at quarter scale, promoted to GPU above about 0.2 Mpx; on a surface the GPU draws, drawn in its frame at full resolution whatever its size |
+| Blur over your own content | `backdrop: blur(16)` inside a surface | Heavy; drawn at quarter scale, promoted to GPU above about 0.2 Mpx; on a surface the GPU draws, drawn in its frame, a small one at the same quarter scale, so it looks the same on either |
 | Blur behind the surface | `blur: 24` (existing) | Free; the compositor does it |
 
 Tuning the compositor's blur (saturation, noise, vibrancy) belongs to the compositor; `strand compositor-rules` prints matching Hyprland rules.
@@ -610,7 +610,7 @@ For comparison, real Quickshell configs reach 0.5–1.26 GB, driven by a GL cont
 2. **Hyprland layer rules.** Each surface gets a stable `strand-<Name>` namespace, and `strand compositor-rules` prints the rules to paste.
 3. **Tint**, the default fallback: alpha rises by 0.15 so text stays readable, and the inspector says why.
 
-Blur over your own content inside a surface is rendered by Strand at quarter scale on the CPU, because vello\_cpu 0.3 filters are experimental and cannot blur what lies behind a layer; the GPU blurs it at full resolution (above about 0.2 Mpx, or on a surface it draws). Strand never captures the screen.
+Blur over your own content inside a surface is rendered by Strand at quarter scale on the CPU, because vello\_cpu 0.3 filters are experimental and cannot blur what lies behind a layer; the GPU blurs it at full resolution above about 0.2 Mpx, and, on a surface it draws, draws a smaller one in the surface's frame at the CPU's quarter scale, so a blur looks the same whichever draws the surface. Strand never captures the screen.
 
 ## Live reload and real-time config changes
 

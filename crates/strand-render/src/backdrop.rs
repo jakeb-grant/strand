@@ -107,7 +107,7 @@ impl Pass {
     /// The scale it is drawn at: a quarter (design.md), or half or full
     /// size for a blur under 8 or 2 device pixels, which a quarter-scale
     /// pass would turn into blocks.
-    fn reduction(self) -> u32 {
+    pub(crate) fn reduction(self) -> u32 {
         if self.sigma >= 8.0 {
             4
         } else if self.sigma >= 2.0 {
@@ -227,14 +227,66 @@ fn is_marker(i: &Item) -> bool {
 }
 
 /// Hashes the items before `end` that draw over `region` (a node's damage
-/// signature: a change behind its backdrop repaints it).
+/// signature: a change behind its backdrop repaints it), with the groups
+/// they are drawn in: (perf-gpu-retain review) the clip, opacity,
+/// transform and layer markers around each of them, and each layer over
+/// `region` (its pixels may be drawn whatever its items: a CPU filter's
+/// group, pixels read back), so a fade, clip, flip or filter of what is
+/// behind changes it as a change of the items does. Groups still open at
+/// `end` hold the backdrop itself and are left out ([`behind`]): an
+/// ancestor fading is not a change behind it. A group around nothing
+/// over `region` draws nothing there and is left out too.
 pub(crate) fn hash_behind(items: &[DisplayItem], end: usize, region: Rect, h: &mut impl Hasher) {
-    for d in items[..end.min(items.len())].iter() {
-        if !is_marker(&d.item) && d.bounds.intersects(region) {
+    let end = end.min(items.len());
+    let mut open: Vec<usize> = Vec::new();
+    for (i, d) in items[..end].iter().enumerate() {
+        if is_push(&d.item) {
+            open.push(i);
+        } else if is_marker(&d.item) {
+            open.pop();
+        }
+    }
+    let mut ancestor = vec![false; end];
+    for i in open {
+        ancestor[i] = true;
+    }
+    // The groups open here (ancestors aside), each with whether it is
+    // hashed yet: a group is hashed when something it holds is.
+    let mut groups: Vec<(usize, bool)> = Vec::new();
+    for (i, d) in items[..end].iter().enumerate() {
+        if ancestor[i] {
+            continue;
+        }
+        if is_push(&d.item) {
+            groups.push((i, false));
+            if matches!(d.item, Item::PushLayer(_)) && d.bounds.intersects(region) {
+                hash_groups(items, &mut groups, h);
+            }
+        } else if is_marker(&d.item) {
+            if let Some((_, true)) = groups.pop() {
+                crate::flatten::hash_item(h, &d.item);
+            }
+        } else if d.bounds.intersects(region) {
+            hash_groups(items, &mut groups, h);
             crate::flatten::hash_item(h, &d.item);
             (d.bounds.x, d.bounds.y, d.bounds.w, d.bounds.h).hash(h);
         }
     }
+}
+
+/// Hashes the push markers of `groups` not hashed yet, outermost first.
+fn hash_groups(items: &[DisplayItem], groups: &mut [(usize, bool)], h: &mut impl Hasher) {
+    for (j, done) in groups.iter_mut().filter(|(_, done)| !*done) {
+        crate::flatten::hash_item(h, &items[*j].item);
+        *done = true;
+    }
+}
+
+fn is_push(i: &Item) -> bool {
+    matches!(
+        i,
+        Item::PushClip(_) | Item::PushOpacity(..) | Item::PushTransform(_) | Item::PushLayer(_)
+    )
 }
 
 /// What the backdrop group at `i` over `region` reads: the items behind

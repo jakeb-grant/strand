@@ -201,10 +201,11 @@ struct Target {
     /// holds none: one surface-sized texture while the fade lasts.
     snapshot: Option<FrameTarget>,
     /// (perf-gpu-retain) The textures its last frame's backdrops drew
-    /// what is behind them into, reused by the next frame's of the same
-    /// size; those the next frame does not use are freed, so it holds at
-    /// most one per backdrop its last frame showed.
-    backdrops: Vec<FrameTarget>,
+    /// what is behind them and their passes into, but those it shows,
+    /// reused by the next frame's of the same size; those the next frame
+    /// does not use are freed (review: the pass outputs too, so a
+    /// backdrop drawn every frame allocates nothing).
+    backdrops: pass::Pool,
     /// (perf-gpu-retain) Its last frame's backdrops' pixels by key
     /// ([`Op::Backdrop`]'s `key`): a backdrop of the next frame with the
     /// same key is drawn from them, nothing rendered or run; those the
@@ -215,13 +216,14 @@ struct Target {
 /// (perf-gpu-retain) A surface's backdrop textures while a frame draws.
 #[derive(Default)]
 struct Backdrops {
-    /// The textures its last frame rendered what is behind its
-    /// backdrops into, to reuse, and those this frame uses.
-    pool: Vec<FrameTarget>,
-    used: Vec<FrameTarget>,
+    /// The textures its backdrops render and run passes into.
+    pool: pass::Pool,
     /// Its last frame's backdrops' pixels by key, and this frame's.
     kept: Vec<(u64, pass::Drawn)>,
     now: Vec<(u64, pass::Drawn)>,
+    /// This frame's backdrops' pixels drawn anew every frame (key 0),
+    /// back in the pool once the frame no longer reads them.
+    once: Vec<pass::Drawn>,
 }
 
 impl Target {
@@ -234,7 +236,7 @@ impl Target {
             frame: None,
             read: None,
             snapshot: None,
-            backdrops: Vec::new(),
+            backdrops: pass::Pool::default(),
             kept: Vec::new(),
         }
     }
@@ -275,6 +277,8 @@ fn warm_retained() -> Vec<Op> {
             pointer: [8.0, 8.0],
         },
         key: 0,
+        // A blur at half size, as a small one is drawn.
+        reduce: if b == Bundled::BackdropBlur { 2 } else { 1 },
     };
     let mut ops = behind.clone();
     ops.extend([
@@ -753,11 +757,11 @@ impl State {
 
     /// (perf-gpu-retain) Draws the backdrops among `ops`, each after the
     /// backdrops inside its own ops: what is behind it (its ops) into a
-    /// texture of its region, then its passes over that, in a submission
-    /// of its own (vello stages a render's buffers through the queue, so
-    /// two renders share one only if submitted apart). Numbered as
-    /// [`State::draw_passes`]; `pool` holds the surface's textures from
-    /// its last frame, and `used` gets this frame's.
+    /// texture of its region (over `reduce`), then its passes over that,
+    /// in a submission of its own (vello stages a render's buffers
+    /// through the queue, so two renders share one only if submitted
+    /// apart). Numbered as [`State::draw_passes`]; every texture comes
+    /// from the surface's pool `tex`, and goes back to it once read.
     #[allow(clippy::too_many_arguments)]
     fn draw_backdrops(
         &mut self,
@@ -766,7 +770,6 @@ impl State {
         next: &mut usize,
         out: &mut [Option<DrawnPass>],
         bindings: &mut vello_gpu::TextureBindings,
-        keep: &mut Vec<pass::Drawn>,
         tex: &mut Backdrops,
     ) -> Result<(), GpuError> {
         for op in ops {
@@ -779,6 +782,7 @@ impl State {
                     then,
                     globals,
                     key,
+                    reduce,
                 } => {
                     let at = *next;
                     *next += 1;
@@ -801,22 +805,21 @@ impl State {
                         tex.now.push((k, d));
                         continue;
                     }
-                    self.draw_backdrops(dev, inner, next, out, bindings, keep, tex)?;
+                    self.draw_backdrops(dev, inner, next, out, bindings, tex)?;
                     let max = dev
                         .device
                         .limits()
                         .max_texture_dimension_2d
                         .min(u32::from(u16::MAX));
+                    let k = f64::from((*reduce).clamp(1, 16));
                     let (x, y) = (region.x0.round(), region.y0.round());
                     let (w, h) = (region.width().round(), region.height().round());
+                    let (w, h) = ((w / k).ceil(), (h / k).ceil());
                     if !(w >= 1.0 && h >= 1.0 && w <= f64::from(max) && h <= f64::from(max)) {
                         continue;
                     }
                     let (w, h) = (w as u32, h as u32);
-                    let target = match tex.pool.iter().position(|t| t.width == w && t.height == h) {
-                        Some(i) => tex.pool.swap_remove(i),
-                        None => frame_texture(dev, w, h, "strand backdrop"),
-                    };
+                    let target = tex.pool.take(dev, w, h);
                     self.inner.reset_and_resize(w as u16, h as u16);
                     let sampled = Sampled {
                         passes: out,
@@ -828,7 +831,7 @@ impl State {
                         &self.images,
                         &sampled,
                         at + 1,
-                        kurbo_translate(-x, -y),
+                        vello_common::kurbo::Affine::scale(1.0 / k) * kurbo_translate(-x, -y),
                     );
                     if missing.images > 0 {
                         log::debug!("GPU backdrop: {} images not uploaded", missing.images);
@@ -857,52 +860,30 @@ impl State {
                     );
                     if let Err(e) = rendered {
                         dev.queue.submit([encoder.finish()]);
-                        tex.used.push(target);
+                        tex.pool.give(target);
                         return Err(render_error(e.to_string()));
                     }
-                    let mut drawn = match self.passes.draw(
-                        dev,
-                        &mut encoder,
-                        pass,
-                        w,
-                        h,
-                        *globals,
-                        Some(&target.view),
-                    ) {
-                        Ok(Some(d)) => Some(d),
-                        Ok(None) => None,
-                        Err(e) => {
-                            dev.queue.submit([encoder.finish()]);
-                            tex.used.push(target);
-                            return Err(e);
-                        }
-                    };
-                    for p in then {
-                        let Some(before) = drawn.as_ref() else { break };
-                        match self.passes.draw(
+                    // Each pass reads the one before's pixels, which go
+                    // back to the pool once read, what is behind first.
+                    let mut drawn = Some(target);
+                    for p in std::iter::once(pass).chain(then) {
+                        let Some(input) = drawn.take() else { break };
+                        match self.passes.draw_pooled(
                             dev,
                             &mut encoder,
                             p,
-                            w,
-                            h,
                             *globals,
-                            Some(&before.view),
+                            input,
+                            &mut tex.pool,
                         ) {
-                            Ok(Some(d)) => {
-                                if let Some(b) = drawn.replace(d) {
-                                    keep.push(b);
-                                }
-                            }
-                            Ok(None) => {}
+                            Ok(d) => drawn = d,
                             Err(e) => {
                                 dev.queue.submit([encoder.finish()]);
-                                tex.used.push(target);
                                 return Err(e);
                             }
                         }
                     }
                     dev.queue.submit([encoder.finish()]);
-                    tex.used.push(target);
                     if let Some(d) = drawn {
                         let id = TextureId(at as u64 + 1);
                         bindings.insert(id, d.view.clone());
@@ -916,7 +897,7 @@ impl State {
                         if *key != 0 {
                             tex.now.push((*key, d));
                         } else {
-                            keep.push(d);
+                            tex.once.push(d);
                         }
                     }
                 }
@@ -1066,17 +1047,27 @@ impl State {
                     ..Backdrops::default()
                 })
                 .unwrap_or_default();
-            let result = self.draw_backdrops(
-                dev,
-                &frame.ops,
-                &mut 0,
-                &mut drawn,
-                &mut bindings,
-                &mut keep,
-                &mut tex,
-            );
+            // (review) The last frame's pixels no backdrop of this frame
+            // keeps are free for this frame's to draw into.
+            let mut keys = Vec::new();
+            backdrop_keys(&frame.ops, &mut keys);
+            for (k, d) in std::mem::take(&mut tex.kept) {
+                if keys.contains(&k) {
+                    tex.kept.push((k, d));
+                } else {
+                    tex.pool.spare(d);
+                }
+            }
+            let result =
+                self.draw_backdrops(dev, &frame.ops, &mut 0, &mut drawn, &mut bindings, &mut tex);
+            // What this frame drew anew is read by its scene, submitted
+            // after it: the next frame's to reuse.
+            for d in std::mem::take(&mut tex.once) {
+                tex.pool.give(d);
+            }
+            tex.pool.end_frame();
             if let Some(t) = self.targets.get_mut(&surface) {
-                t.backdrops = std::mem::take(&mut tex.used);
+                t.backdrops = std::mem::take(&mut tex.pool);
                 t.kept = std::mem::take(&mut tex.now);
             }
             drop(tex);
@@ -1091,7 +1082,7 @@ impl State {
                 });
             ph.mark("backdrops");
         } else if let Some(t) = self.targets.get_mut(&surface) {
-            t.backdrops.clear();
+            t.backdrops = pass::Pool::default();
             t.kept.clear();
         }
         self.scene.reset_and_resize(w as u16, h as u16);
@@ -1487,6 +1478,19 @@ impl Phases {
     }
 }
 
+/// (perf-gpu-retain review) The keys of the backdrops among `ops`,
+/// those inside backdrops included.
+fn backdrop_keys(ops: &[Op], out: &mut Vec<u64>) {
+    for op in ops {
+        if let Op::Backdrop { key, ops, .. } = op {
+            if *key != 0 {
+                out.push(*key);
+            }
+            backdrop_keys(ops, out);
+        }
+    }
+}
+
 fn kurbo_translate(x: f64, y: f64) -> vello_common::kurbo::Affine {
     vello_common::kurbo::Affine::translate((x, y))
 }
@@ -1738,6 +1742,112 @@ mod tests {
         assert_eq!(majflt("42 (x"), None);
         assert!(thread_stats_since(Some(before)).contains(" ran="));
         assert_eq!(thread_stats_since(None), "");
+    }
+
+    /// (perf-gpu-retain review) A backdrop drawn anew every frame (its
+    /// key changes, as when what is behind it moves) makes no texture
+    /// once the surface's pool has its two: what is behind it and its
+    /// pixels, which swap roles each frame (a blur's two steps draw into
+    /// them in turn). At a quarter of its size it pools its own; drawn
+    /// again from its last pixels (the same key) it holds those alone,
+    /// and a frame without backdrops frees them.
+    #[test]
+    fn a_backdrop_drawn_every_frame_reuses_its_textures() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        use crate::kurbo::{Affine, Rect, Shape};
+        use strand_scene::{Bundled, ShaderInput, ShaderRef};
+        let mut st = State::new(&dev);
+        let s = SurfaceId(1);
+        let size = Size::new(64, 32);
+        st.targets
+            .insert(s, Target::new(size, Scale::ONE, None, None));
+        let (tx, rx) = mpsc::channel();
+        let waker = || {};
+        let reply = Reply {
+            tx: &tx,
+            waker: &waker,
+        };
+        let fill = Op::Fill {
+            path: Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.1),
+            brush: crate::Brush::Solid(crate::AlphaColor::new([1.0, 0.0, 0.0, 1.0])),
+            brush_transform: Affine::IDENTITY,
+            even_odd: false,
+        };
+        let frame = |id: u64, key: u64, reduce: u32, backdrop: bool| Frame {
+            surface: s,
+            id,
+            size,
+            scale: Scale::ONE,
+            ops: if backdrop {
+                vec![
+                    fill.clone(),
+                    Op::Backdrop {
+                        region: Rect::new(8.0, 4.0, 56.0, 28.0),
+                        ops: vec![fill.clone()],
+                        pass: crate::ShaderPass {
+                            code: ShaderRef::Bundled(Bundled::BackdropBlur),
+                            uniforms: std::sync::Arc::from([3.0f32].as_slice()),
+                            input: ShaderInput::Content,
+                        },
+                        then: Vec::new(),
+                        globals: crate::PassGlobals::default(),
+                        key,
+                        reduce,
+                    },
+                ]
+            } else {
+                vec![fill.clone()]
+            },
+            uploads: Vec::new(),
+            retire: Vec::new(),
+            clear: crate::AlphaColor::TRANSPARENT,
+            snapshot: FrameSnapshot::None,
+        };
+        let made = || pass::TARGETS_MADE.with(std::cell::Cell::get);
+        let held = |st: &State| {
+            st.targets
+                .get(&s)
+                .map_or(0, |t| t.backdrops.len() + t.kept.len())
+        };
+        let mut id = 0;
+        let mut draw = |st: &mut State, key: u64, reduce: u32, backdrop: bool| {
+            id += 1;
+            st.frame(
+                &dev,
+                frame(id, key, reduce, backdrop),
+                Duration::ZERO,
+                &reply,
+            );
+            match rx.try_recv() {
+                Ok(GpuReply::Pixels { .. }) => {}
+                other => panic!("frame {id}: {other:?}"),
+            }
+        };
+        for reduce in [1, 4] {
+            for key in 1..=2 {
+                draw(&mut st, key + u64::from(reduce) * 100, reduce, true);
+            }
+            let before = made();
+            for key in 3..=8 {
+                draw(&mut st, key + u64::from(reduce) * 100, reduce, true);
+                assert_eq!(made(), before, "reduce {reduce}, key {key}: a texture made");
+                assert_eq!(held(&st), 2, "reduce {reduce}, key {key}");
+            }
+            // The same key: its last pixels, alone.
+            draw(&mut st, 8 + u64::from(reduce) * 100, reduce, true);
+            assert_eq!(made(), before);
+            assert_eq!(held(&st), 1, "reduce {reduce}: kept alone");
+        }
+        draw(&mut st, 0, 1, false);
+        assert_eq!(held(&st), 0, "freed");
     }
 
     fn replies(

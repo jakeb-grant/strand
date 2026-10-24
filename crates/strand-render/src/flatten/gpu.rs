@@ -250,6 +250,12 @@ impl Flattener<'_> {
             return None;
         };
         let scale = self.scale.as_f32();
+        // (perf-gpu-retain review) A blur under about 0.2 Mpx has the
+        // CPU's look, whoever draws it: a GPU frame draws it at the
+        // CPU's reduction (`Op::Backdrop`'s `reduce`), and where none
+        // does the CPU draws it.
+        let mut reduce = 1;
+        let mut inframe_only = false;
         let (pass, region, pointer) = match b {
             Bundled::Glass => {
                 let refraction = uniforms
@@ -264,15 +270,27 @@ impl Flattener<'_> {
                 };
                 (pass, boxed, self.region_pointer(boxed))
             }
-            // (perf-gpu-retain) Any blur on a surface the GPU draws: its
-            // frame draws it at full resolution, cheaper than the CPU's
-            // quarter-scale pass and its upload.
+            // (perf-gpu-retain) Any blur on a surface the GPU draws is
+            // drawn in its frame, cheaper than the CPU's pass and its
+            // upload; a small one at the CPU's reduction, its sigma in
+            // the reduced pixels.
             Bundled::BackdropBlur
                 if self.gpu_frame || u64::from(boxed.w) * u64::from(boxed.h) >= LARGE_BLUR =>
             {
+                let mut uniforms = uniforms.to_vec();
+                if u64::from(boxed.w) * u64::from(boxed.h) < LARGE_BLUR {
+                    let sigma = uniforms.first().copied().filter(|v| v.is_finite())?;
+                    reduce = crate::backdrop::Pass {
+                        sigma: sigma.max(0.0),
+                        tint: None,
+                    }
+                    .reduction();
+                    uniforms[0] = sigma / reduce as f32;
+                    inframe_only = true;
+                }
                 let pass = ShaderPass {
                     code: ShaderRef::Bundled(Bundled::BackdropBlur),
-                    uniforms: uniforms.clone(),
+                    uniforms: uniforms.into(),
                     input: ShaderInput::Content,
                 };
                 (pass, read, [-1.0, -1.0])
@@ -281,7 +299,8 @@ impl Flattener<'_> {
         };
         let mut h = DefaultHasher::new();
         crate::backdrop::hash_behind(&self.out.items, self.out.items.len(), region, &mut h);
-        let want = bundled_want(
+        reduce.hash(&mut h);
+        let mut want = bundled_want(
             PassId::new(node, Slot::Backdrop),
             vec![pass],
             region,
@@ -291,6 +310,8 @@ impl Flattener<'_> {
             time,
             pointer,
         )?;
+        want.reduce = reduce;
+        want.inframe_only = inframe_only;
         // (perf-gpu-retain) A GPU frame draws it from the want, not from
         // pixels that come back (whose address the layer's hash holds):
         // what it draws (the pointer glass follows) is in the damage.

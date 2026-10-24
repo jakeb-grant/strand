@@ -144,6 +144,11 @@ pub(super) struct Snapshot {
     /// A crossfade landing mid-crossfade: the surface shows `old`'s frame
     /// weighted this much over `pixels`, and that blend is the snapshot.
     under: Option<f32>,
+    /// (perf-gpu-retain review) With `under`, when the snapshot of the
+    /// fade this one replaced was held on the GPU (`pixels` empty): its
+    /// old frame's scene, which the CPU draws as `pixels` if it takes
+    /// this snapshot (the surface went back to the CPU before it).
+    under_old: Option<Flattened>,
     /// 0 (the old frame) to 1 (the new one); started by the surface's
     /// first fade frame.
     progress: Motion<1>,
@@ -1263,8 +1268,15 @@ impl Renderer {
                     );
                     continue;
                 }
-                Some(p) if p.size == size && p.scale == scale => (p.pixels, Some(p.last_w)),
+                Some(p) if p.size == size && p.scale == scale => {
+                    let held = (p.gpu != OnGpu::No).then_some(p.old).flatten();
+                    (p.pixels, Some((p.last_w, held)))
+                }
                 _ => (HugeBuf::default(), None),
+            };
+            let (under, under_old) = match under {
+                Some((w, held)) => (Some(w), held),
+                None => (None, None),
             };
             // The old frame's scene, for what its buffer no longer holds.
             let f = match s.cache.take() {
@@ -1284,6 +1296,7 @@ impl Renderer {
                     pixels,
                     old: Some(f),
                     under,
+                    under_old,
                     progress,
                     last_w: 0.0,
                     since: now,
@@ -1317,9 +1330,11 @@ impl Renderer {
             // Back on the CPU before or while it fades: taken here.
             snap.gpu = OnGpu::No;
             snap.under = None;
+            snap.under_old = None;
         } else if gpu_shows && target.size == snap.size && target.scale == snap.scale {
             snap.gpu = OnGpu::Take;
             snap.under = None;
+            snap.under_old = None;
             return;
         }
         let Some(s) = self.surfaces.get(&surface) else {
@@ -1361,7 +1376,26 @@ impl Renderer {
             pixels = HugeBuf::zeroed(snap.bytes());
         }
         let under = snap.under.take();
-        let prev = std::mem::take(&mut snap.pixels);
+        let mut prev = std::mem::take(&mut snap.pixels);
+        // (perf-gpu-retain review) The fade this one replaced was held on
+        // the GPU, so its snapshot has no pixels here: drawn from its old
+        // frame, for the blend the surface showed.
+        if let (Some(o), Some(_), None) = (snap.under_old.take(), under, &missed)
+            && prev.len() != snap.bytes()
+        {
+            prev = HugeBuf::zeroed(snap.bytes());
+            if let Ok(mut t) =
+                PaintTarget::new(&mut prev, snap.size, snap.size.w * 4, snap.scale, 0)
+            {
+                self.raster.paint(
+                    &o.items,
+                    &Damage::full(snap.size),
+                    &self.atlas,
+                    snap.scale,
+                    &mut t,
+                );
+            }
+        }
         let draw = match &missed {
             Some(m) => (!m.is_empty()).then_some(*m),
             None => Some(Damage::full(snap.size)),
