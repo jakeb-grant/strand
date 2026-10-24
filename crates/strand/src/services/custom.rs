@@ -400,6 +400,12 @@ impl CustomHost {
         types: &TypeTable,
     ) -> Entry {
         let spec = custom::register(spec_of(decl, self.config_dir.borrow().as_deref()));
+        // (history) A `from poll` samples on a clock: a value it takes
+        // while hidden and kept is a poll.
+        client.polls(match &decl.source {
+            SourceSpec::Poll { every, .. } => Some(*every),
+            _ => None,
+        });
         let n = decl.fields.len();
         if let Err(e) = client.seed(rt, |s| *s = Custom::seeded(spec, n)) {
             log::warn!("{}: {e}", decl.name);
@@ -700,11 +706,8 @@ impl ServiceHost for CustomHost {
         }
     }
 
-    fn shown(&self, _rt: &Runtime, service: &str) -> bool {
-        self.entries
-            .borrow()
-            .get(service)
-            .is_none_or(|e| e.client.readers() > 0)
+    fn sampled(&self, _rt: &Runtime, service: &str) -> Option<std::time::Duration> {
+        self.entries.borrow().get(service)?.client.sampled()
     }
 }
 

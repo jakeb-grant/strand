@@ -268,11 +268,14 @@ pub trait ServiceHost {
     /// nothing.
     fn keep(&self, _rt: &Runtime, _service: &str, _every: Option<std::time::Duration>) {}
 
-    /// (history) Whether a visible reader holds `service` now
-    /// (untracked): a kept value taken while it does steps, one taken
-    /// while it does not is a coarse sample. The default: shown.
-    fn shown(&self, _rt: &Runtime, _service: &str) -> bool {
-        true
+    /// (history) How `service`'s values arrive now (untracked): `None`
+    /// when each is taken as it changes (a visible reader holds it, or it
+    /// reports its changes as they happen), so a kept value's time is
+    /// exact; `Some(p)` when no visible reader holds it and it polls
+    /// every `p`, so a value could have changed any time in the `p`
+    /// before it. The default: `None`.
+    fn sampled(&self, _rt: &Runtime, _service: &str) -> Option<std::time::Duration> {
+        None
     }
 
     /// The next wall-clock time the host loop must wake for (the next

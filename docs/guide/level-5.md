@@ -284,7 +284,10 @@ neither makes the whole file text again, and every field reads all of
 it. A field without `= key` reads the key with its own name.
 
 **`from poll … every T`** reads again every `T`, and only while
-something showing reads it. Given a file path (`"/sys/class/…"`), it
+something showing reads it, or while a `graph` keeps history of it:
+then, hidden, it reads at the coarser of `T` and a twentieth of the
+graph's `history` (at least 2 s), and the graph draws each hidden read
+as a line from the one before. Given a file path (`"/sys/class/…"`), it
 reads the file. Given a command, it runs it: `sensors -j` prints JSON,
 and `= temp1_input` finds the first `temp1_input` in it, however deep.
 Values are converted to the declared type.

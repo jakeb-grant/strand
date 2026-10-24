@@ -5,6 +5,8 @@
 //! ([`Renderer::take_feed_demand`]) so producers run only for them. Media
 //! nodes get their raster sources when logic creates them.
 
+use std::time::Duration;
+
 use strand_scene::{NodeId, NodeKind, Prop, PropValue};
 
 use super::Renderer;
@@ -45,13 +47,20 @@ impl Renderer {
             if !self.tree.contains(*id) {
                 continue;
             }
-            if let Some(src) = Source::new(*kind) {
+            if let Some(src) = Source::new(*kind, self.extras.media.clock) {
                 self.extras.rasters.set(*id, Some(src.raster()));
                 self.extras.media.sources.insert(*id, src);
             }
         }
         let tree = &self.tree;
         self.extras.media.sources.retain(|id, _| tree.contains(*id));
+    }
+
+    /// (history) Read `clock` as the boot clock a `graph`'s backlog is
+    /// timed on, for graphs created from now on (tests; the real clock is
+    /// `strand_scene::backlog::boot_now`).
+    pub fn set_history_clock(&mut self, clock: fn() -> Duration) {
+        self.extras.media.clock = Some(clock);
     }
 
     /// (M4) New spectrum bands for `node` (empty: the sound stopped): it

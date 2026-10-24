@@ -16,6 +16,9 @@ const S: SurfaceId = SurfaceId(1);
 const TOLERANCE: u8 = 2;
 const T0: Duration = Duration::from_secs(1);
 
+/// (history) The boot clock graphs read in these tests, seconds.
+const BOOT: f64 = 500.0;
+
 fn ms(n: u64) -> Duration {
     T0 + Duration::from_millis(n)
 }
@@ -126,7 +129,12 @@ fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
             (Prop::Pad, num(5.0)),
         ],
     );
-    let point = |age, value, ramp| BacklogPoint { age, value, ramp };
+    // Timed on a fixed boot clock: 500 s at every draw.
+    let point = |age: f64, value, ramp| BacklogPoint {
+        at: BOOT - age,
+        value,
+        ramp,
+    };
     let backlog = Backlog {
         points: vec![
             point(6.5, 0.3, 0.0),
@@ -154,6 +162,7 @@ fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
         ],
     );
     let mut r = renderer();
+    r.set_history_clock(|| Duration::from_secs_f64(BOOT));
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(80, 40, Scale::ONE);

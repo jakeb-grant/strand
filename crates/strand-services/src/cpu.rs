@@ -29,6 +29,15 @@ pub fn samples() -> u64 {
     SAMPLES.load(Ordering::Relaxed)
 }
 
+static REBASES: AtomicU64 = AtomicU64::new(0);
+
+/// How many fresh baselines every `cpu` service of this process took
+/// (tests: sampling that resumes after a pause, or a reader shown, starts
+/// from now, not from before the pause).
+pub fn rebases() -> u64 {
+    REBASES.load(Ordering::Relaxed)
+}
+
 /// See the module docs.
 #[service(name = "cpu")]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
@@ -63,17 +72,7 @@ impl Sampler {
     fn sample(&mut self, cpu: &mut Cpu) {
         SAMPLES.fetch_add(1, Ordering::Relaxed);
         if let Ok(text) = std::fs::read_to_string("/proc/stat") {
-            let (all, cores) = procfs::parse_stat(&text);
-            if let Some(all) = all {
-                cpu.usage = procfs::usage(self.all, all);
-                self.all = all;
-            }
-            cpu.cores = cores
-                .iter()
-                .enumerate()
-                .map(|(i, c)| procfs::usage(self.cores.get(i).copied().unwrap_or_default(), *c))
-                .collect();
-            self.cores = cores;
+            self.take(&text, cpu);
         }
         cpu.temperature = self
             .temperature
@@ -81,16 +80,37 @@ impl Sampler {
             .and_then(procfs::read_temperature);
     }
 
+    /// `cpu`'s loads from `/proc/stat`'s `text`, since the last reading.
+    fn take(&mut self, text: &str, cpu: &mut Cpu) {
+        let (all, cores) = procfs::parse_stat(text);
+        if let Some(all) = all {
+            cpu.usage = procfs::usage(self.all, all);
+            self.all = all;
+        }
+        cpu.cores = cores
+            .iter()
+            .enumerate()
+            .map(|(i, c)| procfs::usage(self.cores.get(i).copied().unwrap_or_default(), *c))
+            .collect();
+        self.cores = cores;
+    }
+
     /// A fresh baseline, without reporting (sampling resumes after a
     /// pause: the load over the pause is not what anyone asked for).
     fn rebase(&mut self) {
+        REBASES.fetch_add(1, Ordering::Relaxed);
         if let Ok(text) = std::fs::read_to_string("/proc/stat") {
-            let (all, cores) = procfs::parse_stat(&text);
-            if let Some(all) = all {
-                self.all = all;
-            }
-            self.cores = cores;
+            self.base(&text);
         }
+    }
+
+    /// The baseline from `/proc/stat`'s `text`.
+    fn base(&mut self, text: &str) {
+        let (all, cores) = procfs::parse_stat(text);
+        if let Some(all) = all {
+            self.all = all;
+        }
+        self.cores = cores;
     }
 }
 
@@ -121,5 +141,48 @@ impl Cpu {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stat(busy: u64, idle: u64) -> String {
+        format!("cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 {busy} 0 0 {idle} 0 0 0 0 0 0\n")
+    }
+
+    /// (history) The polled builtins' periods, as the schema crate
+    /// tells the eval sandbox's stand-ins.
+    #[test]
+    fn the_polled_periods_are_the_schema_crates() {
+        assert_eq!(
+            strand_services_schema::POLLED,
+            [
+                ("cpu", PERIOD),
+                ("memory", crate::memory::PERIOD),
+                ("disk", crate::disk::PERIOD)
+            ]
+        );
+    }
+
+    /// (history, the review) A fresh baseline after a pause: the first
+    /// sample after it is the load since then, not over the pause.
+    #[test]
+    fn a_sample_after_a_rebase_is_the_load_since_it() {
+        let mut s = Sampler::new();
+        let mut cpu = Cpu::default();
+        s.take(&stat(100, 900), &mut cpu);
+        // Paused: the machine ran flat out (900 busy of 1000).
+        s.base(&stat(1000, 1000));
+        // Then idle for 100.
+        s.take(&stat(1000, 1100), &mut cpu);
+        assert_eq!(cpu.usage, 0.0, "not the pause's load");
+        assert_eq!(cpu.cores, [0.0]);
+        // Without the baseline the pause's load would show.
+        let mut t = Sampler::new();
+        t.take(&stat(100, 900), &mut cpu);
+        t.take(&stat(1000, 1100), &mut cpu);
+        assert!(cpu.usage > 0.8, "{}", cpu.usage);
     }
 }

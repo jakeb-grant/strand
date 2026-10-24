@@ -1518,10 +1518,13 @@ element arc: node {
 }
 /// A sparkline with its own history: `graph cpu.usage { history: 60s }`.
 /// Only the new column repaints. Of a value that exists at file scope (a
-/// service field, or an expression over them and file-level `let`s and
-/// `state`s) it shows the last `history` as soon as it mounts; of one
-/// tied to a list item or a component's parameter, what came since it
-/// mounted.
+/// service field, or an expression over service fields, file-level
+/// `let`s, `state`s and settings, and constants) it shows the last
+/// `history` as soon as it mounts, with time asleep as a gap; of one
+/// tied to a list item, a component's parameter or `let`, an element's
+/// state or the animation clock, or with a `history` that is not a
+/// constant (a literal, or a file-level `let` of one), what came since
+/// it mounted.
 element graph(float -> value): node {
   /// How much history it keeps and shows (60 s when unset).
   history: duration

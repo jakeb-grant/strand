@@ -128,7 +128,7 @@ pub struct Builtin {
 impl Builtin {
     /// Register every builtin service.
     pub fn register(services: &Services, rt: &strand_core::Runtime) -> Builtin {
-        Builtin {
+        let b = Builtin {
             system: services.register(rt),
             cpu: services.register(rt),
             memory: services.register(rt),
@@ -151,7 +151,13 @@ impl Builtin {
             clipboard: services.register(rt),
             disk: services.register(rt),
             keyboard: services.register(rt),
-        }
+        };
+        // (history) The ones sampled on a clock, so a value kept while
+        // hidden is known to be a poll.
+        b.cpu.polls(Some(cpu::PERIOD));
+        b.memory.polls(Some(memory::PERIOD));
+        b.disk.polls(Some(disk::PERIOD));
+        b
     }
 
     /// Each as a [`DynService`].

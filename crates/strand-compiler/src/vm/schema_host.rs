@@ -118,6 +118,9 @@ pub struct SchemaHost {
     /// (history) What each service was asked to keep sampling at while
     /// hidden ([`ServiceHost::keep`]).
     kept: RefCell<BTreeMap<String, std::time::Duration>>,
+    /// (history) The services that poll, and how often while hidden
+    /// ([`SchemaHost::set_polls`]).
+    polls: RefCell<BTreeMap<String, std::time::Duration>>,
 }
 
 /// Where a shadowed builtin service's cells are kept.
@@ -168,6 +171,7 @@ impl SchemaHost {
             answers: RefCell::default(),
             fetches: RefCell::default(),
             kept: RefCell::default(),
+            polls: RefCell::default(),
         };
         for (name, &r) in &crate::schema::Schema::builtin().services {
             host.add_service(rt, name, r);
@@ -559,6 +563,17 @@ impl SchemaHost {
     /// hidden periods ([`ServiceHost::keep`]).
     pub fn kept(&self) -> BTreeMap<String, std::time::Duration> {
         self.kept.borrow().clone()
+    }
+
+    /// (history) Say `service` polls every `every` (`None`: it reports its
+    /// changes as they happen): kept with no reader, it samples at the
+    /// larger of that and its kept period ([`ServiceHost::sampled`]).
+    pub fn set_polls(&self, service: &str, every: Option<std::time::Duration>) {
+        let mut polls = self.polls.borrow_mut();
+        match every {
+            Some(e) => polls.insert(service.to_string(), e),
+            None => polls.remove(service),
+        };
     }
 
     /// Move the clock (the host loop's wall-clock wake-up).
@@ -1127,8 +1142,13 @@ impl ServiceHost for SchemaHost {
         };
     }
 
-    fn shown(&self, _rt: &Runtime, service: &str) -> bool {
-        self.readers(service) > 0
+    fn sampled(&self, _rt: &Runtime, service: &str) -> Option<std::time::Duration> {
+        if self.readers(service) > 0 {
+            return None;
+        }
+        let kept = *self.kept.borrow().get(service)?;
+        let polls = *self.polls.borrow().get(service)?;
+        Some(kept.max(polls))
     }
 
     fn next_wake(&self, rt: &Runtime) -> Option<SystemTime> {

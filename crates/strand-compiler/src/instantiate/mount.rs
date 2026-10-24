@@ -2409,13 +2409,13 @@ impl Ctx {
             return;
         };
         let history = self.history.borrow().clone();
-        let Some(key) = history.key_of(value.value) else {
+        let Some((key, span)) = history.key_of(value.value) else {
             return;
         };
         let version = history.version(&key);
         let memo = rt.memo(move |rt| {
             Ok(PropOut {
-                value: history.backlog(rt, &key),
+                value: history.backlog(rt, &key, span),
                 source: 0,
                 transition: Transition::Instant,
                 node: None,

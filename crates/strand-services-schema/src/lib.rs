@@ -14,6 +14,19 @@ pub const CPU: &str = include_str!("cpu.schema");
 /// `memory`: memory use (procfs).
 pub const MEMORY: &str = include_str!("memory.schema");
 
+/// (history) The builtin services that sample on a clock, each with how
+/// often it samples while a reader is visible: kept by a `graph` and
+/// hidden, each samples at the larger of that and its kept period, and
+/// its hidden samples are drawn as ramps over that period. The eval
+/// sandbox's stand-ins say the same, so a replayed graph draws them as
+/// the live one did. Every other builtin reports its changes as they
+/// happen.
+pub const POLLED: [(&str, std::time::Duration); 3] = [
+    ("cpu", std::time::Duration::from_secs(1)),
+    ("memory", std::time::Duration::from_secs(1)),
+    ("disk", std::time::Duration::from_secs(10)),
+];
+
 /// `battery`: UPower's display device and power sources.
 pub const BATTERY: &str = include_str!("battery.schema");
 /// `brightness`: the backlight (sysfs, logind).

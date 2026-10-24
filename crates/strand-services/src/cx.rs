@@ -10,6 +10,7 @@
 //! service was stopped and the body should return.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -186,6 +187,7 @@ impl Reply {
 // A `Write` is moved once per local write, through the run's channel;
 // boxing it would cost an allocation per write for no gain.
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum Msg<S: Service> {
     /// A local write ([`Write`]).
     Write(Write),
@@ -235,6 +237,10 @@ pub struct Cx<S: Service> {
     visible: bool,
     /// (history) How often to sample while hidden ([`Msg::Keep`]).
     kept: Option<Duration>,
+    /// (history) Where [`Cx::period`] tells its client the visible
+    /// period it samples at (nanoseconds), so a hidden sample is known
+    /// to be polled.
+    clocked: Option<Arc<AtomicU64>>,
     /// Per field: a visible reader reads it (meaningful for stream
     /// fields).
     watched: Vec<bool>,
@@ -300,6 +306,7 @@ impl<S: Service> Cx<S> {
             token: None,
             visible: true,
             kept: None,
+            clocked: None,
             watched,
             ready: false,
             buses,
@@ -455,9 +462,15 @@ impl<S: Service> Cx<S> {
     /// otherwise starts visible, as before.
     ///
     /// [`Client::keep`]: crate::Client::keep
-    pub(crate) fn start_kept(&mut self, read: bool, kept: Option<Duration>) {
+    pub(crate) fn start_kept(
+        &mut self,
+        read: bool,
+        kept: Option<Duration>,
+        clocked: Arc<AtomicU64>,
+    ) {
         self.kept = kept;
         self.visible = read || kept.is_none();
+        self.clocked = Some(clocked);
     }
 
     /// (history) How often to sample while no reader is visible: a
@@ -471,8 +484,17 @@ impl<S: Service> Cx<S> {
     /// reader is visible samples now: `visible` while one is, the kept
     /// hidden period ([`Cx::kept`], never faster than `visible`) while
     /// none is, and `None` (not at all) when nothing keeps it. A polled
-    /// service drives its clock with this ([`Ticker`]).
+    /// service drives its clock with this ([`Ticker`]); asking it tells
+    /// the service's client that it samples every `visible`, so its
+    /// hidden samples are drawn as ramps over the period (a value it
+    /// reports as it changes is drawn as a step at its time).
     pub fn period(&self, visible: Duration) -> Option<Duration> {
+        if let Some(c) = &self.clocked {
+            c.store(
+                u64::try_from(visible.as_nanos()).unwrap_or(u64::MAX).max(1),
+                Ordering::Relaxed,
+            );
+        }
         if self.visible {
             Some(visible)
         } else {

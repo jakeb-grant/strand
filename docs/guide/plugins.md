@@ -92,12 +92,45 @@ fn main() -> std::process::ExitCode {
 - The service name is lower case: letters, digits and `_`. A builtin's
   name (`battery`, `clock`, …) is refused.
 - `run` starts when a config first reads `hello` and stops 5 s after
-  the last reader goes, as a builtin service does. `cx.ready()` says the
+  the last reader goes, as a builtin service does, unless a `graph`
+  keeps its history (below). `cx.ready()` says the
   first read is in. Add `thread` to `#[service(…)]` for a body that
   blocks; it then gets a thread of its own.
 - A registration the builder cannot serve (a bad or taken name, a
   schema that does not apply or that declares a service besides its
   own) stops every command with a message, before anything runs.
+- `Msg` is `#[non_exhaustive]`: match it with a `_ => {}` arm, as
+  above, so a message a later Strand adds does not break your build.
+
+### When a graph keeps your service's history
+
+A config's `graph hello.count { history: 60s }` shows the last minute
+of the value as soon as it mounts, so Strand keeps your service running
+while no visible reader holds it (it is *kept*), for as long as the
+loaded config has such a graph. Your body is told with `Msg::Keep(Some(
+period))` (`Msg::Keep(None)` when no graph keeps it any more; `cx.kept()`
+says which now) and `Msg::Visible(false)` as usual. What being kept
+means for you depends on how your service gets its values:
+
+- **It reports changes as they happen** (a D-Bus signal, a file watch,
+  an event stream): nothing to do. It is not stopped 5 s after its last
+  reader goes while it is kept, and each value it reports is drawn as a
+  step at the moment it came.
+- **It samples on a clock** (reads `/proc` or runs a command every
+  second): tick with `strand_services::Ticker`. `Ticker::new(&cx,
+  every)` ticks every `every` while a reader is visible, at the kept
+  period (`cx.period(every)`: the coarser of `every` and the period
+  Strand asks for) while hidden and kept, and never otherwise; call
+  `tick.follow(&cx)` after each message, and when it returns `true`
+  (it ticks again after not ticking) take a fresh baseline if you take
+  differences, as `cpu` does. A body that asks `cx.period` says it
+  samples on a clock, so its hidden samples are drawn as lines from the
+  one before across the period they could have changed in. A loop of
+  your own instead of a `Ticker` should sleep for `cx.period(every)`
+  (`None`: wait for the next message).
+- **It runs a stream only while watched** (`#[store(stream)]`,
+  `cx.watched(field)`): a hidden stream stays off, kept or not, and a
+  graph of it holds the last value it had.
 
 ## The two things every plugin must copy
 

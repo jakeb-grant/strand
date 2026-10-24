@@ -1291,7 +1291,8 @@ mod tests {
         };
         assert!(b.points.len() > shown, "{b:?}");
         assert_eq!(b.points[0].ramp, 0.0, "shown: a step");
-        assert!(b.points[0].age > 6.0, "{b:?}");
+        let age = strand_scene::backlog::boot_now().as_secs_f64() - b.points[0].at;
+        assert!(age > 2.5, "taken before the 3 s hidden poll: {age} {b:?}");
         let hidden = &b.points[shown];
         assert!(hidden.ramp > 0.0 && hidden.ramp <= 3.0, "{b:?}");
         // A reload without the graph lets cpu go: it stops after the grace.
@@ -1700,7 +1701,7 @@ service tally {
                         Msg::Call(TallyCall::Echo { text }, reply) => {
                             reply.send::<_, String>(Ok(text));
                         }
-                        Msg::Visible(_) | Msg::Watch { .. } | Msg::Keep(_) => {}
+                        _ => {}
                     }
                 }
                 Ok(())
@@ -2684,6 +2685,30 @@ service shelf {
             );
             assert_eq!(cpu.readers(), 0, "the builtin is let go");
             assert!(live.real.custom.client("cpu").is_some());
+        }
+
+        /// (history, the review) A reload that adds a config `service
+        /// cpu` under a graph keeping `cpu` moves the keep: the builtin
+        /// is let go of where it was kept and the config's service is
+        /// kept instead; a reload dropping the shadow moves it back (and
+        /// stops the shadow).
+        #[test]
+        fn a_reload_adding_a_shadow_moves_the_keep() {
+            let graph = "bar B { graph cpu.usage { history: 60s } }\n";
+            let shadow = "permit exec \"true\"\nservice cpu from poll [\"true\"] every 30s { usage: float }\nbar B { graph cpu.usage { history: 60s } }\n";
+            let mut live = Live::boot(graph, Buses::none());
+            let cpu = live.real.builtin.cpu.clone();
+            assert_eq!(cpu.kept(), Some(Duration::from_secs(3)));
+            live.reload(shadow);
+            assert_eq!(cpu.kept(), None, "the builtin is let go");
+            let Some(custom) = live.real.custom.client("cpu") else {
+                panic!("the config's cpu runs");
+            };
+            assert_eq!(custom.kept(), Some(Duration::from_secs(3)));
+            assert_eq!(live.real.host.sampled(&live.rt, "cpu"), None, "shown");
+            live.reload(graph);
+            assert_eq!(cpu.kept(), Some(Duration::from_secs(3)), "back");
+            assert!(!custom.running(), "the removed shadow stopped");
         }
 
         /// A file whose directory does not exist yet (an app's cache

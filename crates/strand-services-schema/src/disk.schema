@@ -16,7 +16,9 @@ record Filesystem key path {
 }
 
 /// Disk usage of the mounted filesystems (`statvfs`), read every 10 s
-/// while a reader is visible.
+/// while a reader is visible. While none is but a `graph` keeps history
+/// of it, it reads at the coarser of that and a twentieth of the
+/// graph's `history`; otherwise not at all.
 service disk {
   /// The root filesystem's fraction in use, 0 to 1: `pct(disk.usage)`.
   usage: float

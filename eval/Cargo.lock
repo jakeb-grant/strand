@@ -2163,6 +2163,9 @@ dependencies = [
 [[package]]
 name = "strand-scene"
 version = "0.0.0"
+dependencies = [
+ "rustix",
+]
 
 [[package]]
 name = "strand-services-schema"

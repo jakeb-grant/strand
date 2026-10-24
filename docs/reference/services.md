@@ -142,6 +142,9 @@ read changes.
 ## `cpu`
 
 Processor load, sampled once a second while a reader is visible.
+While none is but a `graph` keeps history of it, it samples at the
+coarser of that and a twentieth of the graph's `history` (at least
+2 s); otherwise not at all.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -152,7 +155,9 @@ Processor load, sampled once a second while a reader is visible.
 ## `disk`
 
 Disk usage of the mounted filesystems (`statvfs`), read every 10 s
-while a reader is visible.
+while a reader is visible. While none is but a `graph` keeps history
+of it, it reads at the coarser of that and a twentieth of the
+graph's `history`; otherwise not at all.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -207,7 +212,10 @@ and only while a visible reader shows it.
 
 ## `memory`
 
-Memory use, sampled once a second while a reader is visible.
+Memory use, sampled once a second while a reader is visible. While
+none is but a `graph` keeps history of it, it samples at the coarser
+of that and a twentieth of the graph's `history` (at least 2 s);
+otherwise not at all.
 
 | Field | Type | |
 | --- | --- | --- |

@@ -3131,6 +3131,7 @@ name = "strand-scene"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "rustix",
 ]
 
 [[package]]

@@ -408,8 +408,8 @@ impl ServiceHost for Composite {
         }
     }
 
-    fn shown(&self, rt: &Runtime, service: &str) -> bool {
-        self.route(service).shown(rt, service)
+    fn sampled(&self, rt: &Runtime, service: &str) -> Option<std::time::Duration> {
+        self.route(service).sampled(rt, service)
     }
 
     fn release(&self, rt: &Runtime, service: &str) {

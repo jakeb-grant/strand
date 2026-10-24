@@ -275,6 +275,8 @@ impl Probe {
                         assert_eq!(cx.kept(), k);
                         log(format!("keep {k:?}"));
                     }
+                    // `Msg` is non-exhaustive: messages added later.
+                    Some(_) => {}
                 },
             }
         }

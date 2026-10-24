@@ -478,8 +478,8 @@ impl ServiceHost for StoreHost {
         self.svc.keep(rt, every);
     }
 
-    fn shown(&self, _rt: &Runtime, _service: &str) -> bool {
-        self.svc.readers() > 0
+    fn sampled(&self, _rt: &Runtime, _service: &str) -> Option<std::time::Duration> {
+        self.svc.sampled()
     }
 
     fn acquire_field(&self, _rt: &Runtime, _service: &str, field: &str) {

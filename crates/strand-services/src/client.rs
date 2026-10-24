@@ -43,6 +43,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -505,6 +506,8 @@ impl Services {
             cells,
             refs: Cell::new(0),
             kept: Cell::new(None),
+            polls: Cell::new(None),
+            clocked: Arc::new(AtomicU64::new(0)),
             field_refs: S::FIELDS.iter().map(|_| Cell::new(0)).collect(),
             run: RefCell::new(None),
             timer: Cell::new(None),
@@ -761,6 +764,13 @@ struct ClientInner<S: Service> {
     /// `graph`'s kept history ([`Client::keep`]); while set the service
     /// runs without readers.
     kept: Cell<Option<Duration>>,
+    /// (history) How often it polls while a reader is visible, for a
+    /// service sampled on a clock ([`Client::polls`]).
+    polls: Cell<Option<Duration>>,
+    /// (history) The visible period its body last asked [`Cx::period`]
+    /// for, in nanoseconds (0: never): a body ticking on a clock
+    /// ([`crate::Ticker`]) says it polls without being told.
+    clocked: Arc<AtomicU64>,
     /// Readers per field (stream fields are told of theirs).
     field_refs: Vec<Cell<u32>>,
     run: RefCell<Option<Run<S>>>,
@@ -992,7 +1002,7 @@ impl<S: Service> ClientInner<S> {
             watched,
             unread.clone(),
         );
-        cx.start_kept(self.refs.get() > 0, self.kept.get());
+        cx.start_kept(self.refs.get() > 0, self.kept.get(), self.clocked.clone());
         let mut stop = None;
         let mut thread = None;
         let started = match S::start(cx) {
@@ -1779,6 +1789,33 @@ impl<S: Service> Client<S> {
         self.0.kept.get()
     }
 
+    /// (history) Say the service samples on a clock, every `every` while
+    /// a reader is visible and at the larger of that and its kept period
+    /// while kept with none: the builtins register cpu, memory and disk,
+    /// a host its `from poll` services. A body that asks [`Cx::period`]
+    /// (a [`crate::Ticker`] does) says so itself, before its first run's
+    /// first tick; this says it from the start. `None`: unless its body
+    /// asks, it reports its changes as they happen.
+    pub fn polls(&self, every: Option<Duration>) {
+        self.0.polls.set(every);
+    }
+
+    /// (history) How its values arrive now: `None` when each is taken as
+    /// it changes (a visible reader holds it, or it reports changes as
+    /// they happen), `Some(p)` when it polls every `p` with no visible
+    /// reader, kept (`ServiceHost::sampled` on the language side).
+    pub fn sampled(&self) -> Option<Duration> {
+        if self.0.refs.get() > 0 {
+            return None;
+        }
+        let clocked = match self.0.clocked.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(Duration::from_nanos(n)),
+        };
+        let polls = self.0.polls.get().or(clocked)?;
+        Some(self.0.kept.get()?.max(polls))
+    }
+
     /// Readers holding it now.
     pub fn readers(&self) -> u32 {
         self.0.refs.get()
@@ -2100,6 +2137,8 @@ pub trait DynService {
     fn keep(&self, rt: &Runtime, every: Option<Duration>);
     /// (history) [`Client::kept`].
     fn kept(&self) -> Option<Duration>;
+    /// (history) [`Client::sampled`].
+    fn sampled(&self) -> Option<Duration>;
     /// A visible reader of field `field` came ([`Client::acquire_field`]).
     fn acquire_field(&self, field: usize);
     /// It left or was hidden ([`Client::release_field`]).
@@ -2383,6 +2422,10 @@ impl<S: Service> DynService for Client<S> {
 
     fn kept(&self) -> Option<Duration> {
         Client::kept(self)
+    }
+
+    fn sampled(&self) -> Option<Duration> {
+        Client::sampled(self)
     }
 
     fn acquire_field(&self, field: usize) {

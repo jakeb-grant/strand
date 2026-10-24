@@ -1568,6 +1568,11 @@ impl Instance {
 
     /// Advance the logic clock to `now` and end the tick.
     pub fn tick(&self, now: Duration) -> Update {
+        // (history) Time slept since the last tick is a gap in what the
+        // graphs keep, told before anything records after it.
+        if !self.history.is_empty() {
+            self.history.observe(Some(&self.rt));
+        }
         let tick = self.rt.tick(now);
         self.collect(tick)
     }
@@ -2444,7 +2449,21 @@ impl Instance {
     /// (history) The graph histories this instance keeps, one per series
     /// (decisions.md history): what tests and diagnostics read.
     pub fn histories(&self) -> Vec<HistoryInfo> {
-        self.history.infos(&self.rt)
+        self.history.infos()
+    }
+
+    /// (history) Time kept history on `clock` from now on: tests pass
+    /// their own boot and awake clocks
+    /// (`strand_scene::backlog::clocks` by default).
+    pub fn set_history_clock(&self, clock: strand_scene::backlog::ClockFn) {
+        self.history.set_clock(clock);
+    }
+
+    /// (history) Seed the kept series `key` with `points` (a glitch
+    /// report's replay starts with the history the live shell had):
+    /// `false` when this config keeps no such series.
+    pub fn seed_history(&self, key: &str, points: &[strand_scene::BacklogPoint]) -> bool {
+        self.history.seed(&self.rt, key, points)
     }
 
     /// Unmount everything (the instance's scope is disposed: effects,

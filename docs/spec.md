@@ -1026,14 +1026,20 @@ units).
   program that never reads it never records it, and a config's own
   `service clipboard` shadows the rule (decisions.md m6-service-gaps).
   Likewise a `graph` whose value exists at file scope (a service field,
-  or an expression over them, file-level `let`s and `state`s and
-  constants) shows the last `history` of it as soon as it mounts: the
-  program keeps that value, once per expression, for the longest
-  `history` any of its graphs asks, in memory only, and the services it
-  reads keep sampling, at a coarser period, while no visible reader
-  holds them; a graph of a value tied to a list item, a component's
-  parameter or `let`, or of a computed `history`, shows what came since
-  it mounted (decisions.md history).
+  or an expression over service fields, file-level `let`s, `state`s
+  and settings, and constants) shows the last `history` of it as soon
+  as it mounts: the program keeps that value, once per expression, for
+  the longest `history` any of its graphs asks, in memory only, and
+  the services it reads keep running while no visible reader holds
+  them. One that samples on a clock (`cpu`, `memory`, `disk`, a `from
+  poll` service) samples then at a coarser period, a twentieth of that
+  history and at least 2 s; one that reports its changes as they
+  happen keeps reporting them; a stream run only while watched, or a
+  value that changes only while shown, records nothing hidden. A graph
+  of a value tied to a list item, a component's parameter or `let`, an
+  element's state or the animation clock, or whose `history` is not a
+  constant (a literal, or a file-level `let` of one), shows what came
+  since it mounted (decisions.md history).
 
 ### 8.2 One tick, one diff
 

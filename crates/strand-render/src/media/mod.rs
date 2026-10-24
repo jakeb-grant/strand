@@ -13,6 +13,7 @@ pub mod thumbnail;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use strand_scene::{NodeId, NodeKind, SceneDiff, SceneOp};
 use vello_cpu::color::PremulRgba8;
@@ -54,9 +55,11 @@ pub(crate) enum Source {
 }
 
 impl Source {
-    pub(crate) fn new(kind: NodeKind) -> Option<Source> {
+    /// `clock`: the boot clock a graph reads its backlog's times on
+    /// (`None`: the real one).
+    pub(crate) fn new(kind: NodeKind, clock: Option<fn() -> Duration>) -> Option<Source> {
         Some(match kind {
-            NodeKind::Graph => Source::Graph(Arc::default()),
+            NodeKind::Graph => Source::Graph(Arc::new(graph::GraphSource::with_clock(clock))),
             NodeKind::Spectrum => Source::Spectrum(Arc::default()),
             NodeKind::Svg => Source::Svg(Arc::default()),
             NodeKind::Lottie => Source::Lottie(Arc::default()),
@@ -83,6 +86,8 @@ pub struct Media {
     pub(crate) sources: HashMap<NodeId, Source>,
     /// The demand last handed out ([`crate::Renderer::take_feed_demand`]).
     pub(crate) demand: Vec<crate::FeedDemand>,
+    /// (history) The boot clock graphs read ([`crate::Renderer::set_history_clock`]).
+    pub(crate) clock: Option<fn() -> Duration>,
 }
 
 /// Draws vector content with vello_cpu (single-threaded, as everywhere in
