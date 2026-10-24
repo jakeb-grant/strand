@@ -325,6 +325,79 @@ fn a_meter_value_springs() {
     assert!(r.animating(SurfaceId(1)));
 }
 
+/// (review) A meter with an auto range springing onto a step of the
+/// ladder ends full: the range follows the value logic set, not the
+/// spring's overshoot past it (which grew `0, auto` to 100 for good, so
+/// 50 drew half full).
+#[test]
+fn a_springing_meter_onto_a_ladder_step_ends_full() {
+    use std::time::Duration;
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let c = ranged(&mut b);
+    let (_, mut buf) = show(&mut r, b.diff);
+    let ms = |n| Duration::from_millis(n);
+    r.invalidate(SurfaceId(1));
+    buf.paint_at(&mut r, SurfaceId(1), 1, ms(1000));
+    let mut d = SceneDiff::new();
+    d.set(c.auto, Prop::Value, num(50.0));
+    r.apply(d);
+    let mut at = 1016;
+    buf.paint_at(&mut r, SurfaceId(1), 1, ms(at));
+    while r.animating(SurfaceId(1)) {
+        at += 16;
+        assert!(at < 4000, "settles");
+        buf.paint_at(&mut r, SurfaceId(1), 1, ms(at));
+    }
+    let mb = r.boxes(SurfaceId(1)).unwrap().rects[&c.auto];
+    let filled = (0..mb.w as u32)
+        .filter(|x| buf.px(mb.x as u32 + x, (mb.y + mb.h / 2.0) as u32)[0] == 0xf7)
+        .count() as f32;
+    assert!(filled > 0.97 * mb.w, "50 of 50: {filled} of {}", mb.w);
+}
+
+/// (review) A ranged meter's value settles within its tolerance of the
+/// range's span: a step of 1 % of 0 to 16 GB takes about as many frames
+/// as one of 1 % of 0 to 1 (it took 38 frames against 5, springing for
+/// a millionth of a byte).
+#[test]
+fn a_meter_on_a_large_range_settles_as_one_on_0_to_1() {
+    use std::time::Duration;
+    let frames = |hi: f32| {
+        let mut r = renderer();
+        let mut b = Builder::default();
+        let col = panel(&mut b, 220.0, 40.0);
+        let m = b.node(
+            NodeKind::Meter,
+            Some(col),
+            vec![
+                (Prop::Width, num(200.0)),
+                (Prop::Height, num(6.0)),
+                (Prop::Value, num(0.5 * hi)),
+                (Prop::Range, PropValue::List(vec![num(0.0), num(hi)])),
+            ],
+        );
+        let (_, mut buf) = show(&mut r, b.diff);
+        let ms = |n| Duration::from_millis(n);
+        r.invalidate(SurfaceId(1));
+        buf.paint_at(&mut r, SurfaceId(1), 1, ms(1000));
+        let mut d = SceneDiff::new();
+        d.set(m, Prop::Value, num(0.51 * hi));
+        r.apply(d);
+        let mut n = 0;
+        loop {
+            n += 1;
+            buf.paint_at(&mut r, SurfaceId(1), 1, ms(1000 + 16 * n));
+            if !r.animating(SurfaceId(1)) {
+                break n;
+            }
+            assert!(n < 400, "settles");
+        }
+    };
+    let (small, large) = (frames(1.0), frames(1.6e10));
+    assert!(large <= small + 2, "{large} frames against {small}");
+}
+
 struct Inputs {
     focused: NodeId,
     selected: NodeId,

@@ -1479,7 +1479,9 @@ element meter(float -> value): node {
   value: float
   /// The values its ends stand for: `range: 0, 100`; `auto` (or `auto`
   /// for one end, `range: 0, auto`) follows the values it showed in the
-  /// last minute, on a 1, 2, 5 ladder (0 to 1 when unset).
+  /// last minute, on a 1, 2, 5 ladder (0 to 1 when unset); it moves when
+  /// the meter draws, so it narrows at the first change after a burst is
+  /// a minute old.
   range: (float | SizeKeyword, float | SizeKeyword) | SizeKeyword
   /// The paint of the unfilled part.
   track: paint
@@ -1545,8 +1547,8 @@ element arc: node {
 /// history, drawn over one another against one `range`, the first at the
 /// back: `graph cpu.cores`, `graph [cpu.usage, memory.usage] { color:
 /// $accent, $tertiary }`. Its columns are whole periods of the boot
-/// clock, the same columns wherever and whenever it is drawn, and its
-/// value does not spring: `smooth` eases it.
+/// clock, the same columns whenever its frames come, and its value does
+/// not spring: `smooth` eases it.
 element graph(float | [float] -> value): node {
   /// How much history it keeps and shows (60 s when unset).
   history: duration
@@ -1560,8 +1562,9 @@ element graph(float | [float] -> value): node {
   /// across its column, snapped to whole pixels, with square risers) or
   /// `bars` (a bar per value, `line_width` wide and `gap` apart).
   style: GraphStyle
-  /// The line's colour, or a list, one per series (taken in turn when
-  /// there are more series than colours).
+  /// The line's colour (inherited when unset, as every node's), or a
+  /// list, one per series (taken in turn when there are more series than
+  /// colours; one colour serves them all).
   color: color | [color]
   /// The paint under the line, laid over the graph's box (a gradient
   /// fades as written: `linear(180deg, $accent.alpha(0.4),
@@ -1573,7 +1576,8 @@ element graph(float | [float] -> value): node {
   line_width: length
   /// Under `style: bars`, the space between bars (1 px when unset).
   gap: length
-  /// Smoothing, 0 to 1.
+  /// Smoothing: 0 (unset) follows the value; towards 1 each column moves
+  /// less of the way to it.
   smooth: float
   flags leaf
 }

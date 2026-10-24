@@ -802,7 +802,10 @@ filling the monitor, the keyboard always).
   A change of the transition alone moves nothing.
 - **What cannot interpolate snaps**: fonts snap, shadow lists are padded
   to equal length and spring, layout lengths (`pad`) snap while paint
-  offsets spring. With the desktop's reduced-motion setting on, every
+  offsets spring. A `graph`'s value snaps (a `~` on it changes
+  nothing): `smooth` eases it, and each column is its value at that
+  column's tick on the boot clock, not a spring's position at whatever
+  frame drew it (decisions.md graph-follow; section 14). With the desktop's reduced-motion setting on, every
   transition snaps and loops, time signals and effects stop.
 - **Paint-only props** (`x`, `y`, `scale`, `rotate`, `opacity`) never
   cause layout. A size spring relays out only the subtree under the
@@ -1041,9 +1044,12 @@ units).
   constant (a literal, or a file-level `let` of one), shows what came
   since it mounted (decisions.md history). A graph of a list keeps each
   item's history as its own series, and a graph's columns are whole
-  periods of the boot clock, its `history` over its columns, so the
-  same values fall in the same columns whenever its frames come
-  (decisions.md graph-follow; section 14).
+  periods of the boot clock, its `history` over its columns, each the
+  value at its period's start (as kept, else as the frames that painted
+  it saw it), so kept values fall in the same columns whenever its
+  frames come, and a value no history keeps does too unless it changed
+  within a frame before a column's start (decisions.md graph-follow;
+  sections 6.6 and 14).
 
 ### 8.2 One tick, one diff
 
@@ -1128,8 +1134,9 @@ units).
 - Writes through `<->` are not counted by the feedback throttle
   (section 8.7).
 - A widget with a `range` shows and writes its target in that range's
-  units: `slider { value: <-> brightness_percent; range: 0, 100 }`
-  writes 0 to 100 (decisions.md graph-follow; section 14).
+  units: with `state percent = 50`, `slider { value: <-> percent;
+  range: 0, 100 }` writes 0 to 100 (decisions.md graph-follow; section
+  14).
 
 ### 8.6 Async values
 

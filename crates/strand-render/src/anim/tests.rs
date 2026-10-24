@@ -137,7 +137,7 @@ fn shader_uniforms_spring_between_values_of_one_shape() {
     let et = encode(Prop::Uniforms, Some(&to), Color::WHITE, b).unwrap();
     assert_eq!(decode(Prop::Uniforms, &et), to, "round trip");
     let t0 = Duration::from_millis(1000);
-    let mut m = PropMotion::rest(Prop::Uniforms, &ef, Some(t0));
+    let mut m = PropMotion::rest(Prop::Uniforms, &ef, Some(t0), 1.0);
     assert!(m.retarget(&et, Curve::Spring(strand_scene::motion::SPATIAL), Some(t0)));
     let mid = decode(
         Prop::Uniforms,

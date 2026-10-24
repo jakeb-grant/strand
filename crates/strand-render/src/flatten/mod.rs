@@ -21,7 +21,7 @@ use crate::tree::{Node, SceneTree};
 
 #[cfg(feature = "gpu")]
 mod gpu;
-mod hash;
+pub(crate) mod hash;
 mod image;
 mod node;
 mod paint;

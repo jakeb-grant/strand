@@ -2229,13 +2229,18 @@ impl Router {
             return;
         }
         scene.set_drag(slider, (!last).then_some(v));
-        let range = crate::range::Spec::of(
+        // (review) A range whose end is not known now (a field not set
+        // yet) writes nothing: 0 to 1 would write fractions into a place
+        // of other units.
+        let Some(range) = crate::range::Spec::of(
             scene
                 .tree()
                 .and_then(|t| t.get(slider))
                 .and_then(|n| n.get(Prop::Range)),
         )
-        .fixed();
+        .map(|s| s.fixed()) else {
+            return;
+        };
         self.emit(Intent::Write {
             node: slider,
             prop: Prop::Value,

@@ -206,9 +206,10 @@ unless you write an `exit { … }` block of its own.
 
 **`value: <-> audio.sink.volume`** is the same two-way binding as the
 popup's: the slider shows the volume and writes it when dragged. A
-slider runs from 0 to 1, as the volume does; for a value with other
-ends, give them: `slider { value: <-> brightness_percent; range: 0, 100 }`
-shows and writes 0 to 100.
+slider runs from 0 to 1, as the volume does. For a value with other
+ends, give them: with `state percent = 50`, `slider { value: <->
+percent; range: 0, 100 }` shows `percent` and writes 0 to 100 back to
+it.
 
 ## Battery
 

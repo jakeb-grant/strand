@@ -362,20 +362,56 @@ bar Top { edge: top; height: 30
 }
 "#;
         let got = codes(src);
-        let ends: Vec<&str> = got
+        let mut ends: Vec<&str> = got
             .iter()
             .filter(|(c, _)| c == "check::range_ends")
             .map(|(_, m)| m.as_str())
             .collect();
+        ends.sort_unstable();
         assert_eq!(
             ends,
             [
+                "`range` runs from its lower end to its upper one",
+                "`range` runs from its lower end to its upper one",
                 "`range` takes its two ends, or `auto`",
-                "`range` runs from its lower end to its upper one",
-                "`range` runs from its lower end to its upper one",
+                "a slider's `range` is two numbers",
             ],
             "{got:?}"
         );
-        assert_eq!(got.len(), 5, "and two type errors: {got:?}");
+        assert_eq!(got.len(), 5, "and the style's type error: {got:?}");
+    }
+
+    /// (graph-follow review) A slider's `auto`, whole or for one end, is
+    /// said to be a slider's limit, not an unknown name with a guess at
+    /// another; and `range`'s type reads its keyword as `auto`.
+    #[test]
+    fn a_sliders_auto_range_says_why() {
+        let src = r#"
+state level = 40.0
+bar Top { edge: top; height: 30
+  slider { value: <-> level; range: auto }
+  slider { value: <-> level; range: 0, auto }
+  meter level { range: "a", 1 }
+}
+"#;
+        let got = codes(src);
+        assert_eq!(
+            got.iter()
+                .filter(
+                    |(c, m)| c == "check::range_ends" && m == "a slider's `range` is two numbers"
+                )
+                .count(),
+            2,
+            "{got:?}"
+        );
+        assert!(
+            !got.iter().any(|(c, _)| c == "check::unknown_name"),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|(_, m)| m.contains("`float | auto`") && !m.contains("Keyword")),
+            "{got:?}"
+        );
     }
 }

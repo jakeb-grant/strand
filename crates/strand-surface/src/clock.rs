@@ -144,6 +144,9 @@ impl FrameClock for PresentationClock {
 
     fn set_clock_id(&mut self, clk_id: u32) {
         use rustix::time::ClockId;
+        // (graph-follow review) Render puts frame times on the boot clock
+        // from the clock they are on.
+        strand_scene::backlog::set_presentation_clock(clk_id);
         self.clock = match clk_id {
             1 => ClockId::Monotonic,
             4 => ClockId::MonotonicRaw,

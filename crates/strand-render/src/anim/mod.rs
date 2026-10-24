@@ -84,6 +84,36 @@ pub(crate) fn springs(kind: strand_scene::NodeKind, prop: Prop) -> bool {
     ANIMATED.contains(&prop) && !(kind == strand_scene::NodeKind::Graph && prop == Prop::Value)
 }
 
+/// (review) What a `value`'s settling tolerance is scaled by: a
+/// `slider`'s, `meter`'s or `arc`'s range's span (`props` resolved, with
+/// `drawn` the range an auto one last drew), 1 for any other node or a
+/// span not known.
+fn value_scale(
+    node: &Node,
+    props: &[(Prop, std::borrow::Cow<'_, PropValue>)],
+    drawn: Option<&crate::range::Auto>,
+) -> f32 {
+    use strand_scene::NodeKind;
+    if !matches!(
+        node.kind,
+        NodeKind::Slider | NodeKind::Meter | NodeKind::Arc
+    ) {
+        return 1.0;
+    }
+    let written = props
+        .iter()
+        .find(|(q, _)| *q == Prop::Range)
+        .map(|(_, v)| v.as_ref());
+    let range = match crate::range::Spec::of(written) {
+        Some(s) if !s.is_auto() => Some(s.fixed()),
+        _ => drawn.and_then(crate::range::Auto::drawn),
+    };
+    match range.map(|r| (r.hi - r.lo).abs()) {
+        Some(span) if span.is_finite() && span > 0.0 => span,
+        _ => 1.0,
+    }
+}
+
 /// Props whose change springs the laid-out size.
 pub(crate) fn is_size(p: Prop) -> bool {
     matches!(p, Prop::Width | Prop::Height | Prop::Size)
@@ -364,16 +394,27 @@ impl Animator {
         self.boot_clock = Some(clock);
     }
 
-    /// (graph-follow) The frame being drawn on the boot clock, in
-    /// seconds, a tick counted as reached half a frame early as a capped
-    /// clock's is: what a `graph` lays its columns by. Zero in a frame
-    /// with no clock (its time zero): it stands nowhere on the boot clock.
+    /// (graph-follow) The frame being drawn on the boot clock: what a
+    /// `graph` lays its columns by. Zero in a frame with no clock (its
+    /// time zero): it stands nowhere on the boot clock.
     pub fn frame_boot(&self) -> Duration {
         if self.time.is_zero() {
             return Duration::ZERO;
         }
-        let ns = self.time.as_nanos() as i128 + self.boot_offset + self.slack.as_nanos() as i128;
+        let ns = self.time.as_nanos() as i128 + self.boot_offset;
         Duration::from_nanos(u64::try_from(ns.max(0)).unwrap_or(u64::MAX))
+    }
+
+    /// (review) The frame being drawn will be painted (not a preview at
+    /// the last painted frame's time).
+    pub fn commits(&self) -> bool {
+        self.commit
+    }
+
+    /// (review) How early a tick counts as reached: half a frame of the
+    /// surface being drawn ([`Animator::set_period`]).
+    pub fn slack(&self) -> Duration {
+        self.slack
     }
 
     /// (graph-follow) The time of the frame being drawn.
@@ -1616,8 +1657,14 @@ impl Animator {
             };
             encode(p, v, inh, boxes)
         };
+        // (review) A ranged widget's `value` is in its range's units, so
+        // it settles within its tolerance of that range's span, as a
+        // value of 0 to 1 did: a meter of bytes no longer springs until
+        // within 0.0005 of a byte.
+        let value_scale = value_scale(node, props, self.ranges.get(&id));
         for p in ANIMATED {
             let inh = if p == Prop::Glow { glow_inh } else { inh };
+            let k = if p == Prop::Value { value_scale } else { 1.0 };
             let own = props.iter().position(|(q, _)| *q == p);
             let own_v = own.map(|i| props[i].1.as_ref().clone());
             let in_exit = exit_pose.iter().find(|(q, _)| *q == p).map(|(_, v)| v);
@@ -1641,7 +1688,7 @@ impl Animator {
                     if m.target() != target {
                         let springs = respring || touch.is_some() || !m.settled(at);
                         if !(springs && m.retarget(&target, curve, last)) {
-                            *m = PropMotion::rest(p, &target, last);
+                            *m = PropMotion::rest(p, &target, last, k);
                         }
                     }
                 }
@@ -1660,7 +1707,7 @@ impl Animator {
                     if let Some(Some(from)) = from
                         && from != target
                     {
-                        let mut m = PropMotion::rest(p, &from, last);
+                        let mut m = PropMotion::rest(p, &from, last, k);
                         if !m.retarget(&target, curve, last) {
                             continue;
                         }

@@ -163,7 +163,7 @@ expect still #after
 | `tooltip_delay` | the renderer's | In ms. |
 | `config`, `config_dir` | none | A config named instead of written in (see Local configs and fonts). |
 | `[services]` | none | `"path" = value` pairs, set before boot. |
-| `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. (history) `"history:<key>"`: a kept series' points before the run (see "Replaying a glitch report"). |
+| `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. (history) `"history:<key>"`: a kept series' points before the run; (graph-follow) a list graph's item `i` is `"history:<key>[i]"` (see "Replaying a glitch report"). |
 | `wall` | the mock's own time | (report) The wall time (RFC 3339 with its offset) virtual `T0` stands for; `clock` and local time follow it (`SchemaHost::mock_at`). |
 | `warmup` | 0 | (report) Ms run before the trace starts: painted, neither traced nor checked; the first traced frame repaints every surface. |
 | `boot` | 1 000 000 | (graph-follow) The boot clock's seconds at virtual `T0`: what kept history and a `graph`'s columns are timed on (a replay writes the live shell's at its window's start). |
@@ -2486,7 +2486,8 @@ work:
    window, which the replay cannot make. Its points from before the
    window's start (its time on the boot clock: `boot_ns` less the time
    from the window's start to the report) are seeded, as
-   `history:<key>` with each point's time in seconds from the window's
+   `history:<key>` (an item of a list graph as `history:<key>[i]`)
+   with each point's time in seconds from the window's
    start, so a graph of it mounting in the replay shows them; from the
    start on, the replay keeps its own, from the fields it plays. The
    bundle holds the ring as it was at the report, which had let go of
@@ -2546,7 +2547,8 @@ capability, used by any scenario):
   the inspector's path) or a `$token`, set as a baseline: services
   before boot, cells and tokens as they mount, so no `on change` fires
   (spec.md 8.4: never at boot). (history) `"history:<key>"` (a series
-  `Instance::histories` names) is `[[at, value, ramp], …]`, oldest
+  `Instance::histories` names; (graph-follow) `<key>[i]` for item `i`
+  of a list graph) is `[[at, value, ramp], …]`, oldest
   first, `at` in seconds from the run's start (before it: negative), a
   `null` value a gap's start: the points go before the series' own (a
   series the config does not keep is skipped).

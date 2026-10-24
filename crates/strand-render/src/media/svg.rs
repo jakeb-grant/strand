@@ -534,7 +534,9 @@ mod tests {
             parts: &[],
             files: None,
             boot: std::time::Duration::ZERO,
+            slack: std::time::Duration::ZERO,
             still: false,
+            commit: true,
         };
         for _ in 0..3 {
             s.prepare(&props);

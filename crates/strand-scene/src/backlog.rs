@@ -69,6 +69,45 @@ pub fn boot_now() -> Duration {
     read(rustix::time::ClockId::Boottime)
 }
 
+/// (graph-follow review) The POSIX id of the clock `wp_presentation`
+/// times frames on: `CLOCK_MONOTONIC` (1) unless the compositor announces
+/// `CLOCK_MONOTONIC_RAW` (4) or `CLOCK_BOOTTIME` (7). strand-surface sets
+/// it when the compositor names its clock; render reads it to put a
+/// frame's presentation time on the boot clock ([`boot_at`]).
+static PRESENTATION_CLOCK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// (graph-follow review) The compositor timed frames on clock `id` (a
+/// POSIX clock id; one not known reads as `CLOCK_MONOTONIC`, as the
+/// frame clock does).
+pub fn set_presentation_clock(id: u32) {
+    let id = if matches!(id, 1 | 4 | 7) { id } else { 1 };
+    PRESENTATION_CLOCK.store(id, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// (graph-follow review) The boot clock at time `p` of the presentation
+/// clock ([`set_presentation_clock`]): `p` moved by what the boot clock
+/// is ahead of that clock now (nothing when it is the boot clock).
+pub fn boot_at(p: Duration) -> Duration {
+    let id = PRESENTATION_CLOCK.load(std::sync::atomic::Ordering::Relaxed);
+    let (boot, presentation) = match id {
+        7 => return p,
+        4 => (
+            read(rustix::time::ClockId::Boottime),
+            read(rustix::time::ClockId::MonotonicRaw),
+        ),
+        _ => {
+            let c = clocks();
+            (c.boot, c.awake)
+        }
+    };
+    moved(p, boot, presentation)
+}
+
+/// `p` on a clock reading `presentation` now, on one reading `boot` now.
+fn moved(p: Duration, boot: Duration, presentation: Duration) -> Duration {
+    (p + boot).saturating_sub(presentation)
+}
+
 fn read(id: rustix::time::ClockId) -> Duration {
     let t = rustix::time::clock_gettime(id);
     Duration::new(
@@ -177,5 +216,41 @@ mod tests {
         let c = clocks();
         assert!(!c.boot.is_zero() && !c.awake.is_zero());
         assert!(boot_now() >= c.boot, "it runs forward");
+    }
+
+    /// (graph-follow review) A presentation time is put on the boot clock
+    /// from the clock the compositor named: moved by what the boot clock
+    /// is ahead of `CLOCK_MONOTONIC` (or of `CLOCK_MONOTONIC_RAW`), and
+    /// taken as it is when the compositor times frames on the boot clock
+    /// itself (moving it again counted the time asleep twice).
+    #[test]
+    fn a_presentation_time_lands_on_the_boot_clock_whatever_its_clock() {
+        let s = Duration::from_secs;
+        assert_eq!(moved(s(100), s(5_000), s(4_000)), s(1_100));
+        let p = s(123);
+        set_presentation_clock(7);
+        assert_eq!(boot_at(p), p, "the boot clock: as it is");
+        // Moved by what the boot clock is ahead now (to a millisecond:
+        // the clocks are read one after the other).
+        let near = |on: Duration, boot: Duration, other: Duration| {
+            let want = (p + boot).saturating_sub(other);
+            on.abs_diff(want) < Duration::from_millis(1)
+        };
+        set_presentation_clock(1);
+        let c = clocks();
+        let on = boot_at(p);
+        assert!(near(on, c.boot, c.awake), "{on:?}");
+        set_presentation_clock(4);
+        let (boot, raw) = (
+            read(rustix::time::ClockId::Boottime),
+            read(rustix::time::ClockId::MonotonicRaw),
+        );
+        let on = boot_at(p);
+        assert!(near(on, boot, raw), "raw: {on:?}");
+        set_presentation_clock(99);
+        assert_eq!(
+            PRESENTATION_CLOCK.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 }

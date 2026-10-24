@@ -4,7 +4,7 @@ expression: rendered
 ---
 check::type_mismatch
 
-  × `height` expects `length | SizeKeyword`, found `text`
+  × `height` expects `length | auto`, found `text`
    ╭─[type_mismatch.strand:5:17]
  4 │ component C {
  5 │   box { height: "tall"; opacity: true

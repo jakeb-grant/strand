@@ -8,17 +8,17 @@ use vello_cpu::kurbo::{self, BezPath};
 
 use super::{FillShape, Item};
 
-pub(super) fn hash_f32(h: &mut impl Hasher, v: f32) {
+pub(crate) fn hash_f32(h: &mut impl Hasher, v: f32) {
     v.to_bits().hash(h);
 }
 
-pub(super) fn hash_color(h: &mut impl Hasher, c: &Color) {
+pub(crate) fn hash_color(h: &mut impl Hasher, c: &Color) {
     for v in [c.r, c.g, c.b, c.a] {
         hash_f32(h, v);
     }
 }
 
-pub(super) fn hash_stops(h: &mut impl Hasher, stops: &[strand_scene::GradientStop]) {
+pub(crate) fn hash_stops(h: &mut impl Hasher, stops: &[strand_scene::GradientStop]) {
     stops.len().hash(h);
     for st in stops {
         hash_f32(h, st.offset);
@@ -26,7 +26,7 @@ pub(super) fn hash_stops(h: &mut impl Hasher, stops: &[strand_scene::GradientSto
     }
 }
 
-pub(super) fn hash_paint(h: &mut impl Hasher, p: &Paint) {
+pub(crate) fn hash_paint(h: &mut impl Hasher, p: &Paint) {
     match p {
         Paint::Solid(c) => {
             0u8.hash(h);

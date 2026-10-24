@@ -11,17 +11,21 @@
 //! kept history is timed on: tick `j` is the period from `j × column`
 //! seconds of it, the node's clock ticks at those times
 //! ([`crate::clock::Rate::Aligned`]), and a frame reads which tick it is
-//! in from [`RasterProps::boot`] (the frame on the boot clock, a tick
-//! reached half a frame early). So two graphs drawn at different frame
-//! times (a live shell and its replay) put a value in the same column.
-//! On a tick the kept pixels shift left by the slots that passed and only
-//! the new ones are drawn; between ticks a new value redraws only the
-//! newest slot, which shows the value now. A sample is the value at its
-//! tick, eased by `smooth` (0 follows the value, towards 1 it lags: each
-//! tick moves `1 - smooth` of the way). Every style keeps this; the one
-//! exception is a `fill` whose colours change across the box (a gradient
-//! at an angle, a radial or a conic one), which cannot move with the
-//! columns, so such a graph is drawn whole at each tick.
+//! in from [`RasterProps::boot`] (the frame on the boot clock; a tick
+//! counts as reached [`RasterProps::slack`], half a frame, early). A
+//! sample is the value at its tick's start (review): the backlog's where
+//! it reaches that time, else the value the last painted frame at or
+//! before it saw ([`Series::known`]), the newest taken anew at each
+//! advance; eased by `smooth` (0 follows the value, towards 1 it lags:
+//! each tick moves `1 - smooth` of the way). So two graphs drawn at
+//! different frame times (a live shell and its replay) put a value in
+//! the same column. On a tick the kept pixels shift left by the slots
+//! that passed and only the new ones are drawn; between ticks a new
+//! value redraws only the newest slot, which shows the value now. Every
+//! style keeps this; the one exception is a `fill` whose colours change
+//! across the box (a gradient at an angle, a radial or a conic one),
+//! which cannot move with the columns, so such a graph is drawn whole at
+//! each tick (and between ticks, only its newest slot).
 //!
 //! Values are read against `range` ([`crate::range`]): 0 to 1 unless
 //! written, its lower end at the bottom, clamped; under `range: auto` the
@@ -29,9 +33,10 @@
 //! anew. The line is the node's `color`, `line_width` wide, under it
 //! `fill` (none by default), drawn as written over the graph's box: a
 //! gradient is a gradient. A list value (`graph cpu.cores`, `graph
-//! [net.rx, net.tx]`) is several series, each sampled and eased on its
-//! own, drawn over one another in order (the first at the back), each in
-//! its turn of a `color` list and a `fill` list.
+//! [cpu.usage, memory.usage]`) is several series, each sampled and eased
+//! on its own, drawn over one another in order (the first at the back),
+//! each in its turn of a `color` list and a `fill` list; a list that
+//! changes length keeps the items still there and draws every slot anew.
 //!
 //! Under `reduced_motion` (time frozen) the history stops scrolling and
 //! the newest column still follows the value.
@@ -62,10 +67,14 @@ use vello_cpu::color::PremulRgba8;
 
 use crate::clock::Rate;
 use crate::offscreen::{RasterProps, RasterSource};
-use crate::range::{Auto, Range, Spec};
+use crate::range::{Auto, End, Range, Spec};
 
 /// `history` when none is set.
 pub const DEFAULT_HISTORY: Duration = strand_scene::backlog::DEFAULT_HISTORY;
+
+/// (review) When a value seen by a frame not painted yet was seen: after
+/// every tick's time.
+const NOT_YET: Duration = Duration::MAX;
 
 /// The shortest column (a narrow graph over a short history).
 const MIN_COLUMN: Duration = Duration::from_millis(16);
@@ -116,6 +125,16 @@ impl Fill {
             Fill::Gradient(_) => false,
         }
     }
+
+    /// (review) Every row is painted the same: a linear gradient straight
+    /// across, kept one pixel tall.
+    fn same_down(&self) -> bool {
+        match self {
+            Fill::Flat(_) => true,
+            Fill::Gradient(Paint::Linear { angle, .. }) => angle.rem_euclid(180.0) == 90.0,
+            Fill::Gradient(_) => false,
+        }
+    }
 }
 
 /// (graph-follow) What a graph's pixels are drawn with, besides its
@@ -159,7 +178,7 @@ impl Look {
         for f in &self.fills {
             match f {
                 Fill::Flat(c) => c.map(f32::to_bits).hash(&mut h),
-                Fill::Gradient(p) => format!("{p:?}").hash(&mut h),
+                Fill::Gradient(p) => crate::flatten::hash::hash_paint(&mut h, p),
             }
         }
         h.finish()
@@ -211,15 +230,113 @@ struct Series {
     samples: VecDeque<f32>,
     /// The eased value as of the newest sample.
     eased: Option<f32>,
+    /// (review) The eased value before the newest sample: what it is
+    /// eased from again when it is taken anew ([`Series::resample`]).
+    before: Option<f32>,
     /// (history) The backlog as last read from the props.
     backlog: Option<Arc<Backlog>>,
+    /// (review) The values frames saw, with when on the boot clock (each
+    /// change once, oldest first, from the one in force at the newest
+    /// sample's tick): what the value was at a tick's time when no
+    /// backlog reaches it ([`Series::known`]).
+    seen: VecDeque<(Duration, f32)>,
+    /// (review) Added to a list that grew: its samples start at the next
+    /// draw, from its backlog where it has one.
+    fresh: bool,
 }
 
 impl Series {
+    /// (review) A frame at `boot` on the boot clock sees `v`. A frame
+    /// that is not painted (a preview, timed as the last painted one)
+    /// sees it at no time yet, and the next painted frame stamps it with
+    /// its own: a value is seen when it is first painted. A frame with
+    /// no clock (zero) stands nowhere and logs nothing.
+    fn see(&mut self, boot: Duration, commit: bool, v: f32) {
+        self.value = v;
+        if boot.is_zero() {
+            return;
+        }
+        if commit {
+            for (t, _) in self.seen.iter_mut().rev() {
+                if *t != NOT_YET {
+                    break;
+                }
+                *t = boot;
+            }
+        }
+        if self
+            .seen
+            .back()
+            .is_none_or(|(_, last)| last.to_bits() != v.to_bits())
+        {
+            self.seen
+                .push_back((if commit { boot } else { NOT_YET }, v));
+        }
+    }
+
+    /// (review) Drops what the samples taken from tick `j` (`col` each)
+    /// on cannot need: every change but the last one at or before it.
+    fn forget_seen(&mut self, j: u64, col: Duration) {
+        let at = time_of(j, col);
+        while self.seen.len() >= 2 && self.seen[1].0 <= at {
+            self.seen.pop_front();
+        }
+    }
+
+    /// (review) What is known of the value at tick `j`'s time (`col`
+    /// each): the backlog's value then, from its oldest point on (logic
+    /// times its points when the value changed, and sends them with the
+    /// value, so it is exact whenever the frames came); without a
+    /// backlog reaching that time, what the last painted frame at or
+    /// before it saw; [`Past::Unknown`] when neither says.
+    fn known(&self, j: u64, col: Duration) -> Past {
+        match past(self.backlog.as_deref(), j, col.as_secs_f64()) {
+            Past::Unknown => {}
+            k => return k,
+        }
+        let at = time_of(j, col);
+        match self.seen.iter().rev().find(|(t, _)| *t <= at) {
+            Some((_, v)) if v.is_finite() => Past::Known(*v),
+            Some(_) => Past::Gap,
+            None => Past::Unknown,
+        }
+    }
+
+    /// The sample of tick `j`: what is known at its time, else the value
+    /// now (`None`: a gap).
+    fn sample(&self, j: u64, col: Duration) -> Option<f32> {
+        match self.known(j, col) {
+            Past::Known(v) => Some(v),
+            Past::Gap => None,
+            Past::Unknown => Some(self.value),
+        }
+    }
+
+    /// (review) Takes the newest sample (tick `j`) anew from what is
+    /// known of its time now: a frame drew it before a later one (or a
+    /// backlog point) said what the value was at its time. Unknown, it
+    /// stays. `true` when it changed.
+    fn resample(&mut self, j: u64, col: Duration, smooth: f32) -> bool {
+        let v = match self.known(j, col) {
+            Past::Known(v) => Some(v),
+            Past::Gap => None,
+            Past::Unknown => return false,
+        };
+        let Some(old) = self.samples.pop_back() else {
+            return false;
+        };
+        self.eased = self.before;
+        self.ease_in(v, smooth);
+        self.samples
+            .back()
+            .is_some_and(|new| new.to_bits() != old.to_bits())
+    }
+
     /// One more sample: `v` eased in by `smooth` (the first after a gap
     /// is `v`); `None` (or a value not finite) is a gap, drawn as no
     /// column.
     fn ease_in(&mut self, v: Option<f32>, smooth: f32) {
+        self.before = self.eased;
         let Some(v) = v.filter(|v| v.is_finite()) else {
             self.eased = None;
             self.samples.push_back(f32::NAN);
@@ -242,15 +359,18 @@ impl Series {
 
     /// The samples afresh at `tick`: the columns before it from the
     /// backlog, from its oldest point on (none without one), each in its
-    /// own column, the newest the value now.
-    fn restart(&mut self, tick: u64, cols: usize, col: f64, smooth: f32) {
+    /// own column, the newest what is known at its time (the value now
+    /// when nothing is).
+    fn restart(&mut self, tick: u64, cols: usize, col: Duration, smooth: f32) {
         self.samples.clear();
         self.eased = None;
+        self.before = None;
+        self.fresh = false;
         for back in (1..cols).rev() {
             let Some(j) = tick.checked_sub(back as u64) else {
                 continue;
             };
-            match past(self.backlog.as_deref(), j, col) {
+            match past(self.backlog.as_deref(), j, col.as_secs_f64()) {
                 // Older than anything kept: no column yet.
                 Past::Unknown if self.samples.is_empty() => {}
                 Past::Unknown => self.ease_in(Some(self.value), smooth),
@@ -258,7 +378,8 @@ impl Series {
                 Past::Gap => self.ease_in(None, smooth),
             }
         }
-        self.ease_in(Some(self.value), smooth);
+        let newest = self.sample(tick, col);
+        self.ease_in(newest.or(Some(self.value)), smooth);
     }
 }
 
@@ -272,9 +393,11 @@ struct Graph {
     spec: Spec,
     auto: Auto,
     look: Look,
-    /// (graph-follow) The frame being drawn on the boot clock, and
-    /// whether time stands still in it ([`RasterProps`]).
+    /// (graph-follow) The frame being drawn on the boot clock, how early
+    /// a tick counts as reached, and whether time stands still in it
+    /// ([`RasterProps`]).
     boot: Duration,
+    slack: Duration,
     still: bool,
     /// The tick of the newest sample, and the column the samples were
     /// taken at.
@@ -286,25 +409,37 @@ struct Graph {
     /// ones).
     drawn_columns: u64,
     /// (graph-follow) Each gradient fill rendered over the box (a
-    /// gradient the same across, one pixel wide), by index in
-    /// `look.fills`.
+    /// gradient the same across, one pixel wide; one the same down, one
+    /// pixel tall), by index in `look.fills`.
     painted: Vec<Option<Painted>>,
+    /// (review) The props `look` was made from, hashed: it is made again
+    /// only when they change.
+    look_key: Option<u64>,
+    /// (review) Every slot is drawn at the next draw: a series started
+    /// afresh (a list that grew or shrank, time that went back).
+    redraw: bool,
+    /// (review) The sample before the newest was taken anew at the last
+    /// advance, so its slot is drawn again.
+    revised: bool,
 }
 
-/// (graph-follow) A gradient fill's pixels, premultiplied RGBA.
+/// (graph-follow) A gradient fill's pixels, premultiplied RGBA (with red
+/// and blue as the raster's pixmaps hold them).
 #[derive(Debug)]
 struct Painted {
     paint: Paint,
     w: usize,
     h: usize,
-    px: Vec<[f32; 4]>,
+    px: Vec<PremulRgba8>,
 }
 
 impl Painted {
     fn at(&self, x: usize, y: usize) -> [f32; 4] {
         let x = x.min(self.w.saturating_sub(1));
         let y = y.min(self.h.saturating_sub(1));
-        self.px.get(y * self.w + x).copied().unwrap_or([0.0; 4])
+        self.px.get(y * self.w + x).map_or([0.0; 4], |c| {
+            [c.b, c.g, c.r, c.a].map(|v| f32::from(v) / 255.0)
+        })
     }
 }
 
@@ -373,6 +508,13 @@ fn tick_of(boot: Duration, col: Duration) -> u64 {
     u64::try_from(boot.as_nanos() / col.as_nanos().max(1)).unwrap_or(u64::MAX)
 }
 
+/// (review) The time on the boot clock tick `j` starts at, to the
+/// nanosecond (as [`tick_of`] counts).
+fn time_of(j: u64, col: Duration) -> Duration {
+    let ns = u128::from(j).saturating_mul(col.as_nanos());
+    Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))
+}
+
 fn premul(c: Color) -> [f32; 4] {
     let a = c.a.clamp(0.0, 1.0);
     [
@@ -428,8 +570,11 @@ pub(crate) fn number(v: Option<&PropValue>) -> Option<f32> {
 impl Graph {
     /// Brings every series' samples up to `tick` (`col`: a column): each
     /// tick passed eases a value in once more (at most a box's worth are
-    /// kept), the newest the value now and those before it from the
-    /// backlog where it has them (a gap in it stays a gap).
+    /// kept), each what is known at its tick's time ([`Series::sample`]:
+    /// the backlog where it reaches that time, else what a frame saw
+    /// then). The newest sample is taken anew at each advance, so a
+    /// frame that came early or a backlog point that came late leaves
+    /// every tick its value at its time, whenever the frames came.
     fn advance(&mut self, tick: u64, columns: usize, col: Duration) {
         let cols = columns.max(1);
         if col != self.col {
@@ -437,41 +582,44 @@ impl Graph {
             self.tick = None;
             self.col = col;
         }
-        let (secs, smooth) = (col.as_secs_f64(), self.smooth);
+        let smooth = self.smooth;
+        self.revised = false;
         match self.tick {
-            Some(t) if tick > t => {
-                let n = ((tick - t) as usize).min(cols);
+            Some(t) if tick >= t => {
+                let n = (tick - t).min(cols as u64);
                 for s in &mut self.series {
+                    if s.fresh {
+                        s.restart(tick, cols, col, smooth);
+                        self.redraw = true;
+                        continue;
+                    }
+                    self.revised |= s.resample(t, col, smooth);
                     for back in (0..n).rev() {
-                        let j = tick - back as u64;
-                        let v = match (back, past(s.backlog.as_deref(), j, secs)) {
-                            (0, _) | (_, Past::Unknown) => Some(s.value),
-                            (_, Past::Known(v)) => Some(v),
-                            (_, Past::Gap) => None,
-                        };
+                        let j = tick - back;
+                        let v = s.sample(j, col);
                         s.ease_in(v, smooth);
                     }
                 }
             }
-            // Time went back (a remount, another clock): the history
-            // starts again, from the backlog if there is one.
-            Some(t) if tick < t => self.restart(tick, cols, secs),
-            Some(_) => {}
-            None => self.restart(tick, cols, secs),
+            // Time went back (a remount, another clock), or no history
+            // yet: it starts again, from the backlog if there is one.
+            _ => self.restart(tick, cols, col),
         }
         self.tick = Some(tick);
         for s in &mut self.series {
             while s.samples.len() > cols {
                 s.samples.pop_front();
             }
+            s.forget_seen(tick, col);
         }
     }
 
-    fn restart(&mut self, tick: u64, cols: usize, col: f64) {
+    fn restart(&mut self, tick: u64, cols: usize, col: Duration) {
         let smooth = self.smooth;
         for s in &mut self.series {
             s.restart(tick, cols, col, smooth);
         }
+        self.redraw = true;
     }
 
     /// The range the columns are drawn against: `range` as written, or
@@ -503,23 +651,26 @@ impl Graph {
                 continue;
             };
             let pw = if f.same_across() { 1 } else { w };
+            let ph = if f.same_down() { 1 } else { h };
             if self.painted[k]
                 .as_ref()
-                .is_some_and(|d| d.paint == *p && d.w == pw && d.h == h)
+                .is_some_and(|d| d.paint == *p && d.w == pw && d.h == ph)
             {
                 continue;
             }
-            let px = crate::cache::render_gradient(p, pw as u32, h as u32).map(|pm| {
-                // The raster's pixmaps hold red and blue swapped.
-                pm.data()
-                    .iter()
-                    .map(|c| [c.b, c.g, c.r, c.a].map(|v| f32::from(v) / 255.0))
-                    .collect()
-            });
+            // A 90deg gradient rendered one pixel tall is its row of a
+            // box `h` tall; one straight down, one pixel wide, its column.
+            let px = crate::cache::render_gradient_part(
+                p,
+                w as u32,
+                h as u32,
+                (0, 0, pw as u32, ph as u32),
+            )
+            .map(|pm| pm.data().to_vec());
             self.painted[k] = px.map(|px| Painted {
                 paint: p.clone(),
                 w: pw,
-                h,
+                h: ph,
                 px,
             });
         }
@@ -649,7 +800,7 @@ impl RasterSource for GraphSource {
         // Frozen time keeps the tick it has.
         let tick = match g.tick {
             Some(t) if g.still && g.col == col => t,
-            _ => tick_of(g.boot, col),
+            _ => tick_of(g.boot + g.slack, col),
         };
         g.advance(tick, slots.count, col);
         if g.boot.is_zero() {
@@ -665,8 +816,12 @@ impl RasterSource for GraphSource {
         let across = g.look.fills.iter().all(Fill::same_across);
         let lw = (g.look.line_width.unwrap_or(LINE) * scale).max(1.0);
         let scale_bits = scale.to_bits();
+        let redraw = std::mem::take(&mut g.redraw);
         // Kept pixels at this size, look and range shift by the ticks
-        // passed; only the slots that changed are drawn.
+        // passed; only the slots that changed are drawn. (review) A fill
+        // that changes across the box cannot shift, so a tick draws such
+        // a graph whole, but between ticks it too draws only its newest
+        // slot.
         let mut kept = match g.kept.take() {
             Some(k)
                 if k.w == w
@@ -674,7 +829,8 @@ impl RasterSource for GraphSource {
                     && k.scale == scale_bits
                     && k.look == look
                     && k.range == range
-                    && across =>
+                    && !redraw
+                    && (across || k.tick == tick) =>
             {
                 k
             }
@@ -706,8 +862,12 @@ impl RasterSource for GraphSource {
                     }
                 }
                 // The previously newest slot showed the live value; it
-                // now shows its sample, so it is drawn again too.
-                (slots.count - shift).saturating_sub(1)
+                // now shows its sample, so it is drawn again too, and
+                // (review) the one before it when its sample was taken
+                // anew.
+                (slots.count - shift)
+                    .saturating_sub(1)
+                    .saturating_sub(usize::from(g.revised))
             }
         };
         let smooth = g.smooth;
@@ -754,16 +914,27 @@ impl RasterSource for GraphSource {
         let Ok(mut g) = self.inner.lock() else {
             return 0;
         };
+        // A value that is not a number (an item of a list, or the one
+        // value: review) is a gap.
         let values: Vec<f32> = match (props.get)(Prop::Value) {
             Some(PropValue::List(items)) => items
                 .iter()
                 .map(|v| number(Some(v)).unwrap_or(f32::NAN))
                 .collect(),
-            v => vec![number(v).unwrap_or(0.0)],
+            None => vec![0.0],
+            v => vec![number(v).unwrap_or(f32::NAN)],
         };
         if values.len() != g.series.len() {
-            g.series = values.iter().map(|_| Series::default()).collect();
-            g.tick = None;
+            // (review) The items still there keep their samples; those
+            // added start from their backlogs at the next draw, and every
+            // slot is drawn again (a dropped series' line goes at once).
+            let n = values.len();
+            g.series.truncate(n);
+            g.series.resize_with(n, || Series {
+                fresh: true,
+                ..Series::default()
+            });
+            g.redraw = true;
         }
         // Not part of the state: a backlog draws nothing by itself, only
         // the columns a later tick fills.
@@ -778,8 +949,9 @@ impl RasterSource for GraphSource {
                 .collect(),
             _ => Vec::new(),
         };
+        let boot = props.boot;
         for (i, (s, v)) in g.series.iter_mut().zip(values).enumerate() {
-            s.value = v;
+            s.see(boot, props.commit, v);
             s.backlog = backlogs.get(i).cloned().flatten();
         }
         g.smooth = number((props.get)(Prop::Smooth))
@@ -789,31 +961,30 @@ impl RasterSource for GraphSource {
             Some(PropValue::Duration(d)) if !d.is_zero() => *d,
             _ => DEFAULT_HISTORY,
         };
-        g.spec = Spec::of((props.get)(Prop::Range));
-        let colors: Vec<[f32; 4]> = match (props.get)(Prop::Color) {
-            Some(PropValue::List(items)) => items.iter().filter_map(color_of).map(premul).collect(),
-            _ => Vec::new(),
-        };
-        g.look = Look {
-            style: match (props.get)(Prop::Style) {
-                Some(PropValue::Keyword(k)) if k == "steps" => Style::Steps,
-                Some(PropValue::Keyword(k)) if k == "bars" => Style::Bars,
-                _ => Style::Line,
-            },
-            line_width: number((props.get)(Prop::LineWidth)),
-            gap: number((props.get)(Prop::Gap)),
-            colors: if colors.is_empty() {
-                vec![premul(props.color)]
-            } else {
-                colors
-            },
-            fills: match (props.get)(Prop::Fill) {
-                Some(PropValue::List(items)) => items.iter().filter_map(Fill::of).collect(),
-                Some(v) => Fill::of(v).into_iter().collect(),
-                None => Vec::new(),
-            },
-        };
-        g.boot = props.boot;
+        // (review) A range not usable now (an end not a finite number)
+        // keeps the last usable one.
+        if let Some(spec) = Spec::of((props.get)(Prop::Range)) {
+            g.spec = spec;
+        }
+        // (review) The look is made again only when its props change.
+        let mut lk = DefaultHasher::new();
+        for p in [
+            Prop::Style,
+            Prop::LineWidth,
+            Prop::Gap,
+            Prop::Color,
+            Prop::Fill,
+        ] {
+            hash_value(&mut lk, (props.get)(p));
+        }
+        crate::flatten::hash::hash_color(&mut lk, &props.color);
+        let lk = lk.finish();
+        if g.look_key != Some(lk) {
+            g.look_key = Some(lk);
+            g.look = look_of(props);
+        }
+        g.boot = boot;
+        g.slack = props.slack;
         g.still = props.still;
         let mut h = DefaultHasher::new();
         for s in &g.series {
@@ -821,14 +992,78 @@ impl RasterSource for GraphSource {
         }
         g.smooth.to_bits().hash(&mut h);
         g.history.hash(&mut h);
-        g.look.hash().hash(&mut h);
-        format!("{:?}", g.spec).hash(&mut h);
+        lk.hash(&mut h);
+        for e in [g.spec.lo, g.spec.hi] {
+            match e {
+                End::At(v) => v.to_bits().hash(&mut h),
+                End::Auto => u64::MAX.hash(&mut h),
+            }
+        }
         // The tick this frame is in, as the last width splits history.
         let slots = self.columns.load(Ordering::Relaxed);
         if slots > 0 && !g.still {
-            tick_of(g.boot, column(g.history, slots)).hash(&mut h);
+            tick_of(g.boot + g.slack, column(g.history, slots)).hash(&mut h);
         }
         h.finish()
+    }
+}
+
+/// (graph-follow) What a graph's pixels are drawn with, from its props.
+fn look_of(props: &RasterProps<'_>) -> Look {
+    let colors: Vec<[f32; 4]> = match (props.get)(Prop::Color) {
+        Some(PropValue::List(items)) => items.iter().filter_map(color_of).map(premul).collect(),
+        _ => Vec::new(),
+    };
+    Look {
+        style: match (props.get)(Prop::Style) {
+            Some(PropValue::Keyword(k)) if k == "steps" => Style::Steps,
+            Some(PropValue::Keyword(k)) if k == "bars" => Style::Bars,
+            _ => Style::Line,
+        },
+        line_width: number((props.get)(Prop::LineWidth)),
+        gap: number((props.get)(Prop::Gap)),
+        colors: if colors.is_empty() {
+            vec![premul(props.color)]
+        } else {
+            colors
+        },
+        fills: match (props.get)(Prop::Fill) {
+            Some(PropValue::List(items)) => items.iter().filter_map(Fill::of).collect(),
+            Some(v) => Fill::of(v).into_iter().collect(),
+            None => Vec::new(),
+        },
+    }
+}
+
+/// (review) Hashes what a look prop's value draws: its colours, paints,
+/// numbers and keywords.
+fn hash_value(h: &mut DefaultHasher, v: Option<&PropValue>) {
+    use crate::flatten::hash::{hash_color, hash_paint};
+    match v {
+        None => 0u8.hash(h),
+        Some(PropValue::Color(c)) => {
+            1u8.hash(h);
+            hash_color(h, c);
+        }
+        Some(PropValue::Paint(p)) => {
+            2u8.hash(h);
+            hash_paint(h, p);
+        }
+        Some(PropValue::List(items)) => {
+            3u8.hash(h);
+            items.len().hash(h);
+            for i in items {
+                hash_value(h, Some(i));
+            }
+        }
+        Some(PropValue::Keyword(k)) => {
+            4u8.hash(h);
+            k.hash(h);
+        }
+        Some(v) => {
+            5u8.hash(h);
+            number(Some(v)).map(f32::to_bits).hash(h);
+        }
     }
 }
 
@@ -887,10 +1122,13 @@ mod tests {
         // One-second columns, drawn in tick 1000 (1000 s on the boot
         // clock); the backlog holds 0.2 from 997.5 s, then 0.6 from
         // 998.5 s, and the value now is 0.9.
-        let mut g = with_backlog(0.9, backlog(&[(997.5, 0.2, 0.0), (998.5, 0.6, 0.0)]));
+        let mut g = with_backlog(
+            0.9,
+            backlog(&[(997.5, 0.2, 0.0), (998.5, 0.6, 0.0), (999.7, 0.9, 0.0)]),
+        );
         g.advance(1000, 5, secs(1.0));
         // Ticks 996 and 997 are older than the backlog: no sample. Tick
-        // 998 is 0.2, tick 999 0.6, tick 1000 the value.
+        // 998 is 0.2, tick 999 0.6, tick 1000 the value since 999.7 s.
         assert_eq!(g.series[0].samples, [0.2, 0.6, 0.9]);
     }
 
@@ -944,9 +1182,10 @@ mod tests {
         // ticks.
         g.advance(16, 8, col);
         g.series[0].backlog = backlog(&[(960.0, 0.5, 0.0), (1100.0, 0.2, 0.0), (1250.0, 0.8, 0.0)]);
+        g.series[0].value = 0.8;
         g.advance(21, 8, col);
-        // Ticks from 1020, 1080, 1140, 1200 s, then the value now.
-        let want = [0.5, 0.5, 0.5, 0.2, 0.2, 0.5];
+        // Ticks from 1020, 1080, 1140, 1200 and 1260 s.
+        let want = [0.5, 0.5, 0.5, 0.2, 0.2, 0.8];
         let got = &g.series[0].samples;
         assert_eq!(got.len(), want.len());
         for (got, want) in got.iter().zip(want) {
@@ -994,7 +1233,7 @@ mod tests {
             series: vec![
                 Series {
                     value: 0.3,
-                    backlog: backlog(&[(998.0, 0.1, 0.0)]),
+                    backlog: backlog(&[(998.0, 0.1, 0.0), (999.5, 0.3, 0.0)]),
                     ..Series::default()
                 },
                 Series {
@@ -1048,7 +1287,7 @@ mod tests {
                     ..Series::default()
                 },
             ],
-            spec: Spec::of(Some(&PropValue::Keyword("auto".into()))),
+            spec: Spec::of(Some(&PropValue::Keyword("auto".into()))).unwrap(),
             ..Graph::default()
         };
         g.advance(5, 4, secs(1.0));

@@ -714,6 +714,15 @@ impl fmt::Display for ShowTy<'_> {
                 if e.home.as_ref().is_some_and(|h| h.shared || stable) {
                     return homed(f, &e.name, &e.home);
                 }
+                // (graph-follow review) A schema keyword of one word
+                // (`enum SizeKeyword { auto }`) reads as that word:
+                // `length | auto`, not the schema's name for it.
+                if schema(&e.origin)
+                    && e.name.ends_with("Keyword")
+                    && let [word] = e.variants.as_slice()
+                {
+                    return f.write_str(word);
+                }
                 named(f, &e.name, schema(&e.origin))
             }
             Ty::EnumType(e) => {
@@ -767,7 +776,7 @@ impl fmt::Display for ShowTy<'_> {
                         f.write_str(" | ")?;
                     }
                     // (graph-follow) A tuple among a union's members is
-                    // bracketed: `(float, float) | SizeKeyword`.
+                    // put in parentheses: `(float, float) | auto`.
                     match t {
                         Ty::Tuple(_) => write!(f, "({})", show(t))?,
                         _ => write!(f, "{}", show(t))?,

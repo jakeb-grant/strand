@@ -303,7 +303,10 @@ fn fade(angle: f32, from: &str, to: Color) -> PropValue {
 
 /// (graph-follow) `style: line`, `steps` and `bars` (2 px bars 1 px
 /// apart, and 3 px bars with no gap), over the same values; each tick
-/// draws only its new slot and the last live one.
+/// draws only its new slot and the last live one. (review) And steps
+/// over a value held five columns at a time, so its flat runs and
+/// square risers show (over a value changing every column, steps look
+/// like a line).
 #[test]
 fn a_graph_draws_as_a_line_steps_or_bars() {
     let (mut r, ids, mut buf) = graphs(&[
@@ -320,9 +323,16 @@ fn a_graph_draws_as_a_line_steps_or_bars() {
             (Prop::LineWidth, num(3.0)),
             (Prop::Gap, num(0.0)),
         ],
+        vec![
+            (Prop::Style, kw("steps")),
+            (Prop::Color, color("#cba6f7")),
+            (Prop::LineWidth, num(2.0)),
+        ],
     ]);
-    let drawn = feed(&mut r, &ids, &mut buf, |_, k| num(wave(k)));
-    assert_eq!(drawn, [2, 2, 2, 2], "only the new slots repaint");
+    let drawn = feed(&mut r, &ids, &mut buf, |i, k| {
+        num(if i == 4 { wave(k - k % 5) } else { wave(k) })
+    });
+    assert_eq!(drawn, [2, 2, 2, 2, 2], "only the new slots repaint");
     assert_matches_ref("graph_styles", &buf, TOLERANCE);
 }
 
@@ -376,6 +386,12 @@ fn a_graph_draws_a_gradient_fill_and_its_line_width() {
     let drawn = feed(&mut r, &ids, &mut buf, |_, k| num(wave(k)));
     assert_eq!(drawn, [2, 60, 2, 2], "a fill across the box draws it whole");
     assert_matches_ref("graph_fill", &buf, TOLERANCE);
+    // (review) Between ticks its columns stay: a new value draws only
+    // its newest slot, as any graph's does.
+    let before = r.graph_columns_drawn(ids[1]).unwrap();
+    set(&mut r, ids[1], Prop::Value, num(0.2));
+    buf.paint_at(&mut r, S, 1, ms(4530));
+    assert_eq!(r.graph_columns_drawn(ids[1]).unwrap() - before, 1);
     // The fade: stronger under the line than at the bottom, where the
     // panel all but shows through.
     let rect = r.boxes(S).unwrap().rects[&ids[0]];
@@ -415,48 +431,164 @@ fn a_graph_draws_several_series() {
     assert_matches_ref("graph_series", &buf, TOLERANCE);
 }
 
+/// The pixels of `rect` in `buf`.
+fn region(buf: &Buffer, rect: strand_scene::LogicalRect) -> Vec<[u8; 4]> {
+    let (x0, y0) = (rect.x as u32, rect.y as u32);
+    (0..rect.h as u32)
+        .flat_map(|y| (0..rect.w as u32).map(move |x| (x0 + x, y0 + y)))
+        .map(|(x, y)| buf.px(x, y))
+        .collect()
+}
+
+/// (review) A list value that changes length keeps the items still
+/// there and draws every slot again: a graph of two series that drops
+/// the second draws what one of the first alone draws (the dropped line
+/// is gone at once, not scrolled off over a `history`), and one that
+/// gains a second draws it from its backlog in the older columns, as
+/// one that had both all along.
+#[test]
+fn a_list_that_shrinks_or_grows_keeps_its_items_and_redraws() {
+    let kept = |points: &[(f64, f32)]| {
+        PropValue::Backlog(std::sync::Arc::new(Backlog {
+            points: points
+                .iter()
+                .map(|&(at, value)| BacklogPoint {
+                    at,
+                    value,
+                    ramp: 0.0,
+                })
+                .collect(),
+        }))
+    };
+    let (mut r, ids, mut buf) = graphs(&[vec![], vec![], vec![], vec![]]);
+    for (i, g) in ids.iter().enumerate().skip(2) {
+        let second = if i == 3 {
+            kept(&[(BOOT, 0.5)])
+        } else {
+            PropValue::Unset
+        };
+        set(&mut r, *g, Prop::Backlog, list([PropValue::Unset, second]));
+    }
+    for k in 0..45u64 {
+        let a = 0.1 + 0.2 * wave(k);
+        let values = [
+            if k < 40 {
+                list([num(a), num(0.9)])
+            } else {
+                list([num(a)])
+            },
+            list([num(a)]),
+            if k < 40 {
+                list([num(a)])
+            } else {
+                list([num(a), num(0.5)])
+            },
+            list([num(a), num(0.5)]),
+        ];
+        if k == 40 {
+            set(
+                &mut r,
+                ids[2],
+                Prop::Backlog,
+                list([PropValue::Unset, kept(&[(BOOT, 0.5)])]),
+            );
+        }
+        for (g, v) in ids.iter().zip(values) {
+            set(&mut r, *g, Prop::Value, v);
+        }
+        for at in [100 * k + 50, 100 * k + 110] {
+            buf.paint_at(&mut r, S, if at == 50 { 0 } else { 1 }, ms(at));
+        }
+    }
+    let rects = r.boxes(S).unwrap().rects.clone();
+    let px = |i: usize| region(&buf, rects[&ids[i]]);
+    assert!(px(0) == px(1), "the dropped series is gone");
+    assert!(px(2) == px(3), "the added series is drawn from its backlog");
+    assert!(px(1) != px(3));
+}
+
 /// (graph-follow) A graph's columns are whole periods of the boot clock:
 /// two shells drawing the same values, one at 60 Hz from its mount and
 /// one at 24 Hz from 23 ms later, draw the same columns, the steps in
 /// the same places. (Columns timed from each one's first frame put them
-/// a pixel apart, as a replay drew them before.)
+/// a pixel apart, as a replay drew them before.) (review) Each column is
+/// the value at its tick's time, not at the first frame drawn in its
+/// tick: a value no history keeps is known at the frames that paint it,
+/// so its changes just after a boundary (20, 5 and 4 ms, half a 60 Hz
+/// frame being the slack a tick is reached early by) land alike; a kept
+/// value's backlog has each change at its time, so changes within a
+/// frame before a boundary (5, 4, 10 and 1 ms) land alike too.
 #[test]
 fn a_graphs_columns_fall_on_the_boot_clock_whatever_its_frames() {
-    let changes = [
-        (0u64, 0.2f32),
-        (250, 0.7),
-        (730, 0.4),
-        (1180, 0.9),
-        (1640, 0.1),
+    let shown: &[(u64, f32)] = &[
+        (0, 0.2),
+        (220, 0.7),
+        (650, 0.4),
+        (1005, 0.9),
+        (1550, 0.1),
+        (1604, 0.6),
         (2050, 0.5),
     ];
-    let value = |at: u64| {
-        changes
+    let kept: &[(u64, f32)] = &[
+        (0, 0.2),
+        (195, 0.7),
+        (205, 0.3),
+        (596, 0.8),
+        (1004, 0.4),
+        (1390, 0.9),
+        (1799, 0.1),
+        (2096, 0.5),
+    ];
+    for (changes, backlogged) in [(shown, false), (kept, true)] {
+        let value = |at: u64| {
+            changes
+                .iter()
+                .rev()
+                .find(|(t, _)| *t <= at)
+                .map_or(0.0, |c| c.1)
+        };
+        // What logic kept by `at`: each change at its time on the boot
+        // clock (`BOOT` at `ms(0)`).
+        let backlog = |at: u64| {
+            PropValue::Backlog(std::sync::Arc::new(Backlog {
+                points: changes
+                    .iter()
+                    .filter(|(t, _)| *t <= at)
+                    .map(|&(t, value)| BacklogPoint {
+                        at: BOOT + t as f64 / 1000.0,
+                        value,
+                        ramp: 0.0,
+                    })
+                    .collect(),
+            }))
+        };
+        let draw = |period: u64, first: u64| {
+            let (mut r, ids, mut buf) = graphs(&[vec![(Prop::Fill, color("#89b4fa55"))]]);
+            let mut at = first;
+            loop {
+                let end = at >= 2500;
+                let at_ = at.min(2500);
+                set(&mut r, ids[0], Prop::Value, num(value(at_)));
+                if backlogged {
+                    set(&mut r, ids[0], Prop::Backlog, backlog(at_));
+                }
+                buf.paint_at(&mut r, S, if at_ == first { 0 } else { 1 }, ms(at_));
+                if end {
+                    break;
+                }
+                at += period;
+            }
+            buf
+        };
+        let (a, b) = (draw(16, 0), draw(41, 23));
+        let diff = a
+            .to_rgba()
             .iter()
-            .rev()
-            .find(|(t, _)| *t <= at)
-            .map_or(0.0, |c| c.1)
-    };
-    let draw = |period: u64, first: u64| {
-        let (mut r, ids, mut buf) = graphs(&[vec![(Prop::Fill, color("#89b4fa55"))]]);
-        let mut at = first;
-        while at < 2500 {
-            set(&mut r, ids[0], Prop::Value, num(value(at)));
-            buf.paint_at(&mut r, S, if at == first { 0 } else { 1 }, ms(at));
-            at += period;
-        }
-        set(&mut r, ids[0], Prop::Value, num(value(2500)));
-        buf.paint_at(&mut r, S, 1, ms(2500));
-        buf
-    };
-    let (a, b) = (draw(16, 0), draw(41, 23));
-    let diff = a
-        .to_rgba()
-        .iter()
-        .zip(b.to_rgba())
-        .filter(|(x, y)| **x != *y)
-        .count();
-    assert_eq!(diff, 0, "the same columns");
+            .zip(b.to_rgba())
+            .filter(|(x, y)| **x != *y)
+            .count();
+        assert_eq!(diff, 0, "the same columns (kept: {backlogged})");
+    }
 }
 
 /// (graph-follow) A frame with no clock (time zero, as a shell's first

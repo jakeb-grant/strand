@@ -40,7 +40,7 @@
 //! the columns it did not sample itself.
 //!
 //! (graph-follow) A value that is a list (`graph cpu.cores`, `graph
-//! [net.rx, net.tx]`) is several series in one graph: each item keeps a
+//! [cpu.usage, memory.usage]`) is several series in one graph: each item keeps a
 //! ring of its own ([`Rings`]), its backlog is a `List` of each item's
 //! [`Backlog`], and [`HistoryInfo`] names each item's ring by the
 //! expression's key and its index (`…[1]`), so a glitch report and its
@@ -157,6 +157,15 @@ impl Rings {
         }
         for r in self.rings.iter_mut().skip(values.len()) {
             added |= r.gap(t);
+            r.trim(t);
+        }
+        // (review) The ring of an item a shorter list dropped is freed
+        // once all it holds is that gap, a span old: nothing it keeps is
+        // drawn any more.
+        while self.rings.len() > values.len().max(1)
+            && self.rings.last().is_some_and(|r| r.spent(t))
+        {
+            self.rings.pop();
         }
         added
     }
@@ -270,6 +279,15 @@ impl Ring {
         }
         while self.points.len() >= 2 && self.points[1].t <= start {
             self.points.pop_front();
+        }
+    }
+
+    /// (review) All it holds is a gap that started a span or more before
+    /// `now`.
+    fn spent(&self, now: f64) -> bool {
+        match self.points.back() {
+            Some(p) => self.points.len() == 1 && p.gap() && p.t <= now - self.span.as_secs_f64(),
+            None => true,
         }
     }
 
@@ -1138,5 +1156,25 @@ mod tests {
         assert_eq!(b.points.len(), 3);
         assert!(b.points[1].value.is_nan());
         assert_eq!(b.points[2].ramp, 0.0, "no ramp out of a gap");
+    }
+
+    /// (review) A list's rings: an item a shorter list dropped is a gap
+    /// from then, and its ring is freed once that gap is a span old; a
+    /// list that grows again starts that item's ring anew.
+    #[test]
+    fn a_dropped_items_ring_is_freed_a_span_later() {
+        let mut r = Rings::new(s(60.0));
+        assert!(r.push(T0, &[0.1, 0.5, 0.9], true, None));
+        assert!(r.push(T0 + 1.0, &[0.2, 0.6, 0.8], true, None));
+        assert!(r.push(T0 + 2.0, &[0.3], true, None), "two gaps start");
+        assert_eq!(r.rings.len(), 3);
+        assert!(r.rings[2].points.back().is_some_and(|p| p.gap()));
+        r.push(T0 + 30.0, &[0.4], true, None);
+        assert_eq!(r.rings.len(), 3, "half a span: still drawn");
+        r.push(T0 + 62.5, &[0.5], true, None);
+        assert_eq!(r.rings.len(), 1, "a span on: freed");
+        r.push(T0 + 63.0, &[0.5, 0.7], true, None);
+        assert_eq!(r.rings.len(), 2);
+        assert_eq!(r.rings[1].len(), 1, "anew");
     }
 }

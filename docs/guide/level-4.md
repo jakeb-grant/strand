@@ -89,7 +89,8 @@ what you write and `let` for what follows from it.
 (or 0 while muted); otherwise the brightness. `meter level` draws it as
 a filled bar, empty at 0 and full at 1; a value with other ends takes a
 `range` (`meter memory.used { range: 0, memory.total }`), and
-`range: auto` scales the bar to what it showed in the last minute.
+`range: auto` scales the bar from 0 to a round number (1, 2, 5, 10, 20,
+…) above the largest value it showed in the last minute.
 `text pct(level)` draws it as a percentage in a fixed-width font, `4ch`
 wide, so the digits do not jump.
 

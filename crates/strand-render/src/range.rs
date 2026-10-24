@@ -53,22 +53,27 @@ fn end(v: &PropValue) -> Option<End> {
 }
 
 impl Spec {
-    /// `range` as a prop value: `auto`, or a list of its two ends;
-    /// anything else (unset) is 0 to 1.
-    pub fn of(v: Option<&PropValue>) -> Spec {
+    /// `range` as a prop value: `auto`, or a list of its two ends; unset,
+    /// 0 to 1. `None` for a range written but not usable now: an end that
+    /// is not a finite number (an expression over a field not known yet),
+    /// which a node draws by its last usable range and a slider writes
+    /// nothing in (review: not 0 to 1, which would write fractions into a
+    /// place of other units).
+    pub fn of(v: Option<&PropValue>) -> Option<Spec> {
         match v {
-            Some(PropValue::Keyword(k)) if k == "auto" => Spec {
+            None | Some(PropValue::Unset) => Some(Spec::default()),
+            Some(PropValue::Keyword(k)) if k == "auto" => Some(Spec {
                 lo: End::Auto,
                 hi: End::Auto,
-            },
+            }),
             Some(PropValue::List(items)) => match items.as_slice() {
                 [lo, hi] => match (end(lo), end(hi)) {
-                    (Some(lo), Some(hi)) => Spec { lo, hi },
-                    _ => Spec::default(),
+                    (Some(lo), Some(hi)) => Some(Spec { lo, hi }),
+                    _ => None,
                 },
-                _ => Spec::default(),
+                _ => None,
             },
-            _ => Spec::default(),
+            _ => None,
         }
     }
 
@@ -123,7 +128,9 @@ impl Range {
 }
 
 /// The smallest step of the 1, 2, 5 ladder (…, 0.5, 1, 2, 5, 10, 20, …)
-/// at or above `x`; `None` for nothing to span (`x` not above 0).
+/// at or above `x`; `None` for nothing to span (`x` not above 0). A step
+/// past the largest `f32` is the largest `f32` (review: `inf` drew every
+/// value at the bottom).
 pub fn ladder(x: f32) -> Option<f32> {
     if x.is_nan() || x <= 0.0 || !x.is_finite() {
         return None;
@@ -135,7 +142,7 @@ pub fn ladder(x: f32) -> Option<f32> {
         .map(|m| m * base)
         // Within rounding of a step is that step.
         .find(|s| *s >= x * (1.0 - 1e-6))
-        .map(|s| s as f32)
+        .map(|s| s.min(f64::from(f32::MAX)) as f32)
 }
 
 /// How far below a step the values shown must fit before an auto end
@@ -148,22 +155,26 @@ pub const SHOWN: f64 = 60.0;
 
 /// An auto range's state: the span each auto end reached, and (a meter's
 /// or an arc's) the values drawn over the last [`SHOWN`] seconds, as each
-/// second's least and greatest.
+/// second's least and greatest. (review) It also keeps a node's last
+/// usable `range` ([`Auto::usable`]) and the range it last drew
+/// ([`Auto::drawn`]).
 #[derive(Clone, Debug, Default)]
 pub struct Auto {
     lo: Option<f32>,
     hi: Option<f32>,
     seen: VecDeque<(i64, f32, f32)>,
+    good: Option<Spec>,
+    drawn: Option<Range>,
 }
 
 /// An auto end's span, needing to reach `need` past the other end: up at
 /// once to the ladder's step at or above it, down only to a step that
 /// `need` fills no more than [`NARROW`] of. `None` when nothing needs
-/// spanning and none was reached.
+/// spanning (no value shown is past the other end): the end goes back
+/// to its default (review: it kept the span a dip had reached long after
+/// the dip left the values shown).
 fn span(current: Option<f32>, need: f32) -> Option<f32> {
-    let Some(up) = ladder(need) else {
-        return current;
-    };
+    let up = ladder(need)?;
     match current {
         Some(c) if need <= c => match ladder(need / NARROW) {
             Some(down) if down < c => Some(down),
@@ -174,33 +185,54 @@ fn span(current: Option<f32>, need: f32) -> Option<f32> {
 }
 
 impl Auto {
+    /// (review) The spec a node draws by: `read` ([`Spec::of`]) when it is
+    /// usable, else the last usable one (`None` before any was).
+    pub fn usable(&mut self, read: Option<Spec>) -> Option<Spec> {
+        if read.is_some() {
+            self.good = read;
+        }
+        self.good
+    }
+
+    /// (review) The range last drawn by [`Auto::fit`] or [`Auto::show`]:
+    /// what a spring of the node's value settles relative to.
+    pub fn drawn(&self) -> Option<Range> {
+        self.drawn
+    }
+
     /// The range `spec` shows when the values shown run from `shown`'s
-    /// least to its greatest (`None`: nothing shown yet), the auto ends
-    /// moved as the module docs say.
+    /// least to its greatest (`None`: nothing shown, which moves no auto
+    /// end), the auto ends moved as the module docs say.
     pub fn fit(&mut self, spec: Spec, shown: Option<(f32, f32)>) -> Range {
-        let (min, max) = shown
-            .filter(|(a, b)| a.is_finite() && b.is_finite())
-            .unwrap_or((0.0, 0.0));
+        let r = self.fit_ends(spec, shown);
+        self.drawn = Some(r);
+        r
+    }
+
+    fn fit_ends(&mut self, spec: Spec, shown: Option<(f32, f32)>) -> Range {
+        if let Some((min, max)) = shown.filter(|(a, b)| a.is_finite() && b.is_finite()) {
+            match (spec.lo, spec.hi) {
+                (End::At(lo), End::Auto) => self.hi = span(self.hi, max - lo),
+                (End::Auto, End::At(hi)) => self.lo = span(self.lo, hi - min),
+                (End::Auto, End::Auto) => {
+                    // From 0, each way the values go.
+                    self.hi = span(self.hi, max);
+                    self.lo = span(self.lo, -min);
+                }
+                (End::At(_), End::At(_)) => {}
+            }
+        }
         match (spec.lo, spec.hi) {
             (End::At(lo), End::At(hi)) => Range { lo, hi },
-            (End::At(lo), End::Auto) => {
-                self.hi = span(self.hi, max - lo);
-                Range {
-                    lo,
-                    hi: lo + self.hi.unwrap_or(1.0),
-                }
-            }
-            (End::Auto, End::At(hi)) => {
-                self.lo = span(self.lo, hi - min);
-                Range {
-                    lo: hi - self.lo.unwrap_or(1.0),
-                    hi,
-                }
-            }
+            (End::At(lo), End::Auto) => Range {
+                lo,
+                hi: lo + self.hi.unwrap_or(1.0),
+            },
+            (End::Auto, End::At(hi)) => Range {
+                lo: hi - self.lo.unwrap_or(1.0),
+                hi,
+            },
             (End::Auto, End::Auto) => {
-                // From 0, each way the values go.
-                self.hi = span(self.hi, max);
-                self.lo = span(self.lo, -min);
                 let (lo, hi) = (-self.lo.unwrap_or(0.0), self.hi.unwrap_or(0.0));
                 if hi > lo {
                     Range { lo, hi }
@@ -261,26 +293,56 @@ mod tests {
         assert_eq!(l(1234.0), 2000.0);
         assert_eq!(ladder(0.0), None);
         assert_eq!(ladder(f32::NAN), None);
+        // (review) Past the largest float: the largest float, not `inf`.
+        assert_eq!(l(3.0e38), f32::MAX);
+        let r = Auto::default().fit(auto(), Some((0.0, 3.0e38)));
+        assert_eq!(
+            r,
+            Range {
+                lo: 0.0,
+                hi: f32::MAX
+            }
+        );
+        assert!(r.frac(1.5e38).is_some_and(|f| (f - 0.44).abs() < 0.01));
     }
 
     #[test]
     fn a_spec_reads_two_ends_or_auto() {
         let n = PropValue::Number;
         let kw = || PropValue::Keyword("auto".into());
-        assert_eq!(Spec::of(None), Spec::default());
-        assert_eq!(Spec::of(Some(&kw())), auto());
+        assert_eq!(Spec::of(None), Some(Spec::default()));
+        assert_eq!(Spec::of(Some(&kw())), Some(auto()));
         assert_eq!(
             Spec::of(Some(&PropValue::List(vec![n(0.0), kw()]))),
-            Spec {
+            Some(Spec {
                 lo: End::At(0.0),
                 hi: End::Auto
-            }
+            })
         );
         assert_eq!(
-            Spec::of(Some(&PropValue::List(vec![n(10.0), n(30.0)]))).fixed(),
-            Range { lo: 10.0, hi: 30.0 }
+            Spec::of(Some(&PropValue::List(vec![n(10.0), n(30.0)]))).map(|s| s.fixed()),
+            Some(Range { lo: 10.0, hi: 30.0 })
         );
-        assert_eq!(Spec::of(Some(&n(5.0))), Spec::default(), "one end: unset");
+        assert_eq!(Spec::of(Some(&n(5.0))), None, "one end: not usable");
+    }
+
+    /// (review) An end that is not a finite number (a field not known
+    /// yet) makes the range unusable, not 0 to 1: a node keeps drawing by
+    /// its last usable range.
+    #[test]
+    fn an_end_not_known_keeps_the_last_usable_range() {
+        let n = PropValue::Number;
+        let ends = |hi: f32| PropValue::List(vec![n(0.0), n(hi)]);
+        assert_eq!(Spec::of(Some(&ends(f32::NAN))), None);
+        assert_eq!(
+            Spec::of(Some(&PropValue::List(vec![n(0.0), PropValue::Unset]))),
+            None
+        );
+        let mut a = Auto::default();
+        assert_eq!(a.usable(Spec::of(Some(&ends(f32::NAN)))), None, "none yet");
+        let good = a.usable(Spec::of(Some(&ends(100.0))));
+        assert_eq!(good.map(|s| s.fixed()), Some(Range { lo: 0.0, hi: 100.0 }));
+        assert_eq!(a.usable(Spec::of(Some(&ends(f32::INFINITY)))), good);
     }
 
     #[test]
@@ -315,6 +377,29 @@ mod tests {
             Auto::default().fit(s, Some((-3.0, 4.0))),
             Range { lo: -5.0, hi: 5.0 }
         );
+    }
+
+    /// (review) An auto end goes back once nothing shown reaches past
+    /// the other end: a dip below zero widens the bottom, and once it has
+    /// left the values shown the bottom is 0 again; the same for a top
+    /// once every value is at or below the bottom.
+    #[test]
+    fn an_auto_end_goes_back_once_nothing_reaches_it() {
+        let mut a = Auto::default();
+        let s = auto();
+        assert_eq!(a.fit(s, Some((0.2, 0.8))), Range { lo: 0.0, hi: 1.0 });
+        assert_eq!(a.fit(s, Some((-4.0, 0.8))), Range { lo: -5.0, hi: 1.0 });
+        assert_eq!(a.fit(s, Some((0.1, 0.8))), Range { lo: 0.0, hi: 1.0 });
+        // Nothing shown moves nothing.
+        assert_eq!(a.fit(s, Some((-4.0, 0.8))), Range { lo: -5.0, hi: 1.0 });
+        assert_eq!(a.fit(s, None), Range { lo: -5.0, hi: 1.0 });
+        let top = Spec {
+            lo: End::At(10.0),
+            hi: End::Auto,
+        };
+        let mut b = Auto::default();
+        assert_eq!(b.fit(top, Some((10.0, 470.0))).hi, 510.0);
+        assert_eq!(b.fit(top, Some((2.0, 9.0))).hi, 11.0, "back to 1 past it");
     }
 
     #[test]

@@ -84,16 +84,35 @@ impl Flattener<'_> {
     /// as a fraction of its `range`, clamped (0 for none). An auto range
     /// follows the values it drew over the last minute
     /// ([`crate::range::Auto::show`]), moved only by frames that draw it.
-    fn range_frac<'v>(&mut self, id: NodeId, get: &impl Fn(Prop) -> Option<&'v PropValue>) -> f32 {
-        let spec = crate::range::Spec::of(get(Prop::Range));
+    /// (review) It follows `target`, the value logic set, not the value
+    /// drawn, which is a spring's place on the way to it: an overshoot
+    /// past a step of the ladder grew the range, and the margin kept it
+    /// there, so a meter springing to 50 of `range: 0, auto` drew half
+    /// full. A range not usable now (an end not a finite number) draws
+    /// by the last usable one, and as empty before there was one.
+    fn range_frac<'v>(
+        &mut self,
+        id: NodeId,
+        target: Option<f32>,
+        get: &impl Fn(Prop) -> Option<&'v PropValue>,
+    ) -> f32 {
         let Some(v) = number(get(Prop::Value)) else {
             return 0.0;
         };
-        let range = if spec.is_auto() {
-            let now = self.anim.now().as_secs_f64();
-            self.anim.ranges.entry(id).or_default().show(spec, now, v)
+        let written = get(Prop::Range);
+        let range = if matches!(written, None | Some(PropValue::Unset)) {
+            crate::range::Range::UNIT
         } else {
-            spec.fixed()
+            let now = self.anim.now().as_secs_f64();
+            let a = self.anim.ranges.entry(id).or_default();
+            let Some(spec) = a.usable(crate::range::Spec::of(written)) else {
+                return 0.0;
+            };
+            if spec.is_auto() {
+                a.show(spec, now, target.unwrap_or(v))
+            } else {
+                spec.fixed()
+            }
         };
         range.frac(v).unwrap_or(0.0)
     }
@@ -145,7 +164,8 @@ impl Flattener<'_> {
                 // The fill: `color` (its own, else `$accent`) up to
                 // `value`, cut to the track's shape.
                 // (graph-follow) Against its `range`.
-                let v = self.range_frac(id, get) as f64;
+                let target = number(w.node.get(Prop::Value));
+                let v = self.range_frac(id, target, get) as f64;
                 if v <= 0.0 {
                     return;
                 }
@@ -206,7 +226,8 @@ impl Flattener<'_> {
                 // over its fraction, round-capped unless `cap:` says
                 // otherwise; `width` is the line's (design.md: `arc {
                 // value: cpu.usage; sweep: 270deg; width: 4 }`).
-                let v = self.range_frac(id, get) as f64;
+                let target = number(w.node.get(Prop::Value));
+                let v = self.range_frac(id, target, get) as f64;
                 let sweep = get(Prop::Sweep)
                     .and_then(crate::effects::degrees)
                     .unwrap_or(crate::widgets::ARC_SWEEP)
@@ -250,13 +271,24 @@ impl Flattener<'_> {
             }
             NodeKind::Slider => {
                 // A drag holds where the knob is; a value is read against
-                // the slider's `range` (graph-follow).
-                let range = crate::range::Spec::of(get(Prop::Range)).fixed();
+                // the slider's `range` (graph-follow), the last usable one
+                // while an end is not known (review).
+                let written = get(Prop::Range);
+                let range = if matches!(written, None | Some(PropValue::Unset)) {
+                    Some(crate::range::Range::UNIT)
+                } else {
+                    self.anim
+                        .ranges
+                        .entry(id)
+                        .or_default()
+                        .usable(crate::range::Spec::of(written))
+                        .map(|s| s.fixed())
+                };
                 let v = widgets
                     .drags
                     .get(&id)
                     .copied()
-                    .or(number(get(Prop::Value)).and_then(|v| range.frac(v)))
+                    .or(number(get(Prop::Value)).and_then(|v| range.and_then(|r| r.frac(v))))
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0) as f64;
                 let active = hovered || pressed;

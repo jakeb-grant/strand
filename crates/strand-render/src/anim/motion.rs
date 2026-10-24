@@ -380,8 +380,11 @@ pub(super) fn clear(s: [f32; 8]) -> [f32; 8] {
 }
 
 impl PropMotion {
-    pub(super) fn rest(p: Prop, e: &Enc, last: Option<Duration>) -> PropMotion {
-        let k = eps(p);
+    /// At rest at `e`, settling within `p`'s tolerance times `scale`
+    /// (review: a ranged widget's `value` scales it by its range's span;
+    /// 1 for every other prop).
+    pub(super) fn rest(p: Prop, e: &Enc, last: Option<Duration>, scale: f32) -> PropMotion {
+        let k = eps(p) * scale;
         match e {
             Enc::One(v) => PropMotion::One(Motion::rest(*v, k).sampled_at(last)),
             Enc::Four(v) => PropMotion::Four(Motion::rest(*v, k).sampled_at(last)),

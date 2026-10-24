@@ -1026,7 +1026,9 @@ impl<'a> Flattener<'a> {
                         parts: &parts,
                         files: Some(&self.extras.images),
                         boot: self.anim.frame_boot(),
+                        slack: self.anim.slack(),
                         still: self.anim.still(),
+                        commit: self.anim.commits(),
                     },
                 )
             }

@@ -18,13 +18,13 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | Prop | Type | |
 | --- | --- | --- |
 | `id` | `Node` | Names the element, so others read its state (`results.selected`) and keys route to it (`nav: results`). |
-| `width` | `length \| SizeKeyword` | Its width: logical pixels, or `40%` of the parent; `auto` (as unset) sizes it by what it holds, and takes a transition there (`width: auto ~ instant`). |
-| `height` | `length \| SizeKeyword` | Its height: logical pixels, or a percentage of the parent; `auto` as for `width`. |
+| `width` | `length \| auto` | Its width: logical pixels, or `40%` of the parent; `auto` (as unset) sizes it by what it holds, and takes a transition there (`width: auto ~ instant`). |
+| `height` | `length \| auto` | Its height: logical pixels, or a percentage of the parent; `auto` as for `width`. |
 | `min_width` | `length` | The smallest width it takes. |
 | `min_height` | `length` | The smallest height it takes. |
 | `max_width` | `length` | The largest width it takes. |
 | `max_height` | `length` | The largest height it takes: `max_height: 420`. |
-| `size` | `length \| SizeKeyword` | Its width and height at once: `size: 8`; `auto` as for `width`. |
+| `size` | `length \| auto` | Its width and height at once: `size: 8`; `auto` as for `width`. |
 | `grow` | `float` | Its share of the space left in its row or column: `grow: 1`. |
 | `shrink` | `float` | How much it gives up when its row or column is too small: `shrink: 0` keeps its size (default 1). |
 | `justify` | `Justify` | How its children share the main axis: `justify: space_between`. |
@@ -43,7 +43,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `color` | `color` | Inherited. Text and icon colour, inherited by every descendant. |
 | `font` | `font` | Inherited. Font, inherited by every descendant: `"Inter" 13px 500`, `$font.ui`. |
 | `weight` | `int` | Inherited. Font weight, inherited by every descendant: `weight: 600`. |
-| `radius` | `corners \| RadiusKeyword` | Corner radii: one value, four (`14, 14, 0, 0`), or `full` for a pill. |
+| `radius` | `corners \| full` | Corner radii: one value, four (`14, 14, 0, 0`), or `full` for a pill. |
 | `corners` | `CornerStyle` | `squircle` for smooth corners. |
 | `border` | `length, paint` | A border of a width and a paint: `border: 1, $border`. A gradient's angle may animate; only the ring repaints. |
 | `shadow` | `shadow` | Drop shadows: `0 2px 8px $shadow.alpha(0.25)`, comma-separated. |
@@ -52,7 +52,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
+| `hit` | `HitArea \| none` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |
@@ -127,7 +127,7 @@ Also every prop and event of [`node`](#node).
 | Prop | Type | |
 | --- | --- | --- |
 | `value` | `float` | How full it is, in `range` (0 to 1 when unset); a value outside it is drawn at its nearer end. |
-| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its ends stand for, as a `meter`'s: `range: 0, 100`, `range: auto` (0 to 1 when unset). |
+| `range` | `(float \| auto, float \| auto) \| auto` | The values its ends stand for, as a `meter`'s: `range: 0, 100`, `range: auto` (0 to 1 when unset). |
 | `sweep` | `angle` | The angle of the whole arc. |
 | `track` | `paint` | The paint of the unfilled part. |
 
@@ -275,8 +275,8 @@ it mounted. A list is several series in one graph, each with its own
 history, drawn over one another against one `range`, the first at the
 back: `graph cpu.cores`, `graph [cpu.usage, memory.usage] { color:
 $accent, $tertiary }`. Its columns are whole periods of the boot
-clock, the same columns wherever and whenever it is drawn, and its
-value does not spring: `smooth` eases it.
+clock, the same columns whenever its frames come, and its value does
+not spring: `smooth` eases it.
 
 It takes no children.
 
@@ -285,13 +285,13 @@ Also every prop and event of [`node`](#node).
 | Prop | Type | |
 | --- | --- | --- |
 | `history` | `duration` | How much history it keeps and shows (60 s when unset). |
-| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its bottom and top stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) fits what it shows, on a 1, 2, 5 ladder, growing at once and narrowing only once the values shown fit four fifths of a smaller step (0 to 1 when unset). A value outside a fixed range is drawn at its nearer end. |
+| `range` | `(float \| auto, float \| auto) \| auto` | The values its bottom and top stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) fits what it shows, on a 1, 2, 5 ladder, growing at once and narrowing only once the values shown fit four fifths of a smaller step (0 to 1 when unset). A value outside a fixed range is drawn at its nearer end. |
 | `style` | `GraphStyle` | `line` (a line through its values), `steps` (each value held flat across its column, snapped to whole pixels, with square risers) or `bars` (a bar per value, `line_width` wide and `gap` apart). |
-| `color` | `color \| [color]` | The line's colour, or a list, one per series (taken in turn when there are more series than colours). |
+| `color` | `color \| [color]` | The line's colour (inherited when unset, as every node's), or a list, one per series (taken in turn when there are more series than colours; one colour serves them all). |
 | `fill` | `paint \| [paint]` | The paint under the line, laid over the graph's box (a gradient fades as written: `linear(180deg, $accent.alpha(0.4), $accent.alpha(0))`), or a list, one per series; under `style: bars`, the bars' own paint. |
 | `line_width` | `length` | The line's width (1.5 px when unset); under `style: bars`, each bar's (2 px when unset). |
 | `gap` | `length` | Under `style: bars`, the space between bars (1 px when unset). |
-| `smooth` | `float` | Smoothing, 0 to 1. |
+| `smooth` | `float` | Smoothing: 0 (unset) follows the value; towards 1 each column moves less of the way to it. |
 
 ### `grid`
 
@@ -452,7 +452,7 @@ Also every prop and event of [`node`](#node).
 | Prop | Type | |
 | --- | --- | --- |
 | `value` | `float` | How full it is, in `range` (0 to 1 when unset); a value outside it is drawn at its nearer end. |
-| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its ends stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) follows the values it showed in the last minute, on a 1, 2, 5 ladder (0 to 1 when unset). |
+| `range` | `(float \| auto, float \| auto) \| auto` | The values its ends stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) follows the values it showed in the last minute, on a 1, 2, 5 ladder (0 to 1 when unset); it moves when the meter draws, so it narrows at the first change after a burst is a minute old. |
 | `track` | `paint` | The paint of the unfilled part. |
 | `wave` | `float` | A wavy fill's amplitude; 0 is flat: `wave: media.playing ? 3 : 0`. |
 

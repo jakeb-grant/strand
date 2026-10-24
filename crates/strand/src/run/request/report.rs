@@ -210,36 +210,7 @@ impl Shell {
     /// `boot_ns` is written when nothing is kept too: the replay runs on
     /// the live boot clock, so a graph's columns fall where they fell.
     fn history_table(&self) -> Json {
-        let series: Vec<Json> = self
-            .inst
-            .histories()
-            .into_iter()
-            .filter(|h| h.services.iter().all(|(s, _)| s != "auth"))
-            .map(|h| {
-                let points: Vec<Json> = h
-                    .ring
-                    .iter()
-                    .map(|p| {
-                        let v = if p.value.is_finite() {
-                            json!(p.value)
-                        } else {
-                            Json::Null
-                        };
-                        json!([p.at, v, p.ramp])
-                    })
-                    .collect();
-                json!({
-                    "key": h.key,
-                    "span_ms": u64::try_from(h.span.as_millis()).unwrap_or(u64::MAX),
-                    "points": points,
-                })
-            })
-            .collect();
-        let boot = strand_scene::backlog::boot_now();
-        json!({
-            "boot_ns": u64::try_from(boot.as_nanos()).unwrap_or(u64::MAX),
-            "series": series,
-        })
+        history_json(&self.inst.histories(), strand_scene::backlog::boot_now())
     }
 
     /// (report) `nodes.json`: each node the input ring names (a press's
@@ -434,6 +405,42 @@ fn relative(name: &str, dir: Option<&Path>) -> PathBuf {
         .map_or_else(|| PathBuf::from("module.strand"), PathBuf::from)
 }
 
+/// (history) [`Shell::history_table`] of `kept` with the boot clock at
+/// `boot`: (graph-follow review) an object with `boot_ns` even when
+/// nothing is kept (`series` empty).
+fn history_json(
+    kept: &[strand_compiler::instantiate::HistoryInfo],
+    boot: std::time::Duration,
+) -> Json {
+    let series: Vec<Json> = kept
+        .iter()
+        .filter(|h| h.services.iter().all(|(s, _)| s != "auth"))
+        .map(|h| {
+            let points: Vec<Json> = h
+                .ring
+                .iter()
+                .map(|p| {
+                    let v = if p.value.is_finite() {
+                        json!(p.value)
+                    } else {
+                        Json::Null
+                    };
+                    json!([p.at, v, p.ramp])
+                })
+                .collect();
+            json!({
+                "key": h.key,
+                "span_ms": u64::try_from(h.span.as_millis()).unwrap_or(u64::MAX),
+                "points": points,
+            })
+        })
+        .collect();
+    json!({
+        "boot_ns": u64::try_from(boot.as_nanos()).unwrap_or(u64::MAX),
+        "series": series,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,5 +461,14 @@ mod tests {
             PathBuf::from("x.strand")
         );
         assert_eq!(relative("../x.strand", Some(d)), PathBuf::from("x.strand"));
+    }
+
+    /// (graph-follow review) A report of a shell that keeps no history
+    /// still writes `history.json`, with the boot clock its replay runs
+    /// on and no series.
+    #[test]
+    fn history_json_holds_the_boot_clock_when_nothing_is_kept() {
+        let h = history_json(&[], std::time::Duration::from_secs(1234));
+        assert_eq!(h, json!({ "boot_ns": 1_234_000_000_000u64, "series": [] }));
     }
 }

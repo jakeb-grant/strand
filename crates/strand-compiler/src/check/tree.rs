@@ -1961,6 +1961,24 @@ impl<'a> Checker<'a> {
                 );
             }
             h
+        } else if name == "range"
+            && self.nodes.last().is_some_and(|n| n.kind == "slider")
+            && let Some(at) = auto_end(p.value)
+        {
+            // (graph-follow review) `auto` would otherwise be an unknown
+            // name with a guess at another (`auth`).
+            self.error(
+                "check::range_ends",
+                "a slider's `range` is two numbers",
+                at,
+                "a slider takes no `auto`",
+            )
+            .help = Some(
+                "`auto` is for `meter`, `arc` and `graph`, which follow what they show; what a \
+                 slider writes must not depend on what it showed: `range: 0, 100`"
+                    .into(),
+            );
+            hir::Expr::error(p.value.span)
         } else {
             self.prop_value(p.value, &ps.ty, &format!("`{name}`"))
         };
@@ -3310,6 +3328,16 @@ pub(super) fn add_key(
         replacement,
         title: Some(title),
     });
+}
+
+/// (graph-follow review) Where a `range:` value says `auto` (the whole, or
+/// either end).
+fn auto_end(e: &ast::Expr) -> Option<Span> {
+    match &e.kind {
+        ast::ExprKind::Name(n) if n.name == "auto" => Some(n.span),
+        ast::ExprKind::Commas(items) => items.iter().find_map(auto_end),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

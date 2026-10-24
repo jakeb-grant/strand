@@ -669,12 +669,18 @@ pub struct RasterProps<'a> {
     /// (M4) Where a source's file jobs run (the image store's worker, or
     /// inline): `None` runs them inline.
     pub files: Option<&'a crate::image::ImageStore>,
-    /// (graph-follow) The frame being drawn on the boot clock, a tick
-    /// reached half a frame early (`Animator::frame_boot`): where a
-    /// `graph`'s columns fall.
+    /// (graph-follow) The frame being drawn on the boot clock
+    /// (`Animator::frame_boot`; zero in a frame with no clock): where a
+    /// `graph`'s columns fall, and (review) when it saw its value.
     pub boot: std::time::Duration,
+    /// (review) How early a tick counts as reached: half a frame, as a
+    /// capped clock's (`Animator::slack`).
+    pub slack: std::time::Duration,
     /// (graph-follow) Time stands still in this frame (`reduced_motion`).
     pub still: bool,
+    /// (review) This frame will be painted, not a preview flattened at
+    /// the last painted frame's time (`Animator::commits`).
+    pub commit: bool,
 }
 
 impl RasterProps<'_> {

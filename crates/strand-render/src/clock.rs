@@ -64,13 +64,15 @@ pub enum Rate {
 /// passes its own).
 pub type BootClock = fn(Duration) -> Duration;
 
-/// (graph-follow) The real [`BootClock`]: the presentation clock is
-/// `CLOCK_MONOTONIC` (`wp_presentation`'s, `strand_scene::PaintTarget`),
-/// which runs as the boot clock does but for the time asleep, so a time
-/// of it is moved by what the boot clock is ahead of it now.
+/// (graph-follow) The real [`BootClock`]: a time of the presentation
+/// clock (`wp_presentation`'s, `strand_scene::PaintTarget`) moved by what
+/// the boot clock is ahead of it now. (review) That clock is the one the
+/// compositor named (`strand_scene::backlog::set_presentation_clock`,
+/// which strand-surface calls): `CLOCK_MONOTONIC` unless it said
+/// `CLOCK_MONOTONIC_RAW` or `CLOCK_BOOTTIME`, the boot clock itself, whose
+/// times are taken as they are.
 pub fn boot_at(p: Duration) -> Duration {
-    let c = strand_scene::backlog::clocks();
-    (p + c.boot).saturating_sub(c.awake)
+    strand_scene::backlog::boot_at(p)
 }
 
 /// The clock of `node`, if it has one: a CPU raster node's at its

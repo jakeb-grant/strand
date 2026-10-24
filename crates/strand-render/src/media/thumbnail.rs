@@ -236,7 +236,9 @@ mod tests {
             parts: &[],
             files: None,
             boot: std::time::Duration::ZERO,
+            slack: std::time::Duration::ZERO,
             still: false,
+            commit: true,
         };
         let a = s.state(&props);
         s.feed(Some(frame(2, 2, [0, 0, 0, 255])));
