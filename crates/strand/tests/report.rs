@@ -59,11 +59,8 @@ bar Top {{
     box {{ width: 80; height: 40; bg: mood.level == 7 ? #ff0000 : #202020 }}
     image \"{small}\" {{ width: 20; height: 20 }}
     image \"{big}\" {{ width: 20; height: 20 }}
+    graph clicks * 0.5 {{ width: 40; height: 40; history: 120s; fill: #00ff0055 }}
   }}
-}}
-panel History {{
-  anchor: center; open: false
-  graph clicks * 0.5 {{ width: 40; height: 40; history: 30s }}
 }}
 panel Ask {{
   anchor: center; keyboard: exclusive; open: !pw_mode
@@ -548,14 +545,15 @@ fn a_bundle_holds_every_part() {
     ] {
         assert!(dir.join(part).is_file(), "{part} in {}", dir.display());
     }
-    // (history) The graph's kept series (its panel closed: kept all the
-    // same): its points on the boot clock, none after the report's
-    // reading of it, from no click to one.
+    // (history) The graph's kept series: its points on the boot clock,
+    // none after the report's reading of it, from no click to one.
+    // (graph-follow) Drawn in the bar, changing as it is clicked: its
+    // replay draws the same columns (test-report-view.sh --e2e).
     let h = read_json(&dir.join("history.json"));
     let boot = h["boot_ns"].as_u64().unwrap() as f64 / 1e9;
     let series = h["series"].as_array().unwrap();
     assert_eq!(series.len(), 1, "{h}");
-    assert_eq!(series[0]["span_ms"], 30000, "{h}");
+    assert_eq!(series[0]["span_ms"], 120_000, "{h}");
     assert!(series[0]["key"].as_str().unwrap().contains("clicks"), "{h}");
     let points = series[0]["points"].as_array().unwrap();
     assert!(points.len() >= 2, "{h}");

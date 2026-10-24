@@ -63,7 +63,9 @@ pub struct Bundle {
     pub diagnostics: Json,
     /// (history) `history.json`: each series a `graph` kept history of,
     /// its points on the boot clock, and the boot clock at the report
-    /// (`boot_ns`); `Null` when none was kept (or a bundle from before).
+    /// (`boot_ns`, (graph-follow) what the replay's `boot` comes from);
+    /// `Null` in a bundle from before it was written with every report
+    /// and kept nothing.
     pub history: Json,
 }
 

@@ -5,7 +5,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
 
-use strand_scene::{Color, Font, NodeKind, Paint, Prop, PropValue, Rect, Scale, TokenScope};
+use strand_scene::{
+    Color, Font, NodeId, NodeKind, Paint, Prop, PropValue, Rect, Scale, TokenScope,
+};
 use strand_text::{TextLayout, TextStyle};
 use vello_cpu::kurbo::{self, BezPath, RoundedRectRadii, Shape};
 
@@ -78,6 +80,24 @@ pub(super) fn on(bg: Color) -> Color {
 }
 
 impl Flattener<'_> {
+    /// (graph-follow) How full a `meter` or `arc` is drawn: its value
+    /// as a fraction of its `range`, clamped (0 for none). An auto range
+    /// follows the values it drew over the last minute
+    /// ([`crate::range::Auto::show`]), moved only by frames that draw it.
+    fn range_frac<'v>(&mut self, id: NodeId, get: &impl Fn(Prop) -> Option<&'v PropValue>) -> f32 {
+        let spec = crate::range::Spec::of(get(Prop::Range));
+        let Some(v) = number(get(Prop::Value)) else {
+            return 0.0;
+        };
+        let range = if spec.is_auto() {
+            let now = self.anim.now().as_secs_f64();
+            self.anim.ranges.entry(id).or_default().show(spec, now, v)
+        } else {
+            spec.fixed()
+        };
+        range.frac(v).unwrap_or(0.0)
+    }
+
     /// Draws what a widget adds over its background (see
     /// `crate::widgets`).
     #[allow(clippy::too_many_arguments)]
@@ -124,7 +144,8 @@ impl Flattener<'_> {
             NodeKind::Meter => {
                 // The fill: `color` (its own, else `$accent`) up to
                 // `value`, cut to the track's shape.
-                let v = number(get(Prop::Value)).unwrap_or(0.0).clamp(0.0, 1.0) as f64;
+                // (graph-follow) Against its `range`.
+                let v = self.range_frac(id, get) as f64;
                 if v <= 0.0 {
                     return;
                 }
@@ -185,7 +206,7 @@ impl Flattener<'_> {
                 // over its fraction, round-capped unless `cap:` says
                 // otherwise; `width` is the line's (design.md: `arc {
                 // value: cpu.usage; sweep: 270deg; width: 4 }`).
-                let v = number(get(Prop::Value)).unwrap_or(0.0) as f64;
+                let v = self.range_frac(id, get) as f64;
                 let sweep = get(Prop::Sweep)
                     .and_then(crate::effects::degrees)
                     .unwrap_or(crate::widgets::ARC_SWEEP)
@@ -228,11 +249,14 @@ impl Flattener<'_> {
                 }
             }
             NodeKind::Slider => {
+                // A drag holds where the knob is; a value is read against
+                // the slider's `range` (graph-follow).
+                let range = crate::range::Spec::of(get(Prop::Range)).fixed();
                 let v = widgets
                     .drags
                     .get(&id)
                     .copied()
-                    .or(number(get(Prop::Value)))
+                    .or(number(get(Prop::Value)).and_then(|v| range.frac(v)))
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0) as f64;
                 let active = hovered || pressed;

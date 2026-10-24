@@ -75,9 +75,24 @@ use crate::checks::redraw;
 pub const HISTORY_BOOT: Duration = Duration::from_secs(1_000_000);
 
 thread_local! {
-    /// (history) The virtual boot clock now: `HISTORY_BOOT` plus the run's
-    /// time since `T0`, set as each logic step and tick starts.
+    /// (history) The virtual boot clock now: its time at `T0` plus the
+    /// run's time since, set as each logic step and tick starts.
     static VIRTUAL_BOOT: std::cell::Cell<Duration> = const { std::cell::Cell::new(HISTORY_BOOT) };
+    /// (graph-follow) The virtual boot clock at `T0`: the scenario's
+    /// `boot` (a replay's: the live shell's at its window's start), else
+    /// `HISTORY_BOOT`.
+    static BOOT_AT_T0: std::cell::Cell<Duration> = const { std::cell::Cell::new(HISTORY_BOOT) };
+}
+
+fn boot_at_t0() -> Duration {
+    BOOT_AT_T0.with(std::cell::Cell::get)
+}
+
+/// (graph-follow) The virtual boot clock at a frame's time (the run's
+/// clock, `T0` at its start): what render lays a graph's columns on, the
+/// clock logic's kept history is timed on.
+fn render_boot(p: Duration) -> Duration {
+    boot_at_t0() + p.saturating_sub(T0)
 }
 
 fn virtual_boot() -> Duration {
@@ -95,7 +110,7 @@ fn virtual_clocks() -> strand_scene::backlog::Clocks {
 /// negative), a `null` value a gap's start; on the virtual boot clock.
 fn history_points(j: &serde_json::Value) -> Result<Vec<strand_scene::BacklogPoint>, String> {
     let bad = || format!("`{j}` is not a list of [at, value, ramp]");
-    let base = HISTORY_BOOT.as_secs_f64();
+    let base = boot_at_t0().as_secs_f64();
     j.as_array()
         .ok_or_else(bad)?
         .iter()
@@ -124,7 +139,7 @@ fn history_points(j: &serde_json::Value) -> Result<Vec<strand_scene::BacklogPoin
 
 /// The virtual boot clock at the run's time `t`.
 fn set_virtual_boot(t: Duration) {
-    VIRTUAL_BOOT.with(|c| c.set(HISTORY_BOOT + t.saturating_sub(T0)));
+    VIRTUAL_BOOT.with(|c| c.set(boot_at_t0() + t.saturating_sub(T0)));
 }
 use crate::clock::{Clock, T0};
 use crate::gpu::{Device, Fresh};
@@ -1245,8 +1260,13 @@ impl Harness {
         });
         let engine = TextEngine::new(fonts(&sc)?);
         let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+        let boot = sc
+            .boot
+            .and_then(|b| Duration::try_from_secs_f64(b).ok())
+            .unwrap_or(HISTORY_BOOT);
+        BOOT_AT_T0.with(|c| c.set(boot));
         set_virtual_boot(T0);
-        r.set_history_clock(virtual_boot);
+        r.set_history_clock(render_boot);
         r.set_first_frame_wait(Duration::ZERO);
         r.set_new_text_wait(Duration::ZERO);
         r.set_estimate_wait(Duration::ZERO);

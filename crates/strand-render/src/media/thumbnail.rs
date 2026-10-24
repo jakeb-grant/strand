@@ -235,6 +235,8 @@ mod tests {
             color: strand_scene::Color::WHITE,
             parts: &[],
             files: None,
+            boot: std::time::Duration::ZERO,
+            still: false,
         };
         let a = s.state(&props);
         s.feed(Some(frame(2, 2, [0, 0, 0, 255])));

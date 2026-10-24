@@ -76,6 +76,14 @@ pub(crate) const ANIMATED: [Prop; 18] = [
     Prop::Uniforms,
 ];
 
+/// (graph-follow) A change of `prop` on a `kind` node springs: one of
+/// [`ANIMATED`], but for a `graph`'s value, which `smooth` eases and
+/// whose columns are its values at their ticks, not a spring's place at
+/// whatever frame drew them (a replay draws other frames).
+pub(crate) fn springs(kind: strand_scene::NodeKind, prop: Prop) -> bool {
+    ANIMATED.contains(&prop) && !(kind == strand_scene::NodeKind::Graph && prop == Prop::Value)
+}
+
 /// Props whose change springs the laid-out size.
 pub(crate) fn is_size(p: Prop) -> bool {
     matches!(p, Prop::Width | Prop::Height | Prop::Size)
@@ -281,6 +289,15 @@ pub(crate) struct Animator {
     /// The frame period of the surface being drawn (zero: not known):
     /// how far before its first frame a change starts ([`Animator::lead`]).
     period: Duration,
+    /// (graph-follow) The boot clock at a presentation time (`None`: the
+    /// real one, [`crate::clock::boot_at`]).
+    boot_clock: Option<crate::clock::BootClock>,
+    /// (graph-follow) The boot clock less the presentation clock at the
+    /// frame being drawn, in nanoseconds: aligned clocks tick on it.
+    boot_offset: i128,
+    /// (graph-follow) Each `meter`'s and `arc`'s `range: auto`, as the
+    /// values it showed set it ([`crate::range::Auto`]).
+    pub(crate) ranges: HashMap<NodeId, crate::range::Auto>,
     /// Poses render chose for nodes in place of their own `enter`/`exit`
     /// (a page's directional slide): read when the enter starts and on
     /// every frame of the exit.
@@ -341,9 +358,40 @@ impl Animator {
         self.reduced
     }
 
+    /// (graph-follow) Time aligned clocks and graphs on `clock` from now
+    /// on (`crate::Renderer::set_history_clock`).
+    pub fn set_boot_clock(&mut self, clock: crate::clock::BootClock) {
+        self.boot_clock = Some(clock);
+    }
+
+    /// (graph-follow) The frame being drawn on the boot clock, in
+    /// seconds, a tick counted as reached half a frame early as a capped
+    /// clock's is: what a `graph` lays its columns by. Zero in a frame
+    /// with no clock (its time zero): it stands nowhere on the boot clock.
+    pub fn frame_boot(&self) -> Duration {
+        if self.time.is_zero() {
+            return Duration::ZERO;
+        }
+        let ns = self.time.as_nanos() as i128 + self.boot_offset + self.slack.as_nanos() as i128;
+        Duration::from_nanos(u64::try_from(ns.max(0)).unwrap_or(u64::MAX))
+    }
+
+    /// (graph-follow) The time of the frame being drawn.
+    pub(crate) fn now(&self) -> Duration {
+        self.time
+    }
+
+    /// (graph-follow) Time stands still in the frame being drawn
+    /// (`reduced_motion`, or a frame with no clock).
+    pub fn still(&self) -> bool {
+        self.snapping()
+    }
+
     /// Starts drawing a frame at `time` (`commit`: it will be painted).
     pub fn begin(&mut self, time: Duration, prev: Option<Duration>, commit: bool) {
         self.time = time;
+        let boot = self.boot_clock.unwrap_or(crate::clock::boot_at)(time);
+        self.boot_offset = boot.as_nanos() as i128 - time.as_nanos() as i128;
         self.prev = prev.filter(|p| !p.is_zero());
         self.commit = commit;
         self.active = false;
@@ -414,6 +462,17 @@ impl Animator {
         let period = match rate {
             crate::clock::Rate::Refresh => None,
             crate::clock::Rate::Every(p) => Some(p),
+            crate::clock::Rate::Aligned(p) => {
+                return self.times.aligned_context(
+                    id,
+                    self.time,
+                    false,
+                    frozen,
+                    p,
+                    self.slack,
+                    self.boot_offset,
+                );
+            }
         };
         // Read only: the clock starts once the node is drawn
         // ([`Animator::start_clock`]), so a node hidden at first counts
@@ -1013,6 +1072,7 @@ impl Animator {
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
         self.times.forget(id);
+        self.ranges.remove(&id);
         self.shapes.forget(id);
         self.rolls.forget(id);
         self.plays.forget(id);
@@ -1163,6 +1223,7 @@ impl Animator {
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.lifted.retain(|id, _| keep(*id));
         self.step_fills.retain(|id, _| keep(*id));
+        self.ranges.retain(|id, _| keep(*id));
         self.times.retain(&mut keep);
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);

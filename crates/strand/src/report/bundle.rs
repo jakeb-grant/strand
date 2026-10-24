@@ -173,8 +173,9 @@ pub(crate) struct Job {
     /// `services.json`, `cells.json`.
     pub services: Json,
     pub cells: Json,
-    /// (history) `history.json`: the kept series' points
-    /// (`Shell::history_table`); `Null`: none kept, no file.
+    /// (history) `history.json`: the kept series' points and the boot
+    /// clock at the report (`Shell::history_table`; (graph-follow)
+    /// written with every report); `Null`: no file.
     pub history: Json,
     pub config_dir: Option<PathBuf>,
     /// The module set: each file's path under the config directory and

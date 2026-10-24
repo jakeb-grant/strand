@@ -2134,7 +2134,7 @@ Without `save` the answer is as before. With it:
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
 | `services.json` | `{service: {"running": bool, "fields": {field: value}}}` |
 | `cells.json` | `{cell path: value}` |
-| `history.json` | (history) `{"boot_ns", "series": [{"key", "span_ms", "points": [[at, value, ramp], …]}]}`: each series a `graph` keeps history of (`Instance::histories`; one reading `auth` left out), its points oldest first with `at` on the boot clock in seconds and a `null` value for a gap's start, and the boot clock at the report (`boot_ns`, read with `now_ns`); absent when nothing is kept. The replay seeds what each held before its window (docs/eval.md) |
+| `history.json` | (history) `{"boot_ns", "series": [{"key", "span_ms", "points": [[at, value, ramp], …]}]}`: each series a `graph` keeps history of (`Instance::histories`; one reading `auth` left out), its points oldest first with `at` on the boot clock in seconds and a `null` value for a gap's start, and the boot clock at the report (`boot_ns`, read with `now_ns`); (graph-follow) written with every report, `series` empty when nothing is kept. The replay seeds what each held before its window and runs on the live boot clock (its scenario's `boot`, docs/eval.md) |
 | `drawn.json` | (replay-owner) `{"format": 2, "surfaces": [{"slot", "root": node_ref, "drawn_ns", "period_ns", "nodes": [{"ref": node_ref, "origin", "id", "key", "box": [x, y, w, h], "opacity", "travel", "fade"}]}]}`: each mapped surface's nodes as its last frame drew or hid them, in paint order, named as `nodes.json` names them, the box in surface logical px through every transform (axis aligned, to 1/64) and the node's own opacity, with how far it moves over the next frame period (`travel`: the largest edge move, px; `fade`: of the opacity; to 1/64, 0 at rest); `drawn_ns` is when that frame was drawn on the flight rings' clock (absent when not known) and `period_ns` the surface's frame period; main takes them with the frames (`Renderer::drawn_nodes`), logic names them; what the replay's verdict holds its own frame to |
 | `nodes.json` | `{node_ref: {"origin": "file.strand:LINE:COL", "id", "key"}}`: each node the input ring names (a press's hit, a mapped surface's root) and each mapped surface's root, still mounted, the file under the config directory and the `for` row key (none for a per-screen surface's own screen), what a replay holds its own press's hit to |
 | `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
@@ -3025,8 +3025,15 @@ re-base, if it needs one, is a dated decisions.md entry.
       change: a spectrum, an `svg`, a `lottie` with no file), and
       `state(&RasterProps) -> u64` (default 0), called on every flatten
       that draws the node with its resolved props (`RasterProps { get,
-      color, parts }`, exported from `lib.rs`): the pixmap is drawn again
-      when that hash changes. Media nodes (`graph`, `spectrum`, `svg`,
+      color, parts, files, boot, still }`, exported from `lib.rs`;
+      (graph-follow) `boot: Duration` is the frame on the boot clock, a
+      tick reached half a frame early, zero in a frame with no clock,
+      `still` that time stands still in it): the pixmap is drawn again when that hash changes.
+      (graph-follow) `clock::Rate` is `Refresh`, `Every(period)` (a
+      cap, ticking from the node's first frame) or `Aligned(period)`,
+      which ticks at the period's whole multiples on the boot clock
+      (`NodeTimes::aligned_context`), so two renderers drawing at
+      different times tick together: a `graph`'s columns. Media nodes (`graph`, `spectrum`, `svg`,
       `lottie`, `thumbnail`) get their sources from render itself when
       logic creates them. The props keep
     arriving as `PropValue::Call`; render builds the `Effect`s.
@@ -3082,10 +3089,32 @@ re-base, if it needs one, is a dated decisions.md entry.
     a point; render reads the boot clock at each draw and works out each
     column's time from it, filling from the backlog only the columns it
     did not sample (its first draw, a gap in its ticks) and drawing a
-    gap as no column. `Renderer::set_history_clock(fn() -> Duration)`
-    replaces that clock (tests, the eval sandbox's virtual one) before
-    the graphs it times attach. It is not part of the graph's state
-    hash: it repaints nothing by itself. `strand_scene::backlog::
+    gap as no column. (graph-follow) `Renderer::set_history_clock(
+    clock::BootClock)` (`fn(Duration) -> Duration`: the boot clock at a
+    time of the presentation clock; the real one is `clock::boot_at`,
+    the presentation time moved by what `CLOCK_BOOTTIME` is ahead of
+    `CLOCK_MONOTONIC`) replaces that clock (tests, the eval sandbox's
+    virtual one); the animator reads it at each frame's `begin`, and a
+    graph's columns are its whole periods (`history / slots`), tick `j`
+    the value at `j × column` seconds of it. A backlog is not part of
+    the graph's state hash: it repaints nothing by itself. A graph of a
+    list value (`float | [float]`: `Prop::Value` a `List` of numbers)
+    gets a `List` of backlogs, one per item. `strand_scene::backlog::
+    DEFAULT_HISTORY` (60 s) is a graph's `history` when unset, on both
+    sides.
+  - **Ranges** (decisions.md graph-follow). `Prop::Range` (snapped) on a
+    `slider`, `meter`, `arc` or `graph` is a `List` of its two ends,
+    each a `Number` or `Keyword("auto")`, or `Keyword("auto")` for
+    both; unset, 0 to 1. Render reads it with `range::Spec::of`, maps a
+    value with `Range::frac` (clamped) and a slider's drag with
+    `Range::at`, which `Intent::Write` carries in range units; an auto
+    range is `range::Auto` (a graph's own, over its columns; a meter's
+    or an arc's in `Animator::ranges`, over the values it drew in the
+    last minute). `Prop::LineWidth` (snapped) is a graph's line or bar
+    width, `Prop::Style` its `line`, `steps` or `bars`, and its
+    `Prop::Color` and `Prop::Fill` may be `List`s, one per series in
+    turn. A graph's `Prop::Value` does not spring
+    (`anim::springs`). `strand_scene::backlog::
     DEFAULT_HISTORY` (60 s) is a graph's `history` when unset, on both
     sides.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
@@ -4607,7 +4636,9 @@ Public interfaces other crates and later stages build on:
   at file scope, binds `Prop::Backlog` on each such graph, and calls
   `ServiceHost::keep`; `Instance::histories() -> Vec<HistoryInfo { key,
   span, services: Vec<(String, Option<Duration>)>, points, oldest,
-  ring: Vec<BacklogPoint> }>` says what is kept;
+  ring: Vec<BacklogPoint> }>` says what is kept ((graph-follow) a
+  series of a list value as one entry per item, its key the series'
+  with `[i]` after it, which `seed_history` takes too);
   `Instance::set_history_clock(ClockFn)` times it on other clocks
   (tests, the eval sandbox) and `Instance::seed_history(key, &[
   BacklogPoint]) -> bool` puts points before a series' own (a glitch

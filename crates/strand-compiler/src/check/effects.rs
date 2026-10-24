@@ -12,6 +12,9 @@
 //!
 //! It also catches knobs that can only be mistakes when written as
 //! literals: a negative blur or bloom radius, a `grain` outside 0..1.
+//! (graph-follow) And a `range:` that is not two ends (`range: 0, 100`)
+//! or `auto`: a lone number type-checks as the shorthand's first part,
+//! but a range needs both of its ends, and literal ends must rise.
 
 use super::Checker;
 use crate::hir::{self, Callee, ExprKind, Node};
@@ -52,6 +55,10 @@ impl Checker<'_> {
                 "filter" => FILTER,
                 "grain" => {
                     self.grain_amount(&p.value);
+                    continue;
+                }
+                "range" => {
+                    self.range_ends(&p.value);
                     continue;
                 }
                 _ => continue,
@@ -124,6 +131,50 @@ impl Checker<'_> {
                 "out of range",
             )
             .help = Some("film grain reads well around `grain: 0.04`".to_string());
+        }
+    }
+}
+
+impl Checker<'_> {
+    /// (graph-follow) `range:` is two ends or `auto`: a single number (a
+    /// literal or anything of a number's type) is the comma shorthand's
+    /// first part to the type checker, an end with no other; and two
+    /// literal ends must rise (`range: 100, 0` and `range: 5, 5` hold
+    /// nothing).
+    fn range_ends(&mut self, value: &hir::Expr) {
+        let ends = match &value.kind {
+            ExprKind::Commas(items) => items,
+            _ if value.ty.is_numeric() => {
+                self.error(
+                    "check::range_ends",
+                    "`range` takes its two ends, or `auto`",
+                    value.span,
+                    "one end",
+                )
+                .help = Some(
+                    "write both: `range: 0, 100`; `range: 0, auto` follows the values for the \
+                     top"
+                    .into(),
+                );
+                return;
+            }
+            _ => return,
+        };
+        if let [lo, hi] = ends.as_slice()
+            && let (Some(a), Some(b)) = (literal(lo), literal(hi))
+            && a >= b
+        {
+            self.error(
+                "check::range_ends",
+                "`range` runs from its lower end to its upper one",
+                value.span,
+                if a == b { "empty" } else { "reversed" },
+            )
+            .help = Some(if a == b {
+                "its two ends must differ".to_string()
+            } else {
+                format!("the lower end first: `range: {b}, {a}`")
+            });
         }
     }
 }
@@ -273,5 +324,58 @@ bar Top { edge: top; height: 30
             ],
             "{got:?}"
         );
+    }
+
+    /// (graph-follow) `range` on a slider, a meter, an arc and a graph,
+    /// and a graph's `style`, `line_width`, `gap` and lists of values,
+    /// colours and fills, check clean.
+    #[test]
+    fn ranges_and_graph_props_check() {
+        let src = r#"
+state level = 40.0
+bar Top { edge: top; height: 30
+  slider { value: <-> level; range: 0, 100 }
+  meter level { range: 0, auto }
+  meter cpu.usage { range: auto }
+  arc { value: level; range: 0, 100 }
+  graph cpu.usage { range: 0, 1; style: bars; line_width: 3; gap: 0 }
+  graph [cpu.usage, cpu.usage * 2] { color: #89b4fa, #f38ba8; fill: linear(180deg, #89b4fa, #89b4fa00), #f38ba855; style: steps }
+  graph cpu.cores { range: auto, 100; color: #a6e3a1 }
+}
+"#;
+        assert_eq!(codes(src), Vec::<(String, String)>::new());
+    }
+
+    /// (graph-follow) A `range` of one end, or of literal ends that do
+    /// not rise, is an error; a slider's ends are numbers (it writes
+    /// values between them), and a graph's `style` is one of its three.
+    #[test]
+    fn bad_ranges_and_graph_styles_are_errors() {
+        let src = r#"
+state level = 40.0
+bar Top { edge: top; height: 30
+  graph cpu.usage { range: 5 }
+  graph cpu.usage { range: 1, 0 }
+  meter level { range: 3, 3 }
+  slider { value: <-> level; range: 0, auto }
+  graph cpu.usage { style: wave }
+}
+"#;
+        let got = codes(src);
+        let ends: Vec<&str> = got
+            .iter()
+            .filter(|(c, _)| c == "check::range_ends")
+            .map(|(_, m)| m.as_str())
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                "`range` takes its two ends, or `auto`",
+                "`range` runs from its lower end to its upper one",
+                "`range` runs from its lower end to its upper one",
+            ],
+            "{got:?}"
+        );
+        assert_eq!(got.len(), 5, "and two type errors: {got:?}");
     }
 }

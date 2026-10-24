@@ -166,6 +166,7 @@ expect still #after
 | `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. (history) `"history:<key>"`: a kept series' points before the run (see "Replaying a glitch report"). |
 | `wall` | the mock's own time | (report) The wall time (RFC 3339 with its offset) virtual `T0` stands for; `clock` and local time follow it (`SchemaHost::mock_at`). |
 | `warmup` | 0 | (report) Ms run before the trace starts: painted, neither traced nor checked; the first traced frame repaints every surface. |
+| `boot` | 1 000 000 | (graph-follow) The boot clock's seconds at virtual `T0`: what kept history and a `graph`'s columns are timed on (a replay writes the live shell's at its window's start). |
 | `icons` | the config's `icons/` | (report) A flat icon folder used in place of it (inside `eval/` for a committed scenario). |
 | `[allow]` | none | `check = [{ node = "<selector>", why = "…" }]`. |
 | `[tolerance]` | `edge_px = 0.5`, `overshoot = 0.35`, `teleport_px = 32` | See Checks. |
@@ -2497,7 +2498,9 @@ work:
 5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
-   wall time, `[seed]` every service field and cell at the start
+   wall time, (graph-follow) `boot` the live boot clock then (from
+   `history.json`'s `boot_ns`, written with every report), `[seed]`
+   every service field and cell at the start
    (and (history) each kept series' points before it),
    `icons` the bundle's copy of the config's `icons/` folder, or, when
    the bundle copied theme icons under `files/`, both flattened into
@@ -2549,7 +2552,11 @@ capability, used by any scenario):
   series the config does not keep is skipped).
 - (history) A run's kept history and its graphs are timed on the run's
   own clock, not the machine's: the boot clock is virtual, 1 000 000 s
-  at `T0` and running with the scenario's time, never asleep. The
+  at `T0` (or the header's `boot`) and running with the scenario's
+  time, never asleep. (graph-follow) A `graph`'s columns are whole
+  periods of it, so a replay whose `boot` is the live shell's at its
+  window's start puts each value in the column the live shell did,
+  whatever its frames' times. The
   services' stand-ins sample as the live ones do: the polled builtins
   (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`) and a
   config's `from poll` services say they poll (`SchemaHost::set_polls`),
@@ -2558,6 +2565,8 @@ capability, used by any scenario):
   `T0` stands for; `clock` and local time follow it.
 - Header `warmup`: ms run before the trace starts. The warm-up's
   frames are painted but neither traced nor checked.
+- (graph-follow) Header `boot`: the boot clock's seconds at virtual
+  `T0` (see above).
 - Header `icons`: a flat icon folder used in place of the config's
   `icons/` (strand-icons' config folder).
 - `set <path> <JSON>`: a record, list or optional value written as

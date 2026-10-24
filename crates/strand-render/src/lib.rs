@@ -39,6 +39,7 @@ mod pose;
 pub mod probe;
 #[cfg(feature = "gpu")]
 pub mod promote;
+mod range;
 mod raster;
 mod renderer;
 mod shapes;

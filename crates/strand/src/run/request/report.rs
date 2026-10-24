@@ -206,8 +206,9 @@ impl Shell {
     /// (but one reading `auth`), its points as `[at, value, ramp]` (`at`
     /// on the boot clock, seconds; a `null` value starts a gap), with the
     /// boot clock at the report (`boot_ns`, read with `now_ns`), so the
-    /// replay seeds what each held before its window. `Null` when none
-    /// is kept.
+    /// replay seeds what each held before its window. (graph-follow)
+    /// `boot_ns` is written when nothing is kept too: the replay runs on
+    /// the live boot clock, so a graph's columns fall where they fell.
     fn history_table(&self) -> Json {
         let series: Vec<Json> = self
             .inst
@@ -234,9 +235,6 @@ impl Shell {
                 })
             })
             .collect();
-        if series.is_empty() {
-            return Json::Null;
-        }
         let boot = strand_scene::backlog::boot_now();
         json!({
             "boot_ns": u64::try_from(boot.as_nanos()).unwrap_or(u64::MAX),

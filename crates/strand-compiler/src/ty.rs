@@ -766,7 +766,12 @@ impl fmt::Display for ShowTy<'_> {
                     if i > 0 {
                         f.write_str(" | ")?;
                     }
-                    write!(f, "{}", show(t))?;
+                    // (graph-follow) A tuple among a union's members is
+                    // bracketed: `(float, float) | SizeKeyword`.
+                    match t {
+                        Ty::Tuple(_) => write!(f, "({})", show(t))?,
+                        _ => write!(f, "{}", show(t))?,
+                    }
                 }
                 Ok(())
             }

@@ -280,6 +280,14 @@ props! {
     Smooth = "smooth": Snap,
     Style = "style": Snap,
     History = "history": Snap,
+    /// (graph-follow) What a `slider`, `meter`, `arc` or `graph` reads
+    /// its value against: `range: 0, 100` (a `List` of two `Number`s, or
+    /// of a `Number` and `Keyword("auto")`), or `auto` (`Keyword`);
+    /// unset, 0 to 1.
+    Range = "range": Snap,
+    /// (graph-follow) A `graph`'s line width, or each bar's under
+    /// `style: bars`.
+    LineWidth = "line_width": Snap,
     Rate = "rate": Snap,
     Life = "life": Snap,
     Sprite = "sprite": Snap,
@@ -1250,6 +1258,10 @@ mod tests {
         ] {
             assert_eq!(p.name(), name);
         }
+        // (graph-follow) Written in source, and snapping.
+        assert_eq!(Prop::from_name("range"), Some(Prop::Range));
+        assert_eq!(Prop::from_name("line_width"), Some(Prop::LineWidth));
+        assert_eq!(Prop::Range.class(), PropClass::Snap);
         assert_eq!(Prop::Uniforms.class(), PropClass::Effects);
         assert_eq!(Prop::RowFirst.class(), PropClass::Snap);
 

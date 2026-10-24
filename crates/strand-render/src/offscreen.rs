@@ -669,6 +669,12 @@ pub struct RasterProps<'a> {
     /// (M4) Where a source's file jobs run (the image store's worker, or
     /// inline): `None` runs them inline.
     pub files: Option<&'a crate::image::ImageStore>,
+    /// (graph-follow) The frame being drawn on the boot clock, a tick
+    /// reached half a frame early (`Animator::frame_boot`): where a
+    /// `graph`'s columns fall.
+    pub boot: std::time::Duration,
+    /// (graph-follow) Time stands still in this frame (`reduced_motion`).
+    pub still: bool,
 }
 
 impl RasterProps<'_> {

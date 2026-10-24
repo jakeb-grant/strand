@@ -386,6 +386,11 @@ pub struct Scenario {
     /// (report) `warmup`: ms run before the trace starts; its frames are
     /// painted but neither traced nor checked.
     pub warmup: u64,
+    /// (graph-follow) `boot`: the boot clock's seconds at virtual `T0`
+    /// (a replay's: the live shell's at its window's start), what kept
+    /// history and a graph's columns are timed on;
+    /// [`crate::harness::HISTORY_BOOT`] when unset.
+    pub boot: Option<f64>,
     /// (report) `icons`: a flat icon folder used in place of the config's
     /// `icons/`.
     pub icons: Option<PathBuf>,
@@ -423,6 +428,7 @@ struct Header {
     seed: Option<BTreeMap<String, String>>,
     wall: Option<String>,
     warmup: Option<u64>,
+    boot: Option<f64>,
     icons: Option<String>,
 }
 
@@ -1041,6 +1047,14 @@ impl Scenario {
             }
             seed.push((path, json));
         }
+        if let Some(b) = h.boot
+            && !(b.is_finite() && b >= 0.0)
+        {
+            return Err(err(
+                hl("boot"),
+                format!("boot `{b}`: the boot clock's seconds, 0 or more"),
+            ));
+        }
         let wall = match &h.wall {
             Some(w) => Some(Wall::parse(w).map_err(|m| err(hl("wall"), m))?),
             None => None,
@@ -1099,6 +1113,7 @@ impl Scenario {
             seed,
             wall,
             warmup: h.warmup.unwrap_or(0),
+            boot: h.boot,
             icons,
             steps,
             source: text.to_string(),

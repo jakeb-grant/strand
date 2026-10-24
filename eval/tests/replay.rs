@@ -2162,6 +2162,10 @@ fn kept_history_from_before_the_window_is_seeded() {
     });
     let (_, p, text) = plan_of(&f.write("history"), &defaults());
     assert_eq!(p.start, 3 * S);
+    // (graph-follow) The replay runs on the live boot clock: 4973 s at
+    // its start, so its graphs' columns fall where the live shell's did.
+    assert_eq!(p.boot, Some(4973.0));
+    assert!(text.contains("\nboot = 4973.000000000\n"), "{text}");
     assert_eq!(
         p.seeds.get("history:long "),
         Some(&json!([
@@ -2208,6 +2212,8 @@ fn kept_history_from_before_the_window_is_seeded() {
         p.limits
     );
     // A bundle with no history.json seeds and limits nothing of it.
-    let (_, p, _) = plan_of(&Fx::session().write("no-history"), &defaults());
+    let (_, p, text) = plan_of(&Fx::session().write("no-history"), &defaults());
     assert!(!p.seeds.keys().any(|k| k.starts_with("history:")));
+    assert_eq!(p.boot, None);
+    assert!(!text.contains("\nboot = "), "{text}");
 }

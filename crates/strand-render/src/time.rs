@@ -71,6 +71,49 @@ impl NodeTimes {
         (cx, next)
     }
 
+    /// (graph-follow) [`NodeTimes::context`] of a clock that ticks at the
+    /// whole multiples of `period` on the boot clock
+    /// ([`crate::clock::Rate::Aligned`]): `offset` is the boot clock less
+    /// the presentation clock, in nanoseconds, so a frame at `frame` is
+    /// at `frame + offset` on it. `t` counts the periods begun since the
+    /// node's first painted frame (a tick reached `slack` early, as a
+    /// capped clock's), and the next tick is the next multiple's time on
+    /// the presentation clock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn aligned_context(
+        &mut self,
+        id: NodeId,
+        frame: Duration,
+        commit: bool,
+        frozen: bool,
+        period: Duration,
+        slack: Duration,
+        offset: i128,
+    ) -> (TimeContext, Option<Duration>) {
+        let p = period.as_nanos() as i128;
+        if frozen || p == 0 {
+            return self.context(id, frame, commit, frozen, Some(period), slack);
+        }
+        let (index, count) = letter(id);
+        let start = if commit {
+            *self.start.entry(id).or_insert(frame)
+        } else {
+            self.start.get(&id).copied().unwrap_or(frame)
+        };
+        let slack = slack.as_nanos() as i128;
+        let tick = |f: Duration| (f.as_nanos() as i128 + offset + slack).div_euclid(p);
+        let (now, first) = (tick(frame), tick(start));
+        let t = (now - first).max(0) * p;
+        let next = ((now + 1) * p - offset).max(0);
+        let ns = |n: i128| Duration::from_nanos(u64::try_from(n).unwrap_or(u64::MAX));
+        let cx = TimeContext {
+            t: ns(t).as_secs_f32(),
+            index,
+            count,
+        };
+        (cx, Some(ns(next)))
+    }
+
     /// Starts the clock of `id` at `frame` if it has none (its first
     /// painted frame that drew it).
     pub(crate) fn begin(&mut self, id: NodeId, frame: Duration) {
@@ -185,5 +228,40 @@ mod tests {
         );
         let (cx, _) = times.context(id(1), ms(1250), true, false, p, ms(8));
         assert_eq!(cx.t, 0.2);
+    }
+
+    /// (graph-follow) An aligned clock ticks at the period's multiples on
+    /// the boot clock, wherever its node first drew: two nodes started
+    /// 37 ms apart tick at the same frames.
+    #[test]
+    fn an_aligned_clock_ticks_on_the_boot_clocks_multiples() {
+        let mut times = NodeTimes::default();
+        let ms = Duration::from_millis;
+        // The boot clock 5 s 30 ms ahead of the presentation clock.
+        let offset = ms(5030).as_nanos() as i128;
+        let at = |times: &mut NodeTimes, n: u32, f: u64| {
+            times.aligned_context(id(n), ms(f), true, false, ms(100), ms(8), offset)
+        };
+        let (cx, next) = at(&mut times, 1, 1000);
+        assert_eq!(
+            (cx.t, next),
+            (0.0, Some(ms(1070))),
+            "6.1 s on the boot clock"
+        );
+        let (cx, next) = at(&mut times, 2, 1037);
+        assert_eq!((cx.t, next), (0.0, Some(ms(1070))), "the same next tick");
+        let (cx, _) = at(&mut times, 1, 1061);
+        assert_eq!(cx.t, 0.0, "too early");
+        for n in [1, 2] {
+            let (cx, next) = at(&mut times, n, 1063);
+            assert_eq!(
+                (cx.t, next),
+                (0.1, Some(ms(1170))),
+                "node {n}: the frame nearest"
+            );
+        }
+        // Frozen: as any clock.
+        let (cx, next) = times.aligned_context(id(1), ms(2000), true, true, ms(100), ms(8), offset);
+        assert_eq!((cx.t, next), (0.0, None));
     }
 }

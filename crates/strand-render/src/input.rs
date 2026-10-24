@@ -2204,7 +2204,9 @@ impl Router {
     }
 
     /// Moves `slider` to the pointer at `at` (its value from where `at`
-    /// falls along its track, 0 to 1) and writes it; `last` ends the drag.
+    /// falls along its track, 0 to 1) and writes it, in the slider's
+    /// `range` (graph-follow: `range: 0, 100` writes 0 to 100); `last`
+    /// ends the drag.
     fn drag_slider(
         &mut self,
         scene: &mut dyn InputScene,
@@ -2227,10 +2229,17 @@ impl Router {
             return;
         }
         scene.set_drag(slider, (!last).then_some(v));
+        let range = crate::range::Spec::of(
+            scene
+                .tree()
+                .and_then(|t| t.get(slider))
+                .and_then(|n| n.get(Prop::Range)),
+        )
+        .fixed();
         self.emit(Intent::Write {
             node: slider,
             prop: Prop::Value,
-            value: PropValue::Number(v),
+            value: PropValue::Number(range.at(v)),
         });
     }
 

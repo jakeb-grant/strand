@@ -51,6 +51,26 @@ pub enum Rate {
     Refresh,
     /// Once per period: a frame cap.
     Every(Duration),
+    /// (graph-follow) Once per period, at its whole multiples on the boot
+    /// clock (a `graph`'s columns): the same ticks whenever the node
+    /// first drew, so a live shell and its replay tick together
+    /// ([`boot_at`]).
+    Aligned(Duration),
+}
+
+/// (graph-follow) The boot clock at a time of the presentation clock: the
+/// clock kept history is timed on, and the one a `graph` lays its
+/// columns on (`crate::Renderer::set_history_clock`; a test or a replay
+/// passes its own).
+pub type BootClock = fn(Duration) -> Duration;
+
+/// (graph-follow) The real [`BootClock`]: the presentation clock is
+/// `CLOCK_MONOTONIC` (`wp_presentation`'s, `strand_scene::PaintTarget`),
+/// which runs as the boot clock does but for the time asleep, so a time
+/// of it is moved by what the boot clock is ahead of it now.
+pub fn boot_at(p: Duration) -> Duration {
+    let c = strand_scene::backlog::clocks();
+    (p + c.boot).saturating_sub(c.awake)
 }
 
 /// The clock of `node`, if it has one: a CPU raster node's at its
@@ -77,6 +97,10 @@ impl Rate {
     fn faster(self, other: Rate) -> Rate {
         match (self, other) {
             (Rate::Every(a), Rate::Every(b)) => Rate::Every(a.min(b)),
+            (Rate::Aligned(a), Rate::Aligned(b)) => Rate::Aligned(a.min(b)),
+            (Rate::Every(a) | Rate::Aligned(a), Rate::Every(b) | Rate::Aligned(b)) => {
+                Rate::Every(a.min(b))
+            }
             _ => Rate::Refresh,
         }
     }

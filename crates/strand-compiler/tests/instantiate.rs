@@ -5815,3 +5815,54 @@ fn auto_sizes_carry_their_transition() {
     assert_eq!(v, PropValue::Keyword("auto".into()));
     assert!(matches!(t, Transition::Duration { .. }), "{t:?}");
 }
+
+/// (graph-follow) A graph's and a meter's `range`, `style`, `line_width`
+/// and a list of values and colours reach the scene as render reads
+/// them: two ends as a list (`auto` a keyword), a list value as a list
+/// of numbers, a colour list as a list of colours.
+#[test]
+fn graph_and_range_props_reach_the_scene() {
+    let src = "state level = 40.0\nbar B {\n  graph [level, level * 2] { range: 0, auto; style: bars; line_width: 3; color: #89b4fa, #f38ba8 }\n  meter level { range: auto }\n  slider { value: <-> level; range: 0, 100 }\n}\n";
+    let shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let g = shell.scene.of_kind(NodeKind::Graph)[0];
+    let prop = |n: NodeId, p: Prop| shell.scene.prop(n, p).cloned();
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    assert_eq!(
+        prop(g, Prop::Value),
+        Some(PropValue::List(vec![
+            PropValue::Number(40.0),
+            PropValue::Number(80.0)
+        ]))
+    );
+    assert_eq!(
+        prop(g, Prop::Range),
+        Some(PropValue::List(vec![PropValue::Number(0.0), kw("auto")]))
+    );
+    assert_eq!(prop(g, Prop::Style), Some(kw("bars")));
+    assert!(
+        matches!(
+            prop(g, Prop::LineWidth),
+            Some(PropValue::Number(3.0) | PropValue::Length(strand_scene::Length::Px(3.0)))
+        ),
+        "{:?}",
+        prop(g, Prop::LineWidth)
+    );
+    assert!(
+        matches!(prop(g, Prop::Color), Some(PropValue::List(c)) if c.len() == 2
+            && c.iter().all(|c| matches!(c, PropValue::Color(_)))),
+        "{:?}",
+        prop(g, Prop::Color)
+    );
+    let m = shell.scene.of_kind(NodeKind::Meter)[0];
+    assert_eq!(prop(m, Prop::Range), Some(kw("auto")));
+    let s = shell.scene.of_kind(NodeKind::Slider)[0];
+    assert_eq!(
+        prop(s, Prop::Range),
+        Some(PropValue::List(vec![
+            PropValue::Number(0.0),
+            PropValue::Number(100.0)
+        ]))
+    );
+}

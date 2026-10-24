@@ -533,6 +533,8 @@ mod tests {
             color: Color::WHITE,
             parts: &[],
             files: None,
+            boot: std::time::Duration::ZERO,
+            still: false,
         };
         for _ in 0..3 {
             s.prepare(&props);

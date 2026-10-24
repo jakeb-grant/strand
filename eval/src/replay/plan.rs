@@ -216,6 +216,10 @@ pub struct Plan {
     /// mapping what the sandbox's boot maps at once. 0 otherwise.
     pub boot_until: u64,
     pub warmup_ms: u64,
+    /// (graph-follow) The live boot clock at the window's start, seconds
+    /// (`boot`): the replay's at `T0`, so its graphs' columns fall where
+    /// the live shell's fell. `None` for a bundle without it.
+    pub boot: Option<f64>,
     /// The traced part's length, ns before the report.
     pub traced_ns: u64,
     pub backend_both: bool,
@@ -678,11 +682,10 @@ fn history_seeds(b: &Bundle, start: u64, from_boot: bool) -> (Vec<(String, Json)
     let Some(series) = b.history["series"].as_array() else {
         return (seeds, limits);
     };
-    let Some(boot_ns) = b.history["boot_ns"].as_u64() else {
+    // The boot clock at the window's start, seconds.
+    let Some(at_start) = boot_at(b, start) else {
         return (seeds, limits);
     };
-    // The boot clock at the window's start, seconds.
-    let at_start = (boot_ns as f64 - b.now_ns.saturating_sub(start) as f64) / 1e9;
     for s in series {
         let (Some(key), Some(span_ms), Some(points)) = (
             s["key"].as_str(),
@@ -720,6 +723,14 @@ fn history_seeds(b: &Bundle, start: u64, from_boot: bool) -> (Vec<(String, Json)
         }
     }
     (seeds, limits)
+}
+
+/// (history, graph-follow) The live boot clock at `start`, seconds: the
+/// report's (`history.json`'s `boot_ns`, read with `now_ns`) less the
+/// time from `start` to the report.
+fn boot_at(b: &Bundle, start: u64) -> Option<f64> {
+    let boot_ns = b.history["boot_ns"].as_u64()?;
+    Some((boot_ns as f64 - b.now_ns.saturating_sub(start) as f64) / 1e9)
 }
 
 /// `90 s`, `2.5 s`.
@@ -2638,6 +2649,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         shared,
         boot_until,
         warmup_ms,
+        boot: boot_at(b, start),
         traced_ns,
         backend_both,
         compositor_poses,
@@ -2815,6 +2827,9 @@ impl Plan {
         let _ = writeln!(s, "fonts = \"local\"");
         let _ = writeln!(s, "wall = {}", toml_str(&self.wall(b)));
         let _ = writeln!(s, "warmup = {}", self.warmup_ms);
+        if let Some(boot) = self.boot {
+            let _ = writeln!(s, "boot = {boot:.9}");
+        }
         if self.backend_both {
             let _ = writeln!(s, "backend = \"both\"");
         }

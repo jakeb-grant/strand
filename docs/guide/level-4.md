@@ -87,8 +87,11 @@ what you write and `let` for what follows from it.
 
 `… ? … : …` picks one of two values: when `kind == volume`, the volume
 (or 0 while muted); otherwise the brightness. `meter level` draws it as
-a filled bar, and `text pct(level)` as a percentage in a fixed-width
-font, `4ch` wide, so the digits do not jump.
+a filled bar, empty at 0 and full at 1; a value with other ends takes a
+`range` (`meter memory.used { range: 0, memory.total }`), and
+`range: auto` scales the bar to what it showed in the last minute.
+`text pct(level)` draws it as a percentage in a fixed-width font, `4ch`
+wide, so the digits do not jump.
 
 ### The same with `match`
 

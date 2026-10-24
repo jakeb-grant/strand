@@ -38,6 +38,13 @@
 //! each time the ring gains a point while its scope is live (a frozen
 //! hidden panel's binding catches up when it is shown), so render fills
 //! the columns it did not sample itself.
+//!
+//! (graph-follow) A value that is a list (`graph cpu.cores`, `graph
+//! [net.rx, net.tx]`) is several series in one graph: each item keeps a
+//! ring of its own ([`Rings`]), its backlog is a `List` of each item's
+//! [`Backlog`], and [`HistoryInfo`] names each item's ring by the
+//! expression's key and its index (`…[1]`), so a glitch report and its
+//! replay keep and seed each item alike.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -97,6 +104,88 @@ struct Point {
 impl Point {
     fn gap(&self) -> bool {
         !self.v.is_finite()
+    }
+}
+
+/// (graph-follow) A series' rings: the one ring of a value that is a
+/// number, or one per item of a list. See the module docs.
+#[derive(Debug, Default)]
+pub(crate) struct Rings {
+    /// The value was a list when last recorded.
+    list: bool,
+    rings: Vec<Ring>,
+    span: Duration,
+}
+
+impl Rings {
+    fn new(span: Duration) -> Rings {
+        Rings {
+            list: false,
+            rings: vec![Ring::new(span)],
+            span,
+        }
+    }
+
+    fn respan(&mut self, span: Duration, now: f64) {
+        self.span = span;
+        for r in &mut self.rings {
+            r.respan(span, now);
+        }
+    }
+
+    /// Ring `i`, made (empty) when the list had fewer items.
+    fn ring(&mut self, i: usize) -> &mut Ring {
+        while self.rings.len() <= i {
+            self.rings.push(Ring::new(self.span));
+        }
+        &mut self.rings[i]
+    }
+
+    /// Keep `values` taken at `t` as [`Ring::push`] does: a number's one
+    /// value into the one ring, a list's items each into its own (an
+    /// item that is not a number, or one a shorter list no longer has,
+    /// starts a gap). `true` when a point was added.
+    fn push(&mut self, t: f64, values: &[f32], list: bool, polled: Option<Duration>) -> bool {
+        self.list = list;
+        let mut added = false;
+        for (i, v) in values.iter().enumerate() {
+            added |= if v.is_finite() {
+                self.ring(i).push(t, *v, polled)
+            } else {
+                self.ring(i).gap(t)
+            };
+        }
+        for r in self.rings.iter_mut().skip(values.len()) {
+            added |= r.gap(t);
+        }
+        added
+    }
+
+    fn gap(&mut self, t: f64) -> bool {
+        let mut news = false;
+        for r in &mut self.rings {
+            news |= r.gap(t);
+        }
+        news
+    }
+
+    /// The backlog of the last `span` before `now`: the one ring's, or a
+    /// `List` of each item's.
+    fn backlog(&self, span: Duration, now: f64) -> PropValue {
+        if self.list {
+            PropValue::List(
+                self.rings
+                    .iter()
+                    .map(|r| PropValue::Backlog(Arc::new(r.backlog(span, now))))
+                    .collect(),
+            )
+        } else {
+            PropValue::Backlog(Arc::new(
+                self.rings
+                    .first()
+                    .map_or_else(Backlog::default, |r| r.backlog(span, now)),
+            ))
+        }
     }
 }
 
@@ -507,14 +596,14 @@ fn key(prog: &Program, lets: &HashMap<DefId, ChunkId>, chunk: ChunkId, depth: u3
 /// One kept series.
 struct Series {
     want: Want,
-    ring: Rc<RefCell<Ring>>,
+    ring: Rc<RefCell<Rings>>,
     /// Bumped when the ring gains a point: mounted graphs' backlogs read
     /// it.
     version: Signal<u64>,
     recorder: Option<CoreId>,
     /// The backlogs made of this version, by `history`: graphs asking
     /// the same share one.
-    made: RefCell<Vec<(Duration, u64, Arc<Backlog>)>>,
+    made: RefCell<Vec<(Duration, u64, PropValue)>>,
 }
 
 /// Every kept series of an instance, across its reloads. See the module
@@ -657,7 +746,7 @@ impl Histories {
                     rt.set_name(version.id(), format!("history {k}"));
                     series.entry(k.clone()).or_insert(Series {
                         want: want.clone(),
-                        ring: Rc::new(RefCell::new(Ring::new(want.span))),
+                        ring: Rc::new(RefCell::new(Rings::new(want.span))),
                         version,
                         recorder: None,
                         made: RefCell::default(),
@@ -728,13 +817,13 @@ impl Histories {
         };
         let mut made = s.made.borrow_mut();
         if let Some((_, _, b)) = made.iter().find(|(d, v, _)| *d == span && *v == version) {
-            return PropValue::Backlog(b.clone());
+            return b.clone();
         }
         made.retain(|(_, v, _)| *v == version);
         let now = secs((self.clock.get())().boot);
-        let b = Arc::new(s.ring.borrow().backlog(span, now));
+        let b = s.ring.borrow().backlog(span, now);
         made.push((span, version, b.clone()));
-        PropValue::Backlog(b)
+        b
     }
 
     /// Series `key`'s version cell (what its backlog bindings read).
@@ -742,17 +831,22 @@ impl Histories {
         self.series.borrow().get(key).map(|s| s.version.id())
     }
 
-    /// What is kept now, by series ([`crate::instantiate::Instance::histories`]).
+    /// What is kept now, by series ([`crate::instantiate::Instance::histories`]):
+    /// (graph-follow) a list's items each as a series of its own, named
+    /// by the key and the item's index (`…[1]`).
     pub(crate) fn infos(&self) -> Vec<HistoryInfo> {
         let kept = self.kept.borrow();
         let now = secs((self.clock.get())().boot);
-        self.series
-            .borrow()
-            .iter()
-            .map(|(k, s)| {
-                let r = s.ring.borrow();
-                HistoryInfo {
-                    key: k.to_string(),
+        let mut out = Vec::new();
+        for (k, s) in self.series.borrow().iter() {
+            let rings = s.ring.borrow();
+            for (i, r) in rings.rings.iter().enumerate() {
+                out.push(HistoryInfo {
+                    key: if rings.list {
+                        format!("{k}[{i}]")
+                    } else {
+                        k.to_string()
+                    },
                     span: s.want.span,
                     services: s
                         .want
@@ -771,22 +865,37 @@ impl Histories {
                             ramp: p.ramp,
                         })
                         .collect(),
-                }
-            })
-            .collect()
+                });
+            }
+        }
+        out
     }
 
     /// Seed series `key`'s ring with `points`, oldest first (a glitch
     /// report's replay starting where the live shell was): they go
     /// before what it holds, those not older than its oldest dropped;
-    /// `false` for a series not kept.
+    /// `false` for a series not kept. (graph-follow) `key[i]`, as
+    /// [`Histories::infos`] names a list's items, seeds item `i`'s ring.
     pub(crate) fn seed(&self, rt: &Runtime, key: &str, points: &[BacklogPoint]) -> bool {
         let series = self.series.borrow();
-        let Some(s) = series.get(key) else {
-            return false;
+        let (s, item) = match series.get(key) {
+            Some(s) => (s, None),
+            None => {
+                let Some((base, i)) = item_key(key) else {
+                    return false;
+                };
+                let Some(s) = series.get(base) else {
+                    return false;
+                };
+                (s, Some(i))
+            }
         };
         {
-            let mut ring = s.ring.borrow_mut();
+            let mut rings = s.ring.borrow_mut();
+            if item.is_some() {
+                rings.list = true;
+            }
+            let ring = rings.ring(item.unwrap_or(0));
             let first = ring.points.front().map_or(f64::INFINITY, |p| p.t);
             let mut seeded: std::collections::VecDeque<Point> = points
                 .iter()
@@ -806,6 +915,14 @@ impl Histories {
         let _ = s.version.set(rt, n.wrapping_add(1));
         true
     }
+}
+
+/// (graph-follow) `key[i]`: the key of a series whose value is a list,
+/// and the item.
+fn item_key(key: &str) -> Option<(&str, usize)> {
+    let open = key.strip_suffix(']')?.rfind('[')?;
+    let i = key[open + 1..key.len() - 1].parse().ok()?;
+    Some((&key[..open], i))
 }
 
 /// (history) One kept series, as [`crate::instantiate::Instance::histories`]
@@ -850,16 +967,26 @@ fn recorder(
     let effect = rt
         .with_owner(scope.id(), |rt| {
             rt.effect(move |rt| {
-                // A value that fails or is not a number keeps nothing.
+                // A value that fails or is not a number (or a list, each
+                // item its own series) keeps nothing.
                 let Ok(v) = vm2.eval(rt, chunk, &env2) else {
                     return Ok(());
                 };
                 let types = &vm2.prog.types;
-                let Some(x) =
-                    super::convert::prop_value_for(types, SceneProp::Value, &ty, &v).as_number()
-                else {
-                    return Ok(());
-                };
+                let (xs, list) =
+                    match super::convert::prop_value_for(types, SceneProp::Value, &ty, &v) {
+                        PropValue::List(items) => (
+                            items
+                                .iter()
+                                .map(|i| i.as_number().unwrap_or(f32::NAN))
+                                .collect::<Vec<f32>>(),
+                            true,
+                        ),
+                        one => match one.as_number() {
+                            Some(x) => (vec![x], false),
+                            None => return Ok(()),
+                        },
+                    };
                 let polled = rt.untrack(|rt| {
                     let mut last = last.borrow_mut();
                     let mut polled: Option<Duration> = None;
@@ -877,7 +1004,7 @@ fn recorder(
                     return Ok(());
                 };
                 let t = h.observe(None);
-                let added = ring.borrow_mut().push(t, x, polled);
+                let added = ring.borrow_mut().push(t, &xs, list, polled);
                 if added {
                     let n = version.get_untracked(rt).unwrap_or(0);
                     let _ = version.set(rt, n.wrapping_add(1));

@@ -814,14 +814,15 @@ fn every_mutant_line_names_what_exists() {
 }
 
 /// (report) The header keys a replay writes: `[seed]` (JSON values),
-/// `wall` (RFC 3339 with its offset), `warmup` (ms) and `icons` (a
-/// folder, inside eval/ for a committed scenario); a mistake in each is
-/// an error at its line.
+/// `wall` (RFC 3339 with its offset), `warmup` (ms), (graph-follow)
+/// `boot` (the boot clock's seconds at its start) and `icons` (a folder,
+/// inside eval/ for a committed scenario); a mistake in each is an error
+/// at its line.
 #[test]
 fn the_replay_headers_parse() {
     let s = parse(
         "id = \"t\"\nwall = \"2026-10-20T14:03:07.250+02:00\"\nwarmup = 40000\n\
-         icons = \"../../fixtures/images\"\n\n[seed]\n\"mood.level\" = \"7\"\n\
+         boot = 4973.25\nicons = \"../../fixtures/images\"\n\n[seed]\n\"mood.level\" = \"7\"\n\
          \"shell.q\" = \"{\\\"~text\\\": 3}\"\n\"$accent\" = \"\\\"#ff0000\\\"\"\n\
          === shell.strand\nbar Top { height: 30 }\n=== steps\nrest\n",
     );
@@ -830,6 +831,7 @@ fn the_replay_headers_parse() {
     assert_eq!(w.unix.as_secs(), 1_792_497_787);
     assert_eq!(w.unix.subsec_millis(), 250);
     assert_eq!(s.warmup, 40_000);
+    assert_eq!(s.boot, Some(4973.25));
     assert_eq!(s.icons.unwrap(), eval_root().join("fixtures/images"));
     assert_eq!(
         s.seed,
@@ -841,7 +843,7 @@ fn the_replay_headers_parse() {
     );
     // Unset: none of them.
     let s = parse(MIN);
-    assert!(s.wall.is_none() && s.icons.is_none() && s.seed.is_empty());
+    assert!(s.wall.is_none() && s.icons.is_none() && s.seed.is_empty() && s.boot.is_none());
     assert_eq!(s.warmup, 0);
     let bad = |header: &str, want: &str| {
         let (line, msg) = fails(&format!(
@@ -852,6 +854,7 @@ fn the_replay_headers_parse() {
     };
     bad("wall = \"yesterday\"", "RFC 3339");
     bad("wall = \"2026-10-20T14:03:07\"", "RFC 3339");
+    bad("boot = -3.0", "0 or more");
     bad("[seed]\n\"shell.q\" = \"{not json\"", "is not JSON");
     bad("icons = \"/usr/share/icons\"", "outside eval/");
     bad("icons = \"${HOME}/icons\"", "only in eval/scenarios/local/");

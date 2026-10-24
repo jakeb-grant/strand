@@ -215,13 +215,18 @@ fn readme(s: &Schema) -> String {
 
 /// The group an element includes: every prop of the group is the
 /// element's, with the same type (the schema flattens a group's props
-/// into each element that names it).
+/// into each element that names it). (graph-follow) A prop the element
+/// refines (`graph`'s `color`, which takes a list too) is still there by
+/// name, and the section lists it as the element's own.
 fn includes<'a>(s: &'a Schema, name: &str, e: &ElementSchema) -> Vec<&'a str> {
     let mut groups: Vec<&str> = s
         .groups
         .iter()
         .filter(|(n, g)| {
-            *n != name && !g.props.is_empty() && g.props.iter().all(|p| e.prop(&p.name) == Some(p))
+            *n != name
+                && !g.props.is_empty()
+                && g.props.iter().all(|p| e.prop(&p.name).is_some())
+                && g.props.iter().any(|p| e.prop(&p.name) == Some(p))
         })
         .map(|(n, _)| n.as_str())
         .collect();
@@ -357,7 +362,16 @@ fn element_section(o: &mut String, s: &Schema, name: &str, e: &ElementSchema, gr
             .collect();
         let _ = writeln!(o, "Also every prop and event of {}.\n", links.join(" and "));
     }
-    let inherited = |p: &PropSchema| inc.iter().any(|g| s.groups[*g].prop(&p.name) == Some(p));
+    // (graph-follow) A prop the element gives a doc of its own (`graph`'s
+    // `gap`, between its bars) is its own too.
+    let inherited = |p: &PropSchema| {
+        inc.iter().any(|g| s.groups[*g].prop(&p.name) == Some(p))
+            && s.doc(&DocKey::Prop(name.into(), p.name.clone()))
+                .is_none_or(|d| {
+                    inc.iter()
+                        .any(|g| s.doc(&DocKey::Prop((*g).into(), p.name.clone())) == Some(d))
+                })
+    };
     let own: Vec<&PropSchema> = e.props.iter().filter(|p| !inherited(p)).collect();
     props_table(o, s, name, &own);
     let own_events: Vec<&str> = e

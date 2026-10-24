@@ -1039,7 +1039,11 @@ units).
   of a value tied to a list item, a component's parameter or `let`, an
   element's state or the animation clock, or whose `history` is not a
   constant (a literal, or a file-level `let` of one), shows what came
-  since it mounted (decisions.md history).
+  since it mounted (decisions.md history). A graph of a list keeps each
+  item's history as its own series, and a graph's columns are whole
+  periods of the boot clock, its `history` over its columns, so the
+  same values fall in the same columns whenever its frames come
+  (decisions.md graph-follow; section 14).
 
 ### 8.2 One tick, one diff
 
@@ -1123,6 +1127,9 @@ units).
   error. `<->` takes one expression, a place.
 - Writes through `<->` are not counted by the feedback throttle
   (section 8.7).
+- A widget with a `range` shows and writes its target in that range's
+  units: `slider { value: <-> brightness_percent; range: 0, 100 }`
+  writes 0 to 100 (decisions.md graph-follow; section 14).
 
 ### 8.6 Async values
 

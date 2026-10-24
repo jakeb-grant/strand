@@ -1025,6 +1025,8 @@ impl<'a> Flattener<'a> {
                         color: text_color,
                         parts: &parts,
                         files: Some(&self.extras.images),
+                        boot: self.anim.frame_boot(),
+                        still: self.anim.still(),
                     },
                 )
             }

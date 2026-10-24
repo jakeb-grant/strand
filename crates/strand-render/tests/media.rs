@@ -16,8 +16,15 @@ const S: SurfaceId = SurfaceId(1);
 const TOLERANCE: u8 = 2;
 const T0: Duration = Duration::from_secs(1);
 
-/// (history) The boot clock graphs read in these tests, seconds.
+/// (history) The boot clock graphs read in these tests, seconds: its
+/// time at `T0`.
 const BOOT: f64 = 500.0;
+
+/// (graph-follow) The boot clock at a presentation time in these tests:
+/// `BOOT` at `T0`, so 100 ms columns start at `ms(0)`, `ms(100)`, ….
+fn boot(p: Duration) -> Duration {
+    (p + Duration::from_secs_f64(BOOT)).saturating_sub(T0)
+}
 
 fn ms(n: u64) -> Duration {
     T0 + Duration::from_millis(n)
@@ -66,6 +73,7 @@ fn graph_scene() -> (Renderer, NodeId, Buffer) {
         ],
     );
     let mut r = renderer();
+    r.set_history_clock(boot);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     (r, g, Buffer::new(80, 40, Scale::ONE))
@@ -100,8 +108,8 @@ fn a_graph_keeps_its_history_and_draws_only_new_columns() {
         );
     }
     // A value change between ticks redraws only the newest column.
-    set(&mut r, g, Prop::Value, num(0.5));
     let before = r.graph_columns_drawn(g).unwrap();
+    set(&mut r, g, Prop::Value, num(0.5));
     buf.paint_at(&mut r, S, 1, ms(1130));
     assert_eq!(r.graph_columns_drawn(g).unwrap() - before, 1);
     assert_matches_ref("graph_history", &buf, TOLERANCE);
@@ -129,7 +137,7 @@ fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
             (Prop::Pad, num(5.0)),
         ],
     );
-    // Timed on a fixed boot clock: 500 s at every draw.
+    // Timed on the boot clock: 500 s at the first draw.
     let point = |age: f64, value, ramp| BacklogPoint {
         at: BOOT - age,
         value,
@@ -162,7 +170,7 @@ fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
         ],
     );
     let mut r = renderer();
-    r.set_history_clock(|| Duration::from_secs_f64(BOOT));
+    r.set_history_clock(boot);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(80, 40, Scale::ONE);
@@ -176,8 +184,8 @@ fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
     // Columns it samples itself are its own: a tick draws two.
     set(&mut r, g, Prop::Value, num(0.3));
     buf.paint_at(&mut r, S, 1, ms(100));
-    let before = r.graph_columns_drawn(g).unwrap();
     set(&mut r, g, Prop::Value, num(0.35));
+    let before = r.graph_columns_drawn(g).unwrap();
     buf.paint_at(&mut r, S, 1, ms(200));
     assert_eq!(r.graph_columns_drawn(g).unwrap() - before, 2);
 }
@@ -190,6 +198,313 @@ fn a_hidden_graph_has_no_clock() {
     set(&mut r, g, Prop::Opacity, num(0.0));
     settle(&mut r, &mut buf, 30);
     assert_eq!(r.next_wake(), None);
+}
+
+/// (graph-follow) A column of 60 × 24 graphs over 6 s (100 ms columns),
+/// one per entry of `each` (its props; `#89b4fa` unless it sets a
+/// colour), on a dark panel.
+fn graphs(each: &[Vec<(Prop, PropValue)>]) -> (Renderer, Vec<NodeId>, Buffer) {
+    let mut b = Builder::default();
+    let h = 10 + 30 * each.len() as u32;
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(76.0)),
+            (Prop::Height, num(h as f32)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Pad, num(8.0)),
+        ],
+    );
+    let col = b.node(NodeKind::Col, Some(root), vec![(Prop::Gap, num(6.0))]);
+    let ids = each
+        .iter()
+        .map(|props| {
+            let mut p = vec![
+                (Prop::Width, num(60.0)),
+                (Prop::Height, num(24.0)),
+                (Prop::History, PropValue::Duration(Duration::from_secs(6))),
+            ];
+            if !props.iter().any(|(q, _)| *q == Prop::Color) {
+                p.push((Prop::Color, color("#89b4fa")));
+            }
+            p.extend(props.iter().cloned());
+            b.node(NodeKind::Graph, Some(col), p)
+        })
+        .collect();
+    let mut r = renderer();
+    r.set_history_clock(boot);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    (r, ids, Buffer::new(76, h, Scale::ONE))
+}
+
+/// A wave between 0 and 1 over ticks.
+fn wave(k: u64) -> f32 {
+    0.5 + 0.4 * (k as f32 * 0.45).sin() * (k as f32 * 0.11).cos()
+}
+
+/// Paints 45 ticks of the graphs: `value(i, k)` set on graph `i` in the
+/// middle of tick `k` and painted, then the next tick painted with no
+/// change. Returns the most slots each drew at one paint after the
+/// first ticks.
+fn feed(
+    r: &mut Renderer,
+    ids: &[NodeId],
+    buf: &mut Buffer,
+    value: impl Fn(usize, u64) -> PropValue,
+) -> Vec<u64> {
+    let mut most = vec![0; ids.len()];
+    let drawn = |r: &Renderer| -> Vec<u64> {
+        ids.iter()
+            .map(|g| r.graph_columns_drawn(*g).unwrap_or(0))
+            .collect()
+    };
+    for k in 0..45u64 {
+        for (i, g) in ids.iter().enumerate() {
+            set(r, *g, Prop::Value, value(i, k));
+        }
+        for at in [100 * k + 50, 100 * k + 110] {
+            let before = drawn(r);
+            buf.paint_at(r, S, if at == 50 { 0 } else { 1 }, ms(at));
+            if k >= 2 {
+                for ((m, now), was) in most.iter_mut().zip(drawn(r)).zip(before) {
+                    *m = (*m).max(now - was);
+                }
+            }
+        }
+    }
+    most
+}
+
+fn list(items: impl IntoIterator<Item = PropValue>) -> PropValue {
+    PropValue::List(items.into_iter().collect())
+}
+
+fn kw(k: &str) -> PropValue {
+    PropValue::Keyword(k.into())
+}
+
+fn fade(angle: f32, from: &str, to: Color) -> PropValue {
+    PropValue::Paint(Paint::Linear {
+        angle,
+        stops: vec![
+            GradientStop {
+                offset: 0.0,
+                color: hex(from),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: to,
+            },
+        ],
+    })
+}
+
+/// (graph-follow) `style: line`, `steps` and `bars` (2 px bars 1 px
+/// apart, and 3 px bars with no gap), over the same values; each tick
+/// draws only its new slot and the last live one.
+#[test]
+fn a_graph_draws_as_a_line_steps_or_bars() {
+    let (mut r, ids, mut buf) = graphs(&[
+        vec![(Prop::Fill, color("#89b4fa44"))],
+        vec![
+            (Prop::Style, kw("steps")),
+            (Prop::Color, color("#a6e3a1")),
+            (Prop::Fill, color("#a6e3a144")),
+        ],
+        vec![(Prop::Style, kw("bars")), (Prop::Color, color("#f9e2af"))],
+        vec![
+            (Prop::Style, kw("bars")),
+            (Prop::Color, color("#f38ba8")),
+            (Prop::LineWidth, num(3.0)),
+            (Prop::Gap, num(0.0)),
+        ],
+    ]);
+    let drawn = feed(&mut r, &ids, &mut buf, |_, k| num(wave(k)));
+    assert_eq!(drawn, [2, 2, 2, 2], "only the new slots repaint");
+    assert_matches_ref("graph_styles", &buf, TOLERANCE);
+}
+
+/// (graph-follow) `range`: fixed (`0, 100`, a value past it drawn at
+/// the top), `auto` (fitted on the 1, 2, 5 ladder), `50, auto` and `auto`
+/// over values below zero. A value that grows an auto range redraws
+/// every column; one that fits it, only the new ones.
+#[test]
+fn a_graph_reads_its_values_against_its_range() {
+    let (mut r, ids, mut buf) = graphs(&[
+        vec![(Prop::Range, list([num(0.0), num(100.0)]))],
+        vec![(Prop::Range, kw("auto"))],
+        vec![(Prop::Range, list([num(50.0), kw("auto")]))],
+        vec![(Prop::Range, kw("auto")), (Prop::Fill, color("#89b4fa44"))],
+    ]);
+    let drawn = feed(&mut r, &ids, &mut buf, |i, k| {
+        let w = wave(k);
+        num(match i {
+            0 => 130.0 * w,
+            1 => 300.0 + 500.0 * w,
+            2 => 55.0 + 40.0 * w,
+            _ => -3.0 + 7.0 * w,
+        })
+    });
+    assert_eq!(drawn, [2, 2, 2, 2]);
+    assert_matches_ref("graph_range", &buf, TOLERANCE);
+    // Past the auto top: it grows at once, and every column is drawn
+    // against it.
+    let before = r.graph_columns_drawn(ids[1]).unwrap();
+    set(&mut r, ids[1], Prop::Value, num(4000.0));
+    buf.paint_at(&mut r, S, 1, ms(4520));
+    assert_eq!(r.graph_columns_drawn(ids[1]).unwrap() - before, 60);
+}
+
+/// (graph-follow) A gradient `fill` is drawn as written: a fade from the
+/// line down to nothing (straight down, so kept columns still move), and
+/// one across the box (drawn whole at each tick); `line_width` 3 and
+/// 0.5 (a pixel at least).
+#[test]
+fn a_graph_draws_a_gradient_fill_and_its_line_width() {
+    let accent = hex("#89b4fa");
+    let (mut r, ids, mut buf) = graphs(&[
+        vec![(Prop::Fill, fade(180.0, "#89b4fa", accent.with_alpha(0.0)))],
+        vec![
+            (Prop::Color, color("#ffffff")),
+            (Prop::Fill, fade(90.0, "#f38ba8", hex("#89b4fa"))),
+        ],
+        vec![(Prop::LineWidth, num(3.0))],
+        vec![(Prop::LineWidth, num(0.5))],
+    ]);
+    let drawn = feed(&mut r, &ids, &mut buf, |_, k| num(wave(k)));
+    assert_eq!(drawn, [2, 60, 2, 2], "a fill across the box draws it whole");
+    assert_matches_ref("graph_fill", &buf, TOLERANCE);
+    // The fade: stronger under the line than at the bottom, where the
+    // panel all but shows through.
+    let rect = r.boxes(S).unwrap().rects[&ids[0]];
+    let at = |y: f32| buf.px(rect.x as u32 + 58, (rect.y + y) as u32)[0];
+    let (mid, bottom) = (at(16.0), at(rect.h - 1.0));
+    assert!(mid > bottom + 20, "{mid} over {bottom}");
+    assert!(bottom.abs_diff(0x2e) <= 8, "{bottom}");
+}
+
+/// (graph-follow) A list value is several series, drawn over one another
+/// against one range, the first at the back: two lines with a colour and
+/// a fill each, three series over two colours (taken in turn), two bars
+/// overlaid, and steps under one colour for both.
+#[test]
+fn a_graph_draws_several_series() {
+    let (mut r, ids, mut buf) = graphs(&[
+        vec![
+            (Prop::Color, list([color("#89b4fa"), color("#f38ba8")])),
+            (Prop::Fill, list([color("#89b4fa33"), color("#f38ba833")])),
+        ],
+        vec![(Prop::Color, list([color("#a6e3a1"), color("#f9e2af")]))],
+        vec![
+            (Prop::Style, kw("bars")),
+            (Prop::Color, list([color("#89b4fa"), color("#f38ba8")])),
+        ],
+        vec![(Prop::Style, kw("steps")), (Prop::Color, color("#cba6f7"))],
+    ]);
+    let drawn = feed(&mut r, &ids, &mut buf, |i, k| {
+        let (a, b) = (wave(k), wave(k + 9));
+        match i {
+            1 => list([num(a), num(b), num(0.5 * (a + b))]),
+            2 => list([num(0.5 * (a + b)), num(0.5 * b)]),
+            _ => list([num(a), num(b)]),
+        }
+    });
+    assert_eq!(drawn, [2, 2, 2, 2]);
+    assert_matches_ref("graph_series", &buf, TOLERANCE);
+}
+
+/// (graph-follow) A graph's columns are whole periods of the boot clock:
+/// two shells drawing the same values, one at 60 Hz from its mount and
+/// one at 24 Hz from 23 ms later, draw the same columns, the steps in
+/// the same places. (Columns timed from each one's first frame put them
+/// a pixel apart, as a replay drew them before.)
+#[test]
+fn a_graphs_columns_fall_on_the_boot_clock_whatever_its_frames() {
+    let changes = [
+        (0u64, 0.2f32),
+        (250, 0.7),
+        (730, 0.4),
+        (1180, 0.9),
+        (1640, 0.1),
+        (2050, 0.5),
+    ];
+    let value = |at: u64| {
+        changes
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= at)
+            .map_or(0.0, |c| c.1)
+    };
+    let draw = |period: u64, first: u64| {
+        let (mut r, ids, mut buf) = graphs(&[vec![(Prop::Fill, color("#89b4fa55"))]]);
+        let mut at = first;
+        while at < 2500 {
+            set(&mut r, ids[0], Prop::Value, num(value(at)));
+            buf.paint_at(&mut r, S, if at == first { 0 } else { 1 }, ms(at));
+            at += period;
+        }
+        set(&mut r, ids[0], Prop::Value, num(value(2500)));
+        buf.paint_at(&mut r, S, 1, ms(2500));
+        buf
+    };
+    let (a, b) = (draw(16, 0), draw(41, 23));
+    let diff = a
+        .to_rgba()
+        .iter()
+        .zip(b.to_rgba())
+        .filter(|(x, y)| **x != *y)
+        .count();
+    assert_eq!(diff, 0, "the same columns");
+}
+
+/// (graph-follow) A frame with no clock (time zero, as a shell's first
+/// can be) stands nowhere on the boot clock, so it places no columns: a
+/// graph whose first frame had none draws, from its first frame with a
+/// clock, what one whose first frame had a clock draws. (Placed at the
+/// boot clock's time zero, the ticks from it to the next frame were each
+/// filled with the value: the e2e report's live shell drew a flat line
+/// across a graph 3 s old that its replay did not.)
+#[test]
+fn a_frame_with_no_clock_places_no_columns() {
+    let draw = |clockless: bool| {
+        let (mut r, ids, mut buf) = graphs(&[vec![(Prop::Fill, color("#89b4fa55"))]]);
+        set(&mut r, ids[0], Prop::Value, num(0.3));
+        if clockless {
+            buf.paint_at(&mut r, S, 0, Duration::ZERO);
+        }
+        let mut at = 0;
+        while at <= 400 {
+            if at == 256 {
+                set(&mut r, ids[0], Prop::Value, num(0.8));
+            }
+            let age = u8::from(at > 0 || clockless);
+            buf.paint_at(&mut r, S, age, ms(at));
+            at += 16;
+        }
+        buf
+    };
+    let (a, b) = (draw(true), draw(false));
+    // The columns the line lights: the graph is 60 px from x 8, rows 8
+    // to 32, its line #89b4fa over #1e1e2e.
+    let lit = |buf: &Buffer| {
+        (8..68)
+            .filter(|&x| (8..32).any(|y| buf.px(x, y)[0] > 0x90))
+            .count()
+    };
+    assert!(
+        (1..=8).contains(&lit(&b)),
+        "a graph 400 ms old shows a few columns, not {}",
+        lit(&b)
+    );
+    let diff = a
+        .to_rgba()
+        .iter()
+        .zip(b.to_rgba())
+        .filter(|(x, y)| **x != *y)
+        .count();
+    assert_eq!(diff, 0, "the same columns");
 }
 
 const STYLES: [&str; 4] = ["bars", "mirror", "wave", "line"];

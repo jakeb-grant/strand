@@ -587,3 +587,63 @@ fn a_seeded_history_reaches_the_graph() {
     let values: Vec<(f64, f32)> = replay.points(g).iter().map(|p| (p.0, p.1)).collect();
     assert_eq!(values, [(10.0, 0.1), (9.0, 0.3), (8.0, 0.5), (0.0, 0.1)]);
 }
+
+/// (graph-follow) A graph of a list keeps a history per item: its
+/// backlog is a list of each item's, a glitch report names each item's
+/// series by the key and its index, and a replay seeds an item by that
+/// name.
+#[test]
+fn a_list_graph_keeps_a_history_per_series() {
+    let src = "
+state open = true
+bar Top {
+  edge: top; height: 40
+  text \"island\"
+  popup { open: <-> open; graph [cpu.usage, cpu.usage * 2] { history: 60s } }
+}
+";
+    let mut shell = boot(&[("shell.strand", src)]);
+    shell.cpu(1.0, 0.3);
+    shell.open(2.0, false);
+    shell.cpu(6.0, 0.4);
+    shell.open(7.0, true);
+    let g = shell.graphs()[0];
+    let Some(PropValue::List(items)) = shell.scene.prop(g, Prop::Backlog).cloned() else {
+        panic!("a list of backlogs");
+    };
+    let values = |b: &PropValue| -> Vec<f32> {
+        match b {
+            PropValue::Backlog(b) => b.points.iter().map(|p| p.value).collect(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(values(&items[0]), [0.1, 0.3, 0.4]);
+    assert_eq!(values(&items[1]), [0.2, 0.6, 0.8]);
+    let h = shell.histories();
+    assert_eq!(h.len(), 2, "{h:?}");
+    assert!(
+        h[0].key.ends_with("[0]") && h[1].key.ends_with("[1]"),
+        "{h:?}"
+    );
+    assert_eq!(
+        h[0].key.trim_end_matches("[0]"),
+        h[1].key.trim_end_matches("[1]")
+    );
+    assert_eq!(h[1].points, 3);
+    // A replay seeds the second item alone.
+    let mut replay = boot(&[("shell.strand", src)]);
+    let seed = [BacklogPoint {
+        at: T0 - 5.0,
+        value: 0.7,
+        ramp: 0.0,
+    }];
+    assert!(replay.inst.seed_history(&h[1].key, &seed));
+    replay.flush();
+    let g = replay.graphs()[0];
+    let Some(PropValue::List(items)) = replay.scene.prop(g, Prop::Backlog).cloned() else {
+        panic!("a list of backlogs");
+    };
+    assert_eq!(values(&items[0]), [0.1]);
+    assert_eq!(values(&items[1]), [0.7, 0.2]);
+}

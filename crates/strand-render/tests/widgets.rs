@@ -180,6 +180,122 @@ fn button_meter_slider_and_segmented() {
     assert_matches_ref("widgets_controls", &buf, TOLERANCE);
 }
 
+/// (graph-follow) `range` on a slider, meters and an arc: a value is
+/// drawn as its place between the two ends (`range: 0, 100` at 40 is
+/// 40 % along), one past an end at that end, and `range: 0, auto` fits
+/// the values shown on the 1, 2, 5 ladder (37 of 50).
+struct Ranged {
+    slider: NodeId,
+    meter: NodeId,
+    over: NodeId,
+    auto: NodeId,
+}
+
+fn ranged(b: &mut Builder) -> Ranged {
+    let col = panel(b, 220.0, 170.0);
+    let range = |lo: f32, hi: f32| PropValue::List(vec![num(lo), num(hi)]);
+    let meter = |b: &mut Builder, value: f32, range: PropValue| {
+        b.node(
+            NodeKind::Meter,
+            Some(col),
+            vec![
+                (Prop::Width, num(200.0)),
+                (Prop::Height, num(6.0)),
+                (Prop::Value, num(value)),
+                (Prop::Range, range),
+            ],
+        )
+    };
+    let slider = b.node(
+        NodeKind::Slider,
+        Some(col),
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Value, num(40.0)),
+            (Prop::Range, range(0.0, 100.0)),
+            (Prop::TwoWay, PropValue::List(vec![kw("value")])),
+        ],
+    );
+    let ranged = Ranged {
+        slider,
+        meter: meter(b, 150.0, range(100.0, 200.0)),
+        over: meter(b, 300.0, range(0.0, 200.0)),
+        auto: meter(b, 37.0, PropValue::List(vec![num(0.0), kw("auto")])),
+    };
+    b.node(
+        NodeKind::Arc,
+        Some(col),
+        vec![
+            (Prop::Size, num(48.0)),
+            (Prop::Width, num(5.0)),
+            (Prop::Value, num(75.0)),
+            (Prop::Range, range(0.0, 100.0)),
+        ],
+    );
+    ranged
+}
+
+#[test]
+fn a_ranged_slider_meter_and_arc() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let c = ranged(&mut b);
+    let (_, mut buf) = show(&mut r, b.diff);
+    repaint(&mut r, &mut buf);
+    let boxes = r.boxes(SurfaceId(1)).unwrap().rects.clone();
+    let accent = [0xf7, 0xa2, 0x7a, 0xff];
+    let at = |n: NodeId, fx: f32| {
+        let b = boxes[&n];
+        buf.px((b.x + b.w * fx) as u32, (b.y + b.h / 2.0) as u32)
+    };
+    // The slider: 40 of 0 to 100.
+    assert_eq!(at(c.slider, 0.36), accent);
+    assert_ne!(at(c.slider, 0.46), accent);
+    // 150 of 100 to 200 is half; 300 of 0 to 200 is full.
+    assert_eq!(at(c.meter, 0.45), accent);
+    assert_ne!(at(c.meter, 0.55), accent);
+    assert_eq!(at(c.over, 0.98), accent);
+    // `0, auto`: 37 of 0 to 50.
+    assert_eq!(at(c.auto, 0.7), accent);
+    assert_ne!(at(c.auto, 0.78), accent);
+    assert_matches_ref("widgets_ranged", &buf, TOLERANCE);
+}
+
+/// (graph-follow) A slider with `range: 0, 100` dragged writes values in
+/// its range: a press a quarter along writes 25, a drag past the end
+/// 100.
+#[test]
+fn a_ranged_slider_writes_in_its_range() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let c = ranged(&mut b);
+    let (root, _buf) = show(&mut r, b.diff);
+    let mut router = Router::new();
+    let s = SurfaceId(1);
+    router.attached(s, root);
+    let sb = r.boxes(s).unwrap().rects[&c.slider];
+    let y = sb.y + sb.h / 2.0;
+    let (x0, x1) =
+        strand_render::widgets::slider_span(sb.x as f64, (sb.x + sb.w) as f64, true, 1.0);
+    let x_of = |v: f32| (x0 + v as f64 * (x1 - x0)) as f32;
+    let mut out = router.handle(&press(s, x_of(0.25), y, ButtonState::Pressed), &mut r);
+    assert_eq!(
+        r.widgets().drags.get(&c.slider),
+        Some(&0.25),
+        "where it is drawn"
+    );
+    out.extend(router.handle(&motion(s, sb.x + sb.w + 50.0, y), &mut r));
+    out.extend(router.handle(&press(s, x_of(0.5), y, ButtonState::Released), &mut r));
+    let v: Vec<f32> = writes(&out, c.slider)
+        .iter()
+        .map(|v| v.as_number().unwrap())
+        .collect();
+    assert_eq!(v.len(), 3);
+    for (got, want) in v.iter().zip([25.0, 100.0, 50.0]) {
+        assert!((got - want).abs() < 1e-3, "{v:?}");
+    }
+}
+
 /// A meter's `value` springs (the OSD's level glides); a frame mid-way
 /// shows it between the two values.
 #[test]

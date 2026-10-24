@@ -126,7 +126,8 @@ Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `value` | `float` | The fraction filled, 0 to 1. |
+| `value` | `float` | How full it is, in `range` (0 to 1 when unset); a value outside it is drawn at its nearer end. |
+| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its ends stand for, as a `meter`'s: `range: 0, 100`, `range: auto` (0 to 1 when unset). |
 | `sweep` | `angle` | The angle of the whole arc. |
 | `track` | `paint` | The paint of the unfilled part. |
 
@@ -259,7 +260,7 @@ It takes no children.
 ### `graph`
 
 ```strand
-element graph(float -> value): node
+element graph(float | [float] -> value): node
 ```
 
 A sparkline with its own history: `graph cpu.usage { history: 60s }`.
@@ -270,7 +271,12 @@ service field, or an expression over service fields, file-level
 tied to a list item, a component's parameter or `let`, an element's
 state or the animation clock, or with a `history` that is not a
 constant (a literal, or a file-level `let` of one), what came since
-it mounted.
+it mounted. A list is several series in one graph, each with its own
+history, drawn over one another against one `range`, the first at the
+back: `graph cpu.cores`, `graph [cpu.usage, memory.usage] { color:
+$accent, $tertiary }`. Its columns are whole periods of the boot
+clock, the same columns wherever and whenever it is drawn, and its
+value does not spring: `smooth` eases it.
 
 It takes no children.
 
@@ -279,7 +285,12 @@ Also every prop and event of [`node`](#node).
 | Prop | Type | |
 | --- | --- | --- |
 | `history` | `duration` | How much history it keeps and shows (60 s when unset). |
-| `fill` | `paint` | The paint under the line. |
+| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its bottom and top stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) fits what it shows, on a 1, 2, 5 ladder, growing at once and narrowing only once the values shown fit four fifths of a smaller step (0 to 1 when unset). A value outside a fixed range is drawn at its nearer end. |
+| `style` | `GraphStyle` | `line` (a line through its values), `steps` (each value held flat across its column, snapped to whole pixels, with square risers) or `bars` (a bar per value, `line_width` wide and `gap` apart). |
+| `color` | `color \| [color]` | The line's colour, or a list, one per series (taken in turn when there are more series than colours). |
+| `fill` | `paint \| [paint]` | The paint under the line, laid over the graph's box (a gradient fades as written: `linear(180deg, $accent.alpha(0.4), $accent.alpha(0))`), or a list, one per series; under `style: bars`, the bars' own paint. |
+| `line_width` | `length` | The line's width (1.5 px when unset); under `style: bars`, each bar's (2 px when unset). |
+| `gap` | `length` | Under `style: bars`, the space between bars (1 px when unset). |
 | `smooth` | `float` | Smoothing, 0 to 1. |
 
 ### `grid`
@@ -431,7 +442,8 @@ Also every prop and event of [`node`](#node).
 element meter(float -> value): node
 ```
 
-A bar filled to a fraction: `meter level`.
+A bar filled to its value: `meter level`, `meter memory.used {
+range: 0, memory.total }`.
 
 It takes no children.
 
@@ -439,7 +451,8 @@ Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `value` | `float` | The fraction filled, 0 to 1. |
+| `value` | `float` | How full it is, in `range` (0 to 1 when unset); a value outside it is drawn at its nearer end. |
+| `range` | `(float \| SizeKeyword, float \| SizeKeyword) \| SizeKeyword` | The values its ends stand for: `range: 0, 100`; `auto` (or `auto` for one end, `range: 0, auto`) follows the values it showed in the last minute, on a 1, 2, 5 ladder (0 to 1 when unset). |
 | `track` | `paint` | The paint of the unfilled part. |
 | `wave` | `float` | A wavy fill's amplitude; 0 is flat: `wave: media.playing ? 3 : 0`. |
 
@@ -498,86 +511,22 @@ Also every prop and event of [`surface`](#surface).
 ### `particles`
 
 ```strand
-element particles
+element particles: node
 ```
 
 Particles: `particles { rate: 20; life: 1.2s; sprite: dot(3) }`.
 
 It takes no children.
 
+Also every prop and event of [`node`](#node).
+
 | Prop | Type | |
 | --- | --- | --- |
-| `id` | `Node` | Names the element, so others read its state (`results.selected`) and keys route to it (`nav: results`). |
-| `width` | `length \| SizeKeyword` | Its width: logical pixels, or `40%` of the parent; `auto` (as unset) sizes it by what it holds, and takes a transition there (`width: auto ~ instant`). |
-| `height` | `length \| SizeKeyword` | Its height: logical pixels, or a percentage of the parent; `auto` as for `width`. |
-| `min_width` | `length` | The smallest width it takes. |
-| `min_height` | `length` | The smallest height it takes. |
-| `max_width` | `length` | The largest width it takes. |
-| `max_height` | `length` | The largest height it takes: `max_height: 420`. |
-| `size` | `length \| SizeKeyword` | Its width and height at once: `size: 8`; `auto` as for `width`. |
-| `grow` | `float` | Its share of the space left in its row or column: `grow: 1`. |
-| `shrink` | `float` | How much it gives up when its row or column is too small: `shrink: 0` keeps its size (default 1). |
-| `justify` | `Justify` | How its children share the main axis: `justify: space_between`. |
-| `pad` | `insets` | Space inside its edge: one to four values (`pad: 0, $space.3`). |
-| `margin` | `insets` | Space outside its edge: one to four values. |
-| `gap` | `length` | Space between its children: `gap: $space.2`. |
-| `align` | `Align` | Alignment of its children on the cross axis, or of a text's lines. |
-| `place` | `Place` | `absolute` takes it out of the flow, placed by `x` and `y`. |
-| `stagger` | `duration` | Delays each child's `enter` this much after the one before. |
-| `x` | `length` | Horizontal offset; paint-only. |
-| `y` | `length` | Vertical offset; paint-only. |
-| `scale` | `float` | Scale about its centre; paint-only. |
-| `rotate` | `angle` | Rotation about its centre; paint-only: `rotate: t * 20deg`. |
-| `opacity` | `float` | Opacity, 0 to 1; paint-only. |
-| `bg` | `paint` | Background paint: a colour or a gradient. |
-| `color` | `color` | Inherited. Text and icon colour, inherited by every descendant. |
-| `font` | `font` | Inherited. Font, inherited by every descendant: `"Inter" 13px 500`, `$font.ui`. |
-| `weight` | `int` | Inherited. Font weight, inherited by every descendant: `weight: 600`. |
-| `radius` | `corners \| RadiusKeyword` | Corner radii: one value, four (`14, 14, 0, 0`), or `full` for a pill. |
-| `corners` | `CornerStyle` | `squircle` for smooth corners. |
-| `border` | `length, paint` | A border of a width and a paint: `border: 1, $border`. A gradient's angle may animate; only the ring repaints. |
-| `shadow` | `shadow` | Drop shadows: `0 2px 8px $shadow.alpha(0.25)`, comma-separated. |
-| `inner_shadow` | `shadow` | A shadow inside its edge. |
-| `blur` | `length` | Blur behind it, done by the compositor: `blur: 24`. |
-| `blur_fallback` | `BlurFallback` | What to draw when the compositor cannot blur. |
-| `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
-| `clip` | `bool` | Clips its children to its rounded shape. |
-| `hit` | `HitArea \| HitKeyword` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
-| `tooltip` | `text` | A tooltip shown on hover. |
-| `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
-| `blend` | `Blend` | How it blends with what is below it. |
-| `mask` | `Mask` | Masks its subtree: `fade(bottom, 24)`, `radial(…)`, `shape(cookie)`. |
-| `rim` | `Edge, color` | A lit edge: `rim: top, $fg.alpha(0.15)`. |
-| `grain` | `float` | Film grain: `grain: 0.04`. |
-| `morph` | `text` | A shared-element name: nodes with the same `morph` morph into each other across surfaces (`morph: "media"`). |
-| `jelly` | `float` | Squash and stretch while dragged: `jelly: 0.4`. |
-| `parallax` | `length` | Moves with the pointer, up to this far: `parallax: 6px`. |
-| `tilt` | `angle` | Tilts toward the pointer, up to this angle: `tilt: 8deg`. |
-| `shape` | `Shape` | A shape from the shape library; a change morphs by spring. |
-| `stroke` | `length, paint` | An outline of a width and a paint, with styles: `stroke: 3, $accent { trim: 0, progress; cap: round }`. |
-| `stroke.trim` | `float, float` | The part drawn: from a start to an end fraction. |
-| `stroke.wave` | `float, length` | A wavy stroke: its amplitude and wavelength. |
-| `stroke.cap` | `Cap` | The line caps. |
-| `stroke.dash` | `length, length` | Dash and gap lengths. |
-| `enter` | `Pose \| PoseName` | The pose it enters from: `enter { opacity: 0 }`, `popin(0.8)`, `slide(top)`, `fade` or `slidefade`. `exit` mirrors it unless given. |
-| `exit` | `Pose \| PoseName` | The pose it leaves by; the subtree unmounts once it has played. |
-| `transition` | `SwapTransition \| SwapKind` | How its content swaps on `if`, `pages` and image changes: `wipe(left)`, `disc`, `dissolve` or `pixelate`; `none` for no mask. |
-| `drag` | `any` | Makes it a drag source carrying this value: `drag: pin`. |
 | `rate` | `float` | Particles per second. |
 | `life` | `duration` | How long each particle lives. |
 | `sprite` | `Sprite` | What each particle looks like: `dot(3)`. |
 | `glow` | `length` | The particles' glow radius. |
 | `speed` | `float` | How fast the particles move. |
-
-| Event | |
-| --- | --- |
-| `on click` | A primary click. |
-| `on secondary` | A secondary (right) click. |
-| `on middle` | A middle click. |
-| `on scroll(dy: float, dx: float)` | A scroll: `on scroll(dy) { … }`. |
-| `on drop(value: any, at: int)` | Something was dropped on it: a `drag:` source's value or a `Drop` from another program, and the index it landed at. |
-| `on key(key: Key)` | A key press while it has focus. |
-| `on activate` | It was chosen: clicked, Enter while selected in a `list`, or Enter in an `input` with no `nav:` list. |
 
 ### `popup`
 
@@ -657,7 +606,9 @@ Also every prop and event of [`node`](#node).
 element slider: node
 ```
 
-A slider: `slider { value: <-> audio.sink.volume }`.
+A slider: `slider { value: <-> audio.sink.volume }`. Dragged, it
+writes values in its `range`: `slider { value: <-> percent; range: 0,
+100 }`.
 
 It takes no children.
 
@@ -665,7 +616,8 @@ Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `value` | `<-> float` | Its value, 0 to 1, bound two-way. |
+| `value` | `<-> float` | Its value, in `range` (0 to 1 when unset), bound two-way; a value outside it is drawn at its nearer end. |
+| `range` | `float, float` | The values its ends stand for: `range: 0, 100` (0 to 1 when unset). A drag writes values between them. |
 | `track` | `paint` | The paint of the unfilled track. |
 
 ### `spacer`

@@ -506,6 +506,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `EffectKind` | `lightning`, `sparks`, `shimmer`, `ripple`, `aurora` |
 | `Ellipsis` | `none`, `start`, `middle`, `end` |
 | `Fit` | `cover`, `contain`, `fill`, `none` |
+| `GraphStyle` | `line`, `steps`, `bars` |
 | `HitKeyword` | `none` |
 | `InputKind` | `text`, `password`. What an `input` holds: `type: password` masks it (docs/grammar.md). |
 | `Instant` | `instant` |

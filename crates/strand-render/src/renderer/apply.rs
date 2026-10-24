@@ -410,7 +410,8 @@ impl Renderer {
                 }
                 let root = self.tree.root_of(*id);
                 let animates = !reduced && self.shown(root) && !self.lists.still.contains(id);
-                if animates && crate::anim::ANIMATED.contains(prop) {
+                let kind = self.tree.get(*id).map(|n| n.kind);
+                if animates && kind.is_some_and(|k| crate::anim::springs(k, *prop)) {
                     let tables = scope_tables(&self.tree, *id);
                     let scope = TokenScope::new(&tables);
                     let old = self
