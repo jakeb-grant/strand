@@ -498,6 +498,11 @@ pub struct Extras {
     /// "Surface hand-off").
     #[cfg(feature = "gpu")]
     pub gpu_presented: std::collections::HashSet<NodeId>,
+    /// (perf-gpu-retain) Roots of the surfaces the GPU draws (presented
+    /// or read back): their frames draw their backdrops themselves, so a
+    /// backdrop's pass (the pointer glass follows) is in its damage.
+    #[cfg(feature = "gpu")]
+    pub gpu_lowered: std::collections::HashSet<NodeId>,
     /// (M4) The compositor draws a layer surface stretched to its
     /// arranged box whatever its viewport (Hyprland): a root's scale is
     /// painted, not delegated.
@@ -636,6 +641,8 @@ fn flatten_with(
         fillet_fill: None,
         item_clips: Vec::new(),
         pointer: extras.pointers.get(&root).copied(),
+        #[cfg(feature = "gpu")]
+        gpu_frame: extras.gpu_lowered.contains(&root),
         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
         drawn: drawn.then(Vec::new),
         #[cfg(feature = "eval-hooks")]
@@ -719,6 +726,10 @@ struct Flattener<'a> {
     item_clips: Vec<kurbo::Rect>,
     /// (M4) The pointer on the surface, and the surface's logical box.
     pointer: Option<strand_scene::LogicalPoint>,
+    /// (perf-gpu-retain) The GPU draws the surface's frames
+    /// (`Extras::gpu_lowered`).
+    #[cfg(feature = "gpu")]
+    gpu_frame: bool,
     logical: LogicalRect,
     /// (replay-owner) The nodes drawn so far, for [`flatten_drawn`].
     drawn: Option<Vec<crate::DrawnNode>>,

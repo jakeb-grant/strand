@@ -674,12 +674,14 @@ fn resize(r: &mut Renderer, card: NodeId, w: f32, h: f32) {
     assert!(r.apply(d).is_empty());
 }
 
-/// (shadow-slice) A promoted surface lowers a shadow on whole pixels
-/// from its slice tiles: as the launcher's card resizes, no frame after
-/// the first builds or uploads a pixmap (each frame uploaded a new 3.8
-/// MB shadow before). Needs no device: the frames are only lowered.
+/// (shadow-slice, perf-gpu-retain) A promoted surface's shadow is drawn
+/// by the GPU (`Op::BlurredRect`, the CPU's primitive): as the
+/// launcher's card resizes, no frame builds or uploads a pixmap for it
+/// (each frame uploaded a new 3.8 MB shadow before slicing, and slicing
+/// still built a corner tile a frame under a springing radius). Needs
+/// no device: the frames are only lowered.
 #[test]
-fn a_resizing_shadow_is_lowered_from_the_same_tiles() {
+fn a_resizing_shadow_is_drawn_by_the_gpu_with_nothing_built() {
     let mut r = renderer();
     let (card, mut buf) = launcher_card(&mut r, 560.0, 380.0);
     let t0 = Duration::from_secs(1);
@@ -688,6 +690,8 @@ fn a_resizing_shadow_is_lowered_from_the_same_tiles() {
     r.set_backend(S, Backend::GpuPresent);
     let _ = r.take_backend_changes();
     resize(&mut r, card, 566.0, 383.0);
+    // What the CPU frame before built.
+    let before = r.paint_cache().1;
     let first = r
         .paint_gpu(S, t0 + Duration::from_millis(16))
         .expect("resized");
@@ -695,6 +699,12 @@ fn a_resizing_shadow_is_lowered_from_the_same_tiles() {
         f.ops
             .iter()
             .filter(|op| matches!(op, strand_gpu::Op::Image { .. }))
+            .count()
+    };
+    let shadows = |f: &strand_gpu::Frame| {
+        f.ops
+            .iter()
+            .filter(|op| matches!(op, strand_gpu::Op::BlurredRect { .. }))
             .count()
     };
     let builds = r.paint_cache().1;
@@ -709,9 +719,15 @@ fn a_resizing_shadow_is_lowered_from_the_same_tiles() {
             f.uploads.len()
         );
         assert_eq!(images(&f), images(&first));
+        // One blurred rect, or one per quadrant when its corners differ.
+        assert!(
+            shadows(&f) == 1 || shadows(&f) == 4,
+            "frame {i} draws its shadow"
+        );
         assert_eq!(r.paint_cache().1, builds, "frame {i} built a pixmap");
     }
-    assert!(images(&first) >= 8, "drawn from its tiles");
+    assert_eq!(images(&first), 0, "no shadow pixmap drawn");
+    assert_eq!(r.paint_cache().1, before, "nothing built for the GPU");
 }
 
 /// (shadow-slice) The sliced shadow the GPU draws matches the CPU's, at
@@ -1078,6 +1094,35 @@ fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
                 strand_gpu::Op::PushLayer(strand_gpu::Layer { blend: Some(_), .. })
             )
         });
+        // (perf-gpu-retain) The snapshot is the frame the GPU thread
+        // shows, taken there at the first crossfade frame and kept: the
+        // CPU draws and uploads none.
+        if fading {
+            let how = if i == 0 {
+                strand_gpu::FrameSnapshot::Take
+            } else {
+                strand_gpu::FrameSnapshot::Keep
+            };
+            assert_eq!(frame.snapshot, how, "crossfade frame {}", i + 1);
+            assert!(
+                frame
+                    .ops
+                    .iter()
+                    .any(|o| matches!(o, strand_gpu::Op::Snapshot { .. })),
+                "crossfade frame {} draws the snapshot",
+                i + 1
+            );
+            assert!(
+                frame
+                    .uploads
+                    .iter()
+                    .all(|u| u32::from(u.pixmap.width()) < W),
+                "crossfade frame {} uploads a snapshot",
+                i + 1
+            );
+        } else {
+            assert_eq!(frame.snapshot, strand_gpu::FrameSnapshot::None);
+        }
         let px = draw(&mut gpu, &pings, frame);
         let (bad, worst) = compare_bytes(&px, cpu_px);
         if bad as f64 / (W * H) as f64 > EDGE_SHARE {
@@ -2283,4 +2328,337 @@ fn a_gradient_far_apart_in_hue_is_drawn_by_the_gpu_like_the_cpu() {
         bad, 0,
         "{bad} pixels differ by more than {GPU_TOLERANCE} (worst {worst})"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (perf-gpu-retain) Backdrops drawn in a GPU frame
+
+/// Stripes behind, 10 px each, across a `w × h` bar, and a box over
+/// them at `at` (x, y, w, h) with `backdrop` (and `radius`), its other
+/// props `extra`; then boxes with the props `over`, placed absolutely.
+fn backdrop_scene(
+    (w, h): (u32, u32),
+    at: (f32, f32, f32, f32),
+    backdrop: PropValue,
+    extra: Vec<(Prop, PropValue)>,
+    over: Vec<Vec<(Prop, PropValue)>>,
+) -> SceneDiff {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Clip, PropValue::Bool(true)),
+        ],
+    );
+    let abs = |x: f32, y: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(y)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+        ]
+    };
+    for i in 0..w / 10 {
+        let mut p = abs(i as f32 * 10.0, 0.0, 10.0, h as f32);
+        p.push((Prop::Bg, color(colors[i as usize % 4])));
+        b.node(NodeKind::Box, Some(root), p);
+    }
+    let mut p = abs(at.0, at.1, at.2, at.3);
+    p.extend([(Prop::Radius, num(12.0)), (Prop::Backdrop, backdrop)]);
+    p.extend(extra);
+    b.node(NodeKind::Box, Some(root), p);
+    for mut o in over {
+        o.push((Prop::Place, PropValue::Keyword("absolute".into())));
+        b.node(NodeKind::Box, Some(root), o);
+    }
+    b.diff
+}
+
+fn backdrop_call(name: &str, args: Vec<PropValue>) -> PropValue {
+    PropValue::Call {
+        name: name.into(),
+        args,
+    }
+}
+
+/// `scene` on a CPU surface whose backdrop passes are drawn by the GPU
+/// and read back (the path a surface the CPU draws keeps): its frame
+/// once their pixels are in.
+fn backdrop_by_readback(opts: GpuOptions, scene: SceneDiff, (w, h): (u32, u32)) -> Buffer {
+    let mut r = renderer();
+    r.set_promotion(false);
+    assert!(r.apply(scene).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut host = Host::new(opts);
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    for _ in 0..4 {
+        buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+        let reqs = r.take_gpu_requests();
+        let passes = reqs
+            .iter()
+            .filter(|q| matches!(q, GpuRequest::Pass(_)))
+            .count();
+        if passes == 0 {
+            assert!(r.gpu_pass_bytes() > 0, "the GPU's pixels are in");
+            return buf;
+        }
+        host.start();
+        for q in reqs {
+            host.request(q);
+        }
+        for _ in 0..passes {
+            host.until(&mut r, |m| matches!(m, GpuReply::PassPixels { .. }));
+        }
+    }
+    panic!("passes kept being asked for");
+}
+
+/// `scene` presented: painted once on the CPU, promoted, and a GPU
+/// thread attached for readback (the test sees its pixels).
+fn backdrop_presented(
+    opts: GpuOptions,
+    scene: SceneDiff,
+    (w, h): (u32, u32),
+) -> (Renderer, Gpu, mpsc::Receiver<()>) {
+    let mut r = renderer();
+    assert!(r.apply(scene).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    let _ = r.take_gpu_requests();
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    let (ping, pings) = mpsc::channel();
+    let gpu = Gpu::spawn(
+        Box::new(move || {
+            let _ = ping.send(());
+        }),
+        opts,
+    );
+    gpu.send(GpuRequest::Attach {
+        surface: S,
+        handles: None,
+        size: Size::new(w, h),
+        scale: Scale::ONE,
+        opaque: false,
+    });
+    (r, gpu, pings)
+}
+
+fn backdrops_in(f: &strand_gpu::Frame) -> Vec<&strand_gpu::Op> {
+    f.ops
+        .iter()
+        .filter(|o| matches!(o, strand_gpu::Op::Backdrop { .. }))
+        .collect()
+}
+
+/// `backdrop: glass()` and a large `backdrop: blur()` on a presented
+/// surface are drawn in its frames (`Op::Backdrop`): what is behind is
+/// not rasterised by the CPU, uploaded, run as a pass of its own and
+/// read back a frame late, and nothing of the readback path is held;
+/// the frame matches the CPU surface's frame with the GPU's pass read
+/// back, within the GPU tolerance.
+#[test]
+fn a_presented_surface_draws_its_backdrops_in_its_frames() {
+    let Some(opts) = device() else { return };
+    let cases = [
+        (
+            "glass",
+            (240, 60),
+            (40.0, 10.0, 120.0, 40.0),
+            backdrop_call("glass", vec![]),
+        ),
+        (
+            "blur",
+            (640, 400),
+            (20.0, 20.0, 560.0, 360.0),
+            backdrop_call("blur", vec![num(8.0)]),
+        ),
+    ];
+    for (name, size, at, backdrop) in cases {
+        let want = backdrop_by_readback(
+            opts,
+            backdrop_scene(size, at, backdrop.clone(), vec![], vec![]),
+            size,
+        );
+        let (mut r, mut gpu, pings) = backdrop_presented(
+            opts,
+            backdrop_scene(size, at, backdrop, vec![], vec![]),
+            size,
+        );
+        let t = Duration::from_secs(1) + Duration::from_millis(16);
+        let frame = r.paint_gpu(S, t).expect("the switch repaints");
+        assert_eq!(backdrops_in(&frame).len(), 1, "{name}: in the frame");
+        assert!(
+            !r.take_gpu_requests()
+                .iter()
+                .any(|q| matches!(q, GpuRequest::Pass(_))),
+            "{name}: no pass of its own"
+        );
+        let region_sized = frame
+            .uploads
+            .iter()
+            .any(|u| u32::from(u.pixmap.width()) >= (at.2 as u32).min(size.0));
+        assert!(!region_sized, "{name}: nothing behind it uploaded");
+        assert_eq!(r.gpu_pass_bytes(), 0, "{name}: no readback held");
+        let px = draw(&mut gpu, &pings, frame);
+        let (bad, worst) = compare_bytes(&px, &want.pixels);
+        let share = bad as f64 / f64::from(size.0 * size.1);
+        if share > EDGE_SHARE {
+            let rgba: Vec<u8> = px
+                .chunks_exact(4)
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect();
+            write_png(
+                &refs_dir().join(format!("gpu_backdrop_{name}.actual.png")),
+                size.0,
+                size.1,
+                &rgba,
+            );
+        }
+        assert!(
+            share <= EDGE_SHARE,
+            "{name}: {bad} pixels past {GPU_TOLERANCE} of the readback's (worst {worst})"
+        );
+        drop(gpu);
+    }
+}
+
+/// Glass in a presented frame follows the pointer: a pointer over it
+/// repaints the surface (its pass's pointer is in the node's damage),
+/// and the new frame lights it.
+#[test]
+fn glass_in_a_presented_frame_follows_the_pointer() {
+    let Some(opts) = device() else { return };
+    let size = (240, 60);
+    let scene = || {
+        backdrop_scene(
+            size,
+            (40.0, 10.0, 120.0, 40.0),
+            backdrop_call("glass", vec![]),
+            vec![],
+            vec![],
+        )
+    };
+    let (mut r, mut gpu, pings) = backdrop_presented(opts, scene(), size);
+    let t0 = Duration::from_secs(1);
+    let frame = r.paint_gpu(S, t0).expect("the switch repaints");
+    let before = draw(&mut gpu, &pings, frame);
+    assert!(r.paint_gpu(S, t0).is_none(), "idle without the pointer");
+    r.set_pointer(S, Some(LogicalPoint { x: 100.0, y: 30.0 }));
+    assert!(r.wants_frame(S), "the pointer repaints glass");
+    let frame = r
+        .paint_gpu(S, t0 + Duration::from_millis(16))
+        .expect("a frame for the pointer");
+    let pointer = backdrops_in(&frame)
+        .first()
+        .map(|o| match o {
+            strand_gpu::Op::Backdrop { globals, .. } => globals.pointer,
+            _ => [-1.0, -1.0],
+        })
+        .unwrap_or([-1.0, -1.0]);
+    assert_eq!(pointer, [60.0, 20.0], "relative to the glass");
+    let lit = draw(&mut gpu, &pings, frame);
+    let i = ((30 * size.0 + 100) * 4) as usize;
+    let (b, a) = (&before[i..i + 3], &lit[i..i + 3]);
+    assert!((0..3).all(|c| a[c] >= b[c]) && a != b, "{b:?} → {a:?}");
+    drop(gpu);
+}
+
+/// A backdrop the CPU draws with its group (inside a `filter: blur`),
+/// or one such a backdrop reads (drawn before it, under it), keeps the
+/// readback path on a presented surface: its pass is asked for on its
+/// own and the frame draws its pixels.
+#[test]
+fn backdrops_the_cpu_draws_with_others_keep_their_own_pass() {
+    let size = (240, 60);
+    let at = (40.0, 10.0, 120.0, 40.0);
+    let blurred = backdrop_scene(
+        size,
+        at,
+        backdrop_call("glass", vec![]),
+        vec![(Prop::Filter, backdrop_call("blur", vec![num(2.0)]))],
+        vec![],
+    );
+    // Glass, and over it, later, a box whose backdrop the CPU draws
+    // with its `filter: blur` group, reading the glass.
+    let read = backdrop_scene(
+        size,
+        at,
+        backdrop_call("glass", vec![]),
+        vec![],
+        vec![vec![
+            (Prop::X, num(100.0)),
+            (Prop::Y, num(20.0)),
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Backdrop, backdrop_call("blur", vec![num(4.0)])),
+            (Prop::Filter, backdrop_call("blur", vec![num(2.0)])),
+        ]],
+    );
+    for (name, scene) in [("filtered", blurred), ("read", read)] {
+        let mut r = renderer();
+        assert!(r.apply(scene).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(size.0, size.1, Scale::ONE);
+        up_without_a_device(&mut r);
+        buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+        // Asked for by the CPU frame, and still in flight.
+        let mut reqs = r.take_gpu_requests();
+        r.promote_now(S);
+        let _ = r.take_backend_changes();
+        r.set_backend(S, Backend::GpuPresent);
+        let frame = r
+            .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
+            .expect("the switch repaints");
+        assert!(backdrops_in(&frame).is_empty(), "{name}: not in the frame");
+        reqs.extend(r.take_gpu_requests());
+        assert!(
+            reqs.iter().any(|q| matches!(q, GpuRequest::Pass(_))),
+            "{name}: its own pass"
+        );
+    }
+}
+
+/// A small `backdrop: blur()` (under about 0.2 Mpx, the CPU's at
+/// quarter scale on a surface the CPU draws) is drawn in a presented
+/// surface's frame too, at full resolution: nothing rasterised or
+/// uploaded for it, smooth across the stripes behind.
+#[test]
+fn a_small_backdrop_blur_on_a_presented_surface_is_drawn_in_its_frame() {
+    let Some(opts) = device() else { return };
+    let size = (640, 400);
+    let scene = backdrop_scene(
+        size,
+        (20.0, 20.0, 300.0, 300.0),
+        backdrop_call("blur", vec![num(8.0)]),
+        vec![],
+        vec![],
+    );
+    let (mut r, mut gpu, pings) = backdrop_presented(opts, scene, size);
+    let frame = r
+        .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
+        .expect("the switch repaints");
+    assert_eq!(backdrops_in(&frame).len(), 1, "in the frame");
+    assert!(frame.uploads.iter().all(|u| u.pixmap.width() < 100));
+    assert!(
+        !r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_)))
+    );
+    let px = draw(&mut gpu, &pings, frame);
+    let g = |x: u32, y: u32| i32::from(px[((y * size.0 + x) * 4 + 1) as usize]);
+    let row: Vec<i32> = (100..200).map(|x| g(x, 150)).collect();
+    let step = row.windows(2).map(|p| (p[1] - p[0]).abs()).max();
+    assert!(step.unwrap_or(0) <= 6, "smooth: {row:?}");
+    // Outside it the stripes stay sharp.
+    let outside: Vec<i32> = (400..440).map(|x| g(x, 150)).collect();
+    let sharp = outside.windows(2).map(|p| (p[1] - p[0]).abs()).max();
+    assert!(sharp.unwrap_or(0) > 40, "{outside:?}");
+    drop(gpu);
 }

@@ -100,7 +100,7 @@ pub(crate) struct Pass {
 
 impl Pass {
     /// How far the blur reads past the box, physical pixels.
-    fn reach(self) -> u32 {
+    pub(crate) fn reach(self) -> u32 {
         (3.0 * self.sigma).ceil().clamp(0.0, 10_000.0) as u32
     }
 
@@ -174,6 +174,18 @@ pub(crate) fn reach_of(e: &Effect, scale: Scale) -> u32 {
 /// The items before `end` that draw over `region`, with the groups still
 /// open at `end` left open (their push markers dropped): a balanced list.
 pub(crate) fn behind(items: &[DisplayItem], end: usize, region: Rect) -> Vec<DisplayItem> {
+    items
+        .iter()
+        .zip(behind_mask(items, end, region))
+        .filter(|(_, k)| *k)
+        .map(|(d, _)| d.clone())
+        .collect()
+}
+
+/// (perf-gpu-retain) Which of the items before `end` [`behind`] keeps,
+/// by index: a GPU frame lowers them where they are, so a backdrop among
+/// them is still known by its index.
+pub(crate) fn behind_mask(items: &[DisplayItem], end: usize, region: Rect) -> Vec<bool> {
     let end = end.min(items.len());
     let mut open: Vec<usize> = Vec::new();
     let mut keep = vec![true; end];
@@ -194,12 +206,10 @@ pub(crate) fn behind(items: &[DisplayItem], end: usize, region: Rect) -> Vec<Dis
     for i in open {
         keep[i] = false;
     }
-    items[..end]
-        .iter()
-        .zip(keep)
-        .filter(|(d, k)| *k && (is_marker(&d.item) || d.bounds.intersects(region)))
-        .map(|(d, _)| d.clone())
-        .collect()
+    for (k, d) in keep.iter_mut().zip(items) {
+        *k = *k && (is_marker(&d.item) || d.bounds.intersects(region));
+    }
+    keep
 }
 
 fn is_marker(i: &Item) -> bool {

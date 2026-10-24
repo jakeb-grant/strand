@@ -691,10 +691,9 @@ impl PaintCache {
 
     /// The pixmap of a blurred rounded rect, its origin at the shape's
     /// `extent` corner rounded down (`None` when too large to cache),
-    /// built at first sight whatever its size: the GPU backend's frames
-    /// are whole (each lowering is a frame of this cache, `begin_frame`
-    /// in `lower_frame`, for corner-tile promotion and eviction).
-    #[cfg(any(test, feature = "gpu"))]
+    /// built at first sight whatever its size (tests; GPU frames draw
+    /// shadows themselves, `Op::BlurredRect`, perf-gpu-retain).
+    #[cfg(test)]
     pub fn shadow(&mut self, s: &ShadowShape) -> Option<Arc<Pixmap>> {
         self.shadow_with(s, |_, _| true)
     }

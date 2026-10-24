@@ -183,6 +183,11 @@ impl Renderer {
             } else {
                 self.extras.gpu_presented.remove(&root);
             }
+            if self.backend(id).is_gpu() {
+                self.extras.gpu_lowered.insert(root);
+            } else {
+                self.extras.gpu_lowered.remove(&root);
+            }
         }
         // (M4) Whether bundled effects take their GPU form (3-D tilt, an
         // animated aurora): not while the device is unavailable.

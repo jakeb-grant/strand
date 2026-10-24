@@ -175,6 +175,23 @@ impl Offscreen {
         cache: &PaintCache,
         scale: Scale,
     ) {
+        self.prepare_except(items, damage, surface, atlas, cache, scale, &|_| false);
+    }
+
+    /// (perf-gpu-retain) [`Self::prepare`], leaving out the groups pushed
+    /// at the indices `skip` holds: the backdrops a GPU frame draws
+    /// itself (`Op::Backdrop`), which nothing drawn here reads.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_except(
+        &mut self,
+        items: &[DisplayItem],
+        damage: &Damage,
+        surface: Rect,
+        atlas: &AtlasMirror,
+        cache: &PaintCache,
+        scale: Scale,
+        skip: &dyn Fn(usize) -> bool,
+    ) {
         self.frame += 1;
         self.current.clear();
         let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
@@ -207,6 +224,9 @@ impl Offscreen {
             let Item::PushLayer(layer) = &items[i].item else {
                 continue;
             };
+            if skip(i) {
+                continue;
+            }
             // (M4) Drawn by the GPU: its pixels as they came back.
             if let Some(g) = &layer.gpu {
                 self.current.insert(layer_key(layer), g.clone());

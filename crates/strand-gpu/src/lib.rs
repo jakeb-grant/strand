@@ -413,6 +413,24 @@ pub struct Frame {
     /// Background the frame is cleared to (transparent for a
     /// translucent surface).
     pub clear: AlphaColor<Srgb>,
+    /// (perf-gpu-retain) What the frame does with the surface's
+    /// snapshot, the old frame a theme crossfade blends from, which the
+    /// GPU thread holds ([`Op::Snapshot`] draws it).
+    pub snapshot: FrameSnapshot,
+}
+
+/// (perf-gpu-retain) A frame's use of its surface's snapshot.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum FrameSnapshot {
+    /// None held: one held until now is freed.
+    #[default]
+    None,
+    /// Before the frame is drawn, the surface's last frame (the one it
+    /// shows) is copied into its snapshot, which is held from then on.
+    /// A surface with no last frame at the frame's size holds none.
+    Take,
+    /// The snapshot held is kept.
+    Keep,
 }
 
 /// A shader pass drawn offscreen for a surface the GPU does not draw
@@ -517,6 +535,52 @@ pub enum Op {
         bounds: kurbo::Rect,
         globals: PassGlobals,
     },
+    /// (perf-gpu-retain) A blurred rounded rect in `color` (a box
+    /// shadow): vello's `fill_blurred_rounded_rect`, the primitive the
+    /// CPU raster draws shadows with, under the current transform.
+    BlurredRect {
+        rect: kurbo::Rect,
+        radius: f32,
+        std_dev: f32,
+        color: AlphaColor<Srgb>,
+    },
+    /// (perf-gpu-retain) A backdrop drawn in the frame: `ops` (what the
+    /// surface draws behind it, balanced, in buffer pixels from the
+    /// identity transform) drawn into a texture of `region` (whole
+    /// buffer pixels; the texture's origin is the region's corner), read
+    /// as `strand_input` by `pass` and then by each of `then` in turn,
+    /// and the last pass's pixels drawn over `region` at the identity
+    /// transform, under the clips and layers in force. The CPU's
+    /// rasterised input, its upload and the pass's readback are gone.
+    Backdrop {
+        region: kurbo::Rect,
+        ops: Vec<Op>,
+        pass: ShaderPass,
+        then: Vec<ShaderPass>,
+        globals: PassGlobals,
+    },
+    /// (perf-gpu-retain) The surface's snapshot ([`Frame::snapshot`])
+    /// over `rect`, its pixels 1:1 from the origin at the identity
+    /// transform; nothing when none is held.
+    Snapshot {
+        rect: kurbo::Rect,
+    },
+}
+
+impl Op {
+    /// (perf-gpu-retain) The passes `ops` draw into textures of their own
+    /// before the scene samples them ([`Op::Pass`] and [`Op::Backdrop`],
+    /// those inside a backdrop's ops included), in the order the GPU
+    /// thread numbers them: each one before the ones inside it.
+    pub fn passes_in(ops: &[Op]) -> usize {
+        ops.iter()
+            .map(|op| match op {
+                Op::Pass { .. } => 1,
+                Op::Backdrop { ops, .. } => 1 + Op::passes_in(ops),
+                _ => 0,
+            })
+            .sum()
+    }
 }
 
 /// Pixels read back: premultiplied `Bgra8Unorm` rows (the `wl_shm`

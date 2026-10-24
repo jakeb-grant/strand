@@ -37,6 +37,7 @@ fn the_thread_and_driver_start_at_spawn_and_end_at_shutdown() {
             uploads: vec![],
             retire: Vec::new(),
             clear: AlphaColor::new([0.0, 0.0, 1.0, 1.0]),
+            snapshot: Default::default(),
         },
     );
     // Blue, as BGRA bytes.

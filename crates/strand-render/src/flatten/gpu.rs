@@ -236,6 +236,7 @@ impl Flattener<'_> {
         layer: usize,
         radius: f64,
         time: f32,
+        sig: &mut DefaultHasher,
     ) -> Option<Drawn> {
         if boxed.is_empty() {
             return None;
@@ -263,7 +264,12 @@ impl Flattener<'_> {
                 };
                 (pass, boxed, self.region_pointer(boxed))
             }
-            Bundled::BackdropBlur if u64::from(boxed.w) * u64::from(boxed.h) >= LARGE_BLUR => {
+            // (perf-gpu-retain) Any blur on a surface the GPU draws: its
+            // frame draws it at full resolution, cheaper than the CPU's
+            // quarter-scale pass and its upload.
+            Bundled::BackdropBlur
+                if self.gpu_frame || u64::from(boxed.w) * u64::from(boxed.h) >= LARGE_BLUR =>
+            {
                 let pass = ShaderPass {
                     code: ShaderRef::Bundled(Bundled::BackdropBlur),
                     uniforms: uniforms.clone(),
@@ -285,6 +291,12 @@ impl Flattener<'_> {
             time,
             pointer,
         )?;
+        // (perf-gpu-retain) A GPU frame draws it from the want, not from
+        // pixels that come back (whose address the layer's hash holds):
+        // what it draws (the pointer glass follows) is in the damage.
+        if self.gpu_frame {
+            want.key.hash(sig);
+        }
         let got = self.extras.shaders.usable(&want).map(|(_, p)| Drawn {
             pixmap: p.clone(),
             x: region.x,

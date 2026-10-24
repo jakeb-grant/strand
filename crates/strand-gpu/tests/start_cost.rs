@@ -41,6 +41,7 @@ fn fills(id: u64, size: Size) -> Frame {
         uploads: vec![],
         retire: Vec::new(),
         clear: AlphaColor::TRANSPARENT,
+        snapshot: Default::default(),
     }
 }
 

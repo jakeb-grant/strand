@@ -843,7 +843,7 @@ impl<'a> Flattener<'a> {
                     .intersect(self.surface)
                     .unwrap_or_default();
                 let t = time.map_or(0.0, |t| t.t);
-                self.backdrop_pass(node.id, &e, boxed, read, end + 1, r.top_left, t)
+                self.backdrop_pass(node.id, &e, boxed, read, end + 1, r.top_left, t, &mut sig)
             };
             #[cfg(not(feature = "gpu"))]
             let gpu = None;

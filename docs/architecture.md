@@ -896,7 +896,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     over its crossfade snapshot; `fresh_gpu_frame(&self, SurfaceId, id,
     first_upload) -> Option<strand_gpu::Frame>` (with `gpu`): it lowered
     again with a raster and an upload table of their own, every pixmap
-    in its uploads; (eval-rules-4) `repaint_unblended(&self, SurfaceId,
+    in its uploads, with the presented frame's `FrameSnapshot` (a
+    snapshot the GPU thread holds is the fresh device's own last frame,
+    the one before drawn fresh); (eval-rules-4) `repaint_unblended(&self, SurfaceId,
     &mut PaintTarget) -> Option<(&[u8], f32)>`: when that frame was
     blended over a crossfade snapshot standing alone, the frame drawn
     again in full without the blend, with the snapshot's pixels and the
@@ -2646,9 +2648,17 @@ re-base, if it needs one, is a dated decisions.md entry.
   surface that paints nothing for the exit stall loses its snapshot; a
   table that changes no colour leaves fades running, a snapping one
   ends them. The blend works on the CPU `PaintTarget`; on a surface
-  presented by the GPU (M4) the GPU thread keeps the old frame's texture
-  and blends in a shader along the same curve (`strand-gpu`'s
-  crossfade); a surface in readback mode blends on the CPU as today.
+  presented by the GPU (M4) the frame draws the snapshot weighted `1 -
+  w` and adds the new frame weighted `w` (a `Plus` layer) along the same
+  curve; (perf-gpu-retain) its snapshot is the frame the GPU thread
+  last drew for it (`FrameSnapshot::Take` at the fade's first frame,
+  then `Keep`, drawn by `Op::Snapshot`), so nothing is repainted on the
+  CPU or uploaded, the blend on screen included when a crossfade lands
+  mid-crossfade; render takes it so only when it lowered the surface's
+  last frame at this size since it was attached, and a surface that
+  goes back to the CPU before or during its fade takes its snapshot on
+  the CPU from the old display list. A surface in readback mode blends
+  on the CPU as today.
   `Renderer::swapping()` is true while roots spring or a crossfade
   runs on a surface still painting, `swap_crossfades()` counts swaps
   that crossfaded somewhere, `swap_held()` (hidden) lists the surfaces
@@ -5320,10 +5330,13 @@ Wayland crate. Its interface:
   starts the thread `strand-gpu`, which creates the instance, adapter and
   device off the main thread (45–274 ms on hardware, about 100 ms on
   lavapipe), then draws a small frame offscreen (fills, a gradient, a
-  layer, a clip, an image) and records the present blit for both
-  swapchain formats, waiting for the GPU, before it answers `Ready`: the
-  pipelines and resources a first frame would build are built
-  (gpu-first). A failure there answers `Unavailable` as a failed start. `Gpu::send(GpuRequest)` never blocks; `Gpu::try_recv() ->
+  layer, a clip, an image; (perf-gpu-retain) a radial gradient, a
+  shadow in its even-odd ring, a backdrop blur and glass in an additive
+  layer, and a second frame taking and drawing a snapshot) and records
+  the present blit for both swapchain formats, waiting for the GPU,
+  before it answers `Ready`: the pipelines and resources a first frame
+  would build are built (gpu-first). Nothing it draws is kept but the
+  pipelines. A failure there answers `Unavailable` as a failed start. `Gpu::send(GpuRequest)` never blocks; `Gpu::try_recv() ->
   Option<GpuReply>` is drained when the waker's ping fires on the main
   loop. Dropping the `Gpu` (or `GpuRequest::Shutdown`) drops every
   surface, pipeline, texture, the device and the instance, and the thread
@@ -5353,7 +5366,9 @@ Wayland crate. Its interface:
   rasterises them on the CPU when it asks: a filter layer's group,
   CPU-filtered, or what is drawn behind a backdrop), uploaded as
   `strand_input`; each of `then` runs on the one before's output
-  (m4-gpu-effects).
+  (m4-gpu-effects). A surface the GPU draws asks for no backdrop's pass
+  this way but one an offscreen group the CPU draws holds or reads
+  (perf-gpu-retain: its frames draw the rest, `Op::Backdrop`).
   `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released(SurfaceId)`,
   `Presented { surface, frame: u64, at: Instant, waited: Duration,
@@ -5384,7 +5399,8 @@ Wayland crate. Its interface:
   64 compiled pipelines and 16 pass readback buffers (by size), least
   recently used first out.
 - `Frame { surface, id: u64, size, scale, ops: Vec<Op>, uploads:
-  Vec<Upload>, retire: Vec<u64>, clear: AlphaColor<Srgb> }` (`clear`: the
+  Vec<Upload>, retire: Vec<u64>, clear: AlphaColor<Srgb>, snapshot:
+  FrameSnapshot }` (`clear`: the
   background the frame is cleared to; no `readback` field, since an
   attached surface's mode decides and a pass on a CPU surface is its
   own `Pass` request: decisions.md, m4-gpu-w2) is what render lowers its
@@ -5392,11 +5408,30 @@ Wayland crate. Its interface:
   kurbo paths with peniko paints and transforms, images by texture id,
   clips (`PushClipEvenOdd` for a shadow's ring), blends and opacity as
   layers, and `Op::Pass(ShaderPass, bounds)`. `Upload`s carry atlas
-  pages and cached pixmaps (images, gradients, shadows, masks: masks are
+  pages and cached pixmaps (images, gradients, masks: masks are
   always rasterised on the CPU) keyed by id; they live on the GPU until
   a frame lists them in `retire` (render retires an upload whose pixmap
   died or that no frame drew for 600 lowerings) or the device drops. The GPU thread builds the vello_gpu scene from the ops, so
-  that work is off the main thread.
+  that work is off the main thread. (perf-gpu-retain) Three ops draw
+  on the GPU what render drew on the CPU and uploaded:
+  `Op::BlurredRect { rect, radius, std_dev, color }` (a box shadow:
+  vello's blurred rounded rect, the primitive the CPU draws shadows with,
+  one per quadrant when its corners differ, so no shadow pixmap or
+  corner tile is built for a GPU frame); `Op::Backdrop { region, ops,
+  pass, then, globals }` (a backdrop: `ops`, what is drawn behind it,
+  balanced, from the identity transform, rendered into a texture of
+  `region` whose origin is its corner, read as `strand_input` by `pass`
+  and each of `then`, the result drawn over `region` at the identity
+  transform under the clips and layers in force; each backdrop's
+  render is submitted on its own, before the frame's, its texture
+  reused by the surface's next frame and freed when that frame has no
+  backdrop of its size); and `Op::Snapshot { rect }` (the surface's
+  crossfade snapshot 1:1 from the origin, nothing when none is held).
+  `FrameSnapshot` is `None` (none held: one held is freed), `Take`
+  (before the frame draws, the surface's last frame at the frame's
+  size is copied into its snapshot; none if it has no such frame) or
+  `Keep`. Passes inside a backdrop's ops are numbered after it
+  (`Op::passes_in`: each before the ones inside it).
 - `Readback` is `Bgra8Unorm` premultiplied rows (the `wl_shm` ARGB8888
   byte order), padded to wgpu's 256-byte row alignment, with its stride.
 - (perf-bench) `record_frame_phases(on: bool)` and

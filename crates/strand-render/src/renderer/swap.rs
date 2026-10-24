@@ -153,6 +153,25 @@ pub(super) struct Snapshot {
     /// planned): a surface that paints nothing for the exit stall
     /// (asleep, occluded) loses its snapshot.
     since: Instant,
+    /// (perf-gpu-retain) A presented surface's snapshot is its last
+    /// frame as the GPU thread holds it: nothing is drawn or copied on
+    /// the CPU. `old` stays, for the CPU to take it if the surface goes
+    /// back to the CPU first.
+    gpu: OnGpu,
+}
+
+/// (perf-gpu-retain) Where a snapshot is held.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(super) enum OnGpu {
+    /// In `pixels` (taken by the CPU), or not taken yet.
+    #[default]
+    No,
+    /// The GPU thread takes it before it draws the surface's next frame
+    /// (`FrameSnapshot::Take`).
+    Take,
+    /// The GPU thread holds it (`FrameSnapshot::Keep`).
+    Held,
 }
 
 impl Snapshot {
@@ -1233,7 +1252,7 @@ impl Renderer {
             let (pixels, under) = match prev {
                 // Not taken yet: the surface still shows the frame it is
                 // for.
-                Some(p) if p.old.is_some() => {
+                Some(p) if p.old.is_some() && p.gpu == OnGpu::No => {
                     out.insert(
                         id,
                         Snapshot {
@@ -1268,6 +1287,7 @@ impl Renderer {
                     progress,
                     last_w: 0.0,
                     since: now,
+                    gpu: OnGpu::No,
                 },
             );
         }
@@ -1277,9 +1297,31 @@ impl Renderer {
     /// Takes `surface`'s snapshot if its fade has not yet, before the
     /// frame in `target` is painted (see [`Snapshot`]).
     pub(super) fn take_snapshot(&mut self, surface: SurfaceId, target: &PaintTarget<'_>) {
+        // (perf-gpu-retain) A presented surface whose last frame the GPU
+        // thread holds at this size: that frame (the blend it showed,
+        // under a replaced crossfade) is the snapshot, taken there.
+        #[cfg(feature = "gpu")]
+        let (presents, gpu_shows) = (
+            self.backend(surface) == strand_scene::Backend::GpuPresent,
+            self.gpu_shows(surface, target.size),
+        );
+        #[cfg(not(feature = "gpu"))]
+        let (presents, gpu_shows) = (false, false);
         let Some(snap) = self.swap.fade.get_mut(&surface).filter(|s| s.old.is_some()) else {
             return;
         };
+        if snap.gpu != OnGpu::No {
+            if presents {
+                return;
+            }
+            // Back on the CPU before or while it fades: taken here.
+            snap.gpu = OnGpu::No;
+            snap.under = None;
+        } else if gpu_shows && target.size == snap.size && target.scale == snap.scale {
+            snap.gpu = OnGpu::Take;
+            snap.under = None;
+            return;
+        }
         let Some(s) = self.surfaces.get(&surface) else {
             return;
         };
@@ -1707,6 +1749,32 @@ impl Renderer {
             .get(&surface)
             .filter(|s| s.size == size && s.old.is_none() && s.pixels.len() == s.bytes())
             .map(|s| &s.pixels[..])
+    }
+
+    /// (perf-gpu-retain) What a presented frame of `surface` at `size`
+    /// does with the snapshot the GPU thread holds, the fade blending it
+    /// under the frame: take it (the fade's first frame), keep it, or,
+    /// `None`, blend the CPU's snapshot instead (`fade_pixels`). A take is
+    /// a keep from then on.
+    #[cfg(feature = "gpu")]
+    pub(super) fn gpu_snapshot(
+        &mut self,
+        surface: SurfaceId,
+        size: Size,
+    ) -> Option<strand_gpu::FrameSnapshot> {
+        let snap = self
+            .swap
+            .fade
+            .get_mut(&surface)
+            .filter(|s| s.size == size)?;
+        match snap.gpu {
+            OnGpu::No => None,
+            OnGpu::Take => {
+                snap.gpu = OnGpu::Held;
+                Some(strand_gpu::FrameSnapshot::Take)
+            }
+            OnGpu::Held => Some(strand_gpu::FrameSnapshot::Keep),
+        }
     }
 
     /// Forgets a detached surface's crossfade.

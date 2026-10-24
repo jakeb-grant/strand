@@ -50,22 +50,39 @@ fn sampler(smooth: bool) -> ImageSampler {
     }
 }
 
-/// Encodes `ops` into `scene`. Push and pop ops are balanced here: an
-/// extra pop is ignored and what is still pushed at the end is popped.
+/// What a scene samples besides uploads: the passes drawn into textures
+/// of their own ([`Op::passes_in`]'s numbering: each before the ones
+/// inside it) and the surface's snapshot.
+pub(crate) struct Sampled<'a> {
+    pub passes: &'a [Option<DrawnPass>],
+    pub snapshot: Option<DrawnPass>,
+}
+
+/// Encodes `ops` into `scene`, every transform after `base` (a backdrop's
+/// ops are drawn with its region's corner at the origin); `first` is the
+/// number of the first pass among them. Push and pop ops are balanced
+/// here: an extra pop is ignored and what is still pushed at the end is
+/// popped.
 pub(crate) fn build(
     scene: &mut Scene,
     ops: &[Op],
     images: &Images,
-    passes: &[Option<DrawnPass>],
+    sampled: &Sampled<'_>,
+    first: usize,
+    base: Affine,
 ) -> Missing {
     let mut missing = Missing::default();
     // What is pushed: true for a layer, false for a clip.
     let mut stack: Vec<bool> = Vec::new();
-    let mut pass_index = 0;
-    scene.reset_transform();
+    let mut pass_index = first;
+    let mut cur = base;
+    scene.set_transform(base);
     for op in ops {
         match op {
-            Op::Transform(a) => scene.set_transform(*a),
+            Op::Transform(a) => {
+                cur = base * *a;
+                scene.set_transform(cur);
+            }
             Op::PushClip(p) => {
                 scene.push_clip_path(p);
                 stack.push(false);
@@ -152,33 +169,51 @@ pub(crate) fn build(
                 scene.reset_tint();
             }
             Op::Pass { bounds, .. } => {
-                let drawn = passes.get(pass_index).copied().flatten();
+                let drawn = sampled.passes.get(pass_index).copied().flatten();
                 pass_index += 1;
-                let Some(d) = drawn else { continue };
-                let (w, h) = (bounds.width(), bounds.height());
-                if !(w > 0.0 && h > 0.0) {
-                    continue;
+                if let Some(d) = drawn {
+                    texture(scene, d, *bounds, true);
                 }
-                scene.set_paint(PaintType::Image(Image {
-                    image: ImageSource::external_texture(
-                        d.texture,
-                        RectU16 {
-                            x0: 0,
-                            y0: 0,
-                            x1: d.width,
-                            y1: d.height,
-                        },
-                        true,
-                    ),
-                    sampler: sampler(true),
-                }));
-                scene.set_paint_transform(
-                    Affine::translate((bounds.x0, bounds.y0))
-                        * Affine::scale_non_uniform(w / d.width as f64, h / d.height as f64),
-                );
-                scene
-                    .fill_path(&Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).to_path(0.1));
-                scene.reset_paint_transform();
+            }
+            Op::Backdrop {
+                region, ops: inner, ..
+            } => {
+                let drawn = sampled.passes.get(pass_index).copied().flatten();
+                // Its ops' passes were sampled by its own scene.
+                pass_index += 1 + Op::passes_in(inner);
+                if let Some(d) = drawn {
+                    scene.set_transform(base);
+                    texture(scene, d, *region, false);
+                    scene.set_transform(cur);
+                }
+            }
+            Op::BlurredRect {
+                rect,
+                radius,
+                std_dev,
+                color,
+            } => {
+                let sane = [rect.x0, rect.y0, rect.x1, rect.y1]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    && radius.is_finite()
+                    && std_dev.is_finite()
+                    && *std_dev >= 0.0;
+                if sane {
+                    scene.set_paint(*color);
+                    scene.fill_blurred_rounded_rect(rect, radius.max(0.0), *std_dev, false);
+                }
+            }
+            Op::Snapshot { rect } => {
+                if let Some(d) = sampled.snapshot {
+                    scene.set_transform(base);
+                    let r = Rect::new(0.0, 0.0, f64::from(d.width), f64::from(d.height))
+                        .intersect(*rect);
+                    if r.width() > 0.0 && r.height() > 0.0 {
+                        texture_at(scene, d, r);
+                    }
+                    scene.set_transform(cur);
+                }
             }
         }
     }
@@ -190,6 +225,48 @@ pub(crate) fn build(
         }
     }
     missing
+}
+
+/// Fills `bounds` with texture `d` stretched over it (`smooth`: sampled
+/// bilinearly; a backdrop's pixels are drawn 1:1).
+fn texture(scene: &mut Scene, d: DrawnPass, bounds: Rect, smooth: bool) {
+    let (w, h) = (bounds.width(), bounds.height());
+    if !(w > 0.0 && h > 0.0) {
+        return;
+    }
+    scene.set_paint(PaintType::Image(Image {
+        image: external(d),
+        sampler: sampler(smooth),
+    }));
+    scene.set_paint_transform(
+        Affine::translate((bounds.x0, bounds.y0))
+            * Affine::scale_non_uniform(w / d.width as f64, h / d.height as f64),
+    );
+    scene.fill_path(&Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).to_path(0.1));
+    scene.reset_paint_transform();
+}
+
+/// Fills `rect` with texture `d` at its own pixels from the origin.
+fn texture_at(scene: &mut Scene, d: DrawnPass, rect: Rect) {
+    scene.set_paint(PaintType::Image(Image {
+        image: external(d),
+        sampler: sampler(false),
+    }));
+    scene.reset_paint_transform();
+    scene.fill_rect(&rect);
+}
+
+fn external(d: DrawnPass) -> ImageSource {
+    ImageSource::external_texture(
+        d.texture,
+        RectU16 {
+            x0: 0,
+            y0: 0,
+            x1: d.width,
+            y1: d.height,
+        },
+        true,
+    )
 }
 
 /// Swaps red and blue: the CPU's pixmaps are in the raster's BGRA order,

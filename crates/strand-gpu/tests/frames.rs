@@ -77,6 +77,7 @@ fn frames_fill_clip_layer_and_draw_uploads() {
             }],
             retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
+            snapshot: Default::default(),
         },
     );
     assert_eq!((px.width, px.height), (64, 32));
@@ -120,6 +121,7 @@ fn frames_fill_clip_layer_and_draw_uploads() {
             uploads: vec![],
             retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
+            snapshot: Default::default(),
         },
     );
     assert_eq!(pixel(&px, 2, 2), [0, 255, 0, 255]);
@@ -217,6 +219,7 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
             uploads: vec![],
             retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
+            snapshot: Default::default(),
         },
     );
     assert_eq!(pixel(&px, 16, 8), [0, 255, 0, 255], "inside the box");
@@ -263,6 +266,7 @@ fn a_broken_shader_fails_its_pass_and_the_device_stays_up() {
             uploads: vec![],
             retire: Vec::new(),
             clear: AlphaColor::new([1.0, 1.0, 1.0, 1.0]),
+            snapshot: Default::default(),
         },
     );
     assert_eq!(pixel(&px, 0, 0), [255, 255, 255, 255]);
@@ -296,6 +300,7 @@ fn a_frame_whose_inline_pass_fails_is_answered_once() {
         uploads: vec![],
         retire: Vec::new(),
         clear: white,
+        snapshot: Default::default(),
     };
     h.gpu.send(GpuRequest::Frame(with(
         1,
@@ -388,6 +393,7 @@ fn even_odd_clips_cut_holes_and_retired_uploads_go() {
         uploads,
         retire,
         clear: AlphaColor::TRANSPARENT,
+        snapshot: Default::default(),
     };
     let px = frame(
         &mut h,
@@ -449,6 +455,7 @@ fn an_upload_in_a_retired_uploads_slot_is_drawn() {
         uploads,
         retire,
         clear: AlphaColor::TRANSPARENT,
+        snapshot: Default::default(),
     };
     let up = |id, generation, pixmap| Upload {
         id,
@@ -488,6 +495,7 @@ fn frames_and_passes_that_cannot_be_drawn_are_answered() {
         uploads: vec![],
         retire: Vec::new(),
         clear: AlphaColor::TRANSPARENT,
+        snapshot: Default::default(),
     };
     let failed = |h: &mut Harness, what: &str| match h.next() {
         GpuReply::Failed { surface, error, .. } => {

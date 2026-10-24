@@ -13,15 +13,15 @@ use std::time::{Duration, Instant};
 use vello_common::TextureId;
 
 use crate::device::Device;
-use crate::draw::{self, DrawnPass, Held, Images};
+use crate::draw::{self, DrawnPass, Held, Images, Sampled};
 use crate::lru::Lru;
 use crate::pass::{self, Passes};
 use crate::present::{self, Blit, Presented, Swapchain};
 use crate::readback::ReadBuffer;
 use crate::timer::Timer;
 use crate::{
-    Frame, GpuError, GpuErrorKind, GpuMode, GpuOptions, GpuReply, GpuRequest, Op, PassFrame, Scale,
-    Size, SurfaceId, Upload,
+    Frame, FrameSnapshot, GpuError, GpuErrorKind, GpuMode, GpuOptions, GpuReply, GpuRequest, Op,
+    PassFrame, Scale, Size, SurfaceId, Upload,
 };
 
 /// The format frames are rendered in: straight colours, `wl_shm` bytes.
@@ -183,6 +183,10 @@ struct FrameTarget {
     height: u32,
 }
 
+/// (perf-gpu-retain) The texture id a scene samples the surface's
+/// snapshot by (passes are numbered from 1).
+const SNAPSHOT_TEXTURE: TextureId = TextureId(u64::MAX);
+
 struct Target {
     size: Size,
     #[allow(dead_code)]
@@ -192,12 +196,126 @@ struct Target {
     timer: Option<Timer>,
     frame: Option<FrameTarget>,
     read: Option<ReadBuffer>,
+    /// (perf-gpu-retain) The old frame a crossfade blends from, copied
+    /// from `frame` ([`FrameSnapshot::Take`]) and held until a frame
+    /// holds none: one surface-sized texture while the fade lasts.
+    snapshot: Option<FrameTarget>,
+    /// (perf-gpu-retain) The textures its last frame's backdrops drew
+    /// what is behind them into, reused by the next frame's of the same
+    /// size; those the next frame does not use are freed, so it holds at
+    /// most one per backdrop its last frame showed.
+    backdrops: Vec<FrameTarget>,
+}
+
+impl Target {
+    fn new(size: Size, scale: Scale, present: Option<Presented>, timer: Option<Timer>) -> Self {
+        Target {
+            size,
+            scale,
+            present,
+            timer,
+            frame: None,
+            read: None,
+            snapshot: None,
+            backdrops: Vec::new(),
+        }
+    }
+}
+
+/// (perf-gpu-retain) The warm-up frame's ops for what the GPU draws in
+/// place of the CPU's uploads: a shadow in its ring, a radial gradient,
+/// and a backdrop blur and glass in an additive layer.
+fn warm_retained() -> Vec<Op> {
+    use crate::kurbo::{Affine, BezPath, Rect, Shape};
+    use crate::{AlphaColor, Brush, Layer, PassGlobals, ShaderPass, peniko};
+    use strand_scene::{Bundled, ShaderInput, ShaderRef};
+    let blue: AlphaColor<crate::Srgb> = AlphaColor::new([0.2, 0.4, 0.9, 1.0]);
+    let pink: AlphaColor<crate::Srgb> = AlphaColor::new([0.9, 0.5, 0.7, 0.8]);
+    let mut ring = BezPath::new();
+    ring.extend(Rect::new(0.0, 0.0, 64.0, 64.0).path_elements(0.1));
+    ring.extend(Rect::new(16.0, 16.0, 48.0, 48.0).path_elements(0.1));
+    let radial = peniko::Gradient::new_radial((32.0, 32.0), 24.0).with_stops([blue, pink]);
+    let behind = vec![Op::Fill {
+        path: Rect::new(0.0, 0.0, 64.0, 64.0).to_path(0.1),
+        brush: Brush::Gradient(radial),
+        brush_transform: Affine::IDENTITY,
+        even_odd: false,
+    }];
+    let pass = |b: Bundled, u: &[f32]| ShaderPass {
+        code: ShaderRef::Bundled(b),
+        uniforms: std::sync::Arc::from(u),
+        input: ShaderInput::Content,
+    };
+    let backdrop = |x0: f64, b: Bundled, u: &[f32]| Op::Backdrop {
+        region: Rect::new(x0, 0.0, x0 + 32.0, 32.0),
+        ops: behind.clone(),
+        pass: pass(b, u),
+        then: Vec::new(),
+        globals: PassGlobals {
+            time: 0.0,
+            scale: 1.0,
+            pointer: [8.0, 8.0],
+        },
+    };
+    let mut ops = behind.clone();
+    ops.extend([
+        Op::PushClipEvenOdd(ring),
+        Op::BlurredRect {
+            rect: Rect::new(16.0, 16.0, 48.0, 48.0),
+            radius: 8.0,
+            std_dev: 6.0,
+            color: AlphaColor::new([0.0, 0.0, 0.0, 0.4]),
+        },
+        Op::PopClip,
+        Op::PushLayer(Layer {
+            blend: Some(peniko::BlendMode::new(
+                peniko::Mix::Normal,
+                peniko::Compose::Plus,
+            )),
+            opacity: Some(0.5),
+            ..Default::default()
+        }),
+        backdrop(0.0, Bundled::BackdropBlur, &[4.0]),
+        backdrop(32.0, Bundled::Glass, &[12.0, 12.0, 0.6, 2.0]),
+        Op::PopLayer,
+    ]);
+    ops
+}
+
+/// A texture frames, snapshots and backdrops are drawn in or copied to.
+fn frame_texture(dev: &Device, width: u32, height: u32, label: &str) -> FrameTarget {
+    let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FRAME_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    FrameTarget {
+        texture,
+        view,
+        width,
+        height,
+    }
 }
 
 struct State {
     renderer: vello_gpu::Renderer,
     resources: vello_gpu::Resources,
     scene: vello_gpu::Scene,
+    /// (perf-gpu-retain) The scene a backdrop's ops are built in.
+    inner: vello_gpu::Scene,
     images: Images,
     passes: Passes,
     blit: Blit,
@@ -223,6 +341,7 @@ impl State {
             renderer,
             resources,
             scene: vello_gpu::Scene::new(1, 1),
+            inner: vello_gpu::Scene::new(1, 1),
             images: Images::new(),
             passes: Passes::new(dev),
             blit: Blit::default(),
@@ -235,24 +354,20 @@ impl State {
     /// image, a clip and a layer) and records the present blit for both
     /// swapchain formats, then waits for the GPU: the pipelines and
     /// resources a first frame builds are built. Nothing is answered and
-    /// nothing is kept but what any frame keeps.
+    /// nothing is kept but what any frame keeps. (perf-gpu-retain) The
+    /// frame also draws what a first animation's frame may: a box shadow
+    /// in its even-odd ring, a radial gradient, a backdrop blur and glass
+    /// in an additive layer, and a second frame a crossfade's snapshot
+    /// taken from the first, so none of their pipelines is built in a
+    /// shown frame.
     fn warm(&mut self, dev: &Device) {
         use crate::kurbo::{Affine, Rect, Shape};
         use crate::{AlphaColor, Brush, Layer, peniko};
         const WARM: SurfaceId = SurfaceId(u32::MAX);
         const IMAGE: u64 = u64::MAX;
         let size = Size::new(64, 64);
-        self.targets.insert(
-            WARM,
-            Target {
-                size,
-                scale: Scale::ONE,
-                present: None,
-                timer: None,
-                frame: None,
-                read: None,
-            },
-        );
+        self.targets
+            .insert(WARM, Target::new(size, Scale::ONE, None, None));
         let blue = AlphaColor::new([0.2, 0.4, 0.9, 1.0]);
         let pink = AlphaColor::new([0.9, 0.5, 0.7, 0.8]);
         let card = Rect::new(4.0, 4.0, 60.0, 60.0)
@@ -297,6 +412,7 @@ impl State {
             },
             Op::PopClip,
         ];
+        let ops = [ops, warm_retained()].concat();
         let frame = Frame {
             surface: WARM,
             id: 0,
@@ -310,6 +426,7 @@ impl State {
             }],
             retire: Vec::new(),
             clear: AlphaColor::TRANSPARENT,
+            snapshot: FrameSnapshot::None,
         };
         // Its `Pixels` (a readback, which waits for the GPU) goes nowhere.
         let (tx, _rx) = mpsc::channel();
@@ -319,6 +436,30 @@ impl State {
         };
         if let Err(e) = self.draw_frame(dev, frame, Duration::ZERO, &quiet, &mut Phases::new()) {
             log::debug!("GPU: the warm-up frame: {e}");
+        }
+        // A crossfade's first frame: the snapshot taken and drawn under
+        // the new frame.
+        let whole = Rect::new(0.0, 0.0, 64.0, 64.0);
+        let fade = Frame {
+            surface: WARM,
+            id: 1,
+            size,
+            scale: Scale::ONE,
+            ops: vec![
+                Op::PushLayer(Layer {
+                    opacity: Some(0.5),
+                    ..Default::default()
+                }),
+                Op::Snapshot { rect: whole },
+                Op::PopLayer,
+            ],
+            uploads: Vec::new(),
+            retire: Vec::new(),
+            clear: AlphaColor::TRANSPARENT,
+            snapshot: FrameSnapshot::Take,
+        };
+        if let Err(e) = self.draw_frame(dev, fade, Duration::ZERO, &quiet, &mut Phases::new()) {
+            log::debug!("GPU: the warm-up crossfade: {e}");
         }
         self.targets.remove(&WARM);
         let mut encoder = dev
@@ -415,17 +556,8 @@ impl State {
                     GpuMode::Readback
                 };
                 let timer = present.as_ref().and_then(|_| Timer::new(dev));
-                self.targets.insert(
-                    surface,
-                    Target {
-                        size,
-                        scale,
-                        present,
-                        timer,
-                        frame: None,
-                        read: None,
-                    },
-                );
+                self.targets
+                    .insert(surface, Target::new(size, scale, present, timer));
                 reply.send(GpuReply::Attached { surface, mode });
             }
             GpuRequest::Resize {
@@ -534,53 +666,262 @@ impl State {
         }
     }
 
-    /// Draws a frame's passes into their own textures, in op order.
+    /// Draws the [`Op::Pass`]es among `ops` (and inside their backdrops)
+    /// into their own textures, numbering them as [`Op::passes_in`]
+    /// does from `*next` (a backdrop's number is skipped here: its
+    /// pixels are drawn by [`State::draw_backdrops`]). A pass that fails
+    /// draws nothing; the first failure is returned.
+    #[allow(clippy::too_many_arguments)]
     fn draw_passes(
         &mut self,
         dev: &Device,
         encoder: &mut wgpu::CommandEncoder,
         ops: &[Op],
+        next: &mut usize,
+        out: &mut [Option<DrawnPass>],
         bindings: &mut vello_gpu::TextureBindings,
         keep: &mut Vec<pass::Drawn>,
-    ) -> (Vec<Option<DrawnPass>>, Option<GpuError>) {
-        let mut out = Vec::new();
+    ) -> Option<GpuError> {
         let mut failed = None;
         for op in ops {
-            let Op::Pass {
-                pass,
-                bounds,
-                globals,
-            } = op
-            else {
-                continue;
-            };
-            let (w, h) = (bounds.width().ceil(), bounds.height().ceil());
-            if !(w >= 1.0 && h >= 1.0 && w <= 16384.0 && h <= 16384.0) {
-                out.push(None);
-                continue;
-            }
-            match self
-                .passes
-                .draw(dev, encoder, pass, w as u32, h as u32, *globals, None)
-            {
-                Ok(Some(d)) => {
-                    let id = TextureId(out.len() as u64 + 1);
-                    bindings.insert(id, d.view.clone());
-                    out.push(Some(DrawnPass {
-                        texture: id,
-                        width: d.width as u16,
-                        height: d.height as u16,
-                    }));
-                    keep.push(d);
+            match op {
+                Op::Pass {
+                    pass,
+                    bounds,
+                    globals,
+                } => {
+                    let at = *next;
+                    *next += 1;
+                    let (w, h) = (bounds.width().ceil(), bounds.height().ceil());
+                    if !(w >= 1.0 && h >= 1.0 && w <= 16384.0 && h <= 16384.0) {
+                        continue;
+                    }
+                    match self
+                        .passes
+                        .draw(dev, encoder, pass, w as u32, h as u32, *globals, None)
+                    {
+                        Ok(Some(d)) => {
+                            let id = TextureId(at as u64 + 1);
+                            bindings.insert(id, d.view.clone());
+                            if let Some(slot) = out.get_mut(at) {
+                                *slot = Some(DrawnPass {
+                                    texture: id,
+                                    width: d.width as u16,
+                                    height: d.height as u16,
+                                });
+                            }
+                            keep.push(d);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            failed.get_or_insert(e);
+                        }
+                    }
                 }
-                Ok(None) => out.push(None),
-                Err(e) => {
-                    failed.get_or_insert(e);
-                    out.push(None);
+                Op::Backdrop { ops: inner, .. } => {
+                    *next += 1;
+                    if let Some(e) =
+                        self.draw_passes(dev, encoder, inner, next, out, bindings, keep)
+                    {
+                        failed.get_or_insert(e);
+                    }
                 }
+                _ => {}
             }
         }
-        (out, failed)
+        failed
+    }
+
+    /// (perf-gpu-retain) Draws the backdrops among `ops`, each after the
+    /// backdrops inside its own ops: what is behind it (its ops) into a
+    /// texture of its region, then its passes over that, in a submission
+    /// of its own (vello stages a render's buffers through the queue, so
+    /// two renders share one only if submitted apart). Numbered as
+    /// [`State::draw_passes`]; `pool` holds the surface's textures from
+    /// its last frame, and `used` gets this frame's.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_backdrops(
+        &mut self,
+        dev: &Device,
+        ops: &[Op],
+        next: &mut usize,
+        out: &mut [Option<DrawnPass>],
+        bindings: &mut vello_gpu::TextureBindings,
+        keep: &mut Vec<pass::Drawn>,
+        (pool, used): (&mut Vec<FrameTarget>, &mut Vec<FrameTarget>),
+    ) -> Result<(), GpuError> {
+        for op in ops {
+            match op {
+                Op::Pass { .. } => *next += 1,
+                Op::Backdrop {
+                    region,
+                    ops: inner,
+                    pass,
+                    then,
+                    globals,
+                } => {
+                    let at = *next;
+                    *next += 1;
+                    self.draw_backdrops(dev, inner, next, out, bindings, keep, (pool, used))?;
+                    let max = dev
+                        .device
+                        .limits()
+                        .max_texture_dimension_2d
+                        .min(u32::from(u16::MAX));
+                    let (x, y) = (region.x0.round(), region.y0.round());
+                    let (w, h) = (region.width().round(), region.height().round());
+                    if !(w >= 1.0 && h >= 1.0 && w <= f64::from(max) && h <= f64::from(max)) {
+                        continue;
+                    }
+                    let (w, h) = (w as u32, h as u32);
+                    let tex = match pool.iter().position(|t| t.width == w && t.height == h) {
+                        Some(i) => pool.swap_remove(i),
+                        None => frame_texture(dev, w, h, "strand backdrop"),
+                    };
+                    self.inner.reset_and_resize(w as u16, h as u16);
+                    let sampled = Sampled {
+                        passes: out,
+                        snapshot: None,
+                    };
+                    let missing = draw::build(
+                        &mut self.inner,
+                        inner,
+                        &self.images,
+                        &sampled,
+                        at + 1,
+                        kurbo_translate(-x, -y),
+                    );
+                    if missing.images > 0 {
+                        log::debug!("GPU backdrop: {} images not uploaded", missing.images);
+                    }
+                    let mut encoder =
+                        dev.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("strand backdrop"),
+                            });
+                    let rendered = self.renderer.render(
+                        &self.inner,
+                        &mut self.resources,
+                        &dev.device,
+                        &dev.queue,
+                        &mut encoder,
+                        &vello_gpu::RenderSize {
+                            width: w as u16,
+                            height: h as u16,
+                        },
+                        &tex.view,
+                        None,
+                        bindings,
+                        vello_gpu::TargetInit::Clear(vello_gpu::ClearSettings::Viewport {
+                            color: crate::AlphaColor::TRANSPARENT,
+                        }),
+                    );
+                    if let Err(e) = rendered {
+                        dev.queue.submit([encoder.finish()]);
+                        used.push(tex);
+                        return Err(render_error(e.to_string()));
+                    }
+                    let mut drawn = match self.passes.draw(
+                        dev,
+                        &mut encoder,
+                        pass,
+                        w,
+                        h,
+                        *globals,
+                        Some(&tex.view),
+                    ) {
+                        Ok(Some(d)) => Some(d),
+                        Ok(None) => None,
+                        Err(e) => {
+                            dev.queue.submit([encoder.finish()]);
+                            used.push(tex);
+                            return Err(e);
+                        }
+                    };
+                    for p in then {
+                        let Some(before) = drawn.as_ref() else { break };
+                        match self.passes.draw(
+                            dev,
+                            &mut encoder,
+                            p,
+                            w,
+                            h,
+                            *globals,
+                            Some(&before.view),
+                        ) {
+                            Ok(Some(d)) => {
+                                if let Some(b) = drawn.replace(d) {
+                                    keep.push(b);
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                dev.queue.submit([encoder.finish()]);
+                                used.push(tex);
+                                return Err(e);
+                            }
+                        }
+                    }
+                    dev.queue.submit([encoder.finish()]);
+                    used.push(tex);
+                    if let Some(d) = drawn {
+                        let id = TextureId(at as u64 + 1);
+                        bindings.insert(id, d.view.clone());
+                        if let Some(slot) = out.get_mut(at) {
+                            *slot = Some(DrawnPass {
+                                texture: id,
+                                width: d.width as u16,
+                                height: d.height as u16,
+                            });
+                        }
+                        keep.push(d);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// (perf-gpu-retain) Takes, keeps or frees `surface`'s snapshot as a
+    /// `w × h` frame asks ([`Frame::snapshot`]): a take copies its last
+    /// frame, in `encoder` before the frame draws over it.
+    fn snapshot(
+        &mut self,
+        dev: &Device,
+        encoder: &mut wgpu::CommandEncoder,
+        surface: SurfaceId,
+        how: FrameSnapshot,
+        (w, h): (u32, u32),
+    ) {
+        let Some(t) = self.targets.get_mut(&surface) else {
+            return;
+        };
+        match how {
+            FrameSnapshot::None => t.snapshot = None,
+            FrameSnapshot::Keep => {}
+            FrameSnapshot::Take => {
+                let Some(ft) = t.frame.as_ref().filter(|f| f.width == w && f.height == h) else {
+                    log::debug!("GPU: {surface:?} has no {w}×{h} frame to snapshot");
+                    t.snapshot = None;
+                    return;
+                };
+                let snap = match t.snapshot.take() {
+                    Some(s) if s.width == w && s.height == h => s,
+                    _ => frame_texture(dev, w, h, "strand snapshot"),
+                };
+                encoder.copy_texture_to_texture(
+                    ft.texture.as_image_copy(),
+                    snap.texture.as_image_copy(),
+                    wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                t.snapshot = Some(snap);
+            }
+        }
     }
 
     /// Draws a frame; every frame is answered exactly once (`Presented`,
@@ -632,6 +973,9 @@ impl State {
             });
         // A presented frame's GPU time starts with its first command.
         let timed = target.timer.as_ref().and_then(|t| t.begin(&mut encoder));
+        // Before anything draws into the frame texture: the snapshot of
+        // the frame it holds.
+        self.snapshot(dev, &mut encoder, surface, frame.snapshot, (w, h));
         self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
         ph.mark("upload");
         ph.uploads = (
@@ -644,8 +988,16 @@ impl State {
         );
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
-        let (passes, pass_error) =
-            self.draw_passes(dev, &mut encoder, &frame.ops, &mut bindings, &mut keep);
+        let mut drawn: Vec<Option<DrawnPass>> = vec![None; Op::passes_in(&frame.ops)];
+        let pass_error = self.draw_passes(
+            dev,
+            &mut encoder,
+            &frame.ops,
+            &mut 0,
+            &mut drawn,
+            &mut bindings,
+            &mut keep,
+        );
         if let Some(e) = pass_error {
             // The frame ends here with one answer, `Failed`: render takes
             // it back to the CPU, which draws it. A frame both failed and
@@ -657,8 +1009,68 @@ impl State {
             return Err(e);
         }
         ph.mark("passes");
+        // (perf-gpu-retain) Backdrops: what the uploads and passes above
+        // draw is submitted first, each backdrop's render after, the
+        // frame's own last.
+        if frame.ops.iter().any(|o| matches!(o, Op::Backdrop { .. })) {
+            dev.queue.submit([encoder.finish()]);
+            let mut pool = self
+                .targets
+                .get_mut(&surface)
+                .map(|t| std::mem::take(&mut t.backdrops))
+                .unwrap_or_default();
+            let mut used = Vec::new();
+            let result = self.draw_backdrops(
+                dev,
+                &frame.ops,
+                &mut 0,
+                &mut drawn,
+                &mut bindings,
+                &mut keep,
+                (&mut pool, &mut used),
+            );
+            if let Some(t) = self.targets.get_mut(&surface) {
+                t.backdrops = used;
+            }
+            drop(pool);
+            if let Err(e) = result {
+                drop(keep);
+                return Err(e);
+            }
+            encoder = dev
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("strand frame"),
+                });
+            ph.mark("backdrops");
+        } else if let Some(t) = self.targets.get_mut(&surface) {
+            t.backdrops.clear();
+        }
         self.scene.reset_and_resize(w as u16, h as u16);
-        let missing = draw::build(&mut self.scene, &frame.ops, &self.images, &passes);
+        let snapshot = self
+            .targets
+            .get(&surface)
+            .and_then(|t| t.snapshot.as_ref())
+            .map(|s| {
+                bindings.insert(SNAPSHOT_TEXTURE, s.view.clone());
+                DrawnPass {
+                    texture: SNAPSHOT_TEXTURE,
+                    width: s.width as u16,
+                    height: s.height as u16,
+                }
+            });
+        let sampled = Sampled {
+            passes: &drawn,
+            snapshot,
+        };
+        let missing = draw::build(
+            &mut self.scene,
+            &frame.ops,
+            &self.images,
+            &sampled,
+            0,
+            kurbo_translate(0.0, 0.0),
+        );
         ph.mark("build");
         if missing.images > 0 {
             log::debug!(
@@ -675,29 +1087,7 @@ impl State {
             .as_ref()
             .is_none_or(|f| f.width != w || f.height != h)
         {
-            let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("strand frame"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: FRAME_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            target.frame = Some(FrameTarget {
-                texture,
-                view,
-                width: w,
-                height: h,
-            });
+            target.frame = Some(frame_texture(dev, w, h, "strand frame"));
         }
         let Some(ft) = target.frame.as_ref() else {
             return Err(render_error("no frame texture"));
@@ -1047,6 +1437,10 @@ impl Phases {
             self.uploads.1
         );
     }
+}
+
+fn kurbo_translate(x: f64, y: f64) -> vello_common::kurbo::Affine {
+    vello_common::kurbo::Affine::translate((x, y))
 }
 
 fn render_error(message: impl Into<String>) -> GpuError {

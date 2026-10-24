@@ -55,7 +55,7 @@ use vello_cpu::{
 };
 
 use super::Renderer;
-use crate::cache::{PaintCache, ShadowShape};
+use crate::cache::PaintCache;
 use crate::flatten::{DisplayItem, FillShape, Item};
 use crate::offscreen::{Drawn, layer_key};
 use crate::promote::{Device, GPU_OFF, Promotion, Switch};
@@ -536,6 +536,14 @@ struct Surf {
     /// (gpu-first review 2) The size hold the GPU thread was asked to
     /// commit for ([`GpuRequest::Commit`]): asked once per size.
     committed: Option<LogicalSize>,
+    /// (perf-gpu-retain) The size of the last frame lowered for it since
+    /// it was attached to present: the GPU thread holds that frame when
+    /// the next one is drawn (a frame that fails takes the surface back
+    /// to the CPU), so a crossfade can take it as its snapshot.
+    shown: Option<Size>,
+    /// (perf-gpu-retain) What its last presented frame did with its
+    /// snapshot (`Renderer::fresh_gpu_frame` does it again).
+    snap: strand_gpu::FrameSnapshot,
 }
 
 impl Surf {
@@ -657,6 +665,7 @@ impl GpuState {
             s.presenting = false;
             s.pixels = None;
             s.hold = None;
+            s.shown = None;
         }
         for id in &back {
             self.changes.push(BackendChange::Demote(*id));
@@ -843,6 +852,7 @@ impl Renderer {
         s.presenting = false;
         s.pixels = None;
         s.hold = None;
+        s.shown = None;
         self.gpu.fades.remove(&surface);
         if backend.is_gpu() {
             if !s.promo.on_gpu() {
@@ -1119,6 +1129,7 @@ impl Renderer {
                     s.inflight = None;
                     s.presenting = false;
                     s.hold = None;
+                    s.shown = None;
                     if s.promo.on_gpu() {
                         s.promo.force_cpu();
                         s.backend = Backend::Cpu;
@@ -1317,12 +1328,29 @@ impl Renderer {
         } else {
             self.gpu.pointer_users.remove(&surface);
         }
+        // A promoted surface's own passes run in its GPU frames, and so
+        // do its backdrops but those the CPU draws with their groups
+        // (`inframe_backdrops`); its layers' passes are read back like any
+        // surface's.
+        let gpu_drawn = self.backend(surface).is_gpu();
+        let scale = self.surfaces.get(&surface).map(|s| s.scale);
+        let (inframe, inframe_at): (HashSet<PassId>, HashSet<usize>) = match scale {
+            Some(scale) if gpu_drawn => inframe_backdrops(items, wants, scale)
+                .into_iter()
+                .map(|(i, w)| (w.id, i))
+                .unzip(),
+            _ => Default::default(),
+        };
         // Pixels this surface's frame no longer wants go (an effect
-        // hidden, a tilt at rest, a node gone), with or without other
-        // wants; a failure stays while its node does, so that it is not
-        // asked again.
+        // hidden, a tilt at rest, a node gone, a backdrop its GPU frames
+        // draw), with or without other wants; a failure stays while its
+        // node does, so that it is not asked again.
         {
-            let wanted: HashSet<PassId> = wants.iter().map(|w| w.id).collect();
+            let wanted: HashSet<PassId> = wants
+                .iter()
+                .map(|w| w.id)
+                .filter(|id| !inframe.contains(id))
+                .collect();
             let pending = &self.gpu.pending;
             let tree = &self.tree;
             let results = &mut self.extras.shaders;
@@ -1335,9 +1363,6 @@ impl Renderer {
             });
             results.answered.retain(|n| tree.get(*n).is_some());
         }
-        // A promoted surface's own passes run in its GPU frames; its
-        // layers' passes are read back like any surface's.
-        let gpu_drawn = self.backend(surface).is_gpu();
         if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
             s.inline.clear();
             if gpu_drawn {
@@ -1358,7 +1383,7 @@ impl Renderer {
         let mut wait = false;
         let mut prepared = false;
         for w in wants {
-            if gpu_drawn && w.id.slot == Slot::Node {
+            if gpu_drawn && (w.id.slot == Slot::Node || inframe.contains(&w.id)) {
                 continue;
             }
             let last = self.extras.shaders.map.get(&w.id);
@@ -1377,7 +1402,7 @@ impl Renderer {
                 PassInput::None => None,
                 PassInput::Group(_) | PassInput::Behind(_) => {
                     if !prepared {
-                        self.prepare_groups(surface, items);
+                        self.prepare_groups(surface, items, &inframe_at);
                         prepared = true;
                     }
                     match self.pass_input(surface, items, w) {
@@ -1421,18 +1446,26 @@ impl Renderer {
 
     /// Draws this frame's offscreen groups of `surface` (a pass's input
     /// may hold or show them).
-    fn prepare_groups(&mut self, surface: SurfaceId, items: &[DisplayItem]) {
+    /// The backdrops its GPU frames draw (pushed at `inframe`) are left
+    /// out.
+    fn prepare_groups(
+        &mut self,
+        surface: SurfaceId,
+        items: &[DisplayItem],
+        inframe: &HashSet<usize>,
+    ) {
         let Some((size, scale)) = self.surfaces.get(&surface).map(|s| (s.size, s.scale)) else {
             return;
         };
         let (cache, offscreen) = self.raster.gpu_parts();
-        offscreen.prepare(
+        offscreen.prepare_except(
             items,
             &Damage::full(size),
             Rect::from_size(size),
             &self.atlas,
             &*cache,
             scale,
+            &|i| inframe.contains(&i),
         );
     }
 
@@ -1593,14 +1626,32 @@ impl Renderer {
     ) -> Damage {
         let id = self.gpu.frame_id();
         let mut frame = self.lower_frame(surface, id, items, passes, size, scale);
-        match fade.and_then(|w| Some((w, self.fade_pixmap(surface, size)?))) {
-            Some((w, pm)) => {
-                let image = self.gpu.uploads.id(&pm, &mut frame.uploads);
-                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), image, size, w);
+        let rect = kurbo::Rect::new(0.0, 0.0, size.w as f64, size.h as f64);
+        // (perf-gpu-retain) The snapshot the GPU thread holds (its last
+        // frame), else the CPU's, uploaded.
+        match fade.map(|w| (w, self.gpu_snapshot(surface, size))) {
+            Some((w, Some(how))) => {
+                self.gpu.fades.remove(&surface);
+                frame.snapshot = how;
+                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), Op::Snapshot { rect }, w);
             }
+            Some((w, None)) => match self.fade_pixmap(surface, size) {
+                Some(pm) => {
+                    let image = self.gpu.uploads.id(&pm, &mut frame.uploads);
+                    frame.ops =
+                        crossfade_ops(std::mem::take(&mut frame.ops), image_op(rect, image), w);
+                }
+                None => {
+                    self.gpu.fades.remove(&surface);
+                }
+            },
             None => {
                 self.gpu.fades.remove(&surface);
             }
+        }
+        if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+            s.shown = Some(size);
+            s.snap = frame.snapshot;
         }
         self.gpu.present = Some(frame);
         self.gpu.sent = true;
@@ -1628,6 +1679,16 @@ impl Renderer {
         let pm = Arc::new(pm);
         self.gpu.fades.insert(surface, (at, pm.clone()));
         Some(pm)
+    }
+
+    /// (perf-gpu-retain) True if `surface` is presented and the GPU
+    /// thread holds its last frame at `size` (a crossfade takes it as its
+    /// snapshot).
+    pub(super) fn gpu_shows(&self, surface: SurfaceId, size: Size) -> bool {
+        self.gpu
+            .surfaces
+            .get(&surface)
+            .is_some_and(|s| s.backend == Backend::GpuPresent && s.shown == Some(size))
     }
 
     /// Lowers a display list to a GPU frame.
@@ -1683,9 +1744,21 @@ impl Renderer {
             last.size,
             last.scale,
         );
-        // As `gpu_present_paint` blends: over the snapshot, when there is
-        // one to upload.
+        // As `gpu_present_paint` blends: over the snapshot the GPU holds
+        // (the fresh device's own last frame, the same frame drawn fresh),
+        // or over the CPU's, when there is one to upload.
+        let rect = kurbo::Rect::new(0.0, 0.0, last.size.w as f64, last.size.h as f64);
+        let snap = self
+            .gpu
+            .surfaces
+            .get(&surface)
+            .map_or(strand_gpu::FrameSnapshot::None, |s| s.snap);
         if let Some(w) = last.fade
+            && snap != strand_gpu::FrameSnapshot::None
+        {
+            frame.snapshot = snap;
+            frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), Op::Snapshot { rect }, w);
+        } else if let Some(w) = last.fade
             && let Some(px) = self.fade_pixels(surface, last.size)
             && let (Ok(pw), Ok(ph)) = (u16::try_from(last.size.w), u16::try_from(last.size.h))
         {
@@ -1694,7 +1767,7 @@ impl Renderer {
             if bytes.len() == px.len() {
                 bytes.copy_from_slice(px);
                 let image = uploads.id(&Arc::new(pm), &mut frame.uploads);
-                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), image, last.size, w);
+                frame.ops = crossfade_ops(std::mem::take(&mut frame.ops), image_op(rect, image), w);
             }
         }
         Some(frame)
@@ -1719,8 +1792,18 @@ fn lower(
     // A frame of its own: what the last one built uncached (a sliced
     // shadow's corner tiles) is cached if this one asks again.
     cache.begin_frame();
+    // The backdrops the frame draws itself (no CPU input, no readback).
+    let inframe = inframe_backdrops(items, passes, scale);
     // Groups the CPU filters (blur, colour matrix), drawn whole.
-    offscreen.prepare(items, &Damage::full(size), bounds, atlas, &*cache, scale);
+    offscreen.prepare_except(
+        items,
+        &Damage::full(size),
+        bounds,
+        atlas,
+        &*cache,
+        scale,
+        &|i| inframe.contains_key(&i),
+    );
     // The surface's own passes, run in the frame.
     let passes: HashMap<NodeId, &PassWant> = passes
         .iter()
@@ -1735,11 +1818,12 @@ fn lower(
         surface: bounds,
         uploads,
         passes: &passes,
+        inframe: &inframe,
         ops: Vec::new(),
         new: Vec::new(),
     };
     l.uploads.begin();
-    l.lower(items);
+    l.lower(items, items.len(), None);
     Frame {
         surface,
         id,
@@ -1749,33 +1833,102 @@ fn lower(
         uploads: l.new,
         retire: Vec::new(),
         clear: AlphaColor::TRANSPARENT,
+        snapshot: strand_gpu::FrameSnapshot::None,
     }
 }
 
-/// A crossfade frame's ops: upload `image` (the snapshot, `size`)
-/// weighted `1 - w`, and the new frame's `ops` added over it weighted
-/// `w`. Both start at the identity transform.
-fn crossfade_ops(ops: Vec<Op>, image: u64, size: Size, w: f32) -> Vec<Op> {
+/// (perf-gpu-retain) The backdrops a GPU frame of `items` draws itself
+/// ([`Op::Backdrop`]), by the index of their layer, with the wants they
+/// answer: those whose pass reads what is behind them, unless an
+/// offscreen group the CPU draws holds them (a `filter: blur`, a mask:
+/// it draws them with its own items) or a backdrop the CPU draws later
+/// reads them (it reads their pixels from the CPU's groups). The rest
+/// keep the CPU's input, readback and upload.
+pub(crate) fn inframe_backdrops<'w>(
+    items: &[DisplayItem],
+    wants: &'w [PassWant],
+    scale: Scale,
+) -> HashMap<usize, &'w PassWant> {
+    let wanted: HashMap<usize, &PassWant> = wants
+        .iter()
+        .filter(|w| w.id.slot == Slot::Backdrop)
+        .filter_map(|w| match w.input {
+            PassInput::Behind(i) => Some((i, w)),
+            _ => None,
+        })
+        .collect();
+    if wanted.is_empty() {
+        return HashMap::new();
+    }
+    // Whether an offscreen group the CPU draws holds each item.
+    let cpu_group = |d: &DisplayItem| match &d.item {
+        Item::PushLayer(l) => {
+            !l.cell_local()
+                || l.effects
+                    .iter()
+                    .any(|e| matches!(e, strand_scene::Effect::Mask(_)))
+        }
+        _ => false,
+    };
+    let mut held = vec![false; items.len()];
+    let mut open: Vec<bool> = Vec::new();
+    for (j, d) in items.iter().enumerate() {
+        let inside = open.last().copied().unwrap_or(false);
+        held[j] = inside;
+        match &d.item {
+            Item::PushClip(_) | Item::PushOpacity(..) | Item::PushTransform(_) => open.push(inside),
+            Item::PushLayer(_) => open.push(inside || cpu_group(d)),
+            Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+    // Last first: whether a later backdrop the CPU draws reads one is
+    // known when it is reached.
+    let mut out = HashMap::new();
+    let mut cpu_reads: Vec<Rect> = Vec::new();
+    for (j, d) in items.iter().enumerate().rev() {
+        let Item::PushLayer(l) = &d.item else {
+            continue;
+        };
+        let cpu = crate::backdrop::pass(l, scale);
+        let want = wanted.get(&j).copied();
+        if cpu.is_none() && want.is_none() {
+            continue;
+        }
+        let read_by_cpu = cpu_reads.iter().any(|r| r.intersects(d.bounds));
+        match want {
+            Some(w) if !held[j] && !read_by_cpu => {
+                out.insert(j, w);
+            }
+            _ => cpu_reads.push(match cpu {
+                Some(p) => d.bounds.inflate(p.reach()),
+                None => d.bounds,
+            }),
+        }
+    }
+    out
+}
+
+/// A crossfade frame's ops: the snapshot drawn by `under` (an upload,
+/// or the snapshot the GPU thread holds) weighted `1 - w`, and the new
+/// frame's `ops` added over it weighted `w`. Both start at the identity
+/// transform.
+fn crossfade_ops(ops: Vec<Op>, under: Op, w: f32) -> Vec<Op> {
     use vello_cpu::peniko::{BlendMode, Compose, Mix};
     let w = if w.is_finite() {
         w.clamp(0.0, 1.0)
     } else {
         1.0
     };
-    let rect = kurbo::Rect::new(0.0, 0.0, size.w as f64, size.h as f64);
     let mut out = Vec::with_capacity(ops.len() + 7);
     out.push(Op::Transform(Affine::IDENTITY));
     out.push(Op::PushLayer(strand_gpu::Layer {
         opacity: Some(1.0 - w),
         ..Default::default()
     }));
-    out.push(Op::Image {
-        rect,
-        image,
-        image_transform: Affine::IDENTITY,
-        tint: None,
-        smooth: false,
-    });
+    out.push(under);
     out.push(Op::PopLayer);
     out.push(Op::PushLayer(strand_gpu::Layer {
         blend: Some(BlendMode::new(Mix::Normal, Compose::Plus)),
@@ -1785,6 +1938,17 @@ fn crossfade_ops(ops: Vec<Op>, image: u64, size: Size, w: f32) -> Vec<Op> {
     out.extend(ops);
     out.push(Op::PopLayer);
     out
+}
+
+/// Upload `image` drawn 1:1 over `rect` from the origin.
+fn image_op(rect: kurbo::Rect, image: u64) -> Op {
+    Op::Image {
+        rect,
+        image,
+        image_transform: Affine::IDENTITY,
+        tint: None,
+        smooth: false,
+    }
 }
 
 /// Readback rows (BGRA bytes) as a pixmap in the CPU raster's order
@@ -1903,18 +2067,27 @@ struct Lowering<'a> {
     surface: Rect,
     uploads: &'a mut Uploads,
     passes: &'a HashMap<NodeId, &'a PassWant>,
+    /// (perf-gpu-retain) The backdrops drawn in the frame, by their
+    /// layer's index ([`inframe_backdrops`]).
+    inframe: &'a HashMap<usize, &'a PassWant>,
     ops: Vec<Op>,
     new: Vec<Upload>,
 }
 
 impl Lowering<'_> {
-    fn lower(&mut self, items: &[DisplayItem]) {
+    /// Lowers the items before `end`, those `keep` keeps (all if
+    /// `None`), from the identity transform.
+    fn lower(&mut self, items: &[DisplayItem], end: usize, keep: Option<&[bool]>) {
         let mut cur = Affine::IDENTITY;
         let mut saved: Vec<Affine> = Vec::new();
+        let end = end.min(items.len());
         let mut i = 0;
-        while i < items.len() {
+        while i < end {
             let d = &items[i];
             i += 1;
+            if keep.is_some_and(|k| !k.get(i - 1).copied().unwrap_or(false)) {
+                continue;
+            }
             match &d.item {
                 Item::PushClip(_)
                 | Item::PushOpacity(..)
@@ -1940,6 +2113,13 @@ impl Lowering<'_> {
                     ..Default::default()
                 })),
                 Item::PopOpacity => self.ops.push(Op::PopLayer),
+                Item::PushLayer(l) if self.inframe.contains_key(&(i - 1)) => {
+                    let group_end = crate::raster::skip_group(items, i - 1);
+                    if let Some(w) = self.inframe.get(&(i - 1)).copied() {
+                        self.backdrop(items, i - 1, w, l, cur);
+                    }
+                    i = group_end;
+                }
                 Item::PushLayer(l) => {
                     let end = crate::raster::skip_group(items, i - 1);
                     // (Every mask, the shape library's outlines too.)
@@ -1993,55 +2173,12 @@ impl Lowering<'_> {
                     clip,
                     extent,
                 } => {
-                    let shape = ShadowShape {
-                        rect: *rect,
-                        radii: *radii,
-                        std_dev: *std_dev,
-                        color: *color,
-                        extent: *extent,
-                    };
-                    // Sliced on whole pixels: a box whose size springs
-                    // draws from the same tiles every frame.
-                    let sliced = (cur == Affine::IDENTITY)
-                        .then(|| self.cache.shadow_slices(&shape))
-                        .flatten();
-                    if let Some(sl) = sliced {
-                        self.ops.push(Op::PushClipEvenOdd(clip.clone()));
-                        for p in &sl.parts {
-                            let id = self.uploads.id(&p.pixmap, &mut self.new);
-                            self.ops.push(Op::Image {
-                                rect: p.dest,
-                                image: id,
-                                image_transform: Affine::translate(p.origin),
-                                tint: None,
-                                smooth: false,
-                            });
-                        }
-                        self.ops.push(Op::PopClip);
-                        continue;
-                    }
-                    match self.cache.shadow(&shape) {
-                        Some(pm) => {
-                            let id = self.uploads.id(&pm, &mut self.new);
-                            let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
-                            self.ops.push(Op::PushClipEvenOdd(clip.clone()));
-                            self.ops.push(Op::Image {
-                                rect: kurbo::Rect::new(
-                                    ox,
-                                    oy,
-                                    ox + pm.width() as f64,
-                                    oy + pm.height() as f64,
-                                ),
-                                image: id,
-                                image_transform: Affine::translate((ox, oy)),
-                                tint: None,
-                                smooth: cur != Affine::IDENTITY,
-                            });
-                            self.ops.push(Op::PopClip);
-                        }
-                        // Too large to cache: drawn on the CPU.
-                        None => self.island(&items[i - 1..i], d.bounds, cur),
-                    }
+                    // (perf-gpu-retain) Drawn by the GPU with the CPU's
+                    // primitive, as `cache::draw_shadow` draws it: no
+                    // tiles built, nothing uploaded, whatever its size.
+                    self.ops.push(Op::PushClipEvenOdd(clip.clone()));
+                    shadow_ops(&mut self.ops, rect, radii, *std_dev, *color, extent);
+                    self.ops.push(Op::PopClip);
                 }
                 Item::Fill {
                     shape,
@@ -2168,6 +2305,49 @@ impl Lowering<'_> {
         }
     }
 
+    /// (perf-gpu-retain) The backdrop layer `l` pushed at item `at`, for
+    /// want `w`: what is drawn behind it over the want's region, lowered
+    /// into the backdrop's own ops (as `pass_input` rasterises it for a
+    /// pass of its own), and its pass over them, in the frame.
+    fn backdrop(
+        &mut self,
+        items: &[DisplayItem],
+        at: usize,
+        w: &PassWant,
+        l: &crate::layers::Layer,
+        cur: Affine,
+    ) {
+        let region = Rect {
+            x: w.at.0,
+            y: w.at.1,
+            w: w.size.w,
+            h: w.size.h,
+        };
+        let keep = crate::backdrop::behind_mask(items, at, region);
+        let outer = std::mem::take(&mut self.ops);
+        let surface = std::mem::replace(&mut self.surface, region);
+        self.lower(items, at, Some(&keep));
+        let behind = std::mem::replace(&mut self.ops, outer);
+        self.surface = surface;
+        let (blend, opacity) = layer_parts(l);
+        let (x, y) = (f64::from(region.x), f64::from(region.y));
+        self.ops.push(Op::PushLayer(strand_gpu::Layer {
+            blend,
+            opacity,
+            ..Default::default()
+        }));
+        self.ops.push(Op::Transform(Affine::IDENTITY));
+        self.ops.push(Op::Backdrop {
+            region: kurbo::Rect::new(x, y, x + f64::from(region.w), y + f64::from(region.h)),
+            ops: behind,
+            pass: w.pass.clone(),
+            then: w.then.clone(),
+            globals: w.globals,
+        });
+        self.ops.push(Op::Transform(cur));
+        self.ops.push(Op::PopLayer);
+    }
+
     /// Draws `items` (a whole group, or one item) on the CPU into a pixmap
     /// of `bounds` and draws that: what the GPU cannot.
     fn island(&mut self, items: &[DisplayItem], bounds: Rect, cur: Affine) {
@@ -2226,6 +2406,49 @@ impl Lowering<'_> {
             smooth: false,
         });
         self.ops.push(Op::Transform(cur));
+    }
+}
+
+/// A box shadow's ops, as [`crate::cache::draw_shadow`] draws it: one
+/// blurred rounded rect, or, when its corners' radii differ, one per
+/// quadrant of `extent` split at the box's rounded centre.
+fn shadow_ops(
+    ops: &mut Vec<Op>,
+    rect: &kurbo::Rect,
+    radii: &[f32; 4],
+    std_dev: f32,
+    color: Color,
+    extent: &kurbo::Rect,
+) {
+    let color = straight(color);
+    if radii.iter().all(|r| *r == radii[0]) {
+        ops.push(Op::BlurredRect {
+            rect: *rect,
+            radius: radii[0],
+            std_dev,
+            color,
+        });
+        return;
+    }
+    let (mx, my) = (rect.center().x.round(), rect.center().y.round());
+    let quads = [
+        kurbo::Rect::new(extent.x0, extent.y0, mx, my),
+        kurbo::Rect::new(mx, extent.y0, extent.x1, my),
+        kurbo::Rect::new(mx, my, extent.x1, extent.y1),
+        kurbo::Rect::new(extent.x0, my, mx, extent.y1),
+    ];
+    for (q, r) in quads.iter().zip(radii) {
+        if q.width() <= 0.0 || q.height() <= 0.0 {
+            continue;
+        }
+        ops.push(Op::PushClip(q.to_path(0.1)));
+        ops.push(Op::BlurredRect {
+            rect: *rect,
+            radius: *r,
+            std_dev,
+            color,
+        });
+        ops.push(Op::PopClip);
     }
 }
 
