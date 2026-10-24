@@ -205,6 +205,23 @@ struct Target {
     /// size; those the next frame does not use are freed, so it holds at
     /// most one per backdrop its last frame showed.
     backdrops: Vec<FrameTarget>,
+    /// (perf-gpu-retain) Its last frame's backdrops' pixels by key
+    /// ([`Op::Backdrop`]'s `key`): a backdrop of the next frame with the
+    /// same key is drawn from them, nothing rendered or run; those the
+    /// next frame does not draw are freed.
+    kept: Vec<(u64, pass::Drawn)>,
+}
+
+/// (perf-gpu-retain) A surface's backdrop textures while a frame draws.
+#[derive(Default)]
+struct Backdrops {
+    /// The textures its last frame rendered what is behind its
+    /// backdrops into, to reuse, and those this frame uses.
+    pool: Vec<FrameTarget>,
+    used: Vec<FrameTarget>,
+    /// Its last frame's backdrops' pixels by key, and this frame's.
+    kept: Vec<(u64, pass::Drawn)>,
+    now: Vec<(u64, pass::Drawn)>,
 }
 
 impl Target {
@@ -218,6 +235,7 @@ impl Target {
             read: None,
             snapshot: None,
             backdrops: Vec::new(),
+            kept: Vec::new(),
         }
     }
 }
@@ -256,6 +274,7 @@ fn warm_retained() -> Vec<Op> {
             scale: 1.0,
             pointer: [8.0, 8.0],
         },
+        key: 0,
     };
     let mut ops = behind.clone();
     ops.extend([
@@ -748,7 +767,7 @@ impl State {
         out: &mut [Option<DrawnPass>],
         bindings: &mut vello_gpu::TextureBindings,
         keep: &mut Vec<pass::Drawn>,
-        (pool, used): (&mut Vec<FrameTarget>, &mut Vec<FrameTarget>),
+        tex: &mut Backdrops,
     ) -> Result<(), GpuError> {
         for op in ops {
             match op {
@@ -759,10 +778,30 @@ impl State {
                     pass,
                     then,
                     globals,
+                    key,
                 } => {
                     let at = *next;
                     *next += 1;
-                    self.draw_backdrops(dev, inner, next, out, bindings, keep, (pool, used))?;
+                    // The same pixels as the last frame's: drawn from them.
+                    let found = (*key != 0)
+                        .then(|| tex.kept.iter().position(|(k, _)| k == key))
+                        .flatten();
+                    if let Some(i) = found {
+                        *next += Op::passes_in(inner);
+                        let (k, d) = tex.kept.swap_remove(i);
+                        let id = TextureId(at as u64 + 1);
+                        bindings.insert(id, d.view.clone());
+                        if let Some(slot) = out.get_mut(at) {
+                            *slot = Some(DrawnPass {
+                                texture: id,
+                                width: d.width as u16,
+                                height: d.height as u16,
+                            });
+                        }
+                        tex.now.push((k, d));
+                        continue;
+                    }
+                    self.draw_backdrops(dev, inner, next, out, bindings, keep, tex)?;
                     let max = dev
                         .device
                         .limits()
@@ -774,8 +813,8 @@ impl State {
                         continue;
                     }
                     let (w, h) = (w as u32, h as u32);
-                    let tex = match pool.iter().position(|t| t.width == w && t.height == h) {
-                        Some(i) => pool.swap_remove(i),
+                    let target = match tex.pool.iter().position(|t| t.width == w && t.height == h) {
+                        Some(i) => tex.pool.swap_remove(i),
                         None => frame_texture(dev, w, h, "strand backdrop"),
                     };
                     self.inner.reset_and_resize(w as u16, h as u16);
@@ -809,7 +848,7 @@ impl State {
                             width: w as u16,
                             height: h as u16,
                         },
-                        &tex.view,
+                        &target.view,
                         None,
                         bindings,
                         vello_gpu::TargetInit::Clear(vello_gpu::ClearSettings::Viewport {
@@ -818,7 +857,7 @@ impl State {
                     );
                     if let Err(e) = rendered {
                         dev.queue.submit([encoder.finish()]);
-                        used.push(tex);
+                        tex.used.push(target);
                         return Err(render_error(e.to_string()));
                     }
                     let mut drawn = match self.passes.draw(
@@ -828,13 +867,13 @@ impl State {
                         w,
                         h,
                         *globals,
-                        Some(&tex.view),
+                        Some(&target.view),
                     ) {
                         Ok(Some(d)) => Some(d),
                         Ok(None) => None,
                         Err(e) => {
                             dev.queue.submit([encoder.finish()]);
-                            used.push(tex);
+                            tex.used.push(target);
                             return Err(e);
                         }
                     };
@@ -857,13 +896,13 @@ impl State {
                             Ok(None) => {}
                             Err(e) => {
                                 dev.queue.submit([encoder.finish()]);
-                                used.push(tex);
+                                tex.used.push(target);
                                 return Err(e);
                             }
                         }
                     }
                     dev.queue.submit([encoder.finish()]);
-                    used.push(tex);
+                    tex.used.push(target);
                     if let Some(d) = drawn {
                         let id = TextureId(at as u64 + 1);
                         bindings.insert(id, d.view.clone());
@@ -874,7 +913,11 @@ impl State {
                                 height: d.height as u16,
                             });
                         }
-                        keep.push(d);
+                        if *key != 0 {
+                            tex.now.push((*key, d));
+                        } else {
+                            keep.push(d);
+                        }
                     }
                 }
                 _ => {}
@@ -1014,12 +1057,15 @@ impl State {
         // frame's own last.
         if frame.ops.iter().any(|o| matches!(o, Op::Backdrop { .. })) {
             dev.queue.submit([encoder.finish()]);
-            let mut pool = self
+            let mut tex = self
                 .targets
                 .get_mut(&surface)
-                .map(|t| std::mem::take(&mut t.backdrops))
+                .map(|t| Backdrops {
+                    pool: std::mem::take(&mut t.backdrops),
+                    kept: std::mem::take(&mut t.kept),
+                    ..Backdrops::default()
+                })
                 .unwrap_or_default();
-            let mut used = Vec::new();
             let result = self.draw_backdrops(
                 dev,
                 &frame.ops,
@@ -1027,12 +1073,13 @@ impl State {
                 &mut drawn,
                 &mut bindings,
                 &mut keep,
-                (&mut pool, &mut used),
+                &mut tex,
             );
             if let Some(t) = self.targets.get_mut(&surface) {
-                t.backdrops = used;
+                t.backdrops = std::mem::take(&mut tex.used);
+                t.kept = std::mem::take(&mut tex.now);
             }
-            drop(pool);
+            drop(tex);
             if let Err(e) = result {
                 drop(keep);
                 return Err(e);
@@ -1045,6 +1092,7 @@ impl State {
             ph.mark("backdrops");
         } else if let Some(t) = self.targets.get_mut(&surface) {
             t.backdrops.clear();
+            t.kept.clear();
         }
         self.scene.reset_and_resize(w as u16, h as u16);
         let snapshot = self

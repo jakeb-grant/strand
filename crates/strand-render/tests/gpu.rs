@@ -2450,6 +2450,17 @@ fn backdrop_presented(
     (r, gpu, pings)
 }
 
+/// The keys of `f`'s backdrops.
+fn backdrop_keys(f: &strand_gpu::Frame) -> Vec<u64> {
+    f.ops
+        .iter()
+        .filter_map(|o| match o {
+            strand_gpu::Op::Backdrop { key, .. } => Some(*key),
+            _ => None,
+        })
+        .collect()
+}
+
 fn backdrops_in(f: &strand_gpu::Frame) -> Vec<&strand_gpu::Op> {
     f.ops
         .iter()
@@ -2548,6 +2559,7 @@ fn glass_in_a_presented_frame_follows_the_pointer() {
     let (mut r, mut gpu, pings) = backdrop_presented(opts, scene(), size);
     let t0 = Duration::from_secs(1);
     let frame = r.paint_gpu(S, t0).expect("the switch repaints");
+    let still = backdrop_keys(&frame);
     let before = draw(&mut gpu, &pings, frame);
     assert!(r.paint_gpu(S, t0).is_none(), "idle without the pointer");
     r.set_pointer(S, Some(LogicalPoint { x: 100.0, y: 30.0 }));
@@ -2563,6 +2575,11 @@ fn glass_in_a_presented_frame_follows_the_pointer() {
         })
         .unwrap_or([-1.0, -1.0]);
     assert_eq!(pointer, [60.0, 20.0], "relative to the glass");
+    let moved = backdrop_keys(&frame);
+    assert!(
+        still[0] != 0 && moved[0] != 0 && still != moved,
+        "drawn anew"
+    );
     let lit = draw(&mut gpu, &pings, frame);
     let i = ((30 * size.0 + 100) * 4) as usize;
     let (b, a) = (&before[i..i + 3], &lit[i..i + 3]);
@@ -2661,4 +2678,53 @@ fn a_small_backdrop_blur_on_a_presented_surface_is_drawn_in_its_frame() {
     let sharp = outside.windows(2).map(|p| (p[1] - p[0]).abs()).max();
     assert!(sharp.unwrap_or(0) > 40, "{outside:?}");
     drop(gpu);
+}
+
+/// (perf-gpu-retain) A backdrop's key in a GPU frame follows what is
+/// behind it and nothing else: a box over it changing colour keeps it
+/// (the GPU thread draws the last pixels again), one behind it moving
+/// changes it. Needs no device: the frames are only lowered.
+#[test]
+fn a_backdrops_key_follows_what_is_behind_it() {
+    let size = (640, 400);
+    let scene = backdrop_scene(
+        size,
+        (20.0, 20.0, 300.0, 300.0),
+        backdrop_call("blur", vec![num(8.0)]),
+        vec![],
+        vec![vec![
+            (Prop::X, num(100.0)),
+            (Prop::Y, num(100.0)),
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ffffff")),
+        ]],
+    );
+    let mut r = renderer();
+    assert!(r.apply(scene).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(size.0, size.1, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    r.promote_now(S);
+    let _ = r.take_backend_changes();
+    r.set_backend(S, Backend::GpuPresent);
+    up_without_a_device(&mut r);
+    let t = |ms: u64| Duration::from_secs(1) + Duration::from_millis(ms);
+    let first = backdrop_keys(&r.paint_gpu(S, t(16)).expect("the switch repaints"));
+    assert_eq!(first.len(), 1);
+    assert_ne!(first[0], 0);
+    // The box in front: a new colour.
+    // Built in order: the bar, 64 stripes, the card, the box in front.
+    let (stripe, front) = (NodeId::new(4, 0), NodeId::new(66, 0));
+    let mut d = SceneDiff::new();
+    d.set(front, Prop::Bg, color("#000000"));
+    assert!(r.apply(d).is_empty());
+    let f = r.paint_gpu(S, t(32)).expect("a new colour");
+    assert_eq!(backdrop_keys(&f), first, "the same backdrop");
+    // A stripe behind it moved.
+    let mut d = SceneDiff::new();
+    d.set(stripe, Prop::Y, num(10.0));
+    assert!(r.apply(d).is_empty());
+    let f = r.paint_gpu(S, t(48)).expect("moved");
+    assert_ne!(backdrop_keys(&f), first, "drawn anew");
 }

@@ -5425,7 +5425,12 @@ Wayland crate. Its interface:
   transform under the clips and layers in force; each backdrop's
   render is submitted on its own, before the frame's, its texture
   reused by the surface's next frame and freed when that frame has no
-  backdrop of its size); and `Op::Snapshot { rect }` (the surface's
+  backdrop of its size; `key`, render's hash of its want's key (what is
+  behind it, its passes and globals) and its region, or 0 when what is
+  behind it runs passes: a backdrop with the key of one the surface's
+  last frame drew is drawn from that one's pixels, nothing rendered or
+  run, and the last frame's pixels no backdrop of this frame keeps are
+  freed); and `Op::Snapshot { rect }` (the surface's
   crossfade snapshot 1:1 from the origin, nothing when none is held).
   `FrameSnapshot` is `None` (none held: one held is freed), `Take`
   (before the frame draws, the surface's last frame at the frame's

@@ -130,6 +130,7 @@ fn a_backdrop_in_a_frame_is_its_pass_over_what_is_behind_it() {
         pass: blur(3.0),
         then: Vec::new(),
         globals,
+        key: 0,
     });
     ops.push(Op::PopClip);
     for id in [2, 3] {
@@ -209,6 +210,7 @@ fn passes_inside_a_backdrop_draw_into_what_it_reads() {
             pass: copy,
             then: Vec::new(),
             globals: PassGlobals::default(),
+            key: 0,
         },
     ];
     assert_eq!(Op::passes_in(&ops), 3);
@@ -315,4 +317,50 @@ fn a_snapshot_is_the_last_frame_taken_kept_and_freed() {
     });
     let px = frame(&mut h, frame_of(6, big, fade(green), FrameSnapshot::Take));
     assert_eq!(pixel(&px, 24, 8), [0, 0, 0, 0], "no frame of its size");
+}
+
+/// A backdrop with the key of one the surface's last frame drew is drawn
+/// from that one's pixels (its ops are not rendered again); a new key,
+/// or key 0, draws it anew, and a frame without it frees them.
+#[test]
+fn a_backdrop_with_its_last_key_is_drawn_from_its_last_pixels() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(32, 16);
+    attach(&mut h, size);
+    let solid = |c: [f32; 4]| {
+        vec![Op::Fill {
+            path: Rect::new(0.0, 0.0, 32.0, 16.0).to_path(0.1),
+            brush: Brush::Solid(AlphaColor::new(c)),
+            brush_transform: Affine::IDENTITY,
+            even_odd: false,
+        }]
+    };
+    let backdrop = |c: [f32; 4], key: u64| {
+        vec![Op::Backdrop {
+            region: Rect::new(0.0, 0.0, 32.0, 16.0),
+            ops: solid(c),
+            pass: blur(1.0),
+            then: Vec::new(),
+            globals: PassGlobals::default(),
+            key,
+        }]
+    };
+    let at = |h: &mut Harness, id, ops| {
+        pixel(
+            &frame(h, frame_of(id, size, ops, FrameSnapshot::None)),
+            16,
+            8,
+        )
+    };
+    assert_eq!(at(&mut h, 1, backdrop(RED, 7)), [0, 0, 255, 255]);
+    // The same key: the red pixels, whatever its ops say now.
+    assert_eq!(at(&mut h, 2, backdrop(BLUE, 7)), [0, 0, 255, 255], "kept");
+    // A new key, and key 0: drawn anew.
+    assert_eq!(at(&mut h, 3, backdrop(BLUE, 8)), [255, 0, 0, 255]);
+    assert_eq!(at(&mut h, 4, backdrop(RED, 0)), [0, 0, 255, 255]);
+    // Key 8 was not drawn by frame 4: gone.
+    assert_eq!(at(&mut h, 5, backdrop(RED, 8)), [0, 0, 255, 255]);
+    // A frame without backdrops frees what was kept.
+    at(&mut h, 6, solid(BLUE));
+    assert_eq!(at(&mut h, 7, backdrop(BLUE, 8)), [255, 0, 0, 255]);
 }

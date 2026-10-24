@@ -552,12 +552,18 @@ pub enum Op {
     /// and the last pass's pixels drawn over `region` at the identity
     /// transform, under the clips and layers in force. The CPU's
     /// rasterised input, its upload and the pass's readback are gone.
+    ///
+    /// `key` is what its pixels depend on (render hashes what is behind
+    /// it, its region, passes and globals): when the surface's last
+    /// frame drew a backdrop with the same key, its pixels are drawn
+    /// again as they are, nothing rendered or run; `0` draws it anew.
     Backdrop {
         region: kurbo::Rect,
         ops: Vec<Op>,
         pass: ShaderPass,
         then: Vec<ShaderPass>,
         globals: PassGlobals,
+        key: u64,
     },
     /// (perf-gpu-retain) The surface's snapshot ([`Frame::snapshot`])
     /// over `rect`, its pixels 1:1 from the origin at the identity

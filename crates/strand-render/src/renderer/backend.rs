@@ -1744,6 +1744,8 @@ impl Renderer {
             last.size,
             last.scale,
         );
+        // Drawn anew: no backdrop's pixels from the device's last frame.
+        uncached(&mut frame.ops);
         // As `gpu_present_paint` blends: over the snapshot the GPU holds
         // (the fresh device's own last frame, the same frame drawn fresh),
         // or over the CPU's, when there is one to upload.
@@ -1938,6 +1940,18 @@ fn crossfade_ops(ops: Vec<Op>, under: Op, w: f32) -> Vec<Op> {
     out.extend(ops);
     out.push(Op::PopLayer);
     out
+}
+
+/// (eval-sandbox) Every backdrop among `ops` drawn anew
+/// (`Op::Backdrop`'s key 0).
+#[cfg(feature = "eval-hooks")]
+fn uncached(ops: &mut [Op]) {
+    for op in ops {
+        if let Op::Backdrop { key, ops, .. } = op {
+            *key = 0;
+            uncached(ops);
+        }
+    }
 }
 
 /// Upload `image` drawn 1:1 over `rect` from the origin.
@@ -2329,6 +2343,21 @@ impl Lowering<'_> {
         self.lower(items, at, Some(&keep));
         let behind = std::mem::replace(&mut self.ops, outer);
         self.surface = surface;
+        // What its pixels depend on: its want's key (its passes, size,
+        // globals and what is behind it) and where it is; none when what
+        // is behind it runs passes of its own (their pixels move with
+        // their clocks).
+        let key = if behind
+            .iter()
+            .any(|o| matches!(o, Op::Pass { .. } | Op::Backdrop { .. }))
+        {
+            0
+        } else {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (w.key, w.at, w.size.w, w.size.h).hash(&mut h);
+            h.finish().max(1)
+        };
         let (blend, opacity) = layer_parts(l);
         let (x, y) = (f64::from(region.x), f64::from(region.y));
         self.ops.push(Op::PushLayer(strand_gpu::Layer {
@@ -2343,6 +2372,7 @@ impl Lowering<'_> {
             pass: w.pass.clone(),
             then: w.then.clone(),
             globals: w.globals,
+            key,
         });
         self.ops.push(Op::Transform(cur));
         self.ops.push(Op::PopLayer);
