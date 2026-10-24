@@ -460,37 +460,75 @@ re-composited every frame.
 
 ## Animation frame cost after perf-cpu-raster
 
-The same bench, binaries and host as above, run back to back on
-2026-10-23: `laptop/perf` d85e5f96 (before) against perf-cpu-raster's
-head (after), three repeats each, every leg pinned to the performance
-cores (`taskset -c 0-3`, so a large paint draws on four threads).
-Each cell is p50 / p95 in ms, before → after, each repeat's range.
+The same bench and host as above, 2026-10-24: `laptop/perf` d85e5f96
+(before) against perf-cpu-raster's head (after, with the review's
+fixes), each built with the `timing` profile. Repeats on this host are
+bimodal: the stages this branch does not touch (apply, layout, diff)
+move by up to 3× between runs of the same binary, and a single
+before-and-after pair once inverted the wins. So the legs are
+interleaved, before, after, before, after (two pairs, three repeats
+each), every leg pinned to the performance cores (`taskset -c 0-3`, so
+a large paint draws on four threads), and each cell is p50 / p95 in ms,
+before → after, the range across all six repeats. The untouched stages
+are the control: within 1.5× between the legs of each pair, except at
+1.5× in morph-card, resize-shadow, resize-radius and flip, where they
+are 0.04–0.25 ms a frame and higher after in both pairs (a steady
+difference, not a host state flipping). lavapipe is CI's emulated GPU
+on the same four cores; Intel is the laptop's GPU through `gpu.sh`.
 
-
+| Scene | CPU 1× | CPU 1.5× | lavapipe 1× | Intel GPU 1× |
+| --- | --- | --- | --- | --- |
+| morph-card | 5.2–5.8 / 16–18 → 2.4–2.5 / 6.0–6.7 | 5.4–5.5 / 34–42 → 2.3–2.5 / 14–15 | 4.4–4.5 / 12–13 → 4.3–4.4 / 12–13 | 2.0–2.1 / 3.4–4.0 → 2.0–2.1 / 3.0–3.5 |
+| shared-morph | 11 / 23–25 → 1.2–1.3 / 4.2–4.4 | 19–24 / 32–33 → 2.6–2.7 / 8.5–9.0 | 4.0–4.3 / 12–13 → 4.0–4.2 / 12–13 | 1.8–2.0 / 2.2–2.4 → 1.8–2.0 / 2.3–2.4 |
+| panel-open | 7.0–7.1 / 22–25 → 4.5–4.7 / 5.7–6.0 | 12 / 34–40 → 2.7–2.8 / 9.7–13 | 6.0–6.5 / 20 → 6.3–6.4 / 20–21 | 3.4–3.5 / 4.0–4.5 → 3.4–3.5 / 4.0–4.6 |
+| resize-shadow | 5.6–6.4 / 7.3–9.5 → 2.1–2.2 / 3.2–3.5 | 7.4–9.8 / 15–16 → 4.2–4.3 / 5.9–6.2 | 5.2–6.1 / 8.7–8.9 → 5.4–5.7 / 8.6–9.2 | 2.0–2.1 / 2.4–2.8 → 2.0–2.2 / 2.3–2.5 |
+| resize-radius | 7.5–8.0 / 10–11 → 2.9–3.1 / 3.9–4.4 | 6.9–7.0 / 21–22 → 4.4–5.4 / 7.2–8.7 | 4.2–4.5 / 14–15 → 4.1–4.5 / 14–15 | 3.0–3.2 / 3.9–4.1 → 2.4–2.5 / 2.8–3.0 |
+| backdrop-blur | 5.0–5.3 / 7.7–9.2 → 1.9–2.1 / 9.5–13 | 16 / 45–49 → 14 / 40–43 | 11–12 / 30–32 → 11–12 / 27–32 | 3.3–3.5 / 11–12 → 3.4–3.5 / 7.7–8.8 |
+| glass | 3.5–3.6 / 13–15 → 1.3–1.5 / 11–13 | 5.3–5.5 / 10 → 2.1–2.2 / 8.8–11 | 4.8–4.9 / 16–17 → 4.8–5.0 / 15–17 | 2.2–2.3 / 17–21 → 2.1–2.3 / 13–14 |
+| crossfade | 8.8–8.9 / 23–25 → 3.4 / 9.2–11 | 14 / 31–33 → 4.9–5.0 / 14 | 21–22 / 24–26 → 21–22 / 24–26 | 3.9–4.2 / 4.8–5.1 → 3.7–3.8 / 4.8–6.7 |
+| theme-spring | 4.5–4.8 / 5.8–7.1 → 1.8–1.9 / 2.5–3.0 | 3.8–3.9 / 12–13 → 3.7–3.8 / 4.6–5.2 | 3.8–4.7 / 7.5–8.4 → 3.9–5.0 / 7.4–8.3 | 1.9–2.0 / 2.2–2.5 → 1.9–2.0 / 2.2–2.5 |
+| list-scroll | 2.4 / 6.3–6.7 → 0.85–0.87 / 3.0–3.2 | 4.2–4.3 / 10.0–10 → 1.3–1.4 / 4.6–4.8 | 3.5–3.6 / 7.2–7.5 → 3.6 / 7.2–7.6 | 2.0–2.1 / 2.2–2.4 → 2.0–2.1 / 2.2–2.4 |
+| goo | 4.0–4.1 / 4.4 → 2.9 / 3.2 | 8.8–9.3 / 9.6–11 → 6.0–6.1 / 6.7–6.8 | 3.2–3.3 / 3.6–3.8 → 3.1–3.2 / 3.7–3.8 | 3.1–3.2 / 3.4–4.0 → 2.2–2.3 / 2.6–3.5 |
+| letters | 0.48 / 0.48–0.49 → 0.48 / 0.48–0.49 | 0.85 / 0.86 → 0.38–0.42 / 0.42–0.45 | 1.3 / 1.5–1.6 → 1.3–1.4 / 1.5–1.6 | 1.5–1.6 / 1.7–1.8 → 1.5–1.6 / 1.6–1.8 |
+| stagger | 4.2 / 8.9–10 → 1.6–1.7 / 2.2–2.3 | 9.0–9.1 / 13 → 1.0–1.1 / 3.1–3.2 | 4.1–4.3 / 7.4–7.9 → 4.1–4.3 / 7.5–7.8 | 3.2–3.3 / 3.5–4.0 → 3.2–3.3 / 3.4–3.7 |
+| fade | 6.4–6.5 / 7.8–8.4 → 2.6–2.7 / 3.5–3.8 | 5.3–5.5 / 17–18 → 2.8–3.8 / 6.2–6.9 | 4.5–4.9 / 15 → 4.5–4.7 / 14–15 | 2.3–2.5 / 2.7–3.3 → 2.4–2.5 / 2.8–3.6 |
+| flip | 6.2–6.6 / 10–11 → 2.4–2.6 / 5.5–6.2 | 6.8–9.2 / 16–21 → 4.0–4.2 / 7.9–8.9 | 5.2–5.6 / 8.0–9.0 → 5.2–5.8 / 8.3–8.7 | 2.1 / 2.5–2.6 → 2.1 / 2.5–2.7 |
+| cover-turn | 0.20–0.21 / 0.42–0.44 → 0.21 / 0.42–0.44 | 0.51–0.52 / 0.63–0.64 → 0.48–0.50 / 0.51–0.53 | 5.6–5.7 / 7.2–7.8 → 5.6–5.8 / 7.5–7.8 | 1.5–2.1 / 1.7–2.4 → 1.4–1.7 / 1.6–2.3 |
+| cover-mask | 6.7 / 13 → 0.26–0.27 / 0.33 | 13 / 13 → 0.42 / 0.43 | 4.9–5.2 / 5.8–6.2 → 5.0–5.1 / 6.1–6.2 | 1.9–2.0 / 2.6–3.9 → 2.2 / 2.3–2.4 |
+| shader | (GPU only) | (GPU only) | 3.6–3.7 / 4.1–4.5 → 3.6–3.7 / 4.1–4.4 | 1.0–2.0 / 1.2–2.2 → 1.0–1.6 / 1.2–1.8 |
 
 What moved:
 
 - **Masks:** cover-mask's mask is computed only within its shape's reach
-  (13.3 → 0.33 ms p95 at 1×); on the GPU leg its lowering falls from
-  2.1 to 0.4 ms a frame.
+  (13 → 0.33 ms p95 at 1×, 13 → 0.43 at 1.5×).
 - **Parallel cells:** the fine raster of a large paint on four threads
-  (crossfade's raster 11.8 → 3.4 ms at 1×, panel-open's 11.7 → 4.2,
-  goo's 1.8 → 0.7); a paint under 8 cells stays on the render thread.
+  (crossfade p95 23–25 → 9.2–11 ms at 1×, panel-open 22–25 → 5.7–6.0,
+  goo 4.4 → 3.2); a paint under 8 cells stays on the render thread.
 - **Gradients under a transform** draw each cell's part from the cached
-  pixmap (stagger p50 9.2–9.7 → 0.9 ms at 1.5×; shared-morph's p95 at
-  1.5× 37–44 → 9).
+  pixmap (stagger p50 9.0–9.1 → 1.0–1.1 ms at 1.5×; shared-morph's p95
+  at 1.5× 32–33 → 8.5–9.0).
 - **Corner tiles** under a radius spring build on a thread each
-  (resize-radius p95 22 → 6.5 ms at 1.5×).
-- **Goo** allocates 253 times a frame, not 29,000; its flatten is
-  2.3 → 2.2 ms at 1× (a lower bound that skipped far corners measured
-  slower and was not kept).
+  (resize-radius p95 21–22 → 7.2–8.7 ms at 1.5×; on Intel 3.9–4.1 →
+  2.8–3.0 at 1×).
+- **Goo** allocates 428 times a frame, not 29,254 (the bench now counts
+  the raster's helper threads' allocations too; the other scenes'
+  counts rise by about 30 a frame, the threads' start); its frame is
+  4.0–4.1 → 2.9 ms p50 at 1×, mostly the parallel raster.
+- The GPU legs barely move (a GPU frame's CPU raster is a masked group's
+  pixmap or nothing): lavapipe is within its spread everywhere, Intel
+  improves where a frame still rasterises on the CPU (goo, resize-radius,
+  glass's and backdrop-blur's p95).
 
-Still over 8.33 ms at p95: backdrop-blur at 1.5× on the CPU (its blur),
-glass (an offscreen group rebuilt now and then: 11–13 ms frames at 1×),
-crossfade at 1.5× (11–14 ms, its fine raster on four threads), and the
-first frame of a scene. On lavapipe (CI's GPU tier, an emulated GPU
-on the same four cores) the figures are within the run-to-run spread:
-its own threads share the cores the raster's threads use. The bench's
-PSS (glibc's allocator; Strand runs on mimalloc) is a few MB higher
-with the threads' arenas; the memory budgets hold (decisions.md
-perf-cpu-raster).
+Still over 8.33 ms at p95: backdrop-blur at 1.5× on the CPU (its blur:
+40–43 ms), glass (an offscreen group rebuilt now and then: 11–13 ms
+frames at 1×, 8.8–11 at 1.5×), crossfade at 1.5× (14 ms, its fine
+raster on four threads), morph-card at 1.5× (14–15), panel-open at
+1.5× (9.7–13), and the first frame of a scene; flip at 1.5× is at the
+line (7.9–8.9).
+backdrop-blur at 1× moved the other way at p95, 7.7–9.2 → 9.5–13 ms in
+both pairs, while its p50 fell 5.1 → 2.0: its slowest frames are its
+offscreen group's rebuilds (5.6–19 ms of `offscreen`, serial and not
+touched here), which the raster's 7–8 ms frames hid before. The memory
+the threads keep is freed when idle (decisions.md perf-cpu-raster,
+review): the cold two-monitor bar measured 41,870–42,097 kB, its base's
+range.
