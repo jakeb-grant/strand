@@ -107,6 +107,72 @@ fn a_graph_keeps_its_history_and_draws_only_new_columns() {
     assert_eq!((rd, gr, b), (0x1e, 0x1e, 0x2e));
 }
 
+/// (history) A graph mounting onto the history logic kept of its value
+/// (`Prop::Backlog`) shows it at once: over 6 s, a shown second of steps
+/// (0.3, then 0.5, then 0.4), then a hidden span sampled every 2 s drawn
+/// as lines between its samples (up to 0.9, down to 0.2), and the value
+/// now. Nothing is left empty, and the next tick still draws only the
+/// new column and the last live one.
+#[test]
+fn a_graph_mounting_onto_its_backlog_shows_it_with_hidden_spans_as_lines() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Pad, num(5.0)),
+        ],
+    );
+    let point = |age, value, ramp| BacklogPoint { age, value, ramp };
+    let backlog = Backlog {
+        points: vec![
+            point(6.5, 0.3, 0.0),
+            point(5.0, 0.5, 0.0),
+            point(4.0, 0.4, 0.0),
+            // Hidden: one sample every 2 s, each a line from the last.
+            point(2.0, 0.9, 2.0),
+            point(0.0, 0.2, 2.0),
+        ],
+    };
+    let g = b.node(
+        NodeKind::Graph,
+        Some(root),
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Value, num(0.25)),
+            (Prop::History, PropValue::Duration(Duration::from_secs(6))),
+            (Prop::Color, color("#89b4fa")),
+            (Prop::Fill, color("#89b4fa55")),
+            (
+                Prop::Backlog,
+                PropValue::Backlog(std::sync::Arc::new(backlog)),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, T0);
+    buf.paint_at(&mut r, S, 1, ms(16));
+    assert_matches_ref("graph_backlog", &buf, TOLERANCE);
+    // The oldest column is drawn from the backlog, not left empty.
+    let rect = r.boxes(S).unwrap().rects[&g];
+    let [bl, gr, rd, _] = buf.px(rect.x as u32 + 1, rect.y as u32 + 28);
+    assert_ne!((rd, gr, bl), (0x1e, 0x1e, 0x2e), "history at the left edge");
+    // Columns it samples itself are its own: a tick draws two.
+    set(&mut r, g, Prop::Value, num(0.3));
+    buf.paint_at(&mut r, S, 1, ms(100));
+    let before = r.graph_columns_drawn(g).unwrap();
+    set(&mut r, g, Prop::Value, num(0.35));
+    buf.paint_at(&mut r, S, 1, ms(200));
+    assert_eq!(r.graph_columns_drawn(g).unwrap() - before, 2);
+}
+
 #[test]
 fn a_hidden_graph_has_no_clock() {
     let (mut r, g, mut buf) = graph_scene();

@@ -201,6 +201,9 @@ impl Probe {
         if cx.watched("scan") {
             log("scan watched at start".into());
         }
+        if let Some(k) = cx.kept() {
+            log(format!("kept at start {k:?}"));
+        }
         loop {
             tokio::select! {
                 c = cmds.recv() => match c {
@@ -267,6 +270,10 @@ impl Probe {
                     Some(Msg::Watch { field, on }) => {
                         assert_eq!(cx.watched(field), on);
                         log(format!("watch {field} {on}"));
+                    }
+                    Some(Msg::Keep(k)) => {
+                        assert_eq!(cx.kept(), k);
+                        log(format!("keep {k:?}"));
                     }
                 },
             }
@@ -916,6 +923,70 @@ fn a_service_stops_five_seconds_after_its_last_reader() {
     probe.release(&rt);
     probe.release(&rt);
     assert_eq!(probe.readers(), 0);
+    s.shutdown();
+}
+
+/// (history) A service kept for a graph's history runs while nobody
+/// reads it, hidden, told how often to sample; it never stops for lack
+/// of readers until let go, and then stops 5 s later as after its last
+/// reader. Nothing keeps it otherwise: no timer, no run.
+#[test]
+fn a_kept_service_runs_hidden_until_let_go() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
+    // Letting go of what was never kept starts nothing.
+    probe.keep(&rt, None);
+    assert!(!probe.running());
+    assert_eq!(rt.next_deadline(), None);
+    let three = Some(Duration::from_secs(3));
+    probe.keep(&rt, three);
+    assert_eq!(sc.next(), "start visible=false");
+    assert_eq!(sc.next(), "kept at start 3s");
+    assert_eq!((probe.readers(), probe.kept()), (0, three));
+    assert_eq!(rt.next_deadline(), None, "no stop while kept");
+    // A reader comes and goes: visible, then hidden, never stopped.
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "visible true");
+    probe.release(&rt);
+    assert_eq!(sc.next(), "visible false");
+    assert_eq!(rt.next_deadline(), None);
+    at(Duration::from_secs(10));
+    assert!(probe.running());
+    // The same period again says nothing; another is told.
+    probe.keep(&rt, three);
+    assert!(sc.quiet());
+    probe.keep(&rt, Some(Duration::from_secs(5)));
+    assert_eq!(sc.next(), "keep Some(5s)");
+    // Let go with no reader: it stops 5 s later.
+    probe.keep(&rt, None);
+    assert_eq!(sc.next(), "keep None");
+    assert_eq!(rt.next_deadline(), Some(now.get() + STOP_GRACE));
+    at(Duration::from_millis(4999));
+    assert!(probe.running());
+    at(Duration::from_millis(2));
+    assert!(!probe.running());
+    assert_eq!((probe.starts(), probe.stops()), (1, 1));
+    assert_eq!(rt.next_deadline(), None);
+    // Kept while read: it runs on when the reader leaves, and the last
+    // reader's grace starts only once it is let go.
+    let sc2 = script_again();
+    probe.acquire(&rt);
+    assert_eq!(sc2.next(), "start visible=true");
+    probe.keep(&rt, three);
+    assert_eq!(sc2.next(), "keep Some(3s)");
+    probe.release(&rt);
+    assert_eq!(sc2.next(), "visible false");
+    assert_eq!(rt.next_deadline(), None);
+    probe.keep(&rt, None);
+    assert_eq!(sc2.next(), "keep None");
+    assert_eq!(rt.next_deadline(), Some(now.get() + STOP_GRACE));
     s.shutdown();
 }
 

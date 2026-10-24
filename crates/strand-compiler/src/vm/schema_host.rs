@@ -115,6 +115,9 @@ pub struct SchemaHost {
     /// (report) The mock's log of fetches: each method called and
     /// whether a queued answer gave it ([`SchemaHost::take_fetches`]).
     fetches: RefCell<Vec<(String, bool)>>,
+    /// (history) What each service was asked to keep sampling at while
+    /// hidden ([`ServiceHost::keep`]).
+    kept: RefCell<BTreeMap<String, std::time::Duration>>,
 }
 
 /// Where a shadowed builtin service's cells are kept.
@@ -164,6 +167,7 @@ impl SchemaHost {
             shadowed: RefCell::default(),
             answers: RefCell::default(),
             fetches: RefCell::default(),
+            kept: RefCell::default(),
         };
         for (name, &r) in &crate::schema::Schema::builtin().services {
             host.add_service(rt, name, r);
@@ -549,6 +553,12 @@ impl SchemaHost {
     /// Readers currently holding `service` (acquire minus release).
     pub fn readers(&self, service: &str) -> i64 {
         self.refs.borrow().get(service).copied().unwrap_or(0)
+    }
+
+    /// (history) The services kept sampling while hidden, with their
+    /// hidden periods ([`ServiceHost::keep`]).
+    pub fn kept(&self) -> BTreeMap<String, std::time::Duration> {
+        self.kept.borrow().clone()
     }
 
     /// Move the clock (the host loop's wall-clock wake-up).
@@ -1107,6 +1117,18 @@ impl ServiceHost for SchemaHost {
             .borrow_mut()
             .entry(service.to_string())
             .or_default() -= 1;
+    }
+
+    fn keep(&self, _rt: &Runtime, service: &str, every: Option<std::time::Duration>) {
+        let mut kept = self.kept.borrow_mut();
+        match every {
+            Some(e) => kept.insert(service.to_string(), e),
+            None => kept.remove(service),
+        };
+    }
+
+    fn shown(&self, _rt: &Runtime, service: &str) -> bool {
+        self.readers(service) > 0
     }
 
     fn next_wake(&self, rt: &Runtime) -> Option<SystemTime> {

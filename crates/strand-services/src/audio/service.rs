@@ -590,7 +590,7 @@ impl Host for StoreHost {
                     }
                 }
                 Ok(Msg::Call(c, _)) => match c {},
-                Ok(Msg::Visible(_) | Msg::Watch { .. }) => {}
+                Ok(Msg::Visible(_) | Msg::Watch { .. } | Msg::Keep(_)) => {}
                 Err(false) => break,
                 Err(true) => {
                     self.stopped = true;

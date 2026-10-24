@@ -474,6 +474,14 @@ impl ServiceHost for StoreHost {
         self.svc.release(rt);
     }
 
+    fn keep(&self, rt: &Runtime, _service: &str, every: Option<std::time::Duration>) {
+        self.svc.keep(rt, every);
+    }
+
+    fn shown(&self, _rt: &Runtime, _service: &str) -> bool {
+        self.svc.readers() > 0
+    }
+
     fn acquire_field(&self, _rt: &Runtime, _service: &str, field: &str) {
         if let Ok(i) = self.index(field) {
             self.svc.acquire_field(i);

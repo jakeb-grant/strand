@@ -1210,6 +1210,105 @@ mod tests {
         assert_eq!(memory.starts(), 2);
     }
 
+    /// (history) A `graph` in a popup on the real `cpu` service, end to
+    /// end through the composite host: the config keeps `cpu` (at the
+    /// 3 s hidden period of a 60 s history), so it runs and samples
+    /// while the popup is closed and past the 5 s grace; the graph,
+    /// mounted again, gets the values it showed and the coarse one taken
+    /// while closed (a ramp). A reload without the graph lets `cpu` go,
+    /// and it stops 5 s later as after its last reader.
+    #[test]
+    fn a_graph_mounted_again_shows_the_cpu_history_kept_while_closed() {
+        let graph = "export state p = true\nbar B {\n  text \"x\"\n  popup { open: <-> p; graph cpu.usage { history: 60s } }\n}\n";
+        let build = |prev: Option<&strand_compiler::reconcile::Build>, text: &str| {
+            let mut map = SourceMap::new();
+            map.add("svc.strand", text.to_string());
+            strand_compiler::reconcile::Build::compile_with(prev, map, schema())
+                .unwrap_or_else(|d| panic!("{d:#?}"))
+        };
+        let first = build(None, graph);
+        let rt = Runtime::new();
+        let fallback = Rc::new(SchemaHost::new(&rt, &first.program.types, None));
+        let screen = fallback.record(
+            "Screen",
+            &[
+                ("id", Value::text("Mock | DP-1 | Display")),
+                ("name", Value::text("DP-1")),
+            ],
+        );
+        fallback
+            .set(&rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+        let real = Real::start(&rt, &first.program.types, Buses::none(), fallback, || {});
+        let mut inst = Instance::from_build(&rt, &first, real.host.clone(), Storage::none());
+        let mut scene = SceneMirror::new();
+        let mut now = Duration::ZERO;
+        let mut step = |inst: &Instance, scene: &mut SceneMirror, by: Duration| {
+            real.services.pump(&rt);
+            now += by;
+            let u = inst.tick(now);
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            scene.apply(&u.diff).unwrap();
+        };
+        let until = |inst: &Instance,
+                     scene: &mut SceneMirror,
+                     step: &mut dyn FnMut(&Instance, &mut SceneMirror, Duration),
+                     what: &str,
+                     done: &dyn Fn(&Instance) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            while !done(inst) {
+                assert!(Instant::now() < deadline, "timed out: {what}");
+                std::thread::sleep(Duration::from_millis(10));
+                step(inst, scene, Duration::from_millis(10));
+            }
+        };
+        let points = |inst: &Instance| inst.histories().first().map_or(0, |h| h.points);
+        step(&inst, &mut scene, Duration::ZERO);
+        let cpu = real.builtin.cpu.clone();
+        assert_eq!(cpu.kept(), Some(Duration::from_secs(3)));
+        assert_eq!(cpu.readers(), 1, "the popup is open");
+        until(&inst, &mut scene, &mut step, "two shown samples", &|i| {
+            points(i) >= 2
+        });
+        // Closed: nothing reads cpu, yet it runs past the grace, kept.
+        inst.set("svc.p", Value::Bool(false)).unwrap();
+        step(&inst, &mut scene, Duration::ZERO);
+        assert!(scene.of_kind(strand_scene::NodeKind::Graph).is_empty());
+        assert_eq!(cpu.readers(), 0);
+        let shown = points(&inst);
+        step(&inst, &mut scene, STOP_GRACE + Duration::from_secs(1));
+        assert!(cpu.running(), "kept past the grace");
+        until(&inst, &mut scene, &mut step, "a hidden sample", &|i| {
+            points(i) > shown
+        });
+        // Open again: the graph mounts onto all of it.
+        inst.set("svc.p", Value::Bool(true)).unwrap();
+        step(&inst, &mut scene, Duration::ZERO);
+        let g = scene.of_kind(strand_scene::NodeKind::Graph)[0];
+        let Some(strand_scene::PropValue::Backlog(b)) = scene.prop(g, strand_scene::Prop::Backlog)
+        else {
+            panic!("no backlog on {g:?}");
+        };
+        assert!(b.points.len() > shown, "{b:?}");
+        assert_eq!(b.points[0].ramp, 0.0, "shown: a step");
+        assert!(b.points[0].age > 6.0, "{b:?}");
+        let hidden = &b.points[shown];
+        assert!(hidden.ramp > 0.0 && hidden.ramp <= 3.0, "{b:?}");
+        // A reload without the graph lets cpu go: it stops after the grace.
+        let second = build(
+            Some(&first),
+            "export state p = true\nbar B { text \"x\" }\n",
+        );
+        inst.reload(&second);
+        step(&inst, &mut scene, Duration::ZERO);
+        assert!(inst.histories().is_empty());
+        assert_eq!(cpu.kept(), None);
+        step(&inst, &mut scene, STOP_GRACE + Duration::from_secs(1));
+        assert!(!cpu.running(), "let go: stopped after the grace");
+        inst.shutdown();
+        real.shutdown(&rt);
+    }
+
     /// design.md's launcher, unchanged, on the real `apps` service:
     /// closed, it starts nothing and searches nothing; open, it lists the
     /// apps (an empty query lists them all), a query narrows them with
@@ -1601,7 +1700,7 @@ service tally {
                         Msg::Call(TallyCall::Echo { text }, reply) => {
                             reply.send::<_, String>(Ok(text));
                         }
-                        Msg::Visible(_) | Msg::Watch { .. } => {}
+                        Msg::Visible(_) | Msg::Watch { .. } | Msg::Keep(_) => {}
                     }
                 }
                 Ok(())
@@ -2805,6 +2904,37 @@ service shelf {
             live.until("polling again", |_| {
                 std::fs::read_to_string(&runs).unwrap().lines().count() > count
             });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (history) `from poll` under a `graph`: hidden, it polls at
+        /// the kept period (2 s for a 10 s history), not every 100 ms
+        /// and not never; a graph's history kept of a no-code service
+        /// as of a builtin one.
+        #[test]
+        fn a_kept_poll_service_polls_at_the_hidden_period() {
+            let dir = temp("kept-poll");
+            let runs = dir.join("runs");
+            let src = format!(
+                "permit exec \"sh\"\nexport state o = true\nservice p from poll [\"sh\", \"-c\", \"echo run >> {runs}; echo 0.5\"] every 100ms {{ n: float }}\npanel P {{ open: <-> o; graph p.n {{ history: 10s }} }}\n",
+                runs = runs.display(),
+            );
+            let count = || {
+                std::fs::read_to_string(&runs)
+                    .unwrap_or_default()
+                    .lines()
+                    .count()
+            };
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("several polls", |_| count() >= 3);
+            live.inst.set("svc.o", Value::Bool(false)).unwrap();
+            live.tick(Duration::ZERO);
+            std::thread::sleep(Duration::from_millis(150));
+            let hidden = count();
+            std::thread::sleep(Duration::from_millis(3000));
+            let polls = count() - hidden;
+            assert!((1..=2).contains(&polls), "every 2 s while hidden: {polls}");
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

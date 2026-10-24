@@ -24,6 +24,8 @@ mod convert;
 pub(crate) use convert::canvas_paint;
 mod edges;
 mod emit;
+mod history;
+pub use history::HistoryInfo;
 pub mod inspect;
 mod lock;
 mod mirror;
@@ -308,6 +310,9 @@ pub(crate) struct Ctx {
     /// (report review) The instance-tree scopes of mounted `lock`
     /// surfaces (a per-screen one's prefix).
     pub(crate) lock_scopes: RefCell<std::collections::HashSet<Rc<str>>>,
+    /// (history) The instance's kept graph histories (shared by every
+    /// `Ctx` of its reloads; set by the boot).
+    pub(crate) history: RefCell<Rc<history::Histories>>,
 }
 
 impl Ctx {
@@ -778,6 +783,7 @@ impl Ctx {
             cell_ids: RefCell::default(),
             secret_cells: RefCell::default(),
             lock_scopes: RefCell::default(),
+            history: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -986,6 +992,8 @@ pub struct Instance {
     /// (report) The cell tap and what it was last told
     /// ([`Instance::set_cell_tap`]).
     cell_tap: RefCell<report::TapState>,
+    /// (history) The graphs' kept histories, across reloads.
+    history: Rc<history::Histories>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -1065,6 +1073,7 @@ impl Instance {
             bridge: RefCell::default(),
             inspect: inspect::Track::default(),
             cell_tap: RefCell::default(),
+            history: Rc::default(),
         };
         inst.boot(true);
         inst
@@ -1077,6 +1086,8 @@ impl Instance {
         let ctx = self.ctx.clone();
         let prog = ctx.vm.prog.clone();
         let root_env = ctx.vm.root.clone();
+        *ctx.history.borrow_mut() = self.history.clone();
+        let history = self.history.clone();
         // (M6) The palette, before the program mounts: its bindings read
         // `$palette.<name>` from it, and the token table is made over it.
         let c = ctx.clone();
@@ -1094,6 +1105,10 @@ impl Instance {
                 .flat_map(|f| f.items.iter().cloned())
                 .collect();
             ctx.declare(rt, &all, &root_env);
+            // (history) What the graphs keep, once the file scope they
+            // read is declared and before they mount: a graph of a kept
+            // series binds its backlog.
+            history.sync(rt, &ctx, &root_env);
             // What the top level reads, and `screens` for per-monitor bars.
             let mut services: crate::lower::ServiceUses = prog
                 .files
@@ -2426,6 +2441,12 @@ impl Instance {
         v
     }
 
+    /// (history) The graph histories this instance keeps, one per series
+    /// (decisions.md history): what tests and diagnostics read.
+    pub fn histories(&self) -> Vec<HistoryInfo> {
+        self.history.infos(&self.rt)
+    }
+
     /// Unmount everything (the instance's scope is disposed: effects,
     /// timers and handler tasks stop, services are released). Dropping
     /// the instance does the same, so a reload that builds a new instance
@@ -2445,6 +2466,7 @@ impl Instance {
         if let Some(l) = lock {
             l.dispose(&self.rt);
         }
+        self.history.shutdown(&self.rt, &*self.ctx.vm.host);
         self.ctx.em.borrow_mut().ops.clear();
     }
 }

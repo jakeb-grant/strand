@@ -45,6 +45,10 @@ pub struct Composite {
     /// (report) The glitch report's recorder of async calls and `rw`
     /// writes ([`Composite::set_tap`]).
     tap: RefCell<Option<Rc<dyn CallTap>>>,
+    /// (history) Where each kept service was kept: letting it go goes
+    /// there, and a reload routing the name elsewhere lets the old host
+    /// go.
+    kept: RefCell<HashMap<String, Holder>>,
 }
 
 /// (report) What a recorded `fetch`'s answer is told to.
@@ -95,6 +99,7 @@ impl Composite {
             holds: RefCell::default(),
             action_press: std::cell::Cell::new(None),
             tap: RefCell::new(None),
+            kept: RefCell::default(),
         }
     }
 
@@ -385,6 +390,26 @@ impl ServiceHost for Composite {
 
     fn acquire(&self, rt: &Runtime, service: &str) {
         self.take(rt, service, None, self.holder(service));
+    }
+
+    fn keep(&self, rt: &Runtime, service: &str, every: Option<std::time::Duration>) {
+        let now = self.holder(service);
+        let was = match every {
+            Some(_) => self.kept.borrow_mut().insert(service.to_string(), now),
+            None => self.kept.borrow_mut().remove(service),
+        };
+        if let Some(h) = was
+            && (every.is_none() || h != now)
+        {
+            self.host(h).keep(rt, service, None);
+        }
+        if every.is_some() {
+            self.host(now).keep(rt, service, every);
+        }
+    }
+
+    fn shown(&self, rt: &Runtime, service: &str) -> bool {
+        self.route(service).shown(rt, service)
     }
 
     fn release(&self, rt: &Runtime, service: &str) {

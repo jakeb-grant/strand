@@ -3,15 +3,17 @@
 //!
 //! Sampled once a second ([`PERIOD`], as its schema says) only while a
 //! reader is visible: with every reader hidden the service waits on its
-//! messages and wakes nothing. Its first value, at start, is the load
-//! since boot, so a bar does not show 0 for a second.
+//! messages and wakes nothing, unless a `graph` keeps history of it
+//! (history): then it samples at the kept, coarser period ([`Ticker`]),
+//! each sample the load since the one before. Its first value, at start,
+//! is the load since boot, so a bar does not show 0 for a second.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::procfs::{self, Times};
-use crate::{Cx, Msg, ServiceError, Store, service};
+use crate::{Cx, Msg, ServiceError, Store, Ticker, service};
 
 /// The schema the `cpu` service serves.
 pub const SCHEMA: &str = strand_services_schema::CPU;
@@ -97,20 +99,22 @@ impl Cpu {
         let mut sampler = Sampler::new();
         cx.update(|c| sampler.sample(c));
         cx.ready();
-        let mut tick = tokio::time::interval(PERIOD);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.reset();
+        let mut tick = Ticker::new(&cx, PERIOD);
         loop {
             tokio::select! {
-                m = cx.recv() => match m {
-                    None => return Ok(()),
-                    Some(Msg::Visible(true)) => {
+                m = cx.recv() => {
+                    let shown = match m {
+                        None => return Ok(()),
+                        Some(m) => matches!(m, Msg::Visible(true)),
+                    };
+                    // Sampling again after a pause, or shown: the load
+                    // over the pause is not what anyone asked for.
+                    if tick.follow(&cx) || shown {
                         sampler.rebase();
                         tick.reset();
                     }
-                    Some(_) => {}
-                },
-                _ = tick.tick(), if cx.visible() => {
+                }
+                _ = tick.tick() => {
                     if !cx.update(|c| sampler.sample(c)) {
                         return Ok(());
                     }

@@ -16,7 +16,9 @@
 //! with `statvfs` and counted as `df` does ([`usage`]).
 //!
 //! It samples every [`PERIOD`] (10 s), only while a reader is visible,
-//! at start and at once when one becomes visible again. A sample runs on
+//! at start and at once when one becomes visible again; while none is
+//! and a `graph` keeps history of it, at the kept, coarser period
+//! ([`Ticker`]; history). A sample runs on
 //! tokio's blocking pool, one at a time: a `statvfs` that hangs holds no
 //! thread of the shared runtime, keeps the last values shown and queues
 //! no second sample behind it.
@@ -26,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use crate::{Cx, Msg, ServiceError, Store, service};
+use crate::{Cx, Msg, ServiceError, Store, Ticker, service};
 
 /// The schema the `disk` service serves.
 pub const SCHEMA: &str = strand_services_schema::DISK;
@@ -356,9 +358,7 @@ impl Disk {
         let config = config();
         let mut running: Option<Sampling> = None;
         start(&mut running, &config.mountinfo);
-        let mut tick = tokio::time::interval(config.period);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.reset();
+        let mut tick = Ticker::new(&cx, config.period);
         loop {
             tokio::select! {
                 r = async {
@@ -381,16 +381,19 @@ impl Disk {
                         cx.ready();
                     }
                 }
-                m = cx.recv() => match m {
-                    None => return Ok(()),
-                    Some(Msg::Visible(true)) => {
+                m = cx.recv() => {
+                    let shown = match m {
+                        None => return Ok(()),
+                        Some(m) => matches!(m, Msg::Visible(true)),
+                    };
+                    tick.follow(&cx);
+                    if shown {
                         // Back in view: the current values at once.
                         start(&mut running, &config.mountinfo);
                         tick.reset();
                     }
-                    Some(_) => {}
-                },
-                _ = tick.tick(), if cx.visible() => {
+                }
+                _ = tick.tick() => {
                     start(&mut running, &config.mountinfo);
                 }
             }

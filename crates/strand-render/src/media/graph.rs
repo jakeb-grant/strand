@@ -17,22 +17,35 @@
 //! Its time is the node's clock, so under `reduced_motion` (time frozen)
 //! the history stops scrolling and the newest column still follows the
 //! value.
+//!
+//! (history) A graph whose value logic keeps history of (a service
+//! field, or an expression over file-scope values) also gets that
+//! history as [`Prop::Backlog`] (`strand_scene::Backlog`): ages before
+//! the moment logic made it, anchored here at the node's time of the
+//! first draw that sees it. Columns the graph did not sample itself are
+//! drawn from it: every column but the newest when it first draws (it
+//! shows the last `history` as soon as it mounts), and the columns of a
+//! gap in its ticks (it was hidden, or a frame came late), each value
+//! eased by `smooth` in order as a tick would have. A column older than
+//! the backlog's oldest point stays empty, as one older than the mount
+//! is without a backlog. Columns it samples while drawn are its own, one
+//! per tick, as before.
 
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use strand_scene::{Color, Paint, Prop, PropValue, TimeContext};
+use strand_scene::{Backlog, Color, Paint, Prop, PropValue, TimeContext};
 use vello_cpu::color::PremulRgba8;
 
 use crate::clock::Rate;
 use crate::offscreen::{RasterProps, RasterSource};
 
 /// `history` when none is set.
-pub const DEFAULT_HISTORY: Duration = Duration::from_secs(60);
+pub const DEFAULT_HISTORY: Duration = strand_scene::backlog::DEFAULT_HISTORY;
 
 /// The shortest column (a narrow graph over a short history).
 const MIN_COLUMN: Duration = Duration::from_millis(16);
@@ -61,6 +74,12 @@ struct Graph {
     kept: Option<Kept>,
     /// Columns drawn so far (tests: a tick draws only the new ones).
     drawn_columns: u64,
+    /// (history) The backlog as last read from the props.
+    backlog: Option<Arc<Backlog>>,
+    /// (history) The backlog the columns are filled from, and the node's
+    /// time at the draw that first saw it (its ages count back from
+    /// there).
+    anchored: Option<(Arc<Backlog>, f64)>,
 }
 
 #[derive(Debug)]
@@ -139,37 +158,69 @@ pub(crate) fn number(v: Option<&PropValue>) -> Option<f32> {
 }
 
 impl Graph {
-    /// Brings the samples up to `tick`: each tick passed eases the value
-    /// in once more (at most a box's worth are kept).
-    fn advance(&mut self, tick: u64, columns: usize) {
-        let k = 1.0 - self.smooth;
+    /// Brings the samples up to `tick` (`col`: a column's seconds): each
+    /// tick passed eases a value in once more (at most a box's worth are
+    /// kept), the newest the value now and those before it from the
+    /// backlog where it has them.
+    fn advance(&mut self, tick: u64, columns: usize, col: f64) {
+        let cols = columns.max(1);
         match self.tick {
             Some(t) if tick > t => {
-                let n = ((tick - t) as usize).min(columns.max(1));
-                for _ in 0..n {
-                    let e = self.eased.unwrap_or(self.value);
-                    let e = e + (self.value - e) * k;
-                    self.eased = Some(e);
-                    self.samples.push_back(e);
+                let n = ((tick - t) as usize).min(cols);
+                for back in (0..n).rev() {
+                    let j = tick as i64 - back as i64;
+                    let v = match back {
+                        0 => self.value,
+                        _ => self.past(j, col).unwrap_or(self.value),
+                    };
+                    self.ease_in(v);
                 }
             }
-            // Time went back (a resize changed the column, a remount):
-            // the history starts again at the value.
-            Some(t) if tick < t => {
-                self.samples.clear();
-                self.eased = Some(self.value);
-                self.samples.push_back(self.value);
-            }
+            // Time went back (a resize changed the column, a remount): the
+            // history starts again, from the backlog if there is one.
+            Some(t) if tick < t => self.restart(tick, cols, col),
             Some(_) => {}
-            None => {
-                self.eased = Some(self.value);
-                self.samples.push_back(self.value);
-            }
+            None => self.restart(tick, cols, col),
         }
         self.tick = Some(tick);
-        while self.samples.len() > columns.max(1) {
+        while self.samples.len() > cols {
             self.samples.pop_front();
         }
+    }
+
+    /// The samples afresh at `tick`: the columns before it from the
+    /// backlog (none without one), the newest the value now.
+    fn restart(&mut self, tick: u64, cols: usize, col: f64) {
+        self.samples.clear();
+        self.eased = None;
+        for back in (1..cols).rev() {
+            let j = tick as i64 - back as i64;
+            if let Some(v) = self.past(j, col) {
+                self.ease_in(v);
+            }
+        }
+        self.ease_in(self.value);
+    }
+
+    /// One more sample: `v` eased in by `smooth` (the first is `v`).
+    fn ease_in(&mut self, v: f32) {
+        let e = match self.eased {
+            Some(e) => e + (v - e) * (1.0 - self.smooth),
+            None => v,
+        };
+        self.eased = Some(e);
+        self.samples.push_back(e);
+    }
+
+    /// The backlog's value at tick `j` (`col` seconds each), if it was
+    /// made after then and holds it.
+    fn past(&self, j: i64, col: f64) -> Option<f32> {
+        let (b, at) = self.anchored.as_ref()?;
+        let age = at - j as f64 * col;
+        if age <= 0.0 {
+            return None;
+        }
+        b.value_at(age as f32).map(|v| v.clamp(0.0, 1.0))
     }
 
     /// The newest column's value: the newest sample eased toward the value
@@ -247,7 +298,13 @@ impl RasterSource for GraphSource {
         let (wu, hu) = (w as usize, h as usize);
         let col = self.column(g.history).as_secs_f64();
         let tick = (time.t as f64 / col).round().max(0.0) as u64;
-        g.advance(tick, wu);
+        // A backlog not drawn with yet is anchored at this draw.
+        if let Some(b) = &g.backlog
+            && !g.anchored.as_ref().is_some_and(|(a, _)| Arc::ptr_eq(a, b))
+        {
+            g.anchored = Some((b.clone(), time.t as f64));
+        }
+        g.advance(tick, wu, col);
         let live = g.live();
         let style = g.style();
         let (line, fill) = (g.line, g.fill);
@@ -330,6 +387,12 @@ impl RasterSource for GraphSource {
         g.fill = (props.get)(Prop::Fill)
             .and_then(flat)
             .map_or([0.0; 4], premul);
+        // Not part of the state: a backlog draws nothing by itself, only
+        // the columns a later tick fills.
+        g.backlog = match (props.get)(Prop::Backlog) {
+            Some(PropValue::Backlog(b)) => Some(b.clone()),
+            _ => None,
+        };
         let mut h = DefaultHasher::new();
         g.live().to_bits().hash(&mut h);
         g.smooth.to_bits().hash(&mut h);
@@ -350,16 +413,68 @@ mod tests {
             smooth: 0.5,
             ..Graph::default()
         };
-        g.advance(0, 4);
+        g.advance(0, 4, 0.1);
         assert_eq!(g.samples, [1.0]);
         g.value = 0.0;
         assert_eq!(g.live(), 0.5, "the newest column eases now");
-        g.advance(2, 4);
+        g.advance(2, 4, 0.1);
         assert_eq!(g.samples, [1.0, 0.5, 0.25]);
-        g.advance(10, 4);
+        g.advance(10, 4, 0.1);
         assert_eq!(g.samples.len(), 4, "at most a box's worth");
-        g.advance(1, 4);
+        g.advance(1, 4, 0.1);
         assert_eq!(g.samples, [0.0], "time went back: start again");
+    }
+
+    fn backlog(points: &[(f32, f32, f32)]) -> Arc<Backlog> {
+        Arc::new(Backlog {
+            points: points
+                .iter()
+                .map(|&(age, value, ramp)| strand_scene::BacklogPoint { age, value, ramp })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn a_first_draw_fills_its_columns_from_the_backlog() {
+        // One-second columns; the backlog holds 0.2 until 2.5 s ago, then
+        // 0.6, and the value now is 0.9.
+        let mut g = Graph {
+            value: 0.9,
+            anchored: Some((backlog(&[(2.5, 0.2, 0.0), (1.5, 0.6, 0.0)]), 10.0)),
+            ..Graph::default()
+        };
+        g.advance(10, 5, 1.0);
+        // Ticks 6 and 7 are older than the backlog: no sample. Tick 8
+        // (2 s ago) is 0.2, tick 9 (1 s ago) 0.6, tick 10 the value.
+        assert_eq!(g.samples, [0.2, 0.6, 0.9]);
+    }
+
+    #[test]
+    fn a_gap_is_filled_from_the_backlog_and_eased() {
+        let mut g = Graph {
+            value: 0.0,
+            smooth: 0.5,
+            ..Graph::default()
+        };
+        g.advance(0, 8, 1.0);
+        assert_eq!(g.samples, [0.0]);
+        // Hidden from tick 0 to 4; the backlog made at tick 4 ramps from
+        // 0 to 1 over its last 2 s.
+        g.anchored = Some((backlog(&[(4.0, 0.0, 0.0), (0.0, 1.0, 2.0)]), 4.0));
+        g.value = 1.0;
+        g.advance(4, 8, 1.0);
+        // Ticks 1 and 2 hold 0, tick 3 is halfway up, tick 4 the value
+        // now; each eased by half.
+        assert_eq!(g.samples, [0.0, 0.0, 0.0, 0.25, 0.625]);
+        // Without a backlog a gap holds the value now, as before.
+        let mut h = Graph {
+            value: 0.0,
+            ..Graph::default()
+        };
+        h.advance(0, 8, 1.0);
+        h.value = 1.0;
+        h.advance(3, 8, 1.0);
+        assert_eq!(h.samples, [0.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]

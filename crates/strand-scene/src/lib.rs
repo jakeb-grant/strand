@@ -4,6 +4,7 @@
 //! See `docs/architecture.md`, "Contracts".
 
 pub mod backend;
+pub mod backlog;
 pub mod canvas;
 pub mod color;
 pub mod damage;
@@ -20,6 +21,7 @@ pub mod surface;
 pub mod tokens;
 
 pub use backend::{AdapterInfo, Backend, BackendChange, GpuStatus};
+pub use backlog::{Backlog, BacklogPoint};
 pub use canvas::DrawOp;
 
 pub use color::{Color, LinearRgb, MIN_CONTRAST, Oklab, Oklch, REACH_MAX, luminance_reachable};

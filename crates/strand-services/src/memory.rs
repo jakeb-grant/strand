@@ -1,12 +1,13 @@
 //! `memory`: memory use from `/proc/meminfo` (`MemTotal` minus
 //! `MemAvailable` is in use), sampled once a second ([`PERIOD`]) only
-//! while a reader is visible.
+//! while a reader is visible, or at the kept, coarser period while none
+//! is and a `graph` keeps history of it ([`Ticker`]; history).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::procfs;
-use crate::{Cx, Msg, ServiceError, Store, service};
+use crate::{Cx, Msg, ServiceError, Store, Ticker, service};
 
 /// The schema the `memory` service serves.
 pub const SCHEMA: &str = strand_services_schema::MEMORY;
@@ -51,23 +52,24 @@ impl Memory {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         cx.update(sample);
         cx.ready();
-        let mut tick = tokio::time::interval(PERIOD);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.reset();
+        let mut tick = Ticker::new(&cx, PERIOD);
         loop {
             tokio::select! {
-                m = cx.recv() => match m {
-                    None => return Ok(()),
-                    Some(Msg::Visible(true)) => {
+                m = cx.recv() => {
+                    let shown = match m {
+                        None => return Ok(()),
+                        Some(m) => matches!(m, Msg::Visible(true)),
+                    };
+                    tick.follow(&cx);
+                    if shown {
                         // Back in view: show the current value at once.
                         if !cx.update(sample) {
                             return Ok(());
                         }
                         tick.reset();
                     }
-                    Some(_) => {}
-                },
-                _ = tick.tick(), if cx.visible() => {
+                }
+                _ = tick.tick() => {
                     if !cx.update(sample) {
                         return Ok(());
                     }

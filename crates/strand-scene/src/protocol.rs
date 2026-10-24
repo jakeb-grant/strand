@@ -294,6 +294,11 @@ props! {
     Uniforms = "uniforms": Effects,
     /// A `shader` node's checked WGSL, as [`PropValue::Shader`].
     Shader = "shader": Snap,
+    /// (history) A `graph`'s kept history of its value, as
+    /// [`PropValue::Backlog`]: set when the value is one logic keeps
+    /// (a service field or an expression over file-scope values), on
+    /// mount and as the history grows.
+    Backlog = "backlog": Snap,
     /// The type names a node's `on drop` takes, as a `List` of `Keyword`s
     /// (`Drop` for other programs' drops, `any` for everything).
     Accepts = "accepts": Snap,
@@ -627,6 +632,9 @@ pub enum PropValue {
     /// (M4) The compiled `keyframes` block `play` names (the value of
     /// [`Prop::Play`]).
     Keyframes(Arc<Keyframes>),
+    /// (history) A `graph`'s kept history (the value of
+    /// [`Prop::Backlog`]).
+    Backlog(Arc<crate::backlog::Backlog>),
 }
 
 /// (M4) A compiled `keyframes` block, sent inline with `play` so render
@@ -1238,6 +1246,7 @@ mod tests {
             (Prop::RowFirst, "row_first"),
             (Prop::DropRows, "drop_rows"),
             (Prop::NotRow, "not_row"),
+            (Prop::Backlog, "backlog"),
         ] {
             assert_eq!(p.name(), name);
         }

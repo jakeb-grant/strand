@@ -147,7 +147,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     effect style=aurora speed=1
     particles glow=6 rate=20 life=1200ms sprite=dot(3)
     spectrum source="40" bars=48 smooth=0.6 style=mirror
-    graph fill=$accent.alpha(0.2) value=0 history=60000ms
+    graph fill=$accent.alpha(0.2) value=0 history=60000ms backlog=backlog [1 points]
     meter value=0 wave=0
     image source="spin.gif"
     lottie source="loader.json" speed=1

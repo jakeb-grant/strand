@@ -341,6 +341,7 @@ pub fn show(v: &PropValue) -> String {
         PropValue::DrawList(ops) => format!("draw [{} ops]", ops.len()),
         PropValue::Shader(code) => format!("shader {:?}", code.path),
         PropValue::Keyframes(k) => format!("keyframes {} #{}", k.name, k.seq),
+        PropValue::Backlog(b) => format!("backlog [{} points]", b.points.len()),
     }
 }
 

@@ -692,6 +692,20 @@ impl ServiceHost for CustomHost {
             c.release(rt);
         }
     }
+
+    fn keep(&self, rt: &Runtime, service: &str, every: Option<std::time::Duration>) {
+        let c = self.entries.borrow().get(service).map(|e| e.client.clone());
+        if let Some(c) = c {
+            c.keep(rt, every);
+        }
+    }
+
+    fn shown(&self, _rt: &Runtime, service: &str) -> bool {
+        self.entries
+            .borrow()
+            .get(service)
+            .is_none_or(|e| e.client.readers() > 0)
+    }
 }
 
 /// D-Bus introspection for the compiler's `from dbus` check

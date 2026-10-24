@@ -257,6 +257,24 @@ pub trait ServiceHost {
     /// The matching unmount or hide (released before the service).
     fn release_field(&self, _rt: &Runtime, _service: &str, _field: &str) {}
 
+    /// (history) A `graph` of the loaded config keeps history of a value
+    /// `service` gives: keep it running while no reader is visible,
+    /// sampling every `every` then (never faster than while shown);
+    /// `None` lets go (a reload removed the last such graph), and a
+    /// service nobody reads then stops 5 s later as after its last
+    /// reader. The instance calls it on every boot and reload for each
+    /// service it keeps (the same period again changes nothing), and
+    /// with `None` once for each it no longer does. The default does
+    /// nothing.
+    fn keep(&self, _rt: &Runtime, _service: &str, _every: Option<std::time::Duration>) {}
+
+    /// (history) Whether a visible reader holds `service` now
+    /// (untracked): a kept value taken while it does steps, one taken
+    /// while it does not is a coarse sample. The default: shown.
+    fn shown(&self, _rt: &Runtime, _service: &str) -> bool {
+        true
+    }
+
     /// The next wall-clock time the host loop must wake for (the next
     /// minute boundary while a clock is shown); `None` when nothing is
     /// due.

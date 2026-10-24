@@ -1587,6 +1587,10 @@ impl Ctx {
             }
             self.bind_prop(rt, id, prop, sources, env, kind, (e.file, e.span));
         }
+        // (history) A graph of a kept series shows its backlog.
+        if kind == NodeKind::Graph {
+            self.bind_backlog(rt, id, e, env);
+        }
         // (M6) A `trigger: hover` popup's `open` is the router's to write
         // (spec.md 6.3): bound to its node's `shown`, closed until then.
         if kind == NodeKind::Popup
@@ -2375,6 +2379,71 @@ impl Ctx {
                 Binding {
                     scene: id,
                     prop: SceneProp::Open,
+                    memo,
+                    site,
+                    boot: Default::default(),
+                },
+            );
+            if let Some(entry) = em.nodes.get_mut(&id) {
+                entry.bindings.push(memo.id());
+            }
+        }
+    }
+
+    /// (history) A `graph` whose value is a kept series: its
+    /// [`SceneProp::Backlog`], the series' history now, again each time
+    /// the history gains a point while this scope is live.
+    fn bind_backlog(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        id: strand_scene::NodeId,
+        e: &Element,
+        env: &Rc<Env>,
+    ) {
+        let Some(value) = e
+            .arg
+            .iter()
+            .chain(&e.props)
+            .find(|p| p.prop == Some(SceneProp::Value))
+        else {
+            return;
+        };
+        let history = self.history.borrow().clone();
+        let Some(key) = history.key_of(value.value) else {
+            return;
+        };
+        let version = history.version(&key);
+        let memo = rt.memo(move |rt| {
+            Ok(PropOut {
+                value: history.backlog(rt, &key),
+                source: 0,
+                transition: Transition::Instant,
+                node: None,
+            })
+        });
+        let _ = rt.reads_from(memo.id(), &version.into_iter().collect::<Vec<_>>());
+        let what: Rc<str> = "graph.backlog".into();
+        rt.set_name(memo.id(), &*what);
+        let site = Rc::new(super::Site {
+            what,
+            file: e.file,
+            span: e.span,
+            node: Some(id),
+            component: env.component,
+            scope: env.fault_scope(),
+        });
+        if let Ok(out) = memo.get_untracked(rt) {
+            self.em
+                .borrow_mut()
+                .set(id, SceneProp::Backlog, out.value, Transition::Instant);
+        }
+        if rt.watch(memo.id()).is_ok() {
+            let mut em = self.em.borrow_mut();
+            em.bindings.insert(
+                memo.id(),
+                Binding {
+                    scene: id,
+                    prop: SceneProp::Backlog,
                     memo,
                     site,
                     boot: Default::default(),

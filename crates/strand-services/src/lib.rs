@@ -87,7 +87,7 @@ pub use client::{
     Change, Client, DynService, Observer, STOP_GRACE, ServiceDiagnostic, ServiceSnapshot, Services,
     Tap, TapEvent, catch_refusals,
 };
-pub use cx::{Cx, Envelope, Msg, Reply, Write};
+pub use cx::{Cx, Envelope, Msg, Reply, Ticker, Write};
 pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};
 pub use service::{CallSig, FromCall, LocalFuture, NoCall, Service, ServiceError, Start};
 pub use store::{

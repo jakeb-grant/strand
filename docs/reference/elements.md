@@ -263,7 +263,11 @@ element graph(float -> value): node
 ```
 
 A sparkline with its own history: `graph cpu.usage { history: 60s }`.
-Only the new column repaints.
+Only the new column repaints. Of a value that exists at file scope (a
+service field, or an expression over them and file-level `let`s and
+`state`s) it shows the last `history` as soon as it mounts; of one
+tied to a list item or a component's parameter, what came since it
+mounted.
 
 It takes no children.
 
@@ -271,7 +275,7 @@ Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `history` | `duration` | How much history it keeps and shows. |
+| `history` | `duration` | How much history it keeps and shows (60 s when unset). |
 | `fill` | `paint` | The paint under the line. |
 | `smooth` | `float` | Smoothing, 0 to 1. |
 

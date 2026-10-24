@@ -3065,6 +3065,21 @@ re-base, if it needs one, is a dated decisions.md entry.
     `check::keyframe_settings` allows), so render keeps no keyframe table.
     Keyframes are offsets composed with the node's springs; a new `seq`
     restarts them.
+  - **Backlog** (decisions.md history). `Prop::Backlog` (compiler-set,
+    snapped) holds `PropValue::Backlog(Arc<Backlog>)` on a `graph`
+    whose value logic keeps history of: `strand_scene::Backlog { points:
+    Vec<BacklogPoint { age: f32, value: f32, ramp: f32 }> }`, oldest
+    first, ages in seconds before logic made it, `ramp` the seconds over
+    which the value moved to that point from the one before (0 steps: a
+    value taken while shown; a coarse sample taken while hidden ramps
+    over the hidden period); `Backlog::value_at(age)`. Logic sends it
+    when the graph mounts and again when the kept history gains a
+    point; render anchors its ages at the node's time of the first draw
+    that sees it and fills from it only the columns it did not sample
+    (its first draw, a gap in its ticks). It is not part of the graph's
+    state hash: it repaints nothing by itself. `strand_scene::backlog::
+    DEFAULT_HISTORY` (60 s) is a graph's `history` when unset, on both
+    sides.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
     logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
     (`Number`: the global index of the first mounted row). `SceneOp::Create`
@@ -4341,6 +4356,19 @@ Public interfaces other crates and later stages build on:
     service that does not restart; `SchemaHost` remounts it at the new
     defaults when its record or field types moved). All default to
     nothing.
+  - (history) `keep(rt, service, Option<Duration>)`: a `graph` of the
+    loaded config keeps history of a value `service` gives, so keep it
+    running while no reader is visible, sampling at that period then
+    (`None`: let it go; with no reader it then stops `STOP_GRACE`
+    later). The instance calls it on every boot and reload for each
+    service it keeps, and with `None` once for one it no longer does.
+    `shown(rt, service) -> bool` (untracked): whether a visible reader
+    holds it now (default `true`). `SchemaHost` records them
+    (`SchemaHost::kept()`), `StoreHost` and `CustomHost` pass them to
+    the client (`DynService::keep`, `readers() > 0`), and `Composite`
+    routes them as reads are, remembering where each service was kept
+    so `None`, or a reload routing the name elsewhere, lets that host
+    go.
   - (M6) A `from dbus` declaration's actions are
     `CustomService::actions` (`lower::CustomAction { name, method,
     arity }`, in declaration order) and methods on its record, so a
@@ -4557,7 +4585,16 @@ Public interfaces other crates and later stages build on:
   re-read no longer reports.
 - **Instantiation** (`strand_compiler::instantiate`): `Instance::new(rt,
   Arc<lower::Program>, Rc<dyn ServiceHost>, Storage)` mounts the
-  program; `Instance::tick(now)` (or `flush()`) runs the core tick and
+  program; (history) each boot and reload first works out the series
+  its `graph`s keep (`instantiate::history`: a graph's value chunk
+  reading only services, file-level `let`s, `state`s and settings and
+  constants, keyed by its code with names spelled out, spanning the
+  longest constant `history`), keeps a ring per series in the instance
+  (across reloads, freed when no graph shows it), recorded by an effect
+  at file scope, binds `Prop::Backlog` on each such graph, and calls
+  `ServiceHost::keep`; `Instance::histories() -> Vec<HistoryInfo { key,
+  span, services: Vec<(String, Option<Duration>)>, points, oldest }>`
+  says what is kept; `Instance::tick(now)` (or `flush()`) runs the core tick and
   returns an `Update { diff: SceneDiff, errors: Vec<RuntimeError>,
   diagnostics, notices, kept: Vec<KeptCell> }` (`kept`: persisted cells
   kept over a changed default, also in `notices`): one diff per tick,
@@ -6010,8 +6047,16 @@ transparent huge pages for life.
   held, which may be an item that left and whose key was reused since;
   `None` for a field write),
   Action(S::Action), Call(S::Call, Reply), Visible(bool), Watch { field,
-  on }}` and `None` once stopped; `visible()` (a reader is visible: a
-  service polling as a whole, cpu or memory, runs only then);
+  on }, Keep(Option<Duration>)}` and `None` once stopped; `visible()` (a
+  reader is visible: a service polling as a whole, cpu or memory, runs
+  only then); (history) `kept()` (the period a `graph`'s history asks
+  for while no reader is visible; `Msg::Keep` says when it changes) and
+  `period(visible) -> Option<Duration>` (how often a polled service
+  samples now: `visible` while shown, the kept period while hidden and
+  kept, never faster than `visible`, `None` when it should not sample);
+  `Ticker::new(&cx, visible)` follows it (`follow(&cx)` after each
+  message, `reset()`, `tick().await`; cpu, memory and disk use it, and a
+  `from poll` service follows `period` itself);
   `watched(field)` (a visible reader reads that `#[store(stream)]`
   field: a Wi-Fi scan or a level meter runs only then; `Msg::Watch`
   says when it changes); `session()` / `system()` (one zbus connection
@@ -6051,6 +6096,10 @@ transparent huge pages for life.
   a core timer, `STOP_GRACE` = 5 s on the logic clock, that stops it;
   an acquire inside the grace cancels the stop, nothing restarts;
   `release` disposes nothing, so it is safe in scope cleanup),
+  (history) `keep(rt, Option<Duration>)` / `kept()` (a kept service
+  starts, or stays running, with no reader, told `Keep`; the stop timer
+  is armed only once it is neither read nor kept; `DynService::keep`
+  and `kept` likewise),
   `acquire_field(i)` / `release_field(i)` (readers of field `i`; a
   stream field's service is told `Watch` on the first and last),
   `seed(rt, |s| …)` (boot values before it first reports: a host's

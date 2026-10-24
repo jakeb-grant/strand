@@ -504,6 +504,7 @@ impl Services {
             reg: Rc::downgrade(&self.0),
             cells,
             refs: Cell::new(0),
+            kept: Cell::new(None),
             field_refs: S::FIELDS.iter().map(|_| Cell::new(0)).collect(),
             run: RefCell::new(None),
             timer: Cell::new(None),
@@ -756,6 +757,10 @@ struct ClientInner<S: Service> {
     reg: Weak<Registry>,
     cells: S::Cells,
     refs: Cell<u32>,
+    /// (history) How often to sample while no reader is visible, for a
+    /// `graph`'s kept history ([`Client::keep`]); while set the service
+    /// runs without readers.
+    kept: Cell<Option<Duration>>,
     /// Readers per field (stream fields are told of theirs).
     field_refs: Vec<Cell<u32>>,
     run: RefCell<Option<Run<S>>>,
@@ -978,7 +983,7 @@ impl<S: Service> ClientInner<S> {
             .map(|(f, n)| f.stream && n.get() > 0)
             .collect();
         let unread: crate::cx::Unread<S> = Arc::default();
-        let cx = Cx::new(
+        let mut cx = Cx::new(
             state,
             out,
             msgs,
@@ -987,6 +992,7 @@ impl<S: Service> ClientInner<S> {
             watched,
             unread.clone(),
         );
+        cx.start_kept(self.refs.get() > 0, self.kept.get());
         let mut stop = None;
         let mut thread = None;
         let started = match S::start(cx) {
@@ -1108,6 +1114,7 @@ impl<S: Service> ClientInner<S> {
                 move |rt| {
                     if let Some(c) = weak.upgrade()
                         && c.refs.get() == 0
+                        && c.kept.get().is_none()
                     {
                         // A retry pending from a failed run goes with it
                         // (no wakeup later for a service nobody reads).
@@ -1167,7 +1174,7 @@ impl<S: Service> ClientInner<S> {
                     if let Some(c) = weak.upgrade() {
                         c.retry.set(None);
                         let ended = c.run.borrow().as_ref().is_some_and(|r| r.ended);
-                        if c.refs.get() > 0 && ended {
+                        if (c.refs.get() > 0 || c.kept.get().is_some()) && ended {
                             c.stop();
                             c.start(rt);
                         }
@@ -1218,7 +1225,7 @@ impl<S: Service> ClientInner<S> {
         if failed {
             self.unavailable(rt);
         }
-        if failed && self.refs.get() > 0 {
+        if failed && (self.refs.get() > 0 || self.kept.get().is_some()) {
             // Only a run that stayed up resets the backoff: one that fails
             // right after saying it is ready (a daemon missing or
             // flapping) keeps backing off.
@@ -1718,7 +1725,58 @@ impl<S: Service> Client<S> {
         if let Some(run) = self.0.run.borrow().as_ref() {
             run.send(Msg::Visible(false));
         }
-        self.0.arm_stop(rt);
+        // Kept for a graph's history, it runs on, sampling at its hidden
+        // period.
+        if self.0.kept.get().is_none() {
+            self.0.arm_stop(rt);
+        }
+    }
+
+    /// (history) Keep the service running while no reader is visible,
+    /// sampling every `every` (never faster than it does while visible):
+    /// a `graph` in the loaded config keeps history of its values. It
+    /// starts now if it is not running. `None` lets go: a service nobody
+    /// reads then stops [`STOP_GRACE`] later, as after its last reader.
+    /// The service is told with [`Msg::Keep`] ([`Cx::kept`]).
+    pub fn keep(&self, rt: &Runtime, every: Option<Duration>) {
+        if self.0.kept.replace(every) == every {
+            return;
+        }
+        let state = self.0.run.borrow().as_ref().map(|r| r.ended);
+        match (every, state) {
+            (Some(_), Some(false)) => {
+                self.0.disarm_stop(rt);
+                if let Some(run) = self.0.run.borrow().as_ref() {
+                    run.send(Msg::Keep(every));
+                }
+            }
+            // Not running (or its body ended): it starts, hidden unless
+            // read; a failed body backing off starts at its retry.
+            (Some(_), _) => {
+                self.0.disarm_stop(rt);
+                if state == Some(true) && self.0.retry.get().is_some() {
+                    return;
+                }
+                self.0.disarm_retry(rt);
+                self.0.stop();
+                self.0.start(rt);
+            }
+            (None, _) => {
+                if let Some(run) = self.0.run.borrow().as_ref()
+                    && !run.ended
+                {
+                    run.send(Msg::Keep(None));
+                }
+                if self.0.refs.get() == 0 && self.0.run.borrow().is_some() {
+                    self.0.arm_stop(rt);
+                }
+            }
+        }
+    }
+
+    /// (history) How often it samples while hidden ([`Client::keep`]).
+    pub fn kept(&self) -> Option<Duration> {
+        self.0.kept.get()
     }
 
     /// Readers holding it now.
@@ -1735,7 +1793,7 @@ impl<S: Service> Client<S> {
         self.0.failures.set(0);
         self.0.stop();
         self.0.cells.forget_echoes(rt);
-        if self.0.refs.get() > 0 {
+        if self.0.refs.get() > 0 || self.0.kept.get().is_some() {
             self.0.disarm_stop(rt);
             self.0.start(rt);
         } else {
@@ -2038,6 +2096,10 @@ pub trait DynService {
     ) -> Pin<Box<dyn Future<Output = Result<Data, String>>>>;
     fn acquire(&self, rt: &Runtime);
     fn release(&self, rt: &Runtime);
+    /// (history) [`Client::keep`].
+    fn keep(&self, rt: &Runtime, every: Option<Duration>);
+    /// (history) [`Client::kept`].
+    fn kept(&self) -> Option<Duration>;
     /// A visible reader of field `field` came ([`Client::acquire_field`]).
     fn acquire_field(&self, field: usize);
     /// It left or was hidden ([`Client::release_field`]).
@@ -2313,6 +2375,14 @@ impl<S: Service> DynService for Client<S> {
 
     fn release(&self, rt: &Runtime) {
         Client::release(self, rt);
+    }
+
+    fn keep(&self, rt: &Runtime, every: Option<Duration>) {
+        Client::keep(self, rt, every);
+    }
+
+    fn kept(&self) -> Option<Duration> {
+        Client::kept(self)
     }
 
     fn acquire_field(&self, field: usize) {

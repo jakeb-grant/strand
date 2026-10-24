@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use strand_core::Generation;
 use tokio::sync::{mpsc, oneshot};
@@ -200,6 +201,11 @@ pub enum Msg<S: Service> {
     /// now. [`Cx::watched`] already says so; the stream behind it (a
     /// Wi-Fi scan, audio levels) starts or stops here.
     Watch { field: &'static str, on: bool },
+    /// (history) How often to sample while no reader is visible, for the
+    /// history a `graph` keeps of the service's values (`None`: not at
+    /// all, as before). [`Cx::kept`] and [`Cx::period`] already say so; a
+    /// sampled service reschedules here ([`Ticker::follow`]).
+    Keep(Option<Duration>),
 }
 
 impl<S: Service> fmt::Debug for Msg<S> {
@@ -214,6 +220,7 @@ impl<S: Service> fmt::Debug for Msg<S> {
                 .field("field", field)
                 .field("on", on)
                 .finish(),
+            Msg::Keep(every) => f.debug_tuple("Keep").field(every).finish(),
         }
     }
 }
@@ -226,6 +233,8 @@ pub struct Cx<S: Service> {
     /// (M5) The xdg-activation token the last message came with.
     token: Option<String>,
     visible: bool,
+    /// (history) How often to sample while hidden ([`Msg::Keep`]).
+    kept: Option<Duration>,
     /// Per field: a visible reader reads it (meaningful for stream
     /// fields).
     watched: Vec<bool>,
@@ -290,6 +299,7 @@ impl<S: Service> Cx<S> {
             msgs,
             token: None,
             visible: true,
+            kept: None,
             watched,
             ready: false,
             buses,
@@ -440,6 +450,36 @@ impl<S: Service> Cx<S> {
         self.visible
     }
 
+    /// (history) Start kept every `kept` ([`Client::keep`]); with no
+    /// reader (`read` false) a kept service starts hidden. One started
+    /// otherwise starts visible, as before.
+    ///
+    /// [`Client::keep`]: crate::Client::keep
+    pub(crate) fn start_kept(&mut self, read: bool, kept: Option<Duration>) {
+        self.kept = kept;
+        self.visible = read || kept.is_none();
+    }
+
+    /// (history) How often to sample while no reader is visible: a
+    /// `graph` in the loaded config keeps history of this service's
+    /// values. `None` (no such graph): a hidden service samples nothing.
+    pub fn kept(&self) -> Option<Duration> {
+        self.kept
+    }
+
+    /// (history) How often a service sampling every `visible` while a
+    /// reader is visible samples now: `visible` while one is, the kept
+    /// hidden period ([`Cx::kept`], never faster than `visible`) while
+    /// none is, and `None` (not at all) when nothing keeps it. A polled
+    /// service drives its clock with this ([`Ticker`]).
+    pub fn period(&self, visible: Duration) -> Option<Duration> {
+        if self.visible {
+            Some(visible)
+        } else {
+            self.kept.map(|k| k.max(visible))
+        }
+    }
+
     /// A visible reader reads `#[store(stream)]` field `field` now: its
     /// stream (a scan, a level meter) runs only while this holds
     /// ([`Msg::Watch`] says when it changes). Unknown names are `false`.
@@ -500,6 +540,7 @@ impl<S: Service> Cx<S> {
     fn note(&mut self, m: &Msg<S>) {
         match m {
             Msg::Visible(v) => self.visible = *v,
+            Msg::Keep(k) => self.kept = *k,
             Msg::Watch { field, on } => {
                 if let Some(i) = S::FIELDS.iter().position(|f| f.name == *field)
                     && let Some(w) = self.watched.get_mut(i)
@@ -537,4 +578,71 @@ impl<S: Service> Cx<S> {
     pub async fn system(&self) -> zbus::Result<zbus::Connection> {
         bus::system(&self.buses).await
     }
+}
+
+/// (history) A polled service's clock: it ticks every [`Cx::period`] of
+/// the service's visible period, so every `visible` while a reader is
+/// visible, at the kept hidden period while none is and a `graph` keeps
+/// history of the service, and never otherwise (true idle).
+#[derive(Debug)]
+pub struct Ticker {
+    visible: Duration,
+    every: Option<Duration>,
+    interval: Option<tokio::time::Interval>,
+}
+
+impl Ticker {
+    /// A clock for a service sampling every `visible` while shown; its
+    /// first tick is one period from now.
+    pub fn new<S: Service>(cx: &Cx<S>, visible: Duration) -> Ticker {
+        let every = cx.period(visible);
+        Ticker {
+            visible,
+            every,
+            interval: every.map(interval),
+        }
+    }
+
+    /// Follow the period [`Cx::period`] asks for now (call after each
+    /// message): a changed period starts again one new period from now.
+    /// `true` when it starts ticking after not ticking at all (a sampler
+    /// taking differences takes a fresh baseline first).
+    pub fn follow<S: Service>(&mut self, cx: &Cx<S>) -> bool {
+        let every = cx.period(self.visible);
+        if every == self.every {
+            return false;
+        }
+        let resumed = self.every.is_none();
+        self.every = every;
+        self.interval = every.map(interval);
+        resumed && every.is_some()
+    }
+
+    /// The next tick is one period from now.
+    pub fn reset(&mut self) {
+        if let Some(i) = &mut self.interval {
+            i.reset();
+        }
+    }
+
+    /// How often it ticks now.
+    pub fn every(&self) -> Option<Duration> {
+        self.every
+    }
+
+    /// The next tick; never, while it does not tick.
+    pub async fn tick(&mut self) {
+        match &mut self.interval {
+            Some(i) => {
+                i.tick().await;
+            }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+fn interval(every: Duration) -> tokio::time::Interval {
+    let mut i = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    i.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    i
 }

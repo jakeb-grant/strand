@@ -1634,17 +1634,26 @@ async fn run_poll(
     // (a hover popup flickering), the next poll still waits for `every`.
     let mut last: Option<tokio::time::Instant> = None;
     loop {
-        // Until the next poll is due while shown.
-        let due = last.map_or_else(tokio::time::Instant::now, |t| t + every);
-        let sleep = tokio::time::sleep_until(due);
-        tokio::pin!(sleep);
-        if first && !cx.visible() {
+        if first && cx.period(every).is_none() {
             cx.ready();
             first = false;
         }
+        // Until the next poll is due: `every` after the last while shown,
+        // the kept hidden period while a `graph` keeps history of it and
+        // nothing shows it (history), never otherwise. Each message may
+        // change which.
         loop {
+            let due = cx
+                .period(every)
+                .map(|p| last.map_or_else(tokio::time::Instant::now, |t| t + p));
+            let sleep = async {
+                match due {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
-                _ = &mut sleep, if cx.visible() => break,
+                _ = sleep => break,
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
