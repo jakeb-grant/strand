@@ -741,9 +741,10 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
   `text.rs`, `paint.rs`, `hash.rs`, `widget.rs`, `image.rs`, `gpu.rs`
   (M4, `gpu` builds: the pass wants a node adds while drawn and the
   GPU's pixels drawn in place of the CPU's), `tests.rs`.
-- `raster/`: `mod.rs` (`Raster`), `atlas.rs` (`AtlasMirror`), `paint.rs`
-  (scene paints as vello paints), `draw.rs` (drawing a display list,
-  disjoint damage), `tests.rs`.
+- `raster/`: `mod.rs` (`Raster`, its threads' `Lane`s and `share`),
+  `atlas.rs` (`AtlasMirror`), `paint.rs` (scene paints as vello
+  paints), `draw.rs` (drawing a display list, disjoint damage),
+  `tests.rs`.
 - `anim/`: `mod.rs` (`Animator` and its per-frame `paint`), `motion.rs`
   (channel encoding, `PropMotion`), `pose.rs` (enter/exit poses),
   `sizes.rs` (size springs), `keyframes.rs` (M4, S-effects: `play`
@@ -2812,7 +2813,39 @@ re-base, if it needs one, is a dated decisions.md entry.
   cache, offscreen groups, encoding cells, vello_cpu's fine pass and
   copying out, with the cells drawn), which `tests/anim_bench.rs`
   reports per frame; every timer is a few `Instant::now` calls a frame
-  on paths that already run, so idle work is unchanged. A
+  on paths that already run, so idle work is unchanged.
+  (perf-cpu-raster) A paint of at least `PARALLEL_CELLS` (8) cells
+  draws them on up to `MAX_THREADS` (4) threads, the render thread one
+  of them (`raster::share`): each takes the next cell not yet drawn,
+  encodes and rasterises it in a vello_cpu context of its own (each
+  context single-threaded, as before), and copies it into its row of
+  cells' band of the buffer under that band's lock; the threads are
+  started for the paint and joined before it returns, so nothing runs
+  or wakes between paints; at most `MAX_THREADS` − 1 of them run in the
+  process at once however many renderers paint together (a paint that
+  finds no place draws on fewer); and every cell is drawn alone as
+  before, so which thread draws it changes no pixel.
+  `RasterTimes::threads` says how many drew; with more than one,
+  `encode`, `fine` and `copy` share the pass's wall-clock time as the
+  threads spent theirs. Each thread
+  keeps its contexts and scratch (`Lane`) for the raster's life. A
+  gradient over 64 k pixels is dithered on the same threads, by rows,
+  and a shadow's missing slice tiles are built on a thread each
+  (`PaintCache::build_tiles`: a radius spring's four corner tiles). A
+  gradient's colour table (1,024 OKLab samples) is kept by its stops'
+  bits (256 tables, about 4 MB, cleared when full; `cache::lut_cached`),
+  and the ramp cuts vello's gradients are given (`raster::paint::cuts`)
+  are one table shared by every thread. A gradient drawn smoothly
+  (under `scale`/`rotate`) still draws each cell's part (integration-r8),
+  copied from its cached whole pixmap when the cache holds it
+  (`cache::crop_part`, the same pixels) instead of dithered again. A
+  mask (`layers::cell_mask`) is computed only within the reach of its
+  bounded masks (a shape's outline or a radial's disc, grown past its
+  antialiased edge); a shape's polygon bins its edges by band of rows
+  (`shapes::Polygon`), so a pixel's coverage reads the few edges near
+  it, the same bits as all 120. Goo (`effects::goo`) works out each
+  grid corner's box distances into one buffer (on the stack up to
+  eight boxes), not a vector a corner. A
   frame waits for new text (`ESTIMATE_WAIT`) once, however many layout
   passes it takes, its `update` and `paint` sharing the deadline
   (`SurfaceState::text_deadline`, set at its first wait, cleared once

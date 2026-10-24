@@ -558,3 +558,400 @@ fn a_scaled_gradient_repaints_from_its_cache_as_fresh() {
         );
     }
 }
+
+/// (perf-cpu-raster) A scene of most of what a cell draws: a backdrop
+/// gradient, rounded cards with shadows, gradients drawn pixel for
+/// pixel and turned or scaled (sampled smoothly), an opacity group and
+/// a group masked by `shape(cookie)` and turned, over `w × h`.
+fn busy_scene(w: u32, h: u32, turn: f64) -> Vec<DisplayItem> {
+    use std::sync::Arc;
+    use strand_scene::{Color, Effect, GradientStop, Mask, Paint};
+    use vello_cpu::kurbo::{self, Shape};
+    let hex = |s: &str| Color::from_hex(s).unwrap();
+    let ramp = |a: &str, b: &str, angle: f32| Paint::Linear {
+        angle,
+        stops: vec![
+            GradientStop {
+                offset: 0.0,
+                color: hex(a),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: hex(b),
+            },
+        ],
+    };
+    let all = Rect::new(0, 0, w, h);
+    let screen = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+    let bounds = |r: kurbo::Rect| {
+        let r = r.inflate(40.0, 40.0).intersect(screen);
+        Rect::from_edges(
+            r.x0.floor() as i64,
+            r.y0.floor() as i64,
+            r.x1.ceil() as i64,
+            r.y1.ceil() as i64,
+        )
+    };
+    let mut items = vec![DisplayItem {
+        item: Item::Fill {
+            shape: crate::flatten::FillShape::Rect(screen),
+            paint: ramp("#1e1e2e", "#45475a", 120.0),
+            frame: screen,
+        },
+        bounds: all,
+    }];
+    let rr = |r: kurbo::Rect, rad: f64| kurbo::RoundedRect::from_rect(r, rad).into_path(0.1);
+    for i in 0..12 {
+        let (col, row) = ((i % 4) as f64, (i / 4) as f64);
+        let card = kurbo::Rect::new(
+            30.0 + col * (w as f64 - 60.0) / 4.0,
+            25.0 + row * (h as f64 - 50.0) / 3.0,
+            30.0 + col * (w as f64 - 60.0) / 4.0 + (w as f64 - 60.0) / 4.0 - 24.0,
+            25.0 + row * (h as f64 - 50.0) / 3.0 + (h as f64 - 50.0) / 3.0 - 30.0,
+        );
+        let b = bounds(card);
+        let shadow_extent = card.inflate(30.0, 30.0);
+        let mut clip = shadow_extent.to_path(0.1);
+        clip.extend(rr(card, 14.0));
+        items.push(DisplayItem {
+            item: Item::Shadow {
+                rect: card + kurbo::Vec2::new(0.0, 6.0),
+                radii: [14.0; 4],
+                std_dev: 8.0,
+                color: hex("#00000080"),
+                clip,
+                extent: shadow_extent,
+            },
+            bounds: b,
+        });
+        let xform = match i % 3 {
+            0 => None,
+            1 => Some(kurbo::Affine::rotate_about(
+                turn * (i as f64),
+                card.center(),
+            )),
+            _ => Some(kurbo::Affine::scale_about(0.85 + 0.1 * turn, card.center())),
+        };
+        if let Some(t) = xform {
+            items.push(DisplayItem {
+                item: Item::PushTransform(t),
+                bounds: b,
+            });
+        }
+        if i == 5 {
+            items.push(DisplayItem {
+                item: Item::PushOpacity(0.6, None),
+                bounds: b,
+            });
+        }
+        items.push(DisplayItem {
+            item: Item::Fill {
+                shape: crate::flatten::FillShape::Path(rr(card, 14.0)),
+                paint: ramp("#89b4fa", "#cba6f7", 135.0 + 20.0 * i as f32),
+                frame: card,
+            },
+            bounds: b,
+        });
+        if i == 7 {
+            let cover = kurbo::Rect::from_center_size(card.center(), (48.0, 48.0));
+            let layer = crate::layers::Layer {
+                effects: Arc::from(vec![Effect::Mask(Mask::Shape("cookie".into()))]),
+                frame: cover,
+                scale: 1.0,
+                xform: kurbo::Affine::IDENTITY,
+                mosaic: None,
+                gpu: None,
+            };
+            items.push(DisplayItem {
+                item: Item::PushTransform(kurbo::Affine::rotate_about(turn * 3.0, cover.center())),
+                bounds: bounds(cover),
+            });
+            items.push(DisplayItem {
+                item: Item::PushLayer(Arc::new(layer)),
+                bounds: bounds(cover),
+            });
+            items.push(DisplayItem {
+                item: Item::Fill {
+                    shape: crate::flatten::FillShape::Rect(cover),
+                    paint: ramp("#f38ba8", "#fab387", 45.0),
+                    frame: cover,
+                },
+                bounds: bounds(cover),
+            });
+            items.push(DisplayItem {
+                item: Item::PopLayer,
+                bounds: bounds(cover),
+            });
+            items.push(DisplayItem {
+                item: Item::PopTransform,
+                bounds: bounds(cover),
+            });
+        }
+        if i == 5 {
+            items.push(DisplayItem {
+                item: Item::PopOpacity,
+                bounds: b,
+            });
+        }
+        if xform.is_some() {
+            items.push(DisplayItem {
+                item: Item::PopTransform,
+                bounds: b,
+            });
+        }
+    }
+    items
+}
+
+fn paint_with(
+    r: &mut Raster,
+    items: &[DisplayItem],
+    damage: &Damage,
+    (w, h): (u32, u32),
+    buf: &mut [u8],
+) {
+    use strand_scene::{PaintTarget, Size};
+    let atlas = AtlasMirror::default();
+    let mut t = PaintTarget::new(buf, Size::new(w, h), w * 4, Scale::ONE, 0).unwrap();
+    r.paint(items, damage, &atlas, Scale::ONE, &mut t);
+}
+
+/// (perf-cpu-raster) A paint's cells drawn on several threads are the
+/// bytes the render thread alone draws, over frames of a turning,
+/// scaling scene, in full and within scattered damage (rows of cells
+/// shared by several threads, cells cut by the damage), from a fresh
+/// raster and from one whose earlier frames cached its paint; and only a
+/// paint of many cells starts threads.
+#[test]
+fn cells_drawn_on_threads_are_the_render_threads_bytes() {
+    // Counts its paints' threads: other tests' paints take none of them.
+    unbudgeted();
+    use strand_scene::Size;
+    let (w, h) = (1100u32, 700u32);
+    let full = Damage::full(Size::new(w, h));
+    let mut serial = Raster::default();
+    serial.set_max_threads(1);
+    let mut threaded = Raster::default();
+    threaded.set_max_threads(4);
+    let mut a = vec![0u8; (w * h * 4) as usize];
+    let mut b = a.clone();
+    let mut seed = 0x51f1_5eedu64;
+    let mut rnd = move |n: u32| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as u32
+    };
+    for frame in 0..8 {
+        let items = busy_scene(w, h, frame as f64 * 0.07);
+        let damage = if frame % 2 == 0 {
+            full
+        } else {
+            let mut d = Damage::new();
+            for _ in 0..6 {
+                d.add(Rect::new(
+                    rnd(w - 200) as i32,
+                    rnd(h - 150) as i32,
+                    60 + rnd(500),
+                    20 + rnd(300),
+                ));
+            }
+            d
+        };
+        paint_with(&mut serial, &items, &damage, (w, h), &mut a);
+        paint_with(&mut threaded, &items, &damage, (w, h), &mut b);
+        assert_eq!(serial.times().threads, 1);
+        let cells = threaded.times().cells as usize;
+        if cells >= PARALLEL_CELLS {
+            assert_eq!(
+                threaded.times().threads,
+                4.min(cells) as u32,
+                "frame {frame}"
+            );
+        }
+        let differ = a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+        assert_eq!(differ, 0, "frame {frame}: {differ} pixels differ");
+        // And as a fresh raster on its own threads draws the frame.
+        let mut fresh = Raster::default();
+        fresh.set_max_threads(3);
+        let mut c = vec![0u8; (w * h * 4) as usize];
+        paint_with(&mut fresh, &items, &full, (w, h), &mut c);
+        let mut s = vec![0u8; (w * h * 4) as usize];
+        let mut alone = Raster::default();
+        alone.set_max_threads(1);
+        paint_with(&mut alone, &items, &full, (w, h), &mut s);
+        assert!(c == s, "frame {frame}: a fresh threaded frame differs");
+    }
+    assert_eq!(threaded.lanes(), 4);
+    // A small damage stays on the render thread.
+    let mut d = Damage::new();
+    d.add(Rect::new(10, 10, 300, 60));
+    paint_with(&mut threaded, &busy_scene(w, h, 0.0), &d, (w, h), &mut b);
+    assert!(threaded.times().cells < PARALLEL_CELLS as u32);
+    assert_eq!(threaded.times().threads, 1);
+}
+
+/// (perf-cpu-raster) A window of the surface (the drag icon) drawn on
+/// threads is that part of the full paint, its rows cut from the
+/// window's own origin.
+#[test]
+fn a_window_drawn_on_threads_is_the_full_paints_part() {
+    // Counts its paints' threads: other tests' paints take none of them.
+    unbudgeted();
+    use strand_scene::{PaintTarget, Size};
+    let (w, h) = (1100u32, 700u32);
+    let items = busy_scene(w, h, 0.3);
+    let full = Damage::full(Size::new(w, h));
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let mut alone = Raster::default();
+    alone.set_max_threads(1);
+    paint_with(&mut alone, &items, &full, (w, h), &mut buf);
+    let atlas = AtlasMirror::default();
+    // A window starting off the cells' grid, its stride wider than it.
+    let (ox, oy, ww, wh, stride) = (97i64, 41i64, 700u32, 500u32, 700 * 4 + 64);
+    let mut win = vec![0u8; stride as usize * wh as usize];
+    let mut r = Raster::default();
+    r.set_max_threads(4);
+    let mut t = PaintTarget::new(&mut win, Size::new(ww, wh), stride, Scale::ONE, 0).unwrap();
+    r.paint_window(
+        &items,
+        &full,
+        &atlas,
+        Scale::ONE,
+        &mut t,
+        Rect::new(0, 0, w, h),
+        (ox, oy),
+    );
+    assert!(r.times().threads > 1);
+    for y in 0..wh as usize {
+        let src = ((y + oy as usize) * w as usize + ox as usize) * 4;
+        let dst = y * stride as usize;
+        assert!(
+            win[dst..dst + ww as usize * 4] == buf[src..src + ww as usize * 4],
+            "row {y} differs"
+        );
+    }
+}
+
+/// (perf-cpu-raster) However many renderers paint at once, at most
+/// `MAX_THREADS` − 1 helper threads run in the process: eight threads
+/// sharing work together never have more helpers working than that,
+/// and every task still runs once.
+#[test]
+fn renderers_painting_together_share_the_helper_threads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let working = AtomicUsize::new(0);
+    let most = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            s.spawn(|| {
+                for _ in 0..6 {
+                    let mut states = vec![(); MAX_THREADS];
+                    let ran = share(&mut states, 24, |_, _| {
+                        let helper = std::thread::current().name() == Some("strand-raster");
+                        if helper {
+                            let now = working.fetch_add(1, Ordering::SeqCst) + 1;
+                            most.fetch_max(now, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(std::time::Duration::from_micros(300));
+                        if helper {
+                            working.fetch_sub(1, Ordering::SeqCst);
+                        }
+                        done.fetch_add(1, Ordering::SeqCst);
+                    });
+                    assert!((1..=MAX_THREADS).contains(&ran), "{ran} threads ran");
+                }
+            });
+        }
+    });
+    assert_eq!(
+        done.load(Ordering::SeqCst),
+        8 * 6 * 24,
+        "every task ran once"
+    );
+    // (Whether any started depends on the other tests' paints, which
+    // may hold every place; the tests that count threads start theirs.)
+    let most = most.load(Ordering::SeqCst);
+    assert!(most < MAX_THREADS, "{most} helpers at once");
+}
+
+/// (perf-cpu-raster) The raster's threads live only while a paint
+/// draws: once it returns, none it started is left to run or wake (idle
+/// is zero work).
+#[test]
+fn no_raster_thread_outlives_its_paint() {
+    // Counts its paints' threads: other tests' paints take none of them.
+    unbudgeted();
+    use strand_scene::Size;
+    let (w, h) = (1100u32, 700u32);
+    let mut r = Raster::default();
+    r.set_max_threads(4);
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    // SAFETY: gettid has no preconditions.
+    let me = unsafe { libc::gettid() } as i64;
+    for f in 0..3 {
+        let items = busy_scene(w, h, f as f64 * 0.1);
+        paint_with(
+            &mut r,
+            &items,
+            &Damage::full(Size::new(w, h)),
+            (w, h),
+            &mut buf,
+        );
+        let tids = r.worker_tids();
+        assert_eq!(tids.len(), 3, "frame {f}: three threads beside this one");
+        for tid in tids {
+            assert_ne!(tid, me);
+            // Joined: the kernel clears a thread's id (what the join
+            // waits for) a moment before it removes the task, so a
+            // joined thread may still be listed for a moment, never for
+            // long.
+            let task = format!("/proc/self/task/{tid}");
+            let gone = (0..200).any(|_| {
+                let gone = !std::path::Path::new(&task).exists();
+                if !gone {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                gone
+            });
+            assert!(gone, "frame {f}: thread {tid} outlived its paint");
+        }
+    }
+}
+
+/// (perf-cpu-raster) A gradient scaling in (a staggered tile's `enter
+/// { scale: 0.85 }`) or turning, drawn smoothly from the part each cell
+/// shows: once its whole pixmap is cached the parts are copied from it,
+/// not dithered again, and every frame is the bytes a fresh raster, with
+/// nothing cached, dithers.
+#[test]
+fn a_transformed_gradient_draws_its_parts_from_the_cache_as_fresh() {
+    use crate::cache::PARTS_DITHERED;
+    use strand_scene::Size;
+    let (w, h) = (600u32, 300u32);
+    let full = Damage::full(Size::new(w, h));
+    let mut warm = Raster::default();
+    warm.set_max_threads(1);
+    let mut a = vec![0u8; (w * h * 4) as usize];
+    let mut b = a.clone();
+    let mut dithered_warm = Vec::new();
+    for frame in 0..10 {
+        let items = busy_scene(w, h, 0.02 + frame as f64 * 0.05);
+        let before = PARTS_DITHERED.with(|n| n.get());
+        paint_with(&mut warm, &items, &full, (w, h), &mut a);
+        dithered_warm.push(PARTS_DITHERED.with(|n| n.get()) - before);
+        let mut fresh = Raster::default();
+        fresh.set_max_threads(1);
+        paint_with(&mut fresh, &items, &full, (w, h), &mut b);
+        let differ = a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+        assert_eq!(differ, 0, "frame {frame}: {differ} pixels differ");
+    }
+    // The first frame dithers every part; from the third (the second
+    // admits the pixmaps) none.
+    assert!(dithered_warm[0] > 0, "{dithered_warm:?}");
+    assert!(
+        dithered_warm[2..].iter().all(|&n| n == 0),
+        "{dithered_warm:?}"
+    );
+}

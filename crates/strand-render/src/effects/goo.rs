@@ -97,18 +97,24 @@ impl Goo {
     }
 
     /// The field's distance and colour at `p`.
+    #[cfg(test)]
     fn at(&self, p: kurbo::Point) -> (f64, Color) {
+        let mut ds = vec![0.0; self.blobs.len()];
+        self.field(p, &mut ds)
+    }
+
+    /// The field's distance and colour at `p`, each box's distance worked
+    /// out into `ds` (as long as the boxes).
+    fn field(&self, p: kurbo::Point, ds: &mut [f64]) -> (f64, Color) {
         // Twice the distance: two boxes `distance` apart meet in the
         // middle (the smooth minimum dips by at most a quarter of it).
         let k = self.distance * 2.0;
         let mut d = f64::INFINITY;
         let mut nearest = f64::INFINITY;
-        let ds: Vec<f64> = self
-            .blobs
-            .iter()
-            .map(|b| rounded_box(p, b.rect, b.radius))
-            .collect();
-        for &di in &ds {
+        for (di, b) in ds.iter_mut().zip(&self.blobs) {
+            *di = rounded_box(p, b.rect, b.radius);
+        }
+        for &di in ds.iter() {
             d = if d.is_infinite() {
                 di
             } else {
@@ -116,10 +122,17 @@ impl Goo {
             };
             nearest = nearest.min(di);
         }
+        (d, self.colour(ds, nearest))
+    }
+
+    /// The field's colour where the boxes' distances are `ds` and the
+    /// nearest is `nearest` ([`Goo::field`]).
+    fn colour(&self, ds: &[f64], nearest: f64) -> Color {
+        let k = self.distance * 2.0;
         // Each box's colour weighs by how near it is to the nearest.
         let mut sum = [0.0f32; 4];
         let mut total = 0.0f32;
-        for (b, di) in self.blobs.iter().zip(&ds) {
+        for (b, di) in self.blobs.iter().zip(ds) {
             let w = ((k - (di - nearest)).max(0.0) / k.max(1e-6)).powi(2) as f32 + 1e-6;
             let w = if (*di - nearest).abs() < 1e-9 {
                 w.max(1e-3)
@@ -132,7 +145,7 @@ impl Goo {
             sum[3] += b.color.a * w;
             total += w;
         }
-        let c = if total > 0.0 {
+        if total > 0.0 {
             Color::new(
                 sum[0] / total,
                 sum[1] / total,
@@ -141,8 +154,7 @@ impl Goo {
             )
         } else {
             Color::TRANSPARENT
-        };
-        (d, c)
+        }
     }
 }
 
@@ -223,8 +235,15 @@ impl Outline {
             let (p, q) = (c[(k + 3) % 4]?, c[k]?);
             Line::through(p, q, pos[k], d[k])
         };
-        let found: Vec<usize> = (0..4).filter(|&e| c[e].is_some()).collect();
-        if found.len() == 2 {
+        // The edges crossed, in order (no vector: a cell on the outline
+        // of every frame's goo).
+        let mut found = [0usize; 4];
+        let mut crossed = 0;
+        for e in (0..4).filter(|&e| c[e].is_some()) {
+            found[crossed] = e;
+            crossed += 1;
+        }
+        if crossed == 2 {
             let (p, q) = (c[found[0]]?, c[found[1]]?);
             // Orient by the corner furthest from the outline.
             let k = (0..4)
@@ -299,14 +318,24 @@ impl RasterSource for Goo {
         let g = GRID;
         let cols = (x1 - x0) as usize / g + 2;
         let rows = (y1 - y0) as usize / g + 2;
+        let at = |i: usize, j: usize| {
+            kurbo::Point::new(x0 as f64 + (i * g) as f64, y0 as f64 + (j * g) as f64)
+        };
+        // (perf-cpu-raster) Each corner's box distances into one buffer
+        // (on the stack for a few boxes): an 800 x 400 goo has up to
+        // 80,000 corners, and a vector each was as many allocations a
+        // frame.
+        let mut stack = [0.0f64; 8];
+        let mut heap = Vec::new();
+        let ds: &mut [f64] = if self.blobs.len() <= stack.len() {
+            &mut stack[..self.blobs.len()]
+        } else {
+            heap.resize(self.blobs.len(), 0.0);
+            &mut heap
+        };
         let corners: Vec<(f64, Color)> = (0..rows)
             .flat_map(|j| (0..cols).map(move |i| (i, j)))
-            .map(|(i, j)| {
-                self.at(kurbo::Point::new(
-                    x0 as f64 + (i * g) as f64,
-                    y0 as f64 + (j * g) as f64,
-                ))
-            })
+            .map(|(i, j)| self.field(at(i, j), ds))
             .collect();
         let mut canvas = Canvas { px: pixels, w, h };
         for j in 0..rows - 1 {
@@ -314,8 +343,7 @@ impl RasterSource for Goo {
                 let corner = |di: usize, dj: usize| corners[(j + dj) * cols + i + di];
                 // Top left, top right, bottom right, bottom left.
                 let cell = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
-                let origin =
-                    kurbo::Point::new(x0 as f64 + (i * g) as f64, y0 as f64 + (j * g) as f64);
+                let origin = at(i, j);
                 let Some(outline) = Outline::of(cell.map(|c| c.0), origin, g as f64) else {
                     continue;
                 };
@@ -378,6 +406,134 @@ mod tests {
         assert!(one.at(kurbo::Point::new(10.0, 20.0)).0 < 0.0);
         assert!((one.at(kurbo::Point::new(20.5, 20.0)).0 - 0.5).abs() < 1e-6);
         assert_ne!(near.config(), far.config());
+    }
+
+    /// The drawing before perf-cpu-raster: every corner's distance and
+    /// colour first.
+    fn draw_eager(goo: &Goo, pixels: &mut [PremulRgba8], w: u32, h: u32) {
+        let mut reach = goo.blobs[0].rect;
+        for b in &goo.blobs[1..] {
+            reach = reach.union(b.rect);
+        }
+        let reach = reach.inflate(1.0, 1.0);
+        let (x0, y0) = (
+            reach.x0.floor().max(0.0) as u32,
+            reach.y0.floor().max(0.0) as u32,
+        );
+        let (x1, y1) = (
+            (reach.x1.ceil().max(0.0) as u32).min(w),
+            (reach.y1.ceil().max(0.0) as u32).min(h),
+        );
+        let g = GRID;
+        let cols = (x1 - x0) as usize / g + 2;
+        let rows = (y1 - y0) as usize / g + 2;
+        let corners: Vec<(f64, Color)> = (0..rows)
+            .flat_map(|j| (0..cols).map(move |i| (i, j)))
+            .map(|(i, j)| {
+                goo.at(kurbo::Point::new(
+                    x0 as f64 + (i * g) as f64,
+                    y0 as f64 + (j * g) as f64,
+                ))
+            })
+            .collect();
+        let mut canvas = Canvas { px: pixels, w, h };
+        for j in 0..rows - 1 {
+            for i in 0..cols - 1 {
+                let corner = |di: usize, dj: usize| corners[(j + dj) * cols + i + di];
+                let cell = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                let origin =
+                    kurbo::Point::new(x0 as f64 + (i * g) as f64, y0 as f64 + (j * g) as f64);
+                let Some(outline) = Outline::of(cell.map(|c| c.0), origin, g as f64) else {
+                    continue;
+                };
+                for py in 0..g {
+                    for px in 0..g {
+                        let (x, y) = (origin.x as i64 + px as i64, origin.y as i64 + py as i64);
+                        if x >= x1 as i64 || y >= y1 as i64 {
+                            continue;
+                        }
+                        let p = kurbo::Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                        let alpha = (0.5 - outline.distance(p)).clamp(0.0, 1.0) as f32;
+                        if alpha > 0.0 {
+                            let (u, v) = ((p.x - origin.x) / g as f64, (p.y - origin.y) / g as f64);
+                            let c = bilinear(cell.map(|c| c.1), u as f32, v as f32);
+                            canvas.over(x as i32, y as i32, c, alpha);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// (perf-cpu-raster) The corners' field worked out into one buffer
+    /// (on the stack, or on the heap past eight boxes) gives the bytes a
+    /// vector a corner did: blobs of several colours swinging together
+    /// and apart, cut by the pixmap's edge.
+    #[test]
+    fn reused_buffers_draw_the_eager_bytes() {
+        let hex = |s: &str| Color::from_hex(s).unwrap();
+        let (w, h) = (240u32, 120u32);
+        for step in 0..12 {
+            let t = step as f64 * 0.37;
+            let goo = Goo {
+                blobs: vec![
+                    Blob {
+                        rect: kurbo::Rect::from_origin_size(
+                            (20.0 + 40.0 * t.sin(), 30.0),
+                            (50.0, 50.0),
+                        ),
+                        radius: 25.0,
+                        color: hex("#89b4fa"),
+                    },
+                    Blob {
+                        rect: kurbo::Rect::from_origin_size(
+                            (90.0 - 30.0 * t.cos(), 20.5),
+                            (60.0, 60.0),
+                        ),
+                        radius: 30.0,
+                        color: hex("#f38ba8cc"),
+                    },
+                    Blob {
+                        rect: kurbo::Rect::from_origin_size(
+                            (150.0, 40.0 + 30.0 * t.sin()),
+                            (40.0, 40.0),
+                        ),
+                        radius: 12.0,
+                        color: hex("#a6e3a1"),
+                    },
+                    Blob {
+                        rect: kurbo::Rect::from_origin_size(
+                            (210.0 + 10.0 * t.cos(), 90.0),
+                            (50.0, 45.0),
+                        ),
+                        radius: 20.0,
+                        color: hex("#f9e2af"),
+                    },
+                ],
+                // No merge at all on the last step.
+                distance: if step == 11 { 0.0 } else { 18.0 + step as f64 },
+            };
+            // More boxes than the stack buffer holds on odd steps.
+            let mut goo = goo;
+            if step % 2 == 1 {
+                for n in 0..6 {
+                    goo.blobs.push(Blob {
+                        rect: kurbo::Rect::from_origin_size(
+                            (10.0 + 38.0 * n as f64, 85.0 - 6.0 * t.sin() * n as f64),
+                            (22.0, 22.0),
+                        ),
+                        radius: 11.0,
+                        color: hex(if n % 2 == 0 { "#cba6f7" } else { "#94e2d5" }),
+                    });
+                }
+            }
+            let mut a = vec![PremulRgba8::from_u32(0); (w * h) as usize];
+            let mut b = a.clone();
+            goo.draw(&mut a, w, h, 1.0, TimeContext::default());
+            draw_eager(&goo, &mut b, w, h);
+            assert!(a == b, "step {step}");
+            assert!(a.iter().any(|p| p.a > 0));
+        }
     }
 
     /// The marching-squares drawing follows the field: every pixel more

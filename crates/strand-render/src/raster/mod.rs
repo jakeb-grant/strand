@@ -9,6 +9,10 @@
 //! fixed-grid cell at a time, so pixels outside the damage keep the
 //! buffer's previous contents and cost follows the damage.
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
 use strand_scene::{Damage, PaintTarget, Rect, Scale};
 use vello_cpu::kurbo::Affine;
 use vello_cpu::{
@@ -37,6 +41,15 @@ pub const CELL_H: u32 = 64;
 /// smaller, so a surface uses up to four sizes).
 const MIN_CONTEXTS: usize = 8;
 
+/// (perf-cpu-raster) Cells a paint draws before it shares them among
+/// threads: under it the threads' start costs more than they save.
+pub const PARALLEL_CELLS: usize = 8;
+
+/// Most threads that draw one paint's cells, the render thread with
+/// them (a performance core each on a 4 + 8 hybrid laptop; more land
+/// on efficiency cores, which finish a cell slower than they help).
+pub const MAX_THREADS: usize = 4;
+
 /// (perf-bench) Where the last [`Raster::paint`] spent its time: the
 /// paint cache's gradients and shadows built (`prepare`), offscreen
 /// groups and fade layers drawn (`offscreen`), the display list encoded
@@ -51,17 +64,64 @@ pub struct RasterTimes {
     pub fine: std::time::Duration,
     pub copy: std::time::Duration,
     pub cells: u32,
+    /// (perf-cpu-raster) The threads that drew the cells (1: the render
+    /// thread alone). With more, `encode`, `fine` and `copy` share the
+    /// parallel pass's wall-clock time in proportion to the time the
+    /// threads spent in each.
+    pub threads: u32,
+}
+
+/// One thread's vello contexts and scratch space, kept between frames.
+#[derive(Debug, Default)]
+struct Lane {
+    /// One context per cell size in use, most recent first.
+    contexts: Vec<RenderContext>,
+    resources: Option<Resources>,
+    scratch: Vec<u8>,
+    /// This paint's time in each part.
+    encode: std::time::Duration,
+    fine: std::time::Duration,
+    copy: std::time::Duration,
+    /// The OS thread that last drew with it (tests: gone once the paint
+    /// returns).
+    #[cfg(test)]
+    tid: i64,
+}
+
+/// One cell a paint draws: where, the damage's disjoint parts in it,
+/// and its row of cells (its band of the target).
+#[derive(Debug)]
+struct CellJob {
+    cell: Rect,
+    clips: Vec<Rect>,
+    band: usize,
+}
+
+/// What every cell of a paint draws from.
+struct Shared<'a> {
+    items: &'a [DisplayItem],
+    atlas: &'a AtlasMirror,
+    cache: &'a PaintCache,
+    scale: Scale,
+    groups: &'a std::collections::HashMap<usize, crate::offscreen::Drawn>,
+    fades: &'a std::collections::HashMap<usize, crate::offscreen::Drawn>,
+    settings: RasterizerSettings,
+    max_contexts: usize,
+    stride: usize,
+    origin: (i64, i64),
 }
 
 /// Owns the vello contexts and scratch space between frames.
 #[derive(Debug)]
 pub struct Raster {
-    /// One context per cell size in use, most recent first.
-    contexts: Vec<RenderContext>,
+    /// The render thread's contexts and scratch (`lanes[0]`), and the
+    /// other threads' that share large paints ([`PARALLEL_CELLS`]).
+    lanes: Vec<Lane>,
     /// Contexts kept; see [`Raster::set_surfaces`].
     max_contexts: usize,
-    resources: Option<Resources>,
-    scratch: Vec<u8>,
+    /// Most threads a paint's cells are drawn on ([`threads`]; tests set
+    /// 1 to draw on the render thread alone).
+    max_threads: usize,
     /// Pixels the last `paint` handed to vello (cells × cell area).
     rasterised: u64,
     /// Dithered gradients and blurred shadows, drawn from pixmaps.
@@ -75,10 +135,9 @@ pub struct Raster {
 impl Default for Raster {
     fn default() -> Self {
         Self {
-            contexts: Vec::new(),
+            lanes: vec![Lane::default()],
             max_contexts: MIN_CONTEXTS,
-            resources: None,
-            scratch: Vec::new(),
+            max_threads: threads(),
             rasterised: 0,
             cache: PaintCache::default(),
             offscreen: crate::offscreen::Offscreen::default(),
@@ -93,13 +152,40 @@ impl Raster {
     /// outputs of different sizes never rebuild contexts every frame.
     pub fn set_surfaces(&mut self, n: usize) {
         self.max_contexts = (4 * n).max(MIN_CONTEXTS);
-        self.contexts.truncate(self.max_contexts);
+        for lane in &mut self.lanes {
+            lane.contexts.truncate(self.max_contexts);
+        }
     }
 
-    /// Render contexts currently kept.
+    /// Render contexts the render thread keeps.
     #[cfg(test)]
     pub fn contexts(&self) -> usize {
-        self.contexts.len()
+        self.lanes[0].contexts.len()
+    }
+
+    /// (perf-cpu-raster) Draws a paint's cells on at most `n` threads
+    /// (tests: 1 draws them all on the calling thread).
+    #[cfg(test)]
+    pub(crate) fn set_max_threads(&mut self, n: usize) {
+        self.max_threads = n.max(1);
+    }
+
+    /// (perf-cpu-raster) The OS threads other than the caller's that
+    /// drew the last paint's cells (tests).
+    #[cfg(test)]
+    pub(crate) fn worker_tids(&self) -> Vec<i64> {
+        let threads = (self.times.threads as usize).min(self.lanes.len());
+        self.lanes[1..threads.max(1)]
+            .iter()
+            .map(|l| l.tid)
+            .collect()
+    }
+
+    /// (perf-cpu-raster) Threads that have drawn a paint's cells so far,
+    /// the render thread with them (tests).
+    #[cfg(test)]
+    pub(crate) fn lanes(&self) -> usize {
+        self.lanes.len()
     }
 
     /// The cache of dithered gradients and shadows.
@@ -159,32 +245,6 @@ impl Raster {
     /// (perf-bench) Where the last paint spent its time.
     pub fn times(&self) -> RasterTimes {
         self.times
-    }
-
-    fn context(&mut self, w: u16, h: u16) -> &mut RenderContext {
-        match self
-            .contexts
-            .iter()
-            .position(|c| c.width() == w && c.height() == h)
-        {
-            Some(i) => {
-                let c = self.contexts.remove(i);
-                self.contexts.insert(0, c);
-            }
-            None => {
-                // Single-threaded explicitly: feature unification could
-                // otherwise turn on vello's worker threads, and its filters
-                // panic when rendering multi-threaded.
-                let settings = RenderSettings {
-                    num_threads: 0,
-                    ..RenderSettings::default()
-                };
-                self.contexts
-                    .insert(0, RenderContext::new_with(w, h, settings));
-                self.contexts.truncate(self.max_contexts);
-            }
-        }
-        &mut self.contexts[0]
     }
 
     /// Paints `items` into `target`, touching only pixels inside `damage`.
@@ -248,10 +308,10 @@ impl Raster {
         // entries, so none it builds or reuses counts as idle however
         // long `prepare` takes (a slow runner took over the 20 ms a test
         // sets, and freed a shadow the frame had just built).
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         self.prepare(items, &damage, window);
         self.cache.trim_idle(now);
-        let mut mark = std::time::Instant::now();
+        let mark = Instant::now();
         self.times.prepare = mark.saturating_duration_since(now);
         self.offscreen
             .prepare(items, &damage, surface, atlas, &self.cache, scale);
@@ -259,12 +319,7 @@ impl Raster {
             .prepare_fades(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());
-        let mut lap = |part: &mut std::time::Duration| {
-            let at = std::time::Instant::now();
-            *part += at.saturating_duration_since(mark);
-            mark = at;
-        };
-        lap(&mut self.times.offscreen);
+        self.times.offscreen = mark.elapsed();
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
         // composite through it.
@@ -277,6 +332,9 @@ impl Raster {
             render_mode: RenderMode::OptimizeQuality,
             ..RasterizerSettings::default()
         };
+        let mut jobs: Vec<CellJob> = Vec::new();
+        // Each row of cells' rows of the target, `[top, bottom)`.
+        let mut bands: Vec<(i64, i64)> = Vec::new();
         for cy in bbox.top().div_euclid(ch)..(bbox.bottom() + ch - 1).div_euclid(ch) {
             for cx in bbox.left().div_euclid(cw)..(bbox.right() + cw - 1).div_euclid(cw) {
                 let Some(cell) = Rect::from_edges(cx * cw, cy * ch, (cx + 1) * cw, (cy + 1) * ch)
@@ -288,61 +346,353 @@ impl Raster {
                 if clips.is_empty() {
                     continue;
                 }
-                // Cells are at most CELL_W × CELL_H.
-                let (w, h) = (cell.w as u16, cell.h as u16);
                 self.rasterised += cell.area();
-                let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
-                self.context(w, h);
-                let ctx = &mut self.contexts[0];
-                ctx.reset();
-                ctx.set_transform(base);
-                for clip in &clips {
-                    ctx.push_clip_rect(&to_kurbo(*clip));
-                    draw(
-                        ctx,
-                        items,
-                        *clip,
-                        atlas,
-                        &self.cache,
-                        scale,
-                        base,
-                        Affine::IDENTITY,
-                        self.offscreen.current(),
-                        self.offscreen.fades(),
-                    );
-                    ctx.pop_clip();
+                let rows = (
+                    cell.top().max(window.top()) - origin.1,
+                    cell.bottom().min(window.bottom()) - origin.1,
+                );
+                if bands.last() != Some(&rows) {
+                    bands.push(rows);
                 }
-                ctx.flush();
-                lap(&mut self.times.encode);
-                self.times.cells += 1;
-                let row = cell.w as usize * 4;
-                self.scratch.clear();
-                self.scratch.resize(row * cell.h as usize, 0);
-                let resources = self.resources.get_or_insert_with(Resources::new);
-                let ctx = &mut self.contexts[0];
-                if let Some(pm) = PixmapMut::new(w, h, &mut self.scratch) {
-                    ctx.render_with(pm, resources, settings);
-                }
-                // Release image references so atlas pages can be updated
-                // in place.
-                ctx.reset();
-                lap(&mut self.times.fine);
-                let stride = target.stride as usize;
-                for c in &clips {
-                    let lx0 = (c.left() - cell.left()) as usize * 4;
-                    let lx1 = (c.right() - cell.left()) as usize * 4;
-                    let x0 = (c.left() - origin.0) as usize * 4;
-                    let x1 = (c.right() - origin.0) as usize * 4;
-                    for y in c.top()..c.bottom() {
-                        let ly = (y - cell.top()) as usize;
-                        let y = (y - origin.1) as usize;
-                        target.pixels[y * stride + x0..y * stride + x1]
-                            .copy_from_slice(&self.scratch[ly * row + lx0..ly * row + lx1]);
-                    }
-                }
-                lap(&mut self.times.copy);
+                jobs.push(CellJob {
+                    cell,
+                    clips,
+                    band: bands.len() - 1,
+                });
             }
         }
+        self.times.cells = jobs.len() as u32;
+        let shared = Shared {
+            items,
+            atlas,
+            cache: &self.cache,
+            scale,
+            groups: self.offscreen.current(),
+            fades: self.offscreen.fades(),
+            settings,
+            max_contexts: self.max_contexts,
+            stride: target.stride as usize,
+            origin,
+        };
+        let mut threads = if jobs.len() >= PARALLEL_CELLS {
+            self.max_threads.min(jobs.len())
+        } else {
+            1
+        };
+        let lanes_used = threads;
+        while self.lanes.len() < threads {
+            self.lanes.push(Lane::default());
+        }
+        for lane in &mut self.lanes {
+            lane.encode = Duration::ZERO;
+            lane.fine = Duration::ZERO;
+            lane.copy = Duration::ZERO;
+        }
+        let start = Instant::now();
+        if threads <= 1 {
+            let lane = &mut self.lanes[0];
+            for job in &jobs {
+                lane.draw(job, &shared);
+                lane.copy_into(job, &shared, target.pixels, 0);
+            }
+        } else {
+            threads = draw_parallel(
+                &mut self.lanes[..lanes_used],
+                &jobs,
+                &bands,
+                &shared,
+                target,
+            );
+        }
+        let wall = start.elapsed();
+        self.times.threads = threads as u32;
+        let lanes = &self.lanes[..lanes_used];
+        let (enc, fine, copy) = lanes.iter().fold(
+            (Duration::ZERO, Duration::ZERO, Duration::ZERO),
+            |(e, f, c), l| (e + l.encode, f + l.fine, c + l.copy),
+        );
+        if threads <= 1 {
+            (self.times.encode, self.times.fine, self.times.copy) = (enc, fine, copy);
+        } else {
+            // The pass's wall-clock time, shared as the threads spent
+            // theirs.
+            let total = (enc + fine + copy).as_secs_f64();
+            let part = |d: Duration| {
+                if total > 0.0 {
+                    wall.mul_f64(d.as_secs_f64() / total)
+                } else {
+                    Duration::ZERO
+                }
+            };
+            (self.times.encode, self.times.fine, self.times.copy) =
+                (part(enc), part(fine), part(copy));
+        }
+    }
+}
+
+/// Threads a large paint may share its cells among: the cores this
+/// process may run on, at most [`MAX_THREADS`] (asked once: the
+/// question reads cgroup files).
+pub(crate) fn threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, MAX_THREADS)
+    })
+}
+
+/// (perf-cpu-raster) Draws `jobs` on up to `lanes.len()` threads
+/// ([`share`]; it returns how many drew), the render thread one of
+/// them, started for this paint and joined before it returns (so
+/// nothing runs, or wakes, between paints). Each thread
+/// takes the next cell not yet taken, draws it alone in its own
+/// context as the render thread would (every cell is drawn on its own,
+/// so which thread draws it changes no pixel), and copies it into its
+/// band of `target`: the rows of its row of cells, held by a lock while
+/// it copies, since the cells of a row share them.
+fn draw_parallel(
+    lanes: &mut [Lane],
+    jobs: &[CellJob],
+    bands: &[(i64, i64)],
+    shared: &Shared<'_>,
+    target: &mut PaintTarget<'_>,
+) -> usize {
+    let stride = shared.stride;
+    let mut slices = Vec::with_capacity(bands.len());
+    let mut rest: &mut [u8] = target.pixels;
+    let mut at = 0usize;
+    for &(top, bottom) in bands {
+        let (top, bottom) = (
+            top.max(0) as usize * stride,
+            bottom.max(0) as usize * stride,
+        );
+        let skip = top.saturating_sub(at).min(rest.len());
+        let (_, tail) = std::mem::take(&mut rest).split_at_mut(skip);
+        let len = bottom.saturating_sub(top).min(tail.len());
+        let (band, tail) = tail.split_at_mut(len);
+        slices.push(Mutex::new(band));
+        rest = tail;
+        at = top + len;
+    }
+    share(lanes, jobs.len(), |lane, i| {
+        #[cfg(test)]
+        {
+            // SAFETY: gettid has no preconditions.
+            lane.tid = unsafe { libc::gettid() } as i64;
+        }
+        let job = &jobs[i];
+        lane.draw(job, shared);
+        let mut band = slices[job.band]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lane.copy_into(job, shared, &mut band, bands[job.band].0);
+    })
+}
+
+/// Helper threads running in this process ([`share`]): at most
+/// [`MAX_THREADS`] − 1 at once, however many renderers paint together
+/// (an eval sandbox, tests), so the raster never oversubscribes the
+/// cores the rest of the process (the text worker) needs.
+static HELPERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Takes up to `want` of [`HELPERS`]' free places; the guard gives them
+/// back.
+fn reserve_helpers(want: usize) -> Helpers {
+    let mut held = HELPERS.load(Ordering::Relaxed);
+    loop {
+        let n = want.min((MAX_THREADS - 1).saturating_sub(held));
+        if n == 0 {
+            return Helpers(0);
+        }
+        match HELPERS.compare_exchange_weak(held, held + n, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return Helpers(n),
+            Err(now) => held = now,
+        }
+    }
+}
+
+/// Places in [`HELPERS`], given back when dropped (a panic included).
+struct Helpers(usize);
+
+impl Drop for Helpers {
+    fn drop(&mut self) {
+        if self.0 > 0 {
+            HELPERS.fetch_sub(self.0, Ordering::AcqRel);
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test thread whose `share` calls start every helper they ask for,
+    /// outside [`HELPERS`]: tests that count a paint's threads, which
+    /// other tests' paints would otherwise take places from.
+    static UNBUDGETED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (tests) This thread's `share` calls start every helper they ask for
+/// and hold no place in [`HELPERS`].
+#[cfg(test)]
+pub(crate) fn unbudgeted() {
+    UNBUDGETED.with(|u| u.set(true));
+}
+
+/// (perf-cpu-raster) Runs `work(state, i)` for every `i` in `0..tasks`
+/// on up to `states.len()` threads, the calling thread one of them with
+/// `states[0]`: each takes the next task not yet taken. The others are
+/// started for this call and joined before it returns, so nothing runs
+/// or wakes between calls (idle is zero work); they are as many as
+/// [`HELPERS`] has room for, and one that cannot start leaves its tasks
+/// to the rest. A task's panic is the caller's. Returns the threads
+/// that ran, the caller's included.
+pub(crate) fn share<S: Send>(
+    states: &mut [S],
+    tasks: usize,
+    work: impl Fn(&mut S, usize) + Sync,
+) -> usize {
+    let next = AtomicUsize::new(0);
+    let run = |state: &mut S| {
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            if i >= tasks {
+                break;
+            }
+            work(state, i);
+        }
+    };
+    let Some((first, others)) = states.split_first_mut() else {
+        return 0;
+    };
+    let want = others.len().min(tasks.saturating_sub(1));
+    #[cfg(test)]
+    let (_helpers, want) = if UNBUDGETED.with(|u| u.get()) {
+        (Helpers(0), want)
+    } else {
+        let h = reserve_helpers(want);
+        let n = h.0;
+        (h, n)
+    };
+    #[cfg(not(test))]
+    let (_helpers, want) = {
+        let h = reserve_helpers(want);
+        let n = h.0;
+        (h, n)
+    };
+    std::thread::scope(|s| {
+        let started: Vec<_> = others[..want]
+            .iter_mut()
+            .filter_map(|state| {
+                std::thread::Builder::new()
+                    .name("strand-raster".into())
+                    .spawn_scoped(s, || run(state))
+                    .ok()
+            })
+            .collect();
+        let ran = 1 + started.len();
+        run(first);
+        // Joined, not only finished: the threads have exited when the
+        // call returns.
+        for t in started {
+            if let Err(e) = t.join() {
+                std::panic::resume_unwind(e);
+            }
+        }
+        ran
+    })
+}
+
+impl Lane {
+    fn context(&mut self, w: u16, h: u16, max: usize) -> &mut RenderContext {
+        match self
+            .contexts
+            .iter()
+            .position(|c| c.width() == w && c.height() == h)
+        {
+            Some(i) => {
+                let c = self.contexts.remove(i);
+                self.contexts.insert(0, c);
+            }
+            None => {
+                // Single-threaded explicitly: feature unification could
+                // otherwise turn on vello's worker threads, and its filters
+                // panic when rendering multi-threaded.
+                let settings = RenderSettings {
+                    num_threads: 0,
+                    ..RenderSettings::default()
+                };
+                self.contexts
+                    .insert(0, RenderContext::new_with(w, h, settings));
+                self.contexts.truncate(max);
+            }
+        }
+        &mut self.contexts[0]
+    }
+
+    /// Rasterises `job`'s cell into `scratch`: the scene translated by the
+    /// cell's origin, clipped to the damage's parts in it.
+    fn draw(&mut self, job: &CellJob, sh: &Shared<'_>) {
+        let mark = Instant::now();
+        let cell = job.cell;
+        // Cells are at most CELL_W × CELL_H.
+        let (w, h) = (cell.w as u16, cell.h as u16);
+        let base = Affine::translate((-(cell.x as f64), -(cell.y as f64)));
+        let ctx = self.context(w, h, sh.max_contexts);
+        ctx.reset();
+        ctx.set_transform(base);
+        for clip in &job.clips {
+            ctx.push_clip_rect(&to_kurbo(*clip));
+            draw(
+                ctx,
+                sh.items,
+                *clip,
+                sh.atlas,
+                sh.cache,
+                sh.scale,
+                base,
+                Affine::IDENTITY,
+                sh.groups,
+                sh.fades,
+            );
+            ctx.pop_clip();
+        }
+        ctx.flush();
+        let encoded = Instant::now();
+        self.encode += encoded.saturating_duration_since(mark);
+        let row = cell.w as usize * 4;
+        self.scratch.clear();
+        self.scratch.resize(row * cell.h as usize, 0);
+        let resources = self.resources.get_or_insert_with(Resources::new);
+        let ctx = &mut self.contexts[0];
+        if let Some(pm) = PixmapMut::new(w, h, &mut self.scratch) {
+            ctx.render_with(pm, resources, sh.settings);
+        }
+        // Release image references so atlas pages can be updated in
+        // place.
+        ctx.reset();
+        self.fine += encoded.elapsed();
+    }
+
+    /// Copies `job`'s clips from `scratch` into `dst`: the target's rows
+    /// from `row0` on.
+    fn copy_into(&mut self, job: &CellJob, sh: &Shared<'_>, dst: &mut [u8], row0: i64) {
+        let mark = Instant::now();
+        let cell = job.cell;
+        let row = cell.w as usize * 4;
+        let (stride, origin) = (sh.stride, sh.origin);
+        for c in &job.clips {
+            let lx0 = (c.left() - cell.left()) as usize * 4;
+            let lx1 = (c.right() - cell.left()) as usize * 4;
+            let x0 = (c.left() - origin.0) as usize * 4;
+            let x1 = (c.right() - origin.0) as usize * 4;
+            for y in c.top()..c.bottom() {
+                let ly = (y - cell.top()) as usize;
+                let y = (y - origin.1 - row0) as usize;
+                dst[y * stride + x0..y * stride + x1]
+                    .copy_from_slice(&self.scratch[ly * row + lx0..ly * row + lx1]);
+            }
+        }
+        self.copy += mark.elapsed();
     }
 }
 

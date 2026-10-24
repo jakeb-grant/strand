@@ -141,12 +141,20 @@ pub(crate) fn blend_mode(b: BlendMode) -> peniko::BlendMode {
 }
 
 /// The alpha of `masks` (multiplied) at each pixel of `ctx`'s cell.
+///
+/// (perf-cpu-raster) Only the pixels within reach of every bounded mask
+/// (a shape's outline, a radial's disc, each grown past its antialiased
+/// edge: [`mask_reach`]) are looked at; every other pixel's product has
+/// a factor of exactly 0. A cover's 40 px cookie in a 256 × 64 cell
+/// took 6.5 ms when each of the cell's pixels ran its polygon's 120
+/// edges, against about 0.1 ms (decisions.md, perf-cpu-raster).
 fn cell_mask(ctx: &RenderContext, layer: &Layer, masks: &[&Mask], cur: Affine) -> vello_cpu::Mask {
     let (w, h) = (ctx.width(), ctx.height());
-    let inv = if cur.determinant().abs() > 1e-12 {
-        cur.inverse()
+    let invertible = cur.determinant().abs() > 1e-12;
+    let (fwd, inv) = if invertible {
+        (cur, cur.inverse())
     } else {
-        Affine::IDENTITY
+        (Affine::IDENTITY, Affine::IDENTITY)
     };
     // A shape mask's outline as a polygon of the group's box, once per
     // cell.
@@ -157,9 +165,11 @@ fn cell_mask(ctx: &RenderContext, layer: &Layer, masks: &[&Mask], cur: Affine) -
             _ => None,
         })
         .collect();
-    let mut data = Vec::with_capacity(w as usize * h as usize);
-    for y in 0..h {
-        for x in 0..w {
+    let (x0, y0, x1, y1) = cell_window(masks, &shapes, layer, fwd, w, h);
+    let mut data = vec![0u8; w as usize * h as usize];
+    for y in y0..y1 {
+        let row = &mut data[y as usize * w as usize..][..w as usize];
+        for x in x0..x1 {
             // The pixel's centre in the group's space.
             let p = inv * kurbo::Point::new(x as f64 + 0.5, y as f64 + 0.5);
             let a = masks
@@ -170,10 +180,87 @@ fn cell_mask(ctx: &RenderContext, layer: &Layer, masks: &[&Mask], cur: Affine) -
                     None => mask_alpha(m, layer, p),
                 })
                 .product::<f64>();
-            data.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
+            row[x as usize] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
     vello_cpu::Mask::from_parts(data, w, h)
+}
+
+/// Margin, in cell pixels, kept round a mask's reach mapped into the
+/// cell: far more than the rounding between the cell's transform and
+/// its inverse.
+const REACH_MARGIN: f64 = 2.0;
+
+/// The pixels `[x0, x1) × [y0, y1)` of a `w × h` cell under `fwd` (the
+/// group's space to the cell) that the masks' reaches can touch: all of
+/// them when none is bounded.
+fn cell_window(
+    masks: &[&Mask],
+    shapes: &[Option<crate::shapes::Polygon>],
+    layer: &Layer,
+    fwd: Affine,
+    w: u16,
+    h: u16,
+) -> (u16, u16, u16, u16) {
+    let mut win = kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+    for (m, poly) in masks.iter().zip(shapes) {
+        let reach = match poly {
+            Some(poly) => Some(poly.reach()),
+            None => mask_reach(m, layer),
+        };
+        let Some(r) = reach else { continue };
+        if ![r.x0, r.y0, r.x1, r.y1]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() < 1e7)
+        {
+            continue;
+        }
+        let r = fwd
+            .transform_rect_bbox(r)
+            .inflate(REACH_MARGIN, REACH_MARGIN);
+        win = win.intersect(r);
+    }
+    let clamp = |v: f64, hi: u16| {
+        if v.is_finite() {
+            v.clamp(0.0, f64::from(hi)) as u16
+        } else {
+            0
+        }
+    };
+    if !(win.width() > 0.0 && win.height() > 0.0) {
+        return (0, 0, 0, 0);
+    }
+    (
+        clamp(win.x0.floor(), w),
+        clamp(win.y0.floor(), h),
+        clamp(win.x1.ceil(), w),
+        clamp(win.y1.ceil(), h),
+    )
+}
+
+/// Where in the group's space `m` can be other than 0: a radial's disc
+/// past its antialiased edge; `None` for a fade (a half-plane) and a
+/// shape (its polygon says, [`crate::shapes::Polygon::reach`]).
+fn mask_reach(m: &Mask, layer: &Layer) -> Option<kurbo::Rect> {
+    match m {
+        Mask::Radial { at, size } => {
+            let s = if layer.scale.is_finite() && layer.scale > 0.0 {
+                layer.scale as f64
+            } else {
+                1.0
+            };
+            let size = if size.is_finite() {
+                *size as f64 * s
+            } else {
+                0.0
+            };
+            let (cx, cy) = anchor_point(*at, layer.frame);
+            // Past `size + 0.5` from the anchor the alpha is 0.
+            let r = (size + 0.501).max(0.0);
+            Some(kurbo::Rect::new(cx - r, cy - r, cx + r, cy + r))
+        }
+        Mask::Fade { .. } | Mask::Shape(_) => None,
+    }
 }
 
 /// `mask: shape(name)`'s outline over the group's box (an unknown name
@@ -280,6 +367,105 @@ mod tests {
         let circle = Mask::Shape("circle".into());
         assert_eq!(at(&circle, 60.0, 30.0), 1.0);
         assert_eq!(at(&circle, 11.0, 11.0), 0.0);
+    }
+
+    /// The old `cell_mask`: every mask at every pixel of the cell.
+    fn cell_mask_reference(w: u16, h: u16, layer: &Layer, masks: &[&Mask], cur: Affine) -> Vec<u8> {
+        let inv = if cur.determinant().abs() > 1e-12 {
+            cur.inverse()
+        } else {
+            Affine::IDENTITY
+        };
+        let polys: Vec<_> = masks
+            .iter()
+            .map(|m| match m {
+                Mask::Shape(name) => Some(shape_polygon(name, layer)),
+                _ => None,
+            })
+            .collect();
+        let mut data = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let p = inv * kurbo::Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                let a = masks
+                    .iter()
+                    .zip(&polys)
+                    .map(|(m, poly)| match poly {
+                        Some(poly) => poly.coverage_all(p),
+                        None => mask_alpha(m, layer, p),
+                    })
+                    .product::<f64>();
+                data.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        }
+        data
+    }
+
+    /// (perf-cpu-raster) A cell's mask, looked at only within the masks'
+    /// reach, is the same bytes as every pixel's: shapes, discs and
+    /// fades, alone and multiplied, turned, scaled, cut by the cell's
+    /// edge, outside it, and under a transform that cannot be inverted.
+    #[test]
+    fn a_cells_mask_within_reach_equals_every_pixels() {
+        let shape = Mask::Shape("cookie".into());
+        let heart = Mask::Shape("heart".into());
+        let radial = Mask::Radial {
+            at: Anchor::Center,
+            size: 12.0,
+        };
+        let corner = Mask::Radial {
+            at: Anchor::BottomRight,
+            size: 30.0,
+        };
+        let fade = Mask::Fade {
+            edge: Edge::Left,
+            len: 8.0,
+        };
+        let sets: Vec<Vec<&Mask>> = vec![
+            vec![&shape],
+            vec![&heart],
+            vec![&radial],
+            vec![&corner],
+            vec![&fade],
+            vec![&shape, &fade],
+            vec![&radial, &heart],
+        ];
+        let frames = [
+            kurbo::Rect::new(10.0, 10.0, 110.0, 50.0),
+            kurbo::Rect::new(200.0, 12.3, 240.0, 52.3),
+            kurbo::Rect::new(-20.0, -30.0, 20.0, 10.0),
+            kurbo::Rect::new(900.0, 900.0, 940.0, 940.0),
+        ];
+        let c = |f: kurbo::Rect| f.center();
+        let mut cells = 0;
+        for f in frames {
+            let mut l = layer(vec![]);
+            l.frame = f;
+            let xforms = [
+                Affine::IDENTITY,
+                Affine::translate((-0.37, 3.6)),
+                Affine::rotate_about(0.35, c(f)),
+                Affine::rotate_about(2.9, c(f)) * Affine::translate((-40.0, 7.0)),
+                Affine::scale_about(1.7, c(f)),
+                Affine::scale_about(0.02, c(f)),
+                Affine::scale_non_uniform(1.0, 0.0),
+            ];
+            for t in xforms {
+                for masks in &sets {
+                    let (w, h) = (256u16, 64u16);
+                    let ctx = RenderContext::new(w, h);
+                    let got = cell_mask(&ctx, &l, masks, t);
+                    let want = cell_mask_reference(w, h, &l, masks, t);
+                    let got: Vec<u8> = (0..h)
+                        .flat_map(|y| (0..w).map(move |x| (x, y)))
+                        .map(|(x, y)| got.sample(x, y))
+                        .collect();
+                    assert!(got == want, "{masks:?} in {f:?} under {t:?}");
+                    cells += usize::from(want.iter().any(|&a| a > 0));
+                }
+            }
+        }
+        assert!(cells > 60, "most cells see the mask: {cells}");
     }
 
     #[test]

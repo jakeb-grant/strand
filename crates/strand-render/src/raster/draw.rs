@@ -12,7 +12,7 @@ use vello_cpu::{Image, ImageSource, PaintType, RenderContext, Tint, TintMode};
 use super::atlas::AtlasMirror;
 use super::paint::{bgra, paint_type};
 use crate::cache::{
-    PaintCache, ShadowShape, draw_shadow, draw_slices, gradient_key, image_paint,
+    PaintCache, ShadowShape, crop_part, draw_shadow, draw_slices, gradient_key, image_paint,
     render_gradient_part, shadow_key,
 };
 use crate::flatten::{DisplayItem, FillShape, Item};
@@ -54,7 +54,8 @@ pub(super) fn paint_for(
         return paint_type(p, frame);
     };
     let (fx, fy) = (frame.x0.round(), frame.y0.round());
-    if !smooth && let Some(pm) = cache.peek(gradient_key(p, w, h)) {
+    let cached = cache.peek(gradient_key(p, w, h));
+    if !smooth && let Some(pm) = cached {
         return image_paint(pm, fx, fy, smooth);
     }
     // Too large to cache, animated (see `PaintCache::gradient`) or drawn
@@ -65,9 +66,17 @@ pub(super) fn paint_for(
         let y0 = ((region.y0 - fy).floor() - 1.0).clamp(0.0, h as f64) as u32;
         let x1 = ((region.x1 - fx).ceil() + 1.0).clamp(0.0, w as f64) as u32;
         let y1 = ((region.y1 - fy).ceil() + 1.0).clamp(0.0, h as f64) as u32;
+        let part = (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0));
+        // (perf-cpu-raster) Copied from the whole pixmap when the cache
+        // holds it (a tile scaling in, a card morphing by its
+        // transform: its size holds), else dithered: the same pixels.
+        let pm = match cached {
+            Some(whole) => crop_part(whole, part),
+            None => render_gradient_part(p, w, h, part),
+        };
         if x1 > x0
             && y1 > y0
-            && let Some(pm) = render_gradient_part(p, w, h, (x0, y0, x1 - x0, y1 - y0))
+            && let Some(pm) = pm
         {
             return image_paint(&Arc::new(pm), fx + x0 as f64, fy + y0 as f64, smooth);
         }

@@ -558,7 +558,7 @@ Nine lines give a squircle pill with a slowly rotating gradient border, a spinni
 3. **CPU raster nodes** for particle sprites, goo fields, grain and dithering, avoiding the per-path overhead that dominates large particle counts.
 4. **Per-node clocks with frame caps.** GIFs at their own rate, grain at 12 fps, shimmer at 30, everything else at refresh. The frame loop stops when every clock is idle.
 5. **Rectangle clips for damage** (`push_clip_rect`), which cut a 600×500 blur from 8.2 ms to 0.31 ms under a clock-sized damage rect.
-6. **Single-threaded vello\_cpu**, because its filters panic when rendering multi-threaded.
+6. **Single-threaded vello\_cpu contexts**, because its filters panic when rendering multi-threaded. A large paint spreads its cells over a few threads instead, each with contexts of its own, started for the paint and joined before it returns (decisions.md perf-cpu-raster).
 7. **`reduced_motion`** turns off loops, time signals and effects; springs snap.
 
 ## Rendering, performance and memory budget

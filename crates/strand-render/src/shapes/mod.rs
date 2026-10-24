@@ -326,10 +326,35 @@ fn smooth(points: &[[f32; 2]], frame: kurbo::Rect) -> BezPath {
 
 /// A shape's outline as a polygon in physical pixels, for masks: its
 /// coverage of a pixel centre, antialiased over a pixel.
+///
+/// (perf-cpu-raster) Its edges are binned by horizontal band of the
+/// group's space, each band holding the edges whose box, grown by
+/// [`NEAR`], reaches it: a point's crossings are those of the edges
+/// spanning its `y` (all in its band), and its distance matters only
+/// under half a pixel (past it the coverage is 0 or 1 exactly), which
+/// only an edge whose grown box holds the point can give. So
+/// [`Polygon::coverage`] looks at a few edges instead of all
+/// [`SAMPLES`], and gives the same bits as [`Polygon::coverage_all`].
 #[derive(Clone, Debug)]
 pub(crate) struct Polygon {
     points: Vec<kurbo::Point>,
+    /// The points' bounding box.
+    bounds: kurbo::Rect,
+    /// Edge `i` (from point `i` to `i + 1`) in each band, by band from
+    /// `bounds.y0 - NEAR`; empty when a point is not finite (every
+    /// coverage is then taken over all edges).
+    bands: Vec<Vec<u16>>,
+    /// Bands per pixel of `y`.
+    per_px: f64,
 }
+
+/// How near an edge's box a point is looked at for its distance: over
+/// the half pixel past which coverage is exact, so rounding in the
+/// distance of an edge left out cannot matter.
+const NEAR: f64 = 0.501;
+
+/// Most bands of a polygon.
+const MAX_BANDS: usize = 512;
 
 impl Polygon {
     pub(crate) fn new(o: &Outline, frame: kurbo::Rect) -> Polygon {
@@ -337,14 +362,104 @@ impl Polygon {
             Outline::Shape(s) => outline(*s, aspect(frame)),
             Outline::Points(p) => p.clone(),
         };
-        Polygon {
-            points: pts.into_iter().map(|p| place(p, frame)).collect(),
+        Polygon::from_points(pts.into_iter().map(|p| place(p, frame)).collect())
+    }
+
+    fn from_points(points: Vec<kurbo::Point>) -> Polygon {
+        let finite = points.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        let mut bounds = kurbo::Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in &points {
+            bounds = kurbo::Rect::new(
+                bounds.x0.min(p.x),
+                bounds.y0.min(p.y),
+                bounds.x1.max(p.x),
+                bounds.y1.max(p.y),
+            );
         }
+        let n = points.len();
+        if !finite || n < 3 || n > u16::MAX as usize || bounds.height() > 1e7 {
+            return Polygon {
+                points,
+                bounds: kurbo::Rect::new(f64::MIN, f64::MIN, f64::MAX, f64::MAX),
+                bands: Vec::new(),
+                per_px: 0.0,
+            };
+        }
+        let span = bounds.height() + 2.0 * NEAR;
+        let count = (span.ceil() as usize).clamp(1, MAX_BANDS);
+        let per_px = count as f64 / span;
+        let mut bands = vec![Vec::new(); count];
+        let top = bounds.y0 - NEAR;
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            let lo = ((a.y.min(b.y) - NEAR - top) * per_px).floor().max(0.0) as usize;
+            let hi = ((a.y.max(b.y) + NEAR - top) * per_px).floor() as usize;
+            for band in &mut bands[lo.min(count - 1)..=hi.min(count - 1)] {
+                band.push(i as u16);
+            }
+        }
+        Polygon {
+            points,
+            bounds,
+            bands,
+            per_px,
+        }
+    }
+
+    /// The box outside which (by more than half a pixel) the coverage is
+    /// 0.
+    pub(crate) fn reach(&self) -> kurbo::Rect {
+        self.bounds.inflate(NEAR, NEAR)
     }
 
     /// How much of a pixel centred at `p` the shape covers: 1 inside, 0
     /// outside, a ramp one pixel wide across the edge.
     pub(crate) fn coverage(&self, p: kurbo::Point) -> f64 {
+        let n = self.points.len();
+        if n < 3 {
+            return 0.0;
+        }
+        if self.bands.is_empty() {
+            return self.coverage_all(p);
+        }
+        let reach = self.reach();
+        // Outside the grown box: outside the shape, over half a pixel
+        // from every edge (and every comparison of a NaN is false, as
+        // over all edges).
+        if !(p.x >= reach.x0 && p.x <= reach.x1 && p.y >= reach.y0 && p.y <= reach.y1) {
+            return 0.0;
+        }
+        let band =
+            (((p.y - reach.y0) * self.per_px).floor().max(0.0) as usize).min(self.bands.len() - 1);
+        let mut inside = false;
+        let mut d2 = f64::INFINITY;
+        for &i in &self.bands[band] {
+            let i = i as usize;
+            let a = self.points[i];
+            let b = self.points[(i + 1) % n];
+            if (a.y > p.y) != (b.y > p.y) {
+                let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+                if p.x < x {
+                    inside = !inside;
+                }
+            }
+            if p.x < a.x.min(b.x) - NEAR
+                || p.x > a.x.max(b.x) + NEAR
+                || p.y < a.y.min(b.y) - NEAR
+                || p.y > a.y.max(b.y) + NEAR
+            {
+                continue;
+            }
+            d2 = d2.min(segment_d2(p, a, b));
+        }
+        let d = d2.sqrt();
+        let signed = if inside { d } else { -d };
+        (signed + 0.5).clamp(0.0, 1.0)
+    }
+
+    /// [`Polygon::coverage`] over every edge: the reference the binned
+    /// one equals.
+    pub(crate) fn coverage_all(&self, p: kurbo::Point) -> f64 {
         let n = self.points.len();
         if n < 3 {
             return 0.0;
@@ -360,19 +475,24 @@ impl Polygon {
                     inside = !inside;
                 }
             }
-            let ab = b - a;
-            let len2 = ab.hypot2();
-            let t = if len2 > 0.0 {
-                ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            d2 = d2.min((p - (a + ab * t)).hypot2());
+            d2 = d2.min(segment_d2(p, a, b));
         }
         let d = d2.sqrt();
         let signed = if inside { d } else { -d };
         (signed + 0.5).clamp(0.0, 1.0)
     }
+}
+
+/// The squared distance from `p` to the segment `a`–`b`.
+fn segment_d2(p: kurbo::Point, a: kurbo::Point, b: kurbo::Point) -> f64 {
+    let ab = b - a;
+    let len2 = ab.hypot2();
+    let t = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + ab * t)).hypot2()
 }
 
 #[cfg(test)]
@@ -411,6 +531,69 @@ mod tests {
         assert!((pill[0][1] + 1.0).abs() < 1e-4, "top is flat");
         let right = pill[SAMPLES / 4];
         assert!((right[0] - 1.0).abs() < 1e-4 && right[1].abs() < 1e-4);
+    }
+
+    /// (perf-cpu-raster) The binned coverage gives the same bits as the
+    /// one over every edge, for every shape and a morph's points, on and
+    /// round their edges, at sizes from a few pixels to a screen.
+    #[test]
+    fn binned_coverage_equals_every_edge() {
+        let mut outlines: Vec<Outline> = Shape::ALL.iter().map(|s| Outline::Shape(*s)).collect();
+        let (a, b) = (outline(Shape::Cookie, 1.0), outline(Shape::Heart, 1.0));
+        outlines.push(Outline::Points(
+            a.iter()
+                .zip(&b)
+                .map(|(p, q)| [p[0] * 0.4 + q[0] * 0.6, p[1] * 0.4 + q[1] * 0.6])
+                .collect(),
+        ));
+        let frames = [
+            kurbo::Rect::new(3.25, 7.5, 9.0, 12.75),
+            kurbo::Rect::new(10.0, 20.0, 50.0, 60.0),
+            kurbo::Rect::new(-31.3, 4.7, 128.9, 61.1),
+            kurbo::Rect::new(0.0, 0.0, 1920.0, 1200.0),
+        ];
+        // A fixed scatter of points (an LCG), dense near the edges.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut edges = 0;
+        for o in &outlines {
+            for f in frames {
+                let poly = Polygon::new(o, f);
+                let g = f.inflate(2.0, 2.0);
+                for _ in 0..4000 {
+                    let p =
+                        kurbo::Point::new(g.x0 + next() * g.width(), g.y0 + next() * g.height());
+                    let c = poly.coverage(p);
+                    assert_eq!(
+                        c.to_bits(),
+                        poly.coverage_all(p).to_bits(),
+                        "{o:?} {f:?} {p:?}"
+                    );
+                    edges += usize::from(c > 0.0 && c < 1.0);
+                }
+                // Points on the outline itself, and half a pixel off.
+                for (i, q) in poly.points.iter().enumerate() {
+                    for d in [-0.5, -0.25, 0.0, 0.25, 0.5, 0.501] {
+                        let p = *q + kurbo::Vec2::new(d, d * (i % 3) as f64 - 0.125);
+                        assert_eq!(poly.coverage(p).to_bits(), poly.coverage_all(p).to_bits());
+                    }
+                }
+            }
+        }
+        assert!(edges > 500, "the scatter reaches the edges: {edges}");
+        // A degenerate polygon (a point not finite) falls back to every
+        // edge.
+        let nan = Polygon::new(
+            &Outline::Shape(Shape::Cookie),
+            kurbo::Rect::new(0.0, 0.0, f64::NAN, 9.0),
+        );
+        let p = kurbo::Point::new(1.0, 1.0);
+        assert_eq!(nan.coverage(p).to_bits(), nan.coverage_all(p).to_bits());
     }
 
     #[test]

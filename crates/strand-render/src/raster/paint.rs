@@ -63,16 +63,22 @@ pub(crate) fn ramp(stops: &[GradientStop]) -> Vec<(f32, Color)> {
 /// lowers or paints its gradients every frame.
 const CUTS_KEPT: usize = 1024;
 
-thread_local! {
-    static CUTS: std::cell::RefCell<std::collections::HashMap<[u32; 8], std::rc::Rc<[f32]>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+type Cuts = std::collections::HashMap<[u32; 8], std::sync::Arc<[f32]>>;
+
+/// Shared by every thread (perf-cpu-raster: the raster's cells are drawn
+/// on several, `raster::draw_parallel`).
+static CUTS: std::sync::Mutex<Option<Cuts>> = std::sync::Mutex::new(None);
+
+fn cuts_kept() -> std::sync::MutexGuard<'static, Option<Cuts>> {
+    CUTS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Where [`ramp`] cuts the segment from `a` to `b`, strictly inside it
 /// (0..1, in order).
-fn cuts(a: Color, b: Color) -> std::rc::Rc<[f32]> {
+fn cuts(a: Color, b: Color) -> std::sync::Arc<[f32]> {
     let key = [a.r, a.g, a.b, a.a, b.r, b.g, b.b, b.a].map(f32::to_bits);
-    if let Some(c) = CUTS.with(|c| c.borrow().get(&key).cloned()) {
+    if let Some(c) = cuts_kept().as_ref().and_then(|c| c.get(&key).cloned()) {
         return c;
     }
     let at = |t: f32| a.lerp_oklab(b, t).clamped();
@@ -103,14 +109,13 @@ fn cuts(a: Color, b: Color) -> std::rc::Rc<[f32]> {
         todo.push((mid, t1, depth + 1));
         todo.push((t0, mid, depth + 1));
     }
-    let out: std::rc::Rc<[f32]> = out.into();
-    CUTS.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() >= CUTS_KEPT {
-            c.clear();
-        }
-        c.insert(key, out.clone());
-    });
+    let out: std::sync::Arc<[f32]> = out.into();
+    let mut c = cuts_kept();
+    let c = c.get_or_insert_with(Default::default);
+    if c.len() >= CUTS_KEPT {
+        c.clear();
+    }
+    c.insert(key, out.clone());
     out
 }
 

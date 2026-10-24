@@ -759,7 +759,61 @@ impl PaintCache {
     /// evicts what the cache holds, and a still one is built once.
     pub fn shadow_slices(&mut self, s: &ShadowShape) -> Option<Slices> {
         let plan = slice_plan(s)?;
+        self.build_tiles(&plan, s);
         Slices::from_plan(&plan, |t| Some(self.tile(t, s)))
+    }
+
+    /// (perf-cpu-raster) Builds the tiles of `plan` that neither the
+    /// cache nor this frame holds, on a thread each (a radius springing
+    /// builds its four corner tiles every frame: 2 ms of a 1× frame and
+    /// 6.7 ms of a 1.5× one, one after another), then keeps them as
+    /// [`Self::tile`] would have, in its order: a base tile cached, a
+    /// corner tile held. The tiles the cache holds are touched first, as
+    /// `tile` would before building the next quadrant's, so no
+    /// insertion evicts them. Each tile is the same pure function of its
+    /// spec on whichever thread builds it.
+    fn build_tiles(&mut self, plan: &SlicePlan, s: &ShadowShape) {
+        let frame = self.frame;
+        let mut missing: Vec<&TileSpec> = Vec::new();
+        for t in plan.quads.iter().flat_map(|q| [&q.base, &q.corner]) {
+            if self.entries.contains_key(&t.key) {
+                self.get(t.key);
+            } else if self.recent.contains_key(&t.key) || missing.iter().any(|m| m.key == t.key) {
+                // Held (`tile` caches it if an earlier frame built it),
+                // or already to be built.
+            } else {
+                missing.push(t);
+            }
+        }
+        if missing.len() < 2 {
+            return;
+        }
+        let built: Vec<std::sync::Mutex<Option<Pixmap>>> = missing
+            .iter()
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        let threads = crate::raster::threads().min(missing.len());
+        crate::raster::share(&mut vec![(); threads], missing.len(), |_, i| {
+            let pm = render_tile(missing[i], s);
+            *built[i]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pm);
+        });
+        let built = built.into_iter().map(|b| {
+            b.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        for (t, pm) in missing.into_iter().zip(built) {
+            // Every task ran (a panic is this call's).
+            let Some(pm) = pm else { continue };
+            self.built(&pm);
+            if t.base {
+                self.insert(t.key, pm);
+            } else {
+                self.hold_recent(t.key, Arc::new(pm));
+            }
+        }
+        debug_assert_eq!(self.frame, frame);
     }
 
     /// The tiles of `s` sliced, if this frame or the cache holds all of
@@ -855,6 +909,83 @@ fn lut(stops: &[GradientStop]) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// Colour tables kept (each 16 kB); past it the record starts over.
+const LUTS_KEPT: usize = 256;
+
+type Luts = HashMap<Box<[u32]>, Arc<[[f32; 4]]>>;
+
+static LUTS: std::sync::Mutex<Option<Luts>> = std::sync::Mutex::new(None);
+
+/// (perf-cpu-raster) [`lut`] of `stops`, kept by their exact bits: a
+/// gradient drawn smoothly or too large or changing to cache dithers its
+/// part in every cell of every frame, and building its 1024 OKLab
+/// samples cost more than the part (a staggered grid's 24 tiles: 2.7
+/// ms a frame of the 3.8 ms raster). Shared by every thread (the
+/// raster's draw them in parallel, `raster::draw_parallel`).
+fn lut_cached(stops: &[GradientStop]) -> Arc<[[f32; 4]]> {
+    let key: Box<[u32]> = stops
+        .iter()
+        .flat_map(|s| {
+            [
+                s.offset.to_bits(),
+                s.color.r.to_bits(),
+                s.color.g.to_bits(),
+                s.color.b.to_bits(),
+                s.color.a.to_bits(),
+            ]
+        })
+        .collect();
+    let lock = || {
+        LUTS.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some(t) = lock().as_ref().and_then(|l| l.get(&key).cloned()) {
+        return t;
+    }
+    let table: Arc<[[f32; 4]]> = lut(stops).into();
+    let mut l = lock();
+    let l = l.get_or_insert_with(HashMap::new);
+    if l.len() >= LUTS_KEPT {
+        l.clear();
+    }
+    l.insert(key, table.clone());
+    table
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Gradient parts this thread dithered (tests).
+    pub(crate) static PARTS_DITHERED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Colour tables held (tests: bounded).
+#[cfg(test)]
+pub(crate) fn luts_held() -> usize {
+    LUTS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map_or(0, HashMap::len)
+}
+
+/// (perf-cpu-raster) The part `(x0, y0, pw, ph)` of a gradient's whole
+/// pixmap `whole` (as [`render_gradient`] drew it): the pixels
+/// [`render_gradient_part`] would dither for that part, copied.
+pub fn crop_part(whole: &Pixmap, (x0, y0, pw, ph): (u32, u32, u32, u32)) -> Option<Pixmap> {
+    let (w, h) = (whole.width() as u32, whole.height() as u32);
+    if pw == 0 || ph == 0 || x0 + pw > w || y0 + ph > h {
+        return None;
+    }
+    let mut pm = Pixmap::new(pw as u16, ph as u16);
+    let src = whole.data();
+    let dst = pm.data_mut();
+    for y in 0..ph {
+        let from = ((y0 + y) * w + x0) as usize;
+        dst[(y * pw) as usize..][..pw as usize].copy_from_slice(&src[from..from + pw as usize]);
+    }
+    pm.set_may_have_transparency(whole.may_have_transparency());
+    Some(pm)
+}
+
 fn color_at(stops: &[GradientStop], t: f32) -> Color {
     let Some(first) = stops.first() else {
         return Color::TRANSPARENT;
@@ -876,8 +1007,10 @@ fn color_at(stops: &[GradientStop], t: f32) -> Color {
     stops.last().map_or(Color::TRANSPARENT, |s| s.color)
 }
 
-/// Where a frame pixel centre falls along a gradient, 0 to 1.
-type Geometry = Box<dyn Fn(f64, f64) -> f64>;
+/// (perf-cpu-raster) Pixels of a gradient part past which its rows are
+/// dithered on several threads (a 720 × 380 card's gradient took 14 ms
+/// on one).
+const PARALLEL_GRADIENT_PX: u32 = 1 << 16;
 
 /// Renders `paint` over a `w × h` frame with ordered dithering: each
 /// channel is offset by an 8 × 8 Bayer threshold before rounding, so a
@@ -899,57 +1032,19 @@ pub fn render_gradient_part(
     paint: &Paint,
     w: u32,
     h: u32,
-    (x0, y0, pw, ph): (u32, u32, u32, u32),
+    part: (u32, u32, u32, u32),
 ) -> Option<Pixmap> {
+    let (_, _, pw, ph) = part;
     if pw == 0 || ph == 0 || pw > u16::MAX as u32 || ph > u16::MAX as u32 {
         return None;
     }
-    let (stops, geo): (&[GradientStop], Geometry) = match paint {
+    #[cfg(test)]
+    PARTS_DITHERED.with(|n| n.set(n.get() + 1));
+    let stops: &[GradientStop] = match paint {
         Paint::Solid(_) => return None,
-        Paint::Linear { angle, stops } => {
-            let a = finite_angle(*angle).to_radians();
-            let (sin, cos) = a.sin_cos();
-            let len = (w as f64 * sin).abs() + (h as f64 * cos).abs();
-            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
-            let (dx, dy) = (sin, -cos);
-            (
-                stops,
-                Box::new(move |x, y| {
-                    if len <= 0.0 {
-                        return 0.0;
-                    }
-                    ((x - cx) * dx + (y - cy) * dy) / len + 0.5
-                }),
-            )
-        }
-        Paint::Radial { stops } => {
-            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
-            let r = cx.hypot(cy);
-            (
-                stops,
-                Box::new(move |x, y| {
-                    if r <= 0.0 {
-                        0.0
-                    } else {
-                        (x - cx).hypot(y - cy) / r
-                    }
-                }),
-            )
-        }
-        Paint::Conic { from, stops } => {
-            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
-            let from = finite_angle(*from).to_radians();
-            (
-                stops,
-                Box::new(move |x, y| {
-                    // Clockwise from the top: atan2 of (x, -y).
-                    let a = (x - cx).atan2(-(y - cy)) - from;
-                    a.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU
-                }),
-            )
-        }
+        Paint::Linear { stops, .. } | Paint::Radial { stops } | Paint::Conic { stops, .. } => stops,
     };
-    let table = lut(stops);
+    let table = lut_cached(stops);
     // Claimed opaque when its stops are (opaque-fast-path): every pixel
     // then is (their alpha is 255 exactly, which a dither under half a
     // level rounds back to 255). Drawn pixel for pixel its samples are
@@ -958,10 +1053,91 @@ pub fn render_gradient_part(
     // `to_pixmap` says.
     let opaque = !stops.is_empty() && stops.iter().all(|s| s.color.clamped().a >= 1.0);
     let mut pm = Pixmap::new(pw as u16, ph as u16);
+    // Where a frame pixel centre falls along the gradient, 0 to 1: each
+    // geometry its own loop (no call through a pointer per pixel).
     let data = pm.data_mut();
-    for py in 0..ph {
-        for px in 0..pw {
-            let (x, y) = (x0 + px, y0 + py);
+    match paint {
+        Paint::Solid(_) => return None,
+        Paint::Linear { angle, .. } => {
+            let a = finite_angle(*angle).to_radians();
+            let (sin, cos) = a.sin_cos();
+            let len = (w as f64 * sin).abs() + (h as f64 * cos).abs();
+            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+            let (dx, dy) = (sin, -cos);
+            dither_part(data, part, &table, move |x, y| {
+                if len <= 0.0 {
+                    return 0.0;
+                }
+                ((x - cx) * dx + (y - cy) * dy) / len + 0.5
+            });
+        }
+        Paint::Radial { .. } => {
+            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+            let r = cx.hypot(cy);
+            dither_part(data, part, &table, move |x, y| {
+                if r <= 0.0 {
+                    0.0
+                } else {
+                    (x - cx).hypot(y - cy) / r
+                }
+            });
+        }
+        Paint::Conic { from, .. } => {
+            let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+            let from = finite_angle(*from).to_radians();
+            dither_part(data, part, &table, move |x, y| {
+                // Clockwise from the top: atan2 of (x, -y).
+                let a = (x - cx).atan2(-(y - cy)) - from;
+                a.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU
+            });
+        }
+    }
+    pm.set_may_have_transparency(!opaque);
+    Some(pm)
+}
+
+/// Dithers the part `(x0, y0, pw, ph)` of a gradient whose geometry is
+/// `geo` into `data` (`pw × ph`): a large part's rows shared among
+/// threads ([`PARALLEL_GRADIENT_PX`]), each pixel the same pure
+/// function of its place whichever thread draws it.
+fn dither_part(
+    data: &mut [PremulRgba8],
+    (x0, y0, pw, ph): (u32, u32, u32, u32),
+    table: &[[f32; 4]],
+    geo: impl Fn(f64, f64) -> f64 + Sync,
+) {
+    let threads = crate::raster::threads().min(ph as usize);
+    if pw * ph < PARALLEL_GRADIENT_PX || threads <= 1 {
+        dither_rows(data, (x0, y0, pw), table, &geo);
+        return;
+    }
+    let rows = (ph as usize).div_ceil(threads);
+    let chunks: Vec<std::sync::Mutex<Option<&mut [PremulRgba8]>>> = data
+        .chunks_mut(rows * pw as usize)
+        .map(|c| std::sync::Mutex::new(Some(c)))
+        .collect();
+    crate::raster::share(&mut vec![(); threads], chunks.len(), |_, i| {
+        let chunk = chunks[i]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(chunk) = chunk {
+            dither_rows(chunk, (x0, y0 + (i * rows) as u32, pw), table, &geo);
+        }
+    });
+}
+
+/// Dithers `data`'s rows (`pw` wide) of a gradient part whose first row
+/// is the frame's row `y0`, starting at its column `x0`.
+fn dither_rows(
+    data: &mut [PremulRgba8],
+    (x0, y0, pw): (u32, u32, u32),
+    table: &[[f32; 4]],
+    geo: &impl Fn(f64, f64) -> f64,
+) {
+    for (py, row) in data.chunks_mut(pw as usize).enumerate() {
+        for (px, out) in row.iter_mut().enumerate() {
+            let (x, y) = (x0 + px as u32, y0 + py as u32);
             let t = geo(x as f64 + 0.5, y as f64 + 0.5).clamp(0.0, 1.0);
             let f = t as f32 * (LUT - 1) as f32;
             let i = (f as usize).min(LUT - 2);
@@ -972,7 +1148,7 @@ pub fn render_gradient_part(
             let q = |v: f32| (v + d).round().clamp(0.0, 255.0) as u8;
             let alpha = q(ch(3));
             let c = |n: usize| q(ch(n)).min(alpha);
-            data[(py * pw + px) as usize] = PremulRgba8 {
+            *out = PremulRgba8 {
                 r: c(0),
                 g: c(1),
                 b: c(2),
@@ -980,8 +1156,6 @@ pub fn render_gradient_part(
             };
         }
     }
-    pm.set_may_have_transparency(!opaque);
-    Some(pm)
 }
 
 fn finite_angle(deg: f32) -> f64 {
@@ -1072,11 +1246,13 @@ fn render_blurred(w: u16, h: u16, draw: impl FnOnce(&mut RenderContext)) -> Pixm
     ctx.set_fill_rule(Fill::NonZero);
     draw(&mut ctx);
     ctx.flush();
-    let mut bytes = vec![0u8; w as usize * h as usize * 4];
+    // (perf-cpu-raster) Rendered straight into the pixmap: its pixels
+    // are premultiplied RGBA8 bytes in order, as vello writes them.
+    let mut pm = Pixmap::new(w, h);
     let mut resources = Resources::new();
-    if let Some(pm) = PixmapMut::new(w, h, &mut bytes) {
+    if let Some(target) = PixmapMut::new(w, h, pm.data_as_u8_slice_mut()) {
         ctx.render_with(
-            pm,
+            target,
             &mut resources,
             RasterizerSettings {
                 target_init: TargetInit::SrcOver,
@@ -1084,16 +1260,6 @@ fn render_blurred(w: u16, h: u16, draw: impl FnOnce(&mut RenderContext)) -> Pixm
                 ..RasterizerSettings::default()
             },
         );
-    }
-    let mut pm = Pixmap::new(w, h);
-    let data = pm.data_mut();
-    for (d, s) in data.iter_mut().zip(bytes.chunks_exact(4)) {
-        *d = PremulRgba8 {
-            r: s[0],
-            g: s[1],
-            b: s[2],
-            a: s[3],
-        };
     }
     pm
 }
@@ -1156,6 +1322,151 @@ mod tests {
         };
         let pm = render_gradient_part(&none, 9, 9, (0, 0, 9, 9)).unwrap();
         assert!(pm.may_have_transparency(), "no stops: transparent");
+    }
+
+    /// (perf-cpu-raster) A part copied from a gradient's whole pixmap is
+    /// the part dithered on its own, for every paint and parts at the
+    /// edges, the corners and inside; a part past the pixmap is refused.
+    #[test]
+    fn a_part_cropped_from_the_whole_is_the_part_dithered() {
+        let paints = [
+            ramp("#1e66f5", "#ea76cb"),
+            ramp("#1e66f580", "#ea76cb"),
+            Paint::Radial {
+                stops: vec![
+                    GradientStop {
+                        offset: 0.2,
+                        color: Color::from_hex("#f38ba8").unwrap(),
+                    },
+                    GradientStop {
+                        offset: 0.9,
+                        color: Color::from_hex("#89b4fa00").unwrap(),
+                    },
+                ],
+            },
+            Paint::Conic {
+                from: 30.0,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::from_hex("#a6e3a1").unwrap(),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::from_hex("#cba6f7").unwrap(),
+                    },
+                ],
+            },
+        ];
+        let (w, h) = (173u32, 91u32);
+        for p in &paints {
+            let whole = render_gradient(p, w, h).unwrap();
+            for part in [
+                (0, 0, w, h),
+                (0, 0, 17, 9),
+                (w - 30, h - 20, 30, 20),
+                (41, 13, 66, 58),
+                (100, 0, 73, 91),
+                (5, 77, 1, 1),
+            ] {
+                let a = crop_part(&whole, part).unwrap();
+                let b = render_gradient_part(p, w, h, part).unwrap();
+                assert!(a.data() == b.data(), "{p:?} {part:?}");
+                assert_eq!(a.may_have_transparency(), b.may_have_transparency());
+            }
+            assert!(crop_part(&whole, (w - 5, 0, 6, 4)).is_none());
+            assert!(crop_part(&whole, (0, 0, 0, 4)).is_none());
+        }
+    }
+
+    /// (perf-cpu-raster) A large gradient, dithered on several threads,
+    /// is the bytes of its strips dithered one by one on this one (each
+    /// under [`PARALLEL_GRADIENT_PX`]), for every geometry.
+    #[test]
+    fn a_large_gradient_on_threads_is_its_strips_on_one() {
+        let paints = [
+            ramp("#1e66f5", "#ea76cb80"),
+            Paint::Radial {
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::from_hex("#f38ba8").unwrap(),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::from_hex("#11111b").unwrap(),
+                    },
+                ],
+            },
+            Paint::Conic {
+                from: 200.0,
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::from_hex("#a6e3a1").unwrap(),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::from_hex("#cba6f7").unwrap(),
+                    },
+                ],
+            },
+        ];
+        let (w, h) = (731u32, 413u32);
+        assert!(w * h > 4 * PARALLEL_GRADIENT_PX);
+        for p in &paints {
+            let whole = render_gradient(p, w, h).unwrap();
+            let strip = 50;
+            for y in (0..h).step_by(strip as usize) {
+                let sh = strip.min(h - y);
+                assert!(w * sh < PARALLEL_GRADIENT_PX);
+                let part = render_gradient_part(p, w, h, (0, y, w, sh)).unwrap();
+                let from = (y * w) as usize;
+                assert!(
+                    whole.data()[from..from + (w * sh) as usize] == *part.data(),
+                    "{p:?} rows {y}.."
+                );
+            }
+            // And a large part off the frame's corner.
+            let part = (37, 21, 600, 300);
+            assert!(
+                crop_part(&whole, part).unwrap().data()
+                    == render_gradient_part(p, w, h, part).unwrap().data()
+            );
+        }
+    }
+
+    /// (perf-cpu-raster) The colour tables kept are each the table built
+    /// afresh, and their number stays bounded however many gradients
+    /// pass (each a new spring step of a colour).
+    #[test]
+    fn colour_tables_are_kept_exact_and_bounded() {
+        let s = ramp("#313244", "#45475a");
+        let Paint::Linear { stops, .. } = &s else {
+            unreachable!()
+        };
+        assert!(*lut_cached(stops) == *lut(stops));
+        assert!(*lut_cached(stops) == *lut(stops), "from the cache");
+        for i in 0..3 * LUTS_KEPT {
+            let c = Color {
+                r: i as f32 / (3 * LUTS_KEPT) as f32,
+                g: 0.5,
+                b: 0.25,
+                a: 1.0,
+            };
+            let stops = [
+                GradientStop {
+                    offset: 0.0,
+                    color: c,
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color::WHITE,
+                },
+            ];
+            assert!(*lut_cached(&stops) == *lut(&stops));
+            assert!(luts_held() <= LUTS_KEPT);
+        }
     }
 
     /// A slow ramp over 256 px (8 levels) has no 32 px bands: the

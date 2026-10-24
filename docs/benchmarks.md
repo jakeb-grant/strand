@@ -457,3 +457,40 @@ on the CPU however slow (stagger, glass at 1×, cover-mask); text under
 scale and opacity springs is not re-shaped or re-rasterised (its glyphs
 come from the atlas, sampled; text wait is 0) but its group is
 re-composited every frame.
+
+## Animation frame cost after perf-cpu-raster
+
+The same bench, binaries and host as above, run back to back on
+2026-10-23: `laptop/perf` d85e5f96 (before) against perf-cpu-raster's
+head (after), three repeats each, every leg pinned to the performance
+cores (`taskset -c 0-3`, so a large paint draws on four threads).
+Each cell is p50 / p95 in ms, before → after, each repeat's range.
+
+
+
+What moved:
+
+- **Masks:** cover-mask's mask is computed only within its shape's reach
+  (13.3 → 0.33 ms p95 at 1×); on the GPU leg its lowering falls from
+  2.1 to 0.4 ms a frame.
+- **Parallel cells:** the fine raster of a large paint on four threads
+  (crossfade's raster 11.8 → 3.4 ms at 1×, panel-open's 11.7 → 4.2,
+  goo's 1.8 → 0.7); a paint under 8 cells stays on the render thread.
+- **Gradients under a transform** draw each cell's part from the cached
+  pixmap (stagger p50 9.2–9.7 → 0.9 ms at 1.5×; shared-morph's p95 at
+  1.5× 37–44 → 9).
+- **Corner tiles** under a radius spring build on a thread each
+  (resize-radius p95 22 → 6.5 ms at 1.5×).
+- **Goo** allocates 253 times a frame, not 29,000; its flatten is
+  2.3 → 2.2 ms at 1× (a lower bound that skipped far corners measured
+  slower and was not kept).
+
+Still over 8.33 ms at p95: backdrop-blur at 1.5× on the CPU (its blur),
+glass (an offscreen group rebuilt now and then: 11–13 ms frames at 1×),
+crossfade at 1.5× (11–14 ms, its fine raster on four threads), and the
+first frame of a scene. On lavapipe (CI's GPU tier, an emulated GPU
+on the same four cores) the figures are within the run-to-run spread:
+its own threads share the cores the raster's threads use. The bench's
+PSS (glibc's allocator; Strand runs on mimalloc) is a few MB higher
+with the threads' arenas; the memory budgets hold (decisions.md
+perf-cpu-raster).
