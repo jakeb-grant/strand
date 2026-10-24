@@ -583,3 +583,43 @@ cover-turn 1.5× 15–40 / 17–80 → 17–18 / 20–21, cold maxima of the fad
 The CPU leg draws through none of this; its run at this head is within
 the host's noise of the table above (crossfade at 1×, 8.3–8.5 / 8.5–8.6
 max 17, ran on a quieter host than the baseline's 27 / 65).
+
+### After the perf-gpu-retain review
+
+The review's fixes (2026-10-23; decisions.md, perf-gpu-retain: the
+review's six findings): a backdrop's key hashes the groups around what
+is behind it, a small backdrop blur is drawn in the frame at the CPU's
+reduction (a quarter at 1×'s 520×380 card, which is under 0.2 Mpx; the
+1.5× card is over it and stays full size), and a backdrop's pass steps
+draw into the surface's texture pool. Same laptop, Intel GPU leg
+(`scripts/container/gpu.sh`, `STRAND_STRICT_GPU=1`), cores 0–3, the
+bench lock held exclusively; before is the perf-bench baseline
+d85e5f96, rerun in the same session. p50 / p95 in ms (each repeat's
+range), max and cold max:
+
+| Scene | Scale | Before (d85e5f96) | After the review |
+| --- | --- | --- | --- |
+| backdrop-blur | 1× | 3.4–3.5 / 11.2–11.6, max 51, cold 44 | 3.1–3.3 / 4.1, max 5.0, cold 7.5 |
+| backdrop-blur | 1.5× | 25.3–25.5 / 43–52, max 102, cold 95 | 4.1–4.5 / 5.3–6.7, max 7.8, cold 13 |
+| glass | 1× | 2.1–2.2 / 16.4–17.5, max 32, cold 33 | 1.9–2.2 / 2.6–2.7, max 3.6, cold 5.2 |
+| glass | 1.5× | 2.3–2.7 / 14.6–14.7, max 47, cold 54 | 2.3–2.6 / 3.1–3.5, max 4.9, cold 7.1 |
+| crossfade | 1× | 3.9 / 5.0, max 34, cold 48 | 3.0–4.2 / 3.8–5.5, max 8.5, cold 8.7 |
+| crossfade | 1.5× | 4.7–5.8 / 6.6–7.2, max 53, cold 65 | 4.5–5.5 / 5.4–7.0, max 7.6, cold 20 |
+| resize-radius | 1× | 1.9–3.1 / 3.8–4.2, max 5.4 | 1.8–1.9 / 2.1–2.4, max 3.1 |
+| resize-radius | 1.5× | 2.4–6.2 / 7.1–8.0, max 12 | 2.2–2.4 / 2.8–3.2, max 4.1 |
+| cover-turn | 1.5× | 1.7–2.2 / 2.2–2.5, max 2.9 | 1.6–2.0 / 1.8–2.5, max 2.9 |
+
+The 1.5× column is two runs of three repeats, interleaved with two of
+the head before the review (3e4b7c67), which measured the same within
+the host's noise (backdrop-blur 4.4–4.5 / 6.3–6.7, max 7.6; crossfade
+max 8.2–8.9): the review's fixes cost nothing measurable at 1.5×, and at
+1× the quarter-scale blur trims backdrop-blur's tail (p95 4.1, max 5.0,
+against 3.7–6.6 and 7.3 for 3e4b7c67 in the review's run). A third
+1.5× run on a slow spell of the host was 20–50% slower in every scene,
+resize-radius (which none of this touches) included, and is left out.
+
+Open: a crossfade's worst warm frame is still about the 8.33 ms budget
+at both scales (7.0–8.9 ms over these runs, one frame over in some),
+and its cold first frame at 1.5× is 15–20 ms, 85 ms once. The other
+scenes here keep every frame under the budget, warm and cold, but
+backdrop-blur's cold first frame at 1.5× (11–13 ms).
