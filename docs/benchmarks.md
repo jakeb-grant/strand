@@ -532,3 +532,54 @@ touched here), which the raster's 7–8 ms frames hid before. The memory
 the threads keep is freed when idle (decisions.md perf-cpu-raster,
 review): the cold two-monitor bar measured 41,870–42,097 kB, its base's
 range.
+
+## Animation frame cost after perf-gpu-retain
+
+The same bench at `laptop/perf-gpu-retain` 5b9d0a1b (2026-10-23, same
+laptop, pinned to cores 0–3, the bench lock held): a GPU frame draws
+its shadows (`Op::BlurredRect`), its backdrops (`Op::Backdrop`, the pass
+over a texture of what is behind, kept while what is behind is
+unchanged) and its crossfade snapshot (`Op::Snapshot`, the last
+presented frame copied on the GPU) itself, and the device's warm-up
+draws one of each. Intel GPU leg, p50 / p95 in ms (each repeat's range),
+max and the cold max (the warm-up cycle's worst frame):
+
+| Scene | Scale | Before | After |
+| --- | --- | --- | --- |
+| backdrop-blur | 1× | 2.5–3.7 / 11.4–11.7, max 37, cold 45 | 2.8–3.0 / 3.5–4.1, max 4.8, cold 7.2 |
+| backdrop-blur | 1.5× | 25.3 / 27–72, max 90, cold 92 | 4.4–4.5 / 6.1–6.8, max 8.2, cold 10 |
+| glass | 1× | 1.4–2.0 / 6.7, max 21, cold 27 | 2.2–2.3 / 2.7–3.1, max 6.9, cold 6.2 |
+| glass | 1.5× | 1.7–2.2 / 14.5–15, max 54, cold 39 | 2.3–2.4 / 3.0–3.2, max 4.2, cold 4.7 |
+| crossfade | 1× | 2.5–3.4 / 4.1–4.6, max 37, cold 52 | 3.7–4.0 / 4.7–5.3, max 6.3, cold 8.7 |
+| crossfade | 1.5× | 3.3–4.4 / 5.3–5.9, max 52, cold 68 | 4.8–4.9 / 5.9–6.7, max 8.4, cold 20 (85 once) |
+| resize-radius | 1× | 1.7–2.5 / 3.8–4.2, max 5.3 | 1.1–1.2 / 1.3–1.4, max 2.1 |
+| resize-radius | 1.5× | 2.8–6.4 / 7.5–8.5, max 13 | 2.3 / 2.7–3.0, max 3.7 |
+| resize-shadow | 1.5× | 1.8–1.9 / 2.5–2.6 | 1.5–2.2 / 1.8–2.4 |
+| morph-card | 1.5× | 1.4–2.0 / 2.6–8.0, max 17, cold 20 | 2.1–2.2 / 2.5, max 4.8, cold 4.3 |
+| panel-open | 1.5× | 3.2–3.8 / 4.2–5.1, cold 52 | 2.6–4.4 / 4.7–4.9, cold 16 |
+| shared-morph | 1.5× | 1.4–1.7 / 2.0–2.2, cold 57 | 1.9–2.0 / 2.5–2.9, cold 4.9 |
+| goo | 1.5× | 6.9–7.0 / 8.0–8.2, max 15 | 5.3–5.4 / 6.2–8.8, max 11 |
+
+Every Intel scene's p95 is now under 7 ms at both scales but goo's at
+1.5× (one repeat 8.8; its contour is the CPU's flatten, not this
+stream's), and every cold max under 21 ms but the first crossfade at
+1.5× (85 ms once, 20 in the other repeats: its first frame is the CPU's,
+before the surface promotes). The scenes not listed moved within the
+host's noise (±0.5 ms). A backdrop's frame got 0.3–0.6 ms dearer at its
+median where it was cheap before: the old path drew the pass on its own
+thread and showed the frame before's result, so its cost was never in
+the frame (and its pixels were a frame late).
+
+On lavapipe (CI's software device; the frame waits for it) drawing the
+blur in the frame shows its whole cost: backdrop-blur 58–72 / 61–90 at
+1× and 182–184 / 196–200 at 1.5× (was 11–12 / 18 and 25 / 38–39 with
+the pass off the frame), crossfade 1.5× 47–50 / 60–61 (21–32 / 43–48),
+panel-open's p95 20–21 / 35 (14–15 / 21–24, its shadows now blurred by
+the device). Elsewhere lavapipe is the same or faster: fade 1.5× 43–53
+/ 71–80 → 9.0–9.1 / 27–28, flip 1.5× 20–21 / 30–35 → 4.9–5.3 / 15–16,
+cover-turn 1.5× 15–40 / 17–80 → 17–18 / 20–21, cold maxima of the fades
+318–377 → 147–177 ms. No figure gates on it.
+
+The CPU leg draws through none of this; its run at this head is within
+the host's noise of the table above (crossfade at 1×, 8.3–8.5 / 8.5–8.6
+max 17, ran on a quieter host than the baseline's 27 / 65).
