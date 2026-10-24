@@ -1,6 +1,8 @@
 //! (perf-bench) What each animated frame costs, and where its time goes:
-//! the reusable measurement of decisions.md perf-bench, not a gate (the
-//! wall-clock gates are set from its before and after numbers).
+//! the reusable measurement of decisions.md perf-bench, not a gate; the
+//! wall-clock gates set from its before and after numbers are
+//! `animated_cpu_frames_hold_their_gates` below (decisions.md
+//! perf-gates).
 //!
 //! Strand's own animated scenes, written in `.strand` and compiled and
 //! instantiated as `strand run` does (one, a WGSL `shader` node, built as
@@ -1803,6 +1805,164 @@ fn row(scene: &Scene, cfg: Config, leg: Leg, runs: &[Run]) -> String {
         m(|s| s.fade_builds as f64),
         ms(cold),
     )
+}
+
+// ---------------------------------------------------------------------
+// The wall-clock gates (perf-gates): the review's CPU wins, held in CI's
+// `timing` job on GitHub's runners.
+
+/// The start of every wall-clock gate's failure message: the laptop's
+/// container suite warns, instead of failing, only on failures that all
+/// carry it (`scripts/container/gate-misses.sh`). Functional assertions
+/// never carry it.
+const GATE_MISS: &str = "timing gate missed";
+
+/// True when this build's frame times are gated (optimised builds).
+const GATED: bool = !cfg!(debug_assertions);
+
+/// A gated run's median frame: within one 120 Hz frame.
+const GATE_MEDIAN: Duration = BUDGET;
+/// A gated run's 95th percentile: within one 60 Hz frame.
+const GATE_P95: Duration = Duration::from_nanos(16_666_667);
+/// The encoding stage's mean where the win was the encoding (a mask
+/// within its reach, a transformed gradient's parts from the cache;
+/// decisions.md perf-cpu-raster).
+const GATE_ENCODE: Duration = Duration::from_millis(1);
+
+/// The CPU leg's gated runs: a scene, its scale, whether its whole
+/// frames are gated (median and p95) and whether its encoding stage is.
+/// Every gate is at least 3.5 times the laptop's figure (the container,
+/// unpinned, as CI runs it), so GitHub's slower runners pass it; a gate
+/// with less headroom is left out (shared-morph's frames at 1.5×,
+/// 3.2–3.7 ms median and 9.4–10 ms p95 here). The code before the
+/// review misses at least one gate of each run of cover-mask,
+/// shared-morph and stagger; list-scroll and theme-spring catch a gross
+/// regression only (2.4 and 4.5 ms median before). decisions.md
+/// perf-gates.
+const GATED_RUNS: [(&str, f32, bool, bool); 8] = [
+    ("cover-mask", 1.0, true, true),
+    ("cover-mask", 1.5, true, true),
+    ("shared-morph", 1.0, true, true),
+    ("shared-morph", 1.5, false, true),
+    ("stagger", 1.0, true, true),
+    ("stagger", 1.5, true, true),
+    ("list-scroll", 1.0, true, false),
+    ("theme-spring", 1.0, true, false),
+];
+
+/// Wall-clock gate verdicts, held once at the end (`Gates::hold`).
+#[derive(Default)]
+struct Gates(Vec<String>);
+
+impl Gates {
+    fn check(&mut self, met: bool, miss: impl FnOnce() -> String) {
+        if !met {
+            self.0.push(miss());
+        }
+    }
+
+    fn hold(self) {
+        if !self.0.is_empty() {
+            panic!("{GATE_MISS}: {}", self.0.join("\n"));
+        }
+    }
+}
+
+/// The review's CPU wins as gates (CI: `cargo test --profile timing -p
+/// strand-render --test anim_bench animated_cpu_frames_hold_their_gates`):
+/// on the CPU leg, one run of each of [`GATED_RUNS`] at its scale, the
+/// median frame within [`GATE_MEDIAN`] and the 95th percentile within
+/// [`GATE_P95`], and where the win was the encoding, the encoding
+/// stage's mean within [`GATE_ENCODE`]. Each run must draw its frames (functional, never a
+/// gate miss). A debug build draws one cycle of each at scale 1 and
+/// gates nothing.
+#[test]
+fn animated_cpu_frames_hold_their_gates() {
+    let mut gates = Gates::default();
+    let all = scenes();
+    for (name, scale, frames_gated, encode_gated) in GATED_RUNS {
+        if !GATED && scale != 1.0 {
+            continue;
+        }
+        let scene = all
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no scene {name}"));
+        let cfg = Config::of(scene.fit)
+            .into_iter()
+            .find(|c| c.scale == scale)
+            .unwrap_or_else(|| panic!("{name}: no config at {scale}"));
+        let cycles = if GATED { scene.cycles } else { 1 };
+        let r = run(scene, cfg, Leg::Cpu, cycles).expect("the CPU leg boots");
+        // Optimised, every cycle animates for many frames (cover-mask 60,
+        // stagger about 50); in debug a cycle may spend its frames
+        // waiting for the text worker and settle unrecorded.
+        let least = if GATED { 4 * cycles as usize } else { 1 };
+        assert!(
+            r.samples.len() >= least,
+            "{name} {}: {} frames drawn in {cycles} cycles",
+            cfg.name(),
+            r.samples.len()
+        );
+        let mut work: Vec<f64> = r.samples.iter().map(|s| s.work).collect();
+        let (median, p95) = (quantile(&mut work, 0.5), quantile(&mut work, 0.95));
+        let encode = mean(r.samples.iter().map(|s| s.encode));
+        let us = |d: Duration| d.as_secs_f64() * 1e6;
+        let verdict = if GATED {
+            let mut held = Vec::new();
+            if frames_gated {
+                held.push(format!("{GATE_MEDIAN:?} median, {GATE_P95:?} p95"));
+            }
+            if encode_gated {
+                held.push(format!("{GATE_ENCODE:?} encoding"));
+            }
+            format!("gates {}", held.join(", "))
+        } else {
+            "not gated (debug build)".to_string()
+        };
+        eprintln!(
+            "anim gate {name} {}: {} frames, median {:.2} ms, p95 {:.2} ms, encoding's mean {:.3} ms; {verdict}",
+            cfg.name(),
+            r.samples.len(),
+            median / 1e3,
+            p95 / 1e3,
+            encode / 1e3,
+        );
+        if !GATED {
+            continue;
+        }
+        gates.check(!frames_gated || median <= us(GATE_MEDIAN), || {
+            format!(
+                "{name} {}: median {:.2} ms over {GATE_MEDIAN:?}",
+                cfg.name(),
+                median / 1e3
+            )
+        });
+        gates.check(!frames_gated || p95 <= us(GATE_P95), || {
+            format!(
+                "{name} {}: p95 {:.2} ms over {GATE_P95:?}",
+                cfg.name(),
+                p95 / 1e3
+            )
+        });
+        gates.check(!encode_gated || encode <= us(GATE_ENCODE), || {
+            format!(
+                "{name} {}: encoding's mean {:.3} ms over {GATE_ENCODE:?}",
+                cfg.name(),
+                encode / 1e3
+            )
+        });
+    }
+    gates.hold();
+}
+
+/// The container suite's gate-miss check reads the marker these gates'
+/// failures start with, and names this file among those that carry it.
+#[test]
+fn the_gate_miss_marker_is_the_one_the_container_suite_reads() {
+    let check = include_str!("../../../scripts/container/gate-misses.sh");
+    assert!(check.contains(&format!("index(msg, \"{GATE_MISS}\") == 1")));
+    assert!(check.contains("strand-render/tests/anim_bench.rs"));
 }
 
 /// The bench's own checks, run in every test run (cheap): each scene

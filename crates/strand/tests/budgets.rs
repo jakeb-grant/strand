@@ -1,7 +1,7 @@
 //! M3 exit, "memory verified", and the idle budget on the real services
 //! (design.md, "Memory budget" and "Testing": the two-monitor bar with no
 //! GPU device aims at 42 MB, a warning above it, and the build fails above
-//! 48 MB; with the warm device on CI's lavapipe tier 232 / 242 MiB; a
+//! 48 MB; with the warm device on CI's lavapipe tier 242 / 252 MiB; a
 //! running service with nothing changing wakes nothing).
 //!
 //! `strand run` without `STRAND_MOCK` on a headless sway with two
@@ -20,7 +20,7 @@
 //!   on the machine's icon themes (`/usr/share`; CI installs Adwaita):
 //!   once every value is on screen, its volume, network and battery
 //!   icons drawn, and the boot work is done, PSS stays
-//!   within the 242 MiB ceiling (fails above it; above the 232 MiB target
+//!   within the 252 MiB ceiling (fails above it; above the 242 MiB target
 //!   it warns; both hold the warm GPU device, lavapipe on CI's tier:
 //!   decisions.md gpu-first) in release (a debug build has its own ceiling),
 //!   no page of it is a transparent huge page, over 10 s between two
@@ -129,9 +129,15 @@ const COLD_FULL_SHELL_KB: u64 = 104 * 1024;
 /// it (232 MiB) and a ceiling 15.7 MB over it (242 MiB); the full shell's
 /// larger figure (a desktop of apps) 296,351 kB, so 296 MiB (6.7 MB over)
 /// and 324 MiB (35.4 MB over, as 104 MB is over the cold shell for
-/// GitHub's variance). decisions.md gpu-first.
-const PSS_TARGET_KB: u64 = 232 * 1024;
-const PSS_GATE_KB: u64 = 242 * 1024;
+/// GitHub's variance). decisions.md gpu-first. The bar's re-based by the
+/// same rule (decisions.md perf, warm bar) when the warm start began
+/// building the pipelines of an animation's shadows, backdrops and
+/// crossfade (lavapipe's compiled code: 233,340 and 233,876 kB before,
+/// 242,085 and 241,679 kB after in the container; 63,601 → 65,172 kB on
+/// the owner's Intel GPU): a target 5.6 MB over 242,085 kB (242 MiB) and
+/// a ceiling 16 MB over it (252 MiB).
+const PSS_TARGET_KB: u64 = 242 * 1024;
+const PSS_GATE_KB: u64 = 252 * 1024;
 const FULL_SHELL_TARGET_KB: u64 = 296 * 1024;
 const FULL_SHELL_KB: u64 = 324 * 1024;
 /// The warm debug bar measured 269,462 kB (the cold one 75,166 kB under
@@ -1584,8 +1590,8 @@ fn warn_over_target(what: &str, pss: u64, target: u64) {
     }
 }
 
-/// The two-monitor design bar on the real services: within the 242 MiB
-/// ceiling (a warning above the 232 MiB target; the warm device's), no huge page, and 10 s between minute ticks without a wakeup or
+/// The two-monitor design bar on the real services: within the 252 MiB
+/// ceiling (a warning above the 242 MiB target; the warm device's), no huge page, and 10 s between minute ticks without a wakeup or
 /// a frame.
 #[test]
 fn the_design_bar_on_the_real_services_keeps_the_budget() {

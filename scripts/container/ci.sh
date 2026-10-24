@@ -7,7 +7,8 @@
 # names it. Keep the steps in step with ci.yml.
 #
 # The wall-clock latency gates (the `timing` job: theme_swap_bench,
-# reload_latency and list_scroll_bench) are advisory here: they run and
+# reload_latency, list_scroll_bench and anim_bench's CPU frames) are
+# advisory here: they run and
 # print their numbers, and a step whose only failures are wall-clock
 # gate misses (panics marked "timing gate missed", judged by
 # gate-misses.sh) prints WARN instead of failing the run (decisions.md
@@ -78,7 +79,7 @@ step() {
 # The lines of a timing test's output that carry its numbers and, on a
 # miss, its verdicts.
 key_numbers() {
-  grep -a -E 'timing gate missed|theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^list scroll|^test .* FAILED$|^test result:' "$1" |
+  grep -a -E 'timing gate missed|theme swap .* median|crossfading swap|scopes, spring\(|reload latency over|save → presented|token p95|markup p95|portal SettingChanged|monitor plugged|scale change heard|panicked at|, over [0-9.]+|^token edits|^markup edits|^a (scale change|plugged monitor|portal change):|^list scroll|^anim gate|^test .* FAILED$|^test result:' "$1" |
     sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | head -60
 }
 
@@ -207,6 +208,8 @@ timing_step "cargo test --profile timing -p strand-render --test motion (frame t
   cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test morph (island card frame time)" 30 \
   cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
+timing_step "cargo test --profile timing -p strand-render --test anim_bench (animated CPU frames)" 30 \
+  cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
 timing_step "cargo test --profile timing -p strand-compiler --test theme (theme swap logic)" 30 \
   cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 

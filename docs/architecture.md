@@ -5817,8 +5817,8 @@ inspector (M5) to say why.
   gpu-first the device is warm wherever one can start, so `budgets.rs`
   measures two legs (decisions.md gpu-first). Warm, under
   `STRAND_REQUIRE_GPU=1` with lavapipe accepted, the figures include
-  lavapipe's and LLVM's pages: the bar warns above 232 MiB and fails
-  above 242 MiB, the full shell 296 / 324 MiB, debug 288 MiB, each the
+  lavapipe's and LLVM's pages: the bar warns above 242 MiB and fails
+  above 252 MiB (re-based from 232 / 242 MiB, decisions.md perf), the full shell 296 / 324 MiB, debug 288 MiB, each the
   measurement plus the cold gates' absolute headroom. Cold
   (`the_design_bar_with_no_gpu_keeps_the_cold_budget`,
   `the_full_shell_with_no_gpu_keeps_the_cold_budget`; `demo.rs` and

@@ -176,7 +176,7 @@ jobs:
       # UPower, NetworkManager and logind and a mock portal on a private
       # bus, the shell's own notifications server and tray host, sway's
       # IPC, a private PipeWire) within the PSS budget with the warm
-      # lavapipe device (232 MiB target warns, 242 MiB ceiling fails) and
+      # lavapipe device (242 MiB target warns, 252 MiB ceiling fails) and
       # GPU cold (42 / 48 MB, nothing Vulkan mapped) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
@@ -279,6 +279,12 @@ jobs:
       # folding: the median frame within half a 60 Hz refresh and every
       # frame within one, on an optimised build (owner-testing.md bug 17).
       - run: cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
+      # The animation review's CPU wins (decisions.md perf-gates): the
+      # cover's mask, the transformed gradients of a shared morph and a
+      # staggered grid, a list scrolled and a palette spring, each run's
+      # median frame within a 120 Hz refresh and its p95 within a 60 Hz
+      # one, and where the win was the encoding, its mean within 1 ms.
+      - run: cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
       # The logic side of a theme swap (design.md's theme.strand, from
       # the write of `theme.look` to `SetTokens`) within design.md's
       # 5 ms by the median of 15 swaps, on an optimised build.

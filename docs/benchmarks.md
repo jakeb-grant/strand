@@ -623,3 +623,105 @@ at both scales (7.0–8.9 ms over these runs, one frame over in some),
 and its cold first frame at 1.5× is 15–20 ms, 85 ms once. The other
 scenes here keep every frame under the budget, warm and cold, but
 backdrop-blur's cold first frame at 1.5× (11–13 ms).
+
+## Animation frame cost after the review (perf)
+
+Both streams merged on `laptop/perf` (perf-cpu-raster, then
+perf-gpu-retain on top; decisions.md perf, the merge), 2026-10-24.
+Before is d85e5f96 (`main` d10f1e4e and the bench, no change to what
+it measures; built with this head's bench file, which only counts the
+raster's helper threads too). Both built with the `timing` profile,
+interleaved as two pairs (before, after; then after, before), three
+repeats each, every leg pinned to cores 0–3 with the bench lock held
+exclusively: the CPU and lavapipe in `scripts/container/run.sh`, the
+Intel GPU (PTL, Mesa 25.2.8) through `gpu.sh` with
+`STRAND_STRICT_GPU=1`. Each cell is the p95 in ms, before → after, the
+range over the six repeats (a frame's cost: the render thread's work on
+the CPU, the longer of the two threads' on a GPU). The untouched stages
+(apply, layout, diff) stayed within 1.5× between the two trees in 205
+of 212 scene-pair cells; the 7 others are the 1.5× CPU runs of
+morph-card, resize-shadow, resize-radius and flip, 0.04–0.27 ms a frame,
+as perf-cpu-raster found.
+
+| Scene | CPU 1× | CPU 1.5× | Intel 1× | Intel 1.5× | lavapipe 1× | lavapipe 1.5× |
+|---|---|---|---|---|---|---|
+| backdrop-blur | 8.1–11 → 9.2–13 | 46–51 → 40–44 | 11–12 → 4.0–4.5 | 57–64 → 6.2–6.8 | 23–31 → 24–32 | 28–29 → 174–175 |
+| cover-mask | 13 → 0.33 | 13 → 0.42–0.43 | 2.1–4.3 → 2.2–2.4 | 3.4–4.6 → 3.0–3.1 | 5.8–6.0 → 6.3–6.6 | 11 → 12 |
+| cover-turn | 0.42–0.44 → 0.43–0.44 | 0.63–0.64 → 0.51–0.52 | 1.9–2.5 → 1.3–1.7 | 1.9–2.6 → 1.9–2.0 | 7.5–7.7 → 7.2–7.7 | 16–19 → 15–19 |
+| crossfade | 22–25 → 9.3–10 | 31–35 → 14 | 4.9–6.3 → 4.7–5.1 | 6.2–6.8 → 5.5–6.4 | 25–26 → 25–26 | 42–50 → 41–53 |
+| fade | 8.1–10 → 3.5–3.9 | 17–18 → 6.2–7.4 | 2.9–3.1 → 2.7–3.3 | 3.3–3.9 → 3.5–3.9 | 14–15 → 15–16 | 25–26 → 27–28 |
+| flip | 10–12 → 5.4–6.0 | 18–19 → 8.1–9.4 | 2.4–3.2 → 2.5–2.9 | 2.9–3.4 → 3.0–3.3 | 8.3–8.8 → 8.1–8.9 | 14–16 → 14–16 |
+| glass | 13 → 11–12 | 10 → 8.8–10 | 17–18 → 2.6–3.5 | 14–15 → 3.1–3.9 | 16–18 → 23 | 29–31 → 25–27 |
+| goo | 4.4 → 3.2 | 9.6–9.7 → 6.7–6.8 | 3.4–3.6 → 2.6–2.9 | 7.6–7.8 → 5.5–5.7 | 3.7–3.8 → 3.6–3.9 | 7.6–7.9 → 5.9–6.1 |
+| letters | 0.49 → 0.49 | 0.86–0.87 → 0.42–0.46 | 1.7–1.8 → 1.8 | 1.6–1.9 → 1.6–1.9 | 1.5–1.6 → 1.5–1.7 | 2.4 → 2.4 |
+| list-scroll | 6.4–6.9 → 3.0–3.1 | 10.0–10 → 4.5–4.8 | 2.2–2.6 → 2.3–2.4 | 2.9–3.2 → 2.9–3.1 | 7.0–7.6 → 7.1–7.6 | 7.0–7.6 → 7.0–7.3 |
+| morph-card | 16–17 → 6.1–6.5 | 34–37 → 14 | 3.4–4.0 → 2.4–2.7 | 7.3–8.6 → 3.0–3.9 | 12–14 → 13 | 21–24 → 20 |
+| panel-open | 22–24 → 5.8–6.6 | 34–39 → 10.0–10 | 4.0–4.7 → 4.0–5.5 | 5.5–5.7 → 5.2–6.3 | 19–21 → 19–21 | 30–35 → 32–33 |
+| resize-radius | 10–12 → 4.0–5.9 | 21–23 → 7.4–9.2 | 3.9–4.2 → 2.2–2.4 | 7.4–8.0 → 2.8–3.3 | 13–14 → 9.4–10.0 | 20–21 → 16–17 |
+| resize-shadow | 7.2–7.9 → 2.8–3.2 | 15–16 → 5.1–5.9 | 2.4–2.7 → 2.4–2.6 | 2.8–3.3 → 3.1–3.5 | 8.4–9.1 → 9.6–11 | 15–16 → 16–18 |
+| shader | — | — | 1.3–1.8 → 1.5–2.2 | 1.5–1.8 → 1.6–1.7 | 4.0–4.4 → 4.1–4.4 | 7.9–12 → 8.0–12 |
+| shared-morph | 23–25 → 4.0–4.5 | 30–35 → 8.7–9.1 | 2.2–2.5 → 2.1–2.3 | 2.6–2.9 → 2.7–3.6 | 12–13 → 12 | 12–15 → 14–15 |
+| stagger | 9.0–10 → 2.1–2.4 | 13 → 3.1–3.2 | 3.4–3.5 → 3.5–3.9 | 4.8–5.0 → 4.7–5.2 | 7.4–7.7 → 7.7–8.3 | 12–14 → 12–13 |
+| theme-spring | 5.8–6.7 → 2.6–3.7 | 12–13 → 4.6–5.6 | 2.4–2.7 → 2.2–2.4 | 2.8–3.3 → 2.8–3.1 | 7.8–8.5 → 7.4–8.1 | 13–15 → 13–14 |
+
+On the Intel GPU the worst warm frame fell where the review aimed:
+backdrop-blur 34–40 → 5.2–5.8 ms at 1× and 76–89 → 7.0–8.1 at 1.5×,
+crossfade 30–35 → 5.7–6.8 and 47–52 → 6.3–9.0, glass 21–24 → 3.2–5.2
+and 44–50 → 3.6–5.8, morph-card at 1.5× 13–17 → 3.8–4.3, resize-radius
+at 1.5× 8.5–15 → 3.3–4.5. The cold first frames (the warm-up cycle's
+worst): backdrop-blur 41–48 → 5.3–6.8 ms at 1× and 86–92 → 8.3–9.5 at
+1.5×, crossfade 44–47 → 8.4–10 and 60–77 → 17–84, glass 24–49 → 3.8–4.4
+and 50–55 → 4.2–5.5, shared-morph 27–31 → 4.0–4.7 and 54–61 → 4.7–5.7,
+panel-open 32–39 → 8.4–18 and 67–73 → 9.4–17.
+
+Still over the 8.33 ms budget after the review:
+
+- **Intel GPU**, where a large animation is drawn: no scene's p95. Single
+  frames: crossfade at 1.5× (1 of 972, max 9.0), panel-open at 1.5× (1
+  of 990, max 8.7), goo at 1.5× (14 of 1,800, max 12: its contour is
+  the CPU's flatten); the cold first frames of crossfade (8.4–10 ms at
+  1×, 17–84 at 1.5×), panel-open (8.4–18 and 9.4–17) and backdrop-blur
+  at 1.5× (8.3–9.5).
+- **CPU**, where a small animation, or every one without a GPU, is
+  drawn: backdrop-blur (p95 9.2–13 at 1×, 40–44 at 1.5×: its blur and
+  its offscreen group's rebuilds, serial), glass (11–12 and 8.8–10: an
+  offscreen group rebuilt now and then), crossfade (9.3–10 and 14),
+  morph-card at 1.5× (14), panel-open at 1.5× (10), flip at 1.5×
+  (8.1–9.4), shared-morph at 1.5× (8.7–9.1) and resize-radius at 1.5×
+  (7.4–9.2). Their frames damage 0.2 Mpx or more, so where a device
+  exists they promote and the Intel columns are what the owner sees, but
+  for glass at 1×: its frames damage 0.11 Mpx and its median is 1.4 ms,
+  so it stays on the CPU with a device too, its slow frames (an offscreen
+  group's rebuild, 11–12 ms at p95) included. That is the deferred
+  promotion of small slow animations (decisions.md perf).
+- **lavapipe** (CI's software device, never used outside tests): most
+  scenes at 1.5× and several at 1×, as before. backdrop-blur at 1.5× is
+  now 174–175 ms (28–29 before) because the frame draws its blur instead
+  of showing the pass a frame late (decisions.md perf-gpu-retain); glass
+  at 1× 16–18 → 23 likewise. No gate reads lavapipe's timings.
+
+Memory, `cargo test --release -p strand --test budgets` in the
+container, two runs of each tree interleaved, kB PSS (before → after):
+the cold two-monitor bar 41,686 / 41,961 → 41,998 / 41,891; the cold
+full shell (161 entries, the launcher open, toasts and the OSD up)
+86,745 / 76,153 → 86,926 / 83,490 (over its 77,824 kB target and under
+its ceiling on both trees, as on `main`); the warm bar on lavapipe
+233,340 / 233,876 → 242,085 / 241,679, over its old 232 MiB target, so
+re-based to 242 / 252 MiB (decisions.md perf, warm bar); the warm full
+shell 309,282 / 313,226 → 279,623 / 282,392 (161 entries). The warm
+bar's 8 MB is lavapipe's compiled code for the pipelines the warm start
+now builds (`[anon]` +5.6 MB, the device's `memfd` +2.2 MB); on the
+owner's Intel GPU through `gpu.sh` the same bar measured 63,601 →
+65,172 kB.
+
+The CPU wins are gated in CI's `timing` job by
+`animated_cpu_frames_hold_their_gates` (decisions.md perf-gates).
+Unpinned in the container, as CI runs it, five runs: cover-mask median
+0.26–0.27 / p95 0.33–0.34 ms at 1× and 0.41–0.42 / 0.43 at 1.5×,
+encoding 0.09–0.18 ms; shared-morph 1.54–1.61 / 4.49–4.61 at 1×
+(3.2–3.7 / 9.4–10.1 at 1.5×, its frames not gated), encoding
+0.11–0.18; stagger 1.90–2.03 / 2.58–2.84 at 1× and 1.50–1.80 /
+3.66–3.82 at 1.5×, encoding 0.13–0.14; list-scroll 0.99–1.00 /
+3.06–3.11; theme-spring 1.84–1.99 / 2.32–2.93. The same test on
+d85e5f96 misses 12 of its gates (cover-mask's encoding 8.5 and 13 ms,
+shared-morph's median 9.2 ms at 1×, stagger's median 9.1 ms at 1.5×).
