@@ -2828,12 +2828,18 @@ re-base, if it needs one, is a dated decisions.md entry.
   `RasterTimes::threads` says how many drew; with more than one,
   `encode`, `fine` and `copy` share the pass's wall-clock time as the
   threads spent theirs. Each thread
-  keeps its contexts and scratch (`Lane`) for the raster's life. A
+  keeps its contexts and scratch (`Lane`) between paints; the other
+  threads' lanes are freed once no paint has drawn on them for
+  `LANE_IDLE` (1 s), at the next paint's or wake's trim
+  (`Raster::trim_idle`, never a wake of its own), so an animation keeps
+  them and an idle shell does not. A
   gradient over 64 k pixels is dithered on the same threads, by rows,
   and a shadow's missing slice tiles are built on a thread each
   (`PaintCache::build_tiles`: a radius spring's four corner tiles). A
   gradient's colour table (1,024 OKLab samples) is kept by its stops'
-  bits (256 tables, about 4 MB, cleared when full; `cache::lut_cached`),
+  bits (256 tables, about 4 MB, cleared when full, and freed with the
+  paint cache's idle entries once none has been asked for for
+  `IDLE_FREE`; `cache::lut_cached`),
   and the ramp cuts vello's gradients are given (`raster::paint::cuts`)
   are one table shared by every thread. A gradient drawn smoothly
   (under `scale`/`rotate`) still draws each cell's part (integration-r8),

@@ -50,6 +50,16 @@ pub const PARALLEL_CELLS: usize = 8;
 /// on efficiency cores, which finish a cell slower than they help).
 pub const MAX_THREADS: usize = 4;
 
+/// (perf-cpu-raster review) How long the other threads' contexts and
+/// scratch (`Raster::lanes[1..]`) are kept after the last paint that
+/// drew on them: freed at the first paint or wake of the render loop
+/// after it (never at a wake of their own). An animation's frames come
+/// milliseconds apart, so its lanes are kept while it runs; a bar's
+/// first paint (two rows of cells, drawn on four threads) leaves about
+/// 1 MB in its three lanes, which an idle shell does not keep. Building
+/// them again costs a large paint a few contexts.
+pub const LANE_IDLE: Duration = Duration::from_secs(1);
+
 /// (perf-bench) Where the last [`Raster::paint`] spent its time: the
 /// paint cache's gradients and shadows built (`prepare`), offscreen
 /// groups and fade layers drawn (`offscreen`), the display list encoded
@@ -130,6 +140,8 @@ pub struct Raster {
     offscreen: crate::offscreen::Offscreen,
     /// (perf-bench) The last paint's parts.
     times: RasterTimes,
+    /// (perf-cpu-raster review) When a paint last drew on `lanes[1..]`.
+    shared_at: Option<Instant>,
 }
 
 impl Default for Raster {
@@ -142,6 +154,7 @@ impl Default for Raster {
             cache: PaintCache::default(),
             offscreen: crate::offscreen::Offscreen::default(),
             times: RasterTimes::default(),
+            shared_at: None,
         }
     }
 }
@@ -216,6 +229,26 @@ impl Raster {
         self.cache.trim_idle(now);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());
+        self.trim_lanes(now);
+    }
+
+    /// (perf-cpu-raster review) Frees the other threads' lanes (their
+    /// contexts, vello resources and scratch) once no paint has drawn on
+    /// them for [`LANE_IDLE`] (or the shorter idle time a test sets with
+    /// [`Raster::set_idle_free`]).
+    fn trim_lanes(&mut self, now: Instant) {
+        if self.lanes.len() <= 1 {
+            return;
+        }
+        let idle = LANE_IDLE.min(self.cache.idle_free());
+        if self
+            .shared_at
+            .is_none_or(|t| now.saturating_duration_since(t) >= idle)
+        {
+            self.lanes.truncate(1);
+            self.lanes.shrink_to_fit();
+            self.shared_at = None;
+        }
     }
 
     /// Shortens (tests) how long an unused paint cache entry or
@@ -319,6 +352,7 @@ impl Raster {
             .prepare_fades(items, &damage, surface, atlas, &self.cache, scale);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());
+        self.trim_lanes(now);
         self.times.offscreen = mark.elapsed();
         // Pixel-aligned rect clips leave coverage inside them untouched; a
         // multi-rect clip path would round differently where layers
@@ -405,6 +439,9 @@ impl Raster {
             );
         }
         let wall = start.elapsed();
+        if lanes_used > 1 {
+            self.shared_at = Some(Instant::now());
+        }
         self.times.threads = threads as u32;
         let lanes = &self.lanes[..lanes_used];
         let (enc, fine, copy) = lanes.iter().fold(

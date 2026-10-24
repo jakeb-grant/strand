@@ -920,6 +920,48 @@ fn no_raster_thread_outlives_its_paint() {
     }
 }
 
+/// (perf-cpu-raster review) The other threads' lanes are kept while
+/// large paints come within `LANE_IDLE` of each other, freed at the
+/// first trim after it (a paint's or a wake's), and built again by the
+/// next large paint, which draws the same bytes.
+#[test]
+fn helper_lanes_are_freed_when_idle() {
+    // Counts its paints' threads: other tests' paints take none of them.
+    unbudgeted();
+    use std::time::{Duration, Instant};
+    use strand_scene::Size;
+    let (w, h) = (1100u32, 700u32);
+    let full = Damage::full(Size::new(w, h));
+    let items = busy_scene(w, h, 0.2);
+    let mut r = Raster::default();
+    r.set_max_threads(4);
+    let mut a = vec![0u8; (w * h * 4) as usize];
+    paint_with(&mut r, &items, &full, (w, h), &mut a);
+    assert_eq!(r.lanes(), 4);
+    let painted = Instant::now();
+    // Within LANE_IDLE: kept.
+    r.trim_idle(painted + LANE_IDLE / 2);
+    assert_eq!(r.lanes(), 4);
+    // Past it: freed, the render thread's own kept.
+    r.trim_idle(painted + LANE_IDLE + Duration::from_millis(1));
+    assert_eq!(r.lanes(), 1);
+    assert!(r.contexts() > 0, "the render thread's contexts were freed");
+    // A small paint keeps none; a large one builds them again.
+    let mut d = Damage::new();
+    d.add(Rect::new(10, 10, 300, 60));
+    let mut b = a.clone();
+    paint_with(&mut r, &items, &d, (w, h), &mut b);
+    assert_eq!(r.lanes(), 1);
+    paint_with(&mut r, &items, &full, (w, h), &mut b);
+    assert_eq!(r.lanes(), 4);
+    assert!(a == b, "the frame after the lanes were freed differs");
+    // A test's shorter idle time frees them sooner, at a paint's trim.
+    r.set_idle_free(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(5));
+    paint_with(&mut r, &items, &d, (w, h), &mut b);
+    assert_eq!(r.lanes(), 1);
+}
+
 /// (perf-cpu-raster) A gradient scaling in (a staggered tile's `enter
 /// { scale: 0.85 }`) or turning, drawn smoothly from the part each cell
 /// shows: once its whole pixmap is cached the parts are copied from it,

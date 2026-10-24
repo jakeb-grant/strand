@@ -567,6 +567,7 @@ impl PaintCache {
         self.recent
             .retain(|_, t| now.saturating_duration_since(t.at) < idle);
         self.recent_bytes = self.recent.values().map(|t| t.bytes).sum();
+        trim_luts(now, idle);
     }
 
     /// How long an unused entry lives.
@@ -909,12 +910,37 @@ fn lut(stops: &[GradientStop]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// Colour tables kept (each 16 kB); past it the record starts over.
+/// Colour tables kept (each 16 kB, so at most 4 MB); past it the record
+/// starts over.
 const LUTS_KEPT: usize = 256;
 
-type Luts = HashMap<Box<[u32]>, Arc<[[f32; 4]]>>;
+/// The colour tables kept, by their stops' bits, and when one was last
+/// asked for.
+struct Luts {
+    tables: HashMap<Box<[u32]>, Arc<[[f32; 4]]>>,
+    used: Instant,
+}
 
 static LUTS: std::sync::Mutex<Option<Luts>> = std::sync::Mutex::new(None);
+
+fn luts() -> std::sync::MutexGuard<'static, Option<Luts>> {
+    LUTS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// (perf-cpu-raster review) Frees every colour table when none has been
+/// asked for since `now - idle`: a gradient whose colours spring leaves
+/// a table per frame no later frame asks for. Called with the paint
+/// cache's own trim ([`PaintCache::trim_idle`]), at a paint or a wake
+/// of the render loop, never at a wake of its own.
+fn trim_luts(now: Instant, idle: Duration) {
+    let mut l = luts();
+    if l.as_ref()
+        .is_some_and(|l| now.saturating_duration_since(l.used) >= idle)
+    {
+        *l = None;
+    }
+}
 
 /// (perf-cpu-raster) [`lut`] of `stops`, kept by their exact bits: a
 /// gradient drawn smoothly or too large or changing to cache dithers its
@@ -935,20 +961,26 @@ fn lut_cached(stops: &[GradientStop]) -> Arc<[[f32; 4]]> {
             ]
         })
         .collect();
-    let lock = || {
-        LUTS.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    if let Some(t) = lock().as_ref().and_then(|l| l.get(&key).cloned()) {
+    if let Some(l) = luts().as_mut()
+        && let Some(t) = l.tables.get(&key).cloned()
+    {
+        l.used = Instant::now();
         return t;
     }
     let table: Arc<[[f32; 4]]> = lut(stops).into();
-    let mut l = lock();
-    let l = l.get_or_insert_with(HashMap::new);
-    if l.len() >= LUTS_KEPT {
-        l.clear();
+    let mut l = luts();
+    // The clock read under the lock: a trim between the miss and here
+    // never sees a use older than itself.
+    let now = Instant::now();
+    let l = l.get_or_insert_with(|| Luts {
+        tables: HashMap::new(),
+        used: now,
+    });
+    if l.tables.len() >= LUTS_KEPT {
+        l.tables.clear();
     }
-    l.insert(key, table.clone());
+    l.tables.insert(key, table.clone());
+    l.used = now;
     table
 }
 
@@ -961,10 +993,7 @@ thread_local! {
 /// Colour tables held (tests: bounded).
 #[cfg(test)]
 pub(crate) fn luts_held() -> usize {
-    LUTS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .map_or(0, HashMap::len)
+    luts().as_ref().map_or(0, |l| l.tables.len())
 }
 
 /// (perf-cpu-raster) The part `(x0, y0, pw, ph)` of a gradient's whole
@@ -1467,6 +1496,98 @@ mod tests {
             assert!(*lut_cached(&stops) == *lut(&stops));
             assert!(luts_held() <= LUTS_KEPT);
         }
+    }
+
+    /// (perf-cpu-raster review) Stops that differ only in an offset, or
+    /// only in one channel of a colour, are each their own table: asked
+    /// for alternately, each is the table built afresh, and each draws
+    /// its own pixels (a stop sliding along a gradient, or a colour's
+    /// alpha springing, never draws the last frame's).
+    #[test]
+    fn stops_differing_in_one_field_keep_their_own_tables() {
+        let stops = |mid: f32, alpha: f32| {
+            vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Color {
+                        r: 0.9,
+                        g: 0.2,
+                        b: 0.1,
+                        a: 1.0,
+                    },
+                },
+                GradientStop {
+                    offset: mid,
+                    color: Color {
+                        r: 0.1,
+                        g: 0.7,
+                        b: 0.3,
+                        a: alpha,
+                    },
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color {
+                        r: 0.2,
+                        g: 0.1,
+                        b: 0.8,
+                        a: 1.0,
+                    },
+                },
+            ]
+        };
+        // Offsets only, then alpha only, then one more channel.
+        let mut green = stops(0.5, 0.75);
+        green[1].color.g = 0.71;
+        let pairs = [
+            (stops(0.5, 0.75), stops(0.625, 0.75)),
+            (stops(0.5, 0.75), stops(0.5, 0.5)),
+            (stops(0.5, 0.75), green),
+        ];
+        for (a, b) in &pairs {
+            for _ in 0..3 {
+                assert!(*lut_cached(a) == *lut(a));
+                assert!(*lut_cached(b) == *lut(b));
+            }
+            assert!(*lut(a) != *lut(b), "the pair's tables are the same");
+            let paint = |stops: &Vec<GradientStop>| Paint::Linear {
+                angle: 90.0,
+                stops: stops.clone(),
+            };
+            let pa = render_gradient(&paint(a), 300, 20).unwrap();
+            let pb = render_gradient(&paint(b), 300, 20).unwrap();
+            assert_ne!(pa.data_as_u8_slice(), pb.data_as_u8_slice());
+            // Alternately once more, each from the cache.
+            let qa = render_gradient(&paint(a), 300, 20).unwrap();
+            assert_eq!(pa.data_as_u8_slice(), qa.data_as_u8_slice());
+        }
+    }
+
+    /// (perf-cpu-raster review) The colour tables are freed once none
+    /// has been asked for for the paint cache's idle time, with the
+    /// paint cache's own idle entries, and kept while asked for.
+    #[test]
+    fn colour_tables_are_freed_when_idle() {
+        let s = ramp("#123456", "#654321");
+        let Paint::Linear { stops, .. } = &s else {
+            unreachable!()
+        };
+        lut_cached(stops);
+        assert!(luts_held() >= 1);
+        let mut c = PaintCache::default();
+        // Not idle yet: kept (whatever other tests ask for meanwhile).
+        c.trim_idle(Instant::now() + IDLE_FREE / 2);
+        let after = Instant::now();
+        // Idle past IDLE_FREE from every use so far: freed, unless a
+        // test running beside this one asked for a table since.
+        c.trim_idle(after + IDLE_FREE + Duration::from_secs(1));
+        let used = luts().as_ref().map(|l| l.used);
+        assert!(
+            used.is_none_or(|u| u > after),
+            "the tables outlived their idle time"
+        );
+        // And built again, the same, when asked for after.
+        assert!(*lut_cached(stops) == *lut(stops));
     }
 
     /// A slow ramp over 256 px (8 levels) has no 32 px bands: the

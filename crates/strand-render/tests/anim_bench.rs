@@ -27,8 +27,9 @@
 //! encoding, vello's raster and the copy, a crossfade's blend; the GPU
 //! leg's lowering), the damage and the pixels rasterised, the paint
 //! cache's, offscreen groups' and fade layers' builds (misses), and the
-//! render thread's allocations; per run, the caches' bytes and the
-//! process's PSS. Legs:
+//! render thread's allocations with those of the raster's helper
+//! threads drawing its cells (not the text worker's or the GPU
+//! thread's); per run, the caches' bytes and the process's PSS. Legs:
 //!
 //! - `cpu`: the CPU renderer into two `wl_shm`-style buffers in turn
 //!   (age 2, as a compositor holding the last one gives).
@@ -75,7 +76,7 @@ use std::cell::Cell;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -95,19 +96,51 @@ const HZ: u32 = 120;
 const BUDGET: Duration = Duration::from_nanos(8_333_333);
 
 // ---------------------------------------------------------------------
-// Allocations on the bench's own thread while it does render-thread work.
+// Allocations of render-thread work while the bench's own thread does it:
+// that thread's, and those of the raster's helper threads
+// (`strand-raster`, perf-cpu-raster: a large paint draws its cells on a
+// few threads, started for the paint), so a frame's count is its whole
+// paint's however many threads drew it. The text worker's and the GPU
+// thread's are not counted.
 
 struct Counting;
 
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+/// A `counted` call is running: helper threads count theirs.
+static COUNTING_HELPERS: AtomicBool = AtomicBool::new(false);
+
+/// The name of the raster's helper threads (`raster::share`).
+const HELPER: &str = "strand-raster";
 
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// Whether this thread is a raster helper: 0 not yet asked, 1 being
+    /// asked (an allocation while asking counts as not), 2 yes, 3 no.
+    static HELPER_KIND: Cell<u8> = const { Cell::new(0) };
+}
+
+/// This thread is one of the raster's helpers (asked once per thread;
+/// they are started by `std::thread::Builder` with their name, so
+/// asking allocates nothing).
+fn is_helper() -> bool {
+    HELPER_KIND
+        .try_with(|k| match k.get() {
+            2 => true,
+            0 => {
+                k.set(1);
+                let yes = std::thread::current().name() == Some(HELPER);
+                k.set(if yes { 2 } else { 3 });
+                yes
+            }
+            _ => false,
+        })
+        .unwrap_or(false)
 }
 
 fn note(size: usize) {
-    if COUNTING.with(Cell::get) {
+    let mine = COUNTING.try_with(Cell::get).unwrap_or(false);
+    if mine || (COUNTING_HELPERS.load(Ordering::Relaxed) && is_helper()) {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
         ALLOC_BYTES.fetch_add(size as u64, Ordering::Relaxed);
     }
@@ -134,14 +167,17 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Counts this thread's allocations while `f` runs.
+/// Counts this thread's allocations, and the raster helpers' (joined
+/// before the paint returns), while `f` runs.
 fn counted<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
     let (a, b) = (
         ALLOCS.load(Ordering::Relaxed),
         ALLOC_BYTES.load(Ordering::Relaxed),
     );
     COUNTING.with(|c| c.set(true));
+    COUNTING_HELPERS.store(true, Ordering::Relaxed);
     let out = f();
+    COUNTING_HELPERS.store(false, Ordering::Relaxed);
     COUNTING.with(|c| c.set(false));
     (
         out,
