@@ -1,7 +1,7 @@
 //! A glitch report's bundle read back (docs/architecture.md, "Glitch
 //! reports"; docs/eval.md, "Replaying a glitch report", step 1):
 //! `bundle.json`, both ring dumps, `services.json`, `cells.json`,
-//! `nodes.json`, (replay-owner) `drawn.json` and the frames. A newer format is refused by its number.
+//! `nodes.json`, (replay-owner) `drawn.json`, (history) `history.json` and the frames. A newer format is refused by its number.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +61,10 @@ pub struct Bundle {
     pub surfaces: Vec<SurfaceRec>,
     /// The diagnostics (`diagnostics.json`), `Null` when absent.
     pub diagnostics: Json,
+    /// (history) `history.json`: each series a `graph` kept history of,
+    /// its points on the boot clock, and the boot clock at the report
+    /// (`boot_ns`); `Null` when none was kept (or a bundle from before).
+    pub history: Json,
 }
 
 fn read_json(path: &Path) -> Result<Json, Error> {
@@ -129,6 +133,7 @@ impl Bundle {
             nodes: read_opt_json(&dir.join("nodes.json"))?,
             drawn: read_opt_json(&dir.join("drawn.json"))?,
             diagnostics: read_opt_json(&dir.join("diagnostics.json"))?,
+            history: read_opt_json(&dir.join("history.json"))?,
             surfaces,
             words,
             json,

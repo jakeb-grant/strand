@@ -2134,6 +2134,7 @@ Without `save` the answer is as before. With it:
 | `input.flight`, `changes.flight` | the two dumps (absent with `system.replay` off) |
 | `services.json` | `{service: {"running": bool, "fields": {field: value}}}` |
 | `cells.json` | `{cell path: value}` |
+| `history.json` | (history) `{"boot_ns", "series": [{"key", "span_ms", "points": [[at, value, ramp], …]}]}`: each series a `graph` keeps history of (`Instance::histories`; one reading `auth` left out), its points oldest first with `at` on the boot clock in seconds and a `null` value for a gap's start, and the boot clock at the report (`boot_ns`, read with `now_ns`); absent when nothing is kept. The replay seeds what each held before its window (docs/eval.md) |
 | `drawn.json` | (replay-owner) `{"format": 2, "surfaces": [{"slot", "root": node_ref, "drawn_ns", "period_ns", "nodes": [{"ref": node_ref, "origin", "id", "key", "box": [x, y, w, h], "opacity", "travel", "fade"}]}]}`: each mapped surface's nodes as its last frame drew or hid them, in paint order, named as `nodes.json` names them, the box in surface logical px through every transform (axis aligned, to 1/64) and the node's own opacity, with how far it moves over the next frame period (`travel`: the largest edge move, px; `fade`: of the opacity; to 1/64, 0 at rest); `drawn_ns` is when that frame was drawn on the flight rings' clock (absent when not known) and `period_ns` the surface's frame period; main takes them with the frames (`Renderer::drawn_nodes`), logic names them; what the replay's verdict holds its own frame to |
 | `nodes.json` | `{node_ref: {"origin": "file.strand:LINE:COL", "id", "key"}}`: each node the input ring names (a press's hit, a mapped surface's root) and each mapped surface's root, still mounted, the file under the config directory and the `for` row key (none for a per-screen surface's own screen), what a replay holds its own press's hit to |
 | `frames/<n>-<namespace or popup>.png` | each mapped surface's last frame, at its buffer size |
@@ -3068,16 +3069,23 @@ re-base, if it needs one, is a dated decisions.md entry.
   - **Backlog** (decisions.md history). `Prop::Backlog` (compiler-set,
     snapped) holds `PropValue::Backlog(Arc<Backlog>)` on a `graph`
     whose value logic keeps history of: `strand_scene::Backlog { points:
-    Vec<BacklogPoint { age: f32, value: f32, ramp: f32 }> }`, oldest
-    first, ages in seconds before logic made it, `ramp` the seconds over
-    which the value moved to that point from the one before (0 steps: a
-    value taken while shown; a coarse sample taken while hidden ramps
-    over the hidden period); `Backlog::value_at(age)`. Logic sends it
-    when the graph mounts and again when the kept history gains a
-    point; render anchors its ages at the node's time of the first draw
-    that sees it and fills from it only the columns it did not sample
-    (its first draw, a gap in its ticks). It is not part of the graph's
-    state hash: it repaints nothing by itself. `strand_scene::backlog::
+    Vec<BacklogPoint { at: f64, value: f32, ramp: f32 }> }` (16 bytes a
+    point), oldest first, `at` the seconds on the boot clock
+    (`strand_scene::backlog::boot_now()`, `CLOCK_BOOTTIME`, which counts
+    time suspended; `clocks() -> Clocks { boot, awake }` reads it with
+    `CLOCK_MONOTONIC`) when the value was taken, `ramp` the seconds over
+    which the value moved to that point from the one before (0 steps:
+    its time is exact; a sample a hidden service polled ramps over that
+    service's polling period), a value that is not finite the start of a
+    gap (the machine slept); `Backlog::value_at(at)`, `oldest()`. Logic
+    sends it when the graph mounts and again when the kept history gains
+    a point; render reads the boot clock at each draw and works out each
+    column's time from it, filling from the backlog only the columns it
+    did not sample (its first draw, a gap in its ticks) and drawing a
+    gap as no column. `Renderer::set_history_clock(fn() -> Duration)`
+    replaces that clock (tests, the eval sandbox's virtual one) before
+    the graphs it times attach. It is not part of the graph's state
+    hash: it repaints nothing by itself. `strand_scene::backlog::
     DEFAULT_HISTORY` (60 s) is a graph's `history` when unset, on both
     sides.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
@@ -4362,13 +4370,18 @@ Public interfaces other crates and later stages build on:
     (`None`: let it go; with no reader it then stops `STOP_GRACE`
     later). The instance calls it on every boot and reload for each
     service it keeps, and with `None` once for one it no longer does.
-    `shown(rt, service) -> bool` (untracked): whether a visible reader
-    holds it now (default `true`). `SchemaHost` records them
-    (`SchemaHost::kept()`), `StoreHost` and `CustomHost` pass them to
-    the client (`DynService::keep`, `readers() > 0`), and `Composite`
-    routes them as reads are, remembering where each service was kept
-    so `None`, or a reload routing the name elsewhere, lets that host
-    go.
+    `sampled(rt, service) -> Option<Duration>` (untracked): how its
+    values arrive now, `None` when each is exact (a visible reader holds
+    it, or it reports its changes as they happen; the default),
+    `Some(period)` when it polls every `period` hidden and kept, so a
+    value of it may have changed any time in the period before.
+    `SchemaHost` records them (`SchemaHost::kept()`,
+    `SchemaHost::set_polls(service, Option<Duration>)`), `StoreHost` and
+    `CustomHost` pass them to the client (`DynService::keep`,
+    `DynService::sampled`; `CustomHost` says a `from poll` service polls
+    every `every`), and `Composite` routes them as reads are,
+    remembering where each service was kept so `None`, or a reload
+    routing the name elsewhere, lets that host go.
   - (M6) A `from dbus` declaration's actions are
     `CustomService::actions` (`lower::CustomAction { name, method,
     arity }`, in declaration order) and methods on its record, so a
@@ -4593,8 +4606,14 @@ Public interfaces other crates and later stages build on:
   (across reloads, freed when no graph shows it), recorded by an effect
   at file scope, binds `Prop::Backlog` on each such graph, and calls
   `ServiceHost::keep`; `Instance::histories() -> Vec<HistoryInfo { key,
-  span, services: Vec<(String, Option<Duration>)>, points, oldest }>`
-  says what is kept; `Instance::tick(now)` (or `flush()`) runs the core tick and
+  span, services: Vec<(String, Option<Duration>)>, points, oldest,
+  ring: Vec<BacklogPoint> }>` says what is kept;
+  `Instance::set_history_clock(ClockFn)` times it on other clocks
+  (tests, the eval sandbox) and `Instance::seed_history(key, &[
+  BacklogPoint]) -> bool` puts points before a series' own (a glitch
+  report's replay); `Instance::tick` reads the clocks first, and time
+  the boot clock ran ahead of the awake one by 2 s or more is a gap in
+  every ring; `Instance::tick(now)` (or `flush()`) runs the core tick and
   returns an `Update { diff: SceneDiff, errors: Vec<RuntimeError>,
   diagnostics, notices, kept: Vec<KeptCell> }` (`kept`: persisted cells
   kept over a changed default, also in `notices`): one diff per tick,
@@ -6056,7 +6075,9 @@ transparent huge pages for life.
   kept, never faster than `visible`, `None` when it should not sample);
   `Ticker::new(&cx, visible)` follows it (`follow(&cx)` after each
   message, `reset()`, `tick().await`; cpu, memory and disk use it, and a
-  `from poll` service follows `period` itself);
+  `from poll` service follows `period` itself); asking `period` tells
+  the client the body samples on a clock (`Client::sampled`);
+  `Msg` is `#[non_exhaustive]`;
   `watched(field)` (a visible reader reads that `#[store(stream)]`
   field: a Wi-Fi scan or a level meter runs only then; `Msg::Watch`
   says when it changes); `session()` / `system()` (one zbus connection
@@ -6099,7 +6120,12 @@ transparent huge pages for life.
   (history) `keep(rt, Option<Duration>)` / `kept()` (a kept service
   starts, or stays running, with no reader, told `Keep`; the stop timer
   is armed only once it is neither read nor kept; `DynService::keep`
-  and `kept` likewise),
+  and `kept` likewise), `polls(Option<Duration>)` (it samples on a
+  clock every so often while shown: the builtins say it of cpu, memory
+  and disk, from `strand_services_schema::POLLED`, a host of its `from
+  poll` services) and `sampled() -> Option<Duration>` (`Some` while it
+  is kept, unread and polls, by `polls` or its body's `Cx::period`:
+  the coarser of that and the kept period; `DynService::sampled`),
   `acquire_field(i)` / `release_field(i)` (readers of field `i`; a
   stream field's service is told `Watch` on the first and last),
   `seed(rt, |s| …)` (boot values before it first reports: a host's

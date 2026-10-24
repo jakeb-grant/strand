@@ -163,7 +163,7 @@ expect still #after
 | `tooltip_delay` | the renderer's | In ms. |
 | `config`, `config_dir` | none | A config named instead of written in (see Local configs and fonts). |
 | `[services]` | none | `"path" = value` pairs, set before boot. |
-| `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. |
+| `[seed]` | none | (report) `"path" = "<JSON>"` baselines for a service field (before boot), a cell (by the inspector's path, as it mounts) or a `$token` (an overlay): no `on change` fires for them; a seed never mounted is a note. (history) `"history:<key>"`: a kept series' points before the run (see "Replaying a glitch report"). |
 | `wall` | the mock's own time | (report) The wall time (RFC 3339 with its offset) virtual `T0` stands for; `clock` and local time follow it (`SchemaHost::mock_at`). |
 | `warmup` | 0 | (report) Ms run before the trace starts: painted, neither traced nor checked; the first traced frame repaints every surface. |
 | `icons` | the config's `icons/` | (report) A flat icon folder used in place of it (inside `eval/` for a committed scenario). |
@@ -2341,8 +2341,8 @@ work:
 
 1. **Reads** `bundle.json` (its outputs and surfaces among it), both
    ring dumps (`strand_core::flight`), `services.json`, `cells.json`,
-   `nodes.json` and (replay-owner) `drawn.json`, refusing a newer
-   format by its number.
+   `nodes.json`, (replay-owner) `drawn.json` and (history)
+   `history.json`, refusing a newer format by its number.
 2. **Picks the window**: from the newest of the two rings' oldest
    records (a ring that wrapped), the last reload committed and the
    last gap's end (a lock, the recorder off), to the report; bounded by
@@ -2480,10 +2480,25 @@ work:
    for `volume`): such a list starts with the write already made, as
    at the report (a config that does not compile here is one limit
    saying it could not tell).
+   (history) A series a `graph` keeps history of (`history.json`) is
+   not in the rings: the live shell's store held the points before the
+   window, which the replay cannot make. Its points from before the
+   window's start (its time on the boot clock: `boot_ns` less the time
+   from the window's start to the report) are seeded, as
+   `history:<key>` with each point's time in seconds from the window's
+   start, so a graph of it mounting in the replay shows them; from the
+   start on, the replay keeps its own, from the fields it plays. The
+   bundle holds the ring as it was at the report, which had let go of
+   points older than its `history` by then: a series whose points do
+   not reach a whole `history` back from the window's start is a limit
+   naming it, how far back the report holds it and its `history`, since
+   live a graph of it mounting then may have shown older ones (not in a
+   window from the shell's start, before which nothing was kept).
 5. **Writes a local scenario** (`eval/scenarios/local/report-<bundle
    name>.scn`, gitignored, so it may name the bundle): `config_dir` is
    the bundle's `config/`, `fonts = "local"`, `wall` the window start's
-   wall time, `[seed]` every service field and cell at the start,
+   wall time, `[seed]` every service field and cell at the start
+   (and (history) each kept series' points before it),
    `icons` the bundle's copy of the config's `icons/` folder, or, when
    the bundle copied theme icons under `files/`, both flattened into
    `report-<name>.icons/` beside the scenario, `backend = "both"` when
@@ -2527,7 +2542,18 @@ capability, used by any scenario):
 - Header `[seed]`: `"path" = "<JSON>"` for a service field, a cell (by
   the inspector's path) or a `$token`, set as a baseline: services
   before boot, cells and tokens as they mount, so no `on change` fires
-  (spec.md 8.4: never at boot).
+  (spec.md 8.4: never at boot). (history) `"history:<key>"` (a series
+  `Instance::histories` names) is `[[at, value, ramp], …]`, oldest
+  first, `at` in seconds from the run's start (before it: negative), a
+  `null` value a gap's start: the points go before the series' own (a
+  series the config does not keep is skipped).
+- (history) A run's kept history and its graphs are timed on the run's
+  own clock, not the machine's: the boot clock is virtual, 1 000 000 s
+  at `T0` and running with the scenario's time, never asleep. The
+  services' stand-ins sample as the live ones do: the polled builtins
+  (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`) and a
+  config's `from poll` services say they poll (`SchemaHost::set_polls`),
+  so their hidden samples ramp as the live shell's did.
 - Header `wall`: the wall time (RFC 3339 with its offset) virtual
   `T0` stands for; `clock` and local time follow it.
 - Header `warmup`: ms run before the trace starts. The warm-up's

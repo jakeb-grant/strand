@@ -61,6 +61,10 @@ bar Top {{
     image \"{big}\" {{ width: 20; height: 20 }}
   }}
 }}
+panel History {{
+  anchor: center; open: false
+  graph clicks * 0.5 {{ width: 40; height: 40; history: 30s }}
+}}
 panel Ask {{
   anchor: center; keyboard: exclusive; open: !pw_mode
   col {{ width: 300; pad: 8
@@ -538,11 +542,26 @@ fn a_bundle_holds_every_part() {
         "cells.json",
         "nodes.json",
         "drawn.json",
+        "history.json",
         "config/report.strand",
         "config/icons/mark.svg",
     ] {
         assert!(dir.join(part).is_file(), "{part} in {}", dir.display());
     }
+    // (history) The graph's kept series (its panel closed: kept all the
+    // same): its points on the boot clock, none after the report's
+    // reading of it, from no click to one.
+    let h = read_json(&dir.join("history.json"));
+    let boot = h["boot_ns"].as_u64().unwrap() as f64 / 1e9;
+    let series = h["series"].as_array().unwrap();
+    assert_eq!(series.len(), 1, "{h}");
+    assert_eq!(series[0]["span_ms"], 30000, "{h}");
+    assert!(series[0]["key"].as_str().unwrap().contains("clicks"), "{h}");
+    let points = series[0]["points"].as_array().unwrap();
+    assert!(points.len() >= 2, "{h}");
+    assert!(points.iter().all(|p| p[0].as_f64().unwrap() <= boot), "{h}");
+    assert_eq!(points[0][1], json!(0.0), "{h}");
+    assert_eq!(points.last().unwrap()[1], json!(0.5), "{h}");
     // (replay-owner) The boxes each mapped surface's last frame drew,
     // named as nodes.json names a node: the bar's first box at its
     // corner, 80 by 40, opaque.

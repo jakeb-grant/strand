@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
+use serde_json::json;
 use strand_core::flight::{Entry, NAME_IN_ARENA, flags, gap, kind, modifiers, request};
 
 use super::bundle::{Bundle, node_ref_at};
@@ -662,6 +663,72 @@ pub fn declared_services(config: &Path) -> BTreeSet<String> {
         }
     }
     out
+}
+
+/// (history) `history.json`'s series as `[seed]` entries
+/// (`history:<key>`: the points from before the window, `at` in seconds
+/// from its start), and a limit for each whose points do not reach a
+/// whole `history` back from the window's start: live, a graph of it
+/// mounting then may have shown older ones, which the ring had let go of
+/// by the report. None in a window from the shell's start (`from_boot`):
+/// nothing was kept before it, live either.
+fn history_seeds(b: &Bundle, start: u64, from_boot: bool) -> (Vec<(String, Json)>, Vec<String>) {
+    let mut seeds = Vec::new();
+    let mut limits = Vec::new();
+    let Some(series) = b.history["series"].as_array() else {
+        return (seeds, limits);
+    };
+    let Some(boot_ns) = b.history["boot_ns"].as_u64() else {
+        return (seeds, limits);
+    };
+    // The boot clock at the window's start, seconds.
+    let at_start = (boot_ns as f64 - b.now_ns.saturating_sub(start) as f64) / 1e9;
+    for s in series {
+        let (Some(key), Some(span_ms), Some(points)) = (
+            s["key"].as_str(),
+            s["span_ms"].as_u64(),
+            s["points"].as_array(),
+        ) else {
+            continue;
+        };
+        let span = span_ms as f64 / 1000.0;
+        let named = key.trim_end();
+        let before: Vec<Json> = points
+            .iter()
+            .filter_map(|p| {
+                let at = p[0].as_f64()?;
+                (at < at_start).then(|| json!([at - at_start, p[1].clone(), p[2].clone()]))
+            })
+            .collect();
+        let oldest = points.first().and_then(|p| p[0].as_f64());
+        let back = oldest.map_or(0.0, |o| (at_start - o).max(0.0));
+        if !from_boot && back + 0.5 < span {
+            let held = if back > 0.0 {
+                format!("back to {back:.1} s before the window's start")
+            } else {
+                "nothing from before the window's start".into()
+            };
+            limits.push(format!(
+                "kept history `{named}` ({span}): the report holds {held}, so a graph of it shows \
+                 nothing older in the replay; live, one mounting then may have shown up to \
+                 {span} of it",
+                span = secs_text(span),
+            ));
+        }
+        if !before.is_empty() {
+            seeds.push((format!("history:{key}"), Json::Array(before)));
+        }
+    }
+    (seeds, limits)
+}
+
+/// `90 s`, `2.5 s`.
+fn secs_text(s: f64) -> String {
+    if s.fract() == 0.0 {
+        format!("{s:.0} s")
+    } else {
+        format!("{s:.1} s")
+    }
 }
 
 /// Whether the config uses `thumbnail` nodes.
@@ -1572,7 +1639,13 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             )),
         }
     }
-    let seeds = cur.clone();
+    let mut seeds = cur.clone();
+    // (history) What each kept series held before the window: seeded, so
+    // a graph mounting in the replay shows it; what the report does not
+    // hold of it is a limit.
+    let (kept, kept_limits) = history_seeds(b, start, boot);
+    seeds.extend(kept);
+    limits.extend(kept_limits);
 
     // (fidelity) The roots the live shell showed on several outputs at
     // once in the window: one node, a surface on each output its

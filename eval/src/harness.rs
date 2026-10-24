@@ -68,6 +68,64 @@ use strand_text::{FontConfig, TextEngine};
 
 use crate::Error;
 use crate::checks::redraw;
+
+/// (history) The boot clock at `T0` for what a run's kept history and its
+/// graphs read: the run's own virtual clock, as the live shell's is the
+/// machine's, so a graph's backlog lands where its run's time puts it.
+pub const HISTORY_BOOT: Duration = Duration::from_secs(1_000_000);
+
+thread_local! {
+    /// (history) The virtual boot clock now: `HISTORY_BOOT` plus the run's
+    /// time since `T0`, set as each logic step and tick starts.
+    static VIRTUAL_BOOT: std::cell::Cell<Duration> = const { std::cell::Cell::new(HISTORY_BOOT) };
+}
+
+fn virtual_boot() -> Duration {
+    VIRTUAL_BOOT.with(std::cell::Cell::get)
+}
+
+/// The virtual clocks: the machine never sleeps in a run.
+fn virtual_clocks() -> strand_scene::backlog::Clocks {
+    let b = virtual_boot();
+    strand_scene::backlog::Clocks { boot: b, awake: b }
+}
+
+/// (history) A `[seed]`'s `history:<key>` value: `[[at, value, ramp],
+/// …]`, oldest first, `at` in seconds from the run's start (before it:
+/// negative), a `null` value a gap's start; on the virtual boot clock.
+fn history_points(j: &serde_json::Value) -> Result<Vec<strand_scene::BacklogPoint>, String> {
+    let bad = || format!("`{j}` is not a list of [at, value, ramp]");
+    let base = HISTORY_BOOT.as_secs_f64();
+    j.as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|p| {
+            let at = p
+                .get(0)
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(bad)?;
+            let value = match p.get(1) {
+                Some(serde_json::Value::Null) => f32::NAN,
+                Some(v) => v.as_f64().ok_or_else(bad)? as f32,
+                None => return Err(bad()),
+            };
+            let ramp = p
+                .get(2)
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(bad)? as f32;
+            Ok(strand_scene::BacklogPoint {
+                at: base + at,
+                value,
+                ramp,
+            })
+        })
+        .collect()
+}
+
+/// The virtual boot clock at the run's time `t`.
+fn set_virtual_boot(t: Duration) {
+    VIRTUAL_BOOT.with(|c| c.set(HISTORY_BOOT + t.saturating_sub(T0)));
+}
 use crate::clock::{Clock, T0};
 use crate::gpu::{Device, Fresh};
 use crate::input::{Pointer, to_logic};
@@ -1153,6 +1211,17 @@ impl Harness {
             ),
         };
         let host = Rc::new(host);
+        // (history) How the live services sample: the polled builtins
+        // at their periods, a config's `from poll` every its `every`, so
+        // a kept series' hidden samples ramp as the live shell's did.
+        for (name, every) in strand_services_schema::POLLED {
+            host.set_polls(name, Some(every));
+        }
+        for s in build.program.services.values() {
+            if let strand_compiler::hir::SourceSpec::Poll { every, .. } = &s.source {
+                host.set_polls(&s.name, Some(*every));
+            }
+        }
         // (report) `icons`: the config's icon folder, for this run.
         strand_icons::set_config_icons(sc.icons.clone());
         let reduced = opts.reduced_motion || sc.reduce_motion;
@@ -1176,6 +1245,8 @@ impl Harness {
         });
         let engine = TextEngine::new(fonts(&sc)?);
         let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+        set_virtual_boot(T0);
+        r.set_history_clock(virtual_boot);
         r.set_first_frame_wait(Duration::ZERO);
         r.set_new_text_wait(Duration::ZERO);
         r.set_estimate_wait(Duration::ZERO);
@@ -1221,6 +1292,7 @@ impl Harness {
             ..Storage::none()
         };
         let inst = Instance::from_build(&rt, &build, host.clone(), storage);
+        inst.set_history_clock(virtual_clocks);
         let mut h = Harness {
             sc: sc.clone(),
             opts: opts.clone(),
@@ -1310,6 +1382,7 @@ impl Harness {
         if reduced {
             h.set_reduced_motion(true)?;
         }
+        set_virtual_boot(T0);
         let (u, _) = h.inst.step(T0, h.wall(T0));
         h.update(u)?;
         if h.seed_cells()? {
@@ -1384,8 +1457,16 @@ impl Harness {
     }
 
     /// (report) A `[seed]` entry: a `$token` overlay or a service field
-    /// now (as a boot value), a cell once it is mounted.
+    /// now (as a boot value), a cell once it is mounted, (history) or a
+    /// kept series' history before the run (`history:<key>`).
     fn seed(&mut self, path: &str, j: serde_json::Value) -> Result<(), String> {
+        if let Some(key) = path.strip_prefix("history:") {
+            let points = history_points(&j)?;
+            // A series this config does not keep is not seeded: the
+            // planner names what it seeds from the same config.
+            let _ = self.inst.seed_history(key, &points);
+            return Ok(());
+        }
         if let Some(token) = path.strip_prefix('$') {
             let text = match &j {
                 serde_json::Value::String(s) => s.clone(),
@@ -2162,9 +2243,11 @@ impl Harness {
                     "logic's timers never get past {d:?} (a timer of zero?)"
                 )));
             }
+            set_virtual_boot(d);
             let (u, _) = self.inst.step(d, self.wall(d));
             self.update(u)?;
         }
+        set_virtual_boot(t);
         let (u, _) = self.inst.step(t, self.wall(t));
         self.update(u)
     }
@@ -2952,6 +3035,7 @@ impl Harness {
         let k = self.clock.k();
         let t = self.clock.now();
         let now = self.instant(t);
+        set_virtual_boot(t);
         self.router.set_now(Some(now));
         self.r.set_now(Some(now));
         // (report) The keyboard moved by surfaces mapped or gone.

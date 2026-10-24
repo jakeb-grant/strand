@@ -95,6 +95,8 @@ pub struct Fx {
     pub missing: Vec<Json>,
     pub config: String,
     pub format: u64,
+    /// (history) `history.json` (`Null`: none written).
+    pub history: Json,
 }
 
 impl Fx {
@@ -115,6 +117,7 @@ impl Fx {
             missing: Vec::new(),
             config: shell(),
             format: 1,
+            history: Json::Null,
         };
         f.output(0, "DP-1", 1280, 720, 120, 900 * MS);
         f.node(bits(3, 1), &o.bar, None);
@@ -255,6 +258,9 @@ impl Fx {
         put("services.json", &self.services);
         put("cells.json", &self.cells);
         put("nodes.json", &Json::Object(self.nodes.clone()));
+        if !self.history.is_null() {
+            put("history.json", &self.history);
+        }
         put("diagnostics.json", &json!({"compositor": {"globals": []}}));
         std::fs::write(dir.join("words.txt"), "the bar dipped\n").unwrap();
     }

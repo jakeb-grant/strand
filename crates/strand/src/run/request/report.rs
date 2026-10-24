@@ -174,6 +174,7 @@ impl Shell {
         let nodes = self.node_table(&main, config_dir.as_deref());
         let drawn = self.drawn_table(&main, config_dir.as_deref());
         let now_ns = strand_core::flight::now_ns();
+        let history = self.history_table();
         let wall = chrono::Local::now().to_rfc3339();
         Job {
             root,
@@ -186,6 +187,7 @@ impl Shell {
             drawn,
             services: Json::Object(services),
             cells: Json::Object(cells),
+            history,
             config_dir,
             config,
             files,
@@ -200,6 +202,48 @@ impl Shell {
 }
 
 impl Shell {
+    /// (history) `history.json`: each series a `graph` keeps history of
+    /// (but one reading `auth`), its points as `[at, value, ramp]` (`at`
+    /// on the boot clock, seconds; a `null` value starts a gap), with the
+    /// boot clock at the report (`boot_ns`, read with `now_ns`), so the
+    /// replay seeds what each held before its window. `Null` when none
+    /// is kept.
+    fn history_table(&self) -> Json {
+        let series: Vec<Json> = self
+            .inst
+            .histories()
+            .into_iter()
+            .filter(|h| h.services.iter().all(|(s, _)| s != "auth"))
+            .map(|h| {
+                let points: Vec<Json> = h
+                    .ring
+                    .iter()
+                    .map(|p| {
+                        let v = if p.value.is_finite() {
+                            json!(p.value)
+                        } else {
+                            Json::Null
+                        };
+                        json!([p.at, v, p.ramp])
+                    })
+                    .collect();
+                json!({
+                    "key": h.key,
+                    "span_ms": u64::try_from(h.span.as_millis()).unwrap_or(u64::MAX),
+                    "points": points,
+                })
+            })
+            .collect();
+        if series.is_empty() {
+            return Json::Null;
+        }
+        let boot = strand_scene::backlog::boot_now();
+        json!({
+            "boot_ns": u64::try_from(boot.as_nanos()).unwrap_or(u64::MAX),
+            "series": series,
+        })
+    }
+
     /// (report) `nodes.json`: each node the input ring names (a press's
     /// hit, a mapped surface's root) and each mapped surface's root, still
     /// mounted, by its `node_ref`: its origin (`file.strand:LINE:COL`, the

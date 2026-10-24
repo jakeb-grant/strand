@@ -173,6 +173,9 @@ pub(crate) struct Job {
     /// `services.json`, `cells.json`.
     pub services: Json,
     pub cells: Json,
+    /// (history) `history.json`: the kept series' points
+    /// (`Shell::history_table`); `Null`: none kept, no file.
+    pub history: Json,
     pub config_dir: Option<PathBuf>,
     /// The module set: each file's path under the config directory and
     /// its text as it was compiled.
@@ -455,6 +458,12 @@ fn fill(job: &Job, dir: &Path) -> io::Result<()> {
         &dir.join("cells.json"),
         format!("{:#}\n", job.cells).as_bytes(),
     )?;
+    if !job.history.is_null() {
+        private_file(
+            &dir.join("history.json"),
+            format!("{:#}\n", job.history).as_bytes(),
+        )?;
+    }
     private_file(
         &dir.join("nodes.json"),
         format!("{:#}\n", job.nodes).as_bytes(),

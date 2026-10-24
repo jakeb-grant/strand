@@ -2138,3 +2138,76 @@ fn a_live_frame_at_rest_is_held_to_the_replay_at_rest() {
         v.verdict.line()
     );
 }
+
+/// (history) A kept series' points from before the window are seeded
+/// (`history:<key>`, seconds from its start, a gap kept as `null`); one
+/// whose points do not reach a whole `history` back from the window's
+/// start is a limit, one that does is not, and in a window from the
+/// shell's start none is (nothing was kept before it, live either).
+#[test]
+fn kept_history_from_before_the_window_is_seeded() {
+    let mut f = Fx::session();
+    // The report at 30 s, 5000 s into boot; after a reload at 3 s the
+    // window starts there, 4973 s into boot.
+    f.change(3 * S, kind::RELOAD, "reload", &[1, 0, 0, 0, 0, 0], "{}");
+    f.history = json!({
+        "boot_ns": 5000 * S,
+        "series": [
+            {"key": "long ", "span_ms": 60_000, "points": [
+                [4950.0, 0.0, 0.0], [4960.0, null, 0.0], [4965.0, 0.5, 2.0], [4980.0, 1.0, 0.0]
+            ]},
+            {"key": "short", "span_ms": 10_000, "points": [[4955.0, 0.25, 0.0]]},
+            {"key": "new", "span_ms": 10_000, "points": [[4990.0, 0.25, 0.0]]}
+        ]
+    });
+    let (_, p, text) = plan_of(&f.write("history"), &defaults());
+    assert_eq!(p.start, 3 * S);
+    assert_eq!(
+        p.seeds.get("history:long "),
+        Some(&json!([
+            [-23.0, 0.0, 0.0],
+            [-13.0, null, 0.0],
+            [-8.0, 0.5, 2.0]
+        ])),
+        "{:?}",
+        p.seeds
+    );
+    assert_eq!(
+        p.seeds.get("history:short"),
+        Some(&json!([[-18.0, 0.25, 0.0]]))
+    );
+    assert!(
+        !p.seeds.contains_key("history:new"),
+        "nothing before the window"
+    );
+    let kept: Vec<&String> = p
+        .limits
+        .iter()
+        .filter(|l| l.starts_with("kept history"))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "kept history `long` (60 s): the report holds back to 23.0 s before the window's \
+             start, so a graph of it shows nothing older in the replay; live, one mounting then \
+             may have shown up to 60 s of it",
+            "kept history `new` (10 s): the report holds nothing from before the window's \
+             start, so a graph of it shows nothing older in the replay; live, one mounting then \
+             may have shown up to 10 s of it",
+        ]
+    );
+    assert!(text.contains("\"history:long \" = "), "{text}");
+    // From the shell's start: seeded alike, and no limit.
+    let mut g = Fx::session();
+    g.history = f.history.clone();
+    let (_, p, _) = plan_of(&g.write("history-boot"), &defaults());
+    assert!(p.seeds.contains_key("history:long "));
+    assert!(
+        !p.limits.iter().any(|l| l.starts_with("kept history")),
+        "{:?}",
+        p.limits
+    );
+    // A bundle with no history.json seeds and limits nothing of it.
+    let (_, p, _) = plan_of(&Fx::session().write("no-history"), &defaults());
+    assert!(!p.seeds.keys().any(|k| k.starts_with("history:")));
+}
