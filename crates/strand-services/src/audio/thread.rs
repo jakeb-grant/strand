@@ -22,7 +22,7 @@ use pipewire::device::{Device, DeviceListener};
 use pipewire::loop_::{IoSource, Loop, Timeout, TimerSource};
 use pipewire::main_loop::MainLoopRc;
 use pipewire::metadata::{Metadata, MetadataListener};
-use pipewire::node::{Node, NodeListener};
+use pipewire::node::{Node, NodeChangeMask, NodeListener};
 use pipewire::properties::PropertiesBox;
 use pipewire::registry::{GlobalObject, RegistryRc};
 use pipewire::spa::param::ParamType;
@@ -33,11 +33,11 @@ use rustix::fs::inotify;
 
 use super::meter::{Meter, MeterEvent, MeterTarget, retry_delay};
 use super::model::{
-    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Publisher, icon, linear,
-    perceptual,
+    AudioChange, AudioDevice, AudioState, AudioStream, Direction, LevelTarget, Publisher,
+    StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
 };
 use super::pod::{Props, Route, default_name, default_value};
-use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Host};
+use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Follow, Host};
 
 /// The first wait after a lost or refused connection.
 const FIRST: Duration = Duration::from_millis(100);
@@ -125,6 +125,10 @@ pub(crate) enum Work {
         name: Option<String>,
         description: Option<String>,
         link: Option<RouteLink>,
+        /// (services-round) What a stream's or a video node's info says,
+        /// when its properties changed (a later info event without
+        /// `PROPS` in its mask carries none of them).
+        props: Option<NodeProps>,
     },
     /// A device's `Route` param info flags (they change, the serial bit
     /// toggling, whenever its routes change).
@@ -185,6 +189,7 @@ pub(crate) enum Work {
 /// host is given the defaults and the error is returned.
 pub(crate) fn run(
     config: AudioConfig,
+    follow: Follow,
     host: Box<dyn Host>,
     rx: pipewire::channel::Receiver<Cmd>,
 ) -> Result<(), String> {
@@ -241,6 +246,8 @@ pub(crate) fn run(
 
     let mut driver = Driver {
         config,
+        follow,
+        streams: false,
         q,
         lp,
         context,
@@ -462,6 +469,15 @@ struct Session {
     // registry and the core.
     meters: Vec<Meter>,
     nodes: BTreeMap<u32, NodeEntry>,
+    /// (services-round) Every program's audio stream node the registry
+    /// announced, bound (into `nodes`) only while streams are followed.
+    stream_globals: BTreeMap<u32, GlobalObject<PropertiesBox>>,
+    /// (services-round) The video sources and the streams that take
+    /// video ([`Follow::Video`]).
+    video: BTreeMap<u32, VideoNode>,
+    /// (services-round) Every link's output and input node
+    /// ([`Follow::Video`]).
+    links: BTreeMap<u32, (u32, u32)>,
     devices: BTreeMap<u32, DeviceEntry>,
     metadata: Option<MetaEntry>,
     _registry_listener: pipewire::registry::Listener,
@@ -527,6 +543,87 @@ struct NodeEntry {
     /// It has reported `channelVolumes` (the `volume` prop is then
     /// ignored).
     has_channel_volumes: bool,
+    /// (services-round) A program's stream, not a device: its direction
+    /// and what its info says.
+    stream: Option<(StreamDirection, NodeProps)>,
+}
+
+/// (services-round) What a node's properties say beyond its name and
+/// card: who made it (for a program's stream) and whether it is a
+/// camera (for a video source).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NodeProps {
+    /// The program's name.
+    app: String,
+    /// The program's icon name.
+    icon: String,
+    /// A peak meter's stream (`stream.monitor`, as pavucontrol's and
+    /// Strand's own are): it neither plays nor records for anyone, so it
+    /// is not listed.
+    monitor: bool,
+    /// A camera: `media.role` `Camera`, a node of a device, or a V4L2 or
+    /// libcamera node.
+    camera: bool,
+}
+
+impl NodeProps {
+    /// From a node's properties (`get` reads one).
+    fn read<'a>(get: impl Fn(&str) -> Option<&'a str>) -> NodeProps {
+        let binary = get("application.process.binary").filter(|b| !b.is_empty());
+        let app = get("application.name")
+            .filter(|a| !a.is_empty())
+            .or(binary)
+            .or_else(|| get("node.name"))
+            .unwrap_or_default()
+            .to_owned();
+        let icon = get("application.icon-name")
+            .filter(|i| !i.is_empty())
+            .or(binary)
+            .unwrap_or("applications-multimedia")
+            .to_owned();
+        NodeProps {
+            app,
+            icon,
+            monitor: get("stream.monitor") == Some("true"),
+            camera: get("media.role") == Some("Camera")
+                || get("device.id").is_some()
+                || matches!(get("device.api"), Some("v4l2" | "libcamera")),
+        }
+    }
+}
+
+/// (services-round) Which side of a video link a node is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoRole {
+    /// A source of video: a camera, a screen cast.
+    Source,
+    /// A program's stream taking video (`Stream/Input/Video`).
+    Stream,
+}
+
+impl VideoRole {
+    fn of_media_class(class: &str) -> Option<VideoRole> {
+        match class {
+            "Video/Source" | "Video/Source/Virtual" | "Stream/Output/Video" => {
+                Some(VideoRole::Source)
+            }
+            "Stream/Input/Video" => Some(VideoRole::Stream),
+            _ => None,
+        }
+    }
+}
+
+/// (services-round) A video node followed for `video.streams`: bound for
+/// its info (the program's name and the camera properties are not all
+/// on the registry's global).
+struct VideoNode {
+    _listener: NodeListener,
+    _proxy: Node,
+    role: VideoRole,
+    props: NodeProps,
+    /// The sync after its bind; it counts once that is back.
+    sync: i32,
+    ready: bool,
 }
 
 /// The last [`ECHOES`] volumes written to a device, with the linear
@@ -703,6 +800,11 @@ struct Defaults {
 
 struct Driver<'l> {
     config: AudioConfig,
+    /// What the loop follows: the audio devices (and streams), or video.
+    follow: Follow,
+    /// (services-round) The programs' audio streams are followed
+    /// ([`Cmd::Streams`]).
+    streams: bool,
     q: Queue,
     /// The loop, for the socket watch's io source.
     lp: &'l Loop,
@@ -810,6 +912,8 @@ impl Driver<'_> {
                 self.wanted = set;
                 self.meters_dirty = true;
             }
+            Work::Cmd(Cmd::Streams(_)) if self.quit => {}
+            Work::Cmd(Cmd::Streams(on)) => self.follow_streams(on),
             Work::Cmd(Cmd::Action(_, reply)) if self.quit => {
                 let _ = reply.send(Err(AudioError::NotConnected));
             }
@@ -822,8 +926,12 @@ impl Driver<'_> {
                 name,
                 description,
                 link,
+                props,
             } if self.live(session) => {
-                if let Some(n) = self.session.as_mut().and_then(|s| s.nodes.get_mut(&id)) {
+                let Some(s) = self.session.as_mut() else {
+                    return;
+                };
+                if let Some(n) = s.nodes.get_mut(&id) {
                     if let Some(name) = name {
                         n.device.name = name;
                     }
@@ -831,6 +939,14 @@ impl Driver<'_> {
                         n.device.description = d;
                     }
                     n.link = link;
+                    if let (Some((_, p)), Some(props)) = (&mut n.stream, props) {
+                        *p = props;
+                    }
+                    self.dirty = true;
+                } else if let Some(v) = s.video.get_mut(&id)
+                    && let Some(props) = props
+                {
+                    v.props = props;
                     self.dirty = true;
                 }
             }
@@ -903,6 +1019,11 @@ impl Driver<'_> {
                     for n in s.nodes.values_mut() {
                         if !n.ready && seq >= n.sync {
                             n.ready = true;
+                        }
+                    }
+                    for v in s.video.values_mut() {
+                        if !v.ready && seq >= v.sync {
+                            v.ready = true;
                         }
                     }
                     self.dirty = true;
@@ -1042,6 +1163,7 @@ impl Driver<'_> {
                         | ObjectType::Device
                         | ObjectType::Metadata
                         | ObjectType::Client
+                        | ObjectType::Link
                 ) {
                     q1.borrow_mut().push_back(Work::Global {
                         session: number,
@@ -1061,6 +1183,9 @@ impl Driver<'_> {
             number,
             meters: Vec::new(),
             nodes: BTreeMap::new(),
+            stream_globals: BTreeMap::new(),
+            video: BTreeMap::new(),
+            links: BTreeMap::new(),
             devices: BTreeMap::new(),
             metadata: None,
             _registry_listener: registry_listener,
@@ -1180,74 +1305,36 @@ impl Driver<'_> {
         let get = |k: &str| props.and_then(|p| p.get(k)).map(str::to_owned);
         match global.type_ {
             ObjectType::Node => {
-                let Some(direction) = get("media.class")
-                    .as_deref()
-                    .and_then(Direction::of_media_class)
-                else {
-                    return;
-                };
-                let node: Node = match s.registry.bind(&global) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        log::warn!("audio: cannot bind node {}: {e}", global.id);
-                        return;
+                let class = get("media.class").unwrap_or_default();
+                match self.follow {
+                    Follow::Audio => {
+                        if let Some(direction) = Direction::of_media_class(&class) {
+                            bind_node(s, q, &global, direction, None);
+                        } else if let Some(d) = StreamDirection::of_media_class(&class) {
+                            if self.streams {
+                                bind_stream(s, q, &global, d);
+                            }
+                            s.stream_globals.insert(global.id, global);
+                        }
                     }
-                };
-                let (number, id) = (s.number, global.id);
-                let (q1, q2) = (q.clone(), q);
-                let listener = node
-                    .add_listener_local()
-                    .info(move |info| {
-                        let Some(p) = info.props() else { return };
-                        let description = p
-                            .get("node.description")
-                            .or_else(|| p.get("node.nick"))
-                            .map(str::to_owned);
-                        q1.borrow_mut().push_back(Work::NodeInfo {
-                            session: number,
-                            id,
-                            name: p.get("node.name").map(str::to_owned),
-                            description,
-                            link: RouteLink::of(p.get("device.id"), p.get("card.profile.device")),
-                        });
-                    })
-                    .param(move |_, ty, _, _, pod| {
-                        if ty != ParamType::Props {
-                            return;
+                    Follow::Video => {
+                        if let Some(role) = VideoRole::of_media_class(&class) {
+                            bind_video(s, q, &global, role);
                         }
-                        if let Some(props) = pod.and_then(|p| Props::parse(p.as_bytes())) {
-                            q2.borrow_mut().push_back(Work::NodeProps {
-                                session: number,
-                                id,
-                                props,
-                            });
-                        }
-                    })
-                    .register();
-                node.subscribe_params(&[ParamType::Props]);
-                let name = get("node.name").unwrap_or_else(|| format!("node-{id}"));
-                let mut device = AudioDevice::new(id, name, direction);
-                if let Some(d) = get("node.description").or_else(|| get("node.nick")) {
-                    device.description = d;
+                    }
                 }
-                let Some(sync) = sync(s) else { return };
-                s.nodes.insert(
-                    id,
-                    NodeEntry {
-                        _listener: listener,
-                        proxy: node,
-                        device,
-                        direction,
-                        channels: 0,
-                        serial: get("object.serial"),
-                        link: None,
-                        sync,
-                        ready: false,
-                        echoes: Echoes::default(),
-                        has_channel_volumes: false,
-                    },
-                );
             }
+            ObjectType::Link if self.follow == Follow::Video => {
+                let node = |k: &str| get(k).and_then(|v| v.parse::<u32>().ok());
+                if let (Some(out), Some(input)) =
+                    (node("link.output.node"), node("link.input.node"))
+                {
+                    s.links.insert(global.id, (out, input));
+                    self.dirty = true;
+                }
+            }
+            // The rest serves only the audio devices.
+            _ if self.follow == Follow::Video => {}
             ObjectType::Device => {
                 // Cards (ALSA, Bluetooth): only their routes are read, for
                 // writes; they show nothing themselves.
@@ -1336,6 +1423,10 @@ impl Driver<'_> {
     fn global_remove(&mut self, id: u32) {
         let Some(s) = &mut self.session else { return };
         s.devices.remove(&id);
+        s.stream_globals.remove(&id);
+        if s.video.remove(&id).is_some() | s.links.remove(&id).is_some() {
+            self.dirty = true;
+        }
         if s.clients.remove(&id) {
             reread_soon(s);
         }
@@ -1359,13 +1450,49 @@ impl Driver<'_> {
         }
     }
 
+    /// (services-round) Follows the programs' audio streams (binds every
+    /// stream node announced), or stops (lets them go).
+    fn follow_streams(&mut self, on: bool) {
+        if on == self.streams {
+            return;
+        }
+        self.streams = on;
+        self.dirty = true;
+        let q = self.q.clone();
+        let Some(s) = &mut self.session else { return };
+        if on {
+            let ids: Vec<u32> = s
+                .stream_globals
+                .keys()
+                .copied()
+                .filter(|id| !s.nodes.contains_key(id))
+                .collect();
+            for id in ids {
+                // Taken out while bound (a global is not `Clone`), then
+                // kept again for the next time streams are followed.
+                let Some(g) = s.stream_globals.remove(&id) else {
+                    continue;
+                };
+                let class = g.props.as_ref().and_then(|p| p.get("media.class"));
+                if let Some(d) = class.and_then(StreamDirection::of_media_class) {
+                    bind_stream(s, q.clone(), &g, d);
+                }
+                s.stream_globals.insert(id, g);
+            }
+        } else {
+            s.nodes.retain(|_, n| n.stream.is_none());
+        }
+    }
+
     // --- State -------------------------------------------------------------
 
     fn publish(&mut self) {
         self.dirty = false;
         let state = match &mut self.session {
             Some(s) => {
-                if !s.published && !(ready_to_publish(s) || s.settled && s.initial_done) {
+                if !s.published
+                    && !(ready_to_publish(s, self.follow) || s.settled && s.initial_done)
+                {
                     // The first state of a connection waits for its sync
                     // (always: a daemon that never answers is not a
                     // connection, [`UNANSWERED`]) and for the session
@@ -1473,6 +1600,10 @@ impl Driver<'_> {
             AudioAction::MakeDefault(d) => {
                 let (name, direction) = {
                     let n = node_mut(s, d)?;
+                    // A program's stream is no device to default to.
+                    if n.stream.is_some() {
+                        return Err(AudioError::UnknownDevice(d));
+                    }
                     (n.device.name.clone(), n.direction)
                 };
                 let meta = s.metadata.as_ref().ok_or(AudioError::NoDefaultMetadata)?;
@@ -1730,6 +1861,146 @@ impl Driver<'_> {
     }
 }
 
+/// Binds an audio node (a device, or with `stream` a program's stream)
+/// and follows its info and `Props`; it is shown once the sync after the
+/// bind is back.
+fn bind_node(
+    s: &mut Session,
+    q: Queue,
+    global: &GlobalObject<PropertiesBox>,
+    direction: Direction,
+    stream: Option<StreamDirection>,
+) {
+    let props = global.props.as_ref();
+    let get = |k: &str| props.and_then(|p| p.get(k)).map(str::to_owned);
+    let node: Node = match s.registry.bind(global) {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("audio: cannot bind node {}: {e}", global.id);
+            return;
+        }
+    };
+    let (number, id) = (s.number, global.id);
+    let (q1, q2) = (q.clone(), q);
+    let listener = node
+        .add_listener_local()
+        .info(move |info| {
+            let Some(p) = info.props() else { return };
+            let description = p
+                .get("node.description")
+                .or_else(|| p.get("node.nick"))
+                .map(str::to_owned);
+            q1.borrow_mut().push_back(Work::NodeInfo {
+                session: number,
+                id,
+                name: p.get("node.name").map(str::to_owned),
+                description,
+                link: RouteLink::of(p.get("device.id"), p.get("card.profile.device")),
+                props: info
+                    .change_mask()
+                    .contains(NodeChangeMask::PROPS)
+                    .then(|| NodeProps::read(|k| p.get(k))),
+            });
+        })
+        .param(move |_, ty, _, _, pod| {
+            if ty != ParamType::Props {
+                return;
+            }
+            if let Some(props) = pod.and_then(|p| Props::parse(p.as_bytes())) {
+                q2.borrow_mut().push_back(Work::NodeProps {
+                    session: number,
+                    id,
+                    props,
+                });
+            }
+        })
+        .register();
+    node.subscribe_params(&[ParamType::Props]);
+    let name = get("node.name").unwrap_or_else(|| format!("node-{id}"));
+    let mut device = AudioDevice::new(id, name, direction);
+    if let Some(d) = get("node.description").or_else(|| get("node.nick")) {
+        device.description = d;
+    }
+    let read = NodeProps::read(|k| props.and_then(|p| p.get(k)));
+    let Some(sync) = sync(s) else { return };
+    s.nodes.insert(
+        id,
+        NodeEntry {
+            _listener: listener,
+            proxy: node,
+            device,
+            direction,
+            channels: 0,
+            serial: get("object.serial"),
+            link: None,
+            sync,
+            ready: false,
+            echoes: Echoes::default(),
+            has_channel_volumes: false,
+            stream: stream.map(|d| (d, read)),
+        },
+    );
+}
+
+/// (services-round) Binds a program's audio stream node: a node like a
+/// device's (its volume and mute written the same way, on its own
+/// `Props`), listed in `audio.streams`.
+fn bind_stream(
+    s: &mut Session,
+    q: Queue,
+    global: &GlobalObject<PropertiesBox>,
+    direction: StreamDirection,
+) {
+    let as_device = match direction {
+        StreamDirection::Output => Direction::Sink,
+        StreamDirection::Input => Direction::Source,
+    };
+    bind_node(s, q, global, as_device, Some(direction));
+}
+
+/// (services-round) Binds a video node for its info.
+fn bind_video(s: &mut Session, q: Queue, global: &GlobalObject<PropertiesBox>, role: VideoRole) {
+    let node: Node = match s.registry.bind(global) {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("video: cannot bind node {}: {e}", global.id);
+            return;
+        }
+    };
+    let (number, id) = (s.number, global.id);
+    let listener = node
+        .add_listener_local()
+        .info(move |info| {
+            let Some(p) = info.props() else { return };
+            q.borrow_mut().push_back(Work::NodeInfo {
+                session: number,
+                id,
+                name: None,
+                description: None,
+                link: None,
+                props: info
+                    .change_mask()
+                    .contains(NodeChangeMask::PROPS)
+                    .then(|| NodeProps::read(|k| p.get(k))),
+            });
+        })
+        .register();
+    let props = global.props.as_ref();
+    let read = NodeProps::read(|k| props.and_then(|p| p.get(k)));
+    let Some(sync) = sync(s) else { return };
+    s.video.insert(
+        id,
+        VideoNode {
+            _listener: listener,
+            _proxy: node,
+            role,
+            props: read,
+            sync,
+            ready: false,
+        },
+    );
+}
+
 /// The defaults `shown`, kept until `until`.
 fn held(shown: &AudioState, until: Instant) -> Option<Held> {
     let defaults = Defaults {
@@ -1743,7 +2014,12 @@ fn held(shown: &AudioState, until: Instant) -> Option<Held> {
 /// Whether a connection's first state may go out before [`SETTLE`]: its
 /// syncs are back, the session manager's `default` metadata is read, and
 /// each default shown before the loss names a device again.
-fn ready_to_publish(s: &Session) -> bool {
+fn ready_to_publish(s: &Session, follow: Follow) -> bool {
+    if follow == Follow::Video {
+        // No session manager to wait for: the registry's objects are all
+        // there once the first syncs are back.
+        return s.initial_done && s.awaiting.is_none();
+    }
     s.initial_done
         && s.awaiting.is_none()
         && s.meta_ready
@@ -1883,7 +2159,9 @@ fn default_id(s: &Session, direction: Direction) -> Option<u32> {
         let name = name.as_deref()?;
         s.nodes
             .values()
-            .find(|n| n.ready && n.direction == direction && n.device.name == name)
+            .find(|n| {
+                n.ready && n.stream.is_none() && n.direction == direction && n.device.name == name
+            })
             .map(|n| n.device.id)
     };
     let held = s.held.as_ref().map(|h| h.defaults.names(direction));
@@ -1901,7 +2179,24 @@ fn state_of(s: &Session) -> AudioState {
         connected: true,
         ..AudioState::default()
     };
+    let ours: Vec<u32> = s.meters.iter().map(Meter::node).collect();
     for n in s.nodes.values().filter(|n| n.ready) {
+        if let Some((direction, props)) = &n.stream {
+            if let Some(serial) = n.serial.as_deref().and_then(|v| v.parse().ok()) {
+                state.serials.insert(n.device.id, serial);
+            }
+            if !props.monitor && !ours.contains(&n.device.id) {
+                state.streams.push(AudioStream {
+                    id: n.device.id,
+                    app: props.app.clone(),
+                    icon: props.icon.clone(),
+                    direction: *direction,
+                    volume: n.device.volume,
+                    muted: n.device.muted,
+                });
+            }
+            continue;
+        }
         let mut d = n.device.clone();
         d.default = Some(d.id) == sink || Some(d.id) == source;
         d.icon = icon(n.direction, d.volume, d.muted).to_owned();
@@ -1913,7 +2208,44 @@ fn state_of(s: &Session) -> AudioState {
             Direction::Source => state.sources.push(d),
         }
     }
+    state.video = video_streams(&s.video, &s.links);
     state
+}
+
+/// (services-round) The programs taking video: each stream node with a
+/// link from a source, `camera` when any of its sources is one.
+fn video_streams(
+    nodes: &BTreeMap<u32, VideoNode>,
+    links: &BTreeMap<u32, (u32, u32)>,
+) -> Vec<VideoStream> {
+    let mut out = Vec::new();
+    for (&id, n) in nodes {
+        if !n.ready || n.role != VideoRole::Stream {
+            continue;
+        }
+        let mut source = None;
+        for (from, _) in links.values().filter(|(_, to)| *to == id) {
+            let Some(src) = nodes
+                .get(from)
+                .filter(|s| s.ready && s.role == VideoRole::Source)
+            else {
+                continue;
+            };
+            if src.props.camera {
+                source = Some(VideoSource::Camera);
+            } else {
+                source.get_or_insert(VideoSource::Screencast);
+            }
+        }
+        if let Some(source) = source {
+            out.push(VideoStream {
+                id,
+                app: n.props.app.clone(),
+                source,
+            });
+        }
+    }
+    out
 }
 
 fn node_mut(s: &mut Session, d: DeviceRef) -> Result<&mut NodeEntry, AudioError> {

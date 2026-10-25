@@ -82,6 +82,8 @@ mod store;
 pub mod system;
 pub mod testing;
 pub mod tray;
+#[cfg(feature = "pipewire")]
+pub mod video;
 pub mod wm;
 
 pub use bus::{Bus, Buses};
@@ -119,6 +121,8 @@ pub struct Builtin {
     pub wm: Client<wm::Wm>,
     #[cfg(feature = "pipewire")]
     pub audio: Client<audio::AudioStore>,
+    #[cfg(feature = "pipewire")]
+    pub video: Client<video::Video>,
     pub auth: Client<auth::Auth>,
     pub session: Client<session::Session>,
     pub outputs: Client<outputs::Outputs>,
@@ -148,6 +152,8 @@ impl Builtin {
             wm: services.register(rt),
             #[cfg(feature = "pipewire")]
             audio: services.register(rt),
+            #[cfg(feature = "pipewire")]
+            video: services.register(rt),
             auth: services.register(rt),
             session: services.register(rt),
             outputs: services.register(rt),
@@ -184,6 +190,8 @@ impl Builtin {
             self.wm.dynamic(),
             #[cfg(feature = "pipewire")]
             self.audio.dynamic(),
+            #[cfg(feature = "pipewire")]
+            self.video.dynamic(),
             self.auth.dynamic(),
             self.session.dynamic(),
             self.outputs.dynamic(),
@@ -202,12 +210,13 @@ impl Builtin {
 /// They live in `strand-services-schema` (the LSP reads them without this
 /// runtime); each service's `SCHEMA` is its text there.
 ///
-/// Built without the `pipewire` feature, `audio` is not served: its text
-/// is left out (the stub stays, answered at the schema's defaults).
+/// Built without the `pipewire` feature, `audio` and `video` are not
+/// served: their texts are left out (the stubs stay, answered at the
+/// schema's defaults).
 pub fn schemas() -> Vec<&'static str> {
     let mut all = strand_services_schema::schemas();
     if !cfg!(feature = "pipewire") {
-        all.retain(|t| *t != strand_services_schema::AUDIO);
+        all.retain(|t| *t != strand_services_schema::AUDIO && *t != strand_services_schema::VIDEO);
     }
     all
 }

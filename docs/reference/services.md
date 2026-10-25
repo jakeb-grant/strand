@@ -29,6 +29,12 @@ Audio devices, from PipeWire.
 | `source` | `AudioDevice` | The default input. |
 | `sinks` | `[AudioDevice]` | Every output, keyed by `id`. |
 | `sources` | `[AudioDevice]` | Every input, keyed by `id`. |
+| `streams` | `[AudioStream]` | The programs' streams, keyed by `id`: what plays (a per-app mixer: `for st in audio.streams.filter(s => s.direction == output) key st.id { slider { value: <-> st.volume } }`) and what records (a microphone indicator: `audio.streams.any(s => s.direction == input)`). Followed only while a reader reads it. Peak meters (pavucontrol's, Strand's own) are left out. |
+| `meters` | `[AudioMeter]` | The meters `audio.levels` runs, keyed by `device`: each one's latest spectrum, 64 bands from low to high pitch, each 0 to 1 (none while its device is quiet). Read through `audio.levels`, which asks for the meter; reading this field runs none. |
+
+| Method | |
+| --- | --- |
+| `fn levels(device: AudioDevice, bars: int = 16) -> [float]` | (services-round) `device`'s sound now, as `bars` levels from low to high pitch, each 0 to 1 (zeros while it is quiet), for a visualiser of one's own (`let v = audio.levels(audio.sink, 32)`, drawn by a `canvas`); `audio.levels(audio.source, 1)[0]` is a microphone's level. Its meter runs while a reader of it is visible, and stops a second after the last reading nobody read again. |
 
 ## `auth`
 
@@ -402,6 +408,15 @@ when the session has none, and each item's DBusMenu.
 | Field | Type | |
 | --- | --- | --- |
 | `items` | `[TrayItem]` | The tray's items, keyed by `id`: `for item in tray.items`. |
+
+## `video`
+
+(services-round) The programs taking video, from PipeWire: a camera
+or screen-cast indicator.
+
+| Field | Type | |
+| --- | --- | --- |
+| `streams` | `[VideoStream]` | The programs taking video now, keyed by `id`: a camera indicator (`video.streams.any(s => s.source == camera)`) and a screen-cast one (`… == screencast`), with the programs' names. A program that opens a camera without PipeWire is not seen. |
 
 ## `windows`
 

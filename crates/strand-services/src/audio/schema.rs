@@ -32,14 +32,33 @@ mod tests {
     /// Every member the stubs declare is declared alike, and nothing else.
     #[test]
     fn the_schema_serves_exactly_the_provisional_declarations() {
-        for (stub, real) in [
+        // `video` (services-round) shares the PipeWire loop and this test.
+        let video = strand_services_schema::VIDEO;
+        for (schema, stub, real) in [
             (
+                SCHEMA,
                 "provisional record AudioDevice key id {",
                 "record AudioDevice key id {",
             ),
-            ("provisional service audio {", "service audio {"),
+            (
+                SCHEMA,
+                "provisional record AudioStream key id {",
+                "record AudioStream key id {",
+            ),
+            (
+                SCHEMA,
+                "provisional record AudioMeter key device {",
+                "record AudioMeter key device {",
+            ),
+            (SCHEMA, "provisional service audio {", "service audio {"),
+            (
+                video,
+                "provisional record VideoStream key id {",
+                "record VideoStream key id {",
+            ),
+            (video, "provisional service video {", "service video {"),
         ] {
-            let ours = block(SCHEMA, real);
+            let ours = block(schema, real);
             let theirs = block(BUILTIN, stub);
             assert_eq!(ours, theirs, "{real} differs from the stub");
         }

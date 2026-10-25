@@ -55,6 +55,8 @@ pub const WORKSPACES: &str = include_str!("workspaces.schema");
 pub const WM: &str = include_str!("wm.schema");
 /// `audio`: PipeWire devices.
 pub const AUDIO: &str = include_str!("audio.schema");
+/// (services-round) `video`: the programs taking video over PipeWire.
+pub const VIDEO: &str = include_str!("video.schema");
 /// `auth`: the lock screen's password check (the `strand-auth` helper).
 pub const AUTH: &str = include_str!("auth.schema");
 /// `session`: the login session and the machine's power (logind).
@@ -90,6 +92,7 @@ pub fn schemas() -> Vec<&'static str> {
         WORKSPACES,
         WM,
         AUDIO,
+        VIDEO,
         AUTH,
         SESSION,
         OUTPUTS,

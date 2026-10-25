@@ -191,6 +191,13 @@ impl Drop for Meter {
 }
 
 impl Meter {
+    /// (services-round) Its stream's node (`SPA_ID_INVALID` until it is
+    /// connected): this shell's own meters are left out of
+    /// `audio.streams` by it, whatever the registry tells of them.
+    pub fn node(&self) -> u32 {
+        self.stream.node_id()
+    }
+
     /// Starts a meter on `device`. `wake` is the loop's eventfd; `failures`
     /// is how many meters on this target failed before it.
     pub(crate) fn start(
@@ -209,6 +216,9 @@ impl Meter {
         props.insert("node.name", "strand-levels");
         props.insert("application.name", "Strand");
         props.insert("node.passive", "true");
+        // (services-round) A peak meter, as pipewire-pulse marks
+        // pavucontrol's: other shells leave it out of `audio.streams`.
+        props.insert("stream.monitor", "true");
         props.insert("node.dont-reconnect", "true");
         props.insert("stream.dont-remix", "true");
         props.insert("target.object", device.serial.unwrap_or(device.name));

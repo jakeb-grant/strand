@@ -34,6 +34,80 @@ impl Direction {
     }
 }
 
+/// (services-round) Whether a program's audio stream plays or records.
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[data(name = "StreamDirection")]
+pub enum StreamDirection {
+    /// It plays (`media.class` `Stream/Output/Audio`).
+    #[default]
+    Output,
+    /// It records (`media.class` `Stream/Input/Audio`): a microphone in
+    /// use, or a recorder of what a sink plays.
+    Input,
+}
+
+impl StreamDirection {
+    /// The direction of a node with this `media.class`, if it is a
+    /// program's audio stream.
+    pub fn of_media_class(class: &str) -> Option<Self> {
+        match class {
+            "Stream/Output/Audio" => Some(Self::Output),
+            "Stream/Input/Audio" => Some(Self::Input),
+            _ => None,
+        }
+    }
+}
+
+/// (services-round) A program's audio stream: an item of
+/// `audio.streams`, the schema's `AudioStream` field for field.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "AudioStream", key = id)]
+pub struct AudioStream {
+    /// Its node's PipeWire global id.
+    pub id: u32,
+    /// The program's name (`application.name`, else the node's
+    /// `media.name`, else its `node.name`).
+    pub app: String,
+    /// An icon name for the program (`application.icon-name`, else its
+    /// binary's name, else `applications-multimedia`).
+    pub icon: String,
+    /// Whether it plays or records.
+    pub direction: StreamDirection,
+    /// Its own volume, on the scale [`AudioDevice::volume`] uses.
+    pub volume: f64,
+    /// Muted.
+    pub muted: bool,
+}
+
+/// (services-round) Where a program's video stream comes from.
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[data(name = "VideoSource")]
+pub enum VideoSource {
+    /// A camera (a source node with `media.role` `Camera`, or one of a
+    /// device: what the session manager makes of a V4L2 or libcamera
+    /// camera).
+    Camera,
+    /// Anything else: a screen cast (the portal's stream of a screen or
+    /// window). Not `screen`: that name is a bar's monitor, in scope
+    /// where an indicator compares it.
+    #[default]
+    Screencast,
+}
+
+/// (services-round) A program taking video over PipeWire: an item of
+/// `video.streams`, the schema's `VideoStream` field for field.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "VideoStream", key = id)]
+pub struct VideoStream {
+    /// Its node's PipeWire global id (the stream that takes the video).
+    pub id: u32,
+    /// The program's name, as [`AudioStream::app`] reads it.
+    pub app: String,
+    /// Where the video comes from: `camera` when any source linked to it
+    /// is a camera.
+    pub source: VideoSource,
+}
+
 /// An audio sink or source: the schema's `AudioDevice`, field for field
 /// and nothing else (so the store's `#[derive(Data)]` record is exactly
 /// this). Whether it plays or records is the list it is in; its channel
@@ -165,6 +239,12 @@ pub struct AudioState {
     pub sinks: Vec<AudioDevice>,
     /// Every input, by id.
     pub sources: Vec<AudioDevice>,
+    /// (services-round) The programs' audio streams, by id (empty unless
+    /// the loop follows them, [`super::Audio::set_streams`]).
+    pub streams: Vec<AudioStream>,
+    /// (services-round) The programs taking video, by id (only for the
+    /// `video` service's loop).
+    pub video: Vec<VideoStream>,
     /// Connected to PipeWire. While it is away (a restart), the last
     /// devices stay.
     pub connected: bool,
@@ -257,6 +337,10 @@ pub enum AudioChange {
     Sinks(Vec<VecDiff<u32, AudioDevice>>),
     /// `audio.sources`, keyed by id.
     Sources(Vec<VecDiff<u32, AudioDevice>>),
+    /// (services-round) `audio.streams`, keyed by id.
+    Streams(Vec<VecDiff<u32, AudioStream>>),
+    /// (services-round) `video.streams`, keyed by id.
+    Video(Vec<VecDiff<u32, VideoStream>>),
     /// `audio.sink`: the default output, if any. `None` (no default, or
     /// no PipeWire yet) is shown as the schema's defaults for the record
     /// (`id` 0, empty texts, `volume` 0, `muted` and `default` false).
@@ -271,21 +355,44 @@ pub enum AudioChange {
     Levels(Levels),
 }
 
-fn items(devices: &[AudioDevice]) -> Vec<(u32, AudioDevice)> {
-    devices.iter().map(|d| (d.id, d.clone())).collect()
+/// An item of one of the lists, keyed by its node's id.
+pub(crate) trait Node: Clone + PartialEq {
+    fn node(&self) -> u32;
 }
 
-/// The keyed diff of one list, a device whose id now holds another serial
+impl Node for AudioDevice {
+    fn node(&self) -> u32 {
+        self.id
+    }
+}
+
+impl Node for AudioStream {
+    fn node(&self) -> u32 {
+        self.id
+    }
+}
+
+impl Node for VideoStream {
+    fn node(&self) -> u32 {
+        self.id
+    }
+}
+
+fn items<T: Node>(list: &[T]) -> Vec<(u32, T)> {
+    list.iter().map(|d| (d.node(), d.clone())).collect()
+}
+
+/// The keyed diff of one list, an item whose id now holds another serial
 /// removed first and inserted anew.
-fn list_diff(
+fn list_diff<T: Node>(
     last: &AudioState,
-    old: &[AudioDevice],
+    old: &[T],
     next: &AudioState,
-    new: &[AudioDevice],
-) -> Vec<VecDiff<u32, AudioDevice>> {
-    let reused = |d: &AudioDevice| {
+    new: &[T],
+) -> Vec<VecDiff<u32, T>> {
+    let reused = |d: &T| {
         matches!(
-            (last.serials.get(&d.id), next.serials.get(&d.id)),
+            (last.serials.get(&d.node()), next.serials.get(&d.node())),
             (Some(a), Some(b)) if a != b
         )
     };
@@ -294,7 +401,7 @@ fn list_diff(
     }
     let (old, new) = (items(old), items(new));
     let new_ids: Vec<u32> = new.iter().map(|(k, _)| *k).collect();
-    let gone: Vec<(u32, AudioDevice)> = old
+    let gone: Vec<(u32, T)> = old
         .iter()
         .filter(|(k, d)| !(new_ids.contains(k) && reused(d)))
         .cloned()
@@ -338,6 +445,12 @@ impl Publisher {
                 out.push(AudioChange::Sources(vec![VecDiff::Reset {
                     items: items(&next.sources),
                 }]));
+                out.push(AudioChange::Streams(vec![VecDiff::Reset {
+                    items: items(&next.streams),
+                }]));
+                out.push(AudioChange::Video(vec![VecDiff::Reset {
+                    items: items(&next.video),
+                }]));
                 out.push(AudioChange::Sink(next.sink().cloned()));
                 out.push(AudioChange::Source(next.source().cloned()));
                 out.push(AudioChange::Serials(next.serials.clone()));
@@ -353,6 +466,14 @@ impl Publisher {
                 let d = list_diff(last, &last.sources, &next, &next.sources);
                 if !d.is_empty() {
                     out.push(AudioChange::Sources(d));
+                }
+                let d = list_diff(last, &last.streams, &next, &next.streams);
+                if !d.is_empty() {
+                    out.push(AudioChange::Streams(d));
+                }
+                let d = list_diff(last, &last.video, &next, &next.video);
+                if !d.is_empty() {
+                    out.push(AudioChange::Video(d));
                 }
                 if last.sink() != next.sink() {
                     out.push(AudioChange::Sink(next.sink().cloned()));
@@ -380,6 +501,10 @@ pub struct Mirror {
     pub sinks: Vec<(u32, AudioDevice)>,
     /// `audio.sources`.
     pub sources: Vec<(u32, AudioDevice)>,
+    /// `audio.streams`.
+    pub streams: Vec<(u32, AudioStream)>,
+    /// `video.streams`.
+    pub video: Vec<(u32, VideoStream)>,
     /// `audio.sink`.
     pub sink: Option<AudioDevice>,
     /// `audio.source`.
@@ -404,6 +529,16 @@ impl Mirror {
             AudioChange::Sources(d) => {
                 for diff in d {
                     diff.apply(&mut self.sources)?;
+                }
+            }
+            AudioChange::Streams(d) => {
+                for diff in d {
+                    diff.apply(&mut self.streams)?;
+                }
+            }
+            AudioChange::Video(d) => {
+                for diff in d {
+                    diff.apply(&mut self.video)?;
                 }
             }
             AudioChange::Sink(d) => self.sink = d.clone(),
@@ -529,11 +664,11 @@ mod tests {
             ],
             sources: vec![dev(40, "mic", Direction::Source, 1.0)],
             connected: true,
-            serials: BTreeMap::new(),
+            ..AudioState::default()
         };
         let first = p.publish(s.clone());
-        assert_eq!(first.len(), 6);
-        assert_eq!(first[5], AudioChange::Serials(BTreeMap::new()));
+        assert_eq!(first.len(), 8);
+        assert_eq!(first[7], AudioChange::Serials(BTreeMap::new()));
         assert_eq!(first[0], AudioChange::Connected(true));
         for c in &first {
             m.apply(c).unwrap();

@@ -1,0 +1,20 @@
+/// (services-round) A program taking video over PipeWire.
+record VideoStream key id {
+  /// Its PipeWire id (the program's stream).
+  id: int
+  /// The program's name, such as `Firefox`.
+  app: text
+  /// Where the video comes from: `camera` when any source it takes is
+  /// a camera, else `screencast` (a screen or window cast).
+  source: VideoSource
+}
+
+/// (services-round) The programs taking video, from PipeWire: a camera
+/// or screen-cast indicator.
+service video {
+  /// The programs taking video now, keyed by `id`: a camera indicator
+  /// (`video.streams.any(s => s.source == camera)`) and a screen-cast
+  /// one (`… == screencast`), with the programs' names. A program that
+  /// opens a camera without PipeWire is not seen.
+  streams: [VideoStream]
+}

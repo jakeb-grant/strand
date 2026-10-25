@@ -72,7 +72,7 @@ pub mod pod;
 mod schema;
 mod service;
 pub mod spectrum;
-mod thread;
+pub(crate) mod thread;
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -82,12 +82,14 @@ use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
 pub use model::{
-    AudioChange, AudioDevice, AudioState, Direction, LevelTarget, Levels, Mirror, Publisher, icon,
-    linear, perceptual,
+    AudioChange, AudioDevice, AudioState, AudioStream, Direction, LevelTarget, Levels, Mirror,
+    Publisher, StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
 };
 pub use schema::SCHEMA;
+pub(crate) use service::config as service_config;
 pub use service::{
-    ANSWER_WAIT, AudioDeviceAction, AudioStore, AudioStoreCells, LevelTap, configure, tap_levels,
+    ANSWER_WAIT, AudioDeviceAction, AudioMeter, AudioStore, AudioStoreCells, LEVELS_LEASE,
+    LevelTap, MAX_BARS, bars, configure, tap_levels,
 };
 #[doc(hidden)]
 pub use thread::deny_inotify;
@@ -232,10 +234,24 @@ impl Future for AudioReply {
 pub(crate) enum Cmd {
     Action(AudioAction, oneshot::Sender<Result<(), AudioError>>),
     Levels(BTreeSet<LevelTarget>),
+    /// (services-round) Follow the programs' audio streams
+    /// (`audio.streams`), or stop.
+    Streams(bool),
     /// The host has work: [`Host::poll`] is called once the queue is
     /// handled (it is after every batch of work anyway).
     Poke,
     Stop,
+}
+
+/// (services-round) What a loop follows: the audio devices (and, when
+/// asked, the programs' audio streams) for `audio` and [`Audio`]; or the
+/// video sources, the streams that take video and the links between
+/// them, for the `video` service (which binds no audio node, card or
+/// metadata).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Follow {
+    Audio,
+    Video,
 }
 
 /// Who a PipeWire loop reports to: [`Audio::spawn`]'s sink, or the `audio`
@@ -293,7 +309,7 @@ impl Audio {
         let thread = std::thread::Builder::new()
             .name("strand-pipewire".into())
             .spawn(move || {
-                if let Err(e) = thread::run(config, Box::new(SinkHost(sink)), rx) {
+                if let Err(e) = thread::run(config, Follow::Audio, Box::new(SinkHost(sink)), rx) {
                     log::error!("audio: {e}");
                 }
             })?;
@@ -317,6 +333,13 @@ impl Audio {
     /// makes sound.
     pub fn set_levels(&self, targets: impl IntoIterator<Item = LevelTarget>) {
         let _ = self.tx.send(Cmd::Levels(targets.into_iter().collect()));
+    }
+
+    /// (services-round) Follows the programs' audio streams
+    /// ([`AudioChange::Streams`]) from now on, or stops (they are listed
+    /// as none). Off until asked.
+    pub fn set_streams(&self, on: bool) {
+        let _ = self.tx.send(Cmd::Streams(on));
     }
 
     /// Stops the thread and waits for it (briefly: until the loop has

@@ -242,7 +242,10 @@ cannot.
 
 ## 3. Services of your own
 
-Strand's services cover the usual things: audio, battery (with the
+Strand's services cover the usual things: audio (each program's
+stream too, with its own volume, in `audio.streams`, so a microphone
+light is `audio.streams.any(s => s.direction == input)`, and
+`video.streams` for a camera or screen-cast light), battery (with the
 charge UPower recorded over past hours, `battery.history(10800s)`),
 network (down to the bytes a second in and out, `network.rx` and
 `network.tx`, and your saved connections, a VPN toggle being
@@ -591,7 +594,9 @@ steps.
 - **Canvas.** `canvas { draw: (c) => … }` draws with code: `c.line`,
   `c.rect`, `c.circle` and `c.text`, painted with `c.fill` and
   `c.stroke`, sized by `c.width` and `c.height`. Use it for charts and
-  visualisers the built-in `graph`, `arc` and `spectrum` do not cover.
+  visualisers the built-in `graph`, `arc` and `spectrum` do not cover;
+  `audio.levels(audio.sink, 24)` is the sound playing now as 24 bars
+  from 0 to 1, low pitch first, for one you draw yourself.
   Shapes collect into one path, and `c.fill` or `c.stroke` paints the
   shapes since the last paint, then starts a new path: to fill and
   stroke a shape, draw it again before the stroke. A shape with no paint

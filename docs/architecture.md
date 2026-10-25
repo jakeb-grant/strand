@@ -15,7 +15,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Render timer (`strand-tooltip`) | `strand-render` (`renderer/wake.rs`) | The render loop's own due times: one wake at the latest time it was sent (a tooltip's delay, the exit of a surface whose output stopped sending frames), through the loop's waker | Any work but the wake: `Renderer::update` runs on the main thread |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (`strand-persist`, one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`); the `clipboard` store runs on its own `strand-clipboard` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`), and each value it copies is held by the process-wide `strand-clipboard-keep` keeper thread, started on the first copy and ending once another program takes the selection (m6-service-gaps) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the `video` store the same loop following only video on its own (`strand-video`, services-round), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`); the `clipboard` store runs on its own `strand-clipboard` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`), and each value it copies is held by the process-wide `strand-clipboard-keep` keeper thread, started on the first copy and ending once another program takes the selection (m6-service-gaps) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 | Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check is one PAM conversation that blocks here, bounded by the client's deadlines (decisions.md m6-lock), and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; `strand-gpu`, started with the shell when a device can exist (gpu-first), ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
@@ -6997,10 +6997,12 @@ transparent huge pages for life.
   `set_levels(targets)` replaces the set of peak meters
   (`LevelTarget::{DefaultSink, DefaultSource, Device(id)}`); the store
   passes what visible readers want, and an empty set stops them all.
-  No schema field carries levels yet: their consumer is the `spectrum`
-  element (M4, `spectrum(AudioDevice -> source)`), which will subscribe
-  by its source device and needs the meter to hand out samples for
-  realfft, not only folded peaks (docs/decisions.md, wave4-wm (audio)).
+  Their consumers are the `spectrum` element (M4,
+  `spectrum(AudioDevice -> source)`, through `tap_levels`) and
+  (services-round) `audio.levels`, below; the meters' own capture
+  streams carry `stream.monitor = true`, as pipewire-pulse marks
+  pavucontrol's, and `Meter::node()` (the stream's node id) leaves this
+  shell's own out of `audio.streams` whatever the registry says of them.
   The thread reports a volume it wrote exactly as written: any of a
   device's last `audio::ECHOES` (64, core's `MAX_PENDING_ECHOES`)
   writes, and any volume on the 1/10 000 grid even once forgotten
@@ -7038,8 +7040,55 @@ transparent huge pages for life.
   not update). A loop that cannot be created ends the body with an
   error (the contract's diagnostic and backoff). The loop's keyed diffs
   are keyed by the device's `u32` id.
+  (services-round) Streams: `streams: Vec<AudioStream>` (`#[store(keyed,
+  stream)]`, `AudioStream { id, app, icon, direction: StreamDirection,
+  volume, muted }`, keyed by the node id). The loop keeps every
+  `Stream/Output/Audio` and `Stream/Input/Audio` global
+  (`Session::stream_globals`) but binds them (`bind_node` with a
+  `StreamDirection`, as a device's node is bound) only while
+  `Cmd::Streams(true)`, which the store sends while `Cx::watched
+  ("streams")`, and drops them on `false`; `app` is `application.name`,
+  else `application.process.binary`, else `node.name`, `icon`
+  `application.icon-name`, else the binary, else
+  `applications-multimedia` (`NodeProps::read`, from the global and
+  again from each info event whose mask has `PROPS`; a later info
+  without it carries no properties). Monitors (`stream.monitor`) are
+  left out; streams never count as defaults (`default_id`), and
+  `MakeDefault` of one is `UnknownDevice`. `AudioChange::Streams` is a
+  keyed diff like `Sinks`, `Serials` covers stream ids too, and a write
+  of an item of `audio.streams` (`Shown::Stream`) runs and is answered
+  as a device item's, matched by `app` where a device item is by
+  `node.name`. Video: `strand_services::video` (`Video`,
+  `#[service(name = "video", thread)]`, `streams: Vec<VideoStream>`
+  keyed, `VideoStream { id, app, source: VideoSource }`) runs the same
+  loop (`thread::run(audio::service_config(), Follow::Video, host, rx)`
+  on its own `strand-video` service thread) following only video:
+  `Video/Source`, `Video/Source/Virtual` and `Stream/Output/Video` nodes
+  as sources, `Stream/Input/Video` nodes as takers, and the `Link`
+  globals between them (`link.output.node`, `link.input.node`); a taker
+  with a link from a source is an item, `camera` when one of its sources
+  is (`media.role` `Camera`, a `device.id`, `device.api` `v4l2` or
+  `libcamera`), else `screencast`. `AudioChange::Video` carries the
+  whole list (`VideoHost` turns it into keyed patches); the `audio`
+  host ignores it, and an audio loop never binds a video node. Levels
+  for the language: `levels(device, bars = 16) -> [float]`, a service
+  fn (`fns = audio_fns`, run on the logic thread over the cells): each
+  evaluation asks for the device's meter (`ask_levels(id)`, a
+  process-wide map that pokes the running stores when it gains a
+  device) and reads `meters: Vec<AudioMeter>` (`#[store(keyed)]`,
+  `AudioMeter { device, bands }` keyed by device, the meter's latest
+  64-band spectrum, empty while quiet) through `audio::bars(bands, n)`
+  (each bar the loudest band it covers, a band repeated over more bars
+  than bands, `n` zeros quiet, `n` at most `audio::MAX_BARS` 512). The
+  store meters the tapped targets plus the asked devices while a reader
+  is visible; a meter whose reading went `audio::LEVELS_LEASE` (1 s)
+  without an evaluation asking again is let go (its item leaves
+  `meters`), and while no reader is visible no lease runs, so a bar
+  shown again restarts its meters. A device id of 0 (the schema's
+  default record) or one not there reads `n` zeros.
   `audio::configure(Some(AudioConfig))` points stores started later at
-  a socket (tests); `strand run` uses PipeWire's own default. Levels:
+  a socket (tests) and (services-round) the `video` store too; `strand
+  run` uses PipeWire's own default. Levels:
   `audio::tap_levels(target, f) -> LevelTap` (the M4 `spectrum`
   element's hook) asks the running store to meter `target`; the store
   passes the tapped targets to the loop only while a reader is visible

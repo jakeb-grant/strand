@@ -53,6 +53,12 @@ enum WifiSecurity { open, enhanced_open, wep, wpa, wpa2, wpa3, enterprise }
 /// network, a wired one, a VPN, a WireGuard tunnel, or another kind (a
 /// bridge, a modem, a hotspot shared over Bluetooth).
 enum ConnectionKind { wifi, ethernet, vpn, wireguard, other }
+/// (services-round) Whether a program's audio stream plays (`output`)
+/// or records (`input`).
+enum StreamDirection { output, input }
+/// (services-round) Where a program's video comes from: a camera, or a
+/// screen (or window) cast.
+enum VideoSource { camera, screencast }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -263,6 +269,40 @@ provisional record Workspace key id {
   windows: [Window]
   /// Switches to it: `on click { ws.focus() }`.
   action focus()
+}
+
+/// A program's audio stream, from PipeWire: what it plays or records.
+provisional record AudioStream key id {
+  /// Its PipeWire id.
+  id: int
+  /// The program's name.
+  app: text
+  /// An icon name for the program.
+  icon: text
+  /// Whether it plays or records.
+  direction: StreamDirection
+  /// Its own volume. Writable.
+  volume: float rw
+  /// Muted. Writable.
+  muted: bool rw
+}
+
+/// A program taking video over PipeWire.
+provisional record VideoStream key id {
+  /// Its PipeWire id.
+  id: int
+  /// The program's name.
+  app: text
+  /// Where the video comes from.
+  source: VideoSource
+}
+
+/// A peak meter `audio.levels` runs.
+provisional record AudioMeter key device {
+  /// The device it reads.
+  device: int
+  /// Its latest spectrum.
+  bands: [float]
 }
 
 /// An audio sink or source, from PipeWire.
@@ -599,6 +639,18 @@ provisional service audio {
   sinks: [AudioDevice]
   /// Every input, keyed by `id`.
   sources: [AudioDevice]
+  /// The programs' audio streams, keyed by `id`.
+  streams: [AudioStream]
+  /// The meters `audio.levels` runs, keyed by `device`.
+  meters: [AudioMeter]
+  /// `device`'s sound now, as `bars` levels.
+  fn levels(device: AudioDevice, bars: int = 16) -> [float]
+}
+
+/// The programs taking video, from PipeWire.
+provisional service video {
+  /// The programs taking video now, keyed by `id`.
+  streams: [VideoStream]
 }
 
 /// The screen backlight, set through logind (no root or udev rules).

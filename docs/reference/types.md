@@ -82,6 +82,34 @@ Keyed by `id`.
 | --- | --- |
 | `action make_default()` | Makes it the default device. |
 
+### `AudioMeter`
+
+(services-round) A peak meter `audio.levels` runs: an item of
+`audio.meters`.
+
+Keyed by `device`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `device` | `int` | The device it reads (`AudioDevice.id`). |
+| `bands` | `[float]` | Its latest spectrum: 64 bands from low to high pitch, each 0 to 1; empty while the device is quiet. |
+
+### `AudioStream`
+
+(services-round) A program's audio stream, from PipeWire: what it
+plays or records.
+
+Keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `int` | Its PipeWire id. |
+| `app` | `text` | The program's name, such as `Firefox`. |
+| `icon` | `text` | An icon name for the program. |
+| `direction` | `StreamDirection` | `output` while it plays, `input` while it records (a microphone in use, or a recorder of what a sink plays). |
+| `volume` | `float rw` | Its own volume, on the scale a device's uses. Writable: `st.volume = v`. |
+| `muted` | `bool rw` | Muted. Writable: `st.muted = !st.muted`. |
+
 ### `BluetoothDevice`
 
 A Bluetooth device: one paired with the adapter (`bluetooth.devices`)
@@ -526,6 +554,18 @@ An entry of a tray item's menu (DBusMenu), keyed by `id`.
 | `action activate()` | Chooses it: the app is told it was clicked. |
 | `action open()` | Opens its submenu: the app is told (and may update the entries first). |
 
+### `VideoStream`
+
+(services-round) A program taking video over PipeWire.
+
+Keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `int` | Its PipeWire id (the program's stream). |
+| `app` | `text` | The program's name, such as `Firefox`. |
+| `source` | `VideoSource` | Where the video comes from: `camera` when any source it takes is a camera, else `screencast` (a screen or window cast). |
+
 ### `Window`
 
 A toplevel window, from `ext-foreign-toplevel-list`, with what the
@@ -612,9 +652,11 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Shape` | `rect`, `circle`, `pill`, `cookie`, `clover`, `burst`, `flower`, `gem`, `sunny`, `triangle`, `pentagon`, `hexagon`, `heart` |
 | `SizeKeyword` | `auto` |
 | `SpectrumStyle` | `bars`, `mirror`, `wave`, `line` |
+| `StreamDirection` | `output`, `input`. (services-round) Whether a program's audio stream plays (`output`) or records (`input`). |
 | `SwapKind` | `none`, `disc`, `dissolve`, `pixelate` |
 | `Urgency` | `low`, `normal`, `critical` |
 | `Variant` | `tonal_spot`, `vibrant`, `expressive`, `neutral`, `monochrome`, `fidelity`, `content`, `rainbow`, `fruit_salad` |
+| `VideoSource` | `camera`, `screencast`. (services-round) Where a program's video comes from: a camera, or a screen (or window) cast. |
 | `WifiSecurity` | `open`, `enhanced_open`, `wep`, `wpa`, `wpa2`, `wpa3`, `enterprise`. How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but encrypted); `enterprise` is 802.1X. |
 
 ## Aliases

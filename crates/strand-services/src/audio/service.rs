@@ -26,10 +26,20 @@
 //!   `muted = false` after a `volume = 0.7`) is held until the earlier
 //!   writes of its cell ended too, and answered with the state showing
 //!   them.
-//! - **Levels.** No schema field carries a level (decisions.md, wave4-wm
-//!   (audio)): the peak meters run for [`tap_levels`] taps (the M4
-//!   `spectrum` element's hook), and only while a reader of the service
-//!   is visible: hidden, every meter stops.
+//! - **Streams.** (services-round) `audio.streams` lists the programs'
+//!   streams only while a reader reads it ([`Cx::watched`]): the loop
+//!   binds the stream nodes then ([`Cmd::Streams`]), and lets them go
+//!   when nobody reads it. `st.volume = v` and `st.muted = m` are writes
+//!   of the stream's node as for a device's item, answered the same way.
+//! - **Levels.** The peak meters run for [`tap_levels`] taps (the M4
+//!   `spectrum` element's hook) and (services-round) for
+//!   `audio.levels(dev, bars)`, and only while a reader of the service
+//!   is visible: hidden, every meter stops. `audio.levels` asks for its
+//!   device's meter each time it is evaluated ([`ask_levels`]) and reads
+//!   its latest spectrum from `audio.meters`; a meter whose reading no
+//!   evaluation asked for again within [`LEVELS_LEASE`] (its reader went
+//!   away while another kept the service visible) stops, and its item
+//!   leaves `audio.meters`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -37,8 +47,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use super::model::{AudioChange, AudioDevice, LevelTarget, Levels};
-use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Host, thread};
+use super::model::{AudioChange, AudioDevice, AudioStream, LevelTarget, Levels};
+use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Follow, Host, thread};
 use crate::{Call, Cx, Data, Msg, ServiceError, Step, Store, Write, service};
 
 /// How long a write waits for PipeWire to show its value before it is
@@ -51,18 +61,148 @@ static CONFIG: Mutex<Option<AudioConfig>> = Mutex::new(None);
 /// Where `audio` runs from now on connect (tests: a private PipeWire's
 /// socket). `None`: PipeWire's own default (`$PIPEWIRE_REMOTE`, else
 /// `pipewire-0`).
+/// The same PipeWire serves `video` (services-round).
 pub fn configure(config: Option<AudioConfig>) {
     if let Ok(mut c) = CONFIG.lock() {
         *c = config;
     }
 }
 
-fn config() -> AudioConfig {
+pub(crate) fn config() -> AudioConfig {
     CONFIG
         .lock()
         .ok()
         .and_then(|c| c.clone())
         .unwrap_or_default()
+}
+
+/// (services-round) A peak meter `audio.levels` runs: an item of
+/// `audio.meters`.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "AudioMeter", key = device)]
+pub struct AudioMeter {
+    /// The device it reads (`AudioDevice.id`).
+    pub device: u32,
+    /// Its latest spectrum: [`super::spectrum::BANDS`] bands from low to
+    /// high pitch, each 0 to 1; empty while the device is quiet.
+    pub bands: Vec<f64>,
+}
+
+/// (services-round) How long a meter `audio.levels` asked for runs after
+/// a reading that no evaluation asked for again: its reader is gone.
+pub const LEVELS_LEASE: Duration = Duration::from_secs(1);
+
+/// The most bars `audio.levels` gives.
+pub const MAX_BARS: usize = 512;
+
+/// `bands` as `n` bars, each the loudest band it covers (a band repeats
+/// over the bars it spans when there are more bars than bands); `n`
+/// zeros for a quiet reading.
+pub fn bars(bands: &[f64], n: usize) -> Vec<f64> {
+    let len = bands.len();
+    if len == 0 {
+        return vec![0.0; n];
+    }
+    (0..n)
+        .map(|i| {
+            let lo = (i * len / n).min(len - 1);
+            let hi = ((i + 1) * len).div_ceil(n).clamp(lo + 1, len);
+            bands[lo..hi].iter().copied().fold(0.0, f64::max)
+        })
+        .collect()
+}
+
+/// The devices `audio.levels` asked about: `None` while asked since the
+/// meter's last reading, else when that reading was shown.
+static ASKED: Mutex<BTreeMap<u32, Option<Instant>>> = Mutex::new(BTreeMap::new());
+
+fn with_asked<R>(f: impl FnOnce(&mut BTreeMap<u32, Option<Instant>>) -> R) -> R {
+    let mut g = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut g)
+}
+
+/// `audio.levels(dev, …)` was evaluated: device `id`'s meter runs (while
+/// a reader of `audio` is visible) until a reading of it goes
+/// [`LEVELS_LEASE`] unasked.
+pub fn ask_levels(id: u32) {
+    let new = with_asked(|a| a.insert(id, None).is_none());
+    if new {
+        poke_loops();
+    }
+}
+
+/// The devices asked about now, those whose lease ran out let go. While
+/// no reader is visible no lease runs (no meter reads, and a reader
+/// shown again may not be evaluated again until its meter's first
+/// reading): each counts as asked.
+fn asked(now: Instant, visible: bool) -> BTreeSet<u32> {
+    with_asked(|a| {
+        if visible {
+            a.retain(|_, shown| shown.is_none_or(|t| now < t + LEVELS_LEASE));
+        } else {
+            a.values_mut().for_each(|shown| *shown = None);
+        }
+        a.keys().copied().collect()
+    })
+}
+
+/// When the next lease runs out.
+fn lease_due() -> Option<Instant> {
+    with_asked(|a| a.values().flatten().map(|t| *t + LEVELS_LEASE).min())
+}
+
+/// A reading of `id`'s meter was shown: its lease starts unless asked
+/// again. `false` when nobody asked about `id`.
+fn shown_levels(id: u32, now: Instant) -> bool {
+    with_asked(|a| match a.get_mut(&id) {
+        Some(shown) => {
+            shown.get_or_insert(now);
+            true
+        }
+        None => false,
+    })
+}
+
+/// `audio.levels(dev, bars)`: asks for the device's meter and reads its
+/// spectrum as `bars` bars.
+fn audio_fns(
+    cells: &AudioStoreCells,
+    rt: &strand_core::Runtime,
+    method: &str,
+    args: &[Data],
+) -> Option<Result<Data, strand_core::Error>> {
+    if method != "levels" {
+        return None;
+    }
+    let id = match args.first() {
+        Some(Data::Int(id)) => u32::try_from(*id).ok(),
+        Some(d @ Data::Record { .. }) => match d.field("id") {
+            Some(Data::Int(id)) => u32::try_from(*id).ok(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let n = match args.get(1) {
+        Some(Data::Int(n)) => (*n).clamp(0, MAX_BARS as i64) as usize,
+        None | Some(Data::Null) => 16,
+        Some(_) => {
+            return Some(Err(strand_core::Error::failed(
+                "audio.levels takes a number of bars".to_string(),
+            )));
+        }
+    };
+    let Some(id) = id else {
+        // No device (the schema's default record, id 0, is no device
+        // either): quiet.
+        return Some(Ok(Data::List(vec![Data::Float(0.0); n])));
+    };
+    if id != 0 {
+        ask_levels(id);
+    }
+    Some(cells.meters.with(rt, |m| {
+        let bands = m.get(&id).map(|m| m.bands.as_slice()).unwrap_or(&[]);
+        Data::List(bars(bands, n).into_iter().map(Data::Float).collect())
+    }))
 }
 
 /// `audio`'s actions.
@@ -73,7 +213,13 @@ pub enum AudioDeviceAction {
 }
 
 /// Audio devices, from PipeWire.
-#[service(name = "audio", schema = super::SCHEMA, action = AudioDeviceAction, thread)]
+#[service(
+    name = "audio",
+    schema = super::SCHEMA,
+    action = AudioDeviceAction,
+    fns = audio_fns,
+    thread
+)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct AudioStore {
     /// The default output: `audio.sink.volume`, `audio.sink.muted`.
@@ -86,6 +232,20 @@ pub struct AudioStore {
     /// Every input, keyed by `id`.
     #[store(keyed)]
     pub sources: Vec<AudioDevice>,
+    /// The programs' streams, keyed by `id`: what plays (a per-app
+    /// mixer: `for st in audio.streams.filter(s => s.direction ==
+    /// output) key st.id { slider { value: <-> st.volume } }`) and what
+    /// records (a microphone indicator: `audio.streams.any(s => s.direction ==
+    /// input)`). Followed only while a reader reads it. Peak meters
+    /// (pavucontrol's, Strand's own) are left out.
+    #[store(keyed, stream)]
+    pub streams: Vec<AudioStream>,
+    /// The meters `audio.levels` runs, keyed by `device`: each one's
+    /// latest spectrum, 64 bands from low to high pitch, each 0 to 1
+    /// (none while its device is quiet). Read through `audio.levels`,
+    /// which asks for the meter; reading this field runs none.
+    #[store(keyed)]
+    pub meters: Vec<AudioMeter>,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +355,31 @@ enum Shown {
     Default(bool),
     /// An item of `audio.sinks` (`true`) or `audio.sources`.
     Item(bool, u32),
+    /// (services-round) An item of `audio.streams`.
+    Stream(u32),
+}
+
+/// What a written cell shows: a device, or a program's stream.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Entry<'a> {
+    Device(&'a AudioDevice),
+    Stream(&'a AudioStream),
+}
+
+impl Entry<'_> {
+    fn volume(self) -> f64 {
+        match self {
+            Entry::Device(d) => d.volume,
+            Entry::Stream(s) => s.volume,
+        }
+    }
+
+    fn muted(self) -> bool {
+        match self {
+            Entry::Device(d) => d.muted,
+            Entry::Stream(s) => s.muted,
+        }
+    }
 }
 
 /// How a pending write ended.
@@ -256,6 +441,8 @@ struct StoreHost {
     levels: BTreeSet<LevelTarget>,
     /// The service was stopped: the loop ends.
     stopped: bool,
+    /// The loop follows the programs' streams (`audio.streams` is read).
+    streams: bool,
     /// Its entry in the taps' poke list.
     loop_id: u64,
     /// Each listed device's `object.serial`, by id
@@ -271,10 +458,10 @@ impl Drop for StoreHost {
 }
 
 /// `d`'s field `attr` as written.
-fn holds(d: &AudioDevice, attr: Attr) -> bool {
+fn holds(d: Entry<'_>, attr: Attr) -> bool {
     match attr {
-        Attr::Volume(v) => d.volume == v,
-        Attr::Muted(m) => d.muted == m,
+        Attr::Volume(v) => d.volume() == v,
+        Attr::Muted(m) => d.muted() == m,
     }
 }
 
@@ -283,9 +470,14 @@ impl StoreHost {
     /// `d`: it has its `node.name` (or no name to compare). A device's
     /// node name does not change while it lives; one that took a freed
     /// id has its own.
-    fn names(item: &Data, d: &AudioDevice) -> bool {
-        match item.field("name") {
-            Some(Data::Text(name)) => **name == *d.name,
+    fn names(item: &Data, d: Entry<'_>) -> bool {
+        let (field, now) = match d {
+            Entry::Device(d) => ("name", &d.name),
+            // A stream has no node name to show: its program's.
+            Entry::Stream(s) => ("app", &s.app),
+        };
+        match item.field(field) {
+            Some(Data::Text(name)) => **name == **now,
             _ => true,
         }
     }
@@ -308,12 +500,13 @@ impl StoreHost {
         }))
     }
 
-    fn device(s: &AudioStore, shown: Shown) -> Option<&AudioDevice> {
+    fn device(s: &AudioStore, shown: Shown) -> Option<Entry<'_>> {
         match shown {
-            Shown::Default(true) => Some(&s.sink),
-            Shown::Default(false) => Some(&s.source),
-            Shown::Item(true, id) => s.sinks.iter().find(|d| d.id == id),
-            Shown::Item(false, id) => s.sources.iter().find(|d| d.id == id),
+            Shown::Default(true) => Some(Entry::Device(&s.sink)),
+            Shown::Default(false) => Some(Entry::Device(&s.source)),
+            Shown::Item(true, id) => s.sinks.iter().find(|d| d.id == id).map(Entry::Device),
+            Shown::Item(false, id) => s.sources.iter().find(|d| d.id == id).map(Entry::Device),
+            Shown::Stream(id) => s.streams.iter().find(|d| d.id == id).map(Entry::Stream),
         }
     }
 
@@ -330,7 +523,8 @@ impl StoreHost {
         let shown = match (w.field, &w.key) {
             ("sink", None) => Shown::Default(true),
             ("source", None) => Shown::Default(false),
-            ("sinks" | "sources", Some(Data::Int(id))) => match u32::try_from(*id) {
+            ("sinks" | "sources" | "streams", Some(Data::Int(id))) => match u32::try_from(*id) {
+                Ok(id) if w.field == "streams" => Shown::Stream(id),
                 Ok(id) => Shown::Item(w.field == "sinks", id),
                 // No device has that id, so no write of it waits.
                 Err(_) => {
@@ -347,7 +541,7 @@ impl StoreHost {
         let device = match shown {
             Shown::Default(true) => DeviceRef::DefaultSink,
             Shown::Default(false) => DeviceRef::DefaultSource,
-            Shown::Item(_, id) => DeviceRef::Id {
+            Shown::Item(_, id) | Shown::Stream(id) => DeviceRef::Id {
                 id,
                 serial: self.serials.get(&id).copied(),
             },
@@ -356,15 +550,23 @@ impl StoreHost {
             [Step::Field(f)] => f.as_str(),
             _ => "",
         };
-        let current = Self::device(self.cx.state(), shown).cloned();
+        let state = self.cx.state();
+        let current = Self::device(state, shown);
         // An item of the device that held the id before (a popup's item
         // kept past its device leaving, the id reused since): it is not
         // this device's write.
-        let stale = matches!(shown, Shown::Item(..))
+        let stale = matches!(shown, Shown::Item(..) | Shown::Stream(_))
             && w.held
                 .as_ref()
-                .zip(current.as_ref())
+                .zip(current)
                 .is_some_and(|(held, d)| !Self::names(held, d));
+        let top = current.map_or(1.0, |d| d.volume().max(1.0));
+        let shows = current.map(|d| (d.volume(), d.muted()));
+        let current_holds = move |attr| match (attr, shows) {
+            (Attr::Volume(v), Some((volume, _))) => volume == v,
+            (Attr::Muted(m), Some((_, muted))) => muted == m,
+            (_, None) => false,
+        };
         let number = match &w.value {
             Data::Float(v) => Some(*v),
             Data::Int(n) => Some(*n as f64),
@@ -380,7 +582,6 @@ impl StoreHost {
             }
             ("volume", Some(v), _) if v.is_finite() => {
                 // As the loop clamps: 0 to 1, or to an amplified volume.
-                let top = current.as_ref().map_or(1.0, |d| d.volume.max(1.0));
                 let v = v.clamp(0.0, top);
                 Some((AudioAction::SetVolume(device, v), Attr::Volume(v)))
             }
@@ -410,7 +611,7 @@ impl StoreHost {
             .pending
             .iter()
             .any(|p| p.same(shown, attr) && p.done.is_none());
-        let held = !earlier && current.as_ref().is_some_and(|d| holds(d, attr));
+        let held = !earlier && current_holds(attr);
         let (reply_tx, reply_rx) = oneshot::channel();
         self.pending.push(Pending {
             write: w,
@@ -549,25 +750,43 @@ impl StoreHost {
 impl Host for StoreHost {
     fn changes(&mut self, batch: Vec<AudioChange>) {
         let mut patches = Vec::new();
+        let mut readings = Vec::new();
         for change in batch {
             match change {
                 AudioChange::Connected(c) => log::info!("audio: PipeWire connected: {c}"),
                 AudioChange::Sinks(d) => patches.push(AudioStorePatch::Sinks(d)),
                 AudioChange::Sources(d) => patches.push(AudioStorePatch::Sources(d)),
+                AudioChange::Streams(d) => patches.push(AudioStorePatch::Streams(d)),
+                // The `video` service's loop's; never sent to this one.
+                AudioChange::Video(_) => {}
                 AudioChange::Sink(d) => patches.push(AudioStorePatch::Sink(d.unwrap_or_default())),
                 AudioChange::Source(d) => {
                     patches.push(AudioStorePatch::Source(d.unwrap_or_default()))
                 }
-                AudioChange::Levels(l) => deliver(&l),
+                AudioChange::Levels(l) => {
+                    deliver(&l);
+                    if let LevelTarget::Device(id) = l.target {
+                        readings.push((id, l.bins));
+                    }
+                }
                 AudioChange::Serials(s) => self.serials = s,
             }
         }
-        if patches.is_empty() {
+        let now = Instant::now();
+        readings.retain(|(id, _)| shown_levels(*id, now));
+        if patches.is_empty() && readings.is_empty() {
             return;
         }
         let mut next = self.cx.state().clone();
         for p in &patches {
             next.apply(p);
+        }
+        for (device, bins) in readings {
+            let bands = bins.into_iter().map(f64::from).collect();
+            match next.meters.iter_mut().find(|m| m.device == device) {
+                Some(m) => m.bands = bands,
+                None => next.meters.push(AudioMeter { device, bands }),
+            }
         }
         self.publish(next, true);
         // The first batch holds every field.
@@ -614,15 +833,41 @@ impl Host for StoreHost {
         if self.stopped {
             return vec![Cmd::Stop];
         }
-        // Meters only for taps, and only while a reader is visible.
-        let wanted = if self.cx.visible() {
-            tapped()
+        // Meters only for taps and `audio.levels`, and only while a
+        // reader is visible; a meter no reader asks for any more leaves
+        // `audio.meters`.
+        let visible = self.cx.visible();
+        let asked = asked(now, visible);
+        if self
+            .cx
+            .state()
+            .meters
+            .iter()
+            .any(|m| !asked.contains(&m.device))
+        {
+            let mut next = self.cx.state().clone();
+            next.meters.retain(|m| asked.contains(&m.device));
+            self.publish(next, false);
+            if self.stopped {
+                return vec![Cmd::Stop];
+            }
+        }
+        let wanted = if visible {
+            let mut t = tapped();
+            t.extend(asked.iter().map(|id| LevelTarget::Device(*id)));
+            t
         } else {
             BTreeSet::new()
         };
         if wanted != self.levels {
             self.levels = wanted.clone();
             cmds.push(Cmd::Levels(wanted));
+        }
+        // Streams only while read.
+        let streams = self.cx.watched("streams");
+        if streams != self.streams {
+            self.streams = streams;
+            cmds.push(Cmd::Streams(streams));
         }
         cmds
     }
@@ -632,6 +877,7 @@ impl Host for StoreHost {
             .iter()
             .filter(|p| p.done.is_none())
             .map(Pending::due)
+            .chain(lease_due())
             .min()
     }
 }
@@ -660,6 +906,7 @@ impl AudioStore {
             pending: Vec::new(),
             levels: BTreeSet::new(),
             stopped: false,
+            streams: false,
             loop_id,
             serials: BTreeMap::new(),
         };
@@ -667,7 +914,7 @@ impl AudioStore {
         let _ = tx.send(Cmd::Poke);
         // No PipeWire library loop: the contract shows the error and
         // starts the service again (with backoff) while it is read.
-        thread::run(config(), Box::new(host), rx).map_err(ServiceError)
+        thread::run(config(), Follow::Audio, Box::new(host), rx).map_err(ServiceError)
     }
 }
 
@@ -680,10 +927,52 @@ mod tests {
     fn the_store_is_the_schema_record() {
         assert_eq!(<AudioStore as Service>::NAME, "audio");
         let names: Vec<&str> = AudioStore::FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, ["sink", "source", "sinks", "sources"]);
+        assert_eq!(
+            names,
+            ["sink", "source", "sinks", "sources", "streams", "meters"]
+        );
         assert_eq!((AudioStore::FIELDS[0].ty)(), "AudioDevice");
         assert_eq!((AudioStore::FIELDS[2].ty)(), "[AudioDevice]");
         assert_eq!(AudioDevice::KEY_FIELD, "id");
+    }
+
+    #[test]
+    fn bands_become_bars() {
+        let bands: Vec<f64> = (0..64).map(|i| f64::from(i) / 63.0).collect();
+        // Fewer bars: each the loudest band it covers.
+        let four = bars(&bands, 4);
+        assert_eq!(four.len(), 4);
+        assert_eq!(four[3], 1.0);
+        assert_eq!(four[0], 15.0 / 63.0);
+        // One bar: the loudest band of all (a VU meter).
+        assert_eq!(bars(&bands, 1), [1.0]);
+        // More bars than bands: each band over the bars it spans.
+        let many = bars(&[0.25, 0.75], 4);
+        assert_eq!(many, [0.25, 0.25, 0.75, 0.75]);
+        // A quiet reading: zeros; none asked: none.
+        assert_eq!(bars(&[], 3), [0.0, 0.0, 0.0]);
+        assert!(bars(&bands, 0).is_empty());
+    }
+
+    #[test]
+    fn an_unasked_reading_ends_the_lease() {
+        let t0 = Instant::now();
+        ask_levels(9_001);
+        assert!(asked(t0, true).contains(&9_001));
+        assert!(shown_levels(9_001, t0));
+        // Asked again after the reading: the lease starts anew.
+        ask_levels(9_001);
+        assert!(asked(t0 + LEVELS_LEASE * 2, true).contains(&9_001));
+        assert!(shown_levels(9_001, t0));
+        assert!(asked(t0 + LEVELS_LEASE / 2, true).contains(&9_001));
+        // Hidden, no lease runs out; shown again, it starts at the next
+        // reading.
+        assert!(asked(t0 + LEVELS_LEASE * 5, false).contains(&9_001));
+        assert!(asked(t0 + LEVELS_LEASE * 6, true).contains(&9_001));
+        assert!(shown_levels(9_001, t0 + LEVELS_LEASE * 6));
+        assert!(!asked(t0 + LEVELS_LEASE * 7, true).contains(&9_001));
+        // A reading nobody asked for is not shown.
+        assert!(!shown_levels(9_002, t0));
     }
 
     #[test]

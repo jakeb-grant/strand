@@ -872,6 +872,64 @@ bar Top {
         }
     }
 
+    /// (services-round, S2) The programs' audio streams, the programs
+    /// taking video and a device's levels check against the served
+    /// schema and the builtin stubs alike, as the gap review's per-app
+    /// mixer, privacy indicators and custom visualiser use them.
+    #[test]
+    fn the_services_round_streams_video_and_levels_check() {
+        let src = "bar Top {
+  row {
+    if audio.streams.any(s => s.direction == input) { text \"mic\" }
+    if video.streams.any(s => s.source == camera) { text \"camera\" }
+    if video.streams.any(s => s.source == screencast) { text \"cast\" }
+    for v in video.streams key v.id { text v.app }
+    for st in audio.streams.filter(s => s.direction == output) key st.id {
+      row {
+        icon st.icon
+        text st.app
+        slider { value: <-> st.volume }
+        box { on click { st.muted = !st.muted } }
+      }
+    }
+    canvas { width: 40; height: 20; draw: (c) => {
+      let lv = audio.levels(audio.sink, 4)
+      c.fill($accent)
+      c.rect(0, 0, 10, (lv[0] ?? 0) * c.height)
+      c.rect(10, 0, 10, (lv[1] ?? 0) * c.height)
+    } }
+    meter audio.levels(audio.source, 1)[0] ?? 0
+    text join(\" \", audio.levels(audio.sink).len, audio.meters.len)
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for bad in [
+            // Bars are a number; a stream's direction is not text.
+            "bar B { text join(\" \", audio.levels(audio.sink, \"24\").len) }\n",
+            "bar B { if audio.streams.any(s => s.direction == \"input\") { text \"m\" } }\n",
+            // A program's video stream has no volume.
+            "bar B { for v in video.streams key v.id { text join(\" \", v.volume) } }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.
