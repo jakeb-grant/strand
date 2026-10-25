@@ -323,6 +323,7 @@ fn search_cost() {
                     comment: Some(word(6)),
                     icon: "application-x-executable".into(),
                     categories: vec!["Utility".into()],
+                    actions: Vec::new(),
                 },
                 exec: "true".into(),
                 terminal: false,
@@ -331,6 +332,7 @@ fn search_cost() {
                 icon_key: None,
                 wm_class: None,
                 also: vec![word(3), word(2), word(4)],
+                action_execs: Vec::new(),
             }
         })
         .collect();
