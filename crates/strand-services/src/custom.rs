@@ -30,6 +30,11 @@
 //!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts.
 //! - **poll**: the command (or file) is read every interval, only while a
 //!   reader is visible.
+//! - **dir**: (services-round) the directory's files, listed now and
+//!   whenever an entry is added, removed, renamed or rewritten (an
+//!   inotify watch on the directory, and on the way to it while it does
+//!   not exist); nothing polls. The document is `{"files": [File]}`
+//!   ([`list_dir`]).
 //!
 //! A document ([`Document`]) is JSON when it parses as JSON, else
 //! `key=value` (or `key: value`) lines when every line is one (blank and
@@ -96,6 +101,10 @@ pub enum Source {
         path: Option<String>,
     },
     File {
+        path: PathBuf,
+    },
+    /// (services-round) A directory's files.
+    Dir {
         path: PathBuf,
     },
     Listen {
@@ -550,6 +559,7 @@ impl Custom {
                 run_dbus(&mut cx, &spec, *system, name, &path).await
             }
             Source::File { path } => run_file(&mut cx, &spec, path).await,
+            Source::Dir { path } => run_dir(&mut cx, &spec, path).await,
             Source::Listen { command } => run_listen(&mut cx, &spec, command).await,
             Source::Poll { target, every } => run_poll(&mut cx, &spec, target, *every).await,
         };
@@ -1077,6 +1087,9 @@ struct FileWatch {
     /// watched `a/b` along without an event of its own, and the watch
     /// would follow `a.old/b` for ever.
     ancestors: Vec<i32>,
+    /// (services-round) The path is a directory whose entries matter
+    /// ([`watch_dir`]), not a file whose contents do.
+    dir: bool,
 }
 
 /// The directory a file's path names (`.` for a bare name).
@@ -1087,6 +1100,16 @@ fn dir_of(path: &Path) -> &Path {
 }
 
 fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
+    watch_path(path, false)
+}
+
+/// (services-round) A [`FileWatch`] on a directory: its own watch hears
+/// every entry added, removed, renamed or rewritten.
+fn watch_dir(path: &Path) -> std::io::Result<FileWatch> {
+    watch_path(path, true)
+}
+
+fn watch_path(path: &Path, dir: bool) -> std::io::Result<FileWatch> {
     use rustix::fs::inotify;
     let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
     let mut w = FileWatch {
@@ -1097,6 +1120,7 @@ fn watch_file(path: &Path) -> std::io::Result<FileWatch> {
         complete: false,
         file_wd: -1,
         ancestors: Vec::new(),
+        dir,
     };
     w.arm()?;
     Ok(w)
@@ -1225,12 +1249,19 @@ impl FileWatch {
     /// created; the same inode keeps its watch).
     fn watch_inode(&mut self) {
         use rustix::fs::inotify::{self, WatchFlags};
-        let wd = inotify::add_watch(
-            self.fd.get_ref(),
-            &self.path,
-            WatchFlags::MODIFY | WatchFlags::CLOSE_WRITE,
-        )
-        .unwrap_or(-1);
+        let flags = if self.dir {
+            // A directory's entries: what changes its listing.
+            WatchFlags::CREATE
+                | WatchFlags::DELETE
+                | WatchFlags::MOVED_FROM
+                | WatchFlags::MOVED_TO
+                | WatchFlags::CLOSE_WRITE
+                | WatchFlags::ATTRIB
+                | WatchFlags::ONLYDIR
+        } else {
+            WatchFlags::MODIFY | WatchFlags::CLOSE_WRITE
+        };
+        let wd = inotify::add_watch(self.fd.get_ref(), &self.path, flags).unwrap_or(-1);
         if self.file_wd >= 0 && self.file_wd != wd {
             // The inode replaced (moved away, still linked) is let go.
             let _ = inotify::remove_watch(self.fd.get_ref(), self.file_wd);
@@ -1392,6 +1423,159 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         }
     }
 }
+
+/// (services-round) The most files a `from dir` service lists (the
+/// first by name); more are left out, with a warning.
+pub const MAX_DIR_FILES: usize = 10_000;
+
+/// (services-round) The files of `dir` as a `from dir` document's
+/// `files`: each regular file (a link to one counts; a hidden one,
+/// starting with `.`, does not) as a `File` record (`path`, `name`,
+/// `modified` to the minute in the local zone, `size` in bytes), by
+/// name. `None` while the directory does not exist.
+pub fn list_dir(dir: &Path) -> std::io::Result<Option<Vec<Data>>> {
+    use std::os::unix::ffi::OsStrExt;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut files: Vec<(Vec<u8>, Data)> = Vec::new();
+    let mut more = false;
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        if name.as_bytes().first() == Some(&b'.') {
+            continue;
+        }
+        let path = entry.path();
+        // Followed: a link to a file is a file.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if files.len() >= MAX_DIR_FILES {
+            more = true;
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .ok()
+            .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
+            .map(crate::notifications::Date::at)
+            .unwrap_or_default();
+        let file = Data::Record {
+            ty: "File".into(),
+            fields: vec![
+                ("path".into(), Data::text(path.to_string_lossy())),
+                ("name".into(), Data::text(name.to_string_lossy())),
+                ("modified".into(), crate::ToData::to_data(&modified)),
+                (
+                    "size".into(),
+                    Data::Int(i64::try_from(meta.len()).unwrap_or(i64::MAX)),
+                ),
+            ],
+        };
+        files.push((name.as_bytes().to_vec(), file));
+    }
+    if more {
+        log::warn!(
+            "{}: more than {MAX_DIR_FILES} files; the rest are not listed",
+            dir.display()
+        );
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Some(files.into_iter().map(|(_, f)| f).collect()))
+}
+
+/// The document of a directory: `{"files": [...]}`, or none while it
+/// does not exist.
+fn dir_doc(files: Option<Vec<Data>>) -> Option<Data> {
+    files.map(|f| Data::Record {
+        ty: "".into(),
+        fields: vec![("files".into(), Data::List(f))],
+    })
+}
+
+/// (services-round) `from dir`: the directory's files now and after
+/// every change to its entries.
+async fn run_dir(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), ServiceError> {
+    // Watch first, then list: no change is lost in between.
+    let mut watch = watch_dir(path)
+        .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
+    let mut last: Option<Option<Data>> = None;
+    loop {
+        let p = path.to_path_buf();
+        let listed = match tokio::time::timeout(
+            READ_WAIT,
+            tokio::task::spawn_blocking(move || list_dir(&p)),
+        )
+        .await
+        {
+            Ok(Ok(Ok(files))) => files,
+            Ok(Ok(Err(e))) => return Err(ServiceError(format!("{}: {e}", path.display()))),
+            Ok(Err(e)) => return Err(ServiceError(format!("{}: {e}", path.display()))),
+            Err(_) => {
+                return Err(ServiceError(format!(
+                    "{}: not listed within {READ_WAIT:?}",
+                    path.display()
+                )));
+            }
+        };
+        let doc = dir_doc(listed);
+        let first = last.is_none();
+        if last.as_ref() != Some(&doc) {
+            let mut state = cx.state().clone();
+            for (i, f) in spec.fields.iter().enumerate() {
+                let v = match (&doc, f.key.as_slice()) {
+                    (Some(d), [k]) => d.field(k).cloned().unwrap_or(Data::Null),
+                    _ => Data::Null,
+                };
+                state.set(i, v);
+            }
+            last = Some(doc);
+            if !cx.update(|s| *s = state) {
+                return Ok(());
+            }
+        }
+        if first {
+            cx.ready();
+        }
+        // Until something happens to the directory.
+        loop {
+            tokio::select! {
+                r = watch.fd.readable() => {
+                    let changed = match r {
+                        Ok(mut g) => {
+                            g.clear_ready();
+                            watch.drain()
+                        }
+                        Err(_) => None,
+                    };
+                    match changed {
+                        None => return Err(ServiceError("the directory watch failed".into())),
+                        Some(true) => break,
+                        Some(false) => {}
+                    }
+                }
+                m = cx.recv() => match m {
+                    None => return Ok(()),
+                    Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
+                    Some(_) => {}
+                },
+            }
+        }
+        // A burst (a copy of many files) is listed once.
+        tokio::time::sleep(DIR_SETTLE).await;
+        let _ = watch.drain();
+    }
+}
+
+/// (services-round) How long a `from dir` service waits after a change
+/// before listing again, so a burst of changes is listed once.
+pub const DIR_SETTLE: Duration = Duration::from_millis(50);
 
 /// How long a stopped command's process group has to end after
 /// `SIGTERM` before it is sent `SIGKILL`.

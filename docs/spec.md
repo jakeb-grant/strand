@@ -476,6 +476,17 @@ filling the monitor, the keyboard always).
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. Their fields are checked
   against the schema you declare.
+- `from dir path { files: [File] }` (services-round) lists a
+  directory's files: its document is `{ files: [...] }`, each a `File`
+  (`path`, `name`, `modified: Date`, `size` in bytes) for a regular
+  file or a link to one, hidden files (a name starting with `.`) and
+  subdirectories left out, ordered by name, at most 10 000 (a warning
+  names the rest). It is listed again whenever an entry is added,
+  removed, renamed or rewritten (changes within 50 ms listed once),
+  never on a clock. A directory that does not exist yet reads as no
+  document (every field its default) until it is made. `File` is the
+  one builtin record (with the `Date` it holds) a service's fields may
+  hold besides your own `type`s.
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is

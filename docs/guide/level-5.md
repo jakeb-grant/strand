@@ -3,7 +3,7 @@
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
 `play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files,
-SVG layer selectors, and `service … from file | listen | poll` with
+SVG layer selectors, and `service … from file | dir | listen | poll` with
 `permit exec`, and `action`.
 You build: a theme file, a CSS file of your colours that other programs
 can read, services Strand does not ship, a control centre and a dock.
@@ -299,6 +299,13 @@ comment lines skipped and the double or single quotes around a value
 removed, but only when every other line is a pair: one line that is
 neither makes the whole file text again, and every field reads all of
 it. A field without `= key` reads the key with its own name.
+
+**`from dir`** lists a directory's files and watches it:
+`service walls from dir "~/Pictures/walls" { files: [File] }` gives
+`walls.files`, each file's `path`, `name`, `modified` date and `size`,
+by name, and a wallpaper picker is `for f in walls.files key f.path`.
+A file you add or delete shows at once, without polling; hidden files
+and folders inside are left out.
 
 **`from poll … every T`** reads again every `T`, and only while
 something showing reads it, or while a `graph` keeps history of it:

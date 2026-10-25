@@ -167,6 +167,20 @@ provisional record Date {
   fn format(pattern: text) -> text
 }
 
+/// (services-round) A file a `from dir` service lists: `service walls
+/// from dir "~/Pictures/walls" { files: [File] }`, then `for f in
+/// walls.files key f.path { image f.path }`.
+record File key path {
+  /// Its full path.
+  path: text
+  /// Its name, without the directory.
+  name: text
+  /// When it last changed, to the minute.
+  modified: Date
+  /// Its size in bytes.
+  size: int
+}
+
 /// A cell of a month grid, from `calendar.days(month)`.
 provisional record Day key date {
   /// The day's date.

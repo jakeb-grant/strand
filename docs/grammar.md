@@ -352,12 +352,13 @@ action  = kw:action IDENT params SAME_LINE expr      // the command: a list
 method_action = kw:action IDENT params '=' IDENT    // `from dbus` only
 ```
 
-The source kind is one of `dbus`, `file`, `listen`, `poll` (others are an
-error with a did-you-mean). Their arguments:
+The source kind is one of `dbus`, `dir`, `file`, `listen`, `poll` (others
+are an error with a did-you-mean). Their arguments:
 
 | Source | Arguments |
 | --- | --- |
 | `dbus` | `system` or `session`, the bus name string, optionally an object path string |
+| `dir` | one expression: the directory's path (services-round) |
 | `file` | one expression: the path |
 | `listen` | one expression: the command (string or array) |
 | `poll` | one expression: the command, then `every` and an interval |

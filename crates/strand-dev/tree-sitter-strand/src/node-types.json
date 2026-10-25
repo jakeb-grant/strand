@@ -1981,6 +1981,10 @@
             "named": false
           },
           {
+            "type": "dir",
+            "named": false
+          },
+          {
             "type": "file",
             "named": false
           },
@@ -2921,6 +2925,10 @@
   },
   {
     "type": "dbus",
+    "named": false
+  },
+  {
+    "type": "dir",
     "named": false
   },
   {

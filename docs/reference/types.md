@@ -237,6 +237,21 @@ which; the other fields are empty. A drag inside the shell delivers the
 | `app` | `App?` | The dropped app. |
 | `text` | `text` | The dropped text. |
 
+### `File`
+
+(services-round) A file a `from dir` service lists: `service walls
+from dir "~/Pictures/walls" { files: [File] }`, then `for f in
+walls.files key f.path { image f.path }`.
+
+Keyed by `path`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `path` | `text` | Its full path. |
+| `name` | `text` | Its name, without the directory. |
+| `modified` | `Date` | When it last changed, to the minute. |
+| `size` | `int` | Its size in bytes. |
+
 ### `Filesystem`
 
 A mounted filesystem, keyed by `path`.

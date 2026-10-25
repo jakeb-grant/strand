@@ -450,6 +450,9 @@ pub enum SourceSpec {
     /// A file, read whenever it changes (`~/` is the home directory, a
     /// relative path the config directory).
     File { path: String },
+    /// (services-round) A directory's files, listed again whenever an
+    /// entry changes (`~/` and a relative path as for `File`).
+    Dir { path: String },
     /// A long-running command: each line it prints is a document.
     Listen { command: Vec<String> },
     /// A command run (or a file read) every `every`, only while read.

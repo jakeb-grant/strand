@@ -312,7 +312,7 @@ module.exports = grammar({
         field('name', $.string),
         optional(field('path', $.string)),
       ),
-      seq(field('kind', choice('file', 'listen')), field('argument', $._expression)),
+      seq(field('kind', choice('dir', 'file', 'listen')), field('argument', $._expression)),
       seq(
         field('kind', 'poll'),
         field('argument', $._expression),

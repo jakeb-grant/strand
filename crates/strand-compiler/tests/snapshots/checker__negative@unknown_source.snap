@@ -9,7 +9,7 @@ syntax::unknown_source
  2 │ // An unknown source is one diagnostic: its `every` is not also misplaced.
  3 │ service t from pol "x" every 1s { a: text }
    ·                ─┬─
-   ·                 ╰── sources are dbus, file, listen and poll
+   ·                 ╰── sources are dbus, dir, file, listen and poll
    ╰────
   help: did you mean `poll`?
 

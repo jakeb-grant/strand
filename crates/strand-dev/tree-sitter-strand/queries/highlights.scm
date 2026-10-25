@@ -81,6 +81,7 @@
   "dbus"
   "system"
   "session"
+  "dir"
   "file"
   "listen"
   "poll"

@@ -151,6 +151,9 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>) -> Spec {
         SourceSpec::File { path } => Source::File {
             path: resolve(path, config_dir),
         },
+        SourceSpec::Dir { path } => Source::Dir {
+            path: resolve(path, config_dir),
+        },
         SourceSpec::Listen { command } => Source::Listen {
             command: command.clone(),
         },
@@ -1160,6 +1163,40 @@ mod tests {
             c(&Ty::Optional(Box::new(Ty::INT)), Data::Null),
             Some(Value::Null)
         );
+    }
+
+    /// (services-round) A `from dir` service's listing converts into the
+    /// language's `[File]`: each file's path, name, size and modified
+    /// `Date` as `walls.files` reads them.
+    #[test]
+    fn a_listed_directory_is_a_list_of_files() {
+        let types = &Schema::builtin().types;
+        let file = types.find_record("File").unwrap();
+        let files = Ty::List(Box::new(Ty::Record(file)), false);
+        let dir = std::env::temp_dir().join(format!("strand-dir-coerce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.png"), b"12345").unwrap();
+        std::fs::write(dir.join("a.jpg"), b"1").unwrap();
+        let listed = strand_services::custom::list_dir(&dir).unwrap().unwrap();
+        let v = coerce(types, &files, &Data::List(listed)).unwrap();
+        let Value::List(items) = &v else {
+            panic!("{v:?}")
+        };
+        assert_eq!(items.len(), 2);
+        let a = &items[0];
+        assert_eq!(a.field(types, "name"), Some(&Value::text("a.jpg")));
+        assert_eq!(
+            a.field(types, "path"),
+            Some(&Value::text(dir.join("a.jpg").to_string_lossy()))
+        );
+        assert_eq!(items[1].field(types, "size"), Some(&Value::int(5)));
+        let year = a
+            .field(types, "modified")
+            .and_then(|d| d.field(types, "year"))
+            .and_then(Value::as_f64);
+        assert!(year.is_some_and(|y| y >= 2024.0), "{year:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `strand run`'s loader never waits on a bus after its boot: a save

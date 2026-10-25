@@ -4139,10 +4139,13 @@ Public interfaces other crates and later stages build on:
   must name a field, re-checked across all records after the extension;
   it is atomic, so on error nothing is added and the fingerprint is
   unchanged), and check with
-  `compile_with(&map, &schema)`. A `service … from dbus|file|listen|poll`
-  declaration's source is a constant the checker evaluates
-  (`hir::ServiceDecl::spec`, a `hir::SourceSpec`; fields carry their key
-  path); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
+  `compile_with(&map, &schema)`. A `service … from
+  dbus|dir|file|listen|poll` declaration's source is a constant the
+  checker evaluates (`hir::ServiceDecl::spec`, a `hir::SourceSpec`;
+  services-round: `SourceSpec::Dir { path }`; fields carry their key
+  path, and a field's type may hold the builtin `File` record and the
+  `Date` it carries, `check::tree`'s `DOCUMENT_RECORDS`, besides
+  declared `type`s); `check::dbus::check(&hir::Program, &dyn Introspect)` compares
   its `dbus` fields with an object's introspection (`Introspect::
   properties(system, name, path) -> Result<Vec<BusProperty>, String>`;
   the caller brings the bus: `strand check`, the loader, the LSP), and
@@ -6432,7 +6435,16 @@ transparent huge pages for life.
   `PropertiesChanged`; `rw` writes `Set` with the property's signature),
   a `file` (inotify on its directory, its own inode, and the watched
   directory's ancestors for their move or removal; a missing directory
-  waited for from its nearest existing ancestor), a `listen` command's
+  waited for from its nearest existing ancestor), (services-round) a
+  `dir` (`custom::Source::Dir`: the same watch on the directory itself
+  for entries created, deleted, moved, closed after writing or changed
+  in attributes; `custom::list_dir(dir) -> io::Result<Option<Vec<Data>>>`
+  lists its regular files, links followed, hidden ones left out, as
+  `File` records `{ path, name, modified: Date (local, to the minute),
+  size }` sorted by name, at most `custom::MAX_DIR_FILES` 10 000, `None`
+  while it does not exist; the document is `{ files: [...] }`, listed
+  again `custom::DIR_SETTLE` 50 ms after a change, on a blocking task
+  within `READ_WAIT`), a `listen` command's
   lines (merged and sent at most once per `custom::LISTEN_FLUSH`, a
   frame; services-round: once `custom::hear_lines(spec)` was called,
   each line also emits the store's `line` event, `Data::List` of that

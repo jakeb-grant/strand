@@ -7,7 +7,7 @@ use super::super::span::Span;
 use super::{Ctx, K, Parser, STMT_KEYWORDS, TOP_KEYWORDS, TREE_KEYWORDS, Tok};
 
 /// Service source kinds.
-const SOURCES: &[&str] = &["dbus", "file", "listen", "poll"];
+const SOURCES: &[&str] = &["dbus", "dir", "file", "listen", "poll"];
 
 fn error_item(span: Span) -> Item {
     Item {
@@ -1286,13 +1286,13 @@ impl Parser<'_> {
         let name = self.ident("a service name");
         self.expect_kw("from");
         let start = self.cur().span.start;
-        let kind = self.ident("a source: dbus, file, listen or poll");
+        let kind = self.ident("a source: dbus, dir, file, listen or poll");
         if !kind.name.is_empty() && !SOURCES.contains(&kind.name.as_str()) {
             let mut d = Diagnostic::error(
                 "syntax::unknown_source",
                 format!("unknown service source `{}`", kind.name),
             )
-            .with_label(kind.span, "sources are dbus, file, listen and poll");
+            .with_label(kind.span, "sources are dbus, dir, file, listen and poll");
             d.suggest_opt(kind.span, closest(&kind.name, SOURCES.iter().copied()));
             self.push_error(d);
         }
@@ -1358,7 +1358,7 @@ impl Parser<'_> {
                     );
                 }
             }
-            "file" | "listen" if src.args.len() != 1 => {
+            "dir" | "file" | "listen" if src.args.len() != 1 => {
                 self.push_error(
                     Diagnostic::error(
                         "syntax::expected",

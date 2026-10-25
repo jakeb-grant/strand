@@ -1603,6 +1603,10 @@
                 "members": [
                   {
                     "type": "STRING",
+                    "value": "dir"
+                  },
+                  {
+                    "type": "STRING",
                     "value": "file"
                   },
                   {

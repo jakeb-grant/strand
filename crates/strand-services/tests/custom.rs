@@ -3,7 +3,10 @@
 //! thread at most once a frame, its last line always shown; (M6) a `from
 //! dbus` declaration's actions call its object's methods; (services-round)
 //! once a handler hears it, every line a `from listen` command prints is
-//! one `line` event, none lost to the merge.
+//! one `line` event, none lost to the merge; (services-round) a `from
+//! dir` declaration lists a directory's files and follows them as they
+//! come, go, change and move, and the directory itself as it is created
+//! and removed.
 
 mod support;
 
@@ -302,4 +305,124 @@ fn a_heard_listen_command_sends_every_line() {
     services.shutdown();
     custom::forget(heard_id);
     custom::forget(quiet_id);
+}
+
+/// (services-round) `service walls from dir "…" { files: [File] }`: the
+/// directory's regular files by name (hidden ones and subdirectories
+/// left out, a link to a file listed), each with its path, name, size
+/// and time; a file added, rewritten, renamed or removed is shown at
+/// once; the directory removed lists nothing (null), and made again is
+/// followed again. Nothing polls.
+#[test]
+fn a_dir_is_listed_and_followed() {
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "walls");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("walls");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("b.png"), b"bb").unwrap();
+    std::fs::write(dir.join("a.jpg"), b"a").unwrap();
+    std::fs::write(dir.join(".hidden"), b"x").unwrap();
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    std::fs::write(tmp.path().join("outside.png"), b"ccc").unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("outside.png"), dir.join("c.png")).unwrap();
+    let id = custom::register(Spec {
+        name: "walls".into(),
+        source: Source::Dir { path: dir.clone() },
+        fields: vec![FieldSpec {
+            name: "files".into(),
+            key: vec!["files".into()],
+            rw: false,
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let files = || -> Option<Vec<(String, String, i64)>> {
+        let v = client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()?;
+        let Data::List(items) = v else { return None };
+        Some(
+            items
+                .iter()
+                .map(|f| {
+                    let text = |k: &str| match f.field(k) {
+                        Some(Data::Text(t)) => t.to_string(),
+                        other => panic!("{k}: {other:?}"),
+                    };
+                    let size = match f.field("size") {
+                        Some(Data::Int(n)) => *n,
+                        other => panic!("size: {other:?}"),
+                    };
+                    assert!(
+                        matches!(f.field("modified"), Some(Data::Record { .. })),
+                        "{f:?}"
+                    );
+                    (text("name"), text("path"), size)
+                })
+                .collect(),
+        )
+    };
+    let names = || files().map(|f| f.into_iter().map(|(n, ..)| n).collect::<Vec<_>>());
+    let wait = |what: &str, want: Option<&[&str]>| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            services.pump(&rt);
+            rt.flush();
+            let now = names();
+            if now
+                .as_deref()
+                .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>())
+                == want.map(<[&str]>::to_vec)
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never {what}: {now:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    wait("listed", Some(&["a.jpg", "b.png", "c.png"]));
+    let listed = files().unwrap();
+    assert_eq!(
+        listed[1],
+        (
+            "b.png".to_string(),
+            dir.join("b.png").display().to_string(),
+            2
+        )
+    );
+    assert_eq!(listed[2].2, 3, "a link is listed with its file's size");
+
+    std::fs::write(dir.join("d.webp"), b"dddd").unwrap();
+    wait("a new file", Some(&["a.jpg", "b.png", "c.png", "d.webp"]));
+    std::fs::write(dir.join("a.jpg"), b"aaaaa").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while files().is_none_or(|f| f[0].2 != 5) {
+        services.pump(&rt);
+        rt.flush();
+        assert!(Instant::now() < deadline, "never the rewritten size");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::fs::rename(dir.join("b.png"), dir.join("e.png")).unwrap();
+    wait("a rename", Some(&["a.jpg", "c.png", "d.webp", "e.png"]));
+    std::fs::rename(dir.join("e.png"), tmp.path().join("e.png")).unwrap();
+    std::fs::remove_file(dir.join("d.webp")).unwrap();
+    wait("a move out and a removal", Some(&["a.jpg", "c.png"]));
+
+    // The directory goes: nothing to list; made again: followed again.
+    std::fs::remove_dir_all(&dir).unwrap();
+    wait("the directory gone", None);
+    std::fs::create_dir(&dir).unwrap();
+    wait("the directory made again", Some(&[]));
+    std::fs::write(dir.join("z.png"), b"z").unwrap();
+    wait("a file in the new directory", Some(&["z.png"]));
+
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
 }

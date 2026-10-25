@@ -2757,11 +2757,11 @@ impl<'a> Checker<'a> {
                     constant = false;
                 }
             }
-            "file" | "listen" | "poll" => {
+            "dir" | "file" | "listen" | "poll" => {
                 // The parser reports a count other than one (and a poll
                 // without `every`): one mistake, one diagnostic.
                 for a in s.source.args.iter().take(1) {
-                    let want = if kind == "file" {
+                    let want = if kind == "file" || kind == "dir" {
                         Ty::PATH
                     } else {
                         Ty::Union(vec![Ty::TEXT, Ty::list(Ty::TEXT)])
@@ -2776,7 +2776,7 @@ impl<'a> Checker<'a> {
                 // A poll of a file (a path, no spaces) runs nothing.
                 let polls_file = kind == "poll"
                     && matches!(texts.first(), Some(Some(ConstArg::Text(t))) if is_file_target(t));
-                if kind != "file" && !polls_file {
+                if kind != "file" && kind != "dir" && !polls_file {
                     let program = s.source.args.first().and_then(first_program);
                     let program = program.as_deref();
                     // A block's own permit lists programs the same way a
@@ -2837,7 +2837,7 @@ impl<'a> Checker<'a> {
             (Some(e), "poll") => Some(self.expect(e, &Ty::DURATION, "`every`")),
             // An unknown source is the parser's one diagnostic: its
             // `every` is not also misplaced.
-            (Some(e), "dbus" | "file" | "listen") => {
+            (Some(e), "dbus" | "dir" | "file" | "listen") => {
                 self.error(
                     "check::misplaced",
                     "`every` is for `poll` services",
@@ -2882,6 +2882,9 @@ impl<'a> Checker<'a> {
                 }
                 ("file", [Some(ConstArg::Text(path))]) => {
                     Some(hir::SourceSpec::File { path: path.clone() })
+                }
+                ("dir", [Some(ConstArg::Text(path))]) => {
+                    Some(hir::SourceSpec::Dir { path: path.clone() })
                 }
                 ("listen", [Some(arg)]) => {
                     command_of(arg).map(|command| hir::SourceSpec::Listen { command })
@@ -3075,6 +3078,11 @@ impl<'a> Checker<'a> {
 /// records you declare (`type`) of these. A schema record (`Screen`) is a
 /// live entity its service owns; paints, fonts, shadows and handles are
 /// not data a document holds.
+/// (services-round) The builtin records a service's document may hold
+/// (a `from dir` service's files, and their times): plain data, read
+/// field by field like a declared `type`.
+const DOCUMENT_RECORDS: &[&str] = &["File", "Date"];
+
 fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::RecordId>) -> bool {
     match ty {
         Ty::Error | Ty::Any | Ty::Enum(_) => true,
@@ -3097,10 +3105,15 @@ fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::Rec
                 return true;
             }
             let def = types.record(*r);
-            if !matches!(def.origin, Origin::User(..))
-                || def.handle
-                || !def.methods.is_empty()
-                || !def.events.is_empty()
+            // (services-round) The builtin records a document may hold:
+            // a `from dir` service's `File`, and the `Date` it carries.
+            let document = !matches!(def.origin, Origin::User(..))
+                && DOCUMENT_RECORDS.contains(&def.name.as_str());
+            if !document
+                && (!matches!(def.origin, Origin::User(..))
+                    || def.handle
+                    || !def.methods.is_empty()
+                    || !def.events.is_empty())
             {
                 return false;
             }

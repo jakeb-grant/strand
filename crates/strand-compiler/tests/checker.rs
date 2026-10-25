@@ -966,9 +966,10 @@ fn codes(src: &str) -> Vec<&'static str> {
 }
 
 /// design.md: `from dbus`, `from file`, `from listen` and `from poll`
-/// sources are constants evaluated at load, lowered with each field's
-/// key; running a command needs `permit exec` (a poll of a file runs
-/// nothing), and only a D-Bus property can be `rw`.
+/// sources (and, services-round, `from dir`) are constants evaluated at
+/// load, lowered with each field's key; running a command needs `permit
+/// exec` (a poll of a file runs nothing, nor does a directory), and only
+/// a D-Bus property can be `rw`.
 #[test]
 fn no_code_service_sources_are_constant_and_lowered() {
     let src = r#"
@@ -980,7 +981,8 @@ service music from listen ["playerctl", "-F", "metadata"] { title: text? }
 service temp from poll ["sensors", "-j"] every 5s { cpu: float = package }
 service tool from poll "'my tool' --json a\\ b" every 500ms { x: int }
 service heat from poll "/sys/class/thermal/thermal_zone0/temp" every 2s { milli: int }
-bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", temp.cpu, tool.x, heat.milli) }
+service walls from dir "~/Pictures/walls" { files: [File] }
+bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", temp.cpu, tool.x, heat.milli, walls.files.len, walls.files.first?.name ?? "", walls.files.first?.modified?.year ?? 0) }
 "#;
     let out = one(src);
     let program =
@@ -1048,6 +1050,31 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
             target: PollTarget::File("/sys/class/thermal/thermal_zone0/temp".into()),
             every: Duration::from_secs(2)
         }
+    );
+
+    assert_eq!(
+        svc("walls").source,
+        SourceSpec::Dir {
+            path: "~/Pictures/walls".into()
+        }
+    );
+    assert_eq!(svc("walls").fields[0].key, ["files"]);
+    // One path, a constant, no `every`.
+    assert_eq!(
+        codes("service w from dir \"a\" \"b\" { files: [File] }"),
+        ["syntax::expected"]
+    );
+    assert_eq!(
+        codes("let p = \"/tmp\"\nservice w from dir p { files: [File] }"),
+        ["check::not_constant"]
+    );
+    assert_eq!(
+        codes("service w from dir \"/tmp\" every 1s { files: [File] }"),
+        ["check::misplaced"]
+    );
+    assert_eq!(
+        codes("service w from dri \"/tmp\" { files: [File] }"),
+        ["syntax::unknown_source"]
     );
 
     // A poll of a file needs no permit; a command does.
