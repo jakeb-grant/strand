@@ -286,9 +286,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.commits += 1;
         self.stats.commits += 1;
         if s.commit_seq == 1 {
-            // Mapped: popups waiting for it as their parent come now.
+            // Mapped: popups waiting for it as their parent come now, and
+            // (lockmon) its idle inhibitor (idle.rs).
             let node = s.node;
             self.reconcile_children(node);
+            self.sync_idle_inhibitor(id);
         }
     }
 

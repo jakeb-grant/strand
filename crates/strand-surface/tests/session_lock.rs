@@ -894,8 +894,8 @@ fn a_lock_surface_is_never_handed_to_the_gpu() {
 }
 
 /// (services-round) `lock { inhibit_idle: true }`: the lock's content
-/// surface holds a `zwp_idle_inhibitor_v1` from the moment it is made, and
-/// turned off in place, lets it go.
+/// surface holds a `zwp_idle_inhibitor_v1` from the moment it is mapped
+/// (locked), and turned off in place, lets it go.
 #[test]
 fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
     let test = "a_lock_that_inhibits_idle_holds_an_inhibitor";

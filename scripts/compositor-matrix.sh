@@ -134,7 +134,8 @@ hypr_ready() {
 start_sway() {
   local dir=$1
   mkdir -p "$dir"; chmod 700 "$dir"
-  printf 'xwayland disable\ndefault_border none\noutput HEADLESS-1 resolution %sx%s position 0 0 scale 1\n' "$2" "$3" >"$dir/sway.cfg"
+  # The `matrix` mode: what `wm.mode` reads (modes_and_layouts_follow_the_compositor).
+  printf 'xwayland disable\ndefault_border none\noutput HEADLESS-1 resolution %sx%s position 0 0 scale 1\nmode "matrix" {\n    bindsym Escape mode default\n}\n' "$2" "$3" >"$dir/sway.cfg"
   env -u WAYLAND_DISPLAY -u SWAYSOCK -u DISPLAY XDG_RUNTIME_DIR="$dir" \
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     sway -c "$dir/sway.cfg" >"$OUT/sway.log" 2>&1 &
@@ -173,6 +174,15 @@ animations {
 prefer-no-csd
 layout {
     gaps 8
+}
+// Two layouts: what `keyboard.layouts` reads and `set_layout` switches
+// (modes_and_layouts_follow_the_compositor).
+input {
+    keyboard {
+        xkb {
+            layout "us,de"
+        }
+    }
 }
 EOF
     env -u SWAYSOCK -u DISPLAY XDG_RUNTIME_DIR="$RT/niri" WAYLAND_DISPLAY="$host" \
