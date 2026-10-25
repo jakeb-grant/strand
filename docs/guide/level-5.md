@@ -242,9 +242,14 @@ cannot.
 
 ## 3. Services of your own
 
-Strand's services cover the usual things: audio, battery, network
-(down to the bytes a second in and out, `network.rx` and `network.tx`),
-memory (in use, cached, free and swap), notifications and so on, and
+Strand's services cover the usual things: audio, battery (with the
+charge UPower recorded over past hours, `battery.history(10800s)`),
+network (down to the bytes a second in and out, `network.rx` and
+`network.tx`, and your saved connections, a VPN toggle being
+`c.up()` and `c.down()` on an item of `network.connections`), media
+(every player in `media.players`, and `p.select()` to make one the
+player `media.*` follows), memory (in use, cached, free and swap),
+notifications and so on, and
 the compositor's own: its binding mode (`wm.mode`), each window's place
 (`win.rect`) and `win.move_to(ws)`, the keyboard's layouts with
 `keyboard.next_layout()`, and whether you are away: a screensaver is

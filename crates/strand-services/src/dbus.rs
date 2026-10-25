@@ -469,11 +469,18 @@ pub(crate) async fn idle_without_bus<S: crate::Service>(
         // reports the action failing, never swallowed.
         let why = format!("no {which} bus");
         while let Some(m) = cx.recv().await {
-            if let crate::Msg::Action(a) = m
-                && let Some(event) = S::refused(&a, &why)
-                && !cx.emit(event)
-            {
-                return Ok(());
+            match m {
+                crate::Msg::Action(a) => {
+                    if let Some(event) = S::refused(&a, &why)
+                        && !cx.emit(event)
+                    {
+                        return Ok(());
+                    }
+                }
+                // (services-round) An async method is answered with why
+                // (`battery.history(…)`'s `.error`), not left waiting.
+                crate::Msg::Call(_, reply) => reply.send::<(), _>(Err(why.as_str())),
+                _ => {}
             }
         }
         return Ok(());

@@ -1277,3 +1277,55 @@ fn a_disconnect_while_one_is_in_flight_is_dropped_on_iwd() {
     assert_eq!(cells.ssid.get_untracked(&rt), Ok(None));
     s.shutdown();
 }
+
+/// (services-round) Over iwd, `kind` is `wifi` while a network is
+/// joined, `connections` is empty even while read, and `up()`/`down()`
+/// fail saying saved connections need NetworkManager.
+#[test]
+fn iwd_has_no_saved_connections_and_says_so() {
+    use strand_services::ToData;
+    use strand_services::network::{Connection, ConnectionKind, IWD_NO_CONNECTIONS};
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("lo", None);
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    b.network.acquire_field(field("connections"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.ssid.get_untracked(&rt), Ok(Some("Home".into())));
+    assert_eq!(
+        cells.kind.get_untracked(&rt),
+        Ok(Some(ConnectionKind::Wifi))
+    );
+    assert!(
+        cells
+            .connections
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .is_empty()
+    );
+    let vpn = Connection {
+        id: "u-vpn".into(),
+        name: "Work VPN".into(),
+        ..Connection::default()
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "up", Some(&vpn.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Work VPN".to_string(), IWD_NO_CONNECTIONS.to_string())
+    );
+    s.shutdown();
+}

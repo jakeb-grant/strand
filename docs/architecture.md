@@ -6264,7 +6264,15 @@ transparent huge pages for life.
   `WmAction::SwitchLayout(LayoutSwitch::Next | Index(u32))`, each on a
   subscription of its own that asks again after each batch while the
   adapter answers `NotConnected`, for 3 s at most), and the D-Bus services (wave 4, a2):
-  `battery` (UPower's display device and devices), `brightness`
+  `battery` (UPower's display device and devices; services-round:
+  `#[service(call = BatteryCall)]`, `BatteryCall::History { span,
+  points: Option<i64> }` answered in a task of the body's own by
+  `GetHistory("charge", span, 2 × points)` on the first battery
+  (`Type` 2, `PowerSupply`, `HasHistory`) and `battery::resample(records,
+  now, span, points)`, the charges at even times oldest first, those
+  before the first record left out; `HISTORY_POINTS` 60 unset,
+  `MAX_HISTORY_POINTS` 2000; with no bus, `dbus::idle_without_bus` now
+  answers every async method with why), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's
   `SetBrightness`; `brightness::set_backlight_root` /
   `STRAND_BACKLIGHT_DIR` point it at fake backlights in tests), `network`
@@ -6311,7 +6319,21 @@ transparent huge pages for life.
   watched or the service is kept (`Cx::kept`), a fresh baseline at each
   start, laid over the backend's state by `overlay` from
   `Pending::rates`; `rates::configure_root(Option<PathBuf>)` points it
-  at fake counters and `rates::samples()` counts its reads (tests)), `bluetooth` (BlueZ's
+  at fake counters and `rates::samples()` counts its reads (tests);
+  services-round: `kind: Option<ConnectionKind>` from `Nm::kind` (the
+  activated active connection with `Default`, else `Default6`, a VPN or
+  WireGuard one first, else `PrimaryConnection`'s `Type`, else
+  `PrimaryConnectionType`; `wifi` over iwd while connected) and
+  `connections: Vec<Connection>` (`#[store(keyed, stream)]`, keyed by
+  UUID) from `read_profiles` (`Settings.ListConnections`, each
+  `GetSettings`' `connection` id, uuid and type, loopback left out) only
+  while watched, the Settings namespace subscribed (`"settings"`) then,
+  any of its signals reading again; `NetworkAction::Up`/`Down { item:
+  Connection }` run in a `JoinSet<Switched>`: `activate` (the settings
+  path as read, else `GetConnectionByUuid`, then `ActivateConnection(path,
+  "/", "/")`) whose active connection joins `joining`, so its failure is
+  reported as a join's, and `deactivate` of `Nm::active_of(uuid)`; over
+  iwd both fail with `network::IWD_NO_CONNECTIONS`), `bluetooth` (BlueZ's
   object manager; m6-service-gaps, gap 29: `nearby` is a stream field,
   discovery (`SetDiscoveryFilter`, `StartDiscovery`) running only while
   it is watched, `StopDiscovery` only for the body's own session (BlueZ
@@ -6354,7 +6376,20 @@ transparent huge pages for life.
   while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
   from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,
   false while `CanControl` is, `can_seek` the very test a `position`
-  write makes; remote `https`/`http` art fetched by `art`, below) and
+  write makes; remote `https`/`http` art fetched by `art`, below;
+  services-round: `players: Vec<MediaPlayer>` (`#[data(name =
+  "Player", key = id)]`, the bus name), a `#[store(keyed, stream)]`
+  field built by `Players::items` only while watched, each item's art
+  through the same cache, the active player's looked up last; the
+  ticks run while `players` is watched and any player plays
+  (`next_tick(players, now, listing)`); `MediaAction::{PlayPauseOf,
+  NextOf, PreviousOf, Select} { item }` before the service's own unit
+  actions, so a shared name is matched by its item first;
+  `Players::selected` (the bus name and the clock when chosen) wins
+  `active()` while the player is known and none other was touched
+  playing since; a write of an item's `position` is `Write { field:
+  "players", key: Text(bus name), path: [position] }`, sought by
+  `Players::seek_player`) and
   `tray` (StatusNotifierItem host, its own watcher
   when the session has none, DBusMenu model), and (wave 4, wm) the
   compositor's `workspaces`, `windows` and `wm` and PipeWire's `audio`

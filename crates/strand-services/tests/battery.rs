@@ -298,3 +298,129 @@ fn a_shared_connection_closes_with_its_last_user() {
     });
     s.shutdown();
 }
+
+/// (services-round) `battery.history(span, points)`: UPower's
+/// `GetHistory("charge", …)` of the laptop battery, asked only when
+/// called, resampled to even points oldest first; with no battery that
+/// keeps one, an error.
+#[test]
+fn history_asks_upower_only_when_called() {
+    use strand_services::{Data, FromData};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_mock) = upower(&tokio, &bus, &conn, 50.0) else {
+        return;
+    };
+    let bat = "/org/freedesktop/UPower/devices/mock_BAT";
+    // Charge 80 % an hour ago, 60 % half an hour ago, 50 % a minute ago,
+    // newest first as UPower answers; one record of unknown state.
+    call(
+        &tokio,
+        &conn,
+        UPOWER,
+        bat,
+        "org.freedesktop.DBus.Mock",
+        "AddMethod",
+        &(
+            "org.freedesktop.UPower.Device",
+            "GetHistory",
+            "suu",
+            "a(udu)",
+            "t = int(__import__('time').time()); \
+             ret = [(t - 60, 50.0, 2), (t - 1700, 10.0, 0), (t - 1800, 60.0, 2), (t - 3600, 80.0, 2)]",
+        ),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.battery.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(
+        mock_calls(&tokio, &conn, UPOWER, bat, "GetHistory").is_empty(),
+        "nothing asked before a call"
+    );
+    let d = b.battery.dynamic();
+    let ask = |args: &[Data]| -> Result<Vec<f64>, String> {
+        let fut = d.fetch(&rt, "history", args);
+        let r = tokio.block_on(async {
+            let mut fut = fut;
+            loop {
+                tokio::select! {
+                    r = &mut fut => return r,
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {
+                        s.pump(&rt);
+                    }
+                }
+            }
+        });
+        r.map(|v| Vec::<f64>::from_data(&v).unwrap())
+    };
+    let hour = Data::Duration(Duration::from_secs(3600));
+    let got = ask(&[hour.clone(), Data::Int(3)]).unwrap();
+    // An hour ago, half an hour ago, now (within the second the mock
+    // answers in).
+    assert_eq!(got, [0.8, 0.6, 0.5]);
+    let calls = mock_calls(&tokio, &conn, UPOWER, bat, "GetHistory");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(<&str>::try_from(&calls[0][0]).unwrap(), "charge");
+    assert_eq!(u32::try_from(&calls[0][1]).unwrap(), 3600);
+    // `points` left out: 60 points, the earliest an hour ago.
+    let got = ask(&[hour.clone(), Data::Null]).unwrap();
+    assert_eq!(got.len(), 60);
+    assert_eq!((got[0], got[59]), (0.8, 0.5));
+    // Two hours: the hour before the first record is left out.
+    let got = ask(&[Data::Duration(Duration::from_secs(7200)), Data::Int(5)]).unwrap();
+    assert_eq!(got, [0.8, 0.6, 0.5]);
+
+    // No battery keeps a history: an error, not a hang.
+    mock(
+        &tokio,
+        &conn,
+        UPOWER,
+        ROOT,
+        "RemoveDevice",
+        &(zbus::zvariant::ObjectPath::try_from(bat).unwrap(),),
+    );
+    until(&rt, &s, "the battery gone", || {
+        b.battery
+            .cells()
+            .devices
+            .get_untracked(&rt)
+            .unwrap()
+            .is_empty()
+    });
+    let err = ask(&[hour, Data::Int(3)]).unwrap_err();
+    assert!(err.contains("no battery keeps a history"), "{err}");
+    s.shutdown();
+}
+
+/// (services-round) With its bus disabled, `history` answers why.
+#[test]
+fn without_a_bus_history_says_why() {
+    use strand_services::Data;
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, strand_services::Buses::none());
+    b.battery.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let tokio = tokio();
+    let fut = b.battery.dynamic().fetch(
+        &rt,
+        "history",
+        &[Data::Duration(Duration::from_secs(60)), Data::Null],
+    );
+    let r = tokio.block_on(async {
+        let mut fut = fut;
+        loop {
+            tokio::select! {
+                r = &mut fut => return r,
+                () = tokio::time::sleep(Duration::from_millis(5)) => {
+                    s.pump(&rt);
+                }
+            }
+        }
+    });
+    assert_eq!(r, Err("no system bus".to_string()));
+    s.shutdown();
+}

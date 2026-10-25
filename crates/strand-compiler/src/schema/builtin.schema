@@ -49,6 +49,10 @@ enum OutputTransform { normal, rotate_90, rotate_180, rotate_270, flipped, flipp
 /// How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but
 /// encrypted); `enterprise` is 802.1X.
 enum WifiSecurity { open, enhanced_open, wep, wpa, wpa2, wpa3, enterprise }
+/// (services-round) What kind of network a connection is: a Wi-Fi
+/// network, a wired one, a VPN, a WireGuard tunnel, or another kind (a
+/// bridge, a modem, a hotspot shared over Bluetooth).
+enum ConnectionKind { wifi, ethernet, vpn, wireguard, other }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -543,6 +547,8 @@ provisional service battery {
   power: float
   /// Every power source but line power, keyed by `id`.
   devices: [PowerDevice]
+  /// The battery's charge over the last `span`, as UPower recorded it.
+  fn history(span: duration, points: int = 60) -> Async<[float]>
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.
@@ -639,6 +645,46 @@ provisional service apps {
   fn search(query: text) -> Async<[Hit]>
 }
 
+/// One MPRIS player: an item of `media.players`.
+provisional record Player key id {
+  /// Its bus name: the key.
+  id: text
+  /// Its name, such as `Spotify`.
+  name: text
+  /// `media.*` follows it now.
+  active: bool
+  /// It is playing.
+  playing: bool
+  /// The track's title.
+  title: text?
+  /// The track's artist.
+  artist: text?
+  /// The track's album.
+  album: text?
+  /// The album art.
+  art: text?
+  /// Fraction of the track played, 0 to 1. Writable: seeks it.
+  position: float rw
+  /// Time played.
+  elapsed: duration
+  /// The track's length, when known.
+  length: duration?
+  /// It can skip to the next track.
+  can_next: bool
+  /// It can go back to the previous track.
+  can_previous: bool
+  /// Writing `position` seeks it.
+  can_seek: bool
+  /// Plays or pauses it.
+  action play_pause()
+  /// Skips it to the next track.
+  action next()
+  /// Takes it back to the previous track.
+  action previous()
+  /// Makes it the player `media.*` follows.
+  action select()
+}
+
 /// The active media player, over MPRIS.
 provisional service media {
   /// Something is playing.
@@ -668,6 +714,8 @@ provisional service media {
   can_previous: bool
   /// Writing `position` seeks.
   can_seek: bool
+  /// Every player running, keyed by its bus name.
+  players: [Player]
   /// Plays or pauses.
   action play_pause()
   /// Skips to the next track.
@@ -746,6 +794,22 @@ provisional service wm {
   event config_reloaded(failed: bool?)
 }
 
+/// A saved network connection: an item of `network.connections`.
+provisional record Connection key id {
+  /// Its UUID: the key.
+  id: text
+  /// Its name, as the network settings show it.
+  name: text
+  /// What kind of network it is.
+  kind: ConnectionKind
+  /// It is up.
+  active: bool
+  /// Brings it up.
+  action up()
+  /// Takes it down.
+  action down()
+}
+
 /// The network, from NetworkManager, or from iwd where NetworkManager
 /// does not run.
 provisional service network {
@@ -777,6 +841,11 @@ provisional service network {
   tx: float
   /// A Wi-Fi scan runs.
   scanning: bool
+  /// The kind of the connection carrying the traffic; null while not
+  /// connected.
+  kind: ConnectionKind?
+  /// The saved connections, keyed by `id`.
+  connections: [Connection]
   /// Leaves the Wi-Fi network joined, or stops the one being joined.
   action disconnect()
   /// Scans for Wi-Fi networks now.

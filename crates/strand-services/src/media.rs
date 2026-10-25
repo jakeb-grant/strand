@@ -35,6 +35,15 @@
 //! ([`Player::can_seek`]). MPRIS signals these properties, so they follow
 //! the same `PropertiesChanged` as the rest; an invalidated one is read
 //! again with the player's other properties. Nothing is polled.
+//!
+//! (services-round) `players` lists every known player (a
+//! `#[store(keyed, stream)]` field, built only while a visible reader
+//! reads it), keyed by its bus name, each with the active player's
+//! fields and actions plus `active` and `select()`. `select()` makes a
+//! player the one `media.*` follows ([`Players::select`]) until it
+//! leaves or another player starts playing after it was selected; the
+//! usual choice applies again from there. While the list is read, its
+//! playing players' times tick once a second as `elapsed` does.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -45,7 +54,7 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedValue;
 
 use crate::dbus::{self, Props};
-use crate::{Call, Cx, Msg, ServiceError, Store, art, service};
+use crate::{Call, Cx, Data, Msg, ServiceError, Store, art, service};
 
 /// The schema the `media` service serves.
 pub const SCHEMA: &str = strand_services_schema::MEDIA;
@@ -60,12 +69,47 @@ const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 /// `media`'s actions.
 #[derive(Call, Debug)]
 pub enum MediaAction {
+    // (services-round) An item's actions come first: a name an item's
+    // action shares with the service's is matched by its item's record
+    // before the service's own, which takes no item.
+    /// `p.play_pause()` for `p` in `media.players`.
+    #[call(name = "play_pause")]
+    PlayPauseOf { item: MediaPlayer },
+    /// `p.next()`.
+    #[call(name = "next")]
+    NextOf { item: MediaPlayer },
+    /// `p.previous()`.
+    #[call(name = "previous")]
+    PreviousOf { item: MediaPlayer },
+    /// `p.select()`: `media.*` follows `p`.
+    Select { item: MediaPlayer },
     /// `media.play_pause()`.
     PlayPause,
     /// `media.next()`.
     Next,
     /// `media.previous()`.
     Previous,
+}
+
+/// (services-round) One player of `media.players`: the schema's
+/// `Player`, keyed by its bus name.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "Player", key = id)]
+pub struct MediaPlayer {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    pub playing: bool,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub art: Option<String>,
+    pub position: f64,
+    pub elapsed: Duration,
+    pub length: Option<Duration>,
+    pub can_next: bool,
+    pub can_previous: bool,
+    pub can_seek: bool,
 }
 
 /// See the module docs.
@@ -110,6 +154,13 @@ pub struct Media {
     /// Writing `position` seeks: the active player can seek (`CanSeek`, as
     /// `can_next`) and the track's length is known.
     pub can_seek: bool,
+    /// Every player running, keyed by its bus name (`for p in
+    /// media.players key p.id { … }`): a switcher, a card per player. The
+    /// one `media.*` follows is `active`; `p.select()` picks another. Read
+    /// only while a visible reader reads it; its playing players' times
+    /// tick once a second then.
+    #[store(keyed, stream)]
+    pub players: Vec<MediaPlayer>,
 }
 
 /// The playback rates carried forward: MPRIS players report a rate
@@ -291,13 +342,107 @@ fn micros(v: &OwnedValue) -> Option<Duration> {
 struct Players {
     by_name: BTreeMap<String, Player>,
     clock: u64,
+    /// (services-round) The player `select()` chose, and the clock then:
+    /// it stays the active one while it is listed and no other player
+    /// started playing since.
+    selected: Option<(String, u64)>,
+}
+
+/// What a player shows, the active one's fields and an item's alike.
+struct Shown {
+    playing: bool,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    art: Option<String>,
+    position: f64,
+    elapsed: Duration,
+    length: Option<Duration>,
+    can_next: bool,
+    can_previous: bool,
+    can_seek: bool,
+}
+
+impl Shown {
+    fn of(p: &Player, now: Instant) -> Shown {
+        let meta = p.metadata();
+        let length = meta.get("mpris:length").and_then(micros);
+        let elapsed = p.elapsed(now, length);
+        let text = |k: &str| dbus::text(&meta, k).filter(|s| !s.is_empty());
+        Shown {
+            playing: p.playing(),
+            title: text("xesam:title"),
+            artist: artist(&meta),
+            album: text("xesam:album"),
+            art: text("mpris:artUrl").filter(|u| local_art(u) || art::is_remote(u)),
+            position: match length {
+                Some(l) if !l.is_zero() => {
+                    (elapsed.as_secs_f64() / l.as_secs_f64()).clamp(0.0, 1.0)
+                }
+                _ => 0.0,
+            },
+            elapsed,
+            length,
+            can_next: p.can("CanGoNext"),
+            can_previous: p.can("CanGoPrevious"),
+            can_seek: p.can_seek(length),
+        }
+    }
 }
 
 impl Players {
     fn active(&self) -> Option<&Player> {
         let known = || self.by_name.values().filter(|p| p.known);
+        if let Some((name, at)) = &self.selected
+            && let Some(p) = self.by_name.get(name).filter(|p| p.known)
+            && !known().any(|o| !std::ptr::eq(o, p) && o.playing() && o.touched > *at)
+        {
+            return Some(p);
+        }
         let playing = known().filter(|p| p.playing()).max_by_key(|p| p.touched);
         playing.or_else(|| known().max_by_key(|p| (p.status() == "Paused", p.touched)))
+    }
+
+    /// (services-round) `p.select()`: `name` is the active player until
+    /// it leaves or another starts playing. Whether it is listed.
+    fn select(&mut self, name: &str) -> bool {
+        if !self.by_name.get(name).is_some_and(|p| p.known) {
+            return false;
+        }
+        self.selected = Some((name.to_string(), self.clock));
+        true
+    }
+
+    /// (services-round) Every known player as `media.players` shows it,
+    /// by bus name.
+    fn items(&self, now: Instant) -> Vec<MediaPlayer> {
+        let active = self.active_name();
+        self.by_name
+            .iter()
+            .filter(|(_, p)| p.known)
+            .map(|(name, p)| {
+                let v = Shown::of(p, now);
+                MediaPlayer {
+                    id: name.clone(),
+                    name: p
+                        .identity
+                        .clone()
+                        .unwrap_or_else(|| name.trim_start_matches(PREFIX).to_string()),
+                    active: active.as_deref() == Some(name.as_str()),
+                    playing: v.playing,
+                    title: v.title,
+                    artist: v.artist,
+                    album: v.album,
+                    art: v.art,
+                    position: v.position,
+                    elapsed: v.elapsed,
+                    length: v.length,
+                    can_next: v.can_next,
+                    can_previous: v.can_previous,
+                    can_seek: v.can_seek,
+                }
+            })
+            .collect()
     }
 
     fn active_name(&self) -> Option<String> {
@@ -312,28 +457,21 @@ impl Players {
         let Some(p) = self.active() else {
             return Media::default();
         };
-        let meta = p.metadata();
-        let length = meta.get("mpris:length").and_then(micros);
-        let elapsed = p.elapsed(now, length);
-        let text = |k: &str| dbus::text(&meta, k).filter(|s| !s.is_empty());
+        let v = Shown::of(p, now);
         Media {
-            playing: p.playing(),
-            title: text("xesam:title"),
-            artist: artist(&meta),
-            album: text("xesam:album"),
-            art: text("mpris:artUrl").filter(|u| local_art(u) || art::is_remote(u)),
-            position: match length {
-                Some(l) if !l.is_zero() => {
-                    (elapsed.as_secs_f64() / l.as_secs_f64()).clamp(0.0, 1.0)
-                }
-                _ => 0.0,
-            },
-            elapsed,
-            length,
+            playing: v.playing,
+            title: v.title,
+            artist: v.artist,
+            album: v.album,
+            art: v.art,
+            position: v.position,
+            elapsed: v.elapsed,
+            length: v.length,
             player: p.identity.clone(),
-            can_next: p.can("CanGoNext"),
-            can_previous: p.can("CanGoPrevious"),
-            can_seek: p.can_seek(length),
+            can_next: v.can_next,
+            can_previous: v.can_previous,
+            can_seek: v.can_seek,
+            players: Vec::new(),
         }
     }
 
@@ -343,10 +481,17 @@ impl Players {
     /// `CanSeek` or `CanControl` false, or its track's length unknown),
     /// or `fraction` is not a number.
     fn seek(&mut self, fraction: f64, now: Instant) -> Option<Seek> {
+        let name = self.active_name()?;
+        self.seek_player(&name, fraction, now)
+    }
+
+    /// (services-round) [`Players::seek`] of the player `name` (an item
+    /// of `media.players` written).
+    fn seek_player(&mut self, name: &str, fraction: f64, now: Instant) -> Option<Seek> {
         if !fraction.is_finite() {
             return None;
         }
-        let name = self.active_name()?;
+        let name = name.to_string();
         let p = self.by_name.get_mut(&name)?;
         let meta = p.metadata();
         let length = meta.get("mpris:length").and_then(micros);
@@ -375,6 +520,14 @@ impl Players {
             call,
             asked: p.asked,
         })
+    }
+
+    /// (services-round) `name`, while it is a known player.
+    fn listed(&self, name: String) -> Option<String> {
+        self.by_name
+            .get(&name)
+            .is_some_and(|p| p.known)
+            .then_some(name)
     }
 
     fn by_owner(&mut self, owner: &str) -> Option<(&String, &mut Player)> {
@@ -702,18 +855,39 @@ impl Drop for Kept {
 /// The state to show: `players`' with remote art replaced by its fetched
 /// file (null until it is in, or when it failed), starting its fetch on
 /// the blocking pool when it is due.
-fn shown(players: &Players, kept: &mut Kept, now: Instant) -> Media {
-    let mut m = players.state(now);
-    if let Some(url) = m.art.take() {
-        if !art::is_remote(&url) {
-            m.art = Some(url);
-        } else if let Some(file) = kept.0.cache.file(&url) {
-            m.art = Some(file);
-        } else if kept.0.cache.start(&url, now) {
-            kept.fetch(url, art::fetch);
-        }
+/// (services-round) With `listing` (a visible reader reads
+/// `media.players`), every player too, their art alike; the active
+/// player's art is looked up last, so its file is the one the cache
+/// keeps above all.
+fn shown(players: &Players, kept: &mut Kept, now: Instant, listing: bool) -> Media {
+    let mut items = if listing {
+        players.items(now)
+    } else {
+        Vec::new()
+    };
+    for item in &mut items {
+        item.art = art_file(kept, item.art.take(), now);
     }
+    let mut m = players.state(now);
+    m.art = art_file(kept, m.art.take(), now);
+    m.players = items;
     m
+}
+
+/// `url` as `art` shows it: local art as sent, remote art's fetched
+/// file (none until it is in, starting its fetch when due).
+fn art_file(kept: &mut Kept, url: Option<String>, now: Instant) -> Option<String> {
+    let url = url?;
+    if !art::is_remote(&url) {
+        return Some(url);
+    }
+    if let Some(file) = kept.0.cache.file(&url) {
+        return Some(file);
+    }
+    if kept.0.cache.start(&url, now) {
+        kept.fetch(url, art::fetch);
+    }
+    None
 }
 
 /// A player appeared (or restarted): follow it and read it whole.
@@ -742,9 +916,23 @@ fn arrived(
     tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
 }
 
-/// When the shown second next changes (while playing).
-fn next_tick(players: &Players, now: Instant) -> Option<Instant> {
-    let p = players.active()?;
+/// When the shown second next changes (while playing): the active
+/// player's, or (services-round, `listing`) the soonest of every
+/// playing player's.
+fn next_tick(players: &Players, now: Instant, listing: bool) -> Option<Instant> {
+    if listing {
+        return players
+            .by_name
+            .values()
+            .filter(|p| p.known)
+            .filter_map(|p| tick_of(p, now))
+            .min();
+    }
+    tick_of(players.active()?, now)
+}
+
+/// When `p`'s shown second next changes, while it plays.
+fn tick_of(p: &Player, now: Instant) -> Option<Instant> {
     if !p.playing() {
         return None;
     }
@@ -801,15 +989,16 @@ impl Media {
             }
         }
         let mut kept = Kept::take();
-        let state = shown(&players, &mut kept, Instant::now());
+        let state = shown(&players, &mut kept, Instant::now(), cx.watched("players"));
         if !cx.update(|s| *s = state) {
             return Ok(());
         }
         cx.ready();
         loop {
+            let listing = cx.watched("players");
             let ticking = cx.watched("elapsed") || cx.watched("position");
-            let tick = if ticking {
-                next_tick(&players, Instant::now())
+            let tick = if ticking || listing {
+                next_tick(&players, Instant::now(), listing)
             } else {
                 None
             };
@@ -855,14 +1044,30 @@ impl Media {
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Action(a)) => {
-                        let method = match a {
-                            MediaAction::PlayPause => "PlayPause",
-                            MediaAction::Next => "Next",
-                            MediaAction::Previous => "Previous",
+                        let (method, name) = match a {
+                            MediaAction::PlayPause => ("PlayPause", players.active_name()),
+                            MediaAction::Next => ("Next", players.active_name()),
+                            MediaAction::Previous => ("Previous", players.active_name()),
+                            // (services-round) An item's: that player,
+                            // while it is listed.
+                            MediaAction::PlayPauseOf { item } => ("PlayPause", players.listed(item.id)),
+                            MediaAction::NextOf { item } => ("Next", players.listed(item.id)),
+                            MediaAction::PreviousOf { item } => ("Previous", players.listed(item.id)),
+                            MediaAction::Select { item } => {
+                                if !players.select(&item.id) {
+                                    log::info!("media: no player {} to select", item.id);
+                                }
+                                // The active player may have changed.
+                                let state = shown(&players, &mut kept, Instant::now(), listing);
+                                if !cx.update(|s| *s = state) {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
                         };
                         // A task of its own: a player that does not answer
                         // holds up nothing (dropped with the body).
-                        if let Some(name) = players.active_name() {
+                        if let Some(name) = name {
                             let conn = conn.clone();
                             tasks.spawn(async move {
                                 let r = dbus::timed(conn.call_method(Some(name.as_str()), PATH, Some(PLAYER), method, &())).await;
@@ -874,9 +1079,24 @@ impl Media {
                         }
                         false
                     }
-                    Some(Msg::Write(w)) if w.field == "position" => {
+                    Some(Msg::Write(w)) if w.field == "position" || w.field == "players" => {
                         let now = Instant::now();
-                        match players.seek(w.value().unwrap_or(f64::NAN), now) {
+                        let seek = if w.field == "position" {
+                            players.seek(w.value().unwrap_or(f64::NAN), now)
+                        } else {
+                            // (services-round) `p.position = x` of an item:
+                            // that player, by its bus name.
+                            let to = match (w.path.as_slice(), &w.value) {
+                                ([crate::Step::Field(f)], Data::Float(x)) if f.as_str() == "position" => *x,
+                                ([crate::Step::Field(f)], Data::Int(x)) if f.as_str() == "position" => *x as f64,
+                                _ => f64::NAN,
+                            };
+                            match &w.key {
+                                Some(Data::Text(name)) => players.seek_player(name, to, now),
+                                _ => None,
+                            }
+                        };
+                        match seek {
                             Some(seek) => {
                                 let conn = conn.clone();
                                 tasks.spawn(seek.run(conn));
@@ -885,7 +1105,7 @@ impl Media {
                         }
                         // The fix stands (or the place is kept): the
                         // write is answered with it.
-                        let state = shown(&players, &mut kept, now);
+                        let state = shown(&players, &mut kept, now, listing);
                         if !cx.report(&w, |s| *s = state) {
                             return Ok(());
                         }
@@ -896,7 +1116,7 @@ impl Media {
                 },
             };
             if changed {
-                let state = shown(&players, &mut kept, Instant::now());
+                let state = shown(&players, &mut kept, Instant::now(), cx.watched("players"));
                 if !cx.update(|s| *s = state) {
                     return Ok(());
                 }

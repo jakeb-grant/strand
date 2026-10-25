@@ -2295,3 +2295,195 @@ fn an_explicit_scan_raises_scanning_until_it_ends() {
     assert_eq!(cells.scanning.get_untracked(&rt), Ok(false));
     s.shutdown();
 }
+
+/// (services-round) A connection saved in NetworkManager's settings.
+fn save_connection(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    id: &str,
+    uuid: &str,
+    kind: &str,
+) -> String {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+    let settings: HashMap<&str, HashMap<&str, Value<'_>>> = HashMap::from([(
+        "connection",
+        HashMap::from([
+            ("id", Value::from(id)),
+            ("uuid", Value::from(uuid)),
+            ("type", Value::from(kind)),
+        ]),
+    )]);
+    call(
+        tokio,
+        conn,
+        NM,
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "AddConnection",
+        &(settings,),
+    )
+    .body()
+    .deserialize::<zbus::zvariant::OwnedObjectPath>()
+    .unwrap()
+    .to_string()
+}
+
+/// (services-round) `network.connections` lists the saved connections
+/// only while a visible reader reads them (loopback left out), follows
+/// one saved meanwhile, `c.up()` and `c.down()` switch a VPN, `kind`
+/// names the connection carrying the traffic (the VPN while it is up),
+/// and `down()` of one that is not up fails as `failed(name, error)`.
+#[test]
+fn saved_connections_are_listed_while_read_and_switched() {
+    use strand_services::network::{Connection, ConnectionKind};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddEthernetDevice",
+        &("mock_Eth", "eth0", 30i32),
+    );
+    wifi_home(&tokio, &conn);
+    save_connection(&tokio, &conn, "Wired", "u-wired", "802-3-ethernet");
+    save_connection(&tokio, &conn, "Work VPN", "u-vpn", "vpn");
+    save_connection(&tokio, &conn, "lo", "u-lo", "loopback");
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let list = || -> Vec<Connection> {
+        cells
+            .connections
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect()
+    };
+    assert_eq!(
+        cells.kind.get_untracked(&rt),
+        Ok(Some(ConnectionKind::Wifi))
+    );
+    assert!(list().is_empty(), "not read while nobody reads it");
+
+    b.network.acquire_field(field("connections"));
+    until(&rt, &s, "the saved connections", || list().len() == 3);
+    let shown: Vec<(String, ConnectionKind, bool)> = list()
+        .into_iter()
+        .map(|c| (c.name, c.kind, c.active))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Home".to_string(), ConnectionKind::Wifi, true),
+            ("Wired".to_string(), ConnectionKind::Ethernet, false),
+            ("Work VPN".to_string(), ConnectionKind::Vpn, false),
+        ]
+    );
+    // One saved while it is read: listed.
+    save_connection(&tokio, &conn, "wg0", "u-wg", "wireguard");
+    until(&rt, &s, "the new connection", || {
+        list()
+            .iter()
+            .any(|c| c.id == "u-wg" && c.kind == ConnectionKind::Wireguard)
+    });
+
+    // Up: the VPN is up, and carries the traffic.
+    let vpn = list().into_iter().find(|c| c.id == "u-vpn").unwrap();
+    b.network
+        .dynamic()
+        .action(&rt, "up", Some(&vpn.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the VPN up", || {
+        list().iter().any(|c| c.id == "u-vpn" && c.active)
+            && cells.kind.get_untracked(&rt) == Ok(Some(ConnectionKind::Vpn))
+    });
+    let activated = mock_calls(&tokio, &conn, NM, ROOT, "ActivateConnection");
+    assert_eq!(activated.len(), 1);
+    // Down: it goes.
+    b.network
+        .dynamic()
+        .action(&rt, "down", Some(&vpn.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the VPN down", || {
+        list().iter().any(|c| c.id == "u-vpn" && !c.active)
+    });
+    assert_eq!(
+        mock_calls(&tokio, &conn, NM, ROOT, "DeactivateConnection").len(),
+        1
+    );
+    // Down of one that is not up: a failure naming it.
+    let wired = list().into_iter().find(|c| c.id == "u-wired").unwrap();
+    b.network
+        .dynamic()
+        .action(&rt, "down", Some(&wired.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Wired".to_string(), "it is not active".to_string())
+    );
+    // Up of one NetworkManager does not know: its error.
+    let gone = Connection {
+        id: "u-gone".into(),
+        name: "Gone".into(),
+        ..Connection::default()
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "up", Some(&gone.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the unknown one's failure", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(failures.lock().unwrap()[1].0, "Gone");
+
+    // Nobody reads them: the list goes.
+    b.network.release_field(field("connections"));
+    until(&rt, &s, "the list dropped", || list().is_empty());
+    s.shutdown();
+}
+
+/// (services-round) With no system bus, `up()` is refused as
+/// `failed(name, why)`.
+#[test]
+fn without_a_bus_up_fails_naming_the_connection() {
+    use strand_services::network::Connection;
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, strand_services::Buses::none());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let vpn = Connection {
+        id: "u-vpn".into(),
+        name: "Work VPN".into(),
+        ..Connection::default()
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "up", Some(&vpn.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Work VPN".to_string(), "no system bus".to_string())
+    );
+    s.shutdown();
+}

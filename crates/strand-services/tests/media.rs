@@ -880,3 +880,142 @@ fn media_says_what_the_active_player_can_do() {
     assert_eq!(can(), (false, false, false));
     s.shutdown();
 }
+
+/// (services-round) `media.players` lists every player keyed by its bus
+/// name, only while a visible reader reads it, each with its own track,
+/// time and actions; `p.select()` makes `media.*` follow it until
+/// another player starts playing; writing an item's `position` seeks
+/// that player.
+#[test]
+fn players_list_every_player_and_select_picks_the_one_media_follows() {
+    use strand_services::{Data, FromData, Step, ToData};
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (_a_conn, a) = player_with(
+        &tokio,
+        &bus.address,
+        "mpv",
+        "Paused",
+        "First",
+        30_000_000,
+        |t| t.trackid = Some("/org/mpv/track/7".into()),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let (_b_conn, v) = player(&tokio, &bus.address, "vlc", "Playing", "Other", 0);
+    until(&rt, &s, "vlc active", || {
+        cells.player.get_untracked(&rt) == Ok(Some("vlc".into()))
+    });
+    let list = || -> Vec<media::MediaPlayer> {
+        cells
+            .players
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, p)| p.clone())
+            .collect()
+    };
+    // Nobody reads the list: it is empty, and costs nothing.
+    assert!(list().is_empty());
+    let field = media::Media::FIELDS
+        .iter()
+        .position(|f| f.name == "players")
+        .unwrap();
+    b.media.acquire_field(field);
+    until(&rt, &s, "two players listed", || list().len() == 2);
+    let ps = list();
+    let mpv = ps.iter().find(|p| p.name == "mpv").unwrap().clone();
+    let vlc = ps.iter().find(|p| p.name == "vlc").unwrap().clone();
+    assert_eq!(mpv.id, "org.mpris.MediaPlayer2.mpv");
+    assert_eq!(mpv.title.as_deref(), Some("First"));
+    assert_eq!(mpv.elapsed, Duration::from_secs(30));
+    assert!(!mpv.active && !mpv.playing);
+    assert!(vlc.active && vlc.playing);
+    // The playing one's time ticks while the list is read.
+    until(&rt, &s, "vlc's time to pass", || {
+        list()
+            .iter()
+            .any(|p| p.name == "vlc" && p.elapsed >= Duration::from_secs(1))
+    });
+
+    // Select mpv: `media.*` follows it although vlc plays.
+    b.media
+        .dynamic()
+        .action(&rt, "select", Some(&mpv.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "mpv selected", || {
+        cells.player.get_untracked(&rt) == Ok(Some("mpv".into()))
+            && list().iter().any(|p| p.name == "mpv" && p.active)
+    });
+    assert_eq!(cells.title.get_untracked(&rt), Ok(Some("First".into())));
+    // An item's action reaches that player only.
+    b.media
+        .dynamic()
+        .action(
+            &rt,
+            "play_pause",
+            Some(&vlc.to_data()),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+    until(&rt, &s, "vlc paused", || {
+        list().iter().any(|p| p.name == "vlc" && !p.playing)
+    });
+    assert!(a.lock().unwrap().calls.is_empty(), "mpv was not asked");
+    assert_eq!(v.lock().unwrap().calls, ["PlayPause"]);
+    assert_eq!(
+        cells.player.get_untracked(&rt),
+        Ok(Some("mpv".into())),
+        "the selection holds"
+    );
+    // vlc starts playing again, after the selection: it is the active one.
+    b.media
+        .dynamic()
+        .action(
+            &rt,
+            "play_pause",
+            Some(&vlc.to_data()),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+    until(&rt, &s, "vlc active again", || {
+        cells.player.get_untracked(&rt) == Ok(Some("vlc".into()))
+    });
+
+    // Writing an item's position seeks that player, not the active one.
+    let held = list().into_iter().find(|p| p.name == "mpv").unwrap();
+    b.media
+        .dynamic()
+        .write_item(
+            &rt,
+            "Player",
+            &held.to_data(),
+            &[Step::Field("position".into())],
+            Data::Float(0.5),
+        )
+        .unwrap();
+    rt.flush();
+    until(&rt, &s, "mpv sought", || {
+        a.lock().unwrap().calls == ["SetPosition /org/mpv/track/7 100000000"]
+    });
+    until(&rt, &s, "mpv's place", || {
+        list()
+            .iter()
+            .any(|p| p.name == "mpv" && p.elapsed == Duration::from_secs(100))
+    });
+    assert!(v.lock().unwrap().calls.len() == 2, "vlc was not sought");
+
+    // Nobody reads the list any more: it empties.
+    b.media.release_field(field);
+    until(&rt, &s, "the list dropped", || list().is_empty());
+    let _ = media::MediaPlayer::from_data(&held.to_data()).unwrap();
+    s.shutdown();
+}

@@ -820,6 +820,58 @@ osd Playing { inhibit_idle: true; text \"x\" }
         assert_eq!(codes, ["check::type_mismatch"], "a timeout is a duration");
     }
 
+    /// (services-round, S2) The battery's history, the media players
+    /// and the saved network connections check against the served schema
+    /// and the builtin stubs alike, as the gap review's battery chart,
+    /// player switcher and VPN toggle use them.
+    #[test]
+    fn the_services_round_history_players_and_connections_check() {
+        let src = "let past = battery.history(10800s) ?? []
+let fine = battery.history(3600s, 120) ?? []
+bar Top {
+  row {
+    text join(\" \", past.len, fine.len)
+    for p in media.players key p.id {
+      box {
+        text p.name + (p.title ?? \"\") + (p.artist ?? \"\")
+        when p.active || p.playing { opacity: 1 }
+        slider { value: <-> p.position }
+        on click { p.select() }
+        box { on click { p.play_pause(); p.next(); p.previous() } }
+      }
+    }
+    if network.kind == vpn || network.kind == wireguard { text \"vpn\" }
+    for c in network.connections.filter(c => c.kind == vpn) key c.id {
+      box { when c.active { opacity: 1 }; on click { if c.active { c.down() } else { c.up() } } }
+    }
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for bad in [
+            // A span is a duration; a history is loading until it is in.
+            "bar B { text join(\" \", (battery.history(3600) ?? []).len) }\n",
+            "let h: [float] = battery.history(3600s)\nbar B { text join(\" \", h.len) }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.

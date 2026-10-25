@@ -29,6 +29,29 @@ record AccessPoint key ssid {
   action connect_with(password: text)
 }
 
+/// (services-round) A connection saved in NetworkManager (a Wi-Fi
+/// network joined before, a wired profile, a VPN, a WireGuard tunnel):
+/// an item of `network.connections`, keyed by its UUID.
+record Connection key id {
+  /// Its UUID, which stays when it is renamed: the key.
+  id: text
+  /// Its name, as the network settings show it (`Home`, `Work VPN`).
+  name: text
+  /// What kind of network it is: `if c.kind == vpn { … }`.
+  kind: ConnectionKind
+  /// It is up (activated; not while it is still being brought up).
+  active: bool
+  /// Brings it up (NetworkManager's `ActivateConnection`, on the device
+  /// NetworkManager picks): a VPN toggle's `on`. It is followed until it
+  /// is up; a failure, including one NetworkManager reports later (a
+  /// secret missing, a timeout), is `network.failed(name, error)`.
+  /// Over iwd it fails.
+  action up()
+  /// Takes it down (`DeactivateConnection`). When it is not up, or over
+  /// iwd, it fails, as `network.failed(name, error)`.
+  action down()
+}
+
 /// The network, followed live: from NetworkManager, or from iwd
 /// (`net.connman.iwd`) where NetworkManager does not run. Either one
 /// starting or stopping switches to the other. `network.disconnect()`
@@ -86,6 +109,22 @@ service network {
   /// A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu
   /// asks when it opens; over iwd, iwd's own scans too.
   scanning: bool
+  /// The kind of the connection carrying the traffic, so a bar picks
+  /// its icon: `match network.kind { wifi => …, ethernet => …, vpn |
+  /// wireguard => … }`. A VPN or WireGuard tunnel holding the default
+  /// route counts first, since traffic goes through it; else the
+  /// connection that holds it (NetworkManager's primary connection).
+  /// Null while not connected. Over iwd, `wifi` while a network is
+  /// joined.
+  kind: ConnectionKind?
+  /// The connections saved in NetworkManager, keyed by `id`, by name: a
+  /// VPN toggle (`for c in network.connections.filter(c => c.kind ==
+  /// vpn) key c.id { … }`), a wired profile, Wi-Fi networks joined
+  /// before. Read, and followed as they are added, changed or removed,
+  /// only while a visible reader reads them. NetworkManager's loopback
+  /// profile is left out. Over iwd, which knows only Wi-Fi networks,
+  /// it is empty.
+  connections: [Connection]
   /// Leaves the Wi-Fi network joined, or stops the one being joined; the
   /// daemon then joins nothing on its own until a network is joined again.
   /// A join it stops is no failure; if the disconnect itself fails, that
@@ -103,7 +142,8 @@ service network {
   /// Joining a network failed (no password and no secret agent to ask
   /// for one, a wrong one, out of range, timed out, or the service not
   /// running): `on network.failed(ssid, error) { … }`. `ssid` is the
-  /// network the action was about, "" for one that names none (`scan()`,
-  /// or a `disconnect()` the service could not take).
+  /// network the action was about (a connection's `name` for its `up()`
+  /// and `down()`), "" for one that names none (`scan()`, or a
+  /// `disconnect()` the service could not take).
   event failed(ssid: text, error: text)
 }

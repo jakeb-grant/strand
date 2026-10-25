@@ -416,6 +416,10 @@ impl Iwd {
             rx: 0.0,
             tx: 0.0,
             scanning: station_scans,
+            // (services-round) iwd knows only Wi-Fi: no saved
+            // connections to list.
+            kind: connected.then_some(super::ConnectionKind::Wifi),
+            connections: Vec::new(),
             failed: Event::default(),
         }
     }
@@ -1313,11 +1317,21 @@ pub(super) async fn run(
                             break 'body Next::Stop;
                         }
                     }
+                    Some(Msg::Action(NetworkAction::Up { item } | NetworkAction::Down { item })) => {
+                        // (services-round) Saved connections are
+                        // NetworkManager's.
+                        if !cx.emit(NetworkEvent::Failed((item.name, super::IWD_NO_CONNECTIONS.into()))) {
+                            break 'body Next::Stop;
+                        }
+                    }
                     Some(Msg::Action(a)) => {
                         let (item, password) = match a {
                             NetworkAction::Connect { item } => (item, None),
                             NetworkAction::ConnectWith { item, password } => (item, Some(password)),
-                            NetworkAction::Disconnect | NetworkAction::Scan => continue,
+                            NetworkAction::Disconnect
+                            | NetworkAction::Scan
+                            | NetworkAction::Up { .. }
+                            | NetworkAction::Down { .. } => continue,
                         };
                         // One join of a network at a time; a repeat is
                         // dropped.

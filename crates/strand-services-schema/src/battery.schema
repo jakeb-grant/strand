@@ -34,4 +34,14 @@ service battery {
   /// Every power source but line power, keyed by `id`: laptop batteries
   /// and the batteries of peripherals.
   devices: [PowerDevice]
+  /// The battery's charge over the last `span`, as UPower recorded it
+  /// (`GetHistory`, which UPower keeps across reboots): `points` charges,
+  /// 0 to 1, evenly spaced from `span` ago to now, oldest first, so a
+  /// chart shows the hours before the shell started: `let past =
+  /// battery.history(10800s) ?? []`. Each is the charge last recorded at
+  /// or before its time; the times before UPower's first record in the
+  /// span are left out, so the list may be shorter (it still ends now).
+  /// Of the laptop's first battery that keeps a history; an error when
+  /// none does. Asked only when called, never polled.
+  fn history(span: duration, points: int = 60) -> Async<[float]>
 }

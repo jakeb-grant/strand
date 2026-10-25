@@ -66,6 +66,10 @@ and every power source it reports.
 | `power` | `float` | Power draw in watts. |
 | `devices` | `[PowerDevice]` | Every power source but line power, keyed by `id`: laptop batteries and the batteries of peripherals. |
 
+| Method | |
+| --- | --- |
+| `fn history(span: duration, points: int = 60) -> Async<[float]>` | The battery's charge over the last `span`, as UPower recorded it (`GetHistory`, which UPower keeps across reboots): `points` charges, 0 to 1, evenly spaced from `span` ago to now, oldest first, so a chart shows the hours before the shell started: `let past = battery.history(10800s) ?? []`. Each is the charge last recorded at or before its time; the times before UPower's first record in the span are left out, so the list may be shorter (it still ends now). Of the laptop's first battery that keeps a history; an error when none does. Asked only when called, never polled. |
+
 ## `bluetooth`
 
 Bluetooth, from BlueZ, followed live: the first adapter, the devices
@@ -229,6 +233,7 @@ and only while a visible reader shows it.
 | `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
 | `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
 | `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
+| `players` | `[Player]` | Every player running, keyed by its bus name (`for p in media.players key p.id { … }`): a switcher, a card per player. The one `media.*` follows is `active`; `p.select()` picks another. Read only while a visible reader reads it; its playing players' times tick once a second then. |
 
 | Method | |
 | --- | --- |
@@ -278,6 +283,8 @@ networks now.
 | `rx` | `float` | Bytes a second received through the machine's network hardware (every interface backed by a device: Ethernet, Wi-Fi, a modem; not loopback, bridges, VPN tunnels or containers' links), from the kernel's counters whichever daemon runs: `graph network.rx { range: auto }`. Sampled once a second while a visible reader reads it or `tx`; while none does but a `graph` keeps history of the service, at the coarser of that and a twentieth of the graph's `history` (at least 2 s); otherwise not at all. 0 until the first second has passed. |
 | `tx` | `float` | Bytes a second sent, as `rx` counts them. |
 | `scanning` | `bool` | A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu asks when it opens; over iwd, iwd's own scans too. |
+| `kind` | `ConnectionKind?` | The kind of the connection carrying the traffic, so a bar picks its icon: `match network.kind { wifi => …, ethernet => …, vpn \| wireguard => … }`. A VPN or WireGuard tunnel holding the default route counts first, since traffic goes through it; else the connection that holds it (NetworkManager's primary connection). Null while not connected. Over iwd, `wifi` while a network is joined. |
+| `connections` | `[Connection]` | The connections saved in NetworkManager, keyed by `id`, by name: a VPN toggle (`for c in network.connections.filter(c => c.kind == vpn) key c.id { … }`), a wired profile, Wi-Fi networks joined before. Read, and followed as they are added, changed or removed, only while a visible reader reads them. NetworkManager's loopback profile is left out. Over iwd, which knows only Wi-Fi networks, it is empty. |
 
 | Method | |
 | --- | --- |
@@ -286,7 +293,7 @@ networks now.
 
 | Event | |
 | --- | --- |
-| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. `ssid` is the network the action was about, "" for one that names none (`scan()`, or a `disconnect()` the service could not take). |
+| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. `ssid` is the network the action was about (a connection's `name` for its `up()` and `down()`), "" for one that names none (`scan()`, or a `disconnect()` the service could not take). |
 
 ## `notifications`
 

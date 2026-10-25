@@ -143,6 +143,26 @@ newest first, keyed by `id`.
 | `action copy()` | Makes it the selection again; it moves to the front of the history: `on click { e.copy() }`. |
 | `action remove()` | Removes it from the history, its image file with it. |
 
+### `Connection`
+
+(services-round) A connection saved in NetworkManager (a Wi-Fi
+network joined before, a wired profile, a VPN, a WireGuard tunnel):
+an item of `network.connections`, keyed by its UUID.
+
+Keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `text` | Its UUID, which stays when it is renamed: the key. |
+| `name` | `text` | Its name, as the network settings show it (`Home`, `Work VPN`). |
+| `kind` | `ConnectionKind` | What kind of network it is: `if c.kind == vpn { … }`. |
+| `active` | `bool` | It is up (activated; not while it is still being brought up). |
+
+| Method | |
+| --- | --- |
+| `action up()` | Brings it up (NetworkManager's `ActivateConnection`, on the device NetworkManager picks): a VPN toggle's `on`. It is followed until it is up; a failure, including one NetworkManager reports later (a secret missing, a timeout), is `network.failed(name, error)`. Over iwd it fails. |
+| `action down()` | Takes it down (`DeactivateConnection`). When it is not up, or over iwd, it fails, as `network.failed(name, error)`. |
+
 ### `Date`
 
 A date and time of day, such as `clock.today`.
@@ -364,6 +384,37 @@ height: 1440, refresh: 144)` names one for `OutputChange.mode`.
 | `height` | `int` | Its height in hardware pixels. |
 | `refresh` | `float` | Its refresh rate in Hz (`59.951`), or 0 when it has no fixed rate. |
 
+### `Player`
+
+(services-round) One MPRIS player: an item of `media.players`, with
+the fields and actions `media` has for the active one.
+
+Keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `text` | Its bus name, such as `org.mpris.MediaPlayer2.spotify`: the key. |
+| `name` | `text` | Its name, such as `Spotify` or `mpv` (its MPRIS `Identity`, else its bus name's last part). |
+| `active` | `bool` | `media.*` follows it now. |
+| `playing` | `bool` | It is playing. |
+| `title` | `text?` | The track's title. |
+| `artist` | `text?` | The track's artist. |
+| `album` | `text?` | The track's album. |
+| `art` | `text?` | The album art, as `media.art` shows it. |
+| `position` | `float rw` | Fraction of the track played, 0 to 1. Writable: seeks this player, as writing `media.position` seeks the active one. |
+| `elapsed` | `duration` | Time played. |
+| `length` | `duration?` | The track's length, when known. |
+| `can_next` | `bool` | It can skip to the next track. |
+| `can_previous` | `bool` | It can go back to the previous track. |
+| `can_seek` | `bool` | Writing `position` seeks it. |
+
+| Method | |
+| --- | --- |
+| `action play_pause()` | Plays or pauses it. |
+| `action next()` | Skips it to the next track. |
+| `action previous()` | Takes it back to the previous track. |
+| `action select()` | Makes it the player `media.*` follows, until it leaves or another player starts playing: `on click { p.select() }`. |
+
 ### `PowerDevice`
 
 A power source UPower reports besides the combined battery: a
@@ -536,6 +587,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
 | `BlurFallback` | `tint`, `none` |
 | `Cap` | `butt`, `round`, `square` |
+| `ConnectionKind` | `wifi`, `ethernet`, `vpn`, `wireguard`, `other`. (services-round) What kind of network a connection is: a Wi-Fi network, a wired one, a VPN, a WireGuard tunnel, or another kind (a bridge, a modem, a hotspot shared over Bluetooth). |
 | `CornerStyle` | `round`, `squircle` |
 | `Curve` | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `in_back`, `out_back`, `out_elastic`, `out_bounce`, `standard`, `emphasized` |
 | `DropKind` | `files`, `app`, `text` |

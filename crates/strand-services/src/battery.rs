@@ -7,12 +7,19 @@
 //! `DeviceAdded`/`DeviceRemoved` are applied as they come; UPower
 //! restarting is read afresh without a shell reload, and UPower missing
 //! is "no battery" (`present` false) until it appears. Nothing polls.
+//!
+//! (services-round) `battery.history(span, points)` asks UPower's
+//! `GetHistory("charge", …)` of the first battery that keeps one, in a
+//! task of the body's own (so a slow answer holds up nothing), and
+//! resamples its records ([`resample`]) to `points` evenly spaced
+//! charges, oldest first, the last at the moment it was asked. Only
+//! when asked: nothing is read for it otherwise.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
-use crate::{Cx, ServiceError, Store, service};
+use crate::{Call, Cx, Msg, Reply, ServiceError, Store, service};
 
 /// The schema the `battery` service serves.
 pub const SCHEMA: &str = strand_services_schema::BATTERY;
@@ -35,8 +42,24 @@ pub struct PowerDevice {
     pub icon: String,
 }
 
+/// (services-round) `battery`'s async methods.
+#[derive(Call, Debug)]
+pub enum BatteryCall {
+    /// `battery.history(span, points)`: `points` null asks
+    /// [`HISTORY_POINTS`].
+    History { span: Duration, points: Option<i64> },
+}
+
+/// How many charges `battery.history(span)` gives when `points` is left
+/// out.
+pub const HISTORY_POINTS: usize = 60;
+
+/// The most charges `battery.history` gives (a larger `points` asks
+/// this many).
+pub const MAX_HISTORY_POINTS: usize = 2000;
+
 /// See the module docs.
-#[service(name = "battery")]
+#[service(name = "battery", call = BatteryCall)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Battery {
     /// A battery is present: `if battery.present { Battery }`.
@@ -155,6 +178,8 @@ impl Battery {
         };
         let mut daemon = Daemon::follow(&conn, UPOWER, ROOT).await?;
         let mut upower = UPower::default();
+        // (services-round) `history` calls being answered.
+        let mut asks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         loop {
             // (Re)read everything from the current owner, if any.
             upower
@@ -178,13 +203,93 @@ impl Battery {
                             }
                         }
                     },
-                    m = cx.recv() => if m.is_none() {
-                        return Ok(());
+                    Some(_) = asks.join_next(), if !asks.is_empty() => {}
+                    m = cx.recv() => match m {
+                        None => return Ok(()),
+                        Some(Msg::Call(BatteryCall::History { span, points }, reply)) => {
+                            upower.history(&daemon, &mut asks, span, points, reply);
+                        }
+                        Some(_) => {}
                     },
                 }
             }
         }
     }
+}
+
+/// UPower's `GetHistory` type for the charge.
+const CHARGE: &str = "charge";
+
+/// `points` charges (0 to 1) evenly spaced over the `span` before `now`
+/// (unix seconds), oldest first, the last at `now`: each the newest of
+/// `records` (UPower's `(time, percent)`, in any order) at or before
+/// its time. Points before the first record are left out, so the list
+/// is shorter than `points` when the records start within the span (it
+/// still ends at `now`; a chart aligns it right); no records, none.
+pub fn resample(records: &[(u64, f64)], now: u64, span: Duration, points: usize) -> Vec<f64> {
+    let mut records: Vec<(u64, f64)> = records
+        .iter()
+        .copied()
+        .filter(|(_, p)| p.is_finite())
+        .collect();
+    records.sort_by_key(|(t, _)| *t);
+    if records.is_empty() || points == 0 {
+        return Vec::new();
+    }
+    let now = now as f64;
+    let span = span.as_secs_f64();
+    let step = if points > 1 {
+        span / (points - 1) as f64
+    } else {
+        0.0
+    };
+    (0..points)
+        .filter_map(|i| {
+            let at = now - span + step * i as f64;
+            let at = if i + 1 == points { now } else { at };
+            records
+                .iter()
+                .take_while(|(t, _)| *t as f64 <= at)
+                .last()
+                .map(|(_, p)| (p / 100.0).clamp(0.0, 1.0))
+        })
+        .collect()
+}
+
+/// Asks `path`'s charge history over `span` and resamples it.
+async fn history(
+    conn: zbus::Connection,
+    path: String,
+    span: Duration,
+    points: usize,
+) -> Result<Vec<f64>, String> {
+    // UPower's resolution is about how many records it gives: asked
+    // for twice the points, so each point has its own record.
+    let resolution = u32::try_from(points.saturating_mul(2)).unwrap_or(u32::MAX);
+    let seconds = u32::try_from(span.as_secs().max(1)).unwrap_or(u32::MAX);
+    let answer = dbus::timed(conn.call_method(
+        Some(UPOWER),
+        path.as_str(),
+        Some(DEVICE),
+        "GetHistory",
+        &(CHARGE, seconds, resolution),
+    ))
+    .await
+    .map_err(|e| format!("UPower kept no history: {e}"))?;
+    let records: Vec<(u32, f64, u32)> = answer
+        .body()
+        .deserialize()
+        .map_err(|e| format!("UPower's history did not read: {e}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let records: Vec<(u64, f64)> = records
+        .into_iter()
+        // A record of unknown state holds no charge.
+        .filter(|(_, _, state)| *state != 0)
+        .map(|(t, p, _)| (u64::from(t), p))
+        .collect();
+    Ok(resample(&records, now, span, points))
 }
 
 /// UPower's properties as last read.
@@ -197,6 +302,50 @@ struct UPower {
 impl UPower {
     fn state(&self) -> Battery {
         Battery::from_upower(&self.display, &self.devices)
+    }
+
+    /// The battery whose history `history` asks: the first (by path)
+    /// that is a laptop battery (`Type` 2) powering the machine
+    /// (`PowerSupply`) and keeps a history (`HasHistory`; one that does
+    /// not say counts as keeping one).
+    fn history_device(&self) -> Option<String> {
+        self.devices
+            .iter()
+            .find(|(_, p)| {
+                dbus::number(p, "Type") == Some(2.0)
+                    && dbus::boolean(p, "PowerSupply") != Some(false)
+                    && dbus::boolean(p, "HasHistory") != Some(false)
+            })
+            .map(|(path, _)| path.clone())
+    }
+
+    /// Answers `battery.history(span, points)` in a task of `asks`.
+    fn history(
+        &self,
+        daemon: &Daemon,
+        asks: &mut tokio::task::JoinSet<()>,
+        span: Duration,
+        points: Option<i64>,
+        reply: Reply,
+    ) {
+        let points = points.map_or(HISTORY_POINTS, |n| {
+            usize::try_from(n.max(1))
+                .unwrap_or(1)
+                .min(MAX_HISTORY_POINTS)
+        });
+        let Some(path) = self.history_device() else {
+            reply.send::<Vec<f64>, _>(Err(if daemon.owner().is_none() {
+                "UPower is not running"
+            } else {
+                "no battery keeps a history"
+            }));
+            return;
+        };
+        let conn = daemon.conn().clone();
+        asks.spawn(async move {
+            let r = history(conn, path, span, points).await;
+            reply.send(r);
+        });
     }
 
     /// Read everything; a hung UPower (no answer in
@@ -332,9 +481,54 @@ mod tests {
             Battery::default()
         );
         assert_eq!(level_icon(1.0, false), "battery-level-100-charged-symbolic");
+        // (services-round) The history's battery: a laptop battery
+        // powering the machine, not a mouse's.
+        let mut upower = UPower {
+            devices,
+            ..UPower::default()
+        };
+        assert_eq!(upower.history_device(), None);
+        upower.devices.insert(
+            "/x/bat0".to_string(),
+            props(&[
+                ("Type", OwnedValue::from(2u32)),
+                ("PowerSupply", OwnedValue::from(true)),
+            ]),
+        );
+        upower.devices.insert(
+            "/x/bat1".to_string(),
+            props(&[("Type", OwnedValue::from(2u32))]),
+        );
+        assert_eq!(upower.history_device().as_deref(), Some("/x/bat0"));
         assert_eq!(
             level_icon(0.96, true),
             "battery-level-100-charging-symbolic"
         );
+    }
+
+    /// (services-round) Records become evenly spaced charges, oldest
+    /// first, the last at now; times before the first record are left
+    /// out; records come in any order.
+    #[test]
+    fn a_history_is_resampled_to_even_points() {
+        let now = 10_000;
+        let hour = Duration::from_secs(3600);
+        // Newest first, as UPower answers.
+        let records = [(now - 100, 40.0), (now - 1800, 60.0), (now - 3600, 80.0)];
+        assert_eq!(
+            resample(&records, now, hour, 5),
+            [0.8, 0.8, 0.6, 0.6, 0.4],
+            "every 15 minutes: the last record at or before each"
+        );
+        // Records starting within the span: the earlier points go.
+        let late = [(now - 1000, 50.0), (now - 10, 49.0)];
+        assert_eq!(resample(&late, now, hour, 5), [0.5, 0.49]);
+        // One point is now's.
+        assert_eq!(resample(&records, now, hour, 1), [0.4]);
+        assert!(resample(&[], now, hour, 5).is_empty());
+        assert!(resample(&records, now, hour, 0).is_empty());
+        // Percentages past 100 or below 0 clamp; not numbers are dropped.
+        let odd = [(now - 3600, 120.0), (now - 1800, f64::NAN), (now - 5, -3.0)];
+        assert_eq!(resample(&odd, now, hour, 3), [1.0, 1.0, 0.0]);
     }
 }

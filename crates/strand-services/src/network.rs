@@ -27,6 +27,18 @@
 //! password is a repeat, dropped, whether it is still being asked or
 //! already activating.
 //!
+//! (services-round) `connections` lists NetworkManager's saved
+//! connections (`Settings.ListConnections`, each one's `GetSettings`),
+//! a `#[store(keyed, stream)]` field read, and its settings' signals
+//! followed, only while a visible reader reads it; `c.up()` activates
+//! one (`ActivateConnection`, NetworkManager choosing the device) and
+//! follows it until it is up as a join is, and `c.down()` deactivates
+//! its active connection, each in a task; a failure is `failed(name,
+//! error)`. `kind` is the kind of the connection carrying the traffic
+//! (the activated one holding the default route, a VPN first). Over iwd,
+//! which knows only Wi-Fi networks, `kind` is `wifi` while one is
+//! joined, `connections` is empty and `up()`/`down()` fail saying so.
+//!
 //! Where NetworkManager is not running and iwd is, the network is iwd's
 //! ([`iwd`], owner-testing gaps 15): NetworkManager is chosen whenever it
 //! runs (it may run iwd as its own Wi-Fi backend), iwd otherwise; either
@@ -70,6 +82,52 @@ const SETTINGS_IFACE: &str = "org.freedesktop.NetworkManager.Settings";
 const CONNECTION_IFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 const AP_NAMESPACE: &str = "/org/freedesktop/NetworkManager/AccessPoint";
 
+/// (services-round) What kind of network a connection is
+/// (`network.kind`, `Connection.kind`).
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[data(name = "ConnectionKind")]
+pub enum ConnectionKind {
+    Wifi,
+    Ethernet,
+    Vpn,
+    Wireguard,
+    #[default]
+    Other,
+}
+
+impl ConnectionKind {
+    /// The kind of a NetworkManager connection `type` (`connection.type`,
+    /// an active connection's `Type`).
+    pub fn of_nm(t: &str) -> ConnectionKind {
+        match t {
+            "802-11-wireless" => ConnectionKind::Wifi,
+            "802-3-ethernet" => ConnectionKind::Ethernet,
+            "vpn" => ConnectionKind::Vpn,
+            "wireguard" => ConnectionKind::Wireguard,
+            _ => ConnectionKind::Other,
+        }
+    }
+
+    fn tunnel(self) -> bool {
+        matches!(self, ConnectionKind::Vpn | ConnectionKind::Wireguard)
+    }
+}
+
+/// (services-round) A saved connection: an item of
+/// `network.connections`, keyed by its UUID.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "Connection", key = id)]
+pub struct Connection {
+    pub id: String,
+    pub name: String,
+    pub kind: ConnectionKind,
+    pub active: bool,
+}
+
+/// Why `up()` and `down()` fail over iwd (`network.failed`'s error).
+pub const IWD_NO_CONNECTIONS: &str =
+    "iwd knows only Wi-Fi networks: saved connections need NetworkManager";
+
 /// A Wi-Fi network in range.
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
 #[data(name = "AccessPoint", key = ssid)]
@@ -107,6 +165,10 @@ pub enum NetworkAction {
     Disconnect,
     /// `network.scan()`.
     Scan,
+    /// (services-round) `c.up()` for `c` in `network.connections`.
+    Up { item: Connection },
+    /// `c.down()`.
+    Down { item: Connection },
 }
 
 /// See the module docs.
@@ -169,11 +231,29 @@ pub struct Network {
     /// A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu
     /// asks when it opens; over iwd, iwd's own scans too.
     pub scanning: bool,
+    /// The kind of the connection carrying the traffic, so a bar picks
+    /// its icon: `match network.kind { wifi => …, ethernet => …, vpn |
+    /// wireguard => … }`. A VPN or WireGuard tunnel holding the default
+    /// route counts first, since traffic goes through it; else the
+    /// connection that holds it (NetworkManager's primary connection).
+    /// Null while not connected. Over iwd, `wifi` while a network is
+    /// joined.
+    pub kind: Option<ConnectionKind>,
+    /// The connections saved in NetworkManager, keyed by `id`, by name: a
+    /// VPN toggle (`for c in network.connections.filter(c => c.kind ==
+    /// vpn) key c.id { … }`), a wired profile, Wi-Fi networks joined
+    /// before. Read, and followed as they are added, changed or removed,
+    /// only while a visible reader reads them. NetworkManager's loopback
+    /// profile is left out. Over iwd, which knows only Wi-Fi networks,
+    /// it is empty.
+    #[store(keyed, stream)]
+    pub connections: Vec<Connection>,
     /// Joining a network failed (no password and no secret agent to ask
     /// for one, a wrong one, out of range, timed out, or the service not
     /// running): `on network.failed(ssid, error) { … }`. `ssid` is the
-    /// network the action was about, "" for one that names none (`scan()`,
-    /// or a `disconnect()` the service could not take).
+    /// network the action was about (a connection's `name` for its `up()`
+    /// and `down()`), "" for one that names none (`scan()`, or a
+    /// `disconnect()` the service could not take).
     pub failed: Event<(String, String)>,
 }
 
@@ -185,6 +265,7 @@ fn refused(action: &NetworkAction, error: &str) -> Option<NetworkEvent> {
         NetworkAction::Connect { item } | NetworkAction::ConnectWith { item, .. } => {
             item.ssid.clone()
         }
+        NetworkAction::Up { item } | NetworkAction::Down { item } => item.name.clone(),
         NetworkAction::Disconnect | NetworkAction::Scan => String::new(),
     };
     Some(NetworkEvent::Failed((ssid, error.to_string())))
@@ -450,6 +531,18 @@ pub struct Nm {
     /// A Wi-Fi device's `LastScan` changed since this was last taken: a
     /// scan ended.
     scanned: bool,
+    /// (services-round) The saved connections, by settings path, while
+    /// they are read (`connections` watched).
+    profiles: Option<BTreeMap<String, Profile>>,
+}
+
+/// (services-round) A saved connection's settings that `connections`
+/// shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Profile {
+    uuid: String,
+    name: String,
+    kind: String,
 }
 
 impl Nm {
@@ -518,6 +611,85 @@ impl Nm {
         })
     }
 
+    /// (services-round) The kind of the connection carrying the
+    /// traffic: the activated one holding the default route (IPv4, else
+    /// IPv6; a VPN or WireGuard tunnel first, since traffic goes through
+    /// it), else the manager's `PrimaryConnection` (or its
+    /// `PrimaryConnectionType`). Null while not connected.
+    fn kind(&self) -> Option<ConnectionKind> {
+        if dbus::number(&self.manager, "State").unwrap_or(0.0) < 50.0 {
+            return None;
+        }
+        let kind_of = |c: &Props| dbus::text(c, "Type").map(|t| ConnectionKind::of_nm(&t));
+        let activated = || {
+            self.active
+                .values()
+                .filter(|c| dbus::number(c, "State").map(|n| n as u32) == Some(ACTIVATED))
+        };
+        for key in ["Default", "Default6"] {
+            let mut defaults: Vec<ConnectionKind> = activated()
+                .filter(|c| dbus::boolean(c, key).unwrap_or(false))
+                .filter_map(kind_of)
+                .collect();
+            defaults.sort_by_key(|k| !k.tunnel());
+            if let Some(k) = defaults.first() {
+                return Some(*k);
+            }
+        }
+        object_path(&self.manager, "PrimaryConnection")
+            .and_then(|p| self.active.get(&p))
+            .and_then(kind_of)
+            .or_else(|| {
+                dbus::text(&self.manager, "PrimaryConnectionType")
+                    .filter(|t| !t.is_empty())
+                    .map(|t| ConnectionKind::of_nm(&t))
+            })
+    }
+
+    /// (services-round) The saved connections, by name, each active when
+    /// an activated connection is its; empty while not read.
+    fn connections(&self) -> Vec<Connection> {
+        let Some(profiles) = &self.profiles else {
+            return Vec::new();
+        };
+        let mut out: Vec<Connection> = profiles
+            .values()
+            .map(|p| Connection {
+                id: p.uuid.clone(),
+                name: p.name.clone(),
+                kind: ConnectionKind::of_nm(&p.kind),
+                active: self.active.values().any(|c| {
+                    dbus::text(c, "Uuid").as_deref() == Some(p.uuid.as_str())
+                        && dbus::number(c, "State").map(|n| n as u32) == Some(ACTIVATED)
+                }),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        out
+    }
+
+    /// (services-round) The active connection of saved connection `uuid`
+    /// that is not yet deactivated, for `down()`.
+    fn active_of(&self, uuid: &str) -> Option<String> {
+        self.active
+            .iter()
+            .find(|(_, c)| {
+                dbus::text(c, "Uuid").as_deref() == Some(uuid)
+                    && dbus::number(c, "State").map(|n| n as u32) != Some(DEACTIVATED)
+            })
+            .map(|(path, _)| path.clone())
+    }
+
+    /// (services-round) The settings path of saved connection `uuid`, as
+    /// last read.
+    fn profile_path(&self, uuid: &str) -> Option<String> {
+        self.profiles
+            .as_ref()?
+            .iter()
+            .find(|(_, p)| p.uuid == uuid)
+            .map(|(path, _)| path.clone())
+    }
+
     /// The state these objects make.
     pub fn state(&self, scanning: bool) -> Network {
         let state = dbus::number(&self.manager, "State").unwrap_or(0.0);
@@ -582,6 +754,8 @@ impl Nm {
             rx: 0.0,
             tx: 0.0,
             scanning: false,
+            kind: self.kind(),
+            connections: self.connections(),
             failed: Event::default(),
         }
     }
@@ -590,10 +764,13 @@ impl Nm {
     /// point in range too). Each read is bounded ([`dbus::READ_TIMEOUT`]):
     /// a hung NetworkManager is an error (the run fails and is retried),
     /// an object gone meanwhile is left out.
-    async fn read(&mut self, daemon: &Daemon, scanning: bool) -> zbus::Result<()> {
+    async fn read(&mut self, daemon: &Daemon, scanning: bool, profiles: bool) -> zbus::Result<()> {
         *self = Nm::default();
         if daemon.owner().is_none() {
             return Ok(());
+        }
+        if profiles {
+            self.profiles = Some(read_profiles(daemon.conn()).await?);
         }
         let conn = daemon.conn();
         let read = |path: String, iface: &'static str| async move {
@@ -715,6 +892,127 @@ impl Nm {
     }
 }
 
+/// (services-round) NetworkManager's saved connections, by settings path:
+/// each one's `connection` settings (`id`, `uuid`, `type`); the loopback
+/// connection NetworkManager may keep is no network and is left out. A
+/// hung NetworkManager is an error; a connection gone meanwhile is left
+/// out.
+async fn read_profiles(conn: &zbus::Connection) -> zbus::Result<BTreeMap<String, Profile>> {
+    let listed = dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(
+            Some(NM),
+            SETTINGS,
+            Some(SETTINGS_IFACE),
+            "ListConnections",
+            &(),
+        ),
+    )
+    .await;
+    let paths = match listed {
+        Ok(r) => dbus::paths(r.body().deserialize()?),
+        Err(e) if dbus::is_timeout(&e) => return Err(e),
+        Err(e) => {
+            log::debug!("network: no saved connections: {e}");
+            return Ok(BTreeMap::new());
+        }
+    };
+    let mut out = BTreeMap::new();
+    for path in paths {
+        let settings = dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(
+                Some(NM),
+                path.as_str(),
+                Some(CONNECTION_IFACE),
+                "GetSettings",
+                &(),
+            ),
+        )
+        .await;
+        let settings: HashMap<String, HashMap<String, OwnedValue>> = match settings {
+            Ok(r) => match r.body().deserialize() {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(_) => continue,
+        };
+        let Some(c) = settings.get("connection") else {
+            continue;
+        };
+        let text = |k: &str| {
+            c.get(k)
+                .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
+                .unwrap_or_default()
+        };
+        let kind = text("type");
+        if kind == "loopback" {
+            continue;
+        }
+        out.insert(
+            path,
+            Profile {
+                uuid: text("uuid"),
+                name: text("id"),
+                kind,
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// (services-round) What `up()` and `down()` asked, answered.
+#[derive(Debug)]
+enum Switched {
+    /// `up()` of the connection named so: its active connection, or why
+    /// not.
+    Up(String, Result<String, String>),
+    /// `down()` of the connection named so: done, or why not.
+    Down(String, Result<(), String>),
+}
+
+/// (services-round) Activates saved connection `uuid` (`path` when it
+/// was read), NetworkManager choosing the device.
+async fn activate(
+    conn: zbus::Connection,
+    path: Option<String>,
+    uuid: String,
+) -> Result<String, String> {
+    let path = match path {
+        Some(p) => p,
+        None => {
+            let r = dbus::timed(conn.call_method(
+                Some(NM),
+                SETTINGS,
+                Some(SETTINGS_IFACE),
+                "GetConnectionByUuid",
+                &(uuid.as_str(),),
+            ))
+            .await
+            .map_err(error_text)?;
+            let p: zbus::zvariant::OwnedObjectPath = r.body().deserialize().map_err(error_text)?;
+            p.to_string()
+        }
+    };
+    let none = zbus::zvariant::ObjectPath::from_static_str_unchecked("/");
+    let target = zbus::zvariant::ObjectPath::try_from(path.as_str()).map_err(|e| e.to_string())?;
+    let r = dbus::timed_for(
+        ACTIVATE_TIMEOUT,
+        conn.call_method(
+            Some(NM),
+            ROOT,
+            Some(NM),
+            "ActivateConnection",
+            &(target, none.clone(), none),
+        ),
+    )
+    .await
+    .map_err(error_text)?;
+    let active: zbus::zvariant::OwnedObjectPath = r.body().deserialize().map_err(error_text)?;
+    Ok(active.to_string())
+}
+
 impl Network {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         // The rates come from the kernel, whichever daemon runs.
@@ -834,6 +1132,10 @@ async fn with_nm(
     let mut addresses = Addresses::default();
     // The access points are listed (a reader reads them).
     let mut listing = cx.watched("access_points");
+    // (services-round) The saved connections are listed, and `up()` and
+    // `down()` asked and not answered yet.
+    let mut profiles = cx.watched("connections");
+    let mut switching: JoinSet<Switched> = JoinSet::new();
     let mut used = None;
     // A scan is asked for when listing starts and when a new
     // NetworkManager appears, not on every re-read.
@@ -848,7 +1150,17 @@ async fn with_nm(
         if listing {
             sync_subscriptions(&mut daemon, &nm, listing, false, &mut used).await;
         }
-        if let Err(e) = nm.read(&daemon, listing).await {
+        if profiles {
+            if !daemon.subscribed("settings")
+                && let Ok(r) = dbus::namespace_rule(SETTINGS)
+                && let Err(e) = daemon.subscribe("settings", r).await
+            {
+                log::debug!("network: no saved connections' signals: {e}");
+            }
+        } else {
+            daemon.unsubscribe("settings");
+        }
+        if let Err(e) = nm.read(&daemon, listing, profiles).await {
             return Err(ServiceError(format!("NetworkManager did not answer: {e}")));
         }
         if !settle_joins(cx, &nm, &mut joining) {
@@ -899,6 +1211,7 @@ async fn with_nm(
                         // this would not follow.
                         asking.shutdown().await;
                         leaving.shutdown().await;
+                        switching.shutdown().await;
                         leave = None;
                         stopped = Stopped::default();
                         pending = Pending {
@@ -935,9 +1248,9 @@ async fn with_nm(
                             } else if stopped.state_changed(&path, state, reason) {
                                 // A join the disconnect in flight stopped:
                                 // settled when it answers.
-                            } else if !asking.is_empty() {
-                                // Perhaps a join whose answer is still
-                                // on its way.
+                            } else if !asking.is_empty() || !switching.is_empty() {
+                                // Perhaps a join (or an `up()`) whose
+                                // answer is still on its way.
                                 ended.note(path, state, reason);
                             }
                         }
@@ -1047,7 +1360,7 @@ async fn with_nm(
                                 let conn = daemon.conn().clone();
                                 leaving.spawn(async move { deactivate(&conn, &active).await });
                             }
-                            if asking.is_empty() {
+                            if asking.is_empty() && switching.is_empty() {
                                 ended.clear();
                             }
                             continue;
@@ -1070,7 +1383,7 @@ async fn with_nm(
                                 }
                                 Err(e) => stopped.failures.push((ssid, error_text(e))),
                             }
-                            if asking.is_empty() {
+                            if asking.is_empty() && switching.is_empty() {
                                 ended.clear();
                             }
                             continue;
@@ -1104,7 +1417,7 @@ async fn with_nm(
                             Some(error_text(e))
                         }
                     };
-                    if asking.is_empty() {
+                    if asking.is_empty() && switching.is_empty() {
                         ended.clear();
                     }
                     if let Some(error) = failure
@@ -1127,12 +1440,73 @@ async fn with_nm(
                         return Ok(Next::Stop);
                     }
                 }
+                Some(done) = switching.join_next(), if !switching.is_empty() => {
+                    let failure = match done {
+                        Ok(Switched::Up(name, Ok(active))) => match ended.take(&active) {
+                            Some((ACTIVATED, _)) => None,
+                            Some((_, reason)) => Some((name, reason_text(reason))),
+                            None => {
+                                // Followed until it is up (or not), as
+                                // a join is.
+                                let seen = nm.active.contains_key(&active);
+                                joining.insert(active, Joining { ssid: name, seen, asked_with: fingerprint(None) });
+                                if !settle_joins(cx, &nm, &mut joining) {
+                                    return Ok(Next::Stop);
+                                }
+                                None
+                            }
+                        },
+                        Ok(Switched::Up(name, Err(e)) | Switched::Down(name, Err(e))) => Some((name, e)),
+                        Ok(Switched::Down(_, Ok(()))) => None,
+                        Err(e) => {
+                            log::debug!("network: a switch stopped: {e}");
+                            None
+                        }
+                    };
+                    if asking.is_empty() && switching.is_empty() {
+                        ended.clear();
+                    }
+                    if let Some((name, error)) = failure {
+                        log::info!("network: switching {name} failed: {error}");
+                        if !cx.emit(NetworkEvent::Failed((name, error))) {
+                            return Ok(Next::Stop);
+                        }
+                    }
+                }
                 m = cx.recv() => match m {
                     None => return Ok(Next::Stop),
                     Some(Msg::Watch { field: "access_points", on }) => {
                         listing = on;
                         want_scan = on;
                         break 'follow;
+                    }
+                    Some(Msg::Watch { field: "connections", on }) => {
+                        profiles = on;
+                        break 'follow;
+                    }
+                    Some(Msg::Action(NetworkAction::Up { item })) => {
+                        let conn = daemon.conn().clone();
+                        let path = nm.profile_path(&item.id);
+                        let name = item.name;
+                        switching.spawn(async move {
+                            Switched::Up(name, activate(conn, path, item.id).await)
+                        });
+                    }
+                    Some(Msg::Action(NetworkAction::Down { item })) => {
+                        let Some(active) = nm.active_of(&item.id) else {
+                            if !cx.emit(NetworkEvent::Failed((item.name, "it is not active".into()))) {
+                                return Ok(Next::Stop);
+                            }
+                            continue;
+                        };
+                        // Not followed as a join any more: its end is
+                        // what was asked.
+                        joining.remove(&active);
+                        let conn = daemon.conn().clone();
+                        let name = item.name;
+                        switching.spawn(async move {
+                            Switched::Down(name, deactivate(&conn, &active).await)
+                        });
                     }
                     Some(Msg::Write(w)) if w.field == "wifi" => {
                         let on: bool = w.value().unwrap_or(nm.state(listing).wifi);
@@ -1231,7 +1605,10 @@ async fn with_nm(
                         let (item, password) = match a {
                             NetworkAction::Connect { item } => (item, None),
                             NetworkAction::ConnectWith { item, password } => (item, Some(password)),
-                            NetworkAction::Disconnect | NetworkAction::Scan => continue,
+                            NetworkAction::Disconnect
+                            | NetworkAction::Scan
+                            | NetworkAction::Up { .. }
+                            | NetworkAction::Down { .. } => continue,
                         };
                         // Asked in a task (up to 25 s for the
                         // activation): NetworkManager's signals, the
