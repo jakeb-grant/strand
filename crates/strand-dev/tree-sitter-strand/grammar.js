@@ -193,7 +193,7 @@ module.exports = grammar({
 
     surface: $ => choice(
       seq(
-        field('kind', choice('bar', 'panel', 'osd')),
+        field('kind', choice('bar', 'panel', 'osd', 'window')),
         field('name', $.identifier),
         field('body', $.tree_block),
       ),

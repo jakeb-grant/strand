@@ -23,8 +23,11 @@ use crate::layout::{MAX_CONTENT_SIZE, RootSize, layout};
 /// centre.
 pub(super) fn centred_overhang(spec: &SurfaceSpec, o: Insets) -> Insets {
     // A popup's box is its window geometry, which the compositor places:
-    // its overhang may be uneven.
-    if matches!(spec.kind, NodeKind::Bar | NodeKind::Popup) {
+    // its overhang may be uneven; (window) so is a window's.
+    if matches!(
+        spec.kind,
+        NodeKind::Bar | NodeKind::Popup | NodeKind::Window
+    ) {
         return o;
     }
     let (h, v) = match spec.anchor {
@@ -113,6 +116,11 @@ pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
 /// compositor's slide or flip of a popup that does not fit is not
 /// followed.
 pub fn resize_share(spec: &SurfaceSpec, parent: Option<&SurfaceSpec>) -> (f32, f32) {
+    // (window) A floating window keeps its top-left corner as it
+    // resizes, as compositors keep any window's.
+    if spec.kind == NodeKind::Window {
+        return (0.0, 0.0);
+    }
     if spec.kind == NodeKind::Popup {
         let bar_edge = parent
             .filter(|p| p.kind == NodeKind::Bar)
@@ -176,9 +184,7 @@ impl Renderer {
         drawn: LogicalRect,
         size: LogicalSize,
     ) -> bool {
-        if self.anim.reduced()
-            || !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd | NodeKind::Popup)
-        {
+        if self.anim.reduced() || !self.grows(root, spec) {
             return false;
         }
         let Some(&(cw, ch)) = self.content_sized.get(&root) else {
@@ -190,6 +196,49 @@ impl Renderer {
                 && self.step_curve(root, axis) != Curve::Instant
         };
         springs(cw, 0, drawn.w, size.w) || springs(ch, 1, drawn.h, size.h)
+    }
+
+    /// (growth) Whether the surface node `root`, described by `spec`,
+    /// asks for its content's size and springs over a step of it: a
+    /// panel, OSD or popup, and (window) a window the compositor has not
+    /// given a size on either axis (a floating one at its own size).
+    pub(super) fn grows(&self, root: NodeId, spec: &SurfaceSpec) -> bool {
+        match spec.kind {
+            NodeKind::Panel | NodeKind::Osd | NodeKind::Popup => true,
+            NodeKind::Window => self.window_sized.get(&root).is_none_or(|&(w, h)| !w && !h),
+            _ => false,
+        }
+    }
+
+    /// (window) The compositor's configure of the window on `surface`
+    /// gave it a size on these axes (`(false, false)`: it left the size
+    /// to the window). On such an axis the window fills what it was
+    /// given: it asks for no other size, holds no frame for one and
+    /// springs nothing, so it never fights a tiling layout, a maximize
+    /// or a drag of its edge. Ignored for any other surface.
+    pub fn set_window_sized(&mut self, surface: SurfaceId, sized: (bool, bool)) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        if self
+            .tree
+            .get(root)
+            .is_none_or(|n| n.kind != NodeKind::Window)
+        {
+            return;
+        }
+        let was = self.window_sized.get(&root).copied().unwrap_or_default();
+        if was == sized {
+            return;
+        }
+        if sized == (false, false) {
+            self.window_sized.remove(&root);
+        } else {
+            self.window_sized.insert(root, sized);
+        }
+        self.held.remove(&root);
+        self.spec_dirty.insert(root);
+        self.refresh_specs();
     }
 
     /// (popup-shrink) [`resize_share`] of the surface node `root`.
@@ -322,6 +371,9 @@ impl Renderer {
         };
         let w = fit(spec.width, b.map(|b| b.w), m.left + m.right).map(|w| w + o.left + o.right);
         let h = fit(spec.height, b.map(|b| b.h), m.top + m.bottom).map(|h| h + o.top + o.bottom);
+        // (window) An axis the compositor sized asks for nothing.
+        let (cw, ch) = self.window_sized.get(&root).copied().unwrap_or_default();
+        let (w, h) = (w.filter(|_| !cw), h.filter(|_| !ch));
         Some(match (spec.kind, spec.edge) {
             (NodeKind::Bar, Some(Edge::Left | Edge::Right)) => (w, None),
             (NodeKind::Bar, _) => (None, h),
@@ -712,6 +764,7 @@ impl Renderer {
             self.surface_changes.push((id, SurfaceChange::Removed));
         }
         self.content_sized.retain(|id, _| live.contains(id));
+        self.window_sized.retain(|id, _| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.shadow_held.retain(|id| live.contains(id));
         self.held_reach.retain(|id, _| live.contains(id));

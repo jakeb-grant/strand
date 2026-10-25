@@ -234,6 +234,24 @@ impl Forward {
         }
     }
 
+    /// (window) What the compositor said of the window on `surface`,
+    /// to its root's states: `w.focused` (activated), `w.maximized`,
+    /// `w.fullscreen`, `w.tiled`, `w.decorated`.
+    pub(crate) fn window_state(&self, surface: SurfaceId, state: &strand_surface::ToplevelState) {
+        let Some(&node) = self.surfaces.get(&surface) else {
+            return;
+        };
+        for (flag, on) in [
+            (NodeFlag::Focused, state.activated),
+            (NodeFlag::Maximized, state.maximized),
+            (NodeFlag::Fullscreen, state.fullscreen),
+            (NodeFlag::Tiled, state.tiled),
+            (NodeFlag::Decorated, state.decorated),
+        ] {
+            self.send(ToLogic::Flag { node, flag, on });
+        }
+    }
+
     /// Plugged in, or back within 30 s (`reconnected`) at its old place.
     pub(crate) fn monitor_added(&mut self, monitor: &Monitor) {
         match self.monitors.iter_mut().find(|(m, _)| m.id == monitor.id) {
@@ -1395,6 +1413,23 @@ impl SurfaceHost for Host {
             .as_mut()
             .map(|f| std::mem::take(&mut f.clipboard))
             .unwrap_or_default()
+    }
+
+    /// (window) A window's configure: render lays it out at the size
+    /// the compositor gives on the axes it decides (and within its
+    /// bounds), and logic hears its states.
+    fn window_state(&mut self, surface: SurfaceId, state: &strand_surface::ToplevelState) {
+        self.renderer.set_window_sized(surface, state.sized);
+        if let Some((w, h)) = state.bounds {
+            self.renderer.set_surface_bounds(
+                surface,
+                Some(strand_scene::LogicalSize::new(w as f32, h as f32)),
+            );
+        }
+        if let Some(f) = &self.logic {
+            f.window_state(surface, state);
+        }
+        self.wake_if_changed();
     }
 
     /// (gap 31) The focused surface's keyboard, for `keyboard`: exact

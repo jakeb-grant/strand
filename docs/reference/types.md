@@ -323,6 +323,19 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
 | `box` | `Rect` | Its laid-out box, in its surface's logical pixels from the top-left corner of the surface's box (paint offsets, transforms and poses not applied). A popup's own box is where it sits in the surface it opens from; a bar's, panel's or OSD's is at 0, 0. It updates a frame after layout moves it, and springs like any value: `x: item.box.x - row.box.x ~ $motion.spatial`. It may drive anything that does not lay it out again, through any chain of bindings: paint props (`x`, `y`, `opacity`, colours, transforms; a surface's effects), the size of a `place: absolute` element it is not inside, or what is on another surface that reads nothing back; a load error shows the loop otherwise. A loop through another node's `width` or `height` with no `box` on it is a warning, `check::size_loop`. |
 | `pointer` | `Point?` | The pointer over it, in its laid-out box (0, 0 is its top-left corner as layout put it; its paint offsets and transforms, and its ancestors', are undone, as for a slider), once a frame while it moves or the node moves under it; null while the pointer is not over it. While a left-button press that began on it is held it stays set, wherever the pointer goes (outside the box too), in the frame the node had when the press began: what the drag moves (its `x`, its layout, its surface's margins) does not move the frame, so `on change self.pointer { if self.pressed { px = px0 + (self.pointer?.x ?? grab.x) - grab.x } }` (`grab` a `Point` kept when the press began) follows the pointer without feeding back. An `on change` of only nodes' input state (`pointer`, `hover`, `pressed`, `focused`, `selected`) is an input handler, never throttled. |
+| `maximized` | `bool` | A `window` the compositor maximised. False on other elements. |
+| `fullscreen` | `bool` | A `window` the compositor made fullscreen. False on other elements.  `w.fullscreen()` makes a `window` fullscreen, or restores it when it is fullscreen. |
+| `tiled` | `bool` | A `window` the compositor tiles against another window or a screen edge on any side: drawn square there, with no shadow. False on other elements. |
+| `decorated` | `bool` | A `window` whose title bar and borders the compositor draws (`decorations: server` where it offers them). While false the config draws its own: `if !w.decorated { TitleBar }`. False on other elements. |
+
+| Method | |
+| --- | --- |
+| `action move()` | `w.move()` moves a `window` with the pointer, from a handler of the press that is still held (`on change bar.pressed { if bar.pressed { w.move() } }`): a title bar the config draws. |
+| `action resize(edge: Anchor)` | `w.resize(bottom_right)` resizes a `window` with the pointer from that edge or corner, from a handler of the press that is still held. |
+| `action minimize()` | Minimises a `window`. |
+| `action maximize()` | `w.maximize()` maximises a `window`, or restores it when it is maximised. |
+| `action fullscreen()` | A `window` the compositor made fullscreen. False on other elements.  `w.fullscreen()` makes a `window` fullscreen, or restores it when it is fullscreen. |
+| `action close()` | Closes a `window` as the compositor's close button does: its `open: <-> x` is written false. |
 
 ### `Notification`
 
@@ -680,6 +693,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `CornerStyle` | `round`, `squircle` |
 | `CursorShape` | `default`, `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`, `not_allowed`, `wait`, `progress`, `help`, `context_menu`, `cell`, `copy`, `alias`, `no_drop`, `all_scroll`, `zoom_in`, `zoom_out`, `col_resize`, `row_resize`, `ew_resize`, `ns_resize`, `nesw_resize`, `nwse_resize`, `n_resize`, `e_resize`, `s_resize`, `w_resize`, `ne_resize`, `nw_resize`, `se_resize`, `sw_resize` |
 | `Curve` | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `in_back`, `out_back`, `out_elastic`, `out_bounce`, `standard`, `emphasized` |
+| `Decorations` | `server`, `none`. Who draws a `window`'s title bar and borders: `server`, the compositor where it offers to, or `none`, the config. |
 | `DropKind` | `files`, `app`, `text` |
 | `Edge` | `top`, `bottom`, `left`, `right` |
 | `EffectKind` | `lightning`, `sparks`, `shimmer`, `ripple`, `aurora` |

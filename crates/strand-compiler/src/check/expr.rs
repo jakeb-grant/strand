@@ -720,6 +720,13 @@ impl<'a> Checker<'a> {
                 "a `{k}` on the focused monitor is one surface the compositor places: give it `screens: all` (or monitor names) to have one a monitor, with `screen` in scope"
             ));
         }
+        // (window) A window is one surface wherever the monitors are.
+        if name == "screen" && self.nodes.first().is_some_and(|n| n.kind == "window") {
+            return Some(
+                "a `window` is one surface the compositor puts on a monitor: `screen` is not in scope in it"
+                    .into(),
+            );
+        }
         let (kinds, per_screen): (Vec<&String>, Vec<&String>) = self
             .schema
             .elements

@@ -266,8 +266,7 @@ impl Renderer {
         else {
             return fixed;
         };
-        let asks = matches!(spec.kind, NodeKind::Panel | NodeKind::Osd | NodeKind::Popup);
-        if !asks || !self.held.contains(&root) {
+        if !self.grows(root, spec) || !self.held.contains(&root) {
             return fixed;
         }
         let Some(at) = self.resize_share_of(root) else {
@@ -293,13 +292,13 @@ impl Renderer {
         self.resize_share_of(root)
     }
 
-    /// (growth) A content-sized panel, OSD or popup: the axes it sizes
-    /// by its content, and where the compositor keeps its box as it
+    /// (growth) A content-sized panel, OSD or popup, or (window) a window
+    /// at its own size: the axes it sizes by its content, and where the compositor keeps its box as it
     /// resizes ([`super::specs::resize_share`]). `None` for any other
     /// surface (a bar's length is the output's).
     fn stepped_root(&self, root: NodeId) -> Option<((bool, bool), (f32, f32))> {
         let spec = self.specs.get(&root)?;
-        if !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd | NodeKind::Popup) {
+        if !self.grows(root, spec) {
             return None;
         }
         let axes = *self.content_sized.get(&root)?;

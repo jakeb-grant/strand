@@ -40,8 +40,10 @@ pub use manager::selection::{
 };
 pub use manager::{
     Config, GRAB_WINDOW, KeyboardState, LOCK_FALLBACK_NODE, LockError, LockState, RepaintHandle,
-    Request, State, Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager,
+    Request, State, Stats, SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager, ToplevelState,
 };
 pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
-pub use placement::{Anchors, LayerConfig, PlacementError, layer_config};
+pub use placement::{
+    Anchors, LayerConfig, PlacementError, WindowConfig, layer_config, window_config,
+};
 pub use shm::MAX_BUFFERS;

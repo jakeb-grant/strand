@@ -302,6 +302,7 @@ bar Top {
 }
 panel P { text \"p\" }
 osd O { text \"o\" }
+window W { text \"w\" }
 lock { text \"l\" }
 ";
 

@@ -425,6 +425,11 @@ pub struct Renderer {
     /// The logical size of the output each surface is on, when known: a
     /// content-sized surface is never larger (see [`Renderer::set_surface_bounds`]).
     bounds: HashMap<SurfaceId, LogicalSize>,
+    /// (window) The axes on which the compositor's last configure of a
+    /// `window` root gave it a size (tiled, maximized, resized by hand):
+    /// there it fills what it was given, asks for nothing and springs
+    /// nothing ([`Renderer::set_window_sized`]).
+    window_sized: HashMap<NodeId, (bool, bool)>,
     /// Every spring, pose and glide.
     anim: Animator,
     /// `reduced_motion` as the host set it ([`Renderer::set_reduced_motion`]).
@@ -593,6 +598,7 @@ impl Renderer {
             spec_dirty: BTreeSet::new(),
             content_sized: BTreeMap::new(),
             bounds: HashMap::new(),
+            window_sized: HashMap::new(),
             resize_wait: Duration::ZERO,
             anim: Animator::default(),
             reduced_motion: false,

@@ -58,13 +58,19 @@ impl From<SurfaceError> for DemoError {
 /// Apply one logic tick's diff and hand surface changes to the manager
 /// (render loop steps 0 and 3; `host_loop::apply`: the router observes
 /// it, the renderer applies it, routing settles, surfaces sync).
-pub(crate) fn apply(state: &mut State<Host>, diff: SceneDiff) {
+pub(crate) fn apply(state: &mut State<Host>, mut diff: SceneDiff) {
     // (M6) The popups this diff creates or opens were opened by its press,
     // if it has one: only those grab (`State::set_popup_cause`).
     for (node, press) in popup_causes(&diff) {
         state.set_popup_cause(node, press);
     }
+    // (window) What its handlers asked of windows, once the windows it
+    // opens are there: a move or resize with its press.
+    let (asks, press) = (std::mem::take(&mut diff.window_asks), diff.press);
     let Ok(()) = host_loop::apply(&mut Main(state), diff);
+    for (node, ask) in asks {
+        state.window_ask(node, ask, press);
+    }
 }
 
 /// (M6) What `diff` says opened each popup it touches: a popup it creates

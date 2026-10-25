@@ -686,7 +686,7 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
 
 /// A new size or scale (`geometry_dirty`) as pending state for the next
 /// commit: the buffer scale or the viewport's destination, and a popup's
-/// window geometry. (M4) A handed-off surface sets it too: the GPU
+/// or (window) a window's window geometry. (M4) A handed-off surface sets it too: the GPU
 /// thread's next present commits it (`gpu_handoff.rs`).
 pub(super) fn send_geometry(s: &mut Surface) {
     if !s.geometry_dirty {
@@ -707,6 +707,18 @@ pub(super) fn send_geometry(s: &mut Surface) {
         let [t, r, b, l] = config.overhang;
         let (w, h) = s.logical;
         popup.xdg_surface().set_window_geometry(
+            l,
+            t,
+            (w as i32 - l - r).max(1),
+            (h as i32 - t - b).max(1),
+        );
+    }
+    // (window) So is a window's: the compositor tiles and decorates that
+    // box, and its shadow (drawn by the config) reaches past it.
+    if let Role::Window(win) = &s.role {
+        let [t, r, b, l] = win.config.overhang;
+        let (w, h) = s.logical;
+        win.window.xdg_surface().set_window_geometry(
             l,
             t,
             (w as i32 - l - r).max(1),

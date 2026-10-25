@@ -1501,11 +1501,15 @@ impl Router {
             InputEvent::KeyboardLeave { .. } => {
                 self.set_focus(surface, None);
                 self.pending_paste.remove(&surface);
-                // Focus loss closes a surface bound `open: <-> x`.
-                if open_two_way(scene.tree(), root) {
+                // Focus loss closes a surface bound `open: <-> x`; (window)
+                // not a window, which the compositor focuses and unfocuses
+                // as any app's.
+                if open_two_way(scene.tree(), root) && !is_window(scene.tree(), root) {
                     self.close(scene, root);
                 }
             }
+            // (window) Also the compositor's close of a window
+            // (`xdg_toplevel.close`), which the surface manager reports so.
             InputEvent::ClickAway { .. } => {
                 if open_two_way(scene.tree(), root) {
                     self.close(scene, root);
@@ -2044,7 +2048,9 @@ impl Router {
             Some(PropValue::Node(l)) => Some(*l),
             _ => None,
         };
-        let open = open_two_way(scene.tree(), root);
+        // (window) Escape is a window's own key: only the compositor (or
+        // `w.close()`) closes it.
+        let open = open_two_way(scene.tree(), root) && !is_window(scene.tree(), root);
         self.event(
             focus,
             NodeEvent::Key {
@@ -2547,6 +2553,12 @@ fn first_with_focus(tree: &SceneTree, root: NodeId) -> Option<NodeId> {
 fn open_two_way(tree: Option<&SceneTree>, root: NodeId) -> bool {
     tree.and_then(|t| t.get(root))
         .is_some_and(|n| strand_scene::is_two_way(n.get(Prop::TwoWay), Prop::Open))
+}
+
+/// (window) True if the surface node `root` is a `window`.
+fn is_window(tree: Option<&SceneTree>, root: NodeId) -> bool {
+    tree.and_then(|t| t.get(root))
+        .is_some_and(|n| n.kind == NodeKind::Window)
 }
 
 /// True if `node`'s `value` is bound two-way (`value: <-> x`): only then

@@ -3196,6 +3196,7 @@ dependencies = [
  "png",
  "raw-window-handle",
  "rustix",
+ "serde_json",
  "smithay-client-toolkit",
  "strand-auth",
  "strand-fake-wayland",

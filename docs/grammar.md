@@ -73,7 +73,7 @@ name** (`enter: popin(0.8)`, `type: password`, `text: <-> query`).
 
 | Position | Words |
 | --- | --- |
-| Start of a top-level item | `component` `bar` `panel` `osd` `lock` `state` `let` `export` `enum` `type` `fn` `tokens` `use` `service` `permit` `action` `keyframes` `on` `after` `every` |
+| Start of a top-level item | `component` `bar` `panel` `osd` `window` `lock` `state` `let` `export` `enum` `type` `fn` `tokens` `use` `service` `permit` `action` `keyframes` `on` `after` `every` |
 | Start of a tree item | `when` `if` `match` `for` `on` `after` `every` `enter` `exit` `state` `let` `slot` `set` (only before `{`) `play` |
 | Start of a handler statement | `let` `if` `match` `for` `play` |
 | Start of an expression | `true` `false` `null` `match` `await` |
@@ -252,12 +252,13 @@ cannot be inferred. Children passed at a call site render at `slot`.
 ```
 surface      = surface_kind IDENT tree_block
              | kw:lock IDENT? tree_block
-surface_kind = kw:bar | kw:panel | kw:osd
+surface_kind = kw:bar | kw:panel | kw:osd | kw:window
 ```
 
 `bar Top { … }` is on every monitor with `screen` in scope, as is a `panel` or
 `osd` whose `screens:` picks monitors (spec.md 5.1); the `lock`'s `screen` is
-the monitor its content shows on. `popup` is not a
+the monitor its content shows on. A `window` is one `xdg_toplevel` the
+compositor places, with no `screen` (spec.md 5.1). `popup` is not a
 top-level surface: it is an element anchored to its parent
 (`popup { open: <-> open; Calendar }`).
 

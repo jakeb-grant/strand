@@ -200,6 +200,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.collect_ids(&s.body.items);
+        let id = self.root_id(&s.body.items, node);
         let (props, children) = self.tree_items(&s.body.items, Place::Element { root: true });
         self.surface_props(&kind, &props, &children);
         self.effect_props(&props, &children);
@@ -214,11 +215,46 @@ impl<'a> Checker<'a> {
                 kind: ElementKind::Builtin(kind),
                 span,
                 arg: None,
-                id: None,
+                id,
                 props,
                 children,
             },
         }
+    }
+
+    /// (window) `id: w` written on a top-level surface itself names the
+    /// surface's root, read as any element's (`w.open`, a window's
+    /// `w.maximized`, `w.maximize()`), across its whole body. Bound
+    /// beside the ids `collect_ids` found in it; one of those with the
+    /// same name is named twice.
+    fn root_id(&mut self, items: &'a [ast::Item], node: hir::NodeIdx) -> Option<hir::LocalId> {
+        let name = items.iter().find_map(|i| match &i.kind {
+            ItemKind::Prop(p)
+                if p.name.name == "id"
+                    && let ast::ExprKind::Name(n) = &p.value.kind =>
+            {
+                Some(n)
+            }
+            _ => None,
+        })?;
+        if let Some(super::Binding::Local(prev)) = self.lookup_scope(&name.name)
+            && matches!(self.locals[prev.0 as usize].kind, LocalKind::NodeId(_))
+        {
+            let (file, at) = (self.file(), self.locals[prev.0 as usize].span);
+            self.error(
+                "check::redeclared",
+                format!("`id: {}` is used twice", name.name),
+                name.span,
+                "named again here",
+            )
+            .add_secondary(file, at, "first named here");
+            return None;
+        }
+        let node_ty = self
+            .types
+            .find_schema_record("Node")
+            .map_or(Ty::Error, Ty::Record);
+        Some(self.bind_local(&name.name, node_ty, name.span, LocalKind::NodeId(node)))
     }
 
     /// Finds the `id:` names of a component or surface body, so they can be
@@ -3408,6 +3444,8 @@ fn auto_end(e: &ast::Expr) -> Option<Span> {
 /// (`all`, a name, a list, or an expression).
 pub(crate) fn per_screen(kind: &str, items: &[ast::Item]) -> bool {
     match kind {
+        // (window) One window, wherever the compositor puts it.
+        "window" => false,
         "panel" | "osd" => items.iter().any(|i| {
             matches!(&i.kind, ItemKind::Prop(p) if p.name.name == "screens"
                 && !matches!(&p.value.kind, ast::ExprKind::Name(n) if n.name == "focused"))

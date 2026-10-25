@@ -10,6 +10,10 @@
 //! it, and its `open:` (m6-owner-fixes) only holds it open, so it is
 //! never two-way; the trigger is written as is, on the popup itself,
 //! never in a `when` or as an expression.
+//!
+//! (window) A `window` takes none of the props that place a layer-shell
+//! surface (`screens`, `layer`, `anchor`, `margin`, `attach`, `scrim`,
+//! `keyboard`): the compositor places, stacks and focuses it.
 
 use super::Checker;
 use crate::hir::{self, Node};
@@ -26,6 +30,10 @@ impl Checker<'_> {
         }
         if matches!(kind, "bar" | "panel") {
             self.exclusive(kind, props);
+        }
+        if kind == "window" {
+            self.window_props(props, children);
+            return;
         }
         if !matches!(kind, "bar" | "osd" | "lock") {
             return;
@@ -50,6 +58,57 @@ impl Checker<'_> {
             .help = Some(format!(
                 "put `{name}` on the `panel` or `popup` that grows out of this `{kind}`"
             ));
+        }
+    }
+}
+
+/// (window) The surface props a `window` has no use for, and why: the
+/// compositor places it, sizes it within its `min_*`/`max_*`, and
+/// focuses it, as any app's window.
+const NOT_ON_A_WINDOW: &[(&str, &str)] = &[
+    ("screens", "the compositor puts a window on a monitor"),
+    (
+        "layer",
+        "a window is in the compositor's window stack, not a layer",
+    ),
+    ("anchor", "the compositor places a window"),
+    ("margin", "the compositor places a window"),
+    ("attach", "a window grows out of no edge"),
+    ("scrim", "a window dims nothing behind it"),
+    (
+        "keyboard",
+        "the compositor gives a window the keyboard while it is focused",
+    ),
+];
+
+impl Checker<'_> {
+    /// (window) Refuses the surface props a `window` has no use for,
+    /// among its props and its `when` blocks'.
+    fn window_props(&mut self, props: &[hir::Prop], children: &[Node]) {
+        let whens = children.iter().filter_map(|n| match n {
+            Node::When(w) => Some(&w.props),
+            _ => None,
+        });
+        let bad: Vec<(String, &str, crate::syntax::Span)> = props
+            .iter()
+            .chain(whens.flatten())
+            .filter_map(|p| {
+                let (_, why) = NOT_ON_A_WINDOW.iter().find(|(n, _)| *n == p.name)?;
+                Some((p.name.clone(), *why, p.span))
+            })
+            .collect();
+        for (name, why, span) in bad {
+            self.error(
+                "check::window_prop",
+                format!("a `window` takes no `{name}`"),
+                span,
+                why,
+            )
+            .help = Some(
+                "a `window` takes its size (`width`, `height`, `min_width` …), `title`, \
+                 `app_id`, `decorations` and `open`; the compositor does the rest"
+                    .into(),
+            );
         }
     }
 }

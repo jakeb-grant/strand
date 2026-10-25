@@ -52,6 +52,9 @@ enum DropKind { files, app, text }
 enum InputKind { text, password }
 enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }
 enum PopupTrigger { open, hover }
+/// Who draws a `window`'s title bar and borders: `server`, the
+/// compositor where it offers to, or `none`, the config.
+enum Decorations { server, none }
 /// An output's rotation and flip, as `wl_output` (and niri) name them:
 /// counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`;
 /// `flipped_90` is flipped about the vertical axis, then rotated 90
@@ -131,6 +134,38 @@ handle record Node {
   /// `pressed`, `focused`, `selected`) is an input handler, never
   /// throttled.
   pointer: Point?
+  /// A `window` the compositor maximised. False on other elements.
+  maximized: bool
+  /// A `window` the compositor made fullscreen. False on other elements.
+  fullscreen: bool
+  /// A `window` the compositor tiles against another window or a screen
+  /// edge on any side: drawn square there, with no shadow. False on
+  /// other elements.
+  tiled: bool
+  /// A `window` whose title bar and borders the compositor draws
+  /// (`decorations: server` where it offers them). While false the
+  /// config draws its own: `if !w.decorated { TitleBar }`. False on
+  /// other elements.
+  decorated: bool
+  /// `w.move()` moves a `window` with the pointer, from a handler of the
+  /// press that is still held (`on change bar.pressed { if bar.pressed
+  /// { w.move() } }`): a title bar the config draws.
+  action move()
+  /// `w.resize(bottom_right)` resizes a `window` with the pointer from
+  /// that edge or corner, from a handler of the press that is still
+  /// held.
+  action resize(edge: Anchor)
+  /// Minimises a `window`.
+  action minimize()
+  /// `w.maximize()` maximises a `window`, or restores it when it is
+  /// maximised.
+  action maximize()
+  /// `w.fullscreen()` makes a `window` fullscreen, or restores it when
+  /// it is fullscreen.
+  action fullscreen()
+  /// Closes a `window` as the compositor's close button does: its
+  /// `open: <-> x` is written false.
+  action close()
 }
 
 /// A point (`self.pointer`), logical pixels.
@@ -1766,6 +1801,28 @@ element lock: surface {
   /// The monitor its content shows on: the focused one, else the first.
   /// It follows the content when focus moves to another monitor.
   let screen: Screen
+  flags surface
+}
+/// A window the compositor manages (`xdg_toplevel`): it tiles, floats,
+/// moves, minimises and shows in task bars as an app's window does
+/// (a settings window, a picker). The compositor decides its size: its
+/// `width` and `height` (its content's while unset) are the size it asks
+/// for, and its `min_*`/`max_*` the sizes it takes. Its compositor's
+/// close writes its `open: <-> x` false. Its own `focused` is true while
+/// the compositor has it focused, and `maximized`, `fullscreen`,
+/// `tiled` and `decorated` follow the compositor (`id: w` and
+/// `w.maximized`); `w.move()`, `w.resize(edge)`, `w.minimize()`,
+/// `w.maximize()`, `w.fullscreen()` and `w.close()` ask it.
+element window: surface {
+  /// The title the compositor shows: `title: "Settings"`. Its name while
+  /// unset.
+  title: text
+  /// The app id compositor rules match: `strand-<Name>` while unset.
+  app_id: text
+  /// Who draws its title bar and borders: `server` (the default), the
+  /// compositor where it offers to (`w.decorated`), or `none`, the
+  /// config.
+  decorations: Decorations
   flags surface
 }
 /// Anchored to its parent element; nests (tray menus).

@@ -28,6 +28,7 @@ const TOP_KEYWORDS: &[&str] = &[
     "bar",
     "panel",
     "osd",
+    "window",
     "lock",
     "state",
     "let",

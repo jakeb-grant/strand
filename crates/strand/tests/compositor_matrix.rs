@@ -1418,6 +1418,98 @@ fn window_state_actions_follow_the_compositor() {
     s.shutdown();
 }
 
+/// (window) A `window` in `strand run` is a toplevel of the compositor
+/// on all four: the `windows` store (the compositor's report, or labwc's
+/// foreign-toplevel list) shows it with the app id and title its config
+/// gives; the compositor's close (`win.close()` through the store)
+/// writes its `open: <-> shown` false and it goes; `strand toggle`
+/// opens it again.
+#[test]
+fn a_strand_window_is_a_toplevel_of_the_compositor() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the strand window test");
+        return;
+    };
+    const SRC: &str = "export state shown = true\n\
+        window Probe { open: <-> shown; title: \"Strand probe\"; width: 320; height: 200\n\
+          text \"probe\"\n\
+        }\n";
+    const APP: &str = "strand-Probe";
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.windows.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let item = || {
+        s.pump(&rt);
+        rt.flush();
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.all.into_iter().find(|w| w.app_id == APP))
+    };
+    let dir = std::env::temp_dir().join(format!("strand-matrix-window-{}", std::process::id()));
+    let sock = dir.join("strand.sock");
+    let (strand, log, _bus) = launch_strand(
+        &dir,
+        &[("probe.strand", SRC)],
+        &[("STRAND_SOCKET", sock.clone().into_os_string())],
+    );
+    let mut strand = strand;
+    let log_text = || std::fs::read_to_string(&log).unwrap_or_default();
+    let cli = |args: &[&str]| -> Option<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(args)
+            .env("STRAND_SOCKET", &sock)
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+    };
+    let mut alive = || {
+        if let Ok(Some(status)) = strand.0.try_wait() {
+            panic!("strand exited ({status}): {}", log_text());
+        }
+    };
+    until("the window in windows.all", || {
+        alive();
+        match item() {
+            Some(w) if w.title == "Strand probe" => Ok(()),
+            other => Err(format!("{other:?}\n{}", log_text())),
+        }
+    });
+    eprintln!("matrix: {kind}: strand's window is a toplevel");
+    until("shown is true", || match cli(&["get", "probe.shown"]) {
+        Some(v) if v == "true" => Ok(()),
+        other => Err(format!("{other:?}")),
+    });
+    // The compositor closes it: `open` is written false and it goes.
+    let w = item().expect("the window");
+    b.windows.act(&rt, WindowAction::Close { item: w }).unwrap();
+    until("closed by the compositor", || {
+        alive();
+        let gone = item().is_none();
+        match cli(&["get", "probe.shown"]) {
+            Some(v) if v == "false" && gone => Ok(()),
+            other => Err(format!("shown {other:?}, gone {gone}\n{}", log_text())),
+        }
+    });
+    eprintln!("matrix: {kind}: the compositor's close wrote open false");
+    // Opened again from the CLI.
+    assert!(cli(&["toggle", "probe.shown"]).is_some(), "{}", log_text());
+    until("open again", || {
+        alive();
+        item()
+            .map(|_| ())
+            .ok_or_else(|| format!("not yet\n{}", log_text()))
+    });
+    drop(strand);
+    s.shutdown();
+}
+
 /// (M4) `thumbnail w`'s capture, live: a tap on a real window through
 /// `wm::capture` gets frames of it over the compositor's
 /// ext-image-copy-capture, scaled down to cover the size asked for, in
@@ -1717,6 +1809,50 @@ fn expected(real: &Real) -> (Vec<Drawn>, bool) {
     )
 }
 
+/// `strand run` with the shell `files` and the extra environment `envs`,
+/// in a home of its own under `dir`: the process, its log and the bus
+/// its services use.
+fn launch_strand(
+    dir: &std::path::Path,
+    files: &[(&str, &str)],
+    envs: &[(&str, std::ffi::OsString)],
+) -> (Proc, PathBuf, Option<PrivateBus>) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let home = dir.join("home");
+    let config = home.join(".config/strand");
+    std::fs::create_dir_all(&config).unwrap();
+    for (name, text) in files {
+        std::fs::write(config.join(name), text).unwrap();
+    }
+    // The bar's other services (the tray, the portal) on a bus of
+    // their own; battery and audio have no daemon here and stay at
+    // their defaults.
+    let bus = PrivateBus::start();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_strand"));
+    cmd.arg("run")
+        .arg(&config)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("PIPEWIRE_RUNTIME_DIR", dir.join("no-pipewire"))
+        .env_remove("PIPEWIRE_REMOTE")
+        .env_remove("STRAND_MOCK")
+        .envs(envs.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null());
+    match &bus {
+        Some(bus) => drop(cmd.envs(bus.env())),
+        None => drop(
+            cmd.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+                .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent"),
+        ),
+    }
+    let log = dir.join("strand.log");
+    cmd.stderr(std::fs::File::create(&log).unwrap());
+    (Proc(cmd.spawn().unwrap()), log, bus)
+}
+
 struct Bar<'a> {
     live: &'a Live,
     dir: PathBuf,
@@ -1742,46 +1878,14 @@ impl<'a> Bar<'a> {
         files: &[(&str, &str)],
         envs: &[(&str, std::ffi::OsString)],
     ) -> Self {
-        let _ = std::fs::remove_dir_all(dir);
-        std::fs::create_dir_all(dir).unwrap();
-        let home = dir.join("home");
-        let config = home.join(".config/strand");
-        std::fs::create_dir_all(&config).unwrap();
-        for (name, text) in files {
-            std::fs::write(config.join(name), text).unwrap();
-        }
-        // The bar's other services (the tray, the portal) on a bus of
-        // their own; battery and audio have no daemon here and stay at
-        // their defaults.
-        let bus = PrivateBus::start();
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_strand"));
-        cmd.arg("run")
-            .arg(&config)
-            .env("HOME", &home)
-            .env("XDG_CONFIG_HOME", home.join(".config"))
-            .env("XDG_CACHE_HOME", dir.join("cache"))
-            .env("XDG_STATE_HOME", dir.join("state"))
-            .env("PIPEWIRE_RUNTIME_DIR", dir.join("no-pipewire"))
-            .env_remove("PIPEWIRE_REMOTE")
-            .env_remove("STRAND_MOCK")
-            .envs(envs.iter().map(|(k, v)| (k, v)))
-            .stdin(Stdio::null());
-        match &bus {
-            Some(bus) => drop(cmd.envs(bus.env())),
-            None => drop(
-                cmd.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
-                    .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent"),
-            ),
-        }
-        let log = dir.join("strand.log");
-        cmd.stderr(std::fs::File::create(&log).unwrap());
+        let (strand, log, bus) = launch_strand(dir, files, envs);
         Bar {
             live,
             dir: dir.to_path_buf(),
             log,
             shots: std::env::var_os("STRAND_SHOTS").map(PathBuf::from),
             n: 0,
-            strand: Proc(cmd.spawn().unwrap()),
+            strand,
             _bus: bus,
         }
     }

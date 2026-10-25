@@ -424,6 +424,7 @@ mod tests {
             "osd",
             "popup",
             "lock",
+            "window",
             "row",
             "col",
             "stack",
@@ -593,7 +594,7 @@ mod tests {
         // and so do builtin methods.
         for (text, rec, fields) in [
             ("record Range { start: text }", "Range", 2),
-            ("record Node { x: int }", "Node", 9),
+            ("record Node { x: int }", "Node", 13),
         ] {
             let mut s = Schema::builtin().clone();
             let err = s.extend(text).expect_err(text);

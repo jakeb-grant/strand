@@ -229,6 +229,12 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
                 vm.watch(n, NodeState::WATCH_POINTER);
                 n.pointer(rt).get(rt)?
             }
+            // (window) False on anything but a window's root, which the
+            // compositor's configure tells.
+            "maximized" => Value::Bool(n.window(rt).maximized.get(rt)?),
+            "fullscreen" => Value::Bool(n.window(rt).fullscreen.get(rt)?),
+            "tiled" => Value::Bool(n.window(rt).tiled.get(rt)?),
+            "decorated" => Value::Bool(n.window(rt).decorated.get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),
@@ -1020,6 +1026,26 @@ pub(crate) fn method(
             }
             // Other render-side methods do nothing on the logic thread.
             Ok(Value::Unit)
+        }
+        // (window) `w.maximize()`, `w.resize(top_left)` …: asked of the
+        // compositor; on anything but a window's root, nothing.
+        Value::Node(n) => {
+            let edge = match args.params.first().and_then(Option::as_ref) {
+                Some(Value::Enum(e, v)) => vm
+                    .types()
+                    .enum_(*e)
+                    .variants
+                    .get(*v as usize)
+                    .map(String::as_str),
+                _ => None,
+            };
+            if let Some(ask) = strand_scene::WindowAsk::from_action(name, edge)
+                && let Some(h) = vm.hooks()
+            {
+                h.window(rt, n, ask);
+                return Ok(Value::Unit);
+            }
+            Ok(Value::Null)
         }
         _ => Ok(Value::Null),
     }

@@ -15,6 +15,10 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.reconfigure_popups(node);
             return;
         }
+        if spec.kind == NodeKind::Window {
+            self.reconfigure_window(node);
+            return;
+        }
         let new = self.layer_config_of(node, spec);
         let under = wants_under(spec);
         // The layer its catcher goes on: one below the surface's with a

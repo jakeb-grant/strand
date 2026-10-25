@@ -353,6 +353,8 @@ pub struct TestHost {
     pub input_only: Option<SurfaceId>,
     /// (gap 31) What [`SurfaceHost::keyboard_state`] was told, in order.
     pub keyboard_states: Vec<Option<strand_surface::KeyboardState>>,
+    /// (window) What [`SurfaceHost::window_state`] was told, in order.
+    pub window_states: Vec<(SurfaceId, strand_surface::ToplevelState)>,
 }
 
 impl TestHost {
@@ -585,6 +587,10 @@ impl SurfaceHost for TestHost {
     fn keyboard_state(&mut self, state: Option<&strand_surface::KeyboardState>) {
         self.keyboard_states.push(state.cloned());
     }
+
+    fn window_state(&mut self, surface: SurfaceId, state: &strand_surface::ToplevelState) {
+        self.window_states.push((surface, *state));
+    }
 }
 
 /// A `panel` or `osd` of `w`×`h` at `anchor` with default `screens`
@@ -620,6 +626,25 @@ pub fn bar_spec_with_margin(name: &str, height: f32, margin: Insets) -> SurfaceS
 }
 
 pub const BAR: NodeId = NodeId::new(1, 0);
+
+/// (window) `window <name> { title: <title>; width: <w>; height: <h>;
+/// open: <-> … }` as the renderer would report it.
+pub fn window_spec(name: &str, title: &str, w: f32, h: f32) -> SurfaceSpec {
+    let props: HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text(name.into())),
+        (Prop::Title, PropValue::Text(title.into())),
+        (Prop::Width, PropValue::Number(w)),
+        (Prop::Height, PropValue::Number(h)),
+        (Prop::Open, PropValue::Bool(true)),
+        (
+            Prop::TwoWay,
+            PropValue::List(vec![PropValue::Keyword("open".into())]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    SurfaceSpec::resolve(NodeKind::Window, |p| props.get(&p))
+}
 
 /// Starts sway and a surface manager showing `bar Top { height: 36 }`.
 pub fn start(test: &str, config: Config) -> Option<(Sway, SurfaceManager<TestHost>)> {

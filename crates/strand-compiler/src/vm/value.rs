@@ -190,6 +190,10 @@ pub struct NodeState {
     /// laid-out box, or `Null` while the pointer is not over it. Made on
     /// first use ([`NodeState::pointer`]).
     pub pointer_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (window) A `window`'s compositor state, `w.maximized` and the
+    /// rest. Made on first use ([`NodeState::window`]): only a window's
+    /// root is ever told it.
+    pub window_cell: std::cell::OnceCell<WindowSignals>,
     /// (M6) For a conditional id (`when c { id: name }`), the element it
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
@@ -241,6 +245,22 @@ impl NodeState {
     /// (flex) `self.pointer`'s signal, made on first use.
     pub fn pointer(&self, rt: &strand_core::Runtime) -> Signal<Value> {
         *self.pointer_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (window) A window's compositor state signals, made on first use.
+    pub fn window(&self, rt: &strand_core::Runtime) -> WindowSignals {
+        *self.window_cell.get_or_init(|| {
+            let make = |rt: &strand_core::Runtime| WindowSignals {
+                maximized: rt.signal(false),
+                fullscreen: rt.signal(false),
+                tiled: rt.signal(false),
+                decorated: rt.signal(false),
+            };
+            match self.scope {
+                Some(o) => rt.with_owner(o, make).unwrap_or_else(|_| make(rt)),
+                None => make(rt),
+            }
+        })
     }
 
     /// (M6) A conditional id's target signal (see `alias_cell`).
@@ -306,6 +326,17 @@ impl NodeState {
             None => make(rt),
         }
     }
+}
+
+/// (window) What the compositor says of a `window` (its `xdg_toplevel`
+/// states and decoration mode), as `w.maximized`, `w.fullscreen`,
+/// `w.tiled` and `w.decorated` read it; `w.focused` is the node's own.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowSignals {
+    pub maximized: Signal<bool>,
+    pub fullscreen: Signal<bool>,
+    pub tiled: Signal<bool>,
+    pub decorated: Signal<bool>,
 }
 
 /// A value of the language.

@@ -375,7 +375,12 @@ impl Machine {
                     let a = self.pop_args(&chunk.args[*args as usize]);
                     let recv = self.pop();
                     let name = &chunk.names[*name as usize];
-                    let v = if *action {
+                    let v = if *action && matches!(recv, Value::Node(_)) {
+                        // (window) An element's actions (`w.maximize()`)
+                        // are the instance's, not a service's.
+                        builtins::method(vm, rt, &recv, name, a)?;
+                        Value::Unit
+                    } else if *action {
                         if a.params
                             .iter()
                             .flatten()

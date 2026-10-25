@@ -293,7 +293,7 @@ impl Parser<'_> {
                 top_only(self, "components");
                 self.component()
             }
-            "bar" | "panel" | "osd" | "lock" if ctx == Ctx::Top => self.surface(word),
+            "bar" | "panel" | "osd" | "lock" | "window" if ctx == Ctx::Top => self.surface(word),
             "state" if ctx != Ctx::Service => {
                 if ctx == Ctx::Keyframes {
                     tree_only(self, "`state`");

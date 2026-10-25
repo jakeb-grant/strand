@@ -54,6 +54,10 @@ named_enum! {
         Osd = "osd",
         Popup = "popup",
         Lock = "lock",
+        /// (window) A window the compositor manages: an `xdg_toplevel`
+        /// that tiles, floats, moves and shows in task bars as an app's
+        /// window does.
+        Window = "window",
         // Containers.
         Row = "row",
         Col = "col",
@@ -115,7 +119,12 @@ impl NodeKind {
     pub const fn is_surface(self) -> bool {
         matches!(
             self,
-            NodeKind::Bar | NodeKind::Panel | NodeKind::Osd | NodeKind::Popup | NodeKind::Lock
+            NodeKind::Bar
+                | NodeKind::Panel
+                | NodeKind::Osd
+                | NodeKind::Popup
+                | NodeKind::Lock
+                | NodeKind::Window
         )
     }
 }
@@ -184,6 +193,17 @@ props! {
     /// (services-round) `inhibit_idle: true` on a surface: the compositor
     /// does not go idle while it is shown (`zwp_idle_inhibitor_v1`).
     InhibitIdle = "inhibit_idle": Snap,
+    /// (window) A `window`'s title, as the compositor shows it in its
+    /// title bar and task lists (`Text`; the window's name while unset).
+    Title = "title": Snap,
+    /// (window) A `window`'s app id, which compositor rules match
+    /// (`Text`; `strand-<Name>` while unset, as a layer surface's
+    /// namespace).
+    AppId = "app_id": Snap,
+    /// (window) Who draws a `window`'s title bar and borders: `server`
+    /// (unset: the compositor, where it offers to) or `none` (the
+    /// config), as a `Keyword`.
+    Decorations = "decorations": Snap,
     /// The declared name of a surface (`bar Top` → `"Top"`), as
     /// `PropValue::Text`. Set by the compiler, not written as a prop in
     /// source; the surface's layer-shell namespace is `strand-<name>`
@@ -1045,6 +1065,13 @@ pub struct SceneDiff {
     /// with its serial; one a diff without it opens (a hover, a timer)
     /// never grabs (decisions.md m6-w2-surface).
     pub press: Option<u32>,
+    /// (window) What handlers asked of the `window`s they name, in the
+    /// order they asked (`w.maximize()`, `w.move()`): the host hands
+    /// each to the surface manager once the diff's surface changes are
+    /// in, so a window this diff opens is there to ask. A move or a
+    /// resize goes with the press that is still held (`press`, else the
+    /// seat's last).
+    pub window_asks: Vec<(NodeId, crate::surface::WindowAsk)>,
 }
 
 impl SceneDiff {
@@ -1058,7 +1085,10 @@ impl SceneDiff {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty() && self.layout_seen.is_none() && self.reduced_motion.is_none()
+        self.ops.is_empty()
+            && self.layout_seen.is_none()
+            && self.reduced_motion.is_none()
+            && self.window_asks.is_empty()
     }
 
     /// Convenience for [`SceneOp::Create`].

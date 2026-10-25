@@ -66,6 +66,10 @@ pub trait VmHooks {
     ) -> Result<Option<strand_scene::PropValue>, Error> {
         Ok(None)
     }
+    /// (window) `w.maximize()` and the other window actions on the
+    /// element instance `node`: asked of the compositor once the step's
+    /// diff is applied. Nothing without a host that shows windows.
+    fn window(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::WindowAsk) {}
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the
@@ -380,6 +384,7 @@ impl Env {
             height: rt.signal(Value::float(0.0)),
             rect_cell: Default::default(),
             pointer_cell: Default::default(),
+            window_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),

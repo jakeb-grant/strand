@@ -103,6 +103,12 @@ pub enum NodeFlag {
     Pressed,
     Focused,
     Selected,
+    /// (window) A `window`'s compositor states (`w.maximized` …); its
+    /// `focused` is the compositor's activated state.
+    Maximized,
+    Fullscreen,
+    Tiled,
+    Decorated,
 }
 
 /// A runtime error, located: the error overlay's red outline and
@@ -313,6 +319,9 @@ pub(crate) struct Ctx {
     /// (history) The instance's kept graph histories (shared by every
     /// `Ctx` of its reloads; set by the boot).
     pub(crate) history: RefCell<Rc<history::Histories>>,
+    /// (window) What handlers asked of windows this step, in order
+    /// (`SceneDiff::window_asks`).
+    pub(crate) window_asks: RefCell<Vec<(NodeId, strand_scene::WindowAsk)>>,
 }
 
 impl Ctx {
@@ -403,6 +412,20 @@ impl VmHooks for Ctx {
             "dark" => Some(PropValue::Bool(p.is_dark())),
             _ => p.extra(name).map(PropValue::Color),
         })
+    }
+
+    fn window(&self, _rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::WindowAsk) {
+        // Only a mounted window's root: on another element, nothing.
+        let Some(id) = node.scene.get() else { return };
+        let is_window = self
+            .em
+            .borrow()
+            .nodes
+            .get(&id)
+            .is_some_and(|e| e.kind == NodeKind::Window && Rc::ptr_eq(&e.state, node));
+        if is_window {
+            self.window_asks.borrow_mut().push((id, ask));
+        }
     }
 }
 
@@ -784,6 +807,7 @@ impl Ctx {
             secret_cells: RefCell::default(),
             lock_scopes: RefCell::default(),
             history: RefCell::default(),
+            window_asks: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1689,6 +1713,7 @@ impl Instance {
         Update {
             diff: SceneDiff {
                 ops,
+                window_asks: std::mem::take(&mut *self.ctx.window_asks.borrow_mut()),
                 ..SceneDiff::default()
             },
             errors,
@@ -1797,6 +1822,10 @@ impl Instance {
                 NodeFlag::Pressed => s.pressed,
                 NodeFlag::Focused => s.focused,
                 NodeFlag::Selected => s.selected,
+                NodeFlag::Maximized => s.window(&self.rt).maximized,
+                NodeFlag::Fullscreen => s.window(&self.rt).fullscreen,
+                NodeFlag::Tiled => s.window(&self.rt).tiled,
+                NodeFlag::Decorated => s.window(&self.rt).decorated,
             };
             let _ = sig.set(&self.rt, on);
         }

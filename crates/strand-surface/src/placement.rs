@@ -502,6 +502,89 @@ pub fn layer_config_with(
     Ok(config)
 }
 
+/// (window) Everything a `window`'s `xdg_toplevel` is told: what it is
+/// called, the size it asks for and the sizes it takes, and how far its
+/// buffer reaches past its window geometry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowConfig {
+    /// Its namespace (`strand-<Name>`), as a layer surface's: logs and
+    /// the reload identity of its surface.
+    pub namespace: String,
+    pub title: String,
+    pub app_id: String,
+    /// The box it asks for (its window geometry), logical pixels: the
+    /// compositor's configure may give another.
+    pub width: u32,
+    pub height: u32,
+    /// `xdg_toplevel.set_min_size` and `set_max_size`, window geometry,
+    /// 0 for none on that axis.
+    pub min: (u32, u32),
+    pub max: (u32, u32),
+    /// Shadow reach past the box, top, right, bottom, left: the buffer is
+    /// the box plus it, and the window geometry leaves it out.
+    pub overhang: [i32; 4],
+    /// Who draws its title bar and borders.
+    pub decorations: strand_scene::Decorations,
+}
+
+impl WindowConfig {
+    /// The buffer's logical size for a box of `(w, h)`: plus the
+    /// overhang.
+    pub fn buffer(&self, (w, h): (u32, u32)) -> (u32, u32) {
+        let [t, r, b, l] = self.overhang;
+        (
+            w.saturating_add((l + r).max(0) as u32),
+            h.saturating_add((t + b).max(0) as u32),
+        )
+    }
+
+    /// Its input region and namespace, as a layer surface's: the box
+    /// inside the overhang.
+    pub fn as_layer(&self) -> LayerConfig {
+        let (w, h) = self.buffer((self.width, self.height));
+        LayerConfig {
+            namespace: self.namespace.clone(),
+            layer: Layer::Top,
+            anchors: Anchors::default(),
+            width: w,
+            height: h,
+            exclusive_zone: 0,
+            margin: [0; 4],
+            keyboard: Keyboard::OnDemand,
+            overhang: self.overhang,
+            click_through: false,
+        }
+    }
+}
+
+/// (window) Resolves the `xdg_toplevel` state of a `window` spec. Waits
+/// (`AutoSize`) until render gave it a size; `NotLayerSurface` names any
+/// other kind.
+pub fn window_config(spec: &SurfaceSpec) -> Result<WindowConfig, PlacementError> {
+    if spec.kind != NodeKind::Window {
+        return Err(PlacementError::NotLayerSurface(spec.kind));
+    }
+    let (Some(w), Some(h)) = (spec.width, spec.height) else {
+        return Err(PlacementError::AutoSize(spec.kind));
+    };
+    let o = spec.overhang;
+    let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
+    let opt = |v: Option<f32>| v.map_or(0, |v| px(v).max(0) as u32);
+    let (min_w, min_h) = (opt(spec.min_size.0), opt(spec.min_size.1));
+    let (max_w, max_h) = (opt(spec.max_size.0), opt(spec.max_size.1));
+    Ok(WindowConfig {
+        namespace: spec.namespace(),
+        title: spec.window_title(),
+        app_id: spec.window_app_id(),
+        width: size(w),
+        height: size(h),
+        min: (min_w, min_h),
+        max: (max_w, max_h),
+        overhang,
+        decorations: spec.decorations,
+    })
+}
+
 /// Which side of its anchor a popup opens on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PopupSide {
@@ -591,8 +674,13 @@ pub fn popup_config(
     let (pt, pl) = (px(po.top).max(0), px(po.left).max(0));
     let parent_popup = parent.kind == NodeKind::Popup;
     // The parent's window geometry: a popup's is its box (inside its
-    // overhang); a layer surface's is its whole buffer.
-    let (gx, gy) = if parent_popup { (pl, pt) } else { (0, 0) };
+    // overhang), and (window) a window's; a layer surface's is its whole
+    // buffer.
+    let (gx, gy) = if parent_popup || parent.kind == NodeKind::Window {
+        (pl, pt)
+    } else {
+        (0, 0)
+    };
     let (mut x, mut y, mut aw, mut ah) = (px(a.x) - gx, px(a.y) - gy, px(a.w), px(a.h));
     let bar_edge = (parent.kind == NodeKind::Bar).then(|| parent.edge.unwrap_or(Edge::Top));
     // `attach: <edge>` names the popup's side that touches its anchor,
@@ -1721,5 +1809,49 @@ mod tests {
             (c.layer, popup_scrim_layer(&c)),
             (Layer::Bottom, Layer::Background)
         );
+    }
+
+    /// (window) A window's toplevel state: its title, app id, the box it
+    /// asks for, its size limits and overhang; it waits for a size, and
+    /// a popup in it is placed in its window geometry (its box).
+    #[test]
+    fn a_window_config_names_and_sizes_it() {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Window, |_| None::<&strand_scene::PropValue>);
+        spec.name = Some("Settings".into());
+        assert_eq!(
+            window_config(&spec),
+            Err(PlacementError::AutoSize(NodeKind::Window))
+        );
+        spec.width = Some(400.4);
+        spec.height = Some(300.0);
+        spec.min_size = (Some(200.0), None);
+        spec.max_size = (None, Some(900.0));
+        spec.overhang = strand_scene::Insets::from_values(&[4.0, 8.0, 12.0, 8.0]).unwrap();
+        let c = window_config(&spec).unwrap();
+        assert_eq!(c.title, "Settings");
+        assert_eq!(c.app_id, "strand-Settings");
+        assert_eq!(c.namespace, "strand-Settings");
+        assert_eq!((c.width, c.height), (400, 300));
+        assert_eq!((c.min, c.max), ((200, 0), (0, 900)));
+        assert_eq!(c.overhang, [4, 8, 12, 8]);
+        assert_eq!(c.buffer((640, 480)), (656, 496));
+        assert_eq!(
+            c.as_layer().input_region((416, 316)),
+            Some(Some((8, 4, 400, 300)))
+        );
+        assert_eq!(
+            window_config(&SurfaceSpec::resolve(NodeKind::Panel, |_| None::<
+                &strand_scene::PropValue,
+            >)),
+            Err(PlacementError::NotLayerSurface(NodeKind::Panel))
+        );
+        // A popup in it: anchored in its box, as in a popup's.
+        let mut popup = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        popup.parent = None;
+        popup.width = Some(100.0);
+        popup.height = Some(50.0);
+        popup.anchor_rect = Some(strand_scene::LogicalRect::new(28.0, 24.0, 40.0, 20.0));
+        let p = popup_config(&popup, &spec).unwrap();
+        assert_eq!((p.anchor_rect.0, p.anchor_rect.1), (20, 20));
     }
 }

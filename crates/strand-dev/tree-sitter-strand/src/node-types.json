@@ -2279,6 +2279,10 @@
           {
             "type": "panel",
             "named": false
+          },
+          {
+            "type": "window",
+            "named": false
           }
         ]
       },
@@ -3151,6 +3155,10 @@
   },
   {
     "type": "while",
+    "named": false
+  },
+  {
+    "type": "window",
     "named": false
   },
   {

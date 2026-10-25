@@ -1558,6 +1558,21 @@ impl Ctx {
             {
                 let _ = state.pointer(rt).set(rt, v);
             }
+            // (window) A window kept open across a reload keeps what the
+            // compositor said of it: it says it again only on a change.
+            if let Some(a) = was.window_cell.get() {
+                let b = state.window(rt);
+                for (a, b) in [
+                    (a.maximized, b.maximized),
+                    (a.fullscreen, b.fullscreen),
+                    (a.tiled, b.tiled),
+                    (a.decorated, b.decorated),
+                ] {
+                    if let Ok(true) = a.get_untracked(rt) {
+                        let _ = b.set(rt, true);
+                    }
+                }
+            }
         }
         state.scene.set(Some(id));
         if self.vm.prog.pointer_watch.contains(&e.node) {

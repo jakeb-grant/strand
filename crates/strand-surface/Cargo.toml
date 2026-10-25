@@ -38,6 +38,9 @@ rustix = { version = "1.1.5", features = ["time"] }
 # background effect).
 strand-fake-wayland = { path = "../strand-fake-wayland" }
 png = "0.18.1"
+# tests/window.rs: sway's `get_tree`, where a window's app id and size
+# are read.
+serde_json = "1.0.151"
 rustix = { version = "1.1.5", features = ["process", "event"] }
 strand-render.workspace = true
 strand-text.workspace = true

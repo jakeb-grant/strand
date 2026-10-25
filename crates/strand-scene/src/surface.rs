@@ -95,6 +95,55 @@ named_enum! {
     }
 }
 
+named_enum! {
+    /// (window) Who draws a `window`'s title bar and borders
+    /// (`decorations: server | none`).
+    pub enum Decorations {
+        /// The compositor, where it offers to (`xdg-decoration`); the
+        /// config draws its own where it does not (`self.decorated`
+        /// false).
+        Server = "server",
+        /// The config: the compositor is asked to draw none.
+        None = "none",
+    }
+}
+
+/// (window) What a config asks of its own `window` (`w.maximize()`):
+/// `xdg_toplevel` requests, which the compositor may refuse.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WindowAsk {
+    /// `w.move()`: an interactive move, with the press still held.
+    Move,
+    /// `w.resize(edge)`: an interactive resize from that edge or corner,
+    /// with the press still held. `Center` asks nothing.
+    Resize(Anchor),
+    /// `w.minimize()`.
+    Minimize,
+    /// `w.maximize()`: maximised, or restored when it is.
+    Maximize,
+    /// `w.fullscreen()`: fullscreen, or restored when it is.
+    Fullscreen,
+    /// `w.close()`: closed as the compositor's close button closes it
+    /// (`open: <-> x` written false).
+    Close,
+}
+
+impl WindowAsk {
+    /// The ask a `Node` action names (`move`, `resize`, …), with the
+    /// resize edge's name for `resize`; `None` for any other name.
+    pub fn from_action(name: &str, edge: Option<&str>) -> Option<Self> {
+        Some(match name {
+            "move" => Self::Move,
+            "resize" => Self::Resize(edge.and_then(Anchor::from_name)?),
+            "minimize" => Self::Minimize,
+            "maximize" => Self::Maximize,
+            "fullscreen" => Self::Fullscreen,
+            "close" => Self::Close,
+            _ => return None,
+        })
+    }
+}
+
 /// Which outputs a surface appears on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screens {
@@ -185,6 +234,19 @@ pub struct SurfaceSpec {
     /// (flex) `exclusive:` on a bar or panel: the space it keeps from
     /// windows.
     pub exclusive: Exclusive,
+    /// (window) A `window`'s `title:` (`None`: its name).
+    pub title: Option<String>,
+    /// (window) A `window`'s `app_id:` (`None`: its namespace,
+    /// `strand-<Name>`).
+    pub app_id: Option<String>,
+    /// (window) A `window`'s `min_width`/`min_height` and
+    /// `max_width`/`max_height` in logical pixels: the sizes the
+    /// compositor may give it (`xdg_toplevel.set_min_size` and
+    /// `set_max_size`). `None` for other kinds.
+    pub min_size: (Option<f32>, Option<f32>),
+    pub max_size: (Option<f32>, Option<f32>),
+    /// (window) `decorations:`.
+    pub decorations: Decorations,
 }
 
 /// (flex) What a surface keeps from windows (`exclusive:`).
@@ -258,6 +320,17 @@ impl SurfaceSpec {
                 Some(*n).filter(|n| n.is_finite() && *n >= 0.0)
             }
             _ => None,
+        };
+        let text = |p: Prop| match get(p).as_ref().map(AsRef::as_ref) {
+            Some(PropValue::Text(t)) => Some(t.clone()),
+            _ => None,
+        };
+        let window_px = |w: Prop, h: Prop| {
+            if kind == NodeKind::Window {
+                (px(w), px(h))
+            } else {
+                (None, None)
+            }
         };
         let layer_shell = matches!(kind, NodeKind::Bar | NodeKind::Panel | NodeKind::Osd);
         let edge = keyword(Prop::Edge)
@@ -342,6 +415,17 @@ impl SurfaceSpec {
                 get(Prop::InhibitIdle).as_ref().map(AsRef::as_ref),
                 Some(PropValue::Bool(true))
             ),
+            title: (kind == NodeKind::Window)
+                .then(|| text(Prop::Title))
+                .flatten(),
+            app_id: (kind == NodeKind::Window)
+                .then(|| text(Prop::AppId))
+                .flatten(),
+            min_size: window_px(Prop::MinWidth, Prop::MinHeight),
+            max_size: window_px(Prop::MaxWidth, Prop::MaxHeight),
+            decorations: keyword(Prop::Decorations)
+                .and_then(|k| Decorations::from_name(&k))
+                .unwrap_or(Decorations::Server),
             exclusive: match (kind, get(Prop::Exclusive).as_ref().map(AsRef::as_ref)) {
                 (NodeKind::Bar | NodeKind::Panel, Some(PropValue::Bool(true))) => Exclusive::Auto,
                 (NodeKind::Bar | NodeKind::Panel, Some(PropValue::Bool(false))) => Exclusive::None,
@@ -369,6 +453,25 @@ impl SurfaceSpec {
             "strand-{}",
             self.name.as_deref().unwrap_or(self.kind.name())
         )
+    }
+
+    /// (window) The app id a `window` gives the compositor: its
+    /// `app_id:`, else its namespace (`strand-<Name>`), so compositor
+    /// rules match it as they match a layer surface.
+    pub fn window_app_id(&self) -> String {
+        self.app_id
+            .clone()
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| self.namespace())
+    }
+
+    /// (window) The title a `window` gives the compositor: its `title:`,
+    /// else its name.
+    pub fn window_title(&self) -> String {
+        self.title
+            .clone()
+            .or_else(|| self.name.clone())
+            .unwrap_or_else(|| self.kind.name().to_string())
     }
 
     /// A bar's thickness across its edge, logical pixels (`None` while
@@ -487,6 +590,69 @@ mod tests {
             )
             .inhibit_idle
         );
+    }
+
+    /// (window) A `window` is no layer surface: its title is its name
+    /// and its app id its namespace until set, its size limits are its
+    /// `min_*`/`max_*` in px, and it asks for server-side decorations
+    /// unless `decorations: none`. A new title, app id or limit changes
+    /// it in place; another name makes it again.
+    #[test]
+    fn a_window_resolves() {
+        let w = spec(
+            NodeKind::Window,
+            &[(Prop::Name, PropValue::Text("Settings".into()))],
+        );
+        assert_eq!(w.layer, None);
+        assert_eq!(w.window_title(), "Settings");
+        assert_eq!(w.window_app_id(), "strand-Settings");
+        assert_eq!((w.min_size, w.max_size), ((None, None), (None, None)));
+        assert_eq!(w.decorations, Decorations::Server);
+        assert_eq!(w.exclusive_zone(), Some(0.0));
+        assert!(w.open);
+        let set = spec(
+            NodeKind::Window,
+            &[
+                (Prop::Name, PropValue::Text("Settings".into())),
+                (Prop::Title, PropValue::Text("Strand settings".into())),
+                (Prop::AppId, PropValue::Text("org.strand.Settings".into())),
+                (Prop::MinWidth, PropValue::Number(320.0)),
+                (Prop::MaxHeight, PropValue::Length(Length::Px(900.0))),
+                (Prop::Decorations, kw("none")),
+            ],
+        );
+        assert_eq!(set.window_title(), "Strand settings");
+        assert_eq!(set.window_app_id(), "org.strand.Settings");
+        assert_eq!(set.min_size, (Some(320.0), None));
+        assert_eq!(set.max_size, (None, Some(900.0)));
+        assert_eq!(set.decorations, Decorations::None);
+        assert!(!w.needs_recreate(&set));
+        let mut renamed = w.clone();
+        renamed.name = Some("Other".into());
+        assert!(w.needs_recreate(&renamed));
+        // Size limits are a window's only: a panel's `min_width` lays
+        // out its content.
+        let panel = spec(
+            NodeKind::Panel,
+            &[(Prop::MinWidth, PropValue::Number(320.0))],
+        );
+        assert_eq!(panel.min_size, (None, None));
+        assert_eq!(panel.title, None);
+    }
+
+    #[test]
+    fn window_asks_name_the_node_actions() {
+        assert_eq!(WindowAsk::from_action("move", None), Some(WindowAsk::Move));
+        assert_eq!(
+            WindowAsk::from_action("resize", Some("bottom_right")),
+            Some(WindowAsk::Resize(Anchor::BottomRight))
+        );
+        assert_eq!(WindowAsk::from_action("resize", None), None);
+        assert_eq!(
+            WindowAsk::from_action("fullscreen", None),
+            Some(WindowAsk::Fullscreen)
+        );
+        assert_eq!(WindowAsk::from_action("focus", None), None);
     }
 
     #[test]

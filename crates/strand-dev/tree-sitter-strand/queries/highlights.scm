@@ -65,6 +65,7 @@
   "bar"
   "panel"
   "osd"
+  "window"
   "lock"
   "state"
   "let"

@@ -316,6 +316,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let parent_xdg = match &ps.role {
             Role::Popup { popup, .. } => Some(popup.xdg_surface().clone()),
+            // (window) A menu in a window nests in its xdg_surface.
+            Role::Window(t) => Some(t.window.xdg_surface().clone()),
             Role::Layer(_) => None,
             // A lock surface cannot parent an xdg_popup.
             Role::Lock(_) => {
@@ -468,12 +470,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
-    /// The layer surface popup `id` is nested in (itself for a layer
-    /// surface).
+    /// The layer surface (or lock surface, or (window) window) popup
+    /// `id` is nested in (itself for one).
     pub(super) fn root_layer(&self, mut id: SurfaceId) -> Option<SurfaceId> {
         for _ in 0..64 {
             match &self.surfaces.get(&id)?.role {
-                Role::Layer(_) | Role::Lock(_) => return Some(id),
+                Role::Layer(_) | Role::Lock(_) | Role::Window(_) => return Some(id),
                 Role::Popup { parent, .. } => id = *parent,
             }
         }

@@ -13,8 +13,6 @@ use smithay_client_toolkit::compositor::{
     CompositorHandler, CompositorState, FrameCallbackData, Region,
 };
 use smithay_client_toolkit::dispatch2::Dispatch2;
-use smithay_client_toolkit::error::GlobalError;
-use smithay_client_toolkit::globals::{GlobalData, ProvidesBoundGlobal};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -29,8 +27,8 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     self, KeyboardInteractivity, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
+use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgShell, XdgSurface};
 use smithay_client_toolkit::shm::raw::RawPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
@@ -58,7 +56,7 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
 };
-use wayland_protocols::xdg::shell::client::{xdg_positioner, xdg_wm_base::XdgWmBase};
+use wayland_protocols::xdg::shell::client::xdg_positioner;
 
 use strand_scene::{
     CompositorCaps, DropPayload, Keyboard, Layer, LogicalPoint, LogicalSize, NodeId, NodeKind,
@@ -103,12 +101,14 @@ mod seat;
 #[path = "../selection.rs"]
 pub(crate) mod selection;
 mod session_lock;
+mod window;
 #[cfg(feature = "gpu")]
 pub use gpu_handoff::RawHandles;
 
 use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
 pub use session_lock::{LOCK_FALLBACK_NODE, LockError};
+pub use window::ToplevelState;
 
 /// How long an unmapped surface whose paint drew nothing, while its
 /// painter still wants a frame, waits before it is painted again (no frame
@@ -286,6 +286,14 @@ pub trait SurfaceHost: Painter {
     /// keyboard. The binary hands it to `strand_services::keyboard`.
     fn keyboard_state(&mut self, state: Option<&KeyboardState>) {
         let _ = state;
+    }
+    /// (window) What the compositor's configure of the `window` on
+    /// `surface` says of it, when it changed, before the size it gives
+    /// is configured: the host tells render the axes it sizes
+    /// (`Renderer::set_window_sized`) and its bounds, and logic its
+    /// states (`w.maximized`, `w.focused` …).
+    fn window_state(&mut self, surface: SurfaceId, state: &ToplevelState) {
+        let _ = (surface, state);
     }
 }
 
@@ -529,6 +537,9 @@ pub struct SurfaceInfo {
     /// (services-round) It holds a `zwp_idle_inhibitor_v1`
     /// (`inhibit_idle: true`).
     pub inhibits_idle: bool,
+    /// (window) A window's state as its last configure said (`None`:
+    /// not a window, or not configured yet).
+    pub toplevel: Option<ToplevelState>,
     pub stats: Stats,
 }
 
@@ -612,23 +623,6 @@ struct Surface {
     stats: Stats,
 }
 
-/// The bound `xdg_wm_base` (sctk's `XdgShell` would also bind the
-/// toplevel decoration manager and need a window handler).
-#[derive(Debug)]
-struct WmBase(XdgWmBase);
-
-impl ProvidesBoundGlobal<XdgWmBase, 5> for WmBase {
-    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
-        Ok(self.0.clone())
-    }
-}
-
-impl ProvidesBoundGlobal<XdgWmBase, 6> for WmBase {
-    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
-        Ok(self.0.clone())
-    }
-}
-
 /// What a Wayland surface of ours is.
 enum Role {
     Layer(LayerSurface),
@@ -654,6 +648,8 @@ enum Role {
     /// (M4) A session lock surface showing the lock's content
     /// (`session_lock.rs`).
     Lock(session_lock::LockSurface),
+    /// (window) An `xdg_toplevel` (`window.rs`).
+    Window(Box<window::Toplevel>),
 }
 
 impl Role {
@@ -662,13 +658,14 @@ impl Role {
             Role::Layer(l) => l.wl_surface(),
             Role::Popup { popup, .. } => popup.wl_surface(),
             Role::Lock(l) => l.wl(),
+            Role::Window(t) => t.window.wl_surface(),
         }
     }
 
     fn popup_parent(&self) -> Option<SurfaceId> {
         match self {
             Role::Popup { parent, .. } => Some(*parent),
-            Role::Layer(_) | Role::Lock(_) => None,
+            Role::Layer(_) | Role::Lock(_) | Role::Window(_) => None,
         }
     }
 
@@ -761,6 +758,10 @@ impl Surface {
             pose: self.pose,
             origin: self.origin,
             inhibits_idle: false,
+            toplevel: match &self.role {
+                Role::Window(t) => t.told,
+                _ => None,
+            },
             stats: self.stats,
         }
     }
@@ -797,8 +798,9 @@ pub struct State<H: SurfaceHost + 'static> {
     seat_state: SeatState,
     shm: Shm,
     layer_shell: LayerShell,
-    /// `xdg_wm_base`, for popups (none: popups are not shown).
-    xdg_shell: Option<WmBase>,
+    /// `xdg_wm_base` and (window) the toplevel decoration manager, for
+    /// popups and windows (none: neither is shown).
+    xdg_shell: Option<XdgShell>,
     viewporter: Option<WpViewporter>,
     fractional_manager: Option<WpFractionalScaleManagerV1>,
     presentation: Option<WpPresentation>,
@@ -1013,10 +1015,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let layer_shell = LayerShell::bind(&globals, &qh)
             .map_err(|_| SurfaceError::MissingGlobal("zwlr_layer_shell_v1"))?;
         let shm = Shm::bind(&globals, &qh).map_err(|_| SurfaceError::MissingGlobal("wl_shm"))?;
-        let xdg_shell = globals
-            .bind::<XdgWmBase, _, _>(&qh, 1..=6, GlobalData)
-            .ok()
-            .map(WmBase);
+        let xdg_shell = XdgShell::bind(&globals, &qh).ok();
         let viewporter = globals
             .bind::<WpViewporter, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
@@ -1592,6 +1591,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         if spec.kind == NodeKind::Lock {
             self.reconcile_lock();
+            return;
+        }
+        if spec.kind == NodeKind::Window {
+            self.reconcile_window(node, &spec);
             return;
         }
         let mapped = match self.layer_config_of(node, &spec) {

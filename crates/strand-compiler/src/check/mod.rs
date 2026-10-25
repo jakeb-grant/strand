@@ -273,6 +273,7 @@ pub(crate) const TOP_KEYWORDS: &[&str] = &[
     "panel",
     "osd",
     "lock",
+    "window",
     "state",
     "let",
     "export",

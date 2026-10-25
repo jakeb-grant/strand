@@ -92,7 +92,23 @@ last action a handler ran with one (`Composite::action_press`, from
 answering `item.menu.open()`. The host marks each popup a diff creates
 or opens with it (`demo::popup_causes`, `State::set_popup_cause`)
 before applying it, so the surface grabs only for the press that
-opened it. No locks are shared across
+opened it. (window) `SceneDiff::window_asks: Vec<(NodeId, WindowAsk)>`
+carries what handlers asked of a `window` (`w.maximize()`,
+`w.resize(edge)`; `strand_scene::WindowAsk`), gathered by the instance
+through `VmHooks::window(rt, node, ask)` for a node that is a window's
+root and taken once; the binary applies the diff, then hands each to
+`State::window_ask(node, ask, press)` with the diff's `press`. The
+other way, `SurfaceHost::window_state(surface, &ToplevelState)` reports
+each configure that changes what the compositor says of a window
+(`strand_surface::ToplevelState`: the axes it sized, `activated`,
+`maximized`, `fullscreen`, `tiled`, `decorated`, `configure_bounds`,
+`wm_capabilities`; also `State::toplevel_state(node)` and
+`SurfaceInfo::toplevel`) before its `configured`: the host passes the
+sized axes to `Renderer::set_window_sized(surface, (bool, bool))`
+(laid out at the configured size there, no growth spring, no size
+asked), the bounds to `set_surface_bounds`, and the states to logic as
+`set_flag` with `NodeFlag::Focused`, `Maximized`, `Fullscreen`,
+`Tiled` and `Decorated` on the window's root. No locks are shared across
 threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
@@ -117,7 +133,8 @@ chains, scrolling, the tree): hover and pressed chains, keyboard focus
 (the focused node of the focused surface gets `key(k)`), list selection,
 `nav`, `input` edits, and `open: false` on a surface whose `open` is
 two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
-(`InputEvent::ClickAway`, or a left press on another Strand surface while
+(a `window` only on `InputEvent::ClickAway`, its compositor's close;
+`InputEvent::ClickAway`, or a left press on another Strand surface while
 an open `keyboard: exclusive` one has a two-way `open`:
 `InputScene::exclusive_open`; or, integration-r8, while an open popup with
 no `trigger: hover` has one, `InputScene::popup_open`, unless the press
@@ -5271,10 +5288,26 @@ and the connection):
 - The keyboard: one `wl_keyboard` per seat with xkbcommon keymaps and
   key repeat (`get_keyboard_with_repeat`), as `InputEvent::Key` on the
   surface with keyboard focus (`State::keyboard_focus`).
+- (window) Windows (`NodeKind::Window` specs, `manager/window.rs`): an
+  `xdg_toplevel` through sctk's `XdgShell` (which binds `xdg_wm_base`
+  versions 1–6 and the `xdg-decoration` manager), `Role::Window`, made
+  from `placement::window_config` (a `WindowConfig`: title, app id from
+  `SurfaceSpec::window_app_id`, asked size, min/max sizes, overhang,
+  decorations). Title, app id, limits and the decoration mode change in
+  place (`reconfigure_window`); its window geometry is its box inside
+  the overhang, as a popup's. Its configure takes the compositor's size
+  on an axis when a state constrains it (maximized, fullscreen, tiled,
+  resizing) or it differs from the size asked (`kept_size`), keeps its
+  own otherwise, and reports `SurfaceHost::window_state` on a change;
+  `close` is the surface's `InputEvent::ClickAway`, as is
+  `WindowAsk::Close`. `State::window_ask` sends move and resize with the
+  diff's press serial (else the seat's last), and minimize, maximize
+  and fullscreen (toggles) only where `wm_capabilities` lists them.
 - Popups (`NodeKind::Popup` specs): an `xdg_popup` (`xdg_wm_base` bound
-  directly, versions 1–6) nested in a mapped surface of
+  through sctk's `XdgShell`, versions 1–6) nested in a mapped surface of
   `SurfaceSpec::parent` (the one last pressed, when several), through
-  `zwlr_layer_surface.get_popup` or the parent popup's `xdg_surface`,
+  `zwlr_layer_surface.get_popup` or the parent popup's or window's
+  `xdg_surface` (a window's box being its window geometry),
   positioned by `placement::popup_config` (a `PopupConfig`: box size,
   overhang, anchor rect in the parent's window geometry, side and gap)
   with slide and flip; the gap is the popup's margin on the side facing

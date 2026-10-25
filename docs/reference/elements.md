@@ -807,3 +807,30 @@ It mounts its children only while shown.
 
 Also every prop and event of [`node`](#node).
 
+### `window`
+
+```strand
+element window: surface
+```
+
+A window the compositor manages (`xdg_toplevel`): it tiles, floats,
+moves, minimises and shows in task bars as an app's window does
+(a settings window, a picker). The compositor decides its size: its
+`width` and `height` (its content's while unset) are the size it asks
+for, and its `min_*`/`max_*` the sizes it takes. Its compositor's
+close writes its `open: <-> x` false. Its own `focused` is true while
+the compositor has it focused, and `maximized`, `fullscreen`,
+`tiled` and `decorated` follow the compositor (`id: w` and
+`w.maximized`); `w.move()`, `w.resize(edge)`, `w.minimize()`,
+`w.maximize()`, `w.fullscreen()` and `w.close()` ask it.
+
+It is a surface, written at the top level of a file.
+
+Also every prop and event of [`surface`](#surface).
+
+| Prop | Type | |
+| --- | --- | --- |
+| `title` | `text` | The title the compositor shows: `title: "Settings"`. Its name while unset. |
+| `app_id` | `text` | The app id compositor rules match: `strand-<Name>` while unset. |
+| `decorations` | `Decorations` | Who draws its title bar and borders: `server` (the default), the compositor where it offers to (`w.decorated`), or `none`, the config. |
+
