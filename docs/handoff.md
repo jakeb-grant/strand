@@ -51,7 +51,8 @@ sweep), and for M5's numbers `docs/m5-report.md`.
   limit."): `main` at 091c7f64 measured 22,218,514 and 26,207,698 B (GitHub CI's
   budgets job, run 39691736543), and
   by the same rule they are 22,806,528 B and 26,738,688 B (decisions.md
-  growth).
+  growth). services-round's tree (2026-10-24) re-based them by the same
+  rule to 24,379,392 B and 28,311,552 B (decisions.md services-round).
 - **Checks.** Each merge and the sweep ran fmt, workspace clippy and
   the touched crates' tests in the container, and the lock VM's
   `scenarios/all.sh` where lock code changed (LOCK VM SCENARIOS PASSED
@@ -107,7 +108,8 @@ rulings).
    merged tree: 21,233,664 B and 25,165,824 B; and on the
    m6-service-gaps merged tree: 22,282,240 B and 26,214,400 B; raised
    2026-10-22 at the owner's word on `main` at 091c7f64: 22,806,528 B
-   and 26,738,688 B.
+   and 26,738,688 B; re-based 2026-10-24 on services-round's tree:
+   24,379,392 B and 28,311,552 B.
 3. ~~**The Hyprland IPC capture**~~: done 2026-10-12. The owner ran
    `scripts/capture-hyprland.sh 300` on three monitors; scrubbed, it is
    `tests/fixtures/hyprland-0.56.2-captured-2`, replayed by two adapter

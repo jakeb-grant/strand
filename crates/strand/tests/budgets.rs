@@ -50,10 +50,11 @@
 //!   Vulkan mapped, aiming at 76 MB and failing above 104 MB in release.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   26,738,688 B with the GPU backend (the default build), 22,806,528 B
+//!   28,311,552 B with the GPU backend (the default build), 24,379,392 B
 //!   for the CPU core (`--no-default-features`); both re-based for the
-//!   speed profile and since by the measured-plus-reserve rule, last at
-//!   the owner's word (decisions.md m5-speed, growth; docs/architecture.md,
+//!   speed profile and since by the measured-plus-reserve rule, last for
+//!   services-round's services (decisions.md m5-speed, growth,
+//!   services-round; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2657,8 +2658,14 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 26,738,688 B (102 × 256
-/// KiB). `main` at 091c7f64 measured 26,207,698 B in GitHub CI's
+/// `.text` of the default (GPU) release build: 28,311,552 B (108 × 256
+/// KiB): services-round's tree (`laptop/services` at its S3 commit)
+/// measured 27,620,503 B in the container suite (`main` at 294970c8
+/// 26,539,863 B: S1 and S2's service members +814,912 B, S3's polkit
+/// agent and greetd greeter +265,728 B), plus a 512 KiB reserve over
+/// CI's runner (about 48 KB above the container), rounded up to 256 KiB
+/// (decisions.md services-round). It was 26,738,688 B: `main` at
+/// 091c7f64 measured 26,207,698 B in GitHub CI's
 /// budgets job (run 39691736543; 26,159,895 B in the container suite),
 /// 6,702 B under the gate before; the owner raised it (2026-10-22,
 /// "Raise the code size limit."), by the same rule: CI's measurement
@@ -2676,9 +2683,13 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 26_738_688;
-/// `.text` of the CPU-only release build: 22,806,528 B (87 × 256 KiB).
-/// `main` at 091c7f64 measured 22,218,514 B (CI run 39691736543;
+const TEXT_GATE_GPU: u64 = 28_311_552;
+/// `.text` of the CPU-only release build: 24,379,392 B (93 × 256 KiB):
+/// services-round's tree measured 23,581,207 B in the container suite
+/// (`main` at 294970c8 22,508,247 B; S1 and S2 +807,168 B, S3 +265,792
+/// B), plus a 512 KiB reserve over CI's runner, rounded up to 256 KiB
+/// (decisions.md services-round). It was 22,806,528 B: `main` at
+/// 091c7f64 measured 22,218,514 B (CI run 39691736543;
 /// 22,170,775 B in the container suite); the owner raised the gate
 /// (2026-10-22) by the same rule, CI's measurement plus a 512 KiB
 /// reserve, rounded up to 256 KiB (decisions.md growth). It was
@@ -2693,7 +2704,7 @@ const TEXT_GATE_GPU: u64 = 26_738_688;
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 22_806_528;
+const TEXT_GATE_CPU: u64 = 24_379_392;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's

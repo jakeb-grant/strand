@@ -188,9 +188,9 @@ jobs:
       # The release binary the gate just measured, kept for the human
       # trials' artifact below before the CPU-only build replaces it.
       - run: mkdir -p "$RUNNER_TEMP/trial" && cp target/release/strand "$RUNNER_TEMP/trial/strand-gpu"
-      # The CPU core's .text keeps its own gate (22,806,528 B; the GPU
-      # backend's is 26,738,688 B), both raised at the owner's word on
-      # main at 091c7f64 with a 512 KiB reserve (decisions.md growth;
+      # The CPU core's .text keeps its own gate (24,379,392 B; the GPU
+      # backend's is 28,311,552 B), both re-based on services-round's
+      # tree with a 512 KiB reserve (decisions.md growth, services-round;
       # docs/architecture.md, "`strand-gpu`").
       - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:

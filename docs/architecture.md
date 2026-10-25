@@ -188,12 +188,13 @@ opt-levels build the code users wait on for speed and event-rate
 glue for size (decisions.md m5-speed-profile), and neither `cargo install`
 from crates.io nor a packager's own profile carries them, so packages
 build from the workspace (`budgets.rs` holds the release binary's
-`.text` to 26,738,688 B, and a build without the GPU backend to
-22,806,528 B, both re-based in M5 for the speed profile, again to
+`.text` to 28,311,552 B, and a build without the GPU backend to
+24,379,392 B, both re-based in M5 for the speed profile, again to
 wave 2's merged tree, in M6 for remote media art's HTTPS stack, on
 M6 wave 1's `main` with a 512 KiB reserve, and on M6 wave 2's and
 m6-service-gaps' merged trees with the same reserve, and raised by the
-same rule at the owner's word on `main` at 091c7f64 (decisions.md
+same rule at the owner's word on `main` at 091c7f64 and for
+services-round's services (decisions.md
 m5-speed, m5-integration-w2, m6-integration-w1, m6-owner,
 m6-service-gaps, growth); see
 "`strand-gpu`"). Every program strand starts gets back
@@ -631,8 +632,9 @@ blocker). The `strand` binary's default feature `gpu` turns on render's
 on `shaders` so the LSP checks shaders too. Built with
 `--no-default-features`, `strand` links none of wgpu, vello_gpu, naga or
 libwayland-client: that build is the CPU core the CPU-only `.text` gate
-measures (22,806,528 B since the owner's raise of 2026-10-22 on `main`
-at 091c7f64; decisions.md growth).
+measures (24,379,392 B since services-round's re-base, 22,806,528 B
+from the owner's raise of 2026-10-22 on `main` at 091c7f64; decisions.md
+growth, services-round).
 
 ```
 strand-scene <── strand-gpu (M4: wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -5909,8 +5911,11 @@ inspector (M5) to say why.
 
 **Budgets and tests.**
 - `.text` (`strand/tests/budgets.rs`): the default build at most
-  26,738,688 B and `strand --no-default-features` at most 22,806,528 B
-  (decisions.md growth, 2026-10-22: raised at the owner's word on `main`
+  28,311,552 B and `strand --no-default-features` at most 24,379,392 B
+  (decisions.md services-round, 2026-10-24: services-round's tree,
+  27,620,503 and 23,581,207 B in the container suite, plus a 512 KiB
+  reserve over CI's runner, rounded up to 256 KiB; before it 26,738,688
+  and 22,806,528 B, decisions.md growth, 2026-10-22: raised at the owner's word on `main`
   at 091c7f64, 26,207,698 and 22,218,514 B in GitHub CI's budgets job,
   plus a 512 KiB reserve,
   rounded up to 256 KiB; before it 26,214,400 and 22,282,240 B,
