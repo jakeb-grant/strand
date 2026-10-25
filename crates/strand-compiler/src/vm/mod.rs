@@ -379,6 +379,7 @@ impl Env {
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
             rect_cell: Default::default(),
+            pointer_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),
@@ -440,6 +441,134 @@ pub struct ExecRequest {
     pub action: String,
     /// The program, then its arguments: each parameter exactly one.
     pub argv: Vec<String>,
+    /// (flex) For an action with a result (`action calc(q: text) ->
+    /// text […]`): where its output goes, read as the declared type.
+    /// `None`: run detached, as before.
+    pub reply: Option<ExecReply>,
+}
+
+/// (flex) Where the output of an action with a result goes: the host
+/// runs the command, reads what it printed as [`ExecReply::ty`] and
+/// [`ExecReply::answer`]s, on the logic thread; the call's `Async`
+/// settles with it. A call whose value was dropped (a binding's load
+/// superseded by newer arguments, a handler that let it go) is
+/// [`ExecReply::abandoned`]: the host ends its command.
+#[derive(Clone)]
+pub struct ExecReply(Rc<ReplyState>);
+
+struct ReplyState {
+    /// The program whose types [`ExecReply::ty`] names.
+    prog: Arc<Program>,
+    ty: crate::ty::Ty,
+    answer: RefCell<Option<Result<Value, String>>>,
+    waker: RefCell<Option<std::task::Waker>>,
+    /// Answered, or abandoned: nothing more is taken.
+    done: Cell<bool>,
+    abandoned: Cell<bool>,
+}
+
+impl ExecReply {
+    /// A reply reading the output as `ty`, a type of `prog`.
+    pub fn new(prog: Arc<Program>, ty: crate::ty::Ty) -> ExecReply {
+        ExecReply(Rc::new(ReplyState {
+            prog,
+            ty,
+            answer: RefCell::default(),
+            waker: RefCell::default(),
+            done: Cell::new(false),
+            abandoned: Cell::new(false),
+        }))
+    }
+
+    /// What the output is read as.
+    pub fn ty(&self) -> &crate::ty::Ty {
+        &self.0.ty
+    }
+
+    /// The type table [`ExecReply::ty`] belongs to.
+    pub fn types(&self) -> &crate::ty::TypeTable {
+        &self.0.prog.types
+    }
+
+    /// Settles the call with the command's value, or why it has none
+    /// (it failed, or printed what does not read as the type). Only the
+    /// first answer counts.
+    pub fn answer(&self, r: Result<Value, String>) {
+        if self.0.done.replace(true) {
+            return;
+        }
+        *self.0.answer.borrow_mut() = Some(r);
+        if let Some(w) = self.0.waker.borrow_mut().take() {
+            w.wake();
+        }
+    }
+
+    /// The call's value was dropped before an answer: its command can
+    /// end.
+    pub fn abandoned(&self) -> bool {
+        self.0.abandoned.get()
+    }
+
+    /// The answer, until the call's `await` takes it (tests, hosts).
+    pub fn peek(&self) -> Option<Result<Value, String>> {
+        self.0.answer.borrow().clone()
+    }
+
+    /// What `await` of the call waits on: the call's own (one per call).
+    /// Dropped unanswered, it abandons the reply.
+    pub fn wait(&self) -> ReplyWait {
+        ReplyWait(self.clone())
+    }
+}
+
+impl PartialEq for ExecReply {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ExecReply {}
+
+impl std::fmt::Debug for ExecReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecReply")
+            .field("ty", &self.0.ty)
+            .field("done", &self.0.done.get())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The future of an [`ExecReply`]: dropped unanswered, it abandons it.
+#[derive(Debug)]
+pub struct ReplyWait(ExecReply);
+
+impl std::future::Future for ReplyWait {
+    type Output = Result<Value, String>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let s = &self.0.0;
+        if let Some(r) = s.answer.borrow_mut().take() {
+            return std::task::Poll::Ready(r);
+        }
+        if s.done.get() {
+            // Taken already (polled again after it finished).
+            return std::task::Poll::Ready(Err("its answer was taken".into()));
+        }
+        *s.waker.borrow_mut() = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
+}
+
+impl Drop for ReplyWait {
+    fn drop(&mut self) {
+        let s = &self.0.0;
+        if !s.done.replace(true) {
+            s.abandoned.set(true);
+        }
+    }
 }
 
 /// (M5) The other mode's env (decisions.md m5-tools, "a template reads
@@ -508,6 +637,28 @@ impl Vm {
     /// program runs with no shell between). It runs when the host takes it
     /// ([`Vm::take_execs`]).
     pub(crate) fn exec(&self, def: DefId, args: &[Value]) -> Result<(), Error> {
+        self.request(def, args, None)
+    }
+
+    /// (flex) Asks for action `def`'s command as [`Vm::exec`] does, its
+    /// output read as the action's declared result: what the call's
+    /// `Async` waits on. `None`: the action has no result.
+    pub(crate) fn exec_result(&self, def: DefId, args: &[Value]) -> Result<ReplyWait, Error> {
+        let Some(ty) = self.prog.execs.get(&def).and_then(|a| a.ret.clone()) else {
+            return Err(Error::failed("this action has no result"));
+        };
+        let reply = ExecReply::new(self.prog.clone(), ty);
+        let wait = reply.wait();
+        self.request(def, args, Some(reply))?;
+        Ok(wait)
+    }
+
+    /// Whether action `def` has a result (its call is an `Async`).
+    pub(crate) fn exec_has_result(&self, def: DefId) -> bool {
+        self.prog.execs.get(&def).is_some_and(|a| a.ret.is_some())
+    }
+
+    fn request(&self, def: DefId, args: &[Value], reply: Option<ExecReply>) -> Result<(), Error> {
         let Some(action) = self.prog.execs.get(&def) else {
             return Err(Error::failed("no such action"));
         };
@@ -525,6 +676,7 @@ impl Vm {
         self.execs.borrow_mut().push(ExecRequest {
             action: action.name.clone(),
             argv,
+            reply,
         });
         Ok(())
     }

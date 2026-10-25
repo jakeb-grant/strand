@@ -1066,12 +1066,14 @@ fn board_session() -> Fx {
 }
 
 /// (fidelity) A panel the live shell showed on every output at once
-/// (`screens: all`: one node, a surface of it on each) is drawn by the
-/// sandbox on one output, which keeps one surface per node: the replay
-/// says so plainly, naming the outputs it was not replayed on, and its
-/// maps there are no focus.
+/// (`screens: all`: one node, a surface of it on each, as a strand from
+/// before 2026-10-24 drew it) is planned as shared; the replay's strand
+/// mounts a panel whose `screens:` picks monitors once per monitor
+/// (decisions.md flex), each pinned to its own, so the sandbox draws it
+/// on every output it was shown on live and names no limit for it (the
+/// limit itself stays for a node that is drawn on fewer outputs).
 #[test]
-fn a_node_shown_on_every_output_is_named_where_it_was_not_replayed() {
+fn a_node_shown_on_every_output_live_is_replayed_on_each() {
     let (board, _) = surface_origins();
     let dir = board_session().write("screens-board");
     let (_, p, text) = plan_of(&dir, &defaults());
@@ -1090,25 +1092,12 @@ fn a_node_shown_on_every_output_is_named_where_it_was_not_replayed() {
         "{text}"
     );
     let (r, _) = replay_of(&dir, &defaults());
-    let want = format!(
-        "@{board} was shown live on DP-1, DP-2, HDMI-A-1, eDP-1 at once, one surface of one node \
-         on each (its `screens:` is `all` or a list); the sandbox shows a node on one output, so \
-         the replay drew it on DP-1 only and not on DP-2, HDMI-A-1, eDP-1"
-    );
     assert!(
-        r.limits.contains(&want),
+        !r.limits.iter().any(|l| l.contains("was shown live on")),
         "{:#?}\n{:?}\n{}",
         r.limits,
         r.plan.shared,
         r.text
-    );
-    assert!(
-        r.json["limits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|l| l.as_str() == Some(want.as_str())),
-        "fidelity.json's limits"
     );
 }
 

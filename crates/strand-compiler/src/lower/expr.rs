@@ -440,6 +440,11 @@ impl Lowerer<'_> {
                 let n = c.name(s);
                 c.emit(Op::Service(n), span);
             }
+            // (flex) `pi` is a constant: static where it is read.
+            ExprKind::Value(v) if v == "pi" => {
+                let k = c.constant(Const::Num(std::f64::consts::PI, Num::Float));
+                c.emit(Op::Const(k), span);
+            }
             ExprKind::Value(v) => {
                 let n = c.name(v);
                 c.emit(Op::Value(n), span);
@@ -637,6 +642,9 @@ impl Lowerer<'_> {
                             matches!(receiver.kind, ExprKind::Service(_))
                                 && !self.method_sig(&receiver.ty, name, *overload).2
                         }
+                        // (flex) An action with a result: its command's
+                        // load, as a service's async method's.
+                        Callee::Action(_) => true,
                         _ => false,
                     };
                 // Only the site's own call is lowered as a plain call: its
@@ -920,6 +928,8 @@ fn num_const(value: f64, unit: Option<Unit>, ty: &Ty) -> Const {
         Some(Unit::Ch) => (value, Num::Ch),
         Some(Unit::S) => (value * 1000.0, Num::Ms),
         Some(Unit::Ms) => (value, Num::Ms),
+        Some(Unit::Min) => (value * 60_000.0, Num::Ms),
+        Some(Unit::H) => (value * 3_600_000.0, Num::Ms),
         None => match ty.non_null() {
             Ty::Prim(Prim::Int) => (value, Num::Int),
             Ty::Prim(Prim::Length) => (value, Num::Px),

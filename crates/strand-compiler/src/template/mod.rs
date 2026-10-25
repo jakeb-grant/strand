@@ -597,6 +597,14 @@ impl Compiler {
     }
 }
 
+/// `s` seconds as a duration value; what a `Duration` cannot hold is the
+/// longest it can.
+fn secs(s: f64) -> PropValue {
+    PropValue::Duration(
+        std::time::Duration::try_from_secs_f64(s.max(0.0)).unwrap_or(std::time::Duration::MAX),
+    )
+}
+
 /// A number literal as the token table holds it: pixels and plain
 /// numbers as numbers, other units as their kinds.
 fn number(v: f64, unit: Option<Unit>) -> PropValue {
@@ -606,10 +614,10 @@ fn number(v: f64, unit: Option<Unit>) -> PropValue {
         Some(Unit::Percent) => PropValue::Length(Length::Percent(f)),
         Some(Unit::Ch) => PropValue::Length(Length::Ch(f)),
         Some(Unit::Deg) => PropValue::Angle(f),
-        Some(Unit::S) => PropValue::Duration(std::time::Duration::from_secs_f64(v.max(0.0))),
-        Some(Unit::Ms) => {
-            PropValue::Duration(std::time::Duration::from_secs_f64((v / 1000.0).max(0.0)))
-        }
+        Some(Unit::S) => secs(v),
+        Some(Unit::Ms) => secs(v / 1000.0),
+        Some(Unit::Min) => secs(v * 60.0),
+        Some(Unit::H) => secs(v * 3600.0),
     }
 }
 

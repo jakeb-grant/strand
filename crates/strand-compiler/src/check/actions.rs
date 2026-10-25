@@ -150,13 +150,47 @@ impl<'a> Checker<'a> {
     }
 
     /// The signature a handler calls: `dispatch(ws: int)`, an action.
+    /// (flex) With `-> T` (`action calc(q: text) -> text ["qalc", "-t",
+    /// q]`) the command's output is its value: the call is an
+    /// `Async<T>`, loaded in a binding as `apps.search(q)` is and awaited
+    /// in a handler, so it is no action there.
     pub(super) fn action_sig(&mut self, a: &'a ast::ActionDecl) {
         let Some(&id) = self.item_defs.get(&(self.module, a.name.span)) else {
             return;
         };
         let params = self.action_params(&a.params, false);
-        let mut sig = FnSig::new(params, Ty::Unit);
-        sig.action = true;
+        let ret = a.ret.as_ref().map(|t| {
+            let ty = self.resolve_type(t);
+            // (flex review) What a `from poll` field may hold: data,
+            // records the config declares and the builtin `File` and
+            // `Date` (services-round), never a live handle (`Window`,
+            // `Canvas`).
+            if !super::tree::readable(&self.types, &ty, &mut Vec::new()) {
+                let shown = self.types.show(&ty);
+                self.error(
+                    "check::type_mismatch",
+                    format!("a command's output cannot be read as a `{shown}`"),
+                    t.span,
+                    "not read from what it prints",
+                )
+                .help = Some(
+                    "use `text` for what it prints as it is, or a number, `bool`, enum, a \
+                     `type` you declare, or a list or optional of these, read from its JSON \
+                     or `key=value` lines"
+                        .into(),
+                );
+                return Ty::Error;
+            }
+            ty
+        });
+        let sig = match ret {
+            Some(t) => FnSig::new(params, Ty::Async(Box::new(t))),
+            None => {
+                let mut sig = FnSig::new(params, Ty::Unit);
+                sig.action = true;
+                sig
+            }
+        };
         self.defs[id.0 as usize].ty = Ty::Fn(Arc::new(sig));
     }
 

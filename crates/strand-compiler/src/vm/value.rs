@@ -186,6 +186,10 @@ pub struct NodeState {
     /// render first reports it (it reads as all zeros then). Made on
     /// first use ([`NodeState::rect`]): most elements are never read so.
     pub rect_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (flex) The pointer over it, `self.pointer`: a `Point` in its
+    /// laid-out box, or `Null` while the pointer is not over it. Made on
+    /// first use ([`NodeState::pointer`]).
+    pub pointer_cell: std::cell::OnceCell<Signal<Value>>,
     /// (M6) For a conditional id (`when c { id: name }`), the element it
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
@@ -225,10 +229,18 @@ impl NodeState {
     /// (M6) A binding read `box`: render reports where it is, not only
     /// its size.
     pub const WATCH_BOX: u8 = 4;
+    /// (flex) A binding or handler reads `pointer`: render reports the
+    /// pointer over it, once a frame while it moves.
+    pub const WATCH_POINTER: u8 = 8;
 
     /// (M6) `id.box`'s signal, made on first use in the element's scope.
     pub fn rect(&self, rt: &strand_core::Runtime) -> Signal<Value> {
         *self.rect_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (flex) `self.pointer`'s signal, made on first use.
+    pub fn pointer(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.pointer_cell.get_or_init(|| self.make(rt))
     }
 
     /// (M6) A conditional id's target signal (see `alias_cell`).

@@ -27,6 +27,7 @@ mod feed;
 mod frame;
 mod layout_pass;
 mod lists;
+mod pointer;
 mod pose;
 #[cfg(feature = "eval-hooks")]
 mod probe;
@@ -399,6 +400,9 @@ pub struct Renderer {
     /// flip-flops between them).
     facts: Vec<(NodeId, strand_scene::LogicalRect)>,
     facts_sent: HashMap<(SurfaceId, NodeId), strand_scene::LogicalRect>,
+    /// (flex) The pointer over the nodes logic reads `pointer` of
+    /// (`pointer.rs`).
+    pointing: pointer::Pointing,
     /// (M6) A surface was placed since facts were last taken: the
     /// popups' own boxes are reported then, once every surface moved
     /// with it is placed too ([`Renderer::take_layout_facts`]).
@@ -581,6 +585,7 @@ impl Renderer {
             layout_spent: Duration::ZERO,
             facts: Vec::new(),
             facts_sent: HashMap::new(),
+            pointing: Default::default(),
             placed_dirty: false,
             facts_seq: 0,
             query_wait: Duration::ZERO,

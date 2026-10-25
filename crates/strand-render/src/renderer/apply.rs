@@ -29,6 +29,8 @@ pub(super) fn snaps_and_glides(prop: Prop) -> bool {
             | Justify
             | Place
             | Columns
+            | Wrap
+            | Axis
     )
 }
 
@@ -54,6 +56,9 @@ impl Renderer {
         });
         // (M4) Media nodes this diff creates get their sources.
         let media = crate::media::created(&diff);
+        for popup in self.pointing.diff_applied() {
+            self.spec_dirty.insert(popup);
+        }
         let errors = self.apply_ops(diff);
         self.attach_media(&media);
         // Widget state of nodes logic removed goes with them, and a
@@ -241,6 +246,7 @@ impl Renderer {
         let tree = &self.tree;
         self.facts_sent.retain(|(_, n), _| tree.contains(*n));
         // Newly watched nodes: their box as laid out now (`facts.rs`).
+        self.watch_pointer(&watched);
         self.report_watched(watched);
         let tree = &self.tree;
         self.scrolls.retain(|n, _| tree.contains(*n));

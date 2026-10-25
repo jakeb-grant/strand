@@ -426,6 +426,8 @@ impl Painter for Renderer {
         // into the gap from the next frame), closing surfaces close, and
         // a surface that settled shrinks: the specs are refreshed here so
         // the host sees the change at once.
+        // (flex) The pointer over the nodes logic reads it of.
+        self.report_pointer(surface);
         self.process_finished();
         self.release_holds();
         self.arm_timer();
@@ -979,6 +981,7 @@ impl Renderer {
             && self.surfaces.get(&surface).is_some_and(|s| {
                 s.dirty
                     || !s.valid
+                    || self.pointer_due(surface)
                     || s.animating
                     || self.clocks.wants(surface)
                     || self.inspect.wants(surface)

@@ -125,6 +125,40 @@ impl Range {
     pub fn at(&self, f: f32) -> f32 {
         self.lo + (self.hi - self.lo) * f.clamp(0.0, 1.0)
     }
+
+    /// (flex) The value at fraction `f` moved to the nearest whole
+    /// `step` from `lo` (in the range's units; a slider's `step:`), kept
+    /// within the range; `None` for a step that is not a positive finite
+    /// number. It is `lo + n · step` as written in decimals: worked in
+    /// `f64` from the shortest decimals of `lo` and `step` and rounded
+    /// to as many places as they have, so `step: 0.1` writes `0.9`, not
+    /// `0.90000004`.
+    pub fn snap(&self, f: f32, step: f32) -> Option<f32> {
+        if !(step.is_finite() && step > 0.0 && f.is_finite()) {
+            return None;
+        }
+        let (lo, hi, s) = (decimal(self.lo), decimal(self.hi), decimal(step));
+        let at = lo + (hi - lo) * f64::from(f.clamp(0.0, 1.0));
+        let n = ((at - lo) / s).round();
+        let places = places(self.lo).max(places(step));
+        let scale = 10f64.powi(places as i32);
+        let to = ((lo + n * s) * scale).round() / scale;
+        let to = to.clamp(lo.min(hi), lo.max(hi)) as f32;
+        to.is_finite().then_some(to)
+    }
+}
+
+/// `x` as the `f64` of its shortest decimal form (`0.1f32` is `0.1`,
+/// not `0.10000000149`).
+fn decimal(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(f64::from(x))
+}
+
+/// How many decimal places the shortest form of `x` has (at most 9).
+fn places(x: f32) -> u32 {
+    let s = x.to_string();
+    s.split_once('.')
+        .map_or(0, |(_, frac)| frac.len().min(9) as u32)
 }
 
 /// The smallest step of the 1, 2, 5 ladder (…, 0.5, 1, 2, 5, 10, 20, …)

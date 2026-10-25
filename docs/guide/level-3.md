@@ -209,7 +209,9 @@ popup's: the slider shows the volume and writes it when dragged. A
 slider runs from 0 to 1, as the volume does. For a value with other
 ends, give them: with `state percent = 50`, `slider { value: <->
 percent; range: 0, 100 }` shows `percent` and writes 0 to 100 back to
-it.
+it. `step: 5` beside the range moves the slider in whole steps of 5,
+and the value it writes is a whole step. A slider laid out taller than
+wide (`width: 24; height: 160`) runs upward.
 
 ## Battery
 

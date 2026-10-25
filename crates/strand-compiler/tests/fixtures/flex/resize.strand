@@ -1,0 +1,20 @@
+// A sidebar resized by dragging its grip. The grip moves as the width
+// grows, while its pointer stays in the frame the press began in.
+export state w = 160
+state w0 = 0
+state gx = 0
+
+panel Side {
+  anchor: top_left; width: 400; height: 120
+  row { width: 400; height: 120; bg: #101418
+    box { width: w; height: 120; bg: #26303c }
+    box { width: 8; height: 120; bg: #5b8def
+      on change self.pressed {
+        if self.pressed { w0 = w; gx = self.pointer?.x ?? 0 }
+      }
+      on change self.pointer {
+        if self.pressed { w = clamp(w0 + (self.pointer?.x ?? gx) - gx, 40, 380) }
+      }
+    }
+  }
+}

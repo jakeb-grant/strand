@@ -2218,15 +2218,16 @@ impl Lowering<'_> {
                     frame,
                 } => {
                     let (brush, brush_transform) = brush(paint, *frame);
-                    let path = match shape {
-                        FillShape::Rect(r) => r.to_path(0.1),
-                        FillShape::Path(p) => p.clone(),
+                    let (path, even_odd) = match shape {
+                        FillShape::Rect(r) => (r.to_path(0.1), false),
+                        FillShape::Path(p) => (p.clone(), false),
+                        FillShape::EvenOdd(p) => (p.clone(), true),
                     };
                     self.ops.push(Op::Fill {
                         path,
                         brush,
                         brush_transform,
-                        even_odd: false,
+                        even_odd,
                     });
                 }
                 Item::Border { path, paint, frame } => {

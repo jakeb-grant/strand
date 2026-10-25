@@ -147,7 +147,7 @@ fn radius_expr(v: &PropValue) -> Option<&strand_scene::TokenExpr> {
 }
 
 /// (integration-r8) The range a number expression can take over time:
-/// `wave(…)` 0 to 1, `noise(…)` -1 to 1, literals as they are, and sums,
+/// `wave(…)` 0 to 1, `noise(…)`, `sin` and `cos` -1 to 1, literals as they are, and sums,
 /// differences, products and quotients of those (interval arithmetic).
 /// `None` when it has no bound (`t` grows without one) or is not read
 /// here (a token, a method).
@@ -160,6 +160,10 @@ fn range(e: &strand_scene::TokenExpr) -> Option<(f32, f32)> {
         }
         TokenExpr::Wave { .. } => (0.0, 1.0),
         TokenExpr::Noise(_) => (-1.0, 1.0),
+        TokenExpr::Math {
+            f: strand_scene::MathFn::Sin | strand_scene::MathFn::Cos,
+            ..
+        } => (-1.0, 1.0),
         TokenExpr::Binary { op, lhs, rhs } => {
             let ((a, b), (c, d)) = (range(lhs)?, range(rhs)?);
             let span = |v: [f32; 4]| {

@@ -3512,6 +3512,7 @@ fn scroll_stage(n: usize, row_props: Vec<(Prop, PropValue)>) -> (Stage, NodeId, 
 
 fn wheel(dy: f32, time: u32) -> strand_render::ScrollInput {
     strand_render::ScrollInput {
+        dx: 0.0,
         dy,
         kind: strand_render::ScrollKind::Wheel,
         time,
@@ -3520,6 +3521,7 @@ fn wheel(dy: f32, time: u32) -> strand_render::ScrollInput {
 
 fn touch(dy: f32, time: u32) -> strand_render::ScrollInput {
     strand_render::ScrollInput {
+        dx: 0.0,
         dy,
         kind: strand_render::ScrollKind::Touch,
         time,
@@ -3595,6 +3597,7 @@ fn a_touchpad_fling_decays_and_stops() {
     st.paint(frame(1));
     assert_eq!(st.r.scroll_offset(lst), Some(40.0), "follows the fingers");
     let lift = strand_render::ScrollInput {
+        dx: 0.0,
         dy: 0.0,
         kind: strand_render::ScrollKind::Lift,
         time: 1030,

@@ -1,0 +1,14 @@
+// A dock whose icons swell smoothly with the pointer's distance from
+// their centres, not a step per icon.
+fn centre(i: int) -> float { 92 + i * 56 }
+
+panel Dock {
+  anchor: bottom; width: 520; height: 120
+  row { id: strip; width: 520; height: 120; gap: 8; align: end; justify: center
+        pad: 0, 0, 12; bg: #101418
+    for i in [0, 1, 2, 3, 4, 5, 6] key i {
+      box { size: 48; radius: 12; bg: #5b8def
+            scale: 1 + 0.6 * (1 - ((strip.pointer?.x ?? -1000) - centre(i)).abs() / 120).max(0) ~ instant }
+    }
+  }
+}

@@ -2182,6 +2182,9 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             {
                 continue;
             }
+            // (flex review) A result action's answer (`action calc`) is
+            // the config's own, never a service's.
+            kind::FETCH if name.starts_with("action ") => {}
             kind::FIELD | kind::KEYED | kind::EVENT | kind::FETCH if !known(&svc) => {
                 *unmocked.entry(svc).or_default() += 1;
                 continue;
@@ -2327,7 +2330,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     kind: "change",
                     t: at,
                     text: format!(
-                        "service {name} answered{}",
+                        "{}{name} answered{}",
+                        if name.starts_with("action ") {
+                            ""
+                        } else {
+                            "service "
+                        },
                         if v.as_ref().is_some_and(|j| j.get("err").is_some()) {
                             " with an error"
                         } else {

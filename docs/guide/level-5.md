@@ -2,7 +2,8 @@
 
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
-`play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files,
+`play`, `canvas`, `type` and `key`, `slot`, `fn`, a node's `box` and
+`pointer`, settings files,
 SVG layer selectors, and `service … from file | dir | listen | poll` with
 `permit exec`, and `action`.
 You build: a theme file, a CSS file of your colours that other programs
@@ -368,6 +369,19 @@ can declare actions too, calling a method of its object:
 in `ppd`'s block is `ppd.hold("performance", "gaming", "strand")` in a
 handler, checked against the object's introspection as its fields are.
 
+**An action can give back what its command prints.** Write the type
+after the parameters: `action calc(q: text) -> text ["qalc", "-t", q]`
+(with `permit exec "qalc"`). Then `calc(query)` is not something to run
+from a click but a value that loads, like `apps.search(query)` in the
+launcher: `text calc(query) ?? ""` shows the answer and runs the
+command again each time `query` changes, ending the run before if it
+has not finished. While it runs, `.pending` is true and the last answer
+stays shown; if the program fails, `.error` says how. A `text` result is
+what the program printed; a number, an enum, a record or a list is read
+from it as a `from poll` service reads a command's output (JSON or
+`key=value` lines into the type's fields). In a handler, `let r = await
+calc(q)` waits for it.
+
 For a service none of these can describe, write it in Rust (section 7).
 
 ## 4. A control centre
@@ -473,7 +487,20 @@ it is up to the caller. A component without `slot` takes no children.
 **`fn degrees(c: float) -> text { … }` is a function of your own.** Its
 body's last line is its value. A `fn` is pure: it computes a value
 from its arguments and cannot assign, call an action or `await`, so
-calling it anywhere is safe.
+calling it anywhere is safe. The builtin functions it can use are listed
+in [the function reference](../reference/functions.md): besides `pct`
+and `dur`, `num(x, digits: 1)` writes a number with fixed decimals,
+`bytes(n)` a size (`1.5 GiB`), `number(t)` reads a number from text
+(`null` when it is not one), `sin`, `cos`, `atan2`, `sqrt` and `pi` do
+geometry (angles in degrees, clockwise from the right, so a half turn
+is `180deg`, not `pi`), and a list folds with
+`xs.reduce(0, (sum, x) => sum + x)` and grows with `xs + [x]`.
+
+A panel with many tiles can let them flow: `row { wrap: true; … }`
+runs its children on in another row when one is full. A strip wider
+than the panel scrolls sideways in `scroll { axis: horizontal; snap:
+true; … }`, which settles each wheel step and swipe on a tile's
+start.
 
 **`component Tile(…) tokens { radius: …; pad: … }` gives the
 component tokens of its own,** read inside as `$Tile.radius` and
@@ -589,6 +616,68 @@ an icon from one to another. The other dock draws the same pin too, and
 its `at` leaves that icon out as well, so the pin lands where you let
 it go on either dock.
 
+### Icons that swell toward the pointer
+
+A dock can grow its icons by how near the pointer is, smoothly, rather
+than one icon at a time. Change the row and the icon in `dock.strand`:
+
+```strand level=5 file=dock.strand
+// dock.strand: a dock on every monitor whose icons swell toward the pointer
+type Pin { app: AppId; label: text }
+state pins: [Pin] key app = [
+  Pin(app: "firefox", label: "Firefox"),
+  Pin(app: "org.gnome.Nautilus", label: "Files"),
+] persist
+
+keyframes hop { 0%, 100% { y: 0 }; 40% { y: -10 }; duration: 450ms }
+
+bar Dock {
+  edge: bottom; height: 64; margin: 0, $space.2, $space.2
+  bg: $surface.alpha(0.72); blur: 24; radius: $radius.xl; shadow: $elevation.md
+  row { id: icons; grow: 1; justify: center; align: center; gap: $space.2
+    on drop(p: Pin, at: int) { pins.move(p.app, at) }
+    for p in pins key p.app {
+      let app = apps.all.find(a => a.id == p.app)
+      image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
+        cursor: pointer
+        // How far the pointer is from this icon's centre, along the row.
+        let off = (icons.pointer?.x ?? -1000) - (self.box.x - icons.box.x + 22)
+        scale: 1 + 0.4 * (1 - off.abs() / 120).max(0)
+        enter { scale: 0; opacity: 0 }
+        when app == null { opacity: 0.4 }
+        on click     { app?.launch(); play hop }
+        on secondary { pins.remove_key(p.app) }
+      }
+    }
+  }
+}
+```
+
+Run your pointer along the dock: the icon under it is 1.4 times its
+size and its neighbours a little less, by how far they are, so the
+swell follows the pointer instead of jumping from icon to icon.
+
+**`icons.pointer` is where the pointer is in the row**, a point with
+`x` and `y` measured from the row's top-left corner, or `null` while
+the pointer is not over it (`?? -1000` puts it far away then, so
+nothing swells). Any node has one; `self.pointer` is the node's own.
+It changes at most once a frame. While you hold a press that began on
+a node, it keeps following the pointer even off the node, in the place
+the node had when you pressed, so a grip that moves with what you drag
+cannot run away from your hand.
+
+**`self.box` is the icon's place on the dock**, so `self.box.x -
+icons.box.x + 22` is its centre along the row. `.abs()` is a number's
+distance from zero and `.max(0)` keeps it from going below zero.
+
+**`cursor: pointer` shows the hand over an icon**, as over a link; a
+node without one shows the arrow, an input the text cursor. To ask
+before unpinning, open a menu where you right-clicked: give the icon a
+box around it holding `popup { anchor: pointer; open: <-> menu; … }`
+with an "Unpin" button, and set `menu = true` in `on secondary`.
+**`anchor: pointer`** opens the popup at the click rather than below
+its element: a context menu.
+
 ## 6. Escape hatches
 
 Some things are easier to draw than to describe. Each of these needs a
@@ -616,7 +705,17 @@ steps.
   shapes since the last paint, then starts a new path: to fill and
   stroke a shape, draw it again before the stroke. A shape with no paint
   after it draws nothing, `c.fill` before any shape paints the whole
-  canvas, and later paints cover earlier ones.
+  canvas, and later paints cover earlier ones. For shapes of your own,
+  draw a path point by point: `c.move(x, y)` starts it, `c.to(x, y)`
+  draws a line on, `c.arc(x, y, r, from: a, to: b)` an arc of a circle
+  (angles clockwise from the right, as `rotate` turns), and `c.close()`
+  joins it back to its start. `c.move(20, 20); c.arc(20, 20, 16, from:
+  -90deg, to: -90deg + share * 360deg); c.close(); c.fill($accent)` is a
+  pie slice. `c.fill(paint, evenodd: true)` lets a shape inside another
+  cut a hole: two circles make a ring. `draw` runs again when what it
+  reads changes, not every frame, so it cannot read `t` or `wave(…)`;
+  to animate a canvas, animate its own props (`rotate: t * 90deg`), or
+  use a shader.
 - **Thumbnails.** `thumbnail w` shows a window `w` live, while it is
   on screen, and `thumbnail screen` a still of a monitor, taken each
   time it is shown: `for s in screens.all key s.id { thumbnail s }` is

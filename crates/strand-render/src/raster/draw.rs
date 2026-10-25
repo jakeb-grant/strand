@@ -289,6 +289,11 @@ pub(crate) fn draw(
                 fill_with(ctx, p, smooth, |ctx| match shape {
                     FillShape::Rect(r) => ctx.fill_rect(r),
                     FillShape::Path(p) => ctx.fill_path(p),
+                    FillShape::EvenOdd(p) => {
+                        ctx.set_fill_rule(Fill::EvenOdd);
+                        ctx.fill_path(p);
+                        ctx.set_fill_rule(Fill::NonZero);
+                    }
                 });
             }
             Item::Border { path, paint, frame } => {

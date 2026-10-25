@@ -356,6 +356,42 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
     }
 }
 
+/// (flex) What the command of an action with a result printed (`out`),
+/// read as its declared type `ty`, as a `from poll` service reads a
+/// command's output into a field: a `text` (or `path`) is the output
+/// itself, trimmed; any other type reads the output as a document (JSON,
+/// `key=value` lines, else text) and converts it ([`coerce`]: numbers
+/// from text, enums by variant name, records by field name). Nothing
+/// printed is `null` for an optional type. `Err`: it does not convert.
+pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, String> {
+    let t = out.trim();
+    let inner = match ty {
+        Ty::Optional(inner) => {
+            if t.is_empty() {
+                return Ok(Value::Null);
+            }
+            &**inner
+        }
+        ty => ty,
+    };
+    if matches!(inner, Ty::Prim(Prim::Text | Prim::Path)) {
+        return Ok(Value::text(t));
+    }
+    let data = match custom::Document::parse(t) {
+        custom::Document::Json(v) => custom::json_data(&v),
+        custom::Document::Pairs(pairs) => Data::Record {
+            ty: "".into(),
+            fields: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), Data::text(v)))
+                .collect(),
+        },
+        custom::Document::Text(t) => Data::text(t),
+    };
+    coerce(types, inner, &data)
+        .ok_or_else(|| format!("what it printed is not a `{}`", types.show(inner)))
+}
+
 /// A field's value that does not convert to its declared type, reported
 /// once (a log line and a `strand watch` notice naming the field, its key
 /// and the value) until a value converts again, which resolves it.

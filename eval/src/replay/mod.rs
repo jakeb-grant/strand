@@ -256,9 +256,16 @@ pub fn replay(
         }
     }
     for (m, n) in &fid.mock_answered {
-        limits.push(format!(
-            "calls answered by the mock, no answer recorded: `{m}` ({n})"
-        ));
+        // (flex review) A result action's call with no answer recorded
+        // (a strand before its answers were kept) is answered with an
+        // error: no command runs here.
+        limits.push(match m.strip_prefix("action ") {
+            Some(a) => format!(
+                "calls of a result action answered with an error, no answer recorded: \
+                 `{a}` ({n})"
+            ),
+            None => format!("calls answered by the mock, no answer recorded: `{m}` ({n})"),
+        });
     }
     let mut lines = Vec::new();
     for n in &checked.run.notes {

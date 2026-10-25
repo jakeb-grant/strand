@@ -320,6 +320,8 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                     pointer,
                     button_serial: None,
                     enter_serial: None,
+                    on: None,
+                    shape: None,
                 }),
                 Err(e) => log::warn!("cannot get the pointer: {e}"),
             }
@@ -415,6 +417,8 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     PointerEventKind::Enter { .. } => {
                         if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                             let _ = p.pointer.set_cursor(conn, CursorIcon::Default);
+                            p.on = None;
+                            p.shape = None;
                         }
                     }
                     PointerEventKind::Press { serial, .. } => {
@@ -442,21 +446,24 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
             let position = LogicalPoint::new(e.position.0 as f32, e.position.1 as f32);
             let event = match &e.kind {
                 PointerEventKind::Enter { serial } => {
+                    // The cursor is set once the host has routed the
+                    // enter (`sync_cursors`, below): a new surface shows
+                    // none until a client sets one.
                     if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
                         p.enter_serial = Some(*serial);
-                        match p.pointer.set_cursor(conn, CursorIcon::Default) {
-                            Ok(()) => {
-                                self.stats.cursor_sets += 1;
-                                if let Some(s) = self.surfaces.get_mut(&surface) {
-                                    s.stats.cursor_sets += 1;
-                                }
-                            }
-                            Err(e) => log::debug!("cannot set the cursor: {e}"),
-                        }
+                        p.on = Some(surface);
+                        p.shape = None;
                     }
                     InputEvent::PointerEnter { surface, position }
                 }
-                PointerEventKind::Leave { .. } => InputEvent::PointerLeave { surface },
+                PointerEventKind::Leave { .. } => {
+                    if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i))
+                        && p.on == Some(surface)
+                    {
+                        p.on = None;
+                    }
+                    InputEvent::PointerLeave { surface }
+                }
                 PointerEventKind::Motion { time } => InputEvent::PointerMotion {
                     surface,
                     position,
@@ -516,10 +523,41 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
             };
             self.send_input(event);
         }
+        self.sync_cursors();
     }
 }
 
 impl<H: SurfaceHost + 'static> State<H> {
+    /// (flex) Sets on each seat's pointer the shape the host asks for on
+    /// the surface it is on, when it changed: `wp_cursor_shape_v1` where
+    /// the compositor has it, else the cursor theme (`ThemedPointer`).
+    pub(super) fn sync_cursors(&mut self) {
+        for i in 0..self.pointers.len() {
+            let Some(surface) = self.pointers[i].on else {
+                continue;
+            };
+            let want = self.host.cursor(surface);
+            if self.pointers[i].shape == Some(want) {
+                continue;
+            }
+            // Not asked again for this shape whether or not it took: a
+            // theme without it would fail on every frame.
+            self.pointers[i].shape = Some(want);
+            match self.pointers[i]
+                .pointer
+                .set_cursor(&self.conn, cursor_icon(want))
+            {
+                Ok(()) => {
+                    self.stats.cursor_sets += 1;
+                    if let Some(s) = self.surfaces.get_mut(&surface) {
+                        s.stats.cursor_sets += 1;
+                    }
+                }
+                Err(e) => log::debug!("cannot set the cursor {want}: {e}"),
+            }
+        }
+    }
+
     /// Ends a held leave ([`State::held_leave`]) once the dispatch that
     /// brought it is over: no enter for its layer surface followed, so
     /// the keyboard really left, and the grabbing popup loses it too.
@@ -738,6 +776,47 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         self.lock_keys
             .insert(id, (m.caps_lock, m.num_lock, layout, self.modifiers));
         self.report_keyboard();
+    }
+}
+
+/// (flex) A [`strand_scene::CursorShape`] as the cursor-icon name both
+/// `wp_cursor_shape_v1` and cursor themes know.
+fn cursor_icon(shape: strand_scene::CursorShape) -> CursorIcon {
+    use strand_scene::CursorShape as S;
+    match shape {
+        S::Default => CursorIcon::Default,
+        S::Pointer => CursorIcon::Pointer,
+        S::Text => CursorIcon::Text,
+        S::Crosshair => CursorIcon::Crosshair,
+        S::Grab => CursorIcon::Grab,
+        S::Grabbing => CursorIcon::Grabbing,
+        S::Move => CursorIcon::Move,
+        S::NotAllowed => CursorIcon::NotAllowed,
+        S::Wait => CursorIcon::Wait,
+        S::Progress => CursorIcon::Progress,
+        S::Help => CursorIcon::Help,
+        S::ContextMenu => CursorIcon::ContextMenu,
+        S::Cell => CursorIcon::Cell,
+        S::Copy => CursorIcon::Copy,
+        S::Alias => CursorIcon::Alias,
+        S::NoDrop => CursorIcon::NoDrop,
+        S::AllScroll => CursorIcon::AllScroll,
+        S::ZoomIn => CursorIcon::ZoomIn,
+        S::ZoomOut => CursorIcon::ZoomOut,
+        S::ColResize => CursorIcon::ColResize,
+        S::RowResize => CursorIcon::RowResize,
+        S::EwResize => CursorIcon::EwResize,
+        S::NsResize => CursorIcon::NsResize,
+        S::NeswResize => CursorIcon::NeswResize,
+        S::NwseResize => CursorIcon::NwseResize,
+        S::NResize => CursorIcon::NResize,
+        S::EResize => CursorIcon::EResize,
+        S::SResize => CursorIcon::SResize,
+        S::WResize => CursorIcon::WResize,
+        S::NeResize => CursorIcon::NeResize,
+        S::NwResize => CursorIcon::NwResize,
+        S::SeResize => CursorIcon::SeResize,
+        S::SwResize => CursorIcon::SwResize,
     }
 }
 

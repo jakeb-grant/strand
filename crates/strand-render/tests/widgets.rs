@@ -227,7 +227,14 @@ fn ranged(b: &mut Builder) -> Ranged {
         Some(col),
         vec![
             (Prop::Size, num(48.0)),
-            (Prop::Width, num(5.0)),
+            // (flex) An arc's line is its `stroke:`.
+            (
+                Prop::Stroke,
+                PropValue::Border(Border {
+                    width: 5.0,
+                    paint: Paint::Solid(hex("#7aa2f7")),
+                }),
+            ),
             (Prop::Value, num(75.0)),
             (Prop::Range, range(0.0, 100.0)),
         ],

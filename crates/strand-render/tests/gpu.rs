@@ -855,9 +855,19 @@ fn a_shader_pass_matches_its_reference() {
 /// raster within the GPU tolerance.
 #[test]
 fn a_canvas_is_drawn_by_the_gpu_like_the_cpu() {
+    canvas_on_the_gpu_like_the_cpu(canvas_scene::chart);
+}
+
+/// (flex) The same for paths, arcs and an even-odd fill.
+#[test]
+fn canvas_paths_are_drawn_by_the_gpu_like_the_cpu() {
+    canvas_on_the_gpu_like_the_cpu(canvas_scene::paths);
+}
+
+fn canvas_on_the_gpu_like_the_cpu(ops: fn() -> Vec<strand_scene::canvas::DrawOp>) {
     let Some(opts) = device() else { return };
     let paint = |r: &mut Renderer, buf: &mut Buffer| {
-        let (diff, _) = canvas_scene::canvas_scene(canvas_scene::chart());
+        let (diff, _) = canvas_scene::canvas_scene(ops());
         assert!(r.apply(diff).is_empty());
         r.attach_surface(S, r.tree().roots()[0]);
         buf.paint(r, S, 0);

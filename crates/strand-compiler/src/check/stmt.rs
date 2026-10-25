@@ -244,6 +244,10 @@ impl<'a> Checker<'a> {
                 let ok = match (t.ty.prim(), v.ty.prim()) {
                     _ if widened || t.ty.is_lenient() || v.ty.is_lenient() => true,
                     (Some(Prim::Text), Some(Prim::Text)) => op == AssignOp::Add,
+                    // (flex) `xs += [x]` joins lists, as `+` does.
+                    _ if matches!((&t.ty, &v.ty), (Ty::List(..), Ty::List(..))) => {
+                        op == AssignOp::Add && self.types.assignable(&v.ty, &t.ty)
+                    }
                     (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
                         matches!(op, AssignOp::Mul | AssignOp::Div) && b.is_scalar()
                             || self.types.assignable(&v.ty, &t.ty)

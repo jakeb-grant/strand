@@ -1,0 +1,25 @@
+// Sliders and meters laid out taller than wide run upward; a stepped
+// slider moves in whole steps of its range; a slider turned by `rotate`
+// still follows the pointer along its drawn track.
+export state vol = 0.5
+export state level = 30
+export state turned = 0.25
+
+panel Controls {
+  anchor: top_left; width: 300; height: 200
+  row { width: 300; height: 200; bg: #101418; gap: 16; pad: 16; align: start
+    slider { value: <-> vol; width: 24; height: 160; color: #5b8def; track: #2a3038 }
+    meter { value: 0.75; width: 8; height: 160; color: #5b8def; track: #2a3038 }
+    col { width: 180; gap: 16
+      slider { value: <-> level; range: 0, 100; step: 10; width: 180; color: #5b8def; track: #2a3038 }
+      meter { value: 0.4; width: 180; height: 8; color: #e0a040; track: #2a3038 }
+    }
+  }
+}
+
+panel Turned {
+  anchor: top_left; margin: 0, 0, 0, 400; width: 200; height: 200
+  stack { width: 200; height: 200; bg: #101418; align: center
+    slider { value: <-> turned; width: 120; rotate: -90deg; color: #e0a040; track: #2a3038 }
+  }
+}

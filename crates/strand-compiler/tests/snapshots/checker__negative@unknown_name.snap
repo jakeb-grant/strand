@@ -84,7 +84,8 @@ check::unknown_name
     ·         ───┬──
     ·            ╰── not in scope here
     ╰────
-  help: `screen` is in scope only inside `bar`: use it in that element's block
+  help: `screen` is in scope only inside `bar` or `lock`, and inside `osd` or `panel` when its
+        `screens:` picks monitors: use it in that element's block
 
 check::unknown_name
 

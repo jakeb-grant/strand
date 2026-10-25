@@ -164,6 +164,25 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
              (`ws.sum(w => w.width)`); 0 for no items. Numbers of one unit.",
         ),
         m(
+            "reduce",
+            // `U` is `init`'s type: the checker types the call by it.
+            vec![
+                param("init", Ty::opaque("U")),
+                param(
+                    "f",
+                    Ty::Fn(Arc::new(FnSig::positional(
+                        vec![Ty::opaque("U"), t.clone()],
+                        Ty::opaque("U"),
+                    ))),
+                ),
+            ],
+            Ty::opaque("U"),
+            false,
+            "`init` carried through every item in order by `f`, which takes \
+             what it gave last and the item: `xs.reduce(0, (sum, x) => sum + x)`, \
+             `init` for no items. Its type is `init`'s.",
+        ),
+        m(
             "join",
             vec![param("sep", Ty::TEXT)],
             Ty::TEXT,

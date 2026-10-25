@@ -97,8 +97,10 @@ fn main() -> std::process::ExitCode {
   first read is in. Add `thread` to `#[service(…)]` for a body that
   blocks; it then gets a thread of its own.
 - A registration the builder cannot serve (a bad or taken name, a
-  schema that does not apply or that declares a service besides its
-  own) stops every command with a message, before anything runs.
+  schema that does not apply, or one that declares more than its own
+  service: another service, an element, function, value, method or
+  token; the records and enums its service uses are its own) stops
+  every command with a message, before anything runs.
 - `Msg` is `#[non_exhaustive]`: match it with a `_ => {}` arm, as
   above, so a message a later Strand adds does not break your build.
 

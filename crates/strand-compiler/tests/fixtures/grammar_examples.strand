@@ -31,7 +31,9 @@ service ups from dbus system "org.freedesktop.UPower" "/org/freedesktop/UPower/d
 }
 service mood from file "~/.cache/mood.json" { level: int = level }
 service music from listen ["playerctl", "-F", "metadata"] { title: text? = title }
-permit exec "sensors", "playerctl"
+permit exec "sensors", "playerctl", "qalc"
+action calc(q: text) -> text ["qalc", "-t", q]
+let answer = calc("2+2") ?? ""
 
 keyframes shake { 0%, 100% { x: 0 }; 25% { x: -4 }; 75% { x: 4 }; duration: 300ms }
 

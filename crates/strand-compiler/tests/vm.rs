@@ -409,7 +409,9 @@ fn lambdas_take_named_arguments() {
 /// [`Value::Time`] expressions render evaluates per node per frame, with
 /// no warning; `noise` of a constant is a number now. Reaching logic (a
 /// handler storing one, a comparison, a condition, `match`, text) is an
-/// error value, as a token in arithmetic without numbers is.
+/// error value, as a token in arithmetic without numbers is. (flex) A
+/// builtin that computes at once (`join(" ", t)`) is refused at check
+/// instead (`check::time_in_logic`, tested in flex.rs).
 #[test]
 fn time_values_in_handlers_are_error_values() {
     use strand_scene::{BinOp, PropValue, TokenExpr};
@@ -420,7 +422,6 @@ let glow = 10 * wave(2s, phase: 0.25)
 let jitter = noise(t * 3)
 let still = noise(3)
 let late = t > 2
-let said = join(\" \", t)
 let picked = match wave(1s) { 0 => \"zero\", _ => \"other\" }
 bar B {\n  box { rotate: spin; on click { x = t } }\n  box { on click { log = \"ok\" } }\n}\n";
     let mut map = SourceMap::new();
@@ -471,11 +472,7 @@ bar B {\n  box { rotate: spin; on click { x = t } }\n  box { on click { log = \"
         Value::float(strand_scene::tokens::noise(3.0) as f64),
         "noise of a constant is computed now, as render would"
     );
-    for (name, what) in [
-        ("late", "with `>`"),
-        ("said", "in `join"),
-        ("picked", "in `match`"),
-    ] {
+    for (name, what) in [("late", "with `>`"), ("picked", "in `match`")] {
         let err = inst.value_of("t", name).unwrap_err().to_string();
         assert!(
             err.contains("time-bound value") && err.contains(what),

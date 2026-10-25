@@ -80,3 +80,40 @@ pub fn chart() -> Vec<DrawOp> {
     ops.push(DrawOp::Fill(solid("#f38ba8")));
     ops
 }
+
+/// (flex) Paths drawn point by point: two pie slices (`move`, `arc`,
+/// `close`), an even-odd ring, a stroked half circle over the top and a
+/// triangle from `to` alone.
+pub fn paths() -> Vec<DrawOp> {
+    let solid = |c: &str| Paint::Solid(hex(c));
+    let arc = |x, y, r, from, to| DrawOp::Arc { x, y, r, from, to };
+    let circle = |x, y, r| DrawOp::Circle { x, y, r };
+    vec![
+        DrawOp::Fill(solid("#313244")),
+        // A pie: 12 o'clock to 4 o'clock red, the rest blue.
+        DrawOp::MoveTo { x: 20.0, y: 20.0 },
+        arc(20.0, 20.0, 16.0, -90.0, 30.0),
+        DrawOp::Close,
+        DrawOp::Fill(solid("#ff0000")),
+        DrawOp::MoveTo { x: 20.0, y: 20.0 },
+        arc(20.0, 20.0, 16.0, 30.0, 270.0),
+        DrawOp::Close,
+        DrawOp::Fill(solid("#0000ff")),
+        // A ring: the inner circle cuts a hole.
+        circle(55.0, 20.0, 15.0),
+        circle(55.0, 20.0, 8.0),
+        DrawOp::FillEvenOdd(solid("#00ff00")),
+        // From 9 o'clock clockwise to 3 o'clock: over the top.
+        arc(85.0, 20.0, 12.0, 180.0, 360.0),
+        DrawOp::Stroke {
+            paint: solid("#ffff00"),
+            width: 3.0,
+        },
+        // A triangle from `to` alone: the first `to` starts it.
+        DrawOp::LineTo { x: 79.0, y: 39.0 },
+        DrawOp::LineTo { x: 91.0, y: 39.0 },
+        DrawOp::LineTo { x: 85.0, y: 33.0 },
+        DrawOp::Close,
+        DrawOp::Fill(solid("#ffffff")),
+    ]
+}

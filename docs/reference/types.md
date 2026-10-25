@@ -146,12 +146,16 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 
 | Method | |
 | --- | --- |
-| `fn fill(paint: paint)` | Fills with `paint`. |
-| `fn stroke(paint: paint, width: length = 1)` | Strokes with `paint`, `width` wide. |
+| `fn fill(paint: paint, evenodd: bool = false)` | Fills the shapes drawn since the last paint with `paint`, or the whole canvas when there are none. `evenodd: true` fills by the even-odd rule, so a shape drawn inside another cuts a hole in it (a ring is two circles); unset, overlapping shapes all fill. |
+| `fn stroke(paint: paint, width: length = 1)` | Strokes the shapes drawn since the last paint with `paint`, `width` wide. |
 | `fn line(x1: float, y1: float, x2: float, y2: float)` | A line from (`x1`, `y1`) to (`x2`, `y2`). |
 | `fn rect(x: float, y: float, w: float, h: float)` | A rectangle at (`x`, `y`), `w` wide and `h` high. |
 | `fn circle(x: float, y: float, r: float)` | A circle centred at (`x`, `y`) with radius `r`. |
 | `fn text(t: text, x: float, y: float)` | Text `t` at (`x`, `y`). |
+| `fn move(x: float, y: float)` | Starts a path of your own at (`x`, `y`): `c.move(0, 40); c.to(20, 10); c.to(40, 30); c.stroke($accent, 2)` draws a polyline. |
+| `fn to(x: float, y: float)` | A line from the path's current point to (`x`, `y`). With no path open (at the start, after `close`, a paint, a `rect` or a `circle`), it starts one at (`x`, `y`). |
+| `fn arc(x: float, y: float, r: float, from: angle, to: angle)` | An arc of the circle centred at (`x`, `y`) with radius `r`, from angle `from` to angle `to`: `0deg` points right and angles grow clockwise, as `rotate` turns, so `to` past `from` turns clockwise (at most one whole turn). It joins the open path with a line to its start, or starts one there: `c.move(20, 20); c.arc(20, 20, 16, from: -90deg, to: 30deg); c.close(); c.fill($accent)` is a pie slice. An `atan2` angle runs from -180deg to 180deg: an arc from `135deg` to one turns back past 180deg, so add `360deg` to an angle below the start (`to: a < 135deg ? a + 360deg : a`). |
+| `fn close()` | Closes the open path with a line back to where it started. |
 
 ### `ClipboardEntry`
 
@@ -318,6 +322,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `height` | `float` | Its laid-out height. |
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
 | `box` | `Rect` | Its laid-out box, in its surface's logical pixels from the top-left corner of the surface's box (paint offsets, transforms and poses not applied). A popup's own box is where it sits in the surface it opens from; a bar's, panel's or OSD's is at 0, 0. It updates a frame after layout moves it, and springs like any value: `x: item.box.x - row.box.x ~ $motion.spatial`. It may drive anything that does not lay it out again, through any chain of bindings: paint props (`x`, `y`, `opacity`, colours, transforms; a surface's effects), the size of a `place: absolute` element it is not inside, or what is on another surface that reads nothing back; a load error shows the loop otherwise. A loop through another node's `width` or `height` with no `box` on it is a warning, `check::size_loop`. |
+| `pointer` | `Point?` | The pointer over it, in its laid-out box (0, 0 is its top-left corner as layout put it; its paint offsets and transforms, and its ancestors', are undone, as for a slider), once a frame while it moves or the node moves under it; null while the pointer is not over it. While a left-button press that began on it is held it stays set, wherever the pointer goes (outside the box too), in the frame the node had when the press began: what the drag moves (its `x`, its layout, its surface's margins) does not move the frame, so `on change self.pointer { if self.pressed { px = px0 + (self.pointer?.x ?? grab.x) - grab.x } }` (`grab` a `Point` kept when the press began) follows the pointer without feeding back. An `on change` of only nodes' input state (`pointer`, `hover`, `pressed`, `focused`, `selected`) is an input handler, never throttled. |
 
 ### `Notification`
 
@@ -457,6 +462,15 @@ Keyed by `id`.
 | `action next()` | Skips it to the next track. |
 | `action previous()` | Takes it back to the previous track. |
 | `action select()` | Makes it the player `media.*` follows, until it leaves or another player starts playing: `on click { p.select() }`. |
+
+### `Point`
+
+A point (`self.pointer`), logical pixels.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `float` | From the left. |
+| `y` | `float` | From the top. |
 
 ### `PolkitRequest`
 
@@ -658,11 +672,13 @@ A variant is written bare where its enum is expected (`edge: top`).
 | --- | --- |
 | `Align` | `start`, `center`, `end`, `stretch`, `baseline` |
 | `Anchor` | `center`, `top`, `bottom`, `left`, `right`, `top_left`, `top_right`, `bottom_left`, `bottom_right` |
+| `Axis` | `vertical`, `horizontal`, `both`. Which way a `scroll` scrolls. |
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
 | `BlurFallback` | `tint`, `none` |
 | `Cap` | `butt`, `round`, `square` |
 | `ConnectionKind` | `wifi`, `ethernet`, `vpn`, `wireguard`, `other`. What kind of network a connection is: a Wi-Fi network, a wired one, a VPN, a WireGuard tunnel, or another kind (a bridge, a modem, a hotspot shared over Bluetooth). |
 | `CornerStyle` | `round`, `squircle` |
+| `CursorShape` | `default`, `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`, `not_allowed`, `wait`, `progress`, `help`, `context_menu`, `cell`, `copy`, `alias`, `no_drop`, `all_scroll`, `zoom_in`, `zoom_out`, `col_resize`, `row_resize`, `ew_resize`, `ns_resize`, `nesw_resize`, `nwse_resize`, `n_resize`, `e_resize`, `s_resize`, `w_resize`, `ne_resize`, `nw_resize`, `se_resize`, `sw_resize` |
 | `Curve` | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `in_back`, `out_back`, `out_elastic`, `out_bounce`, `standard`, `emphasized` |
 | `DropKind` | `files`, `app`, `text` |
 | `Edge` | `top`, `bottom`, `left`, `right` |
@@ -679,6 +695,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Markup` | `none`, `basic` |
 | `OutputTransform` | `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`, `flipped_90`, `flipped_180`, `flipped_270`. An output's rotation and flip, as `wl_output` (and niri) name them: counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`; `flipped_90` is flipped about the vertical axis, then rotated 90 degrees. |
 | `Place` | `flow`, `absolute` |
+| `PopupAnchor` | `pointer`. A popup opened where the press that opened it went down. |
 | `PopupTrigger` | `open`, `hover` |
 | `PoseName` | `none`, `fade`, `slidefade` |
 | `RadiusKeyword` | `full` |

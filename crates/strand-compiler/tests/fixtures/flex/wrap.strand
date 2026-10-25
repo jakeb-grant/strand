@@ -1,0 +1,19 @@
+// Rows and columns that run on in another line when one is full: tags
+// that wrap, a wrapped row centring each line, and a column that wraps
+// into a second column.
+panel Wrap {
+  anchor: top_left; width: 400; height: 200
+  row { width: 400; height: 200; bg: #101418; pad: 10; gap: 10; align: start
+    row { wrap: true; gap: 8; width: 180
+      for i in [0, 1, 2, 3, 4, 5, 6] key i { box { width: 50; height: 30; radius: 6; bg: #5b8def } }
+    }
+    col { gap: 10; width: 190
+      row { wrap: true; gap: 8; width: 190; justify: center
+        for i in [0, 1, 2, 3] key i { box { width: 50; height: 30; radius: 6; bg: #e0a040 } }
+      }
+      col { wrap: true; gap: 6; height: 100; width: 190
+        for i in [0, 1, 2, 3, 4] key i { box { width: 40; height: 30; radius: 15; bg: #6fbf73 } }
+      }
+    }
+  }
+}

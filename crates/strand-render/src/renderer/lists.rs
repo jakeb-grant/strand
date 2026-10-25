@@ -17,7 +17,9 @@ use strand_scene::{
 use super::Renderer;
 use super::layout_pass::TextInfo;
 use crate::anim::{exit_pose, is_pose, page_slide};
-use crate::layout::{keep_in_view, layout_margin, relayout_list, scrolls_content, translate_under};
+use crate::layout::{
+    keep_in_view, layout_margin, relayout_list, scroll_axes, scrolls_content, translate_under,
+};
 
 /// What moved a scroll ([`Renderer::scroll_input`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -31,10 +33,12 @@ pub enum ScrollKind {
     Lift,
 }
 
-/// One scroll on a surface: `dy` logical pixels (positive scrolls down)
-/// and the compositor's time of the event, milliseconds.
+/// One scroll on a surface: `dy` logical pixels (positive scrolls down),
+/// `dx` (positive scrolls right) and the compositor's time of the event,
+/// milliseconds.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScrollInput {
+    pub dx: f32,
     pub dy: f32,
     pub kind: ScrollKind,
     pub time: u32,
@@ -67,8 +71,10 @@ pub(crate) struct Lists {
     /// asked against (`first`, `count`, `mounted`): asked again only
     /// once logic has answered with something else.
     asked: HashMap<NodeId, (Range<u32>, u32, u32, u32)>,
-    /// The node a touchpad scrolls on each surface, until it lifts.
-    touching: HashMap<SurfaceId, NodeId>,
+    /// The node a touchpad scrolls on each surface, until it lifts, and
+    /// whether along x: (flex) the gesture keeps both from its first
+    /// event while the pointer stays over the node.
+    touching: HashMap<SurfaceId, (NodeId, bool)>,
     stats: ListFrames,
     /// Lists whose offset a reveal set ([`Renderer::reveal_index`]): held
     /// at the mounted rows' edge until logic answers, which is not a
@@ -152,11 +158,32 @@ impl Renderer {
     /// pixels, at once: one already at its end passes the scroll outward.
     /// Returns the node scrolled, if any moved.
     pub fn scroll(&mut self, surface: SurfaceId, point: LogicalPoint, dy: f32) -> Option<NodeId> {
-        let id = self.scrollable_at(surface, point, dy, false)?;
+        let (id, x, d) = self.scrollable_at(surface, point, (0.0, dy), false)?;
         self.lists.revealing.remove(&id);
-        self.scrolls.entry(id).or_default().scroll_by(dy);
+        self.axis_state(id, x).scroll_by(d);
         self.scrolled(id);
         Some(id)
+    }
+
+    /// (flex) The scroll state of `id` along x (`x`), else along y.
+    fn axis_state(&mut self, id: NodeId, x: bool) -> &mut crate::layout::ScrollState {
+        let st = self.scrolls.entry(id).or_default();
+        if x {
+            st.across.get_or_insert_with(Default::default)
+        } else {
+            st
+        }
+    }
+
+    /// The spring a wheel step (or a snap) moves an offset along: the
+    /// default spatial transition, at once under `reduced_motion`.
+    fn scroll_curve(&self) -> Curve {
+        if self.anim.reduced() {
+            Curve::Instant
+        } else {
+            let tables = [&self.tree.tokens];
+            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::Y))
+        }
     }
 
     /// A scroll from the pointer: wheel steps spring the offset of the
@@ -173,41 +200,56 @@ impl Renderer {
         let reduced = self.anim.reduced();
         match input.kind {
             ScrollKind::Lift => {
-                let id = self.lists.touching.remove(&surface)?;
+                let (id, x) = self.lists.touching.remove(&surface)?;
                 let last = self.last_frame(surface);
                 self.lists.revealing.remove(&id);
-                let st = self.scrolls.get_mut(&id)?;
-                if reduced || !st.lift(input.time, last) {
+                let curve = self.scroll_curve();
+                let st = self.axis_state(id, x);
+                // (flex) `snap: true`: it settles on a child, flung or not.
+                let moved = if st.snaps.is_some() {
+                    st.lift_to_snap(input.time, last, curve)
+                } else {
+                    !reduced && st.lift(input.time, last)
+                };
+                if !moved {
                     return None;
                 }
                 self.scrolled(id);
                 Some(id)
             }
             ScrollKind::Touch => {
-                let id = self.scrollable_at(surface, point, input.dy, false)?;
+                // (flex) A gesture keeps the node and axis its first event
+                // took, so a diagonal swipe on `axis: both` does not step
+                // between the axes and its lift settles the axis it moved.
+                let held = self
+                    .lists
+                    .touching
+                    .get(&surface)
+                    .copied()
+                    .filter(|(id, _)| self.hit(surface, point).contains(id));
+                if let Some((id, x)) = held {
+                    let d = if x { input.dx } else { input.dy };
+                    if d.is_finite() && d != 0.0 {
+                        self.axis_state(id, x).touch(d, input.time);
+                        self.scrolled(id);
+                    }
+                    return Some(id);
+                }
+                let (id, x, d) = self.scrollable_at(surface, point, (input.dx, input.dy), false)?;
                 self.lists.revealing.remove(&id);
-                self.lists.touching.insert(surface, id);
-                self.scrolls
-                    .entry(id)
-                    .or_default()
-                    .touch(input.dy, input.time);
+                self.lists.touching.insert(surface, (id, x));
+                self.axis_state(id, x).touch(d, input.time);
                 self.scrolled(id);
                 Some(id)
             }
             ScrollKind::Wheel => {
-                let id = self.scrollable_at(surface, point, input.dy, true)?;
+                let (id, x, d) = self
+                    .scrollable_at(surface, point, (input.dx, input.dy), true)
+                    .or_else(|| self.sideways_wheel_at(surface, point, (input.dx, input.dy)))?;
                 self.lists.revealing.remove(&id);
-                let curve = if reduced {
-                    Curve::Instant
-                } else {
-                    let tables = [&self.tree.tokens];
-                    Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::Y))
-                };
+                let curve = self.scroll_curve();
                 let last = self.last_frame(surface);
-                self.scrolls
-                    .entry(id)
-                    .or_default()
-                    .wheel(input.dy, curve, last);
+                self.axis_state(id, x).wheel(d, curve, last);
                 self.scrolled(id);
                 Some(id)
             }
@@ -222,28 +264,81 @@ impl Renderer {
             .filter(|t| !t.is_zero())
     }
 
+    /// (flex) A plain mouse wheel (`dy` only) that no `scroll` or `list`
+    /// under `point` can take along y: the innermost scroll along x
+    /// alone that can move by it, sideways, so a strip scrolls with a
+    /// wheel while a page around it still takes vertical scrolling
+    /// first. Never for a touchpad, whose fingers move along x when
+    /// they mean to.
+    fn sideways_wheel_at(
+        &mut self,
+        surface: SurfaceId,
+        point: LogicalPoint,
+        (dx, dy): (f32, f32),
+    ) -> Option<(NodeId, bool, f32)> {
+        if dx != 0.0 || dy == 0.0 || !dy.is_finite() {
+            return None;
+        }
+        let chain = self.hit(surface, point);
+        for n in chain {
+            let Some(node) = self.tree.get(n).filter(|_| scrolls_content(&self.tree, n)) else {
+                continue;
+            };
+            if scroll_axes(node) != [true, false] {
+                continue;
+            }
+            let st = self.axis_state(n, true);
+            let from = st.target();
+            let max = (st.content - st.viewport).max(0.0);
+            if (from + dy).clamp(0.0, max) != from {
+                return Some((n, true, dy));
+            }
+        }
+        None
+    }
+
     /// The innermost `scroll` or `list` under `point` that can move by
-    /// `dy` (from where it is heading, with `target`).
+    /// `(dx, dy)` (from where it is heading, with `target`), whether
+    /// along x, and by how much. (flex) Along the larger of the two
+    /// first.
     fn scrollable_at(
         &mut self,
         surface: SurfaceId,
         point: LogicalPoint,
-        dy: f32,
+        (dx, dy): (f32, f32),
         target: bool,
-    ) -> Option<NodeId> {
-        if !dy.is_finite() || dy == 0.0 {
+    ) -> Option<(NodeId, bool, f32)> {
+        let dx = if dx.is_finite() { dx } else { 0.0 };
+        let dy = if dy.is_finite() { dy } else { 0.0 };
+        if dx == 0.0 && dy == 0.0 {
             return None;
         }
         let chain = self.hit(surface, point);
-        chain.into_iter().find(|n| {
-            if !scrolls_content(&self.tree, *n) {
-                return false;
+        for n in chain {
+            let Some(node) = self.tree.get(n).filter(|_| scrolls_content(&self.tree, n)) else {
+                continue;
+            };
+            let [along_x, along_y] = scroll_axes(node);
+            let mut tries: Vec<(bool, f32)> = Vec::with_capacity(2);
+            if along_y && dy != 0.0 {
+                tries.push((false, dy));
             }
-            let st = self.scrolls.entry(*n).or_default();
-            let from = if target { st.target() } else { st.offset };
-            let max = (st.content - st.viewport).max(0.0);
-            (from + dy).clamp(0.0, max) != from
-        })
+            if along_x && dx != 0.0 {
+                tries.push((true, dx));
+            }
+            if dx.abs() > dy.abs() {
+                tries.reverse();
+            }
+            for (x, d) in tries {
+                let st = self.axis_state(n, x);
+                let from = if target { st.target() } else { st.offset };
+                let max = (st.content - st.viewport).max(0.0);
+                if (from + d).clamp(0.0, max) != from {
+                    return Some((n, x, d));
+                }
+            }
+        }
+        None
     }
 
     /// Scrolls list or scroll `id` so that its child `row` is in view.
@@ -396,15 +491,17 @@ impl Renderer {
         };
         let root = s.root;
         let pending = s.boxes.as_ref().is_some_and(|b| {
-            b.lists
-                .iter()
-                .any(|(id, lb)| self.scrolls.get(id).is_some_and(|st| st.unapplied(lb)))
+            b.lists.iter().any(|(id, lb)| {
+                self.scrolls
+                    .get(id)
+                    .is_some_and(|st| st.unapplied_either(lb))
+            })
         });
         pending
             || self
                 .scrolls
                 .iter()
-                .any(|(id, st)| st.moving() && self.tree.root_of(*id) == Some(root))
+                .any(|(id, st)| st.any_moving() && self.tree.root_of(*id) == Some(root))
     }
 
     /// `id` scrolled: the surfaces showing it want a frame.
@@ -432,8 +529,13 @@ impl Renderer {
         let tree = &self.tree;
         let mut moved = false;
         for (id, st) in self.scrolls.iter_mut() {
-            if st.moving() && tree.root_of(*id) == Some(root) {
-                moved |= st.advance(time, snap, lead);
+            if st.any_moving() && tree.root_of(*id) == Some(root) {
+                if st.moving() {
+                    moved |= st.advance(time, snap, lead);
+                }
+                if let Some(a) = st.across.as_mut().filter(|a| a.moving()) {
+                    moved |= a.advance(time, snap, lead);
+                }
             }
         }
         let Some(s) = self.surfaces.get_mut(&surface) else {
@@ -448,7 +550,11 @@ impl Renderer {
         let mut scrolled: Vec<NodeId> = s.boxes.as_ref().map_or_else(Vec::new, |b| {
             b.lists
                 .iter()
-                .filter(|(id, lb)| self.scrolls.get(id).is_some_and(|st| st.unapplied(lb)))
+                .filter(|(id, lb)| {
+                    self.scrolls
+                        .get(id)
+                        .is_some_and(|st| st.unapplied_either(lb))
+                })
                 .map(|(id, _)| *id)
                 .collect()
         });
@@ -481,10 +587,21 @@ impl Renderer {
                 }
             };
             if fits {
-                translate_under(&self.tree, id, boxes, lb.applied - shown);
+                // (flex) And along x, for a scroll that runs that way.
+                let shown_x = st.across.as_mut().map_or(lb.applied_x, |a| {
+                    a.shown = a.offset.clamp(lb.bounds_x.0, lb.bounds_x.1);
+                    a.shown
+                });
+                translate_under(
+                    &self.tree,
+                    id,
+                    boxes,
+                    (lb.applied_x - shown_x, lb.applied - shown),
+                );
                 st.shown = shown;
                 if let Some(l) = boxes.lists.get_mut(&id) {
                     l.applied = shown;
+                    l.applied_x = shown_x;
                 }
             } else {
                 let layouts = layouts.get_or_insert_with(|| self.shaped());

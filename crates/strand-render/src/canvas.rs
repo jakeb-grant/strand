@@ -5,9 +5,14 @@
 //! same paint API the renderer uses").
 //!
 //! Coordinates are logical pixels from the box's top-left corner. Shapes
-//! add to the current path; `fill` paints it (non-zero) and `stroke`
-//! paints its outline (`kurbo::stroke`, round joins and caps), each then
-//! starting a new path. `fill` with no path paints the whole box (the
+//! add to the current path; `fill` paints it (non-zero, or even-odd when
+//! asked) and `stroke` paints its outline (`kurbo::stroke`, round joins
+//! and caps), each then starting a new path. (flex) `move`, `to`, `arc`
+//! and `close` draw a path point by point: `to` and `arc` continue the
+//! open subpath, or start one at their first point when none is open (at
+//! the start, after `close` or a paint, and after a `rect` or `circle`,
+//! which are closed); an `arc` is joined to the open subpath by a line to
+//! its start, and turns at most one whole turn. `fill` with no path paints the whole box (the
 //! grammar's `c.fill($accent)` before drawing on it). A themed paint is
 //! resolved in the node's token scope, as a `bg` is. Everything is
 //! clipped to the box. `text(t, x, y)` draws `t` in the node's font and
@@ -34,6 +39,32 @@ fn sane(v: f32) -> Option<f64> {
     v.is_finite().then(|| v.clamp(-MAX, MAX))
 }
 
+/// The path being built: the shapes since the last paint, and whether
+/// a subpath is open for `to`, `arc` and `close` to continue.
+#[derive(Default)]
+struct Path {
+    path: BezPath,
+    open: bool,
+}
+
+impl Path {
+    /// Continues the open subpath with a line to `p`, or starts one at
+    /// `p`.
+    fn join(&mut self, p: kurbo::Point) {
+        if self.open {
+            self.path.line_to(p);
+        } else {
+            self.path.move_to(p);
+            self.open = true;
+        }
+    }
+
+    fn take(&mut self) -> BezPath {
+        self.open = false;
+        std::mem::take(&mut self.path)
+    }
+}
+
 /// Most text ops of one canvas drawn (a text's part is a `u8`, part 0
 /// being a node's own text).
 pub(crate) const MAX_TEXTS: usize = 254;
@@ -58,36 +89,75 @@ pub(crate) fn items(
     let mut texts = 0;
     let to_phys = Affine::translate((frame.x0, frame.y0)) * Affine::scale(scale);
     let mut out = Vec::new();
-    let mut path = BezPath::new();
+    let mut path = Path::default();
     for op in ops {
         match op {
             DrawOp::Line { x1, y1, x2, y2 } => {
                 if let (Some(x1), Some(y1), Some(x2), Some(y2)) =
                     (sane(*x1), sane(*y1), sane(*x2), sane(*y2))
                 {
-                    path.move_to((x1, y1));
-                    path.line_to((x2, y2));
+                    path.path.move_to((x1, y1));
+                    path.path.line_to((x2, y2));
+                    path.open = true;
                 }
             }
             DrawOp::Rect { x, y, w, h } => {
                 if let (Some(x), Some(y), Some(w), Some(h)) =
                     (sane(*x), sane(*y), sane(*w), sane(*h))
                 {
-                    path.extend(kurbo::Rect::new(x, y, x + w, y + h).path_elements(TOLERANCE));
+                    path.path
+                        .extend(kurbo::Rect::new(x, y, x + w, y + h).path_elements(TOLERANCE));
+                    path.open = false;
                 }
             }
             DrawOp::Circle { x, y, r } => {
                 if let (Some(x), Some(y), Some(r)) = (sane(*x), sane(*y), sane(*r))
                     && r > 0.0
                 {
-                    path.extend(kurbo::Circle::new((x, y), r).path_elements(TOLERANCE));
+                    path.path
+                        .extend(kurbo::Circle::new((x, y), r).path_elements(TOLERANCE));
+                    path.open = false;
                 }
             }
-            DrawOp::Fill(_) | DrawOp::FillThemed(_) => {
-                let p = std::mem::take(&mut path);
+            DrawOp::MoveTo { x, y } => {
+                if let (Some(x), Some(y)) = (sane(*x), sane(*y)) {
+                    path.path.move_to((x, y));
+                    path.open = true;
+                }
+            }
+            DrawOp::LineTo { x, y } => {
+                if let (Some(x), Some(y)) = (sane(*x), sane(*y)) {
+                    path.join(kurbo::Point::new(x, y));
+                }
+            }
+            DrawOp::Arc { x, y, r, from, to } => {
+                if let (Some(x), Some(y), Some(r), Some(from), Some(to)) =
+                    (sane(*x), sane(*y), sane(*r), sane(*from), sane(*to))
+                    && r >= 0.0
+                {
+                    let start = from.to_radians();
+                    let sweep = (to - from).clamp(-360.0, 360.0).to_radians();
+                    let arc = kurbo::Arc::new((x, y), (r, r), start, sweep, 0.0);
+                    path.join(kurbo::Point::new(x + r * start.cos(), y + r * start.sin()));
+                    if r > 0.0 && sweep != 0.0 {
+                        path.path.extend(arc.append_iter(TOLERANCE));
+                    }
+                }
+            }
+            DrawOp::Close => {
+                if path.open {
+                    path.path.close_path();
+                    path.open = false;
+                }
+            }
+            DrawOp::Fill(_)
+            | DrawOp::FillThemed(_)
+            | DrawOp::FillEvenOdd(_)
+            | DrawOp::FillThemedEvenOdd(_) => {
+                let p = path.take();
                 let paint = match op {
-                    DrawOp::FillThemed(v) => themed(v),
-                    DrawOp::Fill(p) => Some(p.clone()),
+                    DrawOp::FillThemed(v) | DrawOp::FillThemedEvenOdd(v) => themed(v),
+                    DrawOp::Fill(p) | DrawOp::FillEvenOdd(p) => Some(p.clone()),
                     _ => None,
                 };
                 let Some(paint) = paint else {
@@ -98,10 +168,11 @@ pub(crate) fn items(
                 } else {
                     to_phys * p
                 };
-                push_fill(&mut out, shape, &paint, frame);
+                let even_odd = matches!(op, DrawOp::FillEvenOdd(_) | DrawOp::FillThemedEvenOdd(_));
+                push_fill(&mut out, shape, even_odd, &paint, frame);
             }
             DrawOp::Stroke { width, .. } | DrawOp::StrokeThemed { width, .. } => {
-                let p = std::mem::take(&mut path);
+                let p = path.take();
                 let paint = match op {
                     DrawOp::StrokeThemed { paint, .. } => themed(paint),
                     DrawOp::Stroke { paint, .. } => Some(paint.clone()),
@@ -125,7 +196,7 @@ pub(crate) fn items(
                     &kurbo::StrokeOpts::default(),
                     TOLERANCE,
                 );
-                push_fill(&mut out, outline, &paint, frame);
+                push_fill(&mut out, outline, false, &paint, frame);
             }
             DrawOp::Text { text: t, x, y } => {
                 let i = texts;
@@ -158,14 +229,25 @@ pub(crate) fn items(
     clipped
 }
 
-fn push_fill(out: &mut Vec<(Item, kurbo::Rect)>, path: BezPath, paint: &Paint, frame: kurbo::Rect) {
+/// A fill of `path` (`even_odd`: by the even-odd rule, else non-zero).
+fn push_fill(
+    out: &mut Vec<(Item, kurbo::Rect)>,
+    path: BezPath,
+    even_odd: bool,
+    paint: &Paint,
+    frame: kurbo::Rect,
+) {
     let reach = path.bounding_box().intersect(frame);
     if reach.width() <= 0.0 || reach.height() <= 0.0 {
         return;
     }
     out.push((
         Item::Fill {
-            shape: FillShape::Path(path),
+            shape: if even_odd {
+                FillShape::EvenOdd(path)
+            } else {
+                FillShape::Path(path)
+            },
             paint: paint.clone(),
             frame,
         },
@@ -217,6 +299,115 @@ mod tests {
         let (_, reach) = &items[2];
         assert_eq!(reach.x1, frame.x1);
         assert!((reach.y0 - 48.0).abs() < 0.5 || reach.y0 == frame.y0);
+    }
+
+    /// (flex) `to` and `arc` continue the open subpath or start one;
+    /// `close`, a paint, a `rect` and a `circle` leave none open; an
+    /// even-odd fill keeps its rule.
+    #[test]
+    fn paths_continue_the_open_subpath_or_start_one() {
+        use kurbo::PathEl;
+        let frame = kurbo::Rect::new(0.0, 0.0, 100.0, 100.0);
+        let white = || Paint::Solid(Color::WHITE);
+        let path_of = |ops: &[DrawOp]| -> (Vec<PathEl>, bool) {
+            let items = items(ops, frame, 1.0, &|_| None, &mut |_, _, _, _| None);
+            match &items[1].0 {
+                Item::Fill {
+                    shape: FillShape::Path(p),
+                    ..
+                } => (p.elements().to_vec(), false),
+                Item::Fill {
+                    shape: FillShape::EvenOdd(p),
+                    ..
+                } => (p.elements().to_vec(), true),
+                other => panic!("{other:?}"),
+            }
+        };
+        let pt = kurbo::Point::new;
+        // `to` with nothing open starts the path; `close` closes it; the
+        // next `to` starts another.
+        let (els, even_odd) = path_of(&[
+            DrawOp::LineTo { x: 10.0, y: 10.0 },
+            DrawOp::LineTo { x: 20.0, y: 10.0 },
+            DrawOp::Close,
+            DrawOp::LineTo { x: 30.0, y: 30.0 },
+            DrawOp::LineTo { x: 40.0, y: 30.0 },
+            DrawOp::FillEvenOdd(white()),
+        ]);
+        assert!(even_odd);
+        assert_eq!(
+            els,
+            [
+                PathEl::MoveTo(pt(10.0, 10.0)),
+                PathEl::LineTo(pt(20.0, 10.0)),
+                PathEl::ClosePath,
+                PathEl::MoveTo(pt(30.0, 30.0)),
+                PathEl::LineTo(pt(40.0, 30.0)),
+            ]
+        );
+        // An arc joins the open subpath with a line to its start (at 0deg,
+        // the right of its circle) and ends a quarter turn clockwise,
+        // below its centre.
+        let (els, even_odd) = path_of(&[
+            DrawOp::MoveTo { x: 50.0, y: 50.0 },
+            DrawOp::Arc {
+                x: 50.0,
+                y: 50.0,
+                r: 10.0,
+                from: 0.0,
+                to: 90.0,
+            },
+            DrawOp::Fill(white()),
+        ]);
+        assert!(!even_odd);
+        assert_eq!(els[0], PathEl::MoveTo(pt(50.0, 50.0)));
+        assert_eq!(els[1], PathEl::LineTo(pt(60.0, 50.0)));
+        let end = els.last().and_then(|e| e.end_point()).unwrap();
+        assert!(
+            (end.x - 50.0).abs() < 1e-6 && (end.y - 60.0).abs() < 1e-6,
+            "{end:?}"
+        );
+        // After a circle (closed) an arc starts a subpath of its own.
+        let (els, _) = path_of(&[
+            DrawOp::Circle {
+                x: 20.0,
+                y: 20.0,
+                r: 5.0,
+            },
+            DrawOp::Arc {
+                x: 50.0,
+                y: 50.0,
+                r: 10.0,
+                from: 180.0,
+                to: 0.0,
+            },
+            DrawOp::Fill(white()),
+        ]);
+        let moves: Vec<_> = els
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(moves.len(), 2, "{els:?}");
+        assert_eq!(moves[1], pt(40.0, 50.0));
+        // A sweep of more than a turn is one turn.
+        let (els, _) = path_of(&[
+            DrawOp::Arc {
+                x: 50.0,
+                y: 50.0,
+                r: 10.0,
+                from: 0.0,
+                to: 7200.0,
+            },
+            DrawOp::Fill(white()),
+        ]);
+        let end = els.last().and_then(|e| e.end_point()).unwrap();
+        assert!(
+            (end.x - 60.0).abs() < 1e-6 && (end.y - 50.0).abs() < 1e-6,
+            "{end:?}"
+        );
     }
 
     #[test]

@@ -534,17 +534,20 @@ fn scenes() -> Vec<Scene> {
                 let input = match c % 2 {
                     // A swipe down, a frame's worth each, then a fling.
                     0 if f < 24 => Some(ScrollInput {
+                        dx: 0.0,
                         dy: 30.0,
                         kind: ScrollKind::Touch,
                         time,
                     }),
                     0 if f == 24 => Some(ScrollInput {
+                        dx: 0.0,
                         dy: 0.0,
                         kind: ScrollKind::Lift,
                         time,
                     }),
                     // Wheel steps back up.
                     1 if f < 30 && f % 3 == 0 => Some(ScrollInput {
+                        dx: 0.0,
                         dy: -60.0,
                         kind: ScrollKind::Wheel,
                         time,

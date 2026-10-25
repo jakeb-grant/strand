@@ -157,14 +157,29 @@ pub fn input<H: LoopHost>(
     h.shown(idle);
     let (r, router) = h.parts();
     idle.retain(|s| !r.wants_frame(*s));
+    // (flex) Where a press went down: an `anchor: pointer` popup it
+    // opens opens there; a key after it opens one at its element.
+    match event {
+        InputEvent::PointerButton {
+            surface,
+            position,
+            state: strand_scene::ButtonState::Pressed,
+            ..
+        } => r.pressed_at(*surface, *position),
+        InputEvent::PointerButton { surface, .. } => r.released_at(*surface),
+        InputEvent::Key { .. } => r.key_step(),
+        _ => {}
+    }
     if let Some(router) = router {
         let intents = router.handle(event, r);
+        let s = event.surface();
+        r.set_pointer(s, router.pointer(s));
+        // (flex) `Node.pointer`: reported by the frame this wants, or at
+        // once when a press begins, and handed over before the flags so
+        // `on change self.pressed` reads where the press went down.
+        r.pointer_input(s, router.pointer(s), router.hovered(s), router.left_held(s));
+        h.facts()?;
         h.intents(Cause::Input(event), intents)?;
-        let (r, router) = h.parts();
-        if let Some(router) = router {
-            let s = event.surface();
-            r.set_pointer(s, router.pointer(s));
-        }
         input_wake(h);
     }
     h.facts()?;

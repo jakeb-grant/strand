@@ -174,7 +174,7 @@ file
     element arc
       prop value: (. cpu usage)
       prop sweep: 270deg
-      prop width: 4
+      prop stroke: (commas 4 $accent)
     element merge 10
       element box
       element box

@@ -90,6 +90,10 @@ pub struct Program {
     /// through it, as node watch bits ([`reads::alias_watch`]): the
     /// elements it may name are measured only for those.
     pub alias_watch: BTreeMap<NodeIdx, u8>,
+    /// (flex) Elements whose `pointer` is read (`self.pointer`,
+    /// `grip.pointer`): render reports the pointer over them from their
+    /// mount ([`reads::alias_watch`]).
+    pub pointer_watch: std::collections::BTreeSet<NodeIdx>,
     /// The checked `shader` files, by path as written (M4): what a
     /// `shader` node's `Prop::Shader` carries. Set from
     /// [`crate::Compiled::shaders`] by `Build::lowered`.
@@ -122,6 +126,9 @@ pub struct ExecAction {
     pub name: String,
     /// The program first, then its arguments; each parameter is one.
     pub argv: Vec<crate::hir::ArgvPart>,
+    /// (flex) `-> T`: what its output is read as; the call is then an
+    /// `Async<T>` the host answers ([`crate::vm::ExecReply`]).
+    pub ret: Option<Ty>,
 }
 
 /// (M6) A `from dbus` service's `action name(params) = Method`.
@@ -502,6 +509,10 @@ pub enum Event {
     Change {
         targets: Vec<(ChunkId, Option<ChunkId>)>,
         debounce: Option<ChunkId>,
+        /// (flex) Every target is a node's input state (`self.pointer`,
+        /// `grip.pressed`, `hover`): it runs as an input handler, whose
+        /// writes the 30 writes/s guard does not count (spec.md 8.7).
+        input: bool,
     },
 }
 
@@ -836,7 +847,9 @@ impl Lowerer<'_> {
                     ElementKind::Builtin(k) => *k,
                     _ => NodeKind::Panel,
                 };
-                let screen = (kind == NodeKind::Bar)
+                // (flex) A bar's, a lock's, and a panel's or OSD's on
+                // more than the focused monitor: the checker bound it.
+                let screen = (kind != NodeKind::Popup)
                     .then(|| self.scope_local(s.element.span, "screen"))
                     .flatten();
                 out.push(Node::Surface(Surface {
@@ -939,6 +952,13 @@ impl Lowerer<'_> {
                     ExecAction {
                         name: self.hir.def(a.def).name.clone(),
                         argv: a.argv.clone(),
+                        ret: match &self.hir.def(a.def).ty {
+                            Ty::Fn(sig) => match &sig.ret {
+                                Ty::Async(t) => Some((**t).clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
                     },
                 );
             }
@@ -1571,6 +1591,7 @@ impl Lowerer<'_> {
                 }
             }
             hir::Event::Change { targets, debounce } => Event::Change {
+                input: !targets.is_empty() && targets.iter().all(|t| self.input_state(t)),
                 targets: targets
                     .iter()
                     .map(|t| {
@@ -1601,6 +1622,27 @@ impl Lowerer<'_> {
             params: h.params.clone(),
             body: self.stmts_chunk(&h.body, h.span),
             span: h.span,
+        }
+    }
+
+    /// (flex) Whether `e` reads a node's input state: `hover`,
+    /// `pressed`, `pointer`, `focused` or `selected` of `self` or an id,
+    /// or a field of it (`self.pointer.x`). An `on change` of only such
+    /// state is input, as `on click` is.
+    fn input_state(&self, e: &hir::Expr) -> bool {
+        let node = self.hir.types.find_schema_record("Node");
+        let mut cur = e;
+        loop {
+            let hir::ExprKind::Field { base, name, .. } = &cur.kind else {
+                return false;
+            };
+            if node.is_some() && matches!(base.ty.non_null(), Ty::Record(r) if Some(*r) == node) {
+                return matches!(
+                    name.as_str(),
+                    "hover" | "pressed" | "pointer" | "focused" | "selected"
+                );
+            }
+            cur = base;
         }
     }
 

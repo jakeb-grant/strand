@@ -189,7 +189,13 @@ impl<'a> Checker<'a> {
         });
         self.push_scope();
         if let Some(sc) = schema {
+            let per_screen = per_screen(&kind, &s.body.items);
             for (n, t) in &sc.scope {
+                // (flex) A panel's or OSD's `screen` only with a
+                // `screens:` other than `focused`: one instance a monitor.
+                if n == "screen" && !per_screen {
+                    continue;
+                }
                 self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
             }
         }
@@ -1049,6 +1055,36 @@ impl<'a> Checker<'a> {
         self.unknown_element(el, span)
     }
 
+    /// (flex) An `arc` written before its line became its `stroke:`
+    /// (decisions.md flex): `width` beside a `size` (or with no
+    /// `height`) and no `stroke` was the line's width, and is now a box
+    /// that narrow. A warning with the rewrite, since it still checks.
+    fn arc_width(&mut self, el: &ast::Element) {
+        let Some(block) = &el.block else { return };
+        let prop = |name: &str| {
+            block.items.iter().find_map(|i| match &i.kind {
+                ast::ItemKind::Prop(p) if p.name.name == name => Some(p),
+                _ => None,
+            })
+        };
+        let Some(width) = prop("width") else { return };
+        if prop("stroke").is_some() || (prop("height").is_some() && prop("size").is_none()) {
+            return;
+        }
+        let d = self.warning(
+            "check::arc_width",
+            "an `arc`'s `width` is its box's width, not its line's",
+            width.name.span,
+            "sizes the box",
+        );
+        d.help = Some(
+            "an arc's line is its `stroke:` (`stroke: 4`, or `stroke: 4, $accent`); its box is \
+             `size:`, or `width` and `height`"
+                .into(),
+        );
+        d.add_suggestion(width.name.span, "stroke");
+    }
+
     /// Checks before the block: placement, the node and the positional.
     #[inline(never)]
     fn element_head(
@@ -1080,6 +1116,9 @@ impl<'a> Checker<'a> {
                 "draws nothing for now",
             )
             .help = Some("use the `tooltip: expr` prop for a text tooltip".into());
+        }
+        if kind == "arc" {
+            self.arc_width(el);
         }
         if let Some(parent) = self.misplaced_in(schema) {
             self.error(
@@ -1982,6 +2021,9 @@ impl<'a> Checker<'a> {
         } else {
             self.prop_value(p.value, &ps.ty, &format!("`{name}`"))
         };
+        if name == "draw" && self.nodes.last().is_some_and(|n| n.kind == "canvas") {
+            self.time_in_draw(&value);
+        }
         if matches!(name, "enter" | "exit")
             && let Some(t) = p.transition
         {
@@ -2581,6 +2623,7 @@ impl<'a> Checker<'a> {
         if !self.is_reactive(&value) {
             self.constant_lets.insert(id);
         }
+        self.note_time_let(id, &value);
         hir::LetDecl {
             def: id,
             value,
@@ -3083,7 +3126,11 @@ impl<'a> Checker<'a> {
 /// field by field like a declared `type`.
 const DOCUMENT_RECORDS: &[&str] = &["File", "Date"];
 
-fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::RecordId>) -> bool {
+pub(super) fn readable(
+    types: &crate::ty::TypeTable,
+    ty: &Ty,
+    seen: &mut Vec<crate::ty::RecordId>,
+) -> bool {
     match ty {
         Ty::Error | Ty::Any | Ty::Enum(_) => true,
         Ty::Prim(p) => matches!(
@@ -3152,6 +3199,8 @@ fn const_duration(e: &hir::Expr) -> Option<std::time::Duration> {
     let secs = match unit {
         Some(ast::Unit::S) => *value,
         Some(ast::Unit::Ms) => *value / 1000.0,
+        Some(ast::Unit::Min) => *value * 60.0,
+        Some(ast::Unit::H) => *value * 3600.0,
         _ => return None,
     };
     // `try_from` refuses what a `Duration` cannot hold (a typo like
@@ -3350,6 +3399,20 @@ fn auto_end(e: &ast::Expr) -> Option<Span> {
         ast::ExprKind::Name(n) if n.name == "auto" => Some(n.span),
         ast::ExprKind::Commas(items) => items.iter().find_map(auto_end),
         _ => None,
+    }
+}
+
+/// (flex) Whether a surface of `kind` with these items has one instance
+/// per monitor, `screen` in scope: a `bar` and a `lock` always; a
+/// `panel` or `osd` whose `screens:` is written and is not `focused`
+/// (`all`, a name, a list, or an expression).
+pub(crate) fn per_screen(kind: &str, items: &[ast::Item]) -> bool {
+    match kind {
+        "panel" | "osd" => items.iter().any(|i| {
+            matches!(&i.kind, ItemKind::Prop(p) if p.name.name == "screens"
+                && !matches!(&p.value.kind, ast::ExprKind::Name(n) if n.name == "focused"))
+        }),
+        _ => true,
     }
 }
 

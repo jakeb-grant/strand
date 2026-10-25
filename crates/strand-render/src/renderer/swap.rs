@@ -352,6 +352,11 @@ fn expr_refs(e: &TokenExpr, out: &mut Vec<String>) {
             }
         }
         TokenExpr::Wave { phase: x, .. } | TokenExpr::Noise(x) => expr_refs(x, out),
+        TokenExpr::Math { args, .. } => {
+            for e in args {
+                expr_refs(e, out);
+            }
+        }
         TokenExpr::Time | TokenExpr::Index | TokenExpr::Count => {}
     }
 }

@@ -55,7 +55,7 @@ pub use list::{
     FLING_DECAY, LAYOUT_OVERSCAN, ListBox, ListWindow, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
 pub(crate) use list::{
-    keep_in_view, layout_margin, relayout_list, scrolls_content, translate_under,
+    keep_in_view, layout_margin, relayout_list, scroll_axes, scrolls_content, translate_under,
 };
 pub(crate) use text::TextSizes;
 use text::measure_leaf;
@@ -739,40 +739,91 @@ impl<'a> Build<'a> {
             if residue.iter().all(|r| r.is_finite()) && residue != [0.0; 4] {
                 out.residues.insert(id, residue);
             }
-            let mut dy = 0.0;
+            let (mut dx, mut dy) = (0.0, 0.0);
             if scroll_ids.contains(&id) {
-                let st = scrolls.entry(id).or_default();
-                st.viewport = h;
-                // The content's extent: its lowest child, plus the bottom
-                // pad.
-                let bottom = self
+                let [along_x, along_y] = self.tree.get(id).map_or([false, true], list::scroll_axes);
+                let snap = self.tree.get(id).is_some_and(list::snaps);
+                let kids: Vec<taffy::Layout> = self
                     .taffy
                     .children(tn)
                     .unwrap_or_default()
                     .iter()
-                    .filter_map(|k| self.taffy.layout(*k).ok())
+                    .filter_map(|k| self.taffy.layout(*k).ok().copied())
+                    .collect();
+                let st = scrolls.entry(id).or_default();
+                st.viewport = h;
+                // The content's extent: its lowest child, plus the bottom
+                // pad.
+                let bottom = kids
+                    .iter()
                     .map(|k| (cy + k.location.y + k.size.height).round() - y0)
                     .fold(0.0f32, f32::max);
-                st.content = (bottom + l.padding.bottom.round()).max(h);
+                st.content = if along_y {
+                    (bottom + l.padding.bottom.round()).max(h)
+                } else {
+                    // (flex) Not along y: nothing to scroll there.
+                    h
+                };
                 if !st.offset.is_finite() {
                     st.offset = 0.0;
                 }
                 st.offset = st.offset.clamp(0.0, (st.content - st.viewport).max(0.0));
                 st.shown = st.offset;
                 dy = st.offset;
+                // (flex) Where each child starts, from the first one's
+                // place: an offset that shows that child where the first
+                // shows at rest.
+                let starts = |at: &dyn Fn(&taffy::Layout) -> f32| {
+                    let first = kids.first().map(at).unwrap_or(0.0);
+                    let mut v: Vec<f32> = kids.iter().map(|k| at(k) - first).collect();
+                    v.sort_by(f32::total_cmp);
+                    v
+                };
+                st.snaps = (snap && along_y).then(|| list::Snaps {
+                    starts: starts(&|k| k.location.y),
+                    pitch: 0.0,
+                });
+                let bounds = (0.0, (st.content - st.viewport).max(0.0));
+                // (flex) Along x: its own offset, from its rightmost
+                // child, plus the right pad.
+                let mut bounds_x = (0.0, 0.0);
+                if along_x {
+                    let right = kids
+                        .iter()
+                        .map(|k| (cx + k.location.x + k.size.width).round() - x0)
+                        .fold(0.0f32, f32::max);
+                    let a = st.across.get_or_insert_with(Default::default);
+                    a.viewport = w;
+                    a.content = (right + l.padding.right.round()).max(w);
+                    if !a.offset.is_finite() {
+                        a.offset = 0.0;
+                    }
+                    a.offset = a.offset.clamp(0.0, (a.content - a.viewport).max(0.0));
+                    a.shown = a.offset;
+                    a.snaps = snap.then(|| list::Snaps {
+                        starts: starts(&|k| k.location.x),
+                        pitch: 0.0,
+                    });
+                    dx = a.offset;
+                    bounds_x = (0.0, (a.content - a.viewport).max(0.0));
+                } else {
+                    st.across = None;
+                }
                 out.lists.insert(
                     id,
                     ListBox {
                         applied: dy,
                         laid: None,
                         content: LogicalRect::new(ox + x0, oy + y0, w, h),
-                        bounds: (0.0, (st.content - st.viewport).max(0.0)),
+                        bounds,
+                        applied_x: dx,
+                        bounds_x,
                     },
                 );
             }
             if let Ok(kids) = self.taffy.children(tn) {
                 for k in kids {
-                    stack.push((k, cx, cy, ox, oy - dy));
+                    stack.push((k, cx, cy, ox - dx, oy - dy));
                 }
             }
         }

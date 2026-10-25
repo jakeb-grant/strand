@@ -236,6 +236,10 @@ pub(crate) fn hash_item_from(h: &mut impl Hasher, item: &Item, o: Shift) {
             match shape {
                 FillShape::Rect(r) => hash_rect_from(h, *r, o),
                 FillShape::Path(p) => hash_path_from(h, p, o),
+                FillShape::EvenOdd(p) => {
+                    1u8.hash(h);
+                    hash_path_from(h, p, o);
+                }
             }
             hash_paint(h, paint);
             hash_rect_from(h, *frame, o);

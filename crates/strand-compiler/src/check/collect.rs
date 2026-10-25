@@ -674,6 +674,20 @@ impl<'a> Checker<'a> {
                     );
                     continue;
                 }
+                if let Some(t) = &a.ret {
+                    self.error(
+                        "check::misplaced",
+                        "a D-Bus method's action has no result",
+                        t.span,
+                        "nothing is read back",
+                    )
+                    .help = Some(
+                        "read what it changes as a field of the service, or declare a command \
+                         with a result at the top level: `action name(p: text) -> text \
+                         [\"program\", p]`"
+                            .into(),
+                    );
+                }
                 let params = self.action_params(&a.params, true);
                 let mut sig = FnSig::new(params, Ty::Unit);
                 sig.action = true;

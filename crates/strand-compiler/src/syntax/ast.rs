@@ -193,6 +193,9 @@ pub struct FnDecl {
 pub struct ActionDecl {
     pub name: Ident,
     pub params: Vec<Param>,
+    /// (flex) `-> T`: the command's output, read as `T`, is the call's
+    /// value (an `Async<T>`).
+    pub ret: Option<Type>,
     pub body: ActionBody,
     pub span: Span,
 }
@@ -617,6 +620,10 @@ pub enum Unit {
     Ch,
     S,
     Ms,
+    /// (flex) Minutes: `10min`.
+    Min,
+    /// (flex) Hours: `3h`.
+    H,
 }
 
 impl Unit {
@@ -628,6 +635,8 @@ impl Unit {
             "ch" => Self::Ch,
             "s" => Self::S,
             "ms" => Self::Ms,
+            "min" => Self::Min,
+            "h" => Self::H,
             _ => return None,
         })
     }
@@ -640,6 +649,8 @@ impl Unit {
             Self::Ch => "ch",
             Self::S => "s",
             Self::Ms => "ms",
+            Self::Min => "min",
+            Self::H => "h",
         }
     }
 }

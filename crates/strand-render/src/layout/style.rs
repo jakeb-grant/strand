@@ -38,12 +38,9 @@ impl<'a> Build<'a> {
 
         // Box sizes.
         let size = dim(get(Prop::Size).as_deref(), font);
-        // (M4) An `arc`'s `width` is its line's (design.md: `arc { …;
-        // width: 4 }`); its box is square (`Ctx::Square`).
-        let width = match kind {
-            NodeKind::Arc => None,
-            _ => dim(get(Prop::Width).as_deref(), font),
-        };
+        // (flex) An `arc`'s line is its `stroke:`; its `width` is its
+        // box's, as every node's.
+        let width = dim(get(Prop::Width).as_deref(), font);
         if let Some(w) = width.or(size) {
             style.size.width = w.dim();
         }
@@ -323,14 +320,36 @@ impl<'a> Build<'a> {
             NodeKind::Center => row_like(&mut style, AlignContent::CENTER),
             NodeKind::End => row_like(&mut style, AlignContent::FLEX_END),
             NodeKind::Col | NodeKind::Scroll => {
+                // (flex) A scroll along x only lays its children out in a
+                // row; one along both keeps each child its own width.
+                let [along_x, along_y] = if kind == NodeKind::Scroll {
+                    super::list::scroll_axes(node)
+                } else {
+                    [false, true]
+                };
                 style.display = Display::Flex;
-                style.flex_direction = FlexDirection::Column;
-                style.align_items = Some(align.unwrap_or(AlignItems::STRETCH));
+                style.flex_direction = if along_y {
+                    FlexDirection::Column
+                } else {
+                    FlexDirection::Row
+                };
+                let cross = if along_x {
+                    AlignItems::FLEX_START
+                } else {
+                    AlignItems::STRETCH
+                };
+                style.align_items = Some(align.unwrap_or(cross));
                 if let Some(j) = justify_v {
                     style.justify_content = Some(j);
                 }
                 if kind == NodeKind::Scroll {
-                    style.overflow.y = Overflow::Scroll;
+                    let way = |on: bool| if on { Overflow::Scroll } else { Overflow::Clip };
+                    style.overflow.x = if along_x {
+                        Overflow::Scroll
+                    } else {
+                        style.overflow.x
+                    };
+                    style.overflow.y = way(along_y);
                     style.scrollbar_width = 0.0;
                     self.scrolls.push(node.id);
                 }
@@ -406,11 +425,24 @@ impl<'a> Build<'a> {
                 grid_cell = Some(Box::new(|_| (1, 1)));
             }
         }
+        // (flex) `wrap: true`: a row or column runs its children on in
+        // another line when one is full. The lines pack at its start,
+        // `gap` stands between lines as between children, and `align`
+        // and `justify` place the children within each line.
+        let wraps = matches!(kind, NodeKind::Row | NodeKind::Col)
+            && matches!(get(Prop::Wrap).as_deref(), Some(PropValue::Bool(true)));
+        if wraps {
+            style.flex_wrap = taffy::FlexWrap::Wrap;
+            style.align_content = Some(AlignContent::FLEX_START);
+        }
         let mut kids = Vec::with_capacity(children.len());
         let mut child_inh = inh.clone();
         child_inh.font = inh.font.clone();
-        // The flex main axis and gap a collapsing child folds.
+        // The flex main axis and gap a collapsing child folds (not across
+        // wrapped lines: the neighbour across a gap may be on another
+        // line).
         let main = match style.display {
+            _ if wraps => None,
             Display::Flex if style.flex_direction == FlexDirection::Row => Some(0),
             Display::Flex => Some(1),
             _ => None,

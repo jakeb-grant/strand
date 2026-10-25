@@ -254,6 +254,11 @@ impl Shell {
                 }
                 self.layout_seen = Some(seq);
             }
+            ToLogic::Pointer(at) => {
+                for (node, p) in at {
+                    inst.set_pointer(node, p);
+                }
+            }
             ToLogic::Write {
                 node,
                 prop,

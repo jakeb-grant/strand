@@ -162,6 +162,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.paints += 1;
         self.stats.paints += 1;
         let wants_more = self.host.wants_frame(id);
+        // (flex) A frame may show a node whose `cursor:` changed under a
+        // pointer that has not moved.
+        if self.pointers.iter().any(|p| p.on == Some(id)) {
+            self.sync_cursors();
+        }
         // A compositor pose (M4) rides this frame's commit, or a bare one
         // when it drew nothing.
         let posed = self.sync_pose(id);

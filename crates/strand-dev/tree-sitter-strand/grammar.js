@@ -324,11 +324,13 @@ module.exports = grammar({
     service_block: $ => block($, choice($.field, $.permit, $.action)),
 
     // (M6) `action name(params) [command]` at the top level, `action
-    // name(params) = Method` in a `from dbus` service's block.
+    // name(params) = Method` in a `from dbus` service's block. (flex)
+    // `-> T` before the command: its output is the call's value.
     action: $ => seq(
       'action',
       field('name', $.identifier),
       field('parameters', $.parameters),
+      optional(seq('->', field('return_type', $._type))),
       choice(
         seq('=', field('method', $.identifier)),
         field('command', $._expression),
@@ -706,7 +708,7 @@ module.exports = grammar({
     token: _ => /\$[A-Za-z_][A-Za-z0-9_]*/,
     _hash: _ => /#[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*/,
     _int: _ => /[0-9]+/,
-    number: _ => /[0-9]+(\.[0-9]+)?(px|%|deg|ch|ms|s)?/,
+    number: _ => /[0-9]+(\.[0-9]+)?(px|%|deg|ch|ms|min|h|s)?/,
     boolean: _ => choice('true', 'false'),
     null: _ => 'null',
 

@@ -23,6 +23,7 @@ fn fail(msg: impl Into<String>) -> Error {
 pub(crate) fn value(name: &str) -> Value {
     match name {
         "t" => Value::Time(Rc::new(TokenExpr::Time)),
+        "pi" => Value::float(std::f64::consts::PI),
         _ => Value::Null,
     }
 }
@@ -224,6 +225,10 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "width" => laid_out(vm, n, n.width.get(rt)?),
             "height" => laid_out(vm, n, n.height.get(rt)?),
             "box" => laid_out_box(vm, n, n.rect(rt).get(rt)?),
+            "pointer" => {
+                vm.watch(n, NodeState::WATCH_POINTER);
+                n.pointer(rt).get(rt)?
+            }
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),
@@ -354,6 +359,13 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
                 return Ok(Value::Null);
             };
             Value::text(format!("{x}{y}"))
+        }
+        // (flex) And on lists, the items of `a` then those of `b`.
+        Add if matches!((a, b), (Value::List(_), Value::List(_))) => {
+            let (Value::List(x), Value::List(y)) = (a, b) else {
+                return Ok(Value::Null);
+            };
+            Value::list(x.iter().chain(y.iter()).cloned().collect())
         }
         Add | Sub | Mul | Div | Rem => {
             let symbolic = |v: &Value| matches!(v, Value::Token(_) | Value::Time(_));
@@ -486,18 +498,18 @@ pub(crate) fn total_compare(a: &Value, b: &Value) -> Ordering {
 /// True for a builtin function that computes with its arguments now (so
 /// a time-bound argument is an error there), false for the ones whose
 /// result stays symbolic or becomes a call-shaped value render reads.
-fn computes(name: &str) -> bool {
+pub(crate) fn computes(name: &str) -> bool {
     matches!(
         name,
         "pct"
             | "dur"
+            | "num"
+            | "bytes"
+            | "number"
             | "join"
             | "material"
             | "import"
             | "rgb"
-            | "min"
-            | "max"
-            | "clamp"
             | "sleep"
             | "propagate"
     )
@@ -530,6 +542,105 @@ pub fn dur(d: Duration) -> String {
             format!("{h} h {m} min")
         }
     }
+}
+
+/// (flex) `num(x, digits, pad)`: `x` with `digits` decimals (rounded half
+/// away from zero, as `format!` does not), its whole part padded with
+/// zeros to `pad` digits; never `-0`.
+pub fn num(x: f64, digits: i64, pad: i64) -> String {
+    let digits = digits.clamp(0, 12) as usize;
+    let pad = pad.clamp(0, 40) as usize;
+    let body = if x.is_finite() {
+        round_decimal(&format!("{}", x.abs()), digits)
+    } else {
+        format!("{:.digits$}", x.abs())
+    };
+    let whole = body.find('.').unwrap_or(body.len());
+    let zeros = "0".repeat(pad.saturating_sub(whole));
+    let negative = x < 0.0 && body.chars().any(|c| c.is_ascii_digit() && c != '0');
+    format!("{}{zeros}{body}", if negative { "-" } else { "" })
+}
+
+/// A non-negative number written in decimals (`1.005`, Rust's shortest
+/// form of an `f64`, so what the program wrote) rounded half away from
+/// zero to `digits` places on those decimals: `1.005` to two places is
+/// `1.01`, where rounding the binary `f64` (just below 1.005) gives
+/// `1.00`.
+fn round_decimal(s: &str, digits: usize) -> String {
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    let mut ds: Vec<u8> = whole
+        .bytes()
+        .chain(frac.bytes().chain(std::iter::repeat(b'0')).take(digits))
+        .collect();
+    if frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5') {
+        let mut i = ds.len();
+        loop {
+            if i == 0 {
+                ds.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if ds[i] == b'9' {
+                ds[i] = b'0';
+            } else {
+                ds[i] += 1;
+                break;
+            }
+        }
+    }
+    let cut = ds.len() - digits;
+    let (w, f) = ds.split_at(cut);
+    let w = String::from_utf8_lossy(w);
+    if digits == 0 {
+        w.into_owned()
+    } else {
+        format!("{w}.{}", String::from_utf8_lossy(f))
+    }
+}
+
+/// (flex) `bytes(n)`: `512 B`, `1.5 KiB`, `19.4 GiB`, `512 MiB`; one
+/// decimal below 100 (a trailing `.0` dropped), none from 100. The unit
+/// is chosen after rounding, so `1023.6` is `1 KiB`, not `1024 B`.
+pub fn bytes(n: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let sign = if n < 0.0 { "-" } else { "" };
+    let mut v = n.abs();
+    let mut u = 0;
+    while v >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    // What it shows at unit `u`.
+    let rounded = |v: f64, u: usize| {
+        if u == 0 || (v * 10.0).round() / 10.0 >= 100.0 {
+            v.round()
+        } else {
+            (v * 10.0).round() / 10.0
+        }
+    };
+    if rounded(v, u) >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    let r = rounded(v, u);
+    let shown = if u > 0 && r < 100.0 {
+        let s = format!("{r:.1}");
+        s.strip_suffix(".0").map_or(s.clone(), str::to_string)
+    } else {
+        format!("{r}")
+    };
+    format!("{sign}{shown} {}", UNITS[u])
+}
+
+/// (flex) `number(t)`: the number `t` spells, white space around it
+/// ignored; `None` for anything else (`inf` and `NaN` included).
+pub fn number(t: &str) -> Option<f64> {
+    let t = t.trim();
+    // Rust also reads `inf`, `infinity` and `nan`: not numbers here.
+    if !t.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    t.parse::<f64>().ok().filter(|n| n.is_finite())
 }
 
 /// `dur(…, clock: true)`: `0:05`, `3:45`, `1:02:03` (decisions.md
@@ -567,6 +678,22 @@ pub(crate) fn call(
         .any(Value::has_time);
     if timed && computes(name) {
         return Err(time_in_logic(&format!("in `{name}(…)`")));
+    }
+    // (flex) A maths builtin over a value render evaluates (a time
+    // signal or a token) stays symbolic: render computes it per frame,
+    // so `x: 20 * sin(t * 90deg)` bobs.
+    if let Some(f) = strand_scene::MathFn::from_name(name) {
+        let all: Vec<&Value> = args.params.iter().flatten().chain(&args.rest).collect();
+        if all
+            .iter()
+            .any(|v| matches!(v, Value::Time(_) | Value::Token(_)))
+        {
+            let parts: Option<Vec<TokenExpr>> = all.iter().map(|v| token_of(v)).collect();
+            return Ok(match parts {
+                Some(parts) => Value::symbolic_from(TokenExpr::Math { f, args: parts }, timed),
+                None => Value::Null,
+            });
+        }
     }
     Ok(match name {
         "pct" => match args.get(0) {
@@ -702,6 +829,45 @@ pub(crate) fn call(
                 ch(3, 1.0),
             ))
         }
+        "num" => match args.get(0).and_then(Value::as_f64) {
+            Some(x) => Value::text(self::num(
+                x,
+                num(1).unwrap_or(0.0) as i64,
+                num(2).unwrap_or(0.0) as i64,
+            )),
+            None => Value::Null,
+        },
+        "bytes" => match args.get(0).and_then(Value::as_f64) {
+            Some(n) => Value::text(self::bytes(n)),
+            None => Value::Null,
+        },
+        "number" => match args.get(0).and_then(Value::as_text) {
+            Some(t) => self::number(t).map_or(Value::Null, Value::float),
+            None => Value::Null,
+        },
+        // (flex) Angles are degrees (a plain number where an angle is
+        // expected is one), 0deg pointing right, clockwise with y down.
+        "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" => {
+            let x = num(0).unwrap_or(0.0);
+            let r = match name {
+                "sin" => x.to_radians().sin(),
+                "cos" => x.to_radians().cos(),
+                "tan" => x.to_radians().tan(),
+                "sqrt" if x >= 0.0 => x.sqrt(),
+                "exp" => x.exp(),
+                "ln" if x > 0.0 => x.ln(),
+                _ => f64::NAN,
+            };
+            math(name, &[x], r)?
+        }
+        "pow" => {
+            let (x, y) = (num(0).unwrap_or(0.0), num(1).unwrap_or(0.0));
+            math(name, &[x, y], x.powf(y))?
+        }
+        "atan2" => {
+            let (y, x) = (num(0).unwrap_or(0.0), num(1).unwrap_or(0.0));
+            Value::Num(y.atan2(x).to_degrees(), Num::Deg)
+        }
         "min" => Value::float(num(0).unwrap_or(0.0).min(num(1).unwrap_or(0.0))),
         "max" => Value::float(num(0).unwrap_or(0.0).max(num(1).unwrap_or(0.0))),
         "clamp" => {
@@ -772,6 +938,17 @@ pub(crate) fn call(
             call_value(name, all)
         }
     })
+}
+
+/// (flex) A math function's result, or the error value naming the call
+/// when it has none (`sqrt(-1)`, `ln(0)`, an overflow), as arithmetic's
+/// `1 / 0` is.
+fn math(name: &str, args: &[f64], r: f64) -> Result<Value, Error> {
+    if r.is_finite() {
+        return Ok(Value::float(r));
+    }
+    let shown: Vec<String> = args.iter().map(|a| super::value::number(*a)).collect();
+    Err(fail(format!("`{name}({})` has no value", shown.join(", "))))
 }
 
 // ---------------------------------------------------------------------------
@@ -875,10 +1052,29 @@ fn canvas_op(
             y: n(1)?,
             r: n(2)?,
         },
-        "fill" => match crate::instantiate::canvas_paint(types, a.first()?)? {
-            Ok(p) => DrawOp::Fill(p),
-            Err(themed) => DrawOp::FillThemed(themed),
+        "fill" => {
+            let evenodd = matches!(a.get(1), Some(Value::Bool(true)));
+            match (
+                crate::instantiate::canvas_paint(types, a.first()?)?,
+                evenodd,
+            ) {
+                (Ok(p), false) => DrawOp::Fill(p),
+                (Err(themed), false) => DrawOp::FillThemed(themed),
+                (Ok(p), true) => DrawOp::FillEvenOdd(p),
+                (Err(themed), true) => DrawOp::FillThemedEvenOdd(themed),
+            }
+        }
+        "move" => DrawOp::MoveTo { x: n(0)?, y: n(1)? },
+        "to" => DrawOp::LineTo { x: n(0)?, y: n(1)? },
+        // Angles are degrees, as an `angle` value holds them.
+        "arc" => DrawOp::Arc {
+            x: n(0)?,
+            y: n(1)?,
+            r: n(2)?,
+            from: n(3)?,
+            to: n(4)?,
         },
+        "close" => DrawOp::Close,
         "stroke" => {
             let width = n(1).unwrap_or(1.0);
             match crate::instantiate::canvas_paint(types, a.first()?)? {
@@ -985,6 +1181,26 @@ fn text_method(t: &str, name: &str, args: &Args) -> Result<Value, Error> {
         "ends_with" => Value::Bool(t.ends_with(&s(0))),
         "split" => Value::list(t.split(&s(0)).map(Value::text).collect()),
         "replace" => Value::text(t.replace(&s(0), &s(1))),
+        // (flex) Character-indexed, as `len` counts.
+        "slice" => {
+            let len = t.chars().count() as i64;
+            let at = |v: Option<f64>, or: i64| {
+                let i = v.map_or(or, |x| x as i64);
+                if i < 0 { (len + i).max(0) } else { i.min(len) }
+            };
+            let from = at(args.num(0), 0);
+            let to = at(args.num(1), len);
+            Value::text(
+                t.chars()
+                    .skip(from as usize)
+                    .take(to.saturating_sub(from).max(0) as usize)
+                    .collect::<String>(),
+            )
+        }
+        "index_of" => match t.find(&s(0)) {
+            Some(b) => Value::int(t[..b].chars().count() as i64),
+            None => Value::Null,
+        },
         _ => return Err(fail(format!("text has no method `{name}`"))),
     })
 }
@@ -1116,6 +1332,16 @@ fn list_method(
                 }
             }
             Value::Null
+        }
+        // (flex) `xs.reduce(init, (acc, x) => …)`: `init` folded through
+        // every item in order.
+        "reduce" => {
+            let f = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut acc = args.get(0).cloned().unwrap_or(Value::Null);
+            for v in items {
+                acc = vm.call(rt, &f, vec![acc, v.clone()])?;
+            }
+            acc
         }
         // (M6, owner-testing gap 23) `find`'s position: what `xs[i]`
         // reads back.

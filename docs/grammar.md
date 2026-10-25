@@ -96,7 +96,7 @@ selector at the start of a tree item (`#needle { … }`).
 ```
 NUMBER = DIGITS ( '.' DIGITS )? UNIT?
 DIGITS = [0-9]+
-UNIT   = 'px' | '%' | 'deg' | 'ch' | 's' | 'ms'
+UNIT   = 'px' | '%' | 'deg' | 'ch' | 's' | 'ms' | 'min' | 'h'
 ```
 
 - The fraction is taken only when `.` is followed by a digit, so `1.max(2)`
@@ -255,7 +255,9 @@ surface      = surface_kind IDENT tree_block
 surface_kind = kw:bar | kw:panel | kw:osd
 ```
 
-`bar Top { … }` is on every monitor with `screen` in scope. `popup` is not a
+`bar Top { … }` is on every monitor with `screen` in scope, as is a `panel` or
+`osd` whose `screens:` picks monitors (spec.md 5.1); the `lock`'s `screen` is
+the monitor its content shows on. `popup` is not a
 top-level surface: it is an element anchored to its parent
 (`popup { open: <-> open; Calendar }`).
 
@@ -348,7 +350,7 @@ source_arg = SAME_LINE expr           // up to `{` or `every`
 service_block = '{' SEP? ( service_item ( SEP service_item )* )? SEP? '}'
 service_item  = field | permit | method_action
 permit  = kw:permit IDENT ( SAME_LINE expr ( ',' expr )* )?
-action  = kw:action IDENT params SAME_LINE expr      // the command: a list
+action  = kw:action IDENT params ( '->' type )? SAME_LINE expr  // the command: a list
 method_action = kw:action IDENT params '=' IDENT    // `from dbus` only
 ```
 
@@ -386,9 +388,14 @@ with a did-you-mean); a `poll` without `every` is one
 `syntax::expected`. See decisions.md, wave4-a3 "no-code
 services, their grammar read precisely".
 
+`-> type` (flex) makes the command's output the call's value, an
+`Async` of that type (spec.md 5.7); a `from dbus` method's action takes
+none (the parser reads one there, and the checker refuses it).
+
 ```
-permit exec "hyprctl"
+permit exec "hyprctl", "qalc"
 action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]
+action calc(q: text) -> text ["qalc", "-t", q]
 service ppd from dbus system "net.hadess.PowerProfiles" {
   profile: text rw = ActiveProfile
   action hold(profile: text, reason: text, app: text) = HoldProfile

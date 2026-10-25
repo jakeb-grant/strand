@@ -460,7 +460,14 @@ impl Renderer {
                 let parent = anchor.and_then(|a| self.tree.root_of(a));
                 spec.parent = parent;
                 spec.tooltip = self.tree.is_overlay(id);
-                spec.anchor_rect = anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p));
+                // (flex) `anchor: pointer`: where the press that opened
+                // it went down (at its element when no press did).
+                let at_pointer = spec
+                    .at_pointer
+                    .then(|| self.pointing.anchor(id, anchor, parent, spec.open))
+                    .flatten();
+                spec.anchor_rect = at_pointer
+                    .or_else(|| anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p)));
                 if parent.is_some_and(|p| self.specs.get(&p).is_some_and(|ps| !ps.open)) {
                     spec.open = false;
                 }
@@ -773,7 +780,11 @@ impl Renderer {
             .collect();
         for (id, placed) in waiting {
             let anchor = self.tree.get(id).and_then(|n| n.parent);
-            let Some(now) = anchor.and_then(|a| self.anchor_box(a, root)) else {
+            let Some(now) = self
+                .pointing
+                .held_anchor(id)
+                .or_else(|| anchor.and_then(|a| self.anchor_box(a, root)))
+            else {
                 continue;
             };
             if placed.is_none_or(|p| moved(p, now)) {

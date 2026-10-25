@@ -45,9 +45,10 @@ pub use protocol::{
 pub use provenance::{ProvenanceStep, StepKind};
 pub use shader::{PRELUDE, ShaderCode, UniformSlot, UniformType};
 pub use surface::{
-    Anchor, CompositorCaps, Edge, Keyboard, Layer, Screens, SurfaceChange, SurfaceSpec, is_two_way,
+    Anchor, CompositorCaps, CursorShape, Edge, Exclusive, Keyboard, Layer, Screens, SurfaceChange,
+    SurfaceSpec, is_two_way,
 };
 pub use tokens::{
-    BinOp, Channel, HUE_ROOTS, MAX_TOKEN_STEPS, PALETTE_SEGMENT, TimeContext, TokenExpr,
+    BinOp, Channel, HUE_ROOTS, MAX_TOKEN_STEPS, MathFn, PALETTE_SEGMENT, TimeContext, TokenExpr,
     TokenMethod, TokenScope, TokenTable,
 };

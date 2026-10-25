@@ -1,0 +1,26 @@
+// A floating widget dragged by its grip, which moves its own surface:
+// its margins come from state, so the panel moves under the pointer as
+// it is dragged, and that move does not feed back.
+export state px = 40
+export state py = 40
+state px0 = 0
+state py0 = 0
+state gx = 0
+state gy = 0
+
+panel Widget {
+  anchor: top_left; margin: py, 0, 0, px; width: 160; height: 100
+  col { width: 160; height: 100; bg: #26303c; radius: 12
+    box { width: 160; height: 24; bg: #5b8def; radius: 12, 12, 0, 0
+      on change self.pressed {
+        if self.pressed { px0 = px; py0 = py; gx = self.pointer?.x ?? 0; gy = self.pointer?.y ?? 0 }
+      }
+      on change self.pointer {
+        if self.pressed {
+          px = px0 + (self.pointer?.x ?? gx) - gx
+          py = py0 + (self.pointer?.y ?? gy) - gy
+        }
+      }
+    }
+  }
+}

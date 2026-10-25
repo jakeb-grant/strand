@@ -1,0 +1,35 @@
+// A screenshot region selector: press, drag a rectangle, release.
+state ax = 0
+state ay = 0
+export state bx = 0
+export state by = 0
+state shown = false
+export state taken = 0
+
+panel Region {
+  anchor: top_left; width: 640; height: 360; layer: overlay
+  stack { width: 640; height: 360; bg: #10141880
+    on change self.pressed {
+      if self.pressed {
+        ax = self.pointer?.x ?? 0
+        ay = self.pointer?.y ?? 0
+        bx = ax
+        by = ay
+        shown = true
+      } else {
+        taken += 1
+      }
+    }
+    on change self.pointer {
+      if self.pressed {
+        bx = self.pointer?.x ?? bx
+        by = self.pointer?.y ?? by
+      }
+    }
+    if shown {
+      box { place: absolute; x: min(ax, bx); y: min(ay, by)
+            width: (bx - ax).abs(); height: (by - ay).abs()
+            border: 2, #ffffff; bg: #5b8def40 }
+    }
+  }
+}

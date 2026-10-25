@@ -1400,8 +1400,9 @@ impl Parser<'_> {
         ItemKind::Permit(Permit { capability, args })
     }
 
-    /// `action name(params) [argv]` (top level) or `action name(params) =
-    /// Method` (in a service).
+    /// `action name(params) [argv]` (top level, `-> T [argv]` when its
+    /// output is its value) or `action name(params) = Method` (in a
+    /// service).
     fn action(&mut self, ctx: Ctx) -> ItemKind {
         let start = self.cur().span.start;
         self.bump();
@@ -1412,6 +1413,7 @@ impl Parser<'_> {
             self.expected("`(` and the parameters");
             Vec::new()
         };
+        let ret = self.eat(K::ThinArrow).map(|_| self.ty());
         let body = if ctx == Ctx::Service {
             if self.eat(K::Eq).is_some() {
                 ActionBody::Method(self.ident("the D-Bus method it calls"))
@@ -1428,6 +1430,7 @@ impl Parser<'_> {
         ItemKind::Action(ActionDecl {
             name,
             params,
+            ret,
             body,
             span: self.finish(start),
         })

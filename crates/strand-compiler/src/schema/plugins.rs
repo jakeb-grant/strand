@@ -137,9 +137,13 @@ fn read(path: &Path) -> Result<String, String> {
 
 /// Extend `schema` with each of `files` in order, skipping a file whose
 /// stem names one of `linked` (a service this binary serves: its own
-/// text was applied) and, with a warning, one that does not apply or
-/// that redeclares a builtin service's stub (a skipped file adds
-/// nothing).
+/// text was applied) and, with a warning, one that does not apply, that
+/// redeclares a builtin service's stub, or (flex) that declares more
+/// than its own service: a service other than the one its file is named
+/// for, or an element, group, function, value, method or token, which
+/// would change the language for every program (spec.md 5.6; records,
+/// enums, aliases and opaque types its service uses are its own). A
+/// skipped file adds nothing.
 #[cold]
 #[inline(never)]
 pub fn apply(schema: &mut Schema, files: &[(PathBuf, String)], linked: &[&str]) -> Vec<Warning> {
@@ -159,6 +163,9 @@ pub fn apply(schema: &mut Schema, files: &[(PathBuf, String)], linked: &[&str]) 
             Ok(()) if next.provisional.len() < schema.provisional.len() => {
                 vec!["it redeclares a builtin service".to_string()]
             }
+            Ok(()) if !beyond_its_service(schema, &next, stem(path)).is_empty() => {
+                beyond_its_service(schema, &next, stem(path))
+            }
             Ok(()) => {
                 *schema = next;
                 continue;
@@ -170,6 +177,87 @@ pub fn apply(schema: &mut Schema, files: &[(PathBuf, String)], linked: &[&str]) 
         });
     }
     warnings
+}
+
+/// The service a plugin schema file is for: its name's stem.
+fn stem(path: &Path) -> &str {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+}
+
+/// (flex) What `next` (`schema` extended by a plugin's schema text for
+/// service `own`, a file named for it) adds beyond that service and the
+/// records, enums and aliases it uses: each as a reason the text is
+/// refused (a file skipped, a linked registration refused).
+pub fn beyond_its_service(schema: &Schema, next: &Schema, own: &str) -> Vec<String> {
+    let mut why = Vec::new();
+    let new = |a: Vec<&String>, b: Vec<&String>| -> Vec<String> {
+        b.into_iter()
+            .filter(|k| !a.contains(k))
+            .map(|k| k.to_string())
+            .collect()
+    };
+    for s in new(
+        schema.services.keys().collect(),
+        next.services.keys().collect(),
+    ) {
+        if s != own {
+            why.push(format!(
+                "it declares service `{s}`, but a plugin's file declares only its own (`{own}`, \
+                 the file's name)"
+            ));
+        }
+    }
+    let kinds: [(&str, Vec<&String>, Vec<&String>); 5] = [
+        (
+            "element",
+            schema.elements.keys().collect(),
+            next.elements.keys().collect(),
+        ),
+        (
+            "group",
+            schema.groups.keys().collect(),
+            next.groups.keys().collect(),
+        ),
+        (
+            "function",
+            schema.functions.keys().collect(),
+            next.functions.keys().collect(),
+        ),
+        (
+            "value",
+            schema.values.keys().collect(),
+            next.values.keys().collect(),
+        ),
+        (
+            "token",
+            schema.tokens.keys().collect(),
+            next.tokens.keys().collect(),
+        ),
+    ];
+    for (kind, a, b) in kinds {
+        for n in new(a, b) {
+            why.push(format!(
+                "it declares {kind} `{n}`, which only Strand's own schema may"
+            ));
+        }
+    }
+    for (ty, ms) in &next.methods {
+        let had = schema.methods.get(ty).map_or(0, Vec::len);
+        if ms.len() > had {
+            why.push(format!(
+                "it declares methods on `{ty}`, which only Strand's own schema may"
+            ));
+        }
+    }
+    for (f, sigs) in &next.functions {
+        let had = schema.functions.get(f).map_or(0, Vec::len);
+        if had > 0 && sigs.len() > had {
+            why.push(format!(
+                "it declares function `{f}`, which only Strand's own schema may"
+            ));
+        }
+    }
+    why
 }
 
 #[cfg(test)]
@@ -241,8 +329,8 @@ mod tests {
         assert!(files.is_empty() && warnings.is_empty());
     }
 
-    /// Files apply in name order (`b` names a record `a` declares), and
-    /// the fingerprint changes with each.
+    /// Files apply in name order (`bee` names a record `a` declares),
+    /// and the fingerprint changes with each.
     #[test]
     fn files_apply_in_name_order() {
         let t = Temp::new("order");
@@ -251,7 +339,7 @@ mod tests {
             "/// A thing.\nrecord Thing {\n  /// Its name.\n  name: text\n}\n",
         );
         t.put(
-            "b.schema",
+            "bee.schema",
             "/// B.\nservice bee {\n  /// The thing.\n  thing: Thing\n}\n",
         );
         t.put(".hidden.schema", "nonsense");
@@ -259,7 +347,7 @@ mod tests {
         let (files, warnings) = load(&t.0);
         assert!(warnings.is_empty(), "{warnings:?}");
         let names: Vec<_> = files.iter().map(|(p, _)| p.file_name().unwrap()).collect();
-        assert_eq!(names, ["a.schema", "b.schema"]);
+        assert_eq!(names, ["a.schema", "bee.schema"]);
         let mut s = base();
         let before = s.fingerprint();
         assert!(apply(&mut s, &files, &[]).is_empty());
@@ -267,7 +355,7 @@ mod tests {
         assert_ne!(s.fingerprint(), before);
         // A different file, a different fingerprint.
         t.put(
-            "b.schema",
+            "bee.schema",
             "/// B.\nservice bee {\n  /// The thing.\n  thing: Thing?\n}\n",
         );
         let mut again = base();
@@ -312,6 +400,48 @@ mod tests {
         assert_eq!(s.fingerprint(), only.fingerprint());
         assert_ne!(s.fingerprint(), before);
         assert!(hello.exists());
+    }
+
+    /// (flex) A file declares only its own service, the one it is named
+    /// for: one declaring another service, or an element, a function, a
+    /// value, a method or a token, is skipped with a warning naming what
+    /// it declared, and adds nothing; records and enums are its own.
+    #[test]
+    fn a_file_declares_only_its_own_service() {
+        let t = Temp::new("own");
+        let other = t.put(
+            "alpha.schema",
+            "/// A.\nservice alpha {\n  /// x.\n  x: int\n}\n/// B.\nservice beta {\n  /// y.\n  y: int\n}\n",
+        );
+        let element = t.put(
+            "gamma.schema",
+            "/// G.\nservice gamma {\n  /// x.\n  x: int\n}\n/// A widget.\nelement gizmo: node {}\n",
+        );
+        let function = t.put(
+            "delta.schema",
+            "/// D.\nservice delta {\n  /// x.\n  x: int\n}\n/// Twice.\nfn twice(x: int) -> int\n",
+        );
+        t.put(
+            "hello.schema",
+            "/// A kind.\nenum Kind { a, b }\n/// A thing.\nrecord Thing {\n  /// Its kind.\n  kind: Kind\n}\n/// Hello.\nservice hello {\n  /// A thing.\n  thing: Thing\n}\n",
+        );
+        let (files, _) = load(&t.0);
+        let mut s = base();
+        let warned = apply(&mut s, &files, &[]);
+        let paths: Vec<&Path> = warned.iter().map(|w| w.path.as_path()).collect();
+        assert_eq!(
+            paths,
+            [other.as_path(), function.as_path(), element.as_path()],
+            "{warned:?}"
+        );
+        assert!(warned[0].message.contains("service `beta`"), "{warned:?}");
+        assert!(warned[1].message.contains("function `twice`"), "{warned:?}");
+        assert!(warned[2].message.contains("element `gizmo`"), "{warned:?}");
+        for gone in ["alpha", "beta", "gamma", "delta"] {
+            assert!(!s.services.contains_key(gone), "{gone} applied");
+        }
+        assert!(!s.elements.contains_key("gizmo"));
+        assert!(s.services.contains_key("hello"));
     }
 
     /// A file whose stem names a linked service is skipped silently: its

@@ -870,7 +870,7 @@ fn the_keyboard_steps_parse() {
          key Escape\nkey v +ctrl\nkey Tab +shift +alt +super down\nkey Tab up\n\
          type 4\ntype 12 over 300ms\npaste 9\nfocus #ask\nunfocus\n\
          answer apps.search [{\"a\": 1}, 2]\nanswer weather.fetch error \"offline\"\n\
-         set shell.list [1, 2, 3]\n",
+         set shell.list [1, 2, 3]\nanswer action calc \"4\"\nanswer action calc error \"no\"\n",
     );
     let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
     assert_eq!(
@@ -926,6 +926,14 @@ fn the_keyboard_steps_parse() {
                 path: "shell.list".into(),
                 value: "[1, 2, 3]".into()
             },
+            StepKind::Answer {
+                method: "action calc".into(),
+                answer: Ok("\"4\"".into())
+            },
+            StepKind::Answer {
+                method: "action calc".into(),
+                answer: Err("no".into())
+            },
         ]
     );
     // `type … over` is a time step; `answer` opens no segment.
@@ -948,6 +956,8 @@ fn the_keyboard_steps_parse() {
         ("answer apps.search", "takes"),
         ("answer apps.search {nope", "is not JSON"),
         ("answer apps.search error offline", "quoted text"),
+        ("answer action", "takes"),
+        ("answer action calc", "takes"),
     ] {
         let (line, msg) = fails(&format!(
             "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n{step}\n"

@@ -289,18 +289,39 @@ fn components(deps: &[Vec<ChunkId>]) -> (Vec<usize>, Vec<Vec<usize>>) {
 /// (M6) Which laid-out facts each conditional id is read for, as
 /// [`crate::vm::value::NodeState`] watch bits: `name.box` measures each element
 /// it may name ([`NodeState::WATCH_BOX`](crate::vm::value::NodeState::WATCH_BOX)), `name.width` and
-/// `name.height` their sizes, and the name passed as a value both (where
-/// it goes is not followed); its booleans (`name.hover`) need neither.
+/// `name.height` their sizes, (flex) `name.pointer` the pointer over it,
+/// and the name passed as a value both sizes (where it goes is not
+/// followed); its booleans (`name.hover`) need neither. Also (flex) the
+/// elements whose `pointer` is read through `self` or a plain id
+/// (`Program::pointer_watch`).
 pub(crate) fn alias_watch(prog: &mut Program) {
     use crate::vm::value::NodeState;
     let mut out: std::collections::BTreeMap<NodeIdx, u8> = Default::default();
+    let mut pointer = std::collections::BTreeSet::new();
     for chunk in &prog.chunks {
         for (i, op) in chunk.ops.iter().enumerate() {
-            let Op::NodeAlias(n) = op else { continue };
+            let reads_pointer = || {
+                matches!(chunk.ops.get(i + 1), Some(Op::Field(f))
+                    if chunk.names[*f as usize] == "pointer")
+            };
+            let n = match op {
+                Op::NodeAlias(n) => n,
+                // (flex) `self.pointer`, `grip.pointer`: watched from the
+                // element's mount, so a handler that reads it first (`on
+                // change self.pressed { grab = self.pointer }`) finds it.
+                Op::Node(n) => {
+                    if reads_pointer() {
+                        pointer.insert(*n);
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
             let bits = match chunk.ops.get(i + 1) {
                 Some(Op::Field(f)) => match chunk.names[*f as usize].as_str() {
                     "box" => NodeState::WATCH_BOX,
                     "width" | "height" => NodeState::WATCH_SIZE,
+                    "pointer" => NodeState::WATCH_POINTER,
                     _ => 0,
                 },
                 _ => NodeState::WATCH_BOX | NodeState::WATCH_SIZE,
@@ -309,4 +330,5 @@ pub(crate) fn alias_watch(prog: &mut Program) {
         }
     }
     prog.alias_watch = out;
+    prog.pointer_watch = pointer;
 }

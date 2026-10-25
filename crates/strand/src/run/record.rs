@@ -1257,6 +1257,32 @@ impl ChangeRecorder {
         });
     }
 
+    /// (flex review) Action `action`'s command, run with `argv`, answered
+    /// its call (an action with a result): what it answered, as a fetch
+    /// named `action <name>` is, so a replay answers the call with it.
+    /// Its texts are held when an argument is not a text of the program
+    /// (a query typed into a calculator), as a call's answer is.
+    pub(crate) fn exec_answered(
+        &mut self,
+        t: u64,
+        action: &str,
+        argv: &[String],
+        answer: &Result<Value, String>,
+    ) {
+        let tainted = argv.iter().skip(1).any(|a| !self.literal(a));
+        if self.ring.as_ref().is_none_or(Ring::paused) {
+            return;
+        }
+        let id = self.next_call;
+        self.next_call = self.next_call.wrapping_add(1);
+        let call = Call {
+            id,
+            name: format!("action {action}"),
+            tainted,
+        };
+        self.answered(t, &call, answer);
+    }
+
     /// The config wrote `value` to an `rw` field `service.path`.
     pub(crate) fn wrote(&mut self, t: u64, service: &str, path: &[PathSeg], value: &Value) {
         if strand_services::secret(service) {
@@ -3077,6 +3103,22 @@ mod tests {
         assert_eq!((e[0].rec.u32(0), e[1].rec.u32(0)), (0, 1), "call ids");
         assert_eq!(value_of(&e[1]), serde_json::json!({"ok": ["Firefox"]}));
         assert!(!contains(&c.dump().unwrap(), b"hunter2"));
+    }
+
+    /// (flex review) A result action's answer is a fetch named `action
+    /// <name>`; a command given typed text keeps no text of its answer.
+    #[test]
+    fn a_result_actions_answer_is_recorded_as_its_call() {
+        let mut c = ChangeRecorder::new(true, program("let q = \"-t\""));
+        let argv = |q: &str| vec!["qalc".to_string(), "-t".to_string(), q.to_string()];
+        c.exec_answered(5, "calc", &argv("hunter2+1"), &Ok(Value::text("hunter3")));
+        c.exec_answered(6, "calc", &argv("-t"), &Err("`qalc` failed".into()));
+        let e = entries(c.ring().unwrap());
+        assert_eq!(e[0].name.as_deref(), Some("action calc"));
+        assert_eq!(e[0].rec.kind, kind::FETCH);
+        assert_eq!(value_of(&e[0]), serde_json::json!({"ok": {"~text": 7}}));
+        assert_eq!(value_of(&e[1]), serde_json::json!({"err": "`qalc` failed"}));
+        assert!(!contains(&c.dump().unwrap(), b"hunter"));
     }
 
     #[test]
