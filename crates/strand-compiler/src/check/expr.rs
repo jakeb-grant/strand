@@ -61,6 +61,21 @@ pub(crate) fn path_text(e: &ast::Expr) -> Option<String> {
     }
 }
 
+/// (flex) A literal that takes its type from where it is written: a
+/// plain whole number (`int` or `float`), an empty list.
+fn takes_type(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::Number(n) => n.unit.is_none() && !n.fraction,
+        ast::ExprKind::Array(items) => items.is_empty(),
+        ast::ExprKind::Paren(inner) => takes_type(inner),
+        ast::ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => takes_type(expr),
+        _ => false,
+    }
+}
+
 fn quoted(e: &ast::Expr) -> String {
     path_text(e).map_or_else(|| "this value".to_string(), |p| format!("`{p}`"))
 }
@@ -125,7 +140,7 @@ impl<'a> Checker<'a> {
             Some(ast::Unit::Px | ast::Unit::Ch) => Ty::LENGTH,
             Some(ast::Unit::Percent) => Ty::PERCENT,
             Some(ast::Unit::Deg) => Ty::ANGLE,
-            Some(ast::Unit::S | ast::Unit::Ms) => Ty::DURATION,
+            Some(ast::Unit::S | ast::Unit::Ms | ast::Unit::Min | ast::Unit::H) => Ty::DURATION,
             None if !n.fraction && expected.is_some_and(accepts_int) => Ty::INT,
             None => Ty::FLOAT,
         };
@@ -325,14 +340,14 @@ impl<'a> Checker<'a> {
                 let n = &def.name;
                 return if self.float_pins.contains(&(def.file, def.span)) {
                     format!(
-                        "a fraction is written to `{n}`, so it is a `float`; round it here: `{n}.round`"
+                        "a fraction is written to `{n}`, so it is a `float`; round it here: `{n}.round()`"
                     )
                 } else {
-                    format!("declare it `{kw} {n}: int = …`, or round it here: `{n}.round`")
+                    format!("declare it `{kw} {n}: int = …`, or round it here: `{n}.round()`")
                 };
             }
         }
-        "round it: `(…).round`, `.floor` or `.ceil`".into()
+        "round it: `(…).round()`, `.floor()` or `.ceil()`".into()
     }
 
     fn join_branches(&mut self, a: &hir::Expr, b: &hir::Expr, what: &str) -> Ty {
@@ -2155,6 +2170,9 @@ impl<'a> Checker<'a> {
             (*member.sigs[0]).clone()
         };
         let label = path_text(recv_ast).map_or_else(|| n.to_string(), |p| format!("{p}.{n}"));
+        if n == "reduce" {
+            return self.reduce_call(&t, args, &label, span);
+        }
         if mutation
             && !self.action_check(&label, name.span)
             && let Err(why) = self.writable(recv)
@@ -2223,6 +2241,76 @@ impl<'a> Checker<'a> {
         } else {
             ret
         };
+        (out, ret)
+    }
+
+    /// (flex) `xs.reduce(init, f)`, typed by `init`'s type `U`: `f` is a
+    /// `fn(U, T) -> U` and the call a `U`. A whole-number `init` (`0`) is
+    /// tried as an `int` first and, when `f` then gives a fraction, as a
+    /// `float`, as a whole-number `state` widens.
+    fn reduce_call(
+        &mut self,
+        elem: &Ty,
+        args: &'a [ast::Arg],
+        label: &str,
+        span: Span,
+    ) -> (Vec<CallArg>, Ty) {
+        let init = args
+            .iter()
+            .find(|a| matches!(&a.kind, ArgKind::Named(n) if n.name == "init"))
+            .or_else(|| args.iter().find(|a| a.kind == ArgKind::Positional));
+        // `init`'s type, its diagnostics rolled back: the call checks it.
+        let u = match init {
+            Some(a) => {
+                let mark = (self.diags.len(), self.refs.len());
+                let reported = self.reported.clone();
+                let suggestions = self.suggestions_left.clone();
+                self.speculating += 1;
+                // A whole number is an `int` here, as `state n = 0` is.
+                let whole =
+                    matches!(&a.value.kind, ast::ExprKind::Number(_)) && takes_type(&a.value);
+                let h = self.expr(&a.value, whole.then_some(&Ty::INT));
+                self.speculating -= 1;
+                self.diags.truncate(mark.0);
+                self.refs.truncate(mark.1);
+                self.reported = reported;
+                self.suggestions_left = suggestions;
+                self.release_kept();
+                h.ty
+            }
+            None => Ty::Error,
+        };
+        let sig = |u: &Ty| {
+            let f = Ty::Fn(Arc::new(FnSig::positional(
+                vec![u.clone(), elem.clone()],
+                u.clone(),
+            )));
+            Arc::new(FnSig::new(
+                vec![
+                    ParamSig {
+                        name: "init".into(),
+                        ty: u.clone(),
+                        has_default: false,
+                        default: None,
+                        variadic: false,
+                    },
+                    ParamSig {
+                        name: "f".into(),
+                        ty: f,
+                        has_default: false,
+                        default: None,
+                        variadic: false,
+                    },
+                ],
+                u.clone(),
+            ))
+        };
+        let sigs = if u == Ty::INT {
+            vec![sig(&Ty::INT), sig(&Ty::FLOAT)]
+        } else {
+            vec![sig(&u)]
+        };
+        let (_, out, ret) = self.call_overloads(&sigs, args, label, span);
         (out, ret)
     }
 
@@ -2547,9 +2635,20 @@ impl<'a> Checker<'a> {
         expected: Option<&Ty>,
         span: Span,
     ) -> (hir::Expr, hir::Expr, Ty) {
-        let l = self.expr(lhs, expected);
-        let hint = expected.cloned().unwrap_or_else(|| l.ty.clone());
-        let r = self.expr(rhs, Some(&hint));
+        // (flex, critic:int-literal-arith) A literal on the left that takes
+        // its type from where it is (`2500 + n`, `[] + xs`) takes it from
+        // the right operand, as the right one does from the left
+        // (`n + 2500`): both are `int` for an `int` `n`.
+        let (l, r) = if expected.is_none() && takes_type(lhs) && !takes_type(rhs) {
+            let r = self.expr(rhs, None);
+            let l = self.expr(lhs, Some(&r.ty.clone()));
+            (l, r)
+        } else {
+            let l = self.expr(lhs, expected);
+            let hint = expected.cloned().unwrap_or_else(|| l.ty.clone());
+            let r = self.expr(rhs, Some(&hint));
+            (l, r)
+        };
         let ty = if self.operand_ok(&l, lhs) && self.operand_ok(&r, rhs) {
             self.arith(op, &l, &r, span)
         } else {
@@ -2566,6 +2665,10 @@ impl<'a> Checker<'a> {
             _ if l.ty.is_lenient() || r.ty.is_lenient() => return Ty::Error,
             // `a + b` joins two texts (decisions.md m6-w2-language, Gaps 11).
             (Some(Text), Some(Text)) if op == BinaryOp::Add => return Ty::TEXT,
+            // (flex) and two lists of one item type.
+            _ if op == BinaryOp::Add && matches!((&l.ty, &r.ty), (Ty::List(..), Ty::List(..))) => {
+                return self.list_join(l, r, span);
+            }
             (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => (a, b),
             _ => {
                 let (sa, sb) = (self.show(&l.ty), self.show(&r.ty));
@@ -2617,6 +2720,33 @@ impl<'a> Checker<'a> {
                     "units do not combine",
                 )
                 .help = help;
+                Ty::Error
+            }
+        }
+    }
+
+    /// (flex) `a + b` on two lists: the items of both, one item type
+    /// (`[1] + [0.5]` is a `[float]`; an empty `[]` takes the other's).
+    fn list_join(&mut self, l: &hir::Expr, r: &hir::Expr, span: Span) -> Ty {
+        let (Ty::List(a, ka), Ty::List(b, kb)) = (&l.ty, &r.ty) else {
+            return Ty::Error;
+        };
+        let item = match (a.is_error(), b.is_error()) {
+            (true, false) => Some((**b).clone()),
+            (false, true) => Some((**a).clone()),
+            _ => self.types.join(a, b),
+        };
+        match item {
+            Some(t) => Ty::List(Box::new(t), *ka && *kb),
+            None => {
+                let (sa, sb) = (self.show(&l.ty), self.show(&r.ty));
+                self.error(
+                    "check::type_mismatch",
+                    format!("`+` joins lists of one item type, found `{sa}` and `{sb}`"),
+                    span,
+                    "items differ",
+                )
+                .help = Some("make the items one type, with `.map(x => …)`".into());
                 Ty::Error
             }
         }
@@ -3252,7 +3382,8 @@ impl<'a> Checker<'a> {
                 | DefKind::Keyframes
                 | DefKind::Action => false,
             },
-            K::Service(_) | K::Value(_) | K::Node(_) | K::Token(_) | K::Error => true,
+            K::Value(v) => v != "pi",
+            K::Service(_) | K::Node(_) | K::Token(_) | K::Error => true,
             K::Local(l) => !matches!(self.locals[l.0 as usize].kind, LocalKind::Channel),
             K::Number { .. } | K::Text(_) | K::Color(_) | K::Bool(_) | K::Null => false,
             K::Variant(..) | K::EnumType(_) => false,

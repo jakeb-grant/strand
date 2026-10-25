@@ -185,7 +185,7 @@ Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `draw` | `fn(Canvas)` | Draws on the canvas. |
+| `draw` | `fn(Canvas)` | Draws on the canvas. It runs again when what it reads changes, not every frame, so `t`, `wave(…)` and `noise` of `t` are refused in it (`check::time_in_canvas`): animate the canvas's own props (`rotate: t * 90deg`) or draw every frame with a `shader`. |
 
 ### `center`
 

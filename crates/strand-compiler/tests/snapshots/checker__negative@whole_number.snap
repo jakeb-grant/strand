@@ -12,4 +12,4 @@ check::type_mismatch
     ·                ╰── this is `float`
  10 │   }
     ╰────
-  help: a fraction is written to `i`, so it is a `float`; round it here: `i.round`
+  help: a fraction is written to `i`, so it is a `float`; round it here: `i.round()`

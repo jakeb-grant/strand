@@ -928,7 +928,7 @@ filling the monitor, the keyboard always).
 | `int`, `float` | `36`, `0.72`. An `int` widens to `float`. |
 | `length` | `4px`, `40%` (of the container), `4ch`; a bare number is px |
 | `angle` | `270deg` |
-| `duration` | `6s`, `1.2s`, `200ms` |
+| `duration` | `6s`, `1.2s`, `200ms`, `5min`, `3h` |
 | `color` | `#7aa2f7`, `#fff`, `#00000080` (3, 4, 6 or 8 hex digits), token paths, colour functions |
 | `text` | `"Search apps"`; any UTF-8, escapes `\" \\ \n \t \r \0 \u{…}`; no interpolation |
 | `bool` | `true`, `false` |
@@ -948,11 +948,31 @@ filling the monitor, the keyboard always).
   none). It is `find`'s position, so
   `xs[(xs.index_of(x => x.active) ?? -1) + 1]` is the item after the
   active one (decisions.md m6-owner-fixes, gap 23).
+- `xs.reduce(init, f)` folds a list from its first item: `f(acc, x)` is
+  called for each item in order, starting from `init`, and the last
+  result is its value (`init` for an empty list). Its type is `init`'s:
+  `xs.reduce(0, (a, x) => a + x.n)` is an `int` when `x.n` is.
+- A `text`'s members (`len`, `slice`, `index_of`, `split`, …) count
+  characters (Unicode scalar values), not bytes: `"héllo".len` is 5,
+  `s.slice(from, to)` is the characters from `from` up to `to` (a
+  negative index counts from the end, and both are clamped to the text,
+  so `s.slice(-3)` is its last three), and `s.index_of(part)` is the
+  index of `part`'s first occurrence, as an `int?`. `number(t)` reads a
+  decimal number from a text, spaces around it allowed, and is `null`
+  when the text is not one (decisions.md flex).
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a
 duration is expected it is a load error (`200ms`, `1s`: durations need
-units).
+units). `1min` is `60s` and `1h` is `60min`.
+
+A whole-number literal with no unit is an `int` where an `int` or a
+`float` is expected; beside another operand of an arithmetic operator it
+takes that operand's type, so with `n: int`, `2500 + n` and `n + 2500`
+are both `int`s (and with `x: float`, `2500 + x` a `float`). A
+fractional literal (`0.5`) is always a `float`. A `float` where an `int`
+is expected is a load error whose help suggests rounding it (`.round()`,
+`.floor()`, `.ceil()`).
 
 ### 7.2 Operators and calls
 
@@ -972,6 +992,18 @@ units).
   before every time on that day.
 - `+` on two `text`s joins them (`name + "…"`, and `s += "!"` in a
   handler); `+` between a `text` and anything else is a load error.
+- `+` on two lists of one item type joins them, the left's items first
+  (`xs + [x]`, and `xs += [x]` in a handler); `[]` beside a list takes
+  its item type. Lists of different item types, or a list beside a
+  non-list, are a load error (decisions.md flex).
+- The maths functions `sin`, `cos` and `tan` take an `angle` (a bare
+  number is degrees), and `atan2(y, x)` returns one. Angles follow the
+  screen: `0deg` points right (+x) and angles grow clockwise, since y
+  grows down, the way `rotate` turns, so `(r * cos(a), r * sin(a))` is
+  the point at angle `a` on a circle of radius `r`. `pi` is the
+  constant. `sqrt` of a negative number, `ln` of zero or less, and any
+  maths result that is not a finite number (`pow(0, -1)`) are error
+  values (decisions.md flex).
 - `==` and `!=` take two numbers exactly when an ordering comparison
   would, and compare their numbers as written, read the same way as for
   order (`10px == 10`, `2ch == 2px` and `50% == 50px` are true;

@@ -138,7 +138,7 @@ pub struct Token {
 }
 
 /// Units a number may carry (`docs/grammar.md`, "Numbers and units").
-pub const UNITS: &[&str] = &["px", "%", "deg", "ch", "s", "ms"];
+pub const UNITS: &[&str] = &["px", "%", "deg", "ch", "s", "ms", "min", "h"];
 
 /// Splits a lexed number into its numeric text and unit suffix.
 pub fn split_number(text: &str) -> (&str, &str) {

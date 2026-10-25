@@ -8,18 +8,22 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 | Function | |
 | --- | --- |
+| `fn atan2(y: float, x: float) -> angle` | The angle from the origin to the point (`x`, `y`), from -180deg to 180deg, 0deg pointing right and clockwise positive (y grows down): the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`. |
 | `fn bezier(x1: float, y1: float, x2: float, y2: float) -> Easing` | A cubic bézier curve: `~ bezier(0.05, 0.9, 0.1, 1.05)`. |
 | `fn bloom(radius: length, strength: float = 1) -> Filter` | Bloom: bright parts bleed light `radius` around them, `strength` times as bright as they are (1: as bright), `filter: bloom(12)`, `filter: bloom(12, 1.5)`. Without a GPU it draws as a glow. |
 | `fn blur(radius: length) -> Filter` | Blurs: `backdrop: blur(16)` over your own content, `filter: blur(30)`. |
 | `fn brightness(amount: float) -> Filter` | A colour filter: `filter: brightness(0.9)`. |
+| `fn bytes(n: float) -> text lift` | A count of bytes as text in binary units: `bytes(1536)` is `1.5 KiB`, `bytes(disk.used)` `19.4 GiB` (one decimal below 100, none from 100; `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`). Null in, null out. |
 | `fn chromatic(offset: length) -> Filter` | Chromatic aberration: red shifted `offset` right and blue `offset` left of green, `filter: chromatic(2)`. Without a GPU the node draws unfiltered. |
 | `fn clamp(x: float, lo: float, hi: float) -> float` | `x` kept between `lo` and `hi`. |
 | `fn conic(from: angle = 0, ...stops: color) -> paint` | A conic gradient: `conic(from: t * 60deg, $accent, $secondary, $accent)`. |
 | `fn contrast(amount: float) -> Filter` | A colour filter changing contrast. |
+| `fn cos(a: angle) -> float` | The cosine of an angle: `x: r * cos(a)` places a point on a circle, 0deg pointing right and angles turning clockwise, as `c.arc` reads them. |
 | `fn crt() -> Filter` | A CRT look: a curved screen with rounded corners, scanlines, a fringe of colour and a darker rim, `filter: crt()`. No knobs. Without a GPU the node draws unfiltered. |
 | `fn dot(size: length) -> Sprite` | A round particle sprite: `sprite: dot(3)`. |
 | `fn dur(duration: duration, clock: bool = false) -> text lift` | A duration as text: `dur(battery.time_left)` is `45 s`, `12 min` or `2 h 5 min`; with `clock: true` it is a clock reading, `m:ss` or `h:mm:ss` (`dur(media.length, clock: true)` is `3:45`). Null in, null out. |
 | `fn ease(curve: Curve, duration: duration) -> Easing` | A named curve over a duration: `~ ease(out_back, 300ms)`. |
+| `fn exp(x: float) -> float` | e to the power `x`. |
 | `fn fade(edge: Edge, size: length) -> Mask` | A mask fading toward an edge: `mask: fade(bottom, 24)`. |
 | `fn glass(refraction: length = 12) -> Filter` | Liquid glass over what is behind it: lightly frosted, bent up to `refraction` at its rim (red and blue apart), a fresnel rim and a highlight under the pointer, `backdrop: glass()`, `backdrop: glass(20)`. Without a GPU it draws as a blur and a tint. |
 | `fn grayscale(amount: float) -> Filter` | A colour filter: `filter: grayscale(1)`. |
@@ -29,24 +33,31 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn invert(amount: float) -> Filter` | A colour filter inverting colours. |
 | `fn join(sep: text, ...parts: any) -> text` | Joins the parts that are not null. |
 | `fn linear(angle: angle, ...stops: color) -> paint` | A linear gradient: `linear(45deg, $accent, $tertiary)`. Banding is removed by dithering. |
+| `fn ln(x: float) -> float` | The natural logarithm; 0 and negative numbers have none (an error value). |
 | `fn material(seed: color, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Palette` | A Material 3 palette from a seed colour, or from a wallpaper image (quantised off-thread and cached; the old palette holds until the new one is ready, so that form is `Async`). |
 | `fn material(image: path, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Async<Palette>` | A Material 3 palette from a seed colour, or from a wallpaper image (quantised off-thread and cached; the old palette holds until the new one is ready, so that form is `Async`). |
 | `fn max(a: float, b: float) -> float` | The larger of two numbers. |
 | `fn min(a: float, b: float) -> float` | The smaller of two numbers. |
 | `fn noise(x: float) -> float` | Smooth noise at `x`; a time signal when `x` follows `t`. |
+| `fn num(x: float, digits: int = 0, pad: int = 0) -> text lift` | A number as text with `digits` decimals and its whole part padded with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`, `num(7, pad: 2)` is `07`. Null in, null out. |
+| `fn number(t: text) -> float? lift` | The number a text spells, or null when it spells none: `number(" 42 ")` is 42, `number("4 GB")` null. Leading and trailing white space is ignored; `1e3` and `-0.5` are numbers. Null in, null out. |
 | `fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = alpha) -> color` | `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the source colour's channels inside the arguments. |
 | `fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color` | `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the source colour's channels inside the arguments. |
 | `fn pct(fraction: float) -> text lift` | A fraction as a percentage: `pct(battery.percent)`. Null in, null out. |
 | `fn popin(scale: float) -> Pose` | A pose scaling in from `scale`: `enter: popin(0.8)`. |
+| `fn pow(x: float, y: float) -> float` | `x` to the power `y`: `pow(2, 10)` is 1024. |
 | `action propagate()` | Handlers only. |
 | `fn radial(...stops: color) -> paint` | A radial gradient, or with `at` and `size` a radial reveal mask. |
 | `fn radial(at: Anchor, size: length) -> Mask` | A radial gradient, or with `at` and `size` a radial reveal mask. |
 | `fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color` | A colour from red, green and blue channels. |
 | `fn saturate(amount: float) -> Filter` | A colour filter: `filter: saturate(1.3)`. |
 | `fn shape(shape: Shape) -> Mask` | A mask of a shape from the shape library: `mask: shape(cookie)`. |
+| `fn sin(a: angle) -> float` | The sine of an angle (a plain number is degrees): `r * sin(a)`. |
 | `fn sleep(duration: duration) -> Async<()>` | Waits for `duration` inside a handler. |
 | `fn slide(edge: Edge) -> Pose` | A pose sliding in from an edge: `enter: slide(top)`. |
 | `fn spring(stiffness: float, damping: float) -> Spring` | A spring for `~` and the motion tokens: `spring(3000, 0.75)`. |
+| `fn sqrt(x: float) -> float` | The square root; a negative number has none (an error value). |
+| `fn tan(a: angle) -> float` | The tangent of an angle. |
 | `fn tint(color: color) -> Filter` | A colour filter tinting toward a colour: `filter: tint($accent)`. |
 | `fn wave(period: duration, phase: float = 0) -> float` | A time signal that swings once per `period`: `10 * wave(2s)`. Only the node reading it repaints, and only while visible. |
 | `fn wipe(edge: Edge) -> SwapTransition` | A transition wiping from an edge: `transition: wipe(left)`. |
@@ -56,6 +67,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 | Value | Type | |
 | --- | --- | --- |
+| `pi` | `float` | The ratio of a circle's circumference to its diameter, 3.14159… |
 | `t` | `float` | Time signal: seconds, for `rotate: t * 20deg`. |
 
 ## Methods of builtin types
@@ -83,8 +95,9 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 ### `text`
 
-| Method | |
+| Member | |
 | --- | --- |
+| `len: int` | How many characters. |
 | `fn upper() -> text` | The text in upper case. |
 | `fn lower() -> text` | The text in lower case. |
 | `fn trim() -> text` | The text without leading and trailing white space. |
@@ -93,6 +106,8 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn ends_with(suffix: text) -> bool` | It ends with `suffix`. |
 | `fn split(sep: text) -> [text]` | The pieces between each `sep`. |
 | `fn replace(from: text, to: text) -> text` | Every `from` replaced with `to`. |
+| `fn slice(from: int, to: int? = null) -> text` | The characters from `from` up to (not including) `to`, counted from 0; without `to`, to the end. A negative index counts from the end (`name.slice(-3)` is the last three), and indices past either end stop there: `"strand".slice(1, 3)` is `tr`. |
+| `fn index_of(part: text) -> int?` | The character index of the first `part` in it (0 for the first character, as `slice` counts), or null when it holds none. |
 
 ### `[T]`
 
@@ -111,6 +126,7 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn reverse() -> [T]` | The items in reverse order. |
 | `fn distinct() -> [T]` | The items without repeats: the first of each equal item, in order. |
 | `fn sum(of: fn(T) -> any) -> any` | The items added up (`xs.sum()`), or what `of` gives for each (`ws.sum(w => w.width)`); 0 for no items. Numbers of one unit. |
+| `fn reduce(init: U, f: fn(U, T) -> U) -> U` | `init` carried through every item in order by `f`, which takes what it gave last and the item: `xs.reduce(0, (sum, x) => sum + x)`, `init` for no items. Its type is `init`'s. |
 | `fn join(sep: text) -> text` | The text items joined with `sep`. |
 | `fn contains(item: T) -> bool` | Whether `item` is in the list. |
 | `fn any(test: fn(T) -> bool) -> bool` | Whether `test` is true for some item. |

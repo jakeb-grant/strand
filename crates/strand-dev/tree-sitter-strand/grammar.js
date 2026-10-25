@@ -706,7 +706,7 @@ module.exports = grammar({
     token: _ => /\$[A-Za-z_][A-Za-z0-9_]*/,
     _hash: _ => /#[A-Za-z0-9_]+(-[A-Za-z0-9_]+)*/,
     _int: _ => /[0-9]+/,
-    number: _ => /[0-9]+(\.[0-9]+)?(px|%|deg|ch|ms|s)?/,
+    number: _ => /[0-9]+(\.[0-9]+)?(px|%|deg|ch|ms|min|h|s)?/,
     boolean: _ => choice('true', 'false'),
     null: _ => 'null',
 

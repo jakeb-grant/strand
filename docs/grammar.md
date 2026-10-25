@@ -96,7 +96,7 @@ selector at the start of a tree item (`#needle { … }`).
 ```
 NUMBER = DIGITS ( '.' DIGITS )? UNIT?
 DIGITS = [0-9]+
-UNIT   = 'px' | '%' | 'deg' | 'ch' | 's' | 'ms'
+UNIT   = 'px' | '%' | 'deg' | 'ch' | 's' | 'ms' | 'min' | 'h'
 ```
 
 - The fraction is taken only when `.` is followed by a digit, so `1.max(2)`

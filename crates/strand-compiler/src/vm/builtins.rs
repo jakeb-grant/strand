@@ -23,6 +23,7 @@ fn fail(msg: impl Into<String>) -> Error {
 pub(crate) fn value(name: &str) -> Value {
     match name {
         "t" => Value::Time(Rc::new(TokenExpr::Time)),
+        "pi" => Value::float(std::f64::consts::PI),
         _ => Value::Null,
     }
 }
@@ -355,6 +356,13 @@ pub(crate) fn binary(op: BinaryOp, a: &Value, b: &Value) -> Result<Value, Error>
             };
             Value::text(format!("{x}{y}"))
         }
+        // (flex) And on lists, the items of `a` then those of `b`.
+        Add if matches!((a, b), (Value::List(_), Value::List(_))) => {
+            let (Value::List(x), Value::List(y)) = (a, b) else {
+                return Ok(Value::Null);
+            };
+            Value::list(x.iter().chain(y.iter()).cloned().collect())
+        }
         Add | Sub | Mul | Div | Rem => {
             let symbolic = |v: &Value| matches!(v, Value::Token(_) | Value::Time(_));
             if symbolic(a) || symbolic(b) {
@@ -491,6 +499,17 @@ fn computes(name: &str) -> bool {
         name,
         "pct"
             | "dur"
+            | "num"
+            | "bytes"
+            | "number"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "atan2"
+            | "sqrt"
+            | "pow"
+            | "exp"
+            | "ln"
             | "join"
             | "material"
             | "import"
@@ -530,6 +549,58 @@ pub fn dur(d: Duration) -> String {
             format!("{h} h {m} min")
         }
     }
+}
+
+/// (flex) `num(x, digits, pad)`: `x` with `digits` decimals (rounded half
+/// away from zero, as `format!` does not), its whole part padded with
+/// zeros to `pad` digits; never `-0`.
+pub fn num(x: f64, digits: i64, pad: i64) -> String {
+    let digits = digits.clamp(0, 12) as usize;
+    let pad = pad.clamp(0, 40) as usize;
+    let scale = 10f64.powi(digits as i32);
+    let mut r = (x.abs() * scale).round() / scale;
+    if !r.is_finite() {
+        r = x.abs();
+    }
+    let body = format!("{r:.digits$}");
+    let whole = body.find('.').unwrap_or(body.len());
+    let zeros = "0".repeat(pad.saturating_sub(whole));
+    let negative = x < 0.0 && body.chars().any(|c| c.is_ascii_digit() && c != '0');
+    format!("{}{zeros}{body}", if negative { "-" } else { "" })
+}
+
+/// (flex) `bytes(n)`: `512 B`, `1.5 KiB`, `19.4 GiB`, `512 MiB`; one
+/// decimal below 100 (a trailing `.0` dropped), none from 100.
+pub fn bytes(n: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let sign = if n < 0.0 { "-" } else { "" };
+    let mut v = n.abs();
+    let mut u = 0;
+    while v >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        return format!("{sign}{} B", v.round());
+    }
+    let shown = if (v * 10.0).round() / 10.0 < 100.0 {
+        let s = format!("{:.1}", (v * 10.0).round() / 10.0);
+        s.strip_suffix(".0").map_or(s.clone(), str::to_string)
+    } else {
+        format!("{}", v.round())
+    };
+    format!("{sign}{shown} {}", UNITS[u])
+}
+
+/// (flex) `number(t)`: the number `t` spells, white space around it
+/// ignored; `None` for anything else (`inf` and `NaN` included).
+pub fn number(t: &str) -> Option<f64> {
+    let t = t.trim();
+    // Rust also reads `inf`, `infinity` and `nan`: not numbers here.
+    if !t.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    t.parse::<f64>().ok().filter(|n| n.is_finite())
 }
 
 /// `dur(…, clock: true)`: `0:05`, `3:45`, `1:02:03` (decisions.md
@@ -702,6 +773,45 @@ pub(crate) fn call(
                 ch(3, 1.0),
             ))
         }
+        "num" => match args.get(0).and_then(Value::as_f64) {
+            Some(x) => Value::text(self::num(
+                x,
+                num(1).unwrap_or(0.0) as i64,
+                num(2).unwrap_or(0.0) as i64,
+            )),
+            None => Value::Null,
+        },
+        "bytes" => match args.get(0).and_then(Value::as_f64) {
+            Some(n) => Value::text(self::bytes(n)),
+            None => Value::Null,
+        },
+        "number" => match args.get(0).and_then(Value::as_text) {
+            Some(t) => self::number(t).map_or(Value::Null, Value::float),
+            None => Value::Null,
+        },
+        // (flex) Angles are degrees (a plain number where an angle is
+        // expected is one), 0deg pointing right, clockwise with y down.
+        "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" => {
+            let x = num(0).unwrap_or(0.0);
+            let r = match name {
+                "sin" => x.to_radians().sin(),
+                "cos" => x.to_radians().cos(),
+                "tan" => x.to_radians().tan(),
+                "sqrt" if x >= 0.0 => x.sqrt(),
+                "exp" => x.exp(),
+                "ln" if x > 0.0 => x.ln(),
+                _ => f64::NAN,
+            };
+            math(name, &[x], r)?
+        }
+        "pow" => {
+            let (x, y) = (num(0).unwrap_or(0.0), num(1).unwrap_or(0.0));
+            math(name, &[x, y], x.powf(y))?
+        }
+        "atan2" => {
+            let (y, x) = (num(0).unwrap_or(0.0), num(1).unwrap_or(0.0));
+            Value::Num(y.atan2(x).to_degrees(), Num::Deg)
+        }
         "min" => Value::float(num(0).unwrap_or(0.0).min(num(1).unwrap_or(0.0))),
         "max" => Value::float(num(0).unwrap_or(0.0).max(num(1).unwrap_or(0.0))),
         "clamp" => {
@@ -772,6 +882,17 @@ pub(crate) fn call(
             call_value(name, all)
         }
     })
+}
+
+/// (flex) A math function's result, or the error value naming the call
+/// when it has none (`sqrt(-1)`, `ln(0)`, an overflow), as arithmetic's
+/// `1 / 0` is.
+fn math(name: &str, args: &[f64], r: f64) -> Result<Value, Error> {
+    if r.is_finite() {
+        return Ok(Value::float(r));
+    }
+    let shown: Vec<String> = args.iter().map(|a| super::value::number(*a)).collect();
+    Err(fail(format!("`{name}({})` has no value", shown.join(", "))))
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1106,26 @@ fn text_method(t: &str, name: &str, args: &Args) -> Result<Value, Error> {
         "ends_with" => Value::Bool(t.ends_with(&s(0))),
         "split" => Value::list(t.split(&s(0)).map(Value::text).collect()),
         "replace" => Value::text(t.replace(&s(0), &s(1))),
+        // (flex) Character-indexed, as `len` counts.
+        "slice" => {
+            let len = t.chars().count() as i64;
+            let at = |v: Option<f64>, or: i64| {
+                let i = v.map_or(or, |x| x as i64);
+                if i < 0 { (len + i).max(0) } else { i.min(len) }
+            };
+            let from = at(args.num(0), 0);
+            let to = at(args.num(1), len);
+            Value::text(
+                t.chars()
+                    .skip(from as usize)
+                    .take(to.saturating_sub(from).max(0) as usize)
+                    .collect::<String>(),
+            )
+        }
+        "index_of" => match t.find(&s(0)) {
+            Some(b) => Value::int(t[..b].chars().count() as i64),
+            None => Value::Null,
+        },
         _ => return Err(fail(format!("text has no method `{name}`"))),
     })
 }
@@ -1116,6 +1257,16 @@ fn list_method(
                 }
             }
             Value::Null
+        }
+        // (flex) `xs.reduce(init, (acc, x) => …)`: `init` folded through
+        // every item in order.
+        "reduce" => {
+            let f = args.get(1).cloned().unwrap_or(Value::Null);
+            let mut acc = args.get(0).cloned().unwrap_or(Value::Null);
+            for v in items {
+                acc = vm.call(rt, &f, vec![acc, v.clone()])?;
+            }
+            acc
         }
         // (M6, owner-testing gap 23) `find`'s position: what `xs[i]`
         // reads back.

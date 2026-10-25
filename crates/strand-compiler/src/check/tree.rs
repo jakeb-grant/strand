@@ -1982,6 +1982,9 @@ impl<'a> Checker<'a> {
         } else {
             self.prop_value(p.value, &ps.ty, &format!("`{name}`"))
         };
+        if name == "draw" && self.nodes.last().is_some_and(|n| n.kind == "canvas") {
+            self.time_in_draw(&value);
+        }
         if matches!(name, "enter" | "exit")
             && let Some(t) = p.transition
         {
@@ -2581,6 +2584,7 @@ impl<'a> Checker<'a> {
         if !self.is_reactive(&value) {
             self.constant_lets.insert(id);
         }
+        self.note_time_let(id, &value);
         hir::LetDecl {
             def: id,
             value,
@@ -3139,6 +3143,8 @@ fn const_duration(e: &hir::Expr) -> Option<std::time::Duration> {
     let secs = match unit {
         Some(ast::Unit::S) => *value,
         Some(ast::Unit::Ms) => *value / 1000.0,
+        Some(ast::Unit::Min) => *value * 60.0,
+        Some(ast::Unit::H) => *value * 3600.0,
         _ => return None,
     };
     // `try_from` refuses what a `Duration` cannot hold (a typo like

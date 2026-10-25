@@ -441,7 +441,14 @@ it is up to the caller. A component without `slot` takes no children.
 **`fn degrees(c: float) -> text { … }` is a function of your own.** Its
 body's last line is its value. A `fn` is pure: it computes a value
 from its arguments and cannot assign, call an action or `await`, so
-calling it anywhere is safe.
+calling it anywhere is safe. The builtin functions it can use are listed
+in [the function reference](../reference/functions.md): besides `pct`
+and `dur`, `num(x, digits: 1)` writes a number with fixed decimals,
+`bytes(n)` a size (`1.5 GiB`), `number(t)` reads a number from text
+(`null` when it is not one), `sin`, `cos`, `atan2`, `sqrt` and `pi` do
+geometry (angles in degrees, clockwise from the right), and a list
+folds with `xs.reduce(0, (sum, x) => sum + x)` and grows with
+`xs + [x]`.
 
 **`component Tile(…) tokens { radius: …; pad: … }` gives the
 component tokens of its own,** read inside as `$Tile.radius` and

@@ -24,6 +24,7 @@
 mod actions;
 pub mod assets;
 mod boxes;
+mod canvas;
 mod collect;
 mod cycles;
 pub mod dbus;
@@ -483,6 +484,9 @@ pub(crate) struct Checker<'a> {
     pub field_base: bool,
     /// `let`s whose value reads nothing that changes (`let c = 1`).
     pub constant_lets: HashSet<DefId>,
+    /// (flex) The `let`s whose value is a time signal (`t`, `wave(…)`):
+    /// a canvas's `draw:` reading one is an error (`canvas.rs`).
+    pub time_lets: HashSet<DefId>,
     /// `fn`s whose body calls an async service method directly.
     pub fetching_fns: HashSet<DefId>,
     /// `fn` calls inside `fn` bodies: caller, callee.
@@ -605,6 +609,7 @@ impl<'a> Checker<'a> {
             deep_flows: false,
             field_base: false,
             constant_lets: HashSet::new(),
+            time_lets: HashSet::new(),
             fetching_fns: HashSet::new(),
             fn_calls: Vec::new(),
             binding_fn_calls: Vec::new(),

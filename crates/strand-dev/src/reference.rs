@@ -10,8 +10,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use strand_compiler::schema::{DocKey, ElementSchema, PropSchema, Schema, list_members};
-use strand_compiler::ty::{FnSig, Origin, RecordDef, Ty, TypeTable};
+use strand_compiler::schema::{
+    DocKey, ElementSchema, MemberKind, PropSchema, Schema, list_members, members_of,
+};
+use strand_compiler::ty::{FnSig, Origin, Prim, RecordDef, Ty, TypeTable};
 
 use crate::describe;
 
@@ -638,8 +640,32 @@ fn functions(s: &Schema) -> String {
     let _ = writeln!(o, "## Methods of builtin types\n");
     for (t, ms) in &s.methods {
         let _ = writeln!(o, "### `{t}`\n");
-        let _ = writeln!(o, "| Method | |");
+        // (flex) Its fields too (a text's `len`), from the member table
+        // the checker and completion use.
+        let fields: Vec<_> = Prim::from_name(t)
+            .map(|p| members_of(&Ty::Prim(p), s, &s.types))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.kind == MemberKind::Field)
+            .collect();
+        let _ = writeln!(
+            o,
+            "| {} | |",
+            if fields.is_empty() {
+                "Method"
+            } else {
+                "Member"
+            }
+        );
         let _ = writeln!(o, "| --- | --- |");
+        for f in &fields {
+            let _ = writeln!(
+                o,
+                "| {} | {} |",
+                code(&format!("{}: {}", f.name, ty(&s.types, &f.ty))),
+                cell(f.doc.as_deref())
+            );
+        }
         for m in ms {
             let doc = cell(s.doc(&DocKey::Method(t.clone(), m.name.clone())));
             for f in &m.sigs {

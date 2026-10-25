@@ -974,6 +974,19 @@ fn pct(fraction: float) -> text lift
 fn dur(duration: duration, clock: bool = false) -> text lift
 /// Joins the parts that are not null.
 fn join(sep: text, ...parts: any?) -> text
+/// A number as text with `digits` decimals and its whole part padded
+/// with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`,
+/// `num(7, pad: 2)` is `07`. Null in, null out.
+fn num(x: float, digits: int = 0, pad: int = 0) -> text lift
+/// A count of bytes as text in binary units: `bytes(1536)` is `1.5 KiB`,
+/// `bytes(disk.used)` `19.4 GiB` (one decimal below 100, none from 100;
+/// `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`). Null in, null out.
+fn bytes(n: float) -> text lift
+/// The number a text spells, or null when it spells none:
+/// `number(" 42 ")` is 42, `number("4 GB")` null. Leading and
+/// trailing white space is ignored; `1e3` and `-0.5` are numbers.
+/// Null in, null out.
+fn number(t: text) -> float? lift
 
 /// A Material 3 palette from a seed colour, or from a wallpaper image
 /// (quantised off-thread and cached; the old palette holds until the new
@@ -1079,6 +1092,27 @@ fn min(a: float, b: float) -> float
 fn max(a: float, b: float) -> float
 /// `x` kept between `lo` and `hi`.
 fn clamp(x: float, lo: float, hi: float) -> float
+/// The sine of an angle (a plain number is degrees): `r * sin(a)`.
+fn sin(a: angle) -> float
+/// The cosine of an angle: `x: r * cos(a)` places a point on a circle,
+/// 0deg pointing right and angles turning clockwise, as `c.arc` reads
+/// them.
+fn cos(a: angle) -> float
+/// The tangent of an angle.
+fn tan(a: angle) -> float
+/// The angle from the origin to the point (`x`, `y`), from -180deg to
+/// 180deg, 0deg pointing right and clockwise positive (y grows down):
+/// the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`.
+fn atan2(y: float, x: float) -> angle
+/// The square root; a negative number has none (an error value).
+fn sqrt(x: float) -> float
+/// `x` to the power `y`: `pow(2, 10)` is 1024.
+fn pow(x: float, y: float) -> float
+/// e to the power `x`.
+fn exp(x: float) -> float
+/// The natural logarithm; 0 and negative numbers have none (an error
+/// value).
+fn ln(x: float) -> float
 
 /// Handlers only.
 action propagate()
@@ -1087,6 +1121,8 @@ fn sleep(duration: duration) -> Async<unit>
 
 /// Time signal: seconds, for `rotate: t * 20deg`.
 value t: float
+/// The ratio of a circle's circumference to its diameter, 3.14159…
+value pi: float
 
 // ---------------------------------------------------------------------------
 // Methods on builtin types.
@@ -1119,6 +1155,14 @@ methods text {
   fn split(sep: text) -> [text]
   /// Every `from` replaced with `to`.
   fn replace(from: text, to: text) -> text
+  /// The characters from `from` up to (not including) `to`, counted
+  /// from 0; without `to`, to the end. A negative index counts from the
+  /// end (`name.slice(-3)` is the last three), and indices past either
+  /// end stop there: `"strand".slice(1, 3)` is `tr`.
+  fn slice(from: int, to: int? = null) -> text
+  /// The character index of the first `part` in it (0 for the first
+  /// character, as `slice` counts), or null when it holds none.
+  fn index_of(part: text) -> int?
 }
 
 methods float {
@@ -1597,7 +1641,10 @@ element spectrum(AudioDevice -> source): node {
 element shader(path -> source): node { flags leaf uniforms }
 /// Draws with code: `canvas { draw: (c) => … }`.
 element canvas: node {
-  /// Draws on the canvas.
+  /// Draws on the canvas. It runs again when what it reads changes, not
+  /// every frame, so `t`, `wave(…)` and `noise` of `t` are refused in it
+  /// (`check::time_in_canvas`): animate the canvas's own props
+  /// (`rotate: t * 90deg`) or draw every frame with a `shader`.
   draw: fn(Canvas)
   flags leaf
 }

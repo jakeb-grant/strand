@@ -116,6 +116,7 @@ A markup-plus-Luau split recreates pleamar's string seam. A restricted language 
 - **State.** `state x = 0`; add `persist` to keep it across restarts. `state prefs from "prefs.toml" { … }` is a typed, two-way settings file. `let` is derived and read-only. `export` makes a value reachable as `file.name` from the CLI.
 - **Events and time.** `on click`, `on scroll(dy)`, `on show`. `on change x` fires on changes, never at boot or reload; `on change x after 1.2s` debounces. `after T while cond` and `every T while cond` are timers that pause when the condition is false.
 - **Two-way.** `prop: <-> target` binds a widget to `state`, a writable service field or a settings field.
+- **Values and plain functions.** Numbers carry their units (`4px`, `40%`, `90deg`, `200ms`, `1.5s`, `5min`, `3h`). Formatting, text and maths are plain functions, never a mini-language in a string: `pct`, `dur`, `num(x, digits: 1)`, `bytes(n)`, `number(text)`, `sin`, `cos`, `atan2`, `sqrt`, `pow`, `pi`, and text's `slice` and `index_of` by character; lists join with `+` and fold with `reduce`. docs/reference/functions.md lists them all.
 - **Errors, not surprises.** Assigning to a bound prop, redeclaring a name across files and an unknown name are all load errors with a fix.
 
 ### Learning ladder
