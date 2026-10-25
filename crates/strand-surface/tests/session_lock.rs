@@ -909,13 +909,15 @@ fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
     lock.state_mut()
         .apply_surface_change(LOCK, SurfaceChange::Created(inhibiting_lock_spec(true)));
     wait_lock(&mut lock, LockState::Locked);
-    let content = lock.state().lock_content().expect("a content surface");
-    assert!(
-        lock.state()
-            .surface(content)
-            .is_some_and(|i| i.inhibits_idle),
-        "the content inhibits idling"
-    );
+    // (lockmon) From its first frame: sway may say locked before it.
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_content()
+                .and_then(|c| s.surface(c))
+                .is_some_and(|i| i.inhibits_idle)
+        })
+        .unwrap();
+    assert!(ok, "the content inhibits idling");
     lock.state_mut().apply_surface_change(
         LOCK,
         SurfaceChange::Updated {
