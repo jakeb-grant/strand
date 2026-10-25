@@ -357,6 +357,14 @@ props! {
     /// surface carries it, since the handler that hears a key takes it
     /// (spec.md 6.7).
     OnKey = "on_key": Snap,
+    /// (lockmon) On an `input` of a lock's instance: a key (`Text`) it
+    /// shares with the same input of the lock on every other monitor.
+    /// Set by the compiler, never written in source: the input's twins
+    /// hold one text (the lock's own state), and the router builds a key
+    /// typed into one on the newest text any of them wrote, at the caret
+    /// they share, so keys typed as focus moves to another monitor are
+    /// never typed on a text logic has not answered yet (spec.md 5.1).
+    Twin = "twin": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a
     /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`

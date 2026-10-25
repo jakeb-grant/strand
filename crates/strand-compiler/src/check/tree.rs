@@ -188,6 +188,7 @@ impl<'a> Checker<'a> {
             schema,
         });
         self.push_scope();
+        let mut screen = None;
         if let Some(sc) = schema {
             let per_screen = per_screen(&kind, &s.body.items);
             for (n, t) in &sc.scope {
@@ -196,11 +197,18 @@ impl<'a> Checker<'a> {
                 if n == "screen" && !per_screen {
                     continue;
                 }
-                self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
+                let l = self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
+                if n == "screen" {
+                    screen = Some(l);
+                }
             }
         }
         self.collect_ids(&s.body.items);
+        let first_ref = self.refs.len();
         let (props, children) = self.tree_items(&s.body.items, Place::Element { root: true });
+        if kind == "lock" {
+            self.lock_state_screen(&s.body.items, &children, screen, first_ref);
+        }
         self.surface_props(&kind, &props, &children);
         self.effect_props(&props, &children);
         self.pop_scope();
@@ -218,6 +226,87 @@ impl<'a> Checker<'a> {
                 props,
                 children,
             },
+        }
+    }
+
+    /// (lockmon) `check::lock_state_screen`: a lock's `state`s are one for
+    /// every monitor's instance, declared once above them, so a starting
+    /// value that reads `screen` (each instance's own) or a `let` of the
+    /// lock (declared per instance) has no one value to start from.
+    fn lock_state_screen(
+        &mut self,
+        items: &'a [ast::Item],
+        children: &[hir::Node],
+        screen: Option<hir::LocalId>,
+        first_ref: usize,
+    ) {
+        fn starts<'b>(items: &'b [ast::Item], out: &mut Vec<(&'b ast::Ident, Span)>) {
+            for i in items {
+                match &i.kind {
+                    ItemKind::State(st) => {
+                        if let ast::StateInit::Value { value, .. } = &st.init {
+                            out.push((&st.name, value.span));
+                        }
+                    }
+                    ItemKind::Element(e) => {
+                        if let Some(b) = &e.block {
+                            starts(&b.items, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn lets(nodes: &[hir::Node], out: &mut Vec<DefId>) {
+            for n in nodes {
+                match n {
+                    hir::Node::Let(l) => out.push(l.def),
+                    hir::Node::Element(e) if !matches!(e.kind, ElementKind::Component(_)) => {
+                        lets(&e.children, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut states = Vec::new();
+        starts(items, &mut states);
+        if states.is_empty() {
+            return;
+        }
+        let mut own = Vec::new();
+        lets(children, &mut own);
+        let file = self.file();
+        let mut found = Vec::new();
+        for (name, value) in states {
+            let read = self.refs[first_ref.min(self.refs.len())..]
+                .iter()
+                .filter(|r| r.file == file)
+                .filter(|r| r.span.start >= value.start && r.span.end <= value.end)
+                .find_map(|r| match r.target {
+                    Target::Local(l) if Some(l) == screen => Some("`screen`".to_string()),
+                    Target::Def(d) if own.contains(&d) => Some(format!(
+                        "`{}`, a `let` of the lock",
+                        self.defs[d.0 as usize].name
+                    )),
+                    _ => None,
+                });
+            if let Some(what) = read {
+                found.push((name.name.clone(), value, what));
+            }
+        }
+        for (name, at, what) in found {
+            self.error(
+                "check::lock_state_screen",
+                format!("the lock's `state {name}` cannot start from {what}"),
+                at,
+                "read once for every monitor",
+            )
+            .help = Some(
+                "a lock's `state` is one for the lock on every monitor (so a password typed on \
+                 one is typed on all): start it from a value, and read `screen` in props or a \
+                 `let` instead"
+                    .to_string(),
+            );
         }
     }
 

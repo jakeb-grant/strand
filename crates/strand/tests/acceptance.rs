@@ -1685,3 +1685,47 @@ fn the_new_shell_checks_and_runs_on_two_outputs() {
     desk.settled_ref("HEADLESS-2", rect(0, 0, 1920, 40), "new_shell_headless2");
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
 }
+
+/// (lockmon) A `thumbnail screen` on the monitor it shows is a still of
+/// that monitor from before the surface showing it mapped: its first
+/// frame waits for the still, so the panel shows the bar and the desktop
+/// that were there, never itself (decisions.md lockmon).
+#[test]
+fn a_panels_screen_thumbnail_is_a_still_from_before_it_opened() {
+    const SHELL: [(&str, &str); 1] = [(
+        "over.strand",
+        "export state shown = false\n\
+         bar Top { height: 32; bg: #204060 }\n\
+         panel Over { screens: all; open: <-> shown; layer: overlay; anchor: center\n  \
+           width: 640; height: 360; bg: #ff00ff\n  \
+           thumbnail screen { fit: cover; width: 640; height: 360 }\n\
+         }\n",
+    )];
+    let Some(mut desk) = Desk::start_with("still", &SHELL, |b| b.contains("buffer=2560x32 "))
+    else {
+        return;
+    };
+    desk.cli(&["set", "over.shown", "true"]);
+    desk.wait("the panel drawn", 15, |d| {
+        d.surfaces().iter().any(|s| s.contains("buffer=640x360 "))
+    });
+    let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+    let r = rect(960, 540, 640, 360);
+    let count = |img: &Img, c: [u8; 3]| {
+        (0..img.h)
+            .flat_map(|y| (0..img.w).map(move |x| (x, y)))
+            .filter(|(x, y)| close(img.px(*x, *y), c))
+            .count()
+    };
+    // The still in: the bar's colour (32 rows of 1440: 8 of the still's
+    // 360) across the panel.
+    desk.wait("the still in the panel", 15, |d| {
+        count(&d.region("HEADLESS-1", r), [0x20, 0x40, 0x60]) >= 600 * 6
+    });
+    let img = desk.settled("HEADLESS-1", r);
+    // The still covers the panel, and what lay under the panel before it
+    // opened is in its middle: a still taken after would hold the panel
+    // (its own colour, a 160×90 box in the middle).
+    let own = count(&img, [0xff, 0x00, 0xff]);
+    assert_eq!(own, 0, "the panel shows itself in {own} pixels");
+}

@@ -719,9 +719,10 @@ steps.
 - **Thumbnails.** `thumbnail w` shows a window `w` live, while it is
   on screen, and `thumbnail screen` a still of a monitor, taken each
   time it is shown: `for s in screens.all key s.id { thumbnail s }` is
-  an overview of your monitors. A still is taken once the surface
-  showing it is drawn, so on its own monitor it shows that surface too,
-  and not behind a lock screen yet: there it would capture the lock.
+  an overview of your monitors. A still is taken just before the
+  surface showing it appears, so on its own monitor it shows what was
+  there; in a `lock`, `thumbnail screen` is the desktop as it was just
+  before the lock covered it, on every monitor.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

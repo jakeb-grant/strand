@@ -3,15 +3,25 @@
 //!
 //! A `lock` spec that opens asks the compositor for a lock
 //! ([`State::lock`]). While the lock is asked for or held, every output
-//! gets a lock surface, outputs plugged in later included: the focused
-//! one ([`State::set_focused_monitor`], else the first output) shows the
-//! config's content, a [`Surface`] the host paints like any other (its
-//! keys reach the host as usual); every other output shows a solid in the
-//! lock's colour ([`State::set_lock_color`], opaque), whose keyboard focus
-//! counts as the content's. A solid is one `wp_single_pixel_buffer_v1`
-//! pixel the viewporter stretches over the output (design.md: "Scrims and
-//! lock backgrounds use single-pixel buffers"), or the same shm fallback
-//! as a scrim's when the compositor lacks the protocol ([`crate::solid`]). The host hears [`SurfaceHost::lock_changed`]:
+//! gets a lock surface, outputs plugged in later included. (lockmon) A
+//! config's lock is one node per monitor (the compiler mounts an
+//! instance on each, every monitor by default), each pinned to its
+//! monitor by its spec's `screens:`; a node on `screens: focused` shows
+//! on the focused monitor ([`State::set_focused_monitor`], else the first
+//! output). Each output with a node shows that node's content, a
+//! [`Surface`] the host paints like any other (its keys reach the host
+//! as usual); an output with none (a monitor no instance has reached
+//! yet, one the config's `screens:` leaves out, one whose instance the
+//! host gave up on: [`State::lock_instance_failed`]) shows a solid in the
+//! lock's colour ([`State::set_lock_color`], opaque), whose keyboard
+//! focus counts as the focused output's content's. A solid is one
+//! `wp_single_pixel_buffer_v1` pixel the viewporter stretches over the
+//! output (design.md: "Scrims and lock backgrounds use single-pixel
+//! buffers"), or the same shm fallback as a scrim's when the compositor
+//! lacks the protocol ([`crate::solid`]). While no node can show (none is
+//! mounted, every one went or failed), the content surfaces there are
+//! stay for the host's built-in field, or one is made on the focused
+//! output. The host hears [`SurfaceHost::lock_changed`]:
 //! `Locked` once the compositor says every output is covered, `Finished`
 //! when it refuses or ends the lock, `Unlocked` after an unlock.
 //!
@@ -25,8 +35,8 @@
 //!   releases a lock the compositor holds (the other `unlock_and_destroy`
 //!   answers `finished`, on an object the compositor already gave up). The spec closing (`open: false`) or going away
 //!   (a reload, logic gone) changes nothing: the lock surfaces stay and
-//!   the content surface keeps its id, so the binary can paint the
-//!   built-in fallback there ([`State::lock_content`]).
+//!   the content surfaces keep their ids, so the binary can paint the
+//!   built-in fallback there ([`State::lock_contents`]).
 //! - A token that arrives before `locked` is kept and spent the moment
 //!   `locked` is dispatched: `destroy` is a protocol error once the
 //!   compositor has sent `locked`, and it may be on the wire already, so
@@ -124,15 +134,20 @@ impl Phase {
 pub(super) struct SessionLock {
     manager: Option<ExtSessionLockManagerV1>,
     phase: Phase,
-    /// The `lock` spec's node (kept while locked after the spec went).
-    node: Option<NodeId>,
-    /// The spec is gone (removed while locked).
-    spec_gone: bool,
+    /// (lockmon) The `lock` specs' nodes (one per monitor's instance), in
+    /// the order they came: a later one takes an output an earlier one
+    /// also asks for (a reload mounts the lock again before the old one
+    /// goes). One whose spec went while a lock is asked for or held stays
+    /// until the lock ends: the fallback's content may still show it.
+    nodes: Vec<NodeId>,
+    /// (lockmon) Nodes the host gave up on in this lock session
+    /// ([`State::lock_instance_failed`]): their outputs show the solid.
+    failed: BTreeSet<NodeId>,
     /// No new lock until the spec closes: this one was unlocked or
     /// refused while the spec still said open.
     spent: bool,
-    /// The surface showing the config's content.
-    content: Option<SurfaceId>,
+    /// The surfaces showing a node's content, by `wl_output` global.
+    contents: BTreeMap<u32, SurfaceId>,
     /// The other outputs' solids, by `wl_output` global.
     solids: BTreeMap<u32, Solid>,
     color: Color,
@@ -152,10 +167,10 @@ impl SessionLock {
         Self {
             manager,
             phase: Phase::Idle,
-            node: None,
-            spec_gone: false,
+            nodes: Vec::new(),
+            failed: BTreeSet::new(),
             spent: false,
-            content: None,
+            contents: BTreeMap::new(),
             solids: BTreeMap::new(),
             color: Color::BLACK,
             enabled: false,
@@ -313,6 +328,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         if !self.session_lock.enabled {
             return Err(LockError::NotEnabled);
         }
+        if self.session_lock.manager.is_none() {
+            return Err(LockError::Unsupported);
+        }
+        // (lockmon) The host's last look at the desktop.
+        self.host.before_lock();
         let Some(manager) = &self.session_lock.manager else {
             return Err(LockError::Unsupported);
         };
@@ -350,11 +370,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         // After the unlock request, so the compositor never shows its own
         // fallback colour between them.
         self.destroy_lock_surfaces();
-        self.session_lock.spent = !self.session_lock.spec_gone && self.lock_spec_open();
-        if self.session_lock.spec_gone {
-            self.session_lock.node = None;
-            self.session_lock.spec_gone = false;
-        }
+        self.session_lock.spent = self.lock_spec_open();
+        self.lock_session_ended();
         if let Err(e) = self.conn.flush() {
             log::warn!("flushing the unlock failed: {e}");
         }
@@ -373,11 +390,46 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.session_lock.phase.lock().is_some()
     }
 
-    /// The surface showing the lock's content while a lock is asked for
-    /// or held: where the config's lock, or the built-in fallback, is
-    /// painted.
+    /// The surface whose keys the lock takes by default while a lock is
+    /// asked for or held: the content on the focused output (else the
+    /// first output that has one). (lockmon) Every monitor may show
+    /// content: [`Self::lock_contents`] lists them all.
     pub fn lock_content(&self) -> Option<SurfaceId> {
-        self.session_lock.content
+        let l = &self.session_lock;
+        self.lock_output()
+            .and_then(|g| l.contents.get(&g))
+            .or_else(|| l.contents.values().next())
+            .copied()
+    }
+
+    /// (lockmon) Every surface showing the lock's content (a config's
+    /// instance, or where the built-in fallback is painted), in output
+    /// order.
+    pub fn lock_contents(&self) -> Vec<SurfaceId> {
+        self.session_lock.contents.values().copied().collect()
+    }
+
+    /// (lockmon) The surface showing the lock's content on output
+    /// `output` (connector name, else monitor id).
+    pub fn lock_content_on(&self, output: &str) -> Option<SurfaceId> {
+        self.session_lock.contents.iter().find_map(|(g, id)| {
+            let m = self.monitors.get(self.monitors.id_of(*g)?)?;
+            let name = m.connector.clone().unwrap_or_else(|| m.id.to_string());
+            (name == output).then_some(*id)
+        })
+    }
+
+    /// (lockmon) The host gave up on the lock's instance `node` (a
+    /// fault in it, no first frame): its output shows the solid from
+    /// now until the lock ends, fail closed, while the other monitors
+    /// keep theirs. False when `node` is no lock node, or failed already.
+    pub fn lock_instance_failed(&mut self, node: NodeId) -> bool {
+        if !self.session_lock.nodes.contains(&node) || !self.session_lock.failed.insert(node) {
+            return false;
+        }
+        log::warn!("lock: the lock's instance {node:?} failed: its output shows the solid");
+        self.sync_lock_surfaces();
+        true
     }
 
     /// The outputs (by connector name, else monitor id) showing the
@@ -415,11 +467,21 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- specs ---------------------------------------------------------------
 
+    /// Some `lock` spec is open (its instances' `open` is one value).
     fn lock_spec_open(&self) -> bool {
         self.session_lock
-            .node
-            .and_then(|n| self.specs.get(&n))
-            .is_some_and(|s| s.open)
+            .nodes
+            .iter()
+            .filter_map(|n| self.specs.get(n))
+            .any(|s| s.open)
+    }
+
+    /// The lock ended (an unlock, `finished`): nodes whose spec went and
+    /// failures are forgotten.
+    fn lock_session_ended(&mut self) {
+        let specs = &self.specs;
+        self.session_lock.nodes.retain(|n| specs.contains_key(n));
+        self.session_lock.failed.clear();
     }
 
     /// Takes a change of a `lock` spec (or of the lock's node) off the
@@ -434,7 +496,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 spec.kind == NodeKind::Lock
             }
             SurfaceChange::Removed => {
-                self.session_lock.node == Some(node)
+                self.session_lock.nodes.contains(&node)
                     || self
                         .specs
                         .get(&node)
@@ -446,40 +508,29 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         match change {
             SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } => {
-                if let Some(old) = self.session_lock.node
-                    && old != node
-                {
-                    // A config has one `lock` (`check::lock_twice`), so a
-                    // new node is that lock mounted again by a reload,
-                    // whose `Created` comes before the old node's
-                    // `Removed`. It takes over: the old spec goes (its
-                    // `Removed` then finds nothing), a held lock stays
-                    // and its content moves to the new node, and a spent
-                    // lock stays spent (a remount is not a new request).
-                    self.specs.remove(&old);
-                    if self.lock_active()
-                        && let Some(id) = self.session_lock.content.take()
-                    {
-                        self.destroy_surface(id);
-                    }
+                // (lockmon) One node per monitor's instance; a reload's
+                // new nodes come before the old ones go, and take their
+                // outputs over (`lock_want`): a held lock stays, and a
+                // spent one stays spent (a remount is not a new request).
+                if !self.session_lock.nodes.contains(&node) {
+                    self.session_lock.nodes.push(node);
                 }
-                self.session_lock.node = Some(node);
-                self.session_lock.spec_gone = false;
                 self.specs.insert(node, spec);
                 self.reconcile_lock();
             }
             SurfaceChange::Removed => {
                 self.specs.remove(&node);
-                if self.session_lock.node == Some(node) {
-                    if self.lock_active() {
-                        // Fail closed: the lock stays, and its content
-                        // surface keeps its id for the fallback.
-                        self.session_lock.spec_gone = true;
-                    } else {
-                        self.session_lock.node = None;
+                if !self.lock_active() {
+                    self.session_lock.nodes.retain(|n| *n != node);
+                    self.session_lock.failed.remove(&node);
+                    if self.session_lock.nodes.is_empty() {
                         self.session_lock.spent = false;
                     }
                 }
+                // Fail closed while locked: its content goes only for
+                // another instance's (`lock_want`); with none left, the
+                // content surfaces stay, with their ids, for the fallback.
+                self.sync_lock_surfaces();
             }
         }
         None
@@ -489,11 +540,16 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// opening); a closed one never unlocks, it only re-arms the next
     /// opening.
     pub(super) fn reconcile_lock(&mut self) {
-        let Some(spec) = self.session_lock.node.and_then(|n| self.specs.get(&n)) else {
+        let any = self
+            .session_lock
+            .nodes
+            .iter()
+            .any(|n| self.specs.contains_key(n));
+        if !any {
             self.sync_lock_surfaces();
             return;
-        };
-        if !spec.open {
+        }
+        if !self.lock_spec_open() {
             self.session_lock.spent = false;
             self.session_lock.asked_again = false;
         } else if !self.session_lock.spent && !self.lock_active() {
@@ -521,77 +577,158 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- lock surfaces -------------------------------------------------------
 
-    /// The output that shows the content: the focused monitor's, else the
-    /// first.
+    /// The focused monitor's output, else the first: where a `screens:
+    /// focused` instance shows, and the content keys on a solid reach.
     fn lock_output(&self) -> Option<u32> {
         self.focused_output()
             .or_else(|| self.outputs.keys().next().copied())
     }
 
+    /// (lockmon) Which node's content each output shows: the newest live
+    /// (spec mounted, not failed) node pinned to its monitor (`screens:`
+    /// a name, or `all`), else on the focused output the newest live
+    /// `screens: focused` node. A content whose node's spec went keeps
+    /// its output while no live node takes it (the host paints its
+    /// built-in field there); with no live node at all, a single one
+    /// follows the focused output, or one is made there for the last
+    /// node the lock had that did not fail (else [`LOCK_FALLBACK_NODE`]).
+    fn lock_want(&self) -> BTreeMap<u32, NodeId> {
+        let l = &self.session_lock;
+        let live: Vec<(NodeId, &SurfaceSpec)> = l
+            .nodes
+            .iter()
+            .filter(|n| !l.failed.contains(n))
+            .filter_map(|n| Some((*n, self.specs.get(n)?)))
+            .collect();
+        let mut want = BTreeMap::new();
+        for g in self.outputs.keys() {
+            let Some(m) = self.monitors.id_of(*g).and_then(|id| self.monitors.get(id)) else {
+                continue;
+            };
+            let pinned = live.iter().rev().find(|(_, spec)| match &spec.screens {
+                Screens::Focused => false,
+                _ => Self::wants(spec, m),
+            });
+            if let Some((n, _)) = pinned {
+                want.insert(*g, *n);
+            }
+        }
+        if let Some(g) = self.lock_output()
+            && !want.contains_key(&g)
+            && let Some((n, _)) = live
+                .iter()
+                .rev()
+                .find(|(_, spec)| spec.screens == Screens::Focused)
+        {
+            want.insert(g, *n);
+        }
+        // Contents whose node's spec went (logic gone, an instance
+        // unmounted) stay where no live node takes their output: the host
+        // paints its built-in field there. With nothing live at all, a
+        // single one follows the focused output, as the lock's one
+        // content always did.
+        let orphans: Vec<(u32, NodeId)> = l
+            .contents
+            .iter()
+            .filter(|(g, _)| self.outputs.contains_key(g) && !want.contains_key(g))
+            .filter_map(|(g, id)| Some((*g, self.surfaces.get(id)?.node)))
+            .filter(|(_, n)| !l.failed.contains(n) && !self.specs.contains_key(n))
+            .collect();
+        if want.is_empty() && orphans.len() <= 1 {
+            let node = orphans
+                .first()
+                .map(|(_, n)| *n)
+                .or_else(|| {
+                    l.nodes
+                        .iter()
+                        .rev()
+                        .find(|n| !l.failed.contains(n))
+                        .copied()
+                })
+                .unwrap_or(LOCK_FALLBACK_NODE);
+            if let Some(g) = self.lock_output() {
+                want.insert(g, node);
+            }
+            return want;
+        }
+        want.extend(orphans);
+        want
+    }
+
     /// Makes the lock surfaces match the outputs while a lock is asked
-    /// for or held: the content on [`Self::lock_output`], a solid on each
-    /// other output. Surfaces of gone outputs go first, and a surface
-    /// that must move is destroyed before its replacement is made on
-    /// that output (one lock surface per output).
+    /// for or held: each output's content ([`Self::lock_want`]), a solid
+    /// on every other output. Surfaces of gone outputs go first, and a
+    /// surface that must change is destroyed before its replacement is
+    /// made on that output (one lock surface per output).
     pub(super) fn sync_lock_surfaces(&mut self) {
         let Some(lock) = self.session_lock.phase.lock().cloned() else {
             return;
         };
-        let want = self.lock_output();
-        // (m4-audit) Keyboard focus on the content (its own, or a solid's
-        // that counts as its) moves with it: the compositor sends no new
-        // enter while the focused solid stays, and the new content has
-        // another id.
+        let want = self.lock_want();
+        // (m4-audit) Keyboard focus on a content that goes (its own, or a
+        // solid's that counts as its) moves to the content keys on a
+        // solid reach: the compositor sends no new enter while a focused
+        // solid stays, and the new content has another id.
         let mut refocus = false;
-        if let Some(id) = self.session_lock.content {
-            let on = self.surfaces.get(&id).and_then(|s| s.output);
-            if on.is_none() || on != want {
-                refocus = self.keyboard_focus == Some(id);
-                self.session_lock.content = None;
-                self.destroy_surface(id);
-            }
+        let stale: Vec<(u32, SurfaceId)> = self
+            .session_lock
+            .contents
+            .iter()
+            .filter(|(g, id)| {
+                let s = self.surfaces.get(id);
+                s.is_none_or(|s| s.output != Some(**g) || want.get(g) != Some(&s.node))
+            })
+            .map(|(g, id)| (*g, *id))
+            .collect();
+        for (g, id) in stale {
+            refocus |= self.keyboard_focus == Some(id);
+            self.session_lock.contents.remove(&g);
+            self.destroy_surface(id);
         }
-        let stale: Vec<u32> = self
+        let solids: Vec<u32> = self
             .session_lock
             .solids
             .keys()
             .copied()
-            .filter(|g| !self.outputs.contains_key(g) || Some(*g) == want)
+            .filter(|g| !self.outputs.contains_key(g) || want.contains_key(g))
             .collect();
-        for g in stale {
+        for g in solids {
             if let Some(s) = self.session_lock.solids.remove(&g) {
                 s.destroy();
             }
         }
-        if self.session_lock.content.is_none()
-            && let Some(g) = want
-        {
-            self.create_lock_content(&lock, g);
-        }
-        if refocus && let Some(id) = self.session_lock.content {
-            self.keyboard_focus = Some(id);
-            self.send_input(crate::InputEvent::KeyboardEnter { surface: id });
-            // (gap 31) The same keyboard: its state again.
-            self.report_keyboard();
+        for (g, node) in &want {
+            if !self.session_lock.contents.contains_key(g) {
+                self.create_lock_content(&lock, *g, *node);
+            }
         }
         let missing: Vec<u32> = self
             .outputs
             .keys()
             .copied()
-            .filter(|g| Some(*g) != want && !self.session_lock.solids.contains_key(g))
+            .filter(|g| {
+                !self.session_lock.contents.contains_key(g)
+                    && !self.session_lock.solids.contains_key(g)
+            })
             .collect();
         for g in missing {
             self.create_solid(&lock, g);
         }
+        if refocus && let Some(id) = self.lock_content() {
+            self.keyboard_focus = Some(id);
+            self.send_input(crate::InputEvent::KeyboardEnter { surface: id });
+            // (gap 31) The same keyboard: its state again.
+            self.report_keyboard();
+        }
         // (services-round) The spec may have turned `inhibit_idle` on or
         // off in place.
-        if let Some(id) = self.session_lock.content {
+        for id in self.lock_contents() {
             self.sync_idle_inhibitor(id);
         }
     }
 
     fn destroy_lock_surfaces(&mut self) {
-        if let Some(id) = self.session_lock.content.take() {
+        for (_, id) in std::mem::take(&mut self.session_lock.contents) {
             self.destroy_surface(id);
         }
         for (_, s) in std::mem::take(&mut self.session_lock.solids) {
@@ -599,7 +736,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
-    fn create_lock_content(&mut self, lock: &ExtSessionLockV1, global: u32) {
+    fn create_lock_content(&mut self, lock: &ExtSessionLockV1, global: u32, node: NodeId) {
         let Some(output) = self.outputs.get(&global).cloned() else {
             return;
         };
@@ -611,7 +748,6 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(monitor) = monitor else {
             return;
         };
-        let node = self.session_lock.node.unwrap_or(LOCK_FALLBACK_NODE);
         let placement = Placement::Monitor(monitor.id.clone());
         let key = (node, placement.clone());
         let id = match self.ids.get(&key) {
@@ -683,7 +819,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             stats: Stats::default(),
         };
         self.surfaces.insert(id, surface);
-        self.session_lock.content = Some(id);
+        self.session_lock.contents.insert(global, id);
         // (services-round) `inhibit_idle:` holds on a lock as on any
         // surface.
         self.sync_idle_inhibitor(id);
@@ -778,15 +914,15 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// The surface whose keys a keyboard focus on `wl` delivers: ours, or
-    /// the lock content's for a solid lock surface (the compositor may
-    /// focus any lock surface).
+    /// for a solid lock surface (the compositor may focus any lock
+    /// surface) the focused output's content ([`Self::lock_content`]).
     pub(super) fn keyboard_target(&self, wl: &wl_surface::WlSurface) -> Option<SurfaceId> {
         self.surface_for(wl).or_else(|| {
             self.session_lock
                 .solids
                 .values()
                 .any(|s| &s.wl == wl)
-                .then_some(self.session_lock.content)
+                .then(|| self.lock_content())
                 .flatten()
         })
     }
@@ -843,11 +979,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.session_lock.deferred = None;
                 self.destroy_lock_surfaces();
                 self.session_lock.spent = true;
-                if self.session_lock.spec_gone {
-                    // A lock asked for again shows the fallback.
-                    self.session_lock.node = None;
-                    self.session_lock.spec_gone = false;
-                }
+                // A lock asked for again shows what is mounted (the
+                // fallback when nothing is).
+                self.lock_session_ended();
                 self.host.lock_changed(LockState::Finished);
                 if after_finished(was_locked, self.session_lock.asked_again)
                     == AfterFinished::AskAgain

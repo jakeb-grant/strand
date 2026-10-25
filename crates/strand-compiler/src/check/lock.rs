@@ -6,10 +6,15 @@
 //!   lock and one password field; a second `lock` is an error naming the
 //!   first.
 //! - `check::lock_prop`: the surface props that a lock cannot honour are
-//!   warnings rather than silently dropped: a lock covers every monitor
-//!   (`screens`), sits above everything on `ext-session-lock` (`layer`),
-//!   fills its monitor (`anchor`) and always has the keyboard
-//!   (`keyboard`).
+//!   warnings rather than silently dropped: a lock sits above everything
+//!   on `ext-session-lock` (`layer`), fills its monitor (`anchor`) and
+//!   always has the keyboard (`keyboard`). (lockmon) `screens:` picks
+//!   the monitors that show the lock's content, as on a bar (every other
+//!   one shows a solid), so it is no longer one of them.
+//! - `check::lock_state_screen` (lockmon, in the tree checker): a lock's
+//!   `state` is one for every monitor's instance, so its starting value
+//!   reads neither `screen` nor a `let` of the lock (each instance's
+//!   own).
 //! - `check::lock_no_auth`: something in the `lock` calls `auth.submit`,
 //!   in one of its handlers or timers or in a component it shows (a `fn`
 //!   is pure, so it cannot). Only an `auth` success unlocks, and a lock that
@@ -31,7 +36,6 @@ use super::Module;
 
 /// The surface props a `lock` ignores, and why.
 const IGNORED: &[(&str, &str)] = &[
-    ("screens", "a lock covers every monitor"),
     ("layer", "a lock is above everything, on `ext-session-lock`"),
     ("anchor", "a lock surface fills its monitor"),
     ("keyboard", "a lock always takes the keyboard"),

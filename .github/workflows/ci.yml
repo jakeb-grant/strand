@@ -456,6 +456,9 @@ jobs:
               - 'crates/strand/Cargo.toml'
               # The fallback's painting and keys in the binary's host.
               - 'crates/strand/src/demo/host.rs'
+              # (lockmon) The pre-lock screen stills, taken in
+              # `before_lock` while the lock request waits.
+              - 'crates/strand/src/run/feeds.rs'
               - 'crates/strand/tests/lock.rs'
               - 'crates/strand/tests/lock/**'
               # Lock solids: single-pixel buffers and the shm fallback.

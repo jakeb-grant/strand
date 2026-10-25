@@ -262,9 +262,9 @@ A surface is something the compositor shows. Its body is a tree
 and `on hide`.
 `attach:` and `scrim:` are accepted only on a `panel` (and on a
 `popup`); on a `bar`, `osd` or `lock` either one is a load error. On a
-`lock`, `screens:`, `layer:`, `anchor:` and `keyboard:` are warnings:
-`ext-session-lock` decides all four (every monitor, above everything,
-filling the monitor, the keyboard always).
+`lock`, `layer:`, `anchor:` and `keyboard:` are warnings:
+`ext-session-lock` decides all three (above everything, filling the
+monitor, the keyboard always).
 
 - **`bar Name { … }`** is on every monitor that its `screens:` picks
   (all of them by default). Each monitor gets its own instance, with the
@@ -378,15 +378,33 @@ filling the monitor, the keyboard always).
   true once the seat has had no input for `t`, and an inhibitor holds
   it back too (decisions.md services-round).
 - **`lock { … }`** is the lock screen, on `ext-session-lock`. A config
-  has at most one `lock`, across its files. Its content shows on the
-  focused monitor (else the first) and every other monitor shows a
-  solid; `screen` in it is that monitor, and it changes in place when
-  focus moves the content to another (nothing is mounted again, so
-  what was typed stays; decisions.md flex, 2026-10-24). A `lock` in which nothing
+  has at most one `lock`, across its files. It is on every monitor its
+  `screens:` picks (all of them by default), a monitor plugged in while
+  locked included, and each monitor's instance has `screen` (that
+  monitor) in scope, as a bar's has. Unlike a bar's, the lock's own
+  `state`s are one for every instance: there is one password, typed
+  into whichever monitor's lock the compositor gives the keys, and the
+  keys or the pointer moving to another monitor carry on the same
+  text. A lock `state` therefore cannot start from `screen` or from a
+  `let` of the lock that reads it (a load error); its `let`s and its
+  elements' own state are each instance's. Every monitor not picked
+  shows a solid in the lock's colour (its `bg`). `screens: focused`, or
+  a pick that names no plugged monitor, keeps one instance on the
+  focused monitor (else the first), whose `screen` changes in place
+  when focus moves the content to another (nothing is mounted again, so
+  what was typed stays; decisions.md flex, 2026-10-24, and lockmon,
+  2026-10-25). A `thumbnail screen` in a lock shows a still of that
+  monitor taken just before the lock covered it; a monitor plugged in
+  while locked has none and its thumbnail shows nothing. A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
   a lock is a warning, since popups never open on a lock surface. The
   lock is exempt from reload (section 10.1) and **fails closed**: if
-  anything in it faults, a built-in password field is shown.
+  anything in it faults, a built-in password field is shown, on every
+  monitor that showed the lock; a fault inside one monitor's instance
+  alone (its runtime fault, which freezes that instance only, or its
+  first frame missing while another monitor's drew) shows the solid on
+  that monitor while the others carry on, and the field once none is
+  left.
   Authentication runs in a separate helper through the PAM service
   `strand`, or `login` with a one-time warning when `/etc/pam.d/strand`
   is missing. While a lock is shown PAM's conversation runs: the `auth`

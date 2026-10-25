@@ -98,6 +98,11 @@ pub struct Env {
     /// The loads of async service calls made in this scope's bindings
     /// ([`crate::lower::Op::AsyncSite`]), by call chunk.
     sites: RefCell<Vec<(ChunkId, strand_core::Memo<Value>)>>,
+    /// (lockmon) A fault below this scope freezes no more than the child
+    /// of it it happened in, as below the top level: the lock's scope,
+    /// whose state its monitors' instances share, each instance its own
+    /// fault scope ([`Env::fault_scope`]).
+    fault_bound: Cell<bool>,
 }
 
 /// A settings file's fields (`state prefs from "prefs.toml" { … }`):
@@ -155,6 +160,7 @@ impl Env {
             settings: RefCell::default(),
             ident: RefCell::new(Rc::from("")),
             sites: RefCell::default(),
+            fault_bound: Cell::new(false),
         })
     }
 
@@ -178,6 +184,7 @@ impl Env {
             settings: RefCell::default(),
             ident: RefCell::new(parent.ident()),
             sites: RefCell::default(),
+            fault_bound: Cell::new(false),
         })
     }
 
@@ -225,6 +232,12 @@ impl Env {
                 *slot = s;
             }
         }
+    }
+
+    /// (lockmon) Faults below this scope freeze only the child of it
+    /// they happened in ([`Env::fault_scope`]).
+    pub fn set_fault_bound(&self) {
+        self.fault_bound.set(true);
     }
 
     /// Mark this scope as one instance among several (`[<key>]`).
@@ -294,7 +307,7 @@ impl Env {
             let Some(p) = cur.parent.clone() else {
                 return cur.owner.get();
             };
-            if p.parent.is_none() || p.component != cur.component {
+            if p.parent.is_none() || p.fault_bound.get() || p.component != cur.component {
                 return cur.owner.get();
             }
             cur = p;

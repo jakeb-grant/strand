@@ -14,8 +14,9 @@
 //!   so a fingerprint module runs before any password (m6-lock).
 //! - **The fallback** ([`LockScreen`], held by the surface host): while a
 //!   lock is asked for or held, the main thread paints render's built-in
-//!   password field (`strand_render::lock_fallback`) on the lock's
-//!   content surface, and takes its keys, once anything faults: logic
+//!   password field (`strand_render::lock_fallback`) on every content
+//!   surface of the lock, one field whatever surface the keys come from,
+//!   once anything faults: logic
 //!   ended or panicked; logic stopped answering the watchdog; SIGINT or
 //!   SIGTERM (logic is told to stop, the run ends after the unlock); the
 //!   lock drew no first frame within 1 s; no lock is mounted (the lock
@@ -25,6 +26,13 @@
 //!   held. The fallback checks passwords with a `strand_auth::Client` of
 //!   its own on a thread of its own, and its token unlocks like `auth`'s.
 //!   Once shown it stays until the unlock.
+//! - **One monitor's instance** (lockmon): the lock shows an instance on
+//!   each monitor. A fault that touches one instance only (a runtime
+//!   fault inside it, its node gone, no first frame on its surface while
+//!   another drew) fails that instance while another still works:
+//!   strand-surface shows the solid on its output (`State::
+//!   lock_instance_failed`), never the desktop. The last working
+//!   instance failing shows the fallback instead.
 //! - **Restart**: while a lock is asked for or the compositor says the
 //!   session is locked, a marker
 //!   (`$XDG_RUNTIME_DIR/strand-<display>.locked`) says so; a
@@ -438,8 +446,16 @@ pub(crate) enum LockMsg {
 /// The fallback while it is shown.
 struct Shown {
     field: LockFallback,
-    /// Repaint the content surface.
-    dirty: bool,
+    /// (lockmon) The content surfaces painted since the field last
+    /// changed: the others repaint.
+    clean: std::collections::HashSet<SurfaceId>,
+}
+
+impl Shown {
+    /// The field changed: every content surface repaints.
+    fn dirty(&mut self) {
+        self.clean.clear();
+    }
 }
 
 /// The fallback's password checks: a thread holding its own
@@ -486,25 +502,31 @@ impl Checker {
     }
 }
 
-/// The lock as the surface host sees it: the content surface, whether it
-/// drew, and the fallback when it shows (see the module docs).
+/// The lock as the surface host sees it: the content surfaces, whether
+/// they drew, and the fallback when it shows (see the module docs).
 #[derive(Default)]
 pub(crate) struct LockScreen {
-    /// The lock's content surface and the node it shows (a `lock`'s, or
-    /// [`LOCK_FALLBACK_NODE`]). strand-surface's `State::lock_content`
-    /// decides which surface it is ([`LockScreen::sync_content`], each
-    /// main-loop turn); `attached` only takes it early when render's
-    /// tree already says so.
-    content: Option<(SurfaceId, NodeId)>,
-    /// The node each attached surface shows, so the content named by
-    /// `State::lock_content` can be paired with its node even after
+    /// (lockmon) The lock's content surfaces, one per monitor showing
+    /// one, and the node each shows (an instance of a `lock`, or
+    /// [`LOCK_FALLBACK_NODE`]). strand-surface's `State::lock_contents`
+    /// decides which surfaces they are ([`LockScreen::sync_contents`],
+    /// each main-loop turn); `attached` only takes one early when
+    /// render's tree already says so.
+    contents: Vec<(SurfaceId, NodeId)>,
+    /// The node each attached surface shows, so a content named by
+    /// `State::lock_contents` can be paired with its node even after
     /// that node left render's tree (the spec gone while locked: a
     /// reload or SIGTERM unmounting the `lock`).
     nodes: std::collections::HashMap<SurfaceId, NodeId>,
-    /// The content committed a frame with damage in this lock session
+    /// A content committed a frame with damage in this lock session
     /// (a content surface moved to another output does not start the
     /// first-frame deadline again).
     drew: bool,
+    /// (lockmon) The content surfaces that committed a frame with
+    /// damage, and when each was first seen: one that has not drawn
+    /// [`FIRST_FRAME`] after while another did fails its instance.
+    drew_on: std::collections::HashSet<SurfaceId>,
+    seen: std::collections::HashMap<SurfaceId, Instant>,
     /// When the main loop first saw this lock asked for or held (the
     /// first-frame deadline's start): the first frame's time is logged.
     asked: Option<Instant>,
@@ -533,7 +555,7 @@ pub(crate) struct LockScreen {
 impl std::fmt::Debug for LockScreen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LockScreen")
-            .field("content", &self.content)
+            .field("contents", &self.contents)
             .field("drew", &self.drew)
             .field("fallback", &self.fallback.is_some())
             .field("last", &self.last)
@@ -548,11 +570,12 @@ impl LockScreen {
     }
 
     fn on_content(&self, surface: SurfaceId) -> bool {
-        self.content.is_some_and(|(s, _)| s == surface)
+        self.contents.iter().any(|(s, _)| *s == surface)
     }
 
-    /// (report) `surface` shows the lock's content (the config's `lock`
-    /// or the fallback): the glitch report never records it.
+    /// (report) `surface` shows the lock's content (the config's `lock`,
+    /// on any monitor, or the fallback): the glitch report never records
+    /// it.
     pub(crate) fn is_lock_surface(&self, surface: SurfaceId) -> bool {
         self.on_content(surface)
     }
@@ -562,51 +585,61 @@ impl LockScreen {
         self.fallback.is_some() && self.on_content(surface)
     }
 
-    /// A surface was attached. It is taken as the lock's content at once
-    /// when it shows the fallback node or a node render's tree calls a
-    /// `lock` (`kind`); otherwise [`LockScreen::sync_content`] decides on
-    /// the main loop's next turn, from strand-surface's own answer.
+    /// A surface was attached. It is taken as a lock content at once when
+    /// it shows the fallback node or a node render's tree calls a `lock`
+    /// (`kind`); otherwise [`LockScreen::sync_contents`] decides on the
+    /// main loop's next turn, from strand-surface's own answer.
     pub(crate) fn attached(&mut self, surface: SurfaceId, node: NodeId, kind: Option<NodeKind>) {
         self.nodes.insert(surface, node);
-        if node == LOCK_FALLBACK_NODE || kind == Some(NodeKind::Lock) {
-            self.set_content(Some((surface, node)));
+        if (node == LOCK_FALLBACK_NODE || kind == Some(NodeKind::Lock)) && !self.on_content(surface)
+        {
+            self.contents.push((surface, node));
+            self.seen.entry(surface).or_insert_with(Instant::now);
+            if let Some(f) = &mut self.fallback {
+                f.dirty();
+            }
         }
     }
 
     pub(crate) fn detached(&mut self, surface: SurfaceId) {
         self.nodes.remove(&surface);
-        if self.on_content(surface) {
-            self.content = None;
+        self.contents.retain(|(s, _)| *s != surface);
+        self.drew_on.remove(&surface);
+        self.seen.remove(&surface);
+    }
+
+    /// The lock's contents as strand-surface made them
+    /// (`State::lock_contents`): the only answer that holds when render's
+    /// tree no longer knows the node a content was made with (the `lock`
+    /// unmounted while no output existed, then an output came back).
+    pub(crate) fn sync_contents(&mut self, surfaces: &[SurfaceId]) {
+        let contents: Vec<(SurfaceId, NodeId)> = surfaces
+            .iter()
+            .map(|s| (*s, self.nodes.get(s).copied().unwrap_or(LOCK_FALLBACK_NODE)))
+            .collect();
+        if contents == self.contents {
+            return;
+        }
+        let now = Instant::now();
+        for (s, _) in &contents {
+            self.seen.entry(*s).or_insert(now);
+        }
+        self.contents = contents;
+        if let Some(f) = &mut self.fallback {
+            f.dirty();
         }
     }
 
-    /// The lock's content as strand-surface made it (`State::lock_content`):
-    /// the only answer that holds when render's tree no longer knows the
-    /// node the content was made with (the `lock` unmounted while no
-    /// output existed, then an output came back).
-    pub(crate) fn sync_content(&mut self, surface: Option<SurfaceId>) {
-        let content =
-            surface.map(|s| (s, self.nodes.get(&s).copied().unwrap_or(LOCK_FALLBACK_NODE)));
-        if content != self.content {
-            self.set_content(content);
-        }
+    /// The first content and its node.
+    #[cfg(any(test, feature = "faults"))]
+    fn first(&self) -> Option<(SurfaceId, NodeId)> {
+        self.contents.first().copied()
     }
 
-    fn set_content(&mut self, content: Option<(SurfaceId, NodeId)>) {
-        self.content = content;
-        if content.is_some()
-            && let Some(f) = &mut self.fallback
-        {
-            f.dirty = true;
-        }
-    }
-
-    /// The content was configured (a new size): the fallback repaints.
+    /// A content was configured (a new size): the fallback repaints it.
     pub(crate) fn configured(&mut self, surface: SurfaceId) {
-        if self.on_content(surface)
-            && let Some(f) = &mut self.fallback
-        {
-            f.dirty = true;
+        if let Some(f) = &mut self.fallback {
+            f.clean.remove(&surface);
         }
     }
 
@@ -627,7 +660,7 @@ impl LockScreen {
             }
             return None;
         };
-        if !std::mem::take(&mut f.dirty) {
+        if !f.clean.insert(surface) {
             return Some(Damage::new());
         }
         Some(f.field.paint(target))
@@ -643,6 +676,7 @@ impl LockScreen {
                 log::info!("lock: first frame after {} ms", at.elapsed().as_millis());
             }
             self.drew = true;
+            self.drew_on.insert(surface);
         }
     }
 
@@ -652,7 +686,7 @@ impl LockScreen {
             return None;
         }
         match &self.fallback {
-            Some(f) => Some(f.dirty),
+            Some(f) => Some(!f.clean.contains(&surface)),
             None => faults::no_first_frame().then_some(false),
         }
     }
@@ -685,9 +719,9 @@ impl LockScreen {
         };
         match f.field.key(key) {
             Action::None => {}
-            Action::Changed => f.dirty = true,
+            Action::Changed => f.dirty(),
             Action::Submit(bytes) => {
-                f.dirty = true;
+                f.dirty();
                 let password = Password::from_bytes(bytes);
                 if self.checker.is_none()
                     && let Some(reply) = self.reply.clone()
@@ -756,7 +790,7 @@ impl LockScreen {
         if let Some(f) = self.fallback.as_mut()
             && f.field.set_message(text)
         {
-            f.dirty = true;
+            f.dirty();
         }
     }
 
@@ -774,7 +808,7 @@ impl LockScreen {
             return None;
         }
         let f = self.fallback.as_mut()?;
-        f.dirty = true;
+        f.dirty();
         match verdict {
             Verdict::Unlocked(token) => {
                 f.field.set_state(FieldState::Idle);
@@ -835,7 +869,7 @@ impl LockScreen {
         self.pending = None;
         self.fallback = Some(Shown {
             field: LockFallback::new(),
-            dirty: true,
+            clean: std::collections::HashSet::new(),
         });
     }
 
@@ -871,6 +905,8 @@ impl LockScreen {
         self.fallback = None;
         self.pending = None;
         self.drew = false;
+        self.drew_on.clear();
+        self.seen.clear();
         self.asked = None;
         // The helper goes with the lock session, and its checks still in
         // flight answer for a session that has ended.
@@ -1056,11 +1092,16 @@ impl Guard {
     ) {
         self.keep_marker(state);
         faults::unmount_lock(state);
-        let content = state.lock_content();
-        state.host_mut().lock.sync_content(content);
+        let contents = state.lock_contents();
+        state.host_mut().lock.sync_contents(&contents);
         if !state.lock_active() {
             if self.since.take().is_some() {
                 state.host_mut().lock.reset();
+                // (lockmon) The screens' stills from before the lock go
+                // with it.
+                if let Some(feeds) = &mut state.host_mut().feeds {
+                    feeds.lock_ended();
+                }
             }
             state.host_mut().lock.idle();
             state.host_mut().lock.see(false);
@@ -1091,11 +1132,26 @@ impl Guard {
             state.poll();
             return;
         }
+        // (lockmon) Instances that failed while another still works: the
+        // solid on their outputs.
+        let failed = self.failed_instances(state, now);
+        if !failed.is_empty() {
+            for (node, why) in failed {
+                log::warn!("lock: one monitor's lock shows the solid: {why}");
+                state.lock_instance_failed(node);
+            }
+            state.poll();
+        }
         // The other outputs show the lock's colour (the fallback's own,
         // set above, only while it shows).
-        let color = state.host().lock.content.map_or(Color::BLACK, |(_, node)| {
-            lock_color(state.host().renderer.tree(), node)
-        });
+        let tree = state.host().renderer.tree();
+        let color = state
+            .host()
+            .lock
+            .contents
+            .iter()
+            .find(|(_, n)| tree.get(*n).is_some())
+            .map_or(Color::BLACK, |(_, node)| lock_color(tree, *node));
         state.set_lock_color(color);
         // The heartbeat.
         match self.waiting {
@@ -1137,20 +1193,24 @@ impl Guard {
         }
         let host = state.host();
         let screen = &host.lock;
-        if let Some((_, node)) = screen.content {
-            if node == LOCK_FALLBACK_NODE {
-                return Some("the session was locked with no `lock` open".into());
-            }
-            let tree = host.renderer.tree();
-            if tree.get(node).is_none() {
-                return Some("the lock is no longer mounted".into());
-            }
-            let faults = FAULTS.lock().map(|mut f| std::mem::take(&mut *f));
-            for n in faults.unwrap_or_default() {
-                if inside(tree, n, node) {
-                    return Some("a runtime fault froze the lock".into());
-                }
-            }
+        if screen
+            .contents
+            .iter()
+            .any(|(_, n)| *n == LOCK_FALLBACK_NODE)
+        {
+            return Some("the session was locked with no `lock` open".into());
+        }
+        // (lockmon) Every content faulting at once (the one there is, or
+        // all of them): what [`Guard::failed_instances`] fails one by one
+        // otherwise.
+        let faults: Vec<NodeId> = FAULTS.lock().map(|f| f.clone()).unwrap_or_default();
+        let bad: Vec<String> = screen
+            .contents
+            .iter()
+            .filter_map(|(_, n)| instance_fault(host.renderer.tree(), *n, &faults))
+            .collect();
+        if !screen.contents.is_empty() && bad.len() == screen.contents.len() {
+            return bad.into_iter().next();
         }
         if let TextBackend::Worker(w) = host.renderer.text()
             && !w.is_running()
@@ -1164,6 +1224,48 @@ impl Guard {
             ));
         }
         None
+    }
+
+    /// (lockmon) The lock's instances that failed while another still
+    /// works, and why: a runtime fault inside one, its node gone from
+    /// render's tree, or no first frame on its surface [`FIRST_FRAME`]
+    /// after it was made while another content drew. The faults seen go.
+    fn failed_instances(&self, state: &State<Host>, now: Instant) -> Vec<(NodeId, String)> {
+        let host = state.host();
+        let screen = &host.lock;
+        let tree = host.renderer.tree();
+        let faults = FAULTS.lock().map(|mut f| std::mem::take(&mut *f));
+        let faults = faults.unwrap_or_default();
+        let mut bad: Vec<(NodeId, String)> = screen
+            .contents
+            .iter()
+            .filter_map(|(_, n)| Some((*n, instance_fault(tree, *n, &faults)?)))
+            .collect();
+        let healthy = |s: &SurfaceId, n: &NodeId| {
+            screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n)
+        };
+        if screen.contents.iter().any(|(s, n)| healthy(s, n)) {
+            for (s, n) in &screen.contents {
+                let late = screen
+                    .seen
+                    .get(s)
+                    .is_some_and(|t| now.saturating_duration_since(*t) >= FIRST_FRAME);
+                if late && !screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n) {
+                    bad.push((
+                        *n,
+                        format!(
+                            "it drew no first frame within {} ms",
+                            FIRST_FRAME.as_millis()
+                        ),
+                    ));
+                }
+            }
+        }
+        // Never the last one: that is the fallback's ([`Guard::reason`]).
+        if bad.len() >= screen.contents.len() {
+            return Vec::new();
+        }
+        bad
     }
 
     /// The marker follows the compositor ([`marker_step`]).
@@ -1267,6 +1369,22 @@ fn marker_step(marked: bool, active: bool) -> Option<Marker> {
     }
 }
 
+/// (lockmon) What failed the lock's instance `node`: its node gone from
+/// render's tree, or a runtime fault inside it.
+fn instance_fault(
+    tree: &strand_render::SceneTree,
+    node: NodeId,
+    faults: &[NodeId],
+) -> Option<String> {
+    if tree.get(node).is_none() {
+        return Some("the lock is no longer mounted".into());
+    }
+    faults
+        .iter()
+        .any(|n| inside(tree, *n, node))
+        .then(|| "a runtime fault froze the lock".into())
+}
+
 /// `node` is `root` or one of its descendants in `tree`.
 fn inside(tree: &strand_render::SceneTree, node: NodeId, root: NodeId) -> bool {
     let mut at = Some(node);
@@ -1360,23 +1478,28 @@ pub(crate) mod faults {
     pub(crate) fn unmount_lock(state: &mut super::State<super::Host>) {
         static DONE: AtomicBool = AtomicBool::new(false);
         if state.lock_active()
-            && state.lock_content().is_none()
+            && state.lock_contents().is_empty()
             && !DONE.load(Ordering::Acquire)
             && on("lock_unmount_unseen")
         {
+            // (lockmon) Every monitor's instance.
             let tree = state.host().renderer.tree();
-            let lock = tree.roots().iter().copied().find(|n| {
-                tree.get(*n)
-                    .is_some_and(|n| n.kind == super::NodeKind::Lock)
-            });
-            if let Some(node) = lock {
+            let locks: Vec<super::NodeId> = tree
+                .roots()
+                .iter()
+                .copied()
+                .filter(|n| {
+                    tree.get(*n)
+                        .is_some_and(|n| n.kind == super::NodeKind::Lock)
+                })
+                .collect();
+            if !locks.is_empty() {
                 DONE.store(true, Ordering::Release);
                 log::warn!("STRAND_FAULT lock_unmount_unseen");
                 let mut diff = super::SceneDiff::new();
-                diff.push(super::SceneOp::Remove {
-                    id: node,
-                    window: false,
-                });
+                for id in locks {
+                    diff.push(super::SceneOp::Remove { id, window: false });
+                }
                 super::apply(state, diff);
             }
             return;
@@ -1385,19 +1508,20 @@ pub(crate) mod faults {
             return;
         }
         let screen = &state.host().lock;
-        let Some((_, node)) = screen.content else {
+        let Some((_, first)) = screen.first() else {
             return;
         };
-        if node == super::LOCK_FALLBACK_NODE || !screen.drew {
+        if first == super::LOCK_FALLBACK_NODE || !screen.drew {
             return;
         }
+        // (lockmon) Every monitor's instance: the whole `lock` gone.
+        let nodes: Vec<super::NodeId> = screen.contents.iter().map(|(_, n)| *n).collect();
         DONE.store(true, Ordering::Release);
         log::warn!("STRAND_FAULT lock_unmount");
         let mut diff = super::SceneDiff::new();
-        diff.push(super::SceneOp::Remove {
-            id: node,
-            window: false,
-        });
+        for id in nodes {
+            diff.push(super::SceneOp::Remove { id, window: false });
+        }
         super::apply(state, diff);
     }
 
@@ -1550,6 +1674,44 @@ mod tests {
         assert_eq!(paint(&mut s, content), None);
     }
 
+    /// (lockmon) The fallback is one field painted on every content
+    /// surface (each monitor's): a key from any of them types into it,
+    /// and every one repaints; a content made later paints it too.
+    #[test]
+    fn the_fallback_is_one_field_on_every_content() {
+        let mut s = LockScreen::default();
+        let (a, b, c) = (SurfaceId(3), SurfaceId(4), SurfaceId(5));
+        s.attached(a, NodeId::new(2, 0), Some(NodeKind::Lock));
+        s.attached(b, NodeId::new(3, 0), Some(NodeKind::Lock));
+        assert!(s.is_lock_surface(a) && s.is_lock_surface(b));
+        s.show("test");
+        for x in [a, b] {
+            assert!(s.shown_on(x));
+            assert!(paint(&mut s, x).is_some_and(|d| !d.is_empty()));
+            assert_eq!(s.wants_frame(x), Some(false));
+        }
+        // A key on `b` (the event's surface is `a`'s in `key`).
+        let on_b = match key("a", "a") {
+            InputEvent::Key { key, .. } => InputEvent::Key { surface: b, key },
+            e => e,
+        };
+        assert!(s.input(&on_b));
+        assert!(s.input(&key("b", "b")));
+        for x in [a, b] {
+            assert_eq!(s.wants_frame(x), Some(true), "the dots on {x:?} too");
+        }
+        s.sync_contents(&[a, b, c]);
+        assert!(s.shown_on(c));
+        assert_eq!(s.wants_frame(c), Some(true));
+        assert_eq!(s.first(), Some((a, NodeId::new(2, 0))));
+        // Only `auth`'s field types: the fallback has one password.
+        assert_eq!(
+            s.fallback.as_ref().map(|f| f.field.chars()),
+            Some(2),
+            "one password from both monitors"
+        );
+    }
+
     /// The content made again on another output after its node left
     /// render's tree (the spec gone while locked: SIGTERM unmounting)
     /// is still the lock's content, because strand-surface says so: the
@@ -1559,16 +1721,16 @@ mod tests {
         let mut s = LockScreen::default();
         let node = NodeId::new(2, 0);
         s.attached(SurfaceId(5), node, Some(NodeKind::Lock));
-        s.sync_content(Some(SurfaceId(5)));
+        s.sync_contents(&[SurfaceId(5)]);
         s.show("test");
         // Its output goes, then the spec: the node leaves the tree.
         s.detached(SurfaceId(5));
-        s.sync_content(None);
+        s.sync_contents(&[]);
         assert!(!s.shown_on(SurfaceId(5)));
         s.attached(SurfaceId(3), node, None);
         // Another surface on a node the tree does not know is not it.
         s.attached(SurfaceId(4), NodeId::new(7, 0), None);
-        s.sync_content(Some(SurfaceId(3)));
+        s.sync_contents(&[SurfaceId(3)]);
         assert!(
             s.shown_on(SurfaceId(3)),
             "the new content shows the fallback"
@@ -1577,10 +1739,10 @@ mod tests {
         assert_eq!(s.wants_frame(SurfaceId(3)), Some(true));
         assert!(paint(&mut s, SurfaceId(3)).is_some_and(|d| !d.is_empty()));
         assert!(s.input(&key("a", "a")), "its keys never reach the Router");
-        assert_eq!(s.content, Some((SurfaceId(3), node)));
+        assert_eq!(s.first(), Some((SurfaceId(3), node)));
         // strand-surface's answer wins over a guess made at attach time.
-        s.sync_content(None);
-        assert_eq!(s.content, None);
+        s.sync_contents(&[]);
+        assert_eq!(s.first(), None);
     }
 
     /// The lock asked for with no output, its `lock` unmounted before an
@@ -1594,9 +1756,9 @@ mod tests {
         let mut s = LockScreen::default();
         let node = NodeId::new(2, 0);
         s.attached(SurfaceId(3), node, None);
-        assert_eq!(s.content, None, "render's tree cannot tell");
-        s.sync_content(Some(SurfaceId(3)));
-        assert_eq!(s.content, Some((SurfaceId(3), node)));
+        assert_eq!(s.first(), None, "render's tree cannot tell");
+        s.sync_contents(&[SurfaceId(3)]);
+        assert_eq!(s.first(), Some((SurfaceId(3), node)));
         s.show("the lock is no longer mounted");
         assert!(s.shown_on(SurfaceId(3)));
         assert_eq!(s.wants_frame(SurfaceId(3)), Some(true));
@@ -1604,8 +1766,8 @@ mod tests {
         assert!(s.input(&key("a", "a")), "its keys never reach the Router");
         // A content surface with no attach seen falls back to the
         // fallback node: "locked with no `lock` open", never nothing.
-        s.sync_content(Some(SurfaceId(9)));
-        assert_eq!(s.content, Some((SurfaceId(9), LOCK_FALLBACK_NODE)));
+        s.sync_contents(&[SurfaceId(9)]);
+        assert_eq!(s.first(), Some((SurfaceId(9), LOCK_FALLBACK_NODE)));
     }
 
     /// The compositor ending a lock it held is a reason to show the
@@ -1710,10 +1872,10 @@ mod tests {
         let shown = |s: &LockScreen| {
             s.fallback
                 .as_ref()
-                .map(|f| (f.field.message().to_string(), f.dirty))
+                .map(|f| (f.field.message().to_string(), f.clean.is_empty()))
         };
         if let Some(f) = s.fallback.as_mut() {
-            f.dirty = false;
+            f.clean.insert(SurfaceId(3));
         }
         let finger = "Place your finger on the fingerprint reader";
         assert!(
@@ -1888,6 +2050,17 @@ mod tests {
         assert!(inside(&tree, lock, lock));
         assert!(!inside(&tree, bar, lock));
         assert!(!inside(&tree, NodeId::new(9, 0), lock));
+        // (lockmon) What fails one monitor's instance: a fault under its
+        // node, or its node gone; a fault elsewhere does not.
+        assert_eq!(instance_fault(&tree, lock, &[bar]), None);
+        assert_eq!(
+            instance_fault(&tree, lock, &[bar, text]).as_deref(),
+            Some("a runtime fault froze the lock")
+        );
+        assert_eq!(
+            instance_fault(&tree, NodeId::new(9, 0), &[]).as_deref(),
+            Some("the lock is no longer mounted")
+        );
     }
 
     /// A password input's value, from logic's diff or the `Router`'s

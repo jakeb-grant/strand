@@ -310,6 +310,9 @@ pub(crate) struct Ctx {
     /// (report review) The instance-tree scopes of mounted `lock`
     /// surfaces (a per-screen one's prefix).
     pub(crate) lock_scopes: RefCell<std::collections::HashSet<Rc<str>>>,
+    /// (lockmon) Each mounted instance of the lock (`<prefix>[<screen>]`)
+    /// and its prefix, for [`SceneProp::Twin`] keys.
+    pub(crate) lock_instances: RefCell<HashMap<Rc<str>, Rc<str>>>,
     /// (history) The instance's kept graph histories (shared by every
     /// `Ctx` of its reloads; set by the boot).
     pub(crate) history: RefCell<Rc<history::Histories>>,
@@ -783,6 +786,7 @@ impl Ctx {
             cell_ids: RefCell::default(),
             secret_cells: RefCell::default(),
             lock_scopes: RefCell::default(),
+            lock_instances: RefCell::default(),
             history: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);

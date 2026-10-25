@@ -1027,6 +1027,14 @@ impl Painter for Host {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
+        // (lockmon) A first frame waiting for the stills of its screens.
+        if self
+            .feeds
+            .as_ref()
+            .is_some_and(|f| f.holds(surface, Instant::now()).is_some())
+        {
+            return false;
+        }
         self.lock
             .wants_frame(surface)
             .unwrap_or_else(|| self.renderer.wants_frame(surface))
@@ -1255,8 +1263,16 @@ impl SurfaceHost for Host {
         // (`LoopHost::attaching`: the lock's and the host's bookkeeping).
         let bounds = monitor.and_then(monitor_bounds);
         let Ok(()) = host_loop::attached(self, surface, node, bounds);
-        // (report) A slot for it; a lock surface never has one.
+        // (lockmon) Stills of the screens its thumbnails show, before it
+        // maps (not the lock's: those are from before the lock).
         let kind = self.renderer.tree().get(node).map(|n| n.kind);
+        if kind.is_some_and(|k| k != strand_scene::NodeKind::Lock)
+            && let Some(feeds) = &mut self.feeds
+        {
+            let screens = feeds.screens_under(self.renderer.tree(), node);
+            feeds.before_map(surface, screens);
+        }
+        // (report) A slot for it; a lock surface never has one.
         if node != strand_surface::LOCK_FALLBACK_NODE
             && kind != Some(strand_scene::NodeKind::Lock)
             && !self.lock.is_lock_surface(surface)
@@ -1308,6 +1324,9 @@ impl SurfaceHost for Host {
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
         self.lock.detached(surface);
+        if let Some(feeds) = &mut self.feeds {
+            feeds.detached(surface);
+        }
         self.recorder
             .unmapped(strand_core::flight::now_ns(), surface);
         // The renderer and routing forget it (`LoopHost::detaching` and
@@ -1450,7 +1469,14 @@ impl SurfaceHost for Host {
     }
 
     fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
-        self.renderer.frame_deadline(surface)
+        let held = self
+            .feeds
+            .as_ref()
+            .and_then(|f| f.holds(surface, Instant::now()));
+        match (held, self.renderer.frame_deadline(surface)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn frame_dropped(&mut self, surface: SurfaceId) {
@@ -1458,6 +1484,15 @@ impl SurfaceHost for Host {
             eprintln!("strand: dropped surface={}", surface.0);
         }
         self.renderer.invalidate(surface);
+    }
+
+    fn before_lock(&mut self) {
+        // (lockmon) A still of each screen the lock's thumbnails show,
+        // while the desktop still shows (`run/feeds.rs`).
+        if let Some(feeds) = &mut self.feeds {
+            let screens = feeds.lock_screens(self.renderer.tree());
+            feeds.take_lock_stills(&screens, crate::run::feeds::LOCK_STILL_WAIT);
+        }
     }
 
     fn lock_changed(&mut self, state: strand_surface::LockState) {

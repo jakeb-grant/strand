@@ -3,7 +3,6 @@
 export state locked = false
 lock {
   open: <-> locked
-  screens: focused
   layer: top
   keyboard: on_demand
   text "locked"
