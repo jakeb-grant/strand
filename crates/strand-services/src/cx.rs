@@ -640,6 +640,32 @@ impl Ticker {
         resumed && every.is_some()
     }
 
+    /// (services-round) A clock ticking every `every` (`None`: not at
+    /// all), for fields that choose their own period rather than the
+    /// service's ([`Cx::period`]): `network`'s rates sample once a second
+    /// only while read, and at the kept period otherwise, whatever other
+    /// field of the service is shown. Its first tick is one period from
+    /// now.
+    pub fn at(every: Option<Duration>) -> Ticker {
+        Ticker {
+            visible: every.unwrap_or(Duration::ZERO),
+            every,
+            interval: every.map(interval),
+        }
+    }
+
+    /// Follow a period chosen by the caller ([`Ticker::at`]); as
+    /// [`Ticker::follow`] otherwise.
+    pub fn follow_every(&mut self, every: Option<Duration>) -> bool {
+        if every == self.every {
+            return false;
+        }
+        let resumed = self.every.is_none();
+        self.every = every;
+        self.interval = every.map(interval);
+        resumed && every.is_some()
+    }
+
     /// The next tick is one period from now.
     pub fn reset(&mut self) {
         if let Some(i) = &mut self.interval {

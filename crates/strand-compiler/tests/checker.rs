@@ -957,6 +957,35 @@ fn rw_fields_of_service_items_are_writable() {
          }\n");
 }
 
+/// (services-round) A record call may leave out an optional field (null)
+/// and a list field (empty), so a builtin record that gains either, as
+/// `App` gained `actions`, stays buildable as before (spec.md 5.4 and
+/// section 14); any other field is still needed.
+#[test]
+fn a_record_call_may_leave_out_optional_and_list_fields() {
+    assert_eq!(
+        codes(
+            "type Pin { app: text; tags: [text]; note: text? }\n\
+             let p = Pin(app: \"a\")\nbar B { text p.app }\n"
+        ),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        codes(
+            "type Pin { app: text; tags: [text] }\n\
+             let p = Pin(tags: [])\nbar B { text p.app }\n"
+        ),
+        ["check::missing_arg"]
+    );
+    assert_eq!(
+        codes(
+            "let a = App(id: \"x\", name: \"X\", icon: \"\", categories: [])\n\
+             bar B { text a.name }\n"
+        ),
+        Vec::<&str>::new()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // No-code services
 

@@ -377,6 +377,10 @@ pub enum ToMain {
     /// (report) `system.replay` changed: main drops its input ring
     /// (`false`) or starts one empty (`true`), as logic does its own.
     Recording(bool),
+    /// (services-round) An admin password dialog or a login screen came
+    /// (`true`) or went: main's input ring pauses meanwhile, as for a
+    /// lock.
+    Secret(bool),
 }
 
 /// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
@@ -602,6 +606,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // SIGTERM does, through `signals`, so the run ends in order.
     strand_services::greetd::configure(Some(strand_services::greetd::GreetdConfig {
         socket: None,
+        server_uid: greetd_server_uid(),
         started: Some(std::sync::Arc::new(|| {
             // SAFETY: kill(2) on this process with a valid signal; every
             // thread blocks SIGTERM, so `signals` reads it.
@@ -797,6 +802,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                         .recorder
                         .set_on(on, strand_core::flight::now_ns());
                 }
+                Event::Msg(ToMain::Secret(on)) => {
+                    state
+                        .host_mut()
+                        .recorder
+                        .secret(strand_core::flight::now_ns(), on);
+                }
                 // (M5, S-inspect) Layouts, the outline, the flash and
                 // pick mode.
                 Event::Msg(msg) => crate::ipc::inspect::on_main(state, msg, &answer),
@@ -935,6 +946,19 @@ fn exit_beside_gpu_thread(result: &Result<(), DemoError>) -> ! {
     // every thread whose work must reach the disk (logic, compiler) has
     // been joined above.
     unsafe { libc::_exit(i32::from(result.is_err())) }
+}
+
+/// (services-round) Who must serve greetd's socket: root (`None`), as
+/// greetd runs. A debug build (the tests' fake greetd, served by the
+/// test's own user) takes `STRAND_TEST_GREETD_UID`; a release build
+/// never reads it.
+fn greetd_server_uid() -> Option<u32> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("STRAND_TEST_GREETD_UID")
+        .ok()
+        .and_then(|v| v.parse().ok())
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ each).
 | 2 | `on secondary`; `hit:`; the node booleans `hover` and `pressed` |
 | 3 | assignment and compound assignment (`=`, `+=`, `-=`, `*=`, `/=`); `else`; `exit`; `on scroll(dy)` |
 | 4 | `let`; `enum`; `match`; `every … while`; `on show`; `id:`; `@reset`; lambdas (`n => …`); `await`; the `lock` surface |
-| 5 | `set { }`; `keyframes` and `play`; `canvas`; `type` and `key`; `slot`; `fn`; settings files (`state x from "file.toml" { … }`); SVG layer selectors (`#name { … }`); `service … from file`, `from listen`, `from poll` and `permit exec`; `action` |
+| 5 | `set { }`; `keyframes` and `play`; `canvas`; `type` and `key`; `slot`; `fn`; settings files (`state x from "file.toml" { … }`); SVG layer selectors (`#name { … }`); `service … from file`, `from dir`, `from listen`, `from poll` and `permit exec`; `action` |
 
 ## How to read the code blocks
 

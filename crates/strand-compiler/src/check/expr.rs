@@ -1595,7 +1595,10 @@ impl<'a> Checker<'a> {
         Some(hir::Expr::error(span))
     }
 
-    /// `Pin(app: a, label: "x")`.
+    /// `Pin(app: a, label: "x")`. An optional field may be left out (it
+    /// is null), and (services-round) so may a list field (it is empty),
+    /// so a record that gains either stays buildable as before (spec.md
+    /// 5.4).
     fn construct(&mut self, r: RecordId, args: &'a [ast::Arg], span: Span) -> hir::Expr {
         let rec = self.types.record(r);
         let sig = FnSig::new(
@@ -1604,7 +1607,7 @@ impl<'a> Checker<'a> {
                 .map(|f| ParamSig {
                     name: f.name.clone(),
                     ty: f.ty.clone(),
-                    has_default: f.ty.is_optional(),
+                    has_default: f.ty.is_optional() || matches!(f.ty, Ty::List(..)),
                     default: None,
                     variadic: false,
                 })

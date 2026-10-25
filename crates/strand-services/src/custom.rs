@@ -241,26 +241,43 @@ pub struct Custom {
     pub line: Event<Data>,
 }
 
-static LINES: Mutex<Option<std::collections::HashSet<i64>>> = Mutex::new(None);
+/// How many handlers hear each spec's `line` event.
+static LINES: Mutex<Option<HashMap<i64, usize>>> = Mutex::new(None);
 
 /// (services-round) A handler hears spec `id`'s `line` event (`on
-/// svc.line(doc)`): from now on its `from listen` command's every line is
-/// sent as one. Until then a line costs no event, so a declaration only
-/// read through its fields wakes the logic thread at most once a frame.
+/// svc.line(doc)`): while one does, its `from listen` command's every line
+/// is sent as one. Until then, and again once the last has gone
+/// ([`unhear_lines`]), a line costs no event, so a declaration only read
+/// through its fields wakes the logic thread at most once a frame.
 pub fn hear_lines(id: i64) {
-    LINES
+    *LINES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(Default::default)
-        .insert(id);
+        .entry(id)
+        .or_default() += 1;
 }
 
-fn hears_lines(id: i64) -> bool {
+/// A handler [`hear_lines`] counted for spec `id` went (its scope was
+/// disposed).
+pub fn unhear_lines(id: i64) {
+    let mut lines = LINES.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(l) = lines.as_mut() else { return };
+    if let Some(n) = l.get_mut(&id) {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            l.remove(&id);
+        }
+    }
+}
+
+/// Some handler hears spec `id`'s lines.
+pub fn hears_lines(id: i64) -> bool {
     LINES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .is_some_and(|l| l.contains(&id))
+        .is_some_and(|l| l.contains_key(&id))
 }
 
 impl Custom {
@@ -1432,7 +1449,10 @@ pub const MAX_DIR_FILES: usize = 10_000;
 /// `files`: each regular file (a link to one counts; a hidden one,
 /// starting with `.`, does not) as a `File` record (`path`, `name`,
 /// `modified` to the minute in the local zone, `size` in bytes), by
-/// name. `None` while the directory does not exist.
+/// name, the first [`MAX_DIR_FILES`] of them. The names are read and
+/// sorted first, and only those listed are looked at (`stat`), so a huge
+/// directory costs its names, not a `stat` of every entry. `None` while
+/// the directory does not exist.
 pub fn list_dir(dir: &Path) -> std::io::Result<Option<Vec<Data>>> {
     use std::os::unix::ffi::OsStrExt;
     let entries = match std::fs::read_dir(dir) {
@@ -1440,24 +1460,21 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Option<Vec<Data>>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let mut files: Vec<(Vec<u8>, Data)> = Vec::new();
-    let mut more = false;
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name();
-        if name.as_bytes().first() == Some(&b'.') {
-            continue;
-        }
-        let path = entry.path();
+    let mut names: Vec<std::ffi::OsString> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.file_name())
+        .filter(|n| n.as_bytes().first() != Some(&b'.'))
+        .collect();
+    names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    let mut files: Vec<Data> = Vec::new();
+    let mut rest = names.into_iter();
+    for name in rest.by_ref() {
+        let path = dir.join(&name);
         // Followed: a link to a file is a file.
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
         if !meta.is_file() {
-            continue;
-        }
-        if files.len() >= MAX_DIR_FILES {
-            more = true;
             continue;
         }
         let modified = meta
@@ -1466,7 +1483,7 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Option<Vec<Data>>> {
             .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
             .map(crate::notifications::Date::at)
             .unwrap_or_default();
-        let file = Data::Record {
+        files.push(Data::Record {
             ty: "File".into(),
             fields: vec![
                 ("path".into(), Data::text(path.to_string_lossy())),
@@ -1477,17 +1494,18 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Option<Vec<Data>>> {
                     Data::Int(i64::try_from(meta.len()).unwrap_or(i64::MAX)),
                 ),
             ],
-        };
-        files.push((name.as_bytes().to_vec(), file));
+        });
+        if files.len() == MAX_DIR_FILES {
+            break;
+        }
     }
-    if more {
+    if rest.next().is_some() {
         log::warn!(
-            "{}: more than {MAX_DIR_FILES} files; the rest are not listed",
+            "{}: {MAX_DIR_FILES} files listed; the entries after them by name are not",
             dir.display()
         );
     }
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(Some(files.into_iter().map(|(_, f)| f).collect()))
+    Ok(Some(files))
 }
 
 /// The document of a directory: `{"files": [...]}`, or none while it
@@ -1508,21 +1526,29 @@ async fn run_dir(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), Se
     let mut last: Option<Option<Data>> = None;
     loop {
         let p = path.to_path_buf();
-        let listed = match tokio::time::timeout(
-            READ_WAIT,
-            tokio::task::spawn_blocking(move || list_dir(&p)),
-        )
-        .await
-        {
-            Ok(Ok(Ok(files))) => files,
-            Ok(Ok(Err(e))) => return Err(ServiceError(format!("{}: {e}", path.display()))),
-            Ok(Err(e)) => return Err(ServiceError(format!("{}: {e}", path.display()))),
-            Err(_) => {
-                return Err(ServiceError(format!(
-                    "{}: not listed within {READ_WAIT:?}",
-                    path.display()
-                )));
+        let listed_at = tokio::time::Instant::now();
+        // One listing at a time: one slower than READ_WAIT (a huge
+        // directory on a slow disk) is waited for, not started again.
+        let mut listing = tokio::task::spawn_blocking(move || list_dir(&p));
+        let mut slow = false;
+        let listed = loop {
+            tokio::select! {
+                r = &mut listing => break r,
+                _ = tokio::time::sleep(READ_WAIT), if !slow => {
+                    slow = true;
+                    log::warn!("{}: not listed within {READ_WAIT:?}; still listing", path.display());
+                }
+                m = cx.recv() => match m {
+                    None => return Ok(()),
+                    Some(Msg::Write(w)) => if !refuse(cx, &w) { return Ok(()) },
+                    Some(_) => {}
+                },
             }
+        };
+        let listed = match listed {
+            Ok(Ok(files)) => files,
+            Ok(Err(e)) => return Err(ServiceError(format!("{}: {e}", path.display()))),
+            Err(e) => return Err(ServiceError(format!("{}: {e}", path.display()))),
         };
         let doc = dir_doc(listed);
         let first = last.is_none();
@@ -1567,8 +1593,11 @@ async fn run_dir(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), Se
                 },
             }
         }
-        // A burst (a copy of many files) is listed once.
+        // A burst (a copy of many files) is listed once, and a directory
+        // that keeps changing (a download, a cache) at most every
+        // DIR_RELIST.
         tokio::time::sleep(DIR_SETTLE).await;
+        tokio::time::sleep_until(listed_at + DIR_RELIST).await;
         let _ = watch.drain();
     }
 }
@@ -1576,6 +1605,11 @@ async fn run_dir(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), Se
 /// (services-round) How long a `from dir` service waits after a change
 /// before listing again, so a burst of changes is listed once.
 pub const DIR_SETTLE: Duration = Duration::from_millis(50);
+
+/// (services-round) The shortest time between the starts of two
+/// listings of one `from dir` directory: one that keeps changing is
+/// listed (and its list sent) at most this often.
+pub const DIR_RELIST: Duration = Duration::from_millis(500);
 
 /// How long a stopped command's process group has to end after
 /// `SIGTERM` before it is sent `SIGKILL`.

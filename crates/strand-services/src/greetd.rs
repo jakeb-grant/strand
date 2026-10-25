@@ -61,6 +61,9 @@ pub type Started = Arc<dyn Fn() + Send + Sync>;
 pub struct GreetdConfig {
     /// The socket; `None` is `$GREETD_SOCK`.
     pub socket: Option<PathBuf>,
+    /// Who must serve the socket; `None` is root, as greetd runs (tests:
+    /// their own uid). An answer goes to no one else.
+    pub server_uid: Option<u32>,
     /// What a started session does to Strand (the binary: it exits).
     /// Without one it is only logged.
     pub started: Option<Started>,
@@ -70,6 +73,7 @@ impl std::fmt::Debug for GreetdConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GreetdConfig")
             .field("socket", &self.socket)
+            .field("server_uid", &self.server_uid)
             .field("started", &self.started.is_some())
             .finish()
     }
@@ -258,29 +262,18 @@ pub mod proto {
 
 use proto::{AuthMessageType, Request, Response};
 
-/// `greetd`'s actions.
-#[derive(Call)]
+/// `greetd`'s actions (an answer's `Debug` shows only its length).
+#[derive(Call, Debug)]
 pub enum GreetdAction {
     /// `greetd.login(user)`.
     Login { user: String },
-    /// `greetd.submit(answer)`.
-    Submit { answer: String },
+    /// `greetd.submit(answer)`: a [`Password`] from the call on, wiped
+    /// wherever it is dropped.
+    Submit { answer: Password },
     /// `greetd.start(command)`.
     Start { command: Vec<String> },
     /// `greetd.cancel()`.
     Cancel,
-}
-
-impl std::fmt::Debug for GreetdAction {
-    /// An answer shows only its length.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GreetdAction::Login { user } => write!(f, "Login({user:?})"),
-            GreetdAction::Submit { answer } => write!(f, "Submit(<{} bytes>)", answer.len()),
-            GreetdAction::Start { command } => write!(f, "Start({command:?})"),
-            GreetdAction::Cancel => f.write_str("Cancel"),
-        }
-    }
 }
 
 /// See the module docs.
@@ -339,7 +332,8 @@ struct Flow {
     outbox: VecDeque<Out>,
     /// greetd waits on a question.
     asking: bool,
-    /// An answer sent before greetd asked: it answers the first question.
+    /// An answer sent before greetd asked: it answers the first question
+    /// when that one is secret, and is wiped when it is visible.
     held_answer: Option<Password>,
     /// A command to start once the login succeeds.
     held_start: Option<Vec<String>>,
@@ -400,7 +394,7 @@ impl Greetd {
             .clone()
             .or_else(|| std::env::var_os(SOCKET_VAR).map(PathBuf::from));
         let Some(path) = path else {
-            return without_greetd(&mut cx).await;
+            return without_greetd(&mut cx, NO_GREETD).await;
         };
         let stream = tokio::net::UnixStream::connect(&path).await.map_err(|e| {
             ServiceError(format!(
@@ -408,6 +402,28 @@ impl Greetd {
                 path.display()
             ))
         })?;
+        // greetd runs as root: an answer (a password) goes to no other
+        // listener on the path `$GREETD_SOCK` names.
+        let want = config.server_uid.unwrap_or(0);
+        let served_by = stream.peer_cred().map(|c| c.uid());
+        if served_by.as_ref().ok() != Some(&want) {
+            let who = match served_by {
+                Ok(uid) => format!("uid {uid}"),
+                Err(e) => format!("an unknown user ({e})"),
+            };
+            let why = format!(
+                "greetd's socket {} is served by {who}, not {}: Strand sends it nothing",
+                path.display(),
+                if want == 0 {
+                    "root".to_string()
+                } else {
+                    format!("uid {want}")
+                }
+            );
+            cx.warn(why.clone());
+            drop(stream);
+            return without_greetd(&mut cx, &why).await;
+        }
         let (mut r, mut w) = stream.into_split();
         let (tx, mut responses) = mpsc::unbounded_channel();
         let reader = tokio::spawn(async move {
@@ -499,15 +515,19 @@ impl Drop for AbortOnDrop {
 }
 
 /// No `$GREETD_SOCK`: ready at the defaults, each action saying why.
-async fn without_greetd(cx: &mut Cx<Greetd>) -> Result<(), ServiceError> {
-    const WHY: &str = "greetd is not running Strand as its greeter (no $GREETD_SOCK)";
+/// Why every action fails without greetd.
+const NO_GREETD: &str = "greetd is not running Strand as its greeter (no $GREETD_SOCK)";
+
+/// No greetd to answer (or none Strand answers): every action fails with
+/// `why`, its answer wiped as it is dropped.
+async fn without_greetd(cx: &mut Cx<Greetd>, why: &str) -> Result<(), ServiceError> {
     if !cx.update(|s| *s = Greetd::default()) {
         return Ok(());
     }
     cx.ready();
     while let Some(m) = cx.recv().await {
         if let Msg::Action(_) = m
-            && !cx.update(|s| s.error = WHY.into())
+            && !cx.update(|s| s.error = why.into())
         {
             return Ok(());
         }
@@ -586,12 +606,20 @@ fn answered(cx: &mut Cx<Greetd>, flow: &mut Flow, config: &GreetdConfig, r: Resp
             }
             AuthMessageType::Visible | AuthMessageType::Secret => {
                 let echo = auth_message_type == AuthMessageType::Visible;
-                if let Some(a) = flow.held_answer.take() {
-                    flow.outbox.push_back(Out::Answer(Some(a)));
-                    return cx.update(|s| {
-                        s.prompt.clear();
-                        s.echo = echo;
-                    });
+                // An answer typed early goes only to a secret question: a
+                // visible one (a name) might be logged by PAM.
+                match flow.held_answer.take() {
+                    Some(a) if !echo => {
+                        flow.outbox.push_back(Out::Answer(Some(a)));
+                        return cx.update(|s| {
+                            s.prompt.clear();
+                            s.echo = echo;
+                        });
+                    }
+                    Some(_) => {
+                        log::info!("greetd: an answer typed before a visible question was dropped");
+                    }
+                    None => {}
                 }
                 flow.asking = true;
                 cx.update(|s| {
@@ -637,7 +665,6 @@ fn act(cx: &mut Cx<Greetd>, flow: &mut Flow, a: GreetdAction) -> bool {
             })
         }
         GreetdAction::Submit { answer } => {
-            let answer = Password::from(answer);
             if flow.asking {
                 flow.asking = false;
                 flow.outbox.push_back(Out::Answer(Some(answer)));
@@ -764,8 +791,8 @@ mod tests {
     #[test]
     fn an_answer_never_shows_in_debug() {
         let a = GreetdAction::Submit {
-            answer: "hunter2".into(),
+            answer: Password::from("hunter2".to_string()),
         };
-        assert_eq!(format!("{a:?}"), "Submit(<7 bytes>)");
+        assert_eq!(format!("{a:?}"), "Submit { answer: Password(<7 bytes>) }");
     }
 }

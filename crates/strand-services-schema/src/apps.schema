@@ -31,7 +31,7 @@ record AppAction key id {
   name: text
   /// Its own icon, when it names one the icon theme has (or a path).
   icon: text?
-  /// The app it belongs to.
+  /// The `id` of the app it belongs to (`App.id`).
   app: AppId
   /// Starts it (its own `Exec` line, as `launch()` starts the app's) and
   /// counts as a launch of its app for frecency.

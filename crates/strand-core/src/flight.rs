@@ -144,6 +144,9 @@ pub mod gap {
     pub const OFF: u8 = 2;
     /// The inspector's pick mode held input from handlers.
     pub const PICK: u8 = 3;
+    /// (services-round) An admin password dialog or a login screen was
+    /// up (`polkit.request`, `greetd`).
+    pub const SECRET: u8 = 4;
 }
 
 /// Modifier bits of a key record.

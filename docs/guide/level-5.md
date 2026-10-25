@@ -242,26 +242,30 @@ cannot.
 
 ## 3. Services of your own
 
-Strand's services cover the usual things: audio (each program's
-stream too, with its own volume, in `audio.streams`, so a microphone
-light is `audio.streams.any(s => s.direction == input)`, and
-`video.streams` for a camera or screen-cast light), battery (with the
-charge UPower recorded over past hours, `battery.history(10800s)`),
-network (down to the bytes a second in and out, `network.rx` and
-`network.tx`, and your saved connections, a VPN toggle being
-`c.up()` and `c.down()` on an item of `network.connections`), media
-(every player in `media.players`, and `p.select()` to make one the
-player `media.*` follows), memory (in use, cached, free and swap),
-notifications and so on, and
-the compositor's own: its binding mode (`wm.mode`), each window's place
-(`win.rect`) and `win.move_to(ws)`, the keyboard's layouts with
-`keyboard.next_layout()`, and whether you are away: a screensaver is
-`panel Saver { open: idle.after(300s) }`, and `inhibit_idle: caffeine`
-on a bar keeps the screen awake while `caffeine` is true, with no idle
-daemon or `systemd-inhibit`. Look in the reference before reaching for
-`/proc` or the compositor's command line. For the rest, you declare
-one. Make
-`services.strand`:
+Strand's services cover the usual things; look in the
+[reference](../reference/services.md) before reaching for `/proc` or
+the compositor's command line:
+
+- audio, with each program's stream and its own volume
+  (`audio.streams`: a microphone light is `audio.streams.any(s =>
+  s.direction == input)`), and the programs taking video
+  (`video.streams`) for a camera or screen-cast light;
+- battery, with the charge UPower recorded over past hours
+  (`battery.history(10800s)`);
+- network, with the bytes a second in and out (`network.rx`,
+  `network.tx`) and your saved connections, a VPN toggle being
+  `c.up()` and `c.down()` on an item of `network.connections`;
+- media, with every player (`media.players`) and `p.select()` to make
+  one the player `media.*` follows;
+- memory: in use, cached, free and swap;
+- the compositor: its binding mode (`wm.mode`), each window's place
+  (`win.rect`) and `win.move_to(ws)`, the keyboard's layouts
+  (`keyboard.next_layout()`);
+- idle: a screensaver is `panel Saver { open: idle.after(300s) }`, and
+  `inhibit_idle: caffeine` on a bar keeps the screen awake while
+  `caffeine` is true, with no idle daemon or `systemd-inhibit`.
+
+For the rest, you declare one. Make `services.strand`:
 
 ```strand level=5 file=services.strand
 // services.strand: services Strand does not ship
@@ -339,9 +343,9 @@ update, for programs that report changes as they happen:
 with `permit exec "playerctl"`, has `player.status` follow your media
 player as it plays and pauses. Lines that come faster than a frame are
 merged, so the fields show the latest; when every line matters (a log,
-a stream of events), handle `line` instead:
-`on player.line(doc) { log = log + doc.status }` runs once a line, with
-that line's fields in `doc`.
+a stream of events), handle `line` instead: with `state log = ""`,
+`on player.line(doc) { log = log + doc.status + "\n" }` runs once a
+line, with that line's fields in `doc`.
 
 **`action` runs a command from a handler.** For what no service does
 (opening an app of your own, a compositor's dispatch, a tool with only a
@@ -603,7 +607,11 @@ steps.
   `c.stroke`, sized by `c.width` and `c.height`. Use it for charts and
   visualisers the built-in `graph`, `arc` and `spectrum` do not cover;
   `audio.levels(audio.sink, 24)` is the sound playing now as 24 bars
-  from 0 to 1, low pitch first, for one you draw yourself.
+  from 0 to 1, low pitch first, for one you draw yourself: `let lv =
+  audio.levels(audio.sink, 8)`, then `canvas { width: 80; height: 24;
+  draw: (c) => { for i in [0, 1, 2, 3, 4, 5, 6, 7] { c.rect(i * 10,
+  c.height * (1 - lv[i]), 8, c.height * lv[i]) }; c.fill($accent) } }`
+  draws eight bars.
   Shapes collect into one path, and `c.fill` or `c.stroke` paints the
   shapes since the last paint, then starts a new path: to fill and
   stroke a shape, draw it again before the stroke. A shape with no paint
@@ -612,7 +620,9 @@ steps.
 - **Thumbnails.** `thumbnail w` shows a window `w` live, while it is
   on screen, and `thumbnail screen` a still of a monitor, taken each
   time it is shown: `for s in screens.all key s.id { thumbnail s }` is
-  an overview of your monitors.
+  an overview of your monitors. A still is taken once the surface
+  showing it is drawn, so on its own monitor it shows that surface too,
+  and not behind a lock screen yet: there it would capture the lock.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

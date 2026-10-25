@@ -732,8 +732,13 @@ Also every prop and event of [`node`](#node).
 element thumbnail(Window | Screen -> source): node
 ```
 
-A live thumbnail of a window (`thumbnail w`), or (services-round) a
-still of a screen, taken each time it is shown (`thumbnail screen`).
+A live thumbnail of a window (`thumbnail w`), or a still of a screen,
+taken each time it is shown (`thumbnail screen`). Inside a `lock` a
+screen's still is taken after the session locks, so it shows black
+or the lock itself; a still from just before the lock is not done
+yet. On its own screen the still is taken once the surface showing
+it is drawn, so it holds that surface too (an overview shows itself,
+empty); a still from before the surface opens is not done yet either.
 
 It takes no children.
 

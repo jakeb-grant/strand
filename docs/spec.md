@@ -72,7 +72,7 @@ guide's ladder test use this table as the list of constructs.
 | `enum`, `type` | `enum_decl`, `type_decl` | 5.4, 7.1 |
 | `fn` | `fn_decl` | 5.5 |
 | `tokens … extends …`, `override`, `use tokens …, palette …` | `tokens_decl`, `use_decl` | 9 |
-| `service … from dbus\|file\|listen\|poll`, `permit exec` | `service`, `permit` | 5.6 |
+| `service … from dbus\|dir\|file\|listen\|poll`, `permit exec` | `service`, `permit` | 5.6 |
 | `action name(params) [command]`, `action name(params) = Method` | `action`, `method_action` | 5.7 |
 | `keyframes`, `play` | `keyframes`, `play` | 6.6 |
 | `@reset` | `attribute` | 10.4 |
@@ -466,7 +466,10 @@ filling the monitor, the keyboard always).
   known (`state kind = volume`, `kind == volume`).
 - `type Pin { app: AppId; label: text }` declares a record. Records are
   built with call syntax and named arguments: `Pin(app: a, label: "x")`.
-  Fields are read with `.`.
+  An optional field may be left out (it is null), and so may a list
+  field (it is empty), so a record that gains either, builtin or your
+  own, stays buildable as before; every other field is needed. Fields
+  are read with `.`.
 
 ### 5.5 Functions
 
@@ -491,10 +494,11 @@ filling the monitor, the keyboard always).
   directory's files: its document is `{ files: [...] }`, each a `File`
   (`path`, `name`, `modified: Date`, `size` in bytes) for a regular
   file or a link to one, hidden files (a name starting with `.`) and
-  subdirectories left out, ordered by name, at most 10 000 (a warning
-  names the rest). It is listed again whenever an entry is added,
-  removed, renamed or rewritten (changes within 50 ms listed once),
-  never on a clock. A directory that does not exist yet reads as no
+  subdirectories left out, ordered by name, the first 10 000 by name
+  (a warning says how many more there are). It is listed again
+  whenever an entry is added, removed, renamed or rewritten (changes
+  within 50 ms listed once, and a directory that keeps changing at
+  most every 500 ms), never on a clock. A directory that does not exist yet reads as no
   document (every field its default) until it is made. `File` is the
   one builtin record (with the `Date` it holds) a service's fields may
   hold besides your own `type`s.
@@ -1077,10 +1081,11 @@ units).
   the longest `history` any of its graphs asks, in memory only, and
   the services it reads keep running while no visible reader holds
   them. One that samples on a clock (`cpu`, `memory`, `disk`,
-  `network`'s byte rates, a `from poll` service) samples then at a coarser period, a twentieth of that
-  history and at least 2 s; one that reports its changes as they
-  happen keeps reporting them; a stream run only while watched, or a
-  value that changes only while shown, records nothing hidden. A graph
+  `network`'s byte rates, a `from poll` service) samples then at a
+  coarser period, a twentieth of that history and at least 2 s; one
+  that reports its changes as they happen keeps reporting them; a
+  stream run only while watched, or a value that changes only while
+  shown, records nothing hidden. A graph
   of a value tied to a list item, a component's parameter or `let`, an
   element's state or the animation clock, or whose `history` is not a
   constant (a literal, or a file-level `let` of one), shows what came

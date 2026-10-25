@@ -6,9 +6,14 @@
 //! `timeout`, and false again at the next input. The protocol only tells
 //! a client about timeouts it asked for, so each distinct timeout a
 //! config reads is one `ext_idle_notification_v1`, made the first time
-//! `after` is evaluated with it ([`want`]) and kept while the service
-//! runs; `timeouts` lists them with their state, keyed by the timeout,
-//! and `after` reads it (a tracked read, so a reader follows it). The
+//! `after` is evaluated with it ([`want`]) and kept while some
+//! evaluation still reads it: each evaluation counts a reader of its
+//! timeout until it re-runs or its scope goes ([`unwant`]), and a
+//! timeout no evaluation has read for [`LET_GO`] has its notification
+//! destroyed (a reload that changes the timeout, a slider driving it,
+//! leave no compositor timer behind). `timeouts` lists those followed
+//! with their state, keyed by the timeout, and `after` reads it (a
+//! tracked read, so a reader follows it). The
 //! notifications are the plain idle ones, which an idle inhibitor (a
 //! video playing, a surface's `inhibit_idle: true`) holds back, so a
 //! screensaver never covers what inhibits idling. `available` is the
@@ -16,8 +21,9 @@
 //!
 //! The service runs on a thread of its own (`strand-idle`) with its own
 //! Wayland connection, asleep in `poll(2)` on its socket and an eventfd
-//! that [`want`] and the service's messages poke, so it costs no wakeup
-//! between the compositor's `idled` and `resumed`. It connects to
+//! that [`want`], [`unwant`] and the service's messages poke (and, while
+//! a timeout nobody reads waits out [`LET_GO`], until then), so it costs
+//! no wakeup between the compositor's `idled` and `resumed`. It connects to
 //! `$WAYLAND_DISPLAY` ([`configure`] points it elsewhere: tests). A lost
 //! connection clears `available` and `timeouts` and ends the run with an
 //! error, which the contract retries with its backoff.
@@ -27,7 +33,7 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use wayland_client::protocol::{wl_callback, wl_registry, wl_seat};
@@ -64,10 +70,24 @@ fn target() -> WaylandTarget {
         .unwrap_or(WaylandTarget::Env)
 }
 
-/// The timeouts `after` was asked about, in this process.
-static WANTED: Mutex<BTreeSet<Duration>> = Mutex::new(BTreeSet::new());
+/// How long a timeout no evaluation reads keeps its notification: long
+/// enough for a re-evaluation (its reader released, then counted again)
+/// or a reload (the old tree goes, the new one mounts) to read it again
+/// without the compositor's timer starting over.
+pub const LET_GO: Duration = Duration::from_secs(1);
 
-/// The running services' eventfds, poked when a timeout is new.
+/// The readers of one timeout.
+#[derive(Debug, Default)]
+struct Readers {
+    count: usize,
+    /// When the last reader went (none while any reads it).
+    unread_since: Option<Instant>,
+}
+
+/// The timeouts `after` is asked about, in this process.
+static WANTED: Mutex<BTreeMap<Duration, Readers>> = Mutex::new(BTreeMap::new());
+
+/// The running services' eventfds, poked when what is wanted changes.
 static WAKERS: Mutex<Vec<Weak<OwnedFd>>> = Mutex::new(Vec::new());
 
 /// `timeout` as the protocol carries it.
@@ -75,18 +95,7 @@ fn clamp(timeout: Duration) -> Duration {
     Duration::from_millis(timeout.min(MAX_TIMEOUT).as_millis() as u64)
 }
 
-/// `idle.after(timeout)` was evaluated: from now on a running service
-/// follows `timeout` (one notification object each; asked once, kept for
-/// the process). A new one wakes the running services to make it.
-pub fn want(timeout: Duration) {
-    let timeout = clamp(timeout);
-    let new = WANTED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(timeout);
-    if !new {
-        return;
-    }
+fn poke() {
     let mut wakers = WAKERS.lock().unwrap_or_else(PoisonError::into_inner);
     wakers.retain(|w| match w.upgrade() {
         Some(fd) => {
@@ -97,11 +106,58 @@ pub fn want(timeout: Duration) {
     });
 }
 
-fn wanted() -> BTreeSet<Duration> {
-    WANTED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+/// `idle.after(timeout)` was evaluated: one more reader of `timeout`,
+/// which a running service follows (one notification object each) until
+/// its readers have all gone ([`unwant`]). A new one wakes the running
+/// services to make it.
+pub fn want(timeout: Duration) {
+    let timeout = clamp(timeout);
+    let new = {
+        let mut wanted = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
+        let new = !wanted.contains_key(&timeout);
+        let r = wanted.entry(timeout).or_default();
+        r.count += 1;
+        r.unread_since = None;
+        new
+    };
+    if new {
+        poke();
+    }
+}
+
+/// A reader [`want`] counted went (the evaluation re-ran or its scope
+/// was disposed). The last one starts [`LET_GO`].
+pub fn unwant(timeout: Duration) {
+    let timeout = clamp(timeout);
+    let last = {
+        let mut wanted = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
+        match wanted.get_mut(&timeout) {
+            Some(r) if r.count > 0 => {
+                r.count -= 1;
+                if r.count == 0 {
+                    r.unread_since = Some(Instant::now());
+                }
+                r.count == 0
+            }
+            _ => false,
+        }
+    };
+    if last {
+        poke();
+    }
+}
+
+/// The timeouts to follow at `now`, and when the next one nobody reads
+/// is let go. Those let go are forgotten.
+fn wanted(now: Instant) -> (BTreeSet<Duration>, Option<Instant>) {
+    let mut wanted = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
+    wanted.retain(|_, r| r.unread_since.is_none_or(|t| now < t + LET_GO));
+    let next = wanted
+        .values()
+        .filter_map(|r| r.unread_since)
+        .min()
+        .map(|t| t + LET_GO);
+    (wanted.keys().copied().collect(), next)
 }
 
 /// A timeout `idle.after` was asked about, and whether the seat has been
@@ -144,7 +200,9 @@ fn idle_fns(
                 )));
             };
             let timeout = clamp(*timeout);
+            // Read until this evaluation re-runs or its scope goes.
             want(timeout);
+            rt.on_cleanup(move || unwant(timeout));
             Some(
                 cells
                     .timeouts
@@ -249,10 +307,22 @@ impl Idle {
                     }
                 }
             }
+            let mut let_go = None;
             if client.synced {
-                // Each timeout asked for since: one notification.
+                // Each timeout read: one notification; one nobody reads
+                // any more: destroyed.
+                let (want, next) = wanted(Instant::now());
+                let_go = next;
+                client.notifications.retain(|t, (n, _)| {
+                    let keep = want.contains(t);
+                    if !keep {
+                        n.destroy();
+                        client.changed = true;
+                    }
+                    keep
+                });
                 if let (Some(notifier), Some(seat)) = (&client.notifier, &client.seat) {
-                    for t in wanted() {
+                    for t in want {
                         if client.notifications.contains_key(&t) {
                             continue;
                         }
@@ -292,7 +362,14 @@ impl Idle {
                     PollFlags::IN
                 };
                 let mut fds = [PollFd::new(&fd, flags), PollFd::new(wake, PollFlags::IN)];
-                match rustix::event::poll(&mut fds, None) {
+                let timeout = let_go.map(|t| {
+                    let d = t.saturating_duration_since(Instant::now());
+                    rustix::event::Timespec {
+                        tv_sec: d.as_secs().try_into().unwrap_or(i64::MAX),
+                        tv_nsec: d.subsec_nanos().into(),
+                    }
+                });
+                match rustix::event::poll(&mut fds, timeout.as_ref()) {
                     Ok(_) => (
                         fds[0]
                             .revents()

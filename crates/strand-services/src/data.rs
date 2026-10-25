@@ -343,6 +343,23 @@ prim!(
         _ => None,
     }
 );
+/// A secret answer (`auth.submit`, `polkit.respond`, `greetd.submit`):
+/// its text copied once, into a buffer wiped when dropped, so an action
+/// dropped anywhere on its way (a stopped or backing-off store, an answer
+/// to nothing) leaves no copy in freed memory.
+impl FromData for strand_auth::Password {
+    fn from_data(d: &Data) -> Result<Self, DataError> {
+        match d {
+            Data::Text(s) => {
+                let mut bytes = Vec::with_capacity(s.len());
+                bytes.extend_from_slice(s.as_bytes());
+                Ok(strand_auth::Password::from_bytes(bytes))
+            }
+            _ => Err(DataError::expected("text", d)),
+        }
+    }
+}
+
 prim!(
     String,
     "text",

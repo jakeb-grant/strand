@@ -56,7 +56,7 @@ Keyed by `id`.
 | `id` | `text` | Its id in the desktop entry (`new-window`). |
 | `name` | `text` | Its name, in the user's language. |
 | `icon` | `text?` | Its own icon, when it names one the icon theme has (or a path). |
-| `app` | `text` | The app it belongs to. |
+| `app` | `text` | The `id` of the app it belongs to (`App.id`). |
 
 | Method | |
 | --- | --- |
@@ -84,7 +84,7 @@ Keyed by `id`.
 
 ### `AudioMeter`
 
-(services-round) A peak meter `audio.levels` runs: an item of
+A peak meter `audio.levels` runs: an item of
 `audio.meters`.
 
 Keyed by `device`.
@@ -96,17 +96,17 @@ Keyed by `device`.
 
 ### `AudioStream`
 
-(services-round) A program's audio stream, from PipeWire: what it
+A program's audio stream, from PipeWire: what it
 plays or records.
 
 Keyed by `id`.
 
 | Field | Type | |
 | --- | --- | --- |
-| `id` | `int` | Its PipeWire id. |
+| `id` | `int` | Names it while it lives: PipeWire's `object.serial` for it, which, unlike its global id, no later stream takes. |
 | `app` | `text` | The program's name, such as `Firefox`. |
 | `icon` | `text` | An icon name for the program. |
-| `direction` | `StreamDirection` | `output` while it plays, `input` while it records (a microphone in use, or a recorder of what a sink plays). |
+| `direction` | `StreamDirection` | `output` while it plays, `input` while it records a source (a microphone in use), `monitor` while it records what a sink plays (a visualiser, a recorder of the desktop's sound): a microphone light is `audio.streams.any(s => s.direction == input)`. |
 | `volume` | `float rw` | Its own volume, on the scale a device's uses. Writable: `st.volume = v`. |
 | `muted` | `bool rw` | Muted. Writable: `st.muted = !st.muted`. |
 
@@ -173,7 +173,7 @@ newest first, keyed by `id`.
 
 ### `Connection`
 
-(services-round) A connection saved in NetworkManager (a Wi-Fi
+A connection saved in NetworkManager (a Wi-Fi
 network joined before, a wired profile, a VPN, a WireGuard tunnel):
 an item of `network.connections`, keyed by its UUID.
 
@@ -239,7 +239,7 @@ which; the other fields are empty. A drag inside the shell delivers the
 
 ### `File`
 
-(services-round) A file a `from dir` service lists: `service walls
+A file a `from dir` service lists: `service walls
 from dir "~/Pictures/walls" { files: [File] }`, then `for f in
 walls.files key f.path { image f.path }`.
 
@@ -338,14 +338,14 @@ A desktop notification, keyed by `id`.
 | `progress` | `float?` | How far along what it reports is, 0 to 1 (the sender's `value` hint, a percentage), null when it says none: `meter n.progress ?? 0`. |
 | `category` | `text?` | The kind of event it reports (the `category` hint: `email.arrived`, `transfer.complete`), null when the sender gives none. |
 | `desktop_entry` | `text?` | The desktop entry of the app that sent it (the `desktop-entry` hint), null when the sender gives none. |
-| `can_reply` | `bool` | The sender takes a typed reply (an `inline-reply` action, which is not among `actions`): `if n.can_reply { input … }`. False on one remembered from an earlier run. |
+| `can_reply` | `bool` | The sender takes a typed reply (an `inline-reply` action, which is not among `actions`): `if n.can_reply { input … }`. Strand offers senders inline replies only while the config names `can_reply` or `reply`, so a sender keeps its own Reply button otherwise. False on one remembered from an earlier run. |
 
 | Method | |
 | --- | --- |
 | `action expire()` | Ends its popup, as a timeout does; it stays in `all`, still open (its actions still reach the sender) until dismissed. |
 | `action dismiss()` | Closes it: `on secondary { n.dismiss() }`. |
 | `action activate()` | Invokes its default action: `on click { n.activate() }`. |
-| `action reply(text: text)` | `n.reply(text)` sends `text` to the sender as its inline reply and closes it (unless it is resident); nothing when it takes no reply. |
+| `action reply(text: text)` | `n.reply(text)` sends `text` to the sender as its inline reply (to that sender alone, never to other programs on the bus) and closes it (unless it is resident); nothing when it takes no reply. |
 
 ### `NotificationAction`
 
@@ -429,7 +429,7 @@ height: 1440, refresh: 144)` names one for `OutputChange.mode`.
 
 ### `Player`
 
-(services-round) One MPRIS player: an item of `media.players`, with
+One MPRIS player: an item of `media.players`, with
 the fields and actions `media` has for the active one.
 
 Keyed by `id`.
@@ -468,6 +468,7 @@ shows. `polkit.request` is the one being answered.
 | --- | --- | --- |
 | `action_id` | `text` | The polkit action asked for (`org.freedesktop.policykit.exec`). |
 | `message` | `text` | What polkit says it is for, in your language ("Authentication is needed to run `/usr/bin/bash' as the super user"). |
+| `command` | `text?` | The command it would run, with its arguments, as the program asked (`pkexec`'s: "/usr/bin/sh -c rm -rf /tmp/x"), or null for a request that runs none (a settings page's). Show it: `message` names only the program, so it is what tells one `pkexec sh -c …` from another. |
 | `icon` | `text` | The icon the program named for it (a theme icon name), or "". |
 | `user` | `text` | The user whose password is asked for: you, or an administrator when the action needs one. Another of `users` is picked with `polkit.choose(user)`. |
 | `users` | `[text]` | Every user polkit would take a password from for it (the administrators, or only you), each once; `user` is one of them. |
@@ -500,7 +501,8 @@ A span of characters: from `start` up to, not including, `end`.
 
 ### `Rect`
 
-A laid-out box (`id.box`), logical pixels.
+A box in logical pixels: a laid-out node's (`id.box`), or a window's
+place on its screen (`win.rect`).
 
 | Field | Type | |
 | --- | --- | --- |
@@ -588,7 +590,7 @@ An entry of a tray item's menu (DBusMenu), keyed by `id`.
 
 ### `VideoStream`
 
-(services-round) A program taking video over PipeWire.
+A program taking video over PipeWire.
 
 Keyed by `id`.
 
@@ -659,7 +661,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
 | `BlurFallback` | `tint`, `none` |
 | `Cap` | `butt`, `round`, `square` |
-| `ConnectionKind` | `wifi`, `ethernet`, `vpn`, `wireguard`, `other`. (services-round) What kind of network a connection is: a Wi-Fi network, a wired one, a VPN, a WireGuard tunnel, or another kind (a bridge, a modem, a hotspot shared over Bluetooth). |
+| `ConnectionKind` | `wifi`, `ethernet`, `vpn`, `wireguard`, `other`. What kind of network a connection is: a Wi-Fi network, a wired one, a VPN, a WireGuard tunnel, or another kind (a bridge, a modem, a hotspot shared over Bluetooth). |
 | `CornerStyle` | `round`, `squircle` |
 | `Curve` | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `in_back`, `out_back`, `out_elastic`, `out_bounce`, `standard`, `emphasized` |
 | `DropKind` | `files`, `app`, `text` |
@@ -684,11 +686,11 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Shape` | `rect`, `circle`, `pill`, `cookie`, `clover`, `burst`, `flower`, `gem`, `sunny`, `triangle`, `pentagon`, `hexagon`, `heart` |
 | `SizeKeyword` | `auto` |
 | `SpectrumStyle` | `bars`, `mirror`, `wave`, `line` |
-| `StreamDirection` | `output`, `input`. (services-round) Whether a program's audio stream plays (`output`) or records (`input`). |
+| `StreamDirection` | `output`, `input`, `monitor`. Whether a program's audio stream plays (`output`), records a microphone or another source (`input`), or records what a sink plays (`monitor`: a visualiser, a recorder of the desktop's sound). |
 | `SwapKind` | `none`, `disc`, `dissolve`, `pixelate` |
 | `Urgency` | `low`, `normal`, `critical` |
 | `Variant` | `tonal_spot`, `vibrant`, `expressive`, `neutral`, `monochrome`, `fidelity`, `content`, `rainbow`, `fruit_salad` |
-| `VideoSource` | `camera`, `screencast`. (services-round) Where a program's video comes from: a camera, or a screen (or window) cast. |
+| `VideoSource` | `camera`, `screencast`. Where a program's video comes from: a camera, or a screen (or window) cast. |
 | `WifiSecurity` | `open`, `enhanced_open`, `wep`, `wpa`, `wpa2`, `wpa3`, `enterprise`. How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but encrypted); `enterprise` is 802.1X. |
 
 ## Aliases

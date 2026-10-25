@@ -132,6 +132,13 @@ fn lock_spec(open: bool) -> SurfaceSpec {
     SurfaceSpec::resolve(NodeKind::Lock, |p| props.get(&p))
 }
 
+/// (services-round) An open `lock` with `inhibit_idle:`.
+fn inhibiting_lock_spec(inhibit: bool) -> SurfaceSpec {
+    let mut spec = lock_spec(true);
+    spec.inhibit_idle = inhibit;
+    spec
+}
+
 /// A lock client that may lock (`enable_session_lock`).
 fn locker(sway: &Sway) -> SurfaceManager<LockHost> {
     let mut mgr = unwired_locker(sway);
@@ -867,6 +874,48 @@ fn a_lock_surface_is_never_handed_to_the_gpu() {
         shot(&sway, "HEADLESS-1"),
         [BLUE, BLUE],
         "the manager still draws the lock"
+    );
+    assert!(lock.state_mut().unlock(token()));
+}
+
+/// (services-round) `lock { inhibit_idle: true }`: the lock's content
+/// surface holds a `zwp_idle_inhibitor_v1` from the moment it is made, and
+/// turned off in place, lets it go.
+#[test]
+fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
+    let test = "a_lock_that_inhibits_idle_holds_an_inhibitor";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut lock = locker(&sway);
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(inhibiting_lock_spec(true)));
+    wait_lock(&mut lock, LockState::Locked);
+    let content = lock.state().lock_content().expect("a content surface");
+    assert!(
+        lock.state()
+            .surface(content)
+            .is_some_and(|i| i.inhibits_idle),
+        "the content inhibits idling"
+    );
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: inhibiting_lock_spec(false),
+            recreate: false,
+        },
+    );
+    pump_lock(&mut lock, Duration::from_millis(100));
+    let content = lock.state().lock_content().expect("still locked");
+    assert!(
+        !lock
+            .state()
+            .surface(content)
+            .is_some_and(|i| i.inhibits_idle),
+        "turned off in place"
     );
     assert!(lock.state_mut().unlock(token()));
 }

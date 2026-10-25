@@ -117,6 +117,8 @@ fn after_follows_the_seats_idle_time() {
     assert_eq!(timeouts(&rt, &b).len(), n);
     b.idle.release(&rt);
     s.shutdown();
+    // The readers held without a scope go with the runtime.
+    rt.shutdown();
     idle::configure(None);
 }
 
@@ -137,5 +139,57 @@ fn with_no_compositor_after_is_false() {
     assert!(!after(&rt, &*d, Duration::from_millis(1)));
     b.idle.release(&rt);
     s.shutdown();
+    // The readers held without a scope go with the runtime.
+    rt.shutdown();
+    idle::configure(None);
+}
+
+/// (services-round) Each evaluation of `after` reads its timeout until
+/// it re-runs or its scope goes: a reload that changes the timeout (the
+/// old tree's reader gone, the new one's reading another) leaves one
+/// notification, the old one destroyed once nobody has read it for
+/// `LET_GO`; a reader released and counted again at once (a
+/// re-evaluation) keeps its notification.
+#[test]
+fn a_timeout_nobody_reads_is_let_go() {
+    let _one = serial();
+    let Some(sway) = Sway::start("a_timeout_nobody_reads_is_let_go") else {
+        return;
+    };
+    idle::configure(Some(WaylandTarget::Socket(sway.socket())));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let d = b.idle.dynamic();
+    b.idle.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "available", || {
+        b.idle.cells().available.get_untracked(&rt) == Ok(true)
+    });
+    let followed = || -> Vec<Duration> { timeouts(&rt, &b).iter().map(|t| t.timeout).collect() };
+    let (ten, fifteen) = (Duration::from_secs(600), Duration::from_secs(900));
+    let (first, _) = rt.scope(|rt| after(rt, &*d, ten));
+    until(&rt, &s, "ten minutes followed", || followed() == [ten]);
+    // A reload: the old reader goes, the new one reads another timeout.
+    first.dispose(&rt);
+    let (second, _) = rt.scope(|rt| after(rt, &*d, fifteen));
+    until(&rt, &s, "fifteen minutes followed", || {
+        followed().contains(&fifteen)
+    });
+    until(&rt, &s, "ten minutes let go", || followed() == [fifteen]);
+    // Released and read again at once: still the one.
+    second.dispose(&rt);
+    let (third, _) = rt.scope(|rt| after(rt, &*d, fifteen));
+    std::thread::sleep(idle::LET_GO + Duration::from_millis(300));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(followed(), [fifteen]);
+    // Nobody reads it: none left.
+    third.dispose(&rt);
+    until(&rt, &s, "nothing followed", || followed().is_empty());
+    b.idle.release(&rt);
+    s.shutdown();
+    // The readers held without a scope go with the runtime.
+    rt.shutdown();
     idle::configure(None);
 }

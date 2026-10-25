@@ -232,8 +232,9 @@ pub struct Network {
     /// asks when it opens; over iwd, iwd's own scans too.
     pub scanning: bool,
     /// The kind of the connection carrying the traffic, so a bar picks
-    /// its icon: `match network.kind { wifi => …, ethernet => …, vpn |
-    /// wireguard => … }`. A VPN or WireGuard tunnel holding the default
+    /// its icon: `match network.kind { wifi => …, ethernet => …, vpn =>
+    /// …, wireguard => …, _ => … }` (the `_` arm for null and `other`).
+    /// A VPN or WireGuard tunnel holding the default
     /// route counts first, since traffic goes through it; else the
     /// connection that holds it (NetworkManager's primary connection).
     /// Null while not connected. Over iwd, `wifi` while a network is
@@ -764,13 +765,22 @@ impl Nm {
     /// point in range too). Each read is bounded ([`dbus::READ_TIMEOUT`]):
     /// a hung NetworkManager is an error (the run fails and is retried),
     /// an object gone meanwhile is left out.
+    ///
+    /// (services-round) The saved connections already read are kept: they
+    /// change only by the settings' own signals ([`Nm::settings_signal`]),
+    /// not with the connection states that make the rest be read again.
+    /// A new NetworkManager forgets them first ([`Nm::profiles`] `None`).
     async fn read(&mut self, daemon: &Daemon, scanning: bool, profiles: bool) -> zbus::Result<()> {
+        let kept = self.profiles.take();
         *self = Nm::default();
         if daemon.owner().is_none() {
             return Ok(());
         }
         if profiles {
-            self.profiles = Some(read_profiles(daemon.conn()).await?);
+            self.profiles = Some(match kept {
+                Some(p) => p,
+                None => read_profiles(daemon.conn()).await?,
+            });
         }
         let conn = daemon.conn();
         let read = |path: String, iface: &'static str| async move {
@@ -828,6 +838,9 @@ impl Nm {
     /// `scanning` (the one in use is followed through its connection's
     /// `SpecificObject`); then only the new ones are read.
     async fn signal(&mut self, daemon: &Daemon, m: &zbus::Message, scanning: bool) -> Option<bool> {
+        if let Some(changed) = self.settings_signal(daemon, m).await {
+            return changed;
+        }
         let c = dbus::properties_changed(m)?;
         match c.iface.as_str() {
             AP => match self.aps.get_mut(&c.path) {
@@ -892,6 +905,54 @@ impl Nm {
     }
 }
 
+impl Nm {
+    /// (services-round) A signal of the saved connections, applied to
+    /// [`Nm::profiles`] by the one connection it names: `NewConnection`
+    /// and a connection's `Updated` read that one's settings,
+    /// `ConnectionRemoved` (and a connection's `Removed`) drop it. `None`
+    /// for any other signal; `Some(None)` when it cannot be applied in
+    /// place (all is read again).
+    async fn settings_signal(
+        &mut self,
+        daemon: &Daemon,
+        m: &zbus::Message,
+    ) -> Option<Option<bool>> {
+        let h = m.header();
+        let iface = h.interface()?.as_str().to_string();
+        let member = h.member()?.as_str().to_string();
+        let path = h.path()?.as_str().to_string();
+        let target = match (iface.as_str(), member.as_str()) {
+            (SETTINGS_IFACE, "NewConnection" | "ConnectionRemoved") => {
+                match m.body().deserialize::<zbus::zvariant::OwnedObjectPath>() {
+                    Ok(p) => (p.to_string(), member == "NewConnection"),
+                    Err(_) => {
+                        self.profiles = None;
+                        return Some(None);
+                    }
+                }
+            }
+            (CONNECTION_IFACE, "Updated") => (path, true),
+            (CONNECTION_IFACE, "Removed") => (path, false),
+            _ => return None,
+        };
+        let Some(profiles) = &mut self.profiles else {
+            return Some(Some(false));
+        };
+        let (path, read) = target;
+        if !read {
+            return Some(Some(profiles.remove(&path).is_some()));
+        }
+        match read_profile(daemon.conn(), &path).await {
+            Ok(Some(p)) => Some(Some(profiles.insert(path, p.clone()) != Some(p))),
+            Ok(None) => Some(Some(profiles.remove(&path).is_some())),
+            Err(_) => {
+                self.profiles = None;
+                Some(None)
+            }
+        }
+    }
+}
+
 /// (services-round) NetworkManager's saved connections, by settings path:
 /// each one's `connection` settings (`id`, `uuid`, `type`); the loopback
 /// connection NetworkManager may keep is no network and is left out. A
@@ -919,47 +980,47 @@ async fn read_profiles(conn: &zbus::Connection) -> zbus::Result<BTreeMap<String,
     };
     let mut out = BTreeMap::new();
     for path in paths {
-        let settings = dbus::timed_for(
-            dbus::READ_TIMEOUT,
-            conn.call_method(
-                Some(NM),
-                path.as_str(),
-                Some(CONNECTION_IFACE),
-                "GetSettings",
-                &(),
-            ),
-        )
-        .await;
-        let settings: HashMap<String, HashMap<String, OwnedValue>> = match settings {
-            Ok(r) => match r.body().deserialize() {
-                Ok(s) => s,
-                Err(_) => continue,
-            },
-            Err(e) if dbus::is_timeout(&e) => return Err(e),
-            Err(_) => continue,
-        };
-        let Some(c) = settings.get("connection") else {
-            continue;
-        };
-        let text = |k: &str| {
-            c.get(k)
-                .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
-                .unwrap_or_default()
-        };
-        let kind = text("type");
-        if kind == "loopback" {
-            continue;
+        if let Some(p) = read_profile(conn, &path).await? {
+            out.insert(path, p);
         }
-        out.insert(
-            path,
-            Profile {
-                uuid: text("uuid"),
-                name: text("id"),
-                kind,
-            },
-        );
     }
     Ok(out)
+}
+
+/// (services-round) One saved connection's `connection` settings; `None`
+/// for one gone meanwhile, or NetworkManager's loopback connection. A
+/// hung NetworkManager is an error.
+async fn read_profile(conn: &zbus::Connection, path: &str) -> zbus::Result<Option<Profile>> {
+    let settings = dbus::timed_for(
+        dbus::READ_TIMEOUT,
+        conn.call_method(Some(NM), path, Some(CONNECTION_IFACE), "GetSettings", &()),
+    )
+    .await;
+    let settings: HashMap<String, HashMap<String, OwnedValue>> = match settings {
+        Ok(r) => match r.body().deserialize() {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        },
+        Err(e) if dbus::is_timeout(&e) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    let Some(c) = settings.get("connection") else {
+        return Ok(None);
+    };
+    let text = |k: &str| {
+        c.get(k)
+            .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
+            .unwrap_or_default()
+    };
+    let kind = text("type");
+    if kind == "loopback" {
+        return Ok(None);
+    }
+    Ok(Some(Profile {
+        uuid: text("uuid"),
+        name: text("id"),
+        kind,
+    }))
 }
 
 /// (services-round) What `up()` and `down()` asked, answered.
@@ -1136,6 +1197,9 @@ async fn with_nm(
     // `down()` asked and not answered yet.
     let mut profiles = cx.watched("connections");
     let mut switching: JoinSet<Switched> = JoinSet::new();
+    // Each switch in flight's connection name, so one cut short by
+    // NetworkManager going is answered with `failed`.
+    let mut switch_names: HashMap<tokio::task::Id, String> = HashMap::new();
     let mut used = None;
     // A scan is asked for when listing starts and when a new
     // NetworkManager appears, not on every re-read.
@@ -1212,8 +1276,13 @@ async fn with_nm(
                         asking.shutdown().await;
                         leaving.shutdown().await;
                         switching.shutdown().await;
+                        let mut cut: Vec<String> = switch_names.drain().map(|(_, n)| n).collect();
+                        cut.sort();
                         leave = None;
                         stopped = Stopped::default();
+                        // A new NetworkManager's saved connections are
+                        // read afresh.
+                        nm.profiles = None;
                         pending = Pending {
                             address: pending.address.take(),
                             rates: pending.rates,
@@ -1221,7 +1290,7 @@ async fn with_nm(
                         };
                         let stopped = asked.clear().into_iter().chain(
                             std::mem::take(&mut joining).into_values().map(|j| j.ssid),
-                        );
+                        ).chain(cut);
                         for ssid in stopped {
                             if !cx.emit(NetworkEvent::Failed((ssid, "NetworkManager stopped".into()))) {
                                 return Ok(Next::Stop);
@@ -1440,8 +1509,13 @@ async fn with_nm(
                         return Ok(Next::Stop);
                     }
                 }
-                Some(done) = switching.join_next(), if !switching.is_empty() => {
-                    let failure = match done {
+                Some(done) = switching.join_next_with_id(), if !switching.is_empty() => {
+                    let id = match &done {
+                        Ok((id, _)) => *id,
+                        Err(e) => e.id(),
+                    };
+                    switch_names.remove(&id);
+                    let failure = match done.map(|(_, s)| s) {
                         Ok(Switched::Up(name, Ok(active))) => match ended.take(&active) {
                             Some((ACTIVATED, _)) => None,
                             Some((_, reason)) => Some((name, reason_text(reason))),
@@ -1488,9 +1562,11 @@ async fn with_nm(
                         let conn = daemon.conn().clone();
                         let path = nm.profile_path(&item.id);
                         let name = item.name;
-                        switching.spawn(async move {
+                        let label = name.clone();
+                        let task = switching.spawn(async move {
                             Switched::Up(name, activate(conn, path, item.id).await)
                         });
+                        switch_names.insert(task.id(), label);
                     }
                     Some(Msg::Action(NetworkAction::Down { item })) => {
                         let Some(active) = nm.active_of(&item.id) else {
@@ -1504,9 +1580,11 @@ async fn with_nm(
                         joining.remove(&active);
                         let conn = daemon.conn().clone();
                         let name = item.name;
-                        switching.spawn(async move {
+                        let label = name.clone();
+                        let task = switching.spawn(async move {
                             Switched::Down(name, deactivate(&conn, &active).await)
                         });
+                        switch_names.insert(task.id(), label);
                     }
                     Some(Msg::Write(w)) if w.field == "wifi" => {
                         let on: bool = w.value().unwrap_or(nm.state(listing).wifi);

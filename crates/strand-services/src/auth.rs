@@ -223,8 +223,9 @@ fn config() -> AuthConfig {
 /// `auth`'s actions.
 #[derive(Call, Debug)]
 pub enum AuthAction {
-    /// `auth.submit(password)`.
-    Submit { password: String },
+    /// `auth.submit(password)`: a [`Password`] from the call on (its
+    /// `Debug` shows only its length), wiped wherever it is dropped.
+    Submit { password: Password },
 }
 
 /// See the module docs.
@@ -672,7 +673,6 @@ impl Auth {
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Action(AuthAction::Submit { password })) => {
-                        let password = Password::from(password);
                         if cx.state().busy {
                             // One check at a time; this one is dropped
                             // (and wiped).
@@ -725,5 +725,20 @@ impl Auth {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Data, FromCall};
+
+    #[test]
+    fn an_answer_never_shows_in_debug() {
+        let a = AuthAction::from_call("submit", None, &[Data::Text("hunter2".into())]).unwrap();
+        assert_eq!(format!("{a:?}"), "Submit { password: Password(<7 bytes>) }");
+        let AuthAction::Submit { password } = a;
+        assert_eq!(password.as_bytes(), b"hunter2");
+        assert!(AuthAction::from_call("submit", None, &[Data::Int(1)]).is_err());
     }
 }

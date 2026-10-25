@@ -1,4 +1,4 @@
-/// (services-round) One MPRIS player: an item of `media.players`, with
+/// One MPRIS player: an item of `media.players`, with
 /// the fields and actions `media` has for the active one.
 record Player key id {
   /// Its bus name, such as `org.mpris.MediaPlayer2.spotify`: the key.
@@ -44,7 +44,9 @@ record Player key id {
 
 /// The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`
 /// on the session bus, the one playing (the latest to start) chosen, else
-/// the latest to pause. Its position is carried forward from the
+/// the latest to pause, unless one was picked with `p.select()`, which
+/// holds until that player leaves or another starts playing; `players`
+/// lists them all. Its position is carried forward from the
 /// player's last report at its rate, never asked for again (no polling),
 /// and only while a visible reader shows it.
 service media {

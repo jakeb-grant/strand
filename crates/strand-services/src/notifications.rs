@@ -8,13 +8,17 @@
 //!   `value` as `progress`, `category`; `expire_timeout`),
 //!   `CloseNotification`, `GetCapabilities`, `GetServerInformation`; the
 //!   `NotificationClosed`, `ActionInvoked`, (services-round)
-//!   `NotificationReplied` (KDE's `inline-reply` capability: an
-//!   `inline-reply` action makes `can_reply`, and `n.reply(text)` answers
-//!   it) and (M5) `ActivationToken` signals: an `invoke` or `activate` from a handler a press started
-//!   sends the xdg-activation token for that press first, so the app
-//!   that sent the notification may raise its window (the `activation`
-//!   module; the token waits at most 200 ms, then the action goes
-//!   without one).
+//!   `NotificationReplied` (KDE's `inline-reply` capability, advertised
+//!   only while the loaded program names `can_reply` or `reply`
+//!   ([`offer_replies`]): an `inline-reply` action makes `can_reply`, and
+//!   `n.reply(text)` answers it) and (M5) `ActivationToken` signals: an
+//!   `invoke` or `activate` from a handler a press started sends the
+//!   xdg-activation token for that press first, so the app that sent the
+//!   notification may raise its window (the `activation` module; the
+//!   token waits at most 200 ms, then the action goes without one).
+//!   (services-round) Every signal goes to the notification's sender
+//!   alone (a unicast signal, as KDE's server sends them), never to the
+//!   whole bus: a reply's text and an activation token are the sender's.
 //! - The store: `popups` (shown now), `all` (kept, at most [`KEPT`]),
 //!   `count`, `dnd`, the `received` event; `n.expire()` ends a popup (the
 //!   notification stays open in `all`: the server keeps notifications,
@@ -144,17 +148,46 @@ fn config() -> Config {
 /// its `ActivationToken` signal (M5; decisions.md m5-platform).
 pub const SPEC_VERSION: &str = "1.2";
 
-/// What `GetCapabilities` answers.
+/// What `GetCapabilities` answers, `inline-reply` aside
+/// ([`offer_replies`]).
 pub const CAPABILITIES: &[&str] = &[
     "actions",
     "body",
     "body-markup",
     "icon-static",
-    // (services-round) KDE's: an `inline-reply` action is answered by
-    // `NotificationReplied(id, text)`.
-    "inline-reply",
     "persistence",
 ];
+
+/// (services-round) KDE's `inline-reply` capability: an `inline-reply`
+/// action is answered by `NotificationReplied(id, text)`.
+pub const INLINE_REPLY: &str = "inline-reply";
+
+static REPLIES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// (services-round) Whether the server offers inline replies: the binary
+/// sets it from each loaded program, true when the program names
+/// `Notification.can_reply` or `reply` anywhere. An app told of the
+/// capability sends an `inline-reply` action in place of its own "Reply"
+/// button, so a shell that shows no reply field must not advertise it;
+/// while it is off, an `inline-reply` action an app sends anyway is an
+/// ordinary button among `actions`.
+pub fn offer_replies(on: bool) {
+    REPLIES.store(on, Ordering::Relaxed);
+}
+
+fn replies_offered() -> bool {
+    REPLIES.load(Ordering::Relaxed)
+}
+
+/// What `GetCapabilities` answers now.
+pub fn capabilities() -> Vec<String> {
+    let mut caps: Vec<String> = CAPABILITIES.iter().map(|c| c.to_string()).collect();
+    if replies_offered() {
+        caps.push(INLINE_REPLY.to_string());
+        caps.sort();
+    }
+    caps
+}
 
 /// A notification's urgency.
 #[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -342,6 +375,11 @@ enum FromBus {
 struct Ids {
     next: u32,
     live: HashSet<u32>,
+    /// (services-round) Who sent each live one (its unique bus name): the
+    /// only peer told of its replies, actions, activation token and
+    /// closing. A broadcast would let any peer on the bus (a sandboxed app
+    /// among them) read what the user typed in reply to another app.
+    senders: HashMap<u32, String>,
     /// The run ended: `Notify` and `CloseNotification` are refused (the
     /// name may still be ours while the closing signals go out).
     closed: bool,
@@ -456,8 +494,9 @@ impl Server {
                 default = true;
                 continue;
             }
-            // (services-round) Answered by `n.reply(text)`, not a button.
-            if key == "inline-reply" {
+            // (services-round) Answered by `n.reply(text)`, not a button,
+            // while the shell offers replies.
+            if key == INLINE_REPLY && replies_offered() {
                 can_reply = true;
                 continue;
             }
@@ -527,6 +566,7 @@ impl Server {
         actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<u32> {
         let stopped = || zbus::fdo::Error::Failed("the notification server is stopping".into());
         let a = self
@@ -543,11 +583,19 @@ impl Server {
             .ok_or_else(stopped)?;
         let id = a.n.id as u32;
         let (fresh, data) = (!a.replaces, matches!(a.image, Image::Data(_)));
+        // A replacement's sender is the one told from now on.
+        if let Ok(mut ids) = self.ids.lock() {
+            match header.sender() {
+                Some(s) => ids.senders.insert(id, s.to_string()),
+                None => ids.senders.remove(&id),
+            };
+        }
         if self.tx.send(FromBus::Notify(Box::new(a))).is_err() {
             // The body is gone: no id is handed out for a notification
             // nobody shows.
             if fresh && let Ok(mut ids) = self.ids.lock() {
                 ids.live.remove(&id);
+                ids.senders.remove(&id);
             }
             if data {
                 self.images.fetch_sub(1, Ordering::AcqRel);
@@ -572,7 +620,7 @@ impl Server {
     }
 
     async fn get_capabilities(&self) -> Vec<String> {
-        CAPABILITIES.iter().map(|c| c.to_string()).collect()
+        capabilities()
     }
 
     #[zbus(out_args("name", "vendor", "version", "spec_version"))]
@@ -928,8 +976,10 @@ impl Notifications {
                                 close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Activate { item } => {
-                                if kept.default.contains(&item.id) {
-                                    invoked(&conn, item.id, "default", token.as_deref()).await;
+                                if kept.default.contains(&item.id)
+                                    && let Some(to) = sender(&ids, item.id)
+                                {
+                                    invoked(&conn, &to, item.id, "default", token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.id)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
@@ -937,10 +987,12 @@ impl Notifications {
                             NotificationsAction::Reply { item, text } => {
                                 // A restored one, or one with no reply,
                                 // has nobody to answer.
-                                let answers = !kept.restored.contains(&item.id)
-                                    && cx.state().all.iter().any(|n| n.id == item.id && n.can_reply);
-                                if answers {
-                                    replied(&conn, item.id, &text).await;
+                                let to = sender(&ids, item.id).filter(|_| {
+                                    !kept.restored.contains(&item.id)
+                                        && cx.state().all.iter().any(|n| n.id == item.id && n.can_reply)
+                                });
+                                if let Some(to) = to {
+                                    replied(&conn, &to, item.id, &text).await;
                                     kept.resident.contains(&item.id)
                                         || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                                 } else {
@@ -952,8 +1004,9 @@ impl Notifications {
                                 // A restored one's sender cannot hear it.
                                 if !kept.restored.contains(&item.notification)
                                     && cx.state().all.iter().any(|n| n.id == item.notification)
+                                    && let Some(to) = sender(&ids, item.notification)
                                 {
-                                    invoked(&conn, item.notification, &item.id, token.as_deref()).await;
+                                    invoked(&conn, &to, item.notification, &item.id, token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.notification)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.notification, Closed::Dismissed).await
@@ -1029,10 +1082,14 @@ impl Drop for CloseOnStop {
     fn drop(&mut self) {
         // First no new notification is taken (an id handed out now
         // would name one nobody shows), then those open are closed.
-        let mut open: Vec<u32> = match self.ids.lock() {
+        let mut open: Vec<(u32, String)> = match self.ids.lock() {
             Ok(mut ids) => {
                 ids.closed = true;
-                ids.live.drain().collect()
+                let senders = std::mem::take(&mut ids.senders);
+                ids.live
+                    .drain()
+                    .filter_map(|id| Some((id, senders.get(&id)?.clone())))
+                    .collect()
             }
             Err(_) => return,
         };
@@ -1045,8 +1102,8 @@ impl Drop for CloseOnStop {
         // services' thread ends: `Services::shutdown` closes them too.
         crate::client::finalize(async move {
             let _ = conn.object_server().remove::<Server, _>(PATH).await;
-            for id in open {
-                signal_closed(&conn, i64::from(id), Closed::Closed).await;
+            for (id, to) in open {
+                signal_closed(&conn, &to, i64::from(id), Closed::Closed).await;
             }
         });
     }
@@ -1470,9 +1527,10 @@ async fn close(
     why: Closed,
 ) -> bool {
     let known = cx.state().all.iter().any(|n| n.id == id);
-    if let Ok(mut ids) = ids.lock() {
+    let to = ids.lock().ok().and_then(|mut ids| {
         ids.live.remove(&(id as u32));
-    }
+        ids.senders.remove(&(id as u32))
+    });
     kept.resident.remove(&id);
     kept.default.remove(&id);
     kept.transient.remove(&id);
@@ -1483,8 +1541,8 @@ async fn close(
         return !cx.stopped();
     }
     // A restored one's sender is not told: it never knew this id.
-    if !restored {
-        signal_closed(conn, id, why).await;
+    if !restored && let Some(to) = to {
+        signal_closed(conn, &to, id, why).await;
     }
     let alive = cx.update(|s| {
         s.popups.retain(|n| n.id != id);
@@ -1495,10 +1553,17 @@ async fn close(
     alive
 }
 
-async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
+/// The sender of live notification `id`, the one peer its signals go to
+/// ([`Ids::senders`]); `None` for one restored from an earlier run.
+fn sender(ids: &Mutex<Ids>, id: i64) -> Option<String> {
+    let ids = ids.lock().ok()?;
+    ids.senders.get(&(id as u32)).cloned()
+}
+
+async fn signal_closed(conn: &zbus::Connection, to: &str, id: i64, why: Closed) {
     let r = conn
         .emit_signal(
-            None::<&str>,
+            Some(to),
             PATH,
             NAME,
             "NotificationClosed",
@@ -1510,11 +1575,12 @@ async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
     }
 }
 
-/// (services-round) KDE's `NotificationReplied(id, text)`.
-async fn replied(conn: &zbus::Connection, id: i64, text: &str) {
+/// (services-round) KDE's `NotificationReplied(id, text)`, to its sender
+/// alone, as KDE's server sends it.
+async fn replied(conn: &zbus::Connection, to: &str, id: i64, text: &str) {
     let r = conn
         .emit_signal(
-            None::<&str>,
+            Some(to),
             PATH,
             NAME,
             "NotificationReplied",
@@ -1528,13 +1594,15 @@ async fn replied(conn: &zbus::Connection, id: i64, text: &str) {
 
 /// `ActionInvoked`, after (M5) spec 1.2's `ActivationToken` when the
 /// press that invoked it got a token.
-async fn invoked(conn: &zbus::Connection, id: i64, key: &str, token: Option<&str>) {
+/// Both to the notification's sender alone: an activation token lets its
+/// holder raise a window, so no other peer may take it.
+async fn invoked(conn: &zbus::Connection, to: &str, id: i64, key: &str, token: Option<&str>) {
     for (member, text) in [("ActivationToken", token), ("ActionInvoked", Some(key))] {
         let Some(text) = text else {
             continue;
         };
         let r = conn
-            .emit_signal(None::<&str>, PATH, NAME, member, &(id as u32, text))
+            .emit_signal(Some(to), PATH, NAME, member, &(id as u32, text))
             .await;
         if let Err(e) = r {
             log::debug!("notifications: {member} not sent: {e}");

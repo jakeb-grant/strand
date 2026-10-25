@@ -49,14 +49,15 @@ enum OutputTransform { normal, rotate_90, rotate_180, rotate_270, flipped, flipp
 /// How a Wi-Fi network is secured. `enhanced_open` is OWE (open, but
 /// encrypted); `enterprise` is 802.1X.
 enum WifiSecurity { open, enhanced_open, wep, wpa, wpa2, wpa3, enterprise }
-/// (services-round) What kind of network a connection is: a Wi-Fi
+/// What kind of network a connection is: a Wi-Fi
 /// network, a wired one, a VPN, a WireGuard tunnel, or another kind (a
 /// bridge, a modem, a hotspot shared over Bluetooth).
 enum ConnectionKind { wifi, ethernet, vpn, wireguard, other }
-/// (services-round) Whether a program's audio stream plays (`output`)
-/// or records (`input`).
-enum StreamDirection { output, input }
-/// (services-round) Where a program's video comes from: a camera, or a
+/// Whether a program's audio stream plays (`output`), records a
+/// microphone or another source (`input`), or records what a sink plays
+/// (`monitor`: a visualiser, a recorder of the desktop's sound).
+enum StreamDirection { output, input, monitor }
+/// Where a program's video comes from: a camera, or a
 /// screen (or window) cast.
 enum VideoSource { camera, screencast }
 
@@ -106,7 +107,8 @@ handle record Node {
   box: Rect
 }
 
-/// A laid-out box (`id.box`), logical pixels.
+/// A box in logical pixels: a laid-out node's (`id.box`), or a window's
+/// place on its screen (`win.rect`).
 record Rect {
   /// Its left edge.
   x: float
@@ -167,7 +169,7 @@ provisional record Date {
   fn format(pattern: text) -> text
 }
 
-/// (services-round) A file a `from dir` service lists: `service walls
+/// A file a `from dir` service lists: `service walls
 /// from dir "~/Pictures/walls" { files: [File] }`, then `for f in
 /// walls.files key f.path { image f.path }`.
 record File key path {
@@ -287,13 +289,13 @@ provisional record Workspace key id {
 
 /// A program's audio stream, from PipeWire: what it plays or records.
 provisional record AudioStream key id {
-  /// Its PipeWire id.
+  /// Names it while it lives (PipeWire's `object.serial`).
   id: int
   /// The program's name.
   app: text
   /// An icon name for the program.
   icon: text
-  /// Whether it plays or records.
+  /// Whether it plays, records a source, or records what a sink plays.
   direction: StreamDirection
   /// Its own volume. Writable.
   volume: float rw
@@ -1904,8 +1906,13 @@ element lottie(path -> source): node {
   speed: float
   flags leaf
 }
-/// A live thumbnail of a window (`thumbnail w`), or (services-round) a
-/// still of a screen, taken each time it is shown (`thumbnail screen`).
+/// A live thumbnail of a window (`thumbnail w`), or a still of a screen,
+/// taken each time it is shown (`thumbnail screen`). Inside a `lock` a
+/// screen's still is taken after the session locks, so it shows black
+/// or the lock itself; a still from just before the lock is not done
+/// yet. On its own screen the still is taken once the surface showing
+/// it is drawn, so it holds that surface too (an overview shows itself,
+/// empty); a still from before the surface opens is not done yet either.
 element thumbnail(Window | Screen -> source): node {
   /// How the thumbnail fills its box.
   fit: Fit

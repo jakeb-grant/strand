@@ -583,6 +583,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         for g in missing {
             self.create_solid(&lock, g);
         }
+        // (services-round) The spec may have turned `inhibit_idle` on or
+        // off in place.
+        if let Some(id) = self.session_lock.content {
+            self.sync_idle_inhibitor(id);
+        }
     }
 
     fn destroy_lock_surfaces(&mut self) {
@@ -679,6 +684,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.surfaces.insert(id, surface);
         self.session_lock.content = Some(id);
+        // (services-round) `inhibit_idle:` holds on a lock as on any
+        // surface.
+        self.sync_idle_inhibitor(id);
         self.host.surface_attached(id, node, Some(&monitor));
     }
 

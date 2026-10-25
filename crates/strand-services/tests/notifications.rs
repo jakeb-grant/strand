@@ -402,19 +402,24 @@ fn the_server_serves_the_spec_and_the_store() {
 /// m4-owner-docs), the oldest beyond it closing as expired, and lying
 /// pictures are refused.
 /// (services-round) A notification's progress (`value`, a percentage),
-/// category and desktop entry hints; an `inline-reply` action is no
-/// button but `can_reply`, and `n.reply(text)` sends KDE's
-/// `NotificationReplied` and closes it; one without it takes no reply.
+/// category and desktop entry hints; while the program offers replies,
+/// an `inline-reply` action is no button but `can_reply`, and
+/// `n.reply(text)` sends KDE's `NotificationReplied` and closes it; one
+/// without it takes no reply. The reply and the closing go to the sender
+/// alone: another peer listening for the server's signals hears neither.
 #[test]
 fn hints_and_inline_replies() {
     let _serial = serial();
     history_in(None);
+    notifications::offer_replies(true);
     let Some(bus) = PrivateBus::start() else {
         return;
     };
     let tokio = tokio();
     let conn = connect(&tokio, &bus.address);
     let heard = hear(&tokio, &conn);
+    let other = connect(&tokio, &bus.address);
+    let overheard = hear(&tokio, &other);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     b.notifications.acquire(&rt);
@@ -477,6 +482,12 @@ fn hints_and_inline_replies() {
         .unwrap();
     wait_heard(&heard, &format!("Replied {id} on my way"));
     wait_heard(&heard, &format!("Closed {id} 2"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        overheard.lock().unwrap().is_empty(),
+        "another peer hears nothing: {:?}",
+        overheard.lock().unwrap()
+    );
 
     // No `inline-reply`: no reply, and it stays.
     let plain = notify(&tokio, &conn, 0, "Plain", &[], HashMap::new(), -1);
@@ -505,6 +516,48 @@ fn hints_and_inline_replies() {
         "{:?}",
         heard.lock().unwrap()
     );
+    s.shutdown();
+}
+
+/// (services-round) A program that names neither `can_reply` nor
+/// `reply` shows no reply field, so the server does not advertise
+/// `inline-reply` (an app told of it drops its own "Reply" button), and
+/// an `inline-reply` action an app sends anyway is an ordinary button.
+#[test]
+fn no_reply_field_no_inline_reply() {
+    let _serial = serial();
+    history_in(None);
+    notifications::offer_replies(false);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let caps: Vec<String> = call(&tokio, &conn, NAME, PATH, NAME, "GetCapabilities", &())
+        .body()
+        .deserialize()
+        .unwrap();
+    assert!(!caps.iter().any(|c| c == "inline-reply"), "{caps:?}");
+    assert!(caps.iter().any(|c| c == "actions"), "{caps:?}");
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Chat",
+        &["inline-reply", "Reply"],
+        HashMap::new(),
+        -1,
+    );
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let n = popups(&b, &rt).remove(0);
+    assert!(!n.can_reply);
+    let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(buttons, ["inline-reply"], "a button like any other");
     s.shutdown();
 }
 

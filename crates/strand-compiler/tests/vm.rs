@@ -97,6 +97,17 @@ fn runaway_recursion_is_an_error_value() {
     assert!(err.to_string().contains("nested more than"), "{err}");
 }
 
+/// (services-round) A record built without its optional and list fields
+/// holds null and the empty list there (spec.md 5.4).
+#[test]
+fn a_record_left_without_a_list_field_holds_an_empty_one() {
+    let src = "type Pin { app: text; tags: [text]; note: text? }\nlet p = Pin(app: \"a\")\nlet n = p.tags.join(\",\")\nlet none = p.note == null\nbar B { height: 10 }\n";
+    let (_rt, _host, inst) = run(src);
+    inst.flush();
+    assert_eq!(get(&inst, "n"), Value::text(""));
+    assert_eq!(get(&inst, "none"), Value::Bool(true));
+}
+
 /// Keyed collections in handlers: push, insert, move, update, remove by
 /// key; a duplicate key is an error value.
 #[test]

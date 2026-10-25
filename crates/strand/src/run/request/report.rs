@@ -8,8 +8,9 @@
 //! D-Bus front end has no `Report`).
 //!
 //! (report) With words (`{"save": {"words": …}}`) it saves a glitch
-//! report instead: refused while a lock is asked for or shown, main's
-//! part asked with `SnapshotKind::Bundle`, logic's added here (its ring,
+//! report instead: refused while a lock is asked for or shown (and,
+//! services-round, while an admin password dialog or a login screen is
+//! up: `Shell::secret_shown`), main's part asked with `SnapshotKind::Bundle`, logic's added here (its ring,
 //! every service's and cell's value under the redaction rules, the
 //! module set, the files the program reads), and the whole written by a
 //! `strand-report` thread (`crate::report::bundle`), whose outcome
@@ -28,6 +29,10 @@ use crate::run::{Snapshot, SnapshotId, SnapshotKind, ToMain};
 /// The refusal while a lock is asked for or shown.
 const LOCKED: &str = "the screen is locked";
 
+/// (services-round) The refusal while an admin password dialog or a
+/// login screen is up.
+const SECRET: &str = "an admin password dialog or a login screen is shown";
+
 impl Shell {
     #[cold]
     #[inline(never)]
@@ -35,6 +40,9 @@ impl Shell {
         if save.is_some() {
             if self.inst.lock_shown() {
                 return self.answer(from, proto::refused(LOCKED));
+            }
+            if self.secret_shown() {
+                return self.answer(from, proto::refused(SECRET));
             }
             if strand_core::persist::state_dir().is_none() {
                 return self.answer(
@@ -74,6 +82,9 @@ impl Shell {
         // A lock asked for while main answered: nothing is saved.
         if self.inst.lock_shown() {
             return self.answer(from, proto::refused(LOCKED));
+        }
+        if self.secret_shown() {
+            return self.answer(from, proto::refused(SECRET));
         }
         let Some(state) = strand_core::persist::state_dir() else {
             return self.answer(from, proto::refused("no state directory"));

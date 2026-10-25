@@ -71,7 +71,13 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     assert_eq!(m.keyboard_layout.as_deref(), Some("German"));
     // (services-round) Its layouts, named from its rule names (`us,de`)
     // as the keymap names them; and each window's place on its monitor.
-    assert_eq!(m.keyboard_layouts, ["English (US)", "German"]);
+    // Hyprland names only the active one: the rule names travel, and the
+    // `keyboard` service names them while it shows them.
+    assert!(m.keyboard_layouts.is_empty());
+    assert_eq!(
+        m.keyboard_rules.as_ref().map(wm::XkbNames::layout_names),
+        Some(vec!["English (US)".to_string(), "German".to_string()])
+    );
     assert_eq!(
         kitty.rect,
         Some(wm::WinRect {
@@ -158,7 +164,14 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     .await;
     fake.clear_reply("j/devices");
     // (services-round) No rule names: no layouts.
-    assert!(c.mirror.keyboard_layouts.is_empty());
+    assert!(
+        c.mirror
+            .keyboard_rules
+            .as_ref()
+            .map(wm::XkbNames::layout_names)
+            .unwrap_or_default()
+            .is_empty()
+    );
     // A submap entered, then the default one again.
     fake.send("submap>>resize\n");
     c.until("the submap", |m| m.mode.as_deref() == Some("resize"))

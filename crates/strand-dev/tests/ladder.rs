@@ -101,6 +101,7 @@ const LADDER: &[(&str, u32, &str)] = &[
     ("a settings file", 5, "settings files"),
     ("an SVG layer selector", 5, "SVG layer selectors"),
     ("service from file", 5, "`service … from file`"),
+    ("service from dir", 5, "`from dir`"),
     ("service from listen", 5, "`from listen`"),
     ("service from poll", 5, "`from poll`"),
     ("permit exec", 5, "`permit exec`"),
@@ -125,6 +126,9 @@ const PROSE: &[(&str, &str)] = &[
     ("canvas", "`canvas { draw:"),
     ("a shader", "`shader \"aurora.wgsl\""),
     ("an SVG layer selector", "#needle {"),
+    // Level 5: a directory of the reader's own (their wallpapers) is
+    // what `from dir` lists.
+    ("service from dir", "`service walls from dir"),
     // Level 5: `from listen`'s common commands are compositor-specific.
     ("service from listen", "`service player from listen"),
     // Level 5: an action's command is the reader's own (a compositor's
@@ -237,6 +241,7 @@ impl Walk<'_> {
                 let c = match s.source.as_str() {
                     "dbus" => "service from dbus",
                     "file" => "service from file",
+                    "dir" => "service from dir",
                     "listen" => "service from listen",
                     "poll" => "service from poll",
                     other => panic!("a `service … from {other}`"),

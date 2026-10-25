@@ -29,7 +29,7 @@ record AccessPoint key ssid {
   action connect_with(password: text)
 }
 
-/// (services-round) A connection saved in NetworkManager (a Wi-Fi
+/// A connection saved in NetworkManager (a Wi-Fi
 /// network joined before, a wired profile, a VPN, a WireGuard tunnel):
 /// an item of `network.connections`, keyed by its UUID.
 record Connection key id {
@@ -110,8 +110,9 @@ service network {
   /// asks when it opens; over iwd, iwd's own scans too.
   scanning: bool
   /// The kind of the connection carrying the traffic, so a bar picks
-  /// its icon: `match network.kind { wifi => …, ethernet => …, vpn |
-  /// wireguard => … }`. A VPN or WireGuard tunnel holding the default
+  /// its icon: `match network.kind { wifi => …, ethernet => …, vpn =>
+  /// …, wireguard => …, _ => … }` (the `_` arm for null and `other`).
+  /// A VPN or WireGuard tunnel holding the default
   /// route counts first, since traffic goes through it; else the
   /// connection that holds it (NetworkManager's primary connection).
   /// Null while not connected. Over iwd, `wifi` while a network is

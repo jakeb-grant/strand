@@ -55,8 +55,10 @@ record Notification key id {
   /// hint), null when the sender gives none.
   desktop_entry: text?
   /// The sender takes a typed reply (an `inline-reply` action, which is
-  /// not among `actions`): `if n.can_reply { input … }`. False on one
-  /// remembered from an earlier run.
+  /// not among `actions`): `if n.can_reply { input … }`. Strand offers
+  /// senders inline replies only while the config names `can_reply` or
+  /// `reply`, so a sender keeps its own Reply button otherwise. False on
+  /// one remembered from an earlier run.
   can_reply: bool
   /// Ends its popup, as a timeout does; it stays in `all`, still open
   /// (its actions still reach the sender) until dismissed.
@@ -65,8 +67,9 @@ record Notification key id {
   action dismiss()
   /// Invokes its default action: `on click { n.activate() }`.
   action activate()
-  /// `n.reply(text)` sends `text` to the sender as its inline reply and
-  /// closes it (unless it is resident); nothing when it takes no reply.
+  /// `n.reply(text)` sends `text` to the sender as its inline reply (to
+  /// that sender alone, never to other programs on the bus) and closes
+  /// it (unless it is resident); nothing when it takes no reply.
   action reply(text: text)
 }
 

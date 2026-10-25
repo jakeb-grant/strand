@@ -1223,8 +1223,15 @@ bar Top {
   on show { greetd.login(\"alice\") }
 }
 ";
-    let Some(mut setup) = Setup::start_with("greeter", config, &[], &[("GREETD_SOCK", sock)])
-    else {
+    // The fake greetd is served by this test's user, not root: a debug
+    // build takes the expected server from STRAND_TEST_GREETD_UID.
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let env = [
+        ("GREETD_SOCK", sock),
+        ("STRAND_TEST_GREETD_UID", PathBuf::from(uid.to_string())),
+    ];
+    let Some(mut setup) = Setup::start_with("greeter", config, &[], &env) else {
         return;
     };
     let deadline = Instant::now() + Duration::from_secs(30);

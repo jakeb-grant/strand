@@ -29,17 +29,24 @@
 //! - **Streams.** (services-round) `audio.streams` lists the programs'
 //!   streams only while a reader reads it ([`Cx::watched`]): the loop
 //!   binds the stream nodes then ([`Cmd::Streams`]), and lets them go
-//!   when nobody reads it. `st.volume = v` and `st.muted = m` are writes
-//!   of the stream's node as for a device's item, answered the same way.
+//!   when nobody reads it. A stream's `id` is its node's `object.serial`
+//!   (PipeWire reuses node ids, never serials), so `st.volume = v` and
+//!   `st.muted = m` from an item held past its stream's end reach no
+//!   other stream: they are writes of the node that serial names now, as
+//!   for a device's item, answered the same way, and refused when it is
+//!   gone. A stream recording a sink's monitor (`stream.capture.sink`: a
+//!   visualiser, desktop-audio capture) is `monitor`, not `input`.
 //! - **Levels.** The peak meters run for [`tap_levels`] taps (the M4
 //!   `spectrum` element's hook) and (services-round) for
 //!   `audio.levels(dev, bars)`, and only while a reader of the service
 //!   is visible: hidden, every meter stops. `audio.levels` asks for its
-//!   device's meter each time it is evaluated ([`ask_levels`]) and reads
-//!   its latest spectrum from `audio.meters`; a meter whose reading no
-//!   evaluation asked for again within [`LEVELS_LEASE`] (its reader went
-//!   away while another kept the service visible) stops, and its item
-//!   leaves `audio.meters`.
+//!   device's meter each time it is evaluated ([`ask_levels`]), a reader
+//!   until that evaluation re-runs or its scope goes, and reads its
+//!   latest spectrum from `audio.meters`. A meter stops, and its item
+//!   leaves `audio.meters`, [`LEVELS_LEASE`] after its last reader went
+//!   (quiet or not), or once a reading goes that long without an
+//!   evaluation asking again (its reader hidden while another keeps the
+//!   service visible).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -112,54 +119,111 @@ pub fn bars(bands: &[f64], n: usize) -> Vec<f64> {
         .collect()
 }
 
-/// The devices `audio.levels` asked about: `None` while asked since the
-/// meter's last reading, else when that reading was shown.
-static ASKED: Mutex<BTreeMap<u32, Option<Instant>>> = Mutex::new(BTreeMap::new());
+/// One device `audio.levels` asks about.
+#[derive(Debug, Default)]
+struct Asked {
+    /// The evaluations reading it now: each counts from its evaluation
+    /// until it re-runs or its scope goes ([`release_levels`]).
+    readers: usize,
+    /// When a reading was shown that no evaluation asked for again since.
+    shown: Option<Instant>,
+    /// Such a reading went [`LEVELS_LEASE`] unasked (its reader is hidden
+    /// while another keeps the service visible): the meter stops until an
+    /// evaluation asks again.
+    lapsed: bool,
+    /// When the last reader went.
+    unread_since: Option<Instant>,
+}
 
-fn with_asked<R>(f: impl FnOnce(&mut BTreeMap<u32, Option<Instant>>) -> R) -> R {
+/// The devices `audio.levels` asks about.
+static ASKED: Mutex<BTreeMap<u32, Asked>> = Mutex::new(BTreeMap::new());
+
+fn with_asked<R>(f: impl FnOnce(&mut BTreeMap<u32, Asked>) -> R) -> R {
     let mut g = ASKED.lock().unwrap_or_else(|e| e.into_inner());
     f(&mut g)
 }
 
-/// `audio.levels(dev, …)` was evaluated: device `id`'s meter runs (while
-/// a reader of `audio` is visible) until a reading of it goes
+/// `audio.levels(dev, …)` was evaluated: one more reader of device
+/// `id`'s meter, which runs (while a reader of `audio` is visible) until
+/// that reader goes ([`release_levels`]) or a reading goes
 /// [`LEVELS_LEASE`] unasked.
 pub fn ask_levels(id: u32) {
-    let new = with_asked(|a| a.insert(id, None).is_none());
+    let new = with_asked(|a| {
+        let e = a.entry(id).or_default();
+        let new = (e.readers == 0 && e.unread_since.is_none()) || e.lapsed;
+        e.readers += 1;
+        e.shown = None;
+        e.lapsed = false;
+        e.unread_since = None;
+        new
+    });
     if new {
         poke_loops();
     }
 }
 
-/// The devices asked about now, those whose lease ran out let go. While
-/// no reader is visible no lease runs (no meter reads, and a reader
-/// shown again may not be evaluated again until its meter's first
-/// reading): each counts as asked.
+/// A reader [`ask_levels`] counted went (its evaluation re-ran, or its
+/// scope was disposed): the last one starts [`LEVELS_LEASE`], after
+/// which the meter stops whether or not sound flows.
+pub fn release_levels(id: u32) {
+    let last = with_asked(|a| match a.get_mut(&id) {
+        Some(e) if e.readers > 0 => {
+            e.readers -= 1;
+            if e.readers == 0 {
+                e.unread_since = Some(Instant::now());
+            }
+            e.readers == 0
+        }
+        _ => false,
+    });
+    if last {
+        poke_loops();
+    }
+}
+
+/// The devices whose meter runs now; those nobody reads any more for
+/// [`LEVELS_LEASE`] are let go. While no reader is visible no reading
+/// lease runs (no meter reads, and a reader shown again may not be
+/// evaluated again until its meter's first reading).
 fn asked(now: Instant, visible: bool) -> BTreeSet<u32> {
     with_asked(|a| {
-        if visible {
-            a.retain(|_, shown| shown.is_none_or(|t| now < t + LEVELS_LEASE));
-        } else {
-            a.values_mut().for_each(|shown| *shown = None);
+        a.retain(|_, e| e.unread_since.is_none_or(|t| now < t + LEVELS_LEASE));
+        for e in a.values_mut() {
+            if !visible {
+                e.shown = None;
+                e.lapsed = false;
+            } else if e.shown.is_some_and(|t| now >= t + LEVELS_LEASE) {
+                e.shown = None;
+                e.lapsed = true;
+            }
         }
-        a.keys().copied().collect()
+        a.iter()
+            .filter(|(_, e)| !e.lapsed)
+            .map(|(id, _)| *id)
+            .collect()
     })
 }
 
 /// When the next lease runs out.
 fn lease_due() -> Option<Instant> {
-    with_asked(|a| a.values().flatten().map(|t| *t + LEVELS_LEASE).min())
+    with_asked(|a| {
+        a.values()
+            .flat_map(|e| [e.shown, e.unread_since])
+            .flatten()
+            .map(|t| t + LEVELS_LEASE)
+            .min()
+    })
 }
 
 /// A reading of `id`'s meter was shown: its lease starts unless asked
-/// again. `false` when nobody asked about `id`.
+/// again. `false` when nobody asks about `id`.
 fn shown_levels(id: u32, now: Instant) -> bool {
     with_asked(|a| match a.get_mut(&id) {
-        Some(shown) => {
-            shown.get_or_insert(now);
+        Some(e) if !e.lapsed => {
+            e.shown.get_or_insert(now);
             true
         }
-        None => false,
+        _ => false,
     })
 }
 
@@ -197,7 +261,9 @@ fn audio_fns(
         return Some(Ok(Data::List(vec![Data::Float(0.0); n])));
     };
     if id != 0 {
+        // Read until this evaluation re-runs or its scope goes.
         ask_levels(id);
+        rt.on_cleanup(move || release_levels(id));
     }
     Some(cells.meters.with(rt, |m| {
         let bands = m.get(&id).map(|m| m.bands.as_slice()).unwrap_or(&[]);
@@ -482,6 +548,24 @@ impl StoreHost {
         }
     }
 
+    /// (services-round) The node of the stream `audio.streams` shows as
+    /// `id` (its serial): the node that has that serial now. One no node
+    /// has (a stream that ended) is asked of node `id` with serial `id`,
+    /// which is that stream if anything, so the write reaches no other
+    /// stream (where PipeWire gives no serials the id is the node's own).
+    fn stream_ref(&self, id: u32) -> DeviceRef {
+        match self.serials.iter().find(|(_, s)| **s == u64::from(id)) {
+            Some((node, serial)) => DeviceRef::Id {
+                id: *node,
+                serial: Some(*serial),
+            },
+            None => DeviceRef::Id {
+                id,
+                serial: Some(u64::from(id)),
+            },
+        }
+    }
+
     /// The action `make_default()` on `item`: on its device by id and
     /// serial, or `None` when its id holds another device now.
     fn make_default(&self, item: &AudioDevice) -> Option<AudioAction> {
@@ -541,10 +625,11 @@ impl StoreHost {
         let device = match shown {
             Shown::Default(true) => DeviceRef::DefaultSink,
             Shown::Default(false) => DeviceRef::DefaultSource,
-            Shown::Item(_, id) | Shown::Stream(id) => DeviceRef::Id {
+            Shown::Item(_, id) => DeviceRef::Id {
                 id,
                 serial: self.serials.get(&id).copied(),
             },
+            Shown::Stream(id) => self.stream_ref(id),
         };
         let leaf = match w.path.as_slice() {
             [Step::Field(f)] => f.as_str(),
@@ -971,8 +1056,33 @@ mod tests {
         assert!(asked(t0 + LEVELS_LEASE * 6, true).contains(&9_001));
         assert!(shown_levels(9_001, t0 + LEVELS_LEASE * 6));
         assert!(!asked(t0 + LEVELS_LEASE * 7, true).contains(&9_001));
+        // Lapsed, its readings are not shown, until asked again.
+        assert!(!shown_levels(9_001, t0 + LEVELS_LEASE * 7));
+        ask_levels(9_001);
+        assert!(asked(t0 + LEVELS_LEASE * 8, true).contains(&9_001));
         // A reading nobody asked for is not shown.
         assert!(!shown_levels(9_002, t0));
+    }
+
+    /// (services-round) A device asked about while quiet sends no
+    /// reading, so no reading lease runs: its meter stops once its
+    /// readers have gone, [`LEVELS_LEASE`] after the last.
+    #[test]
+    fn a_quiet_meter_stops_once_its_readers_go() {
+        ask_levels(9_101);
+        ask_levels(9_101);
+        let t0 = Instant::now();
+        assert!(asked(t0 + LEVELS_LEASE * 3, true).contains(&9_101));
+        release_levels(9_101);
+        assert!(asked(Instant::now() + LEVELS_LEASE * 3, true).contains(&9_101));
+        release_levels(9_101);
+        let gone = Instant::now();
+        assert!(asked(gone, true).contains(&9_101), "within the lease");
+        assert!(lease_due().is_some());
+        assert!(!asked(gone + LEVELS_LEASE, true).contains(&9_101));
+        // A release with nobody counted changes nothing.
+        release_levels(9_101);
+        assert!(!asked(gone + LEVELS_LEASE, true).contains(&9_101));
     }
 
     #[test]

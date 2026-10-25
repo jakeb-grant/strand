@@ -462,6 +462,11 @@ time to come up:
 swayidle -w before-sleep 'strand set lock.locked true && sleep 1'
 ```
 
+To lock after ten idle minutes without a daemon, add to `lock.strand`:
+`on change idle.after(600s) { if idle.after(600s) { locked = true } }`.
+Locking before the machine sleeps still needs swayidle's
+`before-sleep`, as above.
+
 Press the key:
 every monitor is covered, with the time and a password field. Type your
 password and press Return: "Checking..." counts its dots while the
@@ -527,6 +532,7 @@ panel Polkit {
         bg: $surface; shadow: $elevation.xl
     text "Authentication needed" { font: $font.title }
     text polkit.request?.message ?? ""
+    if polkit.request?.command != null { text polkit.request?.command ?? "" { color: $fg.muted } }
     text "Password for " + (polkit.request?.user ?? "") { color: $fg.muted }
     input { type: (polkit.request?.echo ?? false) ? text : password
       placeholder: polkit.request?.prompt ?? ""; text: <-> answer; focus: true
@@ -543,7 +549,10 @@ panel Polkit {
 }
 ```
 
-Try it from a terminal:
+If your compositor's config starts another agent (an `exec
+polkit-gnome-authentication-agent-1` or `lxpolkit` line), remove that
+line and log in again first: only one agent serves a session. Then try
+it from a terminal:
 
 ```
 pkexec true
@@ -556,16 +565,24 @@ ahead. A wrong one says so and asks again; Cancel tells the program no.
 **Reading `polkit` makes Strand the agent.** While a config reads the
 `polkit` service, Strand registers with polkit as your session's
 agent, and stops five seconds after nothing reads it any more, as
-every service does. Delete `polkit.strand` and Strand is no agent.
+every service does. Remove every read of `polkit` (this file, and the
+bar line below if you add it) and Strand is no agent.
 
 - `polkit.request` is the request waiting, or `null`. Its `message`
   says what it is for, `user` whose password it needs, and `prompt`
   what the check asks ("Password: "), as PAM says it. `echo` is true
   when PAM asks for something that is not a secret, which the input
-  then shows as typed.
+  then shows as typed. `command` is the command it would run, with its
+  arguments (`pkexec`'s), or `null`: show it, since `message` names
+  only the program.
 - `polkit.respond(answer)` answers. The password goes to polkit's own
   helper, `polkit-agent-helper-1`, which checks it and tells polkit;
-  Strand never checks it itself, and wipes it once sent.
+  Strand never checks it itself, and wipes it once sent. An answer
+  reaches only the request that asked for it: one typed just as its
+  request went is dropped, never given to the next. Pass the password
+  to nothing else: your config sees what is typed into it, and a
+  declared action's arguments can be read by every user in the process
+  list.
 - `polkit.cancel()` refuses, and the program is told so.
 - `polkit.busy` is true while an answer is checked, and `polkit.failed`
   once one was refused.
@@ -579,13 +596,15 @@ every service does. Delete `polkit.strand` and Strand is no agent.
 **Only one agent per session.** A desktop that ships its own agent
 (GNOME's, KDE's, `polkit-gnome` started from your compositor's config)
 keeps it: Strand does not fight it. `polkit.available` is then false
-and `polkit.error` says another agent serves this session; once that
-agent goes, Strand takes over. A bar can say so:
+and `polkit.error` says another agent serves this session (it also says
+why when polkit's helper is not installed or Strand runs outside a
+login session); once that agent goes, Strand takes over. A bar can say so:
 `if !polkit.available { text polkit.error }`.
 
-Like the lock's `auth`, nothing of `polkit` is kept in a glitch report,
-and `strand call` refuses its actions: a password is typed into the
-dialog, never sent from a terminal.
+Like the lock's `auth`, nothing of `polkit` is kept in a glitch report:
+while the dialog shows nothing is recorded and `strand report` refuses
+to save one. `strand call` refuses its actions: a password is typed
+into the dialog, never sent from a terminal.
 
 ### A login screen
 
@@ -641,6 +660,9 @@ it:
 exec "strand run /etc/greetd/strand; swaymsg exit"
 ```
 
+The greeter user must be able to run `strand` (installed system-wide,
+on its `PATH`) and read `/etc/greetd/strand`.
+
 Type your name and press Return: greetd asks for your password, and
 the field for it appears. Return again logs you in and starts sway as
 you.
@@ -649,14 +671,18 @@ you.
   `greetd.prompt` (`greetd.echo` when the answer may be shown) and
   PAM's other texts as `greetd.message`.
 - `greetd.submit(answer)` answers. A wrong one sets `greetd.failed`
-  and `greetd.error`, and the same user is asked again.
+  and `greetd.error`, and the same user is asked again. Typed before
+  greetd asks, it answers the first question only when that one is
+  secret. As with the dialog, pass the answer to nothing else.
 - `greetd.start(["sway"])` is the session to start, each text one word.
   Called right after the answer, it waits for the login to succeed;
   greetd then starts it, and `strand run` exits so it can.
 - `greetd.cancel()` drops the login under way.
 
-Run outside greetd, `greetd.available` is false and every action sets
-`greetd.error` instead.
+Run outside greetd, or on a socket root does not serve,
+`greetd.available` is false and every action sets `greetd.error`
+instead. While the login screen shows, nothing is recorded for a
+glitch report.
 
 ## What you have
 

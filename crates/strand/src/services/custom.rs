@@ -57,6 +57,9 @@ struct Entry {
     /// (services-round) `on svc.line(doc)`'s queue (a `from listen`
     /// declaration's), each line as the declaration's record.
     line: strand_core::EventQueue<Vec<Value>>,
+    /// Where the client's one observer sends lines: this mount's queue,
+    /// emptied when it is disposed.
+    sink: Rc<LineSink>,
     /// Its fields' mismatch reports: resolved when the service restarts
     /// or stops (a mismatch is usually fixed by changing the declared
     /// type, which restarts it; a field that still mismatches is reported
@@ -67,14 +70,69 @@ struct Entry {
 }
 
 impl Entry {
-    /// Resolve every open mismatch report and dispose the memos.
-    fn dispose(self, rt: &Runtime) -> Client<Custom> {
+    /// Resolve every open mismatch report and dispose the memos; the
+    /// client's observer sends nothing until the next mount.
+    fn dispose(self, rt: &Runtime) -> (Client<Custom>, Rc<LineSink>) {
         for m in &self.mismatches {
             m.resolve();
         }
         custom::forget(self.spec);
+        *self.sink.0.borrow_mut() = None;
         self.scope.dispose(rt);
-        self.client
+        (self.client, self.sink)
+    }
+}
+
+/// (services-round) The current mount's `line` queue and how to build a
+/// line's record, which the one observer a client gets
+/// ([`LineSink::observe`]) looks up for each line: a restart mounts anew
+/// on the same client, so an observer per mount would pile up, each
+/// emitting into a disposed queue.
+#[derive(Default)]
+struct LineSink(RefCell<Option<LineTarget>>);
+
+struct LineTarget {
+    queue: strand_core::EventQueue<Vec<Value>>,
+    names: Vec<String>,
+    typing: Rc<RefCell<Typing>>,
+    service: String,
+}
+
+impl LineSink {
+    /// The sink of a newly registered `client`, observing it once.
+    fn observe(client: &Client<Custom>) -> Rc<LineSink> {
+        let sink = Rc::new(LineSink::default());
+        let s = sink.clone();
+        client.dynamic().observe(Box::new(move |rt, applied| {
+            let strand_services::Applied::Event { args, .. } = applied else {
+                return;
+            };
+            let Some(Data::List(values)) = args.first() else {
+                return;
+            };
+            let target = s.0.borrow();
+            let Some(t) = target.as_ref() else { return };
+            let typing = t.typing.borrow();
+            let doc = Data::Record {
+                ty: "".into(),
+                fields: t
+                    .names
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(n, v)| (n.clone().into(), v.clone()))
+                    .collect(),
+            };
+            let ty = Ty::Record(typing.record);
+            let v = coerce(&typing.table, &ty, &doc)
+                .unwrap_or_else(|| default_value(&typing.table, &ty));
+            let (queue, service) = (t.queue, t.service.clone());
+            drop(typing);
+            drop(target);
+            if let Err(e) = queue.emit(rt, vec![v]) {
+                log::warn!("{service}.line: {e}");
+            }
+        }));
+        sink
     }
 }
 
@@ -399,12 +457,19 @@ impl CustomHost {
         self.entries.borrow().get(name).map(|e| e.client.clone())
     }
 
+    /// The spec id `name` runs (tests).
+    #[cfg(test)]
+    pub fn spec(&self, name: &str) -> Option<i64> {
+        self.entries.borrow().get(name).map(|e| e.spec)
+    }
+
     /// Seed `client` for `decl` and build the memos converting its
     /// values.
     fn mount(
         &self,
         rt: &Runtime,
         client: Client<Custom>,
+        sink: Rc<LineSink>,
         decl: &CustomService,
         types: &TypeTable,
     ) -> Entry {
@@ -457,37 +522,12 @@ impl CustomHost {
         // (services-round) Each `line` the service sends, as the
         // declaration's record: its fields converted as the memos convert
         // them, a value that does not convert its type's default.
-        let (names, t) = (
-            decl.fields
-                .iter()
-                .map(|f| f.name.clone())
-                .collect::<Vec<_>>(),
-            typing.clone(),
-        );
-        let service = decl.name.clone();
-        client.dynamic().observe(Box::new(move |rt, applied| {
-            let strand_services::Applied::Event { args, .. } = applied else {
-                return;
-            };
-            let Some(Data::List(values)) = args.first() else {
-                return;
-            };
-            let typing = t.borrow();
-            let doc = Data::Record {
-                ty: "".into(),
-                fields: names
-                    .iter()
-                    .zip(values.iter())
-                    .map(|(n, v)| (n.clone().into(), v.clone()))
-                    .collect(),
-            };
-            let ty = Ty::Record(typing.record);
-            let v = coerce(&typing.table, &ty, &doc)
-                .unwrap_or_else(|| default_value(&typing.table, &ty));
-            if let Err(e) = line.emit(rt, vec![v]) {
-                log::warn!("{service}.line: {e}");
-            }
-        }));
+        *sink.0.borrow_mut() = Some(LineTarget {
+            queue: line,
+            names: decl.fields.iter().map(|f| f.name.clone()).collect(),
+            typing: typing.clone(),
+            service: decl.name.clone(),
+        });
         Entry {
             client,
             spec,
@@ -496,6 +536,7 @@ impl CustomHost {
             epoch,
             values,
             line,
+            sink,
             mismatches,
             scope,
         }
@@ -535,7 +576,7 @@ impl CustomHost {
     pub fn dispose(&self, rt: &Runtime) {
         let entries: Vec<Entry> = self.entries.borrow_mut().drain().map(|(_, e)| e).collect();
         for e in entries {
-            e.dispose(rt).unregister(rt);
+            e.dispose(rt).0.unregister(rt);
         }
     }
 }
@@ -554,7 +595,8 @@ impl ServiceHost for CustomHost {
             Some(false) => self.restart(rt, decl, types),
             None => {
                 let client = self.services.register_as::<Custom>(rt, &decl.name);
-                let entry = self.mount(rt, client, decl, types);
+                let sink = LineSink::observe(&client);
+                let entry = self.mount(rt, client, sink, decl, types);
                 self.entries.borrow_mut().insert(decl.name.clone(), entry);
             }
         }
@@ -565,8 +607,8 @@ impl ServiceHost for CustomHost {
         let Some(old) = old else {
             return self.declare(rt, decl, types);
         };
-        let client = old.dispose(rt);
-        let entry = self.mount(rt, client.clone(), decl, types);
+        let (client, sink) = old.dispose(rt);
+        let entry = self.mount(rt, client.clone(), sink, decl, types);
         client.restart(rt);
         self.entries.borrow_mut().insert(decl.name.clone(), entry);
     }
@@ -601,7 +643,7 @@ impl ServiceHost for CustomHost {
     fn stop(&self, rt: &Runtime, name: &str) {
         let old = self.entries.borrow_mut().remove(name);
         if let Some(old) = old {
-            old.dispose(rt).unregister(rt);
+            old.dispose(rt).0.unregister(rt);
         }
     }
 
@@ -738,8 +780,9 @@ impl ServiceHost for CustomHost {
         }
         custom::hear_lines(e.spec);
         e.client.acquire(rt);
-        let (client, weak) = (e.client.clone(), rt.downgrade());
+        let (client, weak, spec) = (e.client.clone(), rt.downgrade(), e.spec);
         rt.on_cleanup(move || {
+            custom::unhear_lines(spec);
             if let Some(rt) = weak.upgrade() {
                 client.release(&rt);
             }

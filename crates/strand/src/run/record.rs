@@ -14,8 +14,10 @@
 //! focused node of the key's surface is a password input every key,
 //! named or not, joins one span with no count. A paste is its count
 //! (none into a password), a drop its kinds. Nothing is appended from a
-//! lock asked for to the unlock (a gap), nor while the inspector picks,
-//! and a lock surface's input never (the host does not pass it).
+//! lock asked for to the unlock (a gap), nor (services-round) while an
+//! admin password dialog or a login screen is up (`polkit.request`, a
+//! greeter: its own gap), nor while the inspector picks, and a lock
+//! surface's input never (the host does not pass it).
 //! `auth` is never recorded; `clipboard`'s texts are lengths; a text of
 //! the config's own (a cell, an `rw` write) is kept only when it is a
 //! literal of the program; a call's arguments are never kept, and the
@@ -122,6 +124,9 @@ struct OutputGeometry {
 pub(crate) struct InputRecorder {
     ring: Option<Ring>,
     locked: bool,
+    /// (services-round) An admin password dialog or a login screen is up
+    /// (logic's `ToMain::Secret`).
+    secret: bool,
     picking: bool,
     surfaces: HashMap<SurfaceId, SurfaceSlot>,
     /// Each mapped surface's root, connector, kind and output slot.
@@ -169,6 +174,7 @@ impl InputRecorder {
         InputRecorder {
             ring: ring_if(on, flight::INPUT, flight::ring::INPUT),
             locked: false,
+            secret: false,
             picking: false,
             surfaces: HashMap::new(),
             roots: HashMap::new(),
@@ -198,12 +204,40 @@ impl InputRecorder {
         if self.ring.is_some() {
             self.restart(t);
         }
-        if let Some(r) = &mut self.ring {
-            if self.locked {
-                r.pause(t, kind::GAP_BEGINS, gap::LOCK);
-            } else if self.picking {
-                r.pause(t, kind::GAP_BEGINS, gap::PICK);
-            }
+        let g = self.gap();
+        if let (Some(r), Some(g)) = (&mut self.ring, g) {
+            r.pause(t, kind::GAP_BEGINS, g);
+        }
+    }
+
+    /// The gap the ring is in: a lock, else (services-round) a password
+    /// dialog or login screen, else the inspector's pick.
+    fn gap(&self) -> Option<u8> {
+        if self.locked {
+            Some(gap::LOCK)
+        } else if self.secret {
+            Some(gap::SECRET)
+        } else if self.picking {
+            Some(gap::PICK)
+        } else {
+            None
+        }
+    }
+
+    /// The gap was `before`: it ends and the one now begins.
+    fn regap(&mut self, t: u64, before: Option<u8>) {
+        let after = self.gap();
+        if before == after {
+            return;
+        }
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        if let Some(g) = before {
+            r.resume(t, kind::GAP_ENDS, g);
+        }
+        if let Some(g) = after {
+            r.pause(t, kind::GAP_BEGINS, g);
         }
     }
 
@@ -257,22 +291,22 @@ impl InputRecorder {
         if locked == self.locked {
             return;
         }
+        let before = self.gap();
         self.locked = locked;
         self.held = [(0, 0); HELD_KEYS];
-        let Some(r) = &mut self.ring else {
+        self.regap(t, before);
+    }
+
+    /// (services-round) An admin password dialog or a login screen came
+    /// or went (`polkit.request`, `greetd`): a gap, as a lock is.
+    pub(crate) fn secret(&mut self, t: u64, on: bool) {
+        if on == self.secret {
             return;
-        };
-        if locked {
-            if self.picking {
-                r.resume(t, kind::GAP_ENDS, gap::PICK);
-            }
-            r.pause(t, kind::GAP_BEGINS, gap::LOCK);
-        } else {
-            r.resume(t, kind::GAP_ENDS, gap::LOCK);
-            if self.picking {
-                r.pause(t, kind::GAP_BEGINS, gap::PICK);
-            }
         }
+        let before = self.gap();
+        self.secret = on;
+        self.held = [(0, 0); HELD_KEYS];
+        self.regap(t, before);
     }
 
     /// The inspector's pick mode began or ended: a gap.
@@ -280,17 +314,9 @@ impl InputRecorder {
         if on == self.picking {
             return;
         }
+        let before = self.gap();
         self.picking = on;
-        if self.locked {
-            return;
-        }
-        if let Some(r) = &mut self.ring {
-            if on {
-                r.pause(t, kind::GAP_BEGINS, gap::PICK);
-            } else {
-                r.resume(t, kind::GAP_ENDS, gap::PICK);
-            }
-        }
+        self.regap(t, before);
     }
 
     fn slot(&self, surface: SurfaceId) -> Option<u16> {
@@ -757,6 +783,9 @@ pub(crate) struct ChangeRecorder {
     ring: Option<Ring>,
     /// A lock is asked for or shown: the ring is paused.
     pub(super) locked: bool,
+    /// (services-round) An admin password dialog or a login screen is
+    /// up: the ring is paused.
+    secret: bool,
     program: Arc<Program>,
     /// Surface roots recorded, by node: their origin (none for a
     /// surface Strand makes itself) and kind.
@@ -859,6 +888,7 @@ impl ChangeRecorder {
         ChangeRecorder {
             ring: ring_if(on, flight::CHANGES, flight::ring::CHANGES),
             locked: false,
+            secret: false,
             declared: declared_of(&program),
             declared_last: HashMap::new(),
             reads: ServiceReads::of(&program),
@@ -872,7 +902,7 @@ impl ChangeRecorder {
     /// (report review) A press hit `node`, now `who`: kept while
     /// recording, the oldest let go past [`HITS_KEPT`].
     pub(crate) fn hit(&mut self, node: NodeId, who: HitIdentity) {
-        if self.ring.is_none() || self.locked {
+        if self.ring.is_none() || self.locked || self.secret {
             return;
         }
         self.hits.retain(|(n, _)| *n != node);
@@ -930,11 +960,50 @@ impl ChangeRecorder {
                 r.push(root_rec(t, slot, *node, *k));
             }
         }
-        if self.locked
-            && let Some(r) = &mut self.ring
-        {
-            r.pause(t, kind::CHANGE_GAP_BEGINS, gap::LOCK);
+        let g = self.gap();
+        if let (Some(r), Some(g)) = (&mut self.ring, g) {
+            r.pause(t, kind::CHANGE_GAP_BEGINS, g);
         }
+    }
+
+    /// The gap the ring is in: a lock, else (services-round) a password
+    /// dialog or login screen.
+    fn gap(&self) -> Option<u8> {
+        if self.locked {
+            Some(gap::LOCK)
+        } else if self.secret {
+            Some(gap::SECRET)
+        } else {
+            None
+        }
+    }
+
+    /// The gap was `before`: it ends and the one now begins.
+    fn regap(&mut self, t: u64, before: Option<u8>) {
+        let after = self.gap();
+        if before == after {
+            return;
+        }
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        if let Some(g) = before {
+            r.resume(t, kind::CHANGE_GAP_ENDS, g);
+        }
+        if let Some(g) = after {
+            r.pause(t, kind::CHANGE_GAP_BEGINS, g);
+        }
+    }
+
+    /// (services-round) An admin password dialog or a login screen came
+    /// or went: a gap, as a lock is.
+    pub(crate) fn secret(&mut self, t: u64, on: bool) {
+        if on == self.secret {
+            return;
+        }
+        let before = self.gap();
+        self.secret = on;
+        self.regap(t, before);
     }
 
     /// The ring (tests).
@@ -953,14 +1022,9 @@ impl ChangeRecorder {
         if locked == self.locked {
             return;
         }
+        let before = self.gap();
         self.locked = locked;
-        if let Some(r) = &mut self.ring {
-            if locked {
-                r.pause(t, kind::CHANGE_GAP_BEGINS, gap::LOCK);
-            } else {
-                r.resume(t, kind::CHANGE_GAP_ENDS, gap::LOCK);
-            }
-        }
+        self.regap(t, before);
     }
 
     /// Whether a config text is kept: a literal of the program.
@@ -1990,6 +2054,28 @@ impl super::shell::Shell {
         self.origin_text(f, sp, self.config_dir.as_deref())
     }
 
+    /// (services-round) An admin password dialog or a login screen is up
+    /// (`Real::secret_shown`).
+    pub(super) fn secret_shown(&self) -> bool {
+        self.real
+            .as_ref()
+            .is_some_and(|r| r.secret_shown(self.inst.runtime()))
+    }
+
+    /// (services-round) Both rings pause while [`Self::secret_shown`],
+    /// as they do for a lock (main's through `ToMain::Secret`).
+    pub(super) fn record_secret(&mut self) {
+        let shown = self.secret_shown();
+        if shown == self.secret_sent {
+            return;
+        }
+        self.secret_sent = shown;
+        self.recorder.borrow_mut().secret(flight::now_ns(), shown);
+        if let Some(tx) = &self.to_main {
+            let _ = tx.send(super::ToMain::Secret(shown));
+        }
+    }
+
     /// (report) The changes ring pauses while a lock is asked for or
     /// shown, and appends again after.
     pub(super) fn record_lock(&mut self) {
@@ -2448,6 +2534,60 @@ mod tests {
             None,
         );
         assert!(!contains(&bytes(r.ring().unwrap()), b"hunter2"));
+    }
+
+    #[test]
+    fn a_password_dialog_or_login_screen_is_a_gap_of_its_own() {
+        let mut r = mapped();
+        let motion = |x| InputEvent::PointerMotion {
+            surface: S,
+            position: p(x, 1.0),
+            time: 0,
+        };
+        r.secret(10, true);
+        r.input(11, &motion(1.0), None, None);
+        // A lock over it: its gap ends and the lock's begins.
+        r.lock(12, true);
+        r.lock(13, false);
+        r.input(14, &motion(2.0), None, None);
+        r.secret(15, false);
+        r.input(16, &motion(3.0), None, None);
+        let e = entries(r.ring().unwrap());
+        assert_eq!(
+            e.iter()
+                .map(|e| (e.rec.kind, e.rec.t, e.rec.u8(0)))
+                .filter(|(k, ..)| *k != kind::MAPPED)
+                .collect::<Vec<_>>(),
+            [
+                (kind::GAP_BEGINS, 10, gap::SECRET),
+                (kind::GAP_ENDS, 12, gap::SECRET),
+                (kind::GAP_BEGINS, 12, gap::LOCK),
+                (kind::GAP_ENDS, 13, gap::LOCK),
+                (kind::GAP_BEGINS, 13, gap::SECRET),
+                (kind::GAP_ENDS, 15, gap::SECRET),
+                (kind::MOTION, 16, e.last().unwrap().rec.u8(0)),
+            ]
+        );
+        // Turned on while it shows, a ring starts in its gap.
+        r.secret(17, true);
+        r.set_on(false, 18);
+        r.set_on(true, 19);
+        assert!(r.ring().unwrap().paused());
+        // The logic side's ring pauses alike.
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        c.secret(1, true);
+        c.cell(2, "a", &Value::int(1), &Value::int(2));
+        c.secret(3, false);
+        let e = entries(c.ring().unwrap());
+        assert_eq!(
+            e.iter()
+                .map(|e| (e.rec.kind, e.rec.u8(0)))
+                .collect::<Vec<_>>(),
+            [
+                (kind::CHANGE_GAP_BEGINS, gap::SECRET),
+                (kind::CHANGE_GAP_ENDS, gap::SECRET)
+            ]
+        );
     }
 
     #[test]

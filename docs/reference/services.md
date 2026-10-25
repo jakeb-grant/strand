@@ -21,7 +21,8 @@ live.
 
 ## `audio`
 
-Audio devices, from PipeWire.
+Audio devices and the programs' streams, from PipeWire, and levels for
+a visualiser of one's own (`audio.levels`).
 
 | Field | Type | |
 | --- | --- | --- |
@@ -34,7 +35,7 @@ Audio devices, from PipeWire.
 
 | Method | |
 | --- | --- |
-| `fn levels(device: AudioDevice, bars: int = 16) -> [float]` | (services-round) `device`'s sound now, as `bars` levels from low to high pitch, each 0 to 1 (zeros while it is quiet), for a visualiser of one's own (`let v = audio.levels(audio.sink, 32)`, drawn by a `canvas`); `audio.levels(audio.source, 1)[0]` is a microphone's level. Its meter runs while a reader of it is visible, and stops a second after the last reading nobody read again. |
+| `fn levels(device: AudioDevice, bars: int = 16) -> [float]` | `device`'s sound now, as `bars` levels from low to high pitch, each 0 to 1 (zeros while it is quiet), for a visualiser of one's own (`let v = audio.levels(audio.sink, 32)`, drawn by a `canvas`); `audio.levels(audio.source, 1)[0]` is a microphone's level. Its meter runs while a reader of `audio` is visible and something evaluates `levels` for that device; one no evaluation has asked for within a second stops. `bars` is at most 512. |
 
 ## `auth`
 
@@ -74,7 +75,7 @@ and every power source it reports.
 
 | Method | |
 | --- | --- |
-| `fn history(span: duration, points: int = 60) -> Async<[float]>` | The battery's charge over the last `span`, as UPower recorded it (`GetHistory`, which UPower keeps across reboots): `points` charges, 0 to 1, evenly spaced from `span` ago to now, oldest first, so a chart shows the hours before the shell started: `let past = battery.history(10800s) ?? []`. Each is the charge last recorded at or before its time; the times before UPower's first record in the span are left out, so the list may be shorter (it still ends now). Of the laptop's first battery that keeps a history; an error when none does. Asked only when called, never polled. |
+| `fn history(span: duration, points: int = 60) -> Async<[float]>` | The battery's charge over the last `span`, as UPower recorded it (`GetHistory`, which UPower keeps across reboots): `points` charges, 0 to 1, evenly spaced from `span` ago to now, oldest first, so a chart shows the hours before the shell started: `let past = battery.history(10800s) ?? []`. Each is the charge last recorded at or before its time; the times before UPower's first record in the span are left out, so the list may be shorter (it still ends now). Of the laptop's first battery that keeps a history; an error when none does. Asked only when called, never polled. `points` is at most 2000. |
 
 ## `bluetooth`
 
@@ -199,7 +200,7 @@ so greetd can run it.
 | Method | |
 | --- | --- |
 | `action login(user: text)` | Starts logging `user` in (a login already under way is dropped): greetd then asks its questions through `prompt`. |
-| `action submit(answer: text)` | Answers `prompt` with `answer`, or the next question greetd asks: `input { type: password; text: <-> pw; on activate { greetd.submit(pw); pw = "" } }`. Ignored while one is being checked. |
+| `action submit(answer: text)` | Answers `prompt` with `answer`: `input { type: password; text: <-> pw; on activate { greetd.submit(pw); pw = "" } }`. One typed after `login(user)` before greetd asks answers its first question when that one is secret (not `echo`), and is dropped when it is visible; one typed while an answer is checked, or after a text PAM showed, is dropped. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. Only a greetd that root serves is answered. |
 | `action start(command: [text])` | Starts `command` as the user's session (`["sway"]`) once the login succeeds: called with the last answer, it waits for greetd to accept it; a login that fails drops it. Strand then exits. Each word is one word, as given (`["sh", "-c", "sway > log"]` for a shell line); greetd runs it after the user's `~/.profile`. |
 | `action cancel()` | Drops the login under way. |
 
@@ -216,7 +217,7 @@ surface's `inhibit_idle: true`) holds them back.
 
 | Method | |
 | --- | --- |
-| `fn after(timeout: duration) -> bool` | True once the seat has had no input for `timeout`, false again at the next input: `panel Saver { open: idle.after(300s) }`. |
+| `fn after(timeout: duration) -> bool` | True once the seat has had no input for `timeout`, false again at the next input: `panel Saver { open: idle.after(300s) }`. The compositor keeps a timer for each timeout only while something reads it; one no longer read goes a second later. |
 
 ## `keyboard`
 
@@ -247,7 +248,9 @@ while a visible reader shows them, the layouts from the compositor
 
 The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`
 on the session bus, the one playing (the latest to start) chosen, else
-the latest to pause. Its position is carried forward from the
+the latest to pause, unless one was picked with `p.select()`, which
+holds until that player leaves or another starts playing; `players`
+lists them all. Its position is carried forward from the
 player's last report at its rate, never asked for again (no polling),
 and only while a visible reader shows it.
 
@@ -315,7 +318,7 @@ networks now.
 | `rx` | `float` | Bytes a second received through the machine's network hardware (every interface backed by a device: Ethernet, Wi-Fi, a modem; not loopback, bridges, VPN tunnels or containers' links), from the kernel's counters whichever daemon runs: `graph network.rx { range: auto }`. Sampled once a second while a visible reader reads it or `tx`; while none does but a `graph` keeps history of the service, at the coarser of that and a twentieth of the graph's `history` (at least 2 s); otherwise not at all. 0 until the first second has passed. |
 | `tx` | `float` | Bytes a second sent, as `rx` counts them. |
 | `scanning` | `bool` | A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu asks when it opens; over iwd, iwd's own scans too. |
-| `kind` | `ConnectionKind?` | The kind of the connection carrying the traffic, so a bar picks its icon: `match network.kind { wifi => …, ethernet => …, vpn \| wireguard => … }`. A VPN or WireGuard tunnel holding the default route counts first, since traffic goes through it; else the connection that holds it (NetworkManager's primary connection). Null while not connected. Over iwd, `wifi` while a network is joined. |
+| `kind` | `ConnectionKind?` | The kind of the connection carrying the traffic, so a bar picks its icon: `match network.kind { wifi => …, ethernet => …, vpn => …, wireguard => …, _ => … }` (the `_` arm for null and `other`). A VPN or WireGuard tunnel holding the default route counts first, since traffic goes through it; else the connection that holds it (NetworkManager's primary connection). Null while not connected. Over iwd, `wifi` while a network is joined. |
 | `connections` | `[Connection]` | The connections saved in NetworkManager, keyed by `id`, by name: a VPN toggle (`for c in network.connections.filter(c => c.kind == vpn) key c.id { … }`), a wired profile, Wi-Fi networks joined before. Read, and followed as they are added, changed or removed, only while a visible reader reads them. NetworkManager's loopback profile is left out. Over iwd, which knows only Wi-Fi networks, it is empty. |
 
 | Method | |
@@ -389,12 +392,12 @@ wiped once sent. A panel shows it:
 | `waiting` | `int` | How many more requests wait behind `request`, each shown in turn. |
 | `busy` | `bool` | An answer is being checked. |
 | `failed` | `bool` | The last answer was refused: `request` stays, and its prompt asks again. |
-| `available` | `bool` | Strand is this session's polkit agent: false while another agent is (a desktop's own, `polkit-gnome`), or without polkit, when `error` says why. |
-| `error` | `text` | Why Strand is not the agent ("another polkit agent serves this session"), or why the last request could not be answered (no helper); "" otherwise. |
+| `available` | `bool` | Strand is this session's polkit agent. False while another agent is (a desktop's own, `polkit-gnome`), and when it cannot be one: polkit's helper (`polkit-agent-helper-1`, setuid root, or polkit's own socket for it) is not installed, polkit is not running, or Strand runs in no login session; `error` says which. |
+| `error` | `text` | Why Strand is not the agent ("another polkit authentication agent already serves this session…"), or why the shown request's check could not run or ended early; "" otherwise. |
 
 | Method | |
 | --- | --- |
-| `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password), or the next prompt the check asks: `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked. |
+| `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password): `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked, and when the request shown has not asked yet (it went, or another user was chosen, since the answer was typed: an answer is never given to a request it was not typed for). After a refusal an answer typed before the check asks again waits for that question, and only a secret one (not `echo`) takes it. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. |
 | `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. |
 | `action choose(user: text)` | Asks for `user`'s password instead (one of `request.users`). |
 
@@ -464,7 +467,7 @@ when the session has none, and each item's DBusMenu.
 
 ## `video`
 
-(services-round) The programs taking video, from PipeWire: a camera
+The programs taking video, from PipeWire: a camera
 or screen-cast indicator.
 
 | Field | Type | |

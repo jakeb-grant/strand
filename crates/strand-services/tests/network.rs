@@ -927,7 +927,21 @@ mod slow_nm {
         fn deactivate_connection(&self, _active: ObjectPath<'_>) {
             self.deactivated.fetch_add(1, Ordering::SeqCst);
         }
+        /// (services-round) A saved connection's `up()`: answered after
+        /// [`ACTIVATE_DELAY`].
+        async fn activate_connection(
+            &self,
+            _conn: ObjectPath<'_>,
+            _dev: ObjectPath<'_>,
+            _specific: ObjectPath<'_>,
+        ) -> OwnedObjectPath {
+            tokio::time::sleep(ACTIVATE_DELAY).await;
+            path(ACTIVE)
+        }
     }
+
+    /// How long a saved connection's activation takes.
+    pub const ACTIVATE_DELAY: Duration = Duration::from_secs(3);
 
     /// The active connection every join is answered with.
     pub const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
@@ -1119,6 +1133,9 @@ mod slow_nm {
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
     impl Settings {
+        fn get_connection_by_uuid(&self, _uuid: &str) -> OwnedObjectPath {
+            path("/org/freedesktop/NetworkManager/Settings/9")
+        }
         async fn list_connections(&self) -> Vec<OwnedObjectPath> {
             self.asked.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
@@ -1374,6 +1391,72 @@ fn a_join_stops_when_networkmanager_is_replaced() {
     assert_eq!(
         *failures.lock().unwrap(),
         vec![("Slow".to_string(), "NetworkManager stopped".to_string())]
+    );
+    s.shutdown();
+}
+
+/// (services-round) A saved connection's `up()` still in flight when
+/// NetworkManager is replaced is cut short, and says so:
+/// `network.failed(name, "NetworkManager stopped")`, as a join does.
+#[test]
+fn an_up_in_flight_fails_when_networkmanager_is_replaced() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (asked, added) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let old = slow_nm::serve(&tokio, &bus.address, Duration::ZERO, &asked, &added, true);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let vpn = network::Connection {
+        id: "u-vpn".into(),
+        name: "Work VPN".into(),
+        kind: network::ConnectionKind::Vpn,
+        active: false,
+    };
+    b.network
+        .dynamic()
+        .action(&rt, "up", Some(&vpn.to_data()), &[], Default::default())
+        .unwrap();
+    // Asked, and not answered yet.
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (new_asked, new_added) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let new = slow_nm::serve(
+        &tokio,
+        &bus.address,
+        Duration::ZERO,
+        &new_asked,
+        &new_added,
+        false,
+    );
+    tokio.block_on(async {
+        new.request_name_with_flags(NM, zbus::fdo::RequestNameFlags::AllowReplacement.into())
+            .await
+            .unwrap();
+        old.release_name(NM).await.unwrap();
+    });
+    until(&rt, &s, "the up failing", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    // Past the old one's answer: no second failure, no success taken.
+    let t = std::time::Instant::now();
+    while t.elapsed() < slow_nm::ACTIVATE_DELAY {
+        s.pump(&rt);
+        rt.flush();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        *failures.lock().unwrap(),
+        vec![("Work VPN".to_string(), "NetworkManager stopped".to_string())]
     );
     s.shutdown();
 }
@@ -2401,6 +2484,10 @@ fn saved_connections_are_listed_while_read_and_switched() {
             .any(|c| c.id == "u-wg" && c.kind == ConnectionKind::Wireguard)
     });
 
+    // A connection's state changing (below) lists none of them again.
+    let settings = "/org/freedesktop/NetworkManager/Settings";
+    let listings = || mock_calls(&tokio, &conn, NM, settings, "ListConnections").len();
+    let listed = listings();
     // Up: the VPN is up, and carries the traffic.
     let vpn = list().into_iter().find(|c| c.id == "u-vpn").unwrap();
     b.network
@@ -2425,6 +2512,7 @@ fn saved_connections_are_listed_while_read_and_switched() {
         mock_calls(&tokio, &conn, NM, ROOT, "DeactivateConnection").len(),
         1
     );
+    assert_eq!(listings(), listed, "the saved connections were kept");
     // Down of one that is not up: a failure naming it.
     let wired = list().into_iter().find(|c| c.id == "u-wired").unwrap();
     b.network

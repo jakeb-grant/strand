@@ -640,7 +640,8 @@ fn counters(root: &std::path::Path, eth: (u64, u64), veth: (u64, u64)) {
 /// through the machine's hardware, from the kernel's counters with no
 /// daemon or bus at all: a container's link and loopback never count.
 /// Read only while a visible reader reads them, once a second; nothing
-/// is read while only the rest of `network` is shown.
+/// is read while only the rest of `network` is shown, and a graph's kept
+/// period holds while only the rest is shown.
 #[test]
 fn network_rates_count_the_hardware_only_while_read() {
     let root = std::env::temp_dir().join(format!("strand-rates-{}", std::process::id()));
@@ -713,6 +714,21 @@ fn network_rates_count_the_hardware_only_while_read() {
     let n = network::rates::samples() - kept;
     assert!((1..=3).contains(&n), "{n} samples in 4.6 s kept at 2 s");
     assert_eq!(b.network.sampled(), Some(Duration::from_secs(2)));
+    // (services-round) Shown again, but only for another field (a bar's
+    // `network.ssid`): the rates stay at the kept period, not once a
+    // second.
+    b.network.acquire(&rt);
+    std::thread::sleep(Duration::from_millis(100));
+    s.pump(&rt);
+    let shown = network::rates::samples();
+    std::thread::sleep(Duration::from_millis(4_600));
+    s.pump(&rt);
+    let n = network::rates::samples() - shown;
+    assert!(
+        (1..=3).contains(&n),
+        "{n} samples in 4.6 s, rates unread, kept at 2 s"
+    );
+    b.network.release(&rt);
     b.network.keep(&rt, None);
     s.shutdown();
     network::rates::configure_root(None);

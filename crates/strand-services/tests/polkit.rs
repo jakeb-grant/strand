@@ -13,7 +13,9 @@
 //! queued, dismissed by the user and withdrawn by the program; choosing
 //! another user; another agent holding the session left be until polkit
 //! says its agents changed; the helper's socket used before the setuid
-//! program; and no registration without a helper.
+//! program; no registration without a helper, or with one that is not
+//! setuid; and an answer typed for a request that went never given to
+//! the next.
 //!
 //! `polkit::configure` is process-wide: the tests take [`LOCK`].
 
@@ -53,7 +55,9 @@ ok = lambda *a, s=self, c=args[1]: s.outcomes.__setitem__(c, 'ok')
 err = lambda e, s=self, c=args[1]: s.outcomes.__setitem__(c, e.get_dbus_name())
 self.connection.call_async(args[0], '/org/freedesktop/PolicyKit1/AuthenticationAgent', \
     'org.freedesktop.PolicyKit1.AuthenticationAgent', 'BeginAuthentication', 'sssa{ss}sa(sa{sv})', \
-    (args[2], 'Strand wants to test', 'dialog-password', {}, args[1], ids), ok, err, timeout=600)
+    (args[2], 'Strand wants to test', 'dialog-password', \
+     {'program': '/usr/bin/sh', 'command_line': '/usr/bin/sh -c true'}, args[1], ids), \
+    ok, err, timeout=600)
 ";
 const OUTCOME: &str = "ret = getattr(self, 'outcomes', {}).get(args[0], 'never begun')";
 const WITHDRAW: &str = "
@@ -67,6 +71,7 @@ const MOCK_IFACE: &str = "org.freedesktop.DBus.Mock";
 /// cookie line (`helper.log`), says a text (escaped as the real one
 /// escapes it), asks for the password and logs each answer it reads
 /// (`answers.log`), `SUCCESS` for `right`, else an error and `FAILURE`.
+/// While `dir/slow` exists it waits a second before it says anything.
 fn fake_helper(dir: &Path) -> PathBuf {
     let path = dir.join("polkit-agent-helper-1");
     let log = dir.join("helper.log");
@@ -75,17 +80,20 @@ fn fake_helper(dir: &Path) -> PathBuf {
         &path,
         format!(
             "#!/bin/sh\nread -r cookie\necho \"$1 $cookie\" >> {log}\n\
+             if [ -e {slow} ]; then sleep 1; fi\n\
              echo 'PAM_TEXT_INFO Touch\\040the\\040key\\303\\251'\n\
              echo 'PAM_PROMPT_ECHO_OFF Password: '\n\
              IFS= read -r answer\nprintf '%s\\n' \"$answer\" >> {answers}\n\
              if [ \"$answer\" = right ]; then echo SUCCESS; \
              else echo 'PAM_ERROR_MSG Authentication failure'; echo FAILURE; fi\n",
             log = log.display(),
-            answers = answers.display()
+            answers = answers.display(),
+            slow = dir.join("slow").display()
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Setuid, as an installed one is (the kernel ignores it on a script).
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o4755)).unwrap();
     path
 }
 
@@ -324,6 +332,7 @@ fn a_request_is_answered_through_the_helper_and_asks_again_when_refused() {
     let Some(w) = World::start(PolkitConfig {
         helper: Some(helper),
         socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
     }) else {
         return;
     };
@@ -356,6 +365,7 @@ fn a_request_is_answered_through_the_helper_and_asks_again_when_refused() {
     let r = w.request().unwrap();
     assert_eq!(r.action_id, "org.example.strand.test");
     assert_eq!(r.message, "Strand wants to test");
+    assert_eq!(r.command.as_deref(), Some("/usr/bin/sh -c true"));
     assert_eq!(r.icon, "dialog-password");
     assert_eq!(r.user, me());
     assert_eq!(r.users, vec![me()]);
@@ -445,6 +455,7 @@ fn requests_queue_and_are_dismissed_withdrawn_or_moved_to_another_user() {
     let Some(w) = World::start(PolkitConfig {
         helper: Some(helper),
         socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
     }) else {
         return;
     };
@@ -531,6 +542,66 @@ fn requests_queue_and_are_dismissed_withdrawn_or_moved_to_another_user() {
 }
 
 #[test]
+fn an_answer_for_a_request_that_went_never_reaches_the_next() {
+    let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let helper = fake_helper(dir.path());
+    let Some(w) = World::start(PolkitConfig {
+        helper: Some(helper),
+        socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
+    }) else {
+        return;
+    };
+    w.b.polkit.acquire(&w.rt);
+    w.until("registered", |w| w.state().4);
+    let agent = w.agent();
+    w.begin(&agent, "a", &[0, uid()]);
+    w.begin(&agent, "b", &[uid()]);
+    w.until("a asks", |w| {
+        w.request()
+            .is_some_and(|r| r.users.len() == 2 && !r.prompt.is_empty())
+    });
+    // b's helper takes a while to ask: the window an answer typed for a
+    // could fall into.
+    std::fs::write(dir.path().join("slow"), "").unwrap();
+    w.tokio
+        .block_on(w.conn.call_method(
+            Some(AUTHORITY),
+            AUTHORITY_PATH,
+            Some(MOCK_IFACE),
+            "Withdraw",
+            &(agent.as_str(), "a"),
+        ))
+        .unwrap();
+    w.until("b shown, not yet asking", |w| {
+        w.request()
+            .is_some_and(|r| r.users == vec![me()] && r.prompt.is_empty())
+    });
+    // The answer typed for a arrives after a went.
+    w.act("respond", &[text("right")]);
+    assert!(!w.state().2, "not taken: nothing is being checked");
+    w.until("b asks", |w| {
+        w.request().is_some_and(|r| !r.prompt.is_empty())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    w.services.pump(&w.rt);
+    w.rt.flush();
+    assert!(
+        lines(&dir.path().join("answers.log")).is_empty(),
+        "b's helper was given nothing"
+    );
+    assert_eq!(w.outcome("b"), "", "b still waits for its own answer");
+    // An answer typed once b asks is b's.
+    std::fs::remove_file(dir.path().join("slow")).unwrap();
+    w.act("respond", &[text("right")]);
+    w.until_outcome("b", "ok");
+    assert_eq!(lines(&dir.path().join("answers.log")), vec!["right"]);
+    w.b.polkit.release(&w.rt);
+    w.services.shutdown();
+}
+
+#[test]
 fn another_agent_is_left_be_until_polkit_says_its_agents_changed() {
     let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
@@ -538,6 +609,7 @@ fn another_agent_is_left_be_until_polkit_says_its_agents_changed() {
     let Some(w) = World::start(PolkitConfig {
         helper: Some(helper),
         socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
     }) else {
         return;
     };
@@ -624,6 +696,7 @@ fn the_helpers_socket_comes_first_and_without_a_helper_no_agent_registers() {
     let Some(w) = World::start(PolkitConfig {
         helper: Some(dir.path().join("no-such-helper")),
         socket: Some(socket),
+        owner: Some(uid()),
     }) else {
         return;
     };
@@ -648,6 +721,7 @@ fn the_helpers_socket_comes_first_and_without_a_helper_no_agent_registers() {
     let Some(w) = World::start(PolkitConfig {
         helper: Some(dir.path().join("no-such-helper")),
         socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
     }) else {
         return;
     };
@@ -655,6 +729,24 @@ fn the_helpers_socket_comes_first_and_without_a_helper_no_agent_registers() {
     w.until("says why", |w| {
         w.state().5.contains("polkit-agent-helper-1")
     });
+    assert!(!w.state().4);
+    assert!(w.calls("RegisterAuthenticationAgent").is_empty());
+    w.b.polkit.release(&w.rt);
+    w.services.shutdown();
+
+    // A helper that is not setuid (polkit 127's, meant only for its
+    // socket) could check nothing: not used, and nothing registers.
+    let plain = fake_helper(dir.path());
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(w) = World::start(PolkitConfig {
+        helper: Some(plain),
+        socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
+    }) else {
+        return;
+    };
+    w.b.polkit.acquire(&w.rt);
+    w.until("says why", |w| w.state().5.contains("is not setuid"));
     assert!(!w.state().4);
     assert!(w.calls("RegisterAuthenticationAgent").is_empty());
     w.b.polkit.release(&w.rt);

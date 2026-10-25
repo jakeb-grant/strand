@@ -52,6 +52,12 @@ pub struct Program {
     /// `instantiate::HELD_ANYWHERE` read anywhere is held from the top
     /// level (spec.md 8.1).
     pub services_anywhere: Arc<ServiceUses>,
+    /// (services-round) Every record member (field or method) the
+    /// program names anywhere, as (record name, member): `n.can_reply`
+    /// and `n.reply(t)` give `("Notification", "can_reply")` and
+    /// `("Notification", "reply")`. What a service offers other programs
+    /// may follow it (the notification server's `inline-reply`).
+    pub members: BTreeSet<(String, String)>,
     /// (M6) Declared actions' commands (`action dispatch(ws: int)
     /// ["hyprctl", "dispatch", "workspace", ws]`), by declaration.
     pub execs: BTreeMap<DefId, ExecAction>,
@@ -664,7 +670,26 @@ pub fn lower(program: &hir::Program, schema: &Schema) -> Program {
     reads::alias_watch(&mut l.out);
     l.resolve_services();
     l.out.services_anywhere = Arc::new(services_anywhere(&l.out));
+    l.out.members = program
+        .refs
+        .iter()
+        .filter_map(|r| match &r.target {
+            hir::Target::Field(rec, name) => {
+                Some((program.types.record(*rec).name.clone(), name.clone()))
+            }
+            _ => None,
+        })
+        .collect();
     l.out
+}
+
+impl Program {
+    /// (services-round) The program names `record`'s `member` somewhere
+    /// ([`Program::members`]).
+    pub fn names_member(&self, record: &str, member: &str) -> bool {
+        self.members
+            .contains(&(record.to_string(), member.to_string()))
+    }
 }
 
 /// What every scope of `prog` reads of the services, together.

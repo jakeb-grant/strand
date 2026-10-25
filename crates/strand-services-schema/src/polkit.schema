@@ -7,6 +7,11 @@ record PolkitRequest {
   /// What polkit says it is for, in your language ("Authentication is
   /// needed to run `/usr/bin/bash' as the super user").
   message: text
+  /// The command it would run, with its arguments, as the program asked
+  /// (`pkexec`'s: "/usr/bin/sh -c rm -rf /tmp/x"), or null for a request
+  /// that runs none (a settings page's). Show it: `message` names only
+  /// the program, so it is what tells one `pkexec sh -c …` from another.
+  command: text?
   /// The icon the program named for it (a theme icon name), or "".
   icon: text
   /// The user whose password is asked for: you, or an administrator
@@ -47,18 +52,26 @@ service polkit {
   /// The last answer was refused: `request` stays, and its prompt asks
   /// again.
   failed: bool
-  /// Strand is this session's polkit agent: false while another agent
-  /// is (a desktop's own, `polkit-gnome`), or without polkit, when
-  /// `error` says why.
+  /// Strand is this session's polkit agent. False while another agent
+  /// is (a desktop's own, `polkit-gnome`), and when it cannot be one:
+  /// polkit's helper (`polkit-agent-helper-1`, setuid root, or polkit's
+  /// own socket for it) is not installed, polkit is not running, or
+  /// Strand runs in no login session; `error` says which.
   available: bool
-  /// Why Strand is not the agent ("another polkit agent serves this
-  /// session"), or why the last request could not be answered (no
-  /// helper); "" otherwise.
+  /// Why Strand is not the agent ("another polkit authentication agent
+  /// already serves this session…"), or why the shown request's check
+  /// could not run or ended early; "" otherwise.
   error: text
-  /// Answers `request.prompt` with `answer` (the password), or the next
-  /// prompt the check asks: `input { type: password; text: <-> pw; on
-  /// activate { polkit.respond(pw); pw = "" } }`. Ignored while one is
-  /// being checked.
+  /// Answers `request.prompt` with `answer` (the password): `input {
+  /// type: password; text: <-> pw; on activate { polkit.respond(pw); pw
+  /// = "" } }`. Ignored while one is being checked, and when the request
+  /// shown has not asked yet (it went, or another user was chosen, since
+  /// the answer was typed: an answer is never given to a request it was
+  /// not typed for). After a refusal an answer typed before the check
+  /// asks again waits for that question, and only a secret one (not
+  /// `echo`) takes it. Pass a password to nothing else: the config is
+  /// trusted code, and a declared action's arguments can be read by
+  /// every user in the process list.
   action respond(answer: text)
   /// Dismisses `request`: the program is told it was refused, and the
   /// next request, if any, shows.

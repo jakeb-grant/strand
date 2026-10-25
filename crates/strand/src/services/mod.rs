@@ -225,6 +225,21 @@ pub fn mock_served(rt: &Runtime, host: &SchemaHost, types: &TypeTable, served: &
     }
 }
 
+/// (services-round) What the services offer other programs, set from
+/// each program `strand run` loads: the notification server advertises
+/// `inline-reply` only while the program names `Notification.can_reply`
+/// or `reply` (a shell with no reply field must not take an app's own
+/// "Reply" button away).
+pub fn follow_program(prog: &strand_compiler::lower::Program) {
+    strand_services::notifications::offer_replies(offers_replies(prog));
+}
+
+/// The program shows a reply field: it names `n.can_reply` or
+/// `n.reply(…)`.
+fn offers_replies(prog: &strand_compiler::lower::Program) -> bool {
+    prog.names_member("Notification", "can_reply") || prog.names_member("Notification", "reply")
+}
+
 /// How long `strand set` on a service waits for a stopped service's
 /// first read.
 pub const SET_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
@@ -516,6 +531,23 @@ impl Real {
         r
     }
 
+    /// (services-round) An admin password dialog (`polkit.request` not
+    /// null) or a login screen (Strand is greetd's greeter) is up: read
+    /// from the running stores' values as they are, never starting
+    /// either. A glitch report is refused and both recorders pause
+    /// meanwhile (`run/record.rs`).
+    pub fn secret_shown(&self, rt: &Runtime) -> bool {
+        let polkit = &self.builtin.polkit;
+        let greetd = &self.builtin.greetd;
+        (polkit.running()
+            && polkit
+                .cells()
+                .request
+                .get_untracked(rt)
+                .is_ok_and(|q| q.is_some()))
+            || (greetd.running() && greetd.cells().available.get_untracked(rt) == Ok(true))
+    }
+
     /// Stop every service (joining the shared runtime thread) and dispose
     /// the stores' cells.
     pub fn shutdown(&self, rt: &Runtime) {
@@ -781,6 +813,30 @@ bar Top {
                 .collect();
             assert_eq!(codes, [code], "{bad}");
         }
+    }
+
+    /// (services-round) Inline replies are offered only by a program
+    /// that names `can_reply` or `reply` somewhere (a prop, a handler);
+    /// one that shows notifications without a reply field does not offer
+    /// them.
+    #[test]
+    fn inline_replies_follow_a_program_that_names_them() {
+        let offers = |src: &str| {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            match strand_compiler::reconcile::Build::compile_with(None, map, schema()) {
+                Ok(b) => offers_replies(&b.program),
+                Err(d) => panic!("{d:#?}"),
+            }
+        };
+        assert!(offers(
+            "bar B { for n in notifications.all { text n.summary; when n.can_reply { opacity: 1 } } }\n"
+        ));
+        assert!(offers(
+            "on notifications.received(n) { n.reply(\"away\") }\nbar B { text \"x\" }\n"
+        ));
+        assert!(!offers(
+            "bar B { for n in notifications.all { box { text n.summary; on click { n.dismiss() } } } }\n"
+        ));
     }
 
     /// (services-round) `idle.after(timeout)` and a surface's
@@ -3421,6 +3477,65 @@ service shelf {
             live.until("merged", |l| {
                 l.value("l", "a") == Value::int(4) && l.value("l", "b") == Value::text("y")
             });
+        }
+
+        /// (services-round) A `from listen` service restarted by reloads
+        /// keeps one observer for its lines (each mount does not add one
+        /// emitting into a disposed queue), and a handler removed by a
+        /// reload that keeps the declaration stops lines being sent as
+        /// events.
+        #[test]
+        fn a_password_dialog_is_shown_while_polkit_holds_a_request() {
+            let mut live = Live::boot("bar B { text polkit.error }", Buses::none());
+            live.until("polkit running", |l| l.real.builtin.polkit.running());
+            assert!(!live.real.secret_shown(&live.rt));
+            live.real
+                .builtin
+                .polkit
+                .seed(&live.rt, |s| {
+                    s.request = Some(strand_services::polkit::PolkitRequest::default());
+                })
+                .unwrap();
+            assert!(live.real.secret_shown(&live.rt));
+            // Stopped, its last value is no dialog: nothing draws it.
+            live.reload("bar B { text \"x\" }");
+            live.tick(STOP_GRACE + Duration::from_secs(1));
+            live.until("polkit stopped", |l| !l.real.builtin.polkit.running());
+            assert!(!live.real.secret_shown(&live.rt));
+        }
+
+        #[test]
+        fn reloads_keep_one_line_observer_and_drop_unheard_lines() {
+            let src = |fields: &str, handler: bool| {
+                format!(
+                    "permit exec \"sh\"\nexport state n = 0\n\
+                     service l from listen [\"sh\", \"-c\", \"i=0; while true; do i=$((i+1)); echo a=$i; sleep .05; done\"] {{ {fields} }}\n\
+                     {}bar B {{ text join(\" \", l.a) }}\n",
+                    if handler {
+                        "on l.line(doc) { n += 1 }\n"
+                    } else {
+                        ""
+                    }
+                )
+            };
+            let mut live = Live::boot(&src("a: int", true), Buses::none());
+            live.until("heard", |l| l.inst.get("svc.n").unwrap() != Value::int(0));
+            for fields in ["a: int; b: text?", "a: int; b: text?; c: text?", "a: int"] {
+                live.reload(&src(fields, true));
+                let before = live.inst.get("svc.n").unwrap();
+                live.until("heard after the restart", |l| {
+                    l.inst.get("svc.n").unwrap() != before
+                });
+                assert_eq!(live.real.custom.client("l").unwrap().observers(), 1);
+            }
+            let spec = live.real.custom.spec("l").unwrap();
+            assert!(strand_services::custom::hears_lines(spec));
+            live.reload(&src("a: int", false));
+            assert_eq!(live.real.custom.spec("l"), Some(spec), "not restarted");
+            assert!(
+                !strand_services::custom::hears_lines(spec),
+                "no handler hears it any more"
+            );
         }
 
         fn gone(pid: &str) -> bool {

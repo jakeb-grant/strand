@@ -20,17 +20,20 @@ record AudioDevice key id {
   action make_default()
 }
 
-/// (services-round) A program's audio stream, from PipeWire: what it
+/// A program's audio stream, from PipeWire: what it
 /// plays or records.
 record AudioStream key id {
-  /// Its PipeWire id.
+  /// Names it while it lives: PipeWire's `object.serial` for it, which,
+  /// unlike its global id, no later stream takes.
   id: int
   /// The program's name, such as `Firefox`.
   app: text
   /// An icon name for the program.
   icon: text
-  /// `output` while it plays, `input` while it records (a microphone in
-  /// use, or a recorder of what a sink plays).
+  /// `output` while it plays, `input` while it records a source (a
+  /// microphone in use), `monitor` while it records what a sink plays (a
+  /// visualiser, a recorder of the desktop's sound): a microphone light is
+  /// `audio.streams.any(s => s.direction == input)`.
   direction: StreamDirection
   /// Its own volume, on the scale a device's uses. Writable:
   /// `st.volume = v`.
@@ -39,7 +42,7 @@ record AudioStream key id {
   muted: bool rw
 }
 
-/// (services-round) A peak meter `audio.levels` runs: an item of
+/// A peak meter `audio.levels` runs: an item of
 /// `audio.meters`.
 record AudioMeter key device {
   /// The device it reads (`AudioDevice.id`).
@@ -49,7 +52,8 @@ record AudioMeter key device {
   bands: [float]
 }
 
-/// Audio devices, from PipeWire.
+/// Audio devices and the programs' streams, from PipeWire, and levels for
+/// a visualiser of one's own (`audio.levels`).
 service audio {
   /// The default output: `audio.sink.volume`, `audio.sink.muted`.
   sink: AudioDevice
@@ -71,11 +75,13 @@ service audio {
   /// (none while its device is quiet). Read through `audio.levels`,
   /// which asks for the meter; reading this field runs none.
   meters: [AudioMeter]
-  /// (services-round) `device`'s sound now, as `bars` levels from low to
+  /// `device`'s sound now, as `bars` levels from low to
   /// high pitch, each 0 to 1 (zeros while it is quiet), for a
   /// visualiser of one's own (`let v = audio.levels(audio.sink, 32)`,
   /// drawn by a `canvas`); `audio.levels(audio.source, 1)[0]` is a
-  /// microphone's level. Its meter runs while a reader of it is visible, and stops
-  /// a second after the last reading nobody read again.
+  /// microphone's level. Its meter runs while a reader of `audio` is
+  /// visible and something evaluates `levels` for that device; one no
+  /// evaluation has asked for within a second stops. `bars` is at most
+  /// 512.
   fn levels(device: AudioDevice, bars: int = 16) -> [float]
 }

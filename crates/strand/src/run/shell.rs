@@ -149,6 +149,9 @@ pub(super) struct Shell {
     pub(super) recorder: std::rc::Rc<std::cell::RefCell<super::record::ChangeRecorder>>,
     /// (report) `system.replay` as last read.
     pub(super) replay_on: bool,
+    /// (services-round) Whether a password dialog or login screen was
+    /// last told to the recorders as shown.
+    pub(super) secret_sent: bool,
     /// (report) The config directory (a report copies its files).
     pub(super) config_dir: Option<PathBuf>,
     /// (report) Wakes the loop when a report is written.
@@ -555,6 +558,7 @@ impl Shell {
                 self.deferred_hard = false;
             }
             if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
+                crate::services::follow_program(&b.program);
                 self.build = b;
                 self.overlay.set_running(true);
             }

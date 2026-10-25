@@ -4,12 +4,16 @@
 //!
 //! Only interfaces backed by a device count (`/sys/class/net/<if>/device`:
 //! Ethernet, Wi-Fi, a USB modem), so loopback, bridges, VPN tunnels and
-//! containers' virtual links never count a byte twice. Sampled like `cpu`
-//! ([`Ticker`]): once a second ([`PERIOD`]) while a visible reader reads
-//! either field (they are stream fields), at the kept, coarser period
-//! while a `graph` keeps the service's history and none does, and never
+//! containers' virtual links never count a byte twice. Sampled on a
+//! clock ([`Ticker`]): once a second ([`PERIOD`]) while a visible reader
+//! reads either field (they are stream fields), at the kept, coarser
+//! period while a `graph` keeps the service's history and none does
+//! (whatever other `network` field is shown: a bar's `network.ssid` does
+//! not make a hidden graph's rates sample every second), and never
 //! otherwise; each sample is the rate since the one before, the first
-//! after a pause a fresh baseline (0 until the next).
+//! after a pause a fresh baseline (0 until the next). Keeping is per
+//! service, so a graph of another `network` field also samples them at
+//! its kept period.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -113,27 +117,35 @@ impl Rates {
         }
     }
 
-    /// Something wants the rates: a visible reader reads one, or a graph
-    /// keeps the service's history.
-    fn wanted(cx: &Cx<Network>) -> bool {
-        cx.watched("rx") || cx.watched("tx") || cx.kept().is_some()
+    /// How often the rates are sampled now: every [`PERIOD`] while a
+    /// visible reader reads one, at the kept period (never faster) while a
+    /// graph keeps the service's history, else not at all.
+    fn every(cx: &Cx<Network>) -> Option<Duration> {
+        // Tells the client the hidden samples are clocked (ramps).
+        let _ = cx.period(PERIOD);
+        if cx.watched("rx") || cx.watched("tx") {
+            Some(PERIOD)
+        } else {
+            cx.kept().map(|k| k.max(PERIOD))
+        }
     }
 
     /// Follow who wants the rates now (call after each message): sampling
     /// starts, changes period or stops. `true` when the values changed
     /// (they go back to 0 when sampling stops or starts afresh).
     pub(crate) fn sync(&mut self, cx: &Cx<Network>) -> bool {
-        if !Self::wanted(cx) {
+        let every = Self::every(cx);
+        if every.is_none() {
             self.tick = None;
             self.last = None;
             return self.zero();
         }
         let fresh = match &mut self.tick {
             None => {
-                self.tick = Some(Ticker::new(cx, PERIOD));
+                self.tick = Some(Ticker::at(every));
                 true
             }
-            Some(t) => t.follow(cx),
+            Some(t) => t.follow_every(every),
         };
         if !fresh {
             return false;

@@ -240,7 +240,8 @@ impl Degradation {
         self.stream = false;
         self.reported = false;
         backoff.connected();
-        tx.send(AdapterMsg::Connected(true)).is_ok() && tx.send(AdapterMsg::State(snapshot)).is_ok()
+        tx.send(AdapterMsg::Connected(true)).is_ok()
+            && tx.send(AdapterMsg::State(Box::new(snapshot))).is_ok()
     }
 
     /// A session ended not understood (`version`: what the compositor

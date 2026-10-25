@@ -426,3 +426,69 @@ fn a_dir_is_listed_and_followed() {
     services.shutdown();
     custom::forget(id);
 }
+
+/// (services-round) A directory past `MAX_DIR_FILES` lists the first
+/// files by name (whatever order the directory keeps them in), a
+/// subdirectory among them not counting as one.
+#[test]
+fn a_huge_dir_lists_its_first_files_by_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let n = custom::MAX_DIR_FILES;
+    std::fs::create_dir(tmp.path().join("0")).unwrap();
+    for i in (0..n + 50).rev() {
+        std::fs::write(tmp.path().join(format!("{i:06}.png")), b"").unwrap();
+    }
+    let listed = custom::list_dir(tmp.path()).unwrap().unwrap();
+    assert_eq!(listed.len(), n);
+    let name = |d: &Data| match d.field("name") {
+        Some(Data::Text(t)) => t.to_string(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(name(&listed[0]), "000000.png");
+    assert_eq!(name(&listed[n - 1]), format!("{:06}.png", n - 1));
+}
+
+/// (services-round) A directory that keeps changing (a download, a
+/// cache) is listed at most every `DIR_RELIST`, not after each change.
+#[test]
+fn a_busy_dir_is_listed_at_most_every_relist() {
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "busy");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let id = custom::register(Spec {
+        name: "busy".into(),
+        source: Source::Dir { path: dir.clone() },
+        fields: vec![FieldSpec {
+            name: "files".into(),
+            key: vec!["files".into()],
+            rw: false,
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    assert!(services.wait_ready(&rt, Duration::from_secs(10)));
+    let before = client.reports();
+    // A file grows every 20 ms for 2 s: a hundred changes.
+    let busy = Duration::from_secs(2);
+    let started = Instant::now();
+    let mut i = 0u32;
+    while started.elapsed() < busy {
+        std::fs::write(dir.join("part"), vec![0u8; i as usize]).unwrap();
+        i += 1;
+        services.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    services.pump(&rt);
+    let lists = client.reports() - before;
+    let most = (busy.as_millis() / custom::DIR_RELIST.as_millis()) as u64 + 2;
+    assert!(
+        (1..=most).contains(&lists),
+        "{lists} listings for {i} changes in {busy:?}"
+    );
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}

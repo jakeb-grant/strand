@@ -1,4 +1,4 @@
-/// (services-round) A program taking video over PipeWire.
+/// A program taking video over PipeWire.
 record VideoStream key id {
   /// Its PipeWire id (the program's stream).
   id: int
@@ -9,7 +9,7 @@ record VideoStream key id {
   source: VideoSource
 }
 
-/// (services-round) The programs taking video, from PipeWire: a camera
+/// The programs taking video, from PipeWire: a camera
 /// or screen-cast indicator.
 service video {
   /// The programs taking video now, keyed by `id`: a camera indicator

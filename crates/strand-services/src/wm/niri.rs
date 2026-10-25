@@ -423,6 +423,7 @@ impl State {
                 configured: Vec::new(),
                 keyboard_layout: self.keyboard_layout(),
                 keyboard_layouts: self.layouts.clone(),
+                keyboard_rules: None,
                 // niri has no binding modes.
                 mode: None,
             },
@@ -746,7 +747,7 @@ async fn session(
                     if !degradation.come_up(tx, backoff, state.snapshot()) {
                         return Ok(());
                     }
-                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                } else if (changed || requery) && tx.send(AdapterMsg::State(Box::new(state.snapshot()))).is_err() {
                     return Ok(());
                 }
                 for failed in reloads {

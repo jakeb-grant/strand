@@ -894,6 +894,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     gap::LOCK => "a lock",
                     gap::OFF => "the recorder off",
                     gap::PICK => "an inspector pick",
+                    gap::SECRET => "a password dialog or login screen",
                     _ => "a gap",
                 };
                 later(

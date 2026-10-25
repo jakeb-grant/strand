@@ -332,6 +332,7 @@ fn greeter() {
     let flag = started.clone();
     strand_services::greetd::configure(Some(strand_services::greetd::GreetdConfig {
         socket: None,
+        server_uid: None,
         started: Some(Arc::new(move || flag.store(true, Ordering::SeqCst))),
     }));
     let rt = Runtime::new();

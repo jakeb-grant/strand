@@ -254,6 +254,7 @@ pub fn logic(
     // (M5) What `file` outputs wrote: `$XDG_STATE_HOME/strand/files`.
     let manifest = storage.palette_dir().map(|d| d.with_file_name("files"));
     let config_dir = storage.config_dir.clone();
+    crate::services::follow_program(&build.program);
     let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
     // (report) The changes ring, its taps installed: the services', the
     // cells', and the composite's calls and writes.
@@ -302,6 +303,7 @@ pub fn logic(
         inspector: Default::default(),
         recorder,
         replay_on: true,
+        secret_sent: false,
         config_dir,
         report_ping,
         written: Default::default(),
@@ -363,8 +365,11 @@ pub fn logic(
             diff.reduced_motion = Some(reduced);
             reduced_sent = reduced;
         }
-        // (report) Surface roots and the lock, from the diff.
+        // (report) Surface roots and the lock, from the diff;
+        // (services-round) a password dialog or login screen pauses the
+        // rings before its surface is drawn.
         shell.record_diff(&diff);
+        shell.record_secret();
         let shaped = structural(&diff);
         if !diff.is_empty() && out.send(diff).is_err() {
             break;

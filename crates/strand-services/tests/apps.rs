@@ -333,7 +333,8 @@ fn a_launch_carries_the_token_and_not_an_inherited_one() {
 /// variables that address this shell: a second instance's
 /// `STRAND_SOCKET` and `STRAND_STATE_DIR` stay with it, so `strand` in a
 /// terminal it opened reaches the display's shell and the app's own
-/// variables (here `XDG_STATE_HOME`) are the session's.
+/// variables (here `XDG_STATE_HOME`) are the session's; (services-round)
+/// a greeter's `GREETD_SOCK` too, so no program it starts drives greetd.
 #[test]
 fn a_launch_never_inherits_the_variables_that_address_this_shell() {
     let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -343,6 +344,7 @@ fn a_launch_never_inherits_the_variables_that_address_this_shell() {
         std::env::set_var("STRAND_SOCKET", "/run/strand-second.sock");
         std::env::set_var("STRAND_STATE_DIR", "/tmp/strand-second-state");
         std::env::set_var("STRAND_LAUNCH_ENV_KEPT", "kept");
+        std::env::set_var("GREETD_SOCK", "/run/greetd-test.sock");
     }
     let root = std::env::temp_dir().join(format!("strand-apps-env-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -353,7 +355,7 @@ fn a_launch_never_inherits_the_variables_that_address_this_shell() {
         &script,
         &format!(
             "#!/bin/sh\necho \"[${{STRAND_SOCKET-unset}}] [${{STRAND_STATE_DIR-unset}}] \
-             [${{STRAND_LAUNCH_ENV_KEPT-unset}}]\" > {0}.tmp\nmv {0}.tmp {0}\n",
+             [${{STRAND_LAUNCH_ENV_KEPT-unset}}] [${{GREETD_SOCK-unset}}]\" > {0}.tmp\nmv {0}.tmp {0}\n",
             marker.display()
         ),
     );
@@ -399,9 +401,10 @@ fn a_launch_never_inherits_the_variables_that_address_this_shell() {
         std::env::remove_var("STRAND_SOCKET");
         std::env::remove_var("STRAND_STATE_DIR");
         std::env::remove_var("STRAND_LAUNCH_ENV_KEPT");
+        std::env::remove_var("GREETD_SOCK");
     }
     let _ = std::fs::remove_dir_all(&root);
-    assert_eq!(got.trim(), "[unset] [unset] [kept]");
+    assert_eq!(got.trim(), "[unset] [unset] [kept] [unset]");
 }
 
 /// Bugs 3 and gaps 9 (m6-w2-services): a window finds its desktop entry

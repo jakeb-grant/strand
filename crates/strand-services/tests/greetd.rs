@@ -7,10 +7,11 @@
 //!
 //! A login shown question by question, texts passed on at once, a
 //! refused answer failing the login, cancelling its session and asking
-//! the same user again, an
-//! answer typed before greetd asked, `start` held until the login
-//! succeeds and then ending the greeter, a second login cancelling the
-//! first, `cancel`, the actions' refusals, and no `$GREETD_SOCK`.
+//! the same user again, an answer typed before greetd asked (given to
+//! its first question only when that one is secret), `start` held until
+//! the login succeeds and then ending the greeter, a second login
+//! cancelling the first, `cancel`, the actions' refusals, a socket root
+//! does not serve sent nothing, and no `$GREETD_SOCK`.
 //!
 //! `greetd::configure` is process-wide: the tests take [`LOCK`].
 
@@ -194,10 +195,17 @@ struct World {
 
 impl World {
     fn start(socket: Option<PathBuf>) -> World {
+        // SAFETY: getuid cannot fail.
+        World::served_by(socket, unsafe { libc::getuid() })
+    }
+
+    /// greetd expected to be served by `uid` (root, as installed).
+    fn served_by(socket: Option<PathBuf>, uid: u32) -> World {
         let started = Arc::new(AtomicUsize::new(0));
         let count = started.clone();
         greetd::configure(Some(GreetdConfig {
             socket,
+            server_uid: Some(uid),
             started: Some(Arc::new(move || {
                 count.fetch_add(1, Ordering::SeqCst);
             })),
@@ -367,9 +375,15 @@ fn answers_typed_early_logins_replaced_and_cancelled() {
     let w = World::start(Some(g.path.clone()));
     w.until("connected", |w| w.state().available);
 
-    // bob types his token before greetd asks for it: it answers the
-    // first question, and the next one is shown.
+    // bob types before greetd asks, and his first question is a visible
+    // one (a token): an answer typed early goes only to a secret
+    // question (PAM may log a visible one's), so it is wiped and the
+    // question shown.
     w.act("login", &[text("bob")]);
+    w.act("submit", &[text("123")]);
+    w.until("asked the token", |w| w.state().prompt == "Token: ");
+    assert!(w.state().echo);
+    assert_eq!(g.types(), ["create_session"]);
     w.act("submit", &[text("123")]);
     w.until("asked the password", |w| w.state().prompt == "Password: ");
     assert!(!w.state().echo);
@@ -432,6 +446,56 @@ fn answers_typed_early_logins_replaced_and_cancelled() {
     w.act("start", &[command(&["sway"])]);
     w.until("start refused", |w| w.state().error.contains("login"));
     assert_eq!(w.started.load(Ordering::SeqCst), 0);
+    w.services.shutdown();
+}
+
+#[test]
+fn an_answer_typed_early_answers_a_secret_first_question() {
+    let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let g = FakeGreetd::start();
+    let w = World::start(Some(g.path.clone()));
+    w.until("connected", |w| w.state().available);
+    // dave's first question is the password: typed before greetd asked,
+    // it answers it.
+    w.act("login", &[text("dave")]);
+    w.act("submit", &[text("right")]);
+    w.until("answered", |_| g.seen().len() == 2);
+    w.settle();
+    assert_eq!(
+        g.seen(),
+        vec![
+            json!({"type": "create_session", "username": "dave"}),
+            json!({"type": "post_auth_message_response", "response": "right"}),
+        ]
+    );
+    assert!(w.state().prompt.is_empty() && !w.state().failed);
+    w.services.shutdown();
+}
+
+#[test]
+fn a_socket_another_user_serves_is_sent_nothing() {
+    let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: getuid cannot fail.
+    let me = unsafe { libc::getuid() };
+    if me == 0 {
+        return;
+    }
+    let g = FakeGreetd::start();
+    // Expected root's, as greetd runs: this test's own socket is not.
+    let w = World::served_by(Some(g.path.clone()), 0);
+    w.act("login", &[text("alice")]);
+    w.act("submit", &[text("hunter2")]);
+    w.until("said why", |w| w.state().error.contains("not root"));
+    assert!(w.state().error.contains(&format!("uid {me}")));
+    w.settle();
+    assert!(g.seen().is_empty(), "nothing was sent: {:?}", g.seen());
+    let warned: Vec<String> = w
+        .services
+        .take_diagnostics()
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(warned.iter().any(|m| m.contains("not root")), "{warned:?}");
     w.services.shutdown();
 }
 

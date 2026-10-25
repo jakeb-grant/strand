@@ -405,6 +405,22 @@ impl PipeWire {
         (v, out.contains("[MUTED]"))
     }
 
+    /// (services-round) The global id of the node whose `object.serial`
+    /// is `serial` (`pw-cli ls Node`), what `wpctl` takes.
+    pub fn node_of_serial(&self, serial: u32) -> u32 {
+        let listing = self.run("pw-cli", &["ls", "Node"]);
+        let mut id = None;
+        for line in listing.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("id ") {
+                id = rest.split(',').next().and_then(|n| n.trim().parse().ok());
+            } else if line == format!("object.serial = \"{serial}\"") {
+                return id.unwrap_or_else(|| panic!("serial {serial} before any id"));
+            }
+        }
+        panic!("no node has serial {serial}: {listing}")
+    }
+
     /// Whether a node named `name` exists.
     pub fn has_node(&self, name: &str) -> bool {
         self.run("pw-cli", &["ls", "Node"])

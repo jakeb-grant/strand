@@ -561,6 +561,9 @@ pub(crate) struct NodeProps {
     /// Strand's own are): it neither plays nor records for anyone, so it
     /// is not listed.
     monitor: bool,
+    /// (services-round) A recording of what a sink plays
+    /// (`stream.capture.sink`): [`StreamDirection::Monitor`].
+    capture_sink: bool,
     /// A camera: `media.role` `Camera`, a node of a device, or a V4L2 or
     /// libcamera node.
     camera: bool,
@@ -585,6 +588,7 @@ impl NodeProps {
             app,
             icon,
             monitor: get("stream.monitor") == Some("true"),
+            capture_sink: get("stream.capture.sink") == Some("true"),
             camera: get("media.role") == Some("Camera")
                 || get("device.id").is_some()
                 || matches!(get("device.api"), Some("v4l2" | "libcamera")),
@@ -1953,7 +1957,8 @@ fn bind_stream(
 ) {
     let as_device = match direction {
         StreamDirection::Output => Direction::Sink,
-        StreamDirection::Input => Direction::Source,
+        // A monitor recording is told apart when listed (state_of).
+        StreamDirection::Input | StreamDirection::Monitor => Direction::Source,
     };
     bind_node(s, q, global, as_device, Some(direction));
 }
@@ -2182,15 +2187,25 @@ fn state_of(s: &Session) -> AudioState {
     let ours: Vec<u32> = s.meters.iter().map(Meter::node).collect();
     for n in s.nodes.values().filter(|n| n.ready) {
         if let Some((direction, props)) = &n.stream {
-            if let Some(serial) = n.serial.as_deref().and_then(|v| v.parse().ok()) {
+            let serial = n.serial.as_deref().and_then(|v| v.parse::<u64>().ok());
+            if let Some(serial) = serial {
                 state.serials.insert(n.device.id, serial);
             }
             if !props.monitor && !ours.contains(&n.device.id) {
                 state.streams.push(AudioStream {
-                    id: n.device.id,
+                    // (services-round) Its serial, which no later stream
+                    // takes (PipeWire reuses global ids at once: a tab
+                    // closed, another opened): a write from an item kept
+                    // past its stream reaches no other.
+                    id: serial
+                        .and_then(|s| u32::try_from(s).ok())
+                        .unwrap_or(n.device.id),
                     app: props.app.clone(),
                     icon: props.icon.clone(),
-                    direction: *direction,
+                    direction: match direction {
+                        StreamDirection::Input if props.capture_sink => StreamDirection::Monitor,
+                        d => *d,
+                    },
                     volume: n.device.volume,
                     muted: n.device.muted,
                 });

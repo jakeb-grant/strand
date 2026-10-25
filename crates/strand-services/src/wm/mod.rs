@@ -60,6 +60,7 @@ pub use detect::{Backend, detect, detect_with};
 pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
 pub use model::{
     CompositorKind, Mirror, Publisher, Sources, WinRect, Window, WmChange, WmState, Workspace,
+    XkbNames,
 };
 pub use protocol::{
     ManagedToplevel, ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget,
@@ -266,7 +267,7 @@ pub(crate) struct IpcSnapshot {
 /// What an adapter tells the service.
 #[derive(Debug)]
 pub(crate) enum AdapterMsg {
-    State(IpcSnapshot),
+    State(Box<IpcSnapshot>),
     Reloaded {
         failed: Option<bool>,
     },
@@ -439,6 +440,7 @@ pub(crate) fn merge_with(
                 // The protocols tell no layout, and no mode.
                 keyboard_layout: None,
                 keyboard_layouts: Vec::new(),
+                keyboard_rules: None,
                 mode: None,
             }
         }
@@ -695,7 +697,7 @@ pub(crate) async fn drive<S>(
                         while let Some(msg) = next.take() {
                             match msg {
                                 AdapterMsg::State(s) => {
-                                    ipc = Some(s);
+                                    ipc = Some(*s);
                                     if degraded.take().is_some() {
                                         log::info!(
                                             "the compositor IPC adapter understands the \

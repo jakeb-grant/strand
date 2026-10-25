@@ -18,6 +18,8 @@ service idle {
   /// seat has been idle that long, by timeout.
   timeouts: [IdleTimeout]
   /// True once the seat has had no input for `timeout`, false again at
-  /// the next input: `panel Saver { open: idle.after(300s) }`.
+  /// the next input: `panel Saver { open: idle.after(300s) }`. The
+  /// compositor keeps a timer for each timeout only while something
+  /// reads it; one no longer read goes a second later.
   fn after(timeout: duration) -> bool
 }

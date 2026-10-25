@@ -187,7 +187,7 @@ impl Harness {
             .act(
                 &self.rt,
                 AuthAction::Submit {
-                    password: password.to_string(),
+                    password: password.to_string().into(),
                 },
             )
             .unwrap();

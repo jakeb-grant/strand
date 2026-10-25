@@ -41,9 +41,14 @@ pub enum StreamDirection {
     /// It plays (`media.class` `Stream/Output/Audio`).
     #[default]
     Output,
-    /// It records (`media.class` `Stream/Input/Audio`): a microphone in
-    /// use, or a recorder of what a sink plays.
+    /// It records a source (`media.class` `Stream/Input/Audio`): a
+    /// microphone in use.
     Input,
+    /// (services-round) It records what a sink plays (an input stream
+    /// with `stream.capture.sink`, as pipewire-pulse marks a recording of
+    /// a `.monitor` source and cava, OBS and `pw-record` ask): a
+    /// visualiser, a recorder of the desktop's sound. Not a microphone.
+    Monitor,
 }
 
 impl StreamDirection {
@@ -63,7 +68,9 @@ impl StreamDirection {
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
 #[data(name = "AudioStream", key = id)]
 pub struct AudioStream {
-    /// Its node's PipeWire global id.
+    /// (services-round) Names it while it lives: its node's
+    /// `object.serial`, which unlike its global id no later stream takes
+    /// (the global id where PipeWire gives no serial).
     pub id: u32,
     /// The program's name (`application.name`, else the node's
     /// `media.name`, else its `node.name`).
@@ -358,6 +365,11 @@ pub enum AudioChange {
 /// An item of one of the lists, keyed by its node's id.
 pub(crate) trait Node: Clone + PartialEq {
     fn node(&self) -> u32;
+    /// Its key is a PipeWire global id, which a later object may take
+    /// (an `AudioStream`'s is its serial, which none does).
+    fn reused_ids() -> bool {
+        true
+    }
 }
 
 impl Node for AudioDevice {
@@ -369,6 +381,9 @@ impl Node for AudioDevice {
 impl Node for AudioStream {
     fn node(&self) -> u32 {
         self.id
+    }
+    fn reused_ids() -> bool {
+        false
     }
 }
 
@@ -391,10 +406,11 @@ fn list_diff<T: Node>(
     new: &[T],
 ) -> Vec<VecDiff<u32, T>> {
     let reused = |d: &T| {
-        matches!(
-            (last.serials.get(&d.node()), next.serials.get(&d.node())),
-            (Some(a), Some(b)) if a != b
-        )
+        T::reused_ids()
+            && matches!(
+                (last.serials.get(&d.node()), next.serials.get(&d.node())),
+                (Some(a), Some(b)) if a != b
+            )
     };
     if old == new && !old.iter().any(reused) {
         return Vec::new();

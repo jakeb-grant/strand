@@ -86,6 +86,8 @@ pub struct PolkitConfig {
     pub helper: Option<PathBuf>,
     /// The helper's socket; `None` is polkit's ([`helper::SOCKET`]).
     pub socket: Option<PathBuf>,
+    /// Who must own the helper (setuid) and its socket; `None` is root.
+    pub owner: Option<u32>,
 }
 
 static CONFIG: Mutex<Option<PolkitConfig>> = Mutex::new(None);
@@ -104,26 +106,16 @@ fn config() -> PolkitConfig {
         .unwrap_or_default()
 }
 
-/// `polkit`'s actions.
-#[derive(Call)]
+/// `polkit`'s actions. An answer is a [`Password`] from the call on (its
+/// `Debug` shows only its length), wiped wherever it is dropped.
+#[derive(Call, Debug)]
 pub enum PolkitAction {
     /// `polkit.respond(answer)`.
-    Respond { answer: String },
+    Respond { answer: Password },
     /// `polkit.cancel()`.
     Cancel,
     /// `polkit.choose(user)`.
     Choose { user: String },
-}
-
-impl std::fmt::Debug for PolkitAction {
-    /// An answer shows only its length.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PolkitAction::Respond { answer } => write!(f, "Respond(<{} bytes>)", answer.len()),
-            PolkitAction::Cancel => f.write_str("Cancel"),
-            PolkitAction::Choose { user } => write!(f, "Choose({user:?})"),
-        }
-    }
 }
 
 /// A request a dialog shows: the schema's `PolkitRequest`.
@@ -132,6 +124,7 @@ impl std::fmt::Debug for PolkitAction {
 pub struct PolkitRequest {
     pub action_id: String,
     pub message: String,
+    pub command: Option<String>,
     pub icon: String,
     pub user: String,
     pub users: Vec<String>,
@@ -153,13 +146,15 @@ pub struct Polkit {
     /// The last answer was refused: `request` stays, and its prompt asks
     /// again.
     pub failed: bool,
-    /// Strand is this session's polkit agent: false while another agent
-    /// is (a desktop's own, `polkit-gnome`), or without polkit, when
-    /// `error` says why.
+    /// Strand is this session's polkit agent. False while another agent
+    /// is (a desktop's own, `polkit-gnome`), and when it cannot be one:
+    /// polkit's helper (`polkit-agent-helper-1`, setuid root, or polkit's
+    /// own socket for it) is not installed, polkit is not running, or
+    /// Strand runs in no login session; `error` says which.
     pub available: bool,
-    /// Why Strand is not the agent ("another polkit agent serves this
-    /// session"), or why the last request could not be answered (no
-    /// helper); "" otherwise.
+    /// Why Strand is not the agent ("another polkit authentication agent
+    /// already serves this session…"), or why the shown request's check
+    /// could not run or ended early; "" otherwise.
     pub error: String,
 }
 
@@ -215,7 +210,7 @@ impl Agent {
         action_id: String,
         message: String,
         icon_name: String,
-        _details: HashMap<String, String>,
+        details: HashMap<String, String>,
         cookie: String,
         identities: Vec<(String, HashMap<String, OwnedValue>)>,
     ) -> Result<(), AgentError> {
@@ -236,6 +231,7 @@ impl Agent {
             icon: icon_name,
             user,
             users,
+            command: command_of(&details),
             ..PolkitRequest::default()
         };
         let (tx, rx) = oneshot::channel();
@@ -261,6 +257,15 @@ impl Agent {
         let _ = self.tx.send(Asked::Cancel(cookie));
         Ok(())
     }
+}
+
+/// The command a request is for, as `BeginAuthentication`'s details name
+/// it: pkexec's `command_line` (the program and its arguments), else its
+/// `program`; `None` for a request that names none (a settings page's).
+pub fn command_of(details: &HashMap<String, String>) -> Option<String> {
+    ["command_line", "program"]
+        .iter()
+        .find_map(|k| details.get(*k).filter(|v| !v.is_empty()).cloned())
 }
 
 // ---- users -----------------------------------------------------------------
@@ -474,8 +479,9 @@ struct Conv {
     answers: mpsc::UnboundedSender<Password>,
     /// A question waits with no answer.
     asking: bool,
-    /// An answer waits for the next question.
-    queued: bool,
+    /// An answer given before a question: the next one gets it only when
+    /// it is secret (`echo` off); a visible one wipes it and asks.
+    held: Option<Password>,
     /// An answer was given in it.
     answered: bool,
 }
@@ -494,6 +500,13 @@ struct Requests {
     next_id: u64,
     helper: Option<Helper>,
     said: mpsc::UnboundedSender<(u64, Said)>,
+    /// The shown request, for its user, has been shown to the user
+    /// asking something (or saying why it could not): an answer given
+    /// before its conversation asks is a retry of it, and waits for the
+    /// question. False from the moment another request (or user) is
+    /// shown until then, so an answer typed for the one before is never
+    /// given to it.
+    seen: bool,
 }
 
 impl Requests {
@@ -508,10 +521,6 @@ impl Requests {
             return Err("polkit's password helper is not installed".into());
         };
         let (answers, rx) = mpsc::unbounded_channel();
-        let given = answer.is_some();
-        if let Some(a) = answer {
-            let _ = answers.send(a);
-        }
         self.next_id += 1;
         let id = self.next_id;
         let (tx, mut said_rx) = mpsc::unbounded_channel();
@@ -534,8 +543,8 @@ impl Requests {
             task,
             answers,
             asking: false,
-            queued: given,
-            answered: given,
+            held: answer,
+            answered: false,
         });
         Ok(())
     }
@@ -543,6 +552,7 @@ impl Requests {
     /// Ends the shown request with `outcome` and shows the next.
     fn finish(&mut self, outcome: Result<(), AgentError>) -> Result<(), String> {
         self.conv = None;
+        self.seen = false;
         if let Some(p) = self.queue.pop_front() {
             let _ = p.reply.send(outcome);
         }
@@ -552,6 +562,7 @@ impl Requests {
     /// Refuses every request (the store stops, polkit went).
     fn drop_all(&mut self, why: &str) {
         self.conv = None;
+        self.seen = false;
         for p in self.queue.drain(..) {
             let _ = p.reply.send(Err(AgentError::Cancelled(why.to_string())));
         }
@@ -567,7 +578,11 @@ impl Polkit {
             Err(e) => return dbus::idle_without_bus(&mut cx, "system", e).await,
         };
         let config = config();
-        let found = Helper::find(config.socket.as_deref(), config.helper.as_deref());
+        let found = Helper::find(
+            config.socket.as_deref(),
+            config.helper.as_deref(),
+            config.owner.unwrap_or(0),
+        );
         let mut daemon = Daemon::new(&conn, AUTHORITY)
             .await
             .map_err(|e| ServiceError(format!("polkit: {e}")))?;
@@ -608,17 +623,18 @@ impl Polkit {
             queue: VecDeque::new(),
             conv: None,
             next_id: 0,
-            helper: found.clone(),
+            helper: found.clone().ok(),
             said: said_tx,
+            seen: false,
         };
-        let helped = found.is_some();
+        let unhelped = found.err();
         if !register(
             &mut cx,
             &mut reg,
             &conn,
             &daemon,
             session.as_deref(),
-            helped,
+            unhelped.as_deref(),
         )
         .await
         {
@@ -639,7 +655,7 @@ impl Polkit {
                         if !publish(&mut cx, &reqs, |s| s.busy = false) {
                             break Ok(());
                         }
-                        if !register(&mut cx, &mut reg, &conn, &daemon, session.as_deref(), helped)
+                        if !register(&mut cx, &mut reg, &conn, &daemon, session.as_deref(), unhelped.as_deref())
                             .await
                         {
                             break Ok(());
@@ -649,7 +665,7 @@ impl Polkit {
                     Some(DaemonEvent::Signal(m)) => {
                         if !reg.registered
                             && dbus::member(&m).as_deref() == Some("Changed")
-                            && !register(&mut cx, &mut reg, &conn, &daemon, session.as_deref(), helped)
+                            && !register(&mut cx, &mut reg, &conn, &daemon, session.as_deref(), unhelped.as_deref())
                                 .await
                         {
                             break Ok(());
@@ -743,19 +759,13 @@ async fn register(
     conn: &zbus::Connection,
     daemon: &Daemon,
     session: Option<&str>,
-    helped: bool,
+    unhelped: Option<&str>,
 ) -> bool {
     if reg.registered {
         return true;
     }
-    let (registered, error, held) = if !helped {
-        (
-            false,
-            "polkit's password helper (polkit-agent-helper-1) is not installed: \
-             Strand cannot check polkit's passwords"
-                .to_string(),
-            false,
-        )
+    let (registered, error, held) = if let Some(why) = unhelped {
+        (false, why.to_string(), false)
     } else if daemon.owner().is_none() {
         (false, "polkit is not running".to_string(), false)
     } else if let Some(session) = session {
@@ -909,14 +919,27 @@ fn said(cx: &mut Cx<Polkit>, reqs: &mut Requests, s: Said) -> bool {
             let Some(c) = reqs.conv.as_mut() else {
                 return true;
             };
-            let queued = std::mem::take(&mut c.queued);
-            c.asking = !queued;
+            // An answer given early goes only to a secret question: a
+            // visible one (a name) might be logged by PAM.
+            let sent = match c.held.take() {
+                Some(a) if !echo => c.answers.send(a).is_ok(),
+                Some(_) => {
+                    log::info!("polkit: an answer given before a visible question was dropped");
+                    false
+                }
+                None => false,
+            };
+            c.answered |= sent;
+            c.asking = !sent;
+            if !sent {
+                reqs.seen = true;
+            }
             if let Some(r) = front(reqs) {
                 r.info.clear();
-                r.prompt = if queued { String::new() } else { text };
+                r.prompt = if sent { String::new() } else { text };
                 r.echo = echo;
             }
-            publish(cx, reqs, |s| s.busy = queued)
+            publish(cx, reqs, |s| s.busy = sent)
         }
         Said::Text(t) => {
             if let Some(r) = front(reqs) {
@@ -943,7 +966,8 @@ fn said(cx: &mut Cx<Polkit>, reqs: &mut Requests, s: Said) -> bool {
                     });
             }
             // It ended before asking anything (a lockout, a broken
-            // stack): the next answer tries again.
+            // stack): shown with why, the next answer tries again.
+            reqs.seen = true;
             publish(cx, reqs, |s| {
                 s.busy = false;
                 s.error = "polkit's check ended before it asked for a password".into();
@@ -960,6 +984,7 @@ fn said(cx: &mut Cx<Polkit>, reqs: &mut Requests, s: Said) -> bool {
             } else {
                 log::info!("polkit: {why}");
             }
+            reqs.seen = true;
             publish(cx, reqs, |s| {
                 s.busy = false;
                 s.failed = s.failed || answered;
@@ -976,7 +1001,6 @@ fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
     }
     match a {
         PolkitAction::Respond { answer } => {
-            let answer = Password::from(answer);
             if cx.state().busy {
                 // One check at a time; this one is dropped (and wiped).
                 return true;
@@ -984,6 +1008,15 @@ fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
             if let Some(why) = helper::refusal(&answer) {
                 log::info!("polkit: an answer was refused: {why}");
                 return cx.update(|s| s.failed = true);
+            }
+            // An answer is the shown request's only once the user has
+            // seen it ask: one typed for a request that went meanwhile
+            // (withdrawn, dismissed, another user chosen) is dropped,
+            // and wiped, never given to the next.
+            let current = reqs.seen || reqs.conv.as_ref().is_some_and(|c| c.asking);
+            if !current {
+                log::info!("polkit: an answer for a request no longer shown was dropped");
+                return true;
             }
             let Some(c) = reqs.conv.as_mut() else {
                 // Ended before asking, or broken: this answer tries again.
@@ -993,11 +1026,18 @@ fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
                         s.error.clear();
                     });
             };
-            if c.queued || c.answers.send(answer).is_err() {
+            if c.held.is_some() {
+                // One answer waits already: this one is dropped (wiped).
                 return true;
             }
-            c.answered = true;
-            c.queued = !std::mem::take(&mut c.asking);
+            if std::mem::take(&mut c.asking) {
+                if c.answers.send(answer).is_err() {
+                    return true;
+                }
+                c.answered = true;
+            } else {
+                c.held = Some(answer);
+            }
             if let Some(r) = front(reqs) {
                 r.prompt.clear();
             }
@@ -1020,6 +1060,7 @@ fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
             r.user = user;
             r.prompt.clear();
             r.info.clear();
+            reqs.seen = false;
             begin_shown(cx, reqs, None)
                 && publish(cx, reqs, |s| {
                     s.busy = false;
@@ -1077,10 +1118,33 @@ mod tests {
     }
 
     #[test]
+    fn the_command_is_pkexecs_command_line_else_its_program() {
+        let d = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            command_of(&d(&[
+                ("program", "/usr/bin/sh"),
+                ("command_line", "/usr/bin/sh -c id")
+            ]))
+            .as_deref(),
+            Some("/usr/bin/sh -c id")
+        );
+        assert_eq!(
+            command_of(&d(&[("program", "/usr/bin/sh"), ("command_line", "")])).as_deref(),
+            Some("/usr/bin/sh")
+        );
+        assert_eq!(command_of(&d(&[("polkit.caller-pid", "12")])), None);
+    }
+
+    #[test]
     fn an_answer_never_shows_in_debug() {
         let a = PolkitAction::Respond {
-            answer: "hunter2".into(),
+            answer: Password::from("hunter2".to_string()),
         };
-        assert_eq!(format!("{a:?}"), "Respond(<7 bytes>)");
+        assert_eq!(format!("{a:?}"), "Respond { answer: Password(<7 bytes>) }");
     }
 }

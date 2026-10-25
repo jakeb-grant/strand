@@ -138,13 +138,19 @@ pub fn restore_in_child() {
 pub const ACTIVATION_VARS: [&str; 2] = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"];
 
 /// The variables that address one running shell, not the session: the
-/// socket it answers on (`STRAND_SOCKET`) and the directory it keeps its
-/// state in (`STRAND_STATE_DIR`). A program strand starts never inherits
+/// socket it answers on (`STRAND_SOCKET`), the directory it keeps its
+/// state in (`STRAND_STATE_DIR`), and (services-round) greetd's socket
+/// when it is the greeter (`GREETD_SOCK`: only its `greetd` store logs
+/// in, never a program it starts). A program strand starts never inherits
 /// them, so a terminal opened from a second instance reaches the
 /// display's shell with `strand set`, as one opened anywhere else does,
 /// and keeps nothing in that instance's state (spec section 13;
 /// decisions.md launch-env).
-pub const INSTANCE_VARS: [&str; 2] = ["STRAND_SOCKET", strand_core::persist::STATE_DIR_VAR];
+pub const INSTANCE_VARS: [&str; 3] = [
+    "STRAND_SOCKET",
+    strand_core::persist::STATE_DIR_VAR,
+    crate::greetd::SOCKET_VAR,
+];
 
 /// The environment of a program strand starts: strand's own, with the
 /// activation variables ([`ACTIVATION_VARS`]) set to `token`, the token
@@ -207,6 +213,7 @@ mod tests {
             got,
             [
                 ("DESKTOP_STARTUP_ID".into(), Some("tok".into())),
+                ("GREETD_SOCK".into(), None),
                 ("STRAND_SOCKET".into(), None),
                 ("STRAND_STATE_DIR".into(), None),
                 ("XDG_ACTIVATION_TOKEN".into(), Some("tok".into())),
@@ -222,6 +229,7 @@ mod tests {
             got,
             [
                 ("DESKTOP_STARTUP_ID".into(), None),
+                ("GREETD_SOCK".into(), None),
                 ("STRAND_SOCKET".into(), None),
                 ("STRAND_STATE_DIR".into(), None),
                 ("XDG_ACTIVATION_TOKEN".into(), None),

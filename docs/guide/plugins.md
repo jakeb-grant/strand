@@ -1,8 +1,8 @@
 # Plugins: a service written in Rust
 
 Most services need no code: `service … from dbus`, `from file`, `from
-listen` and `from poll` (level 5) cover a D-Bus object, a file and a
-command. When a service needs more than that, write it in Rust and
+dir`, `from listen` and `from poll` (level 5) cover a D-Bus object, a
+file, a directory and a command. When a service needs more than that, write it in Rust and
 build your own `strand` binary with it inside. That binary is a
 **plugin**: it answers every `strand` command (`run`, `check`,
 `call`, …) and serves your service beside the builtin ones.

@@ -62,29 +62,97 @@ const MAX_LINE: usize = 8 * 1024;
 /// How the helper is reached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Helper {
-    /// The socket to try first (it is used when it exists).
-    pub socket: PathBuf,
-    /// The setuid helper, when one is installed: used when the socket is
-    /// missing or refuses the connection.
+    /// The socket to try first: a socket `owner` (root) owns.
+    pub socket: Option<PathBuf>,
+    /// The setuid helper, when one is installed (a file `owner` owns,
+    /// setuid): used when there is no socket or it refuses the
+    /// connection.
     pub program: Option<PathBuf>,
 }
 
 impl Helper {
     /// The helper as `socket` and `program` say, or as installed
     /// ([`SOCKET`]; the first of [`HELPER_DIRS`] holding
-    /// [`HELPER_NAME`]). `None` when neither exists: polkit's passwords
+    /// [`HELPER_NAME`]), taken only when `owner` (root; tests their own
+    /// uid) owns it: a socket, or a setuid program. polkit 127 and later
+    /// install the program without setuid, for the socket only; one used
+    /// anyway could check nothing (it says it needs to be setuid root and
+    /// fails every request), and Strand, registered, would keep another
+    /// agent out. `Err` says why there is none: polkit's passwords
     /// cannot be checked here.
-    pub fn find(socket: Option<&Path>, program: Option<&Path>) -> Option<Helper> {
-        let socket = socket.map_or_else(|| PathBuf::from(SOCKET), Path::to_path_buf);
-        let program = match program {
-            Some(p) => Some(p.to_path_buf()).filter(|p| p.is_file()),
+    pub fn find(
+        socket: Option<&Path>,
+        program: Option<&Path>,
+        owner: u32,
+    ) -> Result<Helper, String> {
+        let socket_path = socket.map_or_else(|| PathBuf::from(SOCKET), Path::to_path_buf);
+        let socket = owned_socket(&socket_path, owner).then_some(socket_path.clone());
+        let candidates: Vec<PathBuf> = match program {
+            Some(p) => vec![p.to_path_buf()],
             None => HELPER_DIRS
                 .iter()
                 .map(|d| Path::new(d).join(HELPER_NAME))
-                .find(|p| p.is_file()),
+                .collect(),
         };
-        (socket.exists() || program.is_some()).then_some(Helper { socket, program })
+        let mut unusable = None;
+        let program =
+            candidates
+                .into_iter()
+                .filter(|p| p.is_file())
+                .find(|p| match setuid_by(p, owner) {
+                    Ok(()) => true,
+                    Err(why) => {
+                        unusable.get_or_insert(why);
+                        false
+                    }
+                });
+        if socket.is_some() || program.is_some() {
+            return Ok(Helper { socket, program });
+        }
+        let socket_why = if socket_path.exists() {
+            format!("{} is not a socket {}", socket_path.display(), whose(owner))
+        } else {
+            format!("there is no {}", socket_path.display())
+        };
+        Err(match unusable {
+            Some(why) => format!(
+                "polkit's password helper cannot be used ({why}, and {socket_why}): \
+                 Strand cannot check polkit's passwords"
+            ),
+            None => format!(
+                "polkit's password helper ({HELPER_NAME}) is not installed ({socket_why}): \
+                 Strand cannot check polkit's passwords"
+            ),
+        })
     }
+}
+
+/// "root owns", or the uid that must.
+fn whose(owner: u32) -> String {
+    if owner == 0 {
+        "root owns".into()
+    } else {
+        format!("uid {owner} owns")
+    }
+}
+
+/// `path` is a socket `owner` owns.
+fn owned_socket(path: &Path, owner: u32) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    std::fs::metadata(path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == owner)
+}
+
+/// Why `path` is not a setuid program `owner` owns, if it is not.
+fn setuid_by(path: &Path, owner: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if m.uid() != owner {
+        return Err(format!("{} is not one {}", path.display(), whose(owner)));
+    }
+    if m.mode() & libc::S_ISUID == 0 {
+        return Err(format!("{} is not setuid", path.display()));
+    }
+    Ok(())
 }
 
 /// One line of the helper's.
@@ -223,8 +291,8 @@ async fn open(
     helper: &Helper,
     user: &str,
 ) -> io::Result<(Reader, Writer, Option<tokio::process::Child>)> {
-    if helper.socket.exists() {
-        match tokio::net::UnixStream::connect(&helper.socket).await {
+    if let Some(socket) = &helper.socket {
+        match tokio::net::UnixStream::connect(socket).await {
             Ok(s) => {
                 let (r, mut w) = s.into_split();
                 let mut first = Vec::with_capacity(user.len() + 1);
@@ -236,7 +304,7 @@ async fn open(
             Err(e) if helper.program.is_some() => {
                 log::info!(
                     "polkit: the helper's socket {} refused ({e}): the setuid helper instead",
-                    helper.socket.display()
+                    socket.display()
                 );
             }
             Err(e) => return Err(e),
@@ -245,7 +313,7 @@ async fn open(
     let program = helper.program.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            format!("no {HELPER_NAME} and no {}", helper.socket.display()),
+            format!("no {HELPER_NAME} and no socket for it"),
         )
     })?;
     let mut cmd = tokio::process::Command::new(program);
@@ -437,13 +505,42 @@ mod tests {
     }
 
     #[test]
-    fn no_helper_is_found_where_there_is_none() {
+    fn only_a_setuid_program_or_a_socket_its_owner_owns_is_a_helper() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: getuid cannot fail.
+        let me = unsafe { libc::getuid() };
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("none.socket");
-        let program = dir.path().join("none");
-        assert_eq!(Helper::find(Some(&socket), Some(&program)), None);
+        let program = dir.path().join("helper");
+        let why = Helper::find(Some(&socket), Some(&program), me).unwrap_err();
+        assert!(why.contains("is not installed"), "{why}");
+
+        // Installed without setuid (polkit 127's, meant for its socket):
+        // it could check nothing.
         std::fs::write(&program, "").unwrap();
-        let found = Helper::find(Some(&socket), Some(&program)).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let why = Helper::find(Some(&socket), Some(&program), me).unwrap_err();
+        assert!(why.contains("is not setuid"), "{why}");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o4755)).unwrap();
+        let found = Helper::find(Some(&socket), Some(&program), me).unwrap();
         assert_eq!(found.program.as_deref(), Some(program.as_path()));
+        assert_eq!(found.socket, None);
+        // Setuid, but not root's.
+        if me != 0 {
+            let why = Helper::find(Some(&socket), Some(&program), 0).unwrap_err();
+            assert!(why.contains("not one root owns"), "{why}");
+        }
+
+        // A file where the socket should be is no socket.
+        std::fs::write(&socket, "").unwrap();
+        let why = Helper::find(Some(&socket), Some(&dir.path().join("none")), me).unwrap_err();
+        assert!(why.contains("is not a socket"), "{why}");
+        std::fs::remove_file(&socket).unwrap();
+        let _listening = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let found = Helper::find(Some(&socket), Some(&dir.path().join("none")), me).unwrap();
+        assert_eq!(found.socket.as_deref(), Some(socket.as_path()));
+        if me != 0 {
+            assert!(Helper::find(Some(&socket), Some(&dir.path().join("none")), 0).is_err());
+        }
     }
 }

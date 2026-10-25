@@ -15,7 +15,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | Render timer (`strand-tooltip`) | `strand-render` (`renderer/wake.rs`) | The render loop's own due times: one wake at the latest time it was sent (a tooltip's delay, the exit of a surface whose output stopped sending frames), through the loop's waker | Any work but the wake: `Renderer::update` runs on the main thread |
 | Watcher | `strand-watch` | inotify directory watches and polling (one `strand-watch` thread); not the IPC socket (`docs/decisions.md`, wave2-watch) | Parse files (it sends paths and hashes) |
 | Persist IO (`strand-persist`, one per `PersistStore`) | `strand-core` | Atomic writes of persisted cells, settings-file edits, settings overlays and last-good snapshots; reports each file it is about to change to `PersistStore::on_written` | Run on the logic tick or block logic (failures come back as diagnostics in a later tick) |
-| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the `video` store the same loop following only video on its own (`strand-video`, services-round), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`); the `clipboard` store runs on its own `strand-clipboard` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`), and each value it copies is held by the process-wide `strand-clipboard-keep` keeper thread, started on the first copy and ending once another program takes the selection (m6-service-gaps) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
+| Services | `strand-services` | One tokio current-thread runtime thread (`strand-services`), started with the first service that runs on it: every async service body (the `system` service follows the portal Settings with `strand_watch::follow` here; the `workspaces`, `windows` and `wm` stores and their one compositor hub with its IPC adapter run here, the sway adapter on swayipc-types (swayipc-async 3.0's types) over its own tokio framing, so no async-io reactor thread) and the portal icon-theme follower (`strand_services::icon_theme`, a task on the same session connection); the `audio` store runs the PipeWire loop on its own service thread (`strand-audio`, `Start::Thread`), and the `video` store the same loop following only video on its own (`strand-video`, services-round), and the hub's Wayland toplevel/workspace protocol client its own `strand-toplevel` thread (the hub's, not a `Start::Thread` body: three stores share it; the hub tells it to stop on its last stop without waiting on the shared runtime, and joins it at the next start or stop and on `Services::shutdown`); the `clipboard` store runs on its own `strand-clipboard` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`), and each value it copies is held by the process-wide `strand-clipboard-keep` keeper thread, started on the first copy and ending once another program takes the selection (m6-service-gaps); (services-round) the `idle` store runs ext-idle-notify on its own `strand-idle` thread (`Start::Thread`, asleep in `poll(2)` like `strand-outputs`) (idle: zero wakeups, `crates/strand-services/tests/idle.rs`, `tests/audio_idle.rs`, `tests/wm_services.rs`, `tests/audio_service.rs`) | Block logic: they send patches and events over channels, applied by `Services::pump` on the logic thread |
 | Lock auth (M4; `strand-lock-auth`, started at the fallback lock's first submit, ends with the lock session) | `strand-auth` (`Client`), the binary's `run/lock.rs` | The fallback lock's `strand_auth::Client` and its helper process; each check is one PAM conversation that blocks here, bounded by the client's deadlines (decisions.md m6-lock), and its verdict goes back over the main loop's channel | Run while no fallback is shown, or make the main thread wait on PAM |
 | GPU (M4; `strand-gpu`, started with the shell when a device can exist (gpu-first), ends with the device) | `strand-gpu` | The wgpu instance, adapter and device, vello_gpu's renderer, shader pipelines, promoted surfaces' swapchains, offscreen passes and readbacks (see "`strand-gpu`") | Run while nothing needs it, touch the scene tree, or make the main thread wait while the shell runs: every reply is a message and a ping (the one wait is at exit: `run` joins the thread before the surface manager drops, for at most `GPU_SHUTDOWN`, 3 s; see "`strand-gpu`") |
 | Theme quantiser (`strand-quantise`, one per `Quantiser`, started at the first wallpaper palette asked for) | `strand-theme` (`image.rs`), driven from `strand-compiler`'s `vm/theme.rs` | Wallpaper decodes and palette quantisation off the logic thread, with the quantise cache; a short-lived `strand-quantise-grace` sleeper per torn wallpaper wakes the owner when its grace ends | Run on the logic tick: logic polls for results and keeps the last palette meanwhile |
@@ -23,7 +23,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | File output writer (`strand-files`, S-tools; started with the first mounted `file` output, ends with the shell) | the binary's output host (`run/outputs.rs`) | Writes the bytes logic rendered for each `file` output (atomic temp file and rename, following symlinks, keeping the mode; latest bytes per path win), keeps the manifest under `$XDG_STATE_HOME/strand/files`, tries a refused or failed write again (1 s, doubling to 10 s), runs `run:` with its 200 ms trailing debounce, one run per file plus one queued and the 10 s timeout that kills its process group, each run waited for on a short-lived `strand-files-run` thread; each outcome goes back to logic through a shared outcome list logic drains when the writer pings it (one job queue with a condvar, no channel), so a failure is a notice and a `strand watch` event through `Shell::broadcast` | Render a template, touch the scene or Wayland, or block logic; it has no channel to the main thread |
 | State writer (`strand-state-write`, one per `FileWriter`: the logic thread's for the portal's last values, the theme VM's for the last palette, each started on first use and idle until a write) | `strand-theme` (`writer.rs`) | Atomic writes of the last palette and the portal's last settings, batched per path | Block logic (a write is queued and returns at once; a failure is a WARN) |
 | Introspection asks (`strand-introspect`, one short-lived thread per uncached ask; in `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`), used by `strand-dev`'s workspace (`strand check` and the loader ask on their own thread and wait) | One D-Bus introspection call, its answer remembered for `TTL`, then `done` | Block the LSP's analysis: it gets the remembered answer, or none, at once |
-| Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace | Anything else: each ends with its one wait |
+| Short-lived waiters | the binary's `overlay.rs` (`strand-editor`), `strand-services`'s `custom.rs` (`strand-kill`) and (services-round) `wm/screen.rs` (`strand-screenshot`) | `strand-editor`: waits on the `$EDITOR` the overlay's click opened, so it is reaped; `strand-kill`: SIGKILLs a dropped `permit exec` process group after its SIGTERM grace; `strand-screenshot`: one per `thumbnail screen` shot, ending with its frame or `SHOT_WAIT` | Anything else: each ends with its one wait |
 | Report writer (`strand-report`, decisions.md report; one per `strand report` with words, ends when its bundle is written) | the binary's `report/bundle.rs` | Writes one glitch report's bundle: the two ring dumps, the JSON parts, the frames encoded as PNG, the config and asset copies (bounded reads), then prunes the reports directory to the newest 20; its outcome goes back to logic through a shared slot and the logic loop's ping (see "Glitch reports") | Touch Wayland, the scene or the rings (it gets copies), or block logic or main |
 
 Two library handles have threads the shell does not start:
@@ -1877,7 +1877,9 @@ threads** (as `strand_core::ipc`).
   was animating), `0x26` refresh (period ns u32, when first known or
   changed), `0x30` output (slot = an output slot; connector name u16,
   width u16, height u16, scale u16 in 120ths, x i16, y i16), `0x31`
-  output gone, `0x3E` gap begins (why u8: lock, off, inspector pick),
+  output gone, `0x3E` gap begins (why u8: lock, off, inspector pick,
+  and (services-round) `flight::gap::SECRET`, a password dialog or
+  login screen),
   `0x3F` gap ends. `0x10`–`0x12` are kept for touch, which
   strand-surface does not deliver yet.
 - **Change kinds** (slot = the name's index). `0x40` field (name
@@ -1972,7 +1974,13 @@ of `demo::host::Host`).
   session unlocked; an event on a lock surface (`lock::LockScreen`
   knows them) is never recorded, whatever the state. While the
   inspector picks, input is held from handlers and is not recorded
-  either (a gap).
+  either (a gap). (services-round) While logic's
+  `Real::secret_shown` holds (a running `polkit` with a `request`, a
+  running `greetd` that is `available`), logic sends main
+  `ToMain::Secret(true)` (new) and both rings are in a
+  `flight::gap::SECRET` gap until `ToMain::Secret(false)`; a lock
+  inside it ends it and begins its own, and the glitch report is
+  refused meanwhile, as under a lock.
 - Surfaces and outputs are recorded from the `SurfaceHost` callbacks
   (`surface_attached`, `surface_configured`, `surface_placed`,
   `surface_detached`, `monitor_added`/`changed`/`removed`), refresh,
@@ -4568,6 +4576,11 @@ Public interfaces other crates and later stages build on:
     (`("clipboard", "history")`) read anywhere, with its service, at the
     top level for as long as the program runs, as bars hold `screens`,
     unless the config declares its own `service` of that name.
+    (services-round) `lower::Program::members` holds the `(record,
+    member)` pairs the program names anywhere
+    (`Program::names_member`), for a host that changes what it offers
+    other programs by whether a member is named at all (the
+    notification server's inline replies).
   - Several service crates, one host (M3 plan): `Instance::new` takes one
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value`, `RecordId`
     and the rest of the VM's dynamic types) stays in `strand-compiler`:
@@ -5264,9 +5277,11 @@ and the connection):
     `SurfaceSpec::inhibit_idle` (`Prop::InhibitIdle`, `inhibit_idle:`
     on any surface) gives each of the node's Wayland surfaces a
     `zwp_idle_inhibitor_v1` from `zwp_idle_inhibit_manager_v1` (bound
-    when offered): made as a layer surface or popup is created and when
-    `apply_surface_change` turns it on in place, destroyed when it turns
-    off and before the surface goes. `SurfaceInfo::inhibits_idle` says
+    when offered): made as a layer surface, popup or (services-round
+    review) lock surface is created (`session_lock.rs` syncs it as each
+    lock surface's content goes in) and when `apply_surface_change`
+    turns it on in place, destroyed when it turns off and before the
+    surface goes. `SurfaceInfo::inhibits_idle` says
     whether one is held.
   - Fillets: placement puts an `attach`ed box at its margin on that
     side from that edge, 0 while unset and negative over it (a panel
@@ -6195,8 +6210,9 @@ transparent huge pages for life.
   is armed only once it is neither read nor kept; `DynService::keep`
   and `kept` likewise), `polls(Option<Duration>)` (it samples on a
   clock every so often while shown: the builtins say it of cpu, memory,
-  disk and (services-round) network, from `strand_services_schema::POLLED`, a host of its `from
-  poll` services) and `sampled() -> Option<Duration>` (`Some` while it
+  disk and (services-round) network, from
+  `strand_services_schema::POLLED`, a host of its `from poll`
+  services) and `sampled() -> Option<Duration>` (`Some` while it
   is kept, unread and polls, by `polls` or its body's `Cx::period`:
   the coarser of that and the kept period; `DynService::sampled`),
   `acquire_field(i)` / `release_field(i)` (readers of field `i`; a
@@ -6271,11 +6287,16 @@ transparent huge pages for life.
   points it at fake LEDs in tests, `keyboard::led_reads()` counts the
   reads; services-round: `layouts` from `WmChange::KeyboardLayouts`
   (subscribed while `layout` or `layouts` is watched; a focused keymap
-  naming any wins), `alt`/`ctrl`/`shift`/`logo` from `Focused` only, and
-  the actions `next_layout()`/`set_layout(index)` as
+  naming any wins), or on Hyprland, which names only the active
+  layout, from `WmChange::KeyboardRules` (the keyboard's xkb rule
+  names, `wm::XkbNames`), compiled into names with libxkbcommon by
+  `keyboard` only while `layouts` is watched and only when the rules
+  change, `alt`/`ctrl`/`shift`/`logo` from `Focused` only, and the
+  actions `next_layout()`/`set_layout(index)` as
   `WmAction::SwitchLayout(LayoutSwitch::Next | Index(u32))`, each on a
   subscription of its own that asks again after each batch while the
-  adapter answers `NotConnected`, for 3 s at most), and the D-Bus services (wave 4, a2):
+  adapter answers `NotConnected`, for 3 s at most), and the D-Bus
+  services (wave 4, a2):
   `battery` (UPower's display device and devices; services-round:
   `#[service(call = BatteryCall)]`, `BatteryCall::History { span,
   points: Option<i64> }` answered in a task of the body's own by
@@ -6327,9 +6348,12 @@ transparent huge pages for life.
   byte counters summed over the interfaces with a
   `/sys/class/net/<if>/device` link, each interface's difference since
   the last reading (one that came, went or went back counts nothing),
-  on a `Ticker` of `rates::PERIOD` (1 s) started while `rx` or `tx` is
-  watched or the service is kept (`Cx::kept`), a fresh baseline at each
-  start, laid over the backend's state by `overlay` from
+  on a `Ticker` started while `rx` or `tx` is watched or the service is
+  kept (`Cx::kept`): every `rates::PERIOD` (1 s) while `rx` or `tx` is
+  watched, else at the kept period (`rates::every`; services-round
+  review: a visible reader of other fields no longer samples a hidden
+  graph's rates every second; `Ticker::at`/`follow_every`), a fresh
+  baseline at each start, laid over the backend's state by `overlay` from
   `Pending::rates`; `rates::configure_root(Option<PathBuf>)` points it
   at fake counters and `rates::samples()` counts its reads (tests);
   services-round: `kind: Option<ConnectionKind>` from `Nm::kind` (the
@@ -6339,13 +6363,19 @@ transparent huge pages for life.
   `connections: Vec<Connection>` (`#[store(keyed, stream)]`, keyed by
   UUID) from `read_profiles` (`Settings.ListConnections`, each
   `GetSettings`' `connection` id, uuid and type, loopback left out) only
-  while watched, the Settings namespace subscribed (`"settings"`) then,
-  any of its signals reading again; `NetworkAction::Up`/`Down { item:
+  while watched, the Settings namespace subscribed (`"settings"`) then:
+  (services-round review) the profiles are kept across `Nm::read` (an
+  active connection's change reads no settings) and read again only on
+  a Settings signal (`Nm::settings_signal`: `NewConnection`,
+  `ConnectionRemoved`, a connection's `Updated` or `Removed`), one
+  `GetSettings` per profile (`read_profile`); `NetworkAction::Up`/`Down { item:
   Connection }` run in a `JoinSet<Switched>`: `activate` (the settings
   path as read, else `GetConnectionByUuid`, then `ActivateConnection(path,
   "/", "/")`) whose active connection joins `joining`, so its failure is
-  reported as a join's, and `deactivate` of `Nm::active_of(uuid)`; over
-  iwd both fail with `network::IWD_NO_CONNECTIONS`), `bluetooth` (BlueZ's
+  reported as a join's, and `deactivate` of `Nm::active_of(uuid)`, each
+  task's connection name kept by its `tokio::task::Id` so one cut short
+  by NetworkManager going is `failed(name, "NetworkManager stopped")`;
+  over iwd both fail with `network::IWD_NO_CONNECTIONS`), `bluetooth` (BlueZ's
   object manager; m6-service-gaps, gap 29: `nearby` is a stream field,
   discovery (`SetDiscoveryFilter`, `StartDiscovery`) running only while
   it is watched, `StopDiscovery` only for the body's own session (BlueZ
@@ -6371,16 +6401,25 @@ transparent huge pages for life.
   `apps::set_config` does; services-round: `progress`, `category` and
   `desktop_entry` from the `value`, `category` and `desktop-entry`
   hints, kept in the history, and `can_reply` from an `inline-reply`
-  action, never kept; the server advertises `inline-reply` and
+  action, never kept; the server advertises `inline-reply` only while
+  `notifications::offer_replies(true)` (the binary's
+  `services::follow_program`: the program names `Notification.can_reply`
+  or `reply`, `lower::Program::names_member`), an `inline-reply` action
+  being an ordinary button otherwise, and
   `NotificationsAction::Reply { item, text }` emits
-  `NotificationReplied`), `apps` (services-round: `App.actions:
+  `NotificationReplied`; every signal about a notification
+  (`NotificationClosed`, `ActionInvoked`, `ActivationToken`,
+  `NotificationReplied`) is unicast to the bus name that sent it,
+  recorded at `Notify`), `apps` (services-round: `App.actions:
   Vec<apps::AppAction>` from the entry's `[Desktop Action]` groups,
   `Entry::action_execs` their `Exec` lines, `AppsAction::LaunchAction {
   item: AppAction }` the action's `launch`, starting
   `Entry::for_action(id)`), `idle` (services-round: `ext_idle_notifier_v1` on a
   thread of its own, `strand-idle`, as `outputs` runs; `idle::want(t)`
-  registers a timeout process-wide and pokes the running services'
-  eventfds, each making one `ext_idle_notification_v1` per timeout;
+  counts a reader of a timeout process-wide (`idle::unwant` at the
+  reading scope's cleanup) and pokes the running services' eventfds,
+  each keeping one `ext_idle_notification_v1` per timeout read, and
+  destroying one `idle::LET_GO` (1 s) after its last reader went;
   `Idle.timeouts: Vec<IdleTimeout { timeout, idle }>` keyed by timeout
   is what the `fn after(timeout)` reads, tracked; `idle::configure`
   points it at a test's socket), (services-round) `polkit` (its own
@@ -6409,9 +6448,17 @@ transparent huge pages for life.
   answer sets `failed` and starts the next conversation. `cancel()`
   returns `org.freedesktop.PolicyKit1.Error.Cancelled`,
   `CancelAuthentication` dismisses its request, `choose(user)` restarts
-  the conversation for another listed user.
-  `polkit::configure(Some(PolkitConfig { helper, socket }))` points
-  stores started later at a test's helper), and `greetd` (`greetd.rs`:
+  the conversation for another listed user. (services-round review) A
+  `respond` is taken only once the shown request (for its user) has
+  asked (`Requests::seen`), so an answer typed for a request that went
+  is dropped; one given before a retry's question is held in the
+  conversation (`Conv::held`) and written only to a secret question.
+  `helper::Helper::find` takes a socket only when it is a socket and a
+  program only when it is setuid, both owned by `PolkitConfig::owner`
+  (root), else the store does not register. The request's `command` is
+  the details' `command_line`, else `program`.
+  `polkit::configure(Some(PolkitConfig { helper, socket, owner }))`
+  points stores started later at a test's helper), and `greetd` (`greetd.rs`:
   `$GREETD_SOCK`'s length-prefixed JSON, `greetd::proto`, one request in
   flight; `login` is `create_session` after a `cancel_session` when a
   login is under way, a PAM text is acknowledged with a null response
@@ -6419,10 +6466,16 @@ transparent huge pages for life.
   asked again with `failed` kept, `start` is held until the login
   succeeds and each word quoted for the shell line greetd makes of it
   (`proto::shell_word`), and greetd's success calls the `started` hook
-  of `greetd::configure(Some(GreetdConfig { socket, started }))`, which
-  `strand run` sets to raise SIGTERM on itself; without `$GREETD_SOCK`
-  `available` is false and every action sets `error`; answers are
-  `strand_auth::Password`s, framed in a `Zeroizing` buffer sized once).
+  of `greetd::configure(Some(GreetdConfig { socket, server_uid,
+  started }))`, which `strand run` sets to raise SIGTERM on itself;
+  without `$GREETD_SOCK`, or when the socket's peer (`SO_PEERCRED`) is
+  not `server_uid` (root; a debug build of `strand run` takes
+  `STRAND_TEST_GREETD_UID` for its tests), `available` is false and every action sets
+  `error`; an answer held from before greetd asked goes only to a
+  `secret` question; `child::INSTANCE_VARS` keeps `GREETD_SOCK` from
+  every program Strand starts; answers are `strand_auth::Password`s
+  from the action on (`FromData for Password`, as `auth.submit`'s),
+  framed in a `Zeroizing` buffer sized once).
   Both run on the shared runtime (the helper is a `tokio::process`
   child, killed when its conversation drops) and are
   `strand_services::secret` services, with `auth`
@@ -6493,13 +6546,15 @@ transparent huge pages for life.
   in attributes; `custom::list_dir(dir) -> io::Result<Option<Vec<Data>>>`
   lists its regular files, links followed, hidden ones left out, as
   `File` records `{ path, name, modified: Date (local, to the minute),
-  size }` sorted by name, at most `custom::MAX_DIR_FILES` 10 000, `None`
-  while it does not exist; the document is `{ files: [...] }`, listed
-  again `custom::DIR_SETTLE` 50 ms after a change, on a blocking task
-  within `READ_WAIT`), a `listen` command's
+  size }` sorted by name, the first `custom::MAX_DIR_FILES` 10 000 by
+  name (the names read and sorted first, only those kept `stat`ed),
+  `None` while it does not exist; the document is `{ files: [...] }`,
+  listed again `custom::DIR_SETTLE` 50 ms after a change and at most
+  every `custom::DIR_RELIST` 500 ms, one listing at a time on a blocking
+  task, warned about once past `READ_WAIT`), a `listen` command's
   lines (merged and sent at most once per `custom::LISTEN_FLUSH`, a
-  frame; services-round: once `custom::hear_lines(spec)` was called,
-  each line also emits the store's `line` event, `Data::List` of that
+  frame; services-round: while `custom::hears_lines(spec)` (a count
+  `hear_lines` raises and `unhear_lines` lowers), each line also emits the store's `line` event, `Data::List` of that
   line's field values by index, before the merge) or a `poll` command or file (only while visible) as
   `custom::Document`s (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
   declaration: the run stops and starts again if read) and
@@ -6621,10 +6676,12 @@ transparent huge pages for life.
   write of its value; `restart`/`stop` restart or stop only that service.
   (services-round) `ServiceHost::event(rt, svc, "line")` on a `from
   listen` declaration calls `custom::hear_lines`, acquires the client
-  for the current owner scope (released by its cleanup: a line handler
-  is a reader) and returns the declaration's `EventQueue`, fed by an
-  observer that converts each line to the declaration's record
-  (`Typing::record`); the checker gives every `from listen` service
+  for the current owner scope (released, with `unhear_lines`, by its
+  cleanup: a line handler is a reader) and returns the declaration's
+  `EventQueue`, fed by the one observer each client gets when it is
+  registered (`LineSink`: a restart re-points it at the new mount's
+  queue, never adds another), which converts each line to the
+  declaration's record (`Typing::record`); the checker gives every `from listen` service
   record that one event (`RecordDef::events`, `line(doc: <record>)`).
   `custom::BusIntrospector` is the compiler's `Introspect` over the
   environment's buses (answers remembered 10 s); `custom::dbus_check(config_dir, recheck)`
@@ -6761,10 +6818,14 @@ transparent huge pages for life.
   `submap>>`, sway's `mode` events after `get_binding_state`, none on
   niri. `WmState::keyboard_layouts: Vec<String>`, published as
   `WmChange::KeyboardLayouts`, is sway's first keyboard's
-  `xkb_layout_names`, niri's `KeyboardLayoutsChanged` names, and on
-  Hyprland the layouts libxkbcommon names from the main keyboard's
-  `j/devices` rule names (`hyprland::layout_names`, the
-  `xkbcommon = 0.8.0` dependency without default features).
+  `xkb_layout_names` and niri's `KeyboardLayoutsChanged` names; on
+  Hyprland, whose IPC names only the active layout, it stays empty and
+  `WmState::keyboard_rules: Option<wm::XkbNames>`, published as
+  `WmChange::KeyboardRules`, carries the main keyboard's `j/devices`
+  rule names, which the `keyboard` store compiles into names with
+  libxkbcommon (`XkbNames::layout_names`, the `xkbcommon = 0.8.0`
+  dependency without default features) only while `keyboard.layouts`
+  is watched (services-round review: not on every connection).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
   (M6, gap 31) `WmState::keyboard_layout: Option<String>` is the
@@ -7106,7 +7167,9 @@ transparent huge pages for life.
   are keyed by the device's `u32` id.
   (services-round) Streams: `streams: Vec<AudioStream>` (`#[store(keyed,
   stream)]`, `AudioStream { id, app, icon, direction: StreamDirection,
-  volume, muted }`, keyed by the node id). The loop keeps every
+  volume, muted }`, keyed by the node's `object.serial`, which PipeWire
+  never reuses, as node ids are; `Node::reused_ids` says which ids a
+  list diff may see reused). The loop keeps every
   `Stream/Output/Audio` and `Stream/Input/Audio` global
   (`Session::stream_globals`) but binds them (`bind_node` with a
   `StreamDirection`, as a device's node is bound) only while
@@ -7117,12 +7180,14 @@ transparent huge pages for life.
   `applications-multimedia` (`NodeProps::read`, from the global and
   again from each info event whose mask has `PROPS`; a later info
   without it carries no properties). Monitors (`stream.monitor`) are
-  left out; streams never count as defaults (`default_id`), and
+  left out; an input stream recording a sink's monitor
+  (`stream.capture.sink`) is `StreamDirection::Monitor`; streams never count as defaults (`default_id`), and
   `MakeDefault` of one is `UnknownDevice`. `AudioChange::Streams` is a
   keyed diff like `Sinks`, `Serials` covers stream ids too, and a write
   of an item of `audio.streams` (`Shown::Stream`) runs and is answered
   as a device item's, matched by `app` where a device item is by
-  `node.name`. Video: `strand_services::video` (`Video`,
+  `node.name`, its node found by serial (`Store::stream_ref`), so a
+  write from an item held past its stream's end is refused. Video: `strand_services::video` (`Video`,
   `#[service(name = "video", thread)]`, `streams: Vec<VideoStream>`
   keyed, `VideoStream { id, app, source: VideoSource }`) runs the same
   loop (`thread::run(audio::service_config(), Follow::Video, host, rx)`
@@ -7138,17 +7203,20 @@ transparent huge pages for life.
   for the language: `levels(device, bars = 16) -> [float]`, a service
   fn (`fns = audio_fns`, run on the logic thread over the cells): each
   evaluation asks for the device's meter (`ask_levels(id)`, a
-  process-wide map that pokes the running stores when it gains a
-  device) and reads `meters: Vec<AudioMeter>` (`#[store(keyed)]`,
+  process-wide map counting readers that pokes the running stores when
+  it gains a device; `release_levels(id)` at the evaluation scope's
+  cleanup) and reads `meters: Vec<AudioMeter>` (`#[store(keyed)]`,
   `AudioMeter { device, bands }` keyed by device, the meter's latest
   64-band spectrum, empty while quiet) through `audio::bars(bands, n)`
   (each bar the loudest band it covers, a band repeated over more bars
   than bands, `n` zeros quiet, `n` at most `audio::MAX_BARS` 512). The
   store meters the tapped targets plus the asked devices while a reader
-  is visible; a meter whose reading went `audio::LEVELS_LEASE` (1 s)
-  without an evaluation asking again is let go (its item leaves
-  `meters`), and while no reader is visible no lease runs, so a bar
-  shown again restarts its meters. A device id of 0 (the schema's
+  is visible; a device no evaluation reads any more is let go
+  `audio::LEVELS_LEASE` (1 s) after its last reader went, and one still
+  read but not evaluated again within the lease while shown lapses
+  (its item leaves `meters`) whether or not its meter sent anything (a
+  quiet device sends nothing); while no reader is visible no lease
+  runs, so a bar shown again restarts its meters. A device id of 0 (the schema's
   default record) or one not there reads `n` zeros.
   `audio::configure(Some(AudioConfig))` points stores started later at
   a socket (tests) and (services-round) the `video` store too; `strand

@@ -73,7 +73,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, next_line, too_long};
-use super::model::{WinRect, Window, WmState, Workspace};
+use super::model::{WinRect, Window, WmState, Workspace, XkbNames};
 use super::understood::{self, Degradation, SessionEnd, Strikes};
 use super::{AdapterMsg, Cmd, IpcSnapshot, LayoutSwitch, WmAction, WmError};
 
@@ -190,7 +190,7 @@ impl Devices {
     }
 
     /// (services-round) The xkb rule names of that keyboard: what its
-    /// layouts are named from ([`layout_names`]).
+    /// layouts are named from ([`XkbNames::layout_names`]).
     pub(crate) fn names(&self) -> Option<XkbNames> {
         self.keyboard().map(|k| XkbNames {
             rules: k.rules.clone(),
@@ -200,53 +200,6 @@ impl Devices {
             options: k.options.clone(),
         })
     }
-}
-
-/// (services-round) A keyboard's xkb rule names (RMLVO).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct XkbNames {
-    pub rules: String,
-    pub model: String,
-    pub layout: String,
-    pub variant: String,
-    pub options: String,
-}
-
-/// (services-round) The names of the layouts `names` make, by index, as
-/// the keymap names them (`English (US)`, `German`: the names Hyprland's
-/// `active_keymap` and `activelayout` use), compiled with libxkbcommon
-/// from the system's xkb data. Hyprland reports only the active one's
-/// name; a keymap that does not compile names none.
-pub(crate) fn layout_names(names: &XkbNames) -> Vec<String> {
-    use xkbcommon::xkb;
-    let parts = [
-        &names.rules,
-        &names.model,
-        &names.layout,
-        &names.variant,
-        &names.options,
-    ];
-    // libxkbcommon's names are C strings (the binding would panic on a
-    // NUL); no layout, nothing to name.
-    if names.layout.trim().is_empty() || parts.iter().any(|p| p.contains('\0')) {
-        return Vec::new();
-    }
-    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    let options = (!names.options.is_empty()).then(|| names.options.clone());
-    let Some(keymap) = xkb::Keymap::new_from_names(
-        &ctx,
-        &names.rules,
-        &names.model,
-        &names.layout,
-        &names.variant,
-        options,
-        xkb::KEYMAP_COMPILE_NO_FLAGS,
-    ) else {
-        return Vec::new();
-    };
-    (0..keymap.num_layouts())
-        .map(|i| keymap.layout_get_name(i).to_string())
-        .collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -333,11 +286,9 @@ pub(crate) struct State {
     /// The active keyboard layout: `j/devices`' main keyboard's, then
     /// the last `activelayout` (gap 31).
     pub keyboard_layout: Option<String>,
-    /// (services-round) The main keyboard's layouts, by index, and the
-    /// rule names they were named from (named again only when those
-    /// change).
-    pub keyboard_layouts: Vec<String>,
-    pub xkb_names: Option<XkbNames>,
+    /// (services-round) The main keyboard's rule names, which the
+    /// `keyboard` service names the layouts from while they are read.
+    pub keyboard_rules: Option<XkbNames>,
     /// (services-round) The submap from the last `submap` event; `None`
     /// in the default one (and at connection, which Hyprland does not
     /// tell).
@@ -633,7 +584,9 @@ impl State {
                 focused_screen: focused_mon.map(|m| m.name.clone()),
                 configured,
                 keyboard_layout: self.keyboard_layout.clone(),
-                keyboard_layouts: self.keyboard_layouts.clone(),
+                // Named by the `keyboard` service, only while read.
+                keyboard_layouts: Vec::new(),
+                keyboard_rules: self.keyboard_rules.clone(),
                 mode: self.submap.clone(),
             },
             toplevel_ids,
@@ -921,12 +874,9 @@ async fn read_devices(requests: &Path, state: &mut State) -> Result<(), SessionE
         }
     };
     state.keyboard_layout = devices.layout();
-    // (services-round) Named again only when the keymap changed.
-    let names = devices.names();
-    if names != state.xkb_names {
-        state.keyboard_layouts = names.as_ref().map(layout_names).unwrap_or_default();
-        state.xkb_names = names;
-    }
+    // (services-round) The layouts are named from these by the
+    // `keyboard` service, only while it shows them.
+    state.keyboard_rules = devices.names();
     Ok(())
 }
 
@@ -1074,7 +1024,7 @@ async fn session(
                     if !degradation.come_up(tx, backoff, state.snapshot()) {
                         return Ok(());
                     }
-                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                } else if (changed || requery) && tx.send(AdapterMsg::State(Box::new(state.snapshot()))).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
@@ -1357,15 +1307,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            layout_names(&names("us,de", "")),
+            names("us,de", "").layout_names(),
             ["English (US)", "German"]
         );
         assert_eq!(
-            layout_names(&names("de", "nodeadkeys")),
+            names("de", "nodeadkeys").layout_names(),
             ["German (no dead keys)"]
         );
-        assert!(layout_names(&names("", "")).is_empty());
-        assert!(layout_names(&names("us\0", "")).is_empty());
+        assert!(names("", "").layout_names().is_empty());
+        assert!(names("us\0", "").layout_names().is_empty());
 
         let mv = WmAction::MoveWindow {
             window: "0xa1".into(),

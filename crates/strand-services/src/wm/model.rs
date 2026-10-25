@@ -94,6 +94,55 @@ pub struct Workspace {
     pub windows: Vec<Window>,
 }
 
+/// (services-round) A keyboard's xkb rule names (RMLVO).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct XkbNames {
+    pub rules: String,
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+}
+
+impl XkbNames {
+    /// (services-round) The names of the layouts these make, by index, as
+    /// the keymap names them (`English (US)`, `German`: the names
+    /// Hyprland's `active_keymap` and `activelayout` use), compiled with
+    /// libxkbcommon from the system's xkb data. A keymap that does not
+    /// compile names none.
+    pub fn layout_names(&self) -> Vec<String> {
+        use xkbcommon::xkb;
+        let parts = [
+            &self.rules,
+            &self.model,
+            &self.layout,
+            &self.variant,
+            &self.options,
+        ];
+        // libxkbcommon's names are C strings (the binding would panic on
+        // a NUL); no layout, nothing to name.
+        if self.layout.trim().is_empty() || parts.iter().any(|p| p.contains('\0')) {
+            return Vec::new();
+        }
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let options = (!self.options.is_empty()).then(|| self.options.clone());
+        let Some(keymap) = xkb::Keymap::new_from_names(
+            &ctx,
+            &self.rules,
+            &self.model,
+            &self.layout,
+            &self.variant,
+            options,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) else {
+            return Vec::new();
+        };
+        (0..keymap.num_layouts())
+            .map(|i| keymap.layout_get_name(i).to_string())
+            .collect()
+    }
+}
+
 /// Everything the `workspaces`, `windows` and `wm` services show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WmState {
@@ -119,11 +168,15 @@ pub struct WmState {
     /// the compositor does not say (`keyboard.layout`, gap 31).
     pub keyboard_layout: Option<String>,
     /// (services-round) Every layout of the keymap, by index, as the
-    /// compositor names them (`keyboard.layouts`): Hyprland's main
-    /// keyboard's (named from its xkb rules, model, layouts, variants
-    /// and options), sway's first keyboard's, niri's. Empty when the
-    /// compositor does not say.
+    /// compositor names them (`keyboard.layouts`): sway's first
+    /// keyboard's, niri's. Empty when the compositor does not say, and on
+    /// Hyprland, which names only the active one: see `keyboard_rules`.
     pub keyboard_layouts: Vec<String>,
+    /// (services-round) Hyprland's main keyboard's xkb rule names, which
+    /// name its layouts ([`XkbNames::layout_names`]): compiling a keymap
+    /// costs, so the `keyboard` service names them only while
+    /// `keyboard.layouts` is read. `None` elsewhere.
+    pub keyboard_rules: Option<XkbNames>,
     /// (services-round) The keybind mode the compositor is in
     /// (`wm.mode`): Hyprland's submap, sway's binding mode; `None` in the
     /// default one, on niri and on the protocols alone.
@@ -281,6 +334,9 @@ pub enum WmChange {
     KeyboardLayout(Option<String>),
     /// (services-round) The keymap's layouts (`keyboard.layouts`).
     KeyboardLayouts(Vec<String>),
+    /// (services-round) The xkb rule names the layouts are named from
+    /// (Hyprland's).
+    KeyboardRules(Option<XkbNames>),
     /// (services-round) The keybind mode (`wm.mode`).
     Mode(Option<String>),
 }
@@ -341,6 +397,7 @@ impl Publisher {
                 }]));
                 out.push(WmChange::KeyboardLayout(next.keyboard_layout.clone()));
                 out.push(WmChange::KeyboardLayouts(next.keyboard_layouts.clone()));
+                out.push(WmChange::KeyboardRules(next.keyboard_rules.clone()));
                 out.push(WmChange::Mode(next.mode.clone()));
             }
             Some(last) => {
@@ -383,6 +440,9 @@ impl Publisher {
                 }
                 if last.keyboard_layouts != next.keyboard_layouts {
                     out.push(WmChange::KeyboardLayouts(next.keyboard_layouts.clone()));
+                }
+                if last.keyboard_rules != next.keyboard_rules {
+                    out.push(WmChange::KeyboardRules(next.keyboard_rules.clone()));
                 }
                 if last.mode != next.mode {
                     out.push(WmChange::Mode(next.mode.clone()));
@@ -435,6 +495,8 @@ pub struct Mirror {
     pub keyboard_layout: Option<String>,
     /// The keymap's layouts.
     pub keyboard_layouts: Vec<String>,
+    /// The rule names that name them (Hyprland's).
+    pub keyboard_rules: Option<XkbNames>,
     /// The keybind mode.
     pub mode: Option<String>,
 }
@@ -467,6 +529,7 @@ impl Mirror {
             WmChange::Sources(s) => self.sources = s.clone(),
             WmChange::KeyboardLayout(l) => self.keyboard_layout = l.clone(),
             WmChange::KeyboardLayouts(l) => self.keyboard_layouts = l.clone(),
+            WmChange::KeyboardRules(r) => self.keyboard_rules = r.clone(),
             WmChange::Mode(m) => self.mode = m.clone(),
         }
         Ok(())

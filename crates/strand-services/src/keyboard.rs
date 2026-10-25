@@ -27,6 +27,11 @@
 //!    the shared compositor hub's [`WmChange::KeyboardLayout`] (Hyprland,
 //!    sway, niri), subscribed only while `layout` is watched; likewise
 //!    the layouts ([`WmChange::KeyboardLayouts`]) while `layouts` is.
+//!    Hyprland names only the active layout, so the rest are named here
+//!    from its main keyboard's xkb rule names
+//!    ([`WmChange::KeyboardRules`], compiled with libxkbcommon), only
+//!    while `layouts` is watched and once per change of the names: a
+//!    bar that shows only `wm` or `keyboard.layout` compiles no keymap.
 //!
 //! The modifiers are only a focused surface's: no compositor tells
 //! another client what is held, so they are false otherwise. The actions
@@ -221,6 +226,37 @@ pub struct Compositor {
     pub layout: Option<String>,
     /// The layouts, by index.
     pub layouts: Vec<String>,
+    /// (services-round) Hyprland's rule names, which name its layouts.
+    pub rules: Option<crate::wm::XkbNames>,
+    /// (services-round) The layouts named from `rules`, and the names
+    /// they were named from (named again only when those change).
+    pub named: Option<(crate::wm::XkbNames, Vec<String>)>,
+}
+
+impl Compositor {
+    /// (services-round) Names the layouts from `rules` when `wanted` (a
+    /// reader shows `layouts`) and they changed since: Hyprland's.
+    pub fn name_layouts(&mut self, wanted: bool) {
+        let Some(rules) = self.rules.as_ref().filter(|_| wanted) else {
+            return;
+        };
+        if self.named.as_ref().is_some_and(|(r, _)| r == rules) {
+            return;
+        }
+        self.named = Some((rules.clone(), rules.layout_names()));
+    }
+
+    /// The layouts, by index: the compositor's list, else those named
+    /// from its rule names (while they are current).
+    pub fn all_layouts(&self) -> Vec<String> {
+        if !self.layouts.is_empty() {
+            return self.layouts.clone();
+        }
+        match (&self.rules, &self.named) {
+            (Some(r), Some((n, names))) if r == n => names.clone(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// What the service shows: a focused surface's report wins, its layout
@@ -231,7 +267,7 @@ pub fn merge(focused: Option<&Focused>, leds: Leds, compositor: &Compositor) -> 
         if own.iter().any(|n| !n.is_empty()) {
             own.to_vec()
         } else {
-            compositor.layouts.clone()
+            compositor.all_layouts()
         }
     };
     match focused {
@@ -249,7 +285,7 @@ pub fn merge(focused: Option<&Focused>, leds: Leds, compositor: &Compositor) -> 
             caps_lock: leds.caps_lock,
             num_lock: leds.num_lock,
             layout: compositor.layout.clone(),
-            layouts: compositor.layouts.clone(),
+            layouts: compositor.all_layouts(),
             ..Keyboard::default()
         },
     }
@@ -353,16 +389,21 @@ impl Keyboard {
                             match change {
                                 WmChange::KeyboardLayout(l) => compositor.layout = l,
                                 WmChange::KeyboardLayouts(l) => compositor.layouts = l,
+                                WmChange::KeyboardRules(r) => compositor.rules = r,
                                 _ => {}
                             }
                         }
+                        compositor.name_layouts(cx.watched("layouts"));
                     }
                     // The hub is gone (the services shutting down).
                     None => sub = None,
                 },
                 m = cx.recv() => match m {
                     None => return Ok(()),
-                    Some(Msg::Visible(_) | Msg::Watch { .. }) => sync_layout(&cx, &mut sub),
+                    Some(Msg::Visible(_) | Msg::Watch { .. }) => {
+                        sync_layout(&cx, &mut sub);
+                        compositor.name_layouts(cx.watched("layouts"));
+                    }
                     Some(Msg::Action(a)) => {
                         match a {
                             KeyboardAction::NextLayout => {
@@ -446,6 +487,35 @@ mod tests {
         assert_eq!(read_leds(odd.path()), Leds::default());
     }
 
+    /// (services-round) Hyprland's layouts are named from its rule names
+    /// only while `layouts` is shown, once per change of the names, and
+    /// only while they are the current ones.
+    #[test]
+    fn rule_names_are_named_only_while_layouts_are_read() {
+        let rules = |layout: &str| crate::wm::XkbNames {
+            layout: layout.into(),
+            ..Default::default()
+        };
+        let mut c = Compositor {
+            rules: Some(rules("us,de")),
+            ..Compositor::default()
+        };
+        c.name_layouts(false);
+        assert_eq!(c.named, None, "not read: no keymap compiled");
+        assert!(c.all_layouts().is_empty());
+        c.name_layouts(true);
+        assert_eq!(c.all_layouts(), ["English (US)", "German"]);
+        // New names, not read: the old names are not shown for them.
+        c.rules = Some(rules("de"));
+        c.name_layouts(false);
+        assert!(c.all_layouts().is_empty());
+        c.name_layouts(true);
+        assert_eq!(c.all_layouts(), ["German"]);
+        // A compositor's own list wins.
+        c.layouts = vec!["Strand".into()];
+        assert_eq!(c.all_layouts(), ["Strand"]);
+    }
+
     #[test]
     fn a_focused_report_wins_and_the_compositor_names_the_rest() {
         let leds = Leds {
@@ -455,6 +525,7 @@ mod tests {
         let compositor = Compositor {
             layout: Some("German".into()),
             layouts: vec!["English (US)".into(), "German".into()],
+            ..Compositor::default()
         };
         let f = Focused {
             caps_lock: true,

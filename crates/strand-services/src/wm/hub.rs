@@ -323,6 +323,7 @@ impl Inner {
             }]));
             out.push(WmChange::KeyboardLayout(m.keyboard_layout.clone()));
             out.push(WmChange::KeyboardLayouts(m.keyboard_layouts.clone()));
+            out.push(WmChange::KeyboardRules(m.keyboard_rules.clone()));
             out.push(WmChange::Mode(m.mode.clone()));
         }
         if self.has_sources {

@@ -1882,6 +1882,11 @@ impl<S: Service> Client<S> {
         self.0.starts.get()
     }
 
+    /// How many observers ([`DynService::observe`]) it tells (tests).
+    pub fn observers(&self) -> usize {
+        self.0.observers.borrow().len()
+    }
+
     /// How many times it stopped.
     pub fn stops(&self) -> u64 {
         self.0.stops.get()

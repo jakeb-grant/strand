@@ -42,6 +42,7 @@ service battery {
   /// or before its time; the times before UPower's first record in the
   /// span are left out, so the list may be shorter (it still ends now).
   /// Of the laptop's first battery that keeps a history; an error when
-  /// none does. Asked only when called, never polled.
+  /// none does. Asked only when called, never polled. `points` is at
+  /// most 2000.
   fn history(span: duration, points: int = 60) -> Async<[float]>
 }

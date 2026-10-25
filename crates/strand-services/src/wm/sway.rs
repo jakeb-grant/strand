@@ -489,6 +489,7 @@ impl State {
                 configured: self.configured(),
                 keyboard_layout: self.keyboard_layout.clone(),
                 keyboard_layouts: self.keyboard_layouts.clone(),
+                keyboard_rules: None,
                 mode: self.mode.clone(),
             },
             toplevel_ids,
@@ -922,7 +923,7 @@ async fn session(
                     if !degradation.come_up(tx, backoff, state.snapshot()) {
                         return Ok(());
                     }
-                } else if (changed || requery) && tx.send(AdapterMsg::State(state.snapshot())).is_err() {
+                } else if (changed || requery) && tx.send(AdapterMsg::State(Box::new(state.snapshot()))).is_err() {
                     return Ok(());
                 }
                 for _ in 0..reloads {
