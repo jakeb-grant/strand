@@ -585,7 +585,17 @@ steps.
   shapes since the last paint, then starts a new path: to fill and
   stroke a shape, draw it again before the stroke. A shape with no paint
   after it draws nothing, `c.fill` before any shape paints the whole
-  canvas, and later paints cover earlier ones.
+  canvas, and later paints cover earlier ones. For shapes of your own,
+  draw a path point by point: `c.move(x, y)` starts it, `c.to(x, y)`
+  draws a line on, `c.arc(x, y, r, from: a, to: b)` an arc of a circle
+  (angles clockwise from the right, as `rotate` turns), and `c.close()`
+  joins it back to its start. `c.move(20, 20); c.arc(20, 20, 16, from:
+  -90deg, to: -90deg + share * 360deg); c.close(); c.fill($accent)` is a
+  pie slice. `c.fill(paint, evenodd: true)` lets a shape inside another
+  cut a hole: two circles make a ring. `draw` runs again when what it
+  reads changes, not every frame, so it cannot read `t` or `wave(…)`;
+  to animate a canvas, animate its own props (`rotate: t * 90deg`), or
+  use a shader.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

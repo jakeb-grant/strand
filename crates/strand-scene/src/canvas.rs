@@ -7,9 +7,14 @@
 //! Coordinates are logical pixels from the canvas box's top-left corner
 //! (`c.width` and `c.height` come from layout facts). Shapes add to the
 //! current path; [`DrawOp::Fill`] and [`DrawOp::Stroke`] paint it and
-//! start a new one. The variants are the ones builtin.schema's `Canvas`
-//! record offers today; transforms and clips are added with the canvas
-//! work, so other crates match with a wildcard arm.
+//! start a new one. (flex) A path is also drawn point by point:
+//! [`DrawOp::MoveTo`] starts a subpath, [`DrawOp::LineTo`] and
+//! [`DrawOp::Arc`] continue the open one (or start one at their first
+//! point when none is open), and [`DrawOp::Close`] closes it; a fill may
+//! take the even-odd rule ([`DrawOp::FillEvenOdd`]), so a shape drawn
+//! inside another cuts a hole. The variants are the ones builtin.schema's
+//! `Canvas` record offers today; more may come, so other crates match
+//! with a wildcard arm.
 
 use crate::protocol::{Paint, PropValue};
 
@@ -36,14 +41,42 @@ pub enum DrawOp {
     FillThemed(PropValue),
     /// (M4) `c.stroke(paint, width)` with a themed paint.
     StrokeThemed { paint: PropValue, width: f32 },
+    /// (flex) `c.move(x, y)`: starts a subpath at (`x`, `y`).
+    MoveTo { x: f32, y: f32 },
+    /// (flex) `c.to(x, y)`: a line from the current point to (`x`, `y`);
+    /// with no subpath open, it starts one there.
+    LineTo { x: f32, y: f32 },
+    /// (flex) `c.arc(x, y, r, from, to)`: an arc of the circle centred
+    /// at (`x`, `y`) with radius `r`, from angle `from` to angle `to`,
+    /// degrees, 0 pointing right and growing clockwise (y grows down);
+    /// it turns clockwise when `to > from`, at most one whole turn. A line
+    /// joins the open subpath's current point to the arc's start; with
+    /// none open, the arc starts a subpath.
+    Arc {
+        x: f32,
+        y: f32,
+        r: f32,
+        from: f32,
+        to: f32,
+    },
+    /// (flex) `c.close()`: a line back to the open subpath's start,
+    /// closing it.
+    Close,
+    /// (flex) `c.fill(paint, evenodd: true)`: fills the current path by
+    /// the even-odd rule (a region inside an even number of its subpaths
+    /// is not filled), then clears it.
+    FillEvenOdd(Paint),
+    /// (flex) [`DrawOp::FillEvenOdd`] with a themed paint.
+    FillThemedEvenOdd(PropValue),
 }
 
 impl DrawOp {
     /// Every canvas method an op records, in declaration order: the
     /// functions of builtin.schema's `Canvas` record (the catalogue test
     /// keeps the two equal).
-    pub const METHODS: &'static [&'static str] =
-        &["line", "rect", "circle", "fill", "stroke", "text"];
+    pub const METHODS: &'static [&'static str] = &[
+        "line", "rect", "circle", "fill", "stroke", "text", "move", "to", "arc", "close",
+    ];
 
     /// The canvas method that records this op, as builtin.schema names it.
     pub fn method(&self) -> &'static str {
@@ -51,9 +84,16 @@ impl DrawOp {
             DrawOp::Line { .. } => "line",
             DrawOp::Rect { .. } => "rect",
             DrawOp::Circle { .. } => "circle",
-            DrawOp::Fill(_) | DrawOp::FillThemed(_) => "fill",
+            DrawOp::Fill(_)
+            | DrawOp::FillThemed(_)
+            | DrawOp::FillEvenOdd(_)
+            | DrawOp::FillThemedEvenOdd(_) => "fill",
             DrawOp::Stroke { .. } | DrawOp::StrokeThemed { .. } => "stroke",
             DrawOp::Text { .. } => "text",
+            DrawOp::MoveTo { .. } => "move",
+            DrawOp::LineTo { .. } => "to",
+            DrawOp::Arc { .. } => "arc",
+            DrawOp::Close => "close",
         }
     }
 
@@ -65,6 +105,8 @@ impl DrawOp {
                 | DrawOp::Stroke { .. }
                 | DrawOp::FillThemed(_)
                 | DrawOp::StrokeThemed { .. }
+                | DrawOp::FillEvenOdd(_)
+                | DrawOp::FillThemedEvenOdd(_)
         )
     }
 }
@@ -106,6 +148,17 @@ mod tests {
                 x: 1.0,
                 y: 3.0,
             },
+            DrawOp::MoveTo { x: 5.0, y: 2.0 },
+            DrawOp::Arc {
+                x: 5.0,
+                y: 2.0,
+                r: 2.0,
+                from: 0.0,
+                to: 90.0,
+            },
+            DrawOp::LineTo { x: 1.0, y: 1.0 },
+            DrawOp::Close,
+            DrawOp::FillEvenOdd(Paint::Solid(Color::WHITE)),
         ]);
         let v = PropValue::DrawList(ops.clone());
         // Cloning shares the list; equality compares the ops.
@@ -115,11 +168,15 @@ mod tests {
         let methods: Vec<_> = ops.iter().map(DrawOp::method).collect();
         assert_eq!(
             methods,
-            ["rect", "circle", "fill", "line", "stroke", "text"]
+            [
+                "rect", "circle", "fill", "line", "stroke", "text", "move", "arc", "to", "close",
+                "fill"
+            ]
         );
-        assert_eq!(ops.iter().filter(|o| o.paints()).count(), 2);
+        assert_eq!(ops.iter().filter(|o| o.paints()).count(), 3);
         let mut sorted = methods.clone();
         sorted.sort_unstable();
+        sorted.dedup();
         let mut all = DrawOp::METHODS.to_vec();
         all.sort_unstable();
         assert_eq!(sorted, all, "every variant's method is listed");

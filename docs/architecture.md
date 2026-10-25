@@ -2966,7 +2966,19 @@ re-base, if it needs one, is a dated decisions.md entry.
     lambda in the prop's memo with a `Canvas` of the node's laid-out
     size, the VM recording each `Canvas` method call; render turns the
     list into clipped fills (`strand-render/src/canvas.rs`; `fill` with
-    no path fills the box; `text` is not drawn yet).
+    no path fills the box; `text` is drawn in the node's font, see
+    features.md). (flex) Paths drawn point by point added `MoveTo { x,
+    y }`, `LineTo { x, y }`, `Arc { x, y, r, from, to }` (degrees, 0
+    pointing right, growing clockwise; at most one whole turn) and
+    `Close` for `c.move`, `c.to`, `c.arc` and `c.close`, and
+    `FillEvenOdd(Paint)` and `FillThemedEvenOdd(PropValue)` for
+    `c.fill(paint, evenodd: true)`. `to` and `arc` continue the open
+    subpath (an arc joined by a line to its start) or start one at their
+    first point; `close`, a paint, a `rect` and a `circle` leave none
+    open. Render's display list carries an even-odd fill as
+    `FillShape::EvenOdd(BezPath)` beside `Rect` and `Path`, drawn by the
+    CPU raster and lowered to the GPU's `Op::Fill { even_odd: true }`
+    (decisions.md flex).
   - **Effect layers** (design.md, "Runtime changes these need", items 1–4).
     `strand_scene::effect::Effect` is a tagged group effect:
     `ColorMatrix([f32; 20])` (the `filter:` colour functions compose into

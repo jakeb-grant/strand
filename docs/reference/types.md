@@ -100,12 +100,16 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 
 | Method | |
 | --- | --- |
-| `fn fill(paint: paint)` | Fills with `paint`. |
-| `fn stroke(paint: paint, width: length = 1)` | Strokes with `paint`, `width` wide. |
+| `fn fill(paint: paint, evenodd: bool = false)` | Fills the shapes drawn since the last paint with `paint`, or the whole canvas when there are none. `evenodd: true` fills by the even-odd rule, so a shape drawn inside another cuts a hole in it (a ring is two circles); unset, overlapping shapes all fill. |
+| `fn stroke(paint: paint, width: length = 1)` | Strokes the shapes drawn since the last paint with `paint`, `width` wide. |
 | `fn line(x1: float, y1: float, x2: float, y2: float)` | A line from (`x1`, `y1`) to (`x2`, `y2`). |
 | `fn rect(x: float, y: float, w: float, h: float)` | A rectangle at (`x`, `y`), `w` wide and `h` high. |
 | `fn circle(x: float, y: float, r: float)` | A circle centred at (`x`, `y`) with radius `r`. |
 | `fn text(t: text, x: float, y: float)` | Text `t` at (`x`, `y`). |
+| `fn move(x: float, y: float)` | Starts a path of your own at (`x`, `y`): `c.move(0, 40); c.to(20, 10); c.to(40, 30); c.stroke($accent, 2)` draws a polyline. |
+| `fn to(x: float, y: float)` | A line from the path's current point to (`x`, `y`). With no path open (at the start, after `close`, a paint, a `rect` or a `circle`), it starts one at (`x`, `y`). |
+| `fn arc(x: float, y: float, r: float, from: angle, to: angle)` | An arc of the circle centred at (`x`, `y`) with radius `r`, from angle `from` to angle `to`: `0deg` points right and angles grow clockwise, as `rotate` turns, so `to` past `from` turns clockwise (at most one whole turn). It joins the open path with a line to its start, or starts one there: `c.move(20, 20); c.arc(20, 20, 16, from: -90deg, to: 30deg); c.close(); c.fill($accent)` is a pie slice. |
+| `fn close()` | Closes the open path with a line back to where it started. |
 
 ### `ClipboardEntry`
 

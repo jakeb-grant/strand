@@ -156,6 +156,9 @@ pub struct GlyphFill {
 pub enum FillShape {
     Rect(kurbo::Rect),
     Path(BezPath),
+    /// (flex) A path filled by the even-odd rule (a canvas's
+    /// `c.fill(paint, evenodd: true)`).
+    EvenOdd(BezPath),
 }
 
 /// A display item with the physical rectangle it can touch. A push item's
@@ -780,7 +783,7 @@ fn painted(item: &Item) -> Option<kurbo::Rect> {
     let r = match item {
         Item::Fill { shape, .. } => match shape {
             FillShape::Rect(r) => *r,
-            FillShape::Path(p) => p.bounding_box(),
+            FillShape::Path(p) | FillShape::EvenOdd(p) => p.bounding_box(),
         },
         Item::Border { path, .. } | Item::PushClip(path) => path.bounding_box(),
         Item::Shadow { extent, .. } => *extent,

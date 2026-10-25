@@ -9,7 +9,7 @@ mod common;
 
 use std::sync::Arc;
 
-use canvas_scene::{canvas_scene, chart};
+use canvas_scene::{canvas_scene, chart, paths};
 use common::*;
 use strand_scene::canvas::DrawOp;
 use strand_scene::*;
@@ -239,4 +239,37 @@ fn a_paint_takes_the_shapes_since_the_last_paint() {
     assert_eq!(buf.px(64, 20), bg, "E is not stroked: its path was taken");
     assert_eq!(buf.px(95, 35), bg, "C has no paint after it");
     assert_matches_ref("canvas_paint_order", &buf, TOLERANCE);
+}
+
+/// (flex) Paths drawn point by point: pie slices from `move`, `arc` and
+/// `close` (angles clockwise from the right, as `rotate` turns), a ring
+/// filled by the even-odd rule, and a stroked half circle turning
+/// clockwise over the top.
+#[test]
+fn a_canvas_draws_paths_arcs_and_even_odd_fills() {
+    let mut r = renderer();
+    let (diff, _) = canvas_scene(paths());
+    assert!(r.apply(diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(160, 60, Scale::ONE);
+    buf.paint(&mut r, S, 0);
+    // BGRA, bar coordinates (the canvas is at (10, 10)).
+    let (bg, red, blue, green, yellow, white) = (
+        [0x44, 0x32, 0x31, 255],
+        [0, 0, 255, 255],
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 255, 255, 255],
+        [255, 255, 255, 255],
+    );
+    assert_eq!(buf.px(40, 30), red, "3 o'clock is in the first slice");
+    assert_eq!(buf.px(37, 23), red, "so is half past one");
+    assert_eq!(buf.px(20, 30), blue, "9 o'clock is in the second");
+    assert_eq!(buf.px(30, 40), blue, "and 6 o'clock");
+    assert_eq!(buf.px(65, 30), bg, "the ring's hole");
+    assert_eq!(buf.px(76, 30), green, "the ring");
+    assert_eq!(buf.px(95, 18), yellow, "the arc turns over the top");
+    assert_eq!(buf.px(95, 42), bg, "not under the bottom");
+    assert_eq!(buf.px(95, 47), white, "the triangle");
+    assert_matches_ref("canvas_paths", &buf, TOLERANCE);
 }

@@ -329,7 +329,7 @@ Because `on change` never fires at boot, on a sink switch or on reload, the OSD 
 ### Escape hatches for complex work
 
 - **Shaders:** `shader "aurora.wgsl" { u_speed: 0.4; u_tint: $accent }`, checked with naga, hot-reloaded.
-- **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses.
+- **Canvas:** `canvas { draw: (c) => … }` for charts and visualisers, with the same paint API the renderer uses: shapes (`c.rect`, `c.circle`, `c.line`), paths drawn point by point (`c.move`, `c.to`, `c.arc`, `c.close`), text, and fills (non-zero or `evenodd: true`) and strokes. `draw` runs when what it reads changes, never per frame, so time signals are refused in it: the canvas node's own props or a shader animate it.
 - **Custom services:** `service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`, checked against introspection. Or a Rust crate with `#[service]`.
 - **IPC and CLI:** `strand get | set | toggle | watch | call` over a socket and D-Bus (bus name `io.github.jakeb_grant.Strand`, which may change before 1.0). `strand export` asks the running shell over the socket.
 

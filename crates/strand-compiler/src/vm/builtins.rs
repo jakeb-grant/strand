@@ -996,10 +996,29 @@ fn canvas_op(
             y: n(1)?,
             r: n(2)?,
         },
-        "fill" => match crate::instantiate::canvas_paint(types, a.first()?)? {
-            Ok(p) => DrawOp::Fill(p),
-            Err(themed) => DrawOp::FillThemed(themed),
+        "fill" => {
+            let evenodd = matches!(a.get(1), Some(Value::Bool(true)));
+            match (
+                crate::instantiate::canvas_paint(types, a.first()?)?,
+                evenodd,
+            ) {
+                (Ok(p), false) => DrawOp::Fill(p),
+                (Err(themed), false) => DrawOp::FillThemed(themed),
+                (Ok(p), true) => DrawOp::FillEvenOdd(p),
+                (Err(themed), true) => DrawOp::FillThemedEvenOdd(themed),
+            }
+        }
+        "move" => DrawOp::MoveTo { x: n(0)?, y: n(1)? },
+        "to" => DrawOp::LineTo { x: n(0)?, y: n(1)? },
+        // Angles are degrees, as an `angle` value holds them.
+        "arc" => DrawOp::Arc {
+            x: n(0)?,
+            y: n(1)?,
+            r: n(2)?,
+            from: n(3)?,
+            to: n(4)?,
         },
+        "close" => DrawOp::Close,
         "stroke" => {
             let width = n(1).unwrap_or(1.0);
             match crate::instantiate::canvas_paint(types, a.first()?)? {

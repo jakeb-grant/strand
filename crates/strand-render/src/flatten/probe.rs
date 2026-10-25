@@ -174,7 +174,9 @@ pub(super) fn paint(
                 out.fills.push(paint.clone());
                 let b = match shape {
                     super::FillShape::Rect(r) => *r,
-                    super::FillShape::Path(p) => kurbo::Shape::bounding_box(p),
+                    super::FillShape::Path(p) | super::FillShape::EvenOdd(p) => {
+                        kurbo::Shape::bounding_box(p)
+                    }
                 };
                 out.fill_boxes.push(LogicalRect::new(
                     lg(b.x0),
