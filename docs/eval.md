@@ -2560,7 +2560,8 @@ capability, used by any scenario):
   window's start puts each value in the column the live shell did,
   whatever its frames' times. The
   services' stand-ins sample as the live ones do: the polled builtins
-  (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`) and a
+  (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`,
+  `network`) and a
   config's `from poll` services say they poll (`SchemaHost::set_polls`),
   so their hidden samples ramp as the live shell's did.
 - Header `wall`: the wall time (RFC 3339 with its offset) virtual

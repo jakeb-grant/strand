@@ -157,6 +157,7 @@ impl Builtin {
         b.cpu.polls(Some(cpu::PERIOD));
         b.memory.polls(Some(memory::PERIOD));
         b.disk.polls(Some(disk::PERIOD));
+        b.network.polls(Some(network::rates::PERIOD));
         b
     }
 

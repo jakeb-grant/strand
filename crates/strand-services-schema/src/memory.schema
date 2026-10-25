@@ -9,4 +9,18 @@ service memory {
   used: float
   /// Memory installed, in bytes.
   total: float
+  /// Memory available to start new programs without swapping, in bytes
+  /// (the kernel's estimate, `MemAvailable`): free memory plus the cache
+  /// it can drop.
+  available: float
+  /// Memory holding nothing at all, in bytes (`MemFree`): far less than
+  /// `available`, since the kernel fills spare memory with cache.
+  free: float
+  /// The page cache and buffers, in bytes (`Cached` plus `Buffers`):
+  /// files kept in memory, most of it given back when programs need it.
+  cached: float
+  /// Swap in use, in bytes (`SwapTotal` less `SwapFree`).
+  swap_used: float
+  /// Swap configured, in bytes; 0 without swap.
+  swap_total: float
 }

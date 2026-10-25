@@ -1,5 +1,6 @@
 //! The builtin services on the contract: `system` against a mock portal
-//! on a private bus, `cpu` and `memory` from procfs and `disk` from
+//! on a private bus, `cpu` and `memory` from procfs, `network`'s byte
+//! rates from fake kernel counters, and `disk` from
 //! `statvfs` (sampled only while a
 //! reader is visible), and the test harness itself (private bus,
 //! python-dbusmock).
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, disk, memory, system};
+use strand_services::{Builtin, Buses, Rgba, Services, Store, cpu, disk, memory, network, system};
 use zbus::zvariant::{OwnedValue, Value};
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -291,6 +292,26 @@ fn cpu_and_memory_sample_only_while_a_reader_is_visible() {
     );
     let fraction = b.memory.cells().usage.get_untracked(&rt).unwrap();
     assert!((used / total - fraction).abs() < 1e-9);
+    // (services-round) The breakdown, from the same reading.
+    let m = b.memory.cells();
+    let available = m.available.get_untracked(&rt).unwrap();
+    let free = m.free.get_untracked(&rt).unwrap();
+    let cached = m.cached.get_untracked(&rt).unwrap();
+    assert!(
+        (total - available - used).abs() < 1.0,
+        "used is what is not available"
+    );
+    assert!(
+        free > 0.0 && free <= available,
+        "{free} free of {available}"
+    );
+    assert!(cached > 0.0 && cached < total, "{cached}");
+    let swap_total = m.swap_total.get_untracked(&rt).unwrap();
+    let swap_used = m.swap_used.get_untracked(&rt).unwrap();
+    assert!(
+        (0.0..=swap_total).contains(&swap_used),
+        "{swap_used} of {swap_total}"
+    );
     // Visible: once a second.
     let start = (cpu::samples(), memory::samples());
     std::thread::sleep(cpu::PERIOD * 2 + Duration::from_millis(500));
@@ -598,4 +619,102 @@ fn disk_reads_the_root_filesystem_only_while_visible() {
     assert!(disk::samples() > hidden, "sampling resumes");
     disk::configure(None);
     s.shutdown();
+}
+
+/// Write fake kernel counters under `root`: `eth0` (hardware) and
+/// `veth0` (a container's link), and loopback.
+fn counters(root: &std::path::Path, eth: (u64, u64), veth: (u64, u64)) {
+    let dev = format!(
+        "Inter-|   Receive |  Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes\n\
+             lo: 5000 1 0 0 0 0 0 0 5000 1 0 0 0 0 0 0\n\
+           eth0: {} 1 0 0 0 0 0 0 {} 1 0 0 0 0 0 0\n\
+          veth0: {} 1 0 0 0 0 0 0 {} 1 0 0 0 0 0 0\n",
+        eth.0, eth.1, veth.0, veth.1
+    );
+    let tmp = root.join("proc/net/dev.tmp");
+    std::fs::write(&tmp, dev).unwrap();
+    std::fs::rename(&tmp, root.join("proc/net/dev")).unwrap();
+}
+
+/// (services-round) `network.rx` and `network.tx` are the bytes a second
+/// through the machine's hardware, from the kernel's counters with no
+/// daemon or bus at all: a container's link and loopback never count.
+/// Read only while a visible reader reads them, once a second; nothing
+/// is read while only the rest of `network` is shown.
+#[test]
+fn network_rates_count_the_hardware_only_while_read() {
+    let root = std::env::temp_dir().join(format!("strand-rates-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("proc/net")).unwrap();
+    std::fs::create_dir_all(root.join("sys/class/net/eth0/device")).unwrap();
+    std::fs::create_dir_all(root.join("sys/class/net/veth0")).unwrap();
+    std::fs::create_dir_all(root.join("sys/class/net/lo")).unwrap();
+    counters(&root, (1_000, 2_000), (0, 0));
+    network::rates::configure_root(Some(root.clone()));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, Buses::none());
+    let field = |name: &str| {
+        network::Network::FIELDS
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap()
+    };
+    // Shown, but nobody reads the rates: nothing is read.
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let before = network::rates::samples();
+    std::thread::sleep(network::rates::PERIOD * 2 + Duration::from_millis(300));
+    s.pump(&rt);
+    assert_eq!(network::rates::samples(), before, "no reader of the rates");
+    // Read: a baseline at once, then once a second.
+    b.network.acquire_field(field("rx"));
+    b.network.acquire_field(field("tx"));
+    let started = Instant::now();
+    until(&rt, &s, "the baseline", || {
+        network::rates::samples() > before
+    });
+    // 1 MB in, 0.5 MB out through eth0, and 50 MB through the
+    // container's link, before the first sample.
+    counters(&root, (1_001_000, 502_000), (50_000_000, 50_000_000));
+    let cells = b.network.cells();
+    until(&rt, &s, "a rate", || {
+        cells.rx.get_untracked(&rt).is_ok_and(|r| r > 0.0)
+    });
+    let secs = started.elapsed().as_secs_f64();
+    let rx = cells.rx.get_untracked(&rt).unwrap();
+    let tx = cells.tx.get_untracked(&rt).unwrap();
+    // One second's sample (or a little more on a loaded runner).
+    assert!(
+        rx <= 1_000_000.0 * 1.05 && rx >= 1_000_000.0 / secs.max(1.0) * 0.9,
+        "rx {rx} after {secs} s"
+    );
+    assert!((tx / rx - 0.5).abs() < 1e-9, "tx {tx} of rx {rx}");
+    // No more bytes: the next sample says 0.
+    until(&rt, &s, "an idle second", || {
+        cells.rx.get_untracked(&rt) == Ok(0.0) && cells.tx.get_untracked(&rt) == Ok(0.0)
+    });
+    // Unread again: no more reads.
+    b.network.release_field(field("rx"));
+    b.network.release_field(field("tx"));
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    let unread = network::rates::samples();
+    std::thread::sleep(network::rates::PERIOD * 2 + Duration::from_millis(300));
+    assert_eq!(network::rates::samples(), unread, "nobody reads the rates");
+    // Hidden but kept by a graph's history: sampled at the kept period,
+    // and said to be polled.
+    b.network.release(&rt);
+    b.network.keep(&rt, Some(Duration::from_secs(2)));
+    std::thread::sleep(Duration::from_millis(100));
+    s.pump(&rt);
+    let kept = network::rates::samples();
+    std::thread::sleep(Duration::from_millis(4_600));
+    s.pump(&rt);
+    let n = network::rates::samples() - kept;
+    assert!((1..=3).contains(&n), "{n} samples in 4.6 s kept at 2 s");
+    assert_eq!(b.network.sampled(), Some(Duration::from_secs(2)));
+    b.network.keep(&rt, None);
+    s.shutdown();
+    network::rates::configure_root(None);
+    let _ = std::fs::remove_dir_all(&root);
 }

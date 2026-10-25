@@ -222,6 +222,11 @@ otherwise not at all.
 | `usage` | `float` | The fraction in use, 0 to 1. |
 | `used` | `float` | Memory in use, in bytes (installed memory less what is available). |
 | `total` | `float` | Memory installed, in bytes. |
+| `available` | `float` | Memory available to start new programs without swapping, in bytes (the kernel's estimate, `MemAvailable`): free memory plus the cache it can drop. |
+| `free` | `float` | Memory holding nothing at all, in bytes (`MemFree`): far less than `available`, since the kernel fills spare memory with cache. |
+| `cached` | `float` | The page cache and buffers, in bytes (`Cached` plus `Buffers`): files kept in memory, most of it given back when programs need it. |
+| `swap_used` | `float` | Swap in use, in bytes (`SwapTotal` less `SwapFree`). |
+| `swap_total` | `float` | Swap configured, in bytes; 0 without swap. |
 
 ## `network`
 
@@ -244,6 +249,8 @@ networks now.
 | `frequency` | `int?` | The joined Wi-Fi network's frequency in MHz (2412, 5180, 5955): below 3000 is the 2.4 GHz band, 5150 to 5895 the 5 GHz band, from 5925 the 6 GHz band. Null while no Wi-Fi network is joined, or when iwd does not say. |
 | `security` | `WifiSecurity?` | How the joined Wi-Fi network is secured; null while none is joined. |
 | `address` | `text?` | The connection's IP address, as text without a prefix: its IPv4 address, else its global IPv6 address. Null while not connected. Over NetworkManager this is the default-route connection's interface (wired too); over iwd it is the Wi-Fi interface. Read from the kernel, and followed only while a visible reader reads it. |
+| `rx` | `float` | Bytes a second received through the machine's network hardware (every interface backed by a device: Ethernet, Wi-Fi, a modem; not loopback, bridges, VPN tunnels or containers' links), from the kernel's counters whichever daemon runs: `graph network.rx { range: auto }`. Sampled once a second while a visible reader reads it or `tx`; while none does but a `graph` keeps history of the service, at the coarser of that and a twentieth of the graph's `history` (at least 2 s); otherwise not at all. 0 until the first second has passed. |
+| `tx` | `float` | Bytes a second sent, as `rx` counts them. |
 | `scanning` | `bool` | A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu asks when it opens; over iwd, iwd's own scans too. |
 
 | Method | |

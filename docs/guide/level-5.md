@@ -242,8 +242,11 @@ cannot.
 
 ## 3. Services of your own
 
-Strand's services cover the usual things: audio, battery, network,
-notifications and so on. For the rest, you declare one. Make
+Strand's services cover the usual things: audio, battery, network
+(down to the bytes a second in and out, `network.rx` and `network.tx`),
+memory (in use, cached, free and swap), notifications and so on. Look
+in the reference before reaching for `/proc`. For the rest, you declare
+one. Make
 `services.strand`:
 
 ```strand level=5 file=services.strand

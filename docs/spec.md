@@ -1034,8 +1034,8 @@ units).
   as it mounts: the program keeps that value, once per expression, for
   the longest `history` any of its graphs asks, in memory only, and
   the services it reads keep running while no visible reader holds
-  them. One that samples on a clock (`cpu`, `memory`, `disk`, a `from
-  poll` service) samples then at a coarser period, a twentieth of that
+  them. One that samples on a clock (`cpu`, `memory`, `disk`,
+  `network`'s byte rates, a `from poll` service) samples then at a coarser period, a twentieth of that
   history and at least 2 s; one that reports its changes as they
   happen keeps reporting them; a stream run only while watched, or a
   value that changes only while shown, records nothing hidden. A graph

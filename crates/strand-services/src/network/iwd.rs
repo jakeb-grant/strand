@@ -412,6 +412,9 @@ impl Iwd {
             frequency,
             security,
             address: None,
+            // The overlay's.
+            rx: 0.0,
+            tx: 0.0,
             scanning: station_scans,
             failed: Event::default(),
         }
@@ -1007,6 +1010,7 @@ pub(super) async fn owned(conn: &zbus::Connection, name: &str) -> bool {
 pub(super) async fn run(
     cx: &mut Cx<Network>,
     conn: &zbus::Connection,
+    rates: &mut super::rates::Rates,
 ) -> Result<Next, ServiceError> {
     // NetworkManager appearing takes over.
     let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await?;
@@ -1034,7 +1038,10 @@ pub(super) async fn run(
     let mut leave: Option<(tokio::task::Id, String)> = None;
     // Failures of joins `leave` stopped, while it is in flight.
     let mut held: Vec<(tokio::task::Id, String, String)> = Vec::new();
-    let mut pending = Pending::default();
+    let mut pending = Pending {
+        rates: rates.now(),
+        ..Pending::default()
+    };
     let mut addresses = Addresses::default();
     // The networks in range are listed (a reader reads them).
     let mut listing = cx.watched("access_points");
@@ -1064,6 +1071,12 @@ pub(super) async fn run(
                 && !publish(cx, &iwd, &pending, listing)
             {
                 break 'body Next::Stop;
+            }
+            if rates.sync(cx) {
+                pending.rates = rates.now();
+                if !publish(cx, &iwd, &pending, listing) {
+                    break 'body Next::Stop;
+                }
             }
             tokio::select! {
                 ev = daemon.next() => match ev {
@@ -1113,6 +1126,13 @@ pub(super) async fn run(
                 }
                 a = addresses.next(iface.as_deref()) => {
                     pending.address = a;
+                    if !publish(cx, &iwd, &pending, listing) {
+                        break 'body Next::Stop;
+                    }
+                }
+                _ = rates.tick() => {
+                    rates.sample();
+                    pending.rates = rates.now();
                     if !publish(cx, &iwd, &pending, listing) {
                         break 'body Next::Stop;
                     }

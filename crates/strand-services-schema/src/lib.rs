@@ -20,11 +20,14 @@ pub const MEMORY: &str = include_str!("memory.schema");
 /// its hidden samples are drawn as ramps over that period. The eval
 /// sandbox's stand-ins say the same, so a replayed graph draws them as
 /// the live one did. Every other builtin reports its changes as they
-/// happen.
-pub const POLLED: [(&str, std::time::Duration); 3] = [
+/// happen. (services-round) `network` samples its byte rates (`rx`,
+/// `tx`) on a clock, and reports the rest as it changes; kept hidden,
+/// all of it counts as polled.
+pub const POLLED: [(&str, std::time::Duration); 4] = [
     ("cpu", std::time::Duration::from_secs(1)),
     ("memory", std::time::Duration::from_secs(1)),
     ("disk", std::time::Duration::from_secs(10)),
+    ("network", std::time::Duration::from_secs(1)),
 ];
 
 /// `battery`: UPower's display device and power sources.

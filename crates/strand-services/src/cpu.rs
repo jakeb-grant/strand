@@ -161,7 +161,8 @@ mod tests {
             [
                 ("cpu", PERIOD),
                 ("memory", crate::memory::PERIOD),
-                ("disk", crate::disk::PERIOD)
+                ("disk", crate::disk::PERIOD),
+                ("network", crate::network::rates::PERIOD)
             ]
         );
     }

@@ -44,6 +44,7 @@ use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
 pub mod address;
 pub mod iwd;
+pub mod rates;
 
 /// How a backend's body ended.
 #[derive(Debug, PartialEq)]
@@ -151,6 +152,20 @@ pub struct Network {
     /// kernel, and followed only while a visible reader reads it.
     #[store(stream)]
     pub address: Option<String>,
+    /// Bytes a second received through the machine's network hardware
+    /// (every interface backed by a device: Ethernet, Wi-Fi, a modem; not
+    /// loopback, bridges, VPN tunnels or containers' links), from the
+    /// kernel's counters whichever daemon runs: `graph network.rx {
+    /// range: auto }`. Sampled once a second while a visible reader reads
+    /// it or `tx`; while none does but a `graph` keeps history of the
+    /// service, at the coarser of that and a twentieth of the graph's
+    /// `history` (at least 2 s); otherwise not at all. 0 until the first
+    /// second has passed.
+    #[store(stream)]
+    pub rx: f64,
+    /// Bytes a second sent, as `rx` counts them.
+    #[store(stream)]
+    pub tx: f64,
     /// A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu
     /// asks when it opens; over iwd, iwd's own scans too.
     pub scanning: bool,
@@ -189,6 +204,9 @@ struct Pending {
     scan_until: Option<tokio::time::Instant>,
     /// The address follower's value ([`address::Follower`]).
     address: Option<String>,
+    /// (services-round) The rates last sampled ([`rates::Rates`]):
+    /// received, sent.
+    rates: (f64, f64),
 }
 
 /// `s`, as a backend's state, with the shell's own requests laid over it:
@@ -203,6 +221,7 @@ fn overlay(p: &Pending, s: &mut Network) {
     }
     s.scanning |= p.scan_until.is_some();
     s.address = if s.connected { p.address.clone() } else { None };
+    (s.rx, s.tx) = p.rates;
 }
 
 /// How long a scan NetworkManager accepted counts as running when its
@@ -559,6 +578,9 @@ impl Nm {
                 .map(|f| f as i64),
             security: joined.map(security_of),
             address: None,
+            // The overlay's ([`rates::Rates`]).
+            rx: 0.0,
+            tx: 0.0,
             scanning: false,
             failed: Event::default(),
         }
@@ -695,17 +717,19 @@ impl Nm {
 
 impl Network {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+        // The rates come from the kernel, whichever daemon runs.
+        let mut rates = rates::Rates::new();
         let conn = match cx.system().await {
             Ok(c) => c,
-            Err(e) => return crate::dbus::idle_without_bus(&mut cx, "system", e).await,
+            Err(e) => return without_bus(&mut cx, e, &mut rates).await,
         };
         loop {
             // NetworkManager when it runs, or when nothing else does (it
             // may be started for us); iwd when only iwd runs.
             let next = if !iwd::owned(&conn, NM).await && iwd::owned(&conn, iwd::IWD).await {
-                iwd::run(&mut cx, &conn).await?
+                iwd::run(&mut cx, &conn, &mut rates).await?
             } else {
-                with_nm(&mut cx, &conn).await?
+                with_nm(&mut cx, &conn, &mut rates).await?
             };
             if next == Next::Stop {
                 return Ok(());
@@ -714,10 +738,54 @@ impl Network {
     }
 }
 
+/// (services-round) The body with no system bus to use (its buses
+/// disabled: a test's, a sandbox): the rates still count, and every
+/// action is refused as `dbus::idle_without_bus` refuses it. A bus that
+/// failed is the run's error, retried on its backoff.
+async fn without_bus(
+    cx: &mut Cx<Network>,
+    e: zbus::Error,
+    rates: &mut rates::Rates,
+) -> Result<(), ServiceError> {
+    if cx.buses().system != crate::Bus::Disabled {
+        return Err(ServiceError(format!("no system bus: {e}")));
+    }
+    log::debug!("network: no system bus: {e}");
+    cx.ready();
+    loop {
+        if rates.sync(cx) && !cx.update(|s| (s.rx, s.tx) = rates.now()) {
+            return Ok(());
+        }
+        tokio::select! {
+            m = cx.recv() => match m {
+                None => return Ok(()),
+                Some(Msg::Action(a)) => {
+                    if let Some(event) = refused(&a, "no system bus")
+                        && !cx.emit(event)
+                    {
+                        return Ok(());
+                    }
+                }
+                Some(_) => {}
+            },
+            _ = rates.tick() => {
+                rates.sample();
+                if !cx.update(|s| (s.rx, s.tx) = rates.now()) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
 /// The `network` body over NetworkManager, until it goes while iwd runs,
 /// or iwd appears while it is not running ([`Next::Again`]), or the
 /// service stops.
-async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, ServiceError> {
+async fn with_nm(
+    cx: &mut Cx<Network>,
+    conn: &zbus::Connection,
+    rates: &mut rates::Rates,
+) -> Result<Next, ServiceError> {
     let dbus_proxy = zbus::fdo::DBusProxy::new(conn).await?;
     let mut iwd_owners = dbus_proxy
         .receive_name_owner_changed_with_args(&[(0, iwd::IWD)])
@@ -759,7 +827,10 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
     let mut leave: Option<(tokio::task::Id, String)> = None;
     // The joins `leave` stopped, until it answers.
     let mut stopped = Stopped::default();
-    let mut pending = Pending::default();
+    let mut pending = Pending {
+        rates: rates.now(),
+        ..Pending::default()
+    };
     let mut addresses = Addresses::default();
     // The access points are listed (a reader reads them).
     let mut listing = cx.watched("access_points");
@@ -809,6 +880,12 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
             {
                 return Ok(Next::Stop);
             }
+            if rates.sync(cx) {
+                pending.rates = rates.now();
+                if !publish(cx, &nm, &pending, listing) {
+                    return Ok(Next::Stop);
+                }
+            }
             let scan_until = pending.scan_until;
             tokio::select! {
                 ev = daemon.next() => match ev {
@@ -826,6 +903,7 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                         stopped = Stopped::default();
                         pending = Pending {
                             address: pending.address.take(),
+                            rates: pending.rates,
                             ..Pending::default()
                         };
                         let stopped = asked.clear().into_iter().chain(
@@ -895,6 +973,13 @@ async fn with_nm(cx: &mut Cx<Network>, conn: &zbus::Connection) -> Result<Next, 
                 }
                 a = addresses.next(iface.as_deref()) => {
                     pending.address = a;
+                    if !publish(cx, &nm, &pending, listing) {
+                        return Ok(Next::Stop);
+                    }
+                }
+                _ = rates.tick() => {
+                    rates.sample();
+                    pending.rates = rates.now();
                     if !publish(cx, &nm, &pending, listing) {
                         return Ok(Next::Stop);
                     }
@@ -2355,9 +2440,11 @@ mod tests {
             disconnect: Some("Home".into()),
             scan_until: Some(tokio::time::Instant::now()),
             address: Some("192.168.1.9".into()),
+            rates: (10.0, 20.0),
         };
         let mut s = Network::default();
         overlay(&pending, &mut s);
+        assert_eq!((s.rx, s.tx), (10.0, 20.0), "the rates, connected or not");
         assert_eq!(s.connecting.as_deref(), Some("Cafe"));
         assert_eq!(s.disconnecting.as_deref(), Some("Home"));
         assert!(s.scanning);

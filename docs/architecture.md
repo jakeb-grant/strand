@@ -6169,8 +6169,8 @@ transparent huge pages for life.
   starts, or stays running, with no reader, told `Keep`; the stop timer
   is armed only once it is neither read nor kept; `DynService::keep`
   and `kept` likewise), `polls(Option<Duration>)` (it samples on a
-  clock every so often while shown: the builtins say it of cpu, memory
-  and disk, from `strand_services_schema::POLLED`, a host of its `from
+  clock every so often while shown: the builtins say it of cpu, memory,
+  disk and (services-round) network, from `strand_services_schema::POLLED`, a host of its `from
   poll` services) and `sampled() -> Option<Duration>` (`Some` while it
   is kept, unread and polls, by `polls` or its body's `Cx::period`:
   the coarser of that and the kept period; `DynService::sampled`),
@@ -6225,7 +6225,10 @@ transparent huge pages for life.
   to minutes, read again at each whole minute of uptime only while a
   visible reader shows it, `system::uptime_ticks()` counting the wakes
   for tests), `cpu` and `memory` (procfs, sampled once a second only
-  while a reader is visible), `disk` (M6, gap 33: the mounted
+  while a reader is visible; services-round: `memory`'s `available`,
+  `free`, `cached` (`Cached` plus `Buffers`), `swap_used` and
+  `swap_total` from the same `/proc/meminfo` reading,
+  `procfs::Meminfo`), `disk` (M6, gap 33: the mounted
   filesystems of `/proc/self/mountinfo` selected by `disk::select`,
   none at or under an `autofs` point, measured with rustix's `statvfs` on the blocking pool one sample at a
   time, every 10 s only while a reader is visible;
@@ -6278,7 +6281,18 @@ transparent huge pages for life.
   rtnetlink socket on rustix's `net` (RTM_GETADDR dump, then the IPv4
   and IPv6 address groups; no polling) opened only while `address` is
   watched and the backend names an interface (NetworkManager's
-  default-route device, iwd's Wi-Fi interface)), `bluetooth` (BlueZ's
+  default-route device, iwd's Wi-Fi interface); services-round: `rx`
+  and `tx` (stream fields) from `network::rates::Rates`, owned by the
+  body across both backends and the no-bus body (`without_bus`, which
+  refuses actions as `dbus::idle_without_bus` does): `/proc/net/dev`'s
+  byte counters summed over the interfaces with a
+  `/sys/class/net/<if>/device` link, each interface's difference since
+  the last reading (one that came, went or went back counts nothing),
+  on a `Ticker` of `rates::PERIOD` (1 s) started while `rx` or `tx` is
+  watched or the service is kept (`Cx::kept`), a fresh baseline at each
+  start, laid over the backend's state by `overlay` from
+  `Pending::rates`; `rates::configure_root(Option<PathBuf>)` points it
+  at fake counters and `rates::samples()` counts its reads (tests)), `bluetooth` (BlueZ's
   object manager; m6-service-gaps, gap 29: `nearby` is a stream field,
   discovery (`SetDiscoveryFilter`, `StartDiscovery`) running only while
   it is watched, `StopDiscovery` only for the body's own session (BlueZ

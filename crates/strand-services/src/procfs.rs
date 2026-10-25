@@ -51,10 +51,31 @@ pub(crate) fn usage(prev: Times, cur: Times) -> f64 {
     (total - idle) as f64 / total as f64
 }
 
-/// `MemTotal` and `MemAvailable` of `/proc/meminfo`, in bytes.
-pub(crate) fn parse_meminfo(text: &str) -> Option<(f64, f64)> {
+/// What the `memory` service reads of `/proc/meminfo`, in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Meminfo {
+    /// `MemTotal`.
+    pub total: f64,
+    /// `MemAvailable`.
+    pub available: f64,
+    /// `MemFree`.
+    pub free: f64,
+    /// `Cached` plus `Buffers`: the page cache and the block devices'
+    /// buffers.
+    pub cached: f64,
+    /// `SwapTotal`.
+    pub swap_total: f64,
+    /// `SwapFree`.
+    pub swap_free: f64,
+}
+
+/// `/proc/meminfo`'s numbers, in bytes; `None` without `MemTotal` and
+/// `MemAvailable` (every kernel since 3.14 has both). The rest read 0
+/// when missing.
+pub(crate) fn parse_meminfo(text: &str) -> Option<Meminfo> {
     let mut total = None;
     let mut available = None;
+    let mut m = Meminfo::default();
     for line in text.lines() {
         let Some((key, rest)) = line.split_once(':') else {
             continue;
@@ -66,10 +87,16 @@ pub(crate) fn parse_meminfo(text: &str) -> Option<(f64, f64)> {
         match key {
             "MemTotal" => total = kib(),
             "MemAvailable" => available = kib(),
+            "MemFree" => m.free = kib().unwrap_or(0.0),
+            "Cached" | "Buffers" => m.cached += kib().unwrap_or(0.0),
+            "SwapTotal" => m.swap_total = kib().unwrap_or(0.0),
+            "SwapFree" => m.swap_free = kib().unwrap_or(0.0),
             _ => {}
         }
     }
-    Some((total?, available?))
+    m.total = total?;
+    m.available = available?;
+    Some(m)
 }
 
 /// The time since boot of `/proc/uptime` (its first number, seconds
@@ -189,12 +216,24 @@ mod tests {
 
     #[test]
     fn meminfo_is_bytes() {
-        let text = "MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:    4000000 kB\n";
+        let text = "MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:    4000000 kB\n\
+                    Buffers: 100 kB\nCached: 2000 kB\nSwapCached: 7 kB\n\
+                    SwapTotal: 8000 kB\nSwapFree: 6000 kB\n";
+        let m = parse_meminfo(text).unwrap();
+        assert_eq!(m.total, 16_000_000.0 * 1024.0);
+        assert_eq!(m.available, 4_000_000.0 * 1024.0);
+        assert_eq!(m.free, 1024.0);
         assert_eq!(
-            parse_meminfo(text),
-            Some((16_000_000.0 * 1024.0, 4_000_000.0 * 1024.0))
+            m.cached,
+            2100.0 * 1024.0,
+            "Cached plus Buffers, not SwapCached"
         );
+        assert_eq!(m.swap_total, 8000.0 * 1024.0);
+        assert_eq!(m.swap_free, 6000.0 * 1024.0);
         assert_eq!(parse_meminfo("MemTotal: 1 kB\n"), None);
+        // No swap configured: zeros.
+        let m = parse_meminfo("MemTotal: 2 kB\nMemAvailable: 1 kB\n").unwrap();
+        assert_eq!((m.swap_total, m.swap_free, m.cached), (0.0, 0.0, 0.0));
     }
 
     #[test]

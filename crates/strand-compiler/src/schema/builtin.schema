@@ -685,6 +685,16 @@ provisional service memory {
   used: float
   /// Memory installed.
   total: float
+  /// Memory available to start new programs without swapping.
+  available: float
+  /// Memory holding nothing at all.
+  free: float
+  /// The page cache and buffers.
+  cached: float
+  /// Swap in use.
+  swap_used: float
+  /// Swap configured.
+  swap_total: float
 }
 
 /// Monitors.
@@ -729,6 +739,10 @@ provisional service network {
   security: WifiSecurity?
   /// The connection's IP address, as text without a prefix.
   address: text?
+  /// Bytes a second received through the network hardware.
+  rx: float
+  /// Bytes a second sent through the network hardware.
+  tx: float
   /// A Wi-Fi scan runs.
   scanning: bool
   /// Leaves the Wi-Fi network joined, or stops the one being joined.

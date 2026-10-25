@@ -71,6 +71,18 @@ service network {
   /// (wired too); over iwd it is the Wi-Fi interface. Read from the
   /// kernel, and followed only while a visible reader reads it.
   address: text?
+  /// Bytes a second received through the machine's network hardware
+  /// (every interface backed by a device: Ethernet, Wi-Fi, a modem; not
+  /// loopback, bridges, VPN tunnels or containers' links), from the
+  /// kernel's counters whichever daemon runs: `graph network.rx {
+  /// range: auto }`. Sampled once a second while a visible reader reads
+  /// it or `tx`; while none does but a `graph` keeps history of the
+  /// service, at the coarser of that and a twentieth of the graph's
+  /// `history` (at least 2 s); otherwise not at all. 0 until the first
+  /// second has passed.
+  rx: float
+  /// Bytes a second sent, as `rx` counts them.
+  tx: float
   /// A Wi-Fi scan runs: one `scan()` asked, or the scan a network menu
   /// asks when it opens; over iwd, iwd's own scans too.
   scanning: bool
