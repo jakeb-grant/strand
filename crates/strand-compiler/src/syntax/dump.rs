@@ -283,8 +283,11 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
         ItemKind::Permit(p) => TreeNode::node(format!("permit {}", p.capability.name), span)
             .with_all(p.args.iter().map(expr)),
         ItemKind::Action(a) => {
-            let n = TreeNode::node(format!("action {}", a.name.name), span)
+            let mut n = TreeNode::node(format!("action {}", a.name.name), span)
                 .with(params(&a.params, params_span(&a.params, span)));
+            if let Some(r) = &a.ret {
+                n = n.with(TreeNode::sexpr("->", r.span, vec![ty(r)]));
+            }
             match &a.body {
                 ActionBody::Command(e) => n.with(expr(e)),
                 ActionBody::Method(m) => n.with(TreeNode::leaf(format!("= {}", m.name), m.span)),

@@ -1082,6 +1082,37 @@ bar Bottom {
     }
 }
 
+/// (flex) An action with a result in a binding: `strand run` on the
+/// headless sway runs its command, reads what it printed as the declared
+/// type and draws with it; a command that fails is the value's `.error`.
+#[test]
+fn an_actions_output_is_its_value_in_a_binding() {
+    let config = "\
+permit exec \"sh\"
+action double(n: int) -> int [\"sh\", \"-c\", \"echo $(($0 * 2))\", n]
+action fail() -> int [\"sh\", \"-c\", \"exit 3\"]
+let r = double(21)
+let f = fail()
+bar Top {
+  edge: top; height: 40
+  bg: #0000ff
+  row {
+    box { width: 200; height: 40; bg: (r ?? 0) == 42 ? #00ff00 : #ff0000 }
+    box { width: 200; height: 40; bg: (f.error ?? \"\") != \"\" ? #00ff00 : #ff0000 }
+  }
+}
+";
+    let Some(setup) = Setup::start("action-result", config) else {
+        return;
+    };
+    setup.wait("the output read as an int", |img| {
+        close(img.px(100, 20), GREEN)
+    });
+    setup.wait("the failure as the error", |img| {
+        close(img.px(300, 20), GREEN)
+    });
+}
+
 /// (M6) A click runs a declared action's command (decisions.md
 /// m6-w2-language, the owner's ruling): `strand run` on the headless sway,
 /// a virtual pointer clicking the bar. The command receives its argument

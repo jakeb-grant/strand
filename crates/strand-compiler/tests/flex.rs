@@ -2,8 +2,8 @@
 //! (decisions.md `## flex`): math builtins and `pi`, `number`, text
 //! `slice`/`index_of`, `num` and `bytes`, lists joined with `+` and
 //! `reduce`, the `min` and `h` duration units, a whole-number literal on
-//! the left of arithmetic, and a time signal in a canvas `draw:` refused
-//! at check time.
+//! the left of arithmetic, a time signal in a canvas `draw:` refused at
+//! check time, and an action whose command's output is its value.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use strand_core::Runtime;
 
 fn compile(src: &str) -> (strand_compiler::Compiled, SourceMap) {
     let mut map = SourceMap::new();
-    map.add("t.strand", src.to_string());
+    map.add("flex.strand", src.to_string());
     let c = strand_compiler::compile(&map);
     (c, map)
 }
@@ -48,7 +48,7 @@ fn run(src: &str) -> (Runtime, Rc<SchemaHost>, Instance) {
 }
 
 fn get(inst: &Instance, name: &str) -> Value {
-    inst.value_of("t", name).unwrap()
+    inst.value_of("flex", name).unwrap()
 }
 
 fn float(inst: &Instance, name: &str) -> f64 {
@@ -145,7 +145,7 @@ fn math_builtins_compute() {
     let host = Rc::new(SchemaHost::mock(&rt, &p.types));
     let inst = Instance::new(&rt, p, host, strand_compiler::instantiate::Storage::none());
     inst.flush();
-    let err = inst.value_of("t", "r").unwrap_err();
+    let err = inst.value_of("flex", "r").unwrap_err();
     assert!(err.to_string().contains("`sqrt(-4)` has no value"), "{err}");
 }
 
@@ -339,4 +339,131 @@ fn a_time_signal_in_a_draw_is_refused_at_check() {
          draw: (c) => { c.circle(20, 20, 10 * v); c.fill($accent) } } }\n",
     );
     assert!(codes.is_empty(), "{text}");
+}
+
+/// (flex) An action with a result is an `Async<T>`: loaded in a binding
+/// as `apps.search(q)` is (and refused where it could not answer), awaited
+/// in a handler; one returning nothing stays an action.
+#[test]
+fn an_action_with_a_result_is_typed_async() {
+    let head = "permit exec \"qalc\"\naction calc(q: text) -> text [\"qalc\", \"-t\", q]\n";
+    let src = format!("{head}state query = \"1+1\"\nlet r = calc(query)\nlet shown = r ?? \"…\"\n");
+    assert_eq!(ty(&src, "r"), "Async<text>");
+    assert_eq!(ty(&src, "shown"), "text");
+    let rec = format!(
+        "permit exec \"probe\"\ntype Probe {{ load: float; name: text }}\n\
+         action probe(id: int) -> Probe? [\"probe\", id]\nlet p = probe(3)\n"
+    );
+    assert_eq!(ty(&rec, "p"), "Async<Probe?>");
+    // Awaited in a handler.
+    let (codes, text) = diags(&format!(
+        "{head}state out = \"\"\nstate q = \"\"\non change q {{ out = await calc(q) }}\n"
+    ));
+    assert!(codes.is_empty(), "{text}");
+    // A pure `fn` runs no command.
+    let (codes, text) = diags(&format!(
+        "{head}fn f(x: text) -> text {{ calc(x) ?? \"\" }}\n"
+    ));
+    assert!(codes.contains(&"check::impure"), "{text}");
+    assert!(text.contains("`calc` runs a command"), "{text}");
+    // A binding's lambda would never get its answer.
+    let (codes, text) = diags(&format!(
+        "{head}state qs = [\"1\", \"2\"]\nlet rs = qs.map(q => calc(q) ?? \"\")\n"
+    ));
+    assert!(codes.contains(&"check::action_in_binding"), "{text}");
+    // What a command prints cannot be a function.
+    let (codes, text) = diags("permit exec \"x\"\naction f() -> font [\"x\"]\n");
+    assert!(codes.contains(&"check::type_mismatch"), "{text}");
+    assert!(text.contains("cannot be read as"), "{text}");
+    // A D-Bus method's action has none.
+    let (codes, text) = diags(
+        "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+         profile: text = ActiveProfile\n  action hold(p: text) -> text = HoldProfile\n}\n",
+    );
+    assert!(codes.contains(&"check::misplaced"), "{text}");
+    // An action with no result is still refused in a binding.
+    let (codes, _) =
+        diags("permit exec \"say\"\naction say(t: text) [\"say\", t]\nlet x = say(\"hi\")\n");
+    assert!(codes.contains(&"check::action_in_binding"));
+}
+
+/// (flex) In a binding, the call asks the host for its command with an
+/// answer slot; the answer settles the `let`; newer arguments ask again
+/// and abandon the older call (the host ends its command). In a
+/// handler, `await` waits for the answer.
+#[test]
+fn an_action_with_a_result_is_loaded_and_awaited() {
+    let src = "permit exec \"qalc\"\n\
+        action calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+        export state query = \"1+1\"\n\
+        let r = calc(query)\n\
+        let shown = r ?? \"…\"\n\
+        let pending = r.pending\n\
+        export state asked = \"\"\n\
+        state out = \"\"\n\
+        on change asked { out = await calc(asked) }\n";
+    let (_rt, _host, inst) = run(src);
+    // Nothing reads `r` yet: a `let` is lazy. Reading it makes its load,
+    // which asks on the next flush.
+    assert_eq!(text(&inst, "shown"), "…");
+    inst.flush();
+    assert_eq!(
+        get(&inst, "pending"),
+        Value::Bool(true),
+        "{:?}",
+        get(&inst, "r")
+    );
+    let reqs = inst.take_execs();
+    assert_eq!(reqs.len(), 1, "{reqs:?}");
+    assert_eq!(reqs[0].action, "calc");
+    assert_eq!(reqs[0].argv, ["qalc", "-t", "1+1"]);
+    let first = reqs[0].reply.clone().expect("a reply slot");
+    assert_eq!(
+        first.ty(),
+        &strand_compiler::ty::Ty::Prim(strand_compiler::ty::Prim::Text)
+    );
+    first.answer(Ok(Value::text("2")));
+    inst.flush();
+    assert_eq!(text(&inst, "shown"), "2");
+    assert_eq!(get(&inst, "pending"), Value::Bool(false));
+    // New arguments: asked again; the older call is abandoned once its
+    // load is superseded (here it answered already, so nothing to end).
+    inst.set("flex.query", Value::text("2*3")).unwrap();
+    inst.flush();
+    assert_eq!(
+        text(&inst, "shown"),
+        "2",
+        "the last value is kept while pending"
+    );
+    let reqs = inst.take_execs();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].argv, ["qalc", "-t", "2*3"]);
+    let second = reqs[0].reply.clone().unwrap();
+    inst.set("flex.query", Value::text("7")).unwrap();
+    inst.flush();
+    let reqs = inst.take_execs();
+    assert_eq!(reqs[0].argv, ["qalc", "-t", "7"]);
+    assert!(second.abandoned(), "superseded: its command can end");
+    // A failure is the `Async`'s error, its last value kept.
+    let third = reqs[0].reply.clone().unwrap();
+    third.answer(Err("`qalc` failed (exit status: 1)".into()));
+    inst.flush();
+    assert_eq!(text(&inst, "shown"), "2");
+    let (_, _, inst2) = run(&format!("{src}let err = r.error ?? \"\"\n"));
+    let _ = text(&inst2, "err");
+    inst2.flush();
+    let r = inst2.take_execs().remove(0).reply.unwrap();
+    r.answer(Err("`qalc` failed (exit status: 1)".into()));
+    inst2.flush();
+    assert_eq!(text(&inst2, "err"), "`qalc` failed (exit status: 1)");
+    // In a handler: `await` waits for the answer.
+    inst.set("flex.asked", Value::text("9/3")).unwrap();
+    inst.flush();
+    let reqs = inst.take_execs();
+    assert_eq!(reqs.len(), 1, "{reqs:?}");
+    assert_eq!(reqs[0].argv, ["qalc", "-t", "9/3"]);
+    assert_eq!(text(&inst, "out"), "");
+    reqs[0].reply.as_ref().unwrap().answer(Ok(Value::text("3")));
+    inst.flush();
+    assert_eq!(text(&inst, "out"), "3");
 }

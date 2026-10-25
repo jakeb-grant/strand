@@ -642,6 +642,9 @@ impl Lowerer<'_> {
                             matches!(receiver.kind, ExprKind::Service(_))
                                 && !self.method_sig(&receiver.ty, name, *overload).2
                         }
+                        // (flex) An action with a result: its command's
+                        // load, as a service's async method's.
+                        Callee::Action(_) => true,
                         _ => false,
                     };
                 // Only the site's own call is lowered as a plain call: its

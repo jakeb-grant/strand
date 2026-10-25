@@ -336,6 +336,19 @@ can declare actions too, calling a method of its object:
 in `ppd`'s block is `ppd.hold("performance", "gaming", "strand")` in a
 handler, checked against the object's introspection as its fields are.
 
+**An action can give back what its command prints.** Write the type
+after the parameters: `action calc(q: text) -> text ["qalc", "-t", q]`
+(with `permit exec "qalc"`). Then `calc(query)` is not something to run
+from a click but a value that loads, like `apps.search(query)` in the
+launcher: `text calc(query) ?? ""` shows the answer and runs the
+command again each time `query` changes, ending the run before if it
+has not finished. While it runs, `.pending` is true and the last answer
+stays shown; if the program fails, `.error` says how. A `text` result is
+what the program printed; a number, an enum, a record or a list is read
+from it as a `from poll` service reads a command's output (JSON or
+`key=value` lines into the type's fields). In a handler, `let r = await
+calc(q)` waits for it.
+
 For a service none of these can describe, write it in Rust (section 7).
 
 ## 4. A control centre

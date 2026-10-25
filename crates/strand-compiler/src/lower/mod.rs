@@ -116,6 +116,9 @@ pub struct ExecAction {
     pub name: String,
     /// The program first, then its arguments; each parameter is one.
     pub argv: Vec<crate::hir::ArgvPart>,
+    /// (flex) `-> T`: what its output is read as; the call is then an
+    /// `Async<T>` the host answers ([`crate::vm::ExecReply`]).
+    pub ret: Option<Ty>,
 }
 
 /// (M6) A `from dbus` service's `action name(params) = Method`.
@@ -914,6 +917,13 @@ impl Lowerer<'_> {
                     ExecAction {
                         name: self.hir.def(a.def).name.clone(),
                         argv: a.argv.clone(),
+                        ret: match &self.hir.def(a.def).ty {
+                            Ty::Fn(sig) => match &sig.ret {
+                                Ty::Async(t) => Some((**t).clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
                     },
                 );
             }

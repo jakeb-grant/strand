@@ -526,6 +526,33 @@ filling the monitor, the keyboard always).
   logged and becomes a `strand watch` notice naming the action, as a
   `file`'s `run` failing does (section 9.7). The handler's next
   statement has already run: the call's value is `()`.
+- (flex; decisions.md flex) `action name(params) -> T [command]`
+  declares an action whose command's output is its value: a call is an
+  `Async<T>` (section 8.6), not an action. `T` is a type a `from poll`
+  field may have: `text` or `path` (what it printed, trimmed), a
+  number, length, angle, duration, `bool`, colour or enum (read from
+  the printed text), or a record or list type, or any of these
+  optional; any other is a load error. A record or list is read from
+  JSON, a record also from `key=value` lines, as section 5.6 reads a
+  document; nothing printed is `null` for an optional `T`. The
+  parameters, the command and `permit exec` are as above.
+  - In a binding (`let r = calc(query)`, `text calc(query) ?? "…"`) the
+    call is a load, as `apps.search(q)` is: it runs when first read,
+    runs again when an argument changes, and a newer call supersedes
+    the one in flight, whose command is ended (its process group gets
+    SIGTERM, then SIGKILL half a second later). The value keeps its
+    last result while a new one loads (`.pending`) or after one fails
+    (`.error`). In a binding's lambda it is a load error (its answer
+    could not reach the binding), and in a `fn` too (`fn`s are pure).
+  - In a handler, `await calc(q)` waits for it and is `T`, or the
+    handler's error. A call whose value no one keeps (neither awaited
+    nor stored) is ended at the end of that step.
+  - Every call runs at once on a thread of its own, never queued behind
+    another. Its stdout is read, at most 1 MiB (more ends it, an error);
+    stderr is strand's own log. A program that cannot start, exits
+    non-zero, prints too much or prints what does not read as `T` is
+    the value's `.error` (``"`qalc` failed (exit status: 1)"``) and a
+    log line, not a `strand watch` notice: the config reads `.error`.
 - `strand check` lists every action's command, each parameter shown as
   `{name}` where it is one argument; the language server shows it on an
   action's hover. Both check its program against `permit exec`.
@@ -1172,7 +1199,8 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 
 ### 8.6 Async values
 
-- Some calls return `Async<T>` (`apps.search(q)`, `material(image: …)`).
+- Some calls return `Async<T>` (`apps.search(q)`, `material(image: …)`,
+  and a declared action with a result, section 5.7).
   An `Async` keeps its previous value while a new one loads, and exposes
   `.pending` (a load is in flight) and `.error` (the last load failed).
 - `.value` (`T?`) is the value it holds, `null` before the first load

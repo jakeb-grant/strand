@@ -193,6 +193,9 @@ pub struct FnDecl {
 pub struct ActionDecl {
     pub name: Ident,
     pub params: Vec<Param>,
+    /// (flex) `-> T`: the command's output, read as `T`, is the call's
+    /// value (an `Async<T>`).
+    pub ret: Option<Type>,
     pub body: ActionBody,
     pub span: Span,
 }

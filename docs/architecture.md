@@ -4450,7 +4450,26 @@ Public interfaces other crates and later stages build on:
     argv }`), and after each tick's diff logic takes them
     (`Instance::take_execs() -> Vec<ExecRequest>`) and starts each on a
     thread of its own (`run/exec.rs`), one run per action at a time with
-    one re-run queued.
+    one re-run queued. (flex) `ExecRequest` gained `reply:
+    Option<vm::ExecReply>` and `ExecAction` gained `ret: Option<Ty>`
+    for `action name(params) -> T [command]`: a call of one is an
+    `Async<T>` whose request carries an `ExecReply` (the program `Arc`
+    and `T`; `ty()`, `types()`, `answer(Result<Value, String>)`,
+    `abandoned()`, `peek()`, `wait() -> ReplyWait`, the future `await`
+    and loads poll; dropped unanswered, it abandons the reply). In a
+    binding it is an `Op::AsyncSite` whose chunk ends with `Op::Exec`
+    (the load's input evaluates the arguments, `Machine::call_args`
+    returning no receiver, and its fetch asks for the command), as an
+    async service method's ends with `CallMethod`; in a handler `Op::Exec`
+    pushes the pending `Async`. Such a request is not a host call
+    either: the strand crate's `Execs` runs it at once on a thread of its
+    own (never queued), stdout piped and bounded by
+    `strand_services::custom::MAX_DOCUMENT`, reads the output on the
+    logic thread with `services::custom::read_output(types, ty, out)`
+    (`from poll`'s `Document` and `coerce`) and answers the reply; each
+    tick it ends the process group of every abandoned one (decisions.md
+    flex). A host that never takes the requests (a test, the eval
+    harness) leaves the calls pending.
   - (M6, decisions.md m6-w2-language, a config `service` shadowing a
     builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
     service, field)`, `acquire_builtin(rt, service)` and

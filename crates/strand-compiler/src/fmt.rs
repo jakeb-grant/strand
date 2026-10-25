@@ -235,6 +235,9 @@ impl Facts {
             ItemKind::Permit(p) => self.exprs(&p.args),
             ItemKind::Action(a) => {
                 self.params(&a.params);
+                if let Some(t) = &a.ret {
+                    self.ty(t);
+                }
                 if let ActionBody::Command(e) = &a.body {
                     self.expr(e);
                 }

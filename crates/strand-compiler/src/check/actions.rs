@@ -33,6 +33,29 @@ fn passable(ty: &Ty, dbus: bool) -> bool {
     }
 }
 
+/// (flex) What a command's output can be read as: what a `from poll`
+/// field can hold (decisions.md flex).
+fn readable(ty: &Ty) -> bool {
+    match ty {
+        Ty::Error | Ty::Enum(_) | Ty::Record(_) | Ty::Any => true,
+        Ty::Prim(p) => matches!(
+            p,
+            Prim::Bool
+                | Prim::Int
+                | Prim::Float
+                | Prim::Length
+                | Prim::Percent
+                | Prim::Angle
+                | Prim::Duration
+                | Prim::Color
+                | Prim::Text
+                | Prim::Path
+        ),
+        Ty::Optional(t) | Ty::List(t, _) => readable(t),
+        _ => false,
+    }
+}
+
 /// Whether `program` (a name or a path) is a shell that runs its `-c`
 /// argument as a script.
 fn is_shell(program: &str) -> bool {
@@ -150,13 +173,42 @@ impl<'a> Checker<'a> {
     }
 
     /// The signature a handler calls: `dispatch(ws: int)`, an action.
+    /// (flex) With `-> T` (`action calc(q: text) -> text ["qalc", "-t",
+    /// q]`) the command's output is its value: the call is an
+    /// `Async<T>`, loaded in a binding as `apps.search(q)` is and awaited
+    /// in a handler, so it is no action there.
     pub(super) fn action_sig(&mut self, a: &'a ast::ActionDecl) {
         let Some(&id) = self.item_defs.get(&(self.module, a.name.span)) else {
             return;
         };
         let params = self.action_params(&a.params, false);
-        let mut sig = FnSig::new(params, Ty::Unit);
-        sig.action = true;
+        let ret = a.ret.as_ref().map(|t| {
+            let ty = self.resolve_type(t);
+            if !readable(&ty) {
+                let shown = self.types.show(&ty);
+                self.error(
+                    "check::type_mismatch",
+                    format!("a command's output cannot be read as a `{shown}`"),
+                    t.span,
+                    "not read from what it prints",
+                )
+                .help = Some(
+                    "use `text` for what it prints as it is, or a number, `bool`, enum, list \
+                     or record type read from its JSON or `key=value` lines"
+                        .into(),
+                );
+                return Ty::Error;
+            }
+            ty
+        });
+        let sig = match ret {
+            Some(t) => FnSig::new(params, Ty::Async(Box::new(t))),
+            None => {
+                let mut sig = FnSig::new(params, Ty::Unit);
+                sig.action = true;
+                sig
+            }
+        };
         self.defs[id.0 as usize].ty = Ty::Fn(Arc::new(sig));
     }
 

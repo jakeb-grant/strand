@@ -15,9 +15,19 @@ use crate::lower::{ChunkId, Op};
 /// Told of a load's effect node when it is made.
 pub(crate) type DeclareLoad = Rc<dyn Fn(&Runtime, NodeId)>;
 
+/// What a load asks for with its arguments.
+enum Load {
+    /// A service's async method (`apps.search(q)`).
+    Fetch(Rc<str>, String, Vec<Value>),
+    /// (flex) A declared action's command, its output its value
+    /// (`calc(q)`).
+    Run(crate::hir::DefId, Vec<Value>),
+}
+
 impl Vm {
     /// The value of the async service call chunk `value` (`[Service,
-    /// args…, CallMethod]`) evaluated in `env`: core's
+    /// args…, CallMethod]`, or (flex) `[args…, Exec]` for an action with
+    /// a result) evaluated in `env`: core's
     /// `rt.async_memo(args, fetch)` created on the first read, owned by
     /// `owner`, so each change of the arguments starts one
     /// [`super::ServiceHost::fetch`] and drops the superseded one, and
@@ -50,6 +60,11 @@ impl Vm {
                         rt.async_memo(
                             move |rt| {
                                 let (recv, args) = vm2.eval_call_args(rt, value, &e2)?;
+                                // (flex) A declared action's command.
+                                if let Some(Op::Exec { def, .. }) = vm2.prog.chunk(value).ops.last()
+                                {
+                                    return Ok(Load::Run(*def, args));
+                                }
                                 let Value::Service(s) = recv else {
                                     return Err(Error::failed("not a service call"));
                                 };
@@ -62,12 +77,25 @@ impl Vm {
                                 // What the result depends on besides the
                                 // arguments: a change fetches again.
                                 vm2.host.fetch_reads(rt, &s, &method)?;
-                                Ok((s, method, args))
+                                Ok(Load::Fetch(s, method, args))
                             },
-                            move |(s, method, args): (Rc<str>, String, Vec<Value>)| {
+                            move |load: Load| {
                                 let host = vm3.host.clone();
                                 let rt = w.upgrade();
+                                // Asked for now, so the host takes it after
+                                // this step; dropping the future (newer
+                                // arguments) abandons it.
+                                let run = match &load {
+                                    Load::Run(def, args) => Some(vm3.exec_result(*def, args)),
+                                    Load::Fetch(..) => None,
+                                };
                                 async move {
+                                    if let Some(run) = run {
+                                        return run?.await.map_err(Error::failed);
+                                    }
+                                    let Load::Fetch(s, method, args) = load else {
+                                        return Err(Error::failed("not a service call"));
+                                    };
                                     let Some(rt) = rt else {
                                         return Err(Error::failed("the runtime is gone"));
                                     };

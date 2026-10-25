@@ -38,7 +38,9 @@ file
     field level :int (= level)
   service music (from listen (array "playerctl" "-F" "metadata"))
     field title :text? (= title)
-  permit exec "sensors" "playerctl"
+  permit exec "sensors" "playerctl" "qalc"
+  action calc (params (q :text)) (-> :text) (array "qalc" "-t" q)
+  let answer (= (?? (call calc "2+2") ""))
   keyframes shake
     stop 0% 100%
       prop x: 0

@@ -1418,20 +1418,40 @@ impl<'a> Checker<'a> {
             }
             DefKind::Action => {
                 self.add_ref(id.span, Target::Def(d));
-                let reported = self.action_check(name, id.span);
-                let Ty::Fn(sig) = self.defs[d.0 as usize].ty.clone() else {
+                let sig = match self.defs[d.0 as usize].ty.clone() {
+                    Ty::Fn(sig) => Some(sig),
+                    _ => None,
+                };
+                // (flex) An action with a result is a load, as an async
+                // service method is: fine in a binding, refused in a pure
+                // `fn` and in a binding's lambda, which it could not
+                // answer.
+                let result = sig.as_ref().is_some_and(|s| matches!(s.ret, Ty::Async(_)));
+                let reported = if result {
+                    self.result_action_check(name, id.span)
+                } else {
+                    self.action_check(name, id.span)
+                };
+                let Some(sig) = sig else {
                     for a in args {
                         self.expr(&a.value, None);
                     }
                     return Some(hir::Expr::error(span));
                 };
                 let (args, _) = self.call_args(&sig, args, &format!("`{name}`"), span);
+                let ty = if reported {
+                    Ty::Error
+                } else if result {
+                    sig.ret.clone()
+                } else {
+                    Ty::Unit
+                };
                 return Some(hir::Expr {
                     kind: ExprKind::Call {
                         callee: Callee::Action(d),
                         args,
                     },
-                    ty: if reported { Ty::Error } else { Ty::Unit },
+                    ty,
                     span,
                 });
             }
@@ -1659,6 +1679,37 @@ impl<'a> Checker<'a> {
             )
             .help = Some(format!(
                 "call it from a handler: `on click {{ {what}(…) }}`"
+            ));
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// (flex) Where an action with a result (`action calc(q: text) ->
+    /// text […]`) may be called: a handler awaits it and a binding loads
+    /// it, but a `fn` is pure and a binding's lambda never gets its
+    /// answer. True when it reported.
+    fn result_action_check(&mut self, what: &str, span: Span) -> bool {
+        if self.ctx.pure_fn {
+            self.error(
+                "check::impure",
+                format!("`{what}` runs a command, and fns are pure"),
+                span,
+                "runs a program",
+            )
+            .help = Some(format!(
+                "call it where its value is used: `let r = {what}(…)`, then pass `r ?? …` in"
+            ));
+        } else if self.ctx.binding_lambda {
+            self.error(
+                "check::action_in_binding",
+                format!("`{what}` in a lambda never answers the binding"),
+                span,
+                "its output never reaches this binding",
+            )
+            .help = Some(format!(
+                "call it outside the lambda: `let r = {what}(…)`, then read `r ?? fallback`"
             ));
         } else {
             return false;

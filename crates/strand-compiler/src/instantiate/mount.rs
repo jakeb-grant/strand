@@ -578,11 +578,16 @@ impl Ctx {
             _ => value,
         };
         let chunk = prog.chunk(value);
-        let (Some(Op::Service(_)), Some(Op::CallMethod { action: false, .. })) =
-            (chunk.ops.first(), chunk.ops.last())
-        else {
-            return None;
+        let load = match (chunk.ops.first(), chunk.ops.last()) {
+            (Some(Op::Service(_)), Some(Op::CallMethod { action: false, .. })) => true,
+            // (flex) `let r = calc(q)`: an action's command, its output
+            // the value.
+            (_, Some(Op::Exec { def, .. })) => self.vm.exec_has_result(*def),
+            _ => false,
         };
+        if !load {
+            return None;
+        }
         let env_for_reads = env.clone();
         // The chunk's own reads go on the load's effect.
         let me = Rc::downgrade(self);

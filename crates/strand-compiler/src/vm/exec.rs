@@ -410,8 +410,22 @@ impl Machine {
                 }
                 Op::Exec { def, args } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
-                    vm.exec(*def, &a.into_vec())?;
-                    self.stack.push(Value::Unit);
+                    if vm.exec_has_result(*def) {
+                        // (flex) In a handler, `fn` or lambda: a pending
+                        // `Async` its `await` waits on.
+                        let wait = vm.exec_result(*def, &a.into_vec())?;
+                        let op = PendingOp::new(Box::pin(wait));
+                        self.stack
+                            .push(Value::Async(Rc::new(super::value::AsyncValue {
+                                value: None,
+                                pending: true,
+                                error: None,
+                                op: Some(Rc::new(op)),
+                            })));
+                    } else {
+                        vm.exec(*def, &a.into_vec())?;
+                        self.stack.push(Value::Unit);
+                    }
                 }
                 Op::MakeRecord { ty, args } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
@@ -597,7 +611,8 @@ impl Machine {
     }
 
     /// Run up to the chunk's last op, a method call, and return its
-    /// receiver and arguments instead of calling it.
+    /// receiver and arguments instead of calling it. (flex) A declared
+    /// action's call (`Op::Exec`) has no receiver: `Value::Unit`.
     pub(crate) fn call_args(
         &mut self,
         vm: &Rc<Vm>,
@@ -605,15 +620,17 @@ impl Machine {
     ) -> Result<(Value, Vec<Value>), Error> {
         let prog = vm.prog.clone();
         let chunk = prog.chunk(self.chunk);
-        let Some(Op::CallMethod { args, .. }) = chunk.ops.last() else {
-            return Err(fail("not a method call"));
+        let (args, receiver) = match chunk.ops.last() {
+            Some(Op::CallMethod { args, .. }) => (args, true),
+            Some(Op::Exec { args, .. }) => (args, false),
+            _ => return Err(fail("not a method call")),
         };
         self.stop = Some(chunk.ops.len() - 1);
         if let Exit::Await(_) = self.run(vm, rt)? {
             return Err(fail("`await` outside a handler"));
         }
         let a = self.pop_args(&chunk.args[*args as usize]);
-        let recv = self.pop();
+        let recv = if receiver { self.pop() } else { Value::Unit };
         Ok((recv, a.into_vec()))
     }
 

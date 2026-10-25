@@ -5006,6 +5006,7 @@ fn a_declared_action_asks_for_its_command_with_whole_arguments() {
             ]
             .map(String::from)
             .to_vec(),
+            reply: None,
         }]
     );
     assert!(shell.inst.take_execs().is_empty(), "taken once");
