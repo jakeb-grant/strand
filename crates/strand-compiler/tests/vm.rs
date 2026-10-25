@@ -461,10 +461,7 @@ bar B {\n  box { rotate: spin; on click { x = t } }\n  box { on click { log = \"
         Value::float(strand_scene::tokens::noise(3.0) as f64),
         "noise of a constant is computed now, as render would"
     );
-    for (name, what) in [
-        ("late", "with `>`"),
-        ("picked", "in `match`"),
-    ] {
+    for (name, what) in [("late", "with `>`"), ("picked", "in `match`")] {
         let err = inst.value_of("t", name).unwrap_err().to_string();
         assert!(
             err.contains("time-bound value") && err.contains(what),
