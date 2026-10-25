@@ -930,6 +930,39 @@ bar Top {
         }
     }
 
+    /// (services-round, S2) `thumbnail` takes a screen as well as a
+    /// window: the bar's own monitor, every monitor in an overview, and a
+    /// window still; text is no source.
+    #[test]
+    fn the_services_round_screen_thumbnail_checks() {
+        let src = "bar Top {
+  row {
+    thumbnail screen { fit: cover }
+    for s in screens.all key s.id { thumbnail s { width: 160; height: 90 } }
+    for w in windows.all key w.id { thumbnail w }
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        let bad = "bar B { thumbnail \"DP-1\" }\n";
+        let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+        assert!(
+            strand_compiler::compile_with(&map, schema())
+                .diagnostics
+                .iter()
+                .any(|d| d.is_error()),
+            "{bad}"
+        );
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.

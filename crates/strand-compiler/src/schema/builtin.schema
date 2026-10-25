@@ -1834,8 +1834,9 @@ element lottie(path -> source): node {
   speed: float
   flags leaf
 }
-/// A live thumbnail of a window: `thumbnail w`.
-element thumbnail(Window -> source): node {
+/// A live thumbnail of a window (`thumbnail w`), or (services-round) a
+/// still of a screen, taken each time it is shown (`thumbnail screen`).
+element thumbnail(Window | Screen -> source): node {
   /// How the thumbnail fills its box.
   fit: Fit
   flags leaf

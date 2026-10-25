@@ -729,10 +729,11 @@ Also every prop and event of [`node`](#node).
 ### `thumbnail`
 
 ```strand
-element thumbnail(Window -> source): node
+element thumbnail(Window | Screen -> source): node
 ```
 
-A live thumbnail of a window: `thumbnail w`.
+A live thumbnail of a window (`thumbnail w`), or (services-round) a
+still of a screen, taken each time it is shown (`thumbnail screen`).
 
 It takes no children.
 

@@ -17,7 +17,8 @@
 //!   the alpha modifier and the background effect.
 //!
 //! - `strand-services`' thumbnails: the image capture source and copy
-//!   capture managers ([`FakeBuilder::capture`]; `capture.rs`).
+//!   capture managers ([`FakeBuilder::capture`]; `capture.rs`), for a
+//!   toplevel and (services-round) for a monitor.
 //! - `strand-services`' clipboard: `ext-data-control-v1` and
 //!   `wlr-data-control` ([`FakeBuilder::data_control`]; `data_control.rs`),
 //!   with a selection the fake can set itself ([`Cmd::SetSelection`],

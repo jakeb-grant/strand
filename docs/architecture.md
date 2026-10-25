@@ -495,7 +495,9 @@ the toplevel and workspace protocols strand-services' wm client speaks
 `zwlr_foreign_toplevel_management_v1`) and, with `FakeBuilder::capture`,
 the toplevel capture strand-services' thumbnails use
 (`ext_foreign_toplevel_image_capture_source_manager_v1`,
-`ext_image_copy_capture_manager_v1`; `src/capture.rs`,
+`ext_image_copy_capture_manager_v1`, and services-round
+`ext_output_image_capture_source_manager_v1` for screen shots, a
+monitor's ident being `output:<name>`; `src/capture.rs`,
 `strand-services/tests/capture.rs`), with `FakeBuilder::data_control`
 the clipboard's `ext-data-control-v1` and `wlr-data-control`
 (`src/data_control.rs`: one selection, a client's source or one the fake
@@ -7205,6 +7207,27 @@ transparent huge pages for life.
     frame (`crates/strand-services/tests/capture.rs`, against
     strand-fake-wayland's ext-image-copy-capture;
     `crates/strand-render/tests/thumbnail.rs`).
+    (services-round) A screen: `thumbnail(Window | Screen -> source)`,
+    a `Screen`'s source being its id. `wm::screen::capture_screen(
+    connector, max, f: FnOnce(Option<CaptureFrame>) + Send) ->
+    ScreenShot` takes one frame on a `strand-screenshot` thread with a
+    connection of its own to the display `wm::configure` names
+    (`wm::service::wayland_target`, else `$WAYLAND_DISPLAY`): through
+    `ext_output_image_capture_source_manager_v1` and
+    ext-image-copy-capture when offered, else `zwlr_screencopy_manager_v1`
+    (`capture_output` without the cursor, `y_invert` flipped), into a
+    memfd buffer in ARGB8888 or XRGB8888, scaled by `downscale` and
+    turned by `upright`; `f(None)` when the connector is not there, no
+    protocol is offered, the copy fails or `screen::SHOT_WAIT` (3 s)
+    passes; a dropped `ScreenShot` never calls `f`. `run/feeds.rs`
+    learns each plugged monitor's connector by its `Screen` id
+    (`Feeds::screen(id, Option<connector>)`, from the host's monitor
+    callbacks) and turns a `FeedKind::Thumbnail` whose text is one into
+    `Want::Screen(connector, max)`, a `Tap::Shot` taken each time the
+    node becomes visible and kept while it is
+    (`crates/strand-services/tests/screen.rs`, against the fake's output
+    source and headless sway's screencopy;
+    `crates/strand/src/run/feeds.rs::tests::a_screens_thumbnail_takes_a_frame_of_its_monitor`).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
     anchor's output-logical position for `x`/`y` instead of 0, 0. How it
     reaches the action (an optional argument, or filled in by the host

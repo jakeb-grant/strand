@@ -609,6 +609,10 @@ steps.
   stroke a shape, draw it again before the stroke. A shape with no paint
   after it draws nothing, `c.fill` before any shape paints the whole
   canvas, and later paints cover earlier ones.
+- **Thumbnails.** `thumbnail w` shows a window `w` live, while it is
+  on screen, and `thumbnail screen` a still of a monitor, taken each
+  time it is shown: `for s in screens.all key s.id { thumbnail s }` is
+  an overview of your monitors.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

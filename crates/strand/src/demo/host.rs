@@ -1315,6 +1315,9 @@ impl SurfaceHost for Host {
             p.0.monitor();
         }
         record_output(&mut self.recorder, monitor);
+        if let Some(feeds) = &mut self.feeds {
+            feeds.screen(monitor.id.as_str(), monitor.connector.as_deref());
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_added(monitor);
         }
@@ -1326,6 +1329,9 @@ impl SurfaceHost for Host {
             p.0.monitor();
         }
         record_output(&mut self.recorder, monitor);
+        if let Some(feeds) = &mut self.feeds {
+            feeds.screen(monitor.id.as_str(), monitor.connector.as_deref());
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_changed(monitor);
         }
@@ -1334,6 +1340,9 @@ impl SurfaceHost for Host {
     fn monitor_removed(&mut self, monitor: &Monitor) {
         self.recorder
             .output_gone(strand_core::flight::now_ns(), monitor.id.as_str());
+        if let Some(feeds) = &mut self.feeds {
+            feeds.screen(monitor.id.as_str(), None);
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_removed(monitor);
         }

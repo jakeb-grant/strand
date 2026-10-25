@@ -39,6 +39,16 @@ pub fn configure(config: Option<WmConfig>) {
     }
 }
 
+/// (services-round) The display a screen shot connects to
+/// ([`super::screen`]): the configured one, else `$WAYLAND_DISPLAY`.
+pub(crate) fn wayland_target() -> super::WaylandTarget {
+    CONFIG
+        .lock()
+        .ok()
+        .and_then(|c| c.as_ref().and_then(|c| c.wayland.clone()))
+        .unwrap_or(super::WaylandTarget::Env)
+}
+
 fn config() -> WmConfig {
     CONFIG
         .lock()

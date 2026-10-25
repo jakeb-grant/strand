@@ -17,6 +17,11 @@
 //! and its right half white. What happens is logged in [`crate::Fake::captures`]:
 //! `session <ident>`, `frame <ident>`, `failed <ident>`, `stopped
 //! <ident>`, `end <ident>` (the client destroyed its session).
+//!
+//! (services-round) `ext_output_image_capture_source_manager_v1` too: a
+//! monitor's source is captured as a toplevel's is, under the ident
+//! `output:<name>` (`Cmd::Paint("output:FAKE-1", …)` paints it), for
+//! `strand-services`' screen shots.
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
@@ -28,6 +33,7 @@ use wayland_protocols::ext::image_capture_source::v1::server::{
         self, ExtForeignToplevelImageCaptureSourceManagerV1,
     },
     ext_image_capture_source_v1::{self, ExtImageCaptureSourceV1},
+    ext_output_image_capture_source_manager_v1::{self, ExtOutputImageCaptureSourceManagerV1},
 };
 use wayland_protocols::ext::image_copy_capture::v1::server::{
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1, FailureReason},
@@ -268,6 +274,52 @@ impl Dispatch<ExtForeignToplevelImageCaptureSourceManagerV1, ()> for Server {
     }
 }
 
+/// Whether `ident` (a toplevel's, or `output:<name>`) can be captured.
+fn capturable(state: &Server, ident: &str) -> bool {
+    match ident.strip_prefix("output:") {
+        Some(name) => state.output_names.iter().any(|n| n == name),
+        None => state.toplevels.iter().any(|t| t.ident == ident),
+    }
+}
+
+impl GlobalDispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Server {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<ExtOutputImageCaptureSourceManagerV1>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        init.init(resource, ());
+    }
+}
+
+impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for Server {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &ExtOutputImageCaptureSourceManagerV1,
+        request: ext_output_image_capture_source_manager_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let ext_output_image_capture_source_manager_v1::Request::CreateSource {
+            source,
+            output,
+        } = request
+        {
+            let name = output
+                .data::<usize>()
+                .and_then(|i| state.output_names.get(*i))
+                .cloned()
+                .unwrap_or_default();
+            init.init(source, format!("output:{name}"));
+        }
+    }
+}
+
 fn ident_of(state: &Server, handle: &ExtForeignToplevelHandleV1) -> String {
     state
         .toplevels
@@ -320,7 +372,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for Server {
             let ident = source.data::<String>().cloned().unwrap_or_default();
             let session = init.init(session, ident.clone());
             state.capture.note(format!("session {ident}"));
-            if state.toplevels.iter().any(|t| t.ident == ident) {
+            if capturable(state, &ident) {
                 state.capture.send_constraints(&session, &ident, false);
             } else {
                 session.stopped();
@@ -401,7 +453,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Server {
                     .sessions
                     .iter()
                     .any(|s| s.ident == ident && s.damaged);
-                if !state.toplevels.iter().any(|t| t.ident == ident) {
+                if !capturable(state, &ident) {
                     frame.failed(FailureReason::Stopped);
                 } else if damaged {
                     let shm = std::mem::take(&mut state.shm_buffers);
@@ -433,6 +485,7 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Server {
 pub(crate) fn create_globals(dh: &DisplayHandle, shm: bool) {
     dh.create_global::<Server, ExtForeignToplevelImageCaptureSourceManagerV1, ()>(1, ());
     dh.create_global::<Server, ExtImageCopyCaptureManagerV1, ()>(1, ());
+    dh.create_global::<Server, ExtOutputImageCaptureSourceManagerV1, ()>(1, ());
     if shm {
         dh.create_global::<Server, wl_shm::WlShm, ()>(1, ());
     }

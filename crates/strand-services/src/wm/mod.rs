@@ -43,6 +43,7 @@ pub mod model;
 mod niri;
 pub mod protocol;
 mod schema;
+pub mod screen;
 mod service;
 mod sway;
 mod understood;

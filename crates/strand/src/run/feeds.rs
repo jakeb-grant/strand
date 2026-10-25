@@ -8,7 +8,12 @@
 //! channel and are fed to the renderer there ([`fed`]), and a
 //! `thumbnail`'s window capture (`strand_services::wm::capture`), whose
 //! frames, already scaled down to the thumbnail's size on the protocol
-//! thread, cross the same way.
+//! thread, cross the same way. (services-round) A `thumbnail` of a
+//! screen (`thumbnail screen`: its source is the `Screen`'s id, which the
+//! host tells this as monitors come and go, [`Feeds::screen`]) takes one
+//! frame of that monitor (`strand_services::wm::screen`) each time it is
+//! shown, and keeps it while shown: a thumbnail on the screen it shows
+//! would otherwise show itself, frame after frame.
 //!
 //! A tap lives exactly while its node is visible, so a hidden spectrum
 //! costs no metering and no FFT and a hidden thumbnail no capture; one
@@ -31,6 +36,7 @@ use strand_render::{FeedDemand, FeedKind, ThumbnailFrame};
 use strand_scene::NodeId;
 use strand_services::audio::{LevelTap, LevelTarget, tap_levels};
 use strand_services::wm::capture::{CaptureTap, capture_window};
+use strand_services::wm::screen::{ScreenShot, capture_screen};
 
 /// What a producer sends for its node, with its tap's number.
 #[derive(Debug)]
@@ -55,6 +61,8 @@ impl Fed {
 pub(crate) enum Want {
     Spectrum(u32),
     Thumbnail(String, (u32, u32)),
+    /// (services-round) A screen's one frame: its connector name.
+    Screen(String, (u32, u32)),
 }
 
 /// A running producer.
@@ -62,6 +70,7 @@ pub(crate) enum Want {
 enum Tap {
     Levels(LevelTap),
     Capture(CaptureTap),
+    Shot(ScreenShot),
 }
 
 /// The producers of the visible fed nodes.
@@ -71,6 +80,9 @@ pub(crate) struct Feeds {
     taps: HashMap<NodeId, (Want, u64, Tap)>,
     /// The last tap's number.
     next: u64,
+    /// (services-round) Each plugged monitor's connector name, by its
+    /// `Screen` id.
+    screens: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for Feeds {
@@ -99,6 +111,20 @@ impl Feeds {
             tx,
             taps: HashMap::new(),
             next: 0,
+            screens: HashMap::new(),
+        }
+    }
+
+    /// (services-round) Monitor `id` (a `Screen`'s id) is plugged in as
+    /// `connector` (`None`: unplugged, or no connector named).
+    pub(crate) fn screen(&mut self, id: &str, connector: Option<&str>) {
+        match connector {
+            Some(c) => {
+                self.screens.insert(id.to_string(), c.to_string());
+            }
+            None => {
+                self.screens.remove(id);
+            }
         }
     }
 
@@ -115,7 +141,12 @@ impl Feeds {
                     None => log::debug!("spectrum {:?}: no audio device in {text:?}", d.node),
                 },
                 FeedKind::Thumbnail { window, max } => {
-                    want.insert(d.node, Want::Thumbnail(window, max));
+                    // A screen's id names no window: a `Screen` source.
+                    let w = match self.screens.get(&window) {
+                        Some(connector) => Want::Screen(connector.clone(), max),
+                        None => Want::Thumbnail(window, max),
+                    };
+                    want.insert(d.node, w);
                 }
             }
         }
@@ -148,6 +179,17 @@ impl Feeds {
                             width: f.width,
                             height: f.height,
                             pixels: f.pixels.clone(),
+                        });
+                        let _ = tx.send(Fed::Frame(node, n, frame));
+                    }))
+                }
+                Want::Screen(connector, max) => {
+                    log::debug!("thumbnail {node:?}: a frame of screen {connector} at {max:?}");
+                    Tap::Shot(capture_screen(connector, *max, move |f| {
+                        let frame = f.map(|f| ThumbnailFrame {
+                            width: f.width,
+                            height: f.height,
+                            pixels: f.pixels,
                         });
                         let _ = tx.send(Fed::Frame(node, n, frame));
                     }))
@@ -294,6 +336,38 @@ mod tests {
         // A spectrum and a thumbnail side by side.
         assert_eq!(f.demand(vec![spectrum(2, "40")]), []);
         assert_eq!(f.tapped(), [(b, Want::Spectrum(40))]);
+    }
+
+    /// (services-round) A thumbnail whose source is a plugged monitor's
+    /// `Screen` id takes a frame of that monitor by its connector; one
+    /// shown again takes another; an unplugged one's id names a window
+    /// again (none, so nothing is captured).
+    #[test]
+    fn a_screens_thumbnail_takes_a_frame_of_its_monitor() {
+        let (tx, _rx) = calloop::channel::channel();
+        let mut f = Feeds::new(tx);
+        let a = NodeId::new(1, 0);
+        f.screen("Dell U2720Q", Some("DP-1"));
+        f.screen("BOE 0x0bca", Some("eDP-1"));
+        f.demand(vec![thumbnail(1, "Dell U2720Q", (320, 180))]);
+        assert_eq!(f.tapped(), [(a, Want::Screen("DP-1".into(), (320, 180)))]);
+        let first = f.taps[&a].1;
+        // Hidden, then shown again: a new frame.
+        f.demand(vec![]);
+        f.demand(vec![thumbnail(1, "Dell U2720Q", (320, 180))]);
+        assert_ne!(f.taps[&a].1, first);
+        // Moved to another port: the frame of its new connector.
+        f.screen("Dell U2720Q", Some("DP-2"));
+        f.demand(vec![]);
+        f.demand(vec![thumbnail(1, "Dell U2720Q", (320, 180))]);
+        assert_eq!(f.tapped(), [(a, Want::Screen("DP-2".into(), (320, 180)))]);
+        f.screen("Dell U2720Q", None);
+        f.demand(vec![]);
+        f.demand(vec![thumbnail(1, "Dell U2720Q", (320, 180))]);
+        assert_eq!(
+            f.tapped(),
+            [(a, Want::Thumbnail("Dell U2720Q".into(), (320, 180)))]
+        );
     }
 
     /// A panel holding one `spectrum` of device 40, on surface 1.
