@@ -504,7 +504,13 @@ jobs:
       # with `--features faults`) and the shipping helper against real
       # pam_unix, (services-round) the polkit agent against polkitd and
       # the greeter against greetd, built here (the guest is the
-      # runner's Ubuntu release).
+      # runner's Ubuntu release). (lockmon) The polkit agent runs twice:
+      # against Ubuntu's polkit 124 and its setuid helper, and against
+      # polkit 127, which Dockerfile.lockvm builds from its release
+      # tarball (sha256-pinned; meson 1.4.2 from PyPI) into /opt/polkit127,
+      # and its helper behind
+      # /run/polkit/agent-helper.socket; the image build takes a minute
+      # or two longer for it.
       - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
         with:
