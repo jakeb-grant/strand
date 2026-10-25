@@ -2241,3 +2241,23 @@ fn kept_history_from_before_the_window_is_seeded() {
     assert_eq!(p.boot, None);
     assert!(!text.contains("\nboot = "), "{text}");
 }
+
+/// (lockmon) A recorded command's end is replayed where it came (`end
+/// action rec`), so `rec.running` reads as it did; its start is the
+/// replayed handler's call.
+#[test]
+fn a_recorded_commands_end_is_replayed() {
+    let mut f = Fx::session();
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [0u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "rec", &started, "");
+    f.change(12 * S, kind::ACTION, "rec", &ended, "");
+    let (_, p, text) = plan_of(&f.write("action-end"), &defaults());
+    let st = steps(&text);
+    assert_eq!(
+        st.iter().filter(|s| **s == "end action rec").count(),
+        1,
+        "{st:?}"
+    );
+    assert!(p.events.iter().any(|e| e.text == "action rec succeeded"));
+}

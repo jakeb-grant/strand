@@ -23,6 +23,7 @@ pub mod json;
 mod load;
 pub(crate) use load::DeclareLoad;
 pub mod persist;
+pub mod runs;
 pub mod schema_host;
 pub mod theme;
 pub mod value;
@@ -444,6 +445,9 @@ pub struct Vm {
     /// (M6) Commands declared actions asked to run since the last
     /// [`Vm::take_execs`].
     execs: RefCell<Vec<ExecRequest>>,
+    /// (lockmon) Declared actions' runs (`rec.running`), the instance's,
+    /// kept across reloads.
+    runs: RefCell<Rc<runs::ActionRuns>>,
 }
 
 /// (M6) A command a handler's call of a declared action (`dispatch(3)`)
@@ -458,6 +462,11 @@ pub struct ExecRequest {
     /// text […]`): where its output goes, read as the declared type.
     /// `None`: run detached, as before.
     pub reply: Option<ExecReply>,
+    /// (lockmon) `rec.stop()`: stop the action's commands now running
+    /// (and drop a re-run queued behind one) instead of running one;
+    /// `argv` is empty and `reply` `None`. In order with the calls: `{
+    /// rec.stop(); rec(…) }` starts the new one once the old has ended.
+    pub stop: bool,
 }
 
 /// (flex) Where the output of an action with a result goes: the host
@@ -642,7 +651,48 @@ impl Vm {
             canvas: RefCell::default(),
             other: RefCell::default(),
             execs: RefCell::default(),
+            runs: RefCell::default(),
         })
+    }
+
+    /// (lockmon) The actions' runs this VM reads (`rec.running`).
+    pub fn runs(&self) -> Rc<runs::ActionRuns> {
+        self.runs.borrow().clone()
+    }
+
+    /// (lockmon) Reads `runs` from now on (a reload's new VM keeps the
+    /// instance's).
+    pub fn set_runs(&self, runs: Rc<runs::ActionRuns>) {
+        *self.runs.borrow_mut() = runs;
+    }
+
+    /// (lockmon) Declared action `def`'s run (`rec.running`,
+    /// `rec.started`): an `ActionRun` record, tracked.
+    pub(crate) fn action_run(&self, rt: &Runtime, def: DefId) -> Result<Value, Error> {
+        let types = self.types();
+        let Some(record) = types.find_schema_record("ActionRun") else {
+            return Err(Error::failed("no `ActionRun` record"));
+        };
+        let Some(action) = self.prog.execs.get(&def) else {
+            return Err(Error::failed("no such action"));
+        };
+        let date = types.find_schema_record("Date");
+        self.runs().read(rt, &action.name, record, date)
+    }
+
+    /// (lockmon) `rec.stop()`: asks the host to stop declared action
+    /// `def`'s commands, in order with the calls ([`Vm::take_execs`]).
+    pub(crate) fn stop_action(&self, def: DefId) -> Result<(), Error> {
+        let Some(action) = self.prog.execs.get(&def) else {
+            return Err(Error::failed("no such action"));
+        };
+        self.execs.borrow_mut().push(ExecRequest {
+            action: action.name.clone(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        Ok(())
     }
 
     /// (M6) Asks for declared action `def`'s command with `args` filling
@@ -690,6 +740,7 @@ impl Vm {
             action: action.name.clone(),
             argv,
             reply,
+            stop: false,
         });
         Ok(())
     }

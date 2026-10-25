@@ -382,6 +382,19 @@ from it as a `from poll` service reads a command's output (JSON or
 `key=value` lines into the type's fields). In a handler, `let r = await
 calc(q)` waits for it.
 
+**An action's name tells whether it runs, and stops it.** A screen
+recorder runs until you stop it:
+`action rec(file: path) ["wf-recorder", "-f", file]`, with `permit exec
+"wf-recorder"`. `rec.running` is true while its command runs,
+`rec.started` is when it began (a `Date`, to the minute), and
+`rec.stop()` in a handler stops it the way Ctrl-C in a terminal would,
+so the recorder finishes its file; one that ignores that is ended after
+a few seconds. One button does both: `on click { if rec.running {
+rec.stop() } else { rec("/tmp/clip.mp4") } }`, and `text rec.running ?
+"Stop" : "Record"` labels it. An action with a result has the same
+three: `calc.running` while any of its calls runs, and `calc.stop()`
+ends them, each call's `.error` saying it was stopped.
+
 For a service none of these can describe, write it in Rust (section 7).
 
 ## 4. A control centre

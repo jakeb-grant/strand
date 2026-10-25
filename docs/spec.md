@@ -674,6 +674,31 @@ monitor, the keyboard always).
     and a log line, not a `strand watch` notice: the config reads
     `.error`, which names the exit status; what the program printed on
     stderr is only in strand's log.
+- (lockmon; decisions.md lockmon) An action declared with a command
+  has a run, read through its name as an `ActionRun`: `rec.running`
+  (`bool`) is true while a command of it runs (for an action with a
+  result, while any of its calls' commands does; several may run at
+  once); `rec.started` (`Date?`) is when the one running longest
+  started, to the minute, null while none runs; `rec.stop()` stops
+  them. `running` and `started` read as fields do, in a binding too,
+  tracked (`on change rec.running` fires as commands start and end);
+  they are the runtime's to say and never written (`check::read_only`).
+  `stop()` is an action, a handler's alone (section 8.3): every command
+  of the action now running is stopped and a re-run queued behind one
+  dropped. Each one's process group gets SIGINT, as a terminal's Ctrl-C
+  sends it, then SIGTERM 2 s later if its program has not ended, then
+  SIGKILL 2 s after that; strand's thread that started the command
+  sends these and reaps it, never signalling a group whose id was
+  handed on. A stopped command is no failure (no `strand watch`
+  notice); a stopped call of an action with a result has the `.error`
+  ``"`qalc` was stopped"``, which a handler awaiting it gets. A call
+  after the `stop()` queues behind the stopped command as any call
+  does, so `{ rec.stop(); rec(f) }` restarts it once it has ended. A
+  local or parameter of the action's name is that local, and a `from
+  dbus` service's actions (methods, `ppd.hold`) have no run. A reload
+  keeps every run: it never stops a command. A glitch report's replay
+  (section 13) runs no command: a command counts as running from its
+  call to where the recording says it ended, or to its `stop()`.
 - `strand check` lists every action's command, each parameter shown as
   `{name}` where it is one argument; the language server shows it on an
   action's hover. Both check its program against `permit exec`.

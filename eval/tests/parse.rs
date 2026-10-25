@@ -1020,3 +1020,29 @@ fn several_screens_parse() {
     );
     bad("screens = []", "one at least");
 }
+
+/// (lockmon) `end action <name>` parses; its mistakes name their line.
+#[test]
+fn the_end_action_step_parses() {
+    let s =
+        parse("id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nend action rec\n");
+    let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
+    assert_eq!(
+        kinds,
+        vec![StepKind::EndAction {
+            action: "rec".into()
+        }]
+    );
+    for (step, want) in [
+        ("end", "takes"),
+        ("end rec", "takes"),
+        ("end action", "takes"),
+        ("end action rec now", "unexpected"),
+    ] {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n{step}\n"
+        ));
+        assert_eq!(line, 6, "{step}: {msg}");
+        assert!(msg.contains(want), "{step}: {msg}");
+    }
+}

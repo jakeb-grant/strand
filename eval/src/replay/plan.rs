@@ -2376,20 +2376,28 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     text: format!("request {step}"),
                 });
             }
-            kind::ACTION => events.push(Event {
-                kind: "change",
-                t: at,
-                text: format!(
-                    "action {name} {}",
-                    if e.rec.u8(5) == 1 {
-                        "started"
-                    } else if e.rec.i32(0) == 0 {
-                        "succeeded"
-                    } else {
-                        "failed"
-                    }
-                ),
-            }),
+            kind::ACTION => {
+                // (lockmon) The replayed handler calls the action again;
+                // its command ends where the recording's did, so
+                // `rec.running` reads as it did.
+                if e.rec.u8(5) == 0 {
+                    push(&mut timed, at, format!("end action {name}"), 0);
+                }
+                events.push(Event {
+                    kind: "change",
+                    t: at,
+                    text: format!(
+                        "action {name} {}",
+                        if e.rec.u8(5) == 1 {
+                            "started"
+                        } else if e.rec.i32(0) == 0 {
+                            "succeeded"
+                        } else {
+                            "failed"
+                        }
+                    ),
+                });
+            }
             kind::WRITE => {
                 if known(&svc) {
                     service_writes.push(LiveServiceWrite {

@@ -1730,3 +1730,57 @@ wait 1500
     let c = strand_eval::check_scenario(&sc, &RunOptions::default()).unwrap();
     assert!(c.report.ok(), "{:?}", c.report.lines(&c.run.trace));
 }
+
+/// (lockmon) The sandbox runs no command: a detached action's command
+/// counts as running from its call until `end action <name>` (a
+/// recording's end) or `rec.stop()`, so `rec.running` reads as the
+/// shell's did; the stop is in the trace's commands.
+#[test]
+fn an_actions_run_lasts_until_its_end_or_its_stop() {
+    let text = |steps: &str| {
+        format!(
+            r##"id = "action-run"
+screen = {{ width = 300, scale = 1.0 }}
+
+=== shell.strand
+permit exec "wf-recorder"
+action rec() ["wf-recorder"]
+export state go = 0
+export state halt = 0
+on change go {{ rec() }}
+on change halt {{ rec.stop() }}
+bar Top {{
+  height: 30
+  row {{
+    if rec.running {{ box {{ id: on; width: 10; height: 10; bg: #ff0000 }} }}
+    if !rec.running {{ box {{ id: off; width: 10; height: 10; bg: #00ff00 }} }}
+  }}
+}}
+
+=== steps
+rest
+set go 1
+rest
+{steps}
+rest
+"##
+        )
+    };
+    let t = go(&text(""));
+    assert!(drawn_last(&t, "on") && !drawn_last(&t, "off"));
+    let t = go(&text("end action rec"));
+    assert!(drawn_last(&t, "off") && !drawn_last(&t, "on"));
+    // Two calls: one end leaves the other running.
+    let t = go(&text("set go 2\nrest\nend action rec"));
+    assert!(drawn_last(&t, "on"));
+    let t = go(&text("set go 2\nrest\nset halt 1"));
+    assert!(drawn_last(&t, "off"));
+    assert!(
+        t.commands.iter().any(|c| c.text == "stop rec"),
+        "{:?}",
+        t.commands
+    );
+    let sc = scenario(&text("end action nope"));
+    let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("no action `nope`"), "{e}");
+}

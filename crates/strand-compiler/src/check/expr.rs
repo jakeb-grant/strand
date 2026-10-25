@@ -1003,10 +1003,41 @@ impl<'a> Checker<'a> {
                 return hir::Expr::error(span);
             }
         }
+        // (lockmon) `rec.running`: an action's run.
+        if let Some(hb) = self.action_run(base) {
+            return self.member(hb, base, name, optional, span);
+        }
         // Only `name_expr` reads (and clears) it.
         self.field_base = matches!(base.kind, ast::ExprKind::Name(_));
         let hb = self.expr(base, None);
         self.member(hb, base, name, optional, span)
+    }
+
+    /// (lockmon) `base` names a declared action (`action rec(…) […]`)
+    /// and no local: its run, an `ActionRun` (`rec.running`,
+    /// `rec.started`, `rec.stop()`; spec.md 5.7). Only a field read or a
+    /// method call reaches here, so the bare name is still no value.
+    fn action_run(&mut self, base: &ast::Expr) -> Option<hir::Expr> {
+        let ast::ExprKind::Name(b) = &base.kind else {
+            return None;
+        };
+        if self.lookup_scope(&b.name).is_some() {
+            return None;
+        }
+        let d = match self.file_scopes[self.module].get(&b.name) {
+            Some(&d) => d,
+            None => self.global_named(self.module, &b.name, Want::Value)?,
+        };
+        if self.defs[d.0 as usize].kind != DefKind::Action {
+            return None;
+        }
+        let r = self.types.find_schema_record("ActionRun")?;
+        self.add_ref(b.span, Target::Def(d));
+        Some(hir::Expr {
+            kind: ExprKind::Def(d),
+            ty: Ty::Record(r),
+            span: base.span,
+        })
     }
 
     /// Whether the builtin service or value `base` has a field or method
@@ -1347,7 +1378,11 @@ impl<'a> Checker<'a> {
                         hir::Expr::error(span)
                     });
                 }
-                let recv = self.expr(base, None);
+                // (lockmon) `rec.stop()`.
+                let recv = match self.action_run(base) {
+                    Some(r) => r,
+                    None => self.expr(base, None),
+                };
                 self.method_call(recv, base, name, *optional, args, span)
             }
             _ => {
@@ -3456,8 +3491,9 @@ impl<'a> Checker<'a> {
                 | DefKind::Enum(_)
                 | DefKind::Type(_)
                 | DefKind::Tokens
-                | DefKind::Keyframes
-                | DefKind::Action => false,
+                | DefKind::Keyframes => false,
+                // (lockmon) `rec.running`: its commands start and end.
+                DefKind::Action => true,
             },
             K::Value(v) => v != "pi",
             K::Service(_) | K::Node(_) | K::Token(_) | K::Error => true,

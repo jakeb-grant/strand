@@ -1054,6 +1054,7 @@ impl Instance {
         }
         let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
+        vm.runs().declare(rt, &vm.prog);
         let theme = match storage.is_read_only() {
             true => crate::vm::theme::ThemeHost::read_only,
             false => crate::vm::theme::ThemeHost::new,
@@ -1247,6 +1248,9 @@ impl Instance {
         if let Some(t) = old.vm.theme() {
             vm.set_theme(t);
         }
+        // (lockmon) A reload never stops a command: the runs carry on.
+        vm.set_runs(old.vm.runs());
+        vm.runs().declare(&rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
             em,
@@ -1484,6 +1488,8 @@ impl Instance {
         if let Some(t) = self.ctx.vm.theme() {
             vm.set_theme(t);
         }
+        vm.set_runs(self.ctx.vm.runs());
+        vm.runs().declare(&self.rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
             em,
@@ -1568,6 +1574,27 @@ impl Instance {
     /// starts each detached, off the logic thread.
     pub fn take_execs(&self) -> Vec<crate::vm::ExecRequest> {
         self.ctx.vm.take_execs()
+    }
+
+    /// (lockmon) What the host says of declared action `action`'s
+    /// commands: whether one runs, and when the one running longest
+    /// started (local time; `rec.started` keeps it to the minute).
+    /// `rec.running` and `rec.started` read it on the next flush. An
+    /// action the program does not declare is ignored.
+    pub fn set_action_run(
+        &self,
+        action: &str,
+        running: bool,
+        started: Option<chrono::NaiveDateTime>,
+    ) {
+        self.ctx.vm.runs().set(&self.rt, action, running, started);
+    }
+
+    /// (lockmon) Whether a command of `action` runs, as last set with
+    /// [`Instance::set_action_run`]; `None` for an action the program
+    /// does not declare.
+    pub fn action_running(&self, action: &str) -> Option<bool> {
+        self.ctx.vm.runs().running(&self.rt, action)
     }
 
     /// Advance the logic clock to `now` and end the tick.

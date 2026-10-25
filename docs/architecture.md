@@ -4583,6 +4583,33 @@ Public interfaces other crates and later stages build on:
     queues for that action's next call; a host that never takes the
     requests (a test) leaves the calls pending, and the eval harness
     answers one with nothing queued with an error.
+    (lockmon, decisions.md lockmon) An action's run: `rec.running` and
+    `rec.started` check as fields of the schema record `ActionRun`
+    (`running: bool`, `started: Date?`, `action stop()`), its base the
+    action's `ExprKind::Def` typed as that record (`Checker::action_run`,
+    for a field read or a method call only); they lower to
+    `Op::ActionRun(def)` (the record, read from the instance's
+    `vm::runs::ActionRuns`: two signals per action, made by name when a
+    program declares it, owned by no scope and carried across reloads
+    with `Vm::set_runs`) and `rec.stop()` to `Op::StopAction(def)`,
+    which queues an `ExecRequest` with `stop: true` (new field; empty
+    `argv`, no reply) in order with the calls. The host says how each
+    action stands with `Instance::set_action_run(action, running: bool,
+    started: Option<chrono::NaiveDateTime>)` (local time; kept to the
+    minute) and can read it back with `Instance::action_running`. The
+    strand crate's `Execs` gives each command a `Halt` (an atomic ask,
+    plus an eventfd for a detached command's thread, which sleeps on the
+    child's pidfd and that wake rather than in `wait`): a stop makes the
+    owning thread send its group SIGINT, SIGTERM after `STOP_GRACE` (2 s)
+    while the leader lives (seen with `waitid(WNOWAIT)`), SIGKILL after
+    another, then reap; `Execs::runs()` reports the actions whose run
+    changed (a detached command, or any result call; the oldest start),
+    which `run_execs` passes to `set_action_run` and wakes the loop for.
+    A stop is not recorded (the replayed handler stops again); the
+    commands' ends are `ACTION` records as before, and the eval replay
+    plan turns each end into an `end action <name>` step. The eval
+    harness counts a detached command as running from its call to that
+    step or a stop (`stop <name>` in the trace's commands).
   - (M6, decisions.md m6-w2-language, a config `service` shadowing a
     builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
     service, field)`, `acquire_builtin(rt, service)` and

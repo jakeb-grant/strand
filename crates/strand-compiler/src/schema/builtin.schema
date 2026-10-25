@@ -217,6 +217,22 @@ record File key path {
   size: int
 }
 
+/// (lockmon) A declared action's commands as they run, read through the
+/// action's name: `rec.running`, `rec.started` and `rec.stop()` for
+/// `action rec(…) […]`. Only an action's name reads as one.
+record ActionRun {
+  /// A command of it runs: true while any does (an action with a result
+  /// may run several at once).
+  running: bool
+  /// When the command running longest started, to the minute; null
+  /// while none runs.
+  started: Date?
+  /// Stops every command of it now running, and the re-run queued behind
+  /// one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL
+  /// 2 s after that.
+  action stop()
+}
+
 /// A cell of a month grid, from `calendar.days(month)`.
 provisional record Day key date {
   /// The day's date.

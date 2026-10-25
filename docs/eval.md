@@ -205,6 +205,14 @@ advance the clock.
   error "<text>"` answer the next call of the config's action `<name>`,
   one with a result (`-> T`), read as its `T`; with none queued the call
   is answered with an error, since the sandbox runs no command.
+- `end action <name>` (lockmon): the oldest command of the config's
+  action `<name>` that the sandbox counts as running ends. The sandbox
+  runs no command, so a call of an action without a result counts as
+  running (`rec.running`, `rec.started` at the virtual wall time) from
+  the call until this step or `rec.stop()` (the trace's commands say
+  `stop <name>`); a call with a result runs until it is answered, at
+  once. A report's replay writes this step where the recording says the
+  command ended.
 - `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
   refuses it as unsupported: the notification daemon is not in the
   sandbox. Set `notifications.*` and `emit` instead.
@@ -2597,7 +2605,8 @@ capability, used by any scenario):
   answered with it, ahead of the mock's own (`SchemaHost::answer`).
   A call of an action with a result is a fetch named `action <name>`
   in the recording, given as `answer action <name> <JSON>` (flex
-  review).
+  review). (lockmon) A command's recorded end is `end action <name>` at
+  its time, so `rec.running` reads as it did live.
 
 **The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
 first key `verdict`, the first line of `replay.txt`, of what

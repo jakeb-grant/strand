@@ -1127,6 +1127,10 @@ struct Harness {
     exec_answers: std::cell::RefCell<
         HashMap<String, std::collections::VecDeque<Result<serde_json::Value, String>>>,
     >,
+    /// (lockmon) The starts (wall time) of each action's commands the
+    /// sandbox counts as running, oldest first: from a call until `end
+    /// action <name>` (a recording's end) or `rec.stop()`.
+    sandbox_runs: std::cell::RefCell<HashMap<String, std::collections::VecDeque<SystemTime>>>,
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -1377,6 +1381,7 @@ impl Harness {
             seeded: HashMap::new(),
             facts_seq: None,
             exec_answers: Default::default(),
+            sandbox_runs: Default::default(),
         };
         if opts.log {
             let prog = h.inst.vm().prog.clone();
@@ -1486,6 +1491,13 @@ impl Harness {
     /// (report) The wall time at virtual time `t`.
     fn wall(&self, t: Duration) -> SystemTime {
         self.wall0 + t
+    }
+
+    /// (lockmon) Tells the instance action `action`'s run: running since
+    /// `oldest`, or not running.
+    fn set_run(&self, action: &str, oldest: Option<SystemTime>) {
+        let started = oldest.map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local());
+        self.inst.set_action_run(action, oldest.is_some(), started);
     }
 
     /// (report) A `[seed]` entry: a `$token` overlay or a service field
@@ -2706,6 +2718,26 @@ impl Harness {
                 self.answer_step(method, answer)
                     .map_err(|m| refused(self, m))?;
             }
+            StepKind::EndAction { action } => {
+                self.event(step);
+                if !self
+                    .inst
+                    .vm()
+                    .prog
+                    .execs
+                    .values()
+                    .any(|a| &a.name == action)
+                {
+                    return Err(refused(self, format!("no action `{action}`")));
+                }
+                let mut runs = self.sandbox_runs.borrow_mut();
+                let starts = runs.entry(action.clone()).or_default();
+                starts.pop_front();
+                let oldest = starts.front().copied();
+                drop(runs);
+                self.set_run(action, oldest);
+                self.logic_owed = true;
+            }
             StepKind::Leave => {
                 self.event(step);
                 // The pointer leaves the shell's surfaces (for a window,
@@ -3579,10 +3611,33 @@ impl Harness {
             });
         }
         for x in self.inst.take_execs() {
+            // (lockmon) `rec.stop()`: its commands end at once.
+            if x.stop {
+                self.trace.commands.push(CommandRec {
+                    k,
+                    text: format!("stop {}", x.action),
+                });
+                self.sandbox_runs.borrow_mut().remove(&x.action);
+                self.set_run(&x.action, None);
+                self.logic_owed = true;
+                continue;
+            }
             self.trace.commands.push(CommandRec {
                 k,
                 text: format!("exec {}: {:?}", x.action, x.argv),
             });
+            // (lockmon) A detached command runs from its call until a
+            // step ends it (`end action`, a recording's end) or a stop.
+            if x.reply.is_none() {
+                let wall = self.wall(t);
+                let mut runs = self.sandbox_runs.borrow_mut();
+                let starts = runs.entry(x.action.clone()).or_default();
+                starts.push_back(wall);
+                let oldest = starts.front().copied();
+                drop(runs);
+                self.set_run(&x.action, oldest);
+                self.logic_owed = true;
+            }
             // (flex review) The sandbox runs no command: a result
             // action's call is answered from what was queued for it (a
             // recording's answer), else with an error naming that, so

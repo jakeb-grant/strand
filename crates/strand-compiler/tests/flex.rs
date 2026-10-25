@@ -591,3 +591,104 @@ fn an_action_with_a_result_is_loaded_and_awaited() {
     inst.flush();
     assert_eq!(text(&inst, "out"), "3");
 }
+
+/// (lockmon) An action's name reads as its run: `rec.running` (`bool`),
+/// `rec.started` (`Date?`) in a binding, `rec.stop()` an action of a
+/// handler; the bare name is still no value, the run is not written, and
+/// a local of the name hides it.
+#[test]
+fn an_actions_run_is_read_through_its_name() {
+    let head = "permit exec \"wf-recorder\"\npermit exec \"qalc\"\n\
+        action rec(file: path) [\"wf-recorder\", \"-f\", file]\n\
+        action calc(q: text) -> text [\"qalc\", \"-t\", q]\n";
+    let src = format!(
+        "{head}let on = rec.running\nlet since = rec.started\nlet busy = calc.running\n\
+         let shown = rec.started?.format(\"%H:%M\") ?? \"\"\n"
+    );
+    assert_eq!(ty(&src, "on"), "bool");
+    assert_eq!(ty(&src, "since"), "Date?");
+    assert_eq!(ty(&src, "busy"), "bool");
+    assert_eq!(ty(&src, "shown"), "text");
+    let (codes, text) = diags(&format!(
+        "{head}state n = 0\non change n {{ rec.stop(); rec(\"/tmp/a.mp4\") }}\n\
+         on change rec.running {{ n = 1 }}\n"
+    ));
+    assert!(codes.is_empty(), "{text}");
+    // `stop()` changes something: a handler's alone.
+    let (codes, text) = diags(&format!("{head}let x = rec.stop()\n"));
+    assert!(codes.contains(&"check::action_in_binding"), "{text}");
+    assert!(text.contains("`rec.stop` is an action"), "{text}");
+    // A typo is offered the field.
+    let (codes, text) = diags(&format!("{head}let x = rec.runing\n"));
+    assert_eq!(codes, ["check::unknown_field"], "{text}");
+    assert!(text.contains("`rec` has no field `runing`"), "{text}");
+    assert!(text.contains("running"), "{text}");
+    let (codes, text) = diags(&format!("{head}let x = rec.stop\n"));
+    assert_eq!(codes, ["check::not_a_value"], "{text}");
+    // The run is the host's to say: never written.
+    let (codes, text) = diags(&format!(
+        "{head}state n = 0\non change n {{ rec.running = true }}\n"
+    ));
+    assert!(!codes.is_empty(), "{text}");
+    // A parameter called like the action is the parameter.
+    let (codes, text) = diags(&format!(
+        "{head}type Job {{ running: int }}\nfn f(rec: Job) -> int {{ rec.running }}\n"
+    ));
+    assert!(codes.is_empty(), "{text}");
+    // A service's D-Bus action has no run: it is a method.
+    let (codes, text) = diags(
+        "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+         profile: text = ActiveProfile\n  action hold(p: text) = HoldProfile\n}\n\
+         let x = ppd.hold.running\n",
+    );
+    assert!(!codes.is_empty(), "{text}");
+}
+
+/// (lockmon) What the host says of an action's commands is what
+/// `rec.running` and `rec.started` read (to the minute, null once none
+/// runs); `rec.stop()` asks the host to stop them, in order with the
+/// calls around it.
+#[test]
+fn an_actions_run_follows_the_host_and_stop_is_asked_in_order() {
+    let src = "permit exec \"wf-recorder\"\n\
+        action rec(file: path) [\"wf-recorder\", \"-f\", file]\n\
+        let on = rec.running\n\
+        let at = rec.started?.format(\"%H:%M\") ?? \"-\"\n\
+        export state go = 0\n\
+        export state seen = 0\n\
+        on change rec.running { seen += 1 }\n\
+        on change go { rec.stop(); rec(\"/tmp/b.mp4\") }\n";
+    let (_rt, _host, inst) = run(src);
+    assert_eq!(get(&inst, "on"), Value::Bool(false));
+    assert_eq!(text(&inst, "at"), "-");
+    assert_eq!(inst.action_running("rec"), Some(false));
+    assert_eq!(inst.action_running("nope"), None);
+    let t = chrono::NaiveDate::from_ymd_opt(2026, 10, 25)
+        .unwrap()
+        .and_hms_opt(14, 7, 33)
+        .unwrap();
+    inst.set_action_run("rec", true, Some(t));
+    inst.flush();
+    assert_eq!(get(&inst, "on"), Value::Bool(true));
+    assert_eq!(text(&inst, "at"), "14:07");
+    assert_eq!(get(&inst, "seen").as_f64(), Some(1.0));
+    // A later second of the same minute changes nothing.
+    inst.set_action_run("rec", true, Some(t + chrono::Duration::seconds(20)));
+    inst.flush();
+    assert_eq!(get(&inst, "seen").as_f64(), Some(1.0));
+    // An action the program does not declare is ignored.
+    inst.set_action_run("other", true, Some(t));
+    inst.set_action_run("rec", false, Some(t));
+    inst.flush();
+    assert_eq!(get(&inst, "on"), Value::Bool(false));
+    assert_eq!(text(&inst, "at"), "-", "no start once none runs");
+    assert_eq!(get(&inst, "seen").as_f64(), Some(2.0));
+    // `stop()`, then a call: asked in that order.
+    inst.set("flex.go", Value::int(1)).unwrap();
+    inst.flush();
+    let reqs = inst.take_execs();
+    assert_eq!(reqs.len(), 2, "{reqs:?}");
+    assert!(reqs[0].stop && reqs[0].action == "rec" && reqs[0].argv.is_empty());
+    assert!(!reqs[1].stop);
+    assert_eq!(reqs[1].argv, ["wf-recorder", "-f", "/tmp/b.mp4"]);
+}
