@@ -1178,16 +1178,24 @@ fn a_bar_follows_its_own_screens() {
         pin_of(&shell, "DP-1"),
         Some(PropValue::Text("Mock | DP-1 | Display".into()))
     );
+    // (flex review) The focused bar is one instance, left unpinned for
+    // the surface manager to place on the focused monitor.
     assert_eq!(
         pin_of(&shell, "F HDMI-A-1"),
-        Some(PropValue::Text("Mock | HDMI-A-1 | Display".into()))
+        Some(PropValue::Keyword("focused".into()))
     );
-    // Focus moves: the focused bar follows.
+    let bar_of = |shell: &Shell, text: &str| {
+        let t = shell.text_node(text);
+        shell.scene.ancestor(t, NodeKind::Bar).unwrap()
+    };
+    let before = bar_of(&shell, "F HDMI-A-1");
+    // Focus moves: the focused bar's `screen` follows in place.
     let dp1 = screen(&shell.host, "DP-1", "DP-1");
     shell.host.set(&shell.rt, "screens.focused", dp1).unwrap();
     shell.flush();
     assert!(shell.scene.find_text("F DP-1").is_some());
     assert!(shell.scene.find_text("F HDMI-A-1").is_none());
+    assert_eq!(bar_of(&shell, "F DP-1"), before, "not mounted again");
 }
 
 /// Service events are lossless: three in one tick, three handler runs.
