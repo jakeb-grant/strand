@@ -91,7 +91,8 @@ handle record Node {
   hover: bool
   /// A pointer button is held down on it.
   pressed: bool
-  /// It has keyboard focus.
+  /// It has keyboard focus. On a `window` (its `id:`), the compositor
+  /// has it focused (its `activated` state): `w.focused`.
   focused: bool
   /// It is the selected item of a `list`; arrow keys move the selection.
   selected: bool
@@ -1737,7 +1738,8 @@ group surface: node {
   /// Its layer-shell layer.
   layer: Layer
   /// Whether it is shown. Bound two-way (`open: <-> open`), Escape,
-  /// click-away and focus loss write false.
+  /// click-away and focus loss write false; on a `window` only the
+  /// compositor's close and `w.close()` do.
   open: bool <->
   /// Keyboard focus: `none`, `on_demand` or `exclusive`.
   keyboard: Keyboard
@@ -1813,6 +1815,12 @@ element lock: surface {
 /// `tiled` and `decorated` follow the compositor (`id: w` and
 /// `w.maximized`); `w.move()`, `w.resize(edge)`, `w.minimize()`,
 /// `w.maximize()`, `w.fullscreen()` and `w.close()` ask it.
+/// The compositor places, stacks and focuses it, so the `surface`
+/// props that place a layer surface (`screens`, `layer`, `anchor`,
+/// `keyboard`, `attach`, `scrim`, and `margin` on it) are load errors
+/// (`check::window_prop`), and `screen` is not in scope in it. Escape
+/// and focus loss leave it open; only the compositor's close and
+/// `w.close()` write its `open` false.
 element window: surface {
   /// The title the compositor shows: `title: "Settings"`. Its name while
   /// unset.

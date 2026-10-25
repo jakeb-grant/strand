@@ -2260,7 +2260,7 @@ fn a_window_replays_at_its_recorded_configure() {
     let st = steps(&text);
     for want in [
         format!("window @{wo} _,_ activated"),
-        format!("window @{wo} 600,400 tiled activated"),
+        format!("window @{wo} 600!,400! tiled activated"),
         format!("window @{wo} close"),
     ] {
         assert!(st.contains(&want.as_str()), "no `{want}` in\n{text}");
@@ -2312,7 +2312,7 @@ fn a_window_replays_at_its_recorded_configure() {
         .into_iter()
         .find(|l| l.starts_with("window "))
         .unwrap_or_else(|| panic!("no window step in\n{text}"));
-    assert_eq!(first, format!("window @{wo} 600,400 tiled"));
+    assert_eq!(first, format!("window @{wo} 600!,400! tiled"));
     // Its record lost with the ring's oldest, it is configured as
     // `bundle.json` lists it at the report.
     let (mut f, wo) = with_window();
@@ -2327,7 +2327,37 @@ fn a_window_replays_at_its_recorded_configure() {
     }));
     let (_, _, text) = plan_of(&f.write("window-bundle"), &defaults());
     assert!(
-        steps(&text).contains(&format!("window @{wo} 960,1040 maximized decorated").as_str()),
+        steps(&text).contains(&format!("window @{wo} 960!,1040! maximized decorated").as_str()),
         "{text}"
+    );
+}
+
+/// (window) A configure recorded with an axis the compositor sized at
+/// exactly the size the window asked for (an interactive resize's) is
+/// replayed sized (`W!`), with the bounds the compositor said; a click
+/// away of the window without the compositor's bit is `w.close()`'s,
+/// which the replay's handler asks again, so it plans no `window …
+/// close` (two closes in the replay).
+#[test]
+fn a_window_replays_its_recorded_sized_axes_and_its_own_close() {
+    use flight::toplevel as tl;
+    let (mut f, wo) = with_window();
+    window_mapped(&mut f, 2, bits(20, 1), &wo, 2 * S);
+    f.input.push(
+        Rec::new(2 * S + MS, kind::TOPLEVEL, 2)
+            .u16_at(0, 224)
+            .u16_at(2, 124)
+            .u8_at(4, tl::SIZED_W | tl::SIZED_H | tl::ACTIVATED)
+            .u16_at(6, 1280)
+            .u16_at(8, 690),
+    );
+    f.input.push(Rec::new(4 * S, kind::CLICK_AWAY, 2));
+    let (_, _, text) = plan_of(&f.write("window-own-close"), &defaults());
+    let st = steps(&text);
+    let want = format!("window @{wo} 224!,124! activated bounds 1280,690");
+    assert!(st.contains(&want.as_str()), "no `{want}` in\n{text}");
+    assert!(
+        !st.iter().any(|l| l.ends_with(" close")),
+        "`w.close()` is the handler's own: {text}"
     );
 }

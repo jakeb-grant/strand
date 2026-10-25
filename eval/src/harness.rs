@@ -2136,6 +2136,9 @@ impl Harness {
     /// toggle that state in its configure, `minimize` tells the window
     /// nothing (xdg-shell says nothing of it), and an interactive `move`
     /// or `resize` needs a compositor's own pointer grab, so it is a note.
+    /// A maximize or fullscreen asked of a window its spec opens but not
+    /// shown yet is kept for its first configure, as the surface manager
+    /// asks it at the window's creation.
     fn window_asks(&mut self, asks: Vec<(NodeId, strand_scene::WindowAsk)>) -> Result<(), Error> {
         use strand_scene::WindowAsk;
         for (node, ask) in asks {
@@ -2146,6 +2149,17 @@ impl Harness {
                 .find(|s| s.node == node && s.kind == strand_scene::NodeKind::Window)
                 .map(|s| s.id)
             else {
+                if self.surfaces.opening_window(node)
+                    && matches!(ask, WindowAsk::Maximize | WindowAsk::Fullscreen)
+                {
+                    let mut st = self.surfaces.window_state(node);
+                    match ask {
+                        WindowAsk::Maximize => st.maximized = !st.maximized,
+                        _ => st.fullscreen = !st.fullscreen,
+                    }
+                    let changes = self.surfaces.set_window(node, st)?;
+                    self.surface_changes(changes)?;
+                }
                 continue;
             };
             let mut st = self.surfaces.window_state(node);
@@ -2158,11 +2172,11 @@ impl Harness {
                 // own when it ends.
                 WindowAsk::Maximize => {
                     st.maximized = !st.maximized;
-                    st.size = [None, None];
+                    (st.size, st.sized) = ([None, None], [false, false]);
                 }
                 WindowAsk::Fullscreen => {
                     st.fullscreen = !st.fullscreen;
-                    st.size = [None, None];
+                    (st.size, st.sized) = ([None, None], [false, false]);
                 }
                 WindowAsk::Minimize => continue,
                 WindowAsk::Move | WindowAsk::Resize(_) => {

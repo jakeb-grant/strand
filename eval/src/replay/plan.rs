@@ -2231,14 +2231,26 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     text: format!("input paste of {n} characters on {sel}"),
                 });
             }
-            // (window) A window's click away is its compositor's close
-            // (or `w.close()`'s, which the replay's handler asks again).
-            kind::CLICK_AWAY if is_window(r.slot) => {
+            // (window) A window's click away is its compositor's close,
+            // replayed as the stand-in compositor's; one without the
+            // `COMPOSITOR` bit is `w.close()`'s, which the replay's own
+            // handler asks again, so it is no step.
+            kind::CLICK_AWAY
+                if is_window(r.slot)
+                    && r.u8(0) & strand_core::flight::click_away::COMPOSITOR != 0 =>
+            {
                 push_on(&mut timed, at, format!("window {sel} close"), 0, nb);
                 events.push(Event {
                     kind: "surface",
                     t: at,
                     text: format!("window {sel} closed by the compositor"),
+                });
+            }
+            kind::CLICK_AWAY if is_window(r.slot) => {
+                events.push(Event {
+                    kind: "surface",
+                    t: at,
+                    text: format!("window {sel} closed by its `w.close()`"),
                 });
             }
             kind::CLICK_AWAY => click_aways += 1,

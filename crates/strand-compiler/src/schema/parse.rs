@@ -236,10 +236,9 @@ struct Parser {
     doc_at: HashMap<usize, String>,
     /// Docs found, by what they document.
     docs: Vec<(DocKey, String)>,
-    /// Record members declared as a field, and as a method: a name in
-    /// both has its two docs joined.
+    /// Record members declared as a field: a method of the same name
+    /// keeps its doc as a `DocKey::Action`.
     fields_named: HashSet<DocKey>,
-    methods_named: HashSet<DocKey>,
 }
 
 type PResult<T> = Result<T, SchemaError>;
@@ -553,8 +552,8 @@ impl Parser {
         match name.as_str() {
             "fn" | "action" if !self.at(":") => {
                 let sig = self.sig(name == "action")?;
-                self.methods_named.insert(key(&sig.name));
-                self.document(key(&sig.name), doc);
+                // A `Member` unless a field shares its name (at the end).
+                self.document(DocKey::Action(owner.to_string(), sig.name.clone()), doc);
                 return Ok(RawMember::Method(sig));
             }
             "event" if !self.at(":") => {
@@ -888,7 +887,6 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
         doc_at,
         docs: Vec::new(),
         fields_named: HashSet::new(),
-        methods_named: HashSet::new(),
     };
     let items = p.items();
     let mut errors = std::mem::take(&mut p.errors);
@@ -903,27 +901,27 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
             && replacing.insert(name.clone())
         {
             schema.docs.retain(|k, _| match k {
-                DocKey::Type(t) | DocKey::Member(t, _) => t != name,
+                DocKey::Type(t) | DocKey::Member(t, _) | DocKey::Action(t, _) => t != name,
                 _ => true,
             });
         }
     }
-    // A field and an action may share a name (`fullscreen: bool` and
-    // `action fullscreen()` on `Window`) and so one `DocKey::Member`: the
-    // hover of either shows both docs, in declaration order. Any other
-    // repeated key keeps its first doc.
-    let mut joined: Vec<(DocKey, String)> = Vec::new();
+    // A method's doc is its `Member`'s, unless a field shares its name
+    // (`fullscreen: bool` and `action fullscreen()` on `Window`): then
+    // each keeps its own, the field's the `Member`, the action's the
+    // `Action` (`Schema::method_doc`). A repeated key keeps its first
+    // doc (an overload's).
     for (key, doc) in std::mem::take(&mut p.docs) {
-        if !(p.fields_named.contains(&key) && p.methods_named.contains(&key)) {
-            schema.docs.entry(key).or_insert(doc);
-        } else if let Some((_, d)) = joined.iter_mut().find(|(k, _)| *k == key) {
-            d.push_str("\n\n");
-            d.push_str(&doc);
-        } else {
-            joined.push((key, doc));
-        }
-    }
-    for (key, doc) in joined {
+        let key = match key {
+            DocKey::Action(t, n)
+                if !p
+                    .fields_named
+                    .contains(&DocKey::Member(t.clone(), n.clone())) =>
+            {
+                DocKey::Member(t, n)
+            }
+            k => k,
+        };
         schema.docs.entry(key).or_insert(doc);
     }
     // Records refused in pass 1 (declared twice), so pass 2 leaves the

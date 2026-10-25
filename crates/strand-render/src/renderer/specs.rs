@@ -356,6 +356,12 @@ impl Renderer {
         self.refresh_size_holds();
     }
 
+    /// The bounds `surface`'s content-sized axes are laid out within, as
+    /// last set ([`Renderer::set_surface_bounds`]).
+    pub fn surface_bounds(&self, surface: SurfaceId) -> Option<LogicalSize> {
+        self.bounds.get(&surface).copied()
+    }
+
     /// The buffer size, logical pixels, the spec of `root` asks a
     /// surface of it for, on the content-sized axes (`None`: not sized by
     /// its content on that axis).

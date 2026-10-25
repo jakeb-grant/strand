@@ -129,9 +129,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         let origin = self.surfaces.get(parent).and_then(|p| {
             let (px, py) = p.origin?;
             // A popup parent's window geometry is its box, inside its
-            // overhang; a layer surface's is the whole surface.
+            // overhang, and (window) a window's; a layer surface's is the
+            // whole surface. (A window is never placed: the compositor
+            // does not say where it is, so a popup in it has no origin.)
             let (gx, gy) = match &p.role {
                 Role::Popup { config, .. } => (config.overhang[3], config.overhang[0]),
+                Role::Window(t) => (t.config.overhang[3], t.config.overhang[0]),
                 _ => (0, 0),
             };
             Some((

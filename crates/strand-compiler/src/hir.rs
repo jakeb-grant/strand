@@ -181,7 +181,7 @@ pub struct Def {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefKind {
     Component,
-    /// `bar`, `panel`, `osd`, `lock` (the element kind).
+    /// `bar`, `panel`, `osd`, `window`, `lock` (the element kind).
     Surface(String),
     State,
     /// `state x from "file.toml" { … }`.
@@ -340,7 +340,7 @@ pub struct Param {
     pub default: Option<Expr>,
 }
 
-/// A `bar`, `panel`, `osd` or `lock`: its root element.
+/// A `bar`, `panel`, `osd`, `window` or `lock`: its root element.
 #[derive(Clone, Debug)]
 pub struct Surface {
     pub def: Option<DefId>,

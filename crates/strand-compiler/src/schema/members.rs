@@ -362,7 +362,7 @@ pub fn members_of(t: &Ty, schema: &Schema, types: &TypeTable) -> Vec<MemberInfo>
                 ty: Ty::Unit,
                 sigs: m.sigs.clone(),
                 writes: m.sigs.iter().any(|s| s.action),
-                doc: doc(&m.name),
+                doc: schema.method_doc(&rec.name, &m.name).map(str::to_string),
             }));
             v
         }

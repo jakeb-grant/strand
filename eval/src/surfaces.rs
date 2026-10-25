@@ -134,6 +134,10 @@ enum Place {
 pub struct WindowState {
     /// The box size it gives on each axis (`None`: the window's own).
     pub size: [Option<u32>; 2],
+    /// The axes whose size given is the compositor's whatever the
+    /// window asks for (`W!`: a replay's, as recorded live); on the
+    /// others `placement::window_kept_size` decides, as live.
+    pub sized: [bool; 2],
     pub maximized: bool,
     pub fullscreen: bool,
     pub tiled: bool,
@@ -142,17 +146,22 @@ pub struct WindowState {
     /// Whether the compositor draws its decorations (`None`: as its
     /// `decorations:` asks).
     pub decorated: Option<bool>,
+    /// `configure_bounds` (`None`: not said, as sway 1.9 does not; the
+    /// whole output bounds the window then, as live).
+    pub bounds: Option<[u32; 2]>,
 }
 
 impl Default for WindowState {
     fn default() -> Self {
         WindowState {
             size: [None, None],
+            sized: [false, false],
             maximized: false,
             fullscreen: false,
             tiled: false,
             activated: true,
             decorated: None,
+            bounds: None,
         }
     }
 }
@@ -352,6 +361,14 @@ impl Surfaces {
                 _ => s.keyboard,
             },
         )
+    }
+
+    /// (window) Whether `node` is a `window` its spec opens, shown or
+    /// not yet (render has not sized it).
+    pub fn opening_window(&self, node: NodeId) -> bool {
+        self.specs
+            .get(&node)
+            .is_some_and(|s| s.kind == NodeKind::Window && s.open)
     }
 
     /// (window) The compositor's state of `node`'s window (its default
@@ -790,8 +807,15 @@ impl Surfaces {
                 size => size,
             };
             let constrained = st.maximized || st.fullscreen || st.tiled;
-            let (sw, w) = placement::window_kept_size(given[0], config.width, constrained);
-            let (shh, h) = placement::window_kept_size(given[1], config.height, constrained);
+            // A size recorded as the compositor's stays its (an
+            // interactive resize gives exactly the asked size, and the
+            // size asked in a replay may differ from the live one).
+            let kept = |i: usize, asked: u32| match given[i] {
+                Some(g) if st.sized[i] => (true, g.max(1)),
+                g => placement::window_kept_size(g, asked, constrained),
+            };
+            let (sw, w) = kept(0, config.width);
+            let (shh, h) = kept(1, config.height);
             let at = if st.fullscreen {
                 [0, 0]
             } else if st.maximized || st.tiled {
@@ -812,7 +836,7 @@ impl Surfaces {
                 decorated: st
                     .decorated
                     .unwrap_or(config.decorations == strand_scene::Decorations::Server),
-                bounds: Some((area.w, area.h)),
+                bounds: st.bounds.map(|[w, h]| (w, h)),
                 window_menu: true,
                 can_maximize: true,
                 can_fullscreen: true,
@@ -901,11 +925,36 @@ impl Surfaces {
 
     /// Where surface `id` lies, for render (`Renderer::set_surface_origin`,
     /// as `Host::send_origin` sends it): a layer surface on the one
-    /// output, a popup on its parent's.
+    /// output, a popup on its parent's. (window) None for a window, or a
+    /// popup in one: a compositor never tells a client where its window
+    /// is, so the live surface manager places neither (the sandbox's own
+    /// place for it is only its stand-in compositor's).
     pub fn origin(&self, id: SurfaceId) -> Option<(Option<String>, LogicalPoint)> {
         let sh = self.get(id)?;
+        if self.in_window(sh) {
+            return None;
+        }
         let output = (sh.kind != NodeKind::Popup).then(|| self.output_name(sh.output).to_string());
         Some((output, LogicalPoint::new(sh.origin[0], sh.origin[1])))
+    }
+
+    /// (window) Whether `sh` is a window, or a popup nested in one.
+    fn in_window(&self, sh: &Shown) -> bool {
+        let mut at = sh;
+        // A surface tree is shallow; the bound only guards a cycle.
+        for _ in 0..16 {
+            match &at.place {
+                Place::Window { .. } => return true,
+                Place::Layer(_) => return false,
+                Place::Popup { parent, .. } => {
+                    match self.shown.iter().find(|s| s.node == *parent) {
+                        Some(p) => at = p,
+                        None => return false,
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// (eval-rules-2) The sides of surface `id`'s buffer a shadow may be
@@ -1260,7 +1309,23 @@ mod tests {
         let told = s.told(id).unwrap().1;
         // Decorated as it asks (`decorations: server`, the default).
         assert!(told.activated && told.decorated && told.sized == (false, false));
-        assert_eq!(told.bounds, Some((400, 270)), "the area the bar leaves");
+        assert_eq!(told.bounds, None, "none said, as sway 1.9 says none");
+        // Render is told no origin for it, nor for a popup in it (a
+        // compositor never says where a window is, so live has none),
+        // while the bar has its own.
+        assert_eq!(s.origin(id), None);
+        let bar_id = s.shown.iter().find(|x| x.node == b).unwrap().id;
+        assert!(s.origin(bar_id).is_some());
+        let menu = node(9);
+        let mut popup = spec(NodeKind::Popup, &[]);
+        popup.parent = Some(w);
+        popup.width = Some(80.0);
+        popup.height = Some(40.0);
+        popup.anchor_rect = Some(strand_scene::LogicalRect::new(10.0, 10.0, 20.0, 10.0));
+        s.change(menu, SurfaceChange::Created(popup), 0).unwrap();
+        let menu_id = s.shown.iter().find(|x| x.node == menu).unwrap().id;
+        assert_eq!(s.origin(menu_id), None);
+        s.change(menu, SurfaceChange::Removed, 0).unwrap();
         // Its content grows: the top-left stays.
         s.change(
             w,
@@ -1272,6 +1337,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!((at(&s), size(&s)), ([100.0, 115.0], [240.0, 120.0]));
+        // A size recorded as the compositor's (`240!`) stays its though
+        // it is the size asked (an interactive resize's); bounds said
+        // are told.
+        let resized = WindowState {
+            size: [Some(240), None],
+            sized: [true, false],
+            bounds: Some([400, 270]),
+            ..WindowState::default()
+        };
+        s.set_window(w, resized).unwrap();
+        let told = s.told(id).unwrap().1;
+        assert_eq!((told.sized, told.size), ((true, false), (240, 120)));
+        assert_eq!(told.bounds, Some((400, 270)));
+        // Without the mark, the asked size given back is an echo.
+        s.set_window(
+            w,
+            WindowState {
+                sized: [false, false],
+                ..resized
+            },
+        )
+        .unwrap();
+        assert_eq!(s.told(id).unwrap().1.sized, (false, false));
         // Tiled at a size: that size, at the area's corner.
         let tiled = WindowState {
             size: [Some(380), Some(260)],

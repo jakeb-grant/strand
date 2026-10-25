@@ -706,7 +706,8 @@ window Settings {
   id: w
   col { pad: $space.4; gap: $space.3
     if !w.decorated {                             // no title bar from the compositor
-      row { align: center
+      row { id: bar; align: center
+        on change bar.pressed { if bar.pressed { w.move() } }   // drag the title bar to move it
         text "Settings" { grow: 1; font: $font.title }
         button "Close" { on click { w.close() } }
       }
@@ -748,19 +749,23 @@ part of the shell.
   360` is the size it asks for (its content's while unset, as a
   panel's), `min_width` and `max_width` the sizes it takes; tiled or
   maximised, it is laid out at the size it is given. So `screens`,
-  `layer`, `anchor`, `margin` and `keyboard` are errors on a window:
-  those are the compositor's.
+  `layer`, `anchor`, `margin` and `keyboard` (and the panel's `attach`
+  and `scrim`) are errors on a window: those are the compositor's.
 - `title:` is the name your task bar and window switcher show. Its app
   id, which compositor window rules match, is `strand-Settings`
   (`app_id:` changes it).
 - The compositor draws its title bar and borders where it offers to.
   One that does not leaves them to the window, and `w.decorated` (on
-  its `id:`, as `p.open` is a panel's) is false: the `if` draws a
-  title and a Close button then. `w.focused`, `w.maximized`,
-  `w.fullscreen` and `w.tiled` follow the compositor too, and
-  `w.maximize()`, `w.minimize()`, `w.fullscreen()`, `w.move()` and
-  `w.resize(edge)` ask it, so a title bar of your own can do all a
-  compositor's does (`decorations: none` asks for that always).
+  its `id:`, as `popout.open` is a popup's at level 3) is false: the
+  `if` draws a title and a Close button then. `w.focused`,
+  `w.maximized`, `w.fullscreen` and `w.tiled` follow the compositor
+  too. `w.maximize()`, `w.minimize()` and `w.fullscreen()` ask it from
+  any handler. `w.move()` and `w.resize(edge)` start a drag from the
+  press, so call them while the button is still down, from `on change
+  bar.pressed` as the title bar above does, not from `on click`, which
+  runs at the release, when the compositor no longer takes them. With
+  those, a title bar of your own does what a compositor's does
+  (`decorations: none` asks for that always).
 
 **Panel or window?** A panel belongs to the shell: it sits on a layer
 over or under every window, where you anchor it, on the monitors you

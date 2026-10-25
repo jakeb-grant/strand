@@ -1210,6 +1210,14 @@ impl Router {
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.hover_popups(scene.tree(), self.now());
+        // (window) A window root's `focused` is the compositor's focus
+        // (`activated`), which the host tells from its configure: the
+        // keyboard's focus moving to a button in it, or to a popup of
+        // it, leaves the window focused.
+        let tree = scene.tree();
+        self.out.retain(|i| {
+            !matches!(i, Intent::Flag { node, flag: Flag::Focused, .. } if is_window(tree, *node))
+        });
         for i in &self.out {
             if let Intent::Flag { node, flag, on } = i {
                 scene.set_flag(*node, *flag, *on);
@@ -1318,9 +1326,10 @@ impl Router {
                     self.pointer.remove(&surface);
                     return;
                 }
-                InputEvent::PointerButton { .. }
-                | InputEvent::PointerAxis { .. }
-                | InputEvent::ClickAway { .. } => return,
+                InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. } => return,
+                // (window) The compositor's close of a window is no
+                // pick: it closes it, as out of pick mode.
+                InputEvent::ClickAway { .. } if !is_window(scene.tree(), root) => return,
                 // A drag (another program's) finds no drop target: the
                 // surface manager declines its offer and no `on drop`
                 // runs. The surface it is over is kept, so its motion

@@ -334,9 +334,18 @@ pub fn describe_found(an: &Analysis, found: &Found) -> String {
             let (ty, rw) = rec.field(name).map_or((String::new(), false), |f| {
                 (describe::ty(types, &f.ty), f.rw)
             });
+            // A field an action shares its name with (`fullscreen` and
+            // `fullscreen()`): the hover cannot tell which is meant, so
+            // it shows both docs, the field's first.
+            let field = schema.doc(&DocKey::Member(rec.name.clone(), name.clone()));
+            let action = schema.doc(&DocKey::Action(rec.name.clone(), name.clone()));
+            let both = match (field, action) {
+                (Some(f), Some(a)) => Some(format!("{f}\n\n{a}")),
+                (f, a) => f.or(a).map(str::to_string),
+            };
             describe::markdown(
                 &format!("{}.{name}: {ty}{}", rec.name, if rw { " rw" } else { "" }),
-                schema.doc(&DocKey::Member(rec.name.clone(), name.clone())),
+                both.as_deref(),
             )
         }
         Found::Ref(Target::Element(kind)) => {

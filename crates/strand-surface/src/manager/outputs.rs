@@ -33,10 +33,32 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         self.outputs.remove(&global);
+        // (window) A window, and a popup in one, stays: the compositor
+        // moves it to another output (its enter says which), and made
+        // again it would lose its maximize, tiling and the size the
+        // user gave it.
+        let in_window: Vec<SurfaceId> = self
+            .surfaces
+            .values()
+            .filter(|s| s.output == Some(global))
+            .filter(|s| {
+                self.root_layer(s.id)
+                    .and_then(|r| self.surfaces.get(&r))
+                    .is_some_and(|r| matches!(r.role, Role::Window(_)))
+            })
+            .map(|s| s.id)
+            .collect();
+        for id in &in_window {
+            if let Some(s) = self.surfaces.get_mut(id) {
+                s.output = None;
+                s.monitor = None;
+            }
+        }
         let ids: Vec<SurfaceId> = self
             .surfaces
             .values()
             .filter(|s| s.output == Some(global) || s.requested_output == Some(global))
+            .filter(|s| !in_window.contains(&s.id))
             .map(|s| s.id)
             .collect();
         for id in ids {

@@ -410,7 +410,8 @@ pub fn window_session() -> (Fx, String) {
         (600, 400),
         tl::SIZED_W | tl::SIZED_H | tl::TILED | tl::ACTIVATED,
     );
-    f.input.push(Rec::new(9 * S, kind::CLICK_AWAY, 2));
+    f.input
+        .push(Rec::new(9 * S, kind::CLICK_AWAY, 2).u8_at(0, flight::click_away::COMPOSITOR));
     f.cell(9 * S + MS, "shell.shown", "[true,false]");
     f.cells["shell.shown"] = json!(false);
     f.input.push(Rec::new(9 * S + 300 * MS, kind::UNMAPPED, 2));

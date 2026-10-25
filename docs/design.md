@@ -621,7 +621,7 @@ For comparison, real Quickshell configs reach 0.5–1.26 GB, driven by a GL cont
 **Blur ladder.** You write `blur: 24` and optionally `blur_fallback: tint | none`.
 
 1. **`ext-background-effect-v1`**, merged into wayland-protocols staging in May 2025 and derived from KDE's blur. The region follows the rounded shape and is re-sent only when the shape changes.
-2. **Hyprland layer rules.** Each surface gets a stable `strand-<Name>` namespace, and `strand compositor-rules` prints the rules to paste.
+2. **Hyprland layer rules.** Each layer surface gets a stable `strand-<Name>` namespace, and `strand compositor-rules` prints the rules to paste; a `window` is blurred by the compositor's own window rules, matched on its `app_id` (`strand-<Name>` while unset), which it does not print.
 3. **Tint**, the default fallback: alpha rises by 0.15 so text stays readable, and the inspector says why.
 
 Blur over your own content inside a surface is rendered by Strand at quarter scale on the CPU, because vello\_cpu 0.3 filters are experimental and cannot blur what lies behind a layer; the GPU blurs it at full resolution above about 0.2 Mpx, and, on a surface it draws, draws a smaller one in the surface's frame at the CPU's quarter scale, so a blur looks the same whichever draws the surface. Strand never captures the screen.

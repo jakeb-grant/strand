@@ -269,21 +269,30 @@ advance the clock.
 - `hz N`.
 - `backend cpu|gpu`.
 - `window <surface> W,H [maximized] [fullscreen] [tiled] [activated]
-  [decorated]` (window): the stand-in compositor configures that
-  `window` as said, as a real one does when the user tiles, maximises
-  or resizes it: `W` or `H` a size it is given on that axis (laid out
-  at it, no growth spring), `_` its own; a state left out is off
-  (`decorated` too: the config draws its own). `window <surface>
-  close` is the compositor's close: it writes a two-way `open` false
-  (the surface's click away, as live). Without them the stand-in is a
-  floating compositor: a window maps centred in what the bars'
+  [decorated] [bounds BW,BH]` (window): the stand-in compositor
+  configures that `window` as said, as a real one does when the user
+  tiles, maximises or resizes it: `W` or `H` a size it is given on
+  that axis (laid out at it, with no growth spring, when a state
+  constrains it or it differs from the size asked,
+  `placement::window_kept_size`, as live), `W!` or `H!` a size it is
+  given whatever it asks (a replay's axis the compositor sized live),
+  `_` its own; a state left out is off (`decorated` too: the config
+  draws its own); `bounds` is the configure's `configure_bounds`
+  (without it, none: the screen bounds the window's content, as on
+  sway 1.9). `window <surface> close` is the compositor's close: it
+  writes a two-way `open` false (the surface's click away, as live).
+  Without them the stand-in is a floating compositor that says no
+  bounds: a window maps centred in what the bars'
   exclusive zones leave of the focused screen, at the size it asks
   for, takes the keyboard (the window before it loses `w.focused`) and
   is decorated as it asks (`decorations: server` reads `w.decorated`
-  true, though the stand-in draws no title bar); its `w.maximize()` and `w.fullscreen()` are
-  answered (toggles), `w.close()` closes it, and `w.minimize()`,
-  `w.move()` and `w.resize()` have nothing to show (`eval/src/
-  surfaces.rs`, `Surfaces::set_window`).
+  true, though the stand-in draws no title bar); its `w.maximize()`
+  and `w.fullscreen()` are answered (toggles; asked in the step that
+  opens the window, by its first configure), `w.close()` closes it,
+  and `w.minimize()`, `w.move()` and `w.resize()` have nothing to show
+  (`eval/src/surfaces.rs`, `Surfaces::set_window`). Render is told no
+  origin for a window or a popup in it, as live, where no compositor
+  says where a window is.
 
 **Annotation**
 
@@ -421,7 +430,12 @@ in what they leave (`position_in_rect`: centred on an axis it is not
 anchored to, in whole pixels), again at every new size; a popup from
 `popup_config` and its positioner (`popup_request`), shifted onto the
 screen (`popup_shift`), relative to its parent's window geometry, moving
-with its parent and placed again when its configuration changes. A popup
+with its parent and placed again when its configuration changes.
+(window) A `window` from `placement::window_config`, placed as a
+floating compositor does (centred in what the bars' zones leave of the
+focused screen, at the size it asks for, then kept at its top-left as
+it grows), or as a `window` step configures it, sized by
+`placement::window_kept_size` as live. A popup
 waits for its parent to be shown, and closes with it. A run that leaves a
 surface wanting frames at the end of a rest is a `settle` failure, not a
 hang.
@@ -694,7 +708,7 @@ set, poses, keyframes, morphs, lean, jelly and drags. Derived motion
 | `tiling` | Two edges at one place in layout are drawn on one physical pixel, at every scale (`apart`): no seam between boxes that touch, no pixel drawn twice. See below. |
 | `stagger` | Children with an `enter` mounting together under `stagger:` (a child without one takes no turn) each leave their enter pose within a frame of their turn, one step apart in child order (`start`); a child mounting again after frames without it (a result filtered out and typed back) is numbered with those mounting beside it (eval-coverage-4), unless a list's window mounted it (integration-r7: read from the declared tree's mounts, not the renderer's motion bits). See below. |
 | `continuity` | A motion goes on from what is on screen: each spring sampled is drawn on the way its samples work out (`way`), a change keeps the velocity the way had (`velocity`) and starts one refresh before its first frame (`start`), a surface that stops wanting frames shows each spring at its target (`end`), a fade or colour change settles without a jump the eye sees (`snap`), a new node springs only what its enter pose sets (`first frame`), a size sprung from zero or to zero and gone carries its gap with it, the gap beside it never more than its size on any frame between (eval-rules-6), and its parent, sized by its content, does not step as it unmounts (`fold`, eval-rules-3, eval-coverage-3), an interrupted roll rolls on from the text on screen (`roll`), a `keyframes` play draws its track through its stops at their times and along its easing between them (`track`, eval-rules-8), and with motion reduced what time drives holds still (`still`, eval-rules-8). See below. |
-| `placement` | Each surface's card is where its declared props put it, at every frame painted at a settled size and place: a popup by its anchor (`anchor`), a bar, panel or OSD by its margin in what the bars' exclusive zones leave (`margin`), and a posed one where its pose's offset moves it, by the margins sent (`pose`, eval-rules-6); a split's `center` is centred on its split (`centre`); an image's source shows where its `fit:` puts it in its box (`fit`). eval-rules-4; see below. |
+| `placement` | Each surface's card is where its declared props put it, at every frame painted at a settled size and place: a popup by its anchor (`anchor`), a bar, panel or OSD by its margin in what the bars' exclusive zones leave (`margin`), and a posed one where its pose's offset moves it, by the margins sent (`pose`, eval-rules-6); a split's `center` is centred on its split (`centre`); an image's source shows where its `fit:` puts it in its box (`fit`). A `window`'s own place is the stand-in compositor's and is not judged; a popup in it is judged as one in a panel. eval-rules-4; see below. |
 | `twin` | The run with motion reduced ends each settled segment where the run does, on the output (each run's surfaces where that run placed them), time-driven nodes included (their clocks stand at t = 0 at a settled rest in both). Nodes are matched by identity: a branch render re-created (`#0~2` in one run, `#0~3` in the other) is one node. What lies under a scroll that flung is left out from the fling on (the scroll's own box, and the rest of its surface, still compared): `reduced_motion` flings nothing (renderer/lists.rs `scroll_input`). The re-run's own scrolls are held to their input as `teleport`'s `reduced fling` holds a reduced segment (eval-rules-5): with motion reduced a lift flings nothing. And on every frame of the re-run, not only at its rests, what time drives holds still (`still`, eval-rules-8; see `continuity`). |
 | `determinism` | Two runs have equal digests. Curated scenarios always run it. |
 | `budget` | Each frame stays under `[budget]`. Wall times never gate. |
@@ -2566,14 +2580,19 @@ work:
    (window) What the compositor said of a `window` (its configure:
    the size given on each axis, its states and whether it is
    decorated; the input ring's `TOPLEVEL` record) is a `window @o
-   W,H states` step at its time, so the replay lays it out at the size
-   it was given live, tiled, maximised or floating, with no step on it
+   W!,H! states [bounds BW,BH]` step at its time (`_` on an axis the
+   compositor left to the window; `!` keeps a sized axis sized whatever
+   the window asks in the replay; `bounds` when the configure said
+   them), so the replay lays it out at the size it was given live,
+   tiled, maximised or floating, with no step on it
    before; a window shown at the window's start starts at the last
    configure before it (rewritten with every gap's end, as a surface's
    map is), or `bundle.json`'s (`window` on its surface) when the ring
    kept none, else its first in the window, with a limit. The
-   compositor's close (the slot's `CLICK_AWAY`) is `window @o close`,
-   not a click outside.
+   compositor's close (the slot's `CLICK_AWAY` with
+   `flight::click_away::COMPOSITOR`) is `window @o close`, not a click
+   outside; a window's click away without it is `w.close()`'s, which
+   the replay's own handler asks again, so it is no step.
 6. **Runs it** as `local` does, with every CPU check, then compares
    the replay with the live shell (below) and writes `replay.txt`.
    (report review) A step the sandbox cannot take (input on a surface

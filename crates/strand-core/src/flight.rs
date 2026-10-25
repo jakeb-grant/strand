@@ -87,6 +87,7 @@ pub mod kind {
     pub const KEY: u8 = 0x09;
     pub const TEXT: u8 = 0x0A;
     pub const PASTE: u8 = 0x0B;
+    /// Payload byte 0: [`super::click_away`] bits.
     pub const CLICK_AWAY: u8 = 0x0C;
     pub const DRAG: u8 = 0x0D;
     // 0x10..=0x12 are kept for touch.
@@ -143,6 +144,14 @@ pub mod request {
     pub const SET: u8 = 0;
     pub const TOGGLE: u8 = 1;
     pub const RESET: u8 = 2;
+}
+
+/// (window) A [`kind::CLICK_AWAY`] record's payload byte 0.
+pub mod click_away {
+    /// The compositor closed the window (`xdg_toplevel.close`). A
+    /// window's click away without it is `w.close()`'s, which a
+    /// replay's handler asks again.
+    pub const COMPOSITOR: u8 = 1;
 }
 
 /// (window) A `MAPPED` record's kind byte (payload 9) for a `window`;

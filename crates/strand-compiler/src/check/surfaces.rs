@@ -107,10 +107,52 @@ impl Checker<'_> {
                 why,
             )
             .help = Some(
-                "a `window` takes its size (`width`, `height`, `min_width` …), `title`, \
-                 `app_id`, `decorations` and `open`; the compositor does the rest"
+                "a `window` takes the node props, its size (`width`, `height`, `min_width` …), \
+                 `title`, `app_id`, `decorations`, `open` and `inhibit_idle`; the compositor \
+                 places, stacks and focuses it"
                     .into(),
             );
+        }
+        self.window_min_max(props);
+    }
+
+    /// (window) A `min_width` over the `max_width` (or height) written
+    /// as numbers on a window: the compositor would end Strand's whole
+    /// connection on it (`xdg_toplevel.invalid_size`). One a binding
+    /// makes at run time raises the maximum to the minimum
+    /// (`placement::window_config`).
+    fn window_min_max(&mut self, props: &[hir::Prop]) {
+        let px = |name: &str| {
+            let p = props.iter().find(|p| p.name == name)?;
+            match &p.value.kind {
+                hir::ExprKind::Number {
+                    value,
+                    unit: None | Some(crate::syntax::ast::Unit::Px),
+                } => Some((*value, p.span)),
+                _ => None,
+            }
+        };
+        for axis in ["width", "height"] {
+            let (Some((min, at)), Some((max, max_at))) =
+                (px(&format!("min_{axis}")), px(&format!("max_{axis}")))
+            else {
+                continue;
+            };
+            if min <= max {
+                continue;
+            }
+            let file = self.file();
+            self.error(
+                "check::window_min_max",
+                format!("`min_{axis}` is over `max_{axis}` on this `window`"),
+                at,
+                "the least it may be",
+            )
+            .add_secondary(file, max_at, "over the most it may be")
+            .help = Some(format!(
+                "the compositor refuses a window whose minimum is over its maximum (and closes \
+                 the shell's connection); make `min_{axis}` at most `max_{axis}`"
+            ));
         }
     }
 }

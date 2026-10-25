@@ -668,7 +668,8 @@ mod tests {
     /// `win.maximize()` and `win.fullscreen()` are actions next to the
     /// `maximized` and `fullscreen` fields (the same name as a field and
     /// an action): both check, against the served and the builtin schema,
-    /// and the shared hover doc names both.
+    /// and each keeps its own doc (the field's `DocKey::Member`, the
+    /// action's `Schema::method_doc`).
     #[test]
     fn window_state_actions_check_next_to_their_fields() {
         let src = "bar Top {\n  row {\n    for w in windows.all {\n      \
@@ -690,9 +691,13 @@ mod tests {
                     "fullscreen".into(),
                 ))
                 .unwrap_or_default();
+            assert_eq!(doc, "It is fullscreen.", "{which}");
+            let action = schema
+                .method_doc("Window", "fullscreen")
+                .unwrap_or_default();
             assert!(
-                doc.starts_with("It is fullscreen.") && doc.contains("`win.fullscreen()`"),
-                "{which}: {doc:?}"
+                action.starts_with("`win.fullscreen()`"),
+                "{which}: {action:?}"
             );
         }
         // An action is not a value.

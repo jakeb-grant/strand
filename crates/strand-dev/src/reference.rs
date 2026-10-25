@@ -467,7 +467,7 @@ fn record_body(o: &mut String, s: &Schema, owner: &str, r: &RecordDef) {
         let _ = writeln!(o, "| Method | |");
         let _ = writeln!(o, "| --- | --- |");
         for m in &r.methods {
-            let doc = cell(s.doc(&DocKey::Member(owner.into(), m.name.clone())));
+            let doc = cell(s.method_doc(owner, &m.name));
             for f in &m.sigs {
                 let _ = writeln!(o, "| {} | {doc} |", code(&sig(&s.types, &m.name, f)));
             }

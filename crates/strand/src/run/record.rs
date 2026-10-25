@@ -128,6 +128,9 @@ struct SurfaceSlot {
     /// (window) A window's last configure, written again when a ring
     /// starts anew or a gap ends.
     toplevel: Option<strand_surface::ToplevelState>,
+    /// (window) The compositor closed it: its next click away is that
+    /// close ([`flight::click_away::COMPOSITOR`]).
+    closing: bool,
 }
 
 /// One mapped surface as the bundle lists it.
@@ -291,6 +294,14 @@ impl InputRecorder {
         }
     }
 
+    /// (window) The compositor closed the window on `surface`: the click
+    /// away that follows is recorded as its close.
+    pub(crate) fn window_closed(&mut self, surface: SurfaceId) {
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.closing = true;
+        }
+    }
+
     /// (window) The compositor configured the window on `surface` with
     /// what `state` says (the host hears it only when it changed).
     pub(crate) fn window(
@@ -417,6 +428,13 @@ impl InputRecorder {
         let Some(slot) = self.slot(event.surface()) else {
             return;
         };
+        // (window) The compositor's close, said just before this click
+        // away (`window_closed`), is told from `w.close()`'s.
+        let closed = matches!(event, InputEvent::ClickAway { .. })
+            && self
+                .surfaces
+                .get_mut(&event.surface())
+                .is_some_and(|s| std::mem::take(&mut s.closing));
         let period = self
             .surfaces
             .get(&event.surface())
@@ -492,7 +510,14 @@ impl InputRecorder {
                 self.forget_held(slot);
             }
             InputEvent::Key { key, .. } => self.key(t, slot, key, password),
-            InputEvent::ClickAway { .. } => r.push(Rec::new(t, kind::CLICK_AWAY, slot)),
+            InputEvent::ClickAway { .. } => {
+                let by = if closed {
+                    flight::click_away::COMPOSITOR
+                } else {
+                    0
+                };
+                r.push(Rec::new(t, kind::CLICK_AWAY, slot).u8_at(0, by));
+            }
             InputEvent::DragEnter { at: p, kinds, .. } => {
                 let mask = kinds.iter().fold(0u16, |m, k| m | kind_bit(*k));
                 r.push(drag(t, slot, 0, p.x, p.y, mask));
@@ -599,6 +624,7 @@ impl InputRecorder {
                 painted: None,
                 gpu: false,
                 toplevel: None,
+                closing: false,
             },
         );
         let out = output.map(|(id, _)| self.output_slot(id));
@@ -2740,6 +2766,31 @@ mod tests {
             .map(|e| e.rec.kind)
             .collect();
         assert_eq!(kinds, [kind::CHANGE_GAP_BEGINS, kind::CHANGE_GAP_ENDS]);
+    }
+
+    /// (window) A window's click away the compositor's close made
+    /// (`window_closed` said just before) has the `COMPOSITOR` bit; one
+    /// of `w.close()` has none.
+    #[test]
+    fn a_windows_close_by_the_compositor_is_told_from_w_close() {
+        let mut r = InputRecorder::new(true);
+        let w = SurfaceId(4);
+        r.mapped(1, w, NodeId::new(5, 0), None, NodeKind::Window);
+        let away = InputEvent::ClickAway { surface: w };
+        // `w.close()`: a click away alone.
+        r.input(2, &away, None, None);
+        // The compositor's close: said first.
+        r.window_closed(w);
+        r.input(3, &away, None, None);
+        // Said once: the next is `w.close()`'s again.
+        r.input(4, &away, None, None);
+        let e = entries(r.ring().unwrap());
+        let bits: Vec<u8> = e
+            .iter()
+            .filter(|e| e.rec.kind == kind::CLICK_AWAY)
+            .map(|e| e.rec.u8(0))
+            .collect();
+        assert_eq!(bits, [0, strand_core::flight::click_away::COMPOSITOR, 0]);
     }
 
     /// (window) A window's configure is a `TOPLEVEL` record of its

@@ -291,7 +291,8 @@ filling the monitor, the keyboard always).
   as focus moves (as the lock's does: nothing is mounted again).
   (decisions.md flex, 2026-10-24)
 - **`open:`** says whether a surface is shown. Bound two-way
-  (`open: <-> open`), Escape, a click away and focus loss write `false`.
+  (`open: <-> open`), Escape, a click away and focus loss write `false`
+  (on a `window`, only the compositor's close and `w.close()`, below).
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click
@@ -371,7 +372,8 @@ filling the monitor, the keyboard always).
   modifiers are held (false otherwise: no compositor tells another
   client), so a window switcher opened with Alt+Tab commits on
   `on change keyboard.alt` turning false (decisions.md services-round).
-- Each surface gets a stable layer-shell namespace, `strand-<Name>`.
+- Each layer surface gets a stable layer-shell namespace,
+  `strand-<Name>`; a `window`'s `app_id` defaults to the same string.
 - **`window Name { … }`** is an app's window, an `xdg_toplevel` the
   compositor manages: it tiles, floats, moves, minimises and is listed
   as any app's window is (a settings window, a picker). (decisions.md
@@ -389,12 +391,19 @@ filling the monitor, the keyboard always).
     content's size while unset, springing as content grows as a panel
     does) are the size it asks for; `min_width:`, `min_height:`,
     `max_width:` and `max_height:` are the sizes it accepts
-    (`set_min_size`, `set_max_size`). A configure that gives a size on
-    an axis lays the window out at that size, with no growth spring and
-    no other size asked for, when the window is maximised, fullscreen,
-    tiled or being resized, or the size is not the one it asked for; a
-    configure that leaves the size to it (0) keeps its own. A floating
-    window keeps its top-left as it grows.
+    (`set_min_size`, `set_max_size`). A minimum over the maximum,
+    both written as numbers, is a load error (`check::window_min_max`:
+    the compositor would end Strand's whole connection on it); one a
+    binding makes at run time raises the maximum to the minimum, with
+    a warning in the log. A configure that gives a size on an axis
+    lays the window out at that size, with no growth spring and no
+    other size asked for, when the window is maximised, fullscreen,
+    tiled or being resized, or the size is not the one it asked for
+    nor one of its own it committed since the compositor's last
+    configure (an echo of a configure sent before the compositor saw
+    its latest commit, as on a focus change); a configure that leaves
+    the size to it (0) keeps its own. A floating window keeps its
+    top-left as it grows.
   - **`decorations: server | none`**: `server` (the default) asks for
     the compositor's title bar and borders through `xdg-decoration`,
     `none` asks it to draw none. A compositor may decide otherwise
@@ -403,26 +412,39 @@ filling the monitor, the keyboard always).
     whether it draws them, so a config draws its own title bar where
     it does not, `if !w.decorated { TitleBar }`.
   - **`w.focused`** is true while the compositor has it focused (its
-    `activated` state); **`w.maximized`**, **`w.fullscreen`** and
-    **`w.tiled`** follow the compositor too. `configure_bounds` (the
-    largest size that fits) bounds its content's size.
+    `activated` state), whichever element in it has the keyboard's
+    focus (a button, a popup of it); **`w.maximized`**,
+    **`w.fullscreen`** and **`w.tiled`** follow the compositor too.
+    `configure_bounds` (the largest size that fits) bounds its
+    content's size, and stays its bound when the window enters an
+    output; without it, the whole output is.
   - **`w.move()`** and **`w.resize(edge)`** start an interactive move
     or resize from the seat's press, so they are called while the
     press is held (`on change bar.pressed { if bar.pressed { w.move()
-    } }`); `w.minimize()`, `w.maximize()`, `w.fullscreen()` and
-    `w.close()` ask the rest, with the names and toggles of the
-    `windows` service's window actions (`win.maximize()`). An ask the compositor
-    does not offer (its `wm_capabilities`) does nothing. On another
-    element they do nothing.
+    } }`; `edge` an `Anchor`, `top_left` … `bottom_right`; `center`
+    does nothing); `w.minimize()`, `w.maximize()`, `w.fullscreen()`
+    and `w.close()` ask the rest, with the names and toggles of the
+    `windows` service's window actions (`win.maximize()`). An ask the
+    compositor does not offer (its `wm_capabilities`) does nothing. A
+    maximize, fullscreen or minimize asked in the handler that opens
+    the window (`shown = true; w.maximize()`) is asked when the window
+    is made, before its first frame; a move, resize or close of a
+    window not shown does nothing. On another element they do
+    nothing.
   - The compositor's close, and `w.close()`, write a two-way `open:`
     false; a window whose `open` is not two-way stays open, and
     `strand check` warns on one whose `open:` is one-way or unset
     (`check::window_open`; a two-way `open` in a `when` on it is
     enough). Escape and focus loss leave a window open.
   - A popup in a window opens from it as from a panel, `anchor:
-    pointer` included. Several windows may be open at once; a window
-    already open opening again is the same window; a reload keeps an
-    open window open with its states (section 10.1).
+    pointer` included; since a compositor never tells a client where
+    its window is, neither the window nor a popup in it has a place on
+    the screen, so its `id.box` is unset and no shared morph reaches
+    it from another surface. Several windows may be open at once; a
+    window already open opening again is the same window, and stays
+    the same window when its output is unplugged (the compositor moves
+    it); a reload keeps an open window open with its states (section
+    10.1).
 - **`inhibit_idle: bool`**, on any surface, keeps the compositor from
   going idle (no screensaver, dimming or lock by timeout) while the
   surface is shown and the value is true: `bar Top { inhibit_idle:
@@ -837,7 +859,8 @@ filling the monitor, the keyboard always).
   or `hover`; anything else, and `delay` or `grace` without `trigger:
   hover`, is a load error.
 - `p.open` reads the open state of the popup (or other surface) with
-  `id: p` (an `id:` on a surface names its root, `panel P { id: p … }`): true from the moment it opens until it closes, as its exit
+  `id: p` (an `id:` on a surface names its root, `panel P { id: p …
+  }`): true from the moment it opens until it closes, as its exit
   pose starts, whether `open:` or the pointer opens it; false on other
   elements. `when p.open { … }` styles the anchor while its popup
   shows.
@@ -1781,6 +1804,11 @@ new program with the running one.
   so a renamed surface keeps it. Turning a `bar` into a single surface
   keeps its state when it had one instance, and resets it with a warning
   when it had several.
+- (window) A reload keeps an open `window` open, with what the
+  compositor said of it (`w.maximized`, `w.tiled`, `w.focused`,
+  `w.decorated`); its `title`, `app_id`, size limits and `decorations`
+  change on the open window in place, and a new name makes it again,
+  as for any surface (decisions.md window).
 
 ### 10.2 Identity
 

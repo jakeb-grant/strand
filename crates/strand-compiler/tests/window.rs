@@ -270,6 +270,41 @@ fn what_places_a_layer_surface_is_refused_on_a_window() {
     assert_eq!(codes(src), Vec::<&str>::new());
 }
 
+/// (window) A minimum over the maximum, both written as numbers, is a
+/// load error (the compositor would end Strand's connection on it); one
+/// at most the maximum, or one an expression gives, checks clean (a
+/// binding's is raised at run time, `placement::window_config`).
+#[test]
+fn a_window_minimum_over_its_maximum_is_refused() {
+    let refused = |src: &str| codes(src).contains(&"check::window_min_max");
+    let s = "state s = true\n";
+    assert!(refused(&format!(
+        "{s}window W {{ open: <-> s; min_width: 500; max_width: 400; text \"x\" }}\n"
+    )));
+    assert!(refused(&format!(
+        "{s}window W {{ open: <-> s; min_height: 300px; max_height: 200; text \"x\" }}\n"
+    )));
+    assert!(!refused(&format!(
+        "{s}window W {{ open: <-> s; min_width: 400; max_width: 400; text \"x\" }}\n"
+    )));
+    assert!(!refused(&format!(
+        "{s}state m = 500\nwindow W {{ open: <-> s; min_width: m; max_width: 400; text \"x\" }}\n"
+    )));
+    let mut map = SourceMap::new();
+    map.add(
+        "shell.strand",
+        format!("{s}window W {{ open: <-> s; min_width: 500; max_width: 400; text \"x\" }}\n"),
+    );
+    let out = compile_map(&map);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::window_min_max")
+        .unwrap();
+    assert_eq!(d.severity, strand_compiler::Severity::Error);
+    assert_eq!(d.labels.len(), 2, "both values named");
+}
+
 /// (window, W1 open item) The compositor's close writes only a two-way
 /// `open:`: one unset (always open) or one-way is warned, a two-way one
 /// in a `when` is enough.

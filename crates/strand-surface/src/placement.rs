@@ -587,6 +587,22 @@ pub fn window_config(spec: &SurfaceSpec) -> Result<WindowConfig, PlacementError>
     let opt = |v: Option<f32>| v.map_or(0, |v| px(v).max(0) as u32);
     let (min_w, min_h) = (opt(spec.min_size.0), opt(spec.min_size.1));
     let (max_w, max_h) = (opt(spec.max_size.0), opt(spec.max_size.1));
+    // A minimum over the maximum is `xdg_toplevel.invalid_size`, which
+    // ends the whole connection (every bar and panel with it): the
+    // maximum is raised to the minimum (`check::window_min_max` refuses
+    // it when both are written as numbers; a binding can still make it).
+    let fit = |min: u32, max: u32, axis: &str| {
+        if max > 0 && min > max {
+            log::warn!(
+                "{}: min_{axis} {min} is over max_{axis} {max}: max_{axis} taken as {min}",
+                spec.namespace()
+            );
+            min
+        } else {
+            max
+        }
+    };
+    let (max_w, max_h) = (fit(min_w, max_w, "width"), fit(min_h, max_h, "height"));
     Ok(WindowConfig {
         namespace: spec.namespace(),
         title: spec.window_title(),
@@ -1850,6 +1866,12 @@ mod tests {
         assert_eq!((c.min, c.max), ((200, 0), (0, 900)));
         assert_eq!(c.overhang, [4, 8, 12, 8]);
         assert_eq!(c.buffer((640, 480)), (656, 496));
+        // A minimum over the maximum raises the maximum to it (the
+        // compositor would end the connection on it).
+        let mut bad = spec.clone();
+        bad.min_size = (Some(500.0), Some(100.0));
+        bad.max_size = (Some(400.0), Some(900.0));
+        assert_eq!(window_config(&bad).unwrap().max, (500, 900));
         assert_eq!(
             c.as_layer().input_region((416, 316)),
             Some(Some((8, 4, 400, 300)))

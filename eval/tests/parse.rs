@@ -1021,11 +1021,12 @@ fn several_screens_parse() {
     bad("screens = []", "one at least");
 }
 
-/// (window) `window <surface> <W|_>,<H|_> [states…]` configures a
-/// window as its compositor would, every state not named off; `window
-/// <surface> close` is its compositor's close; a bad size or state is a
-/// typed error at its line. A replay writes the step from a recorded
-/// configure in these words (`Toplevel::words`).
+/// (window) `window <surface> <W|W!|_>,<H|H!|_> [states…] [bounds
+/// W,H]` configures a window as its compositor would, every state not
+/// named off (`W!` a size the compositor sized as given); `window
+/// <surface> close` is its compositor's close; a bad size, state or
+/// bounds is a typed error at its line. A replay writes the step from a
+/// recorded configure in these words (`Toplevel::words`).
 #[test]
 fn the_window_step_parses() {
     use strand_eval::replay::bundle::Toplevel;
@@ -1033,7 +1034,8 @@ fn the_window_step_parses() {
     let s = parse(
         "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\n\
          window #w 960,1040 tiled activated decorated\nwindow #w _,_\n\
-         window #w 800,_ maximized fullscreen\nwindow #w close\n",
+         window #w 800,_ maximized fullscreen\nwindow #w close\n\
+         window #w 960!,_ bounds 1920,1040 activated\n",
     );
     let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
     let w = |configure| StepKind::Window {
@@ -1045,35 +1047,54 @@ fn the_window_step_parses() {
         vec![
             w(Some(WindowState {
                 size: [Some(960), Some(1040)],
+                sized: [false, false],
                 maximized: false,
                 fullscreen: false,
                 tiled: true,
                 activated: true,
                 decorated: Some(true),
+                bounds: None,
             })),
             w(Some(WindowState {
                 size: [None, None],
+                sized: [false, false],
                 maximized: false,
                 fullscreen: false,
                 tiled: false,
                 activated: false,
                 decorated: Some(false),
+                bounds: None,
             })),
             w(Some(WindowState {
                 size: [Some(800), None],
+                sized: [false, false],
                 maximized: true,
                 fullscreen: true,
                 tiled: false,
                 activated: false,
                 decorated: Some(false),
+                bounds: None,
             })),
             w(None),
+            w(Some(WindowState {
+                size: [Some(960), None],
+                sized: [true, false],
+                maximized: false,
+                fullscreen: false,
+                tiled: false,
+                activated: true,
+                decorated: Some(false),
+                bounds: Some([1920, 1040]),
+            })),
         ]
     );
     for (bad, why) in [
         ("window #w 960", "is not `W,H`"),
         ("window #w 0,10", "is not a size in px or `_`"),
         ("window #w 10,10 floating", "is not a window state"),
+        ("window #w 10,10 bounds", "`bounds` needs `W,H`"),
+        ("window #w 10,10 bounds 10!,10", "is not two sizes in px"),
+        ("window #w 10!!,10", "is not a size in px or `_`"),
         ("window #w close now", "unexpected `now`"),
         ("window", "takes"),
     ] {
@@ -1090,5 +1111,10 @@ fn the_window_step_parses() {
         activated: true,
         ..Toplevel::default()
     };
-    assert_eq!(t.words(), "960,_ tiled activated");
+    assert_eq!(t.words(), "960!,_ tiled activated");
+    let t = Toplevel {
+        bounds: Some([1920, 1040]),
+        ..t
+    };
+    assert_eq!(t.words(), "960!,_ tiled activated bounds 1920,1040");
 }

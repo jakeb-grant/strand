@@ -48,6 +48,9 @@ pub struct Toplevel {
     pub tiled: bool,
     pub activated: bool,
     pub decorated: bool,
+    /// `configure_bounds`, logical px (`None`: not said, the whole
+    /// output then).
+    pub bounds: Option<[u32; 2]>,
 }
 
 impl Toplevel {
@@ -56,6 +59,7 @@ impl Toplevel {
         use flight::toplevel as b;
         let bits = r.u8(4);
         let on = |v: u8| bits & v != 0;
+        let bounds = [u32::from(r.u16(6)), u32::from(r.u16(8))];
         Toplevel {
             size: [u32::from(r.u16(0)), u32::from(r.u16(2))],
             sized: [on(b::SIZED_W), on(b::SIZED_H)],
@@ -64,6 +68,7 @@ impl Toplevel {
             tiled: on(b::TILED),
             activated: on(b::ACTIVATED),
             decorated: on(b::DECORATED),
+            bounds: (bounds[0] > 0 && bounds[1] > 0).then_some(bounds),
         }
     }
 
@@ -74,6 +79,11 @@ impl Toplevel {
         }
         let n = |i: usize| v["size"][i].as_u64().map_or(0, |n| n as u32);
         let on = |k: &str| v[k] == true;
+        let b = |i: usize| v["bounds"][i].as_u64().map(|n| n as u32);
+        let bounds = match (b(0), b(1)) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some([w, h]),
+            _ => None,
+        };
         Some(Toplevel {
             size: [n(0), n(1)],
             sized: [v["sized"][0] == true, v["sized"][1] == true],
@@ -82,17 +92,20 @@ impl Toplevel {
             tiled: on("tiled"),
             activated: on("activated"),
             decorated: on("decorated"),
+            bounds,
         })
     }
 
     /// The words of the `window` step that configures a window so
     /// (docs/eval.md, "Step vocabulary"): its size on the axes the
-    /// compositor sized (`_` where it left the window its own), then its
-    /// states, `960,1040 tiled activated decorated`.
+    /// compositor sized, marked `!` (sized as recorded, whatever size the
+    /// window asks for in the replay; `_` where it left the window its
+    /// own), then its states and its bounds when the compositor said
+    /// them, `960!,1040! tiled activated decorated bounds 1920,1040`.
     pub fn words(&self) -> String {
         let axis = |i: usize| {
             if self.sized[i] {
-                self.size[i].max(1).to_string()
+                format!("{}!", self.size[i].max(1))
             } else {
                 "_".to_string()
             }
@@ -109,6 +122,9 @@ impl Toplevel {
                 w.push(' ');
                 w.push_str(name);
             }
+        }
+        if let Some([bw, bh]) = self.bounds {
+            w.push_str(&format!(" bounds {bw},{bh}"));
         }
         w
     }

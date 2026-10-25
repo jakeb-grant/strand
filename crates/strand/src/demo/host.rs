@@ -38,6 +38,10 @@ pub struct Host {
     /// (M4) The output each surface is on (its monitor's identity), for
     /// render's surface origins (shared-element morphs across surfaces).
     outputs: HashMap<SurfaceId, String>,
+    /// (window) What each window's last configure said, as told
+    /// (`SurfaceHost::window_state`): only what changed goes on, and its
+    /// bounds outlast an output's enter.
+    windows: HashMap<SurfaceId, strand_surface::ToplevelState>,
     /// (m6-owner-fixes, B-d) The pointer the compositor still has on a
     /// surface, taken onto a popup of it that mapped (or grew) under it
     /// ([`Host::rebase_pointer`]).
@@ -236,18 +240,20 @@ impl Forward {
 
     /// (window) What the compositor said of the window on `surface`,
     /// to its root's states: `w.focused` (activated), `w.maximized`,
-    /// `w.fullscreen`, `w.tiled`, `w.decorated`.
-    pub(crate) fn window_state(&self, surface: SurfaceId, state: &strand_surface::ToplevelState) {
+    /// `w.fullscreen`, `w.tiled`, `w.decorated`; only those that changed
+    /// since `old` (every one on its first configure), so a configure
+    /// that only resizes it (each step of an interactive resize) wakes
+    /// no logic.
+    pub(crate) fn window_state(
+        &self,
+        surface: SurfaceId,
+        old: Option<&strand_surface::ToplevelState>,
+        state: &strand_surface::ToplevelState,
+    ) {
         let Some(&node) = self.surfaces.get(&surface) else {
             return;
         };
-        for (flag, on) in [
-            (NodeFlag::Focused, state.activated),
-            (NodeFlag::Maximized, state.maximized),
-            (NodeFlag::Fullscreen, state.fullscreen),
-            (NodeFlag::Tiled, state.tiled),
-            (NodeFlag::Decorated, state.decorated),
-        ] {
+        for (flag, on) in window_flags(state, old) {
             self.send(ToLogic::Flag { node, flag, on });
         }
     }
@@ -408,6 +414,30 @@ fn click_point(
     (at(origin.0, x), at(origin.1, y))
 }
 
+/// (window) The root flags a window's configure `state` sets that differ
+/// from `old`'s (every one when there was none).
+fn window_flags(
+    state: &strand_surface::ToplevelState,
+    old: Option<&strand_surface::ToplevelState>,
+) -> Vec<(NodeFlag, bool)> {
+    let flags = |s: &strand_surface::ToplevelState| {
+        [
+            (NodeFlag::Focused, s.activated),
+            (NodeFlag::Maximized, s.maximized),
+            (NodeFlag::Fullscreen, s.fullscreen),
+            (NodeFlag::Tiled, s.tiled),
+            (NodeFlag::Decorated, s.decorated),
+        ]
+    };
+    let was = old.map(flags);
+    flags(state)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, (_, on))| was.is_none_or(|w| w[*i].1 != *on))
+        .map(|(_, f)| f)
+        .collect()
+}
+
 /// A monitor's logical size: no content-sized surface on it is larger.
 fn monitor_bounds(m: &Monitor) -> Option<strand_scene::LogicalSize> {
     m.logical_size
@@ -507,6 +537,7 @@ impl Host {
             roots: HashMap::new(),
             origins: HashMap::new(),
             outputs: HashMap::new(),
+            windows: HashMap::new(),
             rebase: None,
             idle: Vec::new(),
             blur_fallback: BlurFallback::default(),
@@ -1290,8 +1321,13 @@ impl SurfaceHost for Host {
     }
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
-        self.renderer
-            .set_surface_bounds(surface, monitor_bounds(monitor));
+        // (window) The bounds a window's configure gave (the area beside
+        // the compositor's panels) stay over the whole output's.
+        let told = self.windows.get(&surface).and_then(|w| w.bounds);
+        if told.is_none() {
+            self.renderer
+                .set_surface_bounds(surface, monitor_bounds(monitor));
+        }
         self.outputs
             .insert(surface, monitor.id.as_str().to_string());
         self.send_origin(surface);
@@ -1325,6 +1361,7 @@ impl SurfaceHost for Host {
 
     fn surface_detached(&mut self, surface: SurfaceId) {
         log::info!("surface {} detached", surface.0);
+        self.windows.remove(&surface);
         self.lock.detached(surface);
         self.recorder
             .unmapped(strand_core::flight::now_ns(), surface);
@@ -1423,17 +1460,28 @@ impl SurfaceHost for Host {
         // window as the compositor did.
         self.recorder
             .window(strand_core::flight::now_ns(), surface, state);
-        self.renderer.set_window_sized(surface, state.sized);
-        if let Some((w, h)) = state.bounds {
+        let old = self.windows.insert(surface, *state);
+        if old.map(|o| o.sized) != Some(state.sized) {
+            self.renderer.set_window_sized(surface, state.sized);
+        }
+        if let Some((w, h)) = state.bounds
+            && old.and_then(|o| o.bounds) != state.bounds
+        {
             self.renderer.set_surface_bounds(
                 surface,
                 Some(strand_scene::LogicalSize::new(w as f32, h as f32)),
             );
         }
         if let Some(f) = &self.logic {
-            f.window_state(surface, state);
+            f.window_state(surface, old.as_ref(), state);
         }
         self.wake_if_changed();
+    }
+
+    /// (window) The compositor's close, told to the recorder: the click
+    /// away that follows is the compositor's, not `w.close()`'s.
+    fn window_closed(&mut self, surface: SurfaceId) {
+        self.recorder.window_closed(surface);
     }
 
     /// (gap 31) The focused surface's keyboard, for `keyboard`: exact
@@ -1546,6 +1594,82 @@ mod tests {
     use strand_scene::input::button;
     use strand_scene::{AxisDelta, ButtonState, LogicalPoint};
     use strand_surface::MonitorId;
+
+    /// (window) A window's configure tells logic only the flags it
+    /// changed: all on the first, none on one that only resizes it (each
+    /// step of an interactive resize), the one that changed on a focus
+    /// change.
+    #[test]
+    fn a_windows_configure_tells_only_the_flags_it_changed() {
+        let first = strand_surface::ToplevelState {
+            activated: true,
+            decorated: true,
+            size: (400, 300),
+            ..strand_surface::ToplevelState::default()
+        };
+        assert_eq!(
+            window_flags(&first, None),
+            [
+                (NodeFlag::Focused, true),
+                (NodeFlag::Maximized, false),
+                (NodeFlag::Fullscreen, false),
+                (NodeFlag::Tiled, false),
+                (NodeFlag::Decorated, true),
+            ]
+        );
+        let resized = strand_surface::ToplevelState {
+            sized: (true, true),
+            size: (520, 380),
+            ..first
+        };
+        assert!(window_flags(&resized, Some(&first)).is_empty());
+        let unfocused = strand_surface::ToplevelState {
+            activated: false,
+            ..resized
+        };
+        assert_eq!(
+            window_flags(&unfocused, Some(&resized)),
+            [(NodeFlag::Focused, false)]
+        );
+    }
+
+    /// (window) The bounds a window's configure gave outlast the output
+    /// it then enters (the whole monitor's would let its content grow
+    /// past the area the compositor offered); a layer surface takes its
+    /// monitor's.
+    #[test]
+    fn a_windows_configured_bounds_outlast_its_enter() {
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (win, bar) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let num = strand_scene::PropValue::Number;
+        let mut d = SceneDiff::new();
+        d.create(win, strand_scene::NodeKind::Window, None, 0)
+            .set(win, Prop::Width, num(400.0))
+            .set(win, Prop::Height, num(300.0))
+            .create(bar, strand_scene::NodeKind::Bar, None, 1)
+            .set(bar, Prop::Height, num(30.0));
+        assert!(host.renderer.apply(d).is_empty());
+        let (w, b) = (SurfaceId(1), SurfaceId(2));
+        host.surface_attached(w, win, None);
+        host.surface_attached(b, bar, None);
+        let state = strand_surface::ToplevelState {
+            size: (400, 300),
+            bounds: Some((1600, 1000)),
+            ..strand_surface::ToplevelState::default()
+        };
+        host.window_state(w, &state);
+        let m = monitor("A", "DP-1");
+        host.surface_entered(w, &m);
+        host.surface_entered(b, &m);
+        let size = |s| host.renderer.surface_bounds(s).map(|b| (b.w, b.h));
+        assert_eq!(size(w), Some((1600.0, 1000.0)));
+        assert_eq!(size(b), Some((1920.0, 1080.0)));
+    }
 
     /// [`Forward`] without the host loop around it: `surface` shown,
     /// gone, and input routed and [`Forward::routed`].

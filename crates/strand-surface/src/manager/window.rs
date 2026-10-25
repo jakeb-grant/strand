@@ -24,7 +24,8 @@ pub struct ToplevelState {
     /// The axes on which the window takes the compositor's size rather
     /// than its own: one a state constrains (maximized, fullscreen,
     /// tiled, being resized) or that the compositor gave other than the
-    /// window asked for (a floating window the user resized). On the
+    /// window asked for and than any size of its own it committed since
+    /// the last configure (a floating window the user resized). On the
     /// others the compositor left the size to it, or echoed it.
     pub sized: (bool, bool),
     /// Its box (window geometry) as configured, logical pixels.
@@ -56,6 +57,42 @@ pub(super) struct Toplevel {
     pub(super) state: ToplevelState,
     /// The configure told the host last (`None`: none yet).
     pub(super) told: Option<ToplevelState>,
+    /// On each axis, the sizes of its own (on an axis no configure
+    /// sized) it committed since the compositor's last configure was
+    /// acked, and the one it had then: a configure the compositor sent
+    /// before it saw the latest commit gives one of these back, an
+    /// echo, not the user's resize (`configure`).
+    pub(super) echoes: [Vec<u32>; 2],
+    /// The size of its own it last committed on each axis (`None`: that
+    /// axis was the compositor's then).
+    pub(super) own: [Option<u32>; 2],
+}
+
+/// At most this many sizes are kept per axis as echoes; a window does
+/// not commit more own sizes than this between two configures it reads.
+const ECHOES: usize = 8;
+
+impl Toplevel {
+    /// The box `size` goes out with the next commit (its window
+    /// geometry): on an axis it sized itself, a size a configure may
+    /// still echo.
+    pub(super) fn committing(&mut self, size: (u32, u32)) {
+        let sized = [self.state.sized.0, self.state.sized.1];
+        for (i, v) in [size.0, size.1].into_iter().enumerate() {
+            if sized[i] {
+                self.own[i] = None;
+                continue;
+            }
+            self.own[i] = Some(v);
+            let e = &mut self.echoes[i];
+            if !e.contains(&v) {
+                if e.len() == ECHOES {
+                    e.remove(0);
+                }
+                e.push(v);
+            }
+        }
+    }
 }
 
 /// The decorations to ask for at creation: the compositor's (it may
@@ -100,6 +137,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     pub(super) fn reconcile_window(&mut self, node: NodeId, spec: &SurfaceSpec) {
         let existing = self.surfaces_of(node);
         let config = spec.open.then(|| window_config(spec).ok()).flatten();
+        if !spec.open {
+            self.window_asks.remove(&node);
+        }
         let Some(config) = config.filter(|_| self.xdg_shell.is_some()) else {
             if spec.open && self.xdg_shell.is_none() {
                 log::warn!(
@@ -127,6 +167,27 @@ impl<H: SurfaceHost + 'static> State<H> {
         window.set_app_id(config.app_id.clone());
         window.set_min_size(opt_size(config.min));
         window.set_max_size(opt_size(config.max));
+        // (window) What the handler that opened it asked (`w.maximize()`
+        // in the step that set `shown = true`): asked before the first
+        // commit, so its first configure has it.
+        let (mut max, mut full, mut min) = (false, false, false);
+        for ask in self.window_asks.remove(&node).unwrap_or_default() {
+            match ask {
+                strand_scene::WindowAsk::Maximize => max = !max,
+                strand_scene::WindowAsk::Fullscreen => full = !full,
+                strand_scene::WindowAsk::Minimize => min = true,
+                _ => {}
+            }
+        }
+        if max {
+            window.set_maximized();
+        }
+        if full {
+            window.set_fullscreen(None);
+        }
+        if min {
+            window.set_minimized();
+        }
         let key = (node, Placement::Focused);
         let id = match self.ids.get(&key) {
             Some(id) => *id,
@@ -177,6 +238,8 @@ impl<H: SurfaceHost + 'static> State<H> {
                 config,
                 state: ToplevelState::default(),
                 told: None,
+                echoes: [Vec::new(), Vec::new()],
+                own: [None, None],
             })),
             config: layer_like,
             viewport,
@@ -296,6 +359,10 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// without one the seat's last. `w.close()` closes it as the
     /// compositor's close does (a click away for the host). An action
     /// the compositor does not offer (`wm_capabilities`) does nothing.
+    /// A maximize, fullscreen or minimize asked of a window its spec
+    /// opens but that is not made yet (render has not sized it) is asked
+    /// when it is made; a move, resize or close of one not shown does
+    /// nothing.
     pub fn window_ask(&mut self, node: NodeId, ask: strand_scene::WindowAsk, press: Option<u32>) {
         use strand_scene::WindowAsk;
         let Some(id) = self.surfaces_of(node).into_iter().find(|id| {
@@ -304,7 +371,21 @@ impl<H: SurfaceHost + 'static> State<H> {
                 Some(Role::Window(_))
             )
         }) else {
-            log::debug!("{node:?}: {ask:?} asked of no window shown");
+            let opening = self
+                .specs
+                .get(&node)
+                .is_some_and(|s| s.kind == NodeKind::Window && s.open);
+            if opening
+                && matches!(
+                    ask,
+                    WindowAsk::Maximize | WindowAsk::Fullscreen | WindowAsk::Minimize
+                )
+            {
+                log::debug!("{node:?}: {ask:?} asked when its window is made");
+                self.window_asks.entry(node).or_default().push(ask);
+            } else {
+                log::debug!("{node:?}: {ask:?} asked of no window shown");
+            }
             return;
         };
         if ask == WindowAsk::Close {
@@ -380,6 +461,7 @@ impl<H: SurfaceHost + 'static> WindowHandler for State<H> {
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.stats.closed += 1;
         }
+        self.host.window_closed(id);
         self.send_input(InputEvent::ClickAway { surface: id });
     }
 
@@ -405,8 +487,18 @@ impl<H: SurfaceHost + 'static> WindowHandler for State<H> {
                 | WindowState::RESIZING,
         );
         let c = t.config.clone();
-        let (sw, w) = kept_size(configure.new_size.0, c.width, constrained);
-        let (sh, h) = kept_size(configure.new_size.1, c.height, constrained);
+        // A size it committed of its own since the last configure was
+        // acked is an echo of it, from a configure sent before the
+        // compositor saw the latest commit (sway sends one on every
+        // focus change): its own size stays, not taken as the user's
+        // resize, which would stop its content sizing it.
+        let echoes = std::mem::replace(&mut t.echoes, t.own.map(|o| o.into_iter().collect()));
+        let axis = |i: usize, given: Option<NonZeroU32>, asked: u32| match given {
+            Some(g) if !constrained && echoes[i].contains(&g.get()) => (false, asked.max(1)),
+            _ => kept_size(given, asked, constrained),
+        };
+        let (sw, w) = axis(0, configure.new_size.0, c.width);
+        let (sh, h) = axis(1, configure.new_size.1, c.height);
         let caps = configure.capabilities;
         let state = ToplevelState {
             sized: (sw, sh),

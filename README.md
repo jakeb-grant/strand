@@ -1,9 +1,9 @@
 # Strand
 
-A Rust toolkit for Wayland shells. You write bars, launchers, OSDs and
-notification stacks in one small typed declarative language. Everything
-animates by default, nothing runs when nothing changes, and saving a file is a
-state change, not a restart.
+A Rust toolkit for Wayland shells. You write bars, launchers, OSDs,
+notification stacks and settings windows in one small typed declarative
+language. Everything animates by default, nothing runs when nothing
+changes, and saving a file is a state change, not a restart.
 
 ```
 bar Top {
@@ -140,7 +140,7 @@ Each crate is one box in the runtime architecture:
 | `strand-theme` | Palettes: Material 3 roles, `material(seed:/image:)`, importers, the contrast guard | M2 |
 | `strand-render` | Springs, tokens, layout, damage, vello_cpu; lowering to the GPU, effects, promotion | M0, M2, M4 |
 | `strand-gpu` | The GPU thread: one wgpu device, vello_gpu frames, shader passes, readback and WSI presents | M4 |
-| `strand-surface` | Layer-shell, poses, blur, input, frame timing, session lock | M0, M4 |
+| `strand-surface` | Layer-shell and xdg toplevel windows, poses, blur, input, frame timing, session lock | M0, M4 |
 | `strand-auth` | The lock screen's PAM helper and the client that spawns it: the lock's security boundary | M4 |
 | `strand-fake-wayland` | A fake Wayland compositor for tests (toplevels, workspaces, layer surfaces) | M4 |
 | `strand` | The runtime binary and CLI | all |

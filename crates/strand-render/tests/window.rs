@@ -212,3 +212,53 @@ fn a_window_the_compositor_lets_go_of_takes_its_own_size_at_once() {
     // Drawn as a window that was never tiled is.
     assert_matches_ref("window_content_size", &buf, TOLERANCE);
 }
+
+/// (window) A window root's `focused` is the compositor's (its
+/// `activated`, which the host tells): the keyboard entering it, moving
+/// off it or leaving it never writes it.
+#[test]
+fn routing_never_writes_a_windows_focused() {
+    let (mut r, win, spec) = booted();
+    r.attach_surface(WIN, win);
+    let (w, h) = (spec.width.unwrap() as u32, spec.height.unwrap() as u32);
+    r.configure_surface(WIN, Size::new(w, h), Scale::ONE);
+    paint(&mut r, w, h);
+    let mut router = Router::new();
+    router.attached(WIN, win);
+    let mut out = router.handle(&InputEvent::KeyboardEnter { surface: WIN }, &mut r);
+    out.extend(router.handle(&InputEvent::KeyboardLeave { surface: WIN }, &mut r));
+    assert!(
+        !out.iter().any(|i| matches!(
+            i,
+            Intent::Flag {
+                node,
+                flag: strand_render::Flag::Focused,
+                ..
+            } if *node == win
+        )),
+        "{out:?}"
+    );
+}
+
+/// (window) In `strand inspect`'s pick mode the compositor's close of a
+/// window still closes it (a press is the inspector's, a close is not).
+#[test]
+fn pick_mode_lets_a_windows_close_through() {
+    let (mut r, win, spec) = booted();
+    r.attach_surface(WIN, win);
+    let (w, h) = (spec.width.unwrap() as u32, spec.height.unwrap() as u32);
+    r.configure_surface(WIN, Size::new(w, h), Scale::ONE);
+    paint(&mut r, w, h);
+    let mut router = Router::new();
+    router.attached(WIN, win);
+    router.set_picking(true, &mut r);
+    let out = router.handle(&InputEvent::ClickAway { surface: WIN }, &mut r);
+    assert!(
+        out.contains(&Intent::Write {
+            node: win,
+            prop: Prop::Open,
+            value: PropValue::Bool(false),
+        }),
+        "{out:?}"
+    );
+}

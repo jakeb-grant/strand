@@ -191,9 +191,10 @@ pub enum StepKind {
     },
     /// `unfocus`: no surface of the shell has the keyboard.
     Unfocus,
-    /// (window) `window <surface> <W|_>,<H|_> [maximized] [fullscreen]
-    /// [tiled] [activated] [decorated]`: the compositor configures that
-    /// window so (`None`: `window <surface> close`, its close).
+    /// (window) `window <surface> <W|W!|_>,<H|H!|_> [maximized]
+    /// [fullscreen] [tiled] [activated] [decorated] [bounds <W>,<H>]`:
+    /// the compositor configures that window so (`None`: `window
+    /// <surface> close`, its close).
     Window {
         on: Selector,
         configure: Option<crate::surfaces::WindowState>,
@@ -704,8 +705,8 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
             StepKind::Unfocus
         }
         "window" => {
-            let usage = "`window <surface> <W|_>,<H|_> [maximized] [fullscreen] [tiled] \
-                         [activated] [decorated]` or `window <surface> close`";
+            let usage = "`window <surface> <W|W!|_>,<H|H!|_> [maximized] [fullscreen] [tiled] \
+                         [activated] [decorated] [bounds <W>,<H>]` or `window <surface> close`";
             let on = selector(need(1, usage)?)?;
             let size = need(2, usage)?;
             if size == "close" {
@@ -715,27 +716,56 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                     configure: None,
                 }
             } else {
-                let axis = |v: &str| -> Result<Option<u32>, String> {
+                // A size, `W!` sized as given whatever the window asks
+                // for (a replay's, as recorded), or `_`.
+                let axis = |v: &str| -> Result<(Option<u32>, bool), String> {
                     if v == "_" {
-                        return Ok(None);
+                        return Ok((None, false));
                     }
-                    v.parse::<u32>()
+                    let (n, sized) = match v.strip_suffix('!') {
+                        Some(n) => (n, true),
+                        None => (v, false),
+                    };
+                    n.parse::<u32>()
                         .ok()
                         .filter(|n| *n > 0)
-                        .map(Some)
+                        .map(|n| (Some(n), sized))
                         .ok_or_else(|| format!("`{v}` is not a size in px or `_`: {usage}"))
                 };
-                let (a, b) = size
-                    .split_once(',')
-                    .ok_or_else(|| format!("`{size}` is not `W,H`: {usage}"))?;
+                fn pair<'a>(v: &'a str, usage: &str) -> Result<(&'a str, &'a str), String> {
+                    v.split_once(',')
+                        .ok_or_else(|| format!("`{v}` is not `W,H`: {usage}"))
+                }
+                let (a, b) = pair(size, usage)?;
+                let ((wa, sa), (wb, sb)) = (axis(a)?, axis(b)?);
                 let mut st = crate::surfaces::WindowState {
-                    size: [axis(a)?, axis(b)?],
+                    size: [wa, wb],
+                    sized: [sa, sb],
                     activated: false,
                     decorated: Some(false),
                     ..crate::surfaces::WindowState::default()
                 };
-                for x in &w[3..] {
+                let mut rest = w[3..].iter();
+                while let Some(x) = rest.next() {
                     let flag = match x.text.as_str() {
+                        "bounds" => {
+                            let v = rest
+                                .next()
+                                .ok_or_else(|| format!("`bounds` needs `W,H`: {usage}"))?;
+                            let (bw, bh) = pair(&v.text, usage)?;
+                            match (axis(bw)?, axis(bh)?) {
+                                ((Some(bw), false), (Some(bh), false)) => {
+                                    st.bounds = Some([bw, bh]);
+                                }
+                                _ => {
+                                    return Err(format!(
+                                        "`bounds {}` is not two sizes in px: {usage}",
+                                        v.text
+                                    ));
+                                }
+                            }
+                            continue;
+                        }
                         "maximized" => &mut st.maximized,
                         "fullscreen" => &mut st.fullscreen,
                         "tiled" => &mut st.tiled,

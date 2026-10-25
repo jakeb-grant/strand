@@ -940,7 +940,8 @@ fn the_guide_greeter_checks_on_its_own() {
 /// (window) The guide's settings window on the mock services: closed
 /// until `settings.open`; where the compositor draws no title bar
 /// (`w.decorated` false, the mock's), its own title and Close button,
-/// which asks the compositor to close it; decorated, neither; the
+/// which asks the compositor to close it, and a press held on the title
+/// bar asks a move (its release asks nothing); decorated, neither; the
 /// compositor's close writes `settings.open` false.
 #[test]
 fn the_guide_settings_window_draws_its_own_title_bar_where_undecorated() {
@@ -985,6 +986,17 @@ fn the_guide_settings_window_draws_its_own_title_bar_where_undecorated() {
             || inst.event(scene.parent(label).unwrap(), "click", vec![])
     );
     assert_eq!(flush(&mut scene).diff.window_asks, [(w, WindowAsk::Close)]);
+    // The title bar: the row holding the title.
+    let bar = scene.parent(scene.find_text("Settings").unwrap()).unwrap();
+    let bar = if scene.of_kind(NodeKind::Row).contains(&bar) {
+        bar
+    } else {
+        scene.parent(bar).unwrap()
+    };
+    inst.set_flag(bar, NodeFlag::Pressed, true);
+    assert_eq!(flush(&mut scene).diff.window_asks, [(w, WindowAsk::Move)]);
+    inst.set_flag(bar, NodeFlag::Pressed, false);
+    assert!(flush(&mut scene).diff.window_asks.is_empty());
     inst.set_flag(w, NodeFlag::Decorated, true);
     flush(&mut scene);
     assert!(

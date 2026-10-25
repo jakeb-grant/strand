@@ -295,6 +295,13 @@ pub trait SurfaceHost: Painter {
     fn window_state(&mut self, surface: SurfaceId, state: &ToplevelState) {
         let _ = (surface, state);
     }
+    /// (window) The compositor closed the `window` on `surface`
+    /// (`xdg_toplevel.close`), just before the click away that tells
+    /// routing so: a recording tells it from `w.close()`'s, which a
+    /// replay's handler asks again.
+    fn window_closed(&mut self, surface: SurfaceId) {
+        let _ = surface;
+    }
 }
 
 /// (M6, gap 31) The keyboard of the focused surface, as
@@ -888,6 +895,11 @@ pub struct State<H: SurfaceHost + 'static> {
     /// surfaces: a popup opened within [`GRAB_WINDOW`] of it grabs with
     /// its serial.
     last_action: Option<UserAction>,
+    /// (window) What a handler asked of a window not shown yet (the
+    /// step that opens it, before render sized it): its maximize,
+    /// fullscreen or minimize, asked at its creation, before the first
+    /// commit (`window.rs`).
+    window_asks: BTreeMap<NodeId, Vec<strand_scene::WindowAsk>>,
     /// Popups the compositor dismissed (Escape, a click away) whose spec
     /// still says open: not shown again until it says closed.
     dismissed: BTreeSet<NodeId>,
@@ -1127,6 +1139,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             keyboard_focus: None,
             last_pressed: None,
             last_action: None,
+            window_asks: BTreeMap::new(),
             grab_keyboard: BTreeSet::new(),
             releasing: BTreeSet::new(),
             held_leave: None,
@@ -1444,6 +1457,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 self.destroy_node_surfaces(node);
                 self.specs.remove(&node);
                 self.dismissed.remove(&node);
+                self.window_asks.remove(&node);
                 self.ids.retain(|(n, _), _| *n != node);
             }
         }

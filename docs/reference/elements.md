@@ -100,7 +100,7 @@ Also every prop and event of [`node`](#node).
 | --- | --- | --- |
 | `screens` | `Screens \| [text] \| text` | The monitors it is on: `all`, `focused`, or output names. |
 | `layer` | `Layer` | Its layer-shell layer. |
-| `open` | `<-> bool` | Whether it is shown. Bound two-way (`open: <-> open`), Escape, click-away and focus loss write false. |
+| `open` | `<-> bool` | Whether it is shown. Bound two-way (`open: <-> open`), Escape, click-away and focus loss write false; on a `window` only the compositor's close and `w.close()` do. |
 | `keyboard` | `Keyboard` | Keyboard focus: `none`, `on_demand` or `exclusive`. |
 | `anchor` | `Anchor` | Where it sits on the screen: `anchor: top_right`. |
 | `attach` | `Edge` | Grows out of an edge with concave fillets: `attach: top`. |
@@ -823,6 +823,12 @@ the compositor has it focused, and `maximized`, `fullscreen`,
 `tiled` and `decorated` follow the compositor (`id: w` and
 `w.maximized`); `w.move()`, `w.resize(edge)`, `w.minimize()`,
 `w.maximize()`, `w.fullscreen()` and `w.close()` ask it.
+The compositor places, stacks and focuses it, so the `surface`
+props that place a layer surface (`screens`, `layer`, `anchor`,
+`keyboard`, `attach`, `scrim`, and `margin` on it) are load errors
+(`check::window_prop`), and `screen` is not in scope in it. Escape
+and focus loss leave it open; only the compositor's close and
+`w.close()` write its `open` false.
 
 It is a surface, written at the top level of a file.
 

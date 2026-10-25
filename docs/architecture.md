@@ -109,8 +109,17 @@ sized axes to `Renderer::set_window_sized(surface, (bool, bool))`
 asked; an axis the compositor lets go of takes the content's size at
 once, with no spring from the size it was given), the bounds to `set_surface_bounds`, and the states to logic as
 `set_flag` with `NodeFlag::Focused`, `Maximized`, `Fullscreen`,
-`Tiled` and `Decorated` on the window's root. No locks are shared across
-threads on a hot path.
+`Tiled` and `Decorated` on the window's root, each only when it
+changed (`window_flags`; the sized axes and bounds likewise, so a
+configure that only resizes, each step of an interactive resize, wakes
+no logic). The host keeps each window's last state: bounds a configure
+gave outlast `surface_entered`, which gives the whole monitor's only to
+a surface without them (`Renderer::surface_bounds(surface)` reads a
+surface's back). `SurfaceHost::window_closed(surface)` tells the
+compositor's close (`xdg_toplevel.close`) just before its `ClickAway`,
+so the recorder marks that click away `flight::click_away::COMPOSITOR`
+and a replay tells it from `w.close()`'s, which its own handler asks
+again. No locks are shared across threads on a hot path.
 
 `strand run [dir]` (`crates/strand/src/run/`) is this wiring: the main
 thread's surface host forwards the monitor hooks (`screens` as a list of
@@ -134,12 +143,17 @@ chains, scrolling, the tree): hover and pressed chains, keyboard focus
 (the focused node of the focused surface gets `key(k)`), list selection,
 `nav`, `input` edits, and `open: false` on a surface whose `open` is
 two-way (`Prop::TwoWay`) on Escape, focus loss and click-away
-(a `window` only on `InputEvent::ClickAway`, its compositor's close;
-`InputEvent::ClickAway`, or a left press on another Strand surface while
+(`InputEvent::ClickAway`, or a left press on another Strand surface while
 an open `keyboard: exclusive` one has a two-way `open`:
 `InputScene::exclusive_open`; or, integration-r8, while an open popup with
 no `trigger: hover` has one, `InputScene::popup_open`, unless the press
-is in that popup or one nested in it, or on its anchor). The host passes each logic diff to
+is in that popup or one nested in it, or on its anchor). (window) A
+`window` is closed only by `InputEvent::ClickAway`, its compositor's
+close or `WindowAsk::Close` (in pick mode too); Escape and focus loss
+leave it open (`is_window`), and the router never writes its root's
+`Flag::Focused` (`Router::flush` drops it: a window root's `focused`
+is the compositor's `activated`, which the host sends logic from
+`SurfaceHost::window_state`). The host passes each logic diff to
 `Router::observe` before applying it, so logic's own `input` text wins
 over edits in flight, and calls `Router::settle(&mut dyn InputScene)`
 after applying it (a focused `input`'s `nav` list with rows and no
@@ -486,7 +500,7 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
 ```
 strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Painter
   ^   ^   ^
-  |   |   strand-surface   (layer-shell, shm, damage submit, input, frame timing)
+  |   |   strand-surface   (layer-shell, xdg toplevels, shm, damage submit, input, frame timing)
   |   strand-render ── strand-text
   |   |   └── strand-icons (the icon theme lookup; no dependencies)
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
@@ -1937,7 +1951,10 @@ threads** (as `strand_core::ipc`).
   ACTIVATED, DECORATED}`, the capabilities u8 `{CAN_MAXIMIZE,
   CAN_FULLSCREEN, CAN_MINIMIZE, WINDOW_MENU}`, the configure bounds'
   width u16 and height u16, 0 for none; written again for every open
-  window at a gap's end and a ring's restart, as a surface's map is),
+  window at a gap's end and a ring's restart, as a surface's map is;
+  a window's `0x0C` click away has payload byte 0
+  `flight::click_away::COMPOSITOR` when the compositor closed it,
+  none for `w.close()`),
   `0x30` output (slot = an output slot; connector name u16,
   width u16, height u16, scale u16 in 120ths, x i16, y i16), `0x31`
   output gone, `0x3E` gap begins (why u8: lock, off, inspector pick,
@@ -2127,8 +2144,9 @@ thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
   values are kept as reported.
 - Reloads are recorded in `Shell`'s commit (`run/shell.rs`), surface
   roots from the diff logic sends (a create of a `bar`, `panel`, `osd`,
-  `popup` or `lock` root, its origin from `Instance::identity`; a
-  `lock` root is never recorded). `ToLogic::LockState` and the lock
+  `popup`, `window` or `lock` root, its origin from
+  `Instance::identity`; a `lock` root is never recorded).
+  `ToLogic::LockState` and the lock
   asked for write a gap and pause the ring until the unlock, as on
   main.
 
@@ -2557,14 +2575,21 @@ re-base, if it needs one, is a dated decisions.md entry.
   one re-takes a newer press on its element once logic's first diff
   after its release is applied (`Pointing::diff_applied`), so a press
   that closes it never moves it first; `popup_config` makes it `PopupSide::Below` with
-  `aligned`, a positioner anchored and gravitating bottom-right), plus `thickness()` (a bar's
+  `aligned`, a positioner anchored and gravitating bottom-right),
+  (window) `title`, `app_id` (`Prop::Title`, `Prop::AppId`;
+  `window_title()` and `window_app_id()` give the name and namespace
+  while unset), `min_size` and `max_size` (`(Option<f32>,
+  Option<f32>)`, from `min_*`/`max_*`) and `decorations: Decorations`
+  (`Server`, `None`; `Prop::Decorations`), read only for a `window`,
+  plus `thickness()` (a bar's
   across its edge), `exclusive_edge()`, `exclusive_zone()` (what
   `exclusive` keeps along that edge) and `needs_recreate()` (kind,
   namespace or layer changed). (flex) Logic pins each per-monitor
   instance of a `panel` or `osd` whose `screens:` picks monitors as it
   does a bar's; a `lock` is one instance with `screen` bound to the
-  focused (else first) monitor and no pin. A surface without a size of its own (a
-  panel, OSD or popup without `width`/`height`, a bar without a
+  focused (else first) monitor and no pin; a `window` is one instance
+  with no `screen` and no pin. A surface without a size of its own (a
+  panel, OSD, popup or window without `width`/`height`, a bar without a
   thickness) gets it from a content layout pass in render before the spec
   is reported. Render resolves specs through the node's token scope after
   every `apply`: `Renderer::surface_spec(node)` reads one, and
@@ -4400,10 +4425,15 @@ Public interfaces other crates and later stages build on:
   built for the item type; `list_members`, `async_members`,
   `ASYNC_TRANSFORMS`). `///` comments in schema text document the entry they
   precede: `Schema::doc(&DocKey) -> Option<&str>` with `DocKey::{Type(name),
-  Member(type, member), Function(name), Value(name), Method(type, method),
-  Element(kind), Prop(kind, name) (also `on event`, `stroke.dash` and
-  scope names; group docs reach their elements), Token(path)}`;
-  `RecordDef::doc` mirrors `DocKey::Type`; `Schema::token_doc(path)` falls
+  Member(type, member), Action(type, member), Function(name), Value(name),
+  Method(type, method), Element(kind), Prop(kind, name) (also `on event`,
+  `stroke.dash` and scope names; group docs reach their elements),
+  Token(path)}`; (window) a record's method or action is its `Member`'s
+  unless a field shares its name (`fullscreen` and `fullscreen()`), when
+  it keeps its own as `Action`: `Schema::method_doc(type, name)` reads
+  either (the reference's method rows, completion), and the LSP hover of
+  such a field shows both; `RecordDef::doc` mirrors `DocKey::Type`;
+  `Schema::token_doc(path)` falls
   back to the nearest documented group (`space.2` reads `space`). Every
   entry of the builtin schema is documented (a test enforces it). A parameter's default keeps its
   source text (`ParamSig::default: Option<String>`). `Schema::fingerprint()
@@ -5174,7 +5204,8 @@ wake the loop through it, so the binary wires one waker only.
 ### `strand-surface`
 
 Owns the Wayland connection with smithay-client-toolkit: layer-shell surfaces
-per output, a 2–3 buffer shm pool per surface with buffer age,
+per output and (window) `xdg_toplevel` windows, a 2–3 buffer shm pool
+per surface with buffer age,
 `damage_buffer`, `set_opaque_region`, fractional scale + viewporter, frame
 callbacks only while `Painter::wants_frame`, `wp_presentation` timing, output
 hotplug (monitor identity = make + model + description), and input forwarded
@@ -5315,12 +5346,25 @@ and the connection):
   on an axis when a state constrains it (maximized, fullscreen, tiled,
   resizing) or it differs from the size asked (`kept_size`, by
   `placement::window_kept_size(given, asked, constrained)`, the rule
-  eval's stand-in compositor shares), keeps its
+  eval's stand-in compositor shares) and from every size of its own it
+  committed since the last configure was acked (`Toplevel::echoes`,
+  kept by `committing` as `send_geometry` sets the window geometry: a
+  configure sent before the compositor saw the latest commit echoes
+  one), keeps its
   own otherwise, and reports `SurfaceHost::window_state` on a change;
-  `close` is the surface's `InputEvent::ClickAway`, as is
-  `WindowAsk::Close`. `State::window_ask` sends move and resize with the
+  `close` is the surface's `InputEvent::ClickAway` (after
+  `SurfaceHost::window_closed`), as is `WindowAsk::Close`.
+  `State::window_ask` sends move and resize with the
   diff's press serial (else the seat's last), and minimize, maximize
-  and fullscreen (toggles) only where `wm_capabilities` lists them.
+  and fullscreen (toggles) only where `wm_capabilities` lists them; a
+  maximize, fullscreen or minimize asked of a window its spec opens but
+  not made yet waits in `State::window_asks` and is asked at its
+  creation, before the first commit. `placement::window_config` raises a
+  `max_*` under its `min_*` to it (`xdg_toplevel.invalid_size` would end
+  the connection). An output unplugged leaves its windows and their
+  popups alone (`output_removed`: the compositor moves them). A window
+  is never placed (no `surface_placed`: a compositor never says where it
+  is), so neither is a popup in it.
 - Popups (`NodeKind::Popup` specs): an `xdg_popup` (`xdg_wm_base` bound
   through sctk's `XdgShell`, versions 1–6) nested in a mapped surface of
   `SurfaceSpec::parent` (the one last pressed, when several), through

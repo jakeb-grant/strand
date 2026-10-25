@@ -310,3 +310,142 @@ fn a_popup_in_a_window_nests_in_it() {
     assert!(mgr.state().surfaces_of(MENU).is_empty());
     assert!(mgr.state().surfaces().is_empty());
 }
+
+/// Dispatches until `node`'s window painted a first frame.
+fn wait_painted(mgr: &mut SurfaceManager<TestHost>, node: NodeId) -> strand_scene::SurfaceId {
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the window paints: {:?}", mgr.state().surfaces());
+    mgr.state().surfaces_of(node)[0]
+}
+
+/// A minimum over the maximum would be `xdg_toplevel.invalid_size`,
+/// which ends the whole connection: the maximum is raised to it, and
+/// the window maps with the connection alive, a bar beside it still
+/// drawn.
+#[test]
+fn a_minimum_over_the_maximum_keeps_the_connection() {
+    let Some(sway) = Sway::start("a_minimum_over_the_maximum_keeps_the_connection") else {
+        return;
+    };
+    let mut mgr = manager(&sway);
+    let mut spec = window_spec("Odd", "Odd", 400.0, 300.0);
+    spec.min_size = (Some(500.0), None);
+    spec.max_size = (Some(400.0), None);
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(spec));
+    let id = wait_painted(&mut mgr, WIN);
+    // Dispatching on: no protocol error comes back.
+    pump(&mut mgr, Duration::from_millis(500));
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .expect("the connection is alive");
+    assert!(mgr.state().surface(id).is_some());
+    assert_eq!(views(&sway, "strand-Odd").len(), 1);
+}
+
+/// A configure sway sent before it saw the window's latest commit (a
+/// focus change while its content grew) gives back the size it had: an
+/// echo of its own, not the user's resize, so its content still sizes
+/// it.
+#[test]
+fn a_stale_configure_does_not_pin_a_floating_window() {
+    let Some(sway) = Sway::start("a_stale_configure_does_not_pin_a_floating_window") else {
+        return;
+    };
+    sway.msg(&["for_window", "[app_id=strand-Grow]", "floating", "enable"]);
+    let mut mgr = manager(&sway);
+    let spec = window_spec("Grow", "Grow", 400.0, 300.0);
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(spec.clone()));
+    let id = wait_painted(&mut mgr, WIN);
+    pump(&mut mgr, Duration::from_millis(500));
+    // sway deactivates it (a configure at 300 high), unread when the
+    // content grows to 360.
+    sway.msg(&["workspace", "2"]);
+    std::thread::sleep(Duration::from_millis(200));
+    let mut taller = spec;
+    taller.height = Some(360.0);
+    spec_change(&mut mgr, WIN, taller);
+    pump(&mut mgr, Duration::from_millis(500));
+    sway.msg(&["workspace", "1"]);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.toplevel_state(WIN).is_some_and(|t| t.activated)
+                && s.surface(id).is_some_and(|i| i.buffer_size.h == 360)
+        })
+        .unwrap();
+    pump(&mut mgr, Duration::from_millis(300));
+    let st = mgr.state().toplevel_state(WIN).unwrap();
+    assert!(ok, "{st:?} {:?}", mgr.state().host().window_states);
+    assert_eq!(st.sized, (false, false), "{st:?}");
+    assert_eq!(st.size, (400, 360), "{st:?}");
+    assert_eq!(mgr.state().surface(id).unwrap().logical_size, (400, 360));
+    assert!(
+        mgr.state()
+            .host()
+            .window_states
+            .iter()
+            .all(|(_, t)| t.sized == (false, false)),
+        "never taken as a resize: {:?}",
+        mgr.state().host().window_states
+    );
+}
+
+/// A fullscreen asked in the step that opens the window, before render
+/// sized it (so before it is made), is asked at its creation: its first
+/// configure is fullscreen. A move asked so does nothing.
+#[test]
+fn an_ask_before_the_window_is_made_is_kept_for_it() {
+    let Some(sway) = Sway::start("an_ask_before_the_window_is_made_is_kept_for_it") else {
+        return;
+    };
+    let mut mgr = manager(&sway);
+    let sized = window_spec("Early", "Early", 400.0, 300.0);
+    let mut waiting = sized.clone();
+    (waiting.width, waiting.height) = (None, None);
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(waiting));
+    mgr.state_mut().window_ask(WIN, WindowAsk::Fullscreen, None);
+    mgr.state_mut().window_ask(WIN, WindowAsk::Move, None);
+    assert!(mgr.state().surfaces_of(WIN).is_empty(), "not made yet");
+    spec_change(&mut mgr, WIN, sized);
+    let st = wait_state(&mut mgr, WIN, |t| t.fullscreen);
+    assert_eq!(st.size, (1920, 1080), "{st:?}");
+}
+
+/// A window on an output that is unplugged stays the same window (the
+/// compositor moves it): it is not destroyed and made again.
+#[test]
+fn a_window_outlives_its_output() {
+    let Some(sway) = Sway::start("a_window_outlives_its_output") else {
+        return;
+    };
+    let second = sway.create_output();
+    let mut mgr = manager(&sway);
+    mgr.state_mut().apply_surface_change(
+        WIN,
+        SurfaceChange::Created(window_spec("Moved", "Moved", 400.0, 300.0)),
+    );
+    let id = wait_painted(&mut mgr, WIN);
+    pump(&mut mgr, Duration::from_millis(300));
+    sway.msg(&[
+        "[app_id=strand-Moved]",
+        "move",
+        "container",
+        "to",
+        "output",
+        &second,
+    ]);
+    pump(&mut mgr, Duration::from_millis(500));
+    sway.msg(&["output", &second, "unplug"]);
+    pump(&mut mgr, Duration::from_millis(800));
+    assert_eq!(mgr.state().surfaces_of(WIN), vec![id]);
+    assert!(mgr.state().host().detached.is_empty());
+    assert_eq!(mgr.state().host().attached.len(), 1);
+}

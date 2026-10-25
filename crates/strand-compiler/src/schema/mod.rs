@@ -82,8 +82,8 @@ pub struct ElementFlags {
     /// whose `only_in` names it (`letters` in `text`) and the surfaces
     /// `popup` and `tooltip`.
     pub leaf: bool,
-    /// A top-level surface (`bar`, `panel`, `osd`, `lock`); `popup` is an
-    /// anchored surface declared inside an element.
+    /// A top-level surface (`bar`, `panel`, `osd`, `window`, `lock`);
+    /// `popup` is an anchored surface declared inside an element.
     pub surface: bool,
     /// May only appear directly inside this element (`start` in `split`,
     /// `letters` in `text`).
@@ -173,6 +173,11 @@ pub enum DocKey {
     Type(String),
     /// A field, method or event of a record or service: (type, member).
     Member(String, String),
+    /// A method or action of a record or service that shares its name
+    /// with a field (`Window`'s `fullscreen()` beside `fullscreen`), so
+    /// each has its own doc: (type, member). Read with
+    /// [`Schema::method_doc`].
+    Action(String, String),
     /// A builtin function or action.
     Function(String),
     /// A builtin value (`t`).
@@ -245,7 +250,12 @@ impl Schema {
         let s = self;
         let mut missing = Vec::new();
         let mut need = |k: DocKey| {
-            if s.doc(&k).is_none() {
+            let found = match &k {
+                // A method's doc: its own, or its `Member`'s.
+                DocKey::Action(t, n) => s.method_doc(t, n).is_some(),
+                _ => s.doc(&k).is_some(),
+            };
+            if !found {
                 missing.push(format!("{k:?}"));
             }
         };
@@ -256,7 +266,9 @@ impl Schema {
             need(DocKey::Type(r.name.clone()));
             let member = |n: &str| DocKey::Member(r.name.clone(), n.to_string());
             r.fields.iter().for_each(|f| need(member(&f.name)));
-            r.methods.iter().for_each(|m| need(member(&m.name)));
+            r.methods
+                .iter()
+                .for_each(|m| need(DocKey::Action(r.name.clone(), m.name.clone())));
             r.events.iter().for_each(|e| need(member(&e.name)));
         }
         for name in s.functions.keys() {
@@ -326,6 +338,14 @@ impl Schema {
     /// The doc comment of an entry, if it has one.
     pub fn doc(&self, key: &DocKey) -> Option<&str> {
         self.docs.get(key).map(String::as_str)
+    }
+
+    /// The doc of method or action `name` of record or service `owner`:
+    /// its own [`DocKey::Action`] where a field shares its name, else its
+    /// [`DocKey::Member`].
+    pub fn method_doc(&self, owner: &str, name: &str) -> Option<&str> {
+        self.doc(&DocKey::Action(owner.to_string(), name.to_string()))
+            .or_else(|| self.doc(&DocKey::Member(owner.to_string(), name.to_string())))
     }
 
     /// The doc of token `path`, or of the nearest group holding it
@@ -660,14 +680,17 @@ mod tests {
     }
 
     /// A field and an action may share a name (`Window`'s `fullscreen` and
-    /// `fullscreen()`); their one `DocKey::Member` holds both docs, field
-    /// first. Overloads of a function keep their first doc, as before.
+    /// `fullscreen()`); each keeps its own doc, the field's its
+    /// `DocKey::Member`, the action's its `DocKey::Action`
+    /// (`Schema::method_doc`). An action alone is its `Member`'s.
+    /// Overloads of a function keep their first doc, as before.
     #[test]
-    fn a_field_and_an_action_of_one_name_share_their_docs() {
+    fn a_field_and_an_action_of_one_name_keep_their_own_docs() {
         let mut s = Schema::builtin().clone();
         s.extend(
             "record Lamp key id {\n  id: text\n  /// It is on.\n  lit: bool\n  \
-             /// `l.lit()` turns it on, or off when it is on.\n  action lit()\n}\n\
+             /// `l.lit()` turns it on, or off when it is on.\n  action lit()\n  \
+             /// Dims it.\n  action dim()\n}\n\
              /// Rounds.\nfn halve(x: int) -> int\n/// Other.\nfn halve(x: int, y: int) -> int\n",
         )
         .unwrap();
@@ -676,7 +699,16 @@ mod tests {
         assert!(s.types.record(lamp).method("lit").is_some());
         assert_eq!(
             s.doc(&DocKey::Member("Lamp".into(), "lit".into())),
-            Some("It is on.\n\n`l.lit()` turns it on, or off when it is on.")
+            Some("It is on.")
+        );
+        assert_eq!(
+            s.method_doc("Lamp", "lit"),
+            Some("`l.lit()` turns it on, or off when it is on.")
+        );
+        assert_eq!(s.method_doc("Lamp", "dim"), Some("Dims it."));
+        assert_eq!(
+            s.doc(&DocKey::Member("Lamp".into(), "dim".into())),
+            Some("Dims it.")
         );
         assert_eq!(s.doc(&DocKey::Function("halve".into())), Some("Rounds."));
     }
