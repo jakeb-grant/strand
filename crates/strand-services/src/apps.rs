@@ -73,6 +73,23 @@ pub struct App {
     pub icon: String,
     /// Its categories.
     pub categories: Vec<String>,
+    /// (services-round) Its desktop actions (`[Desktop Action …]`).
+    pub actions: Vec<AppAction>,
+}
+
+/// (services-round) One of an app's desktop actions (`New Window`,
+/// `New Private Window`): the schema's `AppAction`.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq, Eq)]
+#[data(name = "AppAction", key = id)]
+pub struct AppAction {
+    /// Its id in the entry (`new-window`).
+    pub id: String,
+    /// Its name, in the user's language.
+    pub name: String,
+    /// Its own icon, if it names one the theme has (or a path).
+    pub icon: Option<String>,
+    /// The app it belongs to.
+    pub app: String,
 }
 
 /// A span of characters of a name.
@@ -92,10 +109,17 @@ pub struct Hit {
     pub ranges: Vec<Range>,
 }
 
-/// `h.app.launch()`.
+/// `h.app.launch()`, and (services-round) `a.launch()` of one of its
+/// desktop actions.
 #[derive(Call, Debug)]
 pub enum AppsAction {
-    Launch { item: App },
+    Launch {
+        item: App,
+    },
+    #[call(name = "launch")]
+    LaunchAction {
+        item: AppAction,
+    },
 }
 
 /// `apps.search(q)`.
@@ -222,6 +246,25 @@ pub struct Entry {
     /// `StartupWMClass`: the window class (Wayland app id) its windows
     /// have, when it is not the entry's id.
     pub wm_class: Option<String>,
+    /// (services-round) Each desktop action's id and `Exec` line, as
+    /// `app.actions` lists them.
+    pub action_execs: Vec<(String, String)>,
+}
+
+impl Entry {
+    /// (services-round) This entry as its desktop action `id` starts:
+    /// the action's `Exec` line in place of the entry's ([`command`]).
+    pub fn for_action(&self, id: &str) -> Option<Entry> {
+        let exec = self
+            .action_execs
+            .iter()
+            .find(|(a, _)| a == id)
+            .map(|(_, e)| e.clone())?;
+        Some(Entry {
+            exec,
+            ..self.clone()
+        })
+    }
 }
 
 /// The `.desktop` files under `dir`, with their ids (the path below `dir`,
@@ -369,6 +412,33 @@ fn listed(
         );
     }
     let icon_key = entry.icon().map(str::to_string);
+    // (services-round) The desktop actions it lists that have a name and
+    // an `Exec` line (the spec requires both; one without is left out).
+    let mut actions = Vec::new();
+    let mut action_execs = Vec::new();
+    for a in entry.actions().unwrap_or_default() {
+        let a = a.trim();
+        if a.is_empty() || actions.iter().any(|x: &AppAction| x.id == a) {
+            continue;
+        }
+        let (Some(name), Some(exec)) = (entry.action_name(a, locales), entry.action_exec(a)) else {
+            continue;
+        };
+        if exec.trim().is_empty() {
+            continue;
+        }
+        actions.push(AppAction {
+            id: a.to_string(),
+            name: name.to_string(),
+            icon: entry
+                .action_entry(a, "Icon")
+                .filter(|i| !i.trim().is_empty())
+                .map(|i| resolve_icon(Some(i)))
+                .filter(|i| i != FALLBACK_ICON),
+            app: id.clone(),
+        });
+        action_execs.push((a.to_string(), exec.to_string()));
+    }
     Some(Entry {
         app: App {
             id,
@@ -385,6 +455,7 @@ fn listed(
                 .filter(|c| !c.is_empty())
                 .map(str::to_string)
                 .collect(),
+            actions,
         },
         exec,
         terminal: entry.terminal(),
@@ -401,6 +472,7 @@ fn listed(
             .map(str::trim)
             .filter(|c| !c.is_empty())
             .map(str::to_string),
+        action_execs,
     })
 }
 
@@ -1023,17 +1095,33 @@ impl Apps {
                         SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         reply.send(Ok::<_, String>(search(&entries, &frecency, &query, unix_now())));
                     }
-                    Some(Msg::Action(AppsAction::Launch { item })) => {
+                    Some(Msg::Action(a)) => {
                         // (M5) The press's xdg-activation token, if any.
                         let token = cx.activation_token().map(str::to_owned);
-                        let Some(entry) = entries.iter().find(|e| e.app.id == item.id) else {
-                            log::warn!("apps: no app `{}` to launch", item.id);
+                        // (services-round) A desktop action starts its
+                        // own `Exec` line, and counts as its app's launch.
+                        let (app, action) = match a {
+                            AppsAction::Launch { item } => (item.id, None),
+                            AppsAction::LaunchAction { item } => (item.app, Some(item.id)),
+                        };
+                        let Some(entry) = entries.iter().find(|e| e.app.id == app) else {
+                            log::warn!("apps: no app `{app}` to launch");
                             continue;
+                        };
+                        let entry = match &action {
+                            None => entry.clone(),
+                            Some(a) => match entry.for_action(a) {
+                                Some(e) => e,
+                                None => {
+                                    log::warn!("apps: `{app}` has no action `{a}`");
+                                    continue;
+                                }
+                            },
                         };
                         // Forking, waiting for the exec and reaping the
                         // intermediate process block: off the shared
                         // runtime, so no service waits on a launch.
-                        let (id, entry) = (entry.app.id.clone(), entry.clone());
+                        let id = entry.app.id.clone();
                         launching.spawn_blocking(move || {
                             command(&entry).and_then(|argv| {
                                 spawn_launched(&argv, entry.path.as_deref(), token.as_deref())
@@ -1093,6 +1181,7 @@ mod tests {
             icon_key: Some("x-icon".into()),
             also: Vec::new(),
             wm_class: None,
+            action_execs: Vec::new(),
         }
     }
 

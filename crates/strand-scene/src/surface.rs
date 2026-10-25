@@ -132,6 +132,11 @@ pub struct SurfaceSpec {
     /// click-away catcher too, when it has one). Only a `popup` or a
     /// `panel` has one (the compiler rejects it elsewhere).
     pub scrim: Option<Color>,
+    /// (services-round) `inhibit_idle: true`: while it is shown the
+    /// compositor does not go idle (no screensaver, dimming or lock by
+    /// timeout): a `zwp_idle_inhibitor_v1` on each of its Wayland
+    /// surfaces.
+    pub inhibit_idle: bool,
 }
 
 /// (M4) Which optional protocols the compositor offered, reported once
@@ -271,6 +276,10 @@ impl SurfaceSpec {
                 ) => Some(*c),
                 _ => None,
             },
+            inhibit_idle: matches!(
+                get(Prop::InhibitIdle).as_ref().map(AsRef::as_ref),
+                Some(PropValue::Bool(true))
+            ),
         }
     }
 
@@ -339,6 +348,30 @@ mod tests {
 
     fn kw(k: &str) -> PropValue {
         PropValue::Keyword(k.into())
+    }
+
+    /// (services-round) `inhibit_idle` is off unless it is `true`, on any
+    /// surface, and changes no Wayland surface's identity.
+    #[test]
+    fn inhibit_idle_resolves() {
+        assert!(!spec(NodeKind::Bar, &[]).inhibit_idle);
+        let on = spec(NodeKind::Bar, &[(Prop::InhibitIdle, PropValue::Bool(true))]);
+        assert!(on.inhibit_idle);
+        assert!(!spec(NodeKind::Bar, &[]).needs_recreate(&on));
+        assert!(
+            spec(
+                NodeKind::Popup,
+                &[(Prop::InhibitIdle, PropValue::Bool(true))]
+            )
+            .inhibit_idle
+        );
+        assert!(
+            !spec(
+                NodeKind::Osd,
+                &[(Prop::InhibitIdle, PropValue::Bool(false))]
+            )
+            .inhibit_idle
+        );
     }
 
     #[test]

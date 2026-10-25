@@ -676,6 +676,150 @@ mod tests {
         );
     }
 
+    /// (services-round) The window, mode and keyboard members check in a
+    /// config against the served schema and the builtin stubs alike: a
+    /// window's `rect` and `move_to(ws)`, `wm.mode`, the keyboard's
+    /// layouts, modifiers and switches. A layout index is an `int`.
+    #[test]
+    fn the_services_round_wm_and_keyboard_members_check() {
+        let src = "bar Top {
+  row {
+    for w in windows.all {
+      box {
+        width: w.rect?.width ?? 0
+        for ws in workspaces.all { box { on click { w.move_to(ws) } } }
+      }
+    }
+    text wm.mode ?? \"\"
+    for l in keyboard.layouts key l { text l }
+    box {
+      when keyboard.alt || keyboard.ctrl || keyboard.shift || keyboard.logo { opacity: 1 }
+      on click { keyboard.next_layout() }
+    }
+    box { on click { keyboard.set_layout(1) } }
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        let bad = "bar Top {\n  box { on click { keyboard.set_layout(\"German\") } }\n}\n";
+        let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+        assert!(
+            strand_compiler::compile_with(&map, schema())
+                .diagnostics
+                .iter()
+                .any(|d| d.is_error()),
+            "a layout by name"
+        );
+    }
+
+    /// (services-round) A notification's hints and reply, an app's
+    /// desktop actions and a `from listen` service's `line` check against
+    /// the served schema and the builtin stubs alike; `line` is only a
+    /// `from listen` service's, its `doc` the service's own record.
+    #[test]
+    fn the_services_round_notification_app_and_line_members_check() {
+        let src = "permit exec \"sh\"
+service log from listen [\"sh\", \"-c\", \"tail -f x\"] { level: text; n: int? }
+state last = \"\"
+on log.line(doc) { last = doc.level + join(\"\", doc.n) }
+bar Top {
+  row {
+    for n in notifications.all {
+      box {
+        width: (n.progress ?? 0) * 100
+        text (n.category ?? \"\") + (n.desktop_entry ?? \"\")
+        when n.can_reply { opacity: 1 }
+        on click { n.reply(\"ok\") }
+      }
+    }
+    for a in apps.all {
+      for x in a.actions { box { text x.name + (x.icon ?? \"\") + x.id; on click { x.launch() } } }
+    }
+    text last
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for (bad, code) in [
+            (
+                "permit exec \"sh\"\nservice p from poll [\"sh\", \"-c\", \"echo\"] every 1s { a: int }\non p.line(doc) { }\nbar B { text \"x\" }\n",
+                "check::unknown_event",
+            ),
+            (
+                "permit exec \"sh\"\nservice l from listen [\"sh\", \"-c\", \"echo\"] { a: int }\non l.line(doc) { let t: text = doc.b }\nbar B { text \"x\" }\n",
+                "check::unknown_field",
+            ),
+            (
+                "bar B { for n in notifications.all { box { on click { n.reply(1) } } } }\n",
+                "check::type_mismatch",
+            ),
+        ] {
+            // A poll service has no `line`; `doc` has only the declared
+            // fields; a reply is text.
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            let codes: Vec<_> = strand_compiler::compile_with(&map, schema())
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .map(|d| d.code)
+                .collect();
+            assert_eq!(codes, [code], "{bad}");
+        }
+    }
+
+    /// (services-round) `idle.after(timeout)` and a surface's
+    /// `inhibit_idle` check against the served schema and the builtin
+    /// stubs alike, as the gap review's screensaver and caffeine toggle
+    /// use them; `after` takes a duration.
+    #[test]
+    fn the_idle_members_check() {
+        let src = "state caffeine = false
+panel Saver {
+  open: idle.after(300s) && idle.available
+  text join(\" \", idle.timeouts.len)
+}
+bar Top {
+  inhibit_idle: caffeine
+  box { on click { caffeine = !caffeine } }
+}
+osd Playing { inhibit_idle: true; text \"x\" }
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        let bad = "panel P { open: idle.after(300) }\n";
+        let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+        let codes: Vec<_> = strand_compiler::compile_with(&map, schema())
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(codes, ["check::type_mismatch"], "a timeout is a duration");
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.
@@ -3017,6 +3161,27 @@ service shelf {
                 .filter(|d| !d.message.starts_with("`l.a`:"))
                 .collect();
             assert!(failures.is_empty(), "{failures:?}");
+        }
+
+        /// (services-round) `on l.line(doc)`: four lines printed in one
+        /// frame are merged into `l`'s fields, and the handler still
+        /// runs once a line, `doc` holding that line's fields alone (an
+        /// optional one it leaves out null, a plain one its default).
+        /// Nothing reads `l`'s fields: the handler alone runs the command.
+        #[test]
+        fn a_line_handler_runs_once_a_line() {
+            let src = "permit exec \"sh\"\nexport state sum = 0\nexport state seen = \"\"\n\
+                service l from listen [\"sh\", \"-c\", \"sleep .2; echo a=1; echo '{\\\"a\\\": 2, \\\"b\\\": \\\"x\\\"}'; echo b=y; echo a=4; sleep 30\"] { a: int; b: text? }\n\
+                on l.line(doc) {\n  sum += doc.a\n  seen = seen + (doc.b ?? \"-\")\n}\n\
+                bar B { text seen }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("four lines heard", |l| {
+                l.inst.get("svc.seen").unwrap() == Value::text("-xy-")
+            });
+            assert_eq!(live.inst.get("svc.sum").unwrap(), Value::int(7));
+            live.until("merged", |l| {
+                l.value("l", "a") == Value::int(4) && l.value("l", "b") == Value::text("y")
+            });
         }
 
         fn gone(pid: &str) -> bool {

@@ -85,6 +85,10 @@ wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 # on compositors without an IPC adapter (labwc, wayfire, river), on the
 # same thread.
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+# (services-round) `keyboard.layouts` on Hyprland, which names only the
+# active layout: its keyboard's xkb rule names compiled to name the rest
+# (the libxkbcommon strand-surface already links).
+xkbcommon = { version = "0.8.0", default-features = false }
 # Audio (design.md names pipewire 0.10): its own `strand-pipewire` thread,
 # since pipewire-rs is `!Send`. `v1_0_0`: the oldest PipeWire we build
 # against (Ubuntu 24.04's 1.0.5).

@@ -181,6 +181,9 @@ props! {
     Screens = "screens": Snap,
     Open = "open": Snap,
     Attach = "attach": Snap,
+    /// (services-round) `inhibit_idle: true` on a surface: the compositor
+    /// does not go idle while it is shown (`zwp_idle_inhibitor_v1`).
+    InhibitIdle = "inhibit_idle": Snap,
     /// The declared name of a surface (`bar Top` → `"Top"`), as
     /// `PropValue::Text`. Set by the compiler, not written as a prop in
     /// source; the surface's layer-shell namespace is `strand-<name>`

@@ -5251,6 +5251,14 @@ and the connection):
     is the same surface on its root layer surface's layer and output
     (popups stack above layer surfaces), taking no clicks (the grab
     closes it).
+  - (services-round) Idle inhibition (`manager/idle.rs`):
+    `SurfaceSpec::inhibit_idle` (`Prop::InhibitIdle`, `inhibit_idle:`
+    on any surface) gives each of the node's Wayland surfaces a
+    `zwp_idle_inhibitor_v1` from `zwp_idle_inhibit_manager_v1` (bound
+    when offered): made as a layer surface or popup is created and when
+    `apply_surface_change` turns it on in place, destroyed when it turns
+    off and before the surface goes. `SurfaceInfo::inhibits_idle` says
+    whether one is held.
   - Fillets: placement puts an `attach`ed box at its margin on that
     side from that edge, 0 while unset and negative over it (a panel
     anchored to it, its margins as set; a popup opening away from its
@@ -5389,7 +5397,12 @@ and the connection):
   (a held one when it resolves as real), when that surface goes
   (`layer.rs`'s destroy, the lock's refocus) or the seat loses its
   keyboard. The binary's host forwards it to
-  `strand_services::keyboard::focused`.
+  `strand_services::keyboard::focused`. (services-round) `KeyboardState`
+  also carries `layouts: Vec<String>` (the keymap's names by index,
+  empty for one it does not name) and `modifiers: strand_scene::Modifiers`
+  (that keyboard's held, latched or locked Ctrl, Alt, Shift and Logo,
+  kept per keyboard beside its lock keys), which the host maps to
+  `Focused { layouts, alt, ctrl, shift, logo }`.
 - Later (planned, so the current shape does not block them):
   - `State::recreate_all()` for `strand reload --hard`.
 
@@ -6244,7 +6257,13 @@ transparent huge pages for life.
   `WmChange::KeyboardLayout`, subscribed only while `layout` is watched;
   `keyboard::configure(Option<keyboard::Config { sys, led_period }>)`
   points it at fake LEDs in tests, `keyboard::led_reads()` counts the
-  reads), and the D-Bus services (wave 4, a2):
+  reads; services-round: `layouts` from `WmChange::KeyboardLayouts`
+  (subscribed while `layout` or `layouts` is watched; a focused keymap
+  naming any wins), `alt`/`ctrl`/`shift`/`logo` from `Focused` only, and
+  the actions `next_layout()`/`set_layout(index)` as
+  `WmAction::SwitchLayout(LayoutSwitch::Next | Index(u32))`, each on a
+  subscription of its own that asks again after each batch while the
+  adapter answers `NotConnected`, for 3 s at most), and the D-Bus services (wave 4, a2):
   `battery` (UPower's display device and devices), `brightness`
   (`/sys/class/backlight` watched with inotify, writes through logind's
   `SetBrightness`; `brightness::set_backlight_root` /
@@ -6315,7 +6334,22 @@ transparent huge pages for life.
   1..=n without actions, before the name is asked for;
   `notifications::set_config(Option<notifications::Config { state }>)`
   points it at a test's directory, or `state: None` for none, as
-  `apps::set_config` does),
+  `apps::set_config` does; services-round: `progress`, `category` and
+  `desktop_entry` from the `value`, `category` and `desktop-entry`
+  hints, kept in the history, and `can_reply` from an `inline-reply`
+  action, never kept; the server advertises `inline-reply` and
+  `NotificationsAction::Reply { item, text }` emits
+  `NotificationReplied`), `apps` (services-round: `App.actions:
+  Vec<apps::AppAction>` from the entry's `[Desktop Action]` groups,
+  `Entry::action_execs` their `Exec` lines, `AppsAction::LaunchAction {
+  item: AppAction }` the action's `launch`, starting
+  `Entry::for_action(id)`), `idle` (services-round: `ext_idle_notifier_v1` on a
+  thread of its own, `strand-idle`, as `outputs` runs; `idle::want(t)`
+  registers a timeout process-wide and pokes the running services'
+  eventfds, each making one `ext_idle_notification_v1` per timeout;
+  `Idle.timeouts: Vec<IdleTimeout { timeout, idle }>` keyed by timeout
+  is what the `fn after(timeout)` reads, tracked; `idle::configure`
+  points it at a test's socket),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
   while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
   from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,
@@ -6365,7 +6399,9 @@ transparent huge pages for life.
   directory's ancestors for their move or removal; a missing directory
   waited for from its nearest existing ancestor), a `listen` command's
   lines (merged and sent at most once per `custom::LISTEN_FLUSH`, a
-  frame) or a `poll` command or file (only while visible) as
+  frame; services-round: once `custom::hear_lines(spec)` was called,
+  each line also emits the store's `line` event, `Data::List` of that
+  line's field values by index, before the merge) or a `poll` command or file (only while visible) as
   `custom::Document`s (JSON, `key=value` lines, or text). `Client::restart(rt)` (a changed
   declaration: the run stops and starts again if read) and
   `Client::stop_now(rt)` (a removed one) serve their reloads, and
@@ -6484,6 +6520,13 @@ transparent huge pages for life.
   directory), each field a memo converting the untyped value to the
   declared type (`custom::coerce`); `write` of an `rw` field is an item
   write of its value; `restart`/`stop` restart or stop only that service.
+  (services-round) `ServiceHost::event(rt, svc, "line")` on a `from
+  listen` declaration calls `custom::hear_lines`, acquires the client
+  for the current owner scope (released by its cleanup: a line handler
+  is a reader) and returns the declaration's `EventQueue`, fed by an
+  observer that converts each line to the declaration's record
+  (`Typing::record`); the checker gives every `from listen` service
+  record that one event (`RecordDef::events`, `line(doc: <record>)`).
   `custom::BusIntrospector` is the compiler's `Introspect` over the
   environment's buses (answers remembered 10 s); `custom::dbus_check(config_dir, recheck)`
   returns the loader's extra check (the D-Bus check and
@@ -6601,6 +6644,28 @@ transparent huge pages for life.
   `Invalid dispatcher`, the dialect understood kept per connection),
   niri's `MaximizeWindowToEdges`/`FullscreenWindow` by id,
   sway's `[con_id=N] fullscreen toggle` (maximize `Unsupported`).
+  (services-round) `win.move_to(ws)` is `WindowAction::MoveTo { item,
+  ws: WorkspaceItem }`, sent as `WmAction::MoveWindow { window,
+  workspace }`: Hyprland's classic `movetoworkspacesilent N,address:…`
+  or Lua `hl.dsp.window.move({ workspace, window })`, sway's `[con_id=N]
+  move container to workspace "<name>"`, niri's
+  `MoveWindowToWorkspace { window_id, reference: { Id }, focus: false }`;
+  `Unsupported` on the protocols. `model::Window::rect:
+  Option<WinRect { x, y, width, height: i64 }>` (served as
+  `WindowItem::rect: Option<WindowRect>`, the builtin `Rect` record) is
+  the window's place on its screen from the adapters (Hyprland's `at`
+  and `size` less its monitor's `x`/`y`, re-read also on
+  `changefloatingmode`; sway's container `rect` less its output's;
+  niri's floating `layout`, patched by `WindowLayoutsChanged`), null on
+  the protocols. `WmState::mode: Option<String>`, published as
+  `WmChange::Mode` (and in the replay), is `wm.mode`: Hyprland's
+  `submap>>`, sway's `mode` events after `get_binding_state`, none on
+  niri. `WmState::keyboard_layouts: Vec<String>`, published as
+  `WmChange::KeyboardLayouts`, is sway's first keyboard's
+  `xkb_layout_names`, niri's `KeyboardLayoutsChanged` names, and on
+  Hyprland the layouts libxkbcommon names from the main keyboard's
+  `j/devices` rule names (`hyprland::layout_names`, the
+  `xkbcommon = 0.8.0` dependency without default features).
   `workspaces.on(screen)` is a `fn` method over the cells (the
   workspaces whose `screen` is the `Screen` record's `name`).
   (M6, gap 31) `WmState::keyboard_layout: Option<String>` is the

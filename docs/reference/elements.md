@@ -104,6 +104,7 @@ Also every prop and event of [`node`](#node).
 | `anchor` | `Anchor` | Where it sits on the screen: `anchor: top_right`. |
 | `attach` | `Edge` | Grows out of an edge with concave fillets: `attach: top`. |
 | `scrim` | `color` | A colour dimming what is behind it, on a `popup` or `panel`: `scrim: $shadow.alpha(0.3)`. A single-pixel buffer, so it costs nothing; a gradient has no single-pixel form. |
+| `inhibit_idle` | `bool` | While it is shown, the compositor does not go idle (no screensaver, dimming or lock by timeout): `bar Top { inhibit_idle: caffeine }`. |
 
 | Event | |
 | --- | --- |

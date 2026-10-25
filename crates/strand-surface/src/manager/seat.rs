@@ -114,17 +114,18 @@ impl<H: SurfaceHost + 'static> State<H> {
             .as_ref()
             .filter(|_| focused)
             .and_then(|k| {
-                let (caps_lock, num_lock, layout) = *self.lock_keys.get(k)?;
-                let layout = self
-                    .layout_names
-                    .get(k)
-                    .and_then(|names| names.get(layout as usize))
+                let (caps_lock, num_lock, layout, modifiers) = *self.lock_keys.get(k)?;
+                let layouts = self.layout_names.get(k).cloned().unwrap_or_default();
+                let layout = layouts
+                    .get(layout as usize)
                     .filter(|n| !n.is_empty())
                     .cloned();
                 Some(KeyboardState {
                     caps_lock,
                     num_lock,
                     layout,
+                    layouts,
+                    modifiers,
                 })
             });
         if state != self.keyboard_reported {
@@ -734,7 +735,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             shift: m.shift,
             logo: m.logo,
         };
-        self.lock_keys.insert(id, (m.caps_lock, m.num_lock, layout));
+        self.lock_keys
+            .insert(id, (m.caps_lock, m.num_lock, layout, self.modifiers));
         self.report_keyboard();
     }
 }

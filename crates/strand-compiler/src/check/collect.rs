@@ -722,9 +722,27 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+        // (services-round) A `from listen` service's every line, lossless:
+        // `on svc.line(doc) { … }`, `doc` its fields read from that line
+        // alone (null where the line has none).
+        let events = if s.source.kind.name == "listen" {
+            vec![crate::ty::EventDef {
+                name: "line".into(),
+                params: vec![crate::ty::ParamSig {
+                    name: "doc".into(),
+                    ty: Ty::Record(rid),
+                    has_default: false,
+                    default: None,
+                    variadic: false,
+                }],
+            }]
+        } else {
+            Vec::new()
+        };
         let rec = self.types.record_mut(rid);
         rec.fields = fields;
         rec.methods = methods;
+        rec.events = events;
     }
 
     fn component_sig(&mut self, c: &'a ast::Component) {

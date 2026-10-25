@@ -1,0 +1,23 @@
+/// A timeout `idle.after` was asked about, and whether the seat has been
+/// idle that long.
+record IdleTimeout key timeout {
+  /// How long without input it waits for.
+  timeout: duration
+  /// The seat has had no input for at least `timeout`.
+  idle: bool
+}
+
+/// Whether the user is away, from the compositor's idle notifications
+/// (ext-idle-notify-v1). What inhibits idling (a video playing, a
+/// surface's `inhibit_idle: true`) holds them back.
+service idle {
+  /// The compositor tells how long the user has been away
+  /// (ext-idle-notify-v1); while false, `idle.after` is false.
+  available: bool
+  /// The timeouts `idle.after` was asked about, each with whether the
+  /// seat has been idle that long, by timeout.
+  timeouts: [IdleTimeout]
+  /// True once the seat has had no input for `timeout`, false again at
+  /// the next input: `panel Saver { open: idle.after(300s) }`.
+  fn after(timeout: duration) -> bool
+}

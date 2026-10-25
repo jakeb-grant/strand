@@ -1021,7 +1021,7 @@ async fn sways_layout_is_the_active_keyboards() {
     };
     let mut keyboard = common::keyboard::Keyboard::new(&sway.socket(), &sway.dir);
     let (sink, mut c) = Collector::new();
-    let (_req_tx, req_rx) = unbounded_channel();
+    let (req_tx, req_rx) = unbounded_channel();
     let config = WmConfig {
         backend: Some(Backend::Sway {
             socket: sway.ipc.clone(),
@@ -1038,6 +1038,8 @@ async fn sways_layout_is_the_active_keyboards() {
         "{}",
         sway.msg(&["-t", "get_inputs", "-r"])
     );
+    // (services-round) The layouts it switches between.
+    assert_eq!(c.mirror.keyboard_layouts, ["Strand One", "Strand Two"]);
     let _keyboard = tokio::task::spawn_blocking(move || {
         keyboard.modifiers(0, 1);
         keyboard
@@ -1048,5 +1050,101 @@ async fn sways_layout_is_the_active_keyboards() {
         m.keyboard_layout.as_deref() == Some("Strand Two")
     })
     .await;
+    // (services-round) `keyboard.set_layout(0)` and `next_layout()`:
+    // sway's `xkb_switch_layout` on every keyboard.
+    for (to, name) in [
+        (wm::LayoutSwitch::Index(0), "Strand One"),
+        (wm::LayoutSwitch::Next, "Strand Two"),
+    ] {
+        let (r, done) = WmRequest::new(WmAction::SwitchLayout(to));
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+        c.until(name, |m| m.keyboard_layout.as_deref() == Some(name))
+            .await;
+    }
+    service.abort();
+}
+
+/// (services-round) A real sway's binding mode (`wm.mode`), a window's
+/// place on its output, and `win.move_to(ws)`.
+#[tokio::test]
+async fn sways_mode_window_rects_and_moves() {
+    let Some(sway) = Sway::start_with(
+        "sways_mode_window_rects_and_moves",
+        "mode \"resize\" {\n    bindsym Escape mode default\n}\n",
+    ) else {
+        return;
+    };
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(Backend::Sway {
+            socket: sway.ipc.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
+        .await;
+    assert_eq!(c.mirror.mode, None);
+    sway.msg(&["mode", "resize"]);
+    c.until("resize", |m| m.mode.as_deref() == Some("resize"))
+        .await;
+    sway.msg(&["mode", "default"]);
+    c.until("default", |m| m.mode.is_none()).await;
+
+    // A window: its place is its container's on the output (sway's tree
+    // says the same; the output is at 0, 0).
+    let _win = TestWindow::open(&sway.socket(), "strand-rect", "rect");
+    c.until("open", |m| {
+        m.window_by_app("strand-rect")
+            .is_some_and(|w| w.rect.is_some_and(|r| r.width > 0))
+    })
+    .await;
+    let w = c.mirror.window_by_app("strand-rect").unwrap().clone();
+    let tree: serde_json::Value = serde_json::from_str(&sway.msg(&["-t", "get_tree"])).unwrap();
+    fn rect(n: &serde_json::Value) -> Option<serde_json::Value> {
+        if n["app_id"] == "strand-rect" {
+            return Some(n["rect"].clone());
+        }
+        ["nodes", "floating_nodes"]
+            .iter()
+            .filter_map(|k| n[*k].as_array())
+            .flatten()
+            .find_map(rect)
+    }
+    let r = rect(&tree).unwrap();
+    let got = w.rect.unwrap();
+    assert_eq!(
+        (got.x, got.y, got.width, got.height),
+        (
+            r["x"].as_i64().unwrap(),
+            r["y"].as_i64().unwrap(),
+            r["width"].as_i64().unwrap(),
+            r["height"].as_i64().unwrap()
+        )
+    );
+
+    // Another workspace (empty, focused), then the window moved to it.
+    let from = w.workspace;
+    sway.msg(&["workspace", "2"]);
+    c.until("ws 2", |m| {
+        m.focused_workspace.as_ref().is_some_and(|w| w.name == "2")
+    })
+    .await;
+    let ws2 = c.mirror.workspace("2").unwrap().id;
+    let (r, done) = WmRequest::new(WmAction::MoveWindow {
+        window: w.id.clone(),
+        workspace: ws2,
+    });
+    req_tx.send(r).unwrap();
+    assert_eq!(done.await, Ok(()));
+    c.until("moved", |m| {
+        m.window_by_app("strand-rect")
+            .is_some_and(|w| w.workspace == Some(ws2))
+    })
+    .await;
+    assert_ne!(from, Some(ws2));
     service.abort();
 }

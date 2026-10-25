@@ -69,6 +69,19 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     );
     // The main keyboard's layout, not the first keyboard's.
     assert_eq!(m.keyboard_layout.as_deref(), Some("German"));
+    // (services-round) Its layouts, named from its rule names (`us,de`)
+    // as the keymap names them; and each window's place on its monitor.
+    assert_eq!(m.keyboard_layouts, ["English (US)", "German"]);
+    assert_eq!(
+        kitty.rect,
+        Some(wm::WinRect {
+            x: 10,
+            y: 52,
+            width: 1260,
+            height: 1376
+        })
+    );
+    assert_eq!(m.mode, None, "the default submap");
     // The rules' numbered workspaces not made yet, on monitors that are
     // on (6 by `desc:`); 1 to 3 exist, a named rule makes none.
     let slots: Vec<(i64, &str)> = m
@@ -144,6 +157,14 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     })
     .await;
     fake.clear_reply("j/devices");
+    // (services-round) No rule names: no layouts.
+    assert!(c.mirror.keyboard_layouts.is_empty());
+    // A submap entered, then the default one again.
+    fake.send("submap>>resize\n");
+    c.until("the submap", |m| m.mode.as_deref() == Some("resize"))
+        .await;
+    fake.send("submap>>\n");
+    c.until("the default submap", |m| m.mode.is_none()).await;
     let ev = tokio::task::spawn_blocking(move || changes.recv_timeout(Duration::from_secs(5)))
         .await
         .unwrap()
@@ -177,6 +198,20 @@ async fn hyprland_adapter_follows_replayed_traffic() {
     let (r, done) = WmRequest::new(WmAction::FullscreenWindow("0xdead".into()));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Err(WmError::UnknownWindow("0xdead".into())));
+    // (services-round) `win.move_to(ws)` without following it, and the
+    // layout switches, Hyprland's own request in both dialects.
+    for action in [
+        WmAction::MoveWindow {
+            window: "0x55d0c0a1c3d0".into(),
+            workspace: 3,
+        },
+        WmAction::SwitchLayout(wm::LayoutSwitch::Next),
+        WmAction::SwitchLayout(wm::LayoutSwitch::Index(1)),
+    ] {
+        let (r, done) = WmRequest::new(action);
+        req_tx.send(r).unwrap();
+        assert_eq!(done.await, Ok(()));
+    }
     // This fake reads dispatches as a classic Hyprland (before 0.55, or a
     // hyprlang config): the first, in Lua, is refused (`Invalid
     // dispatcher`) and said again in the classic dialect, which the
@@ -194,6 +229,9 @@ async fn hyprland_adapter_follows_replayed_traffic() {
             "dispatch closewindow address:0x55d0c0a1c3d0",
             "[[BATCH]]dispatch focuswindow address:0x55d0c0a1c3d0;dispatch fullscreen 1",
             "[[BATCH]]dispatch focuswindow address:0x55d0c0a1c3d0;dispatch fullscreen 0",
+            "dispatch movetoworkspacesilent 3,address:0x55d0c0a1c3d0",
+            "switchxkblayout all next",
+            "switchxkblayout all 1",
         ]
     );
 
@@ -282,6 +320,10 @@ async fn a_lua_config_hyprland_gets_lua_dispatches() {
     for action in [
         WmAction::MaximizeWindow("0x55d0c0a1c3d0".into()),
         WmAction::FullscreenWindow("0x55d0c0a1c3d0".into()),
+        WmAction::MoveWindow {
+            window: "0x55d0c0a1c3d0".into(),
+            workspace: 3,
+        },
     ] {
         let (r, done) = WmRequest::new(action);
         req_tx.send(r).unwrap();
@@ -299,6 +341,7 @@ async fn a_lua_config_hyprland_gets_lua_dispatches() {
             r#"dispatch hl.dsp.window.close({ window = "address:0x55d0c0a1c3d0" })"#,
             r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0x55d0c0a1c3d0" })"#,
             r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0x55d0c0a1c3d0" })"#,
+            r#"dispatch hl.dsp.window.move({ workspace = "3", window = "address:0x55d0c0a1c3d0" })"#,
         ]
     );
     service.abort();

@@ -1,6 +1,10 @@
 //! `keyboard`: the lock keys (`caps_lock`, `num_lock`) and the active
-//! layout's name (`layout`), gap 31 (decisions.md m6-service-gaps). Its
-//! fields are streams: nothing runs for one nobody shows.
+//! layout's name (`layout`), gap 31 (decisions.md m6-service-gaps); and
+//! (services-round) the layouts it switches between (`layouts`), the
+//! modifiers held while a Strand surface has the keys (`alt`, `ctrl`,
+//! `shift`, `logo`), and `next_layout()` and `set_layout(index)` through
+//! the compositor. Its fields are streams: nothing runs for one nobody
+//! shows.
 //!
 //! The sources, in order:
 //!
@@ -21,7 +25,14 @@
 //!    nothing, so a steady state wakes only the services thread.
 //! 3. The layout, when no focused report names one, from the compositor:
 //!    the shared compositor hub's [`WmChange::KeyboardLayout`] (Hyprland,
-//!    sway, niri), subscribed only while `layout` is watched.
+//!    sway, niri), subscribed only while `layout` is watched; likewise
+//!    the layouts ([`WmChange::KeyboardLayouts`]) while `layouts` is.
+//!
+//! The modifiers are only a focused surface's: no compositor tells
+//! another client what is held, so they are false otherwise. The actions
+//! go to the compositor's adapter (Hyprland's `switchxkblayout`, sway's
+//! `xkb_switch_layout`, niri's `SwitchLayout`), each on a subscription of
+//! its own held until it is answered; the standard protocols have none.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,8 +41,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::wm::{WmChange, WmSubscription};
-use crate::{Cx, Msg, ServiceError, Store, service};
+use crate::wm::{LayoutSwitch, WmAction, WmChange, WmError, WmSubscription};
+use crate::{Call, Cx, Msg, ServiceError, Store, service};
 
 /// The schema the `keyboard` service serves.
 pub const SCHEMA: &str = strand_services_schema::KEYBOARD;
@@ -48,6 +59,16 @@ pub struct Focused {
     pub num_lock: bool,
     /// The keymap's name for the active layout, if it names one.
     pub layout: Option<String>,
+    /// (services-round) The keymap's names for every layout, by index.
+    pub layouts: Vec<String>,
+    /// (services-round) Alt is held.
+    pub alt: bool,
+    /// Control is held.
+    pub ctrl: bool,
+    /// Shift is held.
+    pub shift: bool,
+    /// The logo (Super) key is held.
+    pub logo: bool,
 }
 
 static FOCUSED: LazyLock<watch::Sender<Option<Focused>>> =
@@ -147,8 +168,17 @@ pub fn read_leds(sys: &Path) -> Leds {
     leds
 }
 
+/// (services-round) `keyboard`'s actions.
+#[derive(Call, Debug)]
+pub enum KeyboardAction {
+    /// `keyboard.next_layout()`.
+    NextLayout,
+    /// `keyboard.set_layout(index)`: an index into `layouts`.
+    SetLayout { index: i64 },
+}
+
 /// See the module docs.
-#[service(name = "keyboard")]
+#[service(name = "keyboard", action = KeyboardAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Keyboard {
     /// Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`.
@@ -162,23 +192,65 @@ pub struct Keyboard {
     /// null when unknown: `text keyboard.layout ?? ""`.
     #[store(stream)]
     pub layout: Option<String>,
+    /// The layouts it switches between, by index, as the keymap names them
+    /// (`["English (US)", "German"]`; empty when unknown):
+    /// `keyboard.set_layout(i)` takes an index into it.
+    #[store(stream)]
+    pub layouts: Vec<String>,
+    /// Alt is held, while a Strand surface has keyboard focus (false
+    /// otherwise: no compositor tells): an alt-tab switcher commits when
+    /// it turns false.
+    #[store(stream)]
+    pub alt: bool,
+    /// Control is held, while a Strand surface has keyboard focus.
+    #[store(stream)]
+    pub ctrl: bool,
+    /// Shift is held, while a Strand surface has keyboard focus.
+    #[store(stream)]
+    pub shift: bool,
+    /// The logo (Super) key is held, while a Strand surface has keyboard
+    /// focus.
+    #[store(stream)]
+    pub logo: bool,
+}
+
+/// What the compositor says of the keyboard (its hub's changes).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Compositor {
+    /// The active layout's name.
+    pub layout: Option<String>,
+    /// The layouts, by index.
+    pub layouts: Vec<String>,
 }
 
 /// What the service shows: a focused surface's report wins, its layout
 /// falling back to the compositor's; without one, the lights and the
 /// compositor's layout.
-pub fn merge(focused: Option<&Focused>, leds: Leds, compositor: Option<&str>) -> Keyboard {
-    let compositor = compositor.map(str::to_string);
+pub fn merge(focused: Option<&Focused>, leds: Leds, compositor: &Compositor) -> Keyboard {
+    let layouts = |own: &[String]| {
+        if own.iter().any(|n| !n.is_empty()) {
+            own.to_vec()
+        } else {
+            compositor.layouts.clone()
+        }
+    };
     match focused {
         Some(f) => Keyboard {
             caps_lock: f.caps_lock,
             num_lock: f.num_lock,
-            layout: f.layout.clone().or(compositor),
+            layout: f.layout.clone().or_else(|| compositor.layout.clone()),
+            layouts: layouts(&f.layouts),
+            alt: f.alt,
+            ctrl: f.ctrl,
+            shift: f.shift,
+            logo: f.logo,
         },
         None => Keyboard {
             caps_lock: leds.caps_lock,
             num_lock: leds.num_lock,
-            layout: compositor,
+            layout: compositor.layout.clone(),
+            layouts: compositor.layouts.clone(),
+            ..Keyboard::default()
         },
     }
 }
@@ -189,14 +261,51 @@ fn polls(cx: &Cx<Keyboard>, focused: &Option<Focused>) -> bool {
     focused.is_none() && cx.visible() && (cx.watched("caps_lock") || cx.watched("num_lock"))
 }
 
-/// The compositor hub's subscription, while `layout` is watched.
+/// The compositor hub's subscription, while `layout` or `layouts` is
+/// watched.
 fn sync_layout(cx: &Cx<Keyboard>, sub: &mut Option<WmSubscription>) {
-    if !(cx.visible() && cx.watched("layout")) {
+    if !(cx.visible() && (cx.watched("layout") || cx.watched("layouts"))) {
         // Its last layout is kept; a new subscription's first batch
         // brings the current one.
         *sub = None;
     } else if sub.is_none() {
         *sub = crate::wm::hub().map(|h| h.subscribe());
+    }
+}
+
+/// How long an action waits for the compositor's adapter to come up on
+/// a subscription made for it.
+const ACTION_WAIT: Duration = Duration::from_secs(3);
+
+/// (services-round) Runs a layout switch on a subscription of its own
+/// (which starts the compositor service when nothing else runs it): an
+/// adapter still connecting answers `NotConnected`, so it is asked again
+/// after each batch until [`ACTION_WAIT`]. Failures are logged.
+async fn switch_layout(to: LayoutSwitch) {
+    let Some(hub) = crate::wm::hub() else {
+        return;
+    };
+    let mut sub = hub.subscribe();
+    let action = WmAction::SwitchLayout(to);
+    let deadline = tokio::time::Instant::now() + ACTION_WAIT;
+    loop {
+        match sub.request(action.clone()).await {
+            Ok(()) => return,
+            Err(WmError::NotConnected) if tokio::time::Instant::now() < deadline => {
+                match tokio::time::timeout_at(deadline, sub.recv()).await {
+                    Ok(Some(_)) => {}
+                    // Ended, or never connected in time.
+                    Ok(None) | Err(_) => {
+                        log::warn!("keyboard {action:?}: the compositor is not connected");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("keyboard {action:?}: {e}");
+                return;
+            }
+        }
     }
 }
 
@@ -206,7 +315,8 @@ impl Keyboard {
         let mut focus = FOCUSED.subscribe();
         let mut focused = focus.borrow_and_update().clone();
         let mut leds = Leds::default();
-        let mut compositor: Option<String> = None;
+        let mut compositor = Compositor::default();
+        let mut calls = tokio::task::JoinSet::new();
         let mut sub: Option<WmSubscription> = None;
         let mut tick = tokio::time::interval(config.led_period);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -216,7 +326,7 @@ impl Keyboard {
         }
         tick.reset();
         sync_layout(&cx, &mut sub);
-        if !cx.update(|s| *s = merge(focused.as_ref(), leds, compositor.as_deref())) {
+        if !cx.update(|s| *s = merge(focused.as_ref(), leds, &compositor)) {
             return Ok(());
         }
         cx.ready();
@@ -240,8 +350,10 @@ impl Keyboard {
                 } => match b {
                     Some(batch) => {
                         for change in batch {
-                            if let WmChange::KeyboardLayout(l) = change {
-                                compositor = l;
+                            match change {
+                                WmChange::KeyboardLayout(l) => compositor.layout = l,
+                                WmChange::KeyboardLayouts(l) => compositor.layouts = l,
+                                _ => {}
                             }
                         }
                     }
@@ -251,8 +363,23 @@ impl Keyboard {
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Visible(_) | Msg::Watch { .. }) => sync_layout(&cx, &mut sub),
+                    Some(Msg::Action(a)) => {
+                        match a {
+                            KeyboardAction::NextLayout => {
+                                calls.spawn(switch_layout(LayoutSwitch::Next));
+                            }
+                            KeyboardAction::SetLayout { index } => match u32::try_from(index) {
+                                Ok(i) => {
+                                    calls.spawn(switch_layout(LayoutSwitch::Index(i)));
+                                }
+                                Err(_) => log::warn!("keyboard.set_layout({index}): no such layout"),
+                            },
+                        }
+                        continue;
+                    }
                     Some(_) => continue,
                 },
+                Some(_) = calls.join_next(), if !calls.is_empty() => continue,
             }
             let now = polls(&cx, &focused);
             if now && !polling {
@@ -262,7 +389,7 @@ impl Keyboard {
                 tick.reset();
             }
             polling = now;
-            if !cx.update(|s| *s = merge(focused.as_ref(), leds, compositor.as_deref())) {
+            if !cx.update(|s| *s = merge(focused.as_ref(), leds, &compositor)) {
                 return Ok(());
             }
         }
@@ -325,39 +452,52 @@ mod tests {
             caps_lock: false,
             num_lock: true,
         };
+        let compositor = Compositor {
+            layout: Some("German".into()),
+            layouts: vec!["English (US)".into(), "German".into()],
+        };
         let f = Focused {
             caps_lock: true,
             num_lock: false,
             layout: Some("Strand One".into()),
+            layouts: vec!["Strand One".into(), "Strand Two".into()],
+            alt: true,
+            ..Focused::default()
         };
         assert_eq!(
-            merge(Some(&f), leds, Some("German")),
+            merge(Some(&f), leds, &compositor),
             Keyboard {
                 caps_lock: true,
                 num_lock: false,
                 layout: Some("Strand One".into()),
+                layouts: vec!["Strand One".into(), "Strand Two".into()],
+                alt: true,
+                ..Keyboard::default()
             }
         );
         // A keymap that names no layout: the compositor's.
         let unnamed = Focused {
             layout: None,
+            layouts: vec![String::new()],
             ..f.clone()
         };
+        let k = merge(Some(&unnamed), leds, &compositor);
+        assert_eq!(k.layout.as_deref(), Some("German"));
+        assert_eq!(k.layouts, compositor.layouts);
+        // Unfocused: the lights and the compositor, nothing held.
         assert_eq!(
-            merge(Some(&unnamed), leds, Some("German"))
-                .layout
-                .as_deref(),
-            Some("German")
-        );
-        // Unfocused: the lights and the compositor.
-        assert_eq!(
-            merge(None, leds, Some("German")),
+            merge(None, leds, &compositor),
             Keyboard {
                 caps_lock: false,
                 num_lock: true,
                 layout: Some("German".into()),
+                layouts: compositor.layouts.clone(),
+                ..Keyboard::default()
             }
         );
-        assert_eq!(merge(None, Leds::default(), None), Keyboard::default());
+        assert_eq!(
+            merge(None, Leds::default(), &Compositor::default()),
+            Keyboard::default()
+        );
     }
 }

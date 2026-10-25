@@ -4,10 +4,13 @@
 //! name goes with the connection when the service stops.
 //!
 //! - `Notify` (`replaces_id`, actions, hints: `urgency`, `image-data`,
-//!   `image-path`, `desktop-entry`, `resident`; `expire_timeout`),
+//!   `image-path`, `desktop-entry`, `resident`, and (services-round)
+//!   `value` as `progress`, `category`; `expire_timeout`),
 //!   `CloseNotification`, `GetCapabilities`, `GetServerInformation`; the
-//!   `NotificationClosed`, `ActionInvoked` and (M5) `ActivationToken`
-//!   signals: an `invoke` or `activate` from a handler a press started
+//!   `NotificationClosed`, `ActionInvoked`, (services-round)
+//!   `NotificationReplied` (KDE's `inline-reply` capability: an
+//!   `inline-reply` action makes `can_reply`, and `n.reply(text)` answers
+//!   it) and (M5) `ActivationToken` signals: an `invoke` or `activate` from a handler a press started
 //!   sends the xdg-activation token for that press first, so the app
 //!   that sent the notification may raise its window (the `activation`
 //!   module; the token waits at most 200 ms, then the action goes
@@ -147,6 +150,9 @@ pub const CAPABILITIES: &[&str] = &[
     "body",
     "body-markup",
     "icon-static",
+    // (services-round) KDE's: an `inline-reply` action is answered by
+    // `NotificationReplied(id, text)`.
+    "inline-reply",
     "persistence",
 ];
 
@@ -224,6 +230,10 @@ pub struct Notification {
     pub persistent: bool,
     pub time: Date,
     pub actions: Vec<NotificationAction>,
+    pub progress: Option<f64>,
+    pub category: Option<String>,
+    pub desktop_entry: Option<String>,
+    pub can_reply: bool,
 }
 
 /// `notifications`' actions.
@@ -239,6 +249,8 @@ pub enum NotificationsAction {
     Activate { item: Notification },
     /// `a.invoke()`.
     Invoke { item: NotificationAction },
+    /// (services-round) `n.reply(text)`.
+    Reply { item: Notification, text: String },
 }
 
 /// See the module docs.
@@ -435,12 +447,18 @@ impl Server {
         }
         let mut buttons = Vec::new();
         let mut default = false;
+        let mut can_reply = false;
         for pair in actions.chunks(2) {
             let [key, label] = pair else {
                 continue;
             };
             if key == "default" {
                 default = true;
+                continue;
+            }
+            // (services-round) Answered by `n.reply(text)`, not a button.
+            if key == "inline-reply" {
+                can_reply = true;
                 continue;
             }
             buttons.push(NotificationAction {
@@ -479,6 +497,13 @@ impl Server {
                 persistent: expire_timeout == 0,
                 time: Date::now(),
                 actions: buttons,
+                // (services-round) `value`: a percentage, by the spec.
+                progress: crate::dbus::number(&hints, "value")
+                    .filter(|v| v.is_finite())
+                    .map(|v| (v / 100.0).clamp(0.0, 1.0)),
+                category: hint_text(&hints, &["category"]).filter(|c| !c.is_empty()),
+                desktop_entry: hint_text(&hints, &["desktop-entry"]).filter(|d| !d.is_empty()),
+                can_reply,
             },
             image,
             replaces,
@@ -909,6 +934,20 @@ impl Notifications {
                                 kept.resident.contains(&item.id)
                                     || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
                             }
+                            NotificationsAction::Reply { item, text } => {
+                                // A restored one, or one with no reply,
+                                // has nobody to answer.
+                                let answers = !kept.restored.contains(&item.id)
+                                    && cx.state().all.iter().any(|n| n.id == item.id && n.can_reply);
+                                if answers {
+                                    replied(&conn, item.id, &text).await;
+                                    kept.resident.contains(&item.id)
+                                        || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
+                                } else {
+                                    log::warn!("notifications: {} takes no reply", item.id);
+                                    true
+                                }
+                            }
                             NotificationsAction::Invoke { item } => {
                                 // A restored one's sender cannot hear it.
                                 if !kept.restored.contains(&item.notification)
@@ -1046,6 +1085,13 @@ struct Saved {
     #[serde(default)]
     persistent: bool,
     time: SavedTime,
+    /// (services-round) Absent from earlier files.
+    #[serde(default)]
+    progress: Option<f64>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    desktop_entry: Option<String>,
 }
 
 /// A notification's `time`.
@@ -1099,6 +1145,9 @@ fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i
                 hour: n.time.hour,
                 minute: n.time.minute,
             },
+            progress: n.progress,
+            category: n.category.clone(),
+            desktop_entry: n.desktop_entry.clone(),
         })
         .collect();
     serde_json::to_string(&SavedHistory {
@@ -1159,6 +1208,11 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
                 minute: s.time.minute,
             },
             actions: Vec::new(),
+            progress: s.progress,
+            category: s.category,
+            desktop_entry: s.desktop_entry,
+            // Its sender cannot hear a reply.
+            can_reply: false,
         })
         .collect())
 }
@@ -1456,6 +1510,22 @@ async fn signal_closed(conn: &zbus::Connection, id: i64, why: Closed) {
     }
 }
 
+/// (services-round) KDE's `NotificationReplied(id, text)`.
+async fn replied(conn: &zbus::Connection, id: i64, text: &str) {
+    let r = conn
+        .emit_signal(
+            None::<&str>,
+            PATH,
+            NAME,
+            "NotificationReplied",
+            &(id as u32, text),
+        )
+        .await;
+    if let Err(e) = r {
+        log::debug!("notifications: NotificationReplied not sent: {e}");
+    }
+}
+
 /// `ActionInvoked`, after (M5) spec 1.2's `ActivationToken` when the
 /// press that invoked it got a token.
 async fn invoked(conn: &zbus::Connection, id: i64, key: &str, token: Option<&str>) {
@@ -1617,12 +1687,17 @@ mod tests {
                 label: "Reply".into(),
                 notification: id,
             }],
+            progress: Some(0.25),
+            category: Some("email.arrived".into()),
+            desktop_entry: Some("mail".into()),
+            can_reply: true,
         }
     }
 
     /// (gap 35, m6-service-gaps) What is remembered comes back, oldest
     /// first, renumbered 1..=n, without actions: its senders cannot hear
-    /// an answer.
+    /// an answer (services-round: nor a reply), while its hints are
+    /// kept.
     #[test]
     fn the_history_round_trips_without_actions() {
         let all = vec![sent(7, "First", None), sent(9, "Second", None)];
@@ -1632,10 +1707,13 @@ mod tests {
         for (i, (b, a)) in back.iter().zip(&all).enumerate() {
             assert_eq!(b.id, i as i64 + 1, "renumbered");
             assert!(b.actions.is_empty(), "no buttons");
+            assert!(!b.can_reply, "no replies");
+            assert_eq!(b.progress, Some(0.25));
             assert_eq!(
                 Notification {
                     id: a.id,
                     actions: a.actions.clone(),
+                    can_reply: a.can_reply,
                     ..b.clone()
                 },
                 *a

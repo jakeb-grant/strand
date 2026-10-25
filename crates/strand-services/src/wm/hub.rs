@@ -314,12 +314,16 @@ impl Inner {
                 items: m.windows.clone(),
             }]));
             out.push(WmChange::FocusedWorkspace(m.focused_workspace.clone()));
-            out.push(WmChange::FocusedWindow(m.focused_window.clone()));
+            out.push(WmChange::FocusedWindow(
+                m.focused_window.clone().map(Box::new),
+            ));
             out.push(WmChange::FocusedScreen(m.focused_screen.clone()));
             out.push(WmChange::Configured(vec![VecDiff::Reset {
                 items: m.configured.clone(),
             }]));
             out.push(WmChange::KeyboardLayout(m.keyboard_layout.clone()));
+            out.push(WmChange::KeyboardLayouts(m.keyboard_layouts.clone()));
+            out.push(WmChange::Mode(m.mode.clone()));
         }
         if self.has_sources {
             out.push(WmChange::Sources(self.mirror.sources.clone()));

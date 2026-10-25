@@ -89,6 +89,7 @@ mod dnd;
 mod effect;
 #[path = "../gpu_handoff.rs"]
 mod gpu_handoff;
+mod idle;
 mod layer;
 mod origin;
 mod outputs;
@@ -291,6 +292,12 @@ pub struct KeyboardState {
     /// The keymap's name for the active layout (`English (US)`), if it
     /// names one.
     pub layout: Option<String>,
+    /// (services-round) The keymap's names for every layout, by index
+    /// (empty for a layout it does not name).
+    pub layouts: Vec<String>,
+    /// (services-round) The modifiers held (or latched or locked) on
+    /// that keyboard: an alt-tab switcher commits when Alt is released.
+    pub modifiers: strand_scene::Modifiers,
 }
 
 /// (M4) The session lock as the compositor reports it.
@@ -511,6 +518,9 @@ pub struct SurfaceInfo {
     /// (M4) Where its buffer's top-left corner is in the compositor's
     /// logical layout, as last told to [`SurfaceHost::surface_placed`].
     pub origin: Option<(i32, i32)>,
+    /// (services-round) It holds a `zwp_idle_inhibitor_v1`
+    /// (`inhibit_idle: true`).
+    pub inhibits_idle: bool,
     pub stats: Stats,
 }
 
@@ -742,6 +752,7 @@ impl Surface {
             under_layer: None,
             pose: self.pose,
             origin: self.origin,
+            inhibits_idle: false,
             stats: self.stats,
         }
     }
@@ -832,8 +843,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// (gap 31) Each keyboard's keymap's layout names, by layout index.
     layout_names: HashMap<ObjectId, Vec<String>>,
     /// (gap 31) Each keyboard's lock keys and active layout (Caps Lock,
-    /// Num Lock, layout index), from its last `modifiers`.
-    lock_keys: HashMap<ObjectId, (bool, bool, u32)>,
+    /// Num Lock, layout index) and (services-round) its modifiers, from
+    /// its last `modifiers`.
+    lock_keys: HashMap<ObjectId, (bool, bool, u32, strand_scene::Modifiers)>,
     /// (gap 31) The keyboard that entered the focused surface.
     focus_keyboard: Option<ObjectId>,
     /// (gap 31) What [`SurfaceHost::keyboard_state`] was last told.
@@ -895,6 +907,13 @@ pub struct State<H: SurfaceHost + 'static> {
     selection: selection::Selection,
     /// (M5) xdg-activation tokens (`src/activation.rs`).
     activation: activation::Activation,
+    /// (services-round) `zwp_idle_inhibit_manager_v1`, and the inhibitor
+    /// of each surface whose spec says `inhibit_idle` (`idle.rs`).
+    idle_inhibit: Option<wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>,
+    inhibitors: HashMap<
+        SurfaceId,
+        wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+    >,
 }
 
 impl<H: SurfaceHost + 'static> std::fmt::Debug for State<H> {
@@ -1016,6 +1035,13 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
         let background_effect = globals
             .bind::<ExtBackgroundEffectManagerV1, _, _>(&qh, 1..=1, StrandGlobal)
             .ok();
+        let idle_inhibit = globals
+            .bind::<wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, _, _>(
+                &qh,
+                1..=1,
+                StrandGlobal,
+            )
+            .ok();
         let mut offered = globals
             .contents()
             .with_list(|list| Offered::from_registry(list.iter().map(|g| g.interface.as_str())));
@@ -1108,6 +1134,8 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             dnd,
             selection: selection::Selection::new(),
             activation,
+            idle_inhibit,
+            inhibitors: HashMap::new(),
         };
         Ok(Self {
             event_loop,
@@ -1224,6 +1252,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         info.click_away = primary.is_some_and(|c| c.clicks);
         info.scrim = primary.and_then(|c| c.scrim);
         info.under_layer = primary.map(|c| c.on_layer);
+        info.inhibits_idle = self.inhibits_idle(id);
         Some(info)
     }
 
@@ -1402,6 +1431,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         if let Some(root) = moved {
             self.reconfigure(root);
             self.reconcile(root);
+        }
+        // (services-round) `inhibit_idle` turned on or off in place.
+        for id in self.surfaces_of(node) {
+            self.sync_idle_inhibitor(id);
         }
     }
 

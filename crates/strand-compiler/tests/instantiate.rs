@@ -4581,7 +4581,7 @@ bar B {
   row {
     box { drag: "hello" }
     box { drag: Drop(kind: DropKind.files, files: ["/tmp/a b.png", "/tmp/c"], app: null, text: "") }
-    box { drag: App(id: "org.x.Y.desktop", name: "Y", comment: null, icon: "y", categories: []) }
+    box { drag: App(id: "org.x.Y.desktop", name: "Y", comment: null, icon: "y", categories: [], actions: []) }
     box { drag: Pin(app: "a", label: "A") }
   }
   col {

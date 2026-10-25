@@ -1384,6 +1384,11 @@ impl SurfaceHost for Host {
             caps_lock: s.caps_lock,
             num_lock: s.num_lock,
             layout: s.layout.clone(),
+            layouts: s.layouts.clone(),
+            alt: s.modifiers.alt,
+            ctrl: s.modifiers.ctrl,
+            shift: s.modifiers.shift,
+            logo: s.modifiers.logo,
         }));
     }
 

@@ -258,7 +258,8 @@ guide's ladder test use this table as the list of constructs.
 
 A surface is something the compositor shows. Its body is a tree
 (section 6). Every surface accepts `screens:`, `layer:`, `open:`,
-`keyboard:` and `anchor:`, and the events `on show` and `on hide`.
+`keyboard:`, `anchor:` and `inhibit_idle:`, and the events `on show`
+and `on hide`.
 `attach:` and `scrim:` are accepted only on a `panel` (and on a
 `popup`); on a `bar`, `osd` or `lock` either one is a load error. On a
 `lock`, `screens:`, `layer:`, `anchor:` and `keyboard:` are warnings:
@@ -331,8 +332,18 @@ filling the monitor, the keyboard always).
   margin: -30, 0, 0` on a popup of a 30 px top bar, or on a panel under
   it, covers the bar and grows out of the screen's edge.
 - **`keyboard: none | on_demand | exclusive`** sets how the surface
-  takes keyboard focus.
+  takes keyboard focus. While a surface of the shell has it, the
+  `keyboard` service's `alt`, `ctrl`, `shift` and `logo` say which
+  modifiers are held (false otherwise: no compositor tells another
+  client), so a window switcher opened with Alt+Tab commits on
+  `on change keyboard.alt` turning false (decisions.md services-round).
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.
+- **`inhibit_idle: bool`**, on any surface, keeps the compositor from
+  going idle (no screensaver, dimming or lock by timeout) while the
+  surface is shown and the value is true: `bar Top { inhibit_idle:
+  caffeine }`. The other side is the `idle` service: `idle.after(t)` is
+  true once the seat has had no input for `t`, and an inhibitor holds
+  it back too (decisions.md services-round).
 - **`lock { … }`** is the lock screen, on `ext-session-lock`. A config
   has at most one `lock`, across its files. A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
@@ -465,6 +476,15 @@ filling the monitor, the keyboard always).
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. Their fields are checked
   against the schema you declare.
+- A `from listen` service has one event, `line(doc)`: each line the
+  command prints, `doc` holding that line's fields alone (the service's
+  own record: a field the line leaves out is null when its type is
+  optional, its type's default otherwise). Lines printed faster than a
+  frame are merged into the fields but each is still one `line` event,
+  queued as `notifications.received` is, so `on player.line(doc)` sees
+  every line. A line handler reads the service: the command runs while
+  the handler is mounted, and lines printed before it was are not
+  heard.
 - A polled command runs at most every 100 ms: an `every` shorter than
   that is a warning, and the command runs every 100 ms instead. A
   polled file has no floor and is read every `T`.

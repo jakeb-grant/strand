@@ -222,6 +222,8 @@ provisional record Window key id {
   /// entry's id, `StartupWMClass`, a reverse-DNS id's last part, its
   /// name): `win.app?.categories`. Null when no entry matches.
   app: App?
+  /// Its place and size on its screen, when the compositor tells.
+  rect: Rect?
   /// Raises and focuses it.
   action focus()
   /// Asks it to close.
@@ -233,6 +235,8 @@ provisional record Window key id {
   /// `win.fullscreen()` makes it fullscreen, or restores it when it is
   /// fullscreen.
   action fullscreen()
+  /// `win.move_to(ws)` moves it to workspace `ws`.
+  action move_to(ws: Workspace)
 }
 
 /// A workspace, from `ext-workspace-v1`, keyed by `id`.
@@ -346,12 +350,22 @@ provisional record Notification key id {
   time: Date
   /// The buttons it offers.
   actions: [NotificationAction]
+  /// How far along it is, 0 to 1, when the sender says.
+  progress: float?
+  /// The kind of event it reports, when the sender says.
+  category: text?
+  /// The desktop entry of the app that sent it, when the sender says.
+  desktop_entry: text?
+  /// The sender takes a typed reply.
+  can_reply: bool
   /// Ends its popup, as a timeout does.
   action expire()
   /// Closes it: `on secondary { n.dismiss() }`.
   action dismiss()
   /// Invokes its default action: `on click { n.activate() }`.
   action activate()
+  /// Sends `text` as its inline reply.
+  action reply(text: text)
 }
 
 /// An installed app, from its desktop entry (watched live).
@@ -366,7 +380,23 @@ provisional record App key id {
   icon: text
   /// Its desktop entry categories.
   categories: [text]
+  /// The actions its entry offers besides starting it.
+  actions: [AppAction]
   /// Starts it: `on activate { h.app.launch() }`.
+  action launch()
+}
+
+/// One of an app's desktop actions.
+provisional record AppAction key id {
+  /// Its id in the desktop entry.
+  id: text
+  /// Its name.
+  name: text
+  /// Its own icon, if any.
+  icon: text?
+  /// The app it belongs to.
+  app: AppId
+  /// Starts it.
   action launch()
 }
 
@@ -709,6 +739,8 @@ provisional service screens {
 provisional service wm {
   /// Its name, such as `Hyprland`, `niri` or `sway`.
   name: text
+  /// The compositor's binding mode, null in its default one.
+  mode: text?
   /// The compositor reloaded its config; `failed` says whether the new
   /// config failed to load, when the compositor tells.
   event config_reloaded(failed: bool?)
@@ -973,6 +1005,39 @@ provisional service keyboard {
   num_lock: bool
   /// The active layout's name, null when unknown.
   layout: text?
+  /// The layouts it switches between, by index.
+  layouts: [text]
+  /// Alt is held, while a Strand surface has keyboard focus.
+  alt: bool
+  /// Control is held, while a Strand surface has keyboard focus.
+  ctrl: bool
+  /// Shift is held, while a Strand surface has keyboard focus.
+  shift: bool
+  /// The logo (Super) key is held, while a Strand surface has keyboard
+  /// focus.
+  logo: bool
+  /// Switches to the next layout.
+  action next_layout()
+  /// Switches to layout `index` of `layouts`.
+  action set_layout(index: int)
+}
+
+/// A timeout `idle.after` was asked about.
+provisional record IdleTimeout key timeout {
+  /// How long without input it waits for.
+  timeout: duration
+  /// The seat has had no input for at least `timeout`.
+  idle: bool
+}
+
+/// Whether the user is away (ext-idle-notify-v1).
+provisional service idle {
+  /// The compositor tells how long the user has been away.
+  available: bool
+  /// The timeouts `idle.after` was asked about, by timeout.
+  timeouts: [IdleTimeout]
+  /// True once the seat has had no input for `timeout`.
+  fn after(timeout: duration) -> bool
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,6 +1391,9 @@ group surface: node {
   /// `scrim: $shadow.alpha(0.3)`. A single-pixel buffer, so it costs
   /// nothing; a gradient has no single-pixel form.
   scrim: color
+  /// While it is shown, the compositor does not go idle (no screensaver,
+  /// dimming or lock by timeout): `bar Top { inhibit_idle: caffeine }`.
+  inhibit_idle: bool
   /// It was shown: `on show { query = "" }`.
   on show
   /// It was hidden.

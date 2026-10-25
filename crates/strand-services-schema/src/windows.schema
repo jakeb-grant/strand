@@ -27,6 +27,12 @@ record Window key id {
   /// entry's id, `StartupWMClass`, a reverse-DNS id's last part, its
   /// name): `win.app?.categories`. Null when no entry matches.
   app: App?
+  /// Its place and size on its screen, logical pixels from the screen's
+  /// top-left corner, from the compositor's IPC: a tiled niri window
+  /// (which scrolls with its column) and the standard protocols have
+  /// none. Hyprland tells no move of a floating window, so there it is
+  /// as of the window's last other change.
+  rect: Rect?
   /// Raises and focuses it.
   action focus()
   /// Asks it to close.
@@ -38,6 +44,9 @@ record Window key id {
   /// `win.fullscreen()` makes it fullscreen, or restores it when it is
   /// fullscreen.
   action fullscreen()
+  /// `win.move_to(ws)` moves it to workspace `ws`, the focus staying
+  /// where it is (on the compositors' IPC: Hyprland, sway, niri).
+  action move_to(ws: Workspace)
 }
 
 /// Toplevel windows, from `ext-foreign-toplevel-list`.

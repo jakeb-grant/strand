@@ -1,8 +1,9 @@
-/// The keyboard's lock keys and layout. While a Strand surface has
-/// keyboard focus (a lock screen, a launcher) they are that keyboard's
-/// own, exact as keys are pressed; otherwise the lock keys come from the
-/// kernel's keyboard lights, read while a visible reader shows them, and
-/// the layout from the compositor (Hyprland, sway, niri).
+/// The keyboard's lock keys, layouts and modifiers. While a Strand
+/// surface has keyboard focus (a lock screen, a launcher, a window
+/// switcher) they are that keyboard's own, exact as keys are pressed;
+/// otherwise the lock keys come from the kernel's keyboard lights, read
+/// while a visible reader shows them, the layouts from the compositor
+/// (Hyprland, sway, niri), and no modifier is held.
 service keyboard {
   /// Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`.
   /// False when nothing reports it.
@@ -12,4 +13,24 @@ service keyboard {
   /// The active layout's name as the keymap names it (`English (US)`),
   /// null when unknown: `text keyboard.layout ?? ""`.
   layout: text?
+  /// The layouts it switches between, by index, as the keymap names them
+  /// (`["English (US)", "German"]`; empty when unknown):
+  /// `keyboard.set_layout(i)` takes an index into it.
+  layouts: [text]
+  /// Alt is held, while a Strand surface has keyboard focus (false
+  /// otherwise: no compositor tells): an alt-tab switcher commits when
+  /// it turns false.
+  alt: bool
+  /// Control is held, while a Strand surface has keyboard focus.
+  ctrl: bool
+  /// Shift is held, while a Strand surface has keyboard focus.
+  shift: bool
+  /// The logo (Super) key is held, while a Strand surface has keyboard
+  /// focus.
+  logo: bool
+  /// Switches every keyboard to its next layout (Hyprland, sway, niri).
+  action next_layout()
+  /// `keyboard.set_layout(i)` switches every keyboard to layout `i` of
+  /// `layouts`.
+  action set_layout(index: int)
 }

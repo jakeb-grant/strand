@@ -33,9 +33,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
 use super::lines::next_line;
-use super::model::{Window, WmState, Workspace};
+use super::model::{WinRect, Window, WmState, Workspace};
 use super::understood::{self, Degradation, SessionEnd, Strikes};
-use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
+use super::{AdapterMsg, Cmd, IpcSnapshot, LayoutSwitch, WmAction, WmError};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -72,6 +72,31 @@ pub(crate) struct NWindow {
     pub is_focused: bool,
     #[serde(default)]
     pub is_urgent: bool,
+    /// (services-round) Its `layout` (niri 25.05 on), read leniently
+    /// ([`rect`]): a shape this adapter does not know is no place.
+    #[serde(default)]
+    pub layout: Option<Value>,
+}
+
+/// (services-round) A window's place from its niri `layout`: the tile's
+/// position in its workspace's view plus the window's offset in the
+/// tile, and the window's size. niri gives a tile's position only for a
+/// floating window (a scrolling column moves with the view), so a tiled
+/// window has none.
+pub(crate) fn rect(layout: &Value) -> Option<WinRect> {
+    let pair = |key: &str| -> Option<(f64, f64)> {
+        let v = layout.get(key)?.as_array()?;
+        Some((v.first()?.as_f64()?, v.get(1)?.as_f64()?))
+    };
+    let (tx, ty) = pair("tile_pos_in_workspace_view")?;
+    let (ox, oy) = pair("window_offset_in_tile").unwrap_or((0.0, 0.0));
+    let (w, h) = pair("window_size")?;
+    Some(WinRect {
+        x: (tx + ox).round() as i64,
+        y: (ty + oy).round() as i64,
+        width: w.round() as i64,
+        height: h.round() as i64,
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -295,13 +320,38 @@ impl State {
                     return Effect::Requery;
                 };
                 let before = self.keyboard_layout();
+                let names_changed = self.layouts != l.names;
                 self.layouts = l.names;
                 self.layout_idx = l.current_idx;
-                if self.keyboard_layout() == before {
+                if self.keyboard_layout() == before && !names_changed {
                     Effect::None
                 } else {
                     Effect::Changed
                 }
+            }
+            // (services-round) `{ changes: [[id, layout], …] }`: a
+            // floating window moved or a window resized. Only a change of
+            // place counts.
+            "WindowLayoutsChanged" => {
+                let Some(changes) = body.get("changes").and_then(Value::as_array) else {
+                    return Effect::Requery;
+                };
+                let mut effect = Effect::None;
+                for change in changes {
+                    let (Some(id), Some(layout)) =
+                        (change.get(0).and_then(Value::as_u64), change.get(1))
+                    else {
+                        return Effect::Requery;
+                    };
+                    if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
+                        let before = w.layout.as_ref().and_then(rect);
+                        w.layout = Some(layout.clone());
+                        if rect(layout) != before {
+                            effect = Effect::Changed;
+                        }
+                    }
+                }
+                effect
             }
             "KeyboardLayoutSwitched" => {
                 let Some(idx) = body.get("idx").and_then(Value::as_u64) else {
@@ -358,6 +408,7 @@ impl State {
                 workspace: w.workspace_id.map(|i| i as i64),
                 focused: w.is_focused,
                 urgent: w.is_urgent,
+                rect: w.layout.as_ref().and_then(rect),
                 ..Default::default()
             })
             .collect();
@@ -371,6 +422,9 @@ impl State {
                 // open-on-output … }`) always exist: they are in `all`.
                 configured: Vec::new(),
                 keyboard_layout: self.keyboard_layout(),
+                keyboard_layouts: self.layouts.clone(),
+                // niri has no binding modes.
+                mode: None,
             },
             toplevel_ids: Vec::new(),
             // niri's `Window` says neither maximized nor fullscreen: they
@@ -438,6 +492,27 @@ impl State {
             WmAction::FullscreenWindow(id) => {
                 json!({"Action": {"FullscreenWindow": {"id": window(id)?}}})
             }
+            // (services-round) Moved, the focus staying where it is.
+            WmAction::MoveWindow {
+                window: id,
+                workspace,
+            } => {
+                if !self.workspaces.iter().any(|w| w.id as i64 == *workspace) {
+                    return Err(WmError::UnknownWorkspace(*workspace));
+                }
+                json!({"Action": {"MoveWindowToWorkspace": {
+                    "window_id": window(id)?,
+                    "reference": {"Id": workspace},
+                    "focus": false,
+                }}})
+            }
+            WmAction::SwitchLayout(LayoutSwitch::Next) => {
+                json!({"Action": {"SwitchLayout": {"layout": "Next"}}})
+            }
+            WmAction::SwitchLayout(LayoutSwitch::Index(i)) => match u8::try_from(*i) {
+                Ok(i) => json!({"Action": {"SwitchLayout": {"layout": {"Index": i}}}}),
+                Err(_) => return Err(WmError::Rejected(format!("no layout {i}"))),
+            },
         })
     }
 }
@@ -953,6 +1028,121 @@ mod tests {
             Err(WmError::UnknownWindow("4".into()))
         );
         assert!(!s.snapshot().window_states, "niri's IPC has neither state");
+    }
+
+    /// (services-round) A floating window's place from its `layout`
+    /// (the tile in the workspace's view plus the window in the tile); a
+    /// tiled one has none; `WindowLayoutsChanged` counts only a change of
+    /// place. Moves and layout switches are niri actions; the layouts
+    /// are the stream's; niri has no modes.
+    #[test]
+    fn rects_moves_and_layouts() {
+        let mut s = State::default();
+        let ev = |s: &mut State, j: &str| s.apply(&serde_json::from_str(j).unwrap());
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"WindowsChanged":{"windows":[
+                {"id":3,"workspace_id":1,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[628.0,704.0],"window_size":[628,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]}},
+                {"id":4,"workspace_id":1,"layout":{"pos_in_scrolling_layout":null,"tile_size":[404.0,304.0],"window_size":[400,300],"tile_pos_in_workspace_view":[100.4,50.0],"window_offset_in_tile":[2.0,2.0]}}]}}"#
+            ),
+            Effect::Changed
+        );
+        let rects = |s: &State| -> Vec<Option<WinRect>> {
+            s.snapshot().state.windows.iter().map(|w| w.rect).collect()
+        };
+        assert_eq!(
+            rects(&s),
+            [
+                None,
+                Some(WinRect {
+                    x: 102,
+                    y: 52,
+                    width: 400,
+                    height: 300
+                })
+            ]
+        );
+        // A tiled window resized: no place, nothing changed.
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"WindowLayoutsChanged":{"changes":[[3,{"pos_in_scrolling_layout":[1,1],"tile_size":[800.0,704.0],"window_size":[800,704],"tile_pos_in_workspace_view":null,"window_offset_in_tile":[0.0,0.0]}]]}}"#
+            ),
+            Effect::None
+        );
+        // The floating one dragged.
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"WindowLayoutsChanged":{"changes":[[4,{"pos_in_scrolling_layout":null,"tile_size":[404.0,304.0],"window_size":[400,300],"tile_pos_in_workspace_view":[300.0,80.0],"window_offset_in_tile":[2.0,2.0]}],[99,{}]]}}"#
+            ),
+            Effect::Changed
+        );
+        assert_eq!(rects(&s)[1].map(|r| (r.x, r.y)), Some((302, 82)));
+        assert_eq!(
+            ev(&mut s, r#"{"WindowLayoutsChanged":{"changes":[["x"]]}}"#),
+            Effect::Requery
+        );
+        // A layout of a shape this adapter does not know is no place.
+        assert_eq!(rect(&json!({"tile_pos_in_workspace_view": "here"})), None);
+
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"KeyboardLayoutsChanged":{"keyboard_layouts":{"names":["English (US)","German"],"current_idx":0}}}"#
+            ),
+            Effect::Changed
+        );
+        let snap = s.snapshot().state;
+        assert_eq!(snap.keyboard_layouts, ["English (US)", "German"]);
+        assert_eq!(snap.mode, None);
+        // The same layouts again: nothing.
+        assert_eq!(
+            ev(
+                &mut s,
+                r#"{"KeyboardLayoutsChanged":{"keyboard_layouts":{"names":["English (US)","German"],"current_idx":0}}}"#
+            ),
+            Effect::None
+        );
+
+        s.workspaces.push(NWorkspace {
+            id: 7,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.action_for(&WmAction::MoveWindow {
+                window: "4".into(),
+                workspace: 7
+            })
+            .unwrap(),
+            json!({"Action": {"MoveWindowToWorkspace": {
+                "window_id": 4, "reference": {"Id": 7}, "focus": false
+            }}})
+        );
+        assert_eq!(
+            s.action_for(&WmAction::MoveWindow {
+                window: "4".into(),
+                workspace: 8
+            }),
+            Err(WmError::UnknownWorkspace(8))
+        );
+        assert_eq!(
+            s.action_for(&WmAction::SwitchLayout(LayoutSwitch::Next))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"SwitchLayout":{"layout":"Next"}}}"#
+        );
+        assert_eq!(
+            s.action_for(&WmAction::SwitchLayout(LayoutSwitch::Index(1)))
+                .unwrap()
+                .to_string(),
+            r#"{"Action":{"SwitchLayout":{"layout":{"Index":1}}}}"#
+        );
+        assert!(
+            s.action_for(&WmAction::SwitchLayout(LayoutSwitch::Index(300)))
+                .is_err()
+        );
     }
 
     // ---- traffic captured from a real niri 26.04 -------------------------

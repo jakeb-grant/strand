@@ -3892,6 +3892,9 @@ fn a_focused_surface_reports_its_lock_keys_and_layout() {
             caps_lock,
             num_lock,
             layout: Some(layout.to_string()),
+            // (services-round) Every layout, by index.
+            layouts: vec!["Strand One".into(), "Strand Two".into()],
+            modifiers: strand_scene::Modifiers::default(),
         })
     };
     let wait_for = |mgr: &mut strand_surface::SurfaceManager<TestHost>,
@@ -3920,6 +3923,26 @@ fn a_focused_surface_reports_its_lock_keys_and_layout() {
         state(false, true, "Strand Two"),
         "the second layout",
     );
+    // (services-round) Alt held, then Alt and Shift, then released: the
+    // modifiers an alt-tab switcher commits on.
+    const SHIFT: u32 = 1;
+    const MOD1: u32 = 1 << 3;
+    let held = |alt: bool, shift: bool| {
+        state(false, true, "Strand Two").map(|mut s| {
+            s.modifiers.alt = alt;
+            s.modifiers.shift = shift;
+            s
+        })
+    };
+    keyboard.modifiers(MOD1, 0, MOD2, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(&mut mgr, held(true, false), "alt held");
+    keyboard.modifiers(MOD1 | SHIFT, 0, MOD2, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(&mut mgr, held(true, true), "alt and shift held");
+    keyboard.modifiers(0, 0, MOD2, 1);
+    queue.roundtrip(&mut Client).unwrap();
+    wait_for(&mut mgr, held(false, false), "released");
     // Only changes are told.
     let states = mgr.state().host().keyboard_states.clone();
     assert!(
@@ -3933,4 +3956,150 @@ fn a_focused_surface_reports_its_lock_keys_and_layout() {
     wait_for(&mut mgr, None, "unfocused");
     drop(input);
     drop(keyboard);
+}
+
+/// (services-round) A raw `ext_idle_notification_v1` client: whether
+/// the seat went idle for its timeout.
+mod idle_watch {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+    use wayland_protocols::ext::idle_notify::v1::client::{
+        ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+        ext_idle_notifier_v1::ExtIdleNotifierV1,
+    };
+
+    #[derive(Default)]
+    pub struct Watch {
+        pub idle: bool,
+    }
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Watch {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Watch: ignore wl_seat::WlSeat);
+    delegate_noop!(Watch: ignore ExtIdleNotifierV1);
+    impl Dispatch<ExtIdleNotificationV1, ()> for Watch {
+        fn event(
+            state: &mut Self,
+            _: &ExtIdleNotificationV1,
+            event: ext_idle_notification_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                ext_idle_notification_v1::Event::Idled => state.idle = true,
+                ext_idle_notification_v1::Event::Resumed => state.idle = false,
+                _ => {}
+            }
+        }
+    }
+
+    pub struct Idle {
+        queue: EventQueue<Watch>,
+        _n: ExtIdleNotificationV1,
+        pub watch: Watch,
+    }
+
+    impl Idle {
+        /// A notification after `ms` without input, on `conn`'s seat.
+        pub fn new(conn: &Connection, ms: u32) -> Idle {
+            let (globals, mut queue) = registry_queue_init::<Watch>(conn).unwrap();
+            let qh = queue.handle();
+            let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).unwrap();
+            let notifier: ExtIdleNotifierV1 = globals.bind(&qh, 1..=1, ()).unwrap();
+            let n = notifier.get_idle_notification(ms, &seat, &qh, ());
+            let mut watch = Watch::default();
+            queue.roundtrip(&mut watch).unwrap();
+            Idle {
+                queue,
+                _n: n,
+                watch,
+            }
+        }
+
+        /// Reads what arrived.
+        pub fn poll(&mut self) -> bool {
+            self.queue.roundtrip(&mut self.watch).unwrap();
+            self.watch.idle
+        }
+    }
+}
+
+/// (services-round) `inhibit_idle: true` gives each of the surface's
+/// Wayland surfaces a `zwp_idle_inhibitor_v1`, and sway, which honours
+/// one on a layer surface, then holds the seat's idle notifications
+/// back; turned off in place, the inhibitor goes and the seat goes idle.
+#[test]
+fn inhibit_idle_holds_the_compositor_awake() {
+    let Some(sway) = Sway::start("inhibit_idle_holds_the_compositor_awake") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    let spec = |inhibit: bool| {
+        let mut s = bar_spec("Top", 36.0);
+        s.inhibit_idle = inhibit;
+        s
+    };
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(spec(true)));
+    wait_for_bars(&mut mgr, 1);
+    settle(&mut mgr);
+    assert!(mgr.state().surfaces()[0].inhibits_idle);
+    let watcher = sway.connect();
+    let mut idle = idle_watch::Idle::new(&watcher, 200);
+    let until = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < until {
+        pump(&mut mgr, Duration::from_millis(50));
+        assert!(!idle.poll(), "idle while a shown surface inhibits it");
+    }
+    // Off in place: the same surface, no inhibitor, and the seat idles.
+    let before = mgr.state().surfaces()[0].id;
+    mgr.state_mut().apply_surface_change(
+        BAR,
+        SurfaceChange::Updated {
+            spec: spec(false),
+            recreate: false,
+        },
+    );
+    let info = &mgr.state().surfaces()[0];
+    assert_eq!(info.id, before);
+    assert!(!info.inhibits_idle);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        pump(&mut mgr, Duration::from_millis(50));
+        if idle.poll() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never idle without the inhibitor"
+        );
+    }
+    // On again, and the surface going takes its inhibitor with it.
+    mgr.state_mut().apply_surface_change(
+        BAR,
+        SurfaceChange::Updated {
+            spec: spec(true),
+            recreate: false,
+        },
+    );
+    assert!(mgr.state().surfaces()[0].inhibits_idle);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Removed);
+    pump(&mut mgr, Duration::from_millis(50));
+    assert!(mgr.state().surfaces().is_empty());
 }

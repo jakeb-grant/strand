@@ -36,7 +36,8 @@
 //! control); and [`disk`] (the mounted filesystems' usage, `statvfs`,
 //! sampled every 10 s while a reader is visible); and [`keyboard`] (the
 //! lock keys and the layout: a focused surface's keyboard, the kernel's
-//! lights, the compositor).
+//! lights, the compositor); and (services-round) [`idle`] (whether the
+//! user is away, ext-idle-notify-v1).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -65,6 +66,7 @@ mod data;
 pub mod dbus;
 pub mod disk;
 pub mod icon_theme;
+pub mod idle;
 pub mod ipc_bus;
 pub mod keyboard;
 pub mod media;
@@ -123,6 +125,7 @@ pub struct Builtin {
     pub clipboard: Client<clipboard::Clipboard>,
     pub disk: Client<disk::Disk>,
     pub keyboard: Client<keyboard::Keyboard>,
+    pub idle: Client<idle::Idle>,
 }
 
 impl Builtin {
@@ -151,6 +154,7 @@ impl Builtin {
             clipboard: services.register(rt),
             disk: services.register(rt),
             keyboard: services.register(rt),
+            idle: services.register(rt),
         };
         // (history) The ones sampled on a clock, so a value kept while
         // hidden is known to be a poll.
@@ -186,6 +190,7 @@ impl Builtin {
             self.clipboard.dynamic(),
             self.disk.dynamic(),
             self.keyboard.dynamic(),
+            self.idle.dynamic(),
         ]
     }
 }

@@ -244,8 +244,14 @@ cannot.
 
 Strand's services cover the usual things: audio, battery, network
 (down to the bytes a second in and out, `network.rx` and `network.tx`),
-memory (in use, cached, free and swap), notifications and so on. Look
-in the reference before reaching for `/proc`. For the rest, you declare
+memory (in use, cached, free and swap), notifications and so on, and
+the compositor's own: its binding mode (`wm.mode`), each window's place
+(`win.rect`) and `win.move_to(ws)`, the keyboard's layouts with
+`keyboard.next_layout()`, and whether you are away: a screensaver is
+`panel Saver { open: idle.after(300s) }`, and `inhibit_idle: caffeine`
+on a bar keeps the screen awake while `caffeine` is true, with no idle
+daemon or `systemd-inhibit`. Look in the reference before reaching for
+`/proc` or the compositor's command line. For the rest, you declare
 one. Make
 `services.strand`:
 
@@ -316,7 +322,11 @@ not allow. `permit exec` with no list allows any.
 update, for programs that report changes as they happen:
 `service player from listen ["playerctl", "--follow", "status"] { status: text }`,
 with `permit exec "playerctl"`, has `player.status` follow your media
-player as it plays and pauses.
+player as it plays and pauses. Lines that come faster than a frame are
+merged, so the fields show the latest; when every line matters (a log,
+a stream of events), handle `line` instead:
+`on player.line(doc) { log = log + doc.status }` runs once a line, with
+that line's fields in `doc`.
 
 **`action` runs a command from a handler.** For what no service does
 (opening an app of your own, a compositor's dispatch, a tool with only a

@@ -41,12 +41,32 @@ pub struct Window {
     /// The installed app its app id finds (its desktop entry), if any:
     /// `win.app?.categories`.
     pub app: Option<crate::apps::App>,
+    /// (services-round) Where it is on its screen, in logical pixels from
+    /// the screen's top-left corner, when the compositor's IPC says
+    /// (Hyprland's `at` and `size`, sway's container `rect`, niri's
+    /// floating tile position): `None` on the protocols alone, and for
+    /// a niri window its scrolling layout places.
+    pub rect: Option<WinRect>,
     /// Its `ext-foreign-toplevel-list-v1` identifier, when known: the one
     /// the adapter reports (sway 1.10+, Hyprland's `stableId`), or `id`
     /// itself with the protocols alone. Not a schema field: it is how M4's
     /// thumbnails (`ext-image-copy-capture-v1`) will find the window's
     /// handle on the protocol thread.
     pub toplevel: Option<String>,
+}
+
+/// (services-round) A window's place on its screen: the schema's `Rect`,
+/// in whole logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WinRect {
+    /// Its left edge, from the screen's.
+    pub x: i64,
+    /// Its top edge, from the screen's.
+    pub y: i64,
+    /// Its width.
+    pub width: i64,
+    /// Its height.
+    pub height: i64,
 }
 
 /// A workspace: the schema's `Workspace`.
@@ -98,6 +118,16 @@ pub struct WmState {
     /// keyboard and sway's first at connection, niri's own. `None` when
     /// the compositor does not say (`keyboard.layout`, gap 31).
     pub keyboard_layout: Option<String>,
+    /// (services-round) Every layout of the keymap, by index, as the
+    /// compositor names them (`keyboard.layouts`): Hyprland's main
+    /// keyboard's (named from its xkb rules, model, layouts, variants
+    /// and options), sway's first keyboard's, niri's. Empty when the
+    /// compositor does not say.
+    pub keyboard_layouts: Vec<String>,
+    /// (services-round) The keybind mode the compositor is in
+    /// (`wm.mode`): Hyprland's submap, sway's binding mode; `None` in the
+    /// default one, on niri and on the protocols alone.
+    pub mode: Option<String>,
 }
 
 impl WmState {
@@ -232,8 +262,9 @@ pub enum WmChange {
     Windows(Vec<VecDiff<String, Window>>),
     /// `workspaces.focused`.
     FocusedWorkspace(Option<Workspace>),
-    /// `windows.focused`.
-    FocusedWindow(Option<Window>),
+    /// `windows.focused` (boxed: a window is far larger than the other
+    /// changes).
+    FocusedWindow(Option<Box<Window>>),
     /// `workspaces.configured`, keyed by id.
     Configured(Vec<VecDiff<i64, Workspace>>),
     /// The screen with keyboard focus (for `screens.focused`).
@@ -248,6 +279,10 @@ pub enum WmChange {
     Sources(Sources),
     /// The active keyboard layout's name (`keyboard.layout`).
     KeyboardLayout(Option<String>),
+    /// (services-round) The keymap's layouts (`keyboard.layouts`).
+    KeyboardLayouts(Vec<String>),
+    /// (services-round) The keybind mode (`wm.mode`).
+    Mode(Option<String>),
 }
 
 /// Turns successive [`WmState`]s into the smallest [`WmChange`]s.
@@ -297,12 +332,16 @@ impl Publisher {
                 out.push(WmChange::FocusedWorkspace(
                     next.focused_workspace().cloned(),
                 ));
-                out.push(WmChange::FocusedWindow(next.focused_window().cloned()));
+                out.push(WmChange::FocusedWindow(
+                    next.focused_window().cloned().map(Box::new),
+                ));
                 out.push(WmChange::FocusedScreen(next.focused_screen.clone()));
                 out.push(WmChange::Configured(vec![VecDiff::Reset {
                     items: configured_items(&next),
                 }]));
                 out.push(WmChange::KeyboardLayout(next.keyboard_layout.clone()));
+                out.push(WmChange::KeyboardLayouts(next.keyboard_layouts.clone()));
+                out.push(WmChange::Mode(next.mode.clone()));
             }
             Some(last) => {
                 if last.name != next.name {
@@ -326,7 +365,9 @@ impl Publisher {
                     ));
                 }
                 if last.focused_window() != next.focused_window() {
-                    out.push(WmChange::FocusedWindow(next.focused_window().cloned()));
+                    out.push(WmChange::FocusedWindow(
+                        next.focused_window().cloned().map(Box::new),
+                    ));
                 }
                 if last.focused_screen != next.focused_screen {
                     out.push(WmChange::FocusedScreen(next.focused_screen.clone()));
@@ -339,6 +380,12 @@ impl Publisher {
                 }
                 if last.keyboard_layout != next.keyboard_layout {
                     out.push(WmChange::KeyboardLayout(next.keyboard_layout.clone()));
+                }
+                if last.keyboard_layouts != next.keyboard_layouts {
+                    out.push(WmChange::KeyboardLayouts(next.keyboard_layouts.clone()));
+                }
+                if last.mode != next.mode {
+                    out.push(WmChange::Mode(next.mode.clone()));
                 }
             }
         }
@@ -386,6 +433,10 @@ pub struct Mirror {
     pub sources: Sources,
     /// The active keyboard layout.
     pub keyboard_layout: Option<String>,
+    /// The keymap's layouts.
+    pub keyboard_layouts: Vec<String>,
+    /// The keybind mode.
+    pub mode: Option<String>,
 }
 
 impl Mirror {
@@ -405,7 +456,7 @@ impl Mirror {
                 }
             }
             WmChange::FocusedWorkspace(w) => self.focused_workspace = w.clone(),
-            WmChange::FocusedWindow(w) => self.focused_window = w.clone(),
+            WmChange::FocusedWindow(w) => self.focused_window = w.as_deref().cloned(),
             WmChange::FocusedScreen(s) => self.focused_screen = s.clone(),
             WmChange::Configured(d) => {
                 for diff in d {
@@ -415,6 +466,8 @@ impl Mirror {
             WmChange::ConfigReloaded { failed } => self.reloads.push(*failed),
             WmChange::Sources(s) => self.sources = s.clone(),
             WmChange::KeyboardLayout(l) => self.keyboard_layout = l.clone(),
+            WmChange::KeyboardLayouts(l) => self.keyboard_layouts = l.clone(),
+            WmChange::Mode(m) => self.mode = m.clone(),
         }
         Ok(())
     }

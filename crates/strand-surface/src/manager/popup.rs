@@ -425,6 +425,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
         self.sync_popup_scrim(id, spec);
+        self.sync_idle_inhibitor(id);
         let monitor = monitor.and_then(|m| self.monitors.get(&m)).cloned();
         self.host.surface_attached(id, node, monitor.as_ref());
         self.sync_popup_keyboard();

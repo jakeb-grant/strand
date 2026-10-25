@@ -403,6 +403,60 @@ fn the_compositor_stores_follow_hyprland() {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    // (services-round) `wm.mode` is the submap; a window's `rect` its
+    // place on its monitor; `win.move_to(ws)` a silent move.
+    fake.send("submap>>resize\n");
+    until(&rt, &s, "the submap", || {
+        b.wm.cells()
+            .snapshot(&rt)
+            .is_ok_and(|w| w.mode.as_deref() == Some("resize"))
+    });
+    b.windows.acquire(&rt);
+    until(&rt, &s, "the windows", || {
+        b.windows
+            .cells()
+            .all
+            .get_untracked(&rt)
+            .is_ok_and(|v| !v.items().is_empty())
+    });
+    let kitty = b
+        .windows
+        .cells()
+        .all
+        .get_untracked(&rt)
+        .unwrap()
+        .items()
+        .iter()
+        .map(|(_, w)| w.clone())
+        .find(|w| w.app_id == "kitty")
+        .unwrap();
+    assert_eq!(
+        kitty.rect,
+        Some(wm::WindowRect {
+            x: 10.0,
+            y: 52.0,
+            width: 1260.0,
+            height: 1376.0
+        })
+    );
+    let three = workspace(&b, &rt, "3").unwrap();
+    b.windows
+        .act(
+            &rt,
+            WindowAction::MoveTo {
+                item: kitty.clone(),
+                ws: three,
+            },
+        )
+        .unwrap();
+    let sent = format!("dispatch movetoworkspacesilent 3,address:{}", kitty.id);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fake.requests().contains(&sent) {
+        assert!(Instant::now() < deadline, "{:?}", fake.requests());
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    b.windows.release(&rt);
     fake.send(&bursts["reload"]);
     until(&rt, &s, "configreloaded", || {
         reloads.borrow().as_slice() == [vec![Data::Null]]
@@ -412,7 +466,7 @@ fn the_compositor_stores_follow_hyprland() {
     b.workspaces.release(&rt);
     b.wm.release(&rt);
     rt.tick(STOP_GRACE + Duration::from_millis(1));
-    assert!(!b.workspaces.running() && !b.wm.running());
+    assert!(!b.workspaces.running() && !b.wm.running() && !b.windows.running());
     let deadline = Instant::now() + Duration::from_secs(5);
     while wm::live_runs() != runs {
         assert!(

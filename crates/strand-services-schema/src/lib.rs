@@ -68,6 +68,9 @@ pub const CLIPBOARD: &str = include_str!("clipboard.schema");
 pub const DISK: &str = include_str!("disk.schema");
 /// `keyboard`: the lock keys and the layout.
 pub const KEYBOARD: &str = include_str!("keyboard.schema");
+/// (services-round) `idle`: whether the user is away
+/// (ext-idle-notify-v1).
+pub const IDLE: &str = include_str!("idle.schema");
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -93,5 +96,6 @@ pub fn schemas() -> Vec<&'static str> {
         CLIPBOARD,
         DISK,
         KEYBOARD,
+        IDLE,
     ]
 }

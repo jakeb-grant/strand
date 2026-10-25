@@ -167,19 +167,45 @@ graph's `history`; otherwise not at all.
 | `free` | `float` | The root filesystem's bytes free to a user. |
 | `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
 
+## `idle`
+
+Whether the user is away, from the compositor's idle notifications
+(ext-idle-notify-v1). What inhibits idling (a video playing, a
+surface's `inhibit_idle: true`) holds them back.
+
+| Field | Type | |
+| --- | --- | --- |
+| `available` | `bool` | The compositor tells how long the user has been away (ext-idle-notify-v1); while false, `idle.after` is false. |
+| `timeouts` | `[IdleTimeout]` | The timeouts `idle.after` was asked about, each with whether the seat has been idle that long, by timeout. |
+
+| Method | |
+| --- | --- |
+| `fn after(timeout: duration) -> bool` | True once the seat has had no input for `timeout`, false again at the next input: `panel Saver { open: idle.after(300s) }`. |
+
 ## `keyboard`
 
-The keyboard's lock keys and layout. While a Strand surface has
-keyboard focus (a lock screen, a launcher) they are that keyboard's
-own, exact as keys are pressed; otherwise the lock keys come from the
-kernel's keyboard lights, read while a visible reader shows them, and
-the layout from the compositor (Hyprland, sway, niri).
+The keyboard's lock keys, layouts and modifiers. While a Strand
+surface has keyboard focus (a lock screen, a launcher, a window
+switcher) they are that keyboard's own, exact as keys are pressed;
+otherwise the lock keys come from the kernel's keyboard lights, read
+while a visible reader shows them, the layouts from the compositor
+(Hyprland, sway, niri), and no modifier is held.
 
 | Field | Type | |
 | --- | --- | --- |
 | `caps_lock` | `bool` | Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`. False when nothing reports it. |
 | `num_lock` | `bool` | Num Lock is on. |
 | `layout` | `text?` | The active layout's name as the keymap names it (`English (US)`), null when unknown: `text keyboard.layout ?? ""`. |
+| `layouts` | `[text]` | The layouts it switches between, by index, as the keymap names them (`["English (US)", "German"]`; empty when unknown): `keyboard.set_layout(i)` takes an index into it. |
+| `alt` | `bool` | Alt is held, while a Strand surface has keyboard focus (false otherwise: no compositor tells): an alt-tab switcher commits when it turns false. |
+| `ctrl` | `bool` | Control is held, while a Strand surface has keyboard focus. |
+| `shift` | `bool` | Shift is held, while a Strand surface has keyboard focus. |
+| `logo` | `bool` | The logo (Super) key is held, while a Strand surface has keyboard focus. |
+
+| Method | |
+| --- | --- |
+| `action next_layout()` | Switches every keyboard to its next layout (Hyprland, sway, niri). |
+| `action set_layout(index: int)` | `keyboard.set_layout(i)` switches every keyboard to layout `i` of `layouts`. |
 
 ## `media`
 
@@ -386,6 +412,7 @@ The compositor.
 | Field | Type | |
 | --- | --- | --- |
 | `name` | `text` | Its name, such as `Hyprland`, `niri` or `sway` (the desktop's name when only the standard protocols serve it). |
+| `mode` | `text?` | The compositor's binding mode (a Hyprland submap, a sway mode), null in its default one and on compositors without modes: `if wm.mode != null { text wm.mode ?? "" }`. |
 
 | Event | |
 | --- | --- |

@@ -78,6 +78,28 @@ pub struct WindowItem {
     pub fullscreen: bool,
     pub urgent: bool,
     pub app: Option<crate::apps::App>,
+    pub rect: Option<WindowRect>,
+}
+
+/// (services-round) A window's place: the schema's `Rect`.
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq)]
+#[data(name = "Rect")]
+pub struct WindowRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl From<model::WinRect> for WindowRect {
+    fn from(r: model::WinRect) -> Self {
+        WindowRect {
+            x: r.x as f64,
+            y: r.y as f64,
+            width: r.width as f64,
+            height: r.height as f64,
+        }
+    }
 }
 
 impl From<model::Window> for WindowItem {
@@ -94,6 +116,7 @@ impl From<model::Window> for WindowItem {
             fullscreen: w.fullscreen,
             urgent: w.urgent,
             app: w.app,
+            rect: w.rect.map(WindowRect::from),
         }
     }
 }
@@ -164,6 +187,8 @@ pub enum WindowAction {
     Maximize { item: WindowItem },
     /// `win.fullscreen()`: fullscreen, or restore when fullscreen.
     Fullscreen { item: WindowItem },
+    /// (services-round) `win.move_to(ws)`.
+    MoveTo { item: WindowItem, ws: WorkspaceItem },
 }
 
 /// `workspaces`' actions: on a `Workspace` item, and the service's own.
@@ -245,6 +270,10 @@ pub struct Wm {
     /// Its name, such as `Hyprland`, `niri` or `sway` (the desktop's name
     /// when only the standard protocols serve it).
     pub name: String,
+    /// The compositor's binding mode (a Hyprland submap, a sway mode),
+    /// null in its default one and on compositors without modes:
+    /// `if wm.mode != null { text wm.mode ?? "" }`.
+    pub mode: Option<String>,
     /// The compositor reloaded its config; `failed` says whether the new
     /// config failed to load, when the compositor tells (niri).
     pub config_reloaded: Event<Option<bool>>,
@@ -443,7 +472,7 @@ impl Windows {
                             patches.push(WindowsPatch::All(map_diffs(d, WindowItem::from)));
                         }
                         WmChange::FocusedWindow(w) => {
-                            patches.push(WindowsPatch::Focused(w.map(WindowItem::from)));
+                            patches.push(WindowsPatch::Focused(w.map(|w| WindowItem::from(*w))));
                         }
                         _ => {}
                     }
@@ -457,6 +486,10 @@ impl Windows {
                     WindowAction::Minimize { item } => WmAction::MinimizeWindow(item.id),
                     WindowAction::Maximize { item } => WmAction::MaximizeWindow(item.id),
                     WindowAction::Fullscreen { item } => WmAction::FullscreenWindow(item.id),
+                    WindowAction::MoveTo { item, ws } => WmAction::MoveWindow {
+                        window: item.id,
+                        workspace: ws.id,
+                    },
                 })
             },
         )
@@ -527,6 +560,7 @@ impl Wm {
                             known = true;
                             patches.push(WmPatch::Name(n));
                         }
+                        WmChange::Mode(m) => patches.push(WmPatch::Mode(m)),
                         WmChange::ConfigReloaded { failed } => reloads.push(failed),
                         _ => {}
                     }

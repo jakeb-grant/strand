@@ -45,6 +45,19 @@ record Notification key id {
   /// The buttons it offers; none on one remembered from an earlier run
   /// (`notifications.remember`), whose sender cannot hear them.
   actions: [NotificationAction]
+  /// How far along what it reports is, 0 to 1 (the sender's `value`
+  /// hint, a percentage), null when it says none: `meter n.progress ?? 0`.
+  progress: float?
+  /// The kind of event it reports (the `category` hint: `email.arrived`,
+  /// `transfer.complete`), null when the sender gives none.
+  category: text?
+  /// The desktop entry of the app that sent it (the `desktop-entry`
+  /// hint), null when the sender gives none.
+  desktop_entry: text?
+  /// The sender takes a typed reply (an `inline-reply` action, which is
+  /// not among `actions`): `if n.can_reply { input … }`. False on one
+  /// remembered from an earlier run.
+  can_reply: bool
   /// Ends its popup, as a timeout does; it stays in `all`, still open
   /// (its actions still reach the sender) until dismissed.
   action expire()
@@ -52,6 +65,9 @@ record Notification key id {
   action dismiss()
   /// Invokes its default action: `on click { n.activate() }`.
   action activate()
+  /// `n.reply(text)` sends `text` to the sender as its inline reply and
+  /// closes it (unless it is resident); nothing when it takes no reply.
+  action reply(text: text)
 }
 
 /// The notification server: the shell owns the freedesktop notification

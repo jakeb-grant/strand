@@ -13,9 +13,28 @@ record App key id {
   icon: text
   /// Its desktop entry categories.
   categories: [text]
+  /// The actions its entry offers besides starting it (`New Window`,
+  /// `New Private Window`), keyed by `id`: a launcher's or a dock's menu,
+  /// `for a in h.app.actions { button a.name { on click { a.launch() } } }`.
+  actions: [AppAction]
   /// Starts it (its `Exec` line, detached; in a terminal when the entry
   /// asks for one) and counts the launch for frecency: `on activate {
   /// h.app.launch() }`.
+  action launch()
+}
+
+/// One of an app's desktop actions (`[Desktop Action new-window]`).
+record AppAction key id {
+  /// Its id in the desktop entry (`new-window`).
+  id: text
+  /// Its name, in the user's language.
+  name: text
+  /// Its own icon, when it names one the icon theme has (or a path).
+  icon: text?
+  /// The app it belongs to.
+  app: AppId
+  /// Starts it (its own `Exec` line, as `launch()` starts the app's) and
+  /// counts as a launch of its app for frecency.
   action launch()
 }
 

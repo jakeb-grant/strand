@@ -73,9 +73,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, next_line, too_long};
-use super::model::{Window, WmState, Workspace};
+use super::model::{WinRect, Window, WmState, Workspace};
 use super::understood::{self, Degradation, SessionEnd, Strikes};
-use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
+use super::{AdapterMsg, Cmd, IpcSnapshot, LayoutSwitch, WmAction, WmError};
 
 /// How long one request may take; Hyprland answers synchronously.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -108,6 +108,12 @@ pub(crate) struct Monitor {
     /// Make, model and serial, as a rule's `desc:` names a monitor.
     #[serde(default)]
     pub description: String,
+    /// (services-round) Its place in the layout, logical: a window's
+    /// `at` less this is its place on the monitor.
+    #[serde(default)]
+    pub x: i64,
+    #[serde(default)]
+    pub y: i64,
 }
 
 /// One of `j/workspacerules`' rules (0.56.2's `getWorkspaceRuleData`:
@@ -143,6 +149,19 @@ pub(crate) struct Devices {
 pub(crate) struct Keyboard {
     #[serde(default)]
     pub name: String,
+    /// (services-round) Its xkb rule names, as Hyprland's `input`
+    /// config set them: `layout` is a comma-separated list (`us,de`),
+    /// `variant` one per layout (`,nodeadkeys`).
+    #[serde(default)]
+    pub rules: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub layout: String,
+    #[serde(default)]
+    pub variant: String,
+    #[serde(default)]
+    pub options: String,
     /// The active layout's name, as the keymap names it: `English (US)`.
     #[serde(default)]
     pub active_keymap: String,
@@ -153,16 +172,81 @@ pub(crate) struct Keyboard {
 }
 
 impl Devices {
-    /// The layout `keyboard.layout` starts from: the main keyboard's,
-    /// else the first keyboard's (gap 31).
-    pub(crate) fn layout(&self) -> Option<String> {
+    /// The keyboard `keyboard.layout` follows: the main one, else the
+    /// first.
+    fn keyboard(&self) -> Option<&Keyboard> {
         self.keyboards
             .iter()
             .find(|k| k.main)
             .or(self.keyboards.first())
+    }
+
+    /// The layout `keyboard.layout` starts from: the main keyboard's,
+    /// else the first keyboard's (gap 31).
+    pub(crate) fn layout(&self) -> Option<String> {
+        self.keyboard()
             .map(|k| k.active_keymap.clone())
             .filter(|l| !l.is_empty())
     }
+
+    /// (services-round) The xkb rule names of that keyboard: what its
+    /// layouts are named from ([`layout_names`]).
+    pub(crate) fn names(&self) -> Option<XkbNames> {
+        self.keyboard().map(|k| XkbNames {
+            rules: k.rules.clone(),
+            model: k.model.clone(),
+            layout: k.layout.clone(),
+            variant: k.variant.clone(),
+            options: k.options.clone(),
+        })
+    }
+}
+
+/// (services-round) A keyboard's xkb rule names (RMLVO).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct XkbNames {
+    pub rules: String,
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+}
+
+/// (services-round) The names of the layouts `names` make, by index, as
+/// the keymap names them (`English (US)`, `German`: the names Hyprland's
+/// `active_keymap` and `activelayout` use), compiled with libxkbcommon
+/// from the system's xkb data. Hyprland reports only the active one's
+/// name; a keymap that does not compile names none.
+pub(crate) fn layout_names(names: &XkbNames) -> Vec<String> {
+    use xkbcommon::xkb;
+    let parts = [
+        &names.rules,
+        &names.model,
+        &names.layout,
+        &names.variant,
+        &names.options,
+    ];
+    // libxkbcommon's names are C strings (the binding would panic on a
+    // NUL); no layout, nothing to name.
+    if names.layout.trim().is_empty() || parts.iter().any(|p| p.contains('\0')) {
+        return Vec::new();
+    }
+    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let options = (!names.options.is_empty()).then(|| names.options.clone());
+    let Some(keymap) = xkb::Keymap::new_from_names(
+        &ctx,
+        &names.rules,
+        &names.model,
+        &names.layout,
+        &names.variant,
+        options,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    ) else {
+        return Vec::new();
+    };
+    (0..keymap.num_layouts())
+        .map(|i| keymap.layout_get_name(i).to_string())
+        .collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -189,6 +273,14 @@ pub(crate) struct Client {
     /// window's stable id); empty before Hyprland reported it.
     #[serde(rename = "stableId", default)]
     pub stable_id: String,
+    /// (services-round) Its place and size in the layout, logical.
+    #[serde(default)]
+    pub at: Option<[i64; 2]>,
+    #[serde(default)]
+    pub size: Option<[i64; 2]>,
+    /// The monitor it is on, by id.
+    #[serde(default)]
+    pub monitor: Option<i64>,
 }
 
 impl Client {
@@ -241,6 +333,15 @@ pub(crate) struct State {
     /// The active keyboard layout: `j/devices`' main keyboard's, then
     /// the last `activelayout` (gap 31).
     pub keyboard_layout: Option<String>,
+    /// (services-round) The main keyboard's layouts, by index, and the
+    /// rule names they were named from (named again only when those
+    /// change).
+    pub keyboard_layouts: Vec<String>,
+    pub xkb_names: Option<XkbNames>,
+    /// (services-round) The submap from the last `submap` event; `None`
+    /// in the default one (and at connection, which Hyprland does not
+    /// tell).
+    pub submap: Option<String>,
 }
 
 /// Addresses come as `0x55d…` from requests and as `55d…` in events.
@@ -417,6 +518,17 @@ impl State {
                 }
             }
             "configreloaded" => Effect::Reloaded,
+            // (services-round) `NAME`: the submap entered; empty data is
+            // the default one.
+            "submap" => {
+                let name = data.trim();
+                let submap = (!name.is_empty() && name != "default").then(|| name.to_string());
+                if self.submap == submap {
+                    return Effect::None;
+                }
+                self.submap = submap;
+                Effect::Changed
+            }
             // `KEYBOARD,LAYOUT`: a keyboard's layout switched. A layout's
             // name may hold commas (`English (US, intl., with dead
             // keys)`), a device's does not: split at the first. The last
@@ -437,7 +549,7 @@ impl State {
             | "createworkspace" | "createworkspacev2" | "destroyworkspace"
             | "destroyworkspacev2" | "moveworkspace" | "moveworkspacev2" | "renameworkspace"
             | "monitoradded" | "monitoraddedv2" | "monitorremoved" | "monitorremovedv2"
-            | "fullscreen" => Effect::Requery,
+            | "fullscreen" | "changefloatingmode" => Effect::Requery,
             // `workspace`, `focusedmon`, `activewindow`, `windowtitle` come
             // with their v2 twins; layers, window layouts, submaps and the
             // rest show nothing.
@@ -479,6 +591,21 @@ impl State {
                     toplevel_ids.push((c.address.clone(), c.stable_id.clone()));
                 }
                 let special = is_special(&c.workspace.name);
+                // Its place on its monitor: the layout's less the
+                // monitor's.
+                let rect = match (c.at, c.size) {
+                    (Some([x, y]), Some([w, h])) => {
+                        let m = self.monitors.iter().find(|m| Some(m.id) == c.monitor);
+                        let (mx, my) = m.map_or((0, 0), |m| (m.x, m.y));
+                        Some(WinRect {
+                            x: x - mx,
+                            y: y - my,
+                            width: w,
+                            height: h,
+                        })
+                    }
+                    _ => None,
+                };
                 Window {
                     id: c.address.clone(),
                     title: c.title.clone(),
@@ -494,6 +621,7 @@ impl State {
                     app: None,
                     // Set by `merge` from `toplevel_ids`.
                     toplevel: None,
+                    rect,
                 }
             })
             .collect();
@@ -505,6 +633,8 @@ impl State {
                 focused_screen: focused_mon.map(|m| m.name.clone()),
                 configured,
                 keyboard_layout: self.keyboard_layout.clone(),
+                keyboard_layouts: self.keyboard_layouts.clone(),
+                mode: self.submap.clone(),
             },
             toplevel_ids,
             window_states: true,
@@ -639,6 +769,28 @@ impl State {
             WmAction::MinimizeWindow(_) => Err(WmError::Unsupported(
                 "Hyprland has no minimise; move the window to a special workspace",
             )),
+            // (services-round) Moved without following it: the classic
+            // `movetoworkspacesilent`; the Lua dispatcher takes the
+            // window, as `close` and `fullscreen` do.
+            WmAction::MoveWindow { window, workspace } => {
+                self.client(window)?;
+                let target = self.workspace_target(*workspace)?;
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.window.move({{ workspace = {}, window = {} }})",
+                        lua_string(&target),
+                        lua_string(&format!("address:{window}"))
+                    )
+                } else {
+                    format!("dispatch movetoworkspacesilent {target},address:{window}")
+                })
+            }
+            // (services-round) Not a dispatcher: Hyprland's own request,
+            // the same in both dialects, on every keyboard.
+            WmAction::SwitchLayout(to) => Ok(match to {
+                LayoutSwitch::Next => "switchxkblayout all next".to_string(),
+                LayoutSwitch::Index(i) => format!("switchxkblayout all {i}"),
+            }),
             // Hyprland's own toggles: maximized is its fullscreen mode 1,
             // fullscreen mode 0 (the dispatcher's argument; the mode
             // `j/clients` then reports is 1 or 2). The Lua dispatcher takes
@@ -761,13 +913,20 @@ async fn read_rules(requests: &Path, state: &mut State) -> Result<(), SessionEnd
 /// leaves the layout unknown (gap 31).
 async fn read_devices(requests: &Path, state: &mut State) -> Result<(), SessionEnd> {
     let text = request_text(requests, "j/devices").await?;
-    state.keyboard_layout = match parse_reply::<Devices>("j/devices", &text) {
-        Ok(devices) => devices.layout(),
+    let devices = match parse_reply::<Devices>("j/devices", &text) {
+        Ok(devices) => devices,
         Err(e) => {
             log::debug!("Hyprland IPC: no keyboard layout: {e}");
-            None
+            Devices::default()
         }
     };
+    state.keyboard_layout = devices.layout();
+    // (services-round) Named again only when the keymap changed.
+    let names = devices.names();
+    if names != state.xkb_names {
+        state.keyboard_layouts = names.as_ref().map(layout_names).unwrap_or_default();
+        state.xkb_names = names;
+    }
     Ok(())
 }
 
@@ -1108,6 +1267,8 @@ mod tests {
                     },
                     disabled: false,
                     description: String::new(),
+                    x: 0,
+                    y: 0,
                 },
                 Monitor {
                     id: 1,
@@ -1119,6 +1280,8 @@ mod tests {
                     },
                     disabled: false,
                     description: String::new(),
+                    x: 2560,
+                    y: 0,
                 },
             ],
             vec![
@@ -1154,10 +1317,88 @@ mod tests {
                 title: "~".into(),
                 fullscreen: serde_json::json!(0),
                 stable_id: "1f".into(),
+                at: Some([2570, 52]),
+                size: Some([800, 600]),
+                monitor: Some(1),
             }],
             None,
         );
         s
+    }
+
+    /// (services-round) A window's place is on its monitor; a submap
+    /// event sets `wm.mode` (`default` and nothing are none); rule names
+    /// name the layouts; moves and layout switches go out in each
+    /// dialect.
+    #[test]
+    fn rects_submaps_layouts_and_the_new_actions() {
+        let mut s = state();
+        let w = &s.snapshot().state.windows[0];
+        assert_eq!(
+            w.rect,
+            Some(WinRect {
+                x: 10,
+                y: 52,
+                width: 800,
+                height: 600
+            })
+        );
+        assert_eq!(s.apply("submap", "resize"), Effect::Changed);
+        assert_eq!(s.snapshot().state.mode.as_deref(), Some("resize"));
+        assert_eq!(s.apply("submap", "resize"), Effect::None);
+        assert_eq!(s.apply("submap", "default"), Effect::Changed);
+        assert_eq!(s.snapshot().state.mode, None);
+        assert_eq!(s.apply("submap", ""), Effect::None);
+        assert_eq!(s.apply("changefloatingmode", "a1,1"), Effect::Requery);
+
+        let names = |layout: &str, variant: &str| XkbNames {
+            layout: layout.into(),
+            variant: variant.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_names(&names("us,de", "")),
+            ["English (US)", "German"]
+        );
+        assert_eq!(
+            layout_names(&names("de", "nodeadkeys")),
+            ["German (no dead keys)"]
+        );
+        assert!(layout_names(&names("", "")).is_empty());
+        assert!(layout_names(&names("us\0", "")).is_empty());
+
+        let mv = WmAction::MoveWindow {
+            window: "0xa1".into(),
+            workspace: 2,
+        };
+        assert_eq!(
+            s.dispatch_for(&mv, Dialect::Classic).unwrap(),
+            "dispatch movetoworkspacesilent 2,address:0xa1"
+        );
+        assert_eq!(
+            s.dispatch_for(&mv, Dialect::Lua).unwrap(),
+            r#"dispatch hl.dsp.window.move({ workspace = "2", window = "address:0xa1" })"#
+        );
+        let gone = WmAction::MoveWindow {
+            window: "0xdead".into(),
+            workspace: 2,
+        };
+        assert_eq!(
+            s.dispatch_for(&gone, Dialect::Classic),
+            Err(WmError::UnknownWindow("0xdead".into()))
+        );
+        for d in [Dialect::Classic, Dialect::Lua] {
+            assert_eq!(
+                s.dispatch_for(&WmAction::SwitchLayout(LayoutSwitch::Next), d)
+                    .unwrap(),
+                "switchxkblayout all next"
+            );
+            assert_eq!(
+                s.dispatch_for(&WmAction::SwitchLayout(LayoutSwitch::Index(2)), d)
+                    .unwrap(),
+                "switchxkblayout all 2"
+            );
+        }
     }
 
     #[test]

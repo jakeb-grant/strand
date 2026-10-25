@@ -22,7 +22,10 @@
 //!   notifications); nothing polls.
 //! - **listen**: the command runs while the service runs; each line it
 //!   prints is a document (read leniently: bytes that are not UTF-8 do not
-//!   stop it). It ending is a failure (retried with backoff). Commands run
+//!   stop it). (services-round) Each line is also the `line` event, lossless
+//!   (a field's value may be merged away by the next line within a frame;
+//!   an event never is), once the host said a handler hears it
+//!   ([`hear_lines`]). It ending is a failure (retried with backoff). Commands run
 //!   in a process group of their own, ended whole (`SIGTERM`, then
 //!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts.
 //! - **poll**: the command (or file) is read every interval, only while a
@@ -45,7 +48,9 @@ use tokio::io::AsyncBufReadExt;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 use crate::dbus::{self, Daemon, DaemonEvent};
-use crate::{CallSig, Cx, Data, DataError, FromCall, Msg, ServiceError, Store, Write, service};
+use crate::{
+    CallSig, Cx, Data, DataError, Event, FromCall, Msg, ServiceError, Store, Write, service,
+};
 
 /// The schema text of the [`Custom`] store. Never added to the
 /// language's schema: each declaration is its own record there.
@@ -64,6 +69,10 @@ service custom {
   spec: int
   /// Its fields' values, by index.
   values: [CustomValue]
+  /// (services-round) One line a `from listen` command printed: its
+  /// fields' values from that line alone, by index (null where the line
+  /// has none). Sent only once a handler listens.
+  event line(doc: any)
 }
 ";
 
@@ -175,6 +184,13 @@ pub fn register(spec: Spec) -> i64 {
 
 /// Forget spec `id` (a declaration replaced or removed).
 pub fn forget(id: i64) {
+    if let Some(l) = LINES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_mut()
+    {
+        l.remove(&id);
+    }
     if let Some(m) = SPECS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -210,6 +226,32 @@ pub struct Custom {
     /// Its fields' values, by index.
     #[store(keyed)]
     pub values: Vec<CustomValue>,
+    /// (services-round) One line a `from listen` command printed: its
+    /// fields' values from that line alone, by index (null where the line
+    /// has none). Sent only once a handler listens.
+    pub line: Event<Data>,
+}
+
+static LINES: Mutex<Option<std::collections::HashSet<i64>>> = Mutex::new(None);
+
+/// (services-round) A handler hears spec `id`'s `line` event (`on
+/// svc.line(doc)`): from now on its `from listen` command's every line is
+/// sent as one. Until then a line costs no event, so a declaration only
+/// read through its fields wakes the logic thread at most once a frame.
+pub fn hear_lines(id: i64) {
+    LINES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get_or_insert_with(Default::default)
+        .insert(id);
+}
+
+fn hears_lines(id: i64) -> bool {
+    LINES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|l| l.contains(&id))
 }
 
 impl Custom {
@@ -224,6 +266,7 @@ impl Custom {
                     value: Data::Null,
                 })
                 .collect(),
+            line: Default::default(),
         }
     }
 
@@ -1528,6 +1571,18 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         continue;
                     }
                     let doc = Document::parse(&l);
+                    // (services-round) The line itself, before any merge.
+                    let id = cx.state().spec;
+                    if hears_lines(id) {
+                        let values = spec
+                            .fields
+                            .iter()
+                            .map(|f| doc.get(&f.key).unwrap_or(Data::Null))
+                            .collect();
+                        if !cx.emit(CustomEvent::Line(Data::List(values))) {
+                            return Ok(());
+                        }
+                    }
                     let mut state = pending.take().unwrap_or_else(|| cx.state().clone());
                     merge_doc(spec, &doc, &mut state);
                     let now = tokio::time::Instant::now();

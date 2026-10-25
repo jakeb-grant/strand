@@ -1,12 +1,14 @@
 //! No-code services run through the registry as `strand run` runs them:
 //! a `from listen` command printing faster than a frame wakes the logic
 //! thread at most once a frame, its last line always shown; (M6) a `from
-//! dbus` declaration's actions call its object's methods.
+//! dbus` declaration's actions call its object's methods; (services-round)
+//! once a handler hears it, every line a `from listen` command prints is
+//! one `line` event, none lost to the merge.
 
 mod support;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
@@ -14,7 +16,7 @@ use strand_services::custom::{
     self, ActionSpec, Custom, CustomAction, FieldSpec, LISTEN_FLUSH, Source, Spec,
 };
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Buses, Data, Services};
+use strand_services::{Applied, Buses, Data, Services};
 use support::{connect, mock_calls, tokio, until};
 
 /// (M6) `action hold(profile: text, reason: text, app: text) =
@@ -187,4 +189,117 @@ fn a_fast_listen_command_wakes_the_logic_thread_once_a_frame() {
     client.release(&rt);
     services.shutdown();
     custom::forget(id);
+}
+
+/// (services-round) `on svc.line(doc)`: a command printing 2 000 lines as
+/// fast as `sh` can, with a field the even lines leave out. Once heard,
+/// every line arrives as one `line` event, in order, its fields from that
+/// line alone (null where it has none), while the fields themselves stay
+/// merged and the last line's. A declaration nobody hears sends no event.
+#[test]
+fn a_heard_listen_command_sends_every_line() {
+    const LINES: i64 = 2_000;
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let script = format!(
+        "i=0; while [ $i -lt {LINES} ]; do \
+         if [ $((i % 2)) -eq 1 ]; then echo \"{{\\\"t\\\": $i, \\\"odd\\\": true}}\"; \
+         else echo \"{{\\\"t\\\": $i}}\"; fi; i=$((i+1)); done; sleep 30"
+    );
+    let spec = |name: &str| Spec {
+        name: name.into(),
+        source: Source::Listen {
+            command: vec!["sh".into(), "-c".into(), script.clone()],
+        },
+        fields: vec![
+            FieldSpec {
+                name: "t".into(),
+                key: vec!["t".into()],
+                rw: false,
+            },
+            FieldSpec {
+                name: "odd".into(),
+                key: vec!["odd".into()],
+                rw: false,
+            },
+        ],
+        actions: Vec::new(),
+    };
+    let heard = services.register_as::<Custom>(&rt, "heard");
+    let quiet = services.register_as::<Custom>(&rt, "quiet");
+    let heard_id = custom::register(spec("heard"));
+    let quiet_id = custom::register(spec("quiet"));
+    custom::hear_lines(heard_id);
+    heard
+        .seed(&rt, |s| *s = Custom::seeded(heard_id, 2))
+        .unwrap();
+    quiet
+        .seed(&rt, |s| *s = Custom::seeded(quiet_id, 2))
+        .unwrap();
+    let lines: Arc<Mutex<Vec<Vec<Data>>>> = Arc::default();
+    let log = lines.clone();
+    heard.dynamic().observe(Box::new(move |_, a| {
+        if let Applied::Event { args, .. } = a {
+            log.lock().unwrap().push(args.clone());
+        }
+    }));
+    let quiet_events = Arc::new(AtomicU32::new(0));
+    let q = quiet_events.clone();
+    quiet.dynamic().observe(Box::new(move |_, a| {
+        if matches!(a, Applied::Event { .. }) {
+            q.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
+    heard.acquire(&rt);
+    quiet.acquire(&rt);
+    let last = Data::Int(LINES - 1);
+    let value = |c: &strand_services::Client<Custom>| {
+        c.cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        services.pump(&rt);
+        rt.flush();
+        if lines.lock().unwrap().len() as i64 >= LINES
+            && value(&heard).as_ref() == Some(&last)
+            && value(&quiet).as_ref() == Some(&last)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} of {LINES} lines heard",
+            lines.lock().unwrap().len()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len() as i64, LINES, "one event a line, none merged");
+    for (i, args) in lines.iter().enumerate() {
+        let i = i as i64;
+        let odd = if i % 2 == 1 {
+            Data::Bool(true)
+        } else {
+            Data::Null
+        };
+        assert_eq!(args, &vec![Data::List(vec![Data::Int(i), odd])], "line {i}");
+    }
+    // The merged fields keep the last value each field had.
+    let odd = heard
+        .cells()
+        .values
+        .with_untracked(&rt, |v| v.get(&1i64).map(|v| v.value.clone()))
+        .ok()
+        .flatten();
+    assert_eq!(odd, Some(Data::Bool(true)));
+    assert_eq!(quiet_events.load(Ordering::SeqCst), 0, "nobody heard it");
+    heard.release(&rt);
+    quiet.release(&rt);
+    services.shutdown();
+    custom::forget(heard_id);
+    custom::forget(quiet_id);
 }

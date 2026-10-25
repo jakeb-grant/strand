@@ -57,15 +57,17 @@ use tokio::sync::oneshot;
 
 pub use detect::{Backend, detect, detect_with};
 pub use hub::{MAX_QUEUED, WmHub, WmSubscription};
-pub use model::{CompositorKind, Mirror, Publisher, Sources, Window, WmChange, WmState, Workspace};
+pub use model::{
+    CompositorKind, Mirror, Publisher, Sources, WinRect, Window, WmChange, WmState, Workspace,
+};
 pub use protocol::{
     ManagedToplevel, ProtoWorkspace, ProtocolClient, ProtocolState, Toplevel, WaylandTarget,
 };
 use protocol::{ProtocolSender, WindowOp};
 pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
 pub use service::{
-    WindowAction, WindowItem, Windows, WindowsCells, Wm, WmCells, WmEvent, WorkspaceAction,
-    WorkspaceItem, Workspaces, WorkspacesCells, configure, hub,
+    WindowAction, WindowItem, WindowRect, Windows, WindowsCells, Wm, WmCells, WmEvent,
+    WorkspaceAction, WorkspaceItem, Workspaces, WorkspacesCells, configure, hub,
 };
 
 /// An action on a workspace or window.
@@ -102,6 +104,27 @@ pub enum WmAction {
     /// `win.fullscreen()`: make the window fullscreen, or restore it when
     /// it is fullscreen (a toggle).
     FullscreenWindow(String),
+    /// (services-round) `win.move_to(ws)`: move the window to the
+    /// workspace with this id (a configured one is made by it, as
+    /// switching to it would), without following it there.
+    MoveWindow {
+        /// The window's id.
+        window: String,
+        /// The workspace's id.
+        workspace: i64,
+    },
+    /// (services-round) `keyboard.next_layout()` and
+    /// `keyboard.set_layout(i)`: switch every keyboard's layout.
+    SwitchLayout(LayoutSwitch),
+}
+
+/// (services-round) Which layout [`WmAction::SwitchLayout`] switches to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutSwitch {
+    /// The next one, after the last the first.
+    Next,
+    /// The one at this index of `keyboard.layouts`.
+    Index(u32),
 }
 
 /// Why an action did not run.
@@ -412,8 +435,10 @@ pub(crate) fn merge_with(
                 windows,
                 focused_screen: keyboard_screen,
                 configured: Vec::new(),
-                // The protocols tell no layout.
+                // The protocols tell no layout, and no mode.
                 keyboard_layout: None,
+                keyboard_layouts: Vec::new(),
+                mode: None,
             }
         }
     };
@@ -922,6 +947,23 @@ fn route(
         WmAction::MinimizeWindow(id) => (id, WindowOp::Minimize),
         WmAction::MaximizeWindow(id) => (id, WindowOp::Maximize),
         WmAction::FullscreenWindow(id) => (id, WindowOp::Fullscreen),
+        // (services-round) Neither protocol moves a window to a
+        // workspace or switches a keyboard's layout.
+        WmAction::MoveWindow { .. } => {
+            return fail(
+                req.reply,
+                unsupported(
+                    "no compositor IPC (the standard protocols cannot move a window \
+                     to a workspace)",
+                ),
+            );
+        }
+        WmAction::SwitchLayout(_) => {
+            return fail(
+                req.reply,
+                unsupported("no compositor IPC (the standard protocols cannot switch layouts)"),
+            );
+        }
     };
     // Window actions: `zwlr_foreign_toplevel_management_v1`, whose ids the
     // windows shown carry whenever it is bound (`merge`).

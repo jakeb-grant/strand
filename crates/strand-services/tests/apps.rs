@@ -3,13 +3,14 @@
 //! `TryExec`, ids of subdirectories, the user's language), icons checked
 //! against the icon theme, search with ranges and frecency, launching
 //! detached with frecency persisted, and entries read again when they
-//! change, all through the service registry.
+//! change, all through the service registry; (services-round) an entry's
+//! desktop actions listed and launched.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
-use strand_services::apps::{self, App, AppsAction, Config};
+use strand_services::apps::{self, App, AppAction, AppsAction, Config};
 use strand_services::{Builtin, Buses, Data, DynService, FromData, Services};
 
 fn write(path: &Path, text: &str) {
@@ -519,6 +520,136 @@ fn windows_find_their_desktop_entries() {
     let bare = apps::AppIndex::default();
     assert_eq!(bare.window("Spotify"), ("spotify".to_string(), None));
     assert_eq!(bare.window("foot"), ("foot".to_string(), None));
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// (services-round) `app.actions`: the `[Desktop Action …]` groups an
+/// entry's `Actions=` names, in its order, with their names in the
+/// user's language and their icons; one with no group, no name or no
+/// `Exec` is left out, as is a repeated id. `a.launch()` runs the
+/// action's own `Exec` line (field codes expanded as the app's are) and
+/// counts a launch of its app, through the action as Rust calls it and
+/// through the dynamic view as the language does.
+#[test]
+fn desktop_actions_are_listed_and_launched() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!("strand-app-actions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let system = root.join("system/applications");
+    let marker = root.join("launched");
+    let icons = root.join("icons");
+    write(
+        &icons.join("hicolor/index.theme"),
+        "[Icon Theme]\nDirectories=48x48/apps\n[48x48/apps]\nSize=48\nType=Fixed\n",
+    );
+    write(&icons.join("hicolor/48x48/apps/strand-private.png"), "png");
+    strand_icons::set_base_dirs(Some(vec![icons.clone()]));
+    let script = root.join("run.sh");
+    write(
+        &script,
+        &format!(
+            "#!/bin/sh\necho \"$@\" > {}.tmp\nmv {0}.tmp {0}\n",
+            marker.display()
+        ),
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let run = script.display();
+    write(
+        &system.join("browser.desktop"),
+        &format!(
+            "{}\n[Desktop Action new-window]\nName=New Window\nName[de]=Neues Fenster\nExec={run} --new-window %U\n\n\
+             [Desktop Action private]\nName=New Private Window\nExec={run} --private %c\nIcon=strand-private\n\n\
+             [Desktop Action nameless]\nExec={run} --nameless\n\n\
+             [Desktop Action execless]\nName=No Exec\n",
+            desktop(
+                "Browser",
+                &format!("{run} --app"),
+                "Actions=new-window;private;missing;nameless;execless;private;\n"
+            )
+        ),
+    );
+    write(&system.join("plain.desktop"), &desktop("Plain", "true", ""));
+    apps::set_config(Some(Config {
+        dirs: vec![system.clone()],
+        desktops: vec!["Strand".into()],
+        state: None,
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let d = b.apps.dynamic();
+    b.apps.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    rt.flush();
+    let all = d
+        .keyed_items(&rt, 0)
+        .unwrap()
+        .into_iter()
+        .map(|a| App::from_data(&a).unwrap())
+        .collect::<Vec<_>>();
+    let browser = all.iter().find(|a| a.id == "browser").unwrap();
+    let plain = all.iter().find(|a| a.id == "plain").unwrap();
+    assert!(plain.actions.is_empty());
+    assert_eq!(
+        browser.actions,
+        [
+            AppAction {
+                id: "new-window".into(),
+                name: "New Window".into(),
+                icon: None,
+                app: "browser".into(),
+            },
+            AppAction {
+                id: "private".into(),
+                name: "New Private Window".into(),
+                icon: Some("strand-private".into()),
+                app: "browser".into(),
+            },
+        ]
+    );
+    let launched = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let got = std::fs::read_to_string(&marker).unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        got.trim().to_string()
+    };
+    let before = apps::launches();
+    b.apps
+        .act(
+            &rt,
+            AppsAction::LaunchAction {
+                item: browser.actions[1].clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(launched(), "--private Browser", "its own Exec, %c expanded");
+    assert_eq!(apps::launches(), before + 1, "a launch of its app");
+    // As the language calls it: `a.launch()` on the action's record.
+    let item = strand_services::ToData::to_data(&browser.actions[0]);
+    d.action(&rt, "launch", Some(&item), &[], Default::default())
+        .unwrap();
+    assert_eq!(launched(), "--new-window", "%U nothing");
+    assert_eq!(apps::launches(), before + 2);
+    // The app itself still starts its own line.
+    b.apps
+        .act(
+            &rt,
+            AppsAction::Launch {
+                item: browser.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(launched(), "--app");
+
+    s.shutdown();
+    apps::set_config(None);
     strand_icons::set_base_dirs(None);
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -162,6 +162,7 @@ fn a_focused_surfaces_keyboard_state_wins() {
         caps_lock: true,
         num_lock: true,
         layout: Some("German".into()),
+        ..Focused::default()
     }));
     until(&rt, &s, "the focused report", || {
         cells.caps_lock.get_untracked(&rt) == Ok(true)
@@ -178,6 +179,7 @@ fn a_focused_surfaces_keyboard_state_wins() {
         caps_lock: false,
         num_lock: true,
         layout: Some("German".into()),
+        ..Focused::default()
     }));
     until(&rt, &s, "caps lock off", || {
         cells.caps_lock.get_untracked(&rt) == Ok(false)
@@ -246,8 +248,80 @@ fn the_layout_comes_from_the_compositor() {
         cells.layout.get_untracked(&rt) == Ok(Some("English (US)".into()))
     });
     keyboard::focused(None);
+
+    // (services-round) The layouts, named from the main keyboard's rule
+    // names; and the switches, Hyprland's `switchxkblayout`.
+    b.keyboard.acquire_field(field("layouts"));
+    until(&rt, &s, "the layouts", || {
+        cells.layouts.get_untracked(&rt)
+            == Ok(vec!["English (US)".to_string(), "German".to_string()])
+    });
+    let act = |name: &str, args: &[strand_services::Data]| {
+        b.keyboard
+            .dynamic()
+            .action(&rt, name, None, args, Default::default())
+            .unwrap();
+        rt.flush();
+    };
+    act("next_layout", &[]);
+    act("set_layout", &[strand_services::Data::Int(1)]);
+    until(&rt, &s, "the switches", || {
+        let sent: Vec<String> = fake
+            .requests()
+            .into_iter()
+            .filter(|r| r.starts_with("switchxkblayout"))
+            .collect();
+        sent == ["switchxkblayout all next", "switchxkblayout all 1"]
+    });
     s.shutdown();
     wm::configure(None);
     drop(fake);
     drop(tokio);
+}
+
+/// (services-round) The modifiers held are a focused surface's only: no
+/// compositor tells another client, so they are false once the focus
+/// leaves (an alt-tab switcher commits when `alt` turns false).
+#[test]
+fn the_modifiers_are_a_focused_surfaces_only() {
+    let _serial = serial();
+    let _lights = Lights::new();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt);
+    b.keyboard.acquire(&rt);
+    for f in ["alt", "ctrl", "shift", "logo"] {
+        b.keyboard.acquire_field(field(f));
+    }
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.keyboard.cells();
+    let held = |rt: &Runtime| {
+        (
+            cells.alt.get_untracked(rt),
+            cells.ctrl.get_untracked(rt),
+            cells.shift.get_untracked(rt),
+            cells.logo.get_untracked(rt),
+        )
+    };
+    assert_eq!(held(&rt), (Ok(false), Ok(false), Ok(false), Ok(false)));
+    keyboard::focused(Some(Focused {
+        alt: true,
+        shift: true,
+        ..Focused::default()
+    }));
+    until(&rt, &s, "alt and shift held", || {
+        held(&rt) == (Ok(true), Ok(false), Ok(true), Ok(false))
+    });
+    keyboard::focused(Some(Focused {
+        ctrl: true,
+        logo: true,
+        ..Focused::default()
+    }));
+    until(&rt, &s, "ctrl and logo held", || {
+        held(&rt) == (Ok(false), Ok(true), Ok(false), Ok(true))
+    });
+    keyboard::focused(None);
+    until(&rt, &s, "nothing held once the focus left", || {
+        held(&rt) == (Ok(false), Ok(false), Ok(false), Ok(false))
+    });
+    s.shutdown();
 }

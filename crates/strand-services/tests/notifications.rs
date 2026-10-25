@@ -95,6 +95,10 @@ fn hear(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> Arc<Mutex<V
                     let (id, key): (u32, String) = m.body().deserialize().unwrap();
                     format!("Invoked {id} {key}")
                 }
+                "NotificationReplied" => {
+                    let (id, text): (u32, String) = m.body().deserialize().unwrap();
+                    format!("Replied {id} {text}")
+                }
                 "ActivationToken" => {
                     let (id, token): (u32, String) = m.body().deserialize().unwrap();
                     format!("Token {id} {token}")
@@ -397,6 +401,113 @@ fn the_server_serves_the_spec_and_the_store() {
 /// client sending in a loop, not the memory budget's 100; decisions.md
 /// m4-owner-docs), the oldest beyond it closing as expired, and lying
 /// pictures are refused.
+/// (services-round) A notification's progress (`value`, a percentage),
+/// category and desktop entry hints; an `inline-reply` action is no
+/// button but `can_reply`, and `n.reply(text)` sends KDE's
+/// `NotificationReplied` and closes it; one without it takes no reply.
+#[test]
+fn hints_and_inline_replies() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let caps: Vec<String> = call(&tokio, &conn, NAME, PATH, NAME, "GetCapabilities", &())
+        .body()
+        .deserialize()
+        .unwrap();
+    assert!(caps.iter().any(|c| c == "inline-reply"), "{caps:?}");
+
+    let id = notify(
+        &tokio,
+        &conn,
+        0,
+        "Copying",
+        &["inline-reply", "Reply", "ok", "OK"],
+        HashMap::from([
+            ("value", Value::from(42i32)),
+            ("category", Value::from("transfer")),
+            ("desktop-entry", Value::from("org.gnome.Nautilus")),
+        ]),
+        -1,
+    );
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let n = popups(&b, &rt).remove(0);
+    assert_eq!(n.progress, Some(0.42));
+    assert_eq!(n.category.as_deref(), Some("transfer"));
+    assert_eq!(n.desktop_entry.as_deref(), Some("org.gnome.Nautilus"));
+    assert!(n.can_reply);
+    let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(buttons, ["ok"], "the reply is no button");
+
+    // Progress moves by replacement; past 100 is whole.
+    notify(
+        &tokio,
+        &conn,
+        id,
+        "Copying",
+        &["inline-reply", "Reply"],
+        HashMap::from([("value", Value::from(140u32))]),
+        -1,
+    );
+    until(&rt, &s, "the progress", || {
+        popups(&b, &rt)
+            .first()
+            .is_some_and(|n| n.progress == Some(1.0) && n.category.is_none())
+    });
+
+    let item = popups(&b, &rt)[0].to_data();
+    b.notifications
+        .dynamic()
+        .action(
+            &rt,
+            "reply",
+            Some(&item),
+            &[Data::text("on my way")],
+            Default::default(),
+        )
+        .unwrap();
+    wait_heard(&heard, &format!("Replied {id} on my way"));
+    wait_heard(&heard, &format!("Closed {id} 2"));
+
+    // No `inline-reply`: no reply, and it stays.
+    let plain = notify(&tokio, &conn, 0, "Plain", &[], HashMap::new(), -1);
+    until(&rt, &s, "the plain one", || popups(&b, &rt).len() == 1);
+    let n = popups(&b, &rt).remove(0);
+    assert!(!n.can_reply && n.progress.is_none());
+    b.notifications
+        .dynamic()
+        .action(
+            &rt,
+            "reply",
+            Some(&n.to_data()),
+            &[Data::text("hello")],
+            Default::default(),
+        )
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(popups(&b, &rt).len(), 1);
+    assert!(
+        !heard
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with(&format!("Replied {plain} "))),
+        "{:?}",
+        heard.lock().unwrap()
+    );
+    s.shutdown();
+}
+
 #[test]
 fn history_is_bounded_and_lying_pictures_are_refused() {
     let _serial = serial();

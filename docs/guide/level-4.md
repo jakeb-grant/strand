@@ -302,6 +302,11 @@ component Toast(n: Notification) {
 Send three notifications and click "Clear all": the cards leave one
 after another, 80 ms apart, instead of all at once.
 
+A card can show more of what the sender says: `meter n.progress ?? 0`
+for a download's progress (0 to 1), `n.category` (`email.arrived`) to
+pick an icon, and, when `n.can_reply` is true (a chat app), an `input`
+whose `on activate { n.reply(draft) }` sends the reply back to the app.
+
 **`await` waits inside a handler.** `sleep(80ms)` returns an `Async`
 (next section) that finishes after 80 ms, and `await` pauses the
 handler until it does. While it waits, the rest of the shell runs on:
@@ -378,6 +383,10 @@ launcher uses: `for h in hits` and `hits.len` read the last result,
 empty before the first one. `!hits.pending` in the last line stops "No
 matches" from flashing while a search is still running.
 
+An app may offer more than starting it: `h.app.actions` lists its extra
+actions (a new window, a private one), each with a `name` to show and
+`a.launch()` to start it, for a menu beside the hit.
+
 **`list { … }` is a container for long lists.** It looks like a `col`,
 but it only builds the rows you can see, so a thousand apps cost no
 more than ten. It also has a selection: arrow keys move it, `selected`
@@ -390,7 +399,10 @@ arrow keys and Return to the list named `results`. An `id:` also lets
 you read another node's booleans, as in `when results.hover { … }`.
 
 **`keyboard: exclusive`** takes the keyboard while the launcher is open,
-so you type into it without clicking it first. **`open: <-> open`**
+so you type into it without clicking it first. While it has the keys,
+`keyboard.alt`, `ctrl`, `shift` and `logo` say which modifiers you hold:
+a window switcher opened on Alt+Tab can pick on Alt's release with
+`on change keyboard.alt { if !keyboard.alt { … } }`. **`open: <-> open`**
 works as the popup's did at level 3: the toggle opens it, and Escape, a
 click away or focus moving elsewhere writes `false` back.
 

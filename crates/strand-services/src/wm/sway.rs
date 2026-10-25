@@ -1,11 +1,15 @@
 //! sway's IPC: swayipc-types (swayipc-async 3.0's types) over our own
 //! i3-ipc framing.
 //!
-//! One connection subscribes to `workspace`, `window`, `output`, `input`
-//! and `shutdown` events; another reads `get_workspaces` and `get_tree`
-//! and runs commands. The keyboard layout (gap 31) is the first
-//! keyboard's at connection (`get_inputs`), then follows each keyboard's
-//! `xkb_layout` and `xkb_keymap` input events.
+//! One connection subscribes to `workspace`, `window`, `output`, `input`,
+//! `mode` and `shutdown` events; another reads `get_workspaces` and
+//! `get_tree` and runs commands. The keyboard layout (gap 31) and the
+//! layouts it switches between are the first keyboard's at connection
+//! (`get_inputs`), then follow each keyboard's `xkb_layout` and
+//! `xkb_keymap` input events. The binding mode (`wm.mode`) is
+//! `get_binding_state`'s at connection, then each `mode` event's; sway's
+//! `default` is none. A window's place (`rect`) is its container's, less
+//! its output's.
 //! A window's title change is patched from the event; every other event
 //! re-reads the workspaces and the tree, once per burst. sway's `reload`
 //! (a `workspace` event with `change: reload`) is `wm.config_reloaded`.
@@ -43,9 +47,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use super::backoff::Backoff;
 use super::lines::{MAX_MESSAGE, too_long};
-use super::model::{Window, WmState, Workspace};
+use super::model::{WinRect, Window, WmState, Workspace};
 use super::understood::{self, Degradation, SessionEnd, Strikes};
-use super::{AdapterMsg, Cmd, IpcSnapshot, WmAction, WmError};
+use super::{AdapterMsg, Cmd, IpcSnapshot, LayoutSwitch, WmAction, WmError};
 
 /// sway's scratchpad workspace.
 const SCRATCH: &str = "__i3_scratch";
@@ -180,15 +184,46 @@ pub(crate) struct State {
     /// connection (`get_inputs`), then the last keyboard whose layout or
     /// keymap changed (`input` events).
     pub keyboard_layout: Option<String>,
+    /// (services-round) The layouts that keyboard switches between, by
+    /// index.
+    pub keyboard_layouts: Vec<String>,
+    /// (services-round) The binding mode; `None` in sway's `default`.
+    pub mode: Option<String>,
 }
 
-/// One of `get_inputs`' inputs: only a keyboard's layout is read.
+/// One of `get_inputs`' inputs: only a keyboard's layouts are read.
 #[derive(Clone, Debug, Default, serde::Deserialize, PartialEq)]
 pub(crate) struct SwayInput {
     #[serde(default, rename = "type")]
     pub input_type: String,
     #[serde(default)]
     pub xkb_active_layout_name: Option<String>,
+    /// (services-round) Its layouts by index (sway may put a `null` in).
+    #[serde(default)]
+    pub xkb_layout_names: Vec<Option<String>>,
+}
+
+/// (services-round) The layouts the first keyboard that names any
+/// switches between.
+pub(crate) fn first_layouts(inputs: &[SwayInput]) -> Vec<String> {
+    inputs
+        .iter()
+        .filter(|i| i.input_type == "keyboard")
+        .map(|i| {
+            i.xkb_layout_names
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .find(|names| !names.is_empty())
+        .unwrap_or_default()
+}
+
+/// (services-round) A binding mode's name as `wm.mode` holds it: sway's
+/// `default` is none.
+fn mode(name: &str) -> Option<String> {
+    (!name.is_empty() && name != "default").then(|| name.to_string())
 }
 
 /// The layout `keyboard.layout` starts from: the first keyboard's that
@@ -348,28 +383,42 @@ fn is_window(n: &Node) -> bool {
         && n.nodes.is_empty()
 }
 
-fn collect_windows(node: &Node, workspace: Option<i64>, out: &mut Vec<(Option<i64>, Node)>) {
+/// The windows under `node`, each with its workspace and its `rect`
+/// made relative to its output (whose layout position is `origin`).
+fn collect_windows(
+    node: &Node,
+    workspace: Option<i64>,
+    origin: (i32, i32),
+    out: &mut Vec<(Option<i64>, Node)>,
+) {
     let workspace = if node.node_type == NodeType::Workspace {
         (node.name.as_deref() != Some(SCRATCH)).then_some(node.id)
     } else {
         workspace
     };
+    let origin = if node.node_type == NodeType::Output {
+        (node.rect.x, node.rect.y)
+    } else {
+        origin
+    };
     if is_window(node) {
         let mut leaf = node.clone();
         leaf.nodes.clear();
         leaf.floating_nodes.clear();
+        leaf.rect.x -= origin.0;
+        leaf.rect.y -= origin.1;
         out.push((workspace, leaf));
         return;
     }
     for n in node.nodes.iter().chain(&node.floating_nodes) {
-        collect_windows(n, workspace, out);
+        collect_windows(n, workspace, origin, out);
     }
 }
 
 impl State {
     pub(crate) fn set_tree(&mut self, tree: &Node) {
         self.windows.clear();
-        collect_windows(tree, None, &mut self.windows);
+        collect_windows(tree, None, (0, 0), &mut self.windows);
     }
 
     /// A title change from a `window` event; false when the window is not
@@ -420,6 +469,13 @@ impl State {
                     minimized: ws.is_none(),
                     fullscreen: n.fullscreen_mode.is_some_and(|m| m != 0),
                     urgent: n.urgent,
+                    // In the scratchpad, nowhere.
+                    rect: ws.map(|_| WinRect {
+                        x: n.rect.x.into(),
+                        y: n.rect.y.into(),
+                        width: n.rect.width.into(),
+                        height: n.rect.height.into(),
+                    }),
                     ..Default::default()
                 }
             })
@@ -432,6 +488,8 @@ impl State {
                 focused_screen: None,
                 configured: self.configured(),
                 keyboard_layout: self.keyboard_layout.clone(),
+                keyboard_layouts: self.keyboard_layouts.clone(),
+                mode: self.mode.clone(),
             },
             toplevel_ids,
             // `fullscreen_mode`; sway has no maximize, so never maximized.
@@ -477,11 +535,24 @@ impl State {
     /// The sway command switching to the workspace named `name` (made when
     /// it does not exist, on its assigned output if it has one).
     fn switch_to(name: &str) -> Result<String, WmError> {
-        if name.trim().is_empty() {
-            return Err(WmError::UnknownWorkspaceName(name.to_string()));
+        Ok(format!(
+            "workspace --no-auto-back-and-forth {}",
+            quoted(name)?
+        ))
+    }
+
+    /// The name of workspace `id`: an existing one's, or a configured
+    /// one's (made by going to it).
+    fn workspace_name(&self, id: i64) -> Result<String, WmError> {
+        match self.workspaces.iter().find(|w| w.id == id) {
+            Some(ws) => Ok(ws.name.clone()),
+            None => self
+                .configured()
+                .into_iter()
+                .find(|w| w.id == id)
+                .map(|w| w.name)
+                .ok_or(WmError::UnknownWorkspace(id)),
         }
-        let name = name.replace('\\', "\\\\").replace('"', "\\\"");
-        Ok(format!("workspace --no-auto-back-and-forth \"{name}\""))
     }
 
     /// The sway command for an action.
@@ -493,19 +564,7 @@ impl State {
                 .ok_or_else(|| WmError::UnknownWindow(id.to_string()))
         };
         Ok(match action {
-            WmAction::FocusWorkspace(id) => {
-                let name = match self.workspaces.iter().find(|w| w.id == *id) {
-                    Some(ws) => ws.name.clone(),
-                    // A configured workspace, made by switching to it.
-                    None => self
-                        .configured()
-                        .into_iter()
-                        .find(|w| w.id == *id)
-                        .map(|w| w.name)
-                        .ok_or(WmError::UnknownWorkspace(*id))?,
-                };
-                Self::switch_to(&name)?
-            }
+            WmAction::FocusWorkspace(id) => Self::switch_to(&self.workspace_name(*id)?)?,
             // `workspace number n`: the workspace whose name starts with
             // n, made when there is none; a negative n is a configured
             // workspace's slot id.
@@ -529,8 +588,34 @@ impl State {
             WmAction::FullscreenWindow(id) => {
                 format!("[con_id={}] fullscreen toggle", window(id)?)
             }
+            // (services-round) Moved, focus staying where it is; a
+            // configured workspace is made by it.
+            WmAction::MoveWindow {
+                window: id,
+                workspace,
+            } => format!(
+                "[con_id={}] move container to workspace {}",
+                window(id)?,
+                quoted(&self.workspace_name(*workspace)?)?
+            ),
+            // Every keyboard, as `keyboard.layout` follows any.
+            WmAction::SwitchLayout(LayoutSwitch::Next) => {
+                "input type:keyboard xkb_switch_layout next".to_string()
+            }
+            WmAction::SwitchLayout(LayoutSwitch::Index(i)) => {
+                format!("input type:keyboard xkb_switch_layout {i}")
+            }
         })
     }
+}
+
+/// A workspace name as a command's quoted argument.
+fn quoted(name: &str) -> Result<String, WmError> {
+    if name.trim().is_empty() {
+        return Err(WmError::UnknownWorkspaceName(name.to_string()));
+    }
+    let name = name.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!("\"{name}\""))
 }
 
 /// Whether a command's error says sway does not know the command at all.
@@ -569,6 +654,17 @@ async fn read_outputs(conn: &mut Conn, state: &mut State) -> Result<(), SessionE
 async fn read_inputs(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
     let inputs: Option<Vec<SwayInput>> = extra(conn.request(CommandType::GetInputs, "").await)?;
     state.keyboard_layout = inputs.as_deref().and_then(first_layout);
+    state.keyboard_layouts = inputs.as_deref().map(first_layouts).unwrap_or_default();
+    Ok(())
+}
+
+/// (services-round) The binding mode at connection
+/// (`get_binding_state`, sway 1.5 on); `mode` events follow it. Extra:
+/// a sway without it starts in none.
+async fn read_mode(conn: &mut Conn, state: &mut State) -> Result<(), SessionEnd> {
+    let binding: Option<swayipc_types::BindingState> =
+        extra(conn.request(CommandType::GetBindingState, "").await)?;
+    state.mode = binding.and_then(|b| mode(&b.name));
     Ok(())
 }
 
@@ -670,11 +766,30 @@ fn effect(state: &mut State, event: Event) -> Effect {
                 InputChange::Added => state.keyboard_layout.is_none(),
                 _ => false,
             };
+            let layouts: Vec<String> = e.input.xkb_layout_names.into_iter().collect();
+            let mut changed = false;
             if takes && layout.is_some() && layout != state.keyboard_layout {
                 state.keyboard_layout = layout;
+                changed = true;
+            }
+            // A new keymap may switch between other layouts.
+            if takes && !layouts.is_empty() && layouts != state.keyboard_layouts {
+                state.keyboard_layouts = layouts;
+                changed = true;
+            }
+            if changed {
                 Effect::Changed
             } else {
                 Effect::None
+            }
+        }
+        Event::Mode(m) => {
+            let now = mode(&m.change);
+            if now == state.mode {
+                Effect::None
+            } else {
+                state.mode = now;
+                Effect::Changed
             }
         }
         _ => Effect::None,
@@ -716,12 +831,12 @@ async fn session(
     let subscribed: Success = events
         .request(
             CommandType::Subscribe,
-            r#"["workspace","window","output","input","shutdown"]"#,
+            r#"["workspace","window","output","input","mode","shutdown"]"#,
         )
         .await?;
     if !subscribed.success {
         return Err(SessionEnd::reply(
-            "the subscription to workspace, window, output, input and shutdown events (refused)",
+            "the subscription to workspace, window, output, input, mode and shutdown events (refused)",
         ));
     }
     let mut conn = Conn::connect(socket).await?;
@@ -729,6 +844,7 @@ async fn session(
     read_assignments(&mut conn, &mut state).await?;
     read_outputs(&mut conn, &mut state).await?;
     read_inputs(&mut conn, &mut state).await?;
+    read_mode(&mut conn, &mut state).await?;
     query(&mut conn, &mut state).await?;
     // Actions this sway refused stay refused until it reports another
     // version.
@@ -974,6 +1090,97 @@ mod tests {
             state.command_for(&WmAction::FullscreenWindow("0".into())),
             Err(WmError::UnknownWindow("0".into()))
         );
+    }
+
+    /// (services-round) A window's place is its container's less its
+    /// output's (here a second output at 1280, 0); moves and layout
+    /// switches are sway commands; `default` is no mode.
+    #[test]
+    fn rects_moves_layouts_and_modes() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sway-1.9/tree.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut tree: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // HEADLESS-1 moved right of an output at 0, 0: every rect under
+        // it moves with it, as sway's layout coordinates do.
+        fn shift(n: &mut serde_json::Value) {
+            n["rect"]["x"] = (n["rect"]["x"].as_i64().unwrap() + 1280).into();
+            for k in ["nodes", "floating_nodes"] {
+                if let Some(a) = n[k].as_array_mut() {
+                    a.iter_mut().for_each(shift);
+                }
+            }
+        }
+        shift(&mut tree["nodes"][1]);
+        let tree: Node = decode(tree.to_string().into_bytes()).unwrap();
+        let mut state = State::default();
+        state.set_tree(&tree);
+        let w = &state.snapshot().state.windows[0];
+        assert_eq!(
+            w.rect,
+            Some(WinRect {
+                x: 0,
+                y: 25,
+                width: 1280,
+                height: 695
+            })
+        );
+        state.workspaces = decode(
+            br#"[{"id": 4, "num": 1, "name": "1", "layout": "splith", "visible": true,
+                  "focused": true, "urgent": false, "representation": null,
+                  "orientation": "horizontal", "output": "HEADLESS-1",
+                  "rect": {"x": 0, "y": 0, "width": 1280, "height": 720}},
+                 {"id": 9, "num": 2, "name": "2: \"web\"", "layout": "splith", "visible": false,
+                  "focused": false, "urgent": false, "representation": null,
+                  "orientation": "horizontal", "output": "HEADLESS-1",
+                  "rect": {"x": 0, "y": 0, "width": 1280, "height": 720}}]"#
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            state
+                .command_for(&WmAction::MoveWindow {
+                    window: w.id.clone(),
+                    workspace: 9
+                })
+                .unwrap(),
+            format!(
+                r#"[con_id={}] move container to workspace "2: \"web\"""#,
+                w.id
+            )
+        );
+        assert_eq!(
+            state.command_for(&WmAction::MoveWindow {
+                window: w.id.clone(),
+                workspace: 77
+            }),
+            Err(WmError::UnknownWorkspace(77))
+        );
+        assert_eq!(
+            state
+                .command_for(&WmAction::SwitchLayout(LayoutSwitch::Next))
+                .unwrap(),
+            "input type:keyboard xkb_switch_layout next"
+        );
+        assert_eq!(
+            state
+                .command_for(&WmAction::SwitchLayout(LayoutSwitch::Index(1)))
+                .unwrap(),
+            "input type:keyboard xkb_switch_layout 1"
+        );
+        assert_eq!(mode("default"), None);
+        assert_eq!(mode(""), None);
+        assert_eq!(mode("resize"), Some("resize".into()));
+        let inputs: Vec<SwayInput> = decode(
+            br#"[{"type": "pointer"},
+                 {"type": "keyboard", "xkb_layout_names": []},
+                 {"type": "keyboard", "xkb_layout_names": ["English (US)", null, "German"]}]"#
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(first_layouts(&inputs), ["English (US)", "German"]);
     }
 
     /// Gaps 3 (m6-w2-services): the config's top-level `workspace <name>

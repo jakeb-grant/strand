@@ -255,6 +255,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         self.stats.bare_commits += 1;
         self.surfaces.insert(id, surface);
+        self.sync_idle_inhibitor(id);
         self.host.surface_attached(id, node, monitor.as_ref());
     }
 
@@ -271,6 +272,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.destroy_surface(c);
         }
         self.destroy_catcher(id);
+        self.drop_idle_inhibitor(id);
         let Some(mut s) = self.surfaces.remove(&id) else {
             return;
         };

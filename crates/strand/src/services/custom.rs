@@ -54,6 +54,9 @@ struct Entry {
     /// again.
     epoch: Signal<u64>,
     values: Vec<Memo<Value>>,
+    /// (services-round) `on svc.line(doc)`'s queue (a `from listen`
+    /// declaration's), each line as the declaration's record.
+    line: strand_core::EventQueue<Vec<Value>>,
     /// Its fields' mismatch reports: resolved when the service restarts
     /// or stops (a mismatch is usually fixed by changing the declared
     /// type, which restarts it; a field that still mismatches is reported
@@ -79,6 +82,8 @@ impl Entry {
 struct Typing {
     table: Rc<TypeTable>,
     fields: Vec<Ty>,
+    /// The declaration's own record (a `line` event's `doc`).
+    record: strand_compiler::ty::RecordId,
 }
 
 impl Typing {
@@ -98,6 +103,7 @@ impl Typing {
         Typing {
             table: Rc::new(types.clone()),
             fields,
+            record: decl.record,
         }
     }
 }
@@ -412,7 +418,7 @@ impl CustomHost {
         }
         let typing = Rc::new(RefCell::new(Typing::of(decl, types)));
         let mut mismatches = Vec::with_capacity(n);
-        let (scope, (epoch, values)) = rt.scope(|rt| {
+        let (scope, (epoch, values, line)) = rt.scope(|rt| {
             let epoch = rt.signal(0u64);
             let values = (0..n)
                 .map(|i| {
@@ -443,8 +449,42 @@ impl CustomHost {
                     m
                 })
                 .collect::<Vec<Memo<Value>>>();
-            (epoch, values)
+            (epoch, values, rt.events::<Vec<Value>>())
         });
+        // (services-round) Each `line` the service sends, as the
+        // declaration's record: its fields converted as the memos convert
+        // them, a value that does not convert its type's default.
+        let (names, t) = (
+            decl.fields
+                .iter()
+                .map(|f| f.name.clone())
+                .collect::<Vec<_>>(),
+            typing.clone(),
+        );
+        let service = decl.name.clone();
+        client.dynamic().observe(Box::new(move |rt, applied| {
+            let strand_services::Applied::Event { args, .. } = applied else {
+                return;
+            };
+            let Some(Data::List(values)) = args.first() else {
+                return;
+            };
+            let typing = t.borrow();
+            let doc = Data::Record {
+                ty: "".into(),
+                fields: names
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(n, v)| (n.clone().into(), v.clone()))
+                    .collect(),
+            };
+            let ty = Ty::Record(typing.record);
+            let v = coerce(&typing.table, &ty, &doc)
+                .unwrap_or_else(|| default_value(&typing.table, &ty));
+            if let Err(e) = line.emit(rt, vec![v]) {
+                log::warn!("{service}.line: {e}");
+            }
+        }));
         Entry {
             client,
             spec,
@@ -452,6 +492,7 @@ impl CustomHost {
             typing,
             epoch,
             values,
+            line,
             mismatches,
             scope,
         }
@@ -676,13 +717,31 @@ impl ServiceHost for CustomHost {
         )))
     }
 
+    /// (services-round) A `from listen` declaration's `line`: asking for
+    /// it (a handler `on svc.line(doc)`) is what has the service send
+    /// each line ([`custom::hear_lines`]), and the handler is a reader:
+    /// the command runs while it is mounted, its fields read or not
+    /// (released with the scope that mounted it).
     fn event(
         &self,
-        _rt: &Runtime,
-        _service: &str,
-        _event: &str,
+        rt: &Runtime,
+        service: &str,
+        event: &str,
     ) -> Option<strand_core::EventQueue<Vec<Value>>> {
-        None
+        let entries = self.entries.borrow();
+        let e = entries.get(service)?;
+        if event != "line" || !matches!(e.decl.source, SourceSpec::Listen { .. }) {
+            return None;
+        }
+        custom::hear_lines(e.spec);
+        e.client.acquire(rt);
+        let (client, weak) = (e.client.clone(), rt.downgrade());
+        rt.on_cleanup(move || {
+            if let Some(rt) = weak.upgrade() {
+                client.release(&rt);
+            }
+        });
+        Some(e.line)
     }
 
     fn acquire(&self, rt: &Runtime, service: &str) {

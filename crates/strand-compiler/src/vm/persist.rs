@@ -219,11 +219,18 @@ pub fn decode(types: &TypeTable, ty: &Ty, j: &Json) -> Option<Value> {
         },
         (Ty::Enum(e), Json::String(s)) => Value::Enum(*e, types.enum_(*e).variant(s)?),
         (Ty::Record(r), Json::Object(m)) => {
+            // (services-round) A field the object leaves out reads its
+            // type's default, as a settings file's does: a value written
+            // before its record gained a field (a persisted list of apps,
+            // a report's answer from before `App.actions`) still reads.
             let def = types.record(*r);
             let fields = def
                 .fields
                 .iter()
-                .map(|f| decode(types, &f.ty, m.get(&f.name).unwrap_or(&Json::Null)))
+                .map(|f| match m.get(&f.name) {
+                    Some(v) => decode(types, &f.ty, v),
+                    None => Some(super::builtins::default_of(types, &f.ty)),
+                })
                 .collect::<Option<Vec<_>>>()?;
             Value::record(*r, fields)
         }
@@ -266,6 +273,25 @@ mod tests {
         // default).
         assert_eq!(decode_bytes(&t, &Ty::BOOL, b"\"x\""), None);
         assert_eq!(decode_bytes(&t, &Ty::BOOL, b"not json"), None);
+    }
+
+    /// (services-round) A record's missing field is its default; a field
+    /// that is there and does not fit still refuses the whole value.
+    #[test]
+    fn a_records_missing_field_reads_its_default() {
+        let t = types();
+        let app = Ty::Record(t.find_record("App").unwrap());
+        let old = serde_json::json!({"id": "firefox", "name": "Firefox", "comment": null,
+            "icon": "firefox", "categories": []});
+        let v = decode(&t, &app, &old).expect("an App from before `actions`");
+        let Value::Record(rec) = &v else {
+            panic!("{v:?}")
+        };
+        let def = t.record(t.find_record("App").unwrap());
+        let at = def.fields.iter().position(|f| f.name == "actions").unwrap();
+        assert_eq!(rec.fields[at], Value::list(Vec::new()));
+        let bad = serde_json::json!({"id": "firefox", "name": 3});
+        assert_eq!(decode(&t, &app, &bad), None);
     }
 
     #[test]

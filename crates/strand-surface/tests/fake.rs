@@ -827,6 +827,9 @@ fn a_grabbing_popup_loses_the_keyboard_after_an_earlier_release() {
         caps_lock: true,
         num_lock: false,
         layout: None,
+        // The fake's keymap has one layout it does not name.
+        layouts: vec![String::new()],
+        ..Default::default()
     });
     let ok = mgr
         .dispatch_until(WAIT, |s| s.host().keyboard_states.last() == Some(&caps_on))
@@ -980,6 +983,8 @@ fn an_enter_reports_the_lock_keys_of_now_not_of_the_last_focus() {
             caps_lock: on,
             num_lock: false,
             layout: None,
+            layouts: vec![String::new()],
+            ..Default::default()
         })
     };
     let wait_for = |mgr: &mut SurfaceManager<TestHost>, want: Option<KeyboardState>| {

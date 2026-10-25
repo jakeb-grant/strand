@@ -39,10 +39,28 @@ Keyed by `id`.
 | `comment` | `text?` | Its comment, if the entry has one. |
 | `icon` | `text` | Its icon: `image h.app.icon`. An icon name of the desktop's icon theme, or a path; `application-x-executable` when the entry names none the theme has. |
 | `categories` | `[text]` | Its desktop entry categories. |
+| `actions` | `[AppAction]` | The actions its entry offers besides starting it (`New Window`, `New Private Window`), keyed by `id`: a launcher's or a dock's menu, `for a in h.app.actions { button a.name { on click { a.launch() } } }`. |
 
 | Method | |
 | --- | --- |
 | `action launch()` | Starts it (its `Exec` line, detached; in a terminal when the entry asks for one) and counts the launch for frecency: `on activate { h.app.launch() }`. |
+
+### `AppAction`
+
+One of an app's desktop actions (`[Desktop Action new-window]`).
+
+Keyed by `id`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `text` | Its id in the desktop entry (`new-window`). |
+| `name` | `text` | Its name, in the user's language. |
+| `icon` | `text?` | Its own icon, when it names one the icon theme has (or a path). |
+| `app` | `text` | The app it belongs to. |
+
+| Method | |
+| --- | --- |
+| `action launch()` | Starts it (its own `Exec` line, as `launch()` starts the app's) and counts as a launch of its app for frecency. |
 
 ### `AudioDevice`
 
@@ -196,6 +214,18 @@ Keyed by `app.id`.
 | `score` | `float` | Its score: fuzzy match plus frecency (higher first). |
 | `ranges` | `[Range]` | The matched character ranges of its name: `marks: h.ranges`. Empty when the query matched its keywords or generic name instead. |
 
+### `IdleTimeout`
+
+A timeout `idle.after` was asked about, and whether the seat has been
+idle that long.
+
+Keyed by `timeout`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `timeout` | `duration` | How long without input it waits for. |
+| `idle` | `bool` | The seat has had no input for at least `timeout`. |
+
 ### `Key`
 
 A key press: `on key(k: Key)`.
@@ -242,12 +272,17 @@ A desktop notification, keyed by `id`.
 | `persistent` | `bool` | The sender asked it never to expire (an `expire_timeout` of 0): a shell keeps its popup with `after n.timeout ?? 6s while !n.persistent { n.expire() }`. |
 | `time` | `Date` | When it arrived. |
 | `actions` | `[NotificationAction]` | The buttons it offers; none on one remembered from an earlier run (`notifications.remember`), whose sender cannot hear them. |
+| `progress` | `float?` | How far along what it reports is, 0 to 1 (the sender's `value` hint, a percentage), null when it says none: `meter n.progress ?? 0`. |
+| `category` | `text?` | The kind of event it reports (the `category` hint: `email.arrived`, `transfer.complete`), null when the sender gives none. |
+| `desktop_entry` | `text?` | The desktop entry of the app that sent it (the `desktop-entry` hint), null when the sender gives none. |
+| `can_reply` | `bool` | The sender takes a typed reply (an `inline-reply` action, which is not among `actions`): `if n.can_reply { input … }`. False on one remembered from an earlier run. |
 
 | Method | |
 | --- | --- |
 | `action expire()` | Ends its popup, as a timeout does; it stays in `all`, still open (its actions still reach the sender) until dismissed. |
 | `action dismiss()` | Closes it: `on secondary { n.dismiss() }`. |
 | `action activate()` | Invokes its default action: `on click { n.activate() }`. |
+| `action reply(text: text)` | `n.reply(text)` sends `text` to the sender as its inline reply and closes it (unless it is resident); nothing when it takes no reply. |
 
 ### `NotificationAction`
 
@@ -460,6 +495,7 @@ Keyed by `id`.
 | `fullscreen` | `bool` | It is fullscreen.  `win.fullscreen()` makes it fullscreen, or restores it when it is fullscreen. |
 | `urgent` | `bool` | It asks for attention. |
 | `app` | `App?` | The installed app it belongs to, found from its app id (the desktop entry's id, `StartupWMClass`, a reverse-DNS id's last part, its name): `win.app?.categories`. Null when no entry matches. |
+| `rect` | `Rect?` | Its place and size on its screen, logical pixels from the screen's top-left corner, from the compositor's IPC: a tiled niri window (which scrolls with its column) and the standard protocols have none. Hyprland tells no move of a floating window, so there it is as of the window's last other change. |
 
 | Method | |
 | --- | --- |
@@ -468,6 +504,7 @@ Keyed by `id`.
 | `action minimize()` | Minimises it. |
 | `action maximize()` | `win.maximize()` maximises it, or restores it when it is maximised. |
 | `action fullscreen()` | It is fullscreen.  `win.fullscreen()` makes it fullscreen, or restores it when it is fullscreen. |
+| `action move_to(ws: Workspace)` | `win.move_to(ws)` moves it to workspace `ws`, the focus staying where it is (on the compositors' IPC: Hyprland, sway, niri). |
 
 ### `Workspace`
 

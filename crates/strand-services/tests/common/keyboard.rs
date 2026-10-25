@@ -81,4 +81,12 @@ impl Keyboard {
         self.keyboard.modifiers(0, 0, locked, group);
         self.queue.roundtrip(&mut Client).unwrap();
     }
+
+    /// (services-round) Presses and releases `a`: input on the seat.
+    pub fn tap(&mut self) {
+        // evdev's KEY_A (keycode 38 less xkb's offset of 8).
+        self.keyboard.key(0, 30, 1);
+        self.keyboard.key(1, 30, 0);
+        self.queue.roundtrip(&mut Client).unwrap();
+    }
 }
