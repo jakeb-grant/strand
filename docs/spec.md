@@ -415,8 +415,10 @@ filling the monitor, the keyboard always).
     does not offer (its `wm_capabilities`) does nothing. On another
     element they do nothing.
   - The compositor's close, and `w.close()`, write a two-way `open:`
-    false; a window whose `open` is not two-way stays open. Escape and
-    focus loss leave a window open.
+    false; a window whose `open` is not two-way stays open, and
+    `strand check` warns on one whose `open:` is one-way or unset
+    (`check::window_open`; a two-way `open` in a `when` on it is
+    enough). Escape and focus loss leave a window open.
   - A popup in a window opens from it as from a panel, `anchor:
     pointer` included. Several windows may be open at once; a window
     already open opening again is the same window; a reload keeps an
@@ -1948,7 +1950,10 @@ people can edit by hand.
     and their scales, the process's PSS, the GPU's status, reason and
     lost-device count, and each surface's backend, why it is promoted
     and its frame times (p50/p95/p99 over the frames drawn among its
-    last 600 paints, with the drawn and unchanged counts). It carries no
+    last 600 paints, with the drawn and unchanged counts), and (window)
+    for a window what the compositor last said of it: tiled,
+    maximised, fullscreen or floating, focused, who decorates it, and
+    the axes the compositor sized. It carries no
     serials or ids. The `report` request is served over the socket
     only, not D-Bus. (Built, decisions.md report.) `strand report
     words… [--json]`, given words describing a glitch, saves a glitch

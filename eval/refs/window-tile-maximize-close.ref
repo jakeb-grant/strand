@@ -1,0 +1,266 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "window-tile-maximize-close"
+verdict good
+note "window round two: a window tiled by the compositor (360x240), maximised from its own title bar (640x376 under the bar), restored to its content's size at once, decorated by the compositor (its own title bar hidden) and closed by it; frames checked by eye at each segment's end"
+date 2026-10-25
+rev "3aa2859f+changes"
+approver "claude"
+scenario a601e4db510b8f3e
+seal 01b7059641e1f0cb
+S1 0 63 "window Settings"
+S2 0 - "bar Top"
+N0 "a|shell.strand:21:7|#0" "box#a"
+N1 "body|shell.strand:10:3|#0" "col#body"
+N2 "b|shell.strand:22:7|#1" "box#b"
+N3 "content|shell.strand:20:5|#1" "row#content"
+N4 "grow|shell.strand:14:9|#0" "box#grow"
+N5 "label|shell.strand:4:3|[Mock | DP-1]#0" "text#label"
+N6 "maxbtn|shell.strand:15:9|#1" "box#maxbtn"
+N7 "titlebar|shell.strand:12:7|#0" "row#titlebar"
+N8 "title|shell.strand:13:9|#0" "text#title"
+N9 "w|shell.strand:6:1|#0" "window#w"
+N10 "|shell.strand:2:1|[Mock | DP-1]#0" "bar@shell.strand:2"
+k0 p1,2
+s1 z=272,90 o=184,155
+s2 z=640,24
+n0 x=12 y=38 w=120 h=40 ord=7 bg=45475aff
+n1 x=0 y=0 w=272 h=90 ord=1
+n2 x=140 y=38 w=120 h=40 ord=8 bg=45475aff
+n3 x=0 y=38 w=272 h=40 ord=6
+n4 x=63 y=14 w=177 h=0 ord=4
+n5 srf=2 x=0 y=0 w=640 h=24 txt=S ord=1 ink=1,1,47,13 fg=cdd6f4ff gl=["Desktop"]
+n6 x=248 y=6 w=16 h=16 ord=5 bg=89b4faff
+n7 x=0 y=0 w=272 h=28 ord=2 bg=313244ff
+n8 x=8 y=7 w=47 h=15 txt=S ord=3 ink=8,8,47,13 fg=cdd6f4ff gl=["Settings"]
+n9 x=0 y=0 w=272 h=90 bg=181825ff
+n10 srf=2 x=0 y=0 w=640 h=24 bg=1e1e2eff
+k1 p1
+s1 z=360,240 o=0,24
+n1 w=360 h=240
+n2 bg=5c5c67ff
+n3 w=360
+n4 w=265
+n6 x=336
+n7 w=360
+n9 w=360 h=240
+k2
+n2 bg=85807cff
+k3
+n2 bg=aba08dff
+k4
+n2 bg=c7b89aff
+k5
+n2 bg=dbc8a2ff
+k6
+n2 bg=e7d3a7ff
+k7
+n2 bg=eed9abff
+k8
+n2 bg=f3ddacff
+k9
+n2 bg=f6dfaeff
+k10
+n2 bg=f7e0aeff
+k11
+n2 bg=f8e1afff
+k12
+k13
+n2 bg=f9e2afff
+k14
+s1 z=640,376
+n1 w=640 h=376
+n3 w=640
+n4 w=545
+n6 x=616 bg=8cbcefff
+n7 w=640
+n9 w=640 h=376
+k15
+n6 bg=92c8dbff
+k16
+n6 bg=98d1c9ff
+k17
+n6 bg=9dd8bbff
+k18
+n6 bg=a1ddb1ff
+k19
+n6 bg=a3dfabff
+k20
+n6 bg=a4e1a7ff
+k21
+n6 bg=a5e2a4ff
+k22
+n6 bg=a5e2a3ff
+k23
+n6 bg=a6e3a2ff
+k24
+n6 bg=a6e3a1ff
+k25
+s1 z=272,90
+n1 w=272 h=90
+n3 w=272
+n4 w=177
+n6 x=248 bg=a1ddb0ff
+n7 w=272
+n9 w=272 h=90
+k26
+n6 bg=99d2c7ff
+k27
+n6 bg=93c9daff
+k28
+n6 bg=8fc1e6ff
+k29
+n6 bg=8cbceeff
+k30
+n6 bg=8bb9f3ff
+k31
+n6 bg=8ab7f6ff
+k32
+n6 bg=8ab6f8ff
+k33
+n6 bg=89b5f9ff
+k34
+k35
+n6 bg=89b4faff
+k36
+s1 o=184,155 i=0,0,272,80
+n0 y=28 ord=3
+n1 h=80
+n2 y=28 ord=4 bg=ddcaa3ff
+n3 y=28 ord=2
+n4 -
+n6 -
+n7 -
+n8 -
+n9 h=80
+k37
+s1 i=0,0,272,66
+n0 y=14
+n1 h=66
+n2 y=14 bg=afa38fff
+n3 y=14
+n9 h=66
+k38
+s1 i=0,0,272,56
+n0 y=4
+n1 h=56
+n2 y=4 bg=89837dff
+n3 y=4
+n9 h=56
+k39
+s1 i=0,0,272,52
+n0 y=0
+n1 h=52
+n2 y=0 bg=6f6c70ff
+n3 y=0
+n9 h=52
+k40
+s1 i=0,0,272,51
+n0 y=-2
+n1 h=51
+n2 y=-2 bg=5e5d68ff
+n3 y=-1 h=39
+n9 h=51
+k41
+n0 y=-1
+n2 y=-1 bg=545462ff
+k42
+s1 i=0,0,272,52
+n1 h=52
+n2 bg=4d4f5fff
+n3 y=0
+n9 h=52
+k43
+n0 y=0
+n2 y=0 bg=4a4b5dff
+n3 h=40
+k44
+n2 bg=48495cff
+k45
+n2 bg=47485bff
+k46
+n2 bg=46485aff
+k47
+n2 bg=45475aff
+k48
+k49
+s1 z=272,52 i=-
+k50
+n0 op=218
+n1 op=218
+n2 op=218
+n3 op=218
+n9 op=218
+k51
+n0 op=157
+n1 op=157
+n2 op=157
+n3 op=157
+n9 op=157
+k52
+n0 op=104
+n1 op=104
+n2 op=104
+n3 op=104
+n9 op=104
+k53
+n0 op=65
+n1 op=65
+n2 op=65
+n3 op=65
+n9 op=65
+k54
+n0 op=39
+n1 op=39
+n2 op=39
+n3 op=39
+n9 op=39
+k55
+n0 op=23
+n1 op=23
+n2 op=23
+n3 op=23
+n9 op=23
+k56
+n0 op=14
+n1 op=14
+n2 op=14
+n3 op=14
+n9 op=14
+k57
+n0 op=8
+n1 op=8
+n2 op=8
+n3 op=8
+n9 op=8
+k58
+n0 op=4
+n1 op=4
+n2 op=4
+n3 op=4
+n9 op=4
+k59
+n0 op=2
+n1 op=2
+n2 op=2
+n3 op=2
+n9 op=2
+k60
+n0 op=1
+n1 op=1
+n2 op=1
+n3 op=1
+n9 op=1
+k61
+k62
+n0 op=0
+n1 op=0
+n2 op=0
+n3 op=0
+n9 op=0
+k63
+s1 -
+n0 -
+n1 -
+n2 -
+n3 -
+n9 hid=opacity0 bg=-

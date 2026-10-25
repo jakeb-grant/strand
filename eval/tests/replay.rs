@@ -2241,3 +2241,93 @@ fn kept_history_from_before_the_window_is_seeded() {
     assert_eq!(p.boot, None);
     assert!(!text.contains("\nboot = "), "{text}");
 }
+
+/// (window) A window replays as the compositor configured it live: each
+/// `TOPLEVEL` record a `window` step at its time (its own size, then
+/// tiled at 600 × 400), and its compositor's close (its click away) a
+/// `window … close`, which writes its two-way `open` false; the sandbox
+/// lays it out at the recorded size, the trace and the viewer list it as
+/// `window Settings`, and it goes when closed. A window shown before the
+/// window's start is configured from the start as the compositor last
+/// configured it before then, or as `bundle.json` lists it at the report.
+#[test]
+fn a_window_replays_at_its_recorded_configure() {
+    use flight::toplevel as tl;
+    let (f, wo) = window_session();
+    let w = bits(20, 1);
+    let dir = f.write("window");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    let st = steps(&text);
+    for want in [
+        format!("window @{wo} _,_ activated"),
+        format!("window @{wo} 600,400 tiled activated"),
+        format!("window @{wo} close"),
+    ] {
+        assert!(st.contains(&want.as_str()), "no `{want}` in\n{text}");
+    }
+    assert!(
+        !p.limits.iter().any(|l| l.contains("clicks outside")),
+        "a window's close is replayed: {:?}",
+        p.limits
+    );
+    let (r, out) = replay_of(&dir, &defaults());
+    let t = trace_of(&r, &out);
+    let win = t
+        .surfaces
+        .iter()
+        .find(|s| s.kind == "window")
+        .expect("the window in the replay's trace");
+    assert_eq!(win.label, "window Settings");
+    assert!(win.detached.is_some(), "closed by the compositor's close");
+    let sizes: Vec<[f32; 2]> = t
+        .frames
+        .iter()
+        .filter_map(|fr| fr.sizes.get(&win.id).copied())
+        .collect();
+    assert!(
+        sizes.contains(&[224.0, 124.0]) && sizes.contains(&[600.0, 400.0]),
+        "its own size, then the tile's: {sizes:?}"
+    );
+    let html = std::fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(
+        html.contains("window Settings"),
+        "the viewer lists the window"
+    );
+
+    // Shown before the window's start (a reload at 3 s): configured from
+    // the start as last before it.
+    let (mut f, wo) = with_window();
+    window_mapped(&mut f, 2, w, &wo, 2 * S);
+    toplevel(
+        &mut f,
+        2,
+        2 * S + MS,
+        (600, 400),
+        tl::SIZED_W | tl::SIZED_H | tl::TILED,
+    );
+    f.change(3 * S, kind::RELOAD, "reload", &[1, 0, 0, 0, 0, 0], "{}");
+    let (_, p, text) = plan_of(&f.write("window-before"), &defaults());
+    assert_eq!(p.start, 3 * S);
+    let first = steps(&text)
+        .into_iter()
+        .find(|l| l.starts_with("window "))
+        .unwrap_or_else(|| panic!("no window step in\n{text}"));
+    assert_eq!(first, format!("window @{wo} 600,400 tiled"));
+    // Its record lost with the ring's oldest, it is configured as
+    // `bundle.json` lists it at the report.
+    let (mut f, wo) = with_window();
+    f.node(w, &wo, Some("w"));
+    f.surfaces.push(json!({
+        "slot": 2, "namespace": "strand-Settings", "kind": "window",
+        "root": "20.1", "output": "DP-1", "backend": "cpu", "size": [960, 1040],
+        "buffer": [960, 1040], "scale": 1.0, "frame": null, "repainted": 0,
+        "window": {"size": [960, 1040], "sized": [true, true], "maximized": true,
+                   "fullscreen": false, "tiled": false, "activated": false,
+                   "decorated": true}
+    }));
+    let (_, _, text) = plan_of(&f.write("window-bundle"), &defaults());
+    assert!(
+        steps(&text).contains(&format!("window @{wo} 960,1040 maximized decorated").as_str()),
+        "{text}"
+    );
+}

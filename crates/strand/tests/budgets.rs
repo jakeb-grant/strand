@@ -63,6 +63,10 @@
 //!   `system.replay` off and then again with it on: anonymous PSS
 //!   (`Pss_Anon`) on minus off is at most 288 KiB (the rings' 256 KiB
 //!   and 32 KiB of slack), and the dumps a report then saves are full.
+//! - `an_open_window_costs_what_a_panel_does` (window): on a bar with no
+//!   clock, a 640×400 window open costs at most a 640×400 panel's PSS
+//!   plus 1 MiB and within the 14 MB a panel's buffers are budgeted,
+//!   wakes nothing while it rests, and is let go when closed.
 //!
 //! The idle window and the minute tick's one burst are timing claims:
 //! run this binary on its own (CI runs it as a step of its own, with
@@ -2761,70 +2765,14 @@ bar Top {
     on click { clicks = clicks + 1; a = a + 2; b = b + 3 } } }
 }
 ";
-    for tool in ["sway", "swaymsg"] {
-        if bounded(Command::new(tool).arg("--version"), tool).is_none() {
-            assert!(
-                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
-                "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
-            );
-            eprintln!("\n*** SKIPPED: {tool} is not installed ***\n");
-            return;
-        }
-    }
-    let Some(bus) = PrivateBus::start() else {
+    let Some(shell) = Bare::start("rings", BAR) else {
         return;
     };
-    let tmp =
-        TmpDir::new(std::env::temp_dir().join(format!("strand-rings-{}", std::process::id())));
-    let dir = tmp.0.join("run");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let (_sway, display, _ipc) = sway(&dir, 1);
-    let mut pointer = support::pointer::Pointer::new(&dir.join(&display));
-    let config = tmp.0.join("config");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(config.join("b.strand"), BAR).unwrap();
-    let socket = dir.join("s.sock");
-    let log = tmp.0.join("strand.log");
-    let strand = Proc(
-        Command::new(env!("CARGO_BIN_EXE_strand"))
-            .arg("run")
-            .arg(&config)
-            .envs(bus.env())
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WAYLAND_DISPLAY", &display)
-            .env("HOME", tmp.0.join("home"))
-            .env("XDG_CONFIG_HOME", tmp.0.join("xdg-config"))
-            .env("XDG_CACHE_HOME", tmp.0.join("cache"))
-            .env("XDG_STATE_HOME", tmp.0.join("state"))
-            .env("STRAND_SOCKET", &socket)
-            .env_remove("STRAND_MOCK")
-            .env_remove("SWAYSOCK")
-            .stdin(Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
-            .spawn()
-            .unwrap(),
-    );
-    let pid = strand.0.id();
-    let log_text = || std::fs::read_to_string(&log).unwrap_or_default();
-    let cli = |args: &[&str]| -> Option<String> {
-        let out = bounded(
-            Command::new(env!("CARGO_BIN_EXE_strand"))
-                .args(args)
-                .env("STRAND_SOCKET", &socket),
-            "strand",
-        )?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
-    let wait = |what: &str, ok: &dyn Fn() -> bool| {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !ok() {
-            assert!(Instant::now() < deadline, "{what}\n{}", log_text());
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    };
+    let mut pointer = support::pointer::Pointer::new(&shell.dir.join(&shell.display));
+    let pid = shell.strand.0.id();
+    let log_text = || shell.log_text();
+    let cli = |args: &[&str]| shell.cli(args);
+    let wait = |what: &str, ok: &dyn Fn() -> bool| shell.wait(what, ok);
     wait("strand answers", &|| cli(&["get", "b.clicks"]).is_some());
     // The layout: 2560 + 2560 / 1.25 logical pixels wide.
     let (lw, lh) = (2560 + 2048, 1440);
@@ -2897,5 +2845,232 @@ bar Top {
         "the replay rings added {added} kB of anonymous PSS, over {RINGS_KB} kB\n{}",
         memory_report(pid)
     );
-    drop(strand);
+    drop(shell);
+}
+
+/// A `strand run` of one config file on the test's headless sway
+/// (`sway`, at scale 1) and a private bus, without the real services'
+/// mocks: the rings' and the window's measurements.
+struct Bare {
+    // Dropped first: strand before its compositor.
+    strand: Proc,
+    _sway: Proc,
+    _bus: PrivateBus,
+    dir: PathBuf,
+    display: String,
+    socket: PathBuf,
+    log: PathBuf,
+    _tmp: TmpDir,
+}
+
+impl Bare {
+    /// `None` (skipped, loudly) without sway or a bus.
+    fn start(tag: &str, src: &str) -> Option<Bare> {
+        for tool in ["sway", "swaymsg"] {
+            if bounded(Command::new(tool).arg("--version"), tool).is_none() {
+                assert!(
+                    std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                    "{tool} is not installed but STRAND_REQUIRE_SWAY is set"
+                );
+                eprintln!("\n*** SKIPPED: {tool} is not installed ***\n");
+                return None;
+            }
+        }
+        let bus = PrivateBus::start()?;
+        let tmp =
+            TmpDir::new(std::env::temp_dir().join(format!("strand-{tag}-{}", std::process::id())));
+        let dir = tmp.0.join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (sway, display, _ipc) = sway(&dir, 1);
+        let config = tmp.0.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("b.strand"), src).unwrap();
+        let socket = dir.join("s.sock");
+        let log = tmp.0.join("strand.log");
+        let strand = Proc(
+            Command::new(env!("CARGO_BIN_EXE_strand"))
+                .arg("run")
+                .arg(&config)
+                .envs(bus.env())
+                .env("XDG_RUNTIME_DIR", &dir)
+                .env("WAYLAND_DISPLAY", &display)
+                .env("HOME", tmp.0.join("home"))
+                .env("XDG_CONFIG_HOME", tmp.0.join("xdg-config"))
+                .env("XDG_CACHE_HOME", tmp.0.join("cache"))
+                .env("XDG_STATE_HOME", tmp.0.join("state"))
+                .env("STRAND_SOCKET", &socket)
+                .env_remove("STRAND_MOCK")
+                .env_remove("SWAYSOCK")
+                .stdin(Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap(),
+        );
+        Some(Bare {
+            strand,
+            _sway: sway,
+            _bus: bus,
+            dir,
+            display,
+            socket,
+            log,
+            _tmp: tmp,
+        })
+    }
+
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// A `strand` command's stdout, `None` when it failed.
+    fn cli(&self, args: &[&str]) -> Option<String> {
+        let out = bounded(
+            Command::new(env!("CARGO_BIN_EXE_strand"))
+                .args(args)
+                .env("STRAND_SOCKET", &self.socket),
+            "strand",
+        )?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Waits up to a minute for `ok`.
+    fn wait(&self, what: &str, ok: &dyn Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok() {
+            assert!(Instant::now() < deadline, "{what}\n{}", self.log_text());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits up to 30 s for a whole second without a context switch in
+    /// any of strand's threads.
+    fn settle(&self, what: &str) {
+        let pid = self.strand.0.id();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let w = switches(pid);
+            std::thread::sleep(Duration::from_secs(1));
+            if switches(pid) == w {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: never settled: {:?}\n{}",
+                per_thread(pid),
+                self.log_text()
+            );
+        }
+    }
+}
+
+/// (window) `pid`'s own PSS in kB: anonymous and shared memory (its
+/// heap, its buffers and the device's), not its libraries' share, which
+/// moves by megabytes as other processes (a concurrent test's shell)
+/// map and unmap them.
+fn own_kb(pid: u32) -> u64 {
+    status_of(pid, "Pss_Anon:").unwrap_or(0) + status_of(pid, "Pss_Shmem:").unwrap_or(0)
+}
+
+/// (window) What one open window costs over the shell without it, at
+/// most what a panel of its size costs plus 1 MiB (its keyboard focus,
+/// its toplevel and decoration objects), and well within the 14 MB
+/// design.md's budget gives a panel (the launcher's buffers at 2×).
+const WINDOW_OVER_PANEL_KB: u64 = 1024;
+const PANEL_BUDGET_KB: u64 = 14 * 1024;
+
+/// (window) One open window costs what a panel of its size does: a
+/// 640×400 window (fixed-size, so sway floats it at that size) and a
+/// 640×400 panel, each opened alone from `strand set` after both were
+/// opened and closed once (the caches their first draw grows warm), on
+/// a bar with no clock. Strand's own PSS ([`own_kb`]) with the window
+/// open over the bar alone is within the panel's plus
+/// [`WINDOW_OVER_PANEL_KB`] and within [`PANEL_BUDGET_KB`]; the open
+/// window, drawn, wakes no thread of strand's for 5 s; closed, its
+/// buffers are let go (within 1 MiB of the bar alone). A config with no
+/// window is the design bar's, gated above.
+#[test]
+fn an_open_window_costs_what_a_panel_does() {
+    const SRC: &str = "export state win = false
+export state card = false
+bar Top { edge: top; height: 30; text \"bar\" }
+window Probe {
+  open: <-> win; title: \"Probe\"; bg: #1e1e2e
+  width: 640; height: 400; min_width: 640; max_width: 640; min_height: 400; max_height: 400
+  col { pad: 24; text \"Settings\"; box { width: 200; height: 100; bg: #89b4fa } }
+}
+panel Card {
+  open: <-> card; bg: #1e1e2e; width: 640; height: 400
+  col { pad: 24; text \"Settings\"; box { width: 200; height: 100; bg: #89b4fa } }
+}
+";
+    let Some(shell) = Bare::start("window-cost", SRC) else {
+        return;
+    };
+    let pid = shell.strand.0.id();
+    shell.wait("strand answers", &|| shell.cli(&["get", "b.win"]).is_some());
+    let shown = |ns: &str| {
+        shell
+            .cli(&["report"])
+            .is_some_and(|r| r.contains(&format!("{ns} (")))
+    };
+    let open = |cell: &str, ns: &str| {
+        assert!(shell.cli(&["set", cell, "true"]).is_some());
+        shell.wait(&format!("{ns} open"), &|| shown(ns));
+        shell.settle(&format!("{ns} drawn"));
+    };
+    let close = |cell: &str, ns: &str| {
+        assert!(shell.cli(&["set", cell, "false"]).is_some());
+        shell.wait(&format!("{ns} closed"), &|| !shown(ns));
+        shell.settle(&format!("{ns} let go"));
+    };
+    shell.settle("the bar");
+    // Once each: the glyphs, the keymap and the pools they grow.
+    open("b.win", "strand-Probe");
+    close("b.win", "strand-Probe");
+    open("b.card", "strand-Card");
+    close("b.card", "strand-Card");
+    let bar = own_kb(pid);
+    open("b.win", "strand-Probe");
+    let report = shell.cli(&["report"]).unwrap_or_default();
+    assert!(
+        report.contains("    window: floating"),
+        "sway floats a fixed-size window: {report}"
+    );
+    let with_window = own_kb(pid);
+    let before = switches(pid);
+    std::thread::sleep(Duration::from_secs(5));
+    let woke = switches(pid) - before;
+    close("b.win", "strand-Probe");
+    let after_window = own_kb(pid);
+    open("b.card", "strand-Card");
+    let with_panel = own_kb(pid);
+    close("b.card", "strand-Card");
+    let window = with_window.saturating_sub(bar);
+    let panel = with_panel.saturating_sub(bar);
+    eprintln!(
+        "window cost: own PSS {bar} kB the bar, {with_window} kB with the window ({window} kB), \
+         {with_panel} kB with the panel ({panel} kB), {after_window} kB the window closed; \
+         {woke} context switches over 5 s with the window open"
+    );
+    assert_eq!(
+        woke,
+        0,
+        "an open window woke strand: {:?}\n{}",
+        per_thread(pid),
+        shell.log_text()
+    );
+    assert!(
+        window <= panel + WINDOW_OVER_PANEL_KB && window <= PANEL_BUDGET_KB,
+        "the window costs {window} kB, the panel {panel} kB\n{}",
+        memory_report(pid)
+    );
+    assert!(
+        after_window <= bar + 1024,
+        "the closed window kept {} kB\n{}",
+        after_window.saturating_sub(bar),
+        memory_report(pid)
+    );
 }

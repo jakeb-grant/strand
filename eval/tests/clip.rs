@@ -1233,3 +1233,30 @@ fn strand_replay_clip_knows_every_option_that_takes_a_value() {
         "{line}"
     );
 }
+
+/// (window) A clip covers a window as it covers a bar: its elements
+/// named by `#id`, on the surface the replay labels `window Settings`,
+/// at the size the compositor tiled it.
+#[test]
+fn a_clip_covers_a_window() {
+    let (f, _) = window_session();
+    let dir = f.write("clip-window");
+    let (_, out) = replay_of(&dir, &defaults());
+    let r = Replay::find(&out).unwrap();
+    // 6 s to 8 s into the session: tiled, before the close.
+    let m = clip::make(
+        &r,
+        &spec("-24.000s", Some("-22.000s"), &["#wbox"], ""),
+        false,
+    )
+    .unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let els = j["elements"].as_array().unwrap();
+    assert_eq!(els.len(), 1, "{j}");
+    let surfaces = els[0]["surfaces"].as_array().unwrap();
+    assert!(
+        surfaces.iter().any(|s| s["label"] == "window Settings"),
+        "{surfaces:?}"
+    );
+    assert!(m.text.contains("window Settings"), "{}", m.text);
+}

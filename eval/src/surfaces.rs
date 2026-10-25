@@ -29,6 +29,17 @@
 //!   changes (a new size or anchor: the manager repositions it), and it
 //!   moves with its parent, as a configured popup does. It waits for its
 //!   parent to be shown, and goes with it.
+//! - (window) A `window` is the toplevel `placement::window_config`
+//!   asks for, configured as the compositor's [`WindowState`] for it
+//!   says (a `window` step; by default floating, focused, decorated as
+//!   it asks): its box the size given on an axis where
+//!   `placement::window_kept_size` takes it (maximised in the area the
+//!   bars' exclusive zones leave, fullscreen over the output), else the
+//!   size it asks for; a floating one centred in that area when it first
+//!   shows, then kept at its top-left as it grows, as a floating window
+//!   is. What the configure says is told to render and logic
+//!   ([`Change::Window`]) before its size, as the surface manager's
+//!   `SurfaceHost::window_state` is.
 //!
 //! Render is told where each surface lies (`Renderer::set_surface_origin`,
 //! as `Host::send_origin` does) whenever that changes, and the trace
@@ -45,7 +56,8 @@ use strand_scene::{
     Damage, Edge, LogicalPoint, NodeId, NodeKind, PaintTarget, Painter, Scale, Size, SurfaceChange,
     SurfaceId, SurfaceSpec,
 };
-use strand_surface::placement::{self, LayerConfig, PopupConfig, UsableArea};
+use strand_surface::ToplevelState;
+use strand_surface::placement::{self, LayerConfig, PopupConfig, UsableArea, WindowConfig};
 
 use crate::Error;
 use crate::scenario::{Screen, ScreenDef};
@@ -103,6 +115,46 @@ enum Place {
         parent: NodeId,
         at: (i32, i32),
     },
+    /// (window) A toplevel's state, where its box's top-left lies while
+    /// it floats (once first placed), and what its configure last told.
+    Window {
+        config: WindowConfig,
+        float: Option<[i32; 2]>,
+        told: Option<ToplevelState>,
+    },
+}
+
+/// (window) What the sandbox's compositor says of a window in its
+/// configure: a `window` step's, or its own answer to `w.maximize()`
+/// and `w.fullscreen()`. The default is a new floating window, focused,
+/// decorated as it asks. A size given is the box on that axis; with
+/// none, a maximised window takes the area the bars' zones leave and a
+/// fullscreen one its output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowState {
+    /// The box size it gives on each axis (`None`: the window's own).
+    pub size: [Option<u32>; 2],
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub tiled: bool,
+    /// Focused (`activated`): its root's `focused`, and the keyboard.
+    pub activated: bool,
+    /// Whether the compositor draws its decorations (`None`: as its
+    /// `decorations:` asks).
+    pub decorated: Option<bool>,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        WindowState {
+            size: [None, None],
+            maximized: false,
+            fullscreen: false,
+            tiled: false,
+            activated: true,
+            decorated: None,
+        }
+    }
 }
 
 /// A surface as `Surfaces::arrange` places it: its id, its size, where
@@ -121,6 +173,10 @@ pub enum Change {
     /// changed), a popup repositioned at its size or moved with its
     /// parent. Render is told its new origin.
     Placed(SurfaceId),
+    /// (window) A window's configure says something new (its states, the
+    /// axes the compositor sizes): told to render and logic before its
+    /// `Configured` (`Surfaces::told`).
+    Window(SurfaceId),
     Detached(SurfaceId),
 }
 
@@ -151,6 +207,10 @@ pub struct Surfaces {
     /// (eval-surface-leg) With the surface leg, every change the renderer
     /// reported, as it reported it, for the real surface manager.
     pub tee: Option<Vec<(NodeId, SurfaceChange)>>,
+    /// (window) The compositor's state of each window, by its node: kept
+    /// while it is shown (or before it shows, a replay's configure that
+    /// came first), forgotten when it goes.
+    windows: HashMap<NodeId, WindowState>,
 }
 
 impl Surfaces {
@@ -185,6 +245,7 @@ impl Surfaces {
             main,
             focused: 0,
             tee: None,
+            windows: HashMap::new(),
         }
     }
 
@@ -259,7 +320,7 @@ impl Surfaces {
                 .iter()
                 .find(|s| s.node == *parent)
                 .map(|s| s.id.0),
-            Place::Layer(_) => None,
+            Place::Layer(_) | Place::Window { .. } => None,
         };
         let m = spec.margin;
         Some((
@@ -283,9 +344,40 @@ impl Surfaces {
     /// (report) How surface `id` takes the keyboard (its spec's
     /// `keyboard:`; `none` for a surface not shown).
     pub fn keyboard(&self, id: SurfaceId) -> strand_scene::Keyboard {
-        self.get(id)
-            .and_then(|sh| self.specs.get(&sh.node))
-            .map_or(strand_scene::Keyboard::None, |s| s.keyboard)
+        self.get(id).and_then(|sh| self.specs.get(&sh.node)).map_or(
+            strand_scene::Keyboard::None,
+            |s| match s.kind {
+                // (window) A press focuses a window, as a compositor does.
+                NodeKind::Window => strand_scene::Keyboard::OnDemand,
+                _ => s.keyboard,
+            },
+        )
+    }
+
+    /// (window) The compositor's state of `node`'s window (its default
+    /// before any was set).
+    pub fn window_state(&self, node: NodeId) -> WindowState {
+        self.windows.get(&node).copied().unwrap_or_default()
+    }
+
+    /// (window) The compositor configures `node`'s window as `state`
+    /// says (a `window` step, or its answer to an ask): kept for it, and
+    /// the window, if shown, sized and placed so.
+    pub fn set_window(&mut self, node: NodeId, state: WindowState) -> Result<Vec<Change>, Error> {
+        self.windows.insert(node, state);
+        let mut out = Vec::new();
+        self.arrange(&mut out)?;
+        Ok(out)
+    }
+
+    /// (window) Window `id`'s node and what its last configure told
+    /// (`None`: not a window, or not configured).
+    pub fn told(&self, id: SurfaceId) -> Option<(NodeId, ToplevelState)> {
+        let sh = self.get(id)?;
+        match &sh.place {
+            Place::Window { told, .. } => Some((sh.node, (*told)?)),
+            _ => None,
+        }
     }
 
     /// The surface `id`.
@@ -457,6 +549,22 @@ impl Surfaces {
                     parent,
                 }
             }
+            NodeKind::Window => {
+                // It waits for a size, as the manager's
+                // `reconcile_window` does.
+                let Ok(config) = placement::window_config(&spec) else {
+                    return Ok(());
+                };
+                let (float, told) = match at.map(|i| &self.shown[i].place) {
+                    Some(Place::Window { float, told, .. }) => (*float, *told),
+                    _ => (None, None),
+                };
+                Place::Window {
+                    config,
+                    float,
+                    told,
+                }
+            }
             _ => {
                 let Ok(mut config) =
                     placement::layer_config_with(&spec, self.has_nested_scrim(node))
@@ -479,8 +587,23 @@ impl Surfaces {
                 .iter()
                 .find(|s| s.node == *parent)
                 .map_or(0, |p| p.output),
-            Place::Layer(_) => at.map_or_else(|| self.output_for(&spec), |i| self.shown[i].output),
+            Place::Layer(_) | Place::Window { .. } => {
+                at.map_or_else(|| self.output_for(&spec), |i| self.shown[i].output)
+            }
         };
+        // (window) A new window takes the compositor's focus from the
+        // others, unless a configure already said otherwise of it.
+        if at.is_none() && spec.kind == NodeKind::Window && !self.windows.contains_key(&node) {
+            let others: Vec<NodeId> = self
+                .shown
+                .iter()
+                .filter(|s| matches!(s.place, Place::Window { .. }))
+                .map(|s| s.node)
+                .collect();
+            for n in others {
+                self.windows.entry(n).or_default().activated = false;
+            }
+        }
         match at {
             Some(i) => self.shown[i].place = place,
             None => {
@@ -522,6 +645,9 @@ impl Surfaces {
         }
         if let Some(i) = self.shown.iter().position(|s| s.node == node) {
             let gone = self.shown.remove(i);
+            if matches!(gone.place, Place::Window { .. }) {
+                self.windows.remove(&node);
+            }
             out.push(Change::Detached(gone.id));
         }
     }
@@ -560,8 +686,13 @@ impl Surfaces {
         for o in 0..scales.len() {
             self.arrange_layers(o, &mut placed);
         }
+        let told = self.arrange_windows(&mut placed);
         self.arrange_popups(&mut placed);
         for (id, size, origin, rest) in placed {
+            // (window) What its configure says, before its size.
+            if told.contains(&id) {
+                out.push(Change::Window(id));
+            }
             let Some(sh) = self.shown.iter_mut().find(|s| s.id == id) else {
                 continue;
             };
@@ -594,7 +725,7 @@ impl Surfaces {
             .filter(|s| s.output == o)
             .filter_map(|s| match &s.place {
                 Place::Layer(c) => Some((s.id, c.clone())),
-                Place::Popup { .. } => None,
+                Place::Popup { .. } | Place::Window { .. } => None,
             })
             .collect();
         let list: Vec<(SurfaceId, &LayerConfig)> = layers.iter().map(|(i, c)| (*i, c)).collect();
@@ -620,6 +751,90 @@ impl Surfaces {
                 [x as f32, y as f32],
             ));
         }
+    }
+
+    /// (window) The windows, each configured as its compositor state
+    /// says (see the module docs); the ids whose configure tells
+    /// something new.
+    fn arrange_windows(&mut self, placed: &mut Vec<Arranged>) -> Vec<SurfaceId> {
+        let mut told_now = Vec::new();
+        for i in 0..self.shown.len() {
+            let Place::Window { config, float, .. } = &self.shown[i].place else {
+                continue;
+            };
+            let (config, float) = (config.clone(), *float);
+            let sh = &self.shown[i];
+            let st = self.window_state(sh.node);
+            let full = self.full_of(sh.output);
+            // The area the bars' exclusive zones leave: a window is
+            // arranged after every one of them.
+            let layers: Vec<(SurfaceId, LayerConfig)> = self
+                .shown
+                .iter()
+                .filter(|s| s.output == sh.output)
+                .filter_map(|s| match &s.place {
+                    Place::Layer(c) => Some((s.id, c.clone())),
+                    _ => None,
+                })
+                .chain(std::iter::once((sh.id, config.as_layer())))
+                .collect();
+            let list: Vec<(SurfaceId, &LayerConfig)> =
+                layers.iter().map(|(i, c)| (*i, c)).collect();
+            let area = placement::arranged_area(full, &list, &sh.id);
+            // A size given wins (a replay's, as the live compositor gave
+            // it); else a fullscreen window fills its output and a
+            // maximised one the area the zones leave.
+            let given = match st.size {
+                [None, None] if st.fullscreen => [Some(full.0), Some(full.1)],
+                [None, None] if st.maximized => [Some(area.w), Some(area.h)],
+                size => size,
+            };
+            let constrained = st.maximized || st.fullscreen || st.tiled;
+            let (sw, w) = placement::window_kept_size(given[0], config.width, constrained);
+            let (shh, h) = placement::window_kept_size(given[1], config.height, constrained);
+            let at = if st.fullscreen {
+                [0, 0]
+            } else if st.maximized || st.tiled {
+                [area.x, area.y]
+            } else {
+                float.unwrap_or([
+                    area.x + ((area.w as i32 - w as i32) / 2).max(0),
+                    area.y + ((area.h as i32 - h as i32) / 2).max(0),
+                ])
+            };
+            let state = ToplevelState {
+                sized: (sw, shh),
+                size: (w, h),
+                maximized: st.maximized,
+                fullscreen: st.fullscreen,
+                tiled: st.tiled,
+                activated: st.activated,
+                decorated: st
+                    .decorated
+                    .unwrap_or(config.decorations == strand_scene::Decorations::Server),
+                bounds: Some((area.w, area.h)),
+                window_menu: true,
+                can_maximize: true,
+                can_fullscreen: true,
+                can_minimize: true,
+            };
+            let [t, _, _, l] = config.overhang;
+            let (bw, bh) = config.buffer((w, h));
+            let o = [(at[0] - l) as f32, (at[1] - t) as f32];
+            placed.push((sh.id, [bw.max(1), bh.max(1)], o, o));
+            let id = sh.id;
+            let floating = !(st.fullscreen || st.maximized || st.tiled);
+            if let Place::Window { float, told, .. } = &mut self.shown[i].place {
+                if floating {
+                    *float = Some(at);
+                }
+                if *told != Some(state) {
+                    *told = Some(state);
+                    told_now.push(id);
+                }
+            }
+        }
+        told_now
     }
 
     /// The popups, each where its configure put it on its parent.
@@ -664,7 +879,7 @@ impl Surfaces {
         };
         let offset = match sh.place {
             Place::Layer(_) => offset.unwrap_or([0.0, 0.0]),
-            Place::Popup { .. } => [0.0, 0.0],
+            Place::Popup { .. } | Place::Window { .. } => [0.0, 0.0],
         };
         if sh.pose == offset {
             return Ok(Vec::new());
@@ -680,7 +895,7 @@ impl Surfaces {
     pub fn layer_config(&self, id: SurfaceId) -> Option<&LayerConfig> {
         match &self.get(id)?.place {
             Place::Layer(c) => Some(c),
-            Place::Popup { .. } => None,
+            Place::Popup { .. } | Place::Window { .. } => None,
         }
     }
 
@@ -729,14 +944,14 @@ impl Surfaces {
                     .filter(|s| s.output == sh.output)
                     .filter_map(|s| match &s.place {
                         Place::Layer(c) => Some((s.id, c)),
-                        Place::Popup { .. } => None,
+                        Place::Popup { .. } | Place::Window { .. } => None,
                     })
                     .collect();
                 let a = placement::arranged_area(self.full_of(sh.output), &layers, &id);
                 let edges = c.anchors;
                 Some((a, edges))
             }
-            Place::Popup { .. } => None,
+            Place::Popup { .. } | Place::Window { .. } => None,
         };
         let zone = |side: u8| {
             area.is_some_and(|(a, e)| {
@@ -863,6 +1078,8 @@ fn configured_size(c: &LayerConfig, area: UsableArea) -> (u32, u32) {
 fn geometry(s: &Shown) -> (i32, i32) {
     match &s.place {
         Place::Popup { config, .. } => (config.overhang[3], config.overhang[0]),
+        // (window) A window's is its box too.
+        Place::Window { config, .. } => (config.overhang[3], config.overhang[0]),
         Place::Layer(_) => (0, 0),
     }
 }
@@ -998,5 +1215,105 @@ mod tests {
         assert_eq!(at(&s2), [125.0, 38.0]);
         let spaced_id = s2.shown.iter().find(|x| x.node == p).unwrap().id;
         assert_eq!(s2.cuts(spaced_id), 0);
+    }
+
+    /// (window) The sandbox's compositor configures a window: floating
+    /// at the size it asks for, centred in the area a bar's zone leaves
+    /// and kept at its top-left as it grows; a size given wins on its
+    /// axis; maximised it takes that area, fullscreen the output; and
+    /// each configure that says something new is told before its size.
+    /// A second window takes the focus from the first.
+    #[test]
+    fn a_window_is_configured_as_its_compositor_says() {
+        let mut s = Surfaces::new(Screen {
+            width: 400,
+            height: 300,
+            scale: 1.0,
+        });
+        let window = |w: f32, h: f32| {
+            let mut sp = spec(NodeKind::Window, &[]);
+            (sp.width, sp.height) = (Some(w), Some(h));
+            sp
+        };
+        let (b, w) = (node(1), node(2));
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(30.0))]);
+        s.change(b, SurfaceChange::Created(bar), 0).unwrap();
+        let out = s
+            .change(w, SurfaceChange::Created(window(200.0, 100.0)), 0)
+            .unwrap();
+        let id = s.shown.iter().find(|x| x.node == w).unwrap().id;
+        assert_eq!(
+            out.iter()
+                .filter(|c| !matches!(c, Change::Placed(_)))
+                .copied()
+                .collect::<Vec<_>>(),
+            [
+                Change::Attached(id, w),
+                Change::Window(id),
+                Change::Configured(id, Size::new(200, 100), Scale::ONE),
+            ],
+            "told before its size"
+        );
+        let at = |s: &Surfaces| s.get(id).unwrap().origin;
+        let size = |s: &Surfaces| s.get(id).unwrap().logical;
+        assert_eq!((at(&s), size(&s)), ([100.0, 115.0], [200.0, 100.0]));
+        let told = s.told(id).unwrap().1;
+        // Decorated as it asks (`decorations: server`, the default).
+        assert!(told.activated && told.decorated && told.sized == (false, false));
+        assert_eq!(told.bounds, Some((400, 270)), "the area the bar leaves");
+        // Its content grows: the top-left stays.
+        s.change(
+            w,
+            SurfaceChange::Updated {
+                spec: window(240.0, 120.0),
+                recreate: false,
+            },
+            1,
+        )
+        .unwrap();
+        assert_eq!((at(&s), size(&s)), ([100.0, 115.0], [240.0, 120.0]));
+        // Tiled at a size: that size, at the area's corner.
+        let tiled = WindowState {
+            size: [Some(380), Some(260)],
+            tiled: true,
+            ..WindowState::default()
+        };
+        let out = s.set_window(w, tiled).unwrap();
+        assert!(out.contains(&Change::Window(id)));
+        assert_eq!((at(&s), size(&s)), ([0.0, 30.0], [380.0, 260.0]));
+        assert_eq!(s.told(id).unwrap().1.sized, (true, true));
+        // Maximised with no size: the area; fullscreen: the output.
+        let max = WindowState {
+            maximized: true,
+            ..WindowState::default()
+        };
+        s.set_window(w, max).unwrap();
+        assert_eq!((at(&s), size(&s)), ([0.0, 30.0], [400.0, 270.0]));
+        s.set_window(
+            w,
+            WindowState {
+                fullscreen: true,
+                ..WindowState::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((at(&s), size(&s)), ([0.0, 0.0], [400.0, 300.0]));
+        // Floating again: its own size where it floated.
+        s.set_window(w, WindowState::default()).unwrap();
+        assert_eq!((at(&s), size(&s)), ([100.0, 115.0], [240.0, 120.0]));
+        assert_eq!(s.told(id).unwrap().1.sized, (false, false));
+        // Configured the same again: nothing new to tell.
+        let out = s.set_window(w, WindowState::default()).unwrap();
+        assert!(!out.contains(&Change::Window(id)), "{out:?}");
+        // A second window takes the focus.
+        let w2 = node(3);
+        s.change(w2, SurfaceChange::Created(window(100.0, 50.0)), 2)
+            .unwrap();
+        assert!(!s.told(id).unwrap().1.activated);
+        let id2 = s.shown.iter().find(|x| x.node == w2).unwrap().id;
+        assert!(s.told(id2).unwrap().1.activated);
+        // Closed, its state is forgotten.
+        s.change(w, SurfaceChange::Removed, 3).unwrap();
+        assert_eq!(s.window_state(w), WindowState::default());
     }
 }

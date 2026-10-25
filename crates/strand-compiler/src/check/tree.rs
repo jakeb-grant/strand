@@ -203,6 +203,9 @@ impl<'a> Checker<'a> {
         let id = self.root_id(&s.body.items, node);
         let (props, children) = self.tree_items(&s.body.items, Place::Element { root: true });
         self.surface_props(&kind, &props, &children);
+        if kind == "window" {
+            self.window_open(&props, &children, s.kind.span);
+        }
         self.effect_props(&props, &children);
         self.pop_scope();
         self.pop_scope();

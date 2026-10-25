@@ -1,0 +1,66 @@
+id     = "window-tile-maximize-close"
+about  = """A settings window (design.md "Windows"; spec.md 5.1) on the sandbox's
+compositor, beside a bar: it opens floating at its content's size, centred
+in the area the bar's exclusive zone leaves; a configure tiles it at
+360 x 240 (laid out at that size, its content's growth spring off on both
+axes); its own title bar's button asks `w.maximize()`, which the sandbox
+answers with the area the bar leaves, and asks again to restore it; then
+the compositor closes it, which writes its two-way `open` false and plays
+its exit. Its title bar shows only while the compositor does not decorate
+it (`if !w.decorated`), so a configure that decorates it drops the bar."""
+screen = { width = 640, height = 400, scale = 1.0 }
+
+=== shell.strand
+state shown = true
+bar Top {
+  height: 24; bg: #1e1e2e
+  text "Desktop" { id: label; color: #cdd6f4 }
+}
+window Settings {
+  id: w; open: <-> shown; title: "Settings"; decorations: none
+  bg: #181825
+  exit: fade
+  col { id: body; pad: 0, 0, 12, 0; gap: 10
+    if !w.decorated {
+      row { id: titlebar; height: 28; pad: 0, 8; gap: 8; align: center; bg: #313244
+        text "Settings" { id: title; color: #cdd6f4 }
+        box { id: grow; grow: 1 }
+        box { id: maxbtn; width: 16; height: 16; radius: 4
+              bg: w.maximized ? #a6e3a1 : #89b4fa
+              on click { w.maximize() } }
+      }
+    }
+    row { id: content; pad: 0, 12; gap: 8
+      box { id: a; width: 120; height: 40; radius: 8; bg: #45475a }
+      box { id: b; width: 120; height: 40; radius: 8; bg: w.tiled ? #f9e2af : #45475a }
+    }
+  }
+}
+
+=== steps
+rest
+expect visible #titlebar
+mark tile
+# The compositor moves it into its tile: authored, not a glitch.
+intend #w moves
+window #w 360,240 tiled activated
+rest
+expect visible #b
+mark maximize
+intend #w moves
+click 344,14 on #w
+rest
+expect visible #maxbtn
+mark restore
+intend #w moves
+click 624,14 on #w
+rest
+mark decorated
+intend #w moves
+window #w _,_ activated decorated
+rest
+expect hidden #titlebar
+mark close
+window #w close
+rest
+expect hidden #content

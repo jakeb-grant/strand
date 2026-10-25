@@ -31,6 +31,87 @@ pub struct SurfaceRec {
     pub scale: f64,
     /// Its frame's PNG, relative to the bundle.
     pub frame: Option<String>,
+    /// (window) A window's last configure, at the report.
+    pub window: Option<Toplevel>,
+}
+
+/// (window) What the compositor's configure said of a window: a
+/// `TOPLEVEL` record's, or `bundle.json`'s `window` (at the report).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Toplevel {
+    /// Its box, logical px.
+    pub size: [u32; 2],
+    /// The axes the compositor sized.
+    pub sized: [bool; 2],
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub tiled: bool,
+    pub activated: bool,
+    pub decorated: bool,
+}
+
+impl Toplevel {
+    /// A `TOPLEVEL` record's.
+    pub fn of_rec(r: &flight::Rec) -> Toplevel {
+        use flight::toplevel as b;
+        let bits = r.u8(4);
+        let on = |v: u8| bits & v != 0;
+        Toplevel {
+            size: [u32::from(r.u16(0)), u32::from(r.u16(2))],
+            sized: [on(b::SIZED_W), on(b::SIZED_H)],
+            maximized: on(b::MAXIMIZED),
+            fullscreen: on(b::FULLSCREEN),
+            tiled: on(b::TILED),
+            activated: on(b::ACTIVATED),
+            decorated: on(b::DECORATED),
+        }
+    }
+
+    /// `bundle.json`'s `window` of a surface (`None`: not a window).
+    pub fn of_json(v: &Json) -> Option<Toplevel> {
+        if !v.is_object() {
+            return None;
+        }
+        let n = |i: usize| v["size"][i].as_u64().map_or(0, |n| n as u32);
+        let on = |k: &str| v[k] == true;
+        Some(Toplevel {
+            size: [n(0), n(1)],
+            sized: [v["sized"][0] == true, v["sized"][1] == true],
+            maximized: on("maximized"),
+            fullscreen: on("fullscreen"),
+            tiled: on("tiled"),
+            activated: on("activated"),
+            decorated: on("decorated"),
+        })
+    }
+
+    /// The words of the `window` step that configures a window so
+    /// (docs/eval.md, "Step vocabulary"): its size on the axes the
+    /// compositor sized (`_` where it left the window its own), then its
+    /// states, `960,1040 tiled activated decorated`.
+    pub fn words(&self) -> String {
+        let axis = |i: usize| {
+            if self.sized[i] {
+                self.size[i].max(1).to_string()
+            } else {
+                "_".to_string()
+            }
+        };
+        let mut w = format!("{},{}", axis(0), axis(1));
+        for (on, name) in [
+            (self.maximized, "maximized"),
+            (self.fullscreen, "fullscreen"),
+            (self.tiled, "tiled"),
+            (self.activated, "activated"),
+            (self.decorated, "decorated"),
+        ] {
+            if on {
+                w.push(' ');
+                w.push_str(name);
+            }
+        }
+        w
+    }
 }
 
 /// A bundle read back.
@@ -187,6 +268,7 @@ fn surface_rec(s: &Json) -> SurfaceRec {
         },
         scale: s["scale"].as_f64().unwrap_or(1.0),
         frame: s["frame"].as_str().map(str::to_string),
+        window: Toplevel::of_json(&s["window"]),
     }
 }
 

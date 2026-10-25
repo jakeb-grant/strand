@@ -1985,3 +1985,120 @@ fn a_gpu_surface_is_repainted_on_the_cpu() {
     assert_eq!(bar["backend"], "cpu");
     assert_eq!(bar["repainted"], false);
 }
+
+/// (window) A window: tiled by sway, its compositor states read on its
+/// id and counted, closed by sway's `kill`.
+const WIN: &str = "
+export state shown = true
+export state tiled_seen = false
+window Settings {
+  id: w; open: <-> shown; title: \"Settings\"
+  on change w.tiled { if w.tiled { tiled_seen = true } }
+  col { pad: 12; box { width: 200; height: 100; bg: w.tiled ? #f9e2af : #45475a } }
+}
+";
+
+/// (window) A window's compositor states are recorded for its replay: on
+/// a headless sway, which tiles it, the input ring holds its slot's
+/// `TOPLEVEL` record after its `MAPPED` one (kind byte
+/// `MAPPED_WINDOW`), its size and the axes sway sized, tiled, and `bundle.json` and `strand report` list the window with
+/// what sway said of it; sway's `kill` is the slot's click away, which
+/// writes `open` false, and the window is unmapped; `strand set` and
+/// `strand toggle` open and close it again.
+#[test]
+fn a_window_session_is_kept_for_its_replay() {
+    use flight::toplevel as tl;
+    let Some(mut desk) = Desk::with("window", "", &[("win.strand", WIN)]) else {
+        return;
+    };
+    desk.wait("sway tiled the window", |d| {
+        d.get("win.tiled_seen").as_deref() == Some("true")
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let text = desk.ok(&["report"]);
+    assert!(
+        text.contains("strand-Settings (window)")
+            && text.contains("    window: tiled, ")
+            && text.contains("sized by the compositor"),
+        "{text}"
+    );
+    let ans = desk.report("the window");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let bundle = read_json(&dir.join("bundle.json"));
+    let surfaces = bundle["surfaces"].as_array().unwrap();
+    let win = surfaces
+        .iter()
+        .find(|s| s["kind"] == "window")
+        .unwrap_or_else(|| panic!("no window in {surfaces:?}"));
+    assert_eq!(win["namespace"], "strand-Settings");
+    assert_eq!(win["window"]["tiled"], true, "{win}");
+    assert_eq!(win["window"]["sized"], json!([true, true]), "{win}");
+    assert!(
+        surfaces
+            .iter()
+            .filter(|s| s["kind"] != "window")
+            .all(|s| s["window"].is_null()),
+        "{surfaces:?}"
+    );
+    let slot = win["slot"].as_u64().unwrap() as u16;
+    let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    let e = input.entries();
+    let mapped = e
+        .iter()
+        .position(|e| e.rec.kind == kind::MAPPED && e.rec.slot == slot)
+        .expect("the window mapped");
+    assert_eq!(e[mapped].rec.u8(9), flight::MAPPED_WINDOW);
+    let last = e
+        .iter()
+        .rposition(|e| e.rec.kind == kind::TOPLEVEL && e.rec.slot == slot)
+        .expect("its configure recorded");
+    assert!(last > mapped);
+    let t = &e[last].rec;
+    // (The fixture's exclusive panel keeps the keyboard: not focused.)
+    assert_eq!(
+        t.u8(4) & (tl::TILED | tl::SIZED_W | tl::SIZED_H),
+        tl::TILED | tl::SIZED_W | tl::SIZED_H,
+        "tiled and sized: {:#b}",
+        t.u8(4)
+    );
+    assert_eq!(
+        [u64::from(t.u16(0)), u64::from(t.u16(2))],
+        [
+            win["window"]["size"][0].as_u64().unwrap(),
+            win["window"]["size"][1].as_u64().unwrap()
+        ]
+    );
+    // sway closes it: the slot's click away, `open` false, unmapped.
+    let out = Command::new("swaymsg")
+        .args(["[app_id=\"strand-Settings\"]", "kill"])
+        .env("SWAYSOCK", &desk.sway_ipc)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    desk.wait("the compositor's close wrote `open` false", |d| {
+        d.get("win.shown").as_deref() == Some("false")
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let ans = desk.report("the window closed");
+    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+    let input = flight::read(&std::fs::read(dir.join("input.flight")).unwrap()).unwrap();
+    let kinds: Vec<u8> = input
+        .entries()
+        .iter()
+        .filter(|e| e.rec.slot == slot && e.rec.kind != kind::REFRESH)
+        .map(|e| e.rec.kind)
+        .collect();
+    let away = kinds.iter().rposition(|k| *k == kind::CLICK_AWAY);
+    let gone = kinds.iter().rposition(|k| *k == kind::UNMAPPED);
+    assert!(away.is_some() && gone.is_some() && away < gone, "{kinds:?}");
+    // The CLI opens and closes it as a panel: `strand set` maps it
+    // again, `strand toggle` closes it, and `strand report` follows.
+    desk.ok(&["set", "win.shown", "true"]);
+    desk.wait("`strand set` opened the window again", |d| {
+        d.ok(&["report"]).contains("strand-Settings (window)")
+    });
+    desk.ok(&["toggle", "win.shown"]);
+    desk.wait("`strand toggle` closed it", |d| {
+        !d.ok(&["report"]).contains("strand-Settings (window)")
+    });
+}

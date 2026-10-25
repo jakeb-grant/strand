@@ -430,6 +430,10 @@ pub struct Renderer {
     /// there it fills what it was given, asks for nothing and springs
     /// nothing ([`Renderer::set_window_sized`]).
     window_sized: HashMap<NodeId, (bool, bool)>,
+    /// (window) Window roots the compositor stopped sizing on an axis:
+    /// the next step of their box is taken at once (the compositor
+    /// configured their own size already), not sprung from its size.
+    window_let_go: HashSet<NodeId>,
     /// Every spring, pose and glide.
     anim: Animator,
     /// `reduced_motion` as the host set it ([`Renderer::set_reduced_motion`]).
@@ -599,6 +603,7 @@ impl Renderer {
             content_sized: BTreeMap::new(),
             bounds: HashMap::new(),
             window_sized: HashMap::new(),
+            window_let_go: HashSet::new(),
             resize_wait: Duration::ZERO,
             anim: Animator::default(),
             reduced_motion: false,

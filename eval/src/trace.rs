@@ -80,7 +80,7 @@ pub struct RunTrace {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub windowed: BTreeMap<String, Vec<u32>>,
     /// (integration-r7) The ticks at which logic's diff created each
-    /// surface's root (a `bar`, `panel`, `osd`, `popup` or `lock` node:
+    /// surface's root (a `bar`, `panel`, `osd`, `popup`, `window` or `lock` node:
     /// `SceneOp::Create`), by key: when logic opened it, read by
     /// `vanish`'s pose back to tell a surface opened again while it
     /// closed from the renderer's motion bits alone. Never in the digest.

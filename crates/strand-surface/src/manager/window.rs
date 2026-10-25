@@ -72,17 +72,10 @@ fn opt_size((w, h): (u32, u32)) -> Option<(u32, u32)> {
 }
 
 /// The size a window keeps on one axis from a configure that gives it
-/// `given` (`None`: 0, its choice) when it asked for `asked`, and
-/// whether that is the compositor's: a size the compositor gives is
-/// where a state constrains it (`constrained`: maximized, fullscreen,
-/// tiled, being resized) or where it is not the one asked for (the user
-/// resized a floating window); an echo of the asked size, or none, leaves
-/// the size to the window.
+/// `given` (`None`: 0, its choice): [`crate::placement::window_kept_size`],
+/// shared with the evaluation sandbox's compositor.
 fn kept_size(given: Option<NonZeroU32>, asked: u32, constrained: bool) -> (bool, u32) {
-    match given.map(NonZeroU32::get) {
-        Some(g) if constrained || g != asked => (true, g),
-        _ => (false, asked.max(1)),
-    }
+    crate::placement::window_kept_size(given.map(NonZeroU32::get), asked, constrained)
 }
 
 /// The `xdg_toplevel` edge a `w.resize(edge)` names (`center`: none).

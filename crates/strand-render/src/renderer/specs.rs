@@ -231,6 +231,13 @@ impl Renderer {
         if was == sized {
             return;
         }
+        // An axis let go: the window was configured at its own size, so
+        // it takes it at once rather than springing from the size the
+        // compositor gave (its content would be laid out past its
+        // buffer).
+        if (was.0 && !sized.0) || (was.1 && !sized.1) {
+            self.window_let_go.insert(root);
+        }
         if sized == (false, false) {
             self.window_sized.remove(&root);
         } else {
@@ -765,6 +772,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id, _| live.contains(id));
         self.window_sized.retain(|id, _| live.contains(id));
+        self.window_let_go.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.shadow_held.retain(|id| live.contains(id));
         self.held_reach.retain(|id, _| live.contains(id));

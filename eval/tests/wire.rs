@@ -347,3 +347,25 @@ fn the_leg_refuses_a_layer_surface_sized_by_another_ones_zone() {
     let t = go(&sc, leg()).unwrap_or_else(|e| panic!("{e}"));
     assert_clean(&t);
 }
+
+/// (window) The fake compositor maps no `xdg_toplevel`: a run that
+/// shows a window is refused with the leg (before the fake sees it),
+/// and runs without it.
+#[test]
+fn the_leg_refuses_a_window() {
+    let sc = scenario(
+        "id = \"window\"\nscreen = { width = 200, height = 120, scale = 1.0 }\n\
+         === shell.strand\nstate shown = true\n\
+         window W { open: <-> shown; box { width: 40; height: 10 } }\n\
+         === steps\nrest\n",
+    );
+    let leg = RunOptions {
+        surface: Some(true),
+        ..RunOptions::default()
+    };
+    match run(&sc, &leg) {
+        Err(Error::Unsupported(why)) => assert!(why.contains("xdg_toplevel"), "{why}"),
+        other => panic!("not refused: {:?}", other.map(|o| o.notes)),
+    }
+    go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+}

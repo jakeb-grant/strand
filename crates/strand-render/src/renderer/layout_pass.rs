@@ -473,10 +473,17 @@ impl Renderer {
                 b.rects.get(&root).map_or(content, |r| [r.w, r.h])
             };
             let now = self.anim.step_was(root);
+            // (window) A window the compositor let go of takes this step
+            // at once.
+            let let_go = self.window_let_go.remove(&root);
             for (axis, sized) in [cw, ch].into_iter().enumerate() {
                 let delta = was[axis] - (then[axis] + now[axis]);
                 if sized && delta.abs() > STEP_MIN {
-                    let curve = self.step_curve(root, axis);
+                    let curve = if let_go {
+                        Curve::Instant
+                    } else {
+                        self.step_curve(root, axis)
+                    };
                     // `~ instant` takes the step at once: nothing springs,
                     // and what it moves snaps as it did (no FLIP of all).
                     let springs = curve != Curve::Instant;

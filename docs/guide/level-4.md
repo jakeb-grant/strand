@@ -3,15 +3,16 @@
 You learn: `on change … after`, `after … while`, `persist`, `export`,
 `list`, `Async`; also `let`, `enum`, `match`, `every … while`,
 `on show`, `id:`, `@reset`, lambdas (`n => …`), `await` and the `lock`
-surface.
+and `window` surfaces.
 You build: an on-screen display for volume and brightness, a
-notification stack, an app launcher, a lock screen and the dialog a
+notification stack, an app launcher, a lock screen, the dialog a
 program opens when it needs your password (with, for those who want
-one, a login screen in the same language).
+one, a login screen in the same language) and a settings window.
 
 Your bar is always there. Everything on this page appears when
 something happens (a key, a notification, a locked session) and goes
-away again. Each build is a file of its own beside the five from
+away again, but the last: a window, which stays until you close it.
+Each build is a file of its own beside the five from
 level 3; none of them changes the bar.
 
 ## An OSD for volume and brightness
@@ -684,9 +685,95 @@ serves, `greetd.available` is false and every action sets
 `greetd.error` instead. While the login screen shows, nothing is recorded for a
 glitch report.
 
+## A settings window
+
+Everything so far floats above your windows and goes away by itself.
+A settings page is different: you open it, tile it beside your editor
+or move it aside, switch to something else and come back to it, and
+close it when you are done. That is a window.
+
+Make `settings.strand`:
+
+```strand level=4 file=settings.strand
+// settings.strand. Bind a key to: strand toggle settings.open
+export state open = false
+
+window Settings {
+  open: <-> open                                  // its close button writes false
+  title: "Settings"
+  width: 360
+  bg: $surface; font: $font.ui; color: $fg
+  id: w
+  col { pad: $space.4; gap: $space.3
+    if !w.decorated {                             // no title bar from the compositor
+      row { align: center
+        text "Settings" { grow: 1; font: $font.title }
+        button "Close" { on click { w.close() } }
+      }
+    }
+    text "Volume" { color: $fg.muted }
+    row { gap: $space.2; align: center
+      slider { grow: 1; value: <-> audio.sink.volume }
+      button audio.sink.muted ? "Unmute" : "Mute" { on click { audio.sink.muted = !audio.sink.muted } }
+    }
+    if brightness.available {
+      text "Brightness" { color: $fg.muted }
+      slider { value: <-> brightness.level }
+    }
+  }
+}
+```
+
+Bind a key to it, as the launcher's:
+
+```
+bindsym $mod+comma exec strand toggle settings.open
+```
+
+Press it: a window titled "Settings" opens, as any app's would. A
+tiling compositor tiles it beside your other windows and a floating
+one places it; you move, resize, maximise and close it the way you do
+every window, and it shows in your task bar and Alt+Tab. Drag the
+volume slider and the bar's speaker follows.
+
+**`window Settings { … }` is an app's window**, where `panel` is a
+part of the shell.
+
+- It is shown while `open:` is true. The compositor's close (the
+  title bar's button, your close-window key) and `w.close()` write
+  `false` back through `<->`. Bind it two-way: with `open: open` or no
+  `open:` at all, `strand check` warns that the close would do nothing.
+  Escape and clicking another window leave it open.
+- The compositor decides where it goes and how large it is. `width:
+  360` is the size it asks for (its content's while unset, as a
+  panel's), `min_width` and `max_width` the sizes it takes; tiled or
+  maximised, it is laid out at the size it is given. So `screens`,
+  `layer`, `anchor`, `margin` and `keyboard` are errors on a window:
+  those are the compositor's.
+- `title:` is the name your task bar and window switcher show. Its app
+  id, which compositor window rules match, is `strand-Settings`
+  (`app_id:` changes it).
+- The compositor draws its title bar and borders where it offers to.
+  One that does not leaves them to the window, and `w.decorated` (on
+  its `id:`, as `p.open` is a panel's) is false: the `if` draws a
+  title and a Close button then. `w.focused`, `w.maximized`,
+  `w.fullscreen` and `w.tiled` follow the compositor too, and
+  `w.maximize()`, `w.minimize()`, `w.fullscreen()`, `w.move()` and
+  `w.resize(edge)` ask it, so a title bar of your own can do all a
+  compositor's does (`decorations: none` asks for that always).
+
+**Panel or window?** A panel belongs to the shell: it sits on a layer
+over or under every window, where you anchor it, on the monitors you
+name, and Escape or a click elsewhere puts it away (a launcher, a
+control centre, a calendar). A window belongs among your windows: the
+compositor places it, tiles it, lists it and focuses it, and it stays
+until you close it (settings, a picker, a tool you keep open). If you
+would want to tile it, move it to another workspace or find it again
+in Alt+Tab, make it a window.
+
 ## What you have
 
-Your level-3 bar, plus five surfaces that appear when they are needed.
+Your level-3 bar, plus six surfaces that appear when they are needed.
 
 | File | Holds | Opened by |
 | --- | --- | --- |
@@ -695,6 +782,7 @@ Your level-3 bar, plus five surfaces that appear when they are needed.
 | `launcher.strand` | the `Launcher` panel | `strand toggle launcher.open` |
 | `lock.strand` | the lock screen | `strand set lock.locked true` |
 | `polkit.strand` | the `Polkit` password dialog | a program asking polkit |
+| `settings.strand` | the `Settings` window | `strand toggle settings.open` |
 
 Next, [level 5](level-5.md) gives the shell a theme of your own, then
 builds services of your own, a control centre and a dock.

@@ -289,7 +289,7 @@ fn x_share_of(tree: &SceneTree, node: NodeId) -> Option<f32> {
     match p.kind.name() {
         "row" => at(word(Prop::Justify)?.unwrap_or("start")),
         "col" | "scroll" => at(word(Prop::Align)?.unwrap_or("stretch")),
-        "stack" | "box" | "popup" | "panel" | "bar" | "osd" | "lock" => {
+        "stack" | "box" | "popup" | "panel" | "bar" | "osd" | "lock" | "window" => {
             let own = n.get(Prop::Width).is_some() || n.get(Prop::Size).is_some();
             match word(Prop::Align)? {
                 Some(k) => at(k),
@@ -303,13 +303,14 @@ fn x_share_of(tree: &SceneTree, node: NodeId) -> Option<f32> {
 
 /// (eval-rules) The axes on which a surface is sized by its content: a
 /// `popup` or `panel` with no `width` (or `size`) is as wide as what it
-/// holds, one with no `height` as tall. A bar is sized by its screen
-/// edge and its `height`.
+/// holds, one with no `height` as tall; (window) so is a `window` the
+/// compositor leaves its own size. A bar is sized by its screen edge and
+/// its `height`.
 pub fn content_sized(tree: &SceneTree, node: NodeId) -> [bool; 2] {
     let Some(n) = tree.get(node) else {
         return [false, false];
     };
-    if !matches!(n.kind.name(), "popup" | "panel") {
+    if !matches!(n.kind.name(), "popup" | "panel" | "window") {
         return [false, false];
     }
     let size = n.get(Prop::Size).is_some();

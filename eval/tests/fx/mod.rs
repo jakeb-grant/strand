@@ -325,3 +325,94 @@ pub fn write_drawn(dir: &Path, nodes: &[replay::drawn::Drawn]) {
     )
     .unwrap();
 }
+
+/// (window) The fixture with a window declared below the bar (so the
+/// bar's origins stay), and the sandbox's origin of the window's root.
+pub fn with_window() -> (Fx, String) {
+    let mut f = Fx::session();
+    f.config.push_str(
+        "state shown = true\n\
+         window Settings { id: w; open: <-> shown; decorations: none; bg: #181825\n  \
+         col { pad: 12; box { id: wbox; width: 200; height: 100; bg: #45475a } }\n}\n",
+    );
+    static O: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let config = f.config.clone();
+    let origin = O
+        .get_or_init(|| {
+            let dir = tmp("window-probe");
+            let cfg = dir.join("config");
+            std::fs::create_dir_all(&cfg).unwrap();
+            std::fs::write(cfg.join("shell.strand"), &config).unwrap();
+            let scn = dir.join("scenarios/local/probe.scn");
+            std::fs::create_dir_all(scn.parent().unwrap()).unwrap();
+            std::fs::write(
+                &scn,
+                format!(
+                    "id = \"probe\"\nscreen = {{ width = 1280, height = 720, scale = 1.0 }}\nconfig_dir = \"{}\"\n\n=== steps\nrest\n",
+                    cfg.display()
+                ),
+            )
+            .unwrap();
+            let sc = Scenario::load(&scn).unwrap();
+            let t = harness::run(&sc, &RunOptions::default()).unwrap().trace;
+            let w = t
+                .surfaces
+                .iter()
+                .find(|s| s.kind == "window")
+                .expect("the window is shown in the sandbox");
+            t.nodes[&w.root].origin.clone().unwrap()
+        })
+        .clone();
+    (f, origin)
+}
+
+/// (window) A `TOPLEVEL` record of the window's slot: its box, the axes
+/// sized and its state bits.
+pub fn toplevel(f: &mut Fx, slot: u16, t: u64, size: (u16, u16), bits: u8) {
+    f.input.push(
+        Rec::new(t, kind::TOPLEVEL, slot)
+            .u16_at(0, size.0)
+            .u16_at(2, size.1)
+            .u8_at(4, bits),
+    );
+}
+
+/// (window) The window surface `slot` mapped at `t` with root `root`.
+pub fn window_mapped(f: &mut Fx, slot: u16, root: u64, origin: &str, t: u64) {
+    f.node(root, origin, Some("w"));
+    let name = f.changes.name(&format!("{LIVE}/{origin}"));
+    let mut rec = Rec::new(t - MS, kind::ROOT, name).u64_at(0, root);
+    rec.payload[8] = flight::MAPPED_WINDOW;
+    f.changes.push(rec);
+    f.input
+        .push(Rec::new(t, kind::REFRESH, slot).u32_at(0, 16_666_667));
+    f.input.push(
+        Rec::new(t, kind::MAPPED, slot)
+            .u64_at(0, root)
+            .u8_at(8, u8::MAX)
+            .u8_at(9, flight::MAPPED_WINDOW),
+    );
+}
+
+/// (window) The scripted session with the window: mapped at 2 s at its
+/// own size and focused, tiled at 600 × 400 at 5 s, closed by the
+/// compositor at 9 s (its click away, `shell.shown` written false) and
+/// unmapped; and its root's origin.
+pub fn window_session() -> (Fx, String) {
+    use flight::toplevel as tl;
+    let (mut f, wo) = with_window();
+    window_mapped(&mut f, 2, bits(20, 1), &wo, 2 * S);
+    toplevel(&mut f, 2, 2 * S + MS, (224, 124), tl::ACTIVATED);
+    toplevel(
+        &mut f,
+        2,
+        5 * S,
+        (600, 400),
+        tl::SIZED_W | tl::SIZED_H | tl::TILED | tl::ACTIVATED,
+    );
+    f.input.push(Rec::new(9 * S, kind::CLICK_AWAY, 2));
+    f.cell(9 * S + MS, "shell.shown", "[true,false]");
+    f.cells["shell.shown"] = json!(false);
+    f.input.push(Rec::new(9 * S + 300 * MS, kind::UNMAPPED, 2));
+    (f, wo)
+}

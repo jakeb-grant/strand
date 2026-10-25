@@ -557,6 +557,21 @@ impl WindowConfig {
     }
 }
 
+/// (window) The size a window keeps on one axis from a configure that
+/// gives it `given` (`None` or 0: its choice) when it asked for `asked`,
+/// and whether that is the compositor's: a size the compositor gives is
+/// where a state constrains it (`constrained`: maximized, fullscreen,
+/// tiled, being resized) or where it is not the one asked for (the user
+/// resized a floating window); an echo of the asked size, or none,
+/// leaves the size to the window. The surface manager's configure and
+/// the evaluation sandbox's compositor both size a window by it.
+pub fn window_kept_size(given: Option<u32>, asked: u32, constrained: bool) -> (bool, u32) {
+    match given.filter(|g| *g > 0) {
+        Some(g) if constrained || g != asked => (true, g),
+        _ => (false, asked.max(1)),
+    }
+}
+
 /// (window) Resolves the `xdg_toplevel` state of a `window` spec. Waits
 /// (`AutoSize`) until render gave it a size; `NotLayerSurface` names any
 /// other kind.

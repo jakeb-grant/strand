@@ -36,7 +36,8 @@
 //! strand-gpu's), the scale is 1 (the fake's output has no other), and
 //! no layer surface is sized by another's exclusive zone (the fake
 //! stretches each over the whole output; a run that needs a zone is
-//! refused, eval-false-alarms).
+//! refused, eval-false-alarms), and no `window` (the fake maps no
+//! `xdg_toplevel`; a run with one is refused).
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

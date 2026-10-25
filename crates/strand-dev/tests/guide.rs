@@ -936,3 +936,67 @@ fn the_guide_greeter_checks_on_its_own() {
         );
     }
 }
+
+/// (window) The guide's settings window on the mock services: closed
+/// until `settings.open`; where the compositor draws no title bar
+/// (`w.decorated` false, the mock's), its own title and Close button,
+/// which asks the compositor to close it; decorated, neither; the
+/// compositor's close writes `settings.open` false.
+#[test]
+fn the_guide_settings_window_draws_its_own_title_bar_where_undecorated() {
+    use strand_compiler::instantiate::NodeFlag;
+    use strand_scene::{NodeKind, WindowAsk};
+    let schema = builtin_schema();
+    let mut map = SourceMap::new();
+    map.add("settings.strand", last_block("settings.strand"));
+    let compiled = strand_compiler::compile_with(&map, &schema);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "{}",
+        render(&compiled.diagnostics, &map, Style::Plain)
+    );
+    let program = Arc::new(lower::lower(&compiled.program, &schema));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let inst = Instance::new(&rt, program, host, Storage::none());
+    let mut scene = SceneMirror::new();
+    let flush = |scene: &mut SceneMirror| {
+        let u = inst.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        scene.apply(&u.diff).unwrap();
+        u
+    };
+    flush(&mut scene);
+    let w = scene.of_kind(NodeKind::Window)[0];
+    let open = |scene: &SceneMirror| scene.prop(w, Prop::Open).cloned();
+    assert_eq!(open(&scene), Some(PropValue::Bool(false)));
+    inst.set("settings.open", Value::Bool(true)).unwrap();
+    flush(&mut scene);
+    assert_eq!(open(&scene), Some(PropValue::Bool(true)));
+    let texts = scene.texts();
+    assert!(
+        texts.iter().any(|t| t == "Settings") && texts.iter().any(|t| t == "Close"),
+        "{texts:?}"
+    );
+    // The button's handler, on the label or the node holding it.
+    let label = scene.find_text("Close").unwrap();
+    assert!(
+        inst.event(label, "click", vec![])
+            || inst.event(scene.parent(label).unwrap(), "click", vec![])
+    );
+    assert_eq!(flush(&mut scene).diff.window_asks, [(w, WindowAsk::Close)]);
+    inst.set_flag(w, NodeFlag::Decorated, true);
+    flush(&mut scene);
+    assert!(
+        !scene.texts().iter().any(|t| t == "Close"),
+        "{:?}",
+        scene.texts()
+    );
+    // The compositor's close (the router's ClickAway) writes `open`.
+    inst.write(w, Prop::Open, PropValue::Bool(false)).unwrap();
+    flush(&mut scene);
+    assert_eq!(
+        inst.value_of("settings", "open").unwrap(),
+        Value::Bool(false)
+    );
+}

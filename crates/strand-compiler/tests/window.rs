@@ -265,8 +265,37 @@ fn what_places_a_layer_surface_is_refused_on_a_window() {
     );
     // What a window takes checks clean.
     assert_eq!(codes(SETTINGS), Vec::<&str>::new());
-    let src = "window W { inhibit_idle: true; bg: $surface; min_height: 100; text \"x\" }\n";
+    let src = "state s = true\n\
+        window W { open: <-> s; inhibit_idle: true; bg: $surface; min_height: 100; text \"x\" }\n";
     assert_eq!(codes(src), Vec::<&str>::new());
+}
+
+/// (window, W1 open item) The compositor's close writes only a two-way
+/// `open:`: one unset (always open) or one-way is warned, a two-way one
+/// in a `when` is enough.
+#[test]
+fn a_window_the_compositor_cannot_close_is_warned() {
+    let warned = |src: &str| codes(src).contains(&"check::window_open");
+    assert!(warned("window W { text \"x\" }\n"));
+    assert!(warned("state s = true\nwindow W { open: s; text \"x\" }\n"));
+    assert!(!warned(
+        "state s = true\nwindow W { open: <-> s; text \"x\" }\n"
+    ));
+    assert!(!warned(
+        "state s = true\nstate a = false\nwindow W { open: false; when a { open: <-> s }; text \"x\" }\n"
+    ));
+    // A panel's one-way `open:` is not a window's.
+    assert!(!warned("state s = true\npanel P { open: s; text \"x\" }\n"));
+    let mut map = SourceMap::new();
+    map.add("shell.strand", "window W { text \"x\" }\n".to_string());
+    let out = compile_map(&map);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::window_open")
+        .unwrap();
+    assert_eq!(d.severity, strand_compiler::Severity::Warning);
+    assert!(d.help.as_deref().unwrap().contains("open: <-> shown"));
 }
 
 #[test]

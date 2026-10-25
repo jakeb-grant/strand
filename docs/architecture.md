@@ -106,7 +106,8 @@ each configure that changes what the compositor says of a window
 `SurfaceInfo::toplevel`) before its `configured`: the host passes the
 sized axes to `Renderer::set_window_sized(surface, (bool, bool))`
 (laid out at the configured size there, no growth spring, no size
-asked), the bounds to `set_surface_bounds`, and the states to logic as
+asked; an axis the compositor lets go of takes the content's size at
+once, with no spring from the size it was given), the bounds to `set_surface_bounds`, and the states to logic as
 `set_flag` with `NodeFlag::Focused`, `Maximized`, `Fullscreen`,
 `Tiled` and `Decorated` on the window's root. No locks are shared across
 threads on a hot path.
@@ -1919,7 +1920,8 @@ threads** (as `strand_core::ipc`).
   click-away, `0x0D` drag (phase u8: enter, motion, leave, drop; x, y;
   the kinds offered as a u16 mask; never the payload), `0x20` surface
   mapped (slot = a new surface slot; root `NodeId` u64, output slot u8,
-  255 when it has none yet, kind u8: bar, panel, osd, popup, other; its
+  255 when it has none yet, kind u8: bar, panel, osd, popup, other,
+  and (window) 5 for a `window`, `flight::MAPPED_WINDOW`; its
   namespace is in `bundle.json`'s `surfaces` by slot, since a name per
   surface would crowd the key names out of the input ring's 64), `0x21`
   configured (the buffer's width u16 and height u16 in physical px,
@@ -1928,7 +1930,15 @@ threads** (as `strand_core::ipc`).
   (gpu u8), `0x25` late (frames missed u16: a presented frame that came
   two or more refresh periods after the one before while the surface
   was animating), `0x26` refresh (period ns u32, when first known or
-  changed), `0x30` output (slot = an output slot; connector name u16,
+  changed), (window) `0x27` toplevel (a `window`'s configure, written
+  by `InputRecorder::window` from `SurfaceHost::window_state`: width
+  u16 and height u16 in logical px, the state bits u8
+  `flight::toplevel::{SIZED_W, SIZED_H, MAXIMIZED, FULLSCREEN, TILED,
+  ACTIVATED, DECORATED}`, the capabilities u8 `{CAN_MAXIMIZE,
+  CAN_FULLSCREEN, CAN_MINIMIZE, WINDOW_MENU}`, the configure bounds'
+  width u16 and height u16, 0 for none; written again for every open
+  window at a gap's end and a ring's restart, as a surface's map is),
+  `0x30` output (slot = an output slot; connector name u16,
   width u16, height u16, scale u16 in 120ths, x i16, y i16), `0x31`
   output gone, `0x3E` gap begins (why u8: lock, off, inspector pick,
   and (services-round) `flight::gap::SECRET`, a password dialog or
@@ -1983,10 +1993,11 @@ threads** (as `strand_core::ipc`).
   when that is text on the same surface: the count grows and `last`
   moves.
 - **The dump** (`input.flight`, `changes.flight`): a 64-byte header
-  (magic `STRNDFLT`, version u16 = 3 (replayfix, version 2: values
+  (magic `STRNDFLT`, version u16 = 4 (replayfix, version 2: values
   may be edits and patches, and no record's value is lost; (services)
   version 3: a config's write to a service field is recorded as the
-  change it made, `LOCAL`; versions 1 and 2 still read, and
+  change it made, `LOCAL`; (window) version 4: a window's mapped kind
+  and its `0x27` toplevel records; versions 1 to 3 still read, and
   `Dump::version` says which was read),
   ring u8, flags u8 (1 wrapped, 2
   paused), record size u16, record count u32, name count u32, arena
@@ -2156,7 +2167,12 @@ Without `save` the answer is as before. With it:
    images: Vec<PathBuf>, surfaces: Vec<Json> }`, `surfaces` being
    `bundle.json`'s: each mapped surface's slot, namespace, kind, root
    `NodeId`, output, backend, logical and buffer size, scale, its
-   frame's file and whether it was repainted. A frame is the newest
+   frame's file and whether it was repainted, and (window) a window's
+   `window`, what the compositor last said of it
+   (`report::window_json`: `size`, `sized` per axis, `maximized`,
+   `fullscreen`, `tiled`, `activated`, `decorated`, `bounds` and
+   `can`), null for any other surface; bare `strand report` prints the
+   same as a window's `window:` line. A frame is the newest
    committed shm buffer, copied (`strand_surface::State::frame_pixels(
    surface) -> Option<FramePixels>`, new), or, for a surface presented
    by the GPU, its current scene repainted by the CPU into a fresh
@@ -5297,7 +5313,9 @@ and the connection):
   place (`reconfigure_window`); its window geometry is its box inside
   the overhang, as a popup's. Its configure takes the compositor's size
   on an axis when a state constrains it (maximized, fullscreen, tiled,
-  resizing) or it differs from the size asked (`kept_size`), keeps its
+  resizing) or it differs from the size asked (`kept_size`, by
+  `placement::window_kept_size(given, asked, constrained)`, the rule
+  eval's stand-in compositor shares), keeps its
   own otherwise, and reports `SurfaceHost::window_state` on a change;
   `close` is the surface's `InputEvent::ClickAway`, as is
   `WindowAsk::Close`. `State::window_ask` sends move and resize with the

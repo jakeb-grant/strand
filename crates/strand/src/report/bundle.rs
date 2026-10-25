@@ -112,6 +112,7 @@ pub(crate) fn main_bundle(state: &mut State<Host>) -> MainBundle {
             "scale": info.scale.as_f64(),
             "frame": pixels.as_ref().map(|_| file.clone()),
             "repainted": repainted,
+            "window": info.toplevel.as_ref().map(super::window_json),
         }));
         if let Some(pixels) = pixels {
             frames.push(Frame {

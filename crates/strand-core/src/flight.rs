@@ -33,7 +33,10 @@ pub const MAGIC: &[u8; 8] = b"STRNDFLT";
 /// `FIELD` or `KEYED` record flagged [`flags::LOCAL`], beside its
 /// `WRITE`; an older dump has the `WRITE` alone, the value written
 /// without what it replaced.
-pub const VERSION: u16 = 3;
+/// (window) Version 4: a `window`'s configure, a [`kind::TOPLEVEL`]
+/// record of its surface slot, and a window's mapped record names its
+/// kind ([`MAPPED_WINDOW`]); an older dump has no window.
+pub const VERSION: u16 = 4;
 /// Bytes of one record.
 pub const RECORD_BYTES: usize = 24;
 /// Bytes of one name-table entry: a length byte and up to 63 bytes of
@@ -94,6 +97,12 @@ pub mod kind {
     pub const BACKEND: u8 = 0x24;
     pub const LATE: u8 = 0x25;
     pub const REFRESH: u8 = 0x26;
+    /// (window) What the compositor's configure said of a `window`
+    /// (`strand_surface::ToplevelState`), when it changed: its box
+    /// (width u16, height u16, logical px), the state bits u8
+    /// ([`super::toplevel`]), the capability bits u8, and the bounds
+    /// (width u16, height u16; 0 when not said).
+    pub const TOPLEVEL: u8 = 0x27;
     pub const OUTPUT: u8 = 0x30;
     pub const OUTPUT_GONE: u8 = 0x31;
     pub const GAP_BEGINS: u8 = 0x3E;
@@ -134,6 +143,33 @@ pub mod request {
     pub const SET: u8 = 0;
     pub const TOGGLE: u8 = 1;
     pub const RESET: u8 = 2;
+}
+
+/// (window) A `MAPPED` record's kind byte (payload 9) for a `window`;
+/// a bar, panel, OSD and popup are 0 to 3, anything else 4.
+pub const MAPPED_WINDOW: u8 = 5;
+
+/// (window) The bits of a [`kind::TOPLEVEL`] record: its state (payload
+/// byte 4) and the compositor's capabilities (byte 5).
+pub mod toplevel {
+    /// The compositor sized its width (a state constrains it, or it
+    /// gave another size than the window asked for).
+    pub const SIZED_W: u8 = 1;
+    /// … and its height.
+    pub const SIZED_H: u8 = 2;
+    pub const MAXIMIZED: u8 = 4;
+    pub const FULLSCREEN: u8 = 8;
+    /// Tiled on any edge.
+    pub const TILED: u8 = 16;
+    /// Focused by the compositor (`activated`).
+    pub const ACTIVATED: u8 = 32;
+    /// The compositor draws its decorations.
+    pub const DECORATED: u8 = 64;
+    // Capabilities (byte 5).
+    pub const CAN_MAXIMIZE: u8 = 1;
+    pub const CAN_FULLSCREEN: u8 = 2;
+    pub const CAN_MINIMIZE: u8 = 4;
+    pub const WINDOW_MENU: u8 = 8;
 }
 
 /// Why a gap began (payload byte 0 of a gap record).
@@ -960,6 +996,7 @@ impl Dump {
                         | kind::BACKEND
                         | kind::LATE
                         | kind::REFRESH
+                        | kind::TOPLEVEL
                         | kind::OUTPUT_GONE
                         | kind::GAP_BEGINS
                         | kind::GAP_ENDS

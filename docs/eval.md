@@ -268,6 +268,22 @@ advance the clock.
   a `screens: focused` surface mapped after it opens there.
 - `hz N`.
 - `backend cpu|gpu`.
+- `window <surface> W,H [maximized] [fullscreen] [tiled] [activated]
+  [decorated]` (window): the stand-in compositor configures that
+  `window` as said, as a real one does when the user tiles, maximises
+  or resizes it: `W` or `H` a size it is given on that axis (laid out
+  at it, no growth spring), `_` its own; a state left out is off
+  (`decorated` too: the config draws its own). `window <surface>
+  close` is the compositor's close: it writes a two-way `open` false
+  (the surface's click away, as live). Without them the stand-in is a
+  floating compositor: a window maps centred in what the bars'
+  exclusive zones leave of the focused screen, at the size it asks
+  for, takes the keyboard (the window before it loses `w.focused`) and
+  is decorated as it asks (`decorations: server` reads `w.decorated`
+  true, though the stand-in draws no title bar); its `w.maximize()` and `w.fullscreen()` are
+  answered (toggles), `w.close()` closes it, and `w.minimize()`,
+  `w.move()` and `w.resize()` have nothing to show (`eval/src/
+  surfaces.rs`, `Surfaces::set_window`).
 
 **Annotation**
 
@@ -2077,6 +2093,9 @@ What the surface leg leaves out:
   output, so a run in which another surface's zone sizes one (a left bar
   under a top bar) is refused as unsupported with the leg
   (eval-false-alarms);
+- (window) a `window`: the fake maps no `xdg_toplevel`, so a run that
+  shows one is refused as unsupported with the leg (strand-surface's
+  sway tests and the compositor matrix hold the toplevel's protocol);
 - the regions of a posed frame (see above).
 
 ## Cost
@@ -2544,6 +2563,17 @@ work:
    start, at -5 s, -2 s and at the report, and a `shot report` there.
    The services the sandbox keeps itself (`screens`, `clock`,
    `calendar`, `auth`) are neither seeded nor set.
+   (window) What the compositor said of a `window` (its configure:
+   the size given on each axis, its states and whether it is
+   decorated; the input ring's `TOPLEVEL` record) is a `window @o
+   W,H states` step at its time, so the replay lays it out at the size
+   it was given live, tiled, maximised or floating, with no step on it
+   before; a window shown at the window's start starts at the last
+   configure before it (rewritten with every gap's end, as a surface's
+   map is), or `bundle.json`'s (`window` on its surface) when the ring
+   kept none, else its first in the window, with a limit. The
+   compositor's close (the slot's `CLICK_AWAY`) is `window @o close`,
+   not a click outside.
 6. **Runs it** as `local` does, with every CPU check, then compares
    the replay with the live shell (below) and writes `replay.txt`.
    (report review) A step the sandbox cannot take (input on a surface
@@ -2593,6 +2623,8 @@ capability, used by any scenario):
   compositor's: a `keyboard: exclusive` surface takes it as it maps, an
   `on_demand` one on a press in it, and it returns when that surface
   goes.
+- (window) `window <surface> W,H [states]` and `window <surface>
+  close`: the compositor's configure and close of a `window`.
 - `answer <service.method> <JSON>`: the next call of that method is
   answered with it, ahead of the mock's own (`SchemaHost::answer`).
   A call of an action with a result is a fetch named `action <name>`

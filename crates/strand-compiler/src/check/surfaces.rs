@@ -13,7 +13,9 @@
 //!
 //! (window) A `window` takes none of the props that place a layer-shell
 //! surface (`screens`, `layer`, `anchor`, `margin`, `attach`, `scrim`,
-//! `keyboard`): the compositor places, stacks and focuses it.
+//! `keyboard`): the compositor places, stacks and focuses it. Its
+//! `open:` unset or one-way is warned: the compositor's close writes
+//! only a two-way one.
 
 use super::Checker;
 use crate::hir::{self, Node};
@@ -110,6 +112,48 @@ impl Checker<'_> {
                     .into(),
             );
         }
+    }
+}
+
+impl Checker<'_> {
+    /// (window) The compositor's close (and `w.close()`) writes a
+    /// two-way `open:` false; a window whose `open:` is one-way, or
+    /// unset (always open), ignores it, which `xdg_toplevel` allows but
+    /// leaves the user's close button doing nothing. A warning, since
+    /// the program runs. `at` is the `window` keyword, for an unset one.
+    pub(super) fn window_open(
+        &mut self,
+        props: &[hir::Prop],
+        children: &[Node],
+        at: crate::syntax::Span,
+    ) {
+        let whens = children.iter().filter_map(|n| match n {
+            Node::When(w) => Some(&w.props),
+            _ => None,
+        });
+        let opens: Vec<&hir::Prop> = props
+            .iter()
+            .chain(whens.flatten())
+            .filter(|p| p.name == "open")
+            .collect();
+        if opens.iter().any(|p| p.two_way) {
+            return;
+        }
+        let (span, label) = match opens.first() {
+            Some(p) => (p.span, "one-way: the compositor's close cannot write it"),
+            None => (at, "no `open:`: this window is always open"),
+        };
+        self.warning(
+            "check::window_open",
+            "the compositor's close does nothing to this `window`",
+            span,
+            label,
+        )
+        .help = Some(
+            "bind it two-way, `open: <-> shown` with `state shown = false`, so closing the \
+             window (its close button, `w.close()`) writes `shown` false"
+                .into(),
+        );
     }
 }
 

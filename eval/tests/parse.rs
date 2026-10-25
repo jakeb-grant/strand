@@ -1020,3 +1020,75 @@ fn several_screens_parse() {
     );
     bad("screens = []", "one at least");
 }
+
+/// (window) `window <surface> <W|_>,<H|_> [states…]` configures a
+/// window as its compositor would, every state not named off; `window
+/// <surface> close` is its compositor's close; a bad size or state is a
+/// typed error at its line. A replay writes the step from a recorded
+/// configure in these words (`Toplevel::words`).
+#[test]
+fn the_window_step_parses() {
+    use strand_eval::replay::bundle::Toplevel;
+    use strand_eval::surfaces::WindowState;
+    let s = parse(
+        "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\n\
+         window #w 960,1040 tiled activated decorated\nwindow #w _,_\n\
+         window #w 800,_ maximized fullscreen\nwindow #w close\n",
+    );
+    let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
+    let w = |configure| StepKind::Window {
+        on: Selector::Id("w".into()),
+        configure,
+    };
+    assert_eq!(
+        kinds,
+        vec![
+            w(Some(WindowState {
+                size: [Some(960), Some(1040)],
+                maximized: false,
+                fullscreen: false,
+                tiled: true,
+                activated: true,
+                decorated: Some(true),
+            })),
+            w(Some(WindowState {
+                size: [None, None],
+                maximized: false,
+                fullscreen: false,
+                tiled: false,
+                activated: false,
+                decorated: Some(false),
+            })),
+            w(Some(WindowState {
+                size: [Some(800), None],
+                maximized: true,
+                fullscreen: true,
+                tiled: false,
+                activated: false,
+                decorated: Some(false),
+            })),
+            w(None),
+        ]
+    );
+    for (bad, why) in [
+        ("window #w 960", "is not `W,H`"),
+        ("window #w 0,10", "is not a size in px or `_`"),
+        ("window #w 10,10 floating", "is not a window state"),
+        ("window #w close now", "unexpected `now`"),
+        ("window", "takes"),
+    ] {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\n{bad}\n"
+        ));
+        assert_eq!(line, 5, "{bad}: {msg}");
+        assert!(msg.contains(why), "{bad}: {msg}");
+    }
+    let t = Toplevel {
+        size: [960, 1040],
+        sized: [true, false],
+        tiled: true,
+        activated: true,
+        ..Toplevel::default()
+    };
+    assert_eq!(t.words(), "960,_ tiled activated");
+}

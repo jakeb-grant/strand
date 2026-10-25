@@ -177,3 +177,38 @@ fn only_the_compositor_closes_a_window() {
     let out = router.handle(&InputEvent::ClickAway { surface: WIN }, &mut r);
     assert!(closes(&out), "{out:?}");
 }
+
+/// (window) A window the compositor stops sizing (untiled, restored
+/// from a maximize) is configured at its own size at once, so it takes
+/// that size at once: no growth spring from the compositor's size, which
+/// would lay its content out past the buffer it has. A step of its own
+/// content afterwards still springs.
+#[test]
+fn a_window_the_compositor_lets_go_of_takes_its_own_size_at_once() {
+    let (mut r, win, spec) = booted();
+    let (w, h) = (spec.width.unwrap(), spec.height.unwrap());
+    r.attach_surface(WIN, win);
+    r.set_window_sized(WIN, (true, true));
+    r.configure_surface(WIN, Size::new(640, 400), Scale::ONE);
+    let mut buf = Buffer::new(640, 400, Scale::ONE);
+    buf.paint_at(&mut r, WIN, 0, Duration::from_millis(1000));
+    assert_eq!(
+        r.boxes(WIN).unwrap().rects[&win],
+        LogicalRect::new(0.0, 0.0, 640.0, 400.0)
+    );
+    r.set_window_sized(WIN, (false, false));
+    r.configure_surface(WIN, Size::new(w as u32, h as u32), Scale::ONE);
+    let mut buf = Buffer::new(w as u32, h as u32, Scale::ONE);
+    buf.paint_at(&mut r, WIN, 0, Duration::from_millis(1016));
+    assert_eq!(
+        r.boxes(WIN).unwrap().rects[&win],
+        LogicalRect::new(0.0, 0.0, w, h),
+        "its own size at once"
+    );
+    assert!(
+        !r.wants_frame(WIN),
+        "nothing springs from the compositor's size"
+    );
+    // Drawn as a window that was never tiled is.
+    assert_matches_ref("window_content_size", &buf, TOLERANCE);
+}

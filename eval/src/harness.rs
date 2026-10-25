@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use strand_compiler::SourceMap;
-use strand_compiler::instantiate::{Instance, Storage, Update, parse_text};
+use strand_compiler::instantiate::{Instance, NodeFlag, Storage, Update, parse_text};
 use strand_compiler::lower::Program;
 use strand_compiler::reconcile::Build;
 use strand_compiler::schema::Schema;
@@ -2030,8 +2030,11 @@ impl Harness {
     /// takes it (`host_loop::apply`: the router observes it, render
     /// applies it, routing settles, the input wake follows, surfaces
     /// sync), then the loop's turn.
-    fn apply(&mut self, diff: SceneDiff) -> Result<(), Error> {
+    fn apply(&mut self, mut diff: SceneDiff) -> Result<(), Error> {
         self.driven |= !diff.ops.is_empty();
+        // (window) What its handlers asked of windows, once the windows
+        // it opens are there (`demo::apply`).
+        let asks = std::mem::take(&mut diff.window_asks);
         // (integration-r7) The rows a list's window mounts, as logic
         // declares them, noted by key when first drawn
         // (`RunTrace::windowed`).
@@ -2050,7 +2053,10 @@ impl Harness {
                 // again), noted by key when first drawn
                 // (`RunTrace::opened`).
                 use strand_scene::NodeKind as K;
-                if matches!(kind, K::Bar | K::Panel | K::Osd | K::Popup | K::Lock) {
+                if matches!(
+                    kind,
+                    K::Bar | K::Panel | K::Osd | K::Popup | K::Lock | K::Window
+                ) {
                     self.surface_opens.insert(*id, k);
                 } else {
                     self.surface_opens.remove(id);
@@ -2120,7 +2126,167 @@ impl Harness {
             }
         }
         host_loop::apply(self, diff)?;
+        self.window_asks(asks)?;
         self.turn()
+    }
+
+    /// (window) What handlers asked of windows (`w.maximize()` …),
+    /// answered as a compositor that offers every action: `close` is its
+    /// close (a click away for the router), `maximize` and `fullscreen`
+    /// toggle that state in its configure, `minimize` tells the window
+    /// nothing (xdg-shell says nothing of it), and an interactive `move`
+    /// or `resize` needs a compositor's own pointer grab, so it is a note.
+    fn window_asks(&mut self, asks: Vec<(NodeId, strand_scene::WindowAsk)>) -> Result<(), Error> {
+        use strand_scene::WindowAsk;
+        for (node, ask) in asks {
+            let Some(id) = self
+                .surfaces
+                .shown
+                .iter()
+                .find(|s| s.node == node && s.kind == strand_scene::NodeKind::Window)
+                .map(|s| s.id)
+            else {
+                continue;
+            };
+            let mut st = self.surfaces.window_state(node);
+            match ask {
+                WindowAsk::Close => {
+                    self.send(vec![InputEvent::ClickAway { surface: id }])?;
+                    continue;
+                }
+                // The sandbox's own size for the state, or the window's
+                // own when it ends.
+                WindowAsk::Maximize => {
+                    st.maximized = !st.maximized;
+                    st.size = [None, None];
+                }
+                WindowAsk::Fullscreen => {
+                    st.fullscreen = !st.fullscreen;
+                    st.size = [None, None];
+                }
+                WindowAsk::Minimize => continue,
+                WindowAsk::Move | WindowAsk::Resize(_) => {
+                    let note = "a window's interactive move or resize (`w.move()`, \
+                                `w.resize(edge)`) is the compositor's pointer grab, not \
+                                modelled by the sandbox"
+                        .to_string();
+                    if !self.notes.contains(&note) {
+                        self.notes.push(note);
+                    }
+                    continue;
+                }
+            }
+            let changes = self.surfaces.set_window(node, st)?;
+            self.surface_changes(changes)?;
+        }
+        Ok(())
+    }
+
+    /// (window) A `window` step: the compositor configures the window
+    /// `on` names (the window itself, or one in it) as `configure` says,
+    /// or (`None`) closes it. A configure of a window not shown yet is
+    /// kept for when it shows (a replay's, the live map a tick ahead of
+    /// the sandbox's); a close of one not shown closes nothing.
+    fn window_step(
+        &mut self,
+        on: &Selector,
+        configure: Option<&crate::surfaces::WindowState>,
+        line: u32,
+    ) -> Result<(), Error> {
+        let nodes = self.resolve(on, line)?;
+        let tree = self.r.tree();
+        let is_window = |n: NodeId| {
+            tree.get(n)
+                .is_some_and(|x| x.kind == strand_scene::NodeKind::Window)
+        };
+        let node = nodes.iter().find_map(|(n, _)| {
+            let root = tree.root_of(*n).unwrap_or(*n);
+            [*n, root].into_iter().find(|c| is_window(*c))
+        });
+        let Some(node) = node else {
+            return Err(self.err(line, format!("`{on}` is in no `window`")));
+        };
+        match configure {
+            Some(st) => {
+                let changes = self.surfaces.set_window(node, *st)?;
+                self.surface_changes(changes)?;
+            }
+            None => {
+                let shown = self
+                    .surfaces
+                    .shown
+                    .iter()
+                    .find(|s| s.node == node)
+                    .map(|s| s.id);
+                if let Some(id) = shown {
+                    self.send(vec![InputEvent::ClickAway { surface: id }])?;
+                }
+            }
+        }
+        self.turn()
+    }
+
+    /// (window) The compositor's configure of window `id` told, as the
+    /// shell's host tells `SurfaceHost::window_state`: render lays it out
+    /// at the size given on the axes the compositor sized, within its
+    /// bounds, and logic hears its states on its root; the compositor's
+    /// focus moves the keyboard with it.
+    fn tell_window(&mut self, id: SurfaceId) -> Result<(), Error> {
+        let Some((node, st)) = self.surfaces.told(id) else {
+            return Ok(());
+        };
+        self.r.set_window_sized(id, st.sized);
+        if let Some((w, h)) = st.bounds {
+            self.r
+                .set_surface_bounds(id, Some(LogicalSize::new(w as f32, h as f32)));
+        }
+        for (flag, on) in [
+            (NodeFlag::Focused, st.activated),
+            (NodeFlag::Maximized, st.maximized),
+            (NodeFlag::Fullscreen, st.fullscreen),
+            (NodeFlag::Tiled, st.tiled),
+            (NodeFlag::Decorated, st.decorated),
+        ] {
+            self.inst.set_flag(node, flag, on);
+        }
+        self.logic_owed = true;
+        if st.activated {
+            self.kb_take(id);
+        } else {
+            self.kb_stack.retain(|s| *s != id);
+        }
+        Ok(())
+    }
+
+    /// The sandbox compositor's surface changes run through the host
+    /// loop, as the surface manager's callbacks run them: attached,
+    /// (window) told, configured where it lies, placed, detached; then
+    /// noted in the trace.
+    fn surface_changes(&mut self, changes: Vec<Change>) -> Result<(), Error> {
+        let screen = self.surfaces.screen;
+        let bounds = Some(LogicalSize::new(screen.width as f32, screen.height as f32));
+        for c in &changes {
+            self.surface_change(*c, bounds)?;
+        }
+        self.changed(changes)
+    }
+
+    fn surface_change(&mut self, c: Change, bounds: Option<LogicalSize>) -> Result<(), Error> {
+        match c {
+            Change::Attached(id, node) => host_loop::attached(self, id, node, bounds)?,
+            Change::Window(id) => self.tell_window(id)?,
+            Change::Configured(id, size, scale) => {
+                let origin = self.surfaces.origin(id);
+                self.r.set_surface_origin(id, origin);
+                host_loop::configured(self, id, size, scale)?;
+            }
+            Change::Placed(id) => {
+                let origin = self.surfaces.origin(id);
+                self.r.set_surface_origin(id, origin);
+            }
+            Change::Detached(id) => host_loop::detached(self, id)?,
+        }
+        Ok(())
     }
 
     /// The loop's turn after a reaction (eval-host-loop): a wake owed
@@ -2226,7 +2392,7 @@ impl Harness {
                             .flatten(),
                     });
                 }
-                Change::Placed(_) => {}
+                Change::Placed(_) | Change::Window(_) => {}
                 Change::Detached(id) => {
                     if self.gpu_attached.remove(&id)
                         && let Some(dev) = self.gpu.as_mut()
@@ -2700,6 +2866,10 @@ impl Harness {
                 self.event(step);
                 self.kb_stack.clear();
                 self.kb_sync()?;
+            }
+            StepKind::Window { on, configure } => {
+                self.event(step);
+                self.window_step(on, configure.as_ref(), line)?;
             }
             StepKind::Answer { method, answer } => {
                 self.event(step);
@@ -4220,20 +4390,19 @@ impl LoopSync for Harness {
         let bounds = Some(LogicalSize::new(screen.width as f32, screen.height as f32));
         let mut done = Vec::new();
         for (node, change) in self.r.take_surface_changes() {
+            // (window) The leg's fake compositor maps no `xdg_toplevel`.
+            if self.leg.is_some()
+                && let strand_scene::SurfaceChange::Created(spec)
+                | strand_scene::SurfaceChange::Updated { spec, .. } = &change
+                && spec.kind == strand_scene::NodeKind::Window
+            {
+                return Err(Error::Unsupported(
+                    "the surface leg with a window (the fake compositor maps no xdg_toplevel)"
+                        .into(),
+                ));
+            }
             for c in self.surfaces.change(node, change, k)? {
-                match c {
-                    Change::Attached(id, node) => host_loop::attached(self, id, node, bounds)?,
-                    Change::Configured(id, size, scale) => {
-                        let origin = self.surfaces.origin(id);
-                        self.r.set_surface_origin(id, origin);
-                        host_loop::configured(self, id, size, scale)?;
-                    }
-                    Change::Placed(id) => {
-                        let origin = self.surfaces.origin(id);
-                        self.r.set_surface_origin(id, origin);
-                    }
-                    Change::Detached(id) => host_loop::detached(self, id)?,
-                }
+                self.surface_change(c, bounds)?;
                 done.push(c);
             }
         }

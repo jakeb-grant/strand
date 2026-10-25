@@ -82,6 +82,7 @@ pub(crate) fn main_part(state: &State<Host>) -> Json {
                 "backend": backend_name(backend),
                 "promoted": promotion(backend),
                 "frames": frames,
+                "window": s.toplevel.as_ref().map(window_json),
             })
         })
         .collect();
@@ -108,6 +109,60 @@ pub(crate) fn main_part(state: &State<Host>) -> Json {
             "lost_devices": r.gpu_lost_devices(),
         },
     })
+}
+
+/// (window) What the compositor last said of a window, as `strand
+/// report` and `bundle.json` list it: its box, which axes the compositor
+/// sized, its states and what the compositor offers.
+pub(crate) fn window_json(t: &strand_surface::ToplevelState) -> Json {
+    json!({
+        "size": [t.size.0, t.size.1],
+        "sized": [t.sized.0, t.sized.1],
+        "maximized": t.maximized,
+        "fullscreen": t.fullscreen,
+        "tiled": t.tiled,
+        "activated": t.activated,
+        "decorated": t.decorated,
+        "bounds": t.bounds.map(|(w, h)| json!([w, h])),
+        "can": {
+            "maximize": t.can_maximize,
+            "fullscreen": t.can_fullscreen,
+            "minimize": t.can_minimize,
+            "window_menu": t.window_menu,
+        },
+    })
+}
+
+/// (window) A window's states in words: `tiled, focused, decorated by
+/// the compositor`, or `floating` when none.
+fn window_words(w: &Json) -> String {
+    let on = |k: &str| w[k] == true;
+    let mut words: Vec<&str> = Vec::new();
+    if on("fullscreen") {
+        words.push("fullscreen");
+    } else if on("maximized") {
+        words.push("maximized");
+    } else if on("tiled") {
+        words.push("tiled");
+    } else {
+        words.push("floating");
+    }
+    if on("activated") {
+        words.push("focused");
+    }
+    words.push(if on("decorated") {
+        "decorated by the compositor"
+    } else {
+        "decorated by the config"
+    });
+    let sized = match w["sized"].as_array().map(Vec::as_slice) {
+        Some([a, b]) if *a == true && *b == true => "sized by the compositor",
+        Some([a, _]) if *a == true => "width sized by the compositor",
+        Some([_, b]) if *b == true => "height sized by the compositor",
+        _ => "its own size",
+    };
+    words.push(sized);
+    words.join(", ")
 }
 
 #[cfg(feature = "gpu")]
@@ -299,6 +354,9 @@ pub(crate) fn text(r: &Json) -> String {
         if let Some(why) = v["promoted"].as_str() {
             let _ = writeln!(out, "    promoted: {why}");
         }
+        if v["window"].is_object() {
+            let _ = writeln!(out, "    window: {}", window_words(&v["window"]));
+        }
         let f = &v["frames"];
         if f["drawn"].as_u64().is_some_and(|n| n > 0) {
             let ms = |k: &str| f[k].as_u64().unwrap_or(0) as f64 / 1000.0;
@@ -425,5 +483,59 @@ mod tests {
         let t = text(&r);
         assert!(t.contains("    frames: none drawn (3 unchanged)"), "{t}");
         assert!(!t.contains("p50 0.00"), "{t}");
+    }
+
+    /// (window) A window is listed with what its compositor said of it:
+    /// the JSON as the surface manager's state has it, the text in
+    /// words; a layer surface has no `window`.
+    #[test]
+    fn a_window_is_listed_with_its_compositor_states() {
+        let st = strand_surface::ToplevelState {
+            sized: (true, true),
+            size: (960, 1040),
+            tiled: true,
+            activated: true,
+            decorated: true,
+            bounds: Some((1920, 1040)),
+            can_maximize: true,
+            ..strand_surface::ToplevelState::default()
+        };
+        let w = window_json(&st);
+        assert_eq!(w["size"], json!([960, 1040]));
+        assert_eq!(w["sized"], json!([true, true]));
+        assert_eq!(w["bounds"], json!([1920, 1040]));
+        assert_eq!(w["can"]["maximize"], true);
+        assert_eq!(w["can"]["minimize"], false);
+        let r = logic_part(json!({
+            "compositor": {"globals": []},
+            "outputs": [],
+            "surfaces": [
+                {"namespace": "strand-Settings", "kind": "window", "output": "DP-1",
+                 "size": [960, 1040], "scale": 1.0, "fractional": false,
+                 "backend": "cpu", "promoted": null, "frames": null, "window": w},
+                {"namespace": "strand-Top", "kind": "bar", "output": "DP-1",
+                 "size": [1920, 32], "scale": 1.0, "fractional": false,
+                 "backend": "cpu", "promoted": null, "frames": null, "window": null},
+            ],
+            "gpu": {"built": false, "status": "unused", "reason": null, "adapter": null,
+                    "off": false, "lost_devices": 0},
+        }));
+        let t = text(&r);
+        assert!(
+            t.contains(
+                "strand-Settings (window) on DP-1: 960x1040 at scale 1.0, cpu\n    \
+                 window: tiled, focused, decorated by the compositor, sized by the compositor"
+            ),
+            "{t}"
+        );
+        assert_eq!(t.matches("window:").count(), 1, "{t}");
+        let floating = window_json(&strand_surface::ToplevelState {
+            size: (480, 320),
+            ..strand_surface::ToplevelState::default()
+        });
+        assert_eq!(
+            window_words(&floating),
+            "floating, decorated by the config, its own size"
+        );
     }
 }

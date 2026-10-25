@@ -11,7 +11,7 @@ use serde_json::Value as Json;
 use serde_json::json;
 use strand_core::flight::{Entry, NAME_IN_ARENA, flags, gap, kind, modifiers, request};
 
-use super::bundle::{Bundle, node_ref_at};
+use super::bundle::{Bundle, Toplevel, node_ref_at};
 use crate::harness::NodeRef;
 
 /// (replayfix) A leave followed this soon by an enter on another surface
@@ -829,7 +829,16 @@ impl Slots {
                         .find(|(_, o)| &o.0 == n)
                         .map(|(slot, _)| *slot)
                 });
-                (sr.root.clone(), out, 0)
+                // The mapped record's kind byte, by its name.
+                let k = match sr.kind.as_str() {
+                    "bar" => 0,
+                    "panel" => 1,
+                    "osd" => 2,
+                    "popup" => 3,
+                    "window" => strand_core::flight::MAPPED_WINDOW,
+                    _ => 4,
+                };
+                (sr.root.clone(), out, k)
             });
         }
         s
@@ -1757,6 +1766,86 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
         2 => Some("middle"),
         _ => None,
     };
+    // (window) Each window shown at the window's start, configured from
+    // the start as the compositor last configured it before then: its
+    // last `TOPLEVEL` record before the start, else (mapped before the
+    // ring's oldest record) the configure `bundle.json` lists at the
+    // report when the window holds none of its own, else its first in
+    // the window, with a limit.
+    let is_window = |slot: u16| {
+        slots
+            .surfaces
+            .get(&slot)
+            .is_some_and(|s| s.2 == strand_core::flight::MAPPED_WINDOW)
+    };
+    let mut before: BTreeMap<u16, Toplevel> = BTreeMap::new();
+    let mut first_in: BTreeMap<u16, Toplevel> = BTreeMap::new();
+    let mut mapped_before: BTreeSet<u16> = BTreeSet::new();
+    let mut mapped_any: BTreeSet<u16> = BTreeSet::new();
+    for e in &b.inputs {
+        let slot = e.rec.slot;
+        match e.rec.kind {
+            kind::MAPPED => {
+                mapped_any.insert(slot);
+                if e.rec.t < start {
+                    mapped_before.insert(slot);
+                }
+            }
+            kind::UNMAPPED if e.rec.t < start => {
+                mapped_before.remove(&slot);
+                before.remove(&slot);
+            }
+            kind::TOPLEVEL if e.rec.t < start => {
+                before.insert(slot, Toplevel::of_rec(&e.rec));
+            }
+            kind::TOPLEVEL if in_window(e.rec.t) => {
+                first_in
+                    .entry(slot)
+                    .or_insert_with(|| Toplevel::of_rec(&e.rec));
+            }
+            _ => {}
+        }
+    }
+    for sr in &b.surfaces {
+        if !mapped_any.contains(&sr.slot) {
+            mapped_before.insert(sr.slot);
+        }
+    }
+    for slot in &mapped_before {
+        if !is_window(*slot) || before.contains_key(slot) {
+            continue;
+        }
+        let at_report = b
+            .surfaces
+            .iter()
+            .find(|s| s.slot == *slot)
+            .and_then(|s| s.window);
+        let known = match (first_in.get(slot), at_report) {
+            (None, Some(t)) => Some(t),
+            (Some(t), _) => {
+                if let Some(o) = slots.surfaces.get(slot).and_then(|s| origin_of_root(&s.0)) {
+                    limits.push(format!(
+                        "window @{o}: what the compositor said of it before the window's start \
+                         is not in the recording, so the replay configures it from the start as \
+                         the compositor first did in the window ({})",
+                        t.words()
+                    ));
+                }
+                Some(*t)
+            }
+            (None, None) => None,
+        };
+        if let Some(t) = known {
+            before.insert(*slot, t);
+        }
+    }
+    for (slot, t) in &before {
+        if mapped_before.contains(slot)
+            && let Some(sel) = sel_of(*slot)
+        {
+            push(&mut timed, 0, format!("window {sel} {}", t.words()), 0);
+        }
+    }
     for (idx, e) in b.inputs.iter().enumerate() {
         let t = e.rec.t;
         match e.rec.kind {
@@ -1846,6 +1935,21 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                         kind: "late",
                         t: rel(t),
                         text: format!("late frame on {sel}: {missed} missed"),
+                    });
+                }
+                continue;
+            }
+            // (window) The compositor configured a window: the sandbox's
+            // configures it so, once it shows.
+            kind::TOPLEVEL if in_window(t) => {
+                if let Some(sel) = sel_of(e.rec.slot) {
+                    let nb = shown_from.get(&e.rec.slot).copied().unwrap_or(0);
+                    let words = Toplevel::of_rec(&e.rec).words();
+                    push_on(&mut timed, rel(t), format!("window {sel} {words}"), 0, nb);
+                    events.push(Event {
+                        kind: "surface",
+                        t: rel(t),
+                        text: format!("window {sel} configured {words}"),
                     });
                 }
                 continue;
@@ -2125,6 +2229,16 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     kind: "input",
                     t: at,
                     text: format!("input paste of {n} characters on {sel}"),
+                });
+            }
+            // (window) A window's click away is its compositor's close
+            // (or `w.close()`'s, which the replay's handler asks again).
+            kind::CLICK_AWAY if is_window(r.slot) => {
+                push_on(&mut timed, at, format!("window {sel} close"), 0, nb);
+                events.push(Event {
+                    kind: "surface",
+                    t: at,
+                    text: format!("window {sel} closed by the compositor"),
                 });
             }
             kind::CLICK_AWAY => click_aways += 1,

@@ -6,8 +6,9 @@ you can use. Levels 1 to 3 build one bar, on every monitor, with
 workspace dots, the focused window's title, a clock with a calendar
 popup, a volume slider, the battery and the tray. Level 4 adds the
 surfaces that come and go (an on-screen display, notifications, a
-launcher, a lock screen and an admin password dialog), and level 5
-your own theme, services, a control centre and a dock.
+launcher, a lock screen and an admin password dialog) and a settings
+window, and level 5 your own theme, services, a control centre and a
+dock.
 
 Nothing at level N+1 appears in a level-N example. If you stop after
 any level, everything you have written still works.
@@ -17,7 +18,7 @@ any level, everything you have written still works.
 | 1 | Surfaces, nodes, props, services as live values | The hello bar | [level-1.md](level-1.md) |
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray | [level-2.md](level-2.md) |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider | [level-3.md](level-3.md) |
-| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen, password dialog | [level-4.md](level-4.md) |
+| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen, password dialog, settings window | [level-4.md](level-4.md) |
 | 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders, `file` | Control centre, dock, custom services | [level-5.md](level-5.md) |
 
 ## Every construct and its level
@@ -32,7 +33,7 @@ each).
 | 1 | `split` (with `start`, `center`, `end`); comma shorthands; expressions (`?.`, `??`, operators, calls such as `pct` and `join`) |
 | 2 | `on secondary`; `hit:`; the node booleans `hover` and `pressed` |
 | 3 | assignment and compound assignment (`=`, `+=`, `-=`, `*=`, `/=`); `else`; `exit`; `on scroll(dy)` |
-| 4 | `let`; `enum`; `match`; `every … while`; `on show`; `id:`; `@reset`; lambdas (`n => …`); `await`; the `lock` surface |
+| 4 | `let`; `enum`; `match`; `every … while`; `on show`; `id:`; `@reset`; lambdas (`n => …`); `await`; the `lock` and `window` surfaces |
 | 5 | `set { }`; `keyframes` and `play`; `canvas`; `type` and `key`; `slot`; `fn`; a node's `box` and `pointer`; settings files (`state x from "file.toml" { … }`); SVG layer selectors (`#name { … }`); `service … from file`, `from dir`, `from listen`, `from poll` and `permit exec`; `action` |
 
 ## How to read the code blocks

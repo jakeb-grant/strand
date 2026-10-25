@@ -1419,6 +1419,10 @@ impl SurfaceHost for Host {
     /// the compositor gives on the axes it decides (and within its
     /// bounds), and logic hears its states.
     fn window_state(&mut self, surface: SurfaceId, state: &strand_surface::ToplevelState) {
+        // (window) Recorded before its size: a replay configures the
+        // window as the compositor did.
+        self.recorder
+            .window(strand_core::flight::now_ns(), surface, state);
         self.renderer.set_window_sized(surface, state.sized);
         if let Some((w, h)) = state.bounds {
             self.renderer.set_surface_bounds(

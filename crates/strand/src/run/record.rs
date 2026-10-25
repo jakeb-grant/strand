@@ -69,8 +69,35 @@ pub(crate) fn kind_byte(k: NodeKind) -> u8 {
         NodeKind::Panel => 1,
         NodeKind::Osd => 2,
         NodeKind::Popup => 3,
+        NodeKind::Window => flight::MAPPED_WINDOW,
         _ => 4,
     }
+}
+
+/// (window) A window's configure as a `TOPLEVEL` record's payload.
+fn toplevel_rec(t: u64, slot: u16, s: &strand_surface::ToplevelState) -> Rec {
+    use flight::toplevel as b;
+    let c16 = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
+    let bit = |on: bool, v: u8| if on { v } else { 0 };
+    let state = bit(s.sized.0, b::SIZED_W)
+        | bit(s.sized.1, b::SIZED_H)
+        | bit(s.maximized, b::MAXIMIZED)
+        | bit(s.fullscreen, b::FULLSCREEN)
+        | bit(s.tiled, b::TILED)
+        | bit(s.activated, b::ACTIVATED)
+        | bit(s.decorated, b::DECORATED);
+    let caps = bit(s.can_maximize, b::CAN_MAXIMIZE)
+        | bit(s.can_fullscreen, b::CAN_FULLSCREEN)
+        | bit(s.can_minimize, b::CAN_MINIMIZE)
+        | bit(s.window_menu, b::WINDOW_MENU);
+    let (bw, bh) = s.bounds.unwrap_or((0, 0));
+    Rec::new(t, kind::TOPLEVEL, slot)
+        .u16_at(0, c16(s.size.0))
+        .u16_at(2, c16(s.size.1))
+        .u8_at(4, state)
+        .u8_at(5, caps)
+        .u16_at(6, c16(bw))
+        .u16_at(8, c16(bh))
 }
 
 /// FNV-1a, for the named keys held down.
@@ -98,6 +125,9 @@ struct SurfaceSlot {
     /// then (it wanted the next frame).
     painted: Option<(u64, bool)>,
     gpu: bool,
+    /// (window) A window's last configure, written again when a ring
+    /// starts anew or a gap ends.
+    toplevel: Option<strand_surface::ToplevelState>,
 }
 
 /// One mapped surface as the bundle lists it.
@@ -238,6 +268,44 @@ impl InputRecorder {
         }
         if let Some(g) = after {
             r.pause(t, kind::GAP_BEGINS, g);
+        } else {
+            // (window) What the compositor said of each window while the
+            // ring was paused is not in it: as it is now.
+            self.toplevels(t);
+        }
+    }
+
+    /// (window) Each shown window's last configure, written again.
+    fn toplevels(&mut self, t: u64) {
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        let mut windows: Vec<(u16, strand_surface::ToplevelState)> = self
+            .surfaces
+            .values()
+            .filter_map(|s| Some((s.slot, s.toplevel?)))
+            .collect();
+        windows.sort_by_key(|(slot, _)| *slot);
+        for (slot, st) in windows {
+            r.push(toplevel_rec(t, slot, &st));
+        }
+    }
+
+    /// (window) The compositor configured the window on `surface` with
+    /// what `state` says (the host hears it only when it changed).
+    pub(crate) fn window(
+        &mut self,
+        t: u64,
+        surface: SurfaceId,
+        state: &strand_surface::ToplevelState,
+    ) {
+        let Some(s) = self.surfaces.get_mut(&surface) else {
+            return;
+        };
+        s.toplevel = Some(*state);
+        let slot = s.slot;
+        if let Some(r) = &mut self.ring {
+            r.push(toplevel_rec(t, slot, state));
         }
     }
 
@@ -270,6 +338,9 @@ impl InputRecorder {
                     Rec::new(t, kind::REFRESH, s.slot)
                         .u32_at(0, u32::try_from(p).unwrap_or(u32::MAX)),
                 );
+            }
+            if let Some(st) = &s.toplevel {
+                r.push(toplevel_rec(t, s.slot, st));
             }
         }
     }
@@ -527,6 +598,7 @@ impl InputRecorder {
                 period: None,
                 painted: None,
                 gpu: false,
+                toplevel: None,
             },
         );
         let out = output.map(|(id, _)| self.output_slot(id));
@@ -2668,6 +2740,73 @@ mod tests {
             .map(|e| e.rec.kind)
             .collect();
         assert_eq!(kinds, [kind::CHANGE_GAP_BEGINS, kind::CHANGE_GAP_ENDS]);
+    }
+
+    /// (window) A window's configure is a `TOPLEVEL` record of its
+    /// slot, with its box, states, capabilities and bounds; a lock's gap
+    /// drops those in it and its end, like a ring started anew, writes
+    /// each window's last again.
+    #[test]
+    fn a_windows_configure_is_recorded_and_written_again_after_a_gap() {
+        use strand_core::flight::toplevel as b;
+        let mut r = InputRecorder::new(true);
+        let w = SurfaceId(4);
+        r.mapped(1, w, NodeId::new(5, 0), None, NodeKind::Window);
+        let tiled = strand_surface::ToplevelState {
+            sized: (true, true),
+            size: (960, 1040),
+            tiled: true,
+            activated: true,
+            decorated: true,
+            bounds: Some((1920, 1040)),
+            can_maximize: true,
+            can_fullscreen: true,
+            ..strand_surface::ToplevelState::default()
+        };
+        r.window(2, w, &tiled);
+        r.lock(3, true);
+        let maxed = strand_surface::ToplevelState {
+            maximized: true,
+            size: (1920, 1040),
+            ..tiled
+        };
+        r.window(4, w, &maxed);
+        r.lock(5, false);
+        // Another surface's slot is not a window's: nothing.
+        r.window(6, SurfaceId(77), &tiled);
+        let e = entries(r.ring().unwrap());
+        assert_eq!(
+            e.iter().map(|e| (e.rec.kind, e.rec.t)).collect::<Vec<_>>(),
+            [
+                (kind::MAPPED, 1),
+                (kind::TOPLEVEL, 2),
+                (kind::GAP_BEGINS, 3),
+                (kind::GAP_ENDS, 5),
+                (kind::TOPLEVEL, 5),
+            ]
+        );
+        assert_eq!(e[0].rec.u8(9), strand_core::flight::MAPPED_WINDOW);
+        let t = &e[1].rec;
+        assert_eq!((t.slot, t.u16(0), t.u16(2)), (0, 960, 1040));
+        assert_eq!(
+            t.u8(4),
+            b::SIZED_W | b::SIZED_H | b::TILED | b::ACTIVATED | b::DECORATED
+        );
+        assert_eq!(t.u8(5), b::CAN_MAXIMIZE | b::CAN_FULLSCREEN);
+        assert_eq!((t.u16(6), t.u16(8)), (1920, 1040));
+        assert_eq!(
+            e[4].rec.u8(4) & b::MAXIMIZED,
+            b::MAXIMIZED,
+            "the state when the lock ended"
+        );
+        assert_eq!(e[4].rec.u16(0), 1920);
+        // A ring started anew has it too.
+        r.set_on(false, 7);
+        r.set_on(true, 8);
+        assert_eq!(
+            kinds(r.ring().unwrap()),
+            [kind::GAP_ENDS, kind::MAPPED, kind::TOPLEVEL]
+        );
     }
 
     #[test]

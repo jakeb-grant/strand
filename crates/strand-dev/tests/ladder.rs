@@ -83,6 +83,7 @@ const LADDER: &[(&str, u32, &str)] = &[
     ("a lambda", 4, "lambdas"),
     ("await", 4, "`await`"),
     ("the lock surface", 4, "`lock`"),
+    ("the window surface", 4, "`window`"),
     ("tokens", 5, "`tokens`"),
     ("~", 5, "spring overrides `~`"),
     ("service from dbus", 5, "`service from dbus`"),
@@ -211,6 +212,7 @@ impl Walk<'_> {
                 let span = s.element.span;
                 match &s.element.kind {
                     ElementKind::Builtin(k) if k == "lock" => self.at("the lock surface", span),
+                    ElementKind::Builtin(k) if k == "window" => self.at("the window surface", span),
                     _ => self.at("a surface (bar, panel, osd)", span),
                 }
                 self.element_body(&s.element);
@@ -597,6 +599,11 @@ impl Walk<'_> {
                             self.at("a node boolean (hover, pressed)", e.span)
                         }
                         "box" | "pointer" => self.at("a node's box and pointer", e.span),
+                        // (window) What the compositor said of a window,
+                        // read on its id: the window's own.
+                        "decorated" | "maximized" | "fullscreen" | "tiled" => {
+                            self.at("the window surface", e.span)
+                        }
                         other => panic!("a node's `{other}` read: place it in LADDER"),
                     }
                 }
