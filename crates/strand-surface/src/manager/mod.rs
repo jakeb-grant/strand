@@ -191,6 +191,14 @@ pub trait SurfaceHost: Painter {
     fn input(&mut self, event: &InputEvent) {
         let _ = event;
     }
+    /// (flex) The cursor the pointer should show on `surface` now
+    /// (render's `Renderer::cursor`: the `cursor:` of the node under it).
+    /// Asked after each pointer frame on a surface and after a paint or
+    /// a poll while the pointer is on it; a change is set at once.
+    fn cursor(&self, surface: SurfaceId) -> strand_scene::CursorShape {
+        let _ = surface;
+        strand_scene::CursorShape::Default
+    }
     /// (M4) Where `surface`'s buffer (its top-left corner, shadow
     /// overhang included) now lies in the compositor's logical layout
     /// (global logical pixels: its output's position added): a layer
@@ -934,6 +942,10 @@ struct SeatPointer {
     /// last enter.
     button_serial: Option<u32>,
     enter_serial: Option<u32>,
+    /// (flex) The surface it is on, and the shape last set there
+    /// (`None`: none since it entered).
+    on: Option<SurfaceId>,
+    shape: Option<strand_scene::CursorShape>,
 }
 
 /// Owns the Wayland connection and the event loop of the main thread.
@@ -1337,6 +1349,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         for id in ids {
             self.mark(id);
         }
+        self.sync_cursors();
+    }
+
+    /// (flex) The cursor shape last set on the first seat's pointer, and
+    /// the surface it is on (tests).
+    pub fn cursor_shape(&self) -> Option<(SurfaceId, strand_scene::CursorShape)> {
+        let p = self.pointers.first()?;
+        Some((p.on?, p.shape?))
     }
 
     /// (M6) `node`, a popup a scene diff creates or opens, was opened by

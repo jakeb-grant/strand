@@ -3153,11 +3153,16 @@ impl Harness {
     /// Layout facts to logic and its answer back; whether there were any.
     fn answer(&mut self) -> Result<bool, Error> {
         let facts = self.r.take_layout_facts();
-        if facts.is_empty() {
+        // (flex) The pointer over the nodes logic reads it of.
+        let pointer = self.r.take_pointer_facts();
+        if facts.is_empty() && pointer.is_empty() {
             return Ok(false);
         }
         for (n, b) in facts {
             self.inst.set_box(n, b);
+        }
+        for (n, p) in pointer {
+            self.inst.set_pointer(n, p);
         }
         let seq = self.r.layout_seq();
         let u = self.inst.flush();

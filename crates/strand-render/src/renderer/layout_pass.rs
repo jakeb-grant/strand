@@ -990,7 +990,7 @@ fn step_layout(
             let inner = span(nb, axis) - pad_sum(pad, axis);
             // Down a `scroll` or `list` what it holds scrolls: nothing
             // fills it there, and it all keeps its size at rest.
-            let scrolls = axis == 1 && matches!(node.kind, NodeKind::Scroll | NodeKind::List);
+            let scrolls = crate::layout::scroll_axes(node)[axis];
             for c in &node.children {
                 let (Some(cn), Some(cb)) = (tree.get(*c), free.rects.get(c)) else {
                     continue;

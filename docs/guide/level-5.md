@@ -577,6 +577,59 @@ an icon from one to another. The other dock draws the same pin too, and
 its `at` leaves that icon out as well, so the pin lands where you let
 it go on either dock.
 
+### Icons that swell toward the pointer
+
+A dock can grow its icons by how near the pointer is, smoothly, rather
+than one icon at a time. Change the row and the icon in `dock.strand`:
+
+```strand level=5 file=dock.strand
+// dock.strand: a dock on every monitor whose icons swell toward the pointer
+type Pin { app: AppId; label: text }
+state pins: [Pin] key app = [
+  Pin(app: "firefox", label: "Firefox"),
+  Pin(app: "org.gnome.Nautilus", label: "Files"),
+] persist
+
+keyframes hop { 0%, 100% { y: 0 }; 40% { y: -10 }; duration: 450ms }
+
+bar Dock {
+  edge: bottom; height: 64; margin: 0, $space.2, $space.2
+  bg: $surface.alpha(0.72); blur: 24; radius: $radius.xl; shadow: $elevation.md
+  row { id: icons; grow: 1; justify: center; align: center; gap: $space.2
+    on drop(p: Pin, at: int) { pins.move(p.app, at) }
+    for p in pins key p.app {
+      let app = apps.all.find(a => a.id == p.app)
+      image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
+        // How far the pointer is from this icon's centre, along the row.
+        let off = (icons.pointer?.x ?? -1000) - (self.box.x - icons.box.x + 22)
+        scale: 1 + 0.4 * (1 - off.abs() / 120).max(0)
+        enter { scale: 0; opacity: 0 }
+        when app == null { opacity: 0.4 }
+        on click     { app?.launch(); play hop }
+        on secondary { pins.remove_key(p.app) }
+      }
+    }
+  }
+}
+```
+
+Run your pointer along the dock: the icon under it is 1.4 times its
+size and its neighbours a little less, by how far they are, so the
+swell follows the pointer instead of jumping from icon to icon.
+
+**`icons.pointer` is where the pointer is in the row**, a point with
+`x` and `y` measured from the row's top-left corner, or `null` while
+the pointer is not over it (`?? -1000` puts it far away then, so
+nothing swells). Any node has one; `self.pointer` is the node's own.
+It changes at most once a frame. While you hold a press that began on
+a node, it keeps following the pointer even off the node, in the place
+the node had when you pressed, so a grip that moves with what you drag
+cannot run away from your hand.
+
+**`self.box` is the icon's place on the dock**, so `self.box.x -
+icons.box.x + 22` is its centre along the row. `.abs()` is a number's
+distance from zero and `.max(0)` keeps it from going below zero.
+
 ## 6. Escape hatches
 
 Some things are easier to draw than to describe. Each of these needs a

@@ -1,0 +1,34 @@
+// A colour picker: a hue ring turned by the angle around its centre and
+// a saturation/value square, both picked by pressing and dragging.
+export state hue = 0.0
+export state sat = 1.0
+export state val = 1.0
+
+panel Picker {
+  anchor: top_left; width: 240; height: 240
+  stack { width: 240; height: 240; bg: #101418; align: center
+    box { size: 220; radius: full
+          stroke: 20, conic(from: 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)
+      on change self.pressed, self.pointer {
+        // The conic starts at the top; atan2's 0deg points right.
+        if self.pressed {
+          hue = ((atan2((self.pointer?.y ?? 0) - 110, (self.pointer?.x ?? 110) - 110) + 450deg) % 360deg) / 360deg
+        }
+      }
+      box { place: absolute; size: 14; radius: full; border: 2, #ffffff
+            x: 103 + 100 * sin(hue * 360deg); y: 103 - 100 * cos(hue * 360deg) }
+    }
+    stack { width: 120; height: 120; bg: oklch(0.65, 0.25, hue * 360deg + 29deg)
+      on change self.pressed, self.pointer {
+        if self.pressed {
+          sat = clamp((self.pointer?.x ?? 0) / 120, 0, 1)
+          val = 1 - clamp((self.pointer?.y ?? 0) / 120, 0, 1)
+        }
+      }
+      box { width: 120; height: 120; bg: linear(90deg, #ffffff, #ffffff00) }
+      box { width: 120; height: 120; bg: linear(180deg, #00000000, #000000) }
+      box { place: absolute; size: 12; radius: full; border: 2, #ffffff
+            x: sat * 120 - 6; y: (1 - val) * 120 - 6 }
+    }
+  }
+}

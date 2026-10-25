@@ -11,6 +11,10 @@
 
 enum Edge { top, bottom, left, right }
 enum Anchor { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right }
+/// A popup opened where the press that opened it went down.
+enum PopupAnchor { pointer }
+/// Which way a `scroll` scrolls.
+enum Axis { vertical, horizontal, both }
 enum Align { start, center, end, stretch, baseline }
 enum Justify { start, center, end, space_between, space_around, space_evenly }
 enum Layer { background, bottom, top, overlay }
@@ -23,6 +27,13 @@ enum CornerStyle { round, squircle }
 enum RadiusKeyword { full }
 enum SizeKeyword { auto }
 enum HitKeyword { none }
+enum CursorShape {
+  default, pointer, text, crosshair, grab, grabbing, move, not_allowed,
+  wait, progress, help, context_menu, cell, copy, alias, no_drop,
+  all_scroll, zoom_in, zoom_out, col_resize, row_resize, ew_resize,
+  ns_resize, nesw_resize, nwse_resize, n_resize, e_resize, s_resize,
+  w_resize, ne_resize, nw_resize, se_resize, sw_resize
+}
 enum Place { flow, absolute }
 enum Blend { normal, screen, add, multiply, overlay, difference }
 enum BlurFallback { tint, none }
@@ -94,6 +105,26 @@ handle record Node {
   /// shows the loop otherwise. A loop through another node's `width` or
   /// `height` with no `box` on it is a warning, `check::size_loop`.
   box: Rect
+  /// The pointer over it, in its laid-out box (0, 0 is its top-left
+  /// corner as layout put it; its paint offsets and transforms, and its
+  /// ancestors', are undone, as for a slider), once a frame while it
+  /// moves; null while the pointer is not over it. While a press that
+  /// began on it is held it stays set, wherever the pointer goes (outside
+  /// the box too), in the frame the node had when the press began: what
+  /// the drag moves (its `x`, its layout, its surface's margins) does not
+  /// move the frame, so `on change self.pointer { if self.pressed { px =
+  /// px0 + self.pointer.x - grab.x } }` follows the pointer without
+  /// feeding back. An `on change` of only such input state (`pointer`,
+  /// `hover`, `pressed`) is an input handler, never throttled.
+  pointer: Point?
+}
+
+/// A point (`self.pointer`), logical pixels.
+record Point {
+  /// From the left.
+  x: float
+  /// From the top.
+  y: float
 }
 
 /// A laid-out box (`id.box`), logical pixels.
@@ -1293,6 +1324,14 @@ group node {
   /// with `hit: none` gives the popup's input region its children's
   /// boxes instead of its own.
   hit: HitArea | HitKeyword
+  /// The pointer's shape while it is over it: `cursor: pointer` on a
+  /// link, `grab` on a handle (`when pressed { cursor: grabbing }`),
+  /// `ew_resize` on a grip. The innermost node under the pointer with
+  /// one decides, and while a press is held the one it went down on
+  /// does; an `input` shows `text` unless it says otherwise, anything
+  /// else the default arrow. Set through `wp_cursor_shape_v1`, or the
+  /// cursor theme where the compositor lacks it.
+  cursor: CursorShape
   /// A tooltip shown on hover.
   tooltip: text
   /// Colour filters on its subtree: `filter: grayscale(1)`, or a list.
@@ -1391,16 +1430,41 @@ element bar: surface {
   edge: Edge
   /// The monitor this instance is on: one instance per monitor.
   let screen: Screen
+  /// Space it keeps from windows: `true` (the default) its thickness, a
+  /// length exactly that much, `false` or `0` none (it overlaps them).
+  exclusive: bool | length
   flags surface
 }
-/// A layer-shell panel: launchers, notification stacks, dashboards.
-element panel: surface { flags surface }
+/// A layer-shell panel: launchers, notification stacks, dashboards. With
+/// `screens: all` (or names) it is on each of those monitors, one
+/// instance per monitor with `screen` in scope, as a bar is.
+element panel: surface {
+  /// With `screens:` other than `focused`: the monitor this instance is
+  /// on.
+  let screen: Screen
+  /// Space it keeps from windows along the edge it is attached or
+  /// anchored to: `true` its thickness, a length exactly that much,
+  /// `false` or `0` none (the default; it overlaps them).
+  exclusive: bool | length
+  flags surface
+}
 /// An on-screen display: on the focused monitor, in the overlay layer and
-/// click-through.
-element osd: surface { flags surface }
+/// click-through; with `screens: all` (or names) on each of those, with
+/// `screen` in scope.
+element osd: surface {
+  /// With `screens:` other than `focused`: the monitor this instance is
+  /// on.
+  let screen: Screen
+  flags surface
+}
 /// The lock screen, on `ext-session-lock`. It is exempt from reload and
 /// fails closed.
-element lock: surface { flags surface }
+element lock: surface {
+  /// The monitor its content shows on: the focused one, else the first.
+  /// It follows the content when focus moves to another monitor.
+  let screen: Screen
+  flags surface
+}
 /// Anchored to its parent element; nests (tray menus).
 element popup: surface {
   /// What opens it: `open` (the default), its `open:` prop; `hover`,
@@ -1420,6 +1484,12 @@ element popup: surface {
   /// leaves both it and its element, to cross the gap. 200 ms by
   /// default.
   grace: duration
+  /// Where it opens: below the element it is anchored to (the default;
+  /// a submenu beside its row, on the side `left`, `right`, `top` or
+  /// `bottom` names), or `pointer`, where the press that opened it went
+  /// down: a context menu at the click, down and to the right of it,
+  /// kept inside the screen.
+  anchor: Anchor | PopupAnchor
   /// Escape or a click away closed it.
   on dismiss
   flags on_demand
@@ -1428,9 +1498,18 @@ element popup: surface {
 // Containers.
 
 /// Lays out its children in a row.
-element row: node {}
+element row: node {
+  /// Runs its children on in another row when one is full (`gap` stands
+  /// between rows too; `align` and `justify` place them in each).
+  wrap: bool
+}
 /// Lays out its children in a column.
-element col: node {}
+element col: node {
+  /// Runs its children on in another column when one is full (`gap`
+  /// stands between columns too; `align` and `justify` place them in
+  /// each).
+  wrap: bool
+}
 /// Stacks its children on top of each other.
 element stack: node {}
 /// Lays out its children in a grid.
@@ -1439,13 +1518,27 @@ element grid: node {
   columns: int
 }
 /// Scrolls its content.
-element scroll: node {}
+element scroll: node {
+  /// Which way it scrolls: `vertical` (the default), `horizontal` (its
+  /// children in a row; a wheel without a sideways motion scrolls it
+  /// too) or `both`.
+  axis: Axis
+  /// A wheel step or a touchpad's lift settles with a child's start at
+  /// the view's start (the end of the content too): one wheel notch
+  /// moves to the next child, and a fling lands on the child nearest
+  /// where it would have stopped.
+  snap: bool
+}
 /// Virtualised; arrow keys move the selection.
 element list: node {
   /// Takes keyboard focus when shown: arrows move its selection, Return
   /// activates the selected row, and Right opens a popup the row holds
   /// (a menu's submenu).
   focus: bool
+  /// A wheel step or a touchpad's lift settles with a row's start at the
+  /// view's start, as a `scroll`'s `snap`, rows not mounted yet
+  /// included.
+  snap: bool
 }
 /// Start, centre and end, with a truly centred middle.
 element split: node {}
@@ -1506,7 +1599,8 @@ element image(text? -> source): node {
 element button(text -> text): node {}
 /// A slider: `slider { value: <-> audio.sink.volume }`. Dragged, it
 /// writes values in its `range`: `slider { value: <-> percent; range: 0,
-/// 100 }`.
+/// 100 }`. Laid out taller than wide (`width: 24; height: 160`), it runs
+/// upward: its value grows from the bottom.
 element slider: node {
   /// Its value, in `range` (0 to 1 when unset), bound two-way; a value
   /// outside it is drawn at its nearer end.
@@ -1516,6 +1610,9 @@ element slider: node {
   range: (float, float)
   /// The paint of the unfilled track.
   track: paint
+  /// A drag moves in whole steps of this, in `range`'s units from its
+  /// low end (`range: 0, 100; step: 5`); unset, it moves freely.
+  step: float
   flags leaf
 }
 /// A text field: `input { text: <-> query }`. Focused, it copies its
@@ -1537,7 +1634,8 @@ element input: node {
   flags leaf
 }
 /// A bar filled to its value: `meter level`, `meter memory.used {
-/// range: 0, memory.total }`.
+/// range: 0, memory.total }`. Laid out taller than wide (`width: 6;
+/// height: 80`), it fills upward from the bottom.
 element meter(float -> value): node {
   /// How full it is, in `range` (0 to 1 when unset); a value outside it
   /// is drawn at its nearer end.
@@ -1586,7 +1684,11 @@ element file(text -> path) {
 
 // Effects and media nodes.
 
-/// An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg }`.
+/// An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg; stroke:
+/// 4, $accent }`. Its line is its `stroke:`: the width (4 px unset), the
+/// value's paint (else `color`, else `$accent`) and the styles (`cap`,
+/// `dash`). Its box is square, `size:` (24 px unset), drawn on its
+/// smaller side.
 element arc: node {
   /// How full it is, in `range` (0 to 1 when unset); a value outside it
   /// is drawn at its nearer end.
@@ -1596,7 +1698,8 @@ element arc: node {
   range: (float | SizeKeyword, float | SizeKeyword) | SizeKeyword
   /// The angle of the whole arc.
   sweep: angle
-  /// The paint of the unfilled part.
+  /// The paint of the unfilled part (unset, the line's colour, else
+  /// `color`, at 15%).
   track: paint
   flags leaf
 }

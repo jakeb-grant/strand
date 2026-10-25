@@ -1615,16 +1615,27 @@ impl Instance {
             }
             let bits = state.watch.get();
             let query = bits & NodeState::WATCH_QUERY != 0;
-            let kw = match (bits & NodeState::WATCH_BOX != 0, query) {
-                (true, true) => "box_query",
-                (true, false) => "box",
-                (false, true) => "query",
-                (false, false) => "size",
+            // `size`, or what more is read joined by `_`: `box`,
+            // `query`, `box_query`, (flex) `pointer`, `box_pointer`, ….
+            let mut kw: Vec<&str> = Vec::new();
+            if bits & NodeState::WATCH_BOX != 0 {
+                kw.push("box");
+            }
+            if query {
+                kw.push("query");
+            }
+            if bits & NodeState::WATCH_POINTER != 0 {
+                kw.push("pointer");
+            }
+            let kw = if kw.is_empty() {
+                "size".to_string()
+            } else {
+                kw.join("_")
             };
             em.set(
                 id,
                 SceneProp::Watch,
-                PropValue::Keyword(kw.into()),
+                PropValue::Keyword(kw),
                 Transition::Instant,
             );
         }
@@ -1827,6 +1838,30 @@ impl Instance {
             let _ = s.rect(&self.rt).set(&self.rt, r);
         }
         self.set_size(node, rect.w, rect.h);
+    }
+
+    /// (flex) Render reports the pointer over `node` (`self.pointer`,
+    /// `ToLogic::Pointer`): where it is in the node's laid-out box, or
+    /// `None` once it is not over it (nor held in a press that began on
+    /// it).
+    pub fn set_pointer(&self, node: NodeId, at: Option<strand_scene::LogicalPoint>) {
+        let state = self
+            .ctx
+            .em
+            .borrow()
+            .nodes
+            .get(&node)
+            .map(|e| e.state.clone());
+        let Some(s) = state else {
+            return;
+        };
+        let v = match (at, self.ctx.vm.types().find_schema_record("Point")) {
+            (Some(p), Some(ty)) => {
+                Value::record(ty, vec![Value::float(p.x as f64), Value::float(p.y as f64)])
+            }
+            _ => Value::Null,
+        };
+        let _ = s.pointer(&self.rt).set(&self.rt, v);
     }
 
     /// Render reports a node's laid-out size (`self.width`).

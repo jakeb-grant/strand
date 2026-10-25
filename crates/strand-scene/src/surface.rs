@@ -37,6 +37,46 @@ named_enum! {
 }
 
 named_enum! {
+    /// (flex) The pointer's shape over a node (`cursor: grab`), as
+    /// `wp_cursor_shape_v1` and the CSS cursor names have it.
+    pub enum CursorShape {
+        Default = "default",
+        Pointer = "pointer",
+        Text = "text",
+        Crosshair = "crosshair",
+        Grab = "grab",
+        Grabbing = "grabbing",
+        Move = "move",
+        NotAllowed = "not_allowed",
+        Wait = "wait",
+        Progress = "progress",
+        Help = "help",
+        ContextMenu = "context_menu",
+        Cell = "cell",
+        Copy = "copy",
+        Alias = "alias",
+        NoDrop = "no_drop",
+        AllScroll = "all_scroll",
+        ZoomIn = "zoom_in",
+        ZoomOut = "zoom_out",
+        ColResize = "col_resize",
+        RowResize = "row_resize",
+        EwResize = "ew_resize",
+        NsResize = "ns_resize",
+        NeswResize = "nesw_resize",
+        NwseResize = "nwse_resize",
+        NResize = "n_resize",
+        EResize = "e_resize",
+        SResize = "s_resize",
+        WResize = "w_resize",
+        NeResize = "ne_resize",
+        NwResize = "nw_resize",
+        SeResize = "se_resize",
+        SwResize = "sw_resize",
+    }
+}
+
+named_enum! {
     /// The layer-shell layer (`layer: overlay`).
     pub enum Layer {
         Background = "background",
@@ -124,6 +164,11 @@ pub struct SurfaceSpec {
     /// A `popup` that is a tooltip (`tooltip: expr`): shown without a
     /// grab, takes no input.
     pub tooltip: bool,
+    /// (flex) A `popup` with `anchor: pointer`: it opens where the press
+    /// that opened it went down (render gives a 1 × 1 `anchor_rect`
+    /// there), down and to the right of it, kept inside its output as
+    /// any popup is.
+    pub at_pointer: bool,
     /// (M6) A `trigger: hover` popup: the router opens and closes it by
     /// the pointer, and it is shown without a grab (it takes input).
     pub hover_trigger: bool,
@@ -132,6 +177,21 @@ pub struct SurfaceSpec {
     /// click-away catcher too, when it has one). Only a `popup` or a
     /// `panel` has one (the compiler rejects it elsewhere).
     pub scrim: Option<Color>,
+    /// (flex) `exclusive:` on a bar or panel: the space it keeps from
+    /// windows.
+    pub exclusive: Exclusive,
+}
+
+/// (flex) What a surface keeps from windows (`exclusive:`).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Exclusive {
+    /// `true`: its thickness across its edge (a bar's default).
+    Auto,
+    /// `false` or `0`: nothing; windows go under it (every other
+    /// surface's default).
+    None,
+    /// A length: exactly that much from its edge, whatever its size.
+    Length(f32),
 }
 
 /// (M4) Which optional protocols the compositor offered, reported once
@@ -262,6 +322,8 @@ impl SurfaceSpec {
             parent: None,
             anchor_rect: None,
             tooltip: false,
+            at_pointer: kind == NodeKind::Popup
+                && keyword(Prop::Anchor).is_some_and(|k| k == "pointer"),
             hover_trigger: kind == NodeKind::Popup
                 && keyword(Prop::Trigger).is_some_and(|k| k == "hover"),
             scrim: match (kind, get(Prop::Scrim).as_ref().map(AsRef::as_ref)) {
@@ -270,6 +332,22 @@ impl SurfaceSpec {
                     Some(PropValue::Color(c) | PropValue::Paint(Paint::Solid(c))),
                 ) => Some(*c),
                 _ => None,
+            },
+            exclusive: match (kind, get(Prop::Exclusive).as_ref().map(AsRef::as_ref)) {
+                (NodeKind::Bar | NodeKind::Panel, Some(PropValue::Bool(true))) => Exclusive::Auto,
+                (NodeKind::Bar | NodeKind::Panel, Some(PropValue::Bool(false))) => Exclusive::None,
+                (
+                    NodeKind::Bar | NodeKind::Panel,
+                    Some(PropValue::Number(n) | PropValue::Length(Length::Px(n))),
+                ) if n.is_finite() => {
+                    if *n > 0.0 {
+                        Exclusive::Length(*n)
+                    } else {
+                        Exclusive::None
+                    }
+                }
+                (NodeKind::Bar, _) => Exclusive::Auto,
+                _ => Exclusive::None,
             },
         }
     }
@@ -284,16 +362,53 @@ impl SurfaceSpec {
         )
     }
 
-    /// The exclusive zone in logical pixels: a bar reserves its thickness
-    /// across its edge (compositors add the edge's margin); other surfaces
-    /// reserve nothing. `None` while a bar's thickness is auto.
-    pub fn exclusive_zone(&self) -> Option<f32> {
+    /// A bar's thickness across its edge, logical pixels (`None` while
+    /// auto); 0 for other kinds.
+    pub fn thickness(&self) -> Option<f32> {
         if self.kind != NodeKind::Bar {
             return Some(0.0);
         }
         match self.edge {
             Some(Edge::Left | Edge::Right) => self.width,
             _ => self.height,
+        }
+    }
+
+    /// (flex) The edge a surface's exclusive zone reserves along: a
+    /// bar's edge; a panel's `attach:` edge, else its anchor's when that
+    /// is one edge (`top`, `left`, …). A panel at a corner or the centre
+    /// has none.
+    pub fn exclusive_edge(&self) -> Option<Edge> {
+        match self.kind {
+            NodeKind::Bar => Some(self.edge.unwrap_or(Edge::Top)),
+            NodeKind::Panel => self.attach.or(match self.anchor {
+                Anchor::Top => Some(Edge::Top),
+                Anchor::Bottom => Some(Edge::Bottom),
+                Anchor::Left => Some(Edge::Left),
+                Anchor::Right => Some(Edge::Right),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The exclusive zone in logical pixels: what `exclusive:` keeps
+    /// from windows along [`Self::exclusive_edge`] (compositors add the
+    /// edge's margin): by default a bar's thickness and nothing for other
+    /// surfaces; `true` the box's thickness across that edge, a length
+    /// exactly that, `false` or `0` nothing. `None` while a thickness it
+    /// needs is auto.
+    pub fn exclusive_zone(&self) -> Option<f32> {
+        let Some(edge) = self.exclusive_edge() else {
+            return Some(0.0);
+        };
+        match self.exclusive {
+            Exclusive::None => Some(0.0),
+            Exclusive::Length(n) => Some(n),
+            Exclusive::Auto => match edge {
+                Edge::Left | Edge::Right => self.width,
+                Edge::Top | Edge::Bottom => self.height,
+            },
         }
     }
 

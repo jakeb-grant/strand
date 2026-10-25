@@ -1,7 +1,7 @@
 id     = "settings-scroll-gauge-1_75"
 about  = """A settings panel at scale 1.75 opened by a state on the `slidefade`
 preset (design.md "Motion and time": pose presets), with a battery gauge
-(`arc { value: level; sweep: 270deg; width: 3 }`, design.md "Shape and
+(`arc { value: level; sweep: 270deg; stroke: 3, $accent }`, design.md "Shape and
 geometry": arc and ring gauges) whose value springs as the level drops and
 whose colour springs as charging starts, beside a rolling percentage; a
 charging tag whose fill snaps (`~ instant`) while everything else springs; a
@@ -26,8 +26,8 @@ panel Settings {
   enter: slidefade
   col { id: sheet; width: 260; pad: 12; gap: 10; radius: 14; bg: #1e1e2e; color: #cdd6f4
     row { id: header; gap: 8; align: center
-      arc { id: gauge; value: level; size: 28; sweep: 270deg; width: 3
-            color: charging ? #a6e3a1 : #f9e2af }
+      arc { id: gauge; value: level; size: 28; sweep: 270deg
+            stroke: 3, charging ? #a6e3a1 : #f9e2af }
       text pct(level) { id: percent; roll: true; shrink: 0 }
       box { id: tag; width: 40; height: 14; radius: full; bg: charging ? #a6e3a1 : #45475a ~ instant }
       spacer

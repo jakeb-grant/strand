@@ -1,0 +1,27 @@
+// A horizontal strip of cards that snaps to each card's start, a
+// virtualised list that snaps to rows, and a scroll along both axes.
+let colours = [#5b8def, #e0a040, #6fbf73, #c06bd8, #e06c75, #56b6c2, #d19a66, #98c379, #61afef, #be5046]
+let tens = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+// 0 to 199.
+let rows: [int] = [0, 1].reduce([], (a, h) => a + tens.reduce([], (b, t) => b + tens.map(u => h * 100 + t * 10 + u)))
+
+panel Strip {
+  anchor: top_left; width: 300; height: 100
+  scroll { axis: horizontal; snap: true; width: 300; height: 100; gap: 10; bg: #101418
+    for c in colours key c { box { width: 120; height: 80; radius: 8; bg: c } }
+  }
+}
+
+panel Rows {
+  anchor: top_left; margin: 0, 0, 0, 400; width: 200; height: 200
+  list { snap: true; width: 200; height: 200; bg: #101418
+    for i in rows key i { box { width: 200; height: 40; bg: colours[i % 10] ?? #000000 } }
+  }
+}
+
+panel Both {
+  anchor: top_left; margin: 300, 0, 0, 0; width: 200; height: 150
+  scroll { axis: both; width: 200; height: 150; bg: #101418
+    box { width: 600; height: 450; bg: linear(90deg, #5b8def, #e0a040) }
+  }
+}

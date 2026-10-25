@@ -471,6 +471,10 @@ pub struct Router {
     /// (M6) The `input` each surface asked the host to paste into
     /// ([`ClipboardAsk::Paste`]), until the paste arrives.
     pending_paste: HashMap<SurfaceId, NodeId>,
+    /// (flex) Nodes whose `focus:` logic's last diff turned true: focus
+    /// moves to each when routing settles, on a surface that holds the
+    /// keyboard.
+    focus_turned: Vec<NodeId>,
     /// (eval-sandbox) The time the router reads in place of the wall
     /// clock ([`Router::set_now`]).
     #[cfg(feature = "eval-hooks")]
@@ -561,6 +565,18 @@ impl Router {
     /// global index, and is selected again when the window brings it
     /// back.
     pub fn observe(&mut self, diff: &SceneDiff) {
+        // (flex) `focus:` turned true: focus moves there (`settle`).
+        for op in &diff.ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::Focus,
+                value: PropValue::Bool(true),
+                ..
+            } = op
+            {
+                self.focus_turned.push(*id);
+            }
+        }
         // (M6) `open` on a `trigger: hover` popup: the router's own
         // writes coming back, in order, or logic's own value (a reload
         // remounted it open or closed), which the router takes on.
@@ -669,7 +685,11 @@ impl Router {
         self.release(surface);
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
-        self.focus.remove(&surface);
+        // (flex) Its focus is let go as a keyboard leave lets it go: the
+        // node is told it lost focus, or it would keep its caret into
+        // the next time its surface opens, beside the one focus gives
+        // then (two carets after a reopen).
+        self.set_focus(surface, None);
         self.pending_paste.remove(&surface);
         self.pointer.remove(&surface);
         if self.drag.as_ref().is_some_and(|d| d.origin == surface) {
@@ -687,6 +707,12 @@ impl Router {
         self.pressed.contains_key(&surface)
             || self.right_down.contains_key(&surface)
             || self.middle_down.contains_key(&surface)
+    }
+
+    /// (flex) Whether the left button went down on `surface` and is still
+    /// held: its hovered chain is latched to the one it went down on.
+    pub fn left_held(&self, surface: SurfaceId) -> bool {
+        self.pressed.contains_key(&surface)
     }
 
     /// (M4) The last pointer position on `surface`, while the pointer is
@@ -1099,10 +1125,39 @@ impl Router {
     /// activates it then).
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
+        self.refocus(scene.tree());
         self.land(scene);
         self.select_first_rows(scene);
         self.index_selections(scene.tree());
         self.flush(scene)
+    }
+
+    /// (flex) Reactive `focus:`: a node whose `focus:` turned true takes
+    /// the keyboard focus of its surface, if that surface has the
+    /// keyboard (one that has not yet takes its first `focus: true` node
+    /// when it enters). The last to turn true on a surface wins.
+    fn refocus(&mut self, tree: Option<&SceneTree>) {
+        let turned = std::mem::take(&mut self.focus_turned);
+        let Some(tree) = tree else {
+            return;
+        };
+        for node in turned {
+            if !tree.contains_live(node) {
+                continue;
+            }
+            let Some(root) = tree.root_of(node) else {
+                continue;
+            };
+            let surfaces: Vec<SurfaceId> = self
+                .surfaces
+                .iter()
+                .filter(|(s, r)| **r == root && self.focus.contains_key(s))
+                .map(|(s, _)| *s)
+                .collect();
+            for s in surfaces {
+                self.set_focus(s, Some(node));
+            }
+        }
     }
 
     /// Selections that were away from their list's mounted rows and
@@ -1363,7 +1418,7 @@ impl Router {
                     None if vertical.value120 != 0 => ScrollKind::Wheel,
                     None => ScrollKind::Touch,
                 };
-                let lift = vertical.stop && kind == ScrollKind::Touch;
+                let lift = (vertical.stop || horizontal.stop) && kind == ScrollKind::Touch;
                 // An axis frame with no motion (a finger lifted:
                 // `axis_stop` alone) scrolls nothing and wakes no handler.
                 // Detents alone (a wheel whose frame carries no pixel
@@ -1379,6 +1434,7 @@ impl Router {
                 let lifted = |scene: &mut dyn InputScene| {
                     if lift {
                         let input = ScrollInput {
+                            dx: 0.0,
                             dy: 0.0,
                             kind: ScrollKind::Lift,
                             time: *time,
@@ -1391,14 +1447,14 @@ impl Router {
                     return;
                 }
                 let under = chain(scene, *position);
-                if dy != 0.0 {
-                    let input = ScrollInput {
-                        dy: dy as f32,
-                        kind,
-                        time: *time,
-                    };
-                    scene.scroll_input(surface, *position, input);
-                }
+                // (flex) Sideways motion scrolls a `scroll` along x.
+                let input = ScrollInput {
+                    dx: dx as f32,
+                    dy: dy as f32,
+                    kind,
+                    time: *time,
+                };
+                scene.scroll_input(surface, *position, input);
                 lifted(scene);
                 // The handler counts detents (a wheel's own, else pixels
                 // over the legacy step).
@@ -1998,6 +2054,23 @@ impl Router {
             self.close(scene, root);
             return;
         }
+        // (flex) Tab and Shift+Tab move focus between the surface's
+        // `input`s and `list`s in tree order, round from the last to the
+        // first.
+        if matches!(key.name.as_str(), "Tab" | "ISO_Left_Tab" | "KP_Tab")
+            && !key.modifiers.ctrl
+            && !key.modifiers.alt
+            && !key.modifiers.logo
+        {
+            let back = key.name == "ISO_Left_Tab" || key.modifiers.shift;
+            if let Some(next) = scene
+                .tree()
+                .and_then(|t| next_focusable(t, root, focus, back))
+            {
+                self.set_focus(surface, Some(next));
+                return;
+            }
+        }
         let list = match kind {
             Some(NodeKind::List) => Some(focus),
             _ => nav,
@@ -2222,29 +2295,40 @@ impl Router {
         // offsets and transforms of it and its ancestors (a card that
         // springs by `x`).
         let at = scene.to_laid(surface, slider, at);
-        // Pressed, so drawn with its larger knob: the same span.
-        let (x0, x1) = crate::widgets::slider_span(r.x as f64, (r.x + r.w) as f64, true, 1.0);
-        let v = (((at.x as f64 - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0)) as f32;
+        // Pressed, so drawn with its larger knob: the same span. (flex)
+        // Laid out taller than wide, it runs upward: 0 at the bottom.
+        let v = if r.h > r.w {
+            let (y0, y1) = crate::widgets::slider_span(r.y as f64, (r.y + r.h) as f64, true, 1.0);
+            ((y1 - at.y as f64) / (y1 - y0).max(1.0)).clamp(0.0, 1.0) as f32
+        } else {
+            let (x0, x1) = crate::widgets::slider_span(r.x as f64, (r.x + r.w) as f64, true, 1.0);
+            ((at.x as f64 - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0) as f32
+        };
         if !v.is_finite() {
             return;
         }
-        scene.set_drag(slider, (!last).then_some(v));
+        let node = scene.tree().and_then(|t| t.get(slider));
         // (review) A range whose end is not known now (a field not set
         // yet) writes nothing: 0 to 1 would write fractions into a place
         // of other units.
-        let Some(range) = crate::range::Spec::of(
-            scene
-                .tree()
-                .and_then(|t| t.get(slider))
-                .and_then(|n| n.get(Prop::Range)),
-        )
-        .map(|s| s.fixed()) else {
+        let range =
+            crate::range::Spec::of(node.and_then(|n| n.get(Prop::Range))).map(|s| s.fixed());
+        // (flex) `step:` snaps the knob and what it writes to whole steps
+        // of the range's units.
+        let step = match node.and_then(|n| n.get(Prop::Step)) {
+            Some(PropValue::Number(s)) => Some(*s),
+            _ => None,
+        };
+        let snapped = range.zip(step).and_then(|(r, s)| r.snap(v, s));
+        let v = range.zip(snapped).and_then(|(r, s)| r.frac(s)).unwrap_or(v);
+        scene.set_drag(slider, (!last).then_some(v));
+        let Some(range) = range else {
             return;
         };
         self.emit(Intent::Write {
             node: slider,
             prop: Prop::Value,
-            value: PropValue::Number(range.at(v)),
+            value: PropValue::Number(snapped.unwrap_or_else(|| range.at(v))),
         });
     }
 
@@ -2378,6 +2462,34 @@ impl Router {
             self.flag(n, Flag::Pressed, false);
         }
     }
+}
+
+/// (flex) The `input` or `list` after `from` under `root` in tree order
+/// (before it with `back`), round from the end; the first (last) when
+/// `from` is none of them. Nested surfaces (popups) are their own.
+/// `None` when there is no other.
+fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> Option<NodeId> {
+    let mut all = Vec::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Some(n) = tree.get(id) else { continue };
+        if id != root && (n.kind.is_surface() || !tree.contains_live(id)) {
+            continue;
+        }
+        if matches!(n.kind, NodeKind::Input | NodeKind::List) {
+            all.push(id);
+        }
+        stack.extend(n.children.iter().rev());
+    }
+    let at = all.iter().position(|n| *n == from);
+    let len = all.len();
+    let i = match (at, back) {
+        (Some(i), false) => (i + 1) % len.max(1),
+        (Some(i), true) => (i + len - 1) % len.max(1),
+        (None, false) => 0,
+        (None, true) => len.checked_sub(1)?,
+    };
+    all.get(i).copied().filter(|n| *n != from)
 }
 
 /// The first node under `root` (depth first) with `focus: true`.

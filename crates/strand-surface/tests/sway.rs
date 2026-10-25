@@ -3077,6 +3077,186 @@ fn an_activation_token_comes_from_a_click_on_sway() {
     assert_eq!(mgr.state().activation_tokens_issued(), 1);
 }
 
+/// (flex) The cursor follows what the host asks for on the surface the
+/// pointer is on: set when it enters, set again when the host's answer
+/// changes (after a poll: a scene diff changed a node's `cursor:` under
+/// a still pointer, or after a motion onto another node), never twice
+/// for the same shape, and forgotten when it leaves. Sway 1.9 has
+/// `wp_cursor_shape_v1`, so a shape that sets is one the protocol took
+/// (an unknown one would be a protocol error that ends the connection).
+#[test]
+fn the_cursor_follows_the_hosts_shape() {
+    use strand_scene::CursorShape;
+    let Some(sway) = Sway::start("the_cursor_follows_the_hosts_shape") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    wait_for_bars(&mut mgr, 1);
+    let id = mgr.state().surfaces_of(BAR)[0];
+    let mut pointer = VirtualPointer::new(&sway);
+    pump(&mut mgr, Duration::from_millis(200));
+    assert_eq!(mgr.state().cursor_shape(), None);
+    // Onto the bar: the arrow.
+    pointer.motion(100, 10, 1920, 1080);
+    pump(&mut mgr, Duration::from_millis(200));
+    assert_eq!(mgr.state().cursor_shape(), Some((id, CursorShape::Default)));
+    let sets = mgr.state().stats().cursor_sets;
+    assert!(sets >= 1, "{:?}", mgr.state().stats());
+    // The host's answer changes under a still pointer: a poll shows it.
+    mgr.state_mut().host_mut().cursor = Some(CursorShape::Grab);
+    mgr.state_mut().poll();
+    pump(&mut mgr, Duration::from_millis(100));
+    assert_eq!(mgr.state().cursor_shape(), Some((id, CursorShape::Grab)));
+    assert_eq!(mgr.state().stats().cursor_sets, sets + 1);
+    // Every shape is one the protocol takes (an unknown one would end
+    // the connection with a protocol error).
+    for shape in CursorShape::ALL {
+        mgr.state_mut().host_mut().cursor = Some(*shape);
+        mgr.state_mut().poll();
+        pump(&mut mgr, Duration::from_millis(30));
+        assert_eq!(mgr.state().cursor_shape(), Some((id, *shape)));
+    }
+    let sets = mgr.state().stats().cursor_sets;
+    // The same shape is not set again however the pointer moves.
+    for x in 0..5 {
+        pointer.motion(120 + x * 10, 10, 1920, 1080);
+    }
+    pump(&mut mgr, Duration::from_millis(200));
+    assert_eq!(mgr.state().stats().cursor_sets, sets);
+    // Off the bar: no surface of ours, no shape.
+    pointer.motion(900, 900, 1920, 1080);
+    pump(&mut mgr, Duration::from_millis(200));
+    assert_eq!(mgr.state().cursor_shape(), None);
+    assert!(mgr.dispatch(Some(Duration::from_millis(10))).is_ok());
+}
+
+/// (flex) `exclusive:` as sway applies it: a bar keeps its thickness by
+/// default, nothing with `false`, exactly a length with one, changed in
+/// place; a panel anchored to one edge keeps its thickness with `true`
+/// or a length, along that edge, and a panel at a corner keeps nothing.
+#[test]
+fn exclusive_keeps_that_much_from_windows() {
+    use strand_scene::Exclusive;
+    let Some((sway, mut mgr)) = start("exclusive_keeps_that_much_from_windows", Config::default())
+    else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let usable = |mgr: &mut strand_surface::SurfaceManager<TestHost>| {
+        pump(mgr, Duration::from_millis(150));
+        sway.workspace_rect("HEADLESS-1")
+    };
+    assert_eq!(usable(&mut mgr), (0, 36, 1920, 1044));
+    let bar = |e: Exclusive| {
+        let mut spec = bar_spec("Top", 36.0);
+        spec.exclusive = e;
+        SurfaceChange::Updated {
+            spec,
+            recreate: false,
+        }
+    };
+    mgr.state_mut()
+        .apply_surface_change(BAR, bar(Exclusive::None));
+    assert_eq!(usable(&mut mgr), (0, 0, 1920, 1080), "overlaps windows");
+    mgr.state_mut()
+        .apply_surface_change(BAR, bar(Exclusive::Length(10.0)));
+    assert_eq!(usable(&mut mgr), (0, 10, 1920, 1070), "keeps exactly 10");
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Removed);
+    assert_eq!(usable(&mut mgr), (0, 0, 1920, 1080));
+    // A panel on the right edge keeping 280 of its 300.
+    const SIDE: NodeId = NodeId::new(5, 0);
+    let mut side = layer_spec(NodeKind::Panel, "Side", "right", 300.0, 600.0);
+    side.exclusive = Exclusive::Length(280.0);
+    mgr.state_mut()
+        .apply_surface_change(SIDE, SurfaceChange::Created(side.clone()));
+    assert_eq!(usable(&mut mgr), (0, 0, 1640, 1080));
+    // `true`: its width.
+    side.exclusive = Exclusive::Auto;
+    mgr.state_mut().apply_surface_change(
+        SIDE,
+        SurfaceChange::Updated {
+            spec: side.clone(),
+            recreate: false,
+        },
+    );
+    assert_eq!(usable(&mut mgr), (0, 0, 1620, 1080));
+    // At a corner: nothing (layer-shell keeps space along one edge).
+    side.anchor = strand_scene::Anchor::TopRight;
+    mgr.state_mut().apply_surface_change(
+        SIDE,
+        SurfaceChange::Updated {
+            spec: side,
+            recreate: false,
+        },
+    );
+    assert_eq!(usable(&mut mgr), (0, 0, 1920, 1080));
+}
+
+/// (flex) A panel on every screen (`panel Side { screens: all }`) is one
+/// panel node per monitor, each pinned by its monitor's identity as a
+/// bar's instances are: each shows on its own output at its own size
+/// (from `screen.height`), and keeping a length from windows there only.
+#[test]
+fn a_panel_per_screen_shows_on_its_own_output() {
+    use strand_scene::Exclusive;
+    let Some(sway) = Sway::start("a_panel_per_screen_shows_on_its_own_output") else {
+        return;
+    };
+    sway.msg(&["output", "HEADLESS-1", "position", "0", "0"]);
+    let second = sway.create_output();
+    sway.msg(&["output", &second, "position", "1920", "0"]);
+    sway.msg(&["output", &second, "resolution", "1280x720@60Hz"]);
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    let monitors = mgr.state().monitors();
+    assert_eq!(monitors.len(), 2);
+    let mut nodes = Vec::new();
+    for (i, m) in monitors.iter().enumerate() {
+        let node = NodeId::new(10 + i as u32, 0);
+        let (_, h) = m.logical_size.unwrap();
+        let mut spec = layer_spec(NodeKind::Panel, "Side", "left", 200.0, h as f32);
+        spec.screens = strand_scene::Screens::Named(vec![m.id.as_str().to_string()]);
+        spec.exclusive = Exclusive::Length(120.0);
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(spec));
+        nodes.push((node, m.clone()));
+    }
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            nodes.iter().all(|(n, _)| {
+                s.surfaces_of(*n)
+                    .first()
+                    .and_then(|id| s.surface(*id))
+                    .is_some_and(|i| i.configured)
+            })
+        })
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    for (node, m) in &nodes {
+        let ids = mgr.state().surfaces_of(*node);
+        assert_eq!(ids.len(), 1, "one surface for {node:?}");
+        let info = mgr.state().surface(ids[0]).unwrap();
+        assert_eq!(info.monitor.as_ref(), Some(&m.id));
+        assert_eq!(info.logical_size, (200, m.logical_size.unwrap().1 as u32));
+    }
+    pump(&mut mgr, Duration::from_millis(150));
+    assert_eq!(sway.workspace_rect("HEADLESS-1"), (120, 0, 1800, 1080));
+    assert_eq!(sway.workspace_rect(&second).0, 1920 + 120);
+}
+
 /// A virtual pointer on sway's seat (`zwlr_virtual_pointer_v1`).
 struct VirtualPointer {
     queue: wayland_client::EventQueue<VpClient>,
@@ -3120,6 +3300,14 @@ impl VirtualPointer {
             pointer,
             time: 0,
         }
+    }
+
+    /// The pointer to layout position (`x`, `y`) of a `w`×`h` layout.
+    fn motion(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.time += 10;
+        self.pointer.motion_absolute(self.time, x, y, w, h);
+        self.pointer.frame();
+        self.queue.roundtrip(&mut VpClient).unwrap();
     }
 
     /// A left click at layout position (`x`, `y`) of a `w`×`h` layout.
@@ -3697,6 +3885,61 @@ fn a_popups_margin_on_its_anchors_side_is_its_gap() {
             "{name}: {:?}",
             mgr.state().host().placed
         );
+    }
+}
+
+/// (flex) `anchor: pointer`: sway places the popup down and to the
+/// right of the 1 × 1 anchor at the press (in the 36 px top bar, so the
+/// popup's top is just under the press, not under the bar), slid back
+/// inside the output where it would leave it, as any popup is.
+#[test]
+fn a_popup_at_the_pointer_opens_at_the_press() {
+    use std::collections::HashMap;
+    use strand_scene::{Prop, PropValue, SurfaceSpec};
+    let Some((_sway, mut mgr)) = start(
+        "a_popup_at_the_pointer_opens_at_the_press",
+        Config::default(),
+    ) else {
+        return;
+    };
+    wait_for_bars(&mut mgr, 1);
+    let popup = |name: &str, x: f32| {
+        let props: HashMap<Prop, PropValue> =
+            [(Prop::Anchor, PropValue::Keyword("pointer".into()))].into();
+        let mut spec = SurfaceSpec::resolve(NodeKind::Popup, |p| props.get(&p));
+        spec.name = Some(name.into());
+        spec.parent = Some(BAR);
+        spec.anchor_rect = Some(LogicalRect::new(x, 12.0, 1.0, 1.0));
+        spec.width = Some(100.0);
+        spec.height = Some(50.0);
+        spec
+    };
+    // At 300: from 301, 13. At 1900, 100 px would leave the 1920 px
+    // output: it ends at the output's edge.
+    for (i, (name, x, want)) in [("Here", 300.0, (301, 13)), ("Inside", 1900.0, (1820, 13))]
+        .into_iter()
+        .enumerate()
+    {
+        let node = NodeId::new(10 + i as u32, 0);
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(popup(name, x)));
+        let placed = |s: &strand_surface::State<TestHost>| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .filter(|i| i.stats.commits > 0)
+                .and_then(|i| i.origin)
+        };
+        let ok = mgr.dispatch_until(WAIT, |s| placed(s).is_some()).unwrap();
+        assert!(ok, "{name} maps: {:?}", mgr.state().surfaces());
+        assert_eq!(
+            placed(mgr.state()),
+            Some(want),
+            "{name}: {:?}",
+            mgr.state().host().placed
+        );
+        mgr.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
     }
 }
 

@@ -911,7 +911,8 @@ fn strokes(scale: Scale) -> (Renderer, Buffer, Vec<NodeId>) {
                 (Prop::Size, num(48.0)),
                 (Prop::Value, num(0.6)),
                 (Prop::Sweep, PropValue::Angle(270.0)),
-                (Prop::Width, num(5.0)),
+                // (flex) An arc's line is its `stroke:`.
+                stroke(5.0, "#89b4fa"),
             ],
         ),
         (

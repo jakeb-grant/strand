@@ -53,6 +53,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `backdrop` | `Filter` | A filter over your own content behind it: `backdrop: blur(16)`. |
 | `clip` | `bool` | Clips its children to its rounded shape. |
 | `hit` | `HitArea \| none` | Its hit area: `hit: grow(6)` enlarges it for small targets; `hit: none` takes no input in its own box (the pointer passes through to what is below), while its children take theirs. On a `trigger: hover` popup that draws nothing, a top-level element with `hit: none` gives the popup's input region its children's boxes instead of its own. |
+| `cursor` | `CursorShape` | The pointer's shape while it is over it: `cursor: pointer` on a link, `grab` on a handle (`when pressed { cursor: grabbing }`), `ew_resize` on a grip. The innermost node under the pointer with one decides, and while a press is held the one it went down on does; an `input` shows `text` unless it says otherwise, anything else the default arrow. Set through `wp_cursor_shape_v1`, or the cursor theme where the compositor lacks it. |
 | `tooltip` | `text` | A tooltip shown on hover. |
 | `filter` | `Filter \| [Filter]` | Colour filters on its subtree: `filter: grayscale(1)`, or a list. |
 | `blend` | `Blend` | How it blends with what is below it. |
@@ -118,7 +119,11 @@ Also every prop and event of [`node`](#node).
 element arc: node
 ```
 
-An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg }`.
+An arc or ring gauge: `arc { value: cpu.usage; sweep: 270deg; stroke:
+4, $accent }`. Its line is its `stroke:`: the width (4 px unset), the
+value's paint (else `color`, else `$accent`) and the styles (`cap`,
+`dash`). Its box is square, `size:` (24 px unset), drawn on its
+smaller side.
 
 It takes no children.
 
@@ -129,7 +134,7 @@ Also every prop and event of [`node`](#node).
 | `value` | `float` | How full it is, in `range` (0 to 1 when unset); a value outside it is drawn at its nearer end. |
 | `range` | `(float \| auto, float \| auto) \| auto` | The values its ends stand for, as a `meter`'s: `range: 0, 100`, `range: auto` (0 to 1 when unset). |
 | `sweep` | `angle` | The angle of the whole arc. |
-| `track` | `paint` | The paint of the unfilled part. |
+| `track` | `paint` | The paint of the unfilled part (unset, the line's colour, else `color`, at 15%). |
 
 ### `bar`
 
@@ -146,6 +151,7 @@ Also every prop and event of [`surface`](#surface).
 | Prop | Type | |
 | --- | --- | --- |
 | `edge` | `Edge` | The screen edge it sits on. |
+| `exclusive` | `bool \| length` | Space it keeps from windows: `true` (the default) its thickness, a length exactly that much, `false` or `0` none (it overlaps them). |
 
 | In scope | Type | |
 | --- | --- | --- |
@@ -208,6 +214,10 @@ element col: node
 Lays out its children in a column.
 
 Also every prop and event of [`node`](#node).
+
+| Prop | Type | |
+| --- | --- | --- |
+| `wrap` | `bool` | Runs its children on in another column when one is full (`gap` stands between columns too; `align` and `justify` place them in each). |
 
 ### `effect`
 
@@ -396,6 +406,7 @@ Also every prop and event of [`node`](#node).
 | Prop | Type | |
 | --- | --- | --- |
 | `focus` | `bool` | Takes keyboard focus when shown: arrows move its selection, Return activates the selected row, and Right opens a popup the row holds (a menu's submenu). |
+| `snap` | `bool` | A wheel step or a touchpad's lift settles with a row's start at the view's start, as a `scroll`'s `snap`, rows not mounted yet included. |
 
 ### `lock`
 
@@ -409,6 +420,10 @@ fails closed.
 It is a surface, written at the top level of a file.
 
 Also every prop and event of [`surface`](#surface).
+
+| In scope | Type | |
+| --- | --- | --- |
+| `screen` | `Screen` | The monitor its content shows on: the focused one, else the first. It follows the content when focus moves to another monitor. |
 
 ### `lottie`
 
@@ -443,7 +458,8 @@ element meter(float -> value): node
 ```
 
 A bar filled to its value: `meter level`, `meter memory.used {
-range: 0, memory.total }`.
+range: 0, memory.total }`. Laid out taller than wide (`width: 6;
+height: 80`), it fills upward from the bottom.
 
 It takes no children.
 
@@ -463,11 +479,16 @@ element osd: surface
 ```
 
 An on-screen display: on the focused monitor, in the overlay layer and
-click-through.
+click-through; with `screens: all` (or names) on each of those, with
+`screen` in scope.
 
 It is a surface, written at the top level of a file.
 
 Also every prop and event of [`surface`](#surface).
+
+| In scope | Type | |
+| --- | --- | --- |
+| `screen` | `Screen` | With `screens:` other than `focused`: the monitor this instance is on. |
 
 ### `page`
 
@@ -502,11 +523,21 @@ Also every prop and event of [`node`](#node).
 element panel: surface
 ```
 
-A layer-shell panel: launchers, notification stacks, dashboards.
+A layer-shell panel: launchers, notification stacks, dashboards. With
+`screens: all` (or names) it is on each of those monitors, one
+instance per monitor with `screen` in scope, as a bar is.
 
 It is a surface, written at the top level of a file.
 
 Also every prop and event of [`surface`](#surface).
+
+| Prop | Type | |
+| --- | --- | --- |
+| `exclusive` | `bool \| length` | Space it keeps from windows along the edge it is attached or anchored to: `true` its thickness, a length exactly that much, `false` or `0` none (the default; it overlaps them). |
+
+| In scope | Type | |
+| --- | --- | --- |
+| `screen` | `Screen` | With `screens:` other than `focused`: the monitor this instance is on. |
 
 ### `particles`
 
@@ -545,6 +576,7 @@ Also every prop and event of [`surface`](#surface).
 | `trigger` | `PopupTrigger` | What opens it: `open` (the default), its `open:` prop; `hover`, the pointer. A `trigger: hover` popup opens while the pointer is on the element it is anchored to (after `delay`), stays open while the pointer is on that element or on the popup (popups opened from it too), and 200 ms more to cross the gap, or while a drag that started in it goes on. It never takes the keyboard, and opening one closes the other `trigger: hover` popup open from the same surface. Its `open:` (never two-way) opens it from code and holds it open while true; then the pointer holds it as usual. |
 | `delay` | `duration` | How long the pointer rests on the element before a `trigger: hover` popup opens. At once by default. |
 | `grace` | `duration` | How long a `trigger: hover` popup stays open after the pointer leaves both it and its element, to cross the gap. 200 ms by default. |
+| `anchor` | `Anchor \| PopupAnchor` | Where it opens: below the element it is anchored to (the default; a submenu beside its row, on the side `left`, `right`, `top` or `bottom` names), or `pointer`, where the press that opened it went down: a context menu at the click, down and to the right of it, kept inside the screen. |
 
 | Event | |
 | --- | --- |
@@ -560,6 +592,10 @@ Lays out its children in a row.
 
 Also every prop and event of [`node`](#node).
 
+| Prop | Type | |
+| --- | --- | --- |
+| `wrap` | `bool` | Runs its children on in another row when one is full (`gap` stands between rows too; `align` and `justify` place them in each). |
+
 ### `scroll`
 
 ```strand
@@ -569,6 +605,11 @@ element scroll: node
 Scrolls its content.
 
 Also every prop and event of [`node`](#node).
+
+| Prop | Type | |
+| --- | --- | --- |
+| `axis` | `Axis` | Which way it scrolls: `vertical` (the default), `horizontal` (its children in a row; a wheel without a sideways motion scrolls it too) or `both`. |
+| `snap` | `bool` | A wheel step or a touchpad's lift settles with a child's start at the view's start (the end of the content too): one wheel notch moves to the next child, and a fling lands on the child nearest where it would have stopped. |
 
 ### `segmented`
 
@@ -608,7 +649,8 @@ element slider: node
 
 A slider: `slider { value: <-> audio.sink.volume }`. Dragged, it
 writes values in its `range`: `slider { value: <-> percent; range: 0,
-100 }`.
+100 }`. Laid out taller than wide (`width: 24; height: 160`), it runs
+upward: its value grows from the bottom.
 
 It takes no children.
 
@@ -619,6 +661,7 @@ Also every prop and event of [`node`](#node).
 | `value` | `<-> float` | Its value, in `range` (0 to 1 when unset), bound two-way; a value outside it is drawn at its nearer end. |
 | `range` | `float, float` | The values its ends stand for: `range: 0, 100` (0 to 1 when unset). A drag writes values between them. |
 | `track` | `paint` | The paint of the unfilled track. |
+| `step` | `float` | A drag moves in whole steps of this, in `range`'s units from its low end (`range: 0, 100; step: 5`); unset, it moves freely. |
 
 ### `spacer`
 

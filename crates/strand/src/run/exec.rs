@@ -62,6 +62,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// (flex) Commands' outputs as their threads report them: the call's
+/// id, and what it printed or why it failed.
+type Outputs = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
+
 /// The commands started and the ones that ended since logic last looked.
 pub(super) struct Execs {
     ping: calloop::ping::Ping,
@@ -73,7 +77,7 @@ pub(super) struct Execs {
     /// (flex) The commands of actions with a result, running.
     fetching: Vec<Fetching>,
     /// Their outputs as their threads report them, by [`Fetching::id`].
-    outputs: Arc<Mutex<Vec<(u64, Result<String, String>)>>>,
+    outputs: Outputs,
     next_id: u64,
 }
 

@@ -1,0 +1,20 @@
+// A rotary knob: press on the dial and turn it around its centre. Its
+// 270° arc starts at the bottom left (135°, clockwise from the right)
+// and ends at the bottom right.
+export state vol = 0.25
+
+// The fraction of the sweep at the point (x, y) of a 100 px dial.
+fn turn(x: float, y: float) -> float {
+  clamp(((atan2(y - 50, x - 50) - 135deg + 360deg) % 360deg) / 270deg, 0, 1)
+}
+
+panel Knob {
+  anchor: top_left; width: 120; height: 120
+  stack { width: 120; height: 120; bg: #101418; align: center
+    arc { size: 100; value: vol; sweep: 270deg; stroke: 10, #5b8def; track: #2a3038
+      on change self.pressed, self.pointer {
+        if self.pressed { vol = turn(self.pointer?.x ?? 50, self.pointer?.y ?? 0) }
+      }
+    }
+  }
+}

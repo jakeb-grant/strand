@@ -366,6 +366,19 @@ pub fn popup_scrim_layer(root: &LayerConfig) -> Layer {
     }
 }
 
+/// (flex) The edge an exclusive zone applies to with these anchors, as
+/// layer-shell has it: anchored to that edge alone, or to it and both
+/// edges beside it.
+fn one_edge(a: Anchors) -> Option<Edge> {
+    match (a.top, a.bottom, a.left, a.right) {
+        (true, false, false, false) | (true, false, true, true) => Some(Edge::Top),
+        (false, true, false, false) | (false, true, true, true) => Some(Edge::Bottom),
+        (false, false, true, false) | (true, true, true, false) => Some(Edge::Left),
+        (false, false, false, true) | (true, true, false, true) => Some(Edge::Right),
+        _ => None,
+    }
+}
+
 /// Resolves the layer-surface state for `spec`.
 pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
     layer_config_with(spec, false)
@@ -398,38 +411,21 @@ pub fn layer_config_with(
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
         let thickness = spec
-            .exclusive_zone()
+            .thickness()
             .ok_or(PlacementError::AutoSize(spec.kind))?;
         let t = size(thickness);
         let (tv, th) = (t + (ot + ob) as u32, t + (ol + or) as u32);
+        // (flex) What it keeps: its thickness unless `exclusive:` says.
+        let zone = spec.exclusive_zone().unwrap_or(thickness);
         // The zone counts from the (moved) margin: it reserves the box
         // plus the overhang towards the edge, so the reserved space stays
         // margin + thickness.
+        let reach = |o: i32| if zone > 0.0 { px(zone) + o } else { 0 };
         match edge {
-            Edge::Top => (
-                Anchors::new(true, false, true, true),
-                0,
-                tv,
-                px(thickness) + ot,
-            ),
-            Edge::Bottom => (
-                Anchors::new(false, true, true, true),
-                0,
-                tv,
-                px(thickness) + ob,
-            ),
-            Edge::Left => (
-                Anchors::new(true, true, true, false),
-                th,
-                0,
-                px(thickness) + ol,
-            ),
-            Edge::Right => (
-                Anchors::new(true, true, false, true),
-                th,
-                0,
-                px(thickness) + or,
-            ),
+            Edge::Top => (Anchors::new(true, false, true, true), 0, tv, reach(ot)),
+            Edge::Bottom => (Anchors::new(false, true, true, true), 0, tv, reach(ob)),
+            Edge::Left => (Anchors::new(true, true, true, false), th, 0, reach(ol)),
+            Edge::Right => (Anchors::new(true, true, false, true), th, 0, reach(or)),
         }
     } else {
         let (Some(w), Some(h)) = (spec.width, spec.height) else {
@@ -455,11 +451,26 @@ pub fn layer_config_with(
             Some(Edge::Right) => (anchors.left, anchors.right) = (false, true),
             None => {}
         }
+        // (flex) A panel's `exclusive:` along the one edge it is
+        // anchored to; a corner or centre keeps nothing (layer-shell
+        // reserves only along one edge).
+        let zone = match (spec.exclusive_edge(), spec.exclusive_zone()) {
+            (Some(edge), Some(z)) if z > 0.0 && one_edge(anchors) == Some(edge) => {
+                px(z)
+                    + match edge {
+                        Edge::Top => ot,
+                        Edge::Bottom => ob,
+                        Edge::Left => ol,
+                        Edge::Right => or,
+                    }
+            }
+            _ => 0,
+        };
         (
             anchors,
             size(w) + (ol + or) as u32,
             size(h) + (ot + ob) as u32,
-            0,
+            zone,
         )
     };
     let mut config = LayerConfig {
@@ -605,12 +616,22 @@ pub fn popup_config(
         },
         None => PopupSide::Below,
     };
-    // A submenu beside its row starts level with it.
-    let aligned =
-        parent_popup && spec.attach.is_none() && matches!(side, PopupSide::Right | PopupSide::Left);
-    if let Some(edge) = bar_edge {
+    // (flex) `anchor: pointer`: below and to the right of the press,
+    // touching it unless a margin says otherwise.
+    let side = if spec.at_pointer && spec.attach.is_none() {
+        PopupSide::Below
+    } else {
+        side
+    };
+    // A submenu beside its row starts level with it; a popup at the
+    // pointer starts at it.
+    let aligned = (spec.at_pointer && spec.attach.is_none())
+        || (parent_popup
+            && spec.attach.is_none()
+            && matches!(side, PopupSide::Right | PopupSide::Left));
+    if let Some(edge) = bar_edge.filter(|_| !spec.at_pointer) {
         // Across the whole bar: from its box's edge to its other edge.
-        let thick = parent.exclusive_zone().map_or(0, |t| px(t).max(0));
+        let thick = parent.thickness().map_or(0, |t| px(t).max(0));
         match edge {
             Edge::Top | Edge::Bottom => {
                 y = pt;
@@ -635,6 +656,7 @@ pub fn popup_config(
     let gap = match (spec.margin_set, spec.attach) {
         (true, _) => px(gap),
         (false, Some(_)) => 0,
+        (false, None) if spec.at_pointer => 0,
         (false, None) => 6,
     };
     if spec.tooltip {
@@ -669,6 +691,8 @@ pub fn popup_request(
     let (ax, ay, aw, ah) = rect;
     let (w, h) = (c.width.max(1) as i32, c.height.max(1) as i32);
     let (x, y) = match (c.side, c.aligned) {
+        // (flex) At the pointer: from the press, down and right.
+        (PopupSide::Below, true) => (ax + aw, ay + ah + c.gap),
         (PopupSide::Below, _) => (ax + aw / 2 - w / 2, ay + ah + c.gap),
         (PopupSide::Above, _) => (ax + aw / 2 - w / 2, ay - h - c.gap),
         (PopupSide::Right, false) => (ax + aw + c.gap, ay + ah / 2 - h / 2),
@@ -1265,6 +1289,43 @@ mod tests {
         let right = (1100, 0, 20, 32);
         let shift = popup_shift(&c, right, out);
         assert_eq!(popup_slides(&c, right, shift, Some(out)), (false, false));
+    }
+
+    /// (flex) `anchor: pointer`: the popup opens from the 1 × 1 anchor
+    /// render gives at the press, not across its bar, down and to the
+    /// right of it, touching it unless a margin says otherwise.
+    #[test]
+    fn a_popup_at_the_pointer_opens_from_the_press() {
+        use strand_scene::{LogicalRect, NodeId};
+        let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
+        let mut p = spec(
+            NodeKind::Popup,
+            &[(Prop::Anchor, PropValue::Keyword("pointer".into()))],
+        );
+        assert!(p.at_pointer);
+        p.parent = Some(NodeId::new(1, 0));
+        p.width = Some(120.0);
+        p.height = Some(80.0);
+        p.anchor_rect = Some(LogicalRect::new(210.0, 12.0, 1.0, 1.0));
+        let c = popup_config(&p, &bar).unwrap();
+        assert_eq!((c.side, c.aligned), (PopupSide::Below, true));
+        assert_eq!(
+            c.anchor_rect,
+            (210, 12, 1, 1),
+            "at the press, not across the bar"
+        );
+        assert_eq!(c.gap, 0);
+        assert_eq!(popup_request(&c, c.anchor_rect, (0, 0)), (211, 13, 120, 80));
+        // A set margin is its gap, as any popup's.
+        p.margin = Insets::all(4.0);
+        p.margin_set = true;
+        assert_eq!(popup_config(&p, &bar).unwrap().gap, 4);
+        // Not on a panel: `pointer` is a popup's.
+        let panel = spec(
+            NodeKind::Panel,
+            &[(Prop::Anchor, PropValue::Keyword("pointer".into()))],
+        );
+        assert!(!panel.at_pointer);
     }
 
     /// A popup in a top bar opens below the bar (its anchor spans the

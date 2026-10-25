@@ -125,6 +125,20 @@ impl Range {
     pub fn at(&self, f: f32) -> f32 {
         self.lo + (self.hi - self.lo) * f.clamp(0.0, 1.0)
     }
+
+    /// (flex) The value at fraction `f` moved to the nearest whole
+    /// `step` from `lo` (in the range's units; a slider's `step:`), kept
+    /// within the range; `None` for a step that is not a positive finite
+    /// number.
+    pub fn snap(&self, f: f32, step: f32) -> Option<f32> {
+        if !(step.is_finite() && step > 0.0 && f.is_finite()) {
+            return None;
+        }
+        let n = ((self.at(f) - self.lo) / step).round();
+        let (min, max) = (self.lo.min(self.hi), self.lo.max(self.hi));
+        let to = (self.lo + n * step).clamp(min, max);
+        to.is_finite().then_some(to)
+    }
 }
 
 /// The smallest step of the 1, 2, 5 ladder (…, 0.5, 1, 2, 5, 10, 20, …)

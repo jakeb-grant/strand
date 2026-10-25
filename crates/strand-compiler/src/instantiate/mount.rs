@@ -1381,6 +1381,9 @@ impl Ctx {
             for f in [st.hover, st.pressed, st.focused, st.selected] {
                 let _ = f.set(rt, false);
             }
+            if let Some(p) = st.pointer_cell.get() {
+                let _ = p.set(rt, Value::Null);
+            }
             // (M6) Conditional ids naming it name nothing now.
             for a in st.claims.borrow().iter() {
                 let _ = a.hold(rt, &st, false);
@@ -1548,8 +1551,19 @@ impl Ctx {
             {
                 let _ = state.rect(rt).set(rt, v);
             }
+            // (flex) So is the pointer over it: render reports only what
+            // changed.
+            if let Some(a) = was.pointer_cell.get()
+                && let Ok(v) = a.get_untracked(rt)
+            {
+                let _ = state.pointer(rt).set(rt, v);
+            }
         }
         state.scene.set(Some(id));
+        if self.vm.prog.pointer_watch.contains(&e.node) {
+            self.vm
+                .watch(&state, crate::vm::value::NodeState::WATCH_POINTER);
+        }
         self.note_node(key.clone(), id, kind, state.clone());
         self.mount_aliases(rt, e, env, &state);
         for &l in &e.scope {
@@ -3694,12 +3708,16 @@ impl Ctx {
         self.blocked.borrow_mut().retain(|&id, _| rt.exists(id));
     }
 
-    /// A surface: once, or for a `bar`, once per monitor of the `screens`
-    /// service (those its own `screens:` picks) with `screen` in scope,
-    /// pinned to that monitor with `screens: "<monitor id>"`. Bars are
-    /// keyed by the monitor's identity (make, model and description), and
-    /// one whose monitor goes is parked with its state until the monitor
-    /// comes back or is forgotten.
+    /// A surface: once, or for a `bar` (and (flex) a `panel` or `osd`
+    /// whose `screens:` is not `focused`), once per monitor of the
+    /// `screens` service (those its own `screens:` picks) with `screen`
+    /// in scope, pinned to that monitor with `screens: "<monitor id>"`.
+    /// Instances are keyed by the monitor's identity (make, model and
+    /// description), and one whose monitor goes is parked with its state
+    /// until the monitor comes back or is forgotten. (flex) A `lock` is
+    /// one instance whose `screen` is the monitor its content shows on,
+    /// the focused one else the first, changing in place (the surface
+    /// manager moves the content with focus; a typed password stays).
     pub(crate) fn mount_surface(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -3741,10 +3759,26 @@ impl Ctx {
         let ident: Rc<str> = format!("{}/{tag}", env.ident()).into();
         self.note_surface(ident.clone(), true);
         self.note_lock_scope(s.kind, ident.clone());
+        let lock = s.kind == NodeKind::Lock;
         let (ctx, outer) = (self.clone(), env.clone());
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;
             let types = &ctx.vm.prog.types;
+            if lock {
+                // One lock, never unmounted for a monitor: its screen is
+                // the content's, or an empty one while none is known.
+                let focused = ctx.vm.host.read_builtin(rt, "screens", "focused")?;
+                let screen = match focused {
+                    Value::Null => all.as_list().and_then(|l| l.first()).cloned(),
+                    f => Some(f),
+                };
+                let screen = screen.unwrap_or_else(|| {
+                    types.find_record("Screen").map_or(Value::Null, |r| {
+                        crate::vm::builtins::default_of(types, &crate::ty::Ty::Record(r))
+                    })
+                });
+                return Ok(vec![(ValueKey(Value::text("lock")), screen)]);
+            }
             let wanted = match pick {
                 Some(c) => Some(ctx.eval(rt, c, &outer)?),
                 None => None,
@@ -3795,10 +3829,12 @@ impl Ctx {
         let item: ItemMount = Rc::new(move |ctx, rt, env, frag, v| {
             let mut extra = extra.clone();
             // The instance's own pin wins over the bar's `screens:`.
-            extra.push((
-                SceneProp::Screens,
-                PropValue::Text(screen_key(&ctx.vm.prog.types, v)),
-            ));
+            if !lock {
+                extra.push((
+                    SceneProp::Screens,
+                    PropValue::Text(screen_key(&ctx.vm.prog.types, v)),
+                ));
+            }
             ctx.declare(rt, &element.children, env);
             ctx.mount_element_with(rt, &element, env, frag, extra, Some(&services));
         });
@@ -3811,7 +3847,11 @@ impl Ctx {
                 binding: Some(screen),
                 owned: s.body.owned.clone(),
                 item,
-                what: "bar on every screen".to_string(),
+                what: if lock {
+                    "lock on its screen".to_string()
+                } else {
+                    format!("{} on every screen", s.kind.name())
+                },
                 at: (s.element.file, s.element.span),
                 park: true,
                 window: None,
@@ -3949,7 +3989,11 @@ impl Ctx {
                     let _ = rt.reads_from(l, &[]);
                 }
             }
-            Event::Change { targets, debounce } => {
+            Event::Change {
+                targets,
+                debounce,
+                input,
+            } => {
                 // What the tracked expression reads: each target and the
                 // item whose identity re-baselines it.
                 let tracked: Vec<ChunkId> = targets
@@ -3982,10 +4026,17 @@ impl Ctx {
                 });
                 let (e, me, l) = (env.clone(), self.clone(), loc.clone());
                 let el = el.cloned();
+                let input = *input;
                 let start = move |rt: &Runtime| {
                     let ctx = Ctx::event_ctx(el.as_ref(), "change", Vec::new());
                     let fut = vm.handler(rt, body, e.clone(), Frame::new(), ctx);
-                    rt.spawn(me.reporting(l.clone(), fut));
+                    // (flex) A change of input state (`self.pointer`) is
+                    // the user, as `on click` is (spec.md 8.7).
+                    if input {
+                        rt.spawn_input(None, me.reporting(l.clone(), fut));
+                    } else {
+                        rt.spawn(me.reporting(l.clone(), fut));
+                    }
                 };
                 let id = match debounce {
                     None => {

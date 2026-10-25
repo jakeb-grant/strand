@@ -98,6 +98,11 @@ const LADDER: &[(&str, u32, &str)] = &[
     ("key", 5, "`key`"),
     ("slot", 5, "`slot`"),
     ("fn", 5, "`fn`"),
+    (
+        "a node's box and pointer",
+        5,
+        "a node's `box` and `pointer`",
+    ),
     ("a settings file", 5, "settings files"),
     ("an SVG layer selector", 5, "SVG layer selectors"),
     ("service from file", 5, "`service … from file`"),
@@ -586,6 +591,7 @@ impl Walk<'_> {
                         "hover" | "pressed" | "focused" | "selected" => {
                             self.at("a node boolean (hover, pressed)", e.span)
                         }
+                        "box" | "pointer" => self.at("a node's box and pointer", e.span),
                         other => panic!("a node's `{other}` read: place it in LADDER"),
                     }
                 }

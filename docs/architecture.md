@@ -33,6 +33,17 @@ portal with `follow` on the services runtime instead) and
 `audio` store runs its loop on `strand-audio`). Tests and benches spawn
 their own unnamed threads.
 
+(flex) The cursor is pulled the same way as `drop_accepted`:
+`SurfaceHost::cursor(surface) -> strand_scene::CursorShape` (default
+the arrow), which the shell's host answers with `Renderer::cursor` (the
+`cursor:` of the innermost node of the hovered chain the host loop gave
+`Renderer::pointer_input`, latched to the pressed chain while held; an
+`input` is `text`). The surface manager asks after each pointer frame
+on a surface of ours and after a paint or `poll` while a seat's pointer
+is on it, and calls `ThemedPointer::set_cursor` (`wp_cursor_shape_v1`
+or the theme) only when the answer changed since the pointer entered
+(`State::cursor_shape` reads it back for tests).
+
 Channels are the only coupling between threads. Logic → render is one
 `SceneDiff` per tick. Render → logic is `InputEvent`s (`strand-scene`) and layout facts
 (`self.width` for container queries and (M6) `id.box`:
@@ -42,7 +53,21 @@ of its surface's box (a popup's own, its place in its parent surface;
 render's `renderer/facts.rs`), sent as `run::ToLogic::Layout { seq,
 sizes }` with `Renderer::layout_seq`; a `box` watch also reports a move,
 a size watch only a resize, and a node's first box holds its frame as a
-query's change does). The
+query's change does) and (flex) pointer facts (`id.pointer`:
+`Renderer::take_pointer_facts`, each `(NodeId, Option<LogicalPoint>)`
+for a node whose `Prop::Watch` keyword has a `pointer` part (parts join
+with `_`: `box_pointer`), in its laid-out box, `None` once the pointer
+is not over it; render's `renderer/pointer.rs`), sent as
+`run::ToLogic::Pointer` and applied with `Instance::set_pointer`. The
+host gives render the pointer after routing each input event,
+`Renderer::pointer_input(surface, at, hovered chain, left held)`
+(`host_loop::input` does, and hands the facts over before the event's
+intents, so a press's flags reach logic after where it went down); a
+surface with a watched node then wants a frame, whose paint reports
+what changed (once a frame however many events), and a press is
+reported at once. While the left button is held the frame is the one
+the press began in, the surface's place included, so a drag that moves
+the node or its surface does not feed back. The
 next diff logic sends echoes the last batch it took in as
 `SceneDiff::layout_seen` (sent even with no ops): render holds a frame
 whose layout changed a `watch: query` node's size until then, or for
@@ -2462,8 +2487,19 @@ re-base, if it needs one, is a dated decisions.md entry.
   logical width and height, `screens` (`All`, `Focused`, or `Named` monitor identities, which
   logic uses to pin each per-monitor `bar` instance), `open` and `attach`,
   `overhang` (how far shadows reach past the box, filled in by render
-  from layout), plus `exclusive_zone()` and `needs_recreate()` (kind,
-  namespace or layer changed). A surface without a size of its own (a
+  from layout), (flex) `exclusive: Exclusive` (`Auto`, `None`,
+  `Length(f32)`, from `Prop::Exclusive`), (flex) `at_pointer` (a popup
+  with `anchor: pointer`: render gives its `anchor_rect` as 1 × 1 at the
+  press that opened it, recorded by `Renderer::pressed_at(surface,
+  point)`, which the host loop calls for each button press before
+  routing it; `popup_config` makes it `PopupSide::Below` with
+  `aligned`, a positioner anchored and gravitating bottom-right), plus `thickness()` (a bar's
+  across its edge), `exclusive_edge()`, `exclusive_zone()` (what
+  `exclusive` keeps along that edge) and `needs_recreate()` (kind,
+  namespace or layer changed). (flex) Logic pins each per-monitor
+  instance of a `panel` or `osd` whose `screens:` picks monitors as it
+  does a bar's; a `lock` is one instance with `screen` bound to the
+  focused (else first) monitor and no pin. A surface without a size of its own (a
   panel, OSD or popup without `width`/`height`, a bar without a
   thickness) gets it from a content layout pass in render before the spec
   is reported. Render resolves specs through the node's token scope after
@@ -3157,9 +3193,14 @@ re-base, if it needs one, is a dated decisions.md entry.
     (view plus overscan) with `Renderer::take_list_windows() ->
     Vec<(NodeId, Range<u32>)>`, which the binary sends as
     `ToLogic::ListWindow`. Pointer scrolling enters as
-    `Renderer::scroll_input(surface, point, ScrollInput { dy, kind:
+    `Renderer::scroll_input(surface, point, ScrollInput { dx, dy, kind:
     ScrollKind::{Wheel, Touch, Lift}, time })` (the Router maps
-    `AxisSource` and `stop` to it); `Renderer::list_frames() ->
+    `AxisSource` and `stop` to it; (flex) `dx` moves a `scroll` whose
+    `axis:` is `horizontal` or `both`, whose offset along x is
+    `ScrollState::across` and whose boxes' x offset is
+    `ListBox::applied_x`, and a `snap: true` scroll or list keeps its
+    children's starts in `ScrollState`'s snaps from each layout, which a
+    wheel step and a lift settle on); `Renderer::list_frames() ->
     ListFrames { frames, gaps, stalls, top_row }` counts painted frames
     (cached ones too) with a list in view, those that showed an
     unmounted gap, and those whose view was held at the mounted rows'

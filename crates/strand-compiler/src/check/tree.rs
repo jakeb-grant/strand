@@ -189,7 +189,13 @@ impl<'a> Checker<'a> {
         });
         self.push_scope();
         if let Some(sc) = schema {
+            let per_screen = per_screen(&kind, &s.body.items);
             for (n, t) in &sc.scope {
+                // (flex) A panel's or OSD's `screen` only with a
+                // `screens:` other than `focused`: one instance a monitor.
+                if n == "screen" && !per_screen {
+                    continue;
+                }
                 self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
             }
         }
@@ -3343,6 +3349,20 @@ fn auto_end(e: &ast::Expr) -> Option<Span> {
         ast::ExprKind::Name(n) if n.name == "auto" => Some(n.span),
         ast::ExprKind::Commas(items) => items.iter().find_map(auto_end),
         _ => None,
+    }
+}
+
+/// (flex) Whether a surface of `kind` with these items has one instance
+/// per monitor, `screen` in scope: a `bar` and a `lock` always; a
+/// `panel` or `osd` whose `screens:` is written and is not `focused`
+/// (`all`, a name, a list, or an expression).
+pub(crate) fn per_screen(kind: &str, items: &[ast::Item]) -> bool {
+    match kind {
+        "panel" | "osd" => items.iter().any(|i| {
+            matches!(&i.kind, ItemKind::Prop(p) if p.name.name == "screens"
+                && !matches!(&p.value.kind, ast::ExprKind::Name(n) if n.name == "focused"))
+        }),
+        _ => true,
     }
 }
 

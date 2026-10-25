@@ -137,6 +137,43 @@ pub struct ScrollState {
     /// The row the last reveal brought into view, kept in view as the
     /// viewport changes until the pointer scrolls (list-scroll-regrow).
     reveal: Option<Reveal>,
+    /// (flex) A `scroll` with `axis: horizontal` or `both`: its offset
+    /// along x, as this one's runs along y (logical pixels from the
+    /// left).
+    pub across: Option<Box<ScrollState>>,
+    /// (flex) `snap: true`: where its children start, from the last
+    /// layout; a wheel step and a touchpad's lift settle on one.
+    pub(crate) snaps: Option<Snaps>,
+}
+
+/// (flex) Where a `snap: true` scroll's or list's children start along
+/// its axis, as offsets that put each at the view's start: those laid
+/// out, and for a list the rows not mounted on either side at the
+/// estimated pitch.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Snaps {
+    /// The laid-out children's offsets, ascending.
+    pub starts: Vec<f32>,
+    /// Rows not mounted before the first start and after the last one
+    /// stand this far apart (0: none).
+    pub pitch: f32,
+}
+
+/// (flex) Which axes a `scroll` or `list` scrolls along: `[x, y]`. A
+/// list and a `scroll` run along y unless the scroll's `axis:` says
+/// `horizontal` or `both`.
+pub(crate) fn scroll_axes(node: &crate::tree::Node) -> [bool; 2] {
+    match (node.kind, node.get(Prop::Axis)) {
+        (NodeKind::Scroll, Some(PropValue::Keyword(k))) if k == "horizontal" => [true, false],
+        (NodeKind::Scroll, Some(PropValue::Keyword(k))) if k == "both" => [true, true],
+        (NodeKind::Scroll | NodeKind::List, _) => [false, true],
+        _ => [false, false],
+    }
+}
+
+/// (flex) Whether `node` has `snap: true`.
+pub(crate) fn snaps(node: &crate::tree::Node) -> bool {
+    matches!(node.get(Prop::Snap), Some(PropValue::Bool(true)))
 }
 
 /// A reveal ([`Renderer::reveal_index`]) standing until the pointer
@@ -178,6 +215,74 @@ impl ScrollState {
         (self.content - self.viewport).max(0.0)
     }
 
+    /// (flex) The offset a `snap: true` scroll settles at nearest `to`:
+    /// a child's start, the content's start or its end. `to` itself
+    /// without snaps.
+    pub(crate) fn snap_near(&self, to: f32) -> f32 {
+        let max = self.max_offset();
+        let Some(s) = &self.snaps else {
+            return to.clamp(0.0, max);
+        };
+        let mut best = 0.0f32;
+        let mut consider = |p: f32| {
+            let p = p.clamp(0.0, max);
+            if (p - to).abs() < (best - to).abs() {
+                best = p;
+            }
+        };
+        consider(max);
+        for p in &s.starts {
+            consider(*p);
+        }
+        // Rows not mounted, at the estimated pitch past either end.
+        if s.pitch > 0.0
+            && let (Some(first), Some(last)) = (s.starts.first(), s.starts.last())
+        {
+            if to < *first {
+                consider(first - ((first - to) / s.pitch).round() * s.pitch);
+            } else if to > *last {
+                consider(last + ((to - last) / s.pitch).round() * s.pitch);
+            }
+        }
+        best
+    }
+
+    /// (flex) The snap point a wheel step of `d` from `from` goes to: the
+    /// one nearest `from + d`, or the next one that way when that is
+    /// where it is (a notch shorter than a child still moves one).
+    fn snap_step(&self, from: f32, d: f32) -> f32 {
+        let near = self.snap_near(from + d);
+        if (near - from).abs() > 0.5 || d == 0.0 {
+            return near;
+        }
+        // Past the child it is at: the next start beyond it that way.
+        let max = self.max_offset();
+        let Some(s) = &self.snaps else {
+            return near;
+        };
+        let mut points: Vec<f32> = s.starts.iter().map(|p| p.clamp(0.0, max)).collect();
+        points.push(max);
+        points.push(0.0);
+        let beyond = |p: &f32| {
+            if d > 0.0 {
+                *p > from + 0.5
+            } else {
+                *p < from - 0.5
+            }
+        };
+        let next = points
+            .iter()
+            .filter(|p| beyond(p))
+            .copied()
+            .min_by(|a, b| (a - from).abs().total_cmp(&(b - from).abs()));
+        match next {
+            Some(p) => p,
+            // Past the laid-out children: a pitch on, if it has one.
+            None if s.pitch > 0.0 => (from + s.pitch * d.signum()).clamp(0.0, max),
+            None => near,
+        }
+    }
+
     /// Scrolls by `dy` logical pixels, kept within the content. Returns
     /// true if the offset moved. A motion in flight stops.
     pub fn scroll_by(&mut self, dy: f32) -> bool {
@@ -209,15 +314,26 @@ impl ScrollState {
             return false;
         }
         let from = self.target();
-        let to = (from + dy).clamp(0.0, self.max_offset());
+        let to = if self.snaps.is_some() {
+            self.snap_step(from, dy)
+        } else {
+            (from + dy).clamp(0.0, self.max_offset())
+        };
         if to == from {
             return false;
         }
         self.reveal = None;
+        self.spring_to(to, curve, last);
+        true
+    }
+
+    /// The offset springs to `to` along `curve` (lands at once with
+    /// [`Curve::Instant`]).
+    fn spring_to(&mut self, to: f32, curve: Curve, last: Option<Duration>) {
         if curve == Curve::Instant {
             self.offset = to;
             self.motion = None;
-            return true;
+            return;
         }
         match &mut self.motion {
             Some(ScrollMotion::Spring(m, c)) => {
@@ -232,7 +348,6 @@ impl ScrollState {
                 self.motion = Some(ScrollMotion::Spring(m, curve));
             }
         }
-        true
     }
 
     /// A touchpad (finger or continuous) moved by `dy` at compositor
@@ -249,13 +364,48 @@ impl ScrollState {
     /// recent speed starts, unless they had stopped. Returns true if
     /// one did.
     pub fn lift(&mut self, time: u32, frame: Option<Duration>) -> bool {
+        let Some(v) = self.lift_velocity(time) else {
+            return false;
+        };
+        self.motion = Some(ScrollMotion::Fling {
+            v,
+            from: self.offset,
+            start: None,
+            last: frame,
+        });
+        true
+    }
+
+    /// (flex) The fingers lifted on a `snap: true` scroll: the offset
+    /// springs along `curve` to the snap point nearest where a fling at
+    /// the recent speed would have stopped (where it is, if they had
+    /// stopped). Returns true if it moves.
+    pub(crate) fn lift_to_snap(
+        &mut self,
+        time: u32,
+        frame: Option<Duration>,
+        curve: Curve,
+    ) -> bool {
+        let v = self.lift_velocity(time).unwrap_or(0.0);
+        let to = self.snap_near(self.offset + v * FLING_DECAY);
+        if to == self.offset {
+            return false;
+        }
+        self.spring_to(to, curve, frame);
+        true
+    }
+
+    /// The recent touchpad speed at a lift at compositor time `time`,
+    /// logical pixels per second, the samples taken; `None` if they had
+    /// stopped (or there were none).
+    fn lift_velocity(&mut self, time: u32) -> Option<f32> {
         let recent: Vec<(u32, f32)> = self
             .samples
             .drain(..)
             .filter(|(t, _)| time.wrapping_sub(*t) <= FLING_SAMPLES_MS)
             .collect();
         let (Some(first), Some(last)) = (recent.first(), recent.last()) else {
-            return false;
+            return None;
         };
         // Each sample is the motion up to its time, so the first one's
         // happened before the span the samples cover (from the first to
@@ -264,16 +414,7 @@ impl ScrollState {
         let span = (ms as f32 / 1000.0).max(0.008);
         let skip = usize::from(recent.len() > 1);
         let v = recent[skip..].iter().map(|(_, d)| d).sum::<f32>() / span;
-        if !v.is_finite() || v.abs() < FLING_STOP {
-            return false;
-        }
-        self.motion = Some(ScrollMotion::Fling {
-            v,
-            from: self.offset,
-            start: None,
-            last: frame,
-        });
-        true
+        (v.is_finite() && v.abs() >= FLING_STOP).then_some(v)
     }
 
     /// A reveal moved the offset from `from` to show the row at global
@@ -303,6 +444,23 @@ impl ScrollState {
     #[cfg(feature = "eval-hooks")]
     pub fn flinging(&self) -> bool {
         matches!(self.motion, Some(ScrollMotion::Fling { .. }))
+    }
+
+    /// (flex) True while its offset, or its offset along x, moves by
+    /// itself.
+    pub(crate) fn any_moving(&self) -> bool {
+        self.moving() || self.across.as_ref().is_some_and(|a| a.moving())
+    }
+
+    /// (flex) [`ScrollState::unapplied`] along x as well: its offset
+    /// along x is not the one its boxes show.
+    pub(crate) fn unapplied_either(&self, lb: &ListBox) -> bool {
+        let x = self.across.as_ref().is_some_and(|a| {
+            let shown = a.offset.clamp(lb.bounds_x.0, lb.bounds_x.1);
+            let d = (shown - lb.applied_x).abs();
+            d > 0.01 || (!a.moving() && d > 0.0)
+        });
+        x || self.unapplied(lb)
     }
 
     /// True when the boxes under it should move to its offset: while it
@@ -416,6 +574,10 @@ pub struct ListBox {
     /// The offsets it can show: within its content, and for a windowed
     /// list within its mounted rows.
     pub bounds: (f32, f32),
+    /// (flex) A `scroll` along x (`axis: horizontal | both`): the x
+    /// offset its boxes show, and the x offsets it can show.
+    pub applied_x: f32,
+    pub bounds_x: (f32, f32),
 }
 
 /// The rows of a list in the scene: `(row_count, row_first)` for a list
@@ -624,6 +786,12 @@ pub(super) fn place_list(
     };
     let st = scrolls.entry(id).or_default();
     let p = place(st);
+    // (flex) `snap: true`: each row's top, and the estimated pitch of
+    // those not mounted.
+    st.snaps = snaps(node).then(|| Snaps {
+        starts: p.ys.clone(),
+        pitch: p.pitch,
+    });
     // Rows above the one in view changed their extent: the view follows
     // it.
     if let Some((a, was)) = st.anchor
@@ -765,6 +933,7 @@ pub(super) fn place_list(
             }),
             content,
             bounds,
+            ..ListBox::default()
         },
     );
     if changed {
@@ -816,17 +985,25 @@ fn move_subtree(tree: &SceneTree, id: NodeId, old: &Boxes, out: &mut Boxes, dx: 
     }
 }
 
-/// Moves the boxes of everything under `id` (not `id` itself) by `dy`.
-pub(crate) fn translate_under(tree: &SceneTree, id: NodeId, boxes: &mut Boxes, dy: f32) {
+/// Moves the boxes of everything under `id` (not `id` itself) by `(dx,
+/// dy)`.
+pub(crate) fn translate_under(
+    tree: &SceneTree,
+    id: NodeId,
+    boxes: &mut Boxes,
+    (dx, dy): (f32, f32),
+) {
     let Some(node) = tree.get(id) else {
         return;
     };
     let mut stack: Vec<NodeId> = node.children.clone();
     while let Some(n) = stack.pop() {
         if let Some(r) = boxes.rects.get_mut(&n) {
+            r.x += dx;
             r.y += dy;
         }
         if let Some(l) = boxes.lists.get_mut(&n) {
+            l.content.x += dx;
             l.content.y += dy;
         }
         if let Some(node) = tree.get(n) {

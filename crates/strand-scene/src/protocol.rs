@@ -255,6 +255,12 @@ props! {
     Nav = "nav": Snap,
     Hit = "hit": Snap,
     Tooltip = "tooltip": Snap,
+    /// (flex) The pointer's shape over it: a [`crate::CursorShape`]'s
+    /// name as a `Keyword` (`cursor: grab`).
+    Cursor = "cursor": Snap,
+    /// (flex) `exclusive:` on a bar or panel: `Bool`, or a `Number` /
+    /// px `Length` it reserves (see [`crate::Exclusive`]).
+    Exclusive = "exclusive": Snap,
     Drag = "drag": Snap,
     Morph = "morph": Snap,
     Stagger = "stagger": Snap,
@@ -285,6 +291,19 @@ props! {
     /// of a `Number` and `Keyword("auto")`), or `auto` (`Keyword`);
     /// unset, 0 to 1.
     Range = "range": Snap,
+    /// (flex) A `slider`'s step, in its `range`'s units (`Number`): a
+    /// drag snaps to whole steps from the range's low end.
+    Step = "step": Snap,
+    /// (flex) `wrap: true` on a `row` or `col` (`Bool`): its children
+    /// run on in another line when one is full.
+    Wrap = "wrap": Snap,
+    /// (flex) A `scroll`'s axis (`Keyword`): `vertical` (unset),
+    /// `horizontal` or `both`.
+    Axis = "axis": Snap,
+    /// (flex) `snap: true` on a `scroll` or `list` (`Bool`): a wheel
+    /// step and a touchpad's lift settle with a child's start at the
+    /// view's start.
+    Snap = "snap": Snap,
     /// (graph-follow) A `graph`'s line width, or each bar's under
     /// `style: bars`.
     LineWidth = "line_width": Snap,
@@ -379,6 +398,8 @@ impl Prop {
                 | Justify
                 | Place
                 | Columns
+                | Wrap
+                | Axis
                 | Edge
                 | Text
                 | Font

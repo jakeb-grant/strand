@@ -222,15 +222,18 @@ fn input_wakes_the_loop_only_for_a_surface_it_woke() {
     };
     let Ok(()) = host_loop::input(&mut h, &enter, &mut idle);
     let log = h.take();
-    assert!(log[0].starts_with("intents input"), "{log:?}");
-    assert_eq!(log[1..], ["facts"]);
+    // Facts go before the event's intents (a pointer read reaches logic
+    // before the flags) and after them.
+    assert_eq!(log[0], "facts", "{log:?}");
+    assert!(log[1].starts_with("intents input"), "{log:?}");
+    assert_eq!(log[2..], ["facts"]);
     h.r.take_surface_changes();
     assert!(!h.r.wants_frame(S));
     let Ok(()) = host_loop::input(&mut h, &wheel(1010), &mut idle);
-    assert_eq!(h.take(), ["intents input 0", "facts", "wake"]);
+    assert_eq!(h.take(), ["facts", "intents input 0", "facts", "wake"]);
     assert!(h.r.wants_frame(S));
     let Ok(()) = host_loop::input(&mut h, &wheel(1020), &mut idle);
-    assert_eq!(h.take(), ["intents input 0", "facts"]);
+    assert_eq!(h.take(), ["facts", "intents input 0", "facts"]);
     // Settled, a step wakes it again; each paint sends its facts first.
     let mut ms = 1016;
     while h.r.wants_frame(S) {
@@ -246,7 +249,7 @@ fn input_wakes_the_loop_only_for_a_surface_it_woke() {
     }
     h.r.take_surface_changes();
     let Ok(()) = host_loop::input(&mut h, &wheel(ms as u32), &mut idle);
-    assert_eq!(h.take(), ["intents input 0", "facts", "wake"]);
+    assert_eq!(h.take(), ["facts", "intents input 0", "facts", "wake"]);
 }
 
 /// A surface destroyed: the renderer forgets it, then the host, then

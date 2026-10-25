@@ -248,6 +248,11 @@ pub enum ToLogic {
         seq: u64,
         sizes: Vec<(NodeId, strand_scene::LogicalRect)>,
     },
+    /// (flex) The pointer over nodes whose `pointer` logic reads
+    /// (`Renderer::take_pointer_facts`), once a frame while it moves:
+    /// where it is in each node's laid-out box, or `None` once it is not
+    /// over it.
+    Pointer(Vec<(NodeId, Option<strand_scene::LogicalPoint>)>),
     /// A widget or the surface wrote a two-way prop: an `input`'s
     /// `text`, a surface's `open` (Escape, click-away, focus loss, Right
     /// on a row holding a submenu); (M6) `input` is the press that

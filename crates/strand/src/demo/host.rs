@@ -662,6 +662,13 @@ impl Host {
                 sizes: facts,
             });
         }
+        // (flex) The pointer over the nodes logic reads it of.
+        let at = self.renderer.take_pointer_facts();
+        if !at.is_empty()
+            && let Some(f) = &self.logic
+        {
+            f.send(ToLogic::Pointer(at));
+        }
     }
 }
 
@@ -1343,6 +1350,10 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.monitor_forgotten(monitor);
         }
+    }
+
+    fn cursor(&self, surface: SurfaceId) -> strand_scene::CursorShape {
+        self.renderer.cursor(surface)
     }
 
     fn drop_accepted(&self, surface: SurfaceId) -> bool {

@@ -304,6 +304,7 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
     // The swipe: the offset follows the fingers, a frame's worth each.
     for _ in 0..frames {
         let input = ScrollInput {
+            dx: 0.0,
             dy: swipe,
             kind: ScrollKind::Touch,
             time: ms(k),
@@ -314,6 +315,7 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
     }
     // The lift: a fling at the swipe's speed, until it stops.
     let lift = ScrollInput {
+        dx: 0.0,
         dy: 0.0,
         kind: ScrollKind::Lift,
         time: ms(k),
@@ -328,6 +330,7 @@ fn run(hz: u32, swipe: f32, frames: u32) -> (Frames, f32, Launcher) {
     // Wheel steps, one every other frame, then settle.
     for step in 0..40 {
         let input = (step % 2 == 0).then_some(ScrollInput {
+            dx: 0.0,
             dy: 15.0,
             kind: ScrollKind::Wheel,
             time: ms(k),

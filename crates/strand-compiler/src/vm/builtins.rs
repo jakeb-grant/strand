@@ -225,6 +225,10 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "width" => laid_out(vm, n, n.width.get(rt)?),
             "height" => laid_out(vm, n, n.height.get(rt)?),
             "box" => laid_out_box(vm, n, n.rect(rt).get(rt)?),
+            "pointer" => {
+                vm.watch(n, NodeState::WATCH_POINTER);
+                n.pointer(rt).get(rt)?
+            }
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

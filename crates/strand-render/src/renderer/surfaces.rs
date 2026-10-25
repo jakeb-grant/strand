@@ -378,6 +378,8 @@ impl Renderer {
     }
 
     pub fn detach_surface(&mut self, surface: SurfaceId) {
+        let root = self.surfaces.get(&surface).map(|s| s.root);
+        self.pointer_detached(surface, root);
         if let Some(root) = self.surfaces.remove(&surface).map(|s| s.root)
             && !self.surfaces.values().any(|s| s.root == root)
         {

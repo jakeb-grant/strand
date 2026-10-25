@@ -31,7 +31,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box width=24 not_row=true
     input nav=node 25 not_row=true
     list not_row=true
-    box drag=[Pin, ["f7b8bf130132e954"]] not_row=true
+    box drag=[Pin, ["696295564a75eb95"]] not_row=true
     pages current=wifi row_first=0 not_row=true
       page name=wifi
         text text="Wi-Fi"
@@ -42,7 +42,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     popup attach=top not_row=true
     box shape=cookie not_row=true
     box stroke=template(3, #000000 <- $accent) trim=[0, 0.5] cap=round wave=[2, 18] not_row=true
-    arc width=4 value=0 sweep=270deg not_row=true
+    arc stroke=template(4, #000000 <- $accent) value=0 sweep=270deg not_row=true
     merge value=10 not_row=true
       box
       box

@@ -708,15 +708,36 @@ impl<'a> Checker<'a> {
     /// `screen` outside a `bar`: the elements whose blocks bring `name`
     /// into scope.
     fn element_scope_help(&self, name: &str) -> Option<String> {
-        let kinds: Vec<String> = self
+        // (flex) Inside a panel or OSD on the focused monitor.
+        if name == "screen"
+            && let Some(k) = self
+                .nodes
+                .first()
+                .map(|n| n.kind.as_str())
+                .filter(|k| matches!(*k, "panel" | "osd"))
+        {
+            return Some(format!(
+                "a `{k}` on the focused monitor is one surface the compositor places: give it `screens: all` (or monitor names) to have one a monitor, with `screen` in scope"
+            ));
+        }
+        let (kinds, per_screen): (Vec<&String>, Vec<&String>) = self
             .schema
             .elements
             .iter()
             .filter(|(_, e)| e.scope.iter().any(|(n, _)| n == name))
-            .map(|(k, _)| format!("`{k}`"))
-            .collect();
+            .map(|(k, _)| k)
+            .partition(|k| name != "screen" || !matches!(k.as_str(), "panel" | "osd"));
+        let kinds: Vec<String> = kinds.iter().map(|k| format!("`{k}`")).collect();
         if kinds.is_empty() {
             return None;
+        }
+        if !per_screen.is_empty() {
+            let per_screen: Vec<String> = per_screen.iter().map(|k| format!("`{k}`")).collect();
+            return Some(format!(
+                "`{name}` is in scope only inside {}, and inside {} when its `screens:` picks monitors: use it in that element's block",
+                join_or(&kinds),
+                join_or(&per_screen)
+            ));
         }
         Some(format!(
             "`{name}` is in scope only inside {}: use it in that element's block",

@@ -147,7 +147,7 @@ component Shape {
     when loading { shape: burst }
   }
   box { stroke: 3, $accent { trim: 0, progress; wave: 2, 18px; cap: round } }
-  arc { value: cpu.usage; sweep: 270deg; width: 4 }
+  arc { value: cpu.usage; sweep: 270deg; stroke: 4, $accent }
   merge 10 { box {}; box {} }
 }
 

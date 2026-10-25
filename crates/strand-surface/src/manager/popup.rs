@@ -213,6 +213,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         let (ax, ay, _, _) = popup_request(c, rect, shift);
         use xdg_positioner::{Anchor, ConstraintAdjustment as Adj, Gravity};
         let (anchor, gravity, offset, flip) = match (c.side, c.aligned) {
+            // (flex) `anchor: pointer`: from the press, down and right
+            // (above it near the output's bottom).
+            (PopupSide::Below, true) => (
+                Anchor::BottomRight,
+                Gravity::BottomRight,
+                (0, c.gap),
+                Adj::FlipY,
+            ),
             (PopupSide::Below, _) => (Anchor::Bottom, Gravity::Bottom, (0, c.gap), Adj::FlipY),
             (PopupSide::Above, _) => (Anchor::Top, Gravity::Top, (0, -c.gap), Adj::FlipY),
             (PopupSide::Right, false) => (Anchor::Right, Gravity::Right, (c.gap, 0), Adj::FlipX),

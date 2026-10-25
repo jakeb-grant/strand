@@ -276,7 +276,14 @@ filling the monitor, the keyboard always).
   notification stacks and dashboards. **`osd Name { … }`** defaults to
   the focused monitor, the overlay layer, and click-through (an empty
   input region). Both honour `screens: focused`, `layer`, `anchor` and
-  `keyboard`.
+  `keyboard`. A `panel` or `osd` whose `screens:` is written and is not
+  `focused` (`all`, a monitor's name, a list, an expression) is on each
+  monitor it picks as a bar is: an instance per monitor with `screen`
+  in scope and its own state, parked with its monitor
+  (`panel Dock { screens: all; width: screen.width / 2 }`). On the
+  focused monitor (the default) it is one surface the compositor
+  places, and `screen` is not in scope there: reading it is a load
+  error saying to add `screens: all`. (decisions.md flex, 2026-10-24)
 - **`open:`** says whether a surface is shown. Bound two-way
   (`open: <-> open`), Escape, a click away and focus loss write `false`.
 - **`popup { … }`** is an element, not a top-level surface: it is
@@ -303,8 +310,23 @@ filling the monitor, the keyboard always).
   `top_left` or `bottom_left` to the left of its popup, `top` above,
   `bottom` below, to the right otherwise). Where that place does not
   fit on the monitor the compositor may slide or flip it.
+- **`anchor: pointer`** opens a popup where the press that opened it
+  went down (any button, on the surface it nests in), down and to the
+  right of that point and touching it unless its `margin` says
+  otherwise: a context menu at the click, on a bar too (not across the
+  bar). It keeps that place while it stays open; opened by a key, with
+  no press, it opens at its element as usual. (decisions.md flex,
+  2026-10-24)
 - **A bar reserves its edge**: its thickness and its margin on that
-  edge, as layer-shell's exclusive zone. The compositor arranges the
+  edge, as layer-shell's exclusive zone. **`exclusive:`** on a `bar` or
+  `panel` says how much: `true` its thickness across the edge (a bar's
+  default), a length exactly that much whatever its size (`exclusive:
+  20` under a bar that is 36 tall), `false` or `0` nothing, so windows
+  go under it (a panel's default). A panel keeps space along the edge
+  it is attached to, else the one edge its `anchor:` names (`top`,
+  `left`, …); anchored at a corner or the centre it keeps none,
+  layer-shell reserving along one edge only. (decisions.md flex,
+  2026-10-24) The compositor arranges the
   surfaces that reserve one first, from the overlay layer down and in
   the order they were made, each in what the zones before it leave;
   every `bar`, `panel` and `osd` then lies its margin inside what is
@@ -334,7 +356,11 @@ filling the monitor, the keyboard always).
   takes keyboard focus.
 - Each surface gets a stable layer-shell namespace, `strand-<Name>`.
 - **`lock { … }`** is the lock screen, on `ext-session-lock`. A config
-  has at most one `lock`, across its files. A `lock` in which nothing
+  has at most one `lock`, across its files. Its content shows on the
+  focused monitor (else the first) and every other monitor shows a
+  solid; `screen` in it is that monitor, and it changes in place when
+  focus moves the content to another (nothing is mounted again, so
+  what was typed stays; decisions.md flex, 2026-10-24). A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
   a lock is a warning, since popups never open on a lock surface. The
   lock is exempt from reload (section 10.1) and **fails closed**: if
@@ -488,7 +514,11 @@ filling the monitor, the keyboard always).
   and the language server all read, so a program that reads a plugin
   service checks the same way everywhere. A file that is not a regular
   UTF-8 file under 1 MiB, does not apply, or declares a builtin service
-  is skipped with a warning. A text declares only its own service. When
+  is skipped with a warning. A file declares only its own service, the
+  one it is named for (`<service>.schema`), and the records, enums and
+  aliases it uses; one that declares another service, or an element,
+  function, value, method or token, is skipped with a warning naming it
+  (decisions.md flex, 2026-10-24). When
   the running binary does not serve a service a file declares, reads
   give its schema defaults and writes, calls and actions are refused,
   with a notice naming the file while the program reads it.
@@ -707,6 +737,22 @@ filling the monitor, the keyboard always).
   0); after that a value following it springs like any value, `x:
   cur.box.x - ws.box.x ~ $motion.spatial`. A box that does not move
   costs nothing. (decisions.md m6-w2-surface, 2026-10-14)
+- **`self.pointer`** (or `name.pointer`) is where the pointer is in the
+  node's laid-out box, a `Point` (`x`, `y`, logical pixels from the
+  box's top-left corner), or null while the pointer is not over it or
+  one of its descendants on the same surface. Its paint offsets and
+  transforms, and its ancestors', are undone as the frame drew them, so
+  a rotated knob reads it upright. It changes at most once a frame
+  however fast the pointer moves. While a press that went down on the
+  node is held it keeps a value wherever the pointer goes (off the node,
+  off the surface), measured in the box as it was when the press went
+  down, the surface's place included: a drag that moves the node (its
+  `x`, its width) or its surface (margins from state) moves the pointer
+  in that frame, never the frame, so it cannot feed back. A press's
+  `pointer` is set before its `pressed`, so `on change self.pressed {
+  grab = self.pointer }` reads where it went down. A knob is
+  `atan2(p.y - cy, p.x - cx)`; a resize grip adds the pointer's travel
+  since the press to the width it had. (decisions.md flex, 2026-10-24)
 - **What a box may drive.** Anything that does not lay that box out
   again. The checker follows what each value depends on, directly or
   through `let`s, the `state`s and service fields handlers set from
@@ -872,11 +918,58 @@ filling the monitor, the keyboard always).
   default.
 - **Hit testing** follows the node's rounded shape where it is drawn
   (its paint offsets and transforms, and its ancestors', move it; a
-  slider or `segmented` reads the pointer there too). `hit: grow(n)`
+  slider or `segmented` reads the pointer there too, so a slider turned
+  by `rotate` follows the pointer along its drawn track). `hit: grow(n)`
   enlarges it by `n` for small targets; `hit: none` takes no input in
   the node's own box (the pointer passes through to what is below),
   while its children take theirs and are hit with it among their
-  ancestors. Shadows enlarge the buffer but not the input region.
+  ancestors. A node at `opacity: 0` is not drawn and not hit, its
+  children neither: a control that takes input unseen keeps its
+  opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
+  Shadows enlarge the buffer but not the input region.
+- **`wrap: true`** on a `row` or `col` runs its children on in another
+  row (column) when one is full. The lines pack at its start, `gap`
+  stands between lines as between children, and `align` and `justify`
+  place the children within each line; a column wraps only when its
+  height is bounded. (decisions.md flex, 2026-10-24)
+- **A `scroll` scrolls along `axis:`** `vertical` (the default),
+  `horizontal` (its children in a row; a plain wheel, with no sideways
+  motion, scrolls it too) or `both` (each child its own width). Each
+  event moves one axis, the one it moves most along. `snap: true` on a
+  `scroll` or `list` settles a wheel step and a touchpad's lift with a
+  child's start (a row's, for a list, mounted or not) where the first
+  child starts at rest, or at the content's end: a notch moves to the
+  next child, fingers resting between two settle on the nearer, and a
+  fling lands on the child nearest where it would have stopped. Fingers
+  still on the touchpad move it freely. (decisions.md flex, 2026-10-24)
+- **Sliders and meters laid out taller than wide run upward**: a
+  `slider` or `meter` whose box is taller than it is wide (`width: 24;
+  height: 160`) has its track upright, its value growing from the
+  bottom, and a drag reads the pointer's height. There is no
+  orientation prop. `step:` on a slider moves a drag in whole steps of
+  its `range`'s units from its low end (`range: 0, 100; step: 5`), the
+  knob and the value written alike. (decisions.md flex, 2026-10-24)
+- **Focus.** A surface that takes the keyboard focuses its first node
+  with `focus: true`; `focus:` is reactive, so when it turns true on a
+  node of a surface that has the keyboard, focus moves there. Tab and
+  Shift+Tab move focus between the surface's `input`s and `list`s in
+  tree order, round from the last to the first (Ctrl, Alt or Super held
+  leave Tab to handlers); `on key` hears it first. A surface that
+  closes lets its focus go, as when the keyboard leaves it.
+  (decisions.md flex, 2026-10-24)
+- **`cursor:`** sets the pointer's shape over a node, one of
+  `CursorShape` (the CSS cursor names in snake_case: `default`,
+  `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`,
+  `not_allowed`, `wait`, `progress`, `help`, `ew_resize`, `ns_resize`,
+  `col_resize`, `row_resize`, `nwse_resize`, `zoom_in`, …). The
+  innermost node under the pointer that has one decides; while a press
+  is held, the chain it went down on does, so `when pressed { cursor:
+  grabbing }` holds while the drag leaves the node. An `input` without
+  one shows `text`; anything else shows the default arrow. It is set
+  through `wp_cursor_shape_v1`, or from the cursor theme where the
+  compositor lacks it, and set again only when it changes, including
+  when a prop changes under a pointer that has not moved. (decisions.md
+  flex, 2026-10-24)
 - **A `trigger: hover` popup that draws nothing itself** (no `bg`,
   border, shadow, `blur` or `backdrop` of its own) takes input only in
   the boxes of its top-level elements that draw (a `blur` or `backdrop`
@@ -1242,7 +1335,10 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   run's writes count against that run alone, not against the handler.
   So `on scroll(dy) { await x; v -= dy * 0.05 }` at 60 Hz, sixty runs
   that each write once, is never throttled, while one run that keeps
-  writing more than 30 times a second is. Several runs each below the
+  writing more than 30 times a second is. An `on change` whose every
+  target is a node's input state (`hover`, `pressed`, `focused`,
+  `selected`, `pointer`, of `self` or a named node) is an input handler
+  too: a drag following `self.pointer` at 60 Hz is the user. Several runs each below the
   limit are not added up. A handler started by a service event or a timer is
   one writer however many runs it has.
 - **Keyed collections.** A throttled writer to a keyed collection

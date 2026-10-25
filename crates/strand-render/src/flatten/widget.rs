@@ -177,7 +177,10 @@ impl Flattener<'_> {
                 // line along the middle, as thick as the meter (it
                 // flattens as `wave` springs to 0).
                 let amp = number(get(Prop::Wave)).unwrap_or(0.0);
-                if amp.is_finite() && amp != 0.0 {
+                // (flex) Laid out taller than wide, it fills upward from
+                // the bottom, plainly: `wave` is a media meter's, across.
+                let upright = f.height() > f.width();
+                if amp.is_finite() && amp != 0.0 && !upright {
                     let h = f.height();
                     let (x0, cy) = (f.x0 + h / 2.0, f.center().y);
                     let x1 = x0 + (f.width() - h).max(0.0) * v;
@@ -206,7 +209,11 @@ impl Flattener<'_> {
                     }
                     return;
                 }
-                let r = kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1);
+                let r = if upright {
+                    kurbo::Rect::new(f.x0, f.y1 - f.height() * v, f.x1, f.y1)
+                } else {
+                    kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1)
+                };
                 let clip = self.marker(Item::PushClip(w.box_path.clone()));
                 self.group_bounds(clip, phys);
                 self.push(
@@ -224,19 +231,22 @@ impl Flattener<'_> {
             NodeKind::Arc => {
                 // (M4) A gauge: the track over the whole sweep, the value
                 // over its fraction, round-capped unless `cap:` says
-                // otherwise; `width` is the line's (design.md: `arc {
-                // value: cpu.usage; sweep: 270deg; width: 4 }`).
+                // otherwise. (flex) Its line is its `stroke:`, the width
+                // and the value's paint (design.md: `arc { value:
+                // cpu.usage; sweep: 270deg; stroke: 4, $accent }`).
                 let target = number(w.node.get(Prop::Value));
                 let v = self.range_frac(id, target, get) as f64;
                 let sweep = get(Prop::Sweep)
                     .and_then(crate::effects::degrees)
                     .unwrap_or(crate::widgets::ARC_SWEEP)
                     .clamp(0.0, 360.0) as f64;
-                let width = get(Prop::Width)
-                    .and_then(crate::effects::number)
-                    .unwrap_or(crate::widgets::ARC_WIDTH)
-                    .clamp(0.0, 1000.0) as f64
-                    * s;
+                let (line, line_paint) = match get(Prop::Stroke) {
+                    Some(PropValue::Border(strand_scene::Border { width, paint })) => {
+                        (Some(*width).filter(|w| w.is_finite()), Some(paint.clone()))
+                    }
+                    _ => (None, None),
+                };
+                let width = line.unwrap_or(crate::widgets::ARC_WIDTH).clamp(0.0, 1000.0) as f64 * s;
                 let Some((track, value)) = crate::widgets::arc_lines(f, v, sweep, width) else {
                     return;
                 };
@@ -246,9 +256,16 @@ impl Flattener<'_> {
                     s,
                     crate::shapes::stroke::Cap::Round,
                 );
-                let rest = paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(w.color.alpha(0.15)));
-                let fill = match w.node.get(Prop::Color).and(get(Prop::Color)) {
-                    Some(PropValue::Color(c)) => Paint::Solid(*c),
+                // The track unset is the line's colour faint, as it was
+                // `color`'s when that was the arc's colour.
+                let faint = match &line_paint {
+                    Some(Paint::Solid(c)) => *c,
+                    _ => w.color,
+                };
+                let rest = paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(faint.alpha(0.15)));
+                let fill = match (line_paint, w.node.get(Prop::Color).and(get(Prop::Color))) {
+                    (Some(p), _) => p,
+                    (None, Some(PropValue::Color(c))) => Paint::Solid(*c),
                     _ => Paint::Solid(w.accent()),
                 };
                 for (line, paint) in [(Some(track), rest), (value, fill)] {
@@ -294,13 +311,28 @@ impl Flattener<'_> {
                 let active = hovered || pressed;
                 let knob = crate::widgets::slider_knob_radius(active) * s;
                 let track = (crate::widgets::SLIDER_TRACK as f64 * s).max(1.0);
-                let cy = f.center().y;
-                let (x0, x1) = crate::widgets::slider_span(f.x0, f.x1, active, s);
-                let x = x0 + (x1 - x0) * v;
-                let bar =
-                    |a: f64, b: f64| kurbo::Rect::new(a, cy - track / 2.0, b, cy + track / 2.0);
+                // (flex) Laid out taller than wide, it runs upward: the
+                // track stands in the middle and the value grows from
+                // the bottom.
+                let upright = f.height() > f.width();
+                let c = f.center();
+                let (k, rest_bar, fill_bar) = if upright {
+                    let (y0, y1) = crate::widgets::slider_span(f.y0, f.y1, active, s);
+                    let y = y1 - (y1 - y0) * v;
+                    let bar = |a: f64, b: f64| {
+                        kurbo::Rect::new(c.x - track / 2.0, a, c.x + track / 2.0, b)
+                    };
+                    ((c.x, y), bar(f.y0, f.y1), bar(y, f.y1))
+                } else {
+                    let (x0, x1) = crate::widgets::slider_span(f.x0, f.x1, active, s);
+                    let x = x0 + (x1 - x0) * v;
+                    let bar = |a: f64, b: f64| {
+                        kurbo::Rect::new(a, c.y - track / 2.0, b, c.y + track / 2.0)
+                    };
+                    ((x, c.y), bar(f.x0, f.x1), bar(f.x0, x))
+                };
                 let pill = |r: kurbo::Rect| {
-                    let rr = r.height() / 2.0;
+                    let rr = r.width().min(r.height()) / 2.0;
                     shape_path(r, RoundedRectRadii::from_single_radius(rr), false)
                 };
                 let accent = match w.node.get(Prop::Color).and(get(Prop::Color)) {
@@ -308,11 +340,8 @@ impl Flattener<'_> {
                     _ => w.accent(),
                 };
                 let rest = paint_of(get(Prop::Track)).unwrap_or(Paint::Solid(w.color.alpha(0.2)));
-                for (r, paint) in [
-                    (bar(f.x0, f.x1), rest),
-                    (bar(f.x0, x), Paint::Solid(accent)),
-                ] {
-                    if r.width() > 0.0 {
+                for (r, paint) in [(rest_bar, rest), (fill_bar, Paint::Solid(accent))] {
+                    if r.width() > 0.0 && r.height() > 0.0 {
                         self.push(
                             Item::Fill {
                                 shape: FillShape::Path(pill(r)),
@@ -325,7 +354,7 @@ impl Flattener<'_> {
                         );
                     }
                 }
-                let k = kurbo::Rect::new(x - knob, cy - knob, x + knob, cy + knob);
+                let k = kurbo::Rect::new(k.0 - knob, k.1 - knob, k.0 + knob, k.1 + knob);
                 self.push(
                     Item::Fill {
                         shape: FillShape::Path(kurbo::Ellipse::from_rect(k).to_path(TOLERANCE)),

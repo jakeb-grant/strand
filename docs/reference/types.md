@@ -229,6 +229,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `height` | `float` | Its laid-out height. |
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
 | `box` | `Rect` | Its laid-out box, in its surface's logical pixels from the top-left corner of the surface's box (paint offsets, transforms and poses not applied). A popup's own box is where it sits in the surface it opens from; a bar's, panel's or OSD's is at 0, 0. It updates a frame after layout moves it, and springs like any value: `x: item.box.x - row.box.x ~ $motion.spatial`. It may drive anything that does not lay it out again, through any chain of bindings: paint props (`x`, `y`, `opacity`, colours, transforms; a surface's effects), the size of a `place: absolute` element it is not inside, or what is on another surface that reads nothing back; a load error shows the loop otherwise. A loop through another node's `width` or `height` with no `box` on it is a warning, `check::size_loop`. |
+| `pointer` | `Point?` | The pointer over it, in its laid-out box (0, 0 is its top-left corner as layout put it; its paint offsets and transforms, and its ancestors', are undone, as for a slider), once a frame while it moves; null while the pointer is not over it. While a press that began on it is held it stays set, wherever the pointer goes (outside the box too), in the frame the node had when the press began: what the drag moves (its `x`, its layout, its surface's margins) does not move the frame, so `on change self.pointer { if self.pressed { px = px0 + self.pointer.x - grab.x } }` follows the pointer without feeding back. An `on change` of only such input state (`pointer`, `hover`, `pressed`) is an input handler, never throttled. |
 
 ### `Notification`
 
@@ -332,6 +333,15 @@ height: 1440, refresh: 144)` names one for `OutputChange.mode`.
 | `width` | `int` | Its width in hardware pixels (before scale and rotation). |
 | `height` | `int` | Its height in hardware pixels. |
 | `refresh` | `float` | Its refresh rate in Hz (`59.951`), or 0 when it has no fixed rate. |
+
+### `Point`
+
+A point (`self.pointer`), logical pixels.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `float` | From the left. |
+| `y` | `float` | From the top. |
 
 ### `PowerDevice`
 
@@ -500,10 +510,12 @@ A variant is written bare where its enum is expected (`edge: top`).
 | --- | --- |
 | `Align` | `start`, `center`, `end`, `stretch`, `baseline` |
 | `Anchor` | `center`, `top`, `bottom`, `left`, `right`, `top_left`, `top_right`, `bottom_left`, `bottom_right` |
+| `Axis` | `vertical`, `horizontal`, `both`. Which way a `scroll` scrolls. |
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
 | `BlurFallback` | `tint`, `none` |
 | `Cap` | `butt`, `round`, `square` |
 | `CornerStyle` | `round`, `squircle` |
+| `CursorShape` | `default`, `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`, `not_allowed`, `wait`, `progress`, `help`, `context_menu`, `cell`, `copy`, `alias`, `no_drop`, `all_scroll`, `zoom_in`, `zoom_out`, `col_resize`, `row_resize`, `ew_resize`, `ns_resize`, `nesw_resize`, `nwse_resize`, `n_resize`, `e_resize`, `s_resize`, `w_resize`, `ne_resize`, `nw_resize`, `se_resize`, `sw_resize` |
 | `Curve` | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `in_back`, `out_back`, `out_elastic`, `out_bounce`, `standard`, `emphasized` |
 | `DropKind` | `files`, `app`, `text` |
 | `Edge` | `top`, `bottom`, `left`, `right` |
@@ -520,6 +532,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Markup` | `none`, `basic` |
 | `OutputTransform` | `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`, `flipped_90`, `flipped_180`, `flipped_270`. An output's rotation and flip, as `wl_output` (and niri) name them: counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`; `flipped_90` is flipped about the vertical axis, then rotated 90 degrees. |
 | `Place` | `flow`, `absolute` |
+| `PopupAnchor` | `pointer`. A popup opened where the press that opened it went down. |
 | `PopupTrigger` | `open`, `hover` |
 | `PoseName` | `none`, `fade`, `slidefade` |
 | `RadiusKeyword` | `full` |

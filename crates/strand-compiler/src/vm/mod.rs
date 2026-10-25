@@ -379,6 +379,7 @@ impl Env {
             width: rt.signal(Value::float(0.0)),
             height: rt.signal(Value::float(0.0)),
             rect_cell: Default::default(),
+            pointer_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),

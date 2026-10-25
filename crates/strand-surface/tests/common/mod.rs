@@ -326,6 +326,9 @@ pub struct TestHost {
     /// (M4) What [`SurfaceHost::lock_changed`] said, in order.
     pub locks: Vec<strand_surface::LockState>,
     pub monitors_added: Vec<(Monitor, bool)>,
+    /// (flex) What [`SurfaceHost::cursor`] answers on every surface
+    /// (`None`: the default arrow).
+    pub cursor: Option<strand_scene::CursorShape>,
     pub monitors_removed: Vec<Monitor>,
     pub monitors_changed: Vec<Monitor>,
     /// The first paint of each surface draws nothing and returns empty
@@ -520,6 +523,10 @@ impl Painter for TestHost {
 }
 
 impl SurfaceHost for TestHost {
+    fn cursor(&self, _: SurfaceId) -> strand_scene::CursorShape {
+        self.cursor.unwrap_or(strand_scene::CursorShape::Default)
+    }
+
     fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, monitor: Option<&Monitor>) {
         self.attached
             .push((surface, node, monitor.map(|m| m.id.clone())));

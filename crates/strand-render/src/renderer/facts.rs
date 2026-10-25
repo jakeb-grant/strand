@@ -27,12 +27,14 @@ pub(super) struct Watch {
 }
 
 impl Watch {
-    /// From a node's `Prop::Watch` (`size`, `query`, `box`, `box_query`).
+    /// From a node's `Prop::Watch`: `size`, or what more is read joined
+    /// by `_` (`query`, `box`, `box_query`, (flex) `pointer`,
+    /// `box_query_pointer`, …).
     pub(super) fn of(v: &PropValue) -> Watch {
         match v {
             PropValue::Keyword(k) => Watch {
-                boxed: k.starts_with("box"),
-                query: k == "query" || k == "box_query",
+                boxed: k.split('_').any(|p| p == "box"),
+                query: k.split('_').any(|p| p == "query"),
             },
             _ => Watch::default(),
         }

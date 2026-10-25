@@ -350,10 +350,9 @@ fn an_action_with_a_result_is_typed_async() {
     let src = format!("{head}state query = \"1+1\"\nlet r = calc(query)\nlet shown = r ?? \"…\"\n");
     assert_eq!(ty(&src, "r"), "Async<text>");
     assert_eq!(ty(&src, "shown"), "text");
-    let rec = format!(
-        "permit exec \"probe\"\ntype Probe {{ load: float; name: text }}\n\
+    let rec = "permit exec \"probe\"\ntype Probe { load: float; name: text }\n\
          action probe(id: int) -> Probe? [\"probe\", id]\nlet p = probe(3)\n"
-    );
+        .to_string();
     assert_eq!(ty(&rec, "p"), "Async<Probe?>");
     // Awaited in a handler.
     let (codes, text) = diags(&format!(
