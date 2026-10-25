@@ -1852,7 +1852,8 @@ impl Drop for OwnWm {
 /// `keyboard.set_layout(i)` / `next_layout()`, on every compositor of the
 /// matrix, against its own report: sway's binding mode (the matrix
 /// config's `matrix` mode, entered and left) and its first keyboard's
-/// layouts (`get_inputs`; none on a headless sway without devices);
+/// layouts (`get_inputs`, of a virtual keyboard naming two plugged in,
+/// since a headless sway has no devices);
 /// niri, which has no modes, its `keyboard-layouts` (the matrix config's
 /// `us,de`), switched both ways; Hyprland's default submap (null) and its
 /// main keyboard's active keymap (`j/devices`). labwc has no IPC: no
@@ -1893,7 +1894,10 @@ fn modes_and_layouts_follow_the_compositor() {
             // (lockmon review) A headless sway has no keyboard: one is
             // plugged in (a virtual keyboard whose keymap names two
             // layouts), so the layouts compared are sway's own, not two
-            // empty lists.
+            // empty lists. A virtual keyboard's keymap comes after its
+            // `added` event and sway sends no `xkb_keymap` for it, so a
+            // connection made once sway lists its layouts reads them
+            // (`get_inputs`), as at a session's start.
             let dir = tempfile::tempdir().expect("a keymap dir");
             let _keyboard = support::keyboard::Keyboard::with_layouts(
                 &live.socket,
@@ -1928,7 +1932,9 @@ fn modes_and_layouts_follow_the_compositor() {
             });
             let names = sways();
             assert_eq!(names, ["English (US)", "German"], "sway's own report");
-            own.until("sway's layouts", |m| m.keyboard_layouts == names);
+            let fresh = OwnWm::start();
+            fresh.until("sway's layouts", |m| m.keyboard_layouts == names);
+            drop(fresh);
             eprintln!("matrix: sway's layouts: {names:?}");
         }
         Kind::Niri => {
