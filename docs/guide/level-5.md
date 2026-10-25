@@ -734,8 +734,14 @@ steps.
   time it is shown: `for s in screens.all key s.id { thumbnail s }` is
   an overview of your monitors. A still is taken just before the
   surface showing it appears, so on its own monitor it shows what was
-  there; in a `lock`, `thumbnail screen` is the desktop as it was just
-  before the lock covered it, on every monitor.
+  there; one that appears later in a surface already open is taken
+  then, and shows that surface. In a `lock`, `thumbnail screen` is the
+  desktop as it was just before the lock covered it, on each monitor's
+  lock; a monitor plugged in while locked has no still and shows
+  nothing. Mind what that shows: a locked screen is for whoever is at
+  the machine, and a lock's `thumbnail screen` shows them your desktop
+  as you left it, open windows and all, at the size you draw it. A
+  still is kept at 1280×720 at most, scaled up past that.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

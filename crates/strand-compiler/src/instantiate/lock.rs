@@ -149,3 +149,177 @@ impl super::Ctx {
         }
     }
 }
+
+/// (lockmon) The lock's own logic (`mount::lock_logic`): its timers and
+/// its `on change` and service handlers, which write its `state`s and
+/// so run once for the lock, not once per monitor's instance. They are
+/// mounted in the lock's scope the first time an instance's content is
+/// shown, and run while any is shown, frozen otherwise, as a surface's
+/// content is.
+pub(crate) struct LockLogic {
+    env: std::rc::Rc<crate::vm::Env>,
+    nodes: Vec<crate::lower::Node>,
+    /// Their scope, under the lock's (a fault in one freezes the lock).
+    block: strand_core::Scope,
+    mounted: Cell<bool>,
+    running: Cell<bool>,
+    /// The instances' lock nodes whose content is shown.
+    shown: std::cell::RefCell<std::collections::BTreeSet<strand_scene::NodeId>>,
+}
+
+impl super::Ctx {
+    /// (lockmon) Keeps the lock's own logic, mounted in `env` (the
+    /// lock's scope, whose `state`s it writes) once an instance shows.
+    pub(crate) fn set_lock_logic(
+        &self,
+        rt: &Runtime,
+        env: &std::rc::Rc<crate::vm::Env>,
+        nodes: Vec<crate::lower::Node>,
+    ) {
+        let (block, ()) = rt.scope(|_| ());
+        *self.lock_logic.borrow_mut() = Some(std::rc::Rc::new(LockLogic {
+            env: env.clone(),
+            nodes,
+            block,
+            mounted: Cell::new(false),
+            running: Cell::new(false),
+            shown: Default::default(),
+        }));
+    }
+
+    /// (lockmon) The lock's scope, where its `state`s are, once mounted.
+    pub(crate) fn lock_env(&self) -> Option<std::rc::Rc<crate::vm::Env>> {
+        self.lock_logic.borrow().as_ref().map(|l| l.env.clone())
+    }
+
+    /// (lockmon) The content of the lock's instance `node` was shown
+    /// (`open`) or hidden: the lock's logic runs while any is shown.
+    pub(crate) fn lock_logic_shown(
+        self: &std::rc::Rc<Self>,
+        rt: &Runtime,
+        node: strand_scene::NodeId,
+        open: bool,
+    ) {
+        let Some(l) = self.lock_logic.borrow().clone() else {
+            return;
+        };
+        let any = {
+            let mut shown = l.shown.borrow_mut();
+            match open {
+                true => shown.insert(node),
+                false => shown.remove(&node),
+            };
+            !shown.is_empty()
+        };
+        if any == l.running.get() {
+            return;
+        }
+        l.running.set(any);
+        if !any {
+            let _ = rt.suspend(l.block.id());
+        } else if !l.mounted.replace(true) {
+            let _ = rt.with_owner(l.block.id(), |rt| {
+                for n in &l.nodes {
+                    match n {
+                        crate::lower::Node::Handler(h) => self.mount_handler(rt, h, &l.env, None),
+                        crate::lower::Node::Timer(t) => self.mount_timer(rt, t, &l.env, None),
+                        _ => {}
+                    }
+                }
+            });
+        } else {
+            rt.resume(l.block.id());
+        }
+    }
+
+    /// (lockmon) The lock's instance `node` went (its monitor did): it
+    /// no longer counts as shown. Nothing is frozen here (a cleanup);
+    /// the next hide does that.
+    pub(crate) fn lock_logic_gone(&self, node: strand_scene::NodeId) {
+        if let Some(l) = self.lock_logic.borrow().as_ref() {
+            l.shown.borrow_mut().remove(&node);
+        }
+    }
+}
+
+/// (lockmon) The lock's instances' keys and twins (`Prop::Twin`).
+impl super::Ctx {
+    /// (lockmon) `ident` is one monitor's instance of the lock
+    /// (`<prefix>[<screen>]`): its elements' twins are keyed without it.
+    pub(crate) fn note_lock_instance(&self, ident: std::rc::Rc<str>) {
+        if let Some(cut) = ident.rfind('[') {
+            let base: std::rc::Rc<str> = ident[..cut].into();
+            self.lock_instances.borrow_mut().insert(ident, base);
+        }
+    }
+
+    /// (lockmon) The key an element of a lock's instance (its reload key,
+    /// `<instance>/…/e<n>`) shares with the same element on every other
+    /// monitor: the key without the instance's screen.
+    pub(crate) fn twin_key(&self, key: &str) -> Option<String> {
+        self.lock_instances
+            .borrow()
+            .iter()
+            .find_map(|(inst, base)| {
+                let rest = key.strip_prefix(&**inst)?;
+                rest.starts_with('/').then(|| format!("{base}{rest}"))
+            })
+    }
+
+    /// (lockmon review) Whether input `e`, mounted in `env`, has its
+    /// `text` bound two-way to a `state` every instance of the lock
+    /// shares: one the lock's scope reads as the same cell (the lock's
+    /// own, or a top-level one), not a component's or a `for` item's.
+    pub(crate) fn shares_text(&self, e: &crate::lower::Element, env: &crate::vm::Env) -> bool {
+        use crate::lower::PlaceRoot;
+        use crate::vm::value::Slot;
+        let Some(lock) = self.lock_env() else {
+            return false;
+        };
+        e.props.iter().chain(e.arg.iter()).any(|p| {
+            let Some(tw) = &p.two_way else {
+                return false;
+            };
+            let PlaceRoot::Def(d) = tw.place.root else {
+                return false;
+            };
+            p.prop == Some(strand_scene::Prop::Text)
+                && matches!(
+                    (env.def(d), lock.def(d)),
+                    (Some(Slot::Signal(a)), Some(Slot::Signal(b))) if a.id() == b.id()
+                )
+        })
+    }
+}
+
+/// (lockmon) `nodes` without the lock's own logic, which goes to `out`:
+/// the timers and the `on change` and service handlers in the lock's
+/// body and its elements, where its `state`s are (not in `if`/`match`
+/// branches, `for` items or components, which are each instance's).
+/// Element events (`on key`, `on activate`, `on show`) stay: they
+/// happen to one monitor's element.
+pub(crate) fn lock_logic(
+    nodes: &std::sync::Arc<Vec<crate::lower::Node>>,
+    out: &mut Vec<crate::lower::Node>,
+) -> std::sync::Arc<Vec<crate::lower::Node>> {
+    let mut kept = Vec::with_capacity(nodes.len());
+    for n in nodes.iter() {
+        match n {
+            crate::lower::Node::Handler(h)
+                if !matches!(h.event, crate::lower::Event::Element(_)) =>
+            {
+                out.push(n.clone())
+            }
+            crate::lower::Node::Timer(_) => out.push(n.clone()),
+            crate::lower::Node::Element(e)
+                if !matches!(e.kind, crate::lower::ElementKind::Component(_)) =>
+            {
+                let mut e = e.clone();
+                e.children = lock_logic(&e.children, out);
+                kept.push(crate::lower::Node::Element(e));
+            }
+            _ => kept.push(n.clone()),
+        }
+    }
+    std::sync::Arc::new(kept)
+}

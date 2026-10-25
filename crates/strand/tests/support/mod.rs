@@ -228,6 +228,13 @@ pub mod keyboard {
 
     impl Keyboard {
         pub fn new(socket: &Path, dir: &Path) -> Self {
+            Self::with_layouts(socket, dir, &[])
+        }
+
+        /// (lockmon review) [`Keyboard::new`] whose keymap names
+        /// `layouts`, one group each (the letters the same in every
+        /// one): what a compositor reports as the keyboard's layouts.
+        pub fn with_layouts(socket: &Path, dir: &Path, layouts: &[&str]) -> Self {
             let conn = Connection::from_socket(UnixStream::connect(socket).unwrap()).unwrap();
             let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
             let qh = queue.handle();
@@ -236,15 +243,20 @@ pub mod keyboard {
             let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
             let mut codes = String::new();
             let mut symbols = String::new();
+            let groups = layouts.len().max(1);
+            for (i, l) in layouts.iter().enumerate() {
+                symbols.push_str(&format!("name[Group{}] = \"{l}\"; ", i + 1));
+            }
+            let key = |sym: &str| vec![format!("[ {sym} ]"); groups].join(", ");
             for c in 'a'..='z' {
                 let k = code(c).unwrap() + 8;
                 codes.push_str(&format!("<K{k}> = {k}; "));
-                symbols.push_str(&format!("key <K{k}> {{ [ {c} ] }}; "));
+                symbols.push_str(&format!("key <K{k}> {{ {} }}; ", key(&c.to_string())));
             }
             for (name, k) in NAMED {
                 let k = k + 8;
                 codes.push_str(&format!("<K{k}> = {k}; "));
-                symbols.push_str(&format!("key <K{k}> {{ [ {name} ] }}; "));
+                symbols.push_str(&format!("key <K{k}> {{ {} }}; ", key(name)));
             }
             let keymap = format!(
                 "xkb_keymap {{\n\

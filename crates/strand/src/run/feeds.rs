@@ -81,6 +81,19 @@ pub(crate) const STILL_KEEP: Duration = Duration::from_secs(2);
 /// screens the lock shows ([`Feeds::take_lock_stills`]).
 pub(crate) const LOCK_STILL_WAIT: Duration = Duration::from_millis(500);
 
+/// (lockmon review) The size a still is taken at, at most (scaled on the
+/// screenshot thread to cover it, as a thumbnail's frame is): a
+/// thumbnail drawn larger than this shows it scaled up. A 4K screen's
+/// still is then 3.5 MiB, not 32.
+pub(crate) const STILL_MAX: (u32, u32) = (1280, 720);
+
+/// (lockmon review) How long a still taken before a surface mapped may
+/// take before it is given up (its thumbnails then show nothing): the
+/// screenshot thread gives up itself at its own `SHOT_WAIT`, so this
+/// only ends a shot whose answer never came.
+pub(crate) const SHOT_GIVE_UP: Duration =
+    Duration::from_secs(strand_services::wm::screen::SHOT_WAIT.as_secs() + 2);
+
 /// What a node is fed by, and what it was tapped for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Want {
@@ -121,6 +134,9 @@ pub(crate) struct Feeds {
     /// (lockmon) Each screen's still from just before the lock, by
     /// connector, while the lock lasts.
     lock_stills: HashMap<String, CaptureFrame>,
+    /// (lockmon review) The thumbnails fed a lock's still, cleared when
+    /// the lock ends.
+    lock_fed: HashSet<NodeId>,
     /// (lockmon) Stills taken before a surface mapped, by connector, with
     /// when they came; the shots still taking them, numbered; and the
     /// surfaces whose first frame waits for them, until when.
@@ -158,6 +174,7 @@ impl Feeds {
             screens: HashMap::new(),
             lock_nodes: HashSet::new(),
             lock_stills: HashMap::new(),
+            lock_fed: HashSet::new(),
             stills: HashMap::new(),
             shooting: HashMap::new(),
             held: HashMap::new(),
@@ -221,7 +238,7 @@ impl Feeds {
             .map(|c| {
                 let tx = tx.clone();
                 let name = c.clone();
-                capture_screen(c, (0, 0), move |f| {
+                capture_screen(c, STILL_MAX, move |f| {
                     let _ = tx.send((name, f));
                 })
             })
@@ -249,9 +266,56 @@ impl Feeds {
         );
     }
 
-    /// (lockmon) The lock ended: its stills go.
-    pub(crate) fn lock_ended(&mut self) {
+    /// (lockmon) The lock ended (unlocked, or the compositor refused or
+    /// ended it): its stills go, from here and (lockmon review) from
+    /// the thumbnails that showed them, so no later lock shows one.
+    pub(crate) fn lock_ended(&mut self, renderer: &mut strand_render::Renderer) {
         self.lock_stills.clear();
+        for node in std::mem::take(&mut self.lock_fed) {
+            renderer.feed_frame(node, None);
+        }
+        self.taps
+            .retain(|_, (w, ..)| !matches!(w, Want::LockStill(..)));
+    }
+
+    /// (lockmon review) Lets go of the stills taken before a surface
+    /// mapped once [`STILL_KEEP`] has passed, and of shots that have not
+    /// answered in [`SHOT_GIVE_UP`] (their waiting thumbnails show nothing),
+    /// so neither lasts until the next surface maps.
+    pub(crate) fn prune(&mut self, now: Instant) {
+        self.stills
+            .retain(|_, (at, _)| now.saturating_duration_since(*at) < STILL_KEEP);
+        let gone: Vec<String> = self
+            .shooting
+            .iter()
+            .filter(|(_, (_, _, at))| now.saturating_duration_since(*at) >= SHOT_GIVE_UP)
+            .map(|(c, _)| c.clone())
+            .collect();
+        for c in gone {
+            log::info!(
+                "screen {c}: no still before a surface mapped in {} s",
+                SHOT_GIVE_UP.as_secs()
+            );
+            self.shooting.remove(&c);
+            for (want, _, tap) in self.taps.values_mut() {
+                if matches!((&*want, &*tap), (Want::Screen(w, _), Tap::Waiting) if *w == c) {
+                    *tap = Tap::Still;
+                }
+            }
+        }
+        let shooting = &self.shooting;
+        self.held
+            .retain(|_, (_, cs)| cs.iter().any(|c| shooting.contains_key(c)));
+    }
+
+    /// (lockmon review) When [`Feeds::prune`] has something to let go.
+    pub(crate) fn wait(&self, now: Instant) -> Option<Duration> {
+        let stills = self.stills.values().map(|(at, _)| *at + STILL_KEEP);
+        let shots = self.shooting.values().map(|(_, _, at)| *at + SHOT_GIVE_UP);
+        stills
+            .chain(shots)
+            .min()
+            .map(|t| t.saturating_duration_since(now))
     }
 
     /// (lockmon) Surface `surface` is about to map showing the screens
@@ -262,8 +326,7 @@ impl Feeds {
             return;
         }
         let now = Instant::now();
-        self.stills
-            .retain(|_, (at, _)| now.saturating_duration_since(*at) < STILL_KEEP);
+        self.prune(now);
         for c in &connectors {
             if self.shooting.contains_key(c) {
                 continue;
@@ -272,7 +335,7 @@ impl Feeds {
             let n = self.next;
             let tx = self.tx.clone();
             let name = c.clone();
-            let shot = capture_screen(c, (0, 0), move |f| {
+            let shot = capture_screen(c, STILL_MAX, move |f| {
                 let _ = tx.send(Fed::Still(name, n, f));
             });
             self.shooting.insert(c.clone(), (n, shot, now));
@@ -406,9 +469,10 @@ impl Feeds {
                         "thumbnail {node:?}: screen {connector}'s still from before the lock: {}",
                         if still.is_some() { "shown" } else { "none" }
                     );
-                    if let Some(f) = still {
-                        let _ = tx.send(Fed::Frame(node, n, Some(scaled(f, *max))));
-                    }
+                    // (lockmon review) None clears what a thumbnail kept
+                    // from an earlier lock.
+                    let _ = tx.send(Fed::Frame(node, n, still.map(|f| scaled(f, *max))));
+                    self.lock_fed.insert(node);
                     Tap::Still
                 }
                 Want::Screen(connector, max)
@@ -693,9 +757,50 @@ mod tests {
             ]
         );
         assert!(f.taps.values().all(|(_, _, t)| matches!(t, Tap::Still)));
-        assert_eq!(frames(&rx), [(a, Some((2, 1)))], "no frame for eDP-1");
-        f.lock_ended();
+        let mut sent = frames(&rx);
+        sent.sort_by_key(|(n, _)| *n);
+        assert_eq!(
+            sent,
+            [(a, Some((2, 1))), (b, None)],
+            "eDP-1's thumbnail is cleared, not left as it was"
+        );
+        let (mut r, _) = spectrum_scene();
+        f.lock_ended(&mut r);
         assert!(f.lock_stills.is_empty());
+        assert_eq!(f.tapped(), [], "the next lock feeds them again");
+        // (lockmon review) The next lock with no still of DP-1 (its shot
+        // failed): its thumbnail is fed nothing, which clears the first
+        // lock's frame, never shows it again.
+        f.take_lock_stills(&[], Duration::ZERO);
+        f.demand(vec![thumbnail(1, "Dell", (2, 1))]);
+        assert_eq!(frames(&rx), [(a, None)]);
+    }
+
+    /// (lockmon review) A still from before a surface mapped goes once
+    /// `STILL_KEEP` has passed, without another surface mapping; a shot
+    /// that never answers is given up, and the thumbnail waiting for it
+    /// shows nothing rather than waiting for ever.
+    #[test]
+    fn stills_and_shots_are_let_go_in_time() {
+        let (tx, _rx) = calloop::channel::channel();
+        let mut f = Feeds::new(tx);
+        let a = NodeId::new(1, 0);
+        let s = SurfaceId(4);
+        f.screen("Dell", Some("DP-1"));
+        f.before_map(s, vec!["DP-1".into()]);
+        let now = Instant::now();
+        f.demand(vec![thumbnail(1, "Dell", (2, 1))]);
+        assert!(matches!(f.taps[&a].2, Tap::Waiting));
+        assert!(f.wait(now).is_some_and(|w| w <= SHOT_GIVE_UP));
+        f.prune(now + SHOT_GIVE_UP);
+        assert!(f.shooting.is_empty());
+        assert!(matches!(f.taps[&a].2, Tap::Still), "no longer waiting");
+        assert_eq!(f.holds(s, now), None);
+        f.stills.insert("DP-1".into(), (now, Some(still(3))));
+        assert!(f.wait(now).is_some_and(|w| w <= STILL_KEEP));
+        f.prune(now + STILL_KEEP);
+        assert!(f.stills.is_empty(), "let go without another map");
+        assert_eq!(f.wait(now), None);
     }
 
     /// (lockmon) A surface showing a screen in a thumbnail holds its

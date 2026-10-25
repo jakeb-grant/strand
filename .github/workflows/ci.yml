@@ -413,7 +413,11 @@ jobs:
   # step runs on the runner only, never in the container scripts. A
   # runner without /dev/kvm fails here instead of emulating. Runs
   # nightly, on demand, on tags and on pushes and pull requests that
-  # touch the lock code or the harness.
+  # touch the lock code or the harness. (lockmon review) Its image's
+  # polkit 127 stage takes polkit's tag archive and meson's sdist, both
+  # sha256-pinned (Dockerfile.lockvm), so a cold build here runs nothing
+  # unpinned; a tag archive GitHub regenerates fails with a message
+  # saying so.
   lock-vm:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -441,6 +445,9 @@ jobs:
               - 'crates/strand-surface/src/manager/seat.rs'
               - 'crates/strand-surface/src/manager/mod.rs'
               - 'crates/strand-surface/src/manager/popup.rs'
+              # (lockmon review) A lock content's idle inhibitor, made at
+              # its first commit (a lock VM test pins it).
+              - 'crates/strand-surface/src/manager/idle.rs'
               # No GPU hand-off or lent handles for a lock surface.
               - 'crates/strand-surface/src/gpu_handoff.rs'
               - 'crates/**/*lock_fallback*'
@@ -477,7 +484,12 @@ jobs:
               - 'crates/strand-services-schema/src/greetd.schema'
               - 'crates/strand-compiler/src/check/lock.rs'
               # The lock's runtime rules: only an auth token unlocks,
-              # `open` held while locked, the write-back after Unlocked.
+              # `open` held while locked, the write-back after Unlocked;
+              # (lockmon) the lock's own logic run once, its instances'
+              # twin keys. The mount of a lock's instances (mount.rs) and
+              # render's twin routing (input.rs) change with most rounds
+              # and are not listed: the compiler's surfaces.rs and
+              # render's input tests pin them in every run.
               - 'crates/strand-compiler/src/instantiate/lock.rs'
               - 'scripts/lockvm/**'
               - 'scripts/container/*lockvm*'

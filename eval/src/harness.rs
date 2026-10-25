@@ -1127,10 +1127,21 @@ struct Harness {
     exec_answers: std::cell::RefCell<
         HashMap<String, std::collections::VecDeque<Result<serde_json::Value, String>>>,
     >,
-    /// (lockmon) The starts (wall time) of each action's commands the
-    /// sandbox counts as running, oldest first: from a call until `end
-    /// action <name>` (a recording's end) or `rec.stop()`.
-    sandbox_runs: std::cell::RefCell<HashMap<String, std::collections::VecDeque<SystemTime>>>,
+    /// (lockmon) Each detached action's command the sandbox counts as
+    /// running, as the shell's runner keeps them (`run/exec.rs`): one
+    /// running (its start, wall time), from a call until `end action
+    /// <name>` (a recording's end), and one re-run queued behind it,
+    /// which a call while it runs sets and `rec.stop()` drops.
+    sandbox_runs: std::cell::RefCell<HashMap<String, SandboxRun>>,
+}
+
+/// (lockmon review) A detached action's run in the sandbox, as the
+/// shell's runner keeps it: the command running (when it started) and
+/// whether a re-run is queued behind it.
+#[derive(Debug, Default, Clone, Copy)]
+struct SandboxRun {
+    started: Option<SystemTime>,
+    queued: bool,
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -2730,12 +2741,18 @@ impl Harness {
                 {
                     return Err(refused(self, format!("no action `{action}`")));
                 }
+                // The command running ends; the re-run queued behind it
+                // starts now, as the runner starts it.
+                let wall = self.wall(t);
                 let mut runs = self.sandbox_runs.borrow_mut();
-                let starts = runs.entry(action.clone()).or_default();
-                starts.pop_front();
-                let oldest = starts.front().copied();
+                let run = runs.entry(action.clone()).or_default();
+                if run.started.is_some() {
+                    run.started = run.queued.then_some(wall);
+                    run.queued = false;
+                }
+                let started = run.started;
                 drop(runs);
-                self.set_run(action, oldest);
+                self.set_run(action, started);
                 self.logic_owed = true;
             }
             StepKind::Leave => {
@@ -3611,15 +3628,17 @@ impl Harness {
             });
         }
         for x in self.inst.take_execs() {
-            // (lockmon) `rec.stop()`: its commands end at once.
+            // (lockmon) `rec.stop()`: the re-run queued goes; the
+            // command asked to stop runs until its end (`end action`),
+            // as the shell's runs until its program ends.
             if x.stop {
                 self.trace.commands.push(CommandRec {
                     k,
                     text: format!("stop {}", x.action),
                 });
-                self.sandbox_runs.borrow_mut().remove(&x.action);
-                self.set_run(&x.action, None);
-                self.logic_owed = true;
+                if let Some(run) = self.sandbox_runs.borrow_mut().get_mut(&x.action) {
+                    run.queued = false;
+                }
                 continue;
             }
             self.trace.commands.push(CommandRec {
@@ -3627,15 +3646,19 @@ impl Harness {
                 text: format!("exec {}: {:?}", x.action, x.argv),
             });
             // (lockmon) A detached command runs from its call until a
-            // step ends it (`end action`, a recording's end) or a stop.
+            // step ends it (`end action`, a recording's end); a call
+            // while one runs queues one re-run in place of any before.
             if x.reply.is_none() {
                 let wall = self.wall(t);
                 let mut runs = self.sandbox_runs.borrow_mut();
-                let starts = runs.entry(x.action.clone()).or_default();
-                starts.push_back(wall);
-                let oldest = starts.front().copied();
+                let run = runs.entry(x.action.clone()).or_default();
+                match run.started {
+                    Some(_) => run.queued = true,
+                    None => run.started = Some(wall),
+                }
+                let started = run.started;
                 drop(runs);
-                self.set_run(&x.action, oldest);
+                self.set_run(&x.action, started);
                 self.logic_owed = true;
             }
             // (flex review) The sandbox runs no command: a result

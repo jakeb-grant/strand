@@ -287,7 +287,8 @@ monitor, the keyboard always).
   error saying to add `screens: all`. A `screens:` expression that
   evaluates to `focused` keeps one instance that the compositor places
   on the focused monitor, its `screen` that monitor, changing in place
-  as focus moves (as the lock's does: nothing is mounted again).
+  as focus moves (as a lock's with `screens: focused` does: nothing is
+  mounted again).
   (decisions.md flex, 2026-10-24)
 - **`open:`** says whether a surface is shown. Bound two-way
   (`open: <-> open`), Escape, a click away and focus loss write `false`.
@@ -385,16 +386,25 @@ monitor, the keyboard always).
   `state`s are one for every instance: there is one password, typed
   into whichever monitor's lock the compositor gives the keys, and the
   keys or the pointer moving to another monitor carry on the same
-  text. A lock `state` therefore cannot start from `screen` or from a
-  `let` of the lock that reads it (a load error); its `let`s and its
-  elements' own state are each instance's. Every monitor not picked
+  text. A lock `state` (in its body or its elements) therefore cannot
+  start from `screen` or from any `let` of the lock (a load error); its
+  `let`s, its elements' own state and the `state`s of its `if`/`match`
+  branches, components and `for` bodies are each instance's. Its timers
+  and its `on change` and service handlers, in its body and its
+  elements, run once for the lock as its `state`s are one (a counter
+  steps once, not once per monitor), from the first instance shown,
+  paused while none is; they cannot read `screen`, a `let` or an
+  element of the lock (a load error). An element's own handlers
+  (`on key`, `on activate`) run on that monitor's instance. Every monitor not picked
   shows a solid in the lock's colour (its `bg`). `screens: focused`, or
   a pick that names no plugged monitor, keeps one instance on the
   focused monitor (else the first), whose `screen` changes in place
   when focus moves the content to another (nothing is mounted again, so
   what was typed stays; decisions.md flex, 2026-10-24, and lockmon,
   2026-10-25). A `thumbnail screen` in a lock shows a still of that
-  monitor taken just before the lock covered it; a monitor plugged in
+  monitor taken just before the lock covered it (the lock request waits
+  up to 500 ms for it, at most 1280×720, let go when the lock ends; only
+  monitors the lock's thumbnails show are taken); a monitor plugged in
   while locked has none and its thumbnail shows nothing. A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
   a lock is a warning, since popups never open on a lock surface. The

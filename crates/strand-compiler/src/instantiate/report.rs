@@ -66,28 +66,6 @@ impl Ctx {
         }
     }
 
-    /// (lockmon) `ident` is one monitor's instance of the lock
-    /// (`<prefix>[<screen>]`): its elements' twins are keyed without it.
-    pub(super) fn note_lock_instance(&self, ident: Rc<str>) {
-        if let Some(cut) = ident.rfind('[') {
-            let base: Rc<str> = ident[..cut].into();
-            self.lock_instances.borrow_mut().insert(ident, base);
-        }
-    }
-
-    /// (lockmon) The key an element of a lock's instance (its reload key,
-    /// `<instance>/…/e<n>`) shares with the same element on every other
-    /// monitor: the key without the instance's screen.
-    pub(super) fn twin_key(&self, key: &str) -> Option<String> {
-        self.lock_instances
-            .borrow()
-            .iter()
-            .find_map(|(inst, base)| {
-                let rest = key.strip_prefix(&**inst)?;
-                rest.starts_with('/').then(|| format!("{base}{rest}"))
-            })
-    }
-
     /// (report review) Whether `scope` is a lock surface's, or under one
     /// (a per-screen lock's instances are `ident[<screen>]`).
     pub(super) fn in_lock_scope(&self, scope: &str) -> bool {

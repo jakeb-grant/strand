@@ -1498,6 +1498,15 @@ impl SurfaceHost for Host {
     fn lock_changed(&mut self, state: strand_surface::LockState) {
         log::info!("session lock: {state:?}");
         self.lock.changed(state);
+        // (lockmon review) The lock's stills go when it ends, refused
+        // before it ever showed included, never kept for a later lock.
+        if matches!(
+            state,
+            strand_surface::LockState::Unlocked | strand_surface::LockState::Finished
+        ) && let Some(feeds) = &mut self.feeds
+        {
+            feeds.lock_ended(&mut self.renderer);
+        }
         if let Some(f) = &self.logic {
             f.send(ToLogic::LockState(crate::run::lock::session_lock(state)));
         }

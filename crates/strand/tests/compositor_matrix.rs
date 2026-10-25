@@ -1890,24 +1890,44 @@ fn modes_and_layouts_follow_the_compositor() {
             });
             run("swaymsg", &["mode", "default"]);
             own.until("sway's default mode", |m| m.mode.is_none());
+            // (lockmon review) A headless sway has no keyboard: one is
+            // plugged in (a virtual keyboard whose keymap names two
+            // layouts), so the layouts compared are sway's own, not two
+            // empty lists.
+            let dir = tempfile::tempdir().expect("a keymap dir");
+            let _keyboard = support::keyboard::Keyboard::with_layouts(
+                &live.socket,
+                dir.path(),
+                &["English (US)", "German"],
+            );
             // The first keyboard that names layouts (sway may put a null
             // in), as the adapter reads `get_inputs`.
-            let inputs = json("swaymsg", &["-t", "get_inputs", "-r"]);
-            let names: Vec<String> = inputs
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|i| i["type"] == "keyboard")
-                .map(|i| {
-                    i["xkb_layout_names"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|n| n.as_str().map(str::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .find(|n| !n.is_empty())
-                .unwrap_or_default();
+            let sways = || -> Vec<String> {
+                let inputs = json("swaymsg", &["-t", "get_inputs", "-r"]);
+                inputs
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|i| i["type"] == "keyboard")
+                    .map(|i| {
+                        i["xkb_layout_names"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|n| n.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .find(|n| !n.is_empty())
+                    .unwrap_or_default()
+            };
+            until("sway's keyboard names its layouts", || {
+                let n = sways();
+                (!n.is_empty())
+                    .then_some(())
+                    .ok_or_else(|| format!("sway lists no layouts: {n:?}"))
+            });
+            let names = sways();
+            assert_eq!(names, ["English (US)", "German"], "sway's own report");
             own.until("sway's layouts", |m| m.keyboard_layouts == names);
             eprintln!("matrix: sway's layouts: {names:?}");
         }
@@ -1965,6 +1985,14 @@ fn modes_and_layouts_follow_the_compositor() {
             let want = keyboard
                 .map(|k| text(&k["active_keymap"]))
                 .filter(|l| !l.is_empty());
+            // (lockmon review) Where Hyprland has a keyboard, it names a
+            // layout: the comparison is not `None == None`.
+            if keyboard.is_some() {
+                assert!(
+                    want.is_some(),
+                    "Hyprland's keyboard names no layout: {devices}"
+                );
+            }
             own.until("Hyprland's main keyboard's layout", |m| {
                 m.keyboard_layout == want
             });

@@ -2769,6 +2769,128 @@ fn a_faulting_monitors_lock_shows_the_solid() {
     assert_eq!(unlocks(&vm), 1, "{log}");
 }
 
+/// (lockmon review) A fault with no node of its own is still the lock's.
+/// In the lock's `screens:` pick it freezes every monitor's instance: the
+/// built-in field shows, and the right password unlocks (before, nothing
+/// saw it and the frozen lock ignored every key).
+#[test]
+fn a_fault_in_the_locks_screens_shows_the_fallback() {
+    let test = "lockmon_screens_fault";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = CONFIG.replace(
+        "  text pct(10 / zero)\n",
+        "  screens: 10 / zero > 0 ? [\"HEADLESS-1\"] : [\"none\"]\n",
+    );
+    let mut vm = Vm::with(test, "", &config);
+    vm.lock();
+    vm.content();
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.fallback();
+    vm.log_has("a runtime fault froze the lock");
+    vm.fallback_passwords();
+    assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
+}
+
+/// (lockmon review) A fault in an `if` of one monitor's instance (no
+/// node of its own): that monitor shows the solid, the other's lock
+/// carries on and unlocks.
+#[test]
+fn a_fault_in_one_monitors_if_shows_the_solid() {
+    let test = "lockmon_if_fault";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = MULTI.replace(
+        "  text pct(10 / (screen.name == \"HEADLESS-1\" ? 1 : zero))\n",
+        "  if 10 / (screen.name == \"HEADLESS-1\" ? 1 : zero) > 0 { text \"x\" }\n",
+    );
+    assert_ne!(config, MULTI);
+    let mut vm = Vm::with(test, "", &config);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked(&second, "the second monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.until_log("one monitor's lock shows the solid");
+    vm.until_locked(&second, "the solid where the instance faulted", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    vm.lock_passwords();
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("showing the built-in password field"),
+        "{log}"
+    );
+    assert_eq!(unlocks(&vm), 1, "{log}");
+}
+
+/// strand's PSS (KiB), from `smaps_rollup`.
+fn pss_kib(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("Pss:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// (lockmon review) What the lock's content on a second monitor costs,
+/// a tripwire (the budgets catch regressions, never cap a config):
+/// strand's PSS locked on two 1280×720 monitors with [`MULTI`]'s content
+/// on both (the default) less the same with `screens: focused` (the
+/// second a solid). Measured in the lock VM on 2026-10-25: 7,185 KiB
+/// (57,900 less 50,715; about two 1280×720 shm buffers), so the gate is
+/// 10 MiB (decisions.md lockmon review).
+const SECOND_MONITOR_KIB: u64 = 10 * 1024;
+
+#[test]
+fn the_locks_second_monitor_costs_one_surface() {
+    let test = "lockmon_memory";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let measure = |tag: &str, source: &str| -> u64 {
+        let mut vm = Vm::with(&format!("{test}_{tag}"), "", source);
+        let second = vm.sway.plug();
+        vm.until(&second, "the desktop on the second output", Shot::desktop);
+        vm.lock();
+        vm.content();
+        let want = if tag == "every" { LOCK_BG2 } else { LOCK_BG };
+        vm.until_locked(&second, "the second monitor's lock", true, |s| {
+            near(s.corner(), want)
+        });
+        // Its frames and buffers settle.
+        std::thread::sleep(Duration::from_secs(2));
+        let pid = vm.strand.pid().expect("strand runs");
+        let pss = pss_kib(pid);
+        vm.lock_passwords();
+        pss
+    };
+    let every = measure("every", MULTI);
+    let focused = measure(
+        "focused",
+        &MULTI.replace(
+            "  open: <-> locked\n",
+            "  open: <-> locked\n  screens: focused\n",
+        ),
+    );
+    let cost = every.saturating_sub(focused);
+    eprintln!(
+        "lock memory: every monitor {every} KiB, focused only {focused} KiB: \
+         the second monitor's lock costs {cost} KiB"
+    );
+    assert!(every > 0 && focused > 0, "no PSS read");
+    assert!(
+        cost <= SECOND_MONITOR_KIB,
+        "the second monitor's lock costs {cost} KiB, over its {SECOND_MONITOR_KIB} KiB tripwire"
+    );
+}
+
 /// (lockmon) [`CONFIG`] with a still of its monitor in the lock.
 fn still_config() -> String {
     CONFIG.replace(

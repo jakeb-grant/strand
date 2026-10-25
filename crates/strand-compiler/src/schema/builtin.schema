@@ -1776,11 +1776,14 @@ element osd: surface {
   let screen: Screen
   flags surface
 }
-/// The lock screen, on `ext-session-lock`. It is exempt from reload and
-/// fails closed.
+/// The lock screen, on `ext-session-lock`: on every monitor its
+/// `screens:` picks (every one by default), one instance a monitor
+/// sharing the lock's `state`s, timers and `on change` handlers. It is
+/// exempt from reload and fails closed.
 element lock: surface {
-  /// The monitor its content shows on: the focused one, else the first.
-  /// It follows the content when focus moves to another monitor.
+  /// The monitor this instance is on; with `screens: focused` (or a
+  /// pick no plugged monitor matches), the focused one, else the first,
+  /// changing in place as focus moves.
   let screen: Screen
   flags surface
 }

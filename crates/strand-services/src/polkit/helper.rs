@@ -68,6 +68,9 @@ pub struct Helper {
     /// setuid): used when there is no socket or it refuses the
     /// connection.
     pub program: Option<PathBuf>,
+    /// (lockmon review) Whose they are (root): the peer that answers on
+    /// the socket must be this uid, or nothing is sent to it.
+    pub owner: u32,
 }
 
 impl Helper {
@@ -107,7 +110,11 @@ impl Helper {
                     }
                 });
         if socket.is_some() || program.is_some() {
-            return Ok(Helper { socket, program });
+            return Ok(Helper {
+                socket,
+                program,
+                owner,
+            });
         }
         let socket_why = if socket_path.exists() {
             format!("{} is not a socket {}", socket_path.display(), whose(owner))
@@ -136,10 +143,10 @@ fn whose(owner: u32) -> String {
     }
 }
 
-/// `path` is a socket `owner` owns.
+/// `path` is a socket `owner` owns (itself, not a link to one).
 fn owned_socket(path: &Path, owner: u32) -> bool {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    std::fs::metadata(path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == owner)
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == owner)
 }
 
 /// Why `path` is not a setuid program `owner` owns, if it is not.
@@ -286,7 +293,11 @@ type Writer = Box<dyn AsyncWrite + Send + Unpin>;
 
 /// The helper for `user`, connected: through its socket when it exists
 /// and accepts, else the setuid program. The child is killed when it is
-/// dropped (the conversation ended or was abandoned).
+/// dropped (the conversation ended or was abandoned). (lockmon review)
+/// The socket's peer must be the helper's owner (`SO_PEERCRED`), checked
+/// before anything is written; one that is not is refused, with no
+/// setuid program tried instead: the trust is in who answers, not in
+/// the path seen when the store started.
 async fn open(
     helper: &Helper,
     user: &str,
@@ -294,6 +305,17 @@ async fn open(
     if let Some(socket) = &helper.socket {
         match tokio::net::UnixStream::connect(socket).await {
             Ok(s) => {
+                let peer = s.peer_cred()?.uid();
+                if peer != helper.owner {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "{} is answered by uid {peer}, not the uid {} that owns it",
+                            socket.display(),
+                            helper.owner
+                        ),
+                    ));
+                }
                 let (r, mut w) = s.into_split();
                 let mut first = Vec::with_capacity(user.len() + 1);
                 first.extend_from_slice(user.as_bytes());
@@ -502,6 +524,72 @@ mod tests {
         assert!(answer_line(&longest).is_some());
         let longer = Password::from("x".repeat(MAX_ANSWER + 1));
         assert!(refusal(&longer).is_some());
+    }
+
+    /// (lockmon review) The socket is used when it accepts and its peer
+    /// is the helper's owner; the setuid program only when connecting is
+    /// refused; a peer that is not the owner is refused with nothing
+    /// written and no program tried.
+    #[test]
+    fn the_socket_first_and_only_its_owners() {
+        use std::io::Read as _;
+        // SAFETY: getuid cannot fail.
+        let me = unsafe { libc::getuid() };
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent-helper.socket");
+        let program = dir.path().join("helper");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let both = Helper {
+            socket: Some(socket.clone()),
+            program: Some(program.clone()),
+            owner: me,
+        };
+        // Accepting, its peer the owner: the socket, the user's name on it.
+        let (_r, _w, child) = rt.block_on(open(&both, "tester")).unwrap();
+        assert!(child.is_none(), "the socket, not the program");
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut got = [0u8; 7];
+        peer.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"tester\n");
+        // Its peer another uid: refused, nothing written, no program.
+        let other = Helper {
+            owner: me.wrapping_add(1),
+            ..both.clone()
+        };
+        let e = rt.block_on(open(&other, "tester")).err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_millis(200)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        assert!(
+            matches!(peer.read(&mut buf), Ok(0)),
+            "nothing reaches a peer that is not the owner"
+        );
+        // Connecting refused (no one listens): the program.
+        drop(listener);
+        let (_r, _w, child) = rt.block_on(open(&both, "tester")).unwrap();
+        assert!(
+            child.is_some(),
+            "the setuid program when the socket refuses"
+        );
+        // A link to the socket is not the socket.
+        let link = dir.path().join("link.socket");
+        let _again = std::os::unix::net::UnixListener::bind(dir.path().join("real.socket"));
+        std::os::unix::fs::symlink(dir.path().join("real.socket"), &link).unwrap();
+        assert!(!owned_socket(&link, me));
+        assert!(owned_socket(&dir.path().join("real.socket"), me));
     }
 
     #[test]

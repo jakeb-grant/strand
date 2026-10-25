@@ -417,8 +417,10 @@ Also every prop and event of [`node`](#node).
 element lock: surface
 ```
 
-The lock screen, on `ext-session-lock`. It is exempt from reload and
-fails closed.
+The lock screen, on `ext-session-lock`: on every monitor its
+`screens:` picks (every one by default), one instance a monitor
+sharing the lock's `state`s, timers and `on change` handlers. It is
+exempt from reload and fails closed.
 
 It is a surface, written at the top level of a file.
 
@@ -426,7 +428,7 @@ Also every prop and event of [`surface`](#surface).
 
 | In scope | Type | |
 | --- | --- | --- |
-| `screen` | `Screen` | The monitor its content shows on: the focused one, else the first. It follows the content when focus moves to another monitor. |
+| `screen` | `Screen` | The monitor this instance is on; with `screens: focused` (or a pick no plugged monitor matches), the focused one, else the first, changing in place as focus moves. |
 
 ### `lottie`
 

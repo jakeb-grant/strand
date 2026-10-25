@@ -30,6 +30,26 @@ esac
 : >"$log"
 echo "polkit $version: $polkitd_bin" | tee -a "$log"
 
+# (lockmon review) Whatever way the scenario ends, an early `exit 1`
+# included, it leaves the guest as it found it for all.sh's next
+# scenarios: the daemons it started gone, this shell out of the session
+# scope, the test policy and the socket removed, and 124's helper setuid
+# again.
+polkitd= activator= helper124=/usr/lib/polkit-1/polkit-agent-helper-1 policy=
+cleanup() {
+  [ -n "$activator" ] && kill "$activator" 2>/dev/null
+  [ -n "$polkitd" ] && kill "$polkitd" 2>/dev/null
+  pkill -x dbus-daemon 2>/dev/null
+  [ -w /sys/fs/cgroup/cgroup.procs ] && echo $$ >/sys/fs/cgroup/cgroup.procs 2>/dev/null
+  [ -n "$policy" ] && rm -f "$policy"
+  if [ "$version" = 127 ]; then
+    chmod u+s "$helper124" 2>/dev/null
+    rm -f /run/polkit/agent-helper.socket
+  fi
+  return 0
+}
+trap cleanup EXIT
+
 mountpoint -q /sys/fs/cgroup || mount -t cgroup2 cgroup2 /sys/fs/cgroup || exit 1
 scope=/sys/fs/cgroup/user.slice/user-1000.slice/session-1.scope
 mkdir -p "$scope"
@@ -95,9 +115,7 @@ dbus-uuidgen --ensure
 dbus-daemon --system --fork --nopidfile || exit 1
 "$polkitd_bin" --no-debug >>"$log" 2>&1 &
 polkitd=$!
-activator=
 if [ "$version" = 127 ]; then
-  helper124=/usr/lib/polkit-1/polkit-agent-helper-1
   chmod u-s "$helper124" || exit 1
   ls -l "$helper124" | tee -a "$log"
   mkdir -p /run/polkit
@@ -130,14 +148,8 @@ as_tester env STRAND_LOCK_VM_POLKIT="$version" "$VM_AUTH_TEST" polkit --test-thr
   2>&1 | tee -a "$log"
 status=${PIPESTATUS[0]}
 
-[ -n "$activator" ] && kill "$activator" 2>/dev/null
-kill "$polkitd" 2>/dev/null
-pkill -x dbus-daemon 2>/dev/null
-echo $$ >/sys/fs/cgroup/cgroup.procs
-rm -f "$policy"
+cleanup
 if [ "$version" = 127 ]; then
-  chmod u+s "$helper124"
-  rm -f /run/polkit/agent-helper.socket
   # The helper ran: systemd-socket-activate says so for each connection
   # ("Execing /opt/polkit127/…/polkit-agent-helper-1 (…)").
   if ! grep -q 'Execing /opt/polkit127/lib/polkit-1/polkit-agent-helper-1' "$log"; then

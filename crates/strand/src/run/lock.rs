@@ -65,6 +65,13 @@ use super::*;
 /// first frame within 1 s").
 pub(crate) const FIRST_FRAME: Duration = Duration::from_secs(1);
 
+/// (lockmon review) How long one monitor's instance has to draw its first
+/// frame, from its surface's first configure, while another monitor's
+/// lock works: longer than [`FIRST_FRAME`], since a password field is
+/// up elsewhere, so a slow build or a busy GPU is not failed for the
+/// whole lock session (failing shows the solid until the unlock).
+pub(crate) const INSTANCE_FIRST_FRAME: Duration = Duration::from_secs(3);
+
 /// While a lock is shown, a heartbeat goes to logic this long after the
 /// last one was answered.
 pub(crate) const BEAT_EVERY: Duration = Duration::from_secs(1);
@@ -87,6 +94,10 @@ static BEAT: AtomicU64 = AtomicU64::new(0);
 /// Nodes of the runtime faults logic met while a lock was shown, for the
 /// main thread to match against the lock's subtree.
 static FAULTS: Mutex<Vec<NodeId>> = Mutex::new(Vec::new());
+
+/// (lockmon review) At most this many fault nodes wait for their lock
+/// instance's content (cleared when the lock ends).
+const MAX_FAULTS: usize = 4096;
 
 /// strand-surface's report as the compiler's (the compiler does not
 /// depend on strand-surface).
@@ -114,15 +125,25 @@ impl Shell {
         self.inst.set_session_lock(state);
     }
 
-    /// A step's runtime faults, while a lock is shown: their nodes go to
-    /// the main thread, which shows the fallback for one inside the lock
-    /// (its component is frozen, so its password field may be dead).
+    /// A step's runtime faults, while a lock is shown: the nodes each
+    /// takes out go to the main thread, which shows the solid or the
+    /// fallback for one inside the lock (its scope is frozen, so its
+    /// password field may be dead). (lockmon review) By the scope a fault
+    /// freezes, not only its node: a fault with no node (an `if`'s, a
+    /// `for`'s, the lock's `screens:` pick or its own timers) freezes its
+    /// instance, or the whole lock, all the same.
     pub(super) fn lock_faults(&self, errors: &[strand_compiler::instantiate::RuntimeError]) {
         if errors.is_empty() || !self.inst.lock_shown() {
             return;
         }
         if let Ok(mut f) = FAULTS.lock() {
-            f.extend(errors.iter().filter_map(|e| e.node));
+            for e in errors {
+                for n in self.inst.fault_nodes(e) {
+                    if f.len() < MAX_FAULTS && !f.contains(&n) {
+                        f.push(n);
+                    }
+                }
+            }
         }
     }
 
@@ -523,10 +544,11 @@ pub(crate) struct LockScreen {
     /// first-frame deadline again).
     drew: bool,
     /// (lockmon) The content surfaces that committed a frame with
-    /// damage, and when each was first seen: one that has not drawn
-    /// [`FIRST_FRAME`] after while another did fails its instance.
+    /// damage, and (lockmon review) when each surface was first
+    /// configured: a content that has not drawn [`INSTANCE_FIRST_FRAME`]
+    /// after while another did fails its instance.
     drew_on: std::collections::HashSet<SurfaceId>,
-    seen: std::collections::HashMap<SurfaceId, Instant>,
+    configured_at: std::collections::HashMap<SurfaceId, Instant>,
     /// When the main loop first saw this lock asked for or held (the
     /// first-frame deadline's start): the first frame's time is logged.
     asked: Option<Instant>,
@@ -594,7 +616,6 @@ impl LockScreen {
         if (node == LOCK_FALLBACK_NODE || kind == Some(NodeKind::Lock)) && !self.on_content(surface)
         {
             self.contents.push((surface, node));
-            self.seen.entry(surface).or_insert_with(Instant::now);
             if let Some(f) = &mut self.fallback {
                 f.dirty();
             }
@@ -605,7 +626,7 @@ impl LockScreen {
         self.nodes.remove(&surface);
         self.contents.retain(|(s, _)| *s != surface);
         self.drew_on.remove(&surface);
-        self.seen.remove(&surface);
+        self.configured_at.remove(&surface);
     }
 
     /// The lock's contents as strand-surface made them
@@ -619,10 +640,6 @@ impl LockScreen {
             .collect();
         if contents == self.contents {
             return;
-        }
-        let now = Instant::now();
-        for (s, _) in &contents {
-            self.seen.entry(*s).or_insert(now);
         }
         self.contents = contents;
         if let Some(f) = &mut self.fallback {
@@ -638,6 +655,9 @@ impl LockScreen {
 
     /// A content was configured (a new size): the fallback repaints it.
     pub(crate) fn configured(&mut self, surface: SurfaceId) {
+        self.configured_at
+            .entry(surface)
+            .or_insert_with(Instant::now);
         if let Some(f) = &mut self.fallback {
             f.clean.remove(&surface);
         }
@@ -906,7 +926,7 @@ impl LockScreen {
         self.pending = None;
         self.drew = false;
         self.drew_on.clear();
-        self.seen.clear();
+        self.configured_at.clear();
         self.asked = None;
         // The helper goes with the lock session, and its checks still in
         // flight answer for a session that has ended.
@@ -1099,8 +1119,9 @@ impl Guard {
                 state.host_mut().lock.reset();
                 // (lockmon) The screens' stills from before the lock go
                 // with it.
-                if let Some(feeds) = &mut state.host_mut().feeds {
-                    feeds.lock_ended();
+                let host = state.host_mut();
+                if let Some(feeds) = &mut host.feeds {
+                    feeds.lock_ended(&mut host.renderer);
                 }
             }
             state.host_mut().lock.idle();
@@ -1228,42 +1249,26 @@ impl Guard {
 
     /// (lockmon) The lock's instances that failed while another still
     /// works, and why: a runtime fault inside one, its node gone from
-    /// render's tree, or no first frame on its surface [`FIRST_FRAME`]
-    /// after it was made while another content drew. The faults seen go.
+    /// render's tree, or (lockmon review) no first frame on its surface
+    /// [`INSTANCE_FIRST_FRAME`] after its first configure while another
+    /// content drew. The faults inside a
+    /// content go; (lockmon review) one inside no content yet (an
+    /// instance whose surface is still to come, a monitor plugged in
+    /// while locked) waits for it, so its frozen scene never counts as
+    /// healthy.
     fn failed_instances(&self, state: &State<Host>, now: Instant) -> Vec<(NodeId, String)> {
         let host = state.host();
-        let screen = &host.lock;
-        let tree = host.renderer.tree();
         let faults = FAULTS.lock().map(|mut f| std::mem::take(&mut *f));
         let faults = faults.unwrap_or_default();
-        let mut bad: Vec<(NodeId, String)> = screen
-            .contents
-            .iter()
-            .filter_map(|(_, n)| Some((*n, instance_fault(tree, *n, &faults)?)))
-            .collect();
-        let healthy = |s: &SurfaceId, n: &NodeId| {
-            screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n)
-        };
-        if screen.contents.iter().any(|(s, n)| healthy(s, n)) {
-            for (s, n) in &screen.contents {
-                let late = screen
-                    .seen
-                    .get(s)
-                    .is_some_and(|t| now.saturating_duration_since(*t) >= FIRST_FRAME);
-                if late && !screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n) {
-                    bad.push((
-                        *n,
-                        format!(
-                            "it drew no first frame within {} ms",
-                            FIRST_FRAME.as_millis()
-                        ),
-                    ));
+        let (bad, waiting) = failing(&host.lock, host.renderer.tree(), &faults, now);
+        if !waiting.is_empty()
+            && let Ok(mut f) = FAULTS.lock()
+        {
+            for n in waiting {
+                if f.len() < MAX_FAULTS && !f.contains(&n) {
+                    f.push(n);
                 }
             }
-        }
-        // Never the last one: that is the fallback's ([`Guard::reason`]).
-        if bad.len() >= screen.contents.len() {
-            return Vec::new();
         }
         bad
     }
@@ -1367,6 +1372,51 @@ fn marker_step(marked: bool, active: bool) -> Option<Marker> {
     } else {
         None
     }
+}
+
+/// (lockmon) [`Guard::failed_instances`] on `screen`, `tree` and the
+/// fault nodes `faults` at `now`: the instances that failed while another
+/// works, and the faults inside no content yet (kept for when it comes).
+fn failing(
+    screen: &LockScreen,
+    tree: &strand_render::SceneTree,
+    faults: &[NodeId],
+    now: Instant,
+) -> (Vec<(NodeId, String)>, Vec<NodeId>) {
+    let mut bad: Vec<(NodeId, String)> = screen
+        .contents
+        .iter()
+        .filter_map(|(_, n)| Some((*n, instance_fault(tree, *n, faults)?)))
+        .collect();
+    let waiting: Vec<NodeId> = faults
+        .iter()
+        .copied()
+        .filter(|f| !screen.contents.iter().any(|(_, n)| inside(tree, *f, *n)))
+        .collect();
+    let healthy =
+        |s: &SurfaceId, n: &NodeId| screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n);
+    if screen.contents.iter().any(|(s, n)| healthy(s, n)) {
+        for (s, n) in &screen.contents {
+            let late = screen
+                .configured_at
+                .get(s)
+                .is_some_and(|t| now.saturating_duration_since(*t) >= INSTANCE_FIRST_FRAME);
+            if late && !screen.drew_on.contains(s) && !bad.iter().any(|(b, _)| b == n) {
+                bad.push((
+                    *n,
+                    format!(
+                        "it drew no first frame within {} ms of its configure",
+                        INSTANCE_FIRST_FRAME.as_millis()
+                    ),
+                ));
+            }
+        }
+    }
+    // Never the last one: that is the fallback's ([`Guard::reason`]).
+    if bad.len() >= screen.contents.len() {
+        bad.clear();
+    }
+    (bad, waiting)
 }
 
 /// (lockmon) What failed the lock's instance `node`: its node gone from
@@ -1710,6 +1760,63 @@ mod tests {
             Some(2),
             "one password from both monitors"
         );
+    }
+
+    /// (lockmon review) One monitor's instance fails when a fault is
+    /// inside it (one inside no content yet waits for its content) or
+    /// when it has not drawn `INSTANCE_FIRST_FRAME` after its first
+    /// configure while another drew; the deadline starts at the
+    /// configure, not at the attach, and never the last instance.
+    #[test]
+    fn one_monitors_instance_fails_by_its_faults_and_its_first_frame() {
+        use strand_scene::{PropValue, SceneDiff};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let fonts = strand_text::FontConfig::isolated(vec![std::sync::Arc::new(font)]);
+        let engine = strand_text::TextEngine::new(fonts);
+        let mut r =
+            strand_render::Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (la, lb, la_text, later) = (
+            NodeId::new(1, 0),
+            NodeId::new(2, 0),
+            NodeId::new(3, 0),
+            NodeId::new(9, 0),
+        );
+        let mut d = SceneDiff::default();
+        d.create(la, NodeKind::Lock, None, u32::MAX);
+        d.create(lb, NodeKind::Lock, None, u32::MAX);
+        d.create(la_text, NodeKind::Text, Some(la), u32::MAX);
+        d.set(la_text, Prop::Text, PropValue::Text("x".into()));
+        assert!(r.apply(d).is_empty());
+        let tree = r.tree();
+        let mut s = LockScreen::default();
+        let (a, b) = (SurfaceId(3), SurfaceId(4));
+        s.attached(a, la, Some(NodeKind::Lock));
+        s.attached(b, lb, Some(NodeKind::Lock));
+        let now = Instant::now();
+        // A fault inside `a`'s text: `a` fails; one in no content waits.
+        let (bad, waiting) = failing(&s, tree, &[la_text, later], now);
+        assert_eq!(bad.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [la]);
+        assert_eq!(waiting, [later]);
+        // Both faulted: none here (the fallback's).
+        let (bad, _) = failing(&s, tree, &[la, lb], now);
+        assert!(bad.is_empty());
+        // `a` drew, `b` not: not failed before its configure, nor before
+        // the deadline after it.
+        s.painted(a, &Damage::full(Size::new(4, 4)));
+        let late = now + INSTANCE_FIRST_FRAME * 2;
+        assert!(
+            failing(&s, tree, &[], late).0.is_empty(),
+            "never configured"
+        );
+        s.configured(b);
+        let configured = s.configured_at[&b];
+        assert!(
+            failing(&s, tree, &[], configured + FIRST_FRAME)
+                .0
+                .is_empty()
+        );
+        let (bad, _) = failing(&s, tree, &[], configured + INSTANCE_FIRST_FRAME);
+        assert_eq!(bad.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [lb]);
     }
 
     /// The content made again on another output after its node left

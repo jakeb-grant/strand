@@ -13,7 +13,7 @@
 # with snapshot=on: every run starts from the same disk.
 #
 # (lockmon) A stage before them builds polkit 127 from its release
-# tarball (sha256-pinned) into /opt/polkit127, which the guest gets
+# tarball (sha256-pinned, with meson's sdist pinned too) into /opt/polkit127, which the guest gets
 # beside Ubuntu's own polkit 124: polkit.sh runs once with each, 124's
 # setuid helper and 127's socket-activated one
 # (/run/polkit/agent-helper.socket), so both ways Strand's agent reaches
@@ -25,16 +25,32 @@ FROM ubuntu:24.04 AS polkit127
 ENV DEBIAN_FRONTEND=noninteractive
 ARG POLKIT_VERSION=127
 ARG POLKIT_SHA256=9b7bc16f086479dcc626c575976568ba4a85d34297a750d8ab3d2e57f6d8b988
+# (lockmon review) polkit 127 needs meson 1.4 or later; Ubuntu 24.04 has
+# 1.3.2. Meson runs from its sha256-pinned release sdist (PyPI's), not
+# pip: nothing unpinned runs in the stage that builds the helper.
+ARG MESON_VERSION=1.4.2
+ARG MESON_SHA256=ea2546a26f4a171a741c1fd036f22c9c804d6198e3259f1df588e01f842dd69f
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl python3-pip ninja-build gcc \
+ && apt-get install -y --no-install-recommends ca-certificates curl python3 ninja-build gcc \
       pkg-config perl gettext libglib2.0-dev libexpat1-dev libpam0g-dev \
       duktape-dev libsystemd-dev \
  && rm -rf /var/lib/apt/lists/*
-# polkit 127 needs meson 1.4 or later; Ubuntu 24.04 has 1.3.2.
-RUN pip3 install --no-cache-dir --break-system-packages meson==1.4.2
+RUN curl -fsSL -o /tmp/meson.tar.gz \
+      "https://files.pythonhosted.org/packages/source/m/meson/meson-${MESON_VERSION}.tar.gz" \
+ && echo "${MESON_SHA256}  /tmp/meson.tar.gz" | sha256sum -c - \
+ && tar xzf /tmp/meson.tar.gz -C /opt \
+ && printf '#!/bin/sh\nexec python3 /opt/meson-%s/meson.py "$@"\n' "${MESON_VERSION}" \
+      >/usr/local/bin/meson \
+ && chmod 0755 /usr/local/bin/meson \
+ && meson --version
+# GitHub's tag archives are not promised byte-stable (2023's compression
+# change broke such pins): a mismatch says so rather than only failing.
 RUN curl -fsSL -o /tmp/polkit.tar.gz \
       "https://github.com/polkit-org/polkit/archive/refs/tags/${POLKIT_VERSION}.tar.gz" \
- && echo "${POLKIT_SHA256}  /tmp/polkit.tar.gz" | sha256sum -c - \
+ && { echo "${POLKIT_SHA256}  /tmp/polkit.tar.gz" | sha256sum -c - \
+      || { echo "Dockerfile.lockvm: polkit ${POLKIT_VERSION}'s tag archive no longer matches POLKIT_SHA256" \
+              "(GitHub may have regenerated it): diff it against the tag, then update the pin" >&2; \
+           exit 1; }; } \
  && tar xzf /tmp/polkit.tar.gz -C /tmp \
  && cd "/tmp/polkit-${POLKIT_VERSION}" \
  && meson setup build --prefix=/opt/polkit127 --libdir=lib \

@@ -1733,10 +1733,14 @@ wait 1500
 
 /// (lockmon) The sandbox runs no command: a detached action's command
 /// counts as running from its call until `end action <name>` (a
-/// recording's end) or `rec.stop()`, so `rec.running` reads as the
-/// shell's did; the stop is in the trace's commands.
+/// recording's end), so `rec.running` reads as the shell's did. (lockmon
+/// review) As the shell's runner, it runs one command of an action at a
+/// time with one re-run queued behind it (a call while one runs replaces
+/// the queued one), and `rec.stop()` drops the queued re-run while the
+/// stopped command runs until its end; the stop is in the trace's
+/// commands.
 #[test]
-fn an_actions_run_lasts_until_its_end_or_its_stop() {
+fn an_actions_run_lasts_until_its_end() {
     let text = |steps: &str| {
         format!(
             r##"id = "action-run"
@@ -1747,8 +1751,10 @@ permit exec "wf-recorder"
 action rec() ["wf-recorder"]
 export state go = 0
 export state halt = 0
+export state again = 0
 on change go {{ rec() }}
 on change halt {{ rec.stop() }}
+on change again {{ rec.stop(); rec() }}
 bar Top {{
   height: 30
   row {{
@@ -1770,16 +1776,36 @@ rest
     assert!(drawn_last(&t, "on") && !drawn_last(&t, "off"));
     let t = go(&text("end action rec"));
     assert!(drawn_last(&t, "off") && !drawn_last(&t, "on"));
-    // Two calls: one end leaves the other running.
+    // Two calls: one end leaves the queued re-run running.
     let t = go(&text("set go 2\nrest\nend action rec"));
     assert!(drawn_last(&t, "on"));
-    let t = go(&text("set go 2\nrest\nset halt 1"));
+    // Three calls are two commands, as the runner makes them: two ends
+    // end them.
+    let t = go(&text(
+        "set go 2\nrest\nset go 3\nrest\nend action rec\nrest\nend action rec",
+    ));
     assert!(drawn_last(&t, "off"));
+    // A stop: the command runs until its end, and nothing after it.
+    let t = go(&text("set halt 1"));
+    assert!(drawn_last(&t, "on"));
     assert!(
         t.commands.iter().any(|c| c.text == "stop rec"),
         "{:?}",
         t.commands
     );
+    let t = go(&text("set go 2\nrest\nset halt 1\nrest\nend action rec"));
+    assert!(drawn_last(&t, "off"), "the queued re-run was dropped");
+    // A stop then a call (`{ rec.stop(); rec(f) }`): running through the
+    // stopped command's end, then the new one's.
+    let t = go(&text("set again 1\nrest\nend action rec"));
+    assert!(
+        drawn_last(&t, "on"),
+        "the new call runs after the stopped one"
+    );
+    let t = go(&text(
+        "set again 1\nrest\nend action rec\nrest\nend action rec",
+    ));
+    assert!(drawn_last(&t, "off"));
     let sc = scenario(&text("end action nope"));
     let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
     assert!(e.contains("no action `nope`"), "{e}");

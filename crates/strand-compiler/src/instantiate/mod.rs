@@ -313,6 +313,9 @@ pub(crate) struct Ctx {
     /// (lockmon) Each mounted instance of the lock (`<prefix>[<screen>]`)
     /// and its prefix, for [`SceneProp::Twin`] keys.
     pub(crate) lock_instances: RefCell<HashMap<Rc<str>, Rc<str>>>,
+    /// (lockmon) The lock's own timers and handlers, run once for all
+    /// its instances ([`lock::LockLogic`]).
+    pub(crate) lock_logic: RefCell<Option<Rc<lock::LockLogic>>>,
     /// (history) The instance's kept graph histories (shared by every
     /// `Ctx` of its reloads; set by the boot).
     pub(crate) history: RefCell<Rc<history::Histories>>,
@@ -787,6 +790,7 @@ impl Ctx {
             secret_cells: RefCell::default(),
             lock_scopes: RefCell::default(),
             lock_instances: RefCell::default(),
+            lock_logic: RefCell::default(),
             history: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
@@ -2190,6 +2194,26 @@ impl Instance {
             em.set(n, SceneProp::Border, fault_outline(), Transition::Instant);
         }
         frozen
+    }
+
+    /// (lockmon review) The scene nodes fault `err` takes out: the top
+    /// nodes of the scope it freezes (every instance of the lock, for a
+    /// fault in the lock's own scope: its `screens:` pick, its `state`s,
+    /// its timers and handlers; one monitor's lock for a fault inside
+    /// that instance, an `if`'s or a `for`'s included), else the node
+    /// whose prop or handler failed. Empty for a fault at the config's
+    /// top level with no node.
+    pub fn fault_nodes(&self, err: &RuntimeError) -> Vec<strand_scene::NodeId> {
+        let mut nodes = match err.scope {
+            Some(s) => self.ctx.em.borrow().scope_nodes(s),
+            None => Vec::new(),
+        };
+        if let Some(n) = err.node
+            && !nodes.contains(&n)
+        {
+            nodes.push(n);
+        }
+        nodes
     }
 
     /// Resume a scope [`Instance::freeze`] froze and take its outline off.

@@ -1516,23 +1516,16 @@ impl Ctx {
         // A reload keeps the node this element was (same place in the
         // instance tree, same identity, same kind).
         let key: Rc<str> = format!("{}/e{}", env.ident(), self.sid(e.file, e.span)).into();
+        // (lockmon) The key a lock instance's input shares with its twins.
+        let twin = match kind == NodeKind::Input {
+            true => self.twin_key(&key),
+            false => None,
+        };
         let claimed = self.claim_node(&key, kind);
         let id = self
             .em
             .borrow_mut()
             .create_with(frag, kind, claimed.as_ref().map(|c| c.0));
-        // (lockmon) An `input` of a lock's instance names its twins: the
-        // same input on every other monitor, one text between them.
-        if kind == NodeKind::Input
-            && let Some(twin) = self.twin_key(&key)
-        {
-            self.em.borrow_mut().set(
-                id,
-                SceneProp::Twin,
-                PropValue::Text(twin),
-                Transition::Instant,
-            );
-        }
         // (M5) A child of an element holding a `for` that is not one of
         // its rows (a header beside a column's cards, a dock item's icon
         // beside its window dots) is that element's own content: a drag
@@ -1653,6 +1646,21 @@ impl Ctx {
         {
             self.bind_shown(rt, id, &state, env, (e.file, e.span));
         }
+        // (lockmon) An `input` of a lock's instance whose text is the
+        // lock's one `state` (or a top-level one) names its twins: the
+        // same input on every other monitor, one text between them. One
+        // bound to a component's or a `for` item's own state, which each
+        // monitor has its own of, has none.
+        if let Some(twin) = twin
+            && self.shares_text(e, env)
+        {
+            self.em.borrow_mut().set(
+                id,
+                SceneProp::Twin,
+                PropValue::Text(twin),
+                Transition::Instant,
+            );
+        }
         let mut two_way = Vec::new();
         for p in e.props.iter().chain(e.arg.iter()) {
             if let (Some(sp), Some(tw)) = (p.prop, &p.two_way) {
@@ -1769,6 +1777,14 @@ impl Ctx {
         };
         let on_demand = matches!(e.kind, ElementKind::Builtin(NodeKind::Popup));
         let is_lock = matches!(e.kind, ElementKind::Builtin(NodeKind::Lock));
+        if is_lock {
+            let (weak, scene) = (Rc::downgrade(self), ec.scene);
+            rt.on_cleanup(move || {
+                if let Some(ctx) = weak.upgrade() {
+                    ctx.lock_logic_gone(scene);
+                }
+            });
+        }
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
@@ -1797,6 +1813,11 @@ impl Ctx {
             // mount that starts open (a reload) is not one.
             if is_lock && is_open && prev == Some(false) {
                 me.lock_opened();
+            }
+            // (lockmon) The lock's own logic runs while any of its
+            // instances shows.
+            if is_lock {
+                me.lock_logic_shown(rt, ec.scene, is_open);
             }
             if is_open {
                 me.set_held(rt, token, true);
@@ -3902,6 +3923,18 @@ impl Ctx {
             Ok(out)
         });
         let lock_children = lock.then(|| element.clone());
+        // (lockmon) The lock's own timers and `on change` and service
+        // handlers, beside its `state`s, run once in the lock's scope;
+        // each monitor's instance mounts the rest.
+        let mut logic = Vec::new();
+        let element = match lock {
+            true => {
+                let mut e = (*element).clone();
+                e.children = super::lock::lock_logic(&e.children, &mut logic);
+                Arc::new(e)
+            }
+            false => element,
+        };
         let item: ItemMount = Rc::new(move |ctx, rt, env, frag, v| {
             let mut extra = extra.clone();
             // The instance's own pin wins over the bar's `screens:`.
@@ -3956,6 +3989,7 @@ impl Ctx {
                     lenv.set_fault_bound();
                     ctx.note_env(&lenv);
                     ctx.declare_only(rt, &children.children, &lenv, Decls::States);
+                    ctx.set_lock_logic(rt, &lenv, logic);
                     ctx.mount_keyed(rt, frag, &lenv, keyed);
                 });
             }
@@ -4258,7 +4292,13 @@ impl Ctx {
         }
     }
 
-    fn mount_timer(self: &Rc<Self>, rt: &Runtime, t: &Timer, env: &Rc<Env>, el: Option<&ElemCtx>) {
+    pub(crate) fn mount_timer(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        t: &Timer,
+        env: &Rc<Env>,
+        el: Option<&ElemCtx>,
+    ) {
         let (ctx, e, duration, kind) = (self.clone(), env.clone(), t.duration, t.kind);
         let word = match kind {
             TimerKind::After => "after",
@@ -4749,9 +4789,6 @@ fn slot_elements(nodes: &[Node], out: &mut std::collections::BTreeSet<crate::hir
     }
 }
 
-/// The `let`s and `state`s of a body: in elements and `if`/`match`
-/// branches, not in `for` items or components (they have their own
-/// scope).
 /// Which declarations [`Ctx::declare_only`] makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Decls {
@@ -4760,6 +4797,9 @@ pub(crate) enum Decls {
     Lets,
 }
 
+/// The `let`s and `state`s of a body: in its elements, not in `if`/
+/// `match` branches (each branch declares its own as it mounts), `for`
+/// items or components (they have their own scope).
 fn collect_decls<'a>(
     nodes: &'a [Node],
     lets: &mut Vec<(DefId, ChunkId)>,
