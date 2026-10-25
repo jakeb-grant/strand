@@ -1,0 +1,45 @@
+/// A login screen for greetd: when Strand runs as greetd's greeter, its
+/// socket (`$GREETD_SOCK`) logs a user in and starts their session.
+/// greetd's PAM conversation shows as it goes (`prompt`, `message`), and
+/// each answer is wiped once sent. Once a session starts, Strand exits
+/// so greetd can run it.
+service greetd {
+  /// greetd answers: Strand runs as its greeter. False otherwise, when
+  /// every action fails with `error`.
+  available: bool
+  /// The user being logged in (`greetd.login(user)`), or "".
+  user: text
+  /// What greetd asks ("Password: "), as PAM says it; "" while it asks
+  /// nothing.
+  prompt: text
+  /// The answer to `prompt` may be shown as it is typed (a visible
+  /// question, such as a name), not a secret one.
+  echo: bool
+  /// What PAM last told the user ("Place your finger on the fingerprint
+  /// reader", "You are required to change your password"), or "".
+  message: text
+  /// greetd is busy with a request: checking an answer, starting the
+  /// session.
+  busy: bool
+  /// The last answer was refused (greetd then asks the same user
+  /// again), or a login or session could not start; `error` says why.
+  /// It stays until the next answer or login.
+  failed: bool
+  /// Why the last request failed, as greetd says it, or "".
+  error: text
+  /// Starts logging `user` in (a login already under way is dropped):
+  /// greetd then asks its questions through `prompt`.
+  action login(user: text)
+  /// Answers `prompt` with `answer`, or the next question greetd asks:
+  /// `input { type: password; text: <-> pw; on activate {
+  /// greetd.submit(pw); pw = "" } }`. Ignored while one is being checked.
+  action submit(answer: text)
+  /// Starts `command` as the user's session (`["sway"]`) once the login
+  /// succeeds: called with the last answer, it waits for greetd to
+  /// accept it; a login that fails drops it. Strand then exits. Each
+  /// word is one word, as given (`["sh", "-c", "sway > log"]` for a
+  /// shell line); greetd runs it after the user's `~/.profile`.
+  action start(command: [text])
+  /// Drops the login under way.
+  action cancel()
+}

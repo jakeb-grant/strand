@@ -1175,6 +1175,76 @@ provisional service idle {
   fn after(timeout: duration) -> bool
 }
 
+/// A polkit request a password dialog shows.
+provisional record PolkitRequest {
+  /// The polkit action asked for.
+  action_id: text
+  /// What polkit says it is for.
+  message: text
+  /// The icon the program named for it, or "".
+  icon: text
+  /// The user whose password is asked for.
+  user: text
+  /// Every user polkit would take a password from for it.
+  users: [text]
+  /// What the password check asks, or "".
+  prompt: text
+  /// The answer to `prompt` may be shown as it is typed.
+  echo: bool
+  /// What PAM last told the user, or "".
+  info: text
+}
+
+/// Strand's own polkit authentication agent.
+provisional service polkit {
+  /// The request being answered, or null.
+  request: PolkitRequest?
+  /// How many more requests wait behind `request`.
+  waiting: int
+  /// An answer is being checked.
+  busy: bool
+  /// The last answer was refused.
+  failed: bool
+  /// Strand is this session's polkit agent.
+  available: bool
+  /// Why Strand is not the agent, or why a request could not be answered.
+  error: text
+  /// Answers `request.prompt` with `answer`.
+  action respond(answer: text)
+  /// Dismisses `request`.
+  action cancel()
+  /// Asks for `user`'s password instead.
+  action choose(user: text)
+}
+
+/// A login screen over greetd's socket.
+provisional service greetd {
+  /// greetd answers: Strand runs as its greeter.
+  available: bool
+  /// The user being logged in, or "".
+  user: text
+  /// What greetd asks, or "".
+  prompt: text
+  /// The answer to `prompt` may be shown as it is typed.
+  echo: bool
+  /// What PAM last told the user, or "".
+  message: text
+  /// greetd is busy with a request.
+  busy: bool
+  /// The last answer was refused (the user is asked again).
+  failed: bool
+  /// Why the last request failed, or "".
+  error: text
+  /// Starts logging `user` in.
+  action login(user: text)
+  /// Answers `prompt` with `answer`.
+  action submit(answer: text)
+  /// Starts `command` as the user's session once the login succeeds.
+  action start(command: [text])
+  /// Drops the login under way.
+  action cancel()
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.

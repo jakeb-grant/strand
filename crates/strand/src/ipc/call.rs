@@ -8,9 +8,10 @@
 //! read by the parameters' types as `strand set` reads a value
 //! (`Instance::set_text`, `parse_text`), a bad one refused naming the
 //! parameter and its type (an enum's closest variant offered). Left-out
-//! parameters with a default take the schema's default. The lock's
-//! `auth` actions are refused: a password is typed into the lock, never
-//! sent over the socket (decisions.md m5-ipc).
+//! parameters with a default take the schema's default. The actions of
+//! the secret services (`auth`, and (services-round) `polkit` and
+//! `greetd`: `strand_services::secret`) are refused: a password is typed
+//! into the shell, never sent over the socket (decisions.md m5-ipc).
 //!
 //! Actions return nothing, so the answer is `{"ok": true}`, which
 //! `--json` prints; without it a call that went ahead prints nothing.
@@ -33,9 +34,6 @@ pub(crate) struct Call {
     pub action: String,
     pub args: Vec<Value>,
 }
-
-/// Services whose actions the socket does not run.
-const NOT_FROM_IPC: &[&str] = &["auth"];
 
 /// `target` (`notifications.clear`) and its text `args`, checked and
 /// read against `schema`.
@@ -76,9 +74,9 @@ pub(crate) fn resolve_in(
             None => return Err(unknown_service(schema, config, service)),
         },
     };
-    if declared.is_none() && NOT_FROM_IPC.contains(&service) {
+    if declared.is_none() && strand_services::secret(service) {
         return Err(format!(
-            "`{target}`: the lock's `{service}` actions are not run over IPC"
+            "`{target}`: `{service}` takes passwords, so its actions are not run over IPC"
         ));
     }
     let methods = &types.record(record).methods;
@@ -322,6 +320,10 @@ mod tests {
         assert!(why("notifications", &[]).contains("<service>.<action>"));
         assert!(why("notifications.popups.clear", &[]).contains("service-level actions only"));
         assert!(why("auth.submit", &["hunter2"]).contains("not run over IPC"));
+        // (services-round) Nor polkit's or greetd's.
+        assert!(why("polkit.respond", &["hunter2"]).contains("not run over IPC"));
+        assert!(why("greetd.submit", &["hunter2"]).contains("not run over IPC"));
+        assert!(why("greetd.login", &["alice"]).contains("not run over IPC"));
     }
 
     /// (M6, the review of the owner's ruling) A service the running

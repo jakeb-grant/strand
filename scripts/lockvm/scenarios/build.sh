@@ -12,6 +12,9 @@
 #                      it runs and a strand-auth helper with its fault
 #                      points sit beside each other in cargo's debug
 #                      directory, where the binary looks for the helper
+#   VM_AUTH_TEST       strand-services' tests/vm_auth.rs (services-round:
+#                      the polkit agent and the greeter, real polkitd and
+#                      greetd)
 #
 # Usage: scripts/container/run.sh bash scripts/lockvm/scenarios/build.sh
 set -euo pipefail
@@ -31,6 +34,7 @@ test_exe() {
 
 session_lock=$(test_exe strand-surface session_lock)
 vm_pam=$(test_exe strand-auth vm_pam)
+vm_auth=$(test_exe strand-services vm_auth)
 strand_lock=$(cargo test -p strand --features faults --test lock --no-run --message-format=json \
   | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep "/lock-" | tail -1)
 [ -x "$strand_lock" ] || { echo "build.sh: no executable for strand --test lock" >&2; exit 1; }
@@ -53,5 +57,6 @@ helper=$out/helper/release/strand-auth
   printf 'VM_PAM_TEST=%q\n' "$vm_pam"
   printf 'HELPER=%q\n' "$helper"
   printf 'STRAND_LOCK_TEST=%q\n' "$strand_lock"
+  printf 'VM_AUTH_TEST=%q\n' "$vm_auth"
 } >"$out/bins.env"
 cat "$out/bins.env"

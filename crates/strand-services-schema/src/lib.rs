@@ -73,6 +73,16 @@ pub const KEYBOARD: &str = include_str!("keyboard.schema");
 /// (services-round) `idle`: whether the user is away
 /// (ext-idle-notify-v1).
 pub const IDLE: &str = include_str!("idle.schema");
+/// (services-round) `polkit`: Strand's own polkit authentication agent
+/// (the password dialog; polkit's helper checks the password).
+pub const POLKIT: &str = include_str!("polkit.schema");
+/// (services-round) `greetd`: a login screen over greetd's socket.
+pub const GREETD: &str = include_str!("greetd.schema");
+
+/// (services-round) The builtin services whose actions carry secrets
+/// (a lock's password, a polkit or greetd answer): never recorded in a
+/// glitch report, never snapshotted, never run from `strand call`.
+pub const SECRET: [&str; 3] = ["auth", "polkit", "greetd"];
 
 /// Every builtin service's schema text, in registration order.
 pub fn schemas() -> Vec<&'static str> {
@@ -100,5 +110,7 @@ pub fn schemas() -> Vec<&'static str> {
         DISK,
         KEYBOARD,
         IDLE,
+        POLKIT,
+        GREETD,
     ]
 }

@@ -31,7 +31,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     box width=24 not_row=true
     input nav=node 25 not_row=true
     list not_row=true
-    box drag=[Pin, ["10a5b8f8de964b1e"]] not_row=true
+    box drag=[Pin, ["d042c87bf4435b79"]] not_row=true
     pages current=wifi row_first=0 not_row=true
       page name=wifi
         text text="Wi-Fi"

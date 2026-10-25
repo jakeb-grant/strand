@@ -1157,3 +1157,99 @@ bar Top {{
     });
     let _ = std::fs::remove_file(&out);
 }
+
+/// (services-round) A fake greetd on `path`, as greetd 0.9 answers a
+/// greeter (length-prefixed JSON): `Password: ` for any user, success
+/// for `hunter2-secret`, every request it reads sent on `seen`.
+fn fake_greetd(path: &Path, seen: std::sync::mpsc::Sender<serde_json::Value>) {
+    use std::io::{Read, Write};
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        for s in listener.incoming() {
+            let Ok(mut s) = s else { return };
+            let seen = seen.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let mut len = [0u8; 4];
+                    if s.read_exact(&mut len).is_err() {
+                        return;
+                    }
+                    let mut body = vec![0u8; u32::from_ne_bytes(len) as usize];
+                    if s.read_exact(&mut body).is_err() {
+                        return;
+                    }
+                    let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let resp = match req["type"].as_str().unwrap_or("") {
+                        "create_session" => serde_json::json!({
+                            "type": "auth_message",
+                            "auth_message_type": "secret",
+                            "auth_message": "Password: "
+                        }),
+                        "post_auth_message_response" if req["response"] != "hunter2-secret" => {
+                            serde_json::json!({
+                                "type": "error",
+                                "error_type": "auth_error",
+                                "description": "pam_authenticate: AUTH_ERR"
+                            })
+                        }
+                        _ => serde_json::json!({"type": "success"}),
+                    };
+                    let _ = seen.send(req);
+                    let body = serde_json::to_vec(&resp).unwrap();
+                    let _ = s.write_all(&(body.len() as u32).to_ne_bytes());
+                    let _ = s.write_all(&body);
+                }
+            });
+        }
+    });
+}
+
+/// (services-round) `strand run` as greetd's greeter: `greetd` connects
+/// to `$GREETD_SOCK`, the config logs a user in as greetd asks, and once
+/// greetd accepts the session the run ends by itself, cleanly, as greetd
+/// waits for its greeter to exit before it starts the session.
+#[test]
+fn a_greeter_run_ends_once_greetd_starts_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("greetd.sock");
+    let (tx, seen) = std::sync::mpsc::channel();
+    fake_greetd(&sock, tx);
+    let config = "\
+on change greetd.prompt {
+  if greetd.prompt != \"\" { greetd.submit(\"hunter2-secret\"); greetd.start([\"sway\"]) }
+}
+bar Top {
+  edge: top; height: 40
+  on show { greetd.login(\"alice\") }
+}
+";
+    let Some(mut setup) = Setup::start_with("greeter", config, &[], &[("GREETD_SOCK", sock)])
+    else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(s) = setup.strand.0.try_wait().unwrap() {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the greeter never ended: greetd read {:?}\n{}",
+            seen.try_iter().collect::<Vec<_>>(),
+            setup.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status:?}\n{}", setup.log());
+    let got: Vec<serde_json::Value> = seen.try_iter().collect();
+    assert_eq!(
+        got,
+        [
+            serde_json::json!({"type": "create_session", "username": "alice"}),
+            serde_json::json!({"type": "post_auth_message_response", "response": "hunter2-secret"}),
+            serde_json::json!({"type": "start_session", "cmd": ["sway"], "env": []}),
+        ]
+    );
+    // The answer is never logged.
+    assert!(!setup.log().contains("hunter2"), "{}", setup.log());
+}

@@ -702,7 +702,9 @@ fn an_item_write_an_older_ring_did_not_record_is_named() {
     assert_eq!(named.len(), 1, "{:#?}", r.plan.limits);
     assert!(
         named[0].starts_with(
-            "service list `audio.sinks` or `audio.sources`: the config writes an item of it \
+            // (services-round) Programs' streams have a writable `volume` too.
+            "service list `audio.sinks` or `audio.sources` or `audio.streams`: the config \
+             writes an item of it \
              (`volume` at shell.strand:11), and this report's recorder (changes dump version 2, \
              before version 3) kept nothing of a config's write to an item of a keyed list, so \
              the rewind cannot undo one made in the window: the list starts with it already \
@@ -713,7 +715,7 @@ fn an_item_write_an_older_ring_did_not_record_is_named() {
     );
     assert!(
         r.text
-            .contains("  - service list `audio.sinks` or `audio.sources`: "),
+            .contains("  - service list `audio.sinks` or `audio.sources` or `audio.streams`: "),
         "{}",
         r.text
     );

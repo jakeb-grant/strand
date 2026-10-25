@@ -23,6 +23,9 @@ strand-services-macros.workspace = true
 # `auth`: the lock screen's PAM helper client (the helper is a process
 # of its own; only it links libpam).
 strand-auth.workspace = true
+# (services-round) Answers to polkit's helper and greetd, built in buffers
+# wiped when dropped, as strand-auth builds its frames.
+zeroize = "1.9.1"
 # The schema texts it serves (shared with the LSP, which does not link
 # this runtime).
 strand-services-schema.workspace = true

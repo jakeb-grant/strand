@@ -900,3 +900,39 @@ fn the_guide_quotes_the_same_name_error() {
     assert!(page.contains(&error), "level-2.md does not quote: {error}");
     assert!(page.contains(&help), "level-2.md does not quote: {help}");
 }
+
+/// (services-round) Level 4's greeter is a config of its own (greetd's,
+/// under /etc), so it is an untagged block, not a step: it checks alone
+/// as `strand check` would (no error, no warning) and is formatted, and
+/// the greetd and sway lines beside it run it.
+#[test]
+fn the_guide_greeter_checks_on_its_own() {
+    let page = std::fs::read_to_string(guide::root().join("docs/guide/level-4.md")).unwrap();
+    let fences = guide::fences(&page);
+    let greeter = fences
+        .iter()
+        .find(|(_, info, body)| {
+            info.is_empty() && body.starts_with("// /etc/greetd/strand/greeter.strand")
+        })
+        .map(|(_, _, body)| body.clone())
+        .expect("level-4.md shows the greeter as an untagged block");
+    let dir = scratch("greeter");
+    std::fs::write(dir.join("greeter.strand"), &greeter).unwrap();
+    check(&dir, "level-4.md's greeter");
+    let _ = std::fs::remove_dir_all(&dir);
+    for (said, why) in [
+        (
+            "command = \"sway --config /etc/greetd/sway-config\"",
+            "greetd runs sway",
+        ),
+        (
+            "exec \"strand run /etc/greetd/strand; swaymsg exit\"",
+            "sway runs the greeter's directory, then ends",
+        ),
+    ] {
+        assert!(
+            fences.iter().any(|(_, _, body)| body.contains(said)),
+            "level-4.md no longer shows {said} ({why})"
+        );
+    }
+}

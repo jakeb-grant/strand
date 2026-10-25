@@ -117,11 +117,12 @@ impl Shell {
     fn bundle_job(&self, root: PathBuf, words: String, report: Json, main: MainBundle) -> Job {
         let rec = self.recorder.borrow();
         let rt = self.inst.runtime();
-        // Every service but `auth`, under the redaction rules.
+        // Every service but the secret ones (`auth`, `polkit`, `greetd`),
+        // under the redaction rules.
         let mut services = Map::new();
         if let Some(r) = &self.real {
             for s in r.services.snapshot(rt) {
-                if s.name == "auth" {
+                if strand_services::secret(&s.name) {
                     continue;
                 }
                 // A declared service by its declared fields.
@@ -203,7 +204,7 @@ impl Shell {
 
 impl Shell {
     /// (history) `history.json`: each series a `graph` keeps history of
-    /// (but one reading `auth`), its points as `[at, value, ramp]` (`at`
+    /// (but one reading a secret service: `auth`, `polkit`, `greetd`), its points as `[at, value, ramp]` (`at`
     /// on the boot clock, seconds; a `null` value starts a gap), with the
     /// boot clock at the report (`boot_ns`, read with `now_ns`), so the
     /// replay seeds what each held before its window. (graph-follow)
@@ -414,7 +415,7 @@ fn history_json(
 ) -> Json {
     let series: Vec<Json> = kept
         .iter()
-        .filter(|h| h.services.iter().all(|(s, _)| s != "auth"))
+        .filter(|h| h.services.iter().all(|(s, _)| !strand_services::secret(s)))
         .map(|h| {
             let points: Vec<Json> = h
                 .ring

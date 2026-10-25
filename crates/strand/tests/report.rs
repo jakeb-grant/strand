@@ -676,6 +676,11 @@ fn a_bundle_holds_every_part() {
     let s = read_json(&dir.join("services.json"));
     assert_eq!(s["mood"]["fields"]["level"], 7, "{s}");
     assert!(s.get("auth").is_none());
+    // (services-round) Nor polkit's or greetd's (their answers).
+    assert!(
+        s.get("polkit").is_none() && s.get("greetd").is_none(),
+        "{s}"
+    );
     let c = read_json(&dir.join("cells.json"));
     assert_eq!(c["report.clicks"], 1, "{c}");
     assert_eq!(c["report.pw_mode"], true, "{c}");

@@ -360,6 +360,17 @@ filling the monitor, the keyboard always).
   keyboard, so `keyboard.caps_lock`, `keyboard.num_lock` and
   `keyboard.layout` are its keyboard's own, exact as keys are pressed:
   `if keyboard.caps_lock { text "Caps Lock is on" }`.
+- **An admin password dialog and a login screen are ordinary
+  surfaces** (decisions.md services-round): no surface kind of their
+  own. A panel shown while the `polkit` service has a request,
+  `panel Polkit { open: polkit.request != null; keyboard: exclusive … }`,
+  is the session's polkit agent while a config reads `polkit`;
+  `polkit.respond(pw)` answers it through polkit's own helper. A config
+  greetd runs as its greeter logs a user in with `greetd.login`,
+  `greetd.submit` and `greetd.start(command)`, each of the command's
+  texts one word, and `strand run` ends once greetd takes the session.
+  Neither service's answers are recorded, reported or taken by
+  `strand call` (section 13), as with `auth`.
 
 ### 5.2 Components and slot
 
@@ -1635,7 +1646,10 @@ people can edit by hand.
     field, a signed number or percentage (`+5%`) is a step from the
     current value, never below 0;
   - `strand toggle path` flips an exported `bool` state;
-  - `strand call target args…` calls a service-level action;
+  - `strand call target args…` calls a service-level action; the
+    actions of the builtin services that take passwords (`auth`,
+    `polkit`, `greetd`) are refused, since a password is typed into the
+    shell, never sent over the socket;
   - `strand clear path` removes a runtime overlay;
   - `strand watch [--json]` streams events: reloads (files, edit class,
     kept and reset cells, timing and diagnostics), runtime faults and

@@ -37,7 +37,9 @@
 //! sampled every 10 s while a reader is visible); and [`keyboard`] (the
 //! lock keys and the layout: a focused surface's keyboard, the kernel's
 //! lights, the compositor); and (services-round) [`idle`] (whether the
-//! user is away, ext-idle-notify-v1).
+//! user is away, ext-idle-notify-v1), [`polkit`] (Strand's own polkit
+//! authentication agent, polkit's helper checking the password) and
+//! [`greetd`] (a login screen over greetd's socket).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -65,6 +67,7 @@ mod cx;
 mod data;
 pub mod dbus;
 pub mod disk;
+pub mod greetd;
 pub mod icon_theme;
 pub mod idle;
 pub mod ipc_bus;
@@ -75,6 +78,7 @@ pub mod network;
 pub mod notifications;
 pub mod outputs;
 pub mod pixmap;
+pub mod polkit;
 mod procfs;
 mod service;
 pub mod session;
@@ -130,6 +134,8 @@ pub struct Builtin {
     pub disk: Client<disk::Disk>,
     pub keyboard: Client<keyboard::Keyboard>,
     pub idle: Client<idle::Idle>,
+    pub polkit: Client<polkit::Polkit>,
+    pub greetd: Client<greetd::Greetd>,
 }
 
 impl Builtin {
@@ -161,6 +167,8 @@ impl Builtin {
             disk: services.register(rt),
             keyboard: services.register(rt),
             idle: services.register(rt),
+            polkit: services.register(rt),
+            greetd: services.register(rt),
         };
         // (history) The ones sampled on a clock, so a value kept while
         // hidden is known to be a poll.
@@ -199,6 +207,8 @@ impl Builtin {
             self.disk.dynamic(),
             self.keyboard.dynamic(),
             self.idle.dynamic(),
+            self.polkit.dynamic(),
+            self.greetd.dynamic(),
         ]
     }
 }
@@ -219,4 +229,12 @@ pub fn schemas() -> Vec<&'static str> {
         all.retain(|t| *t != strand_services_schema::AUDIO && *t != strand_services_schema::VIDEO);
     }
     all
+}
+
+/// (services-round) Whether `service` is a builtin whose actions carry
+/// secrets ([`strand_services_schema::SECRET`]: `auth`, `polkit`,
+/// `greetd`): the binary never records, snapshots or reports it, nor
+/// runs its actions from `strand call`.
+pub fn secret(service: &str) -> bool {
+    strand_services_schema::SECRET.contains(&service)
 }

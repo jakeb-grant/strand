@@ -930,6 +930,102 @@ bar Top {
         }
     }
 
+    /// (services-round) The polkit dialog and the greetd greeter of the
+    /// guide (level 4, "An admin password dialog" and "A login screen")
+    /// check against the served schema and the builtin stubs alike; an
+    /// answer is text, a session's command a list of words.
+    #[test]
+    fn the_polkit_dialog_and_the_greeter_check() {
+        let polkit = "panel Polkit {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: polkit.request != null
+  state answer = \"\"
+  on show { answer = \"\" }
+  col { width: 420; pad: $space.4; gap: $space.3; radius: $radius.xl
+        bg: $surface; shadow: $elevation.xl
+    text \"Authentication needed\" { font: $font.title }
+    text polkit.request?.message ?? \"\"
+    text \"Password for \" + (polkit.request?.user ?? \"\") { color: $fg.muted }
+    input { type: (polkit.request?.echo ?? false) ? text : password
+      placeholder: polkit.request?.prompt ?? \"\"; text: <-> answer; focus: true
+      on activate { if answer != \"\" { polkit.respond(answer) }; answer = \"\" }
+    }
+    if polkit.busy { text \"Checking...\" { color: $fg.muted } }
+    else if polkit.failed { text \"Wrong password, try again\" { color: $error } }
+    else if (polkit.request?.info ?? \"\") != \"\" { text polkit.request?.info ?? \"\" }
+    row { gap: $space.2
+      box { pad: $space.2; radius: $radius.md; on click { polkit.cancel() }; text \"Cancel\" }
+      if polkit.waiting > 0 { text join(\" \", polkit.waiting, \"more\") { color: $fg.muted } }
+    }
+  }
+}
+bar Top {
+  row {
+    if !polkit.available { text polkit.error }
+    for u in polkit.request?.users ?? [] key u {
+      box { when u == polkit.request?.user { bg: $accent.container }
+            on click { polkit.choose(u) }; text u }
+    }
+  }
+}
+";
+        let greeter = "state user = \"\"
+state answer = \"\"
+
+panel Login {
+  layer: overlay; anchor: center; keyboard: exclusive
+  open: true
+  col { width: 360; pad: $space.4; gap: $space.3; radius: $radius.xl
+        bg: $surface; shadow: $elevation.xl
+    text clock.format(\"%H:%M\") { font: $font.title }
+    input { placeholder: \"User\"; text: <-> user; focus: greetd.prompt == \"\"
+      on activate { if user != \"\" { greetd.login(user) } }
+    }
+    if greetd.prompt != \"\" {
+      input { type: greetd.echo ? text : password; placeholder: greetd.prompt
+        text: <-> answer; focus: true
+        on activate { greetd.submit(answer); greetd.start([\"sway\"]); answer = \"\" }
+      }
+    }
+    if greetd.busy { text \"Logging in...\" { color: $fg.muted } }
+    else if greetd.failed { text greetd.error { color: $error } }
+    if greetd.message != \"\" { text greetd.message { color: $fg.muted } }
+    if !greetd.available { text greetd.error }
+    box { on click { greetd.cancel(); user = \"\" }; text greetd.user }
+  }
+}
+";
+        for src in [polkit, greeter] {
+            for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+                let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+                let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                    .diagnostics
+                    .into_iter()
+                    .filter(|d| d.is_error())
+                    .collect();
+                assert!(errors.is_empty(), "{which}: {errors:#?}");
+            }
+        }
+        for bad in [
+            // An answer is text; a command is a list of words.
+            "bar B { box { on click { polkit.respond(1234) } } }\n",
+            "bar B { box { on click { greetd.start(\"sway\") } } }\n",
+            // A request is optional: unwrapped before use.
+            "bar B { text polkit.request.message }\n",
+            // `choose` takes a user's name.
+            "bar B { box { on click { polkit.choose() } } }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
+    }
+
     /// (services-round, S2) `thumbnail` takes a screen as well as a
     /// window: the bar's own monitor, every monitor in an overview, and a
     /// window still; text is no source.

@@ -970,7 +970,7 @@ impl ChangeRecorder {
 
     /// A service's patch, from `Services::tap`.
     pub(crate) fn service(&mut self, t: u64, ev: &TapEvent<'_>) {
-        if ev.service == "auth" {
+        if strand_services::secret(ev.service) {
             return;
         }
         let clip = ev.service == "clipboard";
@@ -1146,9 +1146,9 @@ impl ChangeRecorder {
 
     /// A call `service.method(args)` began (an async one, a `fetch`):
     /// what its answer is recorded with. `None` while not recording or
-    /// for `auth`.
+    /// for a secret service (`auth`, `polkit`, `greetd`).
     pub(crate) fn call(&mut self, service: &str, method: &str, args: &[Value]) -> Option<Call> {
-        if service == "auth" || self.ring.as_ref().is_none_or(Ring::paused) {
+        if strand_services::secret(service) || self.ring.as_ref().is_none_or(Ring::paused) {
             return None;
         }
         let id = self.next_call;
@@ -1195,7 +1195,7 @@ impl ChangeRecorder {
 
     /// The config wrote `value` to an `rw` field `service.path`.
     pub(crate) fn wrote(&mut self, t: u64, service: &str, path: &[PathSeg], value: &Value) {
-        if service == "auth" {
+        if strand_services::secret(service) {
             return;
         }
         let program = self.program.clone();
@@ -2669,6 +2669,35 @@ mod tests {
         assert!(c.call("auth", "check", &[]).is_none());
         assert!(c.ring().unwrap().is_empty());
         assert!(!contains(&c.dump().unwrap(), b"auth"));
+    }
+
+    /// (services-round) Nor are `polkit` and `greetd`, whose actions
+    /// carry an admin password and a login's answers.
+    #[test]
+    fn polkit_and_greetd_are_never_recorded() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        let old = Data::text("");
+        let new = Data::text("Password:");
+        for service in ["polkit", "greetd"] {
+            c.service(
+                1,
+                &TapEvent {
+                    service,
+                    change: Change::Field {
+                        field: "prompt",
+                        old: &old,
+                        new: &new,
+                        initial: false,
+                        local: false,
+                    },
+                },
+            );
+            c.wrote(2, service, &[PathSeg::Field("x".into())], &Value::text("y"));
+            assert!(c.call(service, "submit", &[]).is_none());
+        }
+        assert!(c.ring().unwrap().is_empty());
+        let dump = c.dump().unwrap();
+        assert!(!contains(&dump, b"polkit") && !contains(&dump, b"greetd"));
     }
 
     #[test]

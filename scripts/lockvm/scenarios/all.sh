@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every S-lock scenario, run as root in the lock VM's guest:
+# Every S-lock (and services-round authentication) scenario, run as root in the lock VM's guest:
 #   scripts/container/run.sh bash scripts/lockvm/scenarios/build.sh
 #   scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh
 # Each scenario runs as the test user `tester` (never root) and logs to
@@ -9,7 +9,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 failed=()
 # pam.sh last: it removes /etc/pam.d/strand (faillock.sh and
 # fingerprint.sh put their own stacks there and the image's back).
-for s in session_lock strand_lock faillock fingerprint pam; do
+# (services-round) polkit.sh and greetd.sh: Strand's polkit agent and
+# greeter against the real polkitd and greetd.
+for s in session_lock strand_lock faillock fingerprint polkit greetd pam; do
   echo "=== scenario $s"
   if bash "$here/$s.sh"; then
     echo "=== $s PASSED"

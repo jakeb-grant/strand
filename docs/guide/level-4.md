@@ -5,7 +5,9 @@ You learn: `on change … after`, `after … while`, `persist`, `export`,
 `on show`, `id:`, `@reset`, lambdas (`n => …`), `await` and the `lock`
 surface.
 You build: an on-screen display for volume and brightness, a
-notification stack, an app launcher and a lock screen.
+notification stack, an app launcher, a lock screen and the dialog a
+program opens when it needs your password (with, for those who want
+one, a login screen in the same language).
 
 Your bar is always there. Everything on this page appears when
 something happens (a key, a notification, a locked session) and goes
@@ -507,9 +509,158 @@ match on a number has no fixed list of cases, so it must end with `_`.
 can go in a surface's or component's tree as well as at the top of a
 file, next to the values it reads.
 
+## An admin password dialog
+
+Some programs need your password before they change the system:
+`pkexec`, a settings page adding a printer or a Wi-Fi network for every
+user. They ask polkit, and polkit asks your session's *authentication
+agent* to show a dialog. Strand can be that agent. Make `polkit.strand`:
+
+```strand level=4 file=polkit.strand
+// polkit.strand. Shown when a program asks polkit for your password
+panel Polkit {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: polkit.request != null
+  state answer = ""
+  on show { answer = "" }
+  col { width: 420; pad: $space.4; gap: $space.3; radius: $radius.xl
+        bg: $surface; shadow: $elevation.xl
+    text "Authentication needed" { font: $font.title }
+    text polkit.request?.message ?? ""
+    text "Password for " + (polkit.request?.user ?? "") { color: $fg.muted }
+    input { type: (polkit.request?.echo ?? false) ? text : password
+      placeholder: polkit.request?.prompt ?? ""; text: <-> answer; focus: true
+      on activate { if answer != "" { polkit.respond(answer) }; answer = "" }
+    }
+    if polkit.busy { text "Checking..." { color: $fg.muted } }
+    else if polkit.failed { text "Wrong password, try again" { color: $error } }
+    else if (polkit.request?.info ?? "") != "" { text polkit.request?.info ?? "" }
+    row { gap: $space.2
+      box { pad: $space.2; radius: $radius.md; on click { polkit.cancel() }; text "Cancel" }
+      if polkit.waiting > 0 { text join(" ", polkit.waiting, "more") { color: $fg.muted } }
+    }
+  }
+}
+```
+
+Try it from a terminal:
+
+```
+pkexec true
+```
+
+A dialog opens in the middle of the screen with what the program wants
+and whose password it needs. Type it and press Return: `pkexec` goes
+ahead. A wrong one says so and asks again; Cancel tells the program no.
+
+**Reading `polkit` makes Strand the agent.** While a config reads the
+`polkit` service, Strand registers with polkit as your session's
+agent, and stops five seconds after nothing reads it any more, as
+every service does. Delete `polkit.strand` and Strand is no agent.
+
+- `polkit.request` is the request waiting, or `null`. Its `message`
+  says what it is for, `user` whose password it needs, and `prompt`
+  what the check asks ("Password: "), as PAM says it. `echo` is true
+  when PAM asks for something that is not a secret, which the input
+  then shows as typed.
+- `polkit.respond(answer)` answers. The password goes to polkit's own
+  helper, `polkit-agent-helper-1`, which checks it and tells polkit;
+  Strand never checks it itself, and wipes it once sent.
+- `polkit.cancel()` refuses, and the program is told so.
+- `polkit.busy` is true while an answer is checked, and `polkit.failed`
+  once one was refused.
+- When several programs ask at once, they wait their turn:
+  `polkit.waiting` counts them.
+- When several administrators could answer (the action needs an
+  administrator, and your machine has more than one),
+  `polkit.request?.users` lists them, and `polkit.choose(name)` asks
+  for another one's password instead.
+
+**Only one agent per session.** A desktop that ships its own agent
+(GNOME's, KDE's, `polkit-gnome` started from your compositor's config)
+keeps it: Strand does not fight it. `polkit.available` is then false
+and `polkit.error` says another agent serves this session; once that
+agent goes, Strand takes over. A bar can say so:
+`if !polkit.available { text polkit.error }`.
+
+Like the lock's `auth`, nothing of `polkit` is kept in a glitch report,
+and `strand call` refuses its actions: a password is typed into the
+dialog, never sent from a terminal.
+
+### A login screen
+
+The same language can draw the screen you log in on. greetd, a small
+login manager, runs a *greeter* and tells it how to log a user in;
+Strand's `greetd` service speaks to it. The greeter is a config of its
+own, outside `~/.config/strand`, so this is not a step. Save it as
+`/etc/greetd/strand/greeter.strand`:
+
+```
+// /etc/greetd/strand/greeter.strand: the login screen greetd shows
+state user = ""
+state answer = ""
+
+panel Login {
+  layer: overlay; anchor: center; keyboard: exclusive
+  open: true
+  col { width: 360; pad: $space.4; gap: $space.3; radius: $radius.xl
+        bg: $surface; shadow: $elevation.xl
+    text clock.format("%H:%M") { font: $font.title }
+    input { placeholder: "User"; text: <-> user; focus: greetd.prompt == ""
+      on activate { if user != "" { greetd.login(user) } }
+    }
+    if greetd.prompt != "" {
+      input { type: greetd.echo ? text : password; placeholder: greetd.prompt
+        text: <-> answer; focus: true
+        on activate { greetd.submit(answer); greetd.start(["sway"]); answer = "" }
+      }
+    }
+    if greetd.busy { text "Logging in..." { color: $fg.muted } }
+    else if greetd.failed { text greetd.error { color: $error } }
+    if greetd.message != "" { text greetd.message { color: $fg.muted } }
+  }
+}
+```
+
+Strand draws on a compositor, so greetd runs one for it: sway here, but
+any compositor with layer-shell does (cage, which shows one app
+window, does not). Point greetd at it in `/etc/greetd/config.toml`,
+with the user your distribution made for the greeter (`greeter` on
+Arch, `_greetd` on Debian and Ubuntu):
+
+```
+[default_session]
+command = "sway --config /etc/greetd/sway-config"
+user = "greeter"
+```
+
+and make `/etc/greetd/sway-config` run the greeter and close sway after
+it:
+
+```
+exec "strand run /etc/greetd/strand; swaymsg exit"
+```
+
+Type your name and press Return: greetd asks for your password, and
+the field for it appears. Return again logs you in and starts sway as
+you.
+
+- `greetd.login(user)` starts a login; greetd's questions arrive as
+  `greetd.prompt` (`greetd.echo` when the answer may be shown) and
+  PAM's other texts as `greetd.message`.
+- `greetd.submit(answer)` answers. A wrong one sets `greetd.failed`
+  and `greetd.error`, and the same user is asked again.
+- `greetd.start(["sway"])` is the session to start, each text one word.
+  Called right after the answer, it waits for the login to succeed;
+  greetd then starts it, and `strand run` exits so it can.
+- `greetd.cancel()` drops the login under way.
+
+Run outside greetd, `greetd.available` is false and every action sets
+`greetd.error` instead.
+
 ## What you have
 
-Your level-3 bar, plus four surfaces that appear when they are needed.
+Your level-3 bar, plus five surfaces that appear when they are needed.
 
 | File | Holds | Opened by |
 | --- | --- | --- |
@@ -517,6 +668,7 @@ Your level-3 bar, plus four surfaces that appear when they are needed.
 | `toasts.strand` | the `Toasts` panel and `Toast` | a notification |
 | `launcher.strand` | the `Launcher` panel | `strand toggle launcher.open` |
 | `lock.strand` | the lock screen | `strand set lock.locked true` |
+| `polkit.strand` | the `Polkit` password dialog | a program asking polkit |
 
 Next, [level 5](level-5.md) gives the shell a theme of your own, then
 builds services of your own, a control centre and a dock.

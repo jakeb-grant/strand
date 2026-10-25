@@ -646,5 +646,6 @@ into your own `strand` binary. [The plugin page](plugins.md) shows how.
 | `dock.strand` | `Pin`, the pins and the `Dock` bar |
 
 Together with levels 1 to 4: a bar on every monitor, an OSD,
-notifications, a launcher, a lock screen, a control centre and a dock,
-all in one language, themed from one file, and live on every save.
+notifications, a launcher, a lock screen, a password dialog, a control
+centre and a dock, all in one language, themed from one file, and live
+on every save.

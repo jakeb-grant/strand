@@ -4,8 +4,10 @@
 # Two stages. `guest` is the VM's root filesystem: Ubuntu 24.04 (the
 # check image's release, so binaries run.sh builds run in it) with the
 # kernel, headless sway, grim, the strand binary's runtime libraries,
-# pamtester, a baked test user and /etc/pam.d/strand, and lockvm-init as
-# PID 1. `disk` turns that tree into an ext4 image (mke2fs -d: no loop
+# pamtester, a baked test user and /etc/pam.d/strand, (services-round)
+# polkitd with its setuid polkit-agent-helper-1 and greetd (the polkit
+# and greetd scenarios; they bring systemd's files, but PID 1 stays
+# lockvm-init, and neither starts on its own), and lockvm-init as PID 1. `disk` turns that tree into an ext4 image (mke2fs -d: no loop
 # mount, no root on the host) and takes out the guest's kernel, made
 # readable by any uid. The final stage is QEMU plus those two files. The guest boots the image
 # with snapshot=on: every run starts from the same disk.
@@ -16,6 +18,7 @@ RUN apt-get update \
       sway grim dbus fonts-dejavu-core adwaita-icon-theme \
       libfontconfig1 libxkbcommon0 libwayland-client0 libpipewire-0.3-0t64 libvulkan1 \
       libpam-modules libpam-runtime pamtester passwd \
+      polkitd greetd \
  && (dpkg --remove --force-depends fonts-dejavu fonts-dejavu-extra || true) \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 # The test user: uid 1000, password "strand-test" (lockvm.sh, the lock

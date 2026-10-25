@@ -38,7 +38,9 @@
 //!   debounced `persist` and settings writes reach the disk. While a
 //!   session lock is asked for or held, the main thread outlives logic
 //!   ending and the signals, and shows the built-in password field
-//!   (`lock.rs`); the run ends after the unlock.
+//!   (`lock.rs`); the run ends after the unlock. (services-round) As
+//!   greetd's greeter, a session greetd accepted (`greetd.start`) ends
+//!   the run the same way: the service raises SIGTERM.
 
 use std::cell::Cell;
 use std::io;
@@ -595,6 +597,19 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // (M4) A tray action sends the press's point only when an input
     // event's handler calls it; a timer's or IPC's sends (0,0).
     strand_services::tray::set_input_probe(strand_compiler::vm::in_input_handler);
+    // (services-round) Run as greetd's greeter, a session greetd accepted
+    // ends the run: greetd starts it once its greeter has exited. As
+    // SIGTERM does, through `signals`, so the run ends in order.
+    strand_services::greetd::configure(Some(strand_services::greetd::GreetdConfig {
+        socket: None,
+        started: Some(std::sync::Arc::new(|| {
+            // SAFETY: kill(2) on this process with a valid signal; every
+            // thread blocks SIGTERM, so `signals` reads it.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+        })),
+    }));
     // The watcher, then the first load (a config broken at boot runs its
     // last good version), then the compiler worker for every later save.
     let (worker_tx, worker_rx) = calloop::channel::channel::<FromWorker>();

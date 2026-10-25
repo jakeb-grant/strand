@@ -1,0 +1,68 @@
+/// A program asking polkit for something that needs a password first
+/// (`pkexec`, a settings page changing the system): what the dialog
+/// shows. `polkit.request` is the one being answered.
+record PolkitRequest {
+  /// The polkit action asked for (`org.freedesktop.policykit.exec`).
+  action_id: text
+  /// What polkit says it is for, in your language ("Authentication is
+  /// needed to run `/usr/bin/bash' as the super user").
+  message: text
+  /// The icon the program named for it (a theme icon name), or "".
+  icon: text
+  /// The user whose password is asked for: you, or an administrator
+  /// when the action needs one. Another of `users` is picked with
+  /// `polkit.choose(user)`.
+  user: text
+  /// Every user polkit would take a password from for it (the
+  /// administrators, or only you), each once; `user` is one of them.
+  users: [text]
+  /// What the password check asks ("Password: "), as PAM says it; ""
+  /// while it asks nothing (an answer being checked, a fingerprint
+  /// reader waiting).
+  prompt: text
+  /// The answer to `prompt` may be shown as it is typed (PAM asks for
+  /// a name, not a secret).
+  echo: bool
+  /// What PAM last told the user, as it said it ("Place your finger on
+  /// the fingerprint reader"), or "".
+  info: text
+}
+
+/// Strand's own polkit authentication agent: the password dialog when a
+/// program asks for something that needs one. While a config reads
+/// `polkit`, Strand registers as this session's agent with polkit
+/// (unless another agent already is, which it leaves be), and each
+/// request polkit sends becomes `request` until it is answered,
+/// cancelled, or withdrawn by the program. The password goes to polkit's
+/// own helper (`polkit-agent-helper-1`), never checked by Strand, and is
+/// wiped once sent. A panel shows it:
+/// `panel Polkit { open: polkit.request != null; keyboard: exclusive … }`.
+service polkit {
+  /// The request being answered, or null when none waits.
+  request: PolkitRequest?
+  /// How many more requests wait behind `request`, each shown in turn.
+  waiting: int
+  /// An answer is being checked.
+  busy: bool
+  /// The last answer was refused: `request` stays, and its prompt asks
+  /// again.
+  failed: bool
+  /// Strand is this session's polkit agent: false while another agent
+  /// is (a desktop's own, `polkit-gnome`), or without polkit, when
+  /// `error` says why.
+  available: bool
+  /// Why Strand is not the agent ("another polkit agent serves this
+  /// session"), or why the last request could not be answered (no
+  /// helper); "" otherwise.
+  error: text
+  /// Answers `request.prompt` with `answer` (the password), or the next
+  /// prompt the check asks: `input { type: password; text: <-> pw; on
+  /// activate { polkit.respond(pw); pw = "" } }`. Ignored while one is
+  /// being checked.
+  action respond(answer: text)
+  /// Dismisses `request`: the program is told it was refused, and the
+  /// next request, if any, shows.
+  action cancel()
+  /// Asks for `user`'s password instead (one of `request.users`).
+  action choose(user: text)
+}

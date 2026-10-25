@@ -6,8 +6,8 @@ you can use. Levels 1 to 3 build one bar, on every monitor, with
 workspace dots, the focused window's title, a clock with a calendar
 popup, a volume slider, the battery and the tray. Level 4 adds the
 surfaces that come and go (an on-screen display, notifications, a
-launcher and a lock screen), and level 5 your own theme, services, a
-control centre and a dock.
+launcher, a lock screen and an admin password dialog), and level 5
+your own theme, services, a control centre and a dock.
 
 Nothing at level N+1 appears in a level-N example. If you stop after
 any level, everything you have written still works.
@@ -17,7 +17,7 @@ any level, everything you have written still works.
 | 1 | Surfaces, nodes, props, services as live values | The hello bar | [level-1.md](level-1.md) |
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | Workspace dots, tray | [level-2.md](level-2.md) |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | Clock with calendar, volume slider | [level-3.md](level-3.md) |
-| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen | [level-4.md](level-4.md) |
+| 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | OSD, notifications, launcher, lock screen, password dialog | [level-4.md](level-4.md) |
 | 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders, `file` | Control centre, dock, custom services | [level-5.md](level-5.md) |
 
 ## Every construct and its level

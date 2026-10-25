@@ -177,6 +177,32 @@ graph's `history`; otherwise not at all.
 | `free` | `float` | The root filesystem's bytes free to a user. |
 | `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
 
+## `greetd`
+
+A login screen for greetd: when Strand runs as greetd's greeter, its
+socket (`$GREETD_SOCK`) logs a user in and starts their session.
+greetd's PAM conversation shows as it goes (`prompt`, `message`), and
+each answer is wiped once sent. Once a session starts, Strand exits
+so greetd can run it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `available` | `bool` | greetd answers: Strand runs as its greeter. False otherwise, when every action fails with `error`. |
+| `user` | `text` | The user being logged in (`greetd.login(user)`), or "". |
+| `prompt` | `text` | What greetd asks ("Password: "), as PAM says it; "" while it asks nothing. |
+| `echo` | `bool` | The answer to `prompt` may be shown as it is typed (a visible question, such as a name), not a secret one. |
+| `message` | `text` | What PAM last told the user ("Place your finger on the fingerprint reader", "You are required to change your password"), or "". |
+| `busy` | `bool` | greetd is busy with a request: checking an answer, starting the session. |
+| `failed` | `bool` | The last answer was refused (greetd then asks the same user again), or a login or session could not start; `error` says why. It stays until the next answer or login. |
+| `error` | `text` | Why the last request failed, as greetd says it, or "". |
+
+| Method | |
+| --- | --- |
+| `action login(user: text)` | Starts logging `user` in (a login already under way is dropped): greetd then asks its questions through `prompt`. |
+| `action submit(answer: text)` | Answers `prompt` with `answer`, or the next question greetd asks: `input { type: password; text: <-> pw; on activate { greetd.submit(pw); pw = "" } }`. Ignored while one is being checked. |
+| `action start(command: [text])` | Starts `command` as the user's session (`["sway"]`) once the login succeeds: called with the last answer, it waits for greetd to accept it; a login that fails drops it. Strand then exits. Each word is one word, as given (`["sh", "-c", "sway > log"]` for a shell line); greetd runs it after the user's `~/.profile`. |
+| `action cancel()` | Drops the login under way. |
+
 ## `idle`
 
 Whether the user is away, from the compositor's idle notifications
@@ -344,6 +370,33 @@ rotation, changed together with `outputs.apply` and checked first with
 | --- | --- |
 | `on outputs.succeeded(action: text)` | The compositor took a configuration: `on outputs.succeeded(action) { … }`, `action` as written (`"apply"` or `"test"`). |
 | `on outputs.failed(action: text, error: text)` | A configuration failed: the compositor refused it (a mode the monitor cannot show), it named no output or an impossible value, or the compositor offers no output configuration: `on outputs.failed(action, error) { … }`. |
+
+## `polkit`
+
+Strand's own polkit authentication agent: the password dialog when a
+program asks for something that needs one. While a config reads
+`polkit`, Strand registers as this session's agent with polkit
+(unless another agent already is, which it leaves be), and each
+request polkit sends becomes `request` until it is answered,
+cancelled, or withdrawn by the program. The password goes to polkit's
+own helper (`polkit-agent-helper-1`), never checked by Strand, and is
+wiped once sent. A panel shows it:
+`panel Polkit { open: polkit.request != null; keyboard: exclusive … }`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `request` | `PolkitRequest?` | The request being answered, or null when none waits. |
+| `waiting` | `int` | How many more requests wait behind `request`, each shown in turn. |
+| `busy` | `bool` | An answer is being checked. |
+| `failed` | `bool` | The last answer was refused: `request` stays, and its prompt asks again. |
+| `available` | `bool` | Strand is this session's polkit agent: false while another agent is (a desktop's own, `polkit-gnome`), or without polkit, when `error` says why. |
+| `error` | `text` | Why Strand is not the agent ("another polkit agent serves this session"), or why the last request could not be answered (no helper); "" otherwise. |
+
+| Method | |
+| --- | --- |
+| `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password), or the next prompt the check asks: `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked. |
+| `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. |
+| `action choose(user: text)` | Asks for `user`'s password instead (one of `request.users`). |
 
 ## `screens`
 

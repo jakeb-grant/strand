@@ -458,6 +458,23 @@ Keyed by `id`.
 | `action previous()` | Takes it back to the previous track. |
 | `action select()` | Makes it the player `media.*` follows, until it leaves or another player starts playing: `on click { p.select() }`. |
 
+### `PolkitRequest`
+
+A program asking polkit for something that needs a password first
+(`pkexec`, a settings page changing the system): what the dialog
+shows. `polkit.request` is the one being answered.
+
+| Field | Type | |
+| --- | --- | --- |
+| `action_id` | `text` | The polkit action asked for (`org.freedesktop.policykit.exec`). |
+| `message` | `text` | What polkit says it is for, in your language ("Authentication is needed to run `/usr/bin/bash' as the super user"). |
+| `icon` | `text` | The icon the program named for it (a theme icon name), or "". |
+| `user` | `text` | The user whose password is asked for: you, or an administrator when the action needs one. Another of `users` is picked with `polkit.choose(user)`. |
+| `users` | `[text]` | Every user polkit would take a password from for it (the administrators, or only you), each once; `user` is one of them. |
+| `prompt` | `text` | What the password check asks ("Password: "), as PAM says it; "" while it asks nothing (an answer being checked, a fingerprint reader waiting). |
+| `echo` | `bool` | The answer to `prompt` may be shown as it is typed (PAM asks for a name, not a secret). |
+| `info` | `text` | What PAM last told the user, as it said it ("Place your finger on the fingerprint reader"), or "". |
+
 ### `PowerDevice`
 
 A power source UPower reports besides the combined battery: a

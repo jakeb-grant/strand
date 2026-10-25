@@ -2041,7 +2041,9 @@ thread's `Shell` in an `Rc<RefCell<…>>` its taps share).
   Synchronous calls the mock computes from state (`clock.format`,
   `workspaces.on`) are not recorded.
 - **Redaction** (the changes ring and the snapshot alike). `auth` is
-  never recorded or snapshotted. Every text of `clipboard` is held back
+  never recorded or snapshotted, nor (services-round) `polkit` and
+  `greetd`: `strand_services::secret(name)`, which `strand call`'s
+  refusal and `history.json` use too. Every text of `clipboard` is held back
   (`{"~text": N}`), an image in its history as its size only. A text of
   the config's own (a cell's value, an `rw` write) is kept only when
   `Program::is_text_literal` holds; a token overlay (`$accent`), set
@@ -6376,7 +6378,50 @@ transparent huge pages for life.
   eventfds, each making one `ext_idle_notification_v1` per timeout;
   `Idle.timeouts: Vec<IdleTimeout { timeout, idle }>` keyed by timeout
   is what the `fn after(timeout)` reads, tracked; `idle::configure`
-  points it at a test's socket),
+  points it at a test's socket), (services-round) `polkit` (its own
+  polkit authentication agent, `polkit/mod.rs` and `polkit/helper.rs`:
+  while it runs, a zbus `org.freedesktop.PolicyKit1.AuthenticationAgent`
+  object at `polkit::AGENT_PATH` on the system connection, registered
+  with the Authority for this process's session, `unix-session` from
+  logind's `GetSession("auto")`, else the `session-N.scope` of
+  `/proc/self/cgroup`, else `$XDG_SESSION_ID`; refused with polkitd's
+  "already exists" it sets `error` to `polkit::HELD` once and registers
+  again at the Authority's `Changed` signal; it is never registered
+  without a helper, and a stop (the body dropped, as every store's) drops
+  the `Exported` guard, whose `Drop` unregisters and removes the object
+  on a task the next run awaits (`TEARDOWN`). `BeginAuthentication`
+  calls from any sender but the Authority's owner fail. Each request is
+  queued (`Polkit.request` the first, `waiting` the rest), its
+  identities read as user names (`polkit::users_of`: `unix-user`, and a
+  `unix-group`'s members), and answered by a conversation with
+  `polkit-agent-helper-1` (`helper::converse` over polkit 127's socket,
+  `helper::SOCKET`, when it listens, else the setuid program from
+  `helper::HELPER_DIRS` with a cleared environment and
+  `child::restore_in_child`): its `PAM_*` lines become `prompt`, `echo`
+  and `info`, each `respond` one answer line in a `Zeroizing` buffer
+  sized once (one with a newline, a NUL or over 511 bytes refused
+  whole), and the helper answers polkit itself; `FAILURE` after an
+  answer sets `failed` and starts the next conversation. `cancel()`
+  returns `org.freedesktop.PolicyKit1.Error.Cancelled`,
+  `CancelAuthentication` dismisses its request, `choose(user)` restarts
+  the conversation for another listed user.
+  `polkit::configure(Some(PolkitConfig { helper, socket }))` points
+  stores started later at a test's helper), and `greetd` (`greetd.rs`:
+  `$GREETD_SOCK`'s length-prefixed JSON, `greetd::proto`, one request in
+  flight; `login` is `create_session` after a `cancel_session` when a
+  login is under way, a PAM text is acknowledged with a null response
+  at once, a refused answer (`auth_error`) is cancelled and the user
+  asked again with `failed` kept, `start` is held until the login
+  succeeds and each word quoted for the shell line greetd makes of it
+  (`proto::shell_word`), and greetd's success calls the `started` hook
+  of `greetd::configure(Some(GreetdConfig { socket, started }))`, which
+  `strand run` sets to raise SIGTERM on itself; without `$GREETD_SOCK`
+  `available` is false and every action sets `error`; answers are
+  `strand_auth::Password`s, framed in a `Zeroizing` buffer sized once).
+  Both run on the shared runtime (the helper is a `tokio::process`
+  child, killed when its conversation drops) and are
+  `strand_services::secret` services, with `auth`
+  (`strand_services_schema::SECRET`),
   `media` (MPRIS; `elapsed`/`position` carried forward, ticking only
   while watched; M6, gap 32: `can_next`, `can_previous` and `can_seek`
   from the active player's `CanGoNext`, `CanGoPrevious` and `CanSeek`,
