@@ -65,7 +65,13 @@ host gives render the pointer after routing each input event,
 intents, so a press's flags reach logic after where it went down); a
 surface with a watched node then wants a frame, whose paint reports
 what changed (once a frame however many events), and a press is
-reported at once. While the left button is held the frame is the one
+reported at once. (flex review) A frame that moved a watched node
+under a pointer resting on its surface reports it too (`report_pointer`
+runs whenever the pointer is over the surface, sending only what
+changed). Every `LoopHost` hands facts over through `facts()` at those
+points, the eval harness too (it sets them on the instance and its next
+flush echoes the batch), so replay orders them as the shell does.
+While the left button is held the frame is the one
 the press began in, the surface's place included, so a drag that moves
 the node or its surface does not feed back. The
 next diff logic sends echoes the last batch it took in as
@@ -1705,8 +1711,13 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   reads `*.schema` but dotfiles, regular files only (symlinks followed;
   FIFOs and devices refused), at most 1 MiB each, UTF-8; a missing
   directory is no plugins; `apply(&mut Schema, files, linked: &[&str])
-  -> Vec<Warning>` is the skip-and-warn loop both consumers call; and
-  `writer(text) -> Option<&str>` reads a file's header. Files are read
+  -> Vec<Warning>` is the skip-and-warn loop both consumers call;
+  `writer(text) -> Option<&str>` reads a file's header; and (flex
+  review) `beyond_its_service(schema, next, own) -> Vec<String>` names
+  what a text adds beyond its own service (another service, an
+  element, group, function, value, method or token), which `apply`
+  skips a file for and the plugin builder's `layered` refuses a
+  registration for (`PluginError::Schema`). Files are read
   once per process; a running shell or LSP sees new files after a
   restart.
 - **`--write-schemas`** (a top-level flag, like `--version`): for each
@@ -2492,7 +2503,13 @@ re-base, if it needs one, is a dated decisions.md entry.
   with `anchor: pointer`: render gives its `anchor_rect` as 1 × 1 at the
   press that opened it, recorded by `Renderer::pressed_at(surface,
   point)`, which the host loop calls for each button press before
-  routing it; `popup_config` makes it `PopupSide::Below` with
+  routing it (with `released_at(surface)` for a release and
+  `key_step()` for a key, each a new input step): (flex review) the
+  press is taken only when the popup opens in that press's step and the
+  press's hit chain holds its element, else the element's box; an open
+  one re-takes a newer press on its element once logic's first diff
+  after its release is applied (`Pointing::diff_applied`), so a press
+  that closes it never moves it first; `popup_config` makes it `PopupSide::Below` with
   `aligned`, a positioner anchored and gravitating bottom-right), plus `thickness()` (a bar's
   across its edge), `exclusive_edge()`, `exclusive_zone()` (what
   `exclusive` keeps along that edge) and `needs_recreate()` (kind,
@@ -2955,7 +2972,10 @@ re-base, if it needs one, is a dated decisions.md entry.
     gradient noise in −1..1, 0 at whole `x`
     (`strand_scene::tokens::noise`). A prop holding a time leaf is
     frame-driven (`PropValue::reads_time`, `TokenExpr::reads_time`;
-    `noise(x)` only when `x` reads `t`): its node repaints each frame of
+    `noise(x)` only when `x` reads `t`; (flex review) a maths builtin of
+    a time leaf is `TokenExpr::Math { f: MathFn, args }`, which the VM
+    builds instead of computing, `MathFn::apply` evaluating it in
+    degrees and giving no value for a result that is not finite): its node repaints each frame of
     its clock while visible, and only it. So is a prop or override that
     references a global token reading time (`$pulse: 8 * wave(2s)` in a
     token set): render asks `reads_time_with(&|p|
@@ -3178,7 +3198,31 @@ re-base, if it needs one, is a dated decisions.md entry.
     `Prop::LineWidth` (snapped) is a graph's line or bar width,
     `Prop::Style` its `line`, `steps` or `bars`, and its `Prop::Color`
     and `Prop::Fill` may be `List`s, one per series in turn. A graph's
-    `Prop::Value` does not spring (`anim::springs`).
+    `Prop::Value` does not spring (`anim::springs`). (flex)
+    `Prop::Step` (snapped, range units) makes render round a slider's
+    drag to `lo + n·step` before `Intent::Write`, computed in `f64` and
+    rounded to the decimals `lo` and `step` are written with
+    (`Range::snap`). A `slider` or `meter` is upright when
+    `widgets::upright(node, w, h)` says so: its written `Width` and
+    `Height` (or `Size`) where both are lengths, else its laid-out box
+    taller than wide; the Router latches it for a drag
+    (`Router::drag_upright`), and an upright meter draws no wave.
+  - **Layout and input props** (flex). `Prop::Wrap` on a `row` or
+    `col` is taffy `flex_wrap` with `align_content: flex-start`.
+    `Prop::Axis` (`Keyword`: `vertical`, `horizontal`, `both`) and
+    `Prop::Snap` (`Bool`) on a `scroll` (`Snap` on a `list` too) are
+    read by `renderer/lists.rs`: a wheel event moves the axis it moves
+    most along, a dy-only wheel goes to the innermost x-only scroll only
+    when no scroll under the pointer can move along y
+    (`sideways_wheel_at`), and a touchpad gesture keeps the node and
+    axis its first event took until its lift. `Prop::Cursor` is a
+    `CursorShape`, which the Router resolves for the pointer's chain
+    (the press's while the left button is held) and the binary hands to
+    strand-surface through `SurfaceHost::cursor`. `Prop::OnKey`
+    (compiler-set, `Bool`) marks an element with an `on key` handler:
+    Tab and Shift+Tab move focus in render only when no element from the
+    focused node out to its surface has it (`input.rs` `hears_keys`);
+    the move skips nodes at `Opacity` 0 and their subtrees.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
     logic sets `Prop::RowCount` (`Number`: all rows) and `Prop::RowFirst`
     (`Number`: the global index of the first mounted row). `SceneOp::Create`
@@ -4509,8 +4553,19 @@ Public interfaces other crates and later stages build on:
     logic thread with `services::custom::read_output(types, ty, out)`
     (`from poll`'s `Document` and `coerce`) and answers the reply; each
     tick it ends the process group of every abandoned one (decisions.md
-    flex). A host that never takes the requests (a test, the eval
-    harness) leaves the calls pending.
+    flex). (flex review) The capture thread owns the command's end: a
+    superseded call (its cancel flag), a timeout (`POLL_TIMEOUT`, 10 s,
+    the read polled with a deadline) or too much output make it send
+    SIGTERM to the group, wait `KILL_GRACE` with `waitid(WNOWAIT)` and
+    then SIGKILL, before it reaps the child, so no signal reaches a
+    recycled group; the answer's `Ended`/`Answered` carry the real exit
+    code. Each answer is recorded (`ChangeRecorder::exec_answered`) as a
+    `FETCH` named `action <name>`, its texts held as a call's are when an
+    argument is not a text of the program, and the eval replay plan
+    turns it into an `answer action <name> …` step, which the harness
+    queues for that action's next call; a host that never takes the
+    requests (a test) leaves the calls pending, and the eval harness
+    answers one with nothing queued with an error.
   - (M6, decisions.md m6-w2-language, a config `service` shadowing a
     builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
     service, field)`, `acquire_builtin(rt, service)` and
@@ -5087,8 +5142,9 @@ and the connection):
   `monitor_added(&Monitor, reconnected)`, `monitor_changed` (scale,
   logical size or position; same identity), `monitor_removed`,
   `monitor_forgotten` (30 s after an unplug), `frame_deadline(surface) ->
-  Option<Instant>`, `frame_dropped(surface)` and `input(&InputEvent)`
-  (main thread, for hit testing). The binary implements it on a wrapper
+  Option<Instant>`, `frame_dropped(surface)`, `input(&InputEvent)`
+  (main thread, for hit testing) and (flex) `cursor(surface) ->
+  CursorShape` (the arrow by default; see Threads). The binary implements it on a wrapper
   around `Renderer`, forwarding to `attach_surface`, `configure_surface`,
   `detach_surface`, `frame_deadline` and `invalidate`.
 - `SurfaceManager::connect(host, Config)` / `with_connection(conn, ..)`;

@@ -218,6 +218,7 @@ fn collect_expr(e: &TokenExpr, out: &mut Vec<String>) {
         }
         TokenExpr::Wave { phase, .. } => collect_expr(phase, out),
         TokenExpr::Noise(x) => collect_expr(x, out),
+        TokenExpr::Math { args, .. } => args.iter().for_each(|e| collect_expr(e, out)),
         TokenExpr::Time | TokenExpr::Index | TokenExpr::Count | TokenExpr::Channel(_) => {}
     }
 }

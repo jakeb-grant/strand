@@ -33,29 +33,6 @@ fn passable(ty: &Ty, dbus: bool) -> bool {
     }
 }
 
-/// (flex) What a command's output can be read as: what a `from poll`
-/// field can hold (decisions.md flex).
-fn readable(ty: &Ty) -> bool {
-    match ty {
-        Ty::Error | Ty::Enum(_) | Ty::Record(_) | Ty::Any => true,
-        Ty::Prim(p) => matches!(
-            p,
-            Prim::Bool
-                | Prim::Int
-                | Prim::Float
-                | Prim::Length
-                | Prim::Percent
-                | Prim::Angle
-                | Prim::Duration
-                | Prim::Color
-                | Prim::Text
-                | Prim::Path
-        ),
-        Ty::Optional(t) | Ty::List(t, _) => readable(t),
-        _ => false,
-    }
-}
-
 /// Whether `program` (a name or a path) is a shell that runs its `-c`
 /// argument as a script.
 fn is_shell(program: &str) -> bool {
@@ -184,7 +161,10 @@ impl<'a> Checker<'a> {
         let params = self.action_params(&a.params, false);
         let ret = a.ret.as_ref().map(|t| {
             let ty = self.resolve_type(t);
-            if !readable(&ty) {
+            // (flex review) What a `from poll` field may hold: data, and
+            // records the config declares, never a live handle (`Window`,
+            // `Canvas`) or `Date`.
+            if !super::tree::readable(&self.types, &ty, &mut Vec::new()) {
                 let shown = self.types.show(&ty);
                 self.error(
                     "check::type_mismatch",
@@ -193,8 +173,9 @@ impl<'a> Checker<'a> {
                     "not read from what it prints",
                 )
                 .help = Some(
-                    "use `text` for what it prints as it is, or a number, `bool`, enum, list \
-                     or record type read from its JSON or `key=value` lines"
+                    "use `text` for what it prints as it is, or a number, `bool`, enum, a \
+                     `type` you declare, or a list or optional of these, read from its JSON \
+                     or `key=value` lines"
                         .into(),
                 );
                 return Ty::Error;

@@ -2,7 +2,8 @@
 
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
-`play`, `canvas`, `type` and `key`, `slot`, `fn`, settings files,
+`play`, `canvas`, `type` and `key`, `slot`, `fn`, a node's `box` and
+`pointer`, settings files,
 SVG layer selectors, and `service … from file | listen | poll` with
 `permit exec`, and `action`.
 You build: a theme file, a CSS file of your colours that other programs
@@ -459,9 +460,15 @@ in [the function reference](../reference/functions.md): besides `pct`
 and `dur`, `num(x, digits: 1)` writes a number with fixed decimals,
 `bytes(n)` a size (`1.5 GiB`), `number(t)` reads a number from text
 (`null` when it is not one), `sin`, `cos`, `atan2`, `sqrt` and `pi` do
-geometry (angles in degrees, clockwise from the right), and a list
-folds with `xs.reduce(0, (sum, x) => sum + x)` and grows with
-`xs + [x]`.
+geometry (angles in degrees, clockwise from the right, so a half turn
+is `180deg`, not `pi`), and a list folds with
+`xs.reduce(0, (sum, x) => sum + x)` and grows with `xs + [x]`.
+
+A panel with many tiles can let them flow: `row { wrap: true; … }`
+runs its children on in another row when one is full. A strip wider
+than the panel scrolls sideways in `scroll { axis: horizontal; snap:
+true; … }`, which settles each wheel step and swipe on a tile's
+start.
 
 **`component Tile(…) tokens { radius: …; pad: … }` gives the
 component tokens of its own,** read inside as `$Tile.radius` and
@@ -600,6 +607,7 @@ bar Dock {
     for p in pins key p.app {
       let app = apps.all.find(a => a.id == p.app)
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
+        cursor: pointer
         // How far the pointer is from this icon's centre, along the row.
         let off = (icons.pointer?.x ?? -1000) - (self.box.x - icons.box.x + 22)
         scale: 1 + 0.4 * (1 - off.abs() / 120).max(0)
@@ -629,6 +637,14 @@ cannot run away from your hand.
 **`self.box` is the icon's place on the dock**, so `self.box.x -
 icons.box.x + 22` is its centre along the row. `.abs()` is a number's
 distance from zero and `.max(0)` keeps it from going below zero.
+
+**`cursor: pointer` shows the hand over an icon**, as over a link; a
+node without one shows the arrow, an input the text cursor. To ask
+before unpinning, open a menu where you right-clicked: give the icon a
+box around it holding `popup { anchor: pointer; open: <-> menu; … }`
+with an "Unpin" button, and set `menu = true` in `on secondary`.
+**`anchor: pointer`** opens the popup at the click rather than below
+its element: a context menu.
 
 ## 6. Escape hatches
 

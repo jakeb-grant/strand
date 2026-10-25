@@ -98,6 +98,26 @@ pub fn slider_knob_radius(active: bool) -> f64 {
     (SLIDER_KNOB as f64 + if active { 2.0 } else { 0.0 }) / 2.0
 }
 
+/// (flex) Whether a `slider` or `meter` drawn `w` × `h` runs upward: by
+/// the box it comes to rest in, so one whose size springs through a
+/// square (a width growing from 0) does not turn part-way. A `width` and
+/// `height` (or a `size`) written as lengths are that box; else it is
+/// the box as laid out now.
+pub fn upright(node: &crate::tree::Node, w: f64, h: f64) -> bool {
+    use strand_scene::{Length, Prop};
+    let fixed = |p: Prop| match node.get(p) {
+        Some(PropValue::Number(n) | PropValue::Length(Length::Px(n))) if n.is_finite() => {
+            Some(f64::from(*n))
+        }
+        _ => None,
+    };
+    let size = fixed(Prop::Size);
+    match (fixed(Prop::Width).or(size), fixed(Prop::Height).or(size)) {
+        (Some(w), Some(h)) => h > w,
+        _ => h > w,
+    }
+}
+
 /// Where a slider's knob centre runs from value 0 to value 1 across its
 /// box `x0..x1`, in units of `s` per logical pixel: drawing and dragging
 /// share it, so the knob stays under the pointer.

@@ -1558,6 +1558,8 @@ impl<'a> Checker<'a> {
             }
             let (overload, args, ret) = self.call_overloads(&sigs, args, name, span);
             (self.ctx.let_value, self.ctx.prop) = saved;
+            self.time_in_builtin(name, &args);
+            self.pi_as_degrees(name, &args);
             let ret = if reported { Ty::Error } else { ret };
             return hir::Expr {
                 kind: ExprKind::Call {

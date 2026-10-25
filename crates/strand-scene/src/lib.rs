@@ -49,6 +49,6 @@ pub use surface::{
     SurfaceSpec, is_two_way,
 };
 pub use tokens::{
-    BinOp, Channel, HUE_ROOTS, MAX_TOKEN_STEPS, PALETTE_SEGMENT, TimeContext, TokenExpr,
+    BinOp, Channel, HUE_ROOTS, MAX_TOKEN_STEPS, MathFn, PALETTE_SEGMENT, TimeContext, TokenExpr,
     TokenMethod, TokenScope, TokenTable,
 };

@@ -201,6 +201,10 @@ advance the clock.
 - `answer <service.method> <JSON>` and `answer <service.method> error
   "<text>"` (report): the next call of that method is answered with it,
   ahead of the mock's own (`SchemaHost::answer`); answers queue in order.
+  (flex review) `answer action <name> <JSON>` and `answer action <name>
+  error "<text>"` answer the next call of the config's action `<name>`,
+  one with a result (`-> T`), read as its `T`; with none queued the call
+  is answered with an error, since the sandbox runs no command.
 - `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
   refuses it as unsupported: the notification daemon is not in the
   sandbox. Set `notifications.*` and `emit` instead.
@@ -313,7 +317,11 @@ drift.
 Pointer steps go through the host's input router as a surface manager's
 events would, and routing reaches logic as it does in the shell. A popup's
 `delay` and grace run on the virtual clock. Actions the shell would run are
-recorded, never executed.
+recorded, never executed. (flex review) A call of an action with a result
+(`-> T`, spec.md 5.7) is answered by the answer queued for it (`answer action
+<name> …`, which a report's replay writes from what the live call answered),
+else with an error saying no command runs in the sandbox, so its `.error`
+shows rather than a call pending for ever.
 
 ### Perturbations
 
@@ -2387,10 +2395,13 @@ work:
    Strand's records), so the replay maps it where the live shell did;
    not for a bar, a popup or a node shown on several outputs at once.
    (fidelity) The sandbox keeps one surface per node: a node the live
-   shell showed on several outputs at once (one surface of it on each:
-   `screens: all` on a panel or OSD, or a list of screens) is drawn on
-   one, and a limit names it, the outputs it was shown on live and
-   those the replay did not draw it on. An output plugged in or
+   shell showed on several outputs at once (one surface of it on each,
+   as a strand before 2026-10-24 drew a `panel` or `osd` with
+   `screens: all` or a list) is drawn on one, and a limit names it, the
+   outputs it was shown on live and those the replay did not draw it
+   on. A strand since then mounts such a panel once per monitor
+   (decisions.md flex), so its replay draws each instance on its own
+   output and names no limit. An output plugged in or
    unplugged in the window (the input ring's `OUTPUT` and `OUTPUT_GONE`
    times) is a screen for the whole window: a limit says when it came
    or went live (one the shell was told of before its first input, in a
@@ -2583,6 +2594,9 @@ capability, used by any scenario):
   goes.
 - `answer <service.method> <JSON>`: the next call of that method is
   answered with it, ahead of the mock's own (`SchemaHost::answer`).
+  A call of an action with a result is a fetch named `action <name>`
+  in the recording, given as `answer action <name> <JSON>` (flex
+  review).
 
 **The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
 first key `verdict`, the first line of `replay.txt`, of what
@@ -2727,7 +2741,9 @@ before the report, first at -31.54s (cell: …)`.
 It also lists what it did not reproduce: typed text (the keys counted,
 typed as `x`; password spans, typed as eight), pastes, services it has
 no stand-in for (a plugin whose schema is not in the bundle), calls
-answered by the mock because no answer was recorded, other programs'
+answered by the mock because no answer was recorded (calls of a result
+action with none recorded, from a strand before 2026-10-24, answered
+with an error), other programs'
 windows (`thumbnail` nodes draw nothing, and the compositor's blur and
 its own animations are not modelled), (fidelity) an output whose
 refresh rate differs from the main one's (one clock), a node shown on
@@ -3005,6 +3021,17 @@ replay`, `strand replay` or `scripts/report-view.sh` exit non-zero;
 only a replay that cannot run does.
 
 ## Limits
+
+- **A result action's answer is replayed, never its command** (flex
+  review). The recording keeps what each call of an action with a
+  result (`-> T`) answered, its texts held as other calls' are when an
+  argument was not the config's own (a typed query), and the replay
+  answers the call with it in order. A report from a strand before
+  2026-10-24 has none: each such call is answered with an error and a
+  limit names the action. A synthetic `drag` step's path is
+  surface-local while the surface stays put: a drag that moves its own
+  surface (a floating widget's grip) feeds back in a scenario, which a
+  recorded drag (the compositor's own positions) does not.
 
 - **Placement is strand-surface's, not a compositor's** (eval-false-alarms).
   The sandbox places surfaces with the code the surface manager sends

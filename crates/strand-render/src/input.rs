@@ -452,6 +452,9 @@ pub struct Router {
     /// The slider being dragged on each surface (the left button went
     /// down on it).
     dragging: HashMap<SurfaceId, NodeId>,
+    /// (flex) Whether each slider being dragged runs upward, as it did
+    /// when the press began: a drag does not change axis mid-way.
+    drag_upright: HashMap<NodeId, bool>,
     /// The `input` whose text a held left button selects, per surface.
     selecting: HashMap<SurfaceId, NodeId>,
     /// (M4) A press on a `drag:` source, or the drag it became.
@@ -2056,11 +2059,13 @@ impl Router {
         }
         // (flex) Tab and Shift+Tab move focus between the surface's
         // `input`s and `list`s in tree order, round from the last to the
-        // first.
+        // first, unless an `on key` hears them: a handler takes the keys
+        // it hears (spec.md 6.7), and moves focus itself with `focus:`.
         if matches!(key.name.as_str(), "Tab" | "ISO_Left_Tab" | "KP_Tab")
             && !key.modifiers.ctrl
             && !key.modifiers.alt
             && !key.modifiers.logo
+            && !scene.tree().is_some_and(|t| hears_keys(t, root, focus))
         {
             let back = key.name == "ISO_Left_Tab" || key.modifiers.shift;
             if let Some(next) = scene
@@ -2297,7 +2302,15 @@ impl Router {
         let at = scene.to_laid(surface, slider, at);
         // Pressed, so drawn with its larger knob: the same span. (flex)
         // Laid out taller than wide, it runs upward: 0 at the bottom.
-        let v = if r.h > r.w {
+        let upright = *self.drag_upright.entry(slider).or_insert_with(|| {
+            scene
+                .tree()
+                .and_then(|t| t.get(slider))
+                .map_or(r.h > r.w, |n| {
+                    crate::widgets::upright(n, f64::from(r.w), f64::from(r.h))
+                })
+        });
+        let v = if upright {
             let (y0, y1) = crate::widgets::slider_span(r.y as f64, (r.y + r.h) as f64, true, 1.0);
             ((y1 - at.y as f64) / (y1 - y0).max(1.0)).clamp(0.0, 1.0) as f32
         } else {
@@ -2336,6 +2349,7 @@ impl Router {
     fn end_drags(&mut self, scene: &mut dyn InputScene, surface: SurfaceId) {
         if let Some(slider) = self.dragging.remove(&surface) {
             scene.set_drag(slider, None);
+            self.drag_upright.remove(&slider);
         }
         self.selecting.remove(&surface);
     }
@@ -2466,14 +2480,19 @@ impl Router {
 
 /// (flex) The `input` or `list` after `from` under `root` in tree order
 /// (before it with `back`), round from the end; the first (last) when
-/// `from` is none of them. Nested surfaces (popups) are their own.
-/// `None` when there is no other.
+/// `from` is none of them. Nested surfaces (popups) are their own, and
+/// what is not shown is skipped: a node leaving (a page no longer
+/// current among them) or at `opacity: 0`, its subtree with it, as the
+/// pointer passes them by (spec.md 6.7). `None` when there is no other.
 fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> Option<NodeId> {
     let mut all = Vec::new();
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
         let Some(n) = tree.get(id) else { continue };
         if id != root && (n.kind.is_surface() || !tree.contains_live(id)) {
+            continue;
+        }
+        if matches!(n.get(Prop::Opacity), Some(PropValue::Number(o)) if *o <= 0.0) {
             continue;
         }
         if matches!(n.kind, NodeKind::Input | NodeKind::List) {
@@ -2490,6 +2509,23 @@ fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> O
         (None, true) => len.checked_sub(1)?,
     };
     all.get(i).copied().filter(|n| *n != from)
+}
+
+/// (flex) True if `from` or an element out to its surface `root` has an
+/// `on key` handler (`Prop::OnKey`, which the compiler sets).
+fn hears_keys(tree: &SceneTree, root: NodeId, from: NodeId) -> bool {
+    let mut cur = Some(from);
+    while let Some(id) = cur {
+        let Some(n) = tree.get(id) else { return false };
+        if matches!(n.get(Prop::OnKey), Some(PropValue::Bool(true))) {
+            return true;
+        }
+        if id == root {
+            return false;
+        }
+        cur = n.parent;
+    }
+    false
 }
 
 /// The first node under `root` (depth first) with `focus: true`.

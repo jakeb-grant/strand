@@ -498,7 +498,7 @@ pub(crate) fn total_compare(a: &Value, b: &Value) -> Ordering {
 /// True for a builtin function that computes with its arguments now (so
 /// a time-bound argument is an error there), false for the ones whose
 /// result stays symbolic or becomes a call-shaped value render reads.
-fn computes(name: &str) -> bool {
+pub(crate) fn computes(name: &str) -> bool {
     matches!(
         name,
         "pct"
@@ -506,21 +506,10 @@ fn computes(name: &str) -> bool {
             | "num"
             | "bytes"
             | "number"
-            | "sin"
-            | "cos"
-            | "tan"
-            | "atan2"
-            | "sqrt"
-            | "pow"
-            | "exp"
-            | "ln"
             | "join"
             | "material"
             | "import"
             | "rgb"
-            | "min"
-            | "max"
-            | "clamp"
             | "sleep"
             | "propagate"
     )
@@ -561,20 +550,57 @@ pub fn dur(d: Duration) -> String {
 pub fn num(x: f64, digits: i64, pad: i64) -> String {
     let digits = digits.clamp(0, 12) as usize;
     let pad = pad.clamp(0, 40) as usize;
-    let scale = 10f64.powi(digits as i32);
-    let mut r = (x.abs() * scale).round() / scale;
-    if !r.is_finite() {
-        r = x.abs();
-    }
-    let body = format!("{r:.digits$}");
+    let body = if x.is_finite() {
+        round_decimal(&format!("{}", x.abs()), digits)
+    } else {
+        format!("{:.digits$}", x.abs())
+    };
     let whole = body.find('.').unwrap_or(body.len());
     let zeros = "0".repeat(pad.saturating_sub(whole));
     let negative = x < 0.0 && body.chars().any(|c| c.is_ascii_digit() && c != '0');
     format!("{}{zeros}{body}", if negative { "-" } else { "" })
 }
 
+/// A non-negative number written in decimals (`1.005`, Rust's shortest
+/// form of an `f64`, so what the program wrote) rounded half away from
+/// zero to `digits` places on those decimals: `1.005` to two places is
+/// `1.01`, where rounding the binary `f64` (just below 1.005) gives
+/// `1.00`.
+fn round_decimal(s: &str, digits: usize) -> String {
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    let mut ds: Vec<u8> = whole
+        .bytes()
+        .chain(frac.bytes().chain(std::iter::repeat(b'0')).take(digits))
+        .collect();
+    if frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5') {
+        let mut i = ds.len();
+        loop {
+            if i == 0 {
+                ds.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if ds[i] == b'9' {
+                ds[i] = b'0';
+            } else {
+                ds[i] += 1;
+                break;
+            }
+        }
+    }
+    let cut = ds.len() - digits;
+    let (w, f) = ds.split_at(cut);
+    let w = String::from_utf8_lossy(w);
+    if digits == 0 {
+        w.into_owned()
+    } else {
+        format!("{w}.{}", String::from_utf8_lossy(f))
+    }
+}
+
 /// (flex) `bytes(n)`: `512 B`, `1.5 KiB`, `19.4 GiB`, `512 MiB`; one
-/// decimal below 100 (a trailing `.0` dropped), none from 100.
+/// decimal below 100 (a trailing `.0` dropped), none from 100. The unit
+/// is chosen after rounding, so `1023.6` is `1 KiB`, not `1024 B`.
 pub fn bytes(n: f64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let sign = if n < 0.0 { "-" } else { "" };
@@ -584,14 +610,24 @@ pub fn bytes(n: f64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 {
-        return format!("{sign}{} B", v.round());
+    // What it shows at unit `u`.
+    let rounded = |v: f64, u: usize| {
+        if u == 0 || (v * 10.0).round() / 10.0 >= 100.0 {
+            v.round()
+        } else {
+            (v * 10.0).round() / 10.0
+        }
+    };
+    if rounded(v, u) >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
     }
-    let shown = if (v * 10.0).round() / 10.0 < 100.0 {
-        let s = format!("{:.1}", (v * 10.0).round() / 10.0);
+    let r = rounded(v, u);
+    let shown = if u > 0 && r < 100.0 {
+        let s = format!("{r:.1}");
         s.strip_suffix(".0").map_or(s.clone(), str::to_string)
     } else {
-        format!("{}", v.round())
+        format!("{r}")
     };
     format!("{sign}{shown} {}", UNITS[u])
 }
@@ -642,6 +678,22 @@ pub(crate) fn call(
         .any(Value::has_time);
     if timed && computes(name) {
         return Err(time_in_logic(&format!("in `{name}(…)`")));
+    }
+    // (flex) A maths builtin over a value render evaluates (a time
+    // signal or a token) stays symbolic: render computes it per frame,
+    // so `x: 20 * sin(t * 90deg)` bobs.
+    if let Some(f) = strand_scene::MathFn::from_name(name) {
+        let all: Vec<&Value> = args.params.iter().flatten().chain(&args.rest).collect();
+        if all
+            .iter()
+            .any(|v| matches!(v, Value::Time(_) | Value::Token(_)))
+        {
+            let parts: Option<Vec<TokenExpr>> = all.iter().map(|v| token_of(v)).collect();
+            return Ok(match parts {
+                Some(parts) => Value::symbolic_from(TokenExpr::Math { f, args: parts }, timed),
+                None => Value::Null,
+            });
+        }
     }
     Ok(match name {
         "pct" => match args.get(0) {

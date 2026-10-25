@@ -451,6 +451,11 @@ pub fn show_expr(e: &TokenExpr) -> String {
             )
         }
         TokenExpr::Noise(x) => format!("noise({})", show_expr(x)),
+        TokenExpr::Math { f, args } => format!(
+            "{}({})",
+            f.name(),
+            args.iter().map(show_expr).collect::<Vec<_>>().join(", ")
+        ),
         TokenExpr::Index => "index".into(),
         TokenExpr::Count => "count".into(),
     }

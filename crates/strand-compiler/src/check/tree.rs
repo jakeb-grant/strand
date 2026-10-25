@@ -1055,6 +1055,36 @@ impl<'a> Checker<'a> {
         self.unknown_element(el, span)
     }
 
+    /// (flex) An `arc` written before its line became its `stroke:`
+    /// (decisions.md flex): `width` beside a `size` (or with no
+    /// `height`) and no `stroke` was the line's width, and is now a box
+    /// that narrow. A warning with the rewrite, since it still checks.
+    fn arc_width(&mut self, el: &ast::Element) {
+        let Some(block) = &el.block else { return };
+        let prop = |name: &str| {
+            block.items.iter().find_map(|i| match &i.kind {
+                ast::ItemKind::Prop(p) if p.name.name == name => Some(p),
+                _ => None,
+            })
+        };
+        let Some(width) = prop("width") else { return };
+        if prop("stroke").is_some() || (prop("height").is_some() && prop("size").is_none()) {
+            return;
+        }
+        let d = self.warning(
+            "check::arc_width",
+            "an `arc`'s `width` is its box's width, not its line's",
+            width.name.span,
+            "sizes the box",
+        );
+        d.help = Some(
+            "an arc's line is its `stroke:` (`stroke: 4`, or `stroke: 4, $accent`); its box is \
+             `size:`, or `width` and `height`"
+                .into(),
+        );
+        d.add_suggestion(width.name.span, "stroke");
+    }
+
     /// Checks before the block: placement, the node and the positional.
     #[inline(never)]
     fn element_head(
@@ -1086,6 +1116,9 @@ impl<'a> Checker<'a> {
                 "draws nothing for now",
             )
             .help = Some("use the `tooltip: expr` prop for a text tooltip".into());
+        }
+        if kind == "arc" {
+            self.arc_width(el);
         }
         if let Some(parent) = self.misplaced_in(schema) {
             self.error(
@@ -3085,7 +3118,11 @@ impl<'a> Checker<'a> {
 /// records you declare (`type`) of these. A schema record (`Screen`) is a
 /// live entity its service owns; paints, fonts, shadows and handles are
 /// not data a document holds.
-fn readable(types: &crate::ty::TypeTable, ty: &Ty, seen: &mut Vec<crate::ty::RecordId>) -> bool {
+pub(super) fn readable(
+    types: &crate::ty::TypeTable,
+    ty: &Ty,
+    seen: &mut Vec<crate::ty::RecordId>,
+) -> bool {
     match ty {
         Ty::Error | Ty::Any | Ty::Enum(_) => true,
         Ty::Prim(p) => matches!(

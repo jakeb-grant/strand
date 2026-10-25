@@ -158,15 +158,17 @@ pub fn input<H: LoopHost>(
     let (r, router) = h.parts();
     idle.retain(|s| !r.wants_frame(*s));
     // (flex) Where a press went down: an `anchor: pointer` popup it
-    // opens opens there.
-    if let InputEvent::PointerButton {
-        surface,
-        position,
-        state: strand_scene::ButtonState::Pressed,
-        ..
-    } = event
-    {
-        r.pressed_at(*surface, *position);
+    // opens opens there; a key after it opens one at its element.
+    match event {
+        InputEvent::PointerButton {
+            surface,
+            position,
+            state: strand_scene::ButtonState::Pressed,
+            ..
+        } => r.pressed_at(*surface, *position),
+        InputEvent::PointerButton { surface, .. } => r.released_at(*surface),
+        InputEvent::Key { .. } => r.key_step(),
+        _ => {}
     }
     if let Some(router) = router {
         let intents = router.handle(event, r);

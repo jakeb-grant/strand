@@ -163,8 +163,8 @@ pub fn apply(schema: &mut Schema, files: &[(PathBuf, String)], linked: &[&str]) 
             Ok(()) if next.provisional.len() < schema.provisional.len() => {
                 vec!["it redeclares a builtin service".to_string()]
             }
-            Ok(()) if !beyond_its_service(schema, &next, path).is_empty() => {
-                beyond_its_service(schema, &next, path)
+            Ok(()) if !beyond_its_service(schema, &next, stem(path)).is_empty() => {
+                beyond_its_service(schema, &next, stem(path))
             }
             Ok(()) => {
                 *schema = next;
@@ -179,11 +179,16 @@ pub fn apply(schema: &mut Schema, files: &[(PathBuf, String)], linked: &[&str]) 
     warnings
 }
 
-/// (flex) What `next` (`schema` extended by the file at `path`) adds
-/// beyond the file's own service, the one its stem names: each as a
-/// reason the file is skipped.
-fn beyond_its_service(schema: &Schema, next: &Schema, path: &Path) -> Vec<String> {
-    let own = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+/// The service a plugin schema file is for: its name's stem.
+fn stem(path: &Path) -> &str {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+}
+
+/// (flex) What `next` (`schema` extended by a plugin's schema text for
+/// service `own`, a file named for it) adds beyond that service and the
+/// records, enums and aliases it uses: each as a reason the text is
+/// refused (a file skipped, a linked registration refused).
+pub fn beyond_its_service(schema: &Schema, next: &Schema, own: &str) -> Vec<String> {
     let mut why = Vec::new();
     let new = |a: Vec<&String>, b: Vec<&String>| -> Vec<String> {
         b.into_iter()

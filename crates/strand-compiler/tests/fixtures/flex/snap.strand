@@ -25,3 +25,15 @@ panel Both {
     box { width: 600; height: 450; bg: linear(90deg, #5b8def, #e0a040) }
   }
 }
+
+// A page that scrolls down with a strip that scrolls sideways in it.
+panel Page {
+  anchor: top_left; margin: 0, 0, 0, 700; width: 200; height: 200
+  scroll { width: 200; height: 200; gap: 10; bg: #101418
+    box { width: 200; height: 100; bg: #5b8def }
+    scroll { axis: horizontal; width: 200; height: 80
+      for c in colours key c { box { width: 120; height: 80; bg: c } }
+    }
+    box { width: 200; height: 300; bg: #e0a040 }
+  }
+}

@@ -108,14 +108,17 @@ handle record Node {
   /// The pointer over it, in its laid-out box (0, 0 is its top-left
   /// corner as layout put it; its paint offsets and transforms, and its
   /// ancestors', are undone, as for a slider), once a frame while it
-  /// moves; null while the pointer is not over it. While a press that
-  /// began on it is held it stays set, wherever the pointer goes (outside
-  /// the box too), in the frame the node had when the press began: what
-  /// the drag moves (its `x`, its layout, its surface's margins) does not
-  /// move the frame, so `on change self.pointer { if self.pressed { px =
-  /// px0 + self.pointer.x - grab.x } }` follows the pointer without
-  /// feeding back. An `on change` of only such input state (`pointer`,
-  /// `hover`, `pressed`) is an input handler, never throttled.
+  /// moves or the node moves under it; null while the pointer is not
+  /// over it. While a left-button press that began on it is held it
+  /// stays set, wherever the pointer goes (outside the box too), in the
+  /// frame the node had when the press began: what the drag moves (its
+  /// `x`, its layout, its surface's margins) does not move the frame, so
+  /// `on change self.pointer { if self.pressed { px = px0 +
+  /// (self.pointer?.x ?? grab.x) - grab.x } }` (`grab` a `Point` kept
+  /// when the press began) follows the pointer without feeding back. An
+  /// `on change` of only nodes' input state (`pointer`, `hover`,
+  /// `pressed`, `focused`, `selected`) is an input handler, never
+  /// throttled.
   pointer: Point?
 }
 
@@ -488,7 +491,9 @@ handle record Canvas {
   /// (at most one whole turn). It joins the open path with a line to
   /// its start, or starts one there: `c.move(20, 20); c.arc(20, 20, 16,
   /// from: -90deg, to: 30deg); c.close(); c.fill($accent)` is a pie
-  /// slice.
+  /// slice. An `atan2` angle runs from -180deg to 180deg: an arc from
+  /// `135deg` to one turns back past 180deg, so add `360deg` to an angle
+  /// below the start (`to: a < 135deg ? a + 360deg : a`).
   fn arc(x: float, y: float, r: float, from: angle, to: angle)
   /// Closes the open path with a line back to where it started.
   fn close()
@@ -1028,11 +1033,14 @@ fn dur(duration: duration, clock: bool = false) -> text lift
 fn join(sep: text, ...parts: any?) -> text
 /// A number as text with `digits` decimals and its whole part padded
 /// with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`,
-/// `num(7, pad: 2)` is `07`. Null in, null out.
+/// `num(7, pad: 2)` is `07`. It rounds half away from zero on the
+/// decimals the number is written with (`num(1.005, digits: 2)` is
+/// `1.01`). Null in, null out.
 fn num(x: float, digits: int = 0, pad: int = 0) -> text lift
 /// A count of bytes as text in binary units: `bytes(1536)` is `1.5 KiB`,
 /// `bytes(disk.used)` `19.4 GiB` (one decimal below 100, none from 100;
-/// `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`). Null in, null out.
+/// `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`, the unit chosen after
+/// rounding, so `bytes(1023.6)` is `1 KiB`). Null in, null out.
 fn bytes(n: float) -> text lift
 /// The number a text spells, or null when it spells none:
 /// `number(" 42 ")` is 42, `number("4 GB")` null. Leading and
@@ -1144,7 +1152,9 @@ fn min(a: float, b: float) -> float
 fn max(a: float, b: float) -> float
 /// `x` kept between `lo` and `hi`.
 fn clamp(x: float, lo: float, hi: float) -> float
-/// The sine of an angle (a plain number is degrees): `r * sin(a)`.
+/// The sine of an angle (a plain number is degrees, so `pi` in it is a
+/// warning: a half turn is `180deg`): `r * sin(a)`. Of a time signal it
+/// follows time, as arithmetic does: `x: 20 * sin(t * 90deg)`.
 fn sin(a: angle) -> float
 /// The cosine of an angle: `x: r * cos(a)` places a point on a circle,
 /// 0deg pointing right and angles turning clockwise, as `c.arc` reads
@@ -1154,7 +1164,9 @@ fn cos(a: angle) -> float
 fn tan(a: angle) -> float
 /// The angle from the origin to the point (`x`, `y`), from -180deg to
 /// 180deg, 0deg pointing right and clockwise positive (y grows down):
-/// the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`.
+/// the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`. An arc
+/// drawn from a fixed angle to it turns the other way once the pointer
+/// passes 180deg: add `360deg` to an angle below the arc's start.
 fn atan2(y: float, x: float) -> angle
 /// The square root; a negative number has none (an error value).
 fn sqrt(x: float) -> float
@@ -1431,7 +1443,8 @@ element bar: surface {
   /// The monitor this instance is on: one instance per monitor.
   let screen: Screen
   /// Space it keeps from windows: `true` (the default) its thickness, a
-  /// length exactly that much, `false` or `0` none (it overlaps them).
+  /// length in px that much (beyond its margin), `false` or `0` none (it
+  /// overlaps them).
   exclusive: bool | length
   flags surface
 }
@@ -1443,8 +1456,9 @@ element panel: surface {
   /// on.
   let screen: Screen
   /// Space it keeps from windows along the edge it is attached or
-  /// anchored to: `true` its thickness, a length exactly that much,
-  /// `false` or `0` none (the default; it overlaps them).
+  /// anchored to (one edge: a corner or the centre keeps none, a
+  /// warning): `true` its thickness, a length in px that much (beyond
+  /// its margin), `false` or `0` none (the default; it overlaps them).
   exclusive: bool | length
   flags surface
 }
@@ -1486,9 +1500,11 @@ element popup: surface {
   grace: duration
   /// Where it opens: below the element it is anchored to (the default;
   /// a submenu beside its row, on the side `left`, `right`, `top` or
-  /// `bottom` names), or `pointer`, where the press that opened it went
-  /// down: a context menu at the click, down and to the right of it,
-  /// kept inside the screen.
+  /// `bottom` names), or `pointer`, where the press on its element that
+  /// opened it went down: a context menu at the click, down and to the
+  /// right of it, kept inside the screen. Opened with no press (a key, a
+  /// timer, a hover) it opens at its element; a later press on its
+  /// element that leaves it open moves it there.
   anchor: Anchor | PopupAnchor
   /// Escape or a click away closed it.
   on dismiss
@@ -1505,9 +1521,9 @@ element row: node {
 }
 /// Lays out its children in a column.
 element col: node {
-  /// Runs its children on in another column when one is full (`gap`
-  /// stands between columns too; `align` and `justify` place them in
-  /// each).
+  /// Runs its children on in another column when one is full, which
+  /// needs a bounded height (`gap` stands between columns too; `align`
+  /// and `justify` place them in each).
   wrap: bool
 }
 /// Stacks its children on top of each other.
@@ -1521,7 +1537,9 @@ element grid: node {
 element scroll: node {
   /// Which way it scrolls: `vertical` (the default), `horizontal` (its
   /// children in a row; a wheel without a sideways motion scrolls it
-  /// too) or `both`.
+  /// when no scroll around it can move along y) or `both`. A touchpad
+  /// gesture keeps the axis its first motion took until the fingers
+  /// lift.
   axis: Axis
   /// A wheel step or a touchpad's lift settles with a child's start at
   /// the view's start (the end of the content too): one wheel notch
@@ -1531,7 +1549,8 @@ element scroll: node {
 }
 /// Virtualised; arrow keys move the selection.
 element list: node {
-  /// Takes keyboard focus when shown: arrows move its selection, Return
+  /// Takes keyboard focus when shown, and whenever it turns true (as an
+  /// `input`'s); then arrows move its selection, Return
   /// activates the selected row, and Right opens a popup the row holds
   /// (a menu's submenu).
   focus: bool
@@ -1600,7 +1619,9 @@ element button(text -> text): node {}
 /// A slider: `slider { value: <-> audio.sink.volume }`. Dragged, it
 /// writes values in its `range`: `slider { value: <-> percent; range: 0,
 /// 100 }`. Laid out taller than wide (`width: 24; height: 160`), it runs
-/// upward: its value grows from the bottom.
+/// upward: its value grows from the bottom (its written `width` and
+/// `height` decide, else its laid-out box; a drag keeps the way it
+/// began).
 element slider: node {
   /// Its value, in `range` (0 to 1 when unset), bound two-way; a value
   /// outside it is drawn at its nearer end.
@@ -1611,7 +1632,9 @@ element slider: node {
   /// The paint of the unfilled track.
   track: paint
   /// A drag moves in whole steps of this, in `range`'s units from its
-  /// low end (`range: 0, 100; step: 5`); unset, it moves freely.
+  /// low end (`range: 0, 100; step: 5`), and writes the decimal they
+  /// spell (`step: 0.1` writes `0.9`, never `0.90000004`); unset, it
+  /// moves freely.
   step: float
   flags leaf
 }
@@ -1627,7 +1650,11 @@ element input: node {
   placeholder: text
   /// `password` masks it.
   type: InputKind
-  /// Takes keyboard focus when shown.
+  /// Takes keyboard focus when shown, and again whenever it turns true
+  /// while its surface has the keyboard (`focus: mode == search`). Tab
+  /// and Shift+Tab move focus between a surface's inputs and lists,
+  /// unless an `on key` around the focused one hears keys: then Tab is
+  /// that handler's.
   focus: bool
   /// Routes arrow keys to a `list`: `nav: results`.
   nav: Node
@@ -1635,7 +1662,7 @@ element input: node {
 }
 /// A bar filled to its value: `meter level`, `meter memory.used {
 /// range: 0, memory.total }`. Laid out taller than wide (`width: 6;
-/// height: 80`), it fills upward from the bottom.
+/// height: 80`), it fills upward from the bottom, without its `wave`.
 element meter(float -> value): node {
   /// How full it is, in `range` (0 to 1 when unset); a value outside it
   /// is drawn at its nearer end.
@@ -1688,7 +1715,9 @@ element file(text -> path) {
 /// 4, $accent }`. Its line is its `stroke:`: the width (4 px unset), the
 /// value's paint (else `color`, else `$accent`) and the styles (`cap`,
 /// `dash`). Its box is square, `size:` (24 px unset), drawn on its
-/// smaller side.
+/// smaller side; `width` and `height` size the box too, never the line
+/// (one `width` beside a `size:` and no `stroke:` is warned, its fix
+/// `stroke`).
 element arc: node {
   /// How full it is, in `range` (0 to 1 when unset); a value outside it
   /// is drawn at its nearer end.

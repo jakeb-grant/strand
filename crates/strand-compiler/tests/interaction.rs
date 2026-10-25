@@ -87,6 +87,100 @@ fn a_popup_at_the_pointer_opens_at_the_press() {
     assert_eq!((at.x, at.y), (450.0, 20.0));
 }
 
+/// `Node.pointer` follows content that moves under a still pointer: a
+/// wheel scroll moves a node 30 px up, so the pointer is 30 px further
+/// down in it, without the mouse moving.
+#[test]
+fn the_pointer_follows_content_moved_under_it() {
+    let mut sh = Shell::new(
+        "state py = 0.0\n\
+         panel P { anchor: top_left; width: 200; height: 200\n\
+           scroll { width: 200; height: 200\n\
+             box { width: 200; height: 600\n\
+               on change self.pointer { py = self.pointer?.y ?? -1.0 }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.move_to(100.0, 51.0);
+    sh.settle();
+    assert_eq!(sh.num("py"), 51.0);
+    sh.wheel(0.0, 2.0);
+    sh.settle();
+    assert_eq!(sh.num("py"), 81.0, "the content moved 30 px under it");
+}
+
+/// `anchor: pointer` takes a press only when it opened the popup: one on
+/// another part of the bar, followed by an open from logic (a timer, an
+/// IPC call, a key), opens it at its element.
+#[test]
+fn a_popup_at_the_pointer_ignores_a_press_that_did_not_open_it() {
+    let mut sh = Shell::new(
+        "state menu = false\n\
+         bar Top { height: 30\n\
+           row {\n\
+             box { width: 300; height: 30; on click { } }\n\
+             box { width: 300; height: 30\n\
+               popup { anchor: pointer; open: menu; width: 120; height: 80 }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.click(40.0, 12.0);
+    sh.set("menu", strand_compiler::vm::Value::Bool(true));
+    let spec = sh.popups()[0].clone();
+    assert!(spec.open);
+    let at = spec.anchor_rect.unwrap();
+    assert_eq!((at.x, at.w), (300.0, 300.0), "at its element: {at:?}");
+}
+
+/// A press on its element while an `anchor: pointer` popup stays open
+/// moves it there once the click is answered (a context menu opened
+/// again on another row); a click that closes it does not move it
+/// first.
+#[test]
+fn a_popup_at_the_pointer_moves_to_a_new_press_that_keeps_it_open() {
+    let mut sh = Shell::new(
+        "state menu = false\n\
+         state n = 0\n\
+         bar Top { height: 30\n\
+           box { width: 600; height: 30\n\
+             on secondary { menu = true; n += 1 }\n\
+             on click { menu = false }\n\
+             bg: n % 2 == 0 ? #101418 : #181c20\n\
+             popup { anchor: pointer; open: <-> menu; width: 120; height: 80 }\n\
+           }\n\
+         }\n",
+    );
+    let right = |sh: &mut Shell, x: f32| {
+        sh.move_to(x, 12.0);
+        let s = sh.surface("Top").id;
+        for state in [
+            strand_scene::ButtonState::Pressed,
+            strand_scene::ButtonState::Released,
+        ] {
+            sh.send(strand_scene::InputEvent::PointerButton {
+                surface: s,
+                position: strand_scene::LogicalPoint::new(x, 12.0),
+                button: strand_scene::input::button::RIGHT,
+                state,
+                time: sh.now.as_millis() as u32,
+            });
+            sh.run(2);
+        }
+    };
+    right(&mut sh, 100.0);
+    let at = sh.popups()[0].anchor_rect.unwrap();
+    assert_eq!(at.x, 100.0);
+    right(&mut sh, 450.0);
+    let spec = sh.popups()[0].clone();
+    assert!(spec.open);
+    assert_eq!(spec.anchor_rect.unwrap().x, 450.0, "moved to the new press");
+    sh.click(200.0, 12.0);
+    let spec = sh.popups()[0].clone();
+    assert!(!spec.open, "a click closes it");
+}
+
 const FORM: &str = "state shown = true\n\
     state which = 0\n\
     state a = \"\"\n\
@@ -125,6 +219,63 @@ fn tab_moves_focus_between_inputs() {
     assert_eq!(focused(&sh, &inputs), [inputs[2]], "Shift+Tab goes back");
     sh.key("ISO_Left_Tab", true);
     assert_eq!(focused(&sh, &inputs), [inputs[1]]);
+}
+
+/// An `on key` that hears Tab takes it: focus stays in the input, so
+/// typing still reaches it, and the handler runs (a launcher's Tab that
+/// switches its mode, beside a list on the same surface). A surface
+/// whose inputs no `on key` hears still moves focus by Tab.
+#[test]
+fn tab_is_left_to_an_on_key_handler() {
+    let mut sh = Shell::new(
+        "state q = \"\"\n\
+         state mode = 0\n\
+         panel L { anchor: top_left; width: 300; height: 200\n\
+           col {\n\
+             input { width: 200; height: 30; text: <-> q; focus: true\n\
+               on key(k) { if k.name == \"Tab\" { mode += 1 } }\n\
+             }\n\
+             list { width: 200; height: 100\n\
+               for x in [\"a\", \"b\"] key x { text x }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    let input = sh.nodes("L", strand_scene::NodeKind::Input)[0];
+    sh.keyboard_to("L");
+    assert_eq!(focused(&sh, &[input]), [input]);
+    sh.key("Tab", false);
+    assert_eq!(sh.num("mode"), 1.0, "the handler heard Tab");
+    assert_eq!(focused(&sh, &[input]), [input], "focus stays in the input");
+    sh.key("Tab", true);
+    assert_eq!(focused(&sh, &[input]), [input]);
+}
+
+/// Tab passes over what is not shown: an input at `opacity: 0` (or in
+/// a faded-out subtree) takes no focus, as it takes no pointer.
+#[test]
+fn tab_skips_inputs_not_shown() {
+    let mut sh = Shell::new(
+        "state a = \"\"\n\
+         state b = \"\"\n\
+         state c = \"\"\n\
+         panel F { anchor: top_left; width: 300; height: 200\n\
+           col {\n\
+             input { width: 200; height: 30; text: <-> a; focus: true }\n\
+             input { width: 200; height: 30; text: <-> b; opacity: 0 }\n\
+             box { opacity: 0; input { width: 200; height: 30; text: <-> b } }\n\
+             input { width: 200; height: 30; text: <-> c }\n\
+           }\n\
+         }\n",
+    );
+    let inputs = sh.nodes("F", strand_scene::NodeKind::Input);
+    assert_eq!(inputs.len(), 4);
+    sh.keyboard_to("F");
+    assert_eq!(focused(&sh, &inputs), [inputs[0]]);
+    sh.key("Tab", false);
+    assert_eq!(focused(&sh, &inputs), [inputs[3]], "past the unseen two");
+    sh.key("Tab", false);
+    assert_eq!(focused(&sh, &inputs), [inputs[0]]);
 }
 
 /// `focus:` is reactive: when it turns true on an input, focus moves

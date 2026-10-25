@@ -255,7 +255,9 @@ surface      = surface_kind IDENT tree_block
 surface_kind = kw:bar | kw:panel | kw:osd
 ```
 
-`bar Top { … }` is on every monitor with `screen` in scope. `popup` is not a
+`bar Top { … }` is on every monitor with `screen` in scope, as is a `panel` or
+`osd` whose `screens:` picks monitors (spec.md 5.1); the `lock`'s `screen` is
+the monitor its content shows on. `popup` is not a
 top-level surface: it is an element anchored to its parent
 (`popup { open: <-> open; Calendar }`).
 

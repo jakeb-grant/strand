@@ -8,12 +8,12 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 | Function | |
 | --- | --- |
-| `fn atan2(y: float, x: float) -> angle` | The angle from the origin to the point (`x`, `y`), from -180deg to 180deg, 0deg pointing right and clockwise positive (y grows down): the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`. |
+| `fn atan2(y: float, x: float) -> angle` | The angle from the origin to the point (`x`, `y`), from -180deg to 180deg, 0deg pointing right and clockwise positive (y grows down): the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`. An arc drawn from a fixed angle to it turns the other way once the pointer passes 180deg: add `360deg` to an angle below the arc's start. |
 | `fn bezier(x1: float, y1: float, x2: float, y2: float) -> Easing` | A cubic bézier curve: `~ bezier(0.05, 0.9, 0.1, 1.05)`. |
 | `fn bloom(radius: length, strength: float = 1) -> Filter` | Bloom: bright parts bleed light `radius` around them, `strength` times as bright as they are (1: as bright), `filter: bloom(12)`, `filter: bloom(12, 1.5)`. Without a GPU it draws as a glow. |
 | `fn blur(radius: length) -> Filter` | Blurs: `backdrop: blur(16)` over your own content, `filter: blur(30)`. |
 | `fn brightness(amount: float) -> Filter` | A colour filter: `filter: brightness(0.9)`. |
-| `fn bytes(n: float) -> text lift` | A count of bytes as text in binary units: `bytes(1536)` is `1.5 KiB`, `bytes(disk.used)` `19.4 GiB` (one decimal below 100, none from 100; `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`). Null in, null out. |
+| `fn bytes(n: float) -> text lift` | A count of bytes as text in binary units: `bytes(1536)` is `1.5 KiB`, `bytes(disk.used)` `19.4 GiB` (one decimal below 100, none from 100; `B`, `KiB`, `MiB`, `GiB`, `TiB`, `PiB`, the unit chosen after rounding, so `bytes(1023.6)` is `1 KiB`). Null in, null out. |
 | `fn chromatic(offset: length) -> Filter` | Chromatic aberration: red shifted `offset` right and blue `offset` left of green, `filter: chromatic(2)`. Without a GPU the node draws unfiltered. |
 | `fn clamp(x: float, lo: float, hi: float) -> float` | `x` kept between `lo` and `hi`. |
 | `fn conic(from: angle = 0, ...stops: color) -> paint` | A conic gradient: `conic(from: t * 60deg, $accent, $secondary, $accent)`. |
@@ -39,7 +39,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn max(a: float, b: float) -> float` | The larger of two numbers. |
 | `fn min(a: float, b: float) -> float` | The smaller of two numbers. |
 | `fn noise(x: float) -> float` | Smooth noise at `x`; a time signal when `x` follows `t`. |
-| `fn num(x: float, digits: int = 0, pad: int = 0) -> text lift` | A number as text with `digits` decimals and its whole part padded with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`, `num(7, pad: 2)` is `07`. Null in, null out. |
+| `fn num(x: float, digits: int = 0, pad: int = 0) -> text lift` | A number as text with `digits` decimals and its whole part padded with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`, `num(7, pad: 2)` is `07`. It rounds half away from zero on the decimals the number is written with (`num(1.005, digits: 2)` is `1.01`). Null in, null out. |
 | `fn number(t: text) -> float? lift` | The number a text spells, or null when it spells none: `number(" 42 ")` is 42, `number("4 GB")` null. Leading and trailing white space is ignored; `1e3` and `-0.5` are numbers. Null in, null out. |
 | `fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = alpha) -> color` | `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the source colour's channels inside the arguments. |
 | `fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color` | `oklch(from $surface, l: l + 0.12)`: `l`, `c`, `h` and `alpha` name the source colour's channels inside the arguments. |
@@ -52,7 +52,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color` | A colour from red, green and blue channels. |
 | `fn saturate(amount: float) -> Filter` | A colour filter: `filter: saturate(1.3)`. |
 | `fn shape(shape: Shape) -> Mask` | A mask of a shape from the shape library: `mask: shape(cookie)`. |
-| `fn sin(a: angle) -> float` | The sine of an angle (a plain number is degrees): `r * sin(a)`. |
+| `fn sin(a: angle) -> float` | The sine of an angle (a plain number is degrees, so `pi` in it is a warning: a half turn is `180deg`): `r * sin(a)`. Of a time signal it follows time, as arithmetic does: `x: 20 * sin(t * 90deg)`. |
 | `fn sleep(duration: duration) -> Async<()>` | Waits for `duration` inside a handler. |
 | `fn slide(edge: Edge) -> Pose` | A pose sliding in from an edge: `enter: slide(top)`. |
 | `fn spring(stiffness: float, damping: float) -> Spring` | A spring for `~` and the motion tokens: `spring(3000, 0.75)`. |

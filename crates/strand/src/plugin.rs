@@ -227,6 +227,12 @@ fn layered(list: &[Registration]) -> Result<Vec<(Schema, Schema)>, PluginError> 
         if !others.is_empty() {
             return Err(schema_err(others));
         }
+        // (flex review) Nor an element, function, value, method or token:
+        // the file `--write-schemas` writes would be skipped whole.
+        let beyond = strand_compiler::schema::plugins::beyond_its_service(&s, &next, r.name);
+        if !beyond.is_empty() {
+            return Err(schema_err(beyond));
+        }
         out.push((s, next.clone()));
         s = next;
     }
@@ -477,6 +483,21 @@ pub(crate) mod tests {
         assert_eq!(service, "hello");
         assert!(
             errors.iter().any(|e| e.contains("`service extra`")),
+            "{errors:?}"
+        );
+        // (flex review) Its own service and a function: the file it would
+        // write is skipped by every reader, so it is refused here too.
+        let more = reg(
+            "hello",
+            || "service hello {\n  /// x.\n  x: int\n}\n/// Twice.\nfn twice(x: int) -> int\n",
+        );
+        let err = validate(&[more]).unwrap_err();
+        let PluginError::Schema { service, errors } = &err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(service, "hello");
+        assert!(
+            errors.iter().any(|e| e.contains("function `twice`")),
             "{errors:?}"
         );
     }

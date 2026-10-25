@@ -100,6 +100,63 @@ fn a_stepped_slider_moves_in_whole_steps() {
     assert_eq!(sh.num("level"), 100.0);
 }
 
+/// A slider keeps the axis its drag began on while the press is held,
+/// even when its box turns wider than tall under the drag.
+#[test]
+fn a_drag_keeps_its_axis() {
+    let mut sh = Shell::new(
+        "export state v = 0.5\n\
+         export state w = 24\n\
+         panel P { anchor: top_left; width: 400; height: 200\n\
+           slider { value: <-> v; width: w; height: 160 }\n\
+         }\n",
+    );
+    // 24 × 160 at the origin: the knob runs from y 152 (0) to 8 (1).
+    sh.move_to(12.0, 80.0);
+    sh.button(true);
+    near(sh.num("v"), 0.5, 0.002, "press");
+    sh.set("w", strand_compiler::vm::Value::int(300));
+    sh.move_to(12.0, 8.0);
+    near(sh.num("v"), 1.0, 1e-6, "still upright");
+    sh.button(false);
+}
+
+/// A decimal `step` writes the step's value as written in decimals
+/// (`0.9`, not `0.90000004`), from a decimal low end too.
+#[test]
+fn a_decimal_step_writes_whole_decimals() {
+    let mut sh = Shell::new(
+        "export state a = 0.0\n\
+         export state b = 0.15\n\
+         panel P { anchor: top_left; width: 300; height: 100\n\
+           col { width: 200\n\
+             slider { value: <-> a; range: 0, 1; step: 0.1; width: 200; height: 20 }\n\
+             slider { value: <-> b; range: 0.15, 2.15; step: 0.05; width: 200; height: 20 }\n\
+           }\n\
+         }\n",
+    );
+    // The knob runs from x 8 to 192 on each.
+    let x = |f: f32| 8.0 + f * 184.0;
+    sh.move_to(x(0.9), 10.0);
+    sh.button(true);
+    assert_eq!(sh.num("a"), 0.9);
+    sh.button(false);
+    for (f, want) in [
+        (0.1, 0.35),
+        (0.15, 0.45),
+        (0.275, 0.7),
+        (0.325, 0.8),
+        (0.4, 0.95),
+        (0.45, 1.05),
+        (0.975, 2.1),
+    ] {
+        sh.move_to(x(f), 30.0);
+        sh.button(true);
+        assert_eq!(sh.num("b"), want, "at {f}");
+        sh.button(false);
+    }
+}
+
 /// A slider turned by `rotate` follows the pointer along its drawn
 /// track: turned a quarter anticlockwise, it runs upward.
 #[test]
@@ -244,6 +301,54 @@ fn a_snapping_list_settles_on_rows() {
         "the row at the top is whole"
     );
     assert_eq!(sh.r.list_frames().gaps, 0);
+}
+
+/// A vertical swipe or wheel over a sideways strip inside a page scrolls
+/// the page, not the strip: a plain wheel turns a strip only where
+/// nothing around it scrolls down, and a touchpad's fingers never do.
+#[test]
+fn a_strip_in_a_page_leaves_vertical_scrolling_to_the_page() {
+    let mut sh = fixture("snap");
+    let scrolls = sh.nodes("Page", NodeKind::Scroll);
+    let (page, strip) = (scrolls[0], scrolls[1]);
+    sh.move_to(800.0, 150.0);
+    sh.touch(0.0, 40.0);
+    assert_eq!(down(&sh, page), 40.0, "the page follows the fingers");
+    assert_eq!(across(&sh, strip), 0.0);
+    pause(&mut sh);
+    sh.lift();
+    sh.settle();
+    sh.move_to(800.0, 100.0);
+    sh.wheel(0.0, 1.0);
+    sh.settle();
+    assert_eq!(down(&sh, page), 55.0, "a wheel scrolls the page");
+    assert_eq!(across(&sh, strip), 0.0, "not the strip");
+    // Sideways, the strip.
+    sh.wheel(2.0, 0.0);
+    sh.settle();
+    assert_eq!(across(&sh, strip), 30.0);
+}
+
+/// A touchpad gesture keeps the axis its first motion took: a swipe
+/// that starts sideways on an `axis: both` scroll stays sideways, so it
+/// neither steps between the axes nor leaves one between children.
+#[test]
+fn a_touchpad_gesture_keeps_its_axis() {
+    let mut sh = fixture("snap");
+    let both = first(&sh, "Both", NodeKind::Scroll);
+    sh.move_to(100.0, 375.0);
+    sh.touch(30.0, 20.0);
+    sh.touch(10.0, 30.0);
+    sh.touch(10.0, 30.0);
+    assert_eq!(across(&sh, both), 50.0);
+    assert_eq!(down(&sh, both), 0.0, "never along y");
+    pause(&mut sh);
+    sh.lift();
+    sh.settle();
+    // The next gesture picks again.
+    sh.touch(0.0, 20.0);
+    assert_eq!(down(&sh, both), 20.0);
+    assert_eq!(across(&sh, both), 50.0);
 }
 
 /// `axis: both`: a wheel scrolls it down, a sideways wheel across.

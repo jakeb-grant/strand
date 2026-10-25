@@ -179,7 +179,7 @@ impl Flattener<'_> {
                 let amp = number(get(Prop::Wave)).unwrap_or(0.0);
                 // (flex) Laid out taller than wide, it fills upward from
                 // the bottom, plainly: `wave` is a media meter's, across.
-                let upright = f.height() > f.width();
+                let upright = crate::widgets::upright(w.node, f.width(), f.height());
                 if amp.is_finite() && amp != 0.0 && !upright {
                     let h = f.height();
                     let (x0, cy) = (f.x0 + h / 2.0, f.center().y);
@@ -314,7 +314,7 @@ impl Flattener<'_> {
                 // (flex) Laid out taller than wide, it runs upward: the
                 // track stands in the middle and the value grows from
                 // the bottom.
-                let upright = f.height() > f.width();
+                let upright = crate::widgets::upright(w.node, f.width(), f.height());
                 let c = f.center();
                 let (k, rest_bar, fill_bar) = if upright {
                     let (y0, y1) = crate::widgets::slider_span(f.y0, f.y1, active, s);

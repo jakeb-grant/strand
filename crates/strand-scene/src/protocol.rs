@@ -348,6 +348,12 @@ props! {
     /// content (`Bool`). A drag source in it is not that element's item,
     /// so the element is not a nested list for it.
     NotRow = "not_row": Snap,
+    /// (flex) On an element with an `on key` handler (`Bool`). Set by
+    /// the compiler, never written in source: Tab and Shift+Tab move
+    /// focus only while no element from the focused node out to its
+    /// surface carries it, since the handler that hears a key takes it
+    /// (spec.md 6.7).
+    OnKey = "on_key": Snap,
     // Tokens.
     /// Token overrides for this node and its subtree, as a
     /// [`PropValue::Tokens`] table: `set { $surface: $surface.alpha(0.5) }`
@@ -1275,6 +1281,7 @@ mod tests {
             (Prop::RowFirst, "row_first"),
             (Prop::DropRows, "drop_rows"),
             (Prop::NotRow, "not_row"),
+            (Prop::OnKey, "on_key"),
             (Prop::Backlog, "backlog"),
         ] {
             assert_eq!(p.name(), name);

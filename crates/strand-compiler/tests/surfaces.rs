@@ -126,6 +126,44 @@ fn a_panel_on_every_screen_has_its_screen() {
     assert_eq!(sh.spec(osds[0]).width, Some(480.0));
 }
 
+/// (flex review) A `screens:` expression that is `focused` now: one
+/// instance whose `screen` follows focus in place, not one remounted
+/// on each monitor focus moves to, so what it holds stays.
+#[test]
+fn a_panel_whose_screens_is_focused_now_follows_focus_in_place() {
+    let src = "state wide = false\n\
+               panel P { screens: wide ? Screens.all : Screens.focused; width: screen.width / 4\n\
+                 text screen.name\n\
+               }\n";
+    let mut sh = boot(src, &MONITORS, Some(0));
+    let panels = sh.scene.of_kind(NodeKind::Panel);
+    assert_eq!(panels.len(), 1, "{}", sh.scene.render());
+    assert_eq!(sh.scene.texts(), ["DP-1"]);
+    assert_eq!(sh.spec(panels[0]).screens, strand_scene::Screens::Focused);
+    let name = sh.scene.find_text("DP-1").unwrap();
+    set_screens(&sh.rt, &sh.host, &MONITORS, Some(1));
+    sh.flush();
+    assert_eq!(
+        sh.scene.of_kind(NodeKind::Panel),
+        panels,
+        "mounted again on focus"
+    );
+    assert_eq!(sh.scene.find_text("HDMI-A-1"), Some(name));
+    assert_eq!(sh.spec(panels[0]).width, Some(480.0));
+}
+
+/// (flex review) A component reading `screen` mounted in a panel whose
+/// `screens:` picks monitors gets each instance's monitor, as in a bar.
+#[test]
+fn a_component_in_a_panel_on_every_screen_reads_its_screen() {
+    let src = "component Name { text screen.name }\n\
+               panel Side { screens: all; anchor: left; width: 200; height: 100\n\
+                 Name { }\n\
+               }\n";
+    let sh = boot(src, &MONITORS, Some(0));
+    assert_eq!(sh.scene.texts(), ["DP-1", "HDMI-A-1"]);
+}
+
 /// A panel on the focused monitor (the default, or `screens: focused`)
 /// is one surface the compositor places: no `screen` is in scope there,
 /// and reading it says where it is.

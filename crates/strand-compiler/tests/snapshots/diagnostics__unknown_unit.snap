@@ -9,7 +9,7 @@ syntax::unknown_unit
  1 │ component A {
  2 │   box { width: 12pz }
    ·                  ─┬
-   ·                   ╰── units are px, %, deg, ch, s and ms
+   ·                   ╰── units are px, %, deg, ch, s, ms, min and h
  3 │ }
    ╰────
   help: did you mean `px`?

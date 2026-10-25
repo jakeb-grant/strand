@@ -117,6 +117,77 @@ pub enum BinOp {
     Rem,
 }
 
+/// (flex) A maths builtin render evaluates per frame when an argument
+/// reads time (`x: 20 * sin(t * 90deg)`). Angles are degrees, `0deg`
+/// pointing right and growing clockwise, as in logic.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MathFn {
+    Sin,
+    Cos,
+    Tan,
+    /// `atan2(y, x)`, in degrees.
+    Atan2,
+    Sqrt,
+    /// `pow(x, y)`.
+    Pow,
+    Exp,
+    Ln,
+    /// `min(a, b)`.
+    Min,
+    /// `max(a, b)`.
+    Max,
+    /// `clamp(x, lo, hi)`.
+    Clamp,
+}
+
+impl MathFn {
+    /// The builtin's name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            MathFn::Sin => "sin",
+            MathFn::Cos => "cos",
+            MathFn::Tan => "tan",
+            MathFn::Atan2 => "atan2",
+            MathFn::Sqrt => "sqrt",
+            MathFn::Pow => "pow",
+            MathFn::Exp => "exp",
+            MathFn::Ln => "ln",
+            MathFn::Min => "min",
+            MathFn::Max => "max",
+            MathFn::Clamp => "clamp",
+        }
+    }
+
+    /// The function named `name`, if it is one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        use MathFn::*;
+        [Sin, Cos, Tan, Atan2, Sqrt, Pow, Exp, Ln, Min, Max, Clamp]
+            .into_iter()
+            .find(|f| f.name() == name)
+    }
+
+    /// Its value at `args` (missing ones 0); `None` when that is not a
+    /// finite number (`sqrt(-4)`), so the prop is not drawn that frame.
+    pub fn apply(self, args: &[f32]) -> Option<f32> {
+        let a = |i: usize| args.get(i).copied().unwrap_or(0.0);
+        let v = match self {
+            MathFn::Sin => a(0).to_radians().sin(),
+            MathFn::Cos => a(0).to_radians().cos(),
+            MathFn::Tan => a(0).to_radians().tan(),
+            MathFn::Atan2 => a(0).atan2(a(1)).to_degrees(),
+            MathFn::Sqrt => a(0).sqrt(),
+            MathFn::Pow => a(0).powf(a(1)),
+            MathFn::Exp => a(0).exp(),
+            MathFn::Ln if a(0) > 0.0 => a(0).ln(),
+            MathFn::Ln => f32::NAN,
+            MathFn::Min => a(0).min(a(1)),
+            MathFn::Max => a(0).max(a(1)),
+            MathFn::Clamp => a(0).max(a(1)).min(a(2).max(a(1))),
+        };
+        v.is_finite().then_some(v)
+    }
+}
+
 /// A token expression, evaluated by the render thread against the current
 /// [`TokenTable`].
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +248,9 @@ pub enum TokenExpr {
     /// (M4) `noise(x)`: smooth 1-D gradient noise in `-1..=1`, 0 at every
     /// whole `x`. A time signal only when `x` reads `t`.
     Noise(Box<TokenExpr>),
+    /// (flex) `sin(…)`, `max(…)` and the other maths builtins on values
+    /// render evaluates ([`MathFn`]).
+    Math { f: MathFn, args: Vec<TokenExpr> },
     /// (M4) A `letters` letter's `index` ([`TimeContext::index`]).
     Index,
     /// (M4) The number of letters in a `letters` block
@@ -273,6 +347,7 @@ impl TokenExpr {
         match self {
             TokenExpr::Time | TokenExpr::Wave { .. } => true,
             TokenExpr::Noise(x) => any(x),
+            TokenExpr::Math { args, .. } => args.iter().any(any),
             TokenExpr::Ref(path) => timed(path),
             TokenExpr::Index | TokenExpr::Count | TokenExpr::Channel(_) => false,
             TokenExpr::Value(v) => v.reads_time_with(timed),
@@ -1062,6 +1137,13 @@ impl<'a> TokenScope<'a> {
                 v.is_finite().then_some(PropValue::Number(v))
             }
             TokenExpr::Noise(x) => Some(PropValue::Number(noise(num(x)?))),
+            TokenExpr::Math { f, args } => {
+                let mut xs = [0.0f32; 3];
+                for (slot, a) in xs.iter_mut().zip(args) {
+                    *slot = num(a)?;
+                }
+                Some(PropValue::Number(f.apply(&xs[..args.len().min(3)])?))
+            }
         }
     }
 }

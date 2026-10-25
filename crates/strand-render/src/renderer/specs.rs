@@ -464,7 +464,7 @@ impl Renderer {
                 // it went down (at its element when no press did).
                 let at_pointer = spec
                     .at_pointer
-                    .then(|| self.pointing.anchor(id, parent, spec.open))
+                    .then(|| self.pointing.anchor(id, anchor, parent, spec.open))
                     .flatten();
                 spec.anchor_rect = at_pointer
                     .or_else(|| anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p)));

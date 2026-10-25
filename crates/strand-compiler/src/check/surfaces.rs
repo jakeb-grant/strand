@@ -24,6 +24,9 @@ impl Checker<'_> {
         if kind == "popup" {
             self.popup_trigger(props, children);
         }
+        if matches!(kind, "bar" | "panel") {
+            self.exclusive(kind, props);
+        }
         if !matches!(kind, "bar" | "osd" | "lock") {
             return;
         }
@@ -52,6 +55,67 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
+    /// (flex) `exclusive:` where it keeps nothing: a length in other
+    /// units than px (layer-shell keeps pixels; it would fall back to
+    /// the default), or on a `panel` with no single edge, at a corner or
+    /// the centre with no `attach:` (layer-shell keeps space along one
+    /// edge only). Warnings, since the program still runs.
+    fn exclusive(&mut self, kind: &str, props: &[hir::Prop]) {
+        let Some(p) = props.iter().find(|p| p.name == "exclusive") else {
+            return;
+        };
+        let keeps = match &p.value.kind {
+            hir::ExprKind::Bool(b) => *b,
+            hir::ExprKind::Number { value, unit } => {
+                if matches!(unit, Some(u) if *u != crate::syntax::ast::Unit::Px) {
+                    self.warning(
+                        "check::exclusive_unit",
+                        "`exclusive:` keeps a length in px",
+                        p.value.span,
+                        "not px",
+                    )
+                    .help = Some(
+                        "write the space to keep in px (`exclusive: 24`), or `true` for the \
+                         surface's thickness"
+                            .into(),
+                    );
+                    return;
+                }
+                *value > 0.0
+            }
+            _ => true,
+        };
+        if kind != "panel" || !keeps || props.iter().any(|q| q.name == "attach") {
+            return;
+        }
+        let anchor = props.iter().find(|q| q.name == "anchor");
+        let edge = match anchor.map(|a| &a.value.kind) {
+            Some(hir::ExprKind::Variant(e, v)) => self
+                .types
+                .enum_(*e)
+                .variants
+                .get(*v as usize)
+                .is_some_and(|n| matches!(n.as_str(), "top" | "bottom" | "left" | "right")),
+            // Not written: the centre. Written as an expression: not known.
+            None => false,
+            Some(_) => true,
+        };
+        if !edge {
+            self.warning(
+                "check::exclusive_edge",
+                "this panel keeps no space: it is not on one edge",
+                p.span,
+                "at a corner or the centre",
+            )
+            .help = Some(
+                "a panel keeps space along its `attach:` edge, or the one edge its `anchor:` \
+                 names (`anchor: left`); add `attach: left` (or the edge it should push \
+                 windows from)"
+                    .into(),
+            );
+        }
+    }
+
     /// (M6) A popup's `trigger`: a variant as written, on the popup;
     /// with `hover`, no two-way `open` beside it (in its props or a
     /// `when`).
@@ -166,6 +230,40 @@ panel Dash { anchor: top_right; attach: top; scrim: #00000040; width: 300; heigh
 "#;
         let got = codes(src);
         assert!(got.iter().all(|(c, _)| c == "check::raw_color"), "{got:?}");
+    }
+
+    /// (flex review) `exclusive:` that keeps nothing is warned: on a
+    /// corner or centred panel with no `attach:`, or in other units than
+    /// px; on an edge, attached, or `false`, it is not.
+    #[test]
+    fn exclusive_that_keeps_nothing_is_warned() {
+        let warned = |src: &str| -> Vec<String> {
+            codes(src)
+                .into_iter()
+                .map(|(c, _)| c)
+                .filter(|c| c.starts_with("check::exclusive"))
+                .collect()
+        };
+        assert_eq!(
+            warned("panel P { anchor: top_left; exclusive: true; width: 100; height: 50 }\n"),
+            ["check::exclusive_edge"]
+        );
+        assert_eq!(
+            warned("panel P { exclusive: 20; width: 100; height: 50 }\n"),
+            ["check::exclusive_edge"]
+        );
+        assert_eq!(
+            warned("bar B { height: 30; exclusive: 50% }\n"),
+            ["check::exclusive_unit"]
+        );
+        for ok in [
+            "panel P { anchor: left; exclusive: true; width: 100 }\n",
+            "panel P { anchor: top_left; attach: left; exclusive: 40; width: 100; height: 50 }\n",
+            "panel P { anchor: top_left; exclusive: false; width: 100; height: 50 }\n",
+            "bar B { height: 30; exclusive: 20 }\n",
+        ] {
+            assert!(warned(ok).is_empty(), "{ok}");
+        }
     }
 
     /// (M6) `trigger: hover` takes no two-way `open:` (m6-owner-fixes:

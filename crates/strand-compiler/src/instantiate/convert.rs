@@ -53,6 +53,7 @@ fn numeric(e: &TokenExpr) -> bool {
         TokenExpr::Time
         | TokenExpr::Wave { .. }
         | TokenExpr::Noise(_)
+        | TokenExpr::Math { .. }
         | TokenExpr::Index
         | TokenExpr::Count
         | TokenExpr::Binary { .. } => true,

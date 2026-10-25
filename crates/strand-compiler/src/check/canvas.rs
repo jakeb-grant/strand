@@ -30,6 +30,62 @@ impl Checker<'_> {
         }
     }
 
+    /// (flex) Reports a time-bound argument of builtin `name` when it
+    /// computes with its arguments now (`pct`, `dur`, `num`, `join`, …):
+    /// logic has no number for a value render evaluates per frame, so the
+    /// call faulted at run time. The maths builtins (`sin`, `max`, …)
+    /// stay symbolic and are fine.
+    pub(super) fn time_in_builtin(&mut self, name: &str, args: &[hir::CallArg]) {
+        if !crate::vm::builtins::computes(name) {
+            return;
+        }
+        let Some(leaf) = args
+            .iter()
+            .find_map(|a| time_leaf(&a.value, &self.time_lets, 0))
+        else {
+            return;
+        };
+        self.error(
+            "check::time_in_logic",
+            format!(
+                "{} changes every frame, and `{name}(…)` needs its value now",
+                leaf.what
+            ),
+            leaf.span,
+            "a time signal",
+        )
+        .help = Some(
+            "time signals are evaluated by render for a node's props, through arithmetic and the \
+             maths builtins (`x: 20 * sin(t * 90deg)`, `opacity: wave(2s)`); text and other \
+             values made from them cannot follow time"
+                .into(),
+        );
+    }
+
+    /// (flex review) `sin(pi / 2)`: the maths builtins take degrees, so
+    /// a bare `pi` in their angle is 3.14°, never a half turn. Warned,
+    /// with `180deg` (a half turn) as the fix.
+    pub(super) fn pi_as_degrees(&mut self, name: &str, args: &[hir::CallArg]) {
+        if !matches!(name, "sin" | "cos" | "tan") {
+            return;
+        }
+        let Some(at) = args.first().and_then(|a| bare_pi(&a.value, 0)) else {
+            return;
+        };
+        let d = self.warning(
+            "check::pi_degrees",
+            format!("`{name}` takes degrees: `pi` here is 3.14°, not a half turn"),
+            at,
+            "3.14 degrees",
+        );
+        d.help = Some(
+            "angles are degrees (`90deg`, or a bare number of degrees); a half turn is \
+             `180deg`, so `sin(pi / 2)` is `sin(180deg / 2)`"
+                .into(),
+        );
+        d.add_suggestion(at, "180deg");
+    }
+
     /// Reports the first time-bound value in canvas `draw` lambda
     /// `draw`.
     pub(super) fn time_in_draw(&mut self, draw: &hir::Expr) {
@@ -51,6 +107,21 @@ impl Checker<'_> {
              `shader`"
                 .into(),
         );
+    }
+}
+
+/// Where `pi` stands in arithmetic `e` (not inside another call).
+fn bare_pi(e: &hir::Expr, depth: u32) -> Option<crate::syntax::Span> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    match &e.kind {
+        ExprKind::Value(n) if n == "pi" => Some(e.span),
+        ExprKind::Unary { expr, .. } => bare_pi(expr, depth + 1),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            bare_pi(lhs, depth + 1).or_else(|| bare_pi(rhs, depth + 1))
+        }
+        _ => None,
     }
 }
 

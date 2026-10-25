@@ -72,7 +72,8 @@ pub(crate) struct Lists {
     /// once logic has answered with something else.
     asked: HashMap<NodeId, (Range<u32>, u32, u32, u32)>,
     /// The node a touchpad scrolls on each surface, until it lifts, and
-    /// whether along x.
+    /// whether along x: (flex) the gesture keeps both from its first
+    /// event while the pointer stays over the node.
     touching: HashMap<SurfaceId, (NodeId, bool)>,
     stats: ListFrames,
     /// Lists whose offset a reveal set ([`Renderer::reveal_index`]): held
@@ -217,6 +218,23 @@ impl Renderer {
                 Some(id)
             }
             ScrollKind::Touch => {
+                // (flex) A gesture keeps the node and axis its first event
+                // took, so a diagonal swipe on `axis: both` does not step
+                // between the axes and its lift settles the axis it moved.
+                let held = self
+                    .lists
+                    .touching
+                    .get(&surface)
+                    .copied()
+                    .filter(|(id, _)| self.hit(surface, point).contains(id));
+                if let Some((id, x)) = held {
+                    let d = if x { input.dx } else { input.dy };
+                    if d.is_finite() && d != 0.0 {
+                        self.axis_state(id, x).touch(d, input.time);
+                        self.scrolled(id);
+                    }
+                    return Some(id);
+                }
                 let (id, x, d) = self.scrollable_at(surface, point, (input.dx, input.dy), false)?;
                 self.lists.revealing.remove(&id);
                 self.lists.touching.insert(surface, (id, x));
@@ -225,7 +243,9 @@ impl Renderer {
                 Some(id)
             }
             ScrollKind::Wheel => {
-                let (id, x, d) = self.scrollable_at(surface, point, (input.dx, input.dy), true)?;
+                let (id, x, d) = self
+                    .scrollable_at(surface, point, (input.dx, input.dy), true)
+                    .or_else(|| self.sideways_wheel_at(surface, point, (input.dx, input.dy)))?;
                 self.lists.revealing.remove(&id);
                 let curve = self.scroll_curve();
                 let last = self.last_frame(surface);
@@ -244,11 +264,43 @@ impl Renderer {
             .filter(|t| !t.is_zero())
     }
 
+    /// (flex) A plain mouse wheel (`dy` only) that no `scroll` or `list`
+    /// under `point` can take along y: the innermost scroll along x
+    /// alone that can move by it, sideways, so a strip scrolls with a
+    /// wheel while a page around it still takes vertical scrolling
+    /// first. Never for a touchpad, whose fingers move along x when
+    /// they mean to.
+    fn sideways_wheel_at(
+        &mut self,
+        surface: SurfaceId,
+        point: LogicalPoint,
+        (dx, dy): (f32, f32),
+    ) -> Option<(NodeId, bool, f32)> {
+        if dx != 0.0 || dy == 0.0 || !dy.is_finite() {
+            return None;
+        }
+        let chain = self.hit(surface, point);
+        for n in chain {
+            let Some(node) = self.tree.get(n).filter(|_| scrolls_content(&self.tree, n)) else {
+                continue;
+            };
+            if scroll_axes(node) != [true, false] {
+                continue;
+            }
+            let st = self.axis_state(n, true);
+            let from = st.target();
+            let max = (st.content - st.viewport).max(0.0);
+            if (from + dy).clamp(0.0, max) != from {
+                return Some((n, true, dy));
+            }
+        }
+        None
+    }
+
     /// The innermost `scroll` or `list` under `point` that can move by
     /// `(dx, dy)` (from where it is heading, with `target`), whether
     /// along x, and by how much. (flex) Along the larger of the two
-    /// first; a scroll along x alone takes a wheel's `dy` when there is
-    /// no `dx` (a plain mouse wheel scrolls a strip sideways).
+    /// first.
     fn scrollable_at(
         &mut self,
         surface: SurfaceId,
@@ -273,9 +325,6 @@ impl Renderer {
             }
             if along_x && dx != 0.0 {
                 tries.push((true, dx));
-            }
-            if along_x && !along_y && dx == 0.0 {
-                tries.push((true, dy));
             }
             if dx.abs() > dy.abs() {
                 tries.reverse();

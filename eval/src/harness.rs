@@ -1117,6 +1117,16 @@ struct Harness {
     /// of it: a seed is where the replay starts, never a write of the
     /// shell's, so its tap is not kept.
     seeded: HashMap<String, String>,
+    /// (flex review) The layout facts' batch handed to logic by
+    /// [`LoopHost::facts`] (before an input's intents, as the shell's
+    /// main thread sends them), which logic's next answer says it saw.
+    facts_seq: Option<u64>,
+    /// (flex review) Answers queued for the next calls of each result
+    /// action (`answer action calc "4"`, a recording's answers): JSON,
+    /// read as the action's type when its call comes.
+    exec_answers: std::cell::RefCell<
+        HashMap<String, std::collections::VecDeque<Result<serde_json::Value, String>>>,
+    >,
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -1365,6 +1375,8 @@ impl Harness {
             log: ReplayLog::default(),
             tapped: Rc::default(),
             seeded: HashMap::new(),
+            facts_seq: None,
+            exec_answers: Default::default(),
         };
         if opts.log {
             let prog = h.inst.vm().prog.clone();
@@ -1600,6 +1612,27 @@ impl Harness {
     /// (report) `answer <method> …`: the method's answer read by its
     /// return type, queued ahead of the mock's own.
     fn answer_step(&self, method: &str, answer: &Result<String, String>) -> Result<(), String> {
+        // (flex review) A result action's next call.
+        if let Some(action) = method.strip_prefix("action ") {
+            let prog = &self.inst.vm().prog;
+            if !prog
+                .execs
+                .values()
+                .any(|a| a.name == action && a.ret.is_some())
+            {
+                return Err(format!("no action `{action}` with a result (`-> T`)"));
+            }
+            let answer = match answer {
+                Ok(j) => Ok(serde_json::from_str(j).map_err(|e| e.to_string())?),
+                Err(e) => Err(e.clone()),
+            };
+            self.exec_answers
+                .borrow_mut()
+                .entry(action.to_string())
+                .or_default()
+                .push_back(answer);
+            return Ok(());
+        }
         let (svc, name) = method
             .split_once('.')
             .ok_or_else(|| format!("`{method}` is not `service.method`"))?;
@@ -1978,6 +2011,9 @@ impl Harness {
             self.notes.push(format!("runtime error: {}", e.message()));
         }
         let mut diff = u.diff;
+        if let Some(seq) = self.facts_seq.take() {
+            diff.layout_seen = Some(seq);
+        }
         self.carry_reduced(&mut diff);
         // (report) `[seed]` cells this update mounted are seeded before
         // they are drawn: logic answers at the loop's next turn.
@@ -3096,6 +3132,9 @@ impl Harness {
         self.release(k, Via::Paint);
         self.paint(t)?;
         self.collect(k, t)?;
+        // (flex review) A result action answered in `collect` is taken
+        // by logic now, as the shell's loop takes a command's output.
+        self.turn()?;
         // What the frames laid out reaches logic now; its answer lands
         // before the next frame.
         self.answer()?;
@@ -3152,19 +3191,12 @@ impl Harness {
 
     /// Layout facts to logic and its answer back; whether there were any.
     fn answer(&mut self) -> Result<bool, Error> {
-        let facts = self.r.take_layout_facts();
-        // (flex) The pointer over the nodes logic reads it of.
-        let pointer = self.r.take_pointer_facts();
-        if facts.is_empty() && pointer.is_empty() {
+        // Taken now, or given before an input and not yet answered.
+        self.give_facts();
+        let Some(seq) = self.facts_seq.take() else {
             return Ok(false);
-        }
-        for (n, b) in facts {
-            self.inst.set_box(n, b);
-        }
-        for (n, p) in pointer {
-            self.inst.set_pointer(n, p);
-        }
-        let seq = self.r.layout_seq();
+        };
+        self.logic_owed = false;
         let u = self.inst.flush();
         for e in &u.errors {
             self.notes.push(format!("runtime error: {}", e.message()));
@@ -3174,6 +3206,26 @@ impl Harness {
         self.carry_reduced(&mut diff);
         self.apply(diff)?;
         Ok(true)
+    }
+
+    /// The renderer's layout and pointer facts set on logic (not yet
+    /// flushed); whether there were any. The batch is noted for the
+    /// answer that says it saw them.
+    fn give_facts(&mut self) -> bool {
+        let facts = self.r.take_layout_facts();
+        // (flex) The pointer over the nodes logic reads it of.
+        let pointer = self.r.take_pointer_facts();
+        if facts.is_empty() && pointer.is_empty() {
+            return false;
+        }
+        for (n, b) in facts {
+            self.inst.set_box(n, b);
+        }
+        for (n, p) in pointer {
+            self.inst.set_pointer(n, p);
+        }
+        self.facts_seq = Some(self.r.layout_seq());
+        true
     }
 
     /// `backend cpu|gpu` mid-run: every shown surface drawn by that
@@ -3531,6 +3583,35 @@ impl Harness {
                 k,
                 text: format!("exec {}: {:?}", x.action, x.argv),
             });
+            // (flex review) The sandbox runs no command: a result
+            // action's call is answered from what was queued for it (a
+            // recording's answer), else with an error naming that, so
+            // its `.error` shows rather than a pending call for ever.
+            if let Some(reply) = &x.reply {
+                let queued = self
+                    .exec_answers
+                    .borrow_mut()
+                    .get_mut(&x.action)
+                    .and_then(std::collections::VecDeque::pop_front);
+                let answer = match &queued {
+                    Some(Ok(j)) => {
+                        strand_compiler::vm::json::from_json(reply.types(), reply.ty(), j)
+                    }
+                    Some(Err(e)) => Err(e.clone()),
+                    None => Err(format!(
+                        "`{}` was not run: the sandbox runs no command, and no answer was \
+                         recorded for this call",
+                        x.action
+                    )),
+                };
+                reply.answer(answer);
+                self.logic_owed = true;
+                if self.opts.log {
+                    self.log
+                        .fetches
+                        .push((k, format!("action {}", x.action), queued.is_some()));
+                }
+            }
         }
         let committed = std::mem::take(&mut self.committed);
         if traces.is_empty() {
@@ -4112,7 +4193,13 @@ impl LoopHost for Harness {
         Ok(())
     }
 
+    /// (flex review) As the shell's main thread sends them before an
+    /// input's intents: logic reads where a press went down in `on
+    /// change self.pressed`. Its answer comes at the loop's turn.
     fn facts(&mut self) -> Result<(), Error> {
+        if self.give_facts() {
+            self.logic_owed = true;
+        }
         Ok(())
     }
 

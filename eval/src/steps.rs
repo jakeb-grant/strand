@@ -697,20 +697,30 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
             StepKind::Unfocus
         }
         "answer" => {
-            let usage =
-                "`answer <service.method> <JSON>` or `answer <service.method> error \"<text>\"`";
-            let method = need(1, usage)?.to_string();
-            if !method.contains('.') || method.starts_with('.') || method.ends_with('.') {
+            let usage = "`answer <service.method> <JSON>`, `answer <service.method> error \
+                         \"<text>\"` or `answer action <name> …`";
+            // (flex review) `answer action calc "4"`: the next call of the
+            // result action `calc` is answered with it.
+            let action = arg(1) == Some("action") && !w[1].quoted;
+            let (method, at) = if action {
+                (format!("action {}", need(2, usage)?), 3)
+            } else {
+                (need(1, usage)?.to_string(), 2)
+            };
+            if !action
+                && (!method.contains('.') || method.starts_with('.') || method.ends_with('.'))
+            {
                 return Err(format!("`{method}` is not `service.method`: {usage}"));
             }
-            need(2, usage)?;
-            let answer = if arg(2) == Some("error") && !w[2].quoted {
-                match &w[3..] {
+            need(at, usage)?;
+            let answer = if arg(at) == Some("error") && !w[at].quoted {
+                match &w[at + 1..] {
                     [t] if t.quoted => Err(t.text.clone()),
                     _ => return Err(format!("`answer … error` takes a quoted text: {usage}")),
                 }
             } else {
                 let json = rest_of("answer")
+                    .trim_start()
                     .strip_prefix(method.as_str())
                     .unwrap_or("")
                     .trim()

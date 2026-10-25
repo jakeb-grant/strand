@@ -516,6 +516,30 @@ fn recorded_answers_come_before_their_calls() {
     );
 }
 
+/// (flex review) A result action's recorded answer (a fetch named
+/// `action calc`) is the config's own: it is queued as `answer action
+/// calc …`, never skipped as a service without a stand-in.
+#[test]
+fn a_result_actions_recorded_answer_is_given_to_its_call() {
+    let mut f = Fx::session();
+    f.change(
+        10 * S,
+        kind::FETCH,
+        "action calc",
+        &1u32.to_le_bytes(),
+        r#"{"ok":"4"}"#,
+    );
+    let (_, p, text) = plan_of(&f.write("action-answer"), &defaults());
+    let st = steps(&text);
+    assert!(st.contains(&"answer action calc \"4\""), "{st:?}");
+    assert!(p.events.iter().any(|e| e.text == "action calc answered"));
+    assert!(
+        !p.limits.iter().any(|l| l.contains("stand-in")),
+        "{:#?}",
+        p.limits
+    );
+}
+
 #[test]
 fn every_limit_is_named() {
     let mut f = Fx::session();

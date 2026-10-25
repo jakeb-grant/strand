@@ -168,7 +168,13 @@ fn text_and_number_helpers() {
          let b2 = bytes(1536)\n\
          let b3 = bytes(20830368563)\n\
          let b4 = bytes(512 * 1024 * 1024)\n\
-         let b5 = bytes(1024)\n");
+         let b5 = bytes(1024)\n\
+         let n6 = num(1.005, digits: 2)\n\
+         let n7 = num(0.995, digits: 2)\n\
+         let b6 = bytes(1023.6)\n\
+         let b7 = bytes(1048575)\n\
+         let b8 = bytes(1048524)\n\
+         let b9 = bytes(1048000)\n");
     assert_eq!(get(&inst, "a"), Value::float(42.0));
     assert_eq!(get(&inst, "b"), Value::float(-0.5));
     assert_eq!(get(&inst, "c"), Value::float(1000.0));
@@ -183,6 +189,12 @@ fn text_and_number_helpers() {
     assert_eq!(text(&inst, "b1"), "512 B");
     assert_eq!(text(&inst, "b2"), "1.5 KiB");
     assert_eq!(text(&inst, "b3"), "19.4 GiB");
+    assert_eq!(text(&inst, "n6"), "1.01", "on the decimals written");
+    assert_eq!(text(&inst, "n7"), "1.00", "carried into the whole part");
+    assert_eq!(text(&inst, "b6"), "1 KiB", "the unit after rounding");
+    assert_eq!(text(&inst, "b7"), "1 MiB");
+    assert_eq!(text(&inst, "b8"), "1 MiB");
+    assert_eq!(text(&inst, "b9"), "1023 KiB");
     assert_eq!(text(&inst, "b4"), "512 MiB");
     assert_eq!(text(&inst, "b5"), "1 KiB");
     assert_eq!(ty("let a = number(\"1\")\n", "a"), "float?");
@@ -341,6 +353,105 @@ fn a_time_signal_in_a_draw_is_refused_at_check() {
     assert!(codes.is_empty(), "{text}");
 }
 
+/// (flex review) The maths builtins take a time signal in a prop: the
+/// call stays symbolic and render evaluates it per frame (`x: 20 *
+/// sin(t * 90deg)` bobs), as `wave` does. A builtin that computes with
+/// its arguments now (`pct`, `num`, `dur`, …) refuses one at check
+/// time, where it faulted at run time.
+#[test]
+fn maths_follow_time_and_other_builtins_refuse_it() {
+    let (codes, text) = diags(
+        "let s = sin(t * 90deg)\n\
+         bar B { box { x: 20 * s; y: 10 * cos(t * 45deg) + max(0, sin(t * 30deg)); \
+         rotate: atan2(sin(t * 90deg), 1) } }\n",
+    );
+    assert!(codes.is_empty(), "{text}");
+    let (_, _, inst) = run("let s = 20 * sin(t * 90deg)\nlet m = clamp(wave(2s), 0.2, 0.8)\n");
+    let Value::Time(e) = get(&inst, "s") else {
+        panic!("{:?}", get(&inst, "s"));
+    };
+    // At t = 1 s: 20 · sin(90°) = 20.
+    let tables = strand_scene::TokenTable::default();
+    let at = |e: &strand_scene::TokenExpr, t: f32| {
+        let levels = [&tables];
+        let scope = strand_scene::TokenScope::new(&levels)
+            .with_time(Some(strand_scene::TimeContext::at(t)));
+        match scope
+            .resolve(&strand_scene::PropValue::Token(e.clone()))
+            .map(|v| v.into_owned())
+        {
+            Some(strand_scene::PropValue::Number(n)) => n,
+            v => panic!("{v:?}"),
+        }
+    };
+    assert!((at(&e, 1.0) - 20.0).abs() < 1e-3);
+    assert!(at(&e, 0.0).abs() < 1e-3);
+    let Value::Time(m) = get(&inst, "m") else {
+        panic!("{:?}", get(&inst, "m"));
+    };
+    assert_eq!(at(&m, 0.0), 0.2, "clamped up from 0");
+    for (call, what) in [
+        ("pct(wave(2s))", "`wave(…)`"),
+        ("num(t, digits: 1)", "`t`"),
+        ("bytes(s * 1000)", "this value"),
+    ] {
+        let (codes, text) = diags(&format!(
+            "let s = sin(t * 90deg)\nbar B {{ text {call} }}\n"
+        ));
+        assert_eq!(codes, ["check::time_in_logic"], "{call}: {text}");
+        assert!(text.contains(what), "{call}: {text}");
+    }
+}
+
+/// (flex review) The maths builtins take degrees: a bare `pi` in their
+/// angle is warned, with `180deg` as the fix.
+#[test]
+fn pi_in_an_angle_is_warned() {
+    let src = "let a = sin(pi / 2)\n";
+    let (codes, text) = diags(src);
+    assert_eq!(codes, ["check::pi_degrees"], "{text}");
+    assert!(text.contains("`sin` takes degrees"), "{text}");
+    let (c, _) = compile(src);
+    let fix = &c.diagnostics[0].suggestions[0];
+    assert_eq!(&src[fix.span.start as usize..fix.span.end as usize], "pi");
+    assert_eq!(fix.replacement, "180deg");
+    for ok in [
+        "let a = sin(180deg / 2)\n",
+        "let a = sqrt(pi)\n",
+        "let a = 2 * pi * 3\n",
+        "let a = cos(90)\n",
+    ] {
+        let (codes, text) = diags(ok);
+        assert!(codes.is_empty(), "{ok}: {text}");
+    }
+}
+
+/// (flex review) An `arc` that set its line with `width` (before its
+/// line became its `stroke:`) is warned, with `stroke` as the fix; one
+/// sized by `width` and `height`, or with a `stroke:`, is not.
+#[test]
+fn an_arc_with_its_old_width_is_warned() {
+    let old = "bar B { arc { value: 0.5; sweep: 270deg; size: 56; width: 5 } }\n";
+    let (codes, text) = diags(old);
+    assert_eq!(codes, ["check::arc_width"], "{text}");
+    assert!(text.contains("line is its `stroke:`"), "{text}");
+    let (c, _) = compile(old);
+    let fix = &c.diagnostics[0].suggestions[0];
+    assert_eq!(
+        &old[fix.span.start as usize..fix.span.end as usize],
+        "width"
+    );
+    assert_eq!(fix.replacement, "stroke");
+    for ok in [
+        "bar B { arc { value: 0.5; size: 56; stroke: 5 } }\n",
+        "bar B { arc { value: 0.5; width: 40; height: 40; stroke: 4 } }\n",
+        "bar B { arc { value: 0.5; width: 40; height: 40 } }\n",
+    ] {
+        let (codes, text) = diags(ok);
+        assert!(codes.is_empty(), "{ok}: {text}");
+    }
+}
+
 /// (flex) An action with a result is an `Async<T>`: loaded in a binding
 /// as `apps.search(q)` is (and refused where it could not answer), awaited
 /// in a handler; one returning nothing stays an action.
@@ -370,10 +481,23 @@ fn an_action_with_a_result_is_typed_async() {
         "{head}state qs = [\"1\", \"2\"]\nlet rs = qs.map(q => calc(q) ?? \"\")\n"
     ));
     assert!(codes.contains(&"check::action_in_binding"), "{text}");
-    // What a command prints cannot be a function.
-    let (codes, text) = diags("permit exec \"x\"\naction f() -> font [\"x\"]\n");
-    assert!(codes.contains(&"check::type_mismatch"), "{text}");
-    assert!(text.contains("cannot be read as"), "{text}");
+    // What a command prints cannot be a function, nor a live handle or a
+    // `Date` (what a `from poll` field cannot hold).
+    for ret in ["font", "Window", "Canvas", "Date", "Screen", "[Window]"] {
+        let (codes, text) = diags(&format!("permit exec \"x\"\naction f() -> {ret} [\"x\"]\n"));
+        assert!(codes.contains(&"check::type_mismatch"), "{ret}: {text}");
+        assert!(text.contains("cannot be read as"), "{ret}: {text}");
+    }
+    // A result action called for its effect alone drops its call (and
+    // ends its command): refused, as a dropped `sleep` is.
+    let (codes, text) = diags(&format!(
+        "{head}state q = \"\"\non change q {{ calc(q) }}\n"
+    ));
+    assert_eq!(codes, ["check::async"], "{text}");
+    assert!(
+        text.contains("is dropped") && text.contains("`await` it"),
+        "{text}"
+    );
     // A D-Bus method's action has none.
     let (codes, text) = diags(
         "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \

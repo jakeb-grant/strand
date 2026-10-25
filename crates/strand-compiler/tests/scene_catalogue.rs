@@ -44,6 +44,8 @@ const COMPILER_SET: &[Prop] = &[
     Prop::DropRows,
     // M5.
     Prop::NotRow,
+    // flex.
+    Prop::OnKey,
 ];
 
 /// Scene kinds the compiler makes from something other than an element:

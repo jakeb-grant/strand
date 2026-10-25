@@ -3760,7 +3760,13 @@ impl Ctx {
         self.note_surface(ident.clone(), true);
         self.note_lock_scope(s.kind, ident.clone());
         let lock = s.kind == NodeKind::Lock;
-        let (ctx, outer) = (self.clone(), env.clone());
+        // (flex review) `screens:` that evaluates to `focused` (written
+        // as an expression, so `screen` is in scope): one instance, keyed
+        // by a constant as the lock's, whose `screen` follows focus in
+        // place, unpinned, so moving focus does not mount it again (a
+        // launcher keeps its query).
+        let on_focused = Rc::new(Cell::new(false));
+        let (ctx, outer, focus_now) = (self.clone(), env.clone(), on_focused.clone());
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;
             let types = &ctx.vm.prog.types;
@@ -3796,6 +3802,15 @@ impl Ctx {
                 }
                 _ => None,
             };
+            focus_now.set(focused.is_some());
+            if let Some(f) = &focused {
+                ctx.bar_instances(&ident, usize::from(!f.is_null()));
+                return Ok(if f.is_null() {
+                    Vec::new()
+                } else {
+                    vec![(ValueKey(Value::text("focused")), f.clone())]
+                });
+            }
             let names: Option<Vec<String>> = match &wanted {
                 Some(Value::Text(t)) => Some(vec![t.to_string()]),
                 Some(Value::List(items)) => Some(
@@ -3809,13 +3824,12 @@ impl Ctx {
             let mut out = Vec::new();
             for sc in all.as_list().unwrap_or(&[]) {
                 let key = screen_key(types, sc);
-                let keep = match (&focused, &names) {
-                    (Some(f), _) => !f.is_null() && screen_key(types, f) == key,
-                    (None, Some(names)) => names.iter().any(|n| {
+                let keep = match &names {
+                    Some(names) => names.iter().any(|n| {
                         sc.field(types, "name").and_then(Value::as_text) == Some(n.as_str())
                             || sc.field(types, "id").and_then(Value::as_text) == Some(n.as_str())
                     }),
-                    (None, None) => true,
+                    None => true,
                 };
                 if keep {
                     out.push((ValueKey(Value::text(key)), sc.clone()));
@@ -3829,7 +3843,7 @@ impl Ctx {
         let item: ItemMount = Rc::new(move |ctx, rt, env, frag, v| {
             let mut extra = extra.clone();
             // The instance's own pin wins over the bar's `screens:`.
-            if !lock {
+            if !lock && !on_focused.get() {
                 extra.push((
                     SceneProp::Screens,
                     PropValue::Text(screen_key(&ctx.vm.prog.types, v)),
@@ -3956,6 +3970,16 @@ impl Ctx {
                         // Several `on click` on one element all run, in
                         // source order.
                         entry.events.entry(name.clone()).or_default().push(q);
+                    }
+                    // (flex) Render leaves Tab to an element that hears
+                    // keys (`Prop::OnKey`).
+                    if name == "key" {
+                        em.set(
+                            el.scene,
+                            SceneProp::OnKey,
+                            PropValue::Bool(true),
+                            Transition::Instant,
+                        );
                     }
                 }
             }

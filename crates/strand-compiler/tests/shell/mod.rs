@@ -587,6 +587,24 @@ impl LoopHost for Shell {
                         NodeEvent::Scroll { dy, dx } => {
                             ("scroll", vec![Value::float(dy), Value::float(dx)])
                         }
+                        NodeEvent::Key {
+                            name,
+                            text,
+                            modifiers: m,
+                        } => (
+                            "key",
+                            vec![self.host.record(
+                                "Key",
+                                &[
+                                    ("name", Value::text(name.as_str())),
+                                    ("text", Value::text(text.as_str())),
+                                    ("ctrl", Value::Bool(m.ctrl)),
+                                    ("shift", Value::Bool(m.shift)),
+                                    ("alt", Value::Bool(m.alt)),
+                                    ("logo", Value::Bool(m.logo)),
+                                ],
+                            )],
+                        ),
                         _ => continue,
                     };
                     self.inst.event(node, name, args);

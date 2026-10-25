@@ -140,6 +140,12 @@ pub struct Token {
 /// Units a number may carry (`docs/grammar.md`, "Numbers and units").
 pub const UNITS: &[&str] = &["px", "%", "deg", "ch", "s", "ms", "min", "h"];
 
+/// "units are px, %, …, min and h", from [`UNITS`].
+fn units_label() -> String {
+    let (last, rest) = UNITS.split_last().unwrap_or((&"", &[]));
+    format!("units are {} and {last}", rest.join(", "))
+}
+
 /// Splits a lexed number into its numeric text and unit suffix.
 pub fn split_number(text: &str) -> (&str, &str) {
     let end = text
@@ -438,10 +444,7 @@ impl Lexer<'_> {
             if !UNITS.contains(&unit) {
                 let mut d =
                     Diagnostic::error("syntax::unknown_unit", format!("unknown unit `{unit}`"))
-                        .with_label(
-                            span(unit_start, self.pos),
-                            "units are px, %, deg, ch, s and ms",
-                        );
+                        .with_label(span(unit_start, self.pos), units_label());
                 d.suggest_opt(
                     span(unit_start, self.pos),
                     closest(unit, UNITS.iter().copied()),

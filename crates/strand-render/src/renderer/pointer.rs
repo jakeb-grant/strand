@@ -45,10 +45,29 @@ pub(super) struct Pointing {
     chains: HashMap<SurfaceId, Vec<NodeId>>,
     /// (flex) Where the last press on each surface (by its root) went
     /// down, any button: where an `anchor: pointer` popup it opens opens.
-    presses: HashMap<NodeId, LogicalPoint>,
+    presses: HashMap<NodeId, PressAt>,
+    /// (flex) Button presses and keys so far, on any surface: a press is
+    /// the latest step while no other press or key came after it.
+    steps: u64,
     /// (flex) The anchor each open `anchor: pointer` popup took when it
-    /// opened, kept while it stays open.
-    anchors: HashMap<NodeId, LogicalRect>,
+    /// opened, kept while it stays open, and the step of the press it
+    /// took it from.
+    anchors: HashMap<NodeId, (LogicalRect, u64)>,
+}
+
+/// (flex) A press as an `anchor: pointer` popup reads it.
+#[derive(Debug, Clone)]
+struct PressAt {
+    at: LogicalPoint,
+    /// The hit chain it went down on, innermost first.
+    chain: Vec<NodeId>,
+    /// Its step ([`Pointing::steps`]).
+    step: u64,
+    /// Its button came up.
+    released: bool,
+    /// A diff from logic was applied after its release: its click has
+    /// been answered.
+    answered: bool,
 }
 
 #[derive(Debug, Default)]
@@ -74,14 +93,20 @@ struct Press {
 }
 
 impl Pointing {
-    /// (flex) The anchor of `anchor: pointer` popup `popup` nested in the
-    /// surface of `parent`: 1 × 1 where the last press there went down
-    /// when it opened, kept while it stays open (`open`); `None` when it
-    /// is closed or no press opened it (a key did: it opens at its
-    /// element).
+    /// (flex) The anchor of `anchor: pointer` popup `popup`, hanging from
+    /// `element` in the surface of `parent`: 1 × 1 where the press that
+    /// opened it went down, kept while it stays open (`open`). A press
+    /// opened it when it is the latest step (no press or key since) and
+    /// went down on `element`; else (a key, a timer, a press elsewhere
+    /// long before) it opens at its element: `None`. A later press on
+    /// `element` moves it there once its click is answered with the
+    /// popup still open, so a press that closes it does not move it
+    /// first; presses inside the popup are on its own surface and never
+    /// move it.
     pub(super) fn anchor(
         &mut self,
         popup: NodeId,
+        element: Option<NodeId>,
         parent: Option<NodeId>,
         open: bool,
     ) -> Option<LogicalRect> {
@@ -89,19 +114,42 @@ impl Pointing {
             self.anchors.remove(&popup);
             return None;
         }
-        if !self.anchors.contains_key(&popup)
-            && let Some(p) = parent.and_then(|p| self.presses.get(&p))
-        {
-            let rect = LogicalRect::new(p.x, p.y, 1.0, 1.0);
-            self.anchors.insert(popup, rect);
+        let steps = self.steps;
+        let fresh = parent
+            .and_then(|p| self.presses.get(&p))
+            .filter(|p| p.step == steps && element.is_some_and(|e| p.chain.contains(&e)));
+        let take = match (self.anchors.get(&popup), fresh) {
+            (None, Some(p)) => Some(p),
+            (Some((_, from)), Some(p)) if p.step > *from && p.answered => Some(p),
+            _ => None,
+        };
+        if let Some(p) = take {
+            let rect = LogicalRect::new(p.at.x, p.at.y, 1.0, 1.0);
+            self.anchors.insert(popup, (rect, p.step));
         }
-        self.anchors.get(&popup).copied()
+        self.anchors.get(&popup).map(|(r, _)| *r)
     }
 
     /// (flex) The anchor an open `anchor: pointer` popup took, if it is
     /// one.
     pub(super) fn held_anchor(&self, popup: NodeId) -> Option<LogicalRect> {
-        self.anchors.get(&popup).copied()
+        self.anchors.get(&popup).map(|(r, _)| *r)
+    }
+
+    /// (flex) Logic's diff is being applied: the click of each press
+    /// released before it has been answered. The open `anchor: pointer`
+    /// popups to look at again when one was answered just now.
+    pub(super) fn diff_applied(&mut self) -> Vec<NodeId> {
+        let mut any = false;
+        for p in self.presses.values_mut() {
+            any |= p.released && !p.answered;
+            p.answered |= p.released;
+        }
+        if any {
+            self.anchors.keys().copied().collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -208,12 +256,40 @@ impl Renderer {
     /// it before routing the press): a popup with `anchor: pointer` that
     /// the press opens opens there.
     pub fn pressed_at(&mut self, surface: SurfaceId, at: LogicalPoint) {
+        self.pointing.steps += 1;
         if let Some(root) = self.surfaces.get(&surface).map(|s| s.root)
             && at.x.is_finite()
             && at.y.is_finite()
         {
-            self.pointing.presses.insert(root, at);
+            let chain = self.hit(surface, at);
+            let step = self.pointing.steps;
+            self.pointing.presses.insert(
+                root,
+                PressAt {
+                    at,
+                    chain,
+                    step,
+                    released: false,
+                    answered: false,
+                },
+            );
         }
+    }
+
+    /// (flex) A button came up on `surface`: the press there is a click
+    /// logic answers.
+    pub fn released_at(&mut self, surface: SurfaceId) {
+        if let Some(root) = self.surfaces.get(&surface).map(|s| s.root)
+            && let Some(p) = self.pointing.presses.get_mut(&root)
+        {
+            p.released = true;
+        }
+    }
+
+    /// (flex) A key went down: a press before it no longer opens an
+    /// `anchor: pointer` popup at its point.
+    pub fn key_step(&mut self) {
+        self.pointing.steps += 1;
     }
 
     /// (flex) Whether `surface` owes logic the pointer (a frame reports
@@ -246,6 +322,7 @@ impl Renderer {
         self.pointing.watched.retain(|n| tree.contains_live(*n));
         self.pointing.sent.retain(|n, _| tree.contains_live(*n));
         self.pointing.anchors.retain(|n, _| tree.contains_live(*n));
+        self.pointing.presses.retain(|n, _| tree.contains_live(*n));
     }
 
     /// (flex) `surface` went: the pointer over its nodes is gone too.
@@ -270,12 +347,21 @@ impl Renderer {
     }
 
     /// (flex) After `surface` painted: the pointer over its watched nodes
-    /// that changed since the last report, if it owes one.
+    /// that changed since the last report, if it owes one, or while the
+    /// pointer rests on it: a frame that moved a node under a still
+    /// pointer (a scroll, a layout change, an animation) moved where the
+    /// pointer is in it. A surface paints only when something changed,
+    /// so a still scene costs nothing.
     pub(super) fn report_pointer(&mut self, surface: SurfaceId) {
         let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
             return;
         };
-        let Some(o) = self.pointing.over.get(&surface).filter(|o| o.due) else {
+        let Some(o) = self
+            .pointing
+            .over
+            .get(&surface)
+            .filter(|o| o.due || o.at.is_some())
+        else {
             return;
         };
         let placed_now = self.extras.placed.get(&root).map(|(_, p)| *p);

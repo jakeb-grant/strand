@@ -73,14 +73,14 @@ guide's ladder test use this table as the list of constructs.
 | `fn` | `fn_decl` | 5.5 |
 | `tokens … extends …`, `override`, `use tokens …, palette …` | `tokens_decl`, `use_decl` | 9 |
 | `service … from dbus\|file\|listen\|poll`, `permit exec` | `service`, `permit` | 5.6 |
-| `action name(params) [command]`, `action name(params) = Method` | `action`, `method_action` | 5.7 |
+| `action name(params) [-> T] [command]`, `action name(params) = Method` | `action`, `method_action` | 5.7, 8.6 |
 | `keyframes`, `play` | `keyframes`, `play` | 6.6 |
 | `@reset` | `attribute` | 10.4 |
 | `kind [positional] { props; children }` | `element` | 6.1 |
 | `name: value`, comma shorthand, space-separated groups | `prop`, `value` | 6.2 |
 | `prop: value ~ transition` | `transition` | 6.6 |
 | `prop: <-> target` | `prop` | 8.5 |
-| `when cond { props }`; `hover`, `pressed`, `focused`, `selected`; `id:` | `when`, `postfix` | 6.3 |
+| `when cond { props }`; `hover`, `pressed`, `focused`, `selected`, `box`, `pointer`; `id:` | `when`, `postfix` | 6.3 |
 | `if` / `else` | `if_tree`, `stmt` | 6.4 |
 | `match` | `match_tree`, `match_expr`, `stmt` | 6.4, 7.3 |
 | `for x in xs key e` | `for_tree`, `stmt` | 6.5 |
@@ -283,7 +283,11 @@ filling the monitor, the keyboard always).
   (`panel Dock { screens: all; width: screen.width / 2 }`). On the
   focused monitor (the default) it is one surface the compositor
   places, and `screen` is not in scope there: reading it is a load
-  error saying to add `screens: all`. (decisions.md flex, 2026-10-24)
+  error saying to add `screens: all`. A `screens:` expression that
+  evaluates to `focused` keeps one instance that the compositor places
+  on the focused monitor, its `screen` that monitor, changing in place
+  as focus moves (as the lock's does: nothing is mounted again).
+  (decisions.md flex, 2026-10-24)
 - **`open:`** says whether a surface is shown. Bound two-way
   (`open: <-> open`), Escape, a click away and focus loss write `false`.
 - **`popup { … }`** is an element, not a top-level surface: it is
@@ -311,22 +315,29 @@ filling the monitor, the keyboard always).
   `bottom` below, to the right otherwise). Where that place does not
   fit on the monitor the compositor may slide or flip it.
 - **`anchor: pointer`** opens a popup where the press that opened it
-  went down (any button, on the surface it nests in), down and to the
-  right of that point and touching it unless its `margin` says
-  otherwise: a context menu at the click, on a bar too (not across the
-  bar). It keeps that place while it stays open; opened by a key, with
-  no press, it opens at its element as usual. (decisions.md flex,
+  went down (any button, on its element, on the surface it nests in),
+  down and to the right of that point and touching it unless its
+  `margin` says otherwise: a context menu at the click, on a bar too
+  (not across the bar). Only the press that opened it counts: a popup
+  opened with no press on its element in that input step (a key, a
+  timer, IPC, a hover) opens at its element as usual, however recent
+  an earlier press was. It keeps its place while it stays open; a
+  later press on its element (outside the popup) that leaves it open
+  moves it there once logic has answered that press, so a right-click
+  on another row opens the menu at that row. (decisions.md flex,
   2026-10-24)
 - **A bar reserves its edge**: its thickness and its margin on that
   edge, as layer-shell's exclusive zone. **`exclusive:`** on a `bar` or
   `panel` says how much: `true` its thickness across the edge (a bar's
-  default), a length exactly that much whatever its size (`exclusive:
-  20` under a bar that is 36 tall), `false` or `0` nothing, so windows
+  default), a length (in px) that much whatever its size, counted from
+  its margin as its thickness is (`exclusive: 20` under a 36-tall bar
+  with an 8 px margin keeps 28), `false` or `0` nothing, so windows
   go under it (a panel's default). A panel keeps space along the edge
-  it is attached to, else the one edge its `anchor:` names (`top`,
-  `left`, …); anchored at a corner or the centre it keeps none,
-  layer-shell reserving along one edge only. (decisions.md flex,
-  2026-10-24) The compositor arranges the
+  its anchors make one edge of: its `attach:` edge, or the one edge its
+  `anchor:` names (`top`, `left`, …); anchored at a corner or the
+  centre it keeps none, layer-shell reserving along one edge only, and
+  `exclusive:` there is a warning, as is a length in another unit than
+  px. (decisions.md flex, 2026-10-24) The compositor arranges the
   surfaces that reserve one first, from the overlay layer down and in
   the order they were made, each in what the zones before it leave;
   every `bar`, `panel` and `osd` then lies its margin inside what is
@@ -400,12 +411,14 @@ filling the monitor, the keyboard always).
   component whose tree is not one element, either is a load error
   naming the fix (wrap the call in a `box`). A component with an `id`
   parameter takes `id:` as its argument.
-- `screen` in a component is the screen of the bar it is mounted in, as
-  in the bar itself (section 5.1): read-only, and on each monitor's
-  instance that monitor. A component that reads it, or calls one that
-  does, gets it from each call, which passes the `screen` in scope
-  there; a call where there is none (in a `panel`, `popup` or `osd`
-  outside any bar) is a load error at the call. A parameter, local,
+- `screen` in a component is the screen of the surface instance it is
+  mounted in, as in that surface itself (section 5.1): a `bar`'s, a
+  `panel`'s or `osd`'s whose `screens:` picks monitors, or the
+  `lock`'s; read-only, and on each monitor's instance that monitor. A
+  component that reads it, or calls one that does, gets it from each
+  call, which passes the `screen` in scope there; a call where there is
+  none (in a `panel` or `osd` on the focused monitor, or a `popup`
+  inside one) is a load error at the call. A parameter, local,
   top-level declaration, enum variant or service named `screen` is the
   one read instead: the component's `screen` is found only where the
   name would otherwise be unknown.
@@ -547,22 +560,25 @@ filling the monitor, the keyboard always).
   argument starting with `-` may be read as an option (`--` before it,
   where the program takes one). A parameter right after a shell's `-c`
   is a warning (`check::shell_script`).
-- An action runs at most once at a time: a call while its command still
+- An action without a result (no `-> T`) runs at most once at a time:
+  a call while its command still
   runs queues one re-run, the latest call's, started when the command
   ends, as a `file`'s `run` is (section 9.7).
-- The command runs detached, in its own process group, with stdin and
+- Its command runs detached, in its own process group, with stdin and
   stdout on `/dev/null`; the handler does not wait for it, and logic is
   never blocked by it. A program that cannot start or exits non-zero is
   logged and becomes a `strand watch` notice naming the action, as a
   `file`'s `run` failing does (section 9.7). The handler's next
-  statement has already run: the call's value is `()`.
+  statement has already run: the call's value is `()`. An action with
+  a result (below) differs in each of these.
 - (flex; decisions.md flex) `action name(params) -> T [command]`
   declares an action whose command's output is its value: a call is an
   `Async<T>` (section 8.6), not an action. `T` is a type a `from poll`
   field may have: `text` or `path` (what it printed, trimmed), a
   number, length, angle, duration, `bool`, colour or enum (read from
-  the printed text), or a record or list type, or any of these
-  optional; any other is a load error. A record or list is read from
+  the printed text), a record `type` the config declares, or a list of
+  these, or any of these optional; any other (a live handle such as
+  `Window` or `Canvas`, `Date`, a font) is a load error. A record or list is read from
   JSON, a record also from `key=value` lines, as section 5.6 reads a
   document; nothing printed is `null` for an optional `T`. The
   parameters, the command and `permit exec` are as above.
@@ -575,14 +591,24 @@ filling the monitor, the keyboard always).
     (`.error`). In a binding's lambda it is a load error (its answer
     could not reach the binding), and in a `fn` too (`fn`s are pure).
   - In a handler, `await calc(q)` waits for it and is `T`, or the
-    handler's error. A call whose value no one keeps (neither awaited
-    nor stored) is ended at the end of that step.
+    handler's error. A call written as a statement (`on click {
+    calc(q) }`) is a load error (`check::async`), as a dropped `sleep`
+    is: its value would be dropped and its command ended at once; an
+    action run for its effect alone has no `-> T`. A call whose value
+    no one keeps (neither awaited nor stored) is ended at the end of
+    that step.
   - Every call runs at once on a thread of its own, never queued behind
     another. Its stdout is read, at most 1 MiB (more ends it, an error);
-    stderr is strand's own log. A program that cannot start, exits
-    non-zero, prints too much or prints what does not read as `T` is
-    the value's `.error` (``"`qalc` failed (exit status: 1)"``) and a
-    log line, not a `strand watch` notice: the config reads `.error`.
+    stderr is strand's own log. It has 10 s, as a `from poll` command
+    has: one still running then (or still holding its output open, a
+    child it left in the background) has its process group ended as a
+    superseded one's is, and the value's `.error` is
+    ``"`qalc` timed out after 10 s"``. A program that cannot start,
+    exits non-zero, prints too much or prints what does not read as
+    `T` is the value's `.error` (``"`qalc` failed (exit status: 1)"``)
+    and a log line, not a `strand watch` notice: the config reads
+    `.error`, which names the exit status; what the program printed on
+    stderr is only in strand's log.
 - `strand check` lists every action's command, each parameter shown as
   `{name}` where it is one argument; the language server shows it on an
   action's hover. Both check its program against `permit exec`.
@@ -743,16 +769,25 @@ filling the monitor, the keyboard always).
   one of its descendants on the same surface. Its paint offsets and
   transforms, and its ancestors', are undone as the frame drew them, so
   a rotated knob reads it upright. It changes at most once a frame
-  however fast the pointer moves. While a press that went down on the
-  node is held it keeps a value wherever the pointer goes (off the node,
-  off the surface), measured in the box as it was when the press went
-  down, the surface's place included: a drag that moves the node (its
-  `x`, its width) or its surface (margins from state) moves the pointer
-  in that frame, never the frame, so it cannot feed back. A press's
+  however fast the pointer moves, and also when the node moves under a
+  pointer that stays still (a `scroll` scrolled, a layout or an
+  animation): it is where the pointer is in the box as the frame laid
+  it out. While a left-button press that went down on the node is held
+  it keeps a value wherever the pointer goes (off the node, off the
+  surface), measured in the box as it was when the press went down,
+  the surface's place included: a drag that moves the node (its `x`,
+  its width) or its surface (margins from state) moves the pointer in
+  that frame, never the frame, so it cannot feed back. A press's
   `pointer` is set before its `pressed`, so `on change self.pressed {
   grab = self.pointer }` reads where it went down. A knob is
-  `atan2(p.y - cy, p.x - cx)`; a resize grip adds the pointer's travel
-  since the press to the width it had. (decisions.md flex, 2026-10-24)
+  `atan2(p.y - cy, p.x - cx)` (between -180° and 180°: section 7.2's
+  `atan2`); a resize grip adds the pointer's travel since the press to
+  the width it had. Outside a press `pointer` is measured in the node's
+  current box, so a node whose place or size follows its own `pointer`
+  moves the frame it is read in; it changes at most once a frame and
+  the checker does not refuse it, but such a node should read the
+  pointer of a parent that stays put (the dock reads its row's).
+  (decisions.md flex, 2026-10-24)
 - **What a box may drive.** Anything that does not lay that box out
   again. The checker follows what each value depends on, directly or
   through `let`s, the `state`s and service fields handlers set from
@@ -933,9 +968,14 @@ filling the monitor, the keyboard always).
   place the children within each line; a column wraps only when its
   height is bounded. (decisions.md flex, 2026-10-24)
 - **A `scroll` scrolls along `axis:`** `vertical` (the default),
-  `horizontal` (its children in a row; a plain wheel, with no sideways
-  motion, scrolls it too) or `both` (each child its own width). Each
-  event moves one axis, the one it moves most along. `snap: true` on a
+  `horizontal` (its children in a row) or `both` (each child its own
+  width). A wheel notch with no sideways motion scrolls a horizontal
+  one under the pointer only when no scroll there can move along y (a
+  strip inside a page leaves it to the page); a touchpad's vertical
+  swipe never does. A wheel event moves one axis, the one it moves most
+  along; a touchpad gesture keeps the axis and the scroll its first
+  event took until the fingers lift (on `both`, a diagonal swipe moves
+  one axis, not each in turn). `snap: true` on a
   `scroll` or `list` settles a wheel step and a touchpad's lift with a
   child's start (a row's, for a list, mounted or not) where the first
   child starts at rest, or at the content's end: a notch moves to the
@@ -945,16 +985,26 @@ filling the monitor, the keyboard always).
 - **Sliders and meters laid out taller than wide run upward**: a
   `slider` or `meter` whose box is taller than it is wide (`width: 24;
   height: 160`) has its track upright, its value growing from the
-  bottom, and a drag reads the pointer's height. There is no
+  bottom, and a drag reads the pointer's height; an upright meter
+  fills plainly (its `wave` is a horizontal meter's). Its written
+  `width` and `height` decide (where both are lengths), else its
+  laid-out box, so a box springing through a square does not turn it,
+  and a drag keeps the orientation it began with. There is no
   orientation prop. `step:` on a slider moves a drag in whole steps of
   its `range`'s units from its low end (`range: 0, 100; step: 5`), the
-  knob and the value written alike. (decisions.md flex, 2026-10-24)
+  knob and the value written alike; the value written is the decimal
+  the step and the low end spell (`range: 0, 1; step: 0.1` writes
+  `0.9`, never `0.90000004`). (decisions.md flex, 2026-10-24)
 - **Focus.** A surface that takes the keyboard focuses its first node
   with `focus: true`; `focus:` is reactive, so when it turns true on a
   node of a surface that has the keyboard, focus moves there. Tab and
   Shift+Tab move focus between the surface's `input`s and `list`s in
-  tree order, round from the last to the first (Ctrl, Alt or Super held
-  leave Tab to handlers); `on key` hears it first. A surface that
+  tree order, round from the last to the first, skipping those not
+  shown (at `opacity: 0`, theirs or an ancestor's, or playing their
+  exit pose, as a page going away does). Tab is a default that a handler takes over: when the
+  focused node or one around it has an `on key` handler, that handler
+  hears Tab and focus stays (it moves focus itself with `focus:`), and
+  Ctrl, Alt or Super held leave Tab to handlers too. A surface that
   closes lets its focus go, as when the keyboard leaves it.
   (decisions.md flex, 2026-10-24)
 - **`cursor:`** sets the pointer's shape over a node, one of
@@ -962,8 +1012,8 @@ filling the monitor, the keyboard always).
   `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`,
   `not_allowed`, `wait`, `progress`, `help`, `ew_resize`, `ns_resize`,
   `col_resize`, `row_resize`, `nwse_resize`, `zoom_in`, …). The
-  innermost node under the pointer that has one decides; while a press
-  is held, the chain it went down on does, so `when pressed { cursor:
+  innermost node under the pointer that has one decides; while the
+  left button is held, the chain it went down on does, so `when pressed { cursor:
   grabbing }` holds while the drag leaves the node. An `input` without
   one shows `text`; anything else shows the default arrow. It is set
   through `wp_cursor_shape_v1`, or from the cursor theme where the
@@ -1071,7 +1121,9 @@ filling the monitor, the keyboard always).
 - `xs.reduce(init, f)` folds a list from its first item: `f(acc, x)` is
   called for each item in order, starting from `init`, and the last
   result is its value (`init` for an empty list). Its type is `init`'s:
-  `xs.reduce(0, (a, x) => a + x.n)` is an `int` when `x.n` is.
+  `xs.reduce(0, (a, x) => a + x.n)` is an `int` when `x.n` is, and a
+  `float` when `f` gives fractions (a whole-number `init` follows `f`,
+  as an untyped `state` does).
 - A `text`'s members (`len`, `slice`, `index_of`, `split`, …) count
   characters (Unicode scalar values), not bytes: `"héllo".len` is 5,
   `s.slice(from, to)` is the characters from `from` up to `to` (a
@@ -1086,9 +1138,9 @@ is `width: 90px`. Where an angle is expected it is degrees, and where a
 duration is expected it is a load error (`200ms`, `1s`: durations need
 units). `1min` is `60s` and `1h` is `60min`.
 
-A whole-number literal with no unit is an `int` where an `int` or a
-`float` is expected; beside another operand of an arithmetic operator it
-takes that operand's type, so with `n: int`, `2500 + n` and `n + 2500`
+A whole-number literal with no unit is an `int` (an `int` widens to
+`float` where one is expected); beside another operand of an arithmetic
+operator it takes that operand's type, so with `n: int`, `2500 + n` and `n + 2500`
 are both `int`s (and with `x: float`, `2500 + x` a `float`). A
 fractional literal (`0.5`) is always a `float`. A `float` where an `int`
 is expected is a load error whose help suggests rounding it (`.round()`,
@@ -1120,10 +1172,20 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   number is degrees), and `atan2(y, x)` returns one. Angles follow the
   screen: `0deg` points right (+x) and angles grow clockwise, since y
   grows down, the way `rotate` turns, so `(r * cos(a), r * sin(a))` is
-  the point at angle `a` on a circle of radius `r`. `pi` is the
-  constant. `sqrt` of a negative number, `ln` of zero or less, and any
-  maths result that is not a finite number (`pow(0, -1)`) are error
-  values (decisions.md flex).
+  the point at angle `a` on a circle of radius `r`. `atan2` returns an
+  angle from -180° to 180°, so an arc drawn from a fixed angle to it
+  (`c.arc(…, from: 135deg, to: atan2(dy, dx))`) turns the other way
+  once the pointer passes 180°: add `360deg` to an angle below the
+  start. `pi` is the constant, a plain number: the maths functions
+  take degrees, so `pi` in their angle (`sin(pi / 2)`) is a warning
+  whose fix is `180deg`. `sqrt` of a negative number, `ln` of zero or
+  less, and any maths result that is not a finite number (`pow(0,
+  -1)`) are error values (decisions.md flex). A maths function of a
+  time signal (`t`, `wave(…)`) is one too, which render evaluates each
+  frame as it does arithmetic on them: `x: 20 * sin(t * 90deg)` bobs.
+  Any other builtin that computes with its arguments at once (`num`,
+  `pct`, `join`, …) cannot take one: a load error
+  (`check::time_in_logic`).
 - `==` and `!=` take two numbers exactly when an ordering comparison
   would, and compare their numbers as written, read the same way as for
   order (`10px == 10`, `2ch == 2px` and `50% == 50px` are true;
@@ -1139,7 +1201,8 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 - `c ? a : b` evaluates only the chosen branch.
 - Calls name their arguments by position or by name
   (`month.add(months: -1)`). Builtin functions that take nullable input
-  and are marked "null in, null out" (`pct`, `dur`) return `null` for a
+  and are marked "null in, null out" (`pct`, `dur`, `num`, `bytes`,
+  `number`) return `null` for a
   `null` argument; `join(sep, parts…)` joins the parts that are not
   `null`.
 - A lambda `x => e` or `(a, b) => { … }` is a value; a lambda is called

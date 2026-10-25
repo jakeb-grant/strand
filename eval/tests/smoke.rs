@@ -1606,6 +1606,87 @@ rest
     assert!(e.contains("is no answer of `apps.search`"), "{e}");
 }
 
+/// (flex review) The sandbox runs no command: a result action's call is
+/// answered by `answer action <name> …` (a recording's answer), else
+/// with an error saying so, so its `.error` shows rather than a call
+/// pending for ever.
+#[test]
+fn a_result_actions_call_is_answered_by_its_answer() {
+    let text = |answer: &str| {
+        format!(
+            r##"id = "action-answer"
+screen = {{ width = 300, scale = 1.0 }}
+
+=== shell.strand
+permit exec "qalc"
+action calc(q: text) -> text ["qalc", "-t", q]
+export state query = ""
+let r = calc(query)
+bar Top {{
+  height: 30
+  row {{
+    if query != "" && r.error != null {{ box {{ id: failed; width: 10; height: 10; bg: #ff0000 }} }}
+    if query != "" && (r ?? "") == "4" {{ box {{ id: four; width: 10; height: 10; bg: #00ff00 }} }}
+  }}
+}}
+
+=== steps
+rest
+{answer}
+set query "2+2"
+rest
+"##
+        )
+    };
+    let t = go(&text(""));
+    assert!(drawn_last(&t, "failed") && !drawn_last(&t, "four"));
+    let t = go(&text("answer action calc \"4\""));
+    assert!(drawn_last(&t, "four") && !drawn_last(&t, "failed"));
+    let t = go(&text("answer action calc error \"no qalc\""));
+    assert!(drawn_last(&t, "failed"));
+    // Only an action with a result is answered.
+    let sc = scenario(&text("answer action nope \"4\""));
+    let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
+    assert!(e.contains("no action `nope` with a result"), "{e}");
+}
+
+/// (flex review) Render's pointer facts reach logic before an input's
+/// flags, as the shell's main thread sends them: `on change
+/// self.pressed` reads where the press went down (the grip of
+/// crates/strand-compiler/tests/fixtures/flex/floating.strand), on a
+/// press whose pointer arrived in the same tick.
+#[test]
+fn the_pointer_reaches_logic_before_the_press() {
+    let text = r##"id = "grip"
+screen = { width = 400, scale = 1.0 }
+
+=== shell.strand
+state gx = -1
+state gy = -1
+bar Top {
+  height: 40
+  col {
+    box { id: grip; width: 200; height: 20; bg: #5b8def
+      on change self.pressed {
+        if self.pressed { gx = self.pointer?.x ?? -1; gy = self.pointer?.y ?? -1 }
+      }
+    }
+    box { id: wx; width: gx + 100; height: 10; bg: #ff0000 }
+    box { id: wy; width: gy + 100; height: 10; bg: #00ff00 }
+  }
+}
+
+=== steps
+rest
+drag 60,12 -> 160,12 over 100ms on #grip
+rest
+"##;
+    let t = go(text);
+    let last = t.frames.last().unwrap();
+    let w = |id: &str| row(last, &key(&t, id)).unwrap().laid[2] - 100.0;
+    assert_eq!((w("wx"), w("wy")), (60.0, 12.0));
+}
+
 /// (report) `warmup` runs its ticks and paints them, but the trace (and
 /// so every check) starts after it, from the state it left: boot ends at
 /// the first traced frame.

@@ -742,10 +742,12 @@ impl<'a> Checker<'a> {
                         "check::no_screen",
                         format!("`{name}` reads `screen`, and there is no `screen` here"),
                         c.span,
-                        "not in a bar",
+                        "no `screen` here",
                     )
                     .help = Some(format!(
-                        "`screen` is the monitor of the bar a component is in: use `{name}` inside a `bar`, or give it a `screen: Screen` parameter and pass one"
+                        "`screen` is the monitor of the surface a component is in: use `{name}` in a \
+                         `bar`, a `panel` or `osd` with `screens: all` (or monitor names), or the \
+                         `lock`, or give it a `screen: Screen` parameter and pass one"
                     ));
                 }
             }

@@ -24,6 +24,7 @@ pub fn expr_reads(e: &TokenExpr, timed: &dyn Fn(&str) -> bool) -> bool {
     match e {
         TokenExpr::Time | TokenExpr::Wave { .. } => true,
         TokenExpr::Noise(x) => any(x),
+        TokenExpr::Math { args, .. } => args.iter().any(any),
         TokenExpr::Ref(path) => timed(path),
         TokenExpr::Index | TokenExpr::Count | TokenExpr::Channel(_) => false,
         TokenExpr::Value(v) => value_reads(v, timed),
@@ -65,6 +66,7 @@ pub fn mentions_tokens(v: &PropValue) -> bool {
             TokenExpr::Ref(_) => true,
             TokenExpr::Value(v) => mentions_tokens(v),
             TokenExpr::Noise(x) => expr(x),
+            TokenExpr::Math { args, .. } => args.iter().any(expr),
             TokenExpr::Method { receiver, args, .. } => expr(receiver) || args.iter().any(expr),
             TokenExpr::OklchFrom {
                 base,
