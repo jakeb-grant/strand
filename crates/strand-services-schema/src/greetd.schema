@@ -37,7 +37,8 @@ service greetd {
   /// one typed while an answer is checked, or after a text PAM showed, is
   /// dropped. Pass a password to nothing else: the config is trusted
   /// code, and a declared action's arguments can be read by every user in
-  /// the process list. Only a greetd that root serves is answered.
+  /// the process list. Only a greetd that root (or Strand's own user)
+  /// serves is answered.
   action submit(answer: text)
   /// Starts `command` as the user's session (`["sway"]`) once the login
   /// succeeds: called with the last answer, it waits for greetd to

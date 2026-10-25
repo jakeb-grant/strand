@@ -200,7 +200,7 @@ so greetd can run it.
 | Method | |
 | --- | --- |
 | `action login(user: text)` | Starts logging `user` in (a login already under way is dropped): greetd then asks its questions through `prompt`. |
-| `action submit(answer: text)` | Answers `prompt` with `answer`: `input { type: password; text: <-> pw; on activate { greetd.submit(pw); pw = "" } }`. One typed after `login(user)` before greetd asks answers its first question when that one is secret (not `echo`), and is dropped when it is visible; one typed while an answer is checked, or after a text PAM showed, is dropped. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. Only a greetd that root serves is answered. |
+| `action submit(answer: text)` | Answers `prompt` with `answer`: `input { type: password; text: <-> pw; on activate { greetd.submit(pw); pw = "" } }`. One typed after `login(user)` before greetd asks answers its first question when that one is secret (not `echo`), and is dropped when it is visible; one typed while an answer is checked, or after a text PAM showed, is dropped. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. Only a greetd that root (or Strand's own user) serves is answered. |
 | `action start(command: [text])` | Starts `command` as the user's session (`["sway"]`) once the login succeeds: called with the last answer, it waits for greetd to accept it; a login that fails drops it. Strand then exits. Each word is one word, as given (`["sh", "-c", "sway > log"]` for a shell line); greetd runs it after the user's `~/.profile`. |
 | `action cancel()` | Drops the login under way. |
 

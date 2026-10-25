@@ -6469,8 +6469,8 @@ transparent huge pages for life.
   of `greetd::configure(Some(GreetdConfig { socket, server_uid,
   started }))`, which `strand run` sets to raise SIGTERM on itself;
   without `$GREETD_SOCK`, or when the socket's peer (`SO_PEERCRED`) is
-  not `server_uid` (root; a debug build of `strand run` takes
-  `STRAND_TEST_GREETD_UID` for its tests), `available` is false and every action sets
+  not `server_uid` (by default root or Strand's own uid, who can read
+  its memory anyway), `available` is false and every action sets
   `error`; an answer held from before greetd asked goes only to a
   `secret` question; `child::INSTANCE_VARS` keeps `GREETD_SOCK` from
   every program Strand starts; answers are `strand_auth::Password`s

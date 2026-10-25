@@ -679,9 +679,9 @@ you.
   greetd then starts it, and `strand run` exits so it can.
 - `greetd.cancel()` drops the login under way.
 
-Run outside greetd, or on a socket root does not serve,
-`greetd.available` is false and every action sets `greetd.error`
-instead. While the login screen shows, nothing is recorded for a
+Run outside greetd, or on a socket neither root nor your own user
+serves, `greetd.available` is false and every action sets
+`greetd.error` instead. While the login screen shows, nothing is recorded for a
 glitch report.
 
 ## What you have

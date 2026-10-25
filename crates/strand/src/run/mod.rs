@@ -606,7 +606,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // SIGTERM does, through `signals`, so the run ends in order.
     strand_services::greetd::configure(Some(strand_services::greetd::GreetdConfig {
         socket: None,
-        server_uid: greetd_server_uid(),
+        server_uid: None,
         started: Some(std::sync::Arc::new(|| {
             // SAFETY: kill(2) on this process with a valid signal; every
             // thread blocks SIGTERM, so `signals` reads it.
@@ -946,19 +946,6 @@ fn exit_beside_gpu_thread(result: &Result<(), DemoError>) -> ! {
     // every thread whose work must reach the disk (logic, compiler) has
     // been joined above.
     unsafe { libc::_exit(i32::from(result.is_err())) }
-}
-
-/// (services-round) Who must serve greetd's socket: root (`None`), as
-/// greetd runs. A debug build (the tests' fake greetd, served by the
-/// test's own user) takes `STRAND_TEST_GREETD_UID`; a release build
-/// never reads it.
-fn greetd_server_uid() -> Option<u32> {
-    if !cfg!(debug_assertions) {
-        return None;
-    }
-    std::env::var("STRAND_TEST_GREETD_UID")
-        .ok()
-        .and_then(|v| v.parse().ok())
 }
 
 #[cfg(test)]

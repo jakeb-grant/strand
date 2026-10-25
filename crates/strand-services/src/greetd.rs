@@ -61,8 +61,9 @@ pub type Started = Arc<dyn Fn() + Send + Sync>;
 pub struct GreetdConfig {
     /// The socket; `None` is `$GREETD_SOCK`.
     pub socket: Option<PathBuf>,
-    /// Who must serve the socket; `None` is root, as greetd runs (tests:
-    /// their own uid). An answer goes to no one else.
+    /// Who must serve the socket; `None` is root, as greetd runs, or
+    /// this process's own user, who can read its memory anyway (a test's
+    /// fake greetd). An answer goes to no one else.
     pub server_uid: Option<u32>,
     /// What a started session does to Strand (the binary: it exits).
     /// Without one it is only logged.
@@ -403,22 +404,28 @@ impl Greetd {
             ))
         })?;
         // greetd runs as root: an answer (a password) goes to no other
-        // listener on the path `$GREETD_SOCK` names.
-        let want = config.server_uid.unwrap_or(0);
+        // user's listener on the path `$GREETD_SOCK` names. This process's
+        // own user is trusted too: it can read Strand's memory anyway.
+        // SAFETY: geteuid cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let wanted: &[u32] = match config.server_uid {
+            Some(uid) => &[uid],
+            None => &[0, me],
+        };
         let served_by = stream.peer_cred().map(|c| c.uid());
-        if served_by.as_ref().ok() != Some(&want) {
+        if !served_by.as_ref().is_ok_and(|uid| wanted.contains(uid)) {
             let who = match served_by {
                 Ok(uid) => format!("uid {uid}"),
                 Err(e) => format!("an unknown user ({e})"),
             };
+            let want = match config.server_uid {
+                Some(0) => "root".to_string(),
+                Some(uid) => format!("uid {uid}"),
+                None => format!("root or this user (uid {me})"),
+            };
             let why = format!(
-                "greetd's socket {} is served by {who}, not {}: Strand sends it nothing",
+                "greetd's socket {} is served by {who}, not {want}: Strand sends it nothing",
                 path.display(),
-                if want == 0 {
-                    "root".to_string()
-                } else {
-                    format!("uid {want}")
-                }
             );
             cx.warn(why.clone());
             drop(stream);
