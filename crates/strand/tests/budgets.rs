@@ -3041,16 +3041,59 @@ panel Card {
     );
     let with_window = own_kb(pid);
     // The report's round trip ends after its answer (the connection's
-    // hangup), so the quiet seconds start once that has settled.
-    shell.settle("the report answered");
-    let before = per_thread(pid);
-    std::thread::sleep(Duration::from_secs(5));
-    let after = per_thread(pid);
-    let woke: Vec<String> = after
-        .iter()
-        .filter(|(t, n)| before.get(*t) != Some(*n))
-        .map(|(t, n)| format!("{t}: {} -> {n}", before.get(t).copied().unwrap_or(0)))
-        .collect();
+    // hangup), so the quiet seconds start once that has settled. The
+    // watcher also watches the config's ancestors (`/tmp` among them), so
+    // a wake of `strand-watch` alone while another test makes a name
+    // beside one is tried again, as the bar's idle window does.
+    let root = shell.log.parent().unwrap().to_path_buf();
+    let mut monitor = DirMonitor::new(
+        pid,
+        &[
+            root.clone(),
+            PathBuf::from("/usr/share"),
+            PathBuf::from("/usr/local/share"),
+        ],
+    );
+    let own = [shell.log.clone(), root.join("state"), root.join("cache")];
+    let mut woke = Vec::new();
+    for attempt in 1..=3 {
+        shell.settle("the report answered");
+        let _ = monitor.events();
+        let before = per_thread(pid);
+        std::thread::sleep(Duration::from_secs(5));
+        let after = per_thread(pid);
+        let seen = monitor.events();
+        let threads: Vec<&String> = after
+            .keys()
+            .filter(|t| before.get(*t) != after.get(*t))
+            .collect();
+        woke = threads
+            .iter()
+            .map(|t| {
+                format!(
+                    "{t}: {} -> {}",
+                    before.get(*t).copied().unwrap_or(0),
+                    after[*t]
+                )
+            })
+            .collect();
+        let watcher_only = threads.iter().all(|t| {
+            t.split_once(' ')
+                .is_some_and(|(_, comm)| comm == "strand-watch")
+        });
+        let outside = seen.iter().any(|e| !own.iter().any(|p| event_under(e, p)));
+        if !woke.is_empty() && watcher_only && outside && attempt < 3 {
+            eprintln!(
+                "window quiet {attempt}: the watcher woke on a change outside the shell, \
+                 trying again: {woke:?}, events {seen:?}"
+            );
+            continue;
+        }
+        if !woke.is_empty() {
+            woke.push(format!("events: {seen:?} ({})", monitor.describe()));
+        }
+        break;
+    }
     close("b.win", "strand-Probe");
     let after_window = own_kb(pid);
     open("b.card", "strand-Card");
