@@ -39,6 +39,10 @@
 //! `idle_follows_the_compositor_and_a_surface_holds_it_awake` `idle.after`
 //! and a panel's `inhibit_idle`, each against the compositor's own report
 //! (labwc: the documented fallbacks).
+//! (oi-window) On all four, `a_window_moves_and_resizes_from_its_own_press`
+//! drags a `window` of strand's own by `w.move()` and `w.resize(edge)`
+//! from a held virtual-pointer press, against the compositor's report and
+//! what it shows.
 //!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
@@ -1860,6 +1864,447 @@ fn a_window_is_placed_and_moved_by_the_stores() {
     drop(keeper);
     drop(win);
     s.shutdown();
+}
+
+// ---- a window's own move and resize -----------------------------------------
+
+/// (oi-window) The colour [`DRAG_SRC`]'s window fills itself with, near
+/// nothing else on the matrix's desktops.
+const DRAG_BG: [u8; 3] = [0xc0, 0x30, 0x8a];
+
+/// (oi-window) A window whose whole content is one press target: a press
+/// asks `w.move()`, or `w.resize(bottom_right)` once `resizing` is set,
+/// from `on change area.pressed` while it is held (decisions.md
+/// "## window"), and counts its asks. It opens at a fixed size (its
+/// minimum its maximum), which every compositor of the matrix floats
+/// (sway's and Hyprland's rule for a fixed-size window, labwc's way with
+/// every window; niri is floated from outside), and is let go of that
+/// size once floating, so it can be resized.
+const DRAG_SRC: &str = "export state shown = true\n\
+    export state fixed = true\n\
+    export state resizing = false\n\
+    export state asks = 0\n\
+    window Drag { id: w; open: <-> shown; title: \"Strand drag\"; decorations: none\n\
+      width: 320; height: 240; bg: #c0308a\n\
+      min_width: fixed ? 320 : 0; max_width: fixed ? 320 : 0\n\
+      min_height: fixed ? 240 : 0; max_height: fixed ? 240 : 0\n\
+      box { id: area; width: 100%; height: 100%\n\
+        on change area.pressed {\n\
+          if area.pressed {\n\
+            asks += 1\n\
+            if resizing { w.resize(bottom_right) } else { w.move() }\n\
+          }\n\
+        }\n\
+      }\n\
+    }\n";
+const DRAG_APP: &str = "strand-Drag";
+
+/// (oi-window) Whether the compositor says `app`'s window floats (`None`:
+/// it is not in its report).
+fn compositor_floats(kind: Kind, app: &str) -> Option<bool> {
+    match kind {
+        Kind::Sway => {
+            fn find(n: &Value, app: &str) -> Option<bool> {
+                if n["app_id"] == app {
+                    return Some(n["type"] == "floating_con");
+                }
+                ["nodes", "floating_nodes"]
+                    .iter()
+                    .filter_map(|k| n[*k].as_array())
+                    .flatten()
+                    .find_map(|c| find(c, app))
+            }
+            find(&json("swaymsg", &["-t", "get_tree", "-r"]), app)
+        }
+        Kind::Hyprland => json("hyprctl", &["-j", "clients"])
+            .as_array()?
+            .iter()
+            .find(|c| c["class"] == app)?["floating"]
+            .as_bool(),
+        Kind::Niri => json("niri", &["msg", "--json", "windows"])
+            .as_array()?
+            .iter()
+            .find(|w| w["app_id"] == app)?["is_floating"]
+            .as_bool(),
+    }
+}
+
+/// (oi-window) Floats `app`'s window from outside, by the compositor's
+/// own CLI: sway's `floating enable`, niri's `toggle-window-floating`,
+/// Hyprland's `hl.dsp.window.float` (`dsp_floatWindow` in
+/// LuaBindingsDispatchers.cpp, 0.56.2; the classic `setfloating` when a
+/// hyprlang Hyprland refuses it).
+fn float_window(kind: Kind, app: &str) {
+    match kind {
+        Kind::Sway => drop(run(
+            "swaymsg",
+            &[&format!("[app_id=\"{app}\"]"), "floating", "enable"],
+        )),
+        Kind::Niri => {
+            let id = json("niri", &["msg", "--json", "windows"])
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|w| w["app_id"] == app)
+                .and_then(|w| w["id"].as_u64())
+                .expect("niri's id for the window")
+                .to_string();
+            drop(run(
+                "niri",
+                &["msg", "action", "toggle-window-floating", "--id", &id],
+            ));
+        }
+        Kind::Hyprland => {
+            let clients = json("hyprctl", &["-j", "clients"]);
+            let address = clients
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|c| c["class"] == app)
+                .map(|c| text(&c["address"]))
+                .expect("Hyprland's address for the window");
+            let window = lua_string(&format!("address:{address}"));
+            let mut reply = hyprctl_dispatch(&[format!(
+                "hl.dsp.window.float({{ action = \"enable\", window = {window} }})"
+            )]);
+            if hypr_wants_classic(&reply) {
+                reply = hyprctl_dispatch(&["setfloating".into(), format!("address:{address}")]);
+            }
+            assert!(hypr_dispatch_ok(&reply), "float {app}: {reply}");
+        }
+    }
+}
+
+/// (oi-window) The box, `[x, y, w, h]` in layout coordinates, of the
+/// pixels near `colour` on `outputs` as grim captures them (an output
+/// with no name: the whole layout, labwc's one output).
+fn drawn_box(outputs: &[Output], dir: &std::path::Path, colour: [u8; 3]) -> Option<[i64; 4]> {
+    let mut b: Option<[i64; 4]> = None;
+    for o in outputs {
+        let img = grab((!o.name.is_empty()).then_some(o.name.as_str()), dir)?;
+        for y in 0..img.h {
+            for x in 0..img.w {
+                if dist(img.px(x, y), colour) > 24 {
+                    continue;
+                }
+                let (x, y) = (i64::from(o.x) + x as i64, i64::from(o.y) + y as i64);
+                b = Some(match b {
+                    None => [x, y, x + 1, y + 1],
+                    Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)],
+                });
+            }
+        }
+    }
+    b.map(|[x0, y0, x1, y1]| [x0, y0, x1 - x0, y1 - y0])
+}
+
+/// (oi-window) `a` is `b` within `tol` px on every side.
+fn near(a: [i64; 4], b: [i64; 4], tol: i64) -> bool {
+    a.iter().zip(b).all(|(a, b)| (a - b).abs() <= tol)
+}
+
+/// (oi-window) A `strand` of the test's own, its control socket and log.
+struct Drag {
+    strand: Proc,
+    log: PathBuf,
+    sock: PathBuf,
+}
+
+impl Drag {
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    fn alive(&mut self) {
+        if let Ok(Some(status)) = self.strand.0.try_wait() {
+            panic!("strand exited ({status}): {}", self.log_text());
+        }
+    }
+
+    /// `strand ARGS…` on its socket: its output, `None` when it failed.
+    fn cli(&self, args: &[&str]) -> Option<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(args)
+            .env("STRAND_SOCKET", &self.sock)
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+    }
+
+    /// `drag.<cell>` reads `want`.
+    fn reads(&mut self, cell: &str, want: &str) {
+        let path = format!("drag.{cell}");
+        until(&format!("{path} is {want}"), || {
+            self.alive();
+            match self.cli(&["get", &path]) {
+                Some(v) if v == want => Ok(()),
+                other => Err(format!("{other:?}\n{}", self.log_text())),
+            }
+        });
+    }
+}
+
+/// (oi-window) `w.move()` and `w.resize(bottom_right)` against every
+/// compositor of the matrix, on a floating `window` of strand's own: a
+/// press held on it (a virtual pointer's) asks the compositor's
+/// interactive move or resize with that press's serial, the pointer then
+/// drags it and lets go. The compositor's own report (sway's tree,
+/// Hyprland's `j/clients`, niri's `windows`; labwc has none) and what it
+/// shows (grim) must have the window moved by the drag, then sized by it
+/// from its bottom-right corner, its top-left kept; what it shows is
+/// strand's own buffer, so the resize's configure was taken and drawn.
+#[test]
+fn a_window_moves_and_resizes_from_its_own_press() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the window move and resize test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    if !registry(&socket)
+        .iter()
+        .any(|i| i == "zwlr_virtual_pointer_manager_v1")
+    {
+        let msg = format!(
+            "matrix: {kind} offers no zwlr_virtual_pointer_manager_v1: a window's move and \
+             resize are not tested here"
+        );
+        assert!(
+            !click_required(),
+            "{msg} (STRAND_MATRIX_REQUIRE_CLICK is set)"
+        );
+        eprintln!("{msg}");
+        return;
+    }
+    // labwc: no IPC, so what it shows is its word.
+    let live = live();
+    let dir = std::env::temp_dir().join(format!("strand-matrix-drag-{}", std::process::id()));
+    let sock = dir.join("strand.sock");
+    let (strand, log, _bus) = launch_strand(
+        &dir,
+        &[("drag.strand", DRAG_SRC)],
+        &[("STRAND_SOCKET", sock.clone().into_os_string())],
+    );
+    let mut d = Drag { strand, log, sock };
+    let outputs = match &live {
+        Some(l) => l.outputs(),
+        None => {
+            let img = grab(None, &dir).expect("grim on labwc");
+            vec![Output {
+                name: String::new(),
+                x: 0,
+                y: 0,
+                w: img.w as u32,
+                h: img.h as u32,
+                focused: true,
+            }]
+        }
+    };
+    let ipc = |live: &Option<Live>| -> Option<[i64; 4]> {
+        compositor_window(live.as_ref()?.kind, DRAG_APP)?.1
+    };
+    until("the window drawn", || {
+        d.alive();
+        drawn_box(&outputs, &dir, DRAG_BG)
+            .map(|_| ())
+            .ok_or_else(|| format!("not drawn\n{}", d.log_text()))
+    });
+    if let Some(l) = &live {
+        if compositor_floats(l.kind, DRAG_APP) != Some(true) {
+            float_window(l.kind, DRAG_APP);
+        }
+        until("the window floats", || {
+            match compositor_floats(l.kind, DRAG_APP) {
+                Some(true) => Ok(()),
+                other => Err(format!("{other:?}\n{}", on_screen(&kind))),
+            }
+        });
+    }
+    // Let go of its fixed size: it stays floating, and can be resized.
+    assert!(
+        d.cli(&["set", "drag.fixed", "false"]).is_some(),
+        "{}",
+        d.log_text()
+    );
+    d.reads("fixed", "false");
+    // Where it is drawn and where the compositor says it is, alike in two
+    // looks a moment apart.
+    let settled = |d: &mut Drag, what: &str| -> ([i64; 4], Option<[i64; 4]>) {
+        let mut last = None;
+        until(what, || {
+            d.alive();
+            std::thread::sleep(Duration::from_millis(150));
+            let seen = (
+                drawn_box(&outputs, &dir, DRAG_BG).ok_or("not drawn")?,
+                ipc(&live),
+            );
+            if last == Some(seen) {
+                return Ok(());
+            }
+            last = Some(seen);
+            Err(format!("drawn {:?}, {kind} says {:?}", seen.0, seen.1))
+        });
+        let seen = last.expect("a look");
+        eprintln!(
+            "matrix: {kind}: {what}: drawn {:?}, {kind} says {:?}",
+            seen.0, seen.1
+        );
+        seen
+    };
+    let (b0, r0) = settled(&mut d, "the floating window");
+    if live.is_some() {
+        assert!(
+            r0.is_some(),
+            "{kind} reports no place for a floating window"
+        );
+    }
+
+    // The virtual pointer (its first button may reach no surface: one on
+    // the desktop, away from the window, first; not on labwc, where a
+    // button on the desktop opens its root menu, which takes the next).
+    let left = outputs.iter().map(|o| i64::from(o.x)).min().unwrap_or(0);
+    let top = outputs.iter().map(|o| i64::from(o.y)).min().unwrap_or(0);
+    let right = outputs
+        .iter()
+        .map(|o| i64::from(o.x) + i64::from(o.w))
+        .max()
+        .unwrap_or(0);
+    let bottom = outputs
+        .iter()
+        .map(|o| i64::from(o.y) + i64::from(o.h))
+        .max()
+        .unwrap_or(0);
+    let at = |x: i64, y: i64| {
+        (
+            (x - left).max(0) as u32,
+            (y - top).max(0) as u32,
+            (right - left) as u32,
+            (bottom - top) as u32,
+        )
+    };
+    let mut pointer = support::pointer::Pointer::new(&socket);
+    let home = outputs
+        .iter()
+        .find(|o| {
+            let (cx, cy) = (b0[0] + b0[2] / 2, b0[1] + b0[3] / 2);
+            cx >= i64::from(o.x)
+                && cx < i64::from(o.x) + i64::from(o.w)
+                && cy >= i64::from(o.y)
+                && cy < i64::from(o.y) + i64::from(o.h)
+        })
+        .cloned()
+        .unwrap_or_else(|| outputs[0].clone());
+    let (x, y, w, h) = at(
+        i64::from(home.x) + 8,
+        i64::from(home.y) + i64::from(home.h) - 8,
+    );
+    if live.is_some() {
+        pointer.click(x, y, w, h);
+    } else {
+        pointer.motion(x, y, w, h);
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    // A press held at `from` until strand has asked (its `asks`-th ask),
+    // then the pointer dragged by `by` in steps, then let go.
+    let mut drag = |d: &mut Drag, from: (i64, i64), by: (i64, i64), asks: u32| {
+        let (x, y, w, h) = at(from.0, from.1);
+        pointer.press(x, y, w, h);
+        d.reads("asks", &asks.to_string());
+        // The ask reaches the compositor just after the state reads so.
+        std::thread::sleep(Duration::from_millis(500));
+        for i in 1..=10 {
+            let (x, y, w, h) = at(from.0 + by.0 * i / 10, from.1 + by.1 * i / 10);
+            pointer.motion(x, y, w, h);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        pointer.release();
+    };
+    let centre = |b: [i64; 4]| (b[0] + b[2] / 2, b[1] + b[3] / 2);
+
+    // `w.move()`: toward the middle of its output, so it stays on it.
+    let mid = (
+        i64::from(home.x) + i64::from(home.w) / 2,
+        i64::from(home.y) + i64::from(home.h) / 2,
+    );
+    let (cx, cy) = centre(b0);
+    let by = (
+        if cx <= mid.0 { 90 } else { -90 },
+        if cy <= mid.1 { 60 } else { -60 },
+    );
+    drag(&mut d, (cx, cy), by, 1);
+    let shifted = |b: [i64; 4]| [b[0] + by.0, b[1] + by.1, b[2], b[3]];
+    let want = (shifted(b0), r0.map(shifted));
+    until("moved by the drag", || {
+        d.alive();
+        let seen = (
+            drawn_box(&outputs, &dir, DRAG_BG).ok_or("not drawn")?,
+            ipc(&live),
+        );
+        let ok = near(seen.0, want.0, 6)
+            && match (seen.1, want.1) {
+                (Some(a), Some(b)) => near(a, b, 6),
+                (None, None) => true,
+                _ => false,
+            };
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "want drawn {:?}, {kind} {:?}; drawn {:?}, {kind} says {:?}\n{}",
+                want.0,
+                want.1,
+                seen.0,
+                seen.1,
+                d.log_text()
+            ))
+        }
+    });
+    let (b1, r1) = settled(&mut d, "moved");
+
+    // `w.resize(bottom_right)`: smaller by the drag, its top-left kept
+    // (smaller, so it stays on its output whatever the compositor gave).
+    assert!(
+        d.cli(&["set", "drag.resizing", "true"]).is_some(),
+        "{}",
+        d.log_text()
+    );
+    d.reads("resizing", "true");
+    let by = (-60, -40);
+    drag(&mut d, centre(b1), by, 2);
+    let sized = |b: [i64; 4]| [b[0], b[1], b[2] + by.0, b[3] + by.1];
+    let want = (sized(b1), r1.map(sized));
+    until("resized by the drag", || {
+        d.alive();
+        let seen = (
+            drawn_box(&outputs, &dir, DRAG_BG).ok_or("not drawn")?,
+            ipc(&live),
+        );
+        let ok = near(seen.0, want.0, 6)
+            && match (seen.1, want.1) {
+                (Some(a), Some(b)) => near(a, b, 6),
+                (None, None) => true,
+                _ => false,
+            };
+        if ok {
+            Ok(())
+        } else {
+            Err(format!(
+                "want drawn {:?}, {kind} {:?}; drawn {:?}, {kind} says {:?}\n{}",
+                want.0,
+                want.1,
+                seen.0,
+                seen.1,
+                d.log_text()
+            ))
+        }
+    });
+    settled(&mut d, "resized");
+    drop(d);
 }
 
 /// (lockmon) A `wm::run` of the test's own, for what the stores give
