@@ -1288,6 +1288,13 @@ fn a_saved_svg_beside_cut_text_redraws_while_it_springs() {
     };
     let red = |c: (u8, u8, u8)| c.2 > 200 && c.1 < 80 && c.0 < 80;
     let blue = |c: (u8, u8, u8)| c.0 > 200 && c.1 < 80 && c.2 < 80;
+    // The svg is decoded off the frame: under load it may come a frame
+    // after the popup settles, its arrival asking for that frame.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !red(colour(&sh)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        sh.paint();
+    }
     assert!(red(colour(&sh)), "{:?}", colour(&sh));
     let cut = |sh: &Shell, n: u32| {
         let Some(r) = sh.rect(pop, text) else {
