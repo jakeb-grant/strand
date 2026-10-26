@@ -160,6 +160,9 @@ pub(super) struct Shell {
     pub(super) written: crate::report::bundle::Done,
     /// (report) Glitch reports being written, with their callers.
     pub(super) saving: Vec<(SnapshotId, super::request::Caller)>,
+    /// (strand-fixes) Whether the running build has a `lock`, as
+    /// [`Shell::tell_lock_helper`] last saw it.
+    pub(super) has_lock: bool,
 }
 
 /// (M6) Which press a diff's popups were opened by, stamped on it as
@@ -400,6 +403,26 @@ impl Shell {
         self.set_blur_notices(all);
     }
 
+    /// (strand-fixes) A running build that has a `lock` the one before
+    /// did not (at boot: any `lock`), with no `strand-auth` helper
+    /// installed: logged and a `strand watch` notice
+    /// ([`super::lock::helper_notice`]).
+    pub(super) fn tell_lock_helper(&mut self) {
+        let lock = super::lock::has_lock(&self.build.program);
+        let before = std::mem::replace(&mut self.has_lock, lock);
+        if !lock || before {
+            return;
+        }
+        let helper = strand_auth::default_helper().is_some();
+        let mocked = crate::mock::requested().is_some();
+        let exe = std::env::current_exe().ok();
+        if let Some(text) = super::lock::helper_notice(lock, before, helper, mocked, exe.as_deref())
+        {
+            log::warn!("{text}");
+            self.handle(ToLogic::Notice(text));
+        }
+    }
+
     /// (M4) The GPU status render reported: kept (for `strand report`),
     /// and each reason the CPU fallback draws is logged and made a
     /// `strand watch` notice once per run.
@@ -566,6 +589,7 @@ impl Shell {
                 crate::services::follow_program(&b.program);
                 self.build = b;
                 self.overlay.set_running(true);
+                self.tell_lock_helper();
             }
             self.retell_blur();
             // (report) The reload, and the new program's literals.

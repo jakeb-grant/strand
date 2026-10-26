@@ -80,9 +80,10 @@ write in an overlay in Strand's state directory instead, with a notice.
 
 ## Variations
 
-- **Controls bound to it.** `segmented { options: [Edge.top, Edge.bottom];
-  value: <-> prefs.position }` is a picker for the edge; a field
-  `level: float = 0.5` takes `slider { value: <-> prefs.level }` the
-  same way.
+- **Controls bound to it.** `segmented { options: Edge; value: <->
+  prefs.position }` is a picker for the edge, a segment for each of
+  `Edge`'s variants; `options: [Edge.top, Edge.bottom]` offers only
+  those two. A field `level: float = 0.5` takes `slider { value: <->
+  prefs.level }` the same way.
 - **Several files.** Each `state … from` is its own file; give them
   different names (`prefs`, `layout`).

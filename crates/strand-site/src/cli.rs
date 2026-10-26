@@ -17,22 +17,6 @@ pub const CAPTURE: &str = "crates/strand-site/cli-help.txt";
 /// Where the page is written.
 pub const OUT: &str = "tools/cli.html";
 
-/// The commands whose own usage is asked for (`strand <cmd> --help`):
-/// those whose code answers a leading `-` with their usage before it does
-/// anything (read in crates/strand: `run`, `new` and `report` refuse it
-/// with their usage line; `check`, `fmt`, `export` and
-/// `compositor-rules` take `--help`). The socket's commands would ask a
-/// running shell, and `replay` hands its arguments to strand-eval.
-pub const OWN_HELP: &[&str] = &[
-    "run",
-    "check",
-    "fmt",
-    "new",
-    "export",
-    "compositor-rules",
-    "report",
-];
-
 const NOTE: &str =
     "# Captured by `strand-site cli` from the strand binary (scripts/site/cli.sh); do not edit.\n";
 
@@ -100,14 +84,22 @@ fn run(bin: &Path, args: &[&str]) -> Result<String, String> {
 
 /// The help `bin` prints now.
 pub fn capture(bin: &Path) -> Result<Vec<Help>, String> {
+    let top = run(bin, &["--help"])?;
+    // Every command `strand --help` lists answers `--help` as its first
+    // argument with its usage, before it does anything (crates/strand
+    // `entry.rs`, `help_asked`): the socket's commands ask no shell.
+    let commands: Vec<String> = rows(&top, "commands:")
+        .into_iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
     let mut out = vec![Help {
         args: "--help".into(),
-        text: run(bin, &["--help"])?,
+        text: top,
     }];
-    for cmd in OWN_HELP {
+    for cmd in &commands {
         out.push(Help {
             args: format!("{cmd} --help"),
-            text: run(bin, &[cmd, "--help"])?,
+            text: run(bin, &[cmd.as_str(), "--help"])?,
         });
     }
     Ok(out)
@@ -398,10 +390,12 @@ mod tests {
         std::fs::create_dir_all(root.join("crates/strand-site")).unwrap();
         let bin = fake(TOP);
         let kept = write(&capture(&bin).unwrap());
+        // Each command `--help` lists is asked for its own, and no other.
         assert!(
-            kept.contains("$ strand export --help\nusage: strand export\n"),
+            kept.contains("$ strand check --help\nusage: strand check\n"),
             "{kept}"
         );
+        assert!(!kept.contains("$ strand export --help"), "{kept}");
         std::fs::write(root.join(CAPTURE), &kept).unwrap();
         assert_eq!(check(&root, &bin), Ok(()));
         // A command added to the binary: the page no longer says it all.

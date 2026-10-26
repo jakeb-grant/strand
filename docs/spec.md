@@ -1633,11 +1633,14 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 
 ### 8.8 Who wins
 
-- `strand set` on a `state` is an ordinary write, the same as a
-  handler's.
-- For **tokens** and **settings fields** the order is: runtime overlay
-  (`strand set`) > file > default. When a save changes a value that a
-  runtime overlay shadows, the reload overlay says so:
+- `strand set` on a `state` or a **settings field** is an ordinary
+  write, the same as a handler's: a settings field's is saved to its
+  file (section 11), which stays the one place its value is kept.
+- For **tokens** the order is: runtime overlay (`strand set '$accent'`)
+  > file > default. For **settings fields** it is: overlay > file >
+  default, the overlay holding only the writes a read-only file could
+  not take (section 11). When a save changes a value that an overlay
+  shadows, the reload overlay says so:
   `accent: file changed but runtime overlay wins [clear]`. `[clear]`, or
   `strand clear`, removes the overlay (section 13).
 

@@ -30,6 +30,9 @@ pub enum DemoError {
     Surface(SurfaceError),
     /// The logic thread ended or failed.
     Logic(String),
+    /// What the user asked for cannot run (a config directory that is
+    /// not one), said as it is.
+    Config(String),
 }
 
 impl fmt::Display for DemoError {
@@ -39,6 +42,7 @@ impl fmt::Display for DemoError {
             Self::Text(e) => write!(f, "text worker: {e:?}"),
             Self::Surface(e) => write!(f, "{e}"),
             Self::Logic(e) => write!(f, "logic thread: {e}"),
+            Self::Config(e) => write!(f, "{e}"),
         }
     }
 }

@@ -93,6 +93,50 @@ fn usage() -> String {
     s
 }
 
+/// `strand run`'s usage.
+const RUN_USAGE: &str = "usage: strand run [dir | --demo]";
+
+/// The usage of each command in COMMANDS, which `strand <command> --help`
+/// (or `-h`) prints on stdout.
+fn command_usage(cmd: &str) -> Option<&'static str> {
+    Some(match cmd {
+        "run" => RUN_USAGE,
+        "check" => crate::check::USAGE,
+        "fmt" => crate::fmt::USAGE,
+        "watch" => crate::ipc::WATCH_USAGE,
+        "reload" => crate::ipc::RELOAD_USAGE,
+        "get" => crate::ipc::GET_USAGE,
+        "set" => crate::ipc::SET_USAGE,
+        "toggle" => crate::ipc::TOGGLE_USAGE,
+        "call" => crate::ipc::CALL_USAGE,
+        "clear" => crate::ipc::CLEAR_USAGE,
+        "new" => crate::new::USAGE,
+        "export" => crate::export::USAGE,
+        "compositor-rules" => crate::rules::USAGE,
+        "report" => crate::report::USAGE,
+        "replay" => crate::report::replay::USAGE,
+        _ => return None,
+    })
+}
+
+/// `strand <command> --help`: the command's usage, when the first
+/// argument after a command asks for it (`-h` or `--help`). Later in the
+/// line it is the command's own to read (a value, a report's words).
+fn help_asked(args: &[std::ffi::OsString]) -> Option<String> {
+    let [cmd, flag, ..] = args else {
+        return None;
+    };
+    if flag != "-h" && flag != "--help" {
+        return None;
+    }
+    let usage = command_usage(cmd.to_str()?)?;
+    let mut out = usage.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
+}
+
 /// What a command line asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
@@ -117,7 +161,7 @@ fn dispatch(args: &[String]) -> Result<Action, String> {
         Some("run") => match &args[1..] {
             [] => Ok(Action::Run(None)),
             [dir] if !dir.starts_with('-') => Ok(Action::Run(Some(dir.into()))),
-            _ => Err("usage: strand run [dir | --demo]".into()),
+            _ => Err(RUN_USAGE.into()),
         },
         Some(cmd) => Err(format!("strand: unknown command `{cmd}`\n\n{}", usage())),
     }
@@ -164,6 +208,12 @@ pub fn main() -> ExitCode {
     // decoder.
     strand_text::set_idle_hook(cli::trim);
     strand_render::image::set_idle_hook(cli::trim);
+    // `strand <command> --help`: its usage on stdout, as asked for.
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(usage) = help_asked(&raw) {
+        print!("{usage}");
+        return ExitCode::SUCCESS;
+    }
     // (replay-owner) Handed off to `strand-eval`, which is not part of
     // the shell (`report::replay`), its arguments as they are: a path
     // need not be UTF-8.
@@ -301,6 +351,28 @@ mod tests {
         );
         assert!(run(&["run", "--demo", "x"]).is_err());
         assert!(run(&["run", "a", "b"]).is_err());
+    }
+
+    /// (strand-fixes) Every command answers `--help` and `-h` as its
+    /// first argument with its own usage; later in the line, or for no
+    /// command, it is not help.
+    #[test]
+    fn every_command_has_its_help() {
+        let os = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        for (name, ..) in COMMANDS {
+            for flag in ["--help", "-h"] {
+                let usage = help_asked(&os(&[name, flag]))
+                    .unwrap_or_else(|| panic!("`strand {name} {flag}` is no help"));
+                assert!(
+                    usage.starts_with(&format!("usage: strand {name}")),
+                    "{name}: {usage}"
+                );
+                assert!(usage.ends_with('\n'), "{name}: {usage:?}");
+            }
+        }
+        assert_eq!(help_asked(&os(&["set", "a.b", "--help"])), None);
+        assert_eq!(help_asked(&os(&["frobnicate", "--help"])), None);
+        assert_eq!(help_asked(&os(&["--help"])), None);
     }
 
     #[test]

@@ -47,12 +47,17 @@ pub(super) fn json_flag(args: &[String]) -> (bool, Vec<&str>) {
     (rest.len() != args.len(), rest)
 }
 
+/// `strand get`'s usage.
+pub(crate) const GET_USAGE: &str = "usage: strand get [--json] <file.name | '$token'>";
+/// `strand toggle`'s usage.
+pub(crate) const TOGGLE_USAGE: &str = "usage: strand toggle <file.name>";
+
 /// `strand get [--json] <path>`: the value as text (`--json`: the
 /// answer, one line).
 pub fn get_cli(args: &[String]) -> Result<String, String> {
     let (json, rest) = json_flag(args);
     let [path] = rest[..] else {
-        return Err("usage: strand get [--json] <file.name | '$token'>".into());
+        return Err(GET_USAGE.into());
     };
     let answer = ask(&Request::Get { path: path.into() })?;
     Ok(if json {
@@ -65,7 +70,7 @@ pub fn get_cli(args: &[String]) -> Result<String, String> {
 /// `strand toggle <path>`.
 pub fn toggle_cli(args: &[String]) -> Result<String, String> {
     let [path] = args else {
-        return Err("usage: strand toggle <file.name>".into());
+        return Err(TOGGLE_USAGE.into());
     };
     ask(&Request::Toggle { path: path.clone() })?;
     Ok(String::new())

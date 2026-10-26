@@ -533,3 +533,95 @@ fn call_runs_a_service_action() {
         assert!(said.contains(why), "{args:?}: {said}");
     }
 }
+
+/// (strand-fixes) `strand <command> --help` (and `-h`) prints the
+/// command's usage on stdout and exits 0, for every command `strand
+/// --help` lists, the socket's included (it asks no shell); a real usage
+/// error stays on stderr with a non-zero exit.
+#[test]
+fn every_command_prints_its_help_on_stdout() {
+    let top = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(top.status.success());
+    let top = String::from_utf8(top.stdout).unwrap();
+    let commands: Vec<&str> = top
+        .split("\ncommands:\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .take_while(|l| l.starts_with("  "))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(commands.len() > 10, "{top}");
+    let nobody = std::env::temp_dir().join(format!("strand-help-{}.sock", std::process::id()));
+    for cmd in commands {
+        for flag in ["--help", "-h"] {
+            let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+                .args([cmd, flag])
+                .env("STRAND_SOCKET", &nobody)
+                .env_remove("WAYLAND_DISPLAY")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "strand {cmd} {flag}: {stderr}");
+            assert!(
+                stdout.starts_with(&format!("usage: strand {cmd}")),
+                "strand {cmd} {flag}: {stdout}"
+            );
+            assert!(stderr.is_empty(), "strand {cmd} {flag}: {stderr}");
+        }
+    }
+    for args in [&["run", "a", "b"][..], &["new", "a", "b"], &["set", "x"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(args)
+            .env("STRAND_SOCKET", &nobody)
+            .env_remove("WAYLAND_DISPLAY")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("usage: strand"), "{args:?}: {stderr}");
+    }
+}
+
+/// (strand-fixes) `strand run` on a directory that is not there says so
+/// in the user's words, with the command that makes one, not the
+/// logic thread's.
+#[test]
+fn run_names_a_missing_config_dir_plainly() {
+    let dir = std::env::temp_dir().join(format!("strand-no-config-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&dir)
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let shown = dir.display();
+    assert_eq!(
+        stderr.trim_end(),
+        format!(
+            "strand run: {shown} does not exist; `strand new {shown}` writes a starter shell there"
+        ),
+    );
+    // A file is no directory.
+    std::fs::write(&dir, "").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .arg("run")
+        .arg(&dir)
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.trim_end(),
+        format!("strand run: {shown} is not a directory")
+    );
+    let _ = std::fs::remove_file(&dir);
+}

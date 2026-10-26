@@ -88,6 +88,9 @@ fn place(
     })
 }
 
+/// `strand new`'s usage.
+pub(crate) const USAGE: &str = "usage: strand new [dir]";
+
 /// `strand new [dir]`.
 pub fn new_cli(args: &[String]) -> Result<String, String> {
     let dir = match args {
@@ -97,7 +100,7 @@ pub fn new_cli(args: &[String]) -> Result<String, String> {
         )
         .ok_or(NewError::NoDir),
         [d] if !d.starts_with('-') => Ok(PathBuf::from(d)),
-        _ => return Err("usage: strand new [dir]".into()),
+        _ => return Err(USAGE.into()),
     };
     let file = dir.and_then(|d| scaffold(&d)).map_err(|e| e.to_string())?;
     Ok(format!(

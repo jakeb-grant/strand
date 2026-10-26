@@ -335,15 +335,42 @@ fn lock_helper(parses: &[Parse], helper: HelperLookup) -> Option<Diagnostic> {
             span,
             "this `lock` needs the helper to check a password",
         )
-        .with_help(
-            "install it: `cargo install --locked --path crates/strand-auth` (strand looks \
-             beside its own executable, then in /usr/libexec/strand, /usr/lib/strand and \
-             /usr/local/libexec/strand)",
-        ),
+        .with_help(format!(
+            "install it: {} (strand looks beside its own executable, then in \
+             /usr/libexec/strand, /usr/lib/strand and /usr/local/libexec/strand)",
+            helper_install_hint(std::env::current_exe().ok().as_deref())
+        )),
     )
 }
 
-const USAGE: &str = "usage: strand check [dir | file]\n\n\
+/// How to put the `strand-auth` helper where `strand_auth::default_helper`
+/// finds it first: beside the running strand (`exe`). It never looks in
+/// `~/.cargo/bin` or on `PATH` for the program passwords are handed to
+/// (whatever a `PATH` entry names would get them), so the hint names the
+/// directory: `cargo install --root` the prefix whose `bin` holds
+/// strand, else a copy of the built helper into strand's directory.
+pub(crate) fn helper_install_hint(exe: Option<&Path>) -> String {
+    let Some(dir) = exe.and_then(Path::parent) else {
+        return "build it (`cargo build --release -p strand-auth`) and put \
+                target/release/strand-auth in the directory that holds strand"
+            .into();
+    };
+    match dir.parent() {
+        Some(prefix) if dir.file_name().is_some_and(|n| n == "bin") => format!(
+            "from the strand checkout, `cargo install --locked --path crates/strand-auth \
+             --root {}` puts it in {}, beside this strand",
+            prefix.display(),
+            dir.display()
+        ),
+        _ => format!(
+            "from the strand checkout, `cargo build --release -p strand-auth`, then copy \
+             target/release/strand-auth into {}, beside this strand",
+            dir.display()
+        ),
+    }
+}
+
+pub(crate) const USAGE: &str = "usage: strand check [dir | file]\n\n\
     Parses and type-checks every .strand file under the directory (default \
     $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits \
     non-zero on errors. Given a file, checks it with the rest of its config \
@@ -859,7 +886,7 @@ mod tests {
         for want in [
             "check::lock_no_helper",
             "lock.strand:1:",
-            "cargo install --locked --path crates/strand-auth",
+            "beside this strand",
             "/usr/libexec/strand",
         ] {
             assert!(report.text.contains(want), "{want}: {}", report.text);
@@ -886,6 +913,31 @@ mod tests {
         }
         let report = check_dir_with(&t.0, Style::Plain, unasked).unwrap();
         assert!(report.ok(), "{}", report.text);
+    }
+
+    /// (strand-fixes) The install hint names the directory strand looks
+    /// in first, beside itself: a `cargo install --root` for a strand in
+    /// a prefix's `bin`, else a copy into its directory.
+    #[test]
+    fn the_helper_hint_names_the_directory_beside_strand() {
+        let hint = helper_install_hint(Some(Path::new("/home/u/.local/bin/strand")));
+        assert!(
+            hint.contains(
+                "cargo install --locked --path crates/strand-auth --root /home/u/.local`"
+            ),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("in /home/u/.local/bin, beside this strand"),
+            "{hint}"
+        );
+        let hint = helper_install_hint(Some(Path::new("/src/strand/target/release/strand")));
+        assert!(!hint.contains("cargo install"), "{hint}");
+        assert!(
+            hint.contains("copy target/release/strand-auth into /src/strand/target/release"),
+            "{hint}"
+        );
+        assert!(helper_install_hint(None).contains("cargo build --release -p strand-auth"));
     }
 
     /// The public `check_dir` asks the same lookup `strand run` does

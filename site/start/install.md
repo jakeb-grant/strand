@@ -44,10 +44,17 @@ strand --version
 `strand --version` prints `strand 0.0.0`.
 
 Strand looks for `strand-auth` beside its own executable, then in
-`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`.
-Without it, `strand run` warns at every start that a `lock` would have
-no way to unlock, and `strand check` reports an error for a config that
-has a `lock`. A shell with no lock screen runs without the helper.
+`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`,
+and nowhere else: never on your `PATH`, since it is the program your
+password is handed to. When a config has a `lock` and there is no
+helper, `strand run` warns at start, or at the reload that adds the
+`lock`, that the lock would have no way to unlock, and `strand check`
+reports an error for the config. Both say where to put the helper:
+beside the `strand` that is running, with `cargo install --locked
+--path crates/strand-auth --root <prefix>` when that `strand` is in
+`<prefix>/bin`, else by copying `target/release/strand-auth` into its
+directory. A shell with no lock screen runs without the helper and
+says nothing about it.
 
 ### Without the GPU backend
 

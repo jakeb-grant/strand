@@ -19,10 +19,13 @@ pub(crate) fn token_path(path: &str) -> Option<&str> {
     path.strip_prefix('$').filter(|p| !p.is_empty())
 }
 
+/// `strand clear`'s usage.
+pub(crate) const CLEAR_USAGE: &str = "usage: strand clear <'$token' | file.settings.field>";
+
 /// `strand clear <path>`.
 pub fn clear_cli(args: &[String]) -> Result<String, String> {
     let [path] = args else {
-        return Err("usage: strand clear <'$token' | file.settings.field>".into());
+        return Err(CLEAR_USAGE.into());
     };
     ask(&Request::Clear { path: path.clone() })?;
     Ok(String::new())

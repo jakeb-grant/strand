@@ -22,6 +22,14 @@ use std::process::ExitCode;
 /// The sandbox's executable name.
 pub(crate) const EVAL: &str = "strand-eval";
 
+/// `strand replay`'s usage: the options are `strand-eval replay`'s
+/// (eval/src/cli.rs `replay`), handed on as they are.
+pub(crate) const USAGE: &str = "usage: strand replay [report-dir] [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]
+       strand replay clip [report-dir] --from T [--to T] [--node SEL]... [--note TEXT] [--json] [--save FILE.zip]
+
+Replays a glitch report (default: the newest under the state directory's reports/) in strand-eval, the evaluation sandbox, found next to strand or on PATH, which takes these options; `clip` makes a clip of the replay instead.
+";
+
 /// `strand-eval` beside `exe` (the running `strand`), else the first on
 /// `path` (a `PATH` value). Only a regular file with an execute bit
 /// counts.

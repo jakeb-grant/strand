@@ -3679,3 +3679,23 @@ fn a_diff_carries_the_press_whose_handlers_made_it() {
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
 }
+
+/// (strand-fixes) An empty config directory compiles, to nothing: `strand
+/// run` says it has nothing to run yet (once, at boot), as it does for a
+/// boot with no build; a config with a file, or one whose errors the
+/// overlay shows, is not "nothing".
+#[test]
+fn an_empty_config_has_nothing_to_run() {
+    let dir = temp_dir("empty-config");
+    assert!(nothing_to_run(&load(&dir)));
+    std::fs::write(dir.join("prefs.toml"), "a = 1\n").unwrap();
+    assert!(nothing_to_run(&load(&dir)), "no .strand file yet");
+    std::fs::write(dir.join("bar.strand"), "bar B { text \"hi\" }\n").unwrap();
+    assert!(!nothing_to_run(&load(&dir)));
+    std::fs::write(dir.join("bar.strand"), "bar B { text nope }\n").unwrap();
+    let broken = Loader::new(&dir, crate::services::schema().clone(), None).boot();
+    assert!(broken.errors() > 0);
+    assert!(!nothing_to_run(&broken));
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(not_a_config_dir(&std::env::temp_dir()).is_none());
+}

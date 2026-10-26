@@ -587,15 +587,36 @@ enum End {
     Failed(DemoError),
 }
 
+/// Why `dir` cannot be run as a config directory, in the user's words
+/// (`strand run: …`), with the command that makes one; `None` when it is
+/// a directory.
+fn not_a_config_dir(dir: &Path) -> Option<String> {
+    if dir.is_dir() {
+        return None;
+    }
+    let shown = dir.display();
+    Some(if dir.exists() {
+        format!("{shown} is not a directory")
+    } else {
+        format!("{shown} does not exist; `strand new {shown}` writes a starter shell there")
+    })
+}
+
+/// The boot found no config to run, and no problem that the overlay
+/// shows instead: no build, or one made of no file (an empty config
+/// directory compiles, to nothing).
+fn nothing_to_run(boot: &Outcome) -> bool {
+    boot.errors() == 0
+        && boot.unreadable.is_empty()
+        && boot.build.as_ref().is_none_or(|b| b.sources.is_empty())
+}
+
 /// Run the config in `dir` until the compositor goes away or SIGINT or
 /// SIGTERM arrives (then `Ok`, after the logic thread has flushed and
 /// ended), or until the logic thread fails.
 pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
-    if !dir.is_dir() {
-        return Err(DemoError::Logic(format!(
-            "{} is not a directory",
-            dir.display()
-        )));
+    if let Some(why) = not_a_config_dir(dir) {
+        return Err(DemoError::Config(why));
     }
     // Before any thread starts, so every thread has the signals blocked.
     let signals = signal_fd()?;
@@ -624,8 +645,8 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // last good version), then the compiler worker for every later save.
     let (worker_tx, worker_rx) = calloop::channel::channel::<FromWorker>();
     let (compiler, boot) = Worker::spawn(dir, live::cache_dir(), worker_tx)?;
-    if boot.build.is_none() && boot.errors() == 0 {
-        log::warn!("{}: nothing to run yet", dir.display());
+    if nothing_to_run(&boot) {
+        log::warn!("{}: nothing to run yet: no .strand file", dir.display());
     }
     let mut live = Live {
         worker: Some(worker_rx),
@@ -744,8 +765,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     // (not under the mock, whose host has no `auth`).
     let mocked = crate::mock::requested().is_some();
     let mut guard = lock::Guard::wire(&handle, mgr.state_mut(), mocked)?;
-    let helper = strand_auth::default_helper().is_some();
-    for why in lock::start_notices(helper, mgr.state().session_lock_supported(), mocked) {
+    for why in lock::start_notices(mgr.state().session_lock_supported(), mocked) {
         log::warn!("{why}");
         let _ = to_logic.send(ToLogic::Notice(why.into()));
     }

@@ -36,13 +36,32 @@ $ strand fmt --help
 usage: strand fmt [--check] [--] [dir | file]...
 
 Formats .strand files in place (a directory means its .strand files, as `strand check` loads them; default $XDG_CONFIG_HOME/strand). With --check, writes nothing, lists the files that are not formatted and exits non-zero if there are any. Files with syntax errors are reported and left as written.
+$ strand watch --help
+usage: strand watch [--json]
+$ strand reload --help
+usage: strand reload [--hard]
+$ strand get --help
+usage: strand get [--json] <file.name | '$token'>
+$ strand set --help
+usage: strand set <file.name> <value>
+$ strand toggle --help
+usage: strand toggle <file.name>
+$ strand call --help
+usage: strand call [--json] <service.action> [args…]
+$ strand clear --help
+usage: strand clear <'$token' | file.settings.field>
 $ strand new --help
-strand new: usage: strand new [dir]
+usage: strand new [dir]
 $ strand export --help
-strand export: usage: strand export json | base24 | --template <file> [--palette '<expr>'] [-o <file>]
+usage: strand export json | base24 | --template <file> [--palette '<expr>'] [-o <file>]
 $ strand compositor-rules --help
 usage: strand compositor-rules [dir] [--classic]
 
 Prints Hyprland layer rules that blur behind the surfaces of the config at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by their strand-<Name> namespaces, for you to paste into your Hyprland config. The default is Hyprland 0.56's Lua config (hl.layer_rule); --classic prints hyprlang `layerrule =` lines for older versions. Nothing is applied to the running session.
 $ strand report --help
-strand report: usage: strand report [--json] [what you saw…]
+usage: strand report [--json] [what you saw…]
+$ strand replay --help
+usage: strand replay [report-dir] [--no-open] [--out DIR] [--to SCN] [--output NAME] [--traced SECONDS|all] [--frames all|failing|none] [--gpu]
+       strand replay clip [report-dir] --from T [--to T] [--node SEL]... [--note TEXT] [--json] [--save FILE.zip]
+
+Replays a glitch report (default: the newest under the state directory's reports/) in strand-eval, the evaluation sandbox, found next to strand or on PATH, which takes these options; `clip` makes a clip of the replay instead.

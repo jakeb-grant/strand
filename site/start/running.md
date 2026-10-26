@@ -51,6 +51,8 @@ writes the `persist` state and settings it has not saved yet. `strand run
 
 If the directory has no `.strand` files yet, the shell starts with
 nothing to show and waits: the first file you save there appears.
+It says so once as it starts, in its log: "… nothing to run yet: no
+.strand file".
 
 ## Save to change it
 

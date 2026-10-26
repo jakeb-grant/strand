@@ -20,7 +20,7 @@ use strand_compiler::{FileId, SourceMap};
 
 use crate::check::default_dir;
 
-const USAGE: &str = "usage: strand fmt [--check] [--] [dir | file]...\n\n\
+pub(crate) const USAGE: &str = "usage: strand fmt [--check] [--] [dir | file]...\n\n\
     Formats .strand files in place (a directory means its .strand files, \
     as `strand check` loads them; default $XDG_CONFIG_HOME/strand). With \
     --check, writes nothing, lists the files that are not formatted and \
